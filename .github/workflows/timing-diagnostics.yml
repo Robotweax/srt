@@ -73,7 +73,7 @@ jobs:
             --repetitions 10 --trace-repetitions 3
       - name: Preserve evidence, including failed measurements
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: linux-timing-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -188,7 +188,7 @@ jobs:
             --stack-trace-comparison
       - name: Preserve logs and metadata only (no reference binaries)
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: linux-group-receive-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

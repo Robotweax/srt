@@ -526,7 +526,7 @@ jobs:
           tests/ffmpeg/run_smoke.sh ffmpeg-source/ffmpeg
       - name: Retain FFmpeg failure evidence (logs and generated media only)
         if: failure() && steps.ffmpeg_smoke.outcome == 'failure'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ffmpeg-smoke-failure
           path: |
@@ -1050,7 +1050,7 @@ jobs:
           tar --list --gzip \
             --file "$RUNNER_TEMP/robotweax-interop-tools.tar.gz"
       - name: Upload Robotweax interoperability tools
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: robotweax-interop-tools
           path: ${{ runner.temp }}/robotweax-interop-tools.tar.gz
@@ -1515,7 +1515,7 @@ jobs:
         if: >-
           failure() && matrix.profile == 'aead-timing'
           && steps.aead_timing.outcome == 'failure'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: aead-timing-failure-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
