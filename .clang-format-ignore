@@ -1,0 +1,7 @@
+**/build*/**
+**/dist/**
+**/interop-artifacts/**
+**/reference-build/**
+**/reference-srt/**
+**/third_party/**
+**/vendor/**

@@ -1,0 +1,202 @@
+name: Timing diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      investigation:
+        description: Isolated diagnostic to run
+        type: choice
+        options:
+          - timing
+          - group-receive-contract
+          - group-backup-baseline
+          - group-matrix-context
+          - group-receive-stack
+          - group-strace-stack
+        default: timing
+  pull_request:
+    paths:
+      - '.github/workflows/timing-diagnostics.yml'
+      - 'interop/run_timing_diagnostics.py'
+      - 'interop/trace_timing_peer.sh'
+      - 'interop/tests/test_timing_diagnostics.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: timing-diagnostics-${{ github.ref }}-${{ inputs.investigation || 'timing' }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.investigation == 'timing'
+    name: Linux serial timing investigation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install diagnostic dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libssl-dev strace
+          python3 -c "import sys; assert sys.version_info >= (3, 10)"
+      - name: Clean Release build (Robotweax only)
+        run: |
+          cmake -S . -B build-diagnostics \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_AEAD_API_PREVIEW=ON \
+            -DROBOTWEAX_SRT_BUILD_TESTS=OFF \
+            -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF \
+            -DROBOTWEAX_SRT_BUILD_TOOLS=ON
+          cmake --build build-diagnostics --parallel 2 --target \
+            robotweax_srt_timing_peer robotweax_srt_interop_peer \
+            robotweax_srt_group_timing_sender
+      - name: Record toolchain and host metadata
+        run: |
+          mkdir -p diagnostic-metadata
+          uname -a > diagnostic-metadata/kernel.txt
+          lscpu > diagnostic-metadata/cpu.txt
+          c++ --version > diagnostic-metadata/compiler.txt
+          cmake --version > diagnostic-metadata/cmake.txt
+          openssl version -a > diagnostic-metadata/openssl.txt
+          strace --version > diagnostic-metadata/strace.txt
+          git rev-parse HEAD > diagnostic-metadata/checkout.txt
+          cp build-diagnostics/CMakeCache.txt diagnostic-metadata/
+      - name: Serial controls, phase observations, and syscall traces
+        run: |
+          python3 interop/run_timing_diagnostics.py \
+            --build-directory build-diagnostics \
+            --output-directory timing-diagnostic-results \
+            --repetitions 10 --trace-repetitions 3
+      - name: Preserve evidence, including failed measurements
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-timing-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            timing-diagnostic-results/
+            diagnostic-metadata/
+          retention-days: 14
+          if-no-files-found: warn
+
+  group_receive_contract:
+    name: Linux serial group investigation (${{ inputs.investigation }})
+    if: github.event_name == 'workflow_dispatch' && (inputs.investigation == 'group-receive-contract' || inputs.investigation == 'group-backup-baseline' || inputs.investigation == 'group-matrix-context' || inputs.investigation == 'group-receive-stack' || inputs.investigation == 'group-strace-stack')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Fetch exact Haivision 1.5.7 reference (runner-local only)
+        uses: actions/checkout@v7
+        with:
+          repository: Haivision/srt
+          ref: 899348d8318eb9a3c5a5b6ec43c4a1114288773a
+          path: diagnostic-reference-source
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libssl-dev pkg-config strace
+          python3 -c "import sys; assert sys.version_info >= (3, 10)"
+      - name: Clean Release builds of the two group peers
+        env:
+          DIAGNOSTIC_SCENARIO: ${{ inputs.investigation }}
+        run: |
+          debug_flags=()
+          peer_debug_flags=()
+          if [[ "$DIAGNOSTIC_SCENARIO" == group-receive-stack || "$DIAGNOSTIC_SCENARIO" == group-strace-stack ]]; then
+            debug_flags=(-DCMAKE_CXX_FLAGS=-g)
+            peer_debug_flags=(-g)
+          fi
+          if [[ "$DIAGNOSTIC_SCENARIO" == group-receive-stack ]]; then
+            sudo apt-get install --no-install-recommends -y gdb
+          fi
+          cmake -S . -B build-group-diagnostics \
+            "${debug_flags[@]}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DROBOTWEAX_SRT_BUILD_TESTS=OFF \
+            -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF \
+            -DROBOTWEAX_SRT_BUILD_TOOLS=ON
+          cmake --build build-group-diagnostics --parallel 2 \
+            --target robotweax_srt_group_peer
+          cmake -S diagnostic-reference-source -B diagnostic-reference-build \
+            "${debug_flags[@]}" \
+            -DCMAKE_BUILD_TYPE=Release -DENABLE_ENCRYPTION=ON \
+            -DENABLE_BONDING=ON -DENABLE_APPS=OFF -DENABLE_TESTING=OFF \
+            -DENABLE_SHARED=OFF -DENABLE_STATIC=ON
+          cmake --build diagnostic-reference-build --parallel 2
+          c++ -std=c++17 -O2 "${peer_debug_flags[@]}" interop/group_peer.cpp \
+            -Idiagnostic-reference-source/srtcore -Idiagnostic-reference-build \
+            diagnostic-reference-build/libsrt.a -lcrypto -lpthread -ldl \
+            -o diagnostic-reference-group-peer
+      - name: Record diagnostic metadata
+        run: |
+          mkdir -p group-diagnostic-metadata
+          uname -a > group-diagnostic-metadata/kernel.txt
+          lscpu > group-diagnostic-metadata/cpu.txt
+          c++ --version > group-diagnostic-metadata/compiler.txt
+          cmake --version > group-diagnostic-metadata/cmake.txt
+          openssl version -a > group-diagnostic-metadata/openssl.txt
+          git rev-parse HEAD > group-diagnostic-metadata/checkout.txt
+          git -C diagnostic-reference-source rev-parse HEAD \
+            > group-diagnostic-metadata/reference-checkout.txt
+          cp build-group-diagnostics/CMakeCache.txt \
+            group-diagnostic-metadata/robotweax-cache.txt
+          cp diagnostic-reference-build/CMakeCache.txt \
+            group-diagnostic-metadata/reference-cache.txt
+      - name: Run 60 serial cases with retained failures
+        if: inputs.investigation != 'group-matrix-context' && inputs.investigation != 'group-receive-stack' && inputs.investigation != 'group-strace-stack'
+        env:
+          DIAGNOSTIC_SCENARIO: ${{ inputs.investigation }}
+        run: |
+          python3 interop/run_group_diagnostics.py \
+            --robotweax-peer build-group-diagnostics/robotweax_srt_group_peer \
+            --reference-peer ./diagnostic-reference-group-peer \
+            --output-directory group-diagnostic-results --repetitions 60 \
+            --scenario "$DIAGNOSTIC_SCENARIO"
+      - name: Compare isolated Backup, CI matrix context, and separate syscall trace
+        if: inputs.investigation == 'group-matrix-context'
+        run: |
+          strace --version > group-diagnostic-metadata/strace.txt
+          python3 interop/run_group_matrix_diagnostics.py \
+            --robotweax-peer build-group-diagnostics/robotweax_srt_group_peer \
+            --reference-peer ./diagnostic-reference-group-peer \
+            --output-directory group-diagnostic-results
+      - name: Capture one stalled reference receive stack in a separate matrix
+        if: inputs.investigation == 'group-receive-stack'
+        run: |
+          gdb --version > group-diagnostic-metadata/gdb.txt
+          python3 interop/run_group_stack_diagnostics.py \
+            --robotweax-peer build-group-diagnostics/robotweax_srt_group_peer \
+            --reference-peer ./diagnostic-reference-group-peer \
+            --output-directory group-diagnostic-results
+      - name: Compare control, strace, and strace with bounded stacks
+        if: inputs.investigation == 'group-strace-stack'
+        run: |
+          strace --version > group-diagnostic-metadata/strace.txt
+          # Bash file-size limit: 128 MiB per log, in addition to time bounds.
+          ulimit -f 131072
+          python3 interop/run_group_matrix_diagnostics.py \
+            --robotweax-peer build-group-diagnostics/robotweax_srt_group_peer \
+            --reference-peer ./diagnostic-reference-group-peer \
+            --output-directory group-diagnostic-results \
+            --stack-trace-comparison
+      - name: Preserve logs and metadata only (no reference binaries)
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-group-receive-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            group-diagnostic-results/**/*.json
+            group-diagnostic-results/**/*.jsonl
+            group-diagnostic-results/**/*.log
+            group-diagnostic-results/**/*.stdout
+            group-diagnostic-results/**/*.stderr
+            group-diagnostic-metadata/*.txt
+          retention-days: 14
+          if-no-files-found: warn

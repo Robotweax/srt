@@ -1,0 +1,39 @@
+---
+Language: Cpp
+BasedOnStyle: WebKit
+Standard: c++20
+
+# Keep the established Robotweax layout while making new formatting
+# deterministic. Formatting is intentionally enforced only on changed lines;
+# this file is not a request for a repository-wide mechanical rewrite.
+IndentWidth: 4
+ContinuationIndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 80
+
+AlignAfterOpenBracket: DontAlign
+BreakBeforeBinaryOperators: NonAssignment
+BreakBeforeBraces: WebKit
+BreakConstructorInitializers: BeforeComma
+BreakInheritanceList: BeforeComma
+Cpp11BracedListStyle: true
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseExpressionOnASingleLine: false
+AllowShortEnumsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: Empty
+AllowShortLoopsOnASingleLine: false
+
+FixNamespaceComments: false
+IncludeBlocks: Preserve
+NamespaceIndentation: None
+ReflowComments: false
+SortIncludes: Never
+SortUsingDeclarations: Never
+...

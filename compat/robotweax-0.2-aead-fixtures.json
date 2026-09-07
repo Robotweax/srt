@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "profile": "robotweax-srt-0.2-aead",
+  "generator": "OpenSSL EVP AES-GCM 3.6.3",
+  "description": "Deterministic current-SRT GCM fixtures. The retransmission bit is present in the input header model but cleared in authenticated data.",
+  "common": {
+    "salt": "000102030405060708090a0b0c0d0e0f",
+    "plaintext": "00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f",
+    "data_header": {
+      "message_number": 19088743,
+      "boundary": 3,
+      "in_order": true,
+      "encryption_key": 1,
+      "retransmitted": true,
+      "timestamp": 2309737967,
+      "destination_socket_id": 270544960
+    }
+  },
+  "vectors": [
+    {
+      "name": "aes-128-gcm",
+      "key": "000102030405060708090a0b0c0d0e0f",
+      "sequence": 16909060,
+      "iv": "0001020304050607090b090f",
+      "aad": "01020304e923456789abcdef10203040",
+      "ciphertext": "990fcbbac96d671e1a01107984225f504a6ab0b0cadb1158d94af3e1c8c1ed10",
+      "tag": "303da5bcffef8a9ce2c610e2e004ecc5",
+      "protected_payload": "990fcbbac96d671e1a01107984225f504a6ab0b0cadb1158d94af3e1c8c1ed10303da5bcffef8a9ce2c610e2e004ecc5"
+    },
+    {
+      "name": "aes-192-gcm",
+      "key": "000102030405060708090a0b0c0d0e0f1011121314151617",
+      "sequence": 270544960,
+      "iv": "000102030405060718293a4b",
+      "aad": "10203040e923456789abcdef10203040",
+      "ciphertext": "35f7f6d94a3276c4c4a035530eeaed665330c7abddf5ad0e260a698a1fc133bd",
+      "tag": "84da2e44dcf705af36293e22f27af6f7",
+      "protected_payload": "35f7f6d94a3276c4c4a035530eeaed665330c7abddf5ad0e260a698a1fc133bd84da2e44dcf705af36293e22f27af6f7"
+    },
+    {
+      "name": "aes-256-gcm",
+      "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "sequence": 2147483646,
+      "iv": "000102030405060777f6f5f5",
+      "aad": "7ffffffee923456789abcdef10203040",
+      "ciphertext": "f719ca09aa1164d5032cd246fcce30c6b2a1a96cfa511ee26047cbea924fd7e4",
+      "tag": "d1e882ca6c0870dd38ae75b8c1323a3f",
+      "protected_payload": "f719ca09aa1164d5032cd246fcce30c6b2a1a96cfa511ee26047cbea924fd7e4d1e882ca6c0870dd38ae75b8c1323a3f"
+    }
+  ]
+}

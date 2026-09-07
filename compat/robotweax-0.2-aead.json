@@ -1,0 +1,413 @@
+{
+  "schema_version": 2,
+  "profile": "robotweax-srt-0.2-aead",
+  "status": "released",
+  "wire_output_enabled": true,
+  "default_api_profile": "srt-1.5.5",
+  "implementation": {
+    "release_version": "0.2.0",
+    "protected_packet_model": true,
+    "production_data_runtime": true,
+    "caller_listener_ipv4_live_message": true,
+    "caller_listener_ipv6_live_message": true,
+    "enabled_in_default_api_profile": false,
+    "extension_build_selection": true,
+    "pinned_reference_interoperability": true,
+    "pinned_reference_live_message_interoperability": true,
+    "pinned_reference_file_stream_interoperability": false,
+    "rendezvous": true,
+    "ipv6": true,
+    "file_stream": true,
+    "fec": true,
+    "connection_groups": true,
+    "timing": true,
+    "adversarial_fuzz": true,
+    "platform_abi": true
+  },
+  "release_evidence": {
+    "milestone": "AEAD-15",
+    "project_version": "0.2.0",
+    "shared_library_abi": "0.2",
+    "release_tag": "v0.2.0",
+    "release_commit": "e28f5f317f1d497ba4d569a25c95cae94a389b9c",
+    "release_date": "2026-08-27",
+    "pull_request_ci": "passed",
+    "post_merge_ci": "passed",
+    "ctr_regression": "full_ci_matrix",
+    "selected_gcm_profiles": [
+      "aead",
+      "aead-ipv6",
+      "aead-file",
+      "aead-file-ipv6",
+      "aead-fec",
+      "aead-group",
+      "aead-timing"
+    ],
+    "security_gates": [
+      "Address/undefined sanitizers",
+      "Fuzz smoke"
+    ],
+    "platform_abi_gate": "AES-GCM platform/ABI",
+    "documentation": {
+      "release_notes": "docs/release-notes-0.2.0.md",
+      "migration_guide": "docs/migration-0.2.md",
+      "compatibility_report": "docs/compatibility.md",
+      "changelog": "CHANGELOG.md"
+    },
+    "source_artifacts": [
+      "github-source-archive-tar-gz",
+      "github-source-archive-zip"
+    ]
+  },
+  "platform_abi": {
+    "current_project_version": "0.2.0",
+    "target_project_version": "0.2.0",
+    "project_version_bump_milestone": "AEAD-15",
+    "target_shared_library_abi": "0.2",
+    "opaque_c_abi_revision": 1,
+    "public_symbol_manifest": "cmake/public-symbols.txt",
+    "historical_abi_baseline": "cmake/abi/robotweax-srt-0.1.0.txt",
+    "current_abi_baseline": "cmake/abi/robotweax-srt-0.2.0.txt",
+    "target_abi_baseline": "cmake/abi/robotweax-srt-0.2.0.txt",
+    "public_symbol_count": 80,
+    "public_symbol_sha256": "078187df2008370574a8acb7dd64c17d0abadc3ba9f8d5f45a88a15d949dda2a",
+    "platforms": ["linux", "macos", "windows"],
+    "build_type": "Release",
+    "linkages": ["static", "shared"],
+    "preview_build_guard": "ENABLE_AEAD_API_PREVIEW",
+    "default_build_guard_enabled": false,
+    "package_consumers": ["cmake_c", "cmake_cpp", "pkg_config_linux"],
+    "shared_library_checks": [
+      "exact_public_exports",
+      "load_unload_lifecycle",
+      "installed_package_consumer"
+    ],
+    "ci_gates": [
+      "Linux Release",
+      "macos-latest Release",
+      "windows-latest Release",
+      "Shared library (ubuntu-latest)",
+      "Shared library (macos-latest)",
+      "Shared library (windows-latest)",
+      "AES-GCM platform/ABI (ubuntu-latest)",
+      "AES-GCM platform/ABI (macos-latest)",
+      "AES-GCM platform/ABI (windows-latest)",
+      "Address/undefined sanitizers",
+      "Fuzz smoke"
+    ]
+  },
+  "interoperability": {
+    "reference_revision": "d99d2e1a3b1a213b03c7dfbea5133898935fdeea",
+    "ci_profiles": [
+      "aead",
+      "aead-ipv6",
+      "aead-file",
+      "aead-file-ipv6",
+      "aead-fec",
+      "aead-group",
+      "aead-timing"
+    ],
+    "build_guard": "ENABLE_AEAD_API_PREVIEW",
+    "matrix": {
+      "key_lengths_bytes": [16],
+      "address_families": ["ipv4", "ipv6"],
+      "connection_modes": ["caller_listener", "rendezvous"],
+      "live_message": {
+        "peers": ["robotweax", "haivision"],
+        "directions": [
+          "robotweax_to_haivision",
+          "haivision_to_robotweax"
+        ]
+      },
+      "file_stream": {
+        "peers": ["robotweax", "robotweax"],
+        "profiles": ["stream", "file_helper", "loss_recovery"]
+      },
+      "fec": {
+        "geometries": ["row", "column", "matrix"],
+        "protected_bytes": "ciphertext_and_16_byte_tag",
+        "robotweax_receiver_directions": [
+          "haivision_to_robotweax"
+        ],
+        "reference_receiver_positive_boundary": "first_message_row_loss",
+        "minimum_data_key_transitions": 2
+      },
+      "connection_groups": {
+        "peers": ["robotweax", "robotweax"],
+        "policies": ["broadcast", "backup"],
+        "profiles": [
+          "baseline",
+          "late_join",
+          "ack_suppression_replay",
+          "path_outage"
+        ],
+        "minimum_member_data_key_transitions": 1
+      },
+      "timing": {
+        "peers": ["robotweax", "robotweax"],
+        "payload_profiles": ["binary-1200", "ts-1316"],
+        "address_families": ["ipv4", "ipv6"],
+        "single_socket_connection_modes": ["caller_listener", "rendezvous"],
+        "single_socket_fault_profile": "loss_delay_reorder",
+        "backup_group_profiles": ["baseline", "ack_suppression_replay", "path_outage"],
+        "minimum_data_key_transitions": 3,
+        "quality_limits": {
+          "early_srt_release_count": 0,
+          "early_udp_egress_count": 0,
+          "payload_integrity_uncompared": 0,
+          "payload_integrity_failures": 0,
+          "tsbpd_deadline_regression_count": 0,
+          "srt_release_regression_count": 0,
+          "maximum_egress_p99_9_microseconds": 20000,
+          "maximum_burst_depth": 8,
+          "maximum_pcr_span_rate_error_ppm": 5000,
+          "maximum_replay_tsbpd_phase_range_microseconds": 2000
+        }
+      },
+      "adversarial": {
+        "fuzz_smoke_runs_per_target": 10000,
+        "key_material_acceptance_modes": ["automatic", "aes_ctr", "aes_gcm"],
+        "authenticated_packet_mutations": [
+          "sequence",
+          "message_number",
+          "timestamp",
+          "destination_socket_id",
+          "key_selector",
+          "ciphertext",
+          "authentication_tag",
+          "truncated_authentication_tag",
+          "undersized_output"
+        ],
+        "authenticated_packet_valid_variants": [
+          "original",
+          "retransmitted_header",
+          "oversized_caller_output_buffer"
+        ],
+        "fail_closed_invariants": [
+          "no_plaintext_on_authentication_failure",
+          "complete_caller_output_erasure_on_failure",
+          "no_adjacent_output_mutation",
+          "no_key_state_mutation_from_malformed_key_material",
+          "bounded_key_fec_and_group_replay_history",
+          "secret_redaction_in_remote_evidence"
+        ]
+      },
+      "key_rotation": {
+        "caller_listener": true,
+        "minimum_caller_listener_data_key_transitions": 3,
+        "rendezvous": true,
+        "minimum_rendezvous_data_key_transitions": 2,
+        "file_stream_caller_listener": true,
+        "file_stream_rendezvous": true,
+        "minimum_file_stream_data_key_transitions": 2,
+        "connection_group_members": true
+      }
+    },
+    "assertions": [
+      "connected_getter_reports_aes_gcm",
+      "exact_payload_sha256",
+      "exact_sender_and_receiver_byte_counts",
+      "zero_receiver_undecryptable_packets",
+      "ipv6_mss_1500_connected_payload_ceiling_1420",
+      "ipv6_mss_1280_runtime_payload_ceiling_1200",
+      "ipv6_statistics_exclude_authentication_tags",
+      "file_stream_ipv4_mss_1500_connected_payload_ceiling_1440",
+      "file_stream_ipv6_mss_1500_connected_payload_ceiling_1420",
+      "file_stream_partial_write_and_read_contract",
+      "file_helpers_exact_offsets_sha256_and_eof",
+      "file_stream_rotation_and_drop_recovery",
+      "file_stream_sequence_rollover",
+      "fec_protected_byte_parity",
+      "fec_reconstruction_before_authentication",
+      "fec_recursive_burst_recovery",
+      "fec_corruption_publishes_zero_plaintext",
+      "fec_message_number_wrap",
+      "fec_resource_bounds",
+      "connection_group_member_local_crypto_mode",
+      "connection_group_distinct_member_receiver_identities",
+      "connection_group_independent_member_key_rotation",
+      "connection_group_late_join",
+      "connection_group_ack_suppression_plaintext_replay",
+      "connection_group_replacement_local_ciphertext",
+      "connection_group_path_outage_failover",
+      "connection_group_replay_gap_fails_closed",
+      "timing_binary_and_mpeg_ts_pcr_profiles",
+      "timing_ipv4_ipv6_caller_listener_and_rendezvous",
+      "timing_rotating_gcm_loss_delay_reorder",
+      "timing_backup_group_baseline_replay_and_path_outage",
+      "timing_zero_early_release_and_exact_payload_integrity",
+      "timing_bounded_egress_burst_pcr_and_replay_phase",
+      "malformed_key_material_fuzzes_session_acceptance",
+      "authenticated_packet_fuzzes_decode_split_and_open",
+      "authentication_failure_erases_only_caller_output",
+      "remote_evidence_redacts_configured_secrets",
+      "rendezvous_sender_first_and_receiver_first",
+      "robotweax_rendezvous_initiator_and_responder_cookie_roles",
+      "rendezvous_drop_recovery_with_immutable_ciphertext",
+      "rendezvous_duplicate_suppression"
+    ],
+    "reference_capability_boundaries": [
+      {
+        "transport": "file_stream",
+        "reference_requires_tsbpd_for_gcm": true,
+        "result": "setup_rejected",
+        "diagnostics": [
+          "Enable TSBPD to use AES GCM.",
+          "setsockflag 62 failed"
+        ]
+      },
+      {
+        "transport": "live_message_fec",
+        "reference_rebuilt_message_number": 1,
+        "result": "later_source_authentication_not_supported_by_reference_receiver",
+        "positive_boundary": "robotweax_to_reference_first_message_row_loss",
+        "robotweax_receiver_profiles": ["row", "column", "matrix"]
+      },
+      {
+        "transport": "connection_groups",
+        "reference_public_group_config_supports_crypto_mode": false,
+        "result": "robotweax_self_interoperability_only"
+      }
+    ],
+    "excluded_until_later_milestones": [
+      "aes_192_gcm",
+      "aes_256_gcm",
+      "pinned_haivision_file_stream_gcm_interoperability",
+      "pinned_haivision_live_message_caller_listener_key_rotation"
+    ]
+  },
+  "scope": "Explicit Robotweax 0.2 extension profile; not a claim of complete SRT 1.6 compatibility.",
+  "upstream": {
+    "haivision_srt": {
+      "repository": "https://github.com/Haivision/srt",
+      "revision": "d99d2e1a3b1a213b03c7dfbea5133898935fdeea",
+      "evidence_role": "public upstream implementation reviewed to freeze the version-pinned GCM compatibility contract; no source is vendored or included in Robotweax releases",
+      "sources": [
+        "https://github.com/Haivision/srt/blob/d99d2e1a3b1a213b03c7dfbea5133898935fdeea/docs/build/build-options.md",
+        "https://github.com/Haivision/srt/blob/d99d2e1a3b1a213b03c7dfbea5133898935fdeea/docs/API/API-socket-options.md",
+        "https://github.com/Haivision/srt/blob/d99d2e1a3b1a213b03c7dfbea5133898935fdeea/docs/API/rejection-codes.md",
+        "https://github.com/Haivision/srt/blob/d99d2e1a3b1a213b03c7dfbea5133898935fdeea/srtcore/srt.h",
+        "https://github.com/Haivision/srt/blob/d99d2e1a3b1a213b03c7dfbea5133898935fdeea/srtcore/socketconfig.cpp",
+        "https://github.com/Haivision/srt/blob/d99d2e1a3b1a213b03c7dfbea5133898935fdeea/srtcore/crypto.cpp",
+        "https://github.com/Haivision/srt/blob/d99d2e1a3b1a213b03c7dfbea5133898935fdeea/srtcore/core.cpp",
+        "https://github.com/Haivision/srt/blob/d99d2e1a3b1a213b03c7dfbea5133898935fdeea/haicrypt/hcrypt.h",
+        "https://github.com/Haivision/srt/blob/d99d2e1a3b1a213b03c7dfbea5133898935fdeea/haicrypt/hcrypt_msg.h",
+        "https://github.com/Haivision/srt/blob/d99d2e1a3b1a213b03c7dfbea5133898935fdeea/haicrypt/hcrypt_ctx_rx.c",
+        "https://github.com/Haivision/srt/blob/d99d2e1a3b1a213b03c7dfbea5133898935fdeea/haicrypt/hcrypt_ctx_tx.c",
+        "https://github.com/Haivision/srt/blob/d99d2e1a3b1a213b03c7dfbea5133898935fdeea/haicrypt/cryspr.c"
+      ]
+    },
+    "srt_rfc_working_copy": {
+      "repository": "https://github.com/Haivision/srt-rfc",
+      "revision": "461a1fea85baaa4a928fa634d30c846dfd047ab8",
+      "evidence_role": "public protocol working copy used as wire-contract evidence",
+      "sources": [
+        "https://github.com/Haivision/srt-rfc/blob/461a1fea85baaa4a928fa634d30c846dfd047ab8/draft-sharabayko-srt.md"
+      ]
+    }
+  },
+  "public_api": {
+    "selection": "explicit_extension_manifest",
+    "upstream_build_guard": "ENABLE_AEAD_API_PREVIEW",
+    "enabled_in_default_header": false,
+    "socket_option": {
+      "name": "SRTO_CRYPTOMODE",
+      "value": 62,
+      "value_type": "int32_t",
+      "default": 0,
+      "minimum": 0,
+      "maximum": 2,
+      "stage": "pre",
+      "modes": {
+        "automatic": 0,
+        "aes_ctr": 1,
+        "aes_gcm": 2
+      },
+      "gcm_transport_bundles": [
+        {
+          "transmission_type": "live",
+          "congestion_control": "live",
+          "tsbpd": true,
+          "message_api": true
+        },
+        {
+          "transmission_type": "file",
+          "congestion_control": "file",
+          "tsbpd": false,
+          "message_api": false
+        }
+      ],
+      "connected_getter_returns_effective_mode": true
+    },
+    "key_management_state": {
+      "name": "SRT_KM_S_BADCRYPTOMODE",
+      "value": 5
+    },
+    "rejection_reason": {
+      "name": "SRT_REJ_CRYPTO",
+      "value": 17
+    }
+  },
+  "negotiation": {
+    "result_values": {
+      "ctr": 1,
+      "gcm": 2,
+      "reject": "SRT_REJ_CRYPTO"
+    },
+    "caller_listener": [
+      [0, 0, "ctr"],
+      [0, 1, "ctr"],
+      [0, 2, "reject"],
+      [1, 0, "ctr"],
+      [1, 1, "ctr"],
+      [1, 2, "reject"],
+      [2, 0, "gcm"],
+      [2, 1, "reject"],
+      [2, 2, "gcm"]
+    ],
+    "rendezvous_initiator_responder": [
+      [0, 0, "ctr"],
+      [0, 1, "ctr"],
+      [0, 2, "reject"],
+      [1, 0, "ctr"],
+      [1, 1, "ctr"],
+      [1, 2, "reject"],
+      [2, 0, "reject"],
+      [2, 1, "reject"],
+      [2, 2, "gcm"]
+    ]
+  },
+  "wire": {
+    "profile": "current_srt_gcm_1.5.4_plus",
+    "legacy_profiles": {
+      "srt_1.5.2_to_1.5.3_ctr_iv_host_order_aad": "reject"
+    },
+    "key_material": {
+      "ctr": {
+        "cipher": 2,
+        "authentication": 0
+      },
+      "gcm": {
+        "cipher": 4,
+        "authentication": 1
+      },
+      "mixed_or_unknown_pairs": "reject_without_state_mutation"
+    },
+    "salt_size_bytes": 16,
+    "iv": {
+      "size_bytes": 12,
+      "construction": "first_12_salt_bytes_xor_8_zero_bytes_and_31_bit_packet_sequence_in_network_order"
+    },
+    "aad": {
+      "size_bytes": 16,
+      "construction": "four_srt_data_header_words_in_network_order_with_retransmission_bit_forced_to_zero"
+    },
+    "authentication_tag": {
+      "size_bytes": 16,
+      "placement": "appended_to_ciphertext"
+    },
+    "retransmission": "byte_identical_ciphertext_and_tag; wire_retransmission_bit_is_not_authenticated",
+    "fec": "protect_ciphertext_and_tag; reconstruct_before_authentication",
+    "receive": "authenticate_before_plaintext_publication"
+  }
+}

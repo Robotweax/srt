@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "transport": "file",
+    "timeout_seconds": 120,
+    "capture": false,
+    "options": {
+      "chunk_size": 32768,
+      "max_bw": 20000000
+    }
+  },
+  "scenarios": [
+    {
+      "name": "file-robotweax-a-to-haivision-b",
+      "caller": {
+        "node": "node_a",
+        "implementation": "robotweax"
+      },
+      "listener": {
+        "node": "node_b",
+        "implementation": "haivision"
+      },
+      "port": 10200,
+      "payload": {
+        "bytes": 8388608,
+        "seed": 3001
+      }
+    },
+    {
+      "name": "file-haivision-a-to-robotweax-b",
+      "caller": {
+        "node": "node_a",
+        "implementation": "haivision"
+      },
+      "listener": {
+        "node": "node_b",
+        "implementation": "robotweax"
+      },
+      "port": 10201,
+      "payload": {
+        "bytes": 8388608,
+        "seed": 3002
+      }
+    },
+    {
+      "name": "file-robotweax-b-to-haivision-a",
+      "caller": {
+        "node": "node_b",
+        "implementation": "robotweax"
+      },
+      "listener": {
+        "node": "node_a",
+        "implementation": "haivision"
+      },
+      "port": 10202,
+      "payload": {
+        "bytes": 8388608,
+        "seed": 3003
+      }
+    },
+    {
+      "name": "file-haivision-b-to-robotweax-a",
+      "caller": {
+        "node": "node_b",
+        "implementation": "haivision"
+      },
+      "listener": {
+        "node": "node_a",
+        "implementation": "robotweax"
+      },
+      "port": 10203,
+      "payload": {
+        "bytes": 8388608,
+        "seed": 3004
+      }
+    }
+  ]
+}

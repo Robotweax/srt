@@ -1,0 +1,43 @@
+#!/bin/sh
+
+set -eu
+
+minimum_version_description="Python 3.10 or newer"
+
+is_supported_python() {
+    "$1" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' \
+        >/dev/null 2>&1
+}
+
+run_python() {
+    if ! is_supported_python "$1"; then
+        printf '%s\n' \
+            "Robotweax SRT requires ${minimum_version_description}; $1 is unsupported." \
+            >&2
+        exit 1
+    fi
+    exec "$@"
+}
+
+if [ -n "${ROBOTWEAX_SRT_PYTHON:-}" ]; then
+    run_python "$ROBOTWEAX_SRT_PYTHON" "$@"
+fi
+
+repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+virtual_environment_python="${repository_root}/.venv/bin/python3"
+if [ -x "$virtual_environment_python" ]; then
+    run_python "$virtual_environment_python" "$@"
+fi
+
+for candidate in python3 python3.10 python3.11 python3.12 python3.13; do
+    if command -v "$candidate" >/dev/null 2>&1 \
+        && is_supported_python "$candidate"; then
+        exec "$candidate" "$@"
+    fi
+done
+
+printf '%s\n' \
+    "Robotweax SRT could not find ${minimum_version_description}." \
+    "Create .venv or set ROBOTWEAX_SRT_PYTHON to a supported interpreter." \
+    >&2
+exit 1

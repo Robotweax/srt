@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "transport": "live",
+    "timeout_seconds": 30,
+    "capture": false,
+    "options": {
+      "latency_ms": 120,
+      "chunk_size": 1200
+    }
+  },
+  "scenarios": [
+    {
+      "name": "robotweax-a-to-haivision-b",
+      "caller": {
+        "node": "node_a",
+        "implementation": "robotweax"
+      },
+      "listener": {
+        "node": "node_b",
+        "implementation": "haivision"
+      },
+      "port": 10000,
+      "payload": {
+        "bytes": 262144,
+        "seed": 1001
+      }
+    },
+    {
+      "name": "haivision-a-to-robotweax-b",
+      "caller": {
+        "node": "node_a",
+        "implementation": "haivision"
+      },
+      "listener": {
+        "node": "node_b",
+        "implementation": "robotweax"
+      },
+      "port": 10001,
+      "payload": {
+        "bytes": 262144,
+        "seed": 1002
+      }
+    },
+    {
+      "name": "robotweax-b-to-haivision-a",
+      "caller": {
+        "node": "node_b",
+        "implementation": "robotweax"
+      },
+      "listener": {
+        "node": "node_a",
+        "implementation": "haivision"
+      },
+      "port": 10002,
+      "payload": {
+        "bytes": 262144,
+        "seed": 1003
+      }
+    },
+    {
+      "name": "haivision-b-to-robotweax-a",
+      "caller": {
+        "node": "node_b",
+        "implementation": "haivision"
+      },
+      "listener": {
+        "node": "node_a",
+        "implementation": "robotweax"
+      },
+      "port": 10003,
+      "payload": {
+        "bytes": 262144,
+        "seed": 1004
+      }
+    },
+    {
+      "name": "robotweax-control-a-to-b",
+      "caller": {
+        "node": "node_a",
+        "implementation": "robotweax"
+      },
+      "listener": {
+        "node": "node_b",
+        "implementation": "robotweax"
+      },
+      "port": 10004,
+      "payload": {
+        "bytes": 262144,
+        "seed": 1005
+      }
+    },
+    {
+      "name": "haivision-control-a-to-b",
+      "caller": {
+        "node": "node_a",
+        "implementation": "haivision"
+      },
+      "listener": {
+        "node": "node_b",
+        "implementation": "haivision"
+      },
+      "port": 10005,
+      "payload": {
+        "bytes": 262144,
+        "seed": 1006
+      }
+    }
+  ]
+}

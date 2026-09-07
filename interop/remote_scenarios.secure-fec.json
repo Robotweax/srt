@@ -1,0 +1,226 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "transport": "live",
+    "timeout_seconds": 60,
+    "capture": true,
+    "options": {
+      "latency_ms": 120,
+      "chunk_size": 1200,
+      "passphrase_env": "SRT_INTEROP_PASSPHRASE",
+      "km_refresh_rate": 1000,
+      "km_preannounce": 400
+    }
+  },
+  "scenarios": [
+    {
+      "name": "encrypted-aes128-robotweax-to-haivision",
+      "caller": {
+        "node": "node_a",
+        "implementation": "robotweax"
+      },
+      "listener": {
+        "node": "node_b",
+        "implementation": "haivision"
+      },
+      "port": 10100,
+      "payload": {
+        "bytes": 4194304,
+        "seed": 2001
+      },
+      "options": {
+        "latency_ms": 120,
+        "chunk_size": 1200,
+        "passphrase_env": "SRT_INTEROP_PASSPHRASE",
+        "pbkeylen": 16,
+        "km_refresh_rate": 1000,
+        "km_preannounce": 400
+      }
+    },
+    {
+      "name": "encrypted-aes192-haivision-to-robotweax",
+      "caller": {
+        "node": "node_a",
+        "implementation": "haivision"
+      },
+      "listener": {
+        "node": "node_b",
+        "implementation": "robotweax"
+      },
+      "port": 10101,
+      "payload": {
+        "bytes": 4194304,
+        "seed": 2002
+      },
+      "options": {
+        "latency_ms": 120,
+        "chunk_size": 1200,
+        "passphrase_env": "SRT_INTEROP_PASSPHRASE",
+        "pbkeylen": 24,
+        "km_refresh_rate": 1000,
+        "km_preannounce": 400
+      }
+    },
+    {
+      "name": "encrypted-aes256-robotweax-to-haivision",
+      "caller": {
+        "node": "node_b",
+        "implementation": "robotweax"
+      },
+      "listener": {
+        "node": "node_a",
+        "implementation": "haivision"
+      },
+      "port": 10102,
+      "payload": {
+        "bytes": 4194304,
+        "seed": 2003
+      },
+      "options": {
+        "latency_ms": 120,
+        "chunk_size": 1200,
+        "passphrase_env": "SRT_INTEROP_PASSPHRASE",
+        "pbkeylen": 32,
+        "km_refresh_rate": 1000,
+        "km_preannounce": 400
+      }
+    },
+    {
+      "name": "encrypted-aes128-haivision-to-robotweax",
+      "caller": {
+        "node": "node_b",
+        "implementation": "haivision"
+      },
+      "listener": {
+        "node": "node_a",
+        "implementation": "robotweax"
+      },
+      "port": 10103,
+      "payload": {
+        "bytes": 4194304,
+        "seed": 2004
+      },
+      "options": {
+        "latency_ms": 120,
+        "chunk_size": 1200,
+        "passphrase_env": "SRT_INTEROP_PASSPHRASE",
+        "pbkeylen": 16,
+        "km_refresh_rate": 1000,
+        "km_preannounce": 400
+      }
+    },
+    {
+      "name": "encrypted-aes192-robotweax-to-haivision",
+      "caller": {
+        "node": "node_b",
+        "implementation": "robotweax"
+      },
+      "listener": {
+        "node": "node_a",
+        "implementation": "haivision"
+      },
+      "port": 10104,
+      "payload": {
+        "bytes": 4194304,
+        "seed": 2005
+      },
+      "options": {
+        "latency_ms": 120,
+        "chunk_size": 1200,
+        "passphrase_env": "SRT_INTEROP_PASSPHRASE",
+        "pbkeylen": 24,
+        "km_refresh_rate": 1000,
+        "km_preannounce": 400
+      }
+    },
+    {
+      "name": "encrypted-aes256-haivision-to-robotweax",
+      "caller": {
+        "node": "node_b",
+        "implementation": "haivision"
+      },
+      "listener": {
+        "node": "node_a",
+        "implementation": "robotweax"
+      },
+      "port": 10105,
+      "payload": {
+        "bytes": 4194304,
+        "seed": 2006
+      },
+      "options": {
+        "latency_ms": 120,
+        "chunk_size": 1200,
+        "passphrase_env": "SRT_INTEROP_PASSPHRASE",
+        "pbkeylen": 32,
+        "km_refresh_rate": 1000,
+        "km_preannounce": 400
+      }
+    },
+    {
+      "name": "fec-row-robotweax-to-haivision",
+      "caller": {
+        "node": "node_a",
+        "implementation": "robotweax"
+      },
+      "listener": {
+        "node": "node_b",
+        "implementation": "haivision"
+      },
+      "port": 10110,
+      "payload": {
+        "bytes": 1048576,
+        "seed": 2010
+      },
+      "options": {
+        "latency_ms": 120,
+        "chunk_size": 1200,
+        "packet_filter": "fec,cols:10,rows:1,layout:staircase,arq:onreq"
+      }
+    },
+    {
+      "name": "fec-column-haivision-to-robotweax",
+      "caller": {
+        "node": "node_a",
+        "implementation": "haivision"
+      },
+      "listener": {
+        "node": "node_b",
+        "implementation": "robotweax"
+      },
+      "port": 10111,
+      "payload": {
+        "bytes": 1048576,
+        "seed": 2011
+      },
+      "options": {
+        "latency_ms": 120,
+        "chunk_size": 1200,
+        "packet_filter": "fec,cols:10,rows:-5,layout:even,arq:onreq"
+      }
+    },
+    {
+      "name": "fec-matrix-encrypted-robotweax-to-haivision",
+      "caller": {
+        "node": "node_b",
+        "implementation": "robotweax"
+      },
+      "listener": {
+        "node": "node_a",
+        "implementation": "haivision"
+      },
+      "port": 10112,
+      "payload": {
+        "bytes": 1048576,
+        "seed": 2012
+      },
+      "options": {
+        "latency_ms": 120,
+        "chunk_size": 1200,
+        "passphrase_env": "SRT_INTEROP_PASSPHRASE",
+        "pbkeylen": 32,
+        "packet_filter": "fec,cols:10,rows:5,layout:staircase,arq:onreq"
+      }
+    }
+  ]
+}

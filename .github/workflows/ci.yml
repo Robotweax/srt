@@ -1,0 +1,1783 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  FFMPEG_COMMIT: 3acec0a1af2dda0a0838689b8b8649e7deb080a0
+  REFERENCE_SRT_COMMIT: 899348d8318eb9a3c5a5b6ec43c4a1114288773a
+  REFERENCE_SRT_VERSION: "1.5.7"
+  REFERENCE_CACHE_SCHEMA: "3"
+  REFERENCE_SRT_LEGACY_COMMIT: b6b4ae990daa8193625a4ddeaeaed03023b23125
+  REFERENCE_SRT_LEGACY_VERSION: "1.5.5"
+  REFERENCE_LEGACY_CACHE_SCHEMA: "1"
+  REFERENCE_SRT_SECURITY_COMMIT: c63c311e88aa55e430e3b7d94b89d790994f88c4
+  REFERENCE_SECURITY_CACHE_SCHEMA: "1"
+  REFERENCE_SRT_AEAD_COMMIT: d99d2e1a3b1a213b03c7dfbea5133898935fdeea
+  REFERENCE_AEAD_CACHE_SCHEMA: "1"
+
+concurrency:
+  group: >-
+    ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Change classification
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+      documentation: ${{ steps.classify.outputs.documentation }}
+      code: ${{ steps.classify.outputs.code }}
+      cpp: ${{ steps.classify.outputs.cpp }}
+      core_tests: ${{ steps.classify.outputs.core_tests }}
+      package: ${{ steps.classify.outputs.package }}
+      python: ${{ steps.classify.outputs.python }}
+      examples: ${{ steps.classify.outputs.examples }}
+      format: ${{ steps.classify.outputs.format }}
+      portable: ${{ steps.classify.outputs.portable }}
+      debug: ${{ steps.classify.outputs.debug }}
+      shared: ${{ steps.classify.outputs.shared }}
+      ffmpeg: ${{ steps.classify.outputs.ffmpeg }}
+      aead_platform: ${{ steps.classify.outputs.aead_platform }}
+      sanitizers: ${{ steps.classify.outputs.sanitizers }}
+      thread_sanitizer: ${{ steps.classify.outputs.thread_sanitizer }}
+      fuzz: ${{ steps.classify.outputs.fuzz }}
+      benchmark: ${{ steps.classify.outputs.benchmark }}
+      timing: ${{ steps.classify.outputs.timing }}
+      interop: ${{ steps.classify.outputs.interop }}
+      handshake_interop: ${{ steps.classify.outputs.handshake_interop }}
+      encrypted_interop: ${{ steps.classify.outputs.encrypted_interop }}
+      aead_interop: ${{ steps.classify.outputs.aead_interop }}
+      aead_fec_interop: ${{ steps.classify.outputs.aead_fec_interop }}
+      aead_group_interop: ${{ steps.classify.outputs.aead_group_interop }}
+      aead_timing_interop: ${{ steps.classify.outputs.aead_timing_interop }}
+      file_interop: ${{ steps.classify.outputs.file_interop }}
+      file_base_interop: ${{ steps.classify.outputs.file_base_interop }}
+      file_encrypted_base_interop: ${{ steps.classify.outputs.file_encrypted_base_interop }}
+      file_encrypted_rendezvous_interop: ${{ steps.classify.outputs.file_encrypted_rendezvous_interop }}
+      file_encrypted_faults_interop: ${{ steps.classify.outputs.file_encrypted_faults_interop }}
+      file_encrypted_rollover_interop: ${{ steps.classify.outputs.file_encrypted_rollover_interop }}
+      file_peer_error_interop: ${{ steps.classify.outputs.file_peer_error_interop }}
+      file_rollover_interop: ${{ steps.classify.outputs.file_rollover_interop }}
+      file_resilience_interop: ${{ steps.classify.outputs.file_resilience_interop }}
+      file_rendezvous_interop: ${{ steps.classify.outputs.file_rendezvous_interop }}
+      fec_interop: ${{ steps.classify.outputs.fec_interop }}
+      rendezvous_interop: ${{ steps.classify.outputs.rendezvous_interop }}
+      reference_matrix: ${{ steps.classify.outputs.reference_matrix }}
+      full: ${{ steps.classify.outputs.full }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify Python version
+        run: >-
+          python3 -c
+          "import sys; sys.version_info >= (3, 10) or
+          sys.exit('Python 3.10 or newer is required')"
+      - name: Check recent full CI evidence
+        if: github.event_name == 'schedule'
+        id: recent_full
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 interop/ci_schedule.py >> "$GITHUB_OUTPUT"
+      - name: Classify changed paths
+        id: classify
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: >-
+            ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: >-
+            ${{ github.event.pull_request.head.sha || github.sha }}
+          EVIDENCE_RUN_ID: ${{ steps.recent_full.outputs.evidence_run_id }}
+        run: |
+          set -euo pipefail
+          output_file="$RUNNER_TEMP/ci-classification.txt"
+          changed_file="$RUNNER_TEMP/ci-changed-paths.txt"
+          evidence_run_id="$EVIDENCE_RUN_ID"
+          if [[ ! "$evidence_run_id" =~ ^[0-9]+$ ]]; then evidence_run_id=""; fi
+          if [[ "$EVENT_NAME" == "schedule" && "$evidence_run_id" =~ ^[0-9]+$ ]]; then
+            python3 interop/ci_changes.py > "$output_file"
+            : > "$changed_file"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" \
+                || "$EVENT_NAME" == "schedule" ]]; then
+            python3 interop/ci_changes.py --full > "$output_file"
+            : > "$changed_file"
+          else
+            if git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+              git diff --name-only "$BASE_SHA" "$HEAD_SHA" > "$changed_file"
+            else
+              git ls-tree -r --name-only "$HEAD_SHA" > "$changed_file"
+            fi
+            python3 interop/ci_changes.py - \
+              < "$changed_file" > "$output_file"
+          fi
+          cat "$output_file" >> "$GITHUB_OUTPUT"
+          {
+            echo "### CI change classification"
+            echo
+            if [[ -s "$changed_file" ]]; then
+              echo '```text'
+              cat "$changed_file"
+              echo '```'
+            elif [[ "$EVENT_NAME" == "schedule" && -n "$evidence_run_id" ]]; then
+              echo "Scheduled duplicate omitted: same-commit full CI passed within 24 hours."
+              echo "Evidence: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$evidence_run_id"
+            elif [[ "$EVENT_NAME" == "schedule" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
+              echo "Full validation ($EVENT_NAME)."
+            else
+              echo "No changed paths."
+            fi
+            echo
+            echo "| Gate | Enabled |"
+            echo "| --- | --- |"
+            while IFS='=' read -r gate enabled; do
+              echo "| \`$gate\` | $enabled |"
+            done < "$output_file"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  dco:
+    name: DCO sign-off
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify every pull-request commit
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ALLOW_DEPENDABOT: >-
+            ${{ github.actor == 'dependabot[bot]'
+            && github.event.pull_request.user.login == 'dependabot[bot]'
+            && startsWith(github.event.pull_request.head.ref, 'dependabot/') }}
+        run: |
+          set -euo pipefail
+          arguments=()
+          if [[ "$ALLOW_DEPENDABOT" == "true" ]]; then
+            arguments+=(--allow-dependabot)
+          fi
+          python3 tools/check_dco.py \
+            "${arguments[@]}" "$BASE_SHA" "$HEAD_SHA"
+      - name: Record non-pull-request policy
+        if: github.event_name != 'pull_request'
+        run: echo "DCO sign-offs are verified on pull requests."
+
+  documentation:
+    name: Documentation
+    needs: changes
+    if: needs.changes.outputs.documentation == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Validate public documentation
+        run: ./tools/python tests/package_consumer/check_documentation.py .
+
+  python_tests:
+    name: Python harness tests
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Run interoperability harness unit tests
+        run: >-
+          python3 -m unittest discover
+          -s interop/tests
+          -p 'test_*.py'
+      - name: Compile Python harness
+        run: >-
+          python3 -m py_compile
+          interop/*.py interop/tests/*.py examples/*.py
+
+  format_check:
+    name: C++ format guard
+    needs: changes
+    if: needs.changes.outputs.format == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install pinned clang-format
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/clang-format-venv"
+          "$RUNNER_TEMP/clang-format-venv/bin/pip" \
+            install --disable-pip-version-check clang-format==22.1.8
+          echo "$RUNNER_TEMP/clang-format-venv/bin" >> "$GITHUB_PATH"
+      - name: Check changed C++ lines
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: >-
+            ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 tools/clang_format.py validate
+          if [[ "$EVENT_NAME" == "workflow_dispatch" \
+                || "$EVENT_NAME" == "schedule" \
+                || -z "$BASE_SHA" ]] \
+              || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "No comparable base revision; configuration validation only."
+          else
+            python3 tools/clang_format.py \
+              check-changed "$BASE_SHA" "$HEAD_SHA"
+          fi
+
+  linux_release:
+    name: Linux Release
+    needs: changes
+    if: >-
+      needs.changes.outputs.cpp == 'true'
+      || needs.changes.outputs.examples == 'true'
+      || needs.changes.outputs.package == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=${{ needs.changes.outputs.benchmark }}
+          -DROBOTWEAX_SRT_BUILD_EXAMPLES=${{ needs.changes.outputs.examples }}
+          -DROBOTWEAX_SRT_BUILD_TOOLS=${{ needs.changes.outputs.core_tests }}
+      - name: Build
+        if: needs.changes.outputs.core_tests == 'true'
+        run: cmake --build build --config Release --parallel
+      - name: Build selected public consumers
+        if: needs.changes.outputs.core_tests != 'true'
+        shell: bash
+        env:
+          EXAMPLES: ${{ needs.changes.outputs.examples }}
+        run: |
+          set -euo pipefail
+          targets=(robotweax_srt)
+          if [[ "$EXAMPLES" == "true" ]]; then
+            targets+=(robotweax_srt_message_demo robotweax_srt_file_demo robotweax_srt_group_demo)
+          fi
+          cmake --build build --config Release --parallel --target "${targets[@]}"
+      - name: Test
+        if: needs.changes.outputs.core_tests == 'true'
+        run: >-
+          ctest --test-dir build
+          -C Release
+          --output-on-failure
+      - name: Test selected public consumers
+        if: needs.changes.outputs.core_tests != 'true'
+        shell: bash
+        env:
+          EXAMPLES: ${{ needs.changes.outputs.examples }}
+          PACKAGE: ${{ needs.changes.outputs.package }}
+        run: |
+          set -euo pipefail
+          labels=()
+          if [[ "$EXAMPLES" == "true" ]]; then labels+=(example); fi
+          if [[ "$PACKAGE" == "true" ]]; then labels+=(abi package); fi
+          [[ ${#labels[@]} -gt 0 ]]
+          pattern=$(IFS='|'; echo "${labels[*]}")
+          ctest --test-dir build -C Release -L "$pattern" \
+            --parallel 1 --no-tests=error --output-on-failure
+
+  live_timing:
+    name: Live timing interoperability
+    needs: changes
+    if: >-
+      needs.changes.outputs.timing == 'true'
+      && needs.changes.outputs.core_tests != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+      - name: Build timing peers
+        run: >-
+          cmake --build build --parallel
+          --target robotweax_srt_timing_peer
+          robotweax_srt_interop_peer
+          robotweax_srt_group_timing_sender
+      - name: Run public-API timing gates
+        run: >-
+          ctest --test-dir build
+          -C Release
+          -L timing
+          --output-on-failure
+
+  portable_release:
+    name: ${{ matrix.os }} Release
+    needs: changes
+    if: needs.changes.outputs.portable == 'true'
+    strategy:
+      fail-fast: ${{ github.event_name == 'pull_request' }}
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          -DROBOTWEAX_SRT_BUILD_EXAMPLES=${{ needs.changes.outputs.examples }}
+          -DROBOTWEAX_SRT_BUILD_TOOLS=${{ needs.changes.outputs.core_tests }}
+      - name: Build
+        if: needs.changes.outputs.core_tests == 'true'
+        run: cmake --build build --config Release --parallel
+      - name: Build selected public consumers
+        if: needs.changes.outputs.core_tests != 'true'
+        shell: bash
+        env:
+          EXAMPLES: ${{ needs.changes.outputs.examples }}
+        run: |
+          set -euo pipefail
+          targets=(robotweax_srt)
+          if [[ "$EXAMPLES" == "true" ]]; then
+            targets+=(robotweax_srt_message_demo robotweax_srt_file_demo robotweax_srt_group_demo)
+          fi
+          cmake --build build --config Release --parallel --target "${targets[@]}"
+      - name: Test
+        if: needs.changes.outputs.core_tests == 'true'
+        run: >-
+          ctest --test-dir build
+          -C Release
+          --output-on-failure
+      - name: Test selected public consumers
+        if: needs.changes.outputs.core_tests != 'true'
+        shell: bash
+        env:
+          EXAMPLES: ${{ needs.changes.outputs.examples }}
+          PACKAGE: ${{ needs.changes.outputs.package }}
+        run: |
+          set -euo pipefail
+          labels=()
+          if [[ "$EXAMPLES" == "true" ]]; then labels+=(example); fi
+          if [[ "$PACKAGE" == "true" ]]; then labels+=(abi package); fi
+          [[ ${#labels[@]} -gt 0 ]]
+          pattern=$(IFS='|'; echo "${labels[*]}")
+          ctest --test-dir build -C Release -L "$pattern" \
+            --parallel 1 --no-tests=error --output-on-failure
+
+  debug_matrix:
+    name: ${{ matrix.os }} Debug
+    needs: changes
+    if: needs.changes.outputs.debug == 'true'
+    strategy:
+      fail-fast: ${{ github.event_name == 'pull_request' }}
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Debug
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+      - name: Build
+        run: cmake --build build --config Debug --parallel
+      - name: Test
+        run: >-
+          ctest --test-dir build
+          -C Debug
+          --output-on-failure
+
+  shared_library:
+    name: Shared library (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.shared == 'true'
+    strategy:
+      fail-fast: ${{ github.event_name == 'pull_request' }}
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SHARED_LIBS=ON
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
+      - name: Build
+        run: >-
+          cmake --build build
+          --config Release
+          --parallel
+          --target robotweax_srt_shared_lifecycle_tests
+          robotweax_srt_global_lifecycle_tests
+          robotweax_srt_c_api_test
+          robotweax_srt_compatible_header_test
+      - name: Test
+        run: >-
+          ctest --test-dir build
+          -C Release
+          -L shared-library
+          --verbose
+          --timeout 120
+
+  ffmpeg_integration:
+    name: FFmpeg integration
+    needs: changes
+    if: needs.changes.outputs.ffmpeg == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check out pinned FFmpeg
+        uses: actions/checkout@v7
+        with:
+          repository: FFmpeg/FFmpeg
+          ref: ${{ env.FFMPEG_COMMIT }}
+          path: ffmpeg-source
+          persist-credentials: false
+      - name: Build shared Robotweax SRT package
+        run: >-
+          cmake -S . -B build-ffmpeg
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SHARED_LIBS=ON
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
+          -DROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT=ON
+          && cmake --build build-ffmpeg --parallel
+      - name: Test opt-in package metadata
+        run: >-
+          ctest --test-dir build-ffmpeg
+          -C Release
+          -L package
+          --output-on-failure
+          --timeout 120
+      - name: Install isolated Robotweax SRT package
+        run: >-
+          cmake --install build-ffmpeg
+          --config Release
+          --prefix "$RUNNER_TEMP/robotweax-srt"
+      - name: Configure minimal FFmpeg build
+        run: >-
+          tests/ffmpeg/configure.sh
+          "$GITHUB_WORKSPACE/ffmpeg-source"
+          "$RUNNER_TEMP/robotweax-srt"
+      - name: Build FFmpeg
+        run: make -C ffmpeg-source -j2 ffmpeg
+      - name: Verify Robotweax linkage and SRT registration
+        shell: bash
+        run: |
+          set -euo pipefail
+          ldd ffmpeg-source/ffmpeg | \
+            grep -F "$RUNNER_TEMP/robotweax-srt/lib/libsrt.so.0.2"
+          ffmpeg-source/ffmpeg -hide_banner -protocols | \
+            grep -Eq '^[[:space:]]+srt$'
+      - name: Run FFmpeg live-transfer smoke test
+        id: ffmpeg_smoke
+        env:
+          TMPDIR: ${{ runner.temp }}/ffmpeg-smoke
+        run: |
+          mkdir -p "$TMPDIR"
+          tests/ffmpeg/run_smoke.sh ffmpeg-source/ffmpeg
+      - name: Retain FFmpeg failure evidence (logs and generated media only)
+        if: failure() && steps.ffmpeg_smoke.outcome == 'failure'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ffmpeg-smoke-failure
+          path: |
+            ${{ runner.temp }}/ffmpeg-smoke/robotweax-ffmpeg.*/*.log
+            ${{ runner.temp }}/ffmpeg-smoke/robotweax-ffmpeg.*/*.out
+            ${{ runner.temp }}/ffmpeg-smoke/robotweax-ffmpeg.*/*.ts
+            ${{ runner.temp }}/ffmpeg-smoke/robotweax-ffmpeg.*/*.m2v
+          if-no-files-found: warn
+          retention-days: 7
+
+  aead_platform:
+    name: AES-GCM platform/ABI (${{ matrix.os }})
+    needs: changes
+    if: >-
+      needs.changes.outputs.aead_platform == 'true'
+      || needs.changes.outputs.examples == 'true'
+    strategy:
+      fail-fast: ${{ github.event_name == 'pull_request' }}
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure static AES-GCM preview
+        run: >-
+          cmake -S . -B build-aead-static
+          -DCMAKE_BUILD_TYPE=Release
+          -DENABLE_AEAD_API_PREVIEW=ON
+          -DROBOTWEAX_SRT_BUILD_EXAMPLES=${{ needs.changes.outputs.examples }}
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
+      - name: Build static AES-GCM preview
+        run: >-
+          cmake --build build-aead-static
+          --config Release
+          --parallel
+          --target robotweax_srt
+      - name: Build AES-GCM public demos
+        if: needs.changes.outputs.examples == 'true'
+        run: >-
+          cmake --build build-aead-static
+          --config Release
+          --parallel
+          --target robotweax_srt_message_demo robotweax_srt_file_demo robotweax_srt_group_demo
+      - name: Test explicit CTR and GCM demo modes
+        if: needs.changes.outputs.examples == 'true'
+        run: >-
+          ctest --test-dir build-aead-static
+          -C Release
+          -L example
+          --parallel 1
+          --no-tests=error
+          --output-on-failure
+      - name: Test static ABI and package consumers
+        if: needs.changes.outputs.aead_platform == 'true'
+        run: >-
+          ctest --test-dir build-aead-static
+          -C Release
+          -L "abi|package"
+          --no-tests=error
+          --output-on-failure
+          --timeout 120
+      - name: Configure shared AES-GCM preview
+        if: needs.changes.outputs.aead_platform == 'true'
+        run: >-
+          cmake -S . -B build-aead-shared
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SHARED_LIBS=ON
+          -DENABLE_AEAD_API_PREVIEW=ON
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
+      - name: Build shared AES-GCM preview
+        if: needs.changes.outputs.aead_platform == 'true'
+        run: >-
+          cmake --build build-aead-shared
+          --config Release
+          --parallel
+      - name: Test shared ABI, exports, and package consumers
+        if: needs.changes.outputs.aead_platform == 'true'
+        run: >-
+          ctest --test-dir build-aead-shared
+          -C Release
+          -L "abi|package|shared-library"
+          --no-tests=error
+          --output-on-failure
+          --timeout 120
+
+  sanitizers:
+    name: Address/undefined sanitizers
+    needs: changes
+    if: needs.changes.outputs.sanitizers == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
+      CXXFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
+      LDFLAGS: -fsanitize=address,undefined
+      UBSAN_OPTIONS: halt_on_error=1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Debug
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          -DENABLE_AEAD_API_PREVIEW=ON
+      - name: Verify fatal UBSan enforcement
+        run: |
+          cmake --build build --target robotweax_srt_ubsan_canary
+          python3 tests/sanitizers/verify_ubsan.py build/robotweax_srt_ubsan_canary
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  thread_sanitizer:
+    name: Thread sanitizer
+    needs: changes
+    if: needs.changes.outputs.thread_sanitizer == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+          CXXFLAGS: -fsanitize=thread -fno-omit-frame-pointer
+          LDFLAGS: -fsanitize=thread
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Debug
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
+      - name: Build lifecycle stress suite
+        run: >-
+          cmake --build build --parallel
+          --target robotweax_srt_lifecycle_tests
+          robotweax_srt_process_exit_tests
+          robotweax_srt_global_lifecycle_tests
+          robotweax_srt_scheduler_tests
+      - name: Run lifecycle stress suite
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: >-
+          ./build/robotweax_srt_lifecycle_tests
+          && ./build/robotweax_srt_process_exit_tests
+          && ./build/robotweax_srt_global_lifecycle_tests
+          && ./build/robotweax_srt_scheduler_tests
+
+  fuzz_smoke:
+    name: Fuzz smoke
+    needs: changes
+    if: needs.changes.outputs.fuzz == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UBSAN_OPTIONS: halt_on_error=1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Debug
+          -DROBOTWEAX_SRT_BUILD_TESTS=OFF
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
+          -DROBOTWEAX_SRT_BUILD_FUZZERS=ON
+          -DENABLE_AEAD_API_PREVIEW=ON
+      - name: Build
+        run: >-
+          cmake --build build --parallel
+          --target fuzz_packet_decode
+          fuzz_handshake_decode
+          fuzz_key_material_decode
+          fuzz_group_membership_decode
+          fuzz_fec_control_decode
+          fuzz_aead_packet_open
+      - name: Exercise packet decoder
+        run: ./build/fuzz_packet_decode -runs=10000
+      - name: Exercise handshake decoder
+        run: ./build/fuzz_handshake_decode -runs=10000
+      - name: Exercise key-material decoder
+        run: ./build/fuzz_key_material_decode -runs=10000
+      - name: Exercise group-membership decoder
+        run: ./build/fuzz_group_membership_decode -runs=10000
+      - name: Exercise FEC control decoder
+        run: ./build/fuzz_fec_control_decode -runs=10000
+      - name: Exercise authenticated DATA open path
+        run: ./build/fuzz_aead_packet_open -runs=10000
+
+  reference_interop_prepare:
+    name: Prepare reference interoperability
+    needs: changes
+    if: >-
+      needs.changes.outputs.interop == 'true'
+      || needs.changes.outputs.benchmark == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Identify reference toolchain
+        id: reference_toolchain
+        shell: bash
+        env:
+          CACHE_PREFIX: >-
+            haivision-srt-${{ runner.os }}-${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          fingerprint="$({
+            c++ --version
+            cmake --version
+            openssl version
+            ldd --version
+            uname -m
+          } | sha256sum | cut -d ' ' -f 1)"
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+          cache_key="${CACHE_PREFIX}-${REFERENCE_SRT_COMMIT}-${fingerprint}-v${REFERENCE_CACHE_SCHEMA}"
+          echo "cache_key=$cache_key" >> "$GITHUB_OUTPUT"
+          legacy_cache_key="${CACHE_PREFIX}-${REFERENCE_SRT_LEGACY_COMMIT}-${fingerprint}-legacy-v${REFERENCE_LEGACY_CACHE_SCHEMA}"
+          echo "legacy_cache_key=$legacy_cache_key" >> "$GITHUB_OUTPUT"
+          security_cache_key="${CACHE_PREFIX}-${REFERENCE_SRT_SECURITY_COMMIT}-${fingerprint}-security-v${REFERENCE_SECURITY_CACHE_SCHEMA}"
+          echo "security_cache_key=$security_cache_key" >> "$GITHUB_OUTPUT"
+          aead_cache_key="${CACHE_PREFIX}-${REFERENCE_SRT_AEAD_COMMIT}-${fingerprint}-aead-v${REFERENCE_AEAD_CACHE_SCHEMA}"
+          echo "aead_cache_key=$aead_cache_key" >> "$GITHUB_OUTPUT"
+      - name: Restore pinned Haivision build
+        if: >-
+          needs.changes.outputs.handshake_interop == 'true'
+          || needs.changes.outputs.encrypted_interop == 'true'
+          || needs.changes.outputs.file_interop == 'true'
+          || needs.changes.outputs.fec_interop == 'true'
+          || needs.changes.outputs.rendezvous_interop == 'true'
+          || needs.changes.outputs.benchmark == 'true'
+        id: reference_cache
+        uses: actions/cache/restore@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-srt
+            reference-build
+          key: ${{ steps.reference_toolchain.outputs.cache_key }}
+          lookup-only: true
+      - name: Build Robotweax SRT
+        shell: bash
+        env:
+          HANDSHAKE: ${{ needs.changes.outputs.handshake_interop }}
+          BENCHMARK: ${{ needs.changes.outputs.benchmark }}
+        run: |
+          set -euo pipefail
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DROBOTWEAX_SRT_BUILD_TESTS=OFF \
+            -DROBOTWEAX_SRT_BUILD_TOOLS=ON \
+            -DROBOTWEAX_SRT_BUILD_BENCHMARKS="$BENCHMARK"
+          # This job packages peers; test binaries run in the test jobs.
+          targets=(robotweax_srt_interop_peer)
+          if [[ "$HANDSHAKE" == "true" ]]; then
+            targets+=(robotweax_srt_handshake_probe robotweax_srt_group_peer)
+          fi
+          if [[ "$BENCHMARK" == "true" ]]; then
+            targets+=(robotweax_srt_scalability_peer)
+          fi
+          cmake --build build --parallel --target "${targets[@]}"
+      - name: Build Robotweax SRT AEAD preview
+        if: >-
+          needs.changes.outputs.aead_interop == 'true'
+          || needs.changes.outputs.aead_fec_interop == 'true'
+          || needs.changes.outputs.aead_group_interop == 'true'
+          || needs.changes.outputs.aead_timing_interop == 'true'
+        run: >-
+          cmake -S . -B build-aead
+          -DCMAKE_BUILD_TYPE=Release
+          -DENABLE_AEAD_API_PREVIEW=ON
+          -DROBOTWEAX_SRT_BUILD_TESTS=OFF
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          -DROBOTWEAX_SRT_BUILD_TOOLS=ON
+          && cmake --build build-aead --parallel
+          --target robotweax_srt_interop_peer
+          robotweax_srt_group_peer
+          robotweax_srt_timing_peer
+          robotweax_srt_group_timing_sender
+      - name: Fetch primary Haivision SRT v1.5.7
+        if: >-
+          (needs.changes.outputs.handshake_interop == 'true'
+          || needs.changes.outputs.encrypted_interop == 'true'
+          || needs.changes.outputs.file_interop == 'true'
+          || needs.changes.outputs.fec_interop == 'true'
+          || needs.changes.outputs.rendezvous_interop == 'true'
+          || needs.changes.outputs.benchmark == 'true')
+          && steps.reference_cache.outputs.cache-hit != 'true'
+        run: |
+          rm -rf reference-srt reference-build
+          git clone https://github.com/Haivision/srt.git reference-srt
+          git -C reference-srt checkout "$REFERENCE_SRT_COMMIT"
+      - name: Build primary Haivision SRT v1.5.7 cache
+        if: >-
+          (needs.changes.outputs.handshake_interop == 'true'
+          || needs.changes.outputs.encrypted_interop == 'true'
+          || needs.changes.outputs.file_interop == 'true'
+          || needs.changes.outputs.fec_interop == 'true'
+          || needs.changes.outputs.rendezvous_interop == 'true'
+          || needs.changes.outputs.benchmark == 'true')
+          && steps.reference_cache.outputs.cache-hit != 'true'
+        run: >-
+          cmake -S reference-srt -B reference-build
+          -DCMAKE_BUILD_TYPE=Release
+          -DENABLE_ENCRYPTION=ON
+          -DENABLE_BONDING=ON
+          -DENABLE_APPS=ON
+          -DENABLE_TESTING=OFF
+          && cmake --build reference-build --parallel
+          --target srt-live-transmit
+      - name: Save pinned Haivision build
+        if: >-
+          (needs.changes.outputs.handshake_interop == 'true'
+          || needs.changes.outputs.encrypted_interop == 'true'
+          || needs.changes.outputs.file_interop == 'true'
+          || needs.changes.outputs.fec_interop == 'true'
+          || needs.changes.outputs.rendezvous_interop == 'true'
+          || needs.changes.outputs.benchmark == 'true')
+          && steps.reference_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-srt
+            reference-build
+          key: ${{ steps.reference_toolchain.outputs.cache_key }}
+      - name: Restore Haivision v1.5.5 backward-compatibility build
+        if: needs.changes.outputs.encrypted_interop == 'true'
+        id: reference_legacy_cache
+        uses: actions/cache/restore@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-legacy-srt
+            reference-legacy-build
+          key: ${{ steps.reference_toolchain.outputs.legacy_cache_key }}
+          lookup-only: true
+      - name: Fetch Haivision SRT v1.5.5 backward profile
+        if: >-
+          needs.changes.outputs.encrypted_interop == 'true'
+          && steps.reference_legacy_cache.outputs.cache-hit != 'true'
+        run: |
+          rm -rf reference-legacy-srt reference-legacy-build
+          git clone https://github.com/Haivision/srt.git reference-legacy-srt
+          git -C reference-legacy-srt checkout "$REFERENCE_SRT_LEGACY_COMMIT"
+      - name: Build Haivision SRT v1.5.5 backward profile
+        if: >-
+          needs.changes.outputs.encrypted_interop == 'true'
+          && steps.reference_legacy_cache.outputs.cache-hit != 'true'
+        run: >-
+          cmake -S reference-legacy-srt -B reference-legacy-build
+          -DCMAKE_BUILD_TYPE=Release
+          -DENABLE_ENCRYPTION=ON
+          -DENABLE_BONDING=ON
+          -DENABLE_APPS=ON
+          -DENABLE_TESTING=OFF
+          && cmake --build reference-legacy-build --parallel
+          --target srt-live-transmit
+      - name: Save Haivision v1.5.5 backward-compatibility build
+        if: >-
+          needs.changes.outputs.encrypted_interop == 'true'
+          && steps.reference_legacy_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-legacy-srt
+            reference-legacy-build
+          key: ${{ steps.reference_toolchain.outputs.legacy_cache_key }}
+      - name: Restore Haivision v1.5.6 security-profile build
+        if: needs.changes.outputs.encrypted_interop == 'true'
+        id: reference_security_cache
+        uses: actions/cache/restore@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-security-srt
+            reference-security-build
+          key: ${{ steps.reference_toolchain.outputs.security_cache_key }}
+          lookup-only: true
+      - name: Fetch Haivision SRT v1.5.6 security profile
+        if: >-
+          needs.changes.outputs.encrypted_interop == 'true'
+          && steps.reference_security_cache.outputs.cache-hit != 'true'
+        run: |
+          rm -rf reference-security-srt reference-security-build
+          git clone https://github.com/Haivision/srt.git reference-security-srt
+          git -C reference-security-srt checkout "$REFERENCE_SRT_SECURITY_COMMIT"
+      - name: Build Haivision v1.5.6 security profile
+        if: >-
+          needs.changes.outputs.encrypted_interop == 'true'
+          && steps.reference_security_cache.outputs.cache-hit != 'true'
+        run: >-
+          cmake -S reference-security-srt -B reference-security-build
+          -DCMAKE_BUILD_TYPE=Release
+          -DENABLE_ENCRYPTION=ON
+          -DENABLE_BONDING=ON
+          -DENABLE_APPS=ON
+          -DENABLE_TESTING=OFF
+          && cmake --build reference-security-build --parallel
+          --target srt-live-transmit
+      - name: Save Haivision v1.5.6 security-profile build
+        if: >-
+          needs.changes.outputs.encrypted_interop == 'true'
+          && steps.reference_security_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-security-srt
+            reference-security-build
+          key: ${{ steps.reference_toolchain.outputs.security_cache_key }}
+      - name: Restore pinned Haivision AEAD-preview build
+        if: >-
+          needs.changes.outputs.aead_interop == 'true'
+          || needs.changes.outputs.aead_fec_interop == 'true'
+        id: reference_aead_cache
+        uses: actions/cache/restore@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-aead-srt
+            reference-aead-build
+          key: ${{ steps.reference_toolchain.outputs.aead_cache_key }}
+          lookup-only: true
+      - name: Fetch pinned Haivision AEAD-preview revision
+        if: >-
+          (needs.changes.outputs.aead_interop == 'true'
+          || needs.changes.outputs.aead_fec_interop == 'true')
+          && steps.reference_aead_cache.outputs.cache-hit != 'true'
+        run: |
+          rm -rf reference-aead-srt reference-aead-build
+          git clone https://github.com/Haivision/srt.git reference-aead-srt
+          git -C reference-aead-srt checkout "$REFERENCE_SRT_AEAD_COMMIT"
+      - name: Build pinned Haivision AEAD preview
+        if: >-
+          (needs.changes.outputs.aead_interop == 'true'
+          || needs.changes.outputs.aead_fec_interop == 'true')
+          && steps.reference_aead_cache.outputs.cache-hit != 'true'
+        run: >-
+          cmake -S reference-aead-srt -B reference-aead-build
+          -DCMAKE_BUILD_TYPE=Release
+          -DENABLE_ENCRYPTION=ON
+          -DENABLE_AEAD_API_PREVIEW=ON
+          -DUSE_ENCLIB=openssl-evp
+          -DENABLE_APPS=OFF
+          -DENABLE_TESTING=OFF
+          && cmake --build reference-aead-build --parallel
+      - name: Save pinned Haivision AEAD-preview build
+        if: >-
+          (needs.changes.outputs.aead_interop == 'true'
+          || needs.changes.outputs.aead_fec_interop == 'true')
+          && steps.reference_aead_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-aead-srt
+            reference-aead-build
+          key: ${{ steps.reference_toolchain.outputs.aead_cache_key }}
+      - name: Build public Robotweax shared-binding peer
+        if: needs.changes.outputs.handshake_interop == 'true'
+        run: >-
+          c++ -std=c++17 -O2 interop/binding_peer.cpp
+          -Iinclude build/libsrt.a -lcrypto -lpthread -ldl
+          -o robotweax-binding-peer
+      - name: Package Robotweax interoperability tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Published workflow artifacts contain Robotweax products only.
+          # Reference builds stay in Actions caches and peers are linked locally.
+          files=(LICENSE THIRD_PARTY.md build/robotweax_srt_interop_peer)
+          for candidate in \
+            build-aead/robotweax_srt_interop_peer \
+            build-aead/robotweax_srt_group_peer \
+            build-aead/robotweax_srt_timing_peer \
+            build-aead/robotweax_srt_group_timing_sender \
+            build/robotweax_srt_handshake_probe \
+            build/robotweax_srt_group_peer \
+            build/robotweax_srt_scalability_peer \
+            robotweax-binding-peer
+          do
+            if [[ -e "$candidate" ]]; then
+              files+=("$candidate")
+            fi
+          done
+          for file in "${files[@]}"; do
+            case "$file" in
+              LICENSE|THIRD_PARTY.md|build/robotweax_*|build-aead/robotweax_*|robotweax-*) ;;
+              *)
+                echo "Refusing non-Robotweax artifact entry: $file" >&2
+                exit 1
+                ;;
+            esac
+            if [[ ! -f "$file" || ! -s "$file" || -L "$file" ]]; then
+              echo "Refusing missing, empty, or symlink artifact entry: $file" >&2
+              exit 1
+            fi
+          done
+          # Keep local macOS contract tests free of AppleDouble metadata too.
+          COPYFILE_DISABLE=1 tar --create --gzip \
+            --file "$RUNNER_TEMP/robotweax-interop-tools.tar.gz" \
+            "${files[@]}"
+          tar --list --gzip \
+            --file "$RUNNER_TEMP/robotweax-interop-tools.tar.gz"
+      - name: Upload Robotweax interoperability tools
+        uses: actions/upload-artifact@v6
+        with:
+          name: robotweax-interop-tools
+          path: ${{ runner.temp }}/robotweax-interop-tools.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  reference_interop_shard:
+    name: Reference interoperability (${{ matrix.profile }})
+    needs:
+      - changes
+      - reference_interop_prepare
+    if: >-
+      needs.changes.outputs.interop == 'true'
+      || needs.changes.outputs.benchmark == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.reference_matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      LD_LIBRARY_PATH: ${{ github.workspace }}/reference-build
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Identify reference toolchain
+        if: >-
+          matrix.profile == 'handshake'
+          || matrix.profile == 'encrypted'
+          || startsWith(matrix.profile, 'file-')
+          || matrix.profile == 'fec'
+          || matrix.profile == 'rendezvous'
+          || matrix.profile == 'scalability'
+          || matrix.profile == 'aead'
+          || matrix.profile == 'aead-ipv6'
+          || matrix.profile == 'aead-file'
+          || matrix.profile == 'aead-file-ipv6'
+          || matrix.profile == 'aead-fec'
+        id: reference_toolchain
+        shell: bash
+        env:
+          CACHE_PREFIX: >-
+            haivision-srt-${{ runner.os }}-${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          fingerprint="$({
+            c++ --version
+            cmake --version
+            openssl version
+            ldd --version
+            uname -m
+          } | sha256sum | cut -d ' ' -f 1)"
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+          cache_key="${CACHE_PREFIX}-${REFERENCE_SRT_COMMIT}-${fingerprint}-v${REFERENCE_CACHE_SCHEMA}"
+          echo "cache_key=$cache_key" >> "$GITHUB_OUTPUT"
+          legacy_cache_key="${CACHE_PREFIX}-${REFERENCE_SRT_LEGACY_COMMIT}-${fingerprint}-legacy-v${REFERENCE_LEGACY_CACHE_SCHEMA}"
+          echo "legacy_cache_key=$legacy_cache_key" >> "$GITHUB_OUTPUT"
+          security_cache_key="${CACHE_PREFIX}-${REFERENCE_SRT_SECURITY_COMMIT}-${fingerprint}-security-v${REFERENCE_SECURITY_CACHE_SCHEMA}"
+          echo "security_cache_key=$security_cache_key" >> "$GITHUB_OUTPUT"
+          aead_cache_key="${CACHE_PREFIX}-${REFERENCE_SRT_AEAD_COMMIT}-${fingerprint}-aead-v${REFERENCE_AEAD_CACHE_SCHEMA}"
+          echo "aead_cache_key=$aead_cache_key" >> "$GITHUB_OUTPUT"
+      - name: Restore pinned Haivision build locally
+        if: >-
+          matrix.profile == 'handshake'
+          || matrix.profile == 'encrypted'
+          || startsWith(matrix.profile, 'file-')
+          || matrix.profile == 'fec'
+          || matrix.profile == 'rendezvous'
+          || matrix.profile == 'scalability'
+        id: reference_cache
+        uses: actions/cache/restore@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-srt
+            reference-build
+          key: ${{ steps.reference_toolchain.outputs.cache_key }}
+      - name: Fetch primary Haivision SRT v1.5.7 locally
+        if: >-
+          (matrix.profile == 'handshake'
+          || matrix.profile == 'encrypted'
+          || startsWith(matrix.profile, 'file-')
+          || matrix.profile == 'fec'
+          || matrix.profile == 'rendezvous'
+          || matrix.profile == 'scalability')
+          && steps.reference_cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf reference-srt reference-build
+          git clone https://github.com/Haivision/srt.git reference-srt
+          git -C reference-srt checkout "$REFERENCE_SRT_COMMIT"
+      - name: Build primary Haivision SRT v1.5.7 locally
+        if: >-
+          (matrix.profile == 'handshake'
+          || matrix.profile == 'encrypted'
+          || startsWith(matrix.profile, 'file-')
+          || matrix.profile == 'fec'
+          || matrix.profile == 'rendezvous'
+          || matrix.profile == 'scalability')
+          && steps.reference_cache.outputs.cache-hit != 'true'
+        run: >-
+          cmake -S reference-srt -B reference-build
+          -DCMAKE_BUILD_TYPE=Release
+          -DENABLE_ENCRYPTION=ON
+          -DENABLE_BONDING=ON
+          -DENABLE_APPS=ON
+          -DENABLE_TESTING=OFF
+          && cmake --build reference-build --parallel
+          --target srt-live-transmit
+      - name: Save pinned Haivision build from shard
+        if: >-
+          (matrix.profile == 'handshake'
+          || matrix.profile == 'encrypted'
+          || startsWith(matrix.profile, 'file-')
+          || matrix.profile == 'fec'
+          || matrix.profile == 'rendezvous'
+          || matrix.profile == 'scalability')
+          && steps.reference_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-srt
+            reference-build
+          key: ${{ steps.reference_toolchain.outputs.cache_key }}
+      - name: Restore Haivision v1.5.5 backward build locally
+        if: matrix.profile == 'encrypted'
+        id: reference_legacy_cache
+        uses: actions/cache/restore@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-legacy-srt
+            reference-legacy-build
+          key: ${{ steps.reference_toolchain.outputs.legacy_cache_key }}
+      - name: Fetch Haivision SRT v1.5.5 backward profile locally
+        if: >-
+          matrix.profile == 'encrypted'
+          && steps.reference_legacy_cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf reference-legacy-srt reference-legacy-build
+          git clone https://github.com/Haivision/srt.git reference-legacy-srt
+          git -C reference-legacy-srt checkout "$REFERENCE_SRT_LEGACY_COMMIT"
+      - name: Build Haivision SRT v1.5.5 backward profile locally
+        if: >-
+          matrix.profile == 'encrypted'
+          && steps.reference_legacy_cache.outputs.cache-hit != 'true'
+        run: >-
+          cmake -S reference-legacy-srt -B reference-legacy-build
+          -DCMAKE_BUILD_TYPE=Release
+          -DENABLE_ENCRYPTION=ON
+          -DENABLE_BONDING=ON
+          -DENABLE_APPS=ON
+          -DENABLE_TESTING=OFF
+          && cmake --build reference-legacy-build --parallel
+          --target srt-live-transmit
+      - name: Save Haivision v1.5.5 backward build from shard
+        if: >-
+          matrix.profile == 'encrypted'
+          && steps.reference_legacy_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-legacy-srt
+            reference-legacy-build
+          key: ${{ steps.reference_toolchain.outputs.legacy_cache_key }}
+      - name: Restore Haivision v1.5.6 security build locally
+        if: matrix.profile == 'encrypted'
+        id: reference_security_cache
+        uses: actions/cache/restore@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-security-srt
+            reference-security-build
+          key: ${{ steps.reference_toolchain.outputs.security_cache_key }}
+      - name: Fetch Haivision SRT v1.5.6 security profile locally
+        if: >-
+          matrix.profile == 'encrypted'
+          && steps.reference_security_cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf reference-security-srt reference-security-build
+          git clone https://github.com/Haivision/srt.git reference-security-srt
+          git -C reference-security-srt checkout "$REFERENCE_SRT_SECURITY_COMMIT"
+      - name: Build Haivision SRT v1.5.6 security profile locally
+        if: >-
+          matrix.profile == 'encrypted'
+          && steps.reference_security_cache.outputs.cache-hit != 'true'
+        run: >-
+          cmake -S reference-security-srt -B reference-security-build
+          -DCMAKE_BUILD_TYPE=Release
+          -DENABLE_ENCRYPTION=ON
+          -DENABLE_BONDING=ON
+          -DENABLE_APPS=ON
+          -DENABLE_TESTING=OFF
+          && cmake --build reference-security-build --parallel
+          --target srt-live-transmit
+      - name: Save Haivision v1.5.6 security build from shard
+        if: >-
+          matrix.profile == 'encrypted'
+          && steps.reference_security_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-security-srt
+            reference-security-build
+          key: ${{ steps.reference_toolchain.outputs.security_cache_key }}
+      - name: Restore pinned Haivision AEAD-preview build locally
+        if: >-
+          matrix.profile == 'aead'
+          || matrix.profile == 'aead-ipv6'
+          || matrix.profile == 'aead-file'
+          || matrix.profile == 'aead-file-ipv6'
+          || matrix.profile == 'aead-fec'
+        id: reference_aead_cache
+        uses: actions/cache/restore@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-aead-srt
+            reference-aead-build
+          key: ${{ steps.reference_toolchain.outputs.aead_cache_key }}
+      - name: Fetch pinned Haivision AEAD-preview revision locally
+        if: >-
+          (matrix.profile == 'aead'
+          || matrix.profile == 'aead-ipv6'
+          || matrix.profile == 'aead-file'
+          || matrix.profile == 'aead-file-ipv6'
+          || matrix.profile == 'aead-fec')
+          && steps.reference_aead_cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf reference-aead-srt reference-aead-build
+          git clone https://github.com/Haivision/srt.git reference-aead-srt
+          git -C reference-aead-srt checkout "$REFERENCE_SRT_AEAD_COMMIT"
+      - name: Build pinned Haivision AEAD preview locally
+        if: >-
+          (matrix.profile == 'aead'
+          || matrix.profile == 'aead-ipv6'
+          || matrix.profile == 'aead-file'
+          || matrix.profile == 'aead-file-ipv6'
+          || matrix.profile == 'aead-fec')
+          && steps.reference_aead_cache.outputs.cache-hit != 'true'
+        run: >-
+          cmake -S reference-aead-srt -B reference-aead-build
+          -DCMAKE_BUILD_TYPE=Release
+          -DENABLE_ENCRYPTION=ON
+          -DENABLE_AEAD_API_PREVIEW=ON
+          -DUSE_ENCLIB=openssl-evp
+          -DENABLE_APPS=OFF
+          -DENABLE_TESTING=OFF
+          && cmake --build reference-aead-build --parallel
+      - name: Save pinned Haivision AEAD-preview build from shard
+        if: >-
+          (matrix.profile == 'aead'
+          || matrix.profile == 'aead-ipv6'
+          || matrix.profile == 'aead-file'
+          || matrix.profile == 'aead-file-ipv6'
+          || matrix.profile == 'aead-fec')
+          && steps.reference_aead_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: |
+            reference-aead-srt
+            reference-aead-build
+          key: ${{ steps.reference_toolchain.outputs.aead_cache_key }}
+      - name: Download Robotweax interoperability tools
+        uses: actions/download-artifact@v7
+        with:
+          name: robotweax-interop-tools
+          path: ${{ runner.temp }}/robotweax-interop-tools
+      - name: Extract Robotweax interoperability tools
+        run: >-
+          tar --extract --gzip
+          --file "$RUNNER_TEMP/robotweax-interop-tools/robotweax-interop-tools.tar.gz"
+      - name: Build exact-message reference helper locally
+        if: matrix.profile == 'handshake'
+        run: >-
+          c++ -std=c++17 interop/reference_peer.cpp
+          -Ireference-srt/srtcore -Ireference-build
+          reference-build/libsrt.a -lcrypto -lpthread -ldl
+          -o reference-peer
+      - name: Build reference API peer locally
+        if: >-
+          matrix.profile == 'handshake'
+          || matrix.profile == 'encrypted'
+          || startsWith(matrix.profile, 'file-')
+          || matrix.profile == 'fec'
+          || matrix.profile == 'rendezvous'
+        run: >-
+          c++ -std=c++17 -O2
+          -DROBOTWEAX_SRT_REFERENCE_DIAGNOSTICS=1
+          interop/api_peer.cpp
+          -Ireference-srt/srtcore -Ireference-build
+          reference-build/libsrt.a -lcrypto -lpthread -ldl
+          -o reference-api-peer
+      - name: Build reference many-socket scalability peer locally
+        if: matrix.profile == 'scalability'
+        run: >-
+          c++ -std=c++17 -O2
+          benchmarks/scalability_peer.cpp
+          -Ireference-srt/srtcore -Ireference-build
+          reference-build/libsrt.a -lcrypto -lpthread -ldl
+          -o reference-scalability-peer
+      - name: Build public reference shared-binding peer locally
+        if: matrix.profile == 'handshake'
+        run: >-
+          c++ -std=c++17 -O2 interop/binding_peer.cpp
+          -Ireference-srt/srtcore -Ireference-build
+          reference-build/libsrt.a -lcrypto -lpthread -ldl
+          -o reference-binding-peer
+      - name: Build Haivision v1.5.6 security-profile peer locally
+        if: matrix.profile == 'encrypted'
+        run: >-
+          c++ -std=c++17 -O2
+          -DROBOTWEAX_SRT_REFERENCE_DIAGNOSTICS=1
+          interop/api_peer.cpp
+          -Ireference-security-srt/srtcore -Ireference-security-build
+          reference-security-build/libsrt.a -lcrypto -lpthread -ldl
+          -o reference-security-api-peer
+      - name: Build Haivision v1.5.5 backward-profile peer locally
+        if: matrix.profile == 'encrypted'
+        run: >-
+          c++ -std=c++17 -O2
+          -DROBOTWEAX_SRT_REFERENCE_DIAGNOSTICS=1
+          interop/api_peer.cpp
+          -Ireference-legacy-srt/srtcore -Ireference-legacy-build
+          reference-legacy-build/libsrt.a -lcrypto -lpthread -ldl
+          -o reference-legacy-api-peer
+      - name: Build pinned Haivision AEAD-preview peer locally
+        if: >-
+          matrix.profile == 'aead'
+          || matrix.profile == 'aead-ipv6'
+          || matrix.profile == 'aead-file'
+          || matrix.profile == 'aead-file-ipv6'
+          || matrix.profile == 'aead-fec'
+        run: >-
+          c++ -std=c++17 -O2
+          -DENABLE_AEAD_API_PREVIEW=1
+          -DROBOTWEAX_SRT_REFERENCE_DIAGNOSTICS=1
+          interop/api_peer.cpp
+          -Ireference-aead-srt/srtcore -Ireference-aead-build
+          reference-aead-build/libsrt.a -lcrypto -lpthread -ldl
+          -o reference-aead-api-peer
+      - name: Build reference connection-group peer locally
+        if: matrix.profile == 'handshake'
+        run: >-
+          c++ -std=c++17 -O2 interop/group_peer.cpp
+          -Ireference-srt/srtcore -Ireference-build
+          reference-build/libsrt.a -lcrypto -lpthread -ldl
+          -o reference-group-peer
+      - name: Run bidirectional HSv5 interoperability test
+        if: matrix.profile == 'handshake'
+        run: >-
+          python3 interop/run_handshake_interop.py
+          --robotweax-probe build/robotweax_srt_handshake_probe
+          --srt-live-transmit reference-build/srt-live-transmit
+          --reference-peer ./reference-peer
+      - name: Run receiver TLPKTDROP and fake-ACK matrix
+        if: matrix.profile == 'handshake'
+        run: >-
+          python3 interop/run_tlpktdrop_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+      - name: Run connection-group admission, payload, and late-join matrix
+        if: matrix.profile == 'handshake'
+        run: >-
+          python3 interop/run_group_interop.py
+          --robotweax-peer build/robotweax_srt_group_peer
+          --reference-peer ./reference-group-peer
+          --expected-reference-version "$REFERENCE_SRT_VERSION"
+          --baseline-only
+      - name: Run individual Message and Stream receive contracts
+        if: matrix.profile == 'handshake'
+        run: >-
+          python3 interop/run_receive_contract_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+          --expected-reference-version "$REFERENCE_SRT_VERSION"
+      - name: Run IPv6 Stream ID, MSS, and statistics interoperability
+        if: matrix.profile == 'handshake'
+        run: >-
+          python3 interop/run_ipv6_mtu_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+          --expected-reference-version "$REFERENCE_SRT_VERSION"
+      - name: Run shared binding and acquired UDP socket interoperability
+        if: matrix.profile == 'handshake'
+        run: >-
+          python3 interop/run_binding_interop.py
+          --robotweax-peer ./robotweax-binding-peer
+          --reference-peer ./reference-binding-peer
+          --expected-reference-version "$REFERENCE_SRT_VERSION"
+      - name: Run listener and connect callback interoperability
+        if: matrix.profile == 'handshake'
+        run: >-
+          python3 interop/run_listen_callback_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+      - name: Run encrypted key-rotation interoperability matrix
+        if: matrix.profile == 'encrypted'
+        run: >-
+          python3 interop/run_encrypted_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+      - name: Run pinned AES-GCM IPv4 preview matrix
+        if: matrix.profile == 'aead'
+        run: >-
+          python3 interop/run_aead_interop.py
+          --robotweax-peer build-aead/robotweax_srt_interop_peer
+          --reference-peer ./reference-aead-api-peer
+      - name: Run pinned AES-GCM IPv6 preview matrix
+        if: matrix.profile == 'aead-ipv6'
+        run: >-
+          python3 interop/run_aead_interop.py
+          --robotweax-peer build-aead/robotweax_srt_interop_peer
+          --reference-peer ./reference-aead-api-peer
+          --host ::1
+      - name: Run pinned AES-GCM File/Stream preview matrix
+        if: matrix.profile == 'aead-file'
+        run: >-
+          python3 interop/run_aead_file_interop.py
+          --robotweax-peer build-aead/robotweax_srt_interop_peer
+          --reference-peer ./reference-aead-api-peer
+      - name: Run pinned AES-GCM IPv6 File/Stream preview matrix
+        if: matrix.profile == 'aead-file-ipv6'
+        run: >-
+          python3 interop/run_aead_file_interop.py
+          --robotweax-peer build-aead/robotweax_srt_interop_peer
+          --reference-peer ./reference-aead-api-peer
+          --host ::1
+      - name: Run pinned AES-GCM FEC matrix
+        if: matrix.profile == 'aead-fec'
+        run: >-
+          python3 interop/run_aead_fec_interop.py
+          --robotweax-peer build-aead/robotweax_srt_interop_peer
+          --reference-peer ./reference-aead-api-peer
+      - name: Run AES-GCM Connection Group matrix
+        if: matrix.profile == 'aead-group'
+        run: >-
+          python3 interop/run_aead_group_interop.py
+          --robotweax-peer build-aead/robotweax_srt_group_peer
+      - name: Run AES-GCM timing matrix
+        id: aead_timing
+        if: matrix.profile == 'aead-timing'
+        run: >-
+          python3 interop/run_aead_timing_interop.py
+          --timing-peer build-aead/robotweax_srt_timing_peer
+          --sender-peer build-aead/robotweax_srt_interop_peer
+          --group-sender-peer build-aead/robotweax_srt_group_timing_sender
+          --failure-artifacts "${{ runner.temp }}/aead-timing-failures"
+      - name: Preserve AES-GCM timing failure diagnostics
+        if: >-
+          failure() && matrix.profile == 'aead-timing'
+          && steps.aead_timing.outcome == 'failure'
+        uses: actions/upload-artifact@v6
+        with:
+          name: aead-timing-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/aead-timing-failures/run-*/*.json
+            ${{ runner.temp }}/aead-timing-failures/run-*/*.log
+          retention-days: 3
+          if-no-files-found: warn
+      - name: Run Haivision v1.5.6 encrypted security baseline
+        if: matrix.profile == 'encrypted'
+        run: >-
+          python3 interop/run_encrypted_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-security-api-peer
+          --baseline-only
+      - name: Run Haivision v1.5.5 encrypted backward baseline
+        if: matrix.profile == 'encrypted'
+        run: >-
+          python3 interop/run_encrypted_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-legacy-api-peer
+          --baseline-only
+      - name: Run encrypted IPv6 caller/listener rotation matrix
+        if: matrix.profile == 'encrypted'
+        run: >-
+          python3 interop/run_encrypted_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+          --host ::1
+      - name: Run FileCC caller/listener and rendezvous matrix
+        if: matrix.profile == 'file-base'
+        run: >-
+          python3 interop/run_file_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+          --expected-reference-version "$REFERENCE_SRT_VERSION"
+          --skip-rollover
+          --skip-resilience
+          --skip-rendezvous-resilience
+      - name: Run encrypted FileCC Caller/Listener baseline
+        if: matrix.profile == 'file-encrypted-base'
+        run: >-
+          python3 interop/run_encrypted_file_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+          --profile base
+      - name: Run encrypted FileCC Rendezvous baseline
+        if: matrix.profile == 'file-encrypted-rendezvous'
+        run: >-
+          python3 interop/run_encrypted_file_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+          --profile rendezvous
+      - name: Run encrypted FileCC recovery faults
+        if: matrix.profile == 'file-encrypted-faults'
+        run: >-
+          python3 interop/run_encrypted_file_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+          --profile faults
+      - name: Run encrypted FileCC sequence rollover
+        if: matrix.profile == 'file-encrypted-rollover'
+        run: >-
+          python3 interop/run_encrypted_file_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+          --profile rollover
+      - name: Run public file-helper PEERERROR matrix
+        if: matrix.profile == 'file-peer-error'
+        run: >-
+          python3 interop/run_file_peer_error_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+      - name: Run injected socket PEERERROR matrix
+        if: matrix.profile == 'file-peer-error'
+        run: >-
+          python3 interop/run_peer_error_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+      - name: Run FileCC sequence rollover matrix
+        if: matrix.profile == 'file-rollover'
+        run: >-
+          python3 interop/run_file_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+          --expected-reference-version "$REFERENCE_SRT_VERSION"
+          --rollover-only
+      - name: Run FileCC dynamic bandwidth and resilience matrix
+        if: matrix.profile == 'file-resilience'
+        run: >-
+          python3 interop/run_file_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+          --expected-reference-version "$REFERENCE_SRT_VERSION"
+          --resilience-only
+      - name: Run FileCC rendezvous fault, RTO, and shutdown matrix
+        if: matrix.profile == 'file-rendezvous'
+        run: >-
+          python3 interop/run_file_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+          --expected-reference-version "$REFERENCE_SRT_VERSION"
+          --rendezvous-resilience-only
+      - name: Run bidirectional Row-FEC recovery matrix
+        if: matrix.profile == 'fec'
+        run: >-
+          python3 interop/run_fec_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+      - name: Run rendezvous role, timing, and fault matrix
+        if: matrix.profile == 'rendezvous'
+        run: >-
+          python3 interop/run_rendezvous_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+      - name: Run IPv6 rendezvous baseline and fault matrix
+        if: matrix.profile == 'rendezvous'
+        run: >-
+          python3 interop/run_rendezvous_interop.py
+          --robotweax-peer build/robotweax_srt_interop_peer
+          --reference-peer ./reference-api-peer
+          --host ::1
+          --ipv6-matrix-only
+      - name: Run many-socket scalability functional profiles
+        if: matrix.profile == 'scalability'
+        run: >-
+          python3 benchmarks/scalability_scorecard.py
+          --topology many-socket
+          --robotweax-peer build/robotweax_srt_scalability_peer
+          --reference-peer ./reference-scalability-peer
+          --profile robotweax-self
+          --profile haivision-self
+          --connections 1,4
+          --message-sizes 188,1316
+          --bytes-per-connection 131600
+          --warmup 0
+          --iterations 1
+          --timeout-seconds 15
+          --output build/many-socket-reference-smoke.json
+
+  reference_interop:
+    name: Reference interoperability
+    if: >-
+      always()
+      && (needs.changes.outputs.interop == 'true'
+      || needs.changes.outputs.benchmark == 'true')
+    needs:
+      - changes
+      - reference_interop_prepare
+      - reference_interop_shard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require preparation and every selected shard to pass
+        shell: bash
+        env:
+          PREPARE: ${{ needs.reference_interop_prepare.result }}
+          SHARDS: ${{ needs.reference_interop_shard.result }}
+        run: |
+          set -euo pipefail
+          printf '%-24s %s\n' "prepare" "$PREPARE" "shards" "$SHARDS"
+          [[ "$PREPARE" == "success" && "$SHARDS" == "success" ]]
+
+  ci_gate:
+    name: Required CI gate
+    if: always()
+    # Keep every check represented here and in the result loop below.
+    # Preparation/shards are checked strictly by reference_interop.
+    # interop/tests/test_ci_gate.py guards this coverage and shell behavior.
+    needs:
+      - changes
+      - dco
+      - documentation
+      - python_tests
+      - format_check
+      - linux_release
+      - live_timing
+      - portable_release
+      - debug_matrix
+      - shared_library
+      - ffmpeg_integration
+      - aead_platform
+      - sanitizers
+      - thread_sanitizer
+      - fuzz_smoke
+      - reference_interop
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # A successful run plus this successful step proves full selection.
+      # A deduplicated schedule has full=false and cannot renew the evidence.
+      - name: Full validation selected (v1)
+        if: needs.changes.outputs.full == 'true'
+        run: ':'
+      - name: Require every selected job to pass
+        shell: bash
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          DCO: ${{ needs.dco.result }}
+          DOCUMENTATION: ${{ needs.documentation.result }}
+          PYTHON_TESTS: ${{ needs.python_tests.result }}
+          FORMAT_CHECK: ${{ needs.format_check.result }}
+          LINUX_RELEASE: ${{ needs.linux_release.result }}
+          LIVE_TIMING: ${{ needs.live_timing.result }}
+          PORTABLE_RELEASE: ${{ needs.portable_release.result }}
+          DEBUG_MATRIX: ${{ needs.debug_matrix.result }}
+          SHARED_LIBRARY: ${{ needs.shared_library.result }}
+          FFMPEG_INTEGRATION: ${{ needs.ffmpeg_integration.result }}
+          AEAD_PLATFORM: ${{ needs.aead_platform.result }}
+          SANITIZERS: ${{ needs.sanitizers.result }}
+          THREAD_SANITIZER: ${{ needs.thread_sanitizer.result }}
+          FUZZ_SMOKE: ${{ needs.fuzz_smoke.result }}
+          REFERENCE_INTEROP: ${{ needs.reference_interop.result }}
+          EXPECT_changes: 'true'
+          EXPECT_dco: 'true'
+          EXPECT_documentation: ${{ needs.changes.outputs.documentation == 'true' }}
+          EXPECT_python_tests: ${{ needs.changes.outputs.python == 'true' }}
+          EXPECT_format_check: ${{ needs.changes.outputs.format == 'true' }}
+          EXPECT_linux_release: ${{ needs.changes.outputs.cpp == 'true' || needs.changes.outputs.examples == 'true' || needs.changes.outputs.package == 'true' }}
+          EXPECT_live_timing: ${{ needs.changes.outputs.timing == 'true' && needs.changes.outputs.core_tests != 'true' }}
+          EXPECT_portable_release: ${{ needs.changes.outputs.portable == 'true' }}
+          EXPECT_debug_matrix: ${{ needs.changes.outputs.debug == 'true' }}
+          EXPECT_shared_library: ${{ needs.changes.outputs.shared == 'true' }}
+          EXPECT_ffmpeg_integration: ${{ needs.changes.outputs.ffmpeg == 'true' }}
+          EXPECT_aead_platform: ${{ needs.changes.outputs.aead_platform == 'true' || needs.changes.outputs.examples == 'true' }}
+          EXPECT_sanitizers: ${{ needs.changes.outputs.sanitizers == 'true' }}
+          EXPECT_thread_sanitizer: ${{ needs.changes.outputs.thread_sanitizer == 'true' }}
+          EXPECT_fuzz_smoke: ${{ needs.changes.outputs.fuzz == 'true' }}
+          EXPECT_reference_interop: ${{ needs.changes.outputs.interop == 'true' || needs.changes.outputs.benchmark == 'true' }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for entry in \
+            "changes=$CHANGES" \
+            "dco=$DCO" \
+            "documentation=$DOCUMENTATION" \
+            "python-tests=$PYTHON_TESTS" \
+            "format-check=$FORMAT_CHECK" \
+            "linux-release=$LINUX_RELEASE" \
+            "live-timing=$LIVE_TIMING" \
+            "portable-release=$PORTABLE_RELEASE" \
+            "debug-matrix=$DEBUG_MATRIX" \
+            "shared-library=$SHARED_LIBRARY" \
+            "ffmpeg-integration=$FFMPEG_INTEGRATION" \
+            "aead-platform=$AEAD_PLATFORM" \
+            "sanitizers=$SANITIZERS" \
+            "thread-sanitizer=$THREAD_SANITIZER" \
+            "fuzz-smoke=$FUZZ_SMOKE" \
+            "reference-interop=$REFERENCE_INTEROP"
+          do
+            name="${entry%%=*}"
+            result="${entry#*=}"
+            printf '%-24s %s\n' "$name" "$result"
+            case "$result" in
+              success) ;;
+              skipped)
+                expected="EXPECT_${name//-/_}"
+                if [[ "${!expected}" != "false" ]]; then
+                  echo "Required job was unexpectedly skipped: $name" >&2
+                  failed=1
+                fi
+                ;;
+              *) failed=1 ;;
+            esac
+          done
+          exit "$failed"

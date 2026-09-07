@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "nodes": {
+    "node_a": {
+      "address": "203.0.113.10",
+      "ssh": [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=2",
+        "interop@203.0.113.10"
+      ],
+      "python": "python3",
+      "workspace": "/opt/robotweax-srt",
+      "peers": {
+        "robotweax": "/opt/robotweax-srt/build/robotweax_srt_interop_peer",
+        "haivision": "/opt/robotweax-srt/reference-build/haivision_srt_interop_peer"
+      },
+      "capture_command": [
+        "sudo",
+        "-n",
+        "tcpdump",
+        "-U",
+        "-n",
+        "-i",
+        "any",
+        "-w",
+        "{pcap}",
+        "udp",
+        "port",
+        "{port}"
+      ]
+    },
+    "node_b": {
+      "address": "203.0.113.20",
+      "ssh": [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=2",
+        "interop@203.0.113.20"
+      ],
+      "python": "python3",
+      "workspace": "/opt/robotweax-srt",
+      "peers": {
+        "robotweax": "/opt/robotweax-srt/build/robotweax_srt_interop_peer",
+        "haivision": "/opt/robotweax-srt/reference-build/haivision_srt_interop_peer"
+      },
+      "capture_command": [
+        "sudo",
+        "-n",
+        "tcpdump",
+        "-U",
+        "-n",
+        "-i",
+        "any",
+        "-w",
+        "{pcap}",
+        "udp",
+        "port",
+        "{port}"
+      ]
+    }
+  }
+}

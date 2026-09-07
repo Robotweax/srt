@@ -1,0 +1,9 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(OpenSSL 3.0 COMPONENTS Crypto)
+find_dependency(Threads)
+
+include("${CMAKE_CURRENT_LIST_DIR}/RobotweaxSRTTargets.cmake")
+
+check_required_components(RobotweaxSRT)
