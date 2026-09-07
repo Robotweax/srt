@@ -1327,7 +1327,7 @@ jobs:
             reference-aead-build
           key: ${{ steps.reference_toolchain.outputs.aead_cache_key }}
       - name: Download Robotweax interoperability tools
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: robotweax-interop-tools
           path: ${{ runner.temp }}/robotweax-interop-tools
