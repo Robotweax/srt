@@ -145,6 +145,16 @@ class CiChangeClassifierTests(unittest.TestCase):
         self.assertFalse(harness.interop)
         self.assertFalse(harness.full)
 
+    def test_udp_bridge_changes_remain_in_public_example_scope(self) -> None:
+        for path in ("examples/srt_udp_bridge.cpp", "examples/test_udp_bridge.py"):
+            with self.subTest(path=path):
+                result = ci_changes.classify([path])
+                self.assertTrue(result.examples)
+                self.assertTrue(result.portable)
+                self.assertFalse(result.core_tests)
+                self.assertFalse(result.interop)
+                self.assertFalse(result.full)
+
     def test_runtime_scheduler_selects_caller_establishment_profiles(
         self,
     ) -> None:

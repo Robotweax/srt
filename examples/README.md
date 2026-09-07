@@ -6,9 +6,18 @@ the public `RobotweaxSRT::srt` target. They are not production relay tools and
 do not replace application-specific reconnect, credential, or monitoring
 policy.
 
+## Live MPEG-TS UDP ↔ SRT bridge
+
+The [UDP/SRT bridge guide](../docs/udp-srt-bridge.md) shows how to build and run
+`robotweax_srt_udp_bridge send` and `robotweax_srt_udp_bridge receive` as a
+continuous MPEG-TS UDP → SRT → UDP path. It preserves datagram boundaries and
+supports IPv4 unicast, Caller/Listener and Rendezvous in either media direction,
+configurable latency, optional AES-CTR, UDP multicast input/output, live SRT
+statistics and opt-in reconnect. It does not transcode or promise lossless restart.
+
 ## Build the networked examples
 
-The three networked example executables are opt-in and are not installed with
+The four networked example executables are opt-in and are not installed with
 the library. The standalone consumer source described below is installed as
 part of the public documentation package.
 
@@ -20,11 +29,11 @@ cmake -S . -B build-examples \
   -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
 cmake --build build-examples \
   --target robotweax_srt_message_demo robotweax_srt_file_demo \
-    robotweax_srt_group_demo --parallel
+    robotweax_srt_group_demo robotweax_srt_udp_bridge --parallel
 ```
 
 Multi-config generators place the executable in a configuration directory and
-require `--config Release` when building. All three executables depend only on
+require `--config Release` when building. All four executables depend only on
 the installed public SRT interface.
 
 ## Installed package consumer

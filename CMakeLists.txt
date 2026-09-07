@@ -188,6 +188,14 @@ set_target_properties(robotweax_srt PROPERTIES
     VISIBILITY_INLINES_HIDDEN YES)
 
 if(ROBOTWEAX_SRT_BUILD_EXAMPLES)
+    add_executable(robotweax_srt_udp_bridge examples/srt_udp_bridge.cpp)
+    target_link_libraries(robotweax_srt_udp_bridge PRIVATE RobotweaxSRT::srt)
+    if(WIN32)
+        target_link_libraries(robotweax_srt_udp_bridge PRIVATE ws2_32)
+    endif()
+    target_compile_features(robotweax_srt_udp_bridge PRIVATE cxx_std_20)
+    set_target_properties(robotweax_srt_udp_bridge PROPERTIES CXX_EXTENSIONS OFF)
+
     add_executable(robotweax_srt_message_demo
         examples/srt_message_demo.cpp)
     target_link_libraries(robotweax_srt_message_demo
@@ -463,6 +471,12 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
 
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     if(ROBOTWEAX_SRT_BUILD_EXAMPLES)
+        add_test(NAME robotweax_srt_udp_bridge_loopback
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples/test_udp_bridge.py
+                --demo $<TARGET_FILE:robotweax_srt_udp_bridge>)
+        set_tests_properties(robotweax_srt_udp_bridge_loopback
+            PROPERTIES TIMEOUT 120 LABELS "example;integration")
         foreach(message_demo_scenario IN ITEMS
                 caller-listener
                 rendezvous)

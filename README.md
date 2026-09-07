@@ -156,6 +156,9 @@ Read the [Integration guide](docs/integration.md),
 [socket-option reference](docs/socket-options.md) before porting an existing
 application.
 
+For a continuous MPEG-TS UDP → SRT → UDP relay, start with the
+[live UDP/SRT bridge demo](docs/udp-srt-bridge.md).
+
 For runnable public-API examples, build the opt-in
 [`srt_message_demo`, `srt_file_demo`, and `srt_group_demo`](examples/README.md),
 or copy the

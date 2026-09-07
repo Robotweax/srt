@@ -6,6 +6,12 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add the opt-in `robotweax_srt_udp_bridge` demo for continuous raw MPEG-TS
+  UDP → SRT → UDP forwarding using the public API. Supports IPv4 unicast/multicast,
+  Caller/Listener and Rendezvous in either media direction, configurable
+  latency, optional AES-CTR, live statistics and opt-in reconnect;
+  includes datagram-integrity/rejection tests and a player/source quickstart.
+
 ## 0.2.3 — 2026-09-07
 
 Compatibility-preserving maintenance and security hardening. The public C ABI

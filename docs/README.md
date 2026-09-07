@@ -15,6 +15,8 @@ developers and transport integrators using the installed public API.
 - [FFmpeg integration](ffmpeg-integration.md) — opt-in package discovery,
   reproducible builds, runtime verification, and the qualified media profile.
 - [Testing](testing.md) — local verification and focused test selection.
+- [Live UDP/SRT bridge](udp-srt-bridge.md) — continuous MPEG-TS UDP → SRT → UDP
+  forwarding with the public API.
 - [Public API examples](../examples/README.md) — runnable Caller, Listener,
   Rendezvous, and Connection Group demonstrations for Message, File/Stream,
   Broadcast, and weighted Backup APIs.
