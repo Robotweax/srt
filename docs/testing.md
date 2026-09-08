@@ -407,3 +407,29 @@ When a test fails:
 Use a clean build directory before attributing a result to source changes.
 See [Building](building.md) for cache hygiene and [Known limitations](limitations.md)
 for combinations that are intentionally unsupported.
+
+### Pinned reference group receive
+
+The Haivision 1.5.7 group helper is compiled with
+`ROBOTWEAX_SRT_REFERENCE_GROUP_RECEIVE=1`. This selects bounded nonblocking
+receive only for the helper's payload-range verification. It retries only
+`SRT_EASYNCRCV`, retains the five-second per-message deadline and all payload,
+hash, sequence and member-metadata checks, then restores the receive mode.
+Robotweax's helper and the separate blocking receive-contract probes are
+unchanged. This is not a transport-library workaround or a relaxed gate.
+
+The reason is a reproduced Linux reference-side stall: payload was ACKed, but
+the reference application remained in `CUDTGroup::recv_WaitForReadReady` /
+`CEPoll::swait`; its send queue was empty. The final hash reply appeared only
+after the caller timed out and started closing its members. Packet capture
+and two post-stall thread snapshots established this distinction from a
+Robotweax reply-receive failure. See diagnostic runs
+[34282020452](https://github.com/Robotweax/srt/actions/runs/34282020452) and
+[34282329261](https://github.com/Robotweax/srt/actions/runs/34282329261).
+The precise internal reference readiness race remains unproven; a passing
+retry or added logging alone must not be treated as a fix.
+
+With the reference-only nonblocking path, the subsequent
+[60-case Linux run](https://github.com/Robotweax/srt/actions/runs/34282747581)
+passed without phase logging. This validates the harness mitigation, not a
+repair of Haivision's internal blocking implementation.

@@ -26,6 +26,18 @@ def preparation_script() -> str:
 @unittest.skipUnless(os.name == "posix" and shutil.which("bash"),
                      "reference preparation runs in POSIX bash")
 class CiBuildScopeTests(unittest.TestCase):
+    def test_group_receive_workaround_is_reference_only(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        macro = "-DROBOTWEAX_SRT_REFERENCE_GROUP_RECEIVE=1"
+        self.assertEqual(workflow.count(macro), 1)
+        step = workflow.split(
+            "      - name: Build reference connection-group peer locally\n", 1
+        )[1].split("      - name:", 1)[0]
+        self.assertIn(macro, step)
+        self.assertIn("reference-build/libsrt.a", step)
+        self.assertNotIn("ROBOTWEAX_SRT_REFERENCE_GROUP_RECEIVE",
+                         (ROOT / "CMakeLists.txt").read_text())
+
     def run_preparation(self, handshake: bool, benchmark: bool,
                         configure_fails: bool = False) -> tuple[int, list]:
         with tempfile.TemporaryDirectory(prefix="srt-build-scope-") as directory:

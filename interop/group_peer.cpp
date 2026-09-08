@@ -3,6 +3,11 @@
 
 #include "srt.h"
 
+#if defined(ROBOTWEAX_SRT_REFERENCE_GROUP_RECEIVE)                             \
+    && defined(ROBOTWEAX_SRT_COMPAT_SRT_H)
+#error "Reference receive workaround must not be enabled for the Robotweax peer"
+#endif
+
 #if defined(_WIN32)
 #  include <ws2tcpip.h>
 #else
@@ -654,36 +659,93 @@ void report_group_transfer_failure(const char* operation, const char* reason,
     std::cerr << "}\n";
 }
 
-bool receive_group_range(
-    SRTSOCKET group, std::size_t first, std::size_t last,
+#if defined(ROBOTWEAX_SRT_REFERENCE_GROUP_RECEIVE)
+// Haivision 1.5.7's blocking group receive can remain in its internal
+// read-readiness wait with payload already received, until peer shutdown.
+// Use the public nonblocking API for payload verification only. Keep the
+// dedicated blocking receive-contract probes independent of this workaround.
+class ReferencePayloadReceiveMode {
+public:
+    explicit ReferencePayloadReceiveMode(SRTSOCKET group)
+        : group_(group)
+    {
+    }
+    bool enable()
+    {
+        int size = static_cast<int>(sizeof(original_));
+        if (srt_getsockopt(group_, 0, SRTO_RCVSYN, &original_, &size)
+            == SRT_ERROR) {
+            return false;
+        }
+        const bool asynchronous = false;
+        active_ = srt_setsockopt(group_, 0, SRTO_RCVSYN, &asynchronous,
+                      static_cast<int>(sizeof(asynchronous)))
+            != SRT_ERROR;
+        return active_;
+    }
+    ~ReferencePayloadReceiveMode()
+    {
+        if (active_) {
+            (void)srt_setsockopt(group_, 0, SRTO_RCVSYN, &original_,
+                static_cast<int>(sizeof(original_)));
+        }
+    }
+
+private:
+    SRTSOCKET group_;
+    bool original_ = true;
+    bool active_ = false;
+};
+#endif
+
+bool receive_group_range(SRTSOCKET group, std::size_t first, std::size_t last,
     std::size_t expected_members, SRT_GROUP_TYPE group_type,
     std::uint64_t& hash)
 {
     constexpr int timeout_milliseconds = 5'000;
-    if (srt_setsockopt(group, 0, SRTO_RCVTIMEO,
-            &timeout_milliseconds,
-            static_cast<int>(sizeof(timeout_milliseconds))) == SRT_ERROR) {
+    if (srt_setsockopt(group, 0, SRTO_RCVTIMEO, &timeout_milliseconds,
+            static_cast<int>(sizeof(timeout_milliseconds)))
+        == SRT_ERROR) {
         report_group_transfer_failure(
             "receive-range/set-timeout", "api", group, first, SRT_ERROR, 0);
         return false;
     }
-    std::array<char, 1'500> buffer{};
+    std::array<char, 1'500> buffer {};
+#if defined(ROBOTWEAX_SRT_REFERENCE_GROUP_RECEIVE)
+    ReferencePayloadReceiveMode receive_mode(group);
+    if (!receive_mode.enable()) {
+        return false;
+    }
+#endif
     for (std::size_t index = first; index < last; ++index) {
-        std::array<SRT_SOCKGROUPDATA, 4> members{};
+        std::array<SRT_SOCKGROUPDATA, 4> members {};
         SRT_MSGCTRL control = srt_msgctrl_default;
         control.grpdata = members.data();
         control.grpdata_size = members.size();
         group_phase("receive-payload", "begin", index);
-        const int received = srt_recvmsg2(group, buffer.data(),
-            static_cast<int>(buffer.size()), &control);
+        int received = srt_recvmsg2(
+            group, buffer.data(), static_cast<int>(buffer.size()), &control);
+#if defined(ROBOTWEAX_SRT_REFERENCE_GROUP_RECEIVE)
+        const auto deadline = std::chrono::steady_clock::now()
+            + std::chrono::milliseconds(timeout_milliseconds);
+        while (received == SRT_ERROR
+            && srt_getlasterror(nullptr) == SRT_EASYNCRCV
+            && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            control = srt_msgctrl_default;
+            control.grpdata = members.data();
+            control.grpdata_size = members.size();
+            received = srt_recvmsg2(group, buffer.data(),
+                static_cast<int>(buffer.size()), &control);
+        }
+#endif
         group_phase("receive-payload", "end", index, received);
         const auto expected = group_payload(index);
         if (received != static_cast<int>(expected.size())
             || !std::equal(expected.begin(), expected.end(), buffer.begin())
             || control.pktseq < 0 || control.msgno <= 0
             || control.grpdata == nullptr
-            || !valid_group_member_states(
-                control.grpdata, control.grpdata_size,
+            || !valid_group_member_states(control.grpdata, control.grpdata_size,
                 expected_members, group_type)) {
             report_group_transfer_failure("receive-range",
                 received == SRT_ERROR                               ? "api"

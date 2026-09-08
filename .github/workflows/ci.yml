@@ -1408,7 +1408,7 @@ jobs:
       - name: Build reference connection-group peer locally
         if: matrix.profile == 'handshake'
         run: >-
-          c++ -std=c++17 -O2 interop/group_peer.cpp
+          c++ -std=c++17 -O2 -DROBOTWEAX_SRT_REFERENCE_GROUP_RECEIVE=1 interop/group_peer.cpp
           -Ireference-srt/srtcore -Ireference-build
           reference-build/libsrt.a -lcrypto -lpthread -ldl
           -o reference-group-peer
