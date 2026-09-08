@@ -77,6 +77,7 @@ set(installed_include_directory
 foreach(public_header IN ITEMS
         robotweax_srt.h
         srt.h
+        srt/access_control.h
         srt/logging_api.h
         srt/srt.h
         srt/version.h)

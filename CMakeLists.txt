@@ -1500,6 +1500,7 @@ install(FILES
     include/srt.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES
+    include/srt/access_control.h
     include/srt/logging_api.h
     include/srt/srt.h
     include/srt/version.h
