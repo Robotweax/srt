@@ -1427,53 +1427,12 @@ jobs:
           --reference-peer ./reference-api-peer
       - name: Run connection-group admission, payload, and late-join matrix
         if: matrix.profile == 'handshake'
-        env:
-          ROBOTWEAX_SRT_GROUP_PHASE_TRACE: "1"
-        run: |
-          # Temporary issue #5 PR diagnostic: preserve the original test and
-          # its exit status; collect only synthetic loopback traffic and logs.
-          if ! command -v tcpdump >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install --no-install-recommends -y tcpdump
-          fi
-          mkdir -p group-reply-evidence
-          git rev-parse HEAD > group-reply-evidence/revision.txt
-          uname -a > group-reply-evidence/host.txt
-          c++ --version > group-reply-evidence/compiler.txt
-          sha256sum build/robotweax_srt_group_peer reference-group-peer reference-build/libsrt.a > group-reply-evidence/binaries.sha256
-          ldd reference-group-peer > group-reply-evidence/reference-linkage.txt
-          ldd build/robotweax_srt_group_peer > group-reply-evidence/robotweax-linkage.txt
-          for cache in build/CMakeCache.txt reference-build/CMakeCache.txt; do
-            if [[ -f "$cache" ]]; then
-              cp "$cache" "group-reply-evidence/$(dirname "$cache")-cache.txt"
-            fi
-          done
-          sudo tcpdump -i lo -n -s 0 -U -c 100000 -w "$PWD/group-reply-evidence/loopback.pcap" 'udp and (host 127.0.0.1 or host ::1)' > group-reply-evidence/tcpdump.log 2>&1 &
-          capture=$!
-          trap 'sudo kill -INT "$capture" 2>/dev/null || true' EXIT
-          sleep 1
-          kill -0 "$capture"
-          set +e
-          python3 interop/run_group_interop.py \
-            --robotweax-peer build/robotweax_srt_group_peer \
-            --reference-peer ./reference-group-peer \
-            --expected-reference-version "$REFERENCE_SRT_VERSION" \
-            --baseline-only \
-            --evidence-directory group-reply-evidence/cases > group-reply-evidence/driver.log 2>&1
-          status=$?
-          sudo kill -INT "$capture" 2>/dev/null
-          wait "$capture"
-          sudo chmod a+r group-reply-evidence/loopback.pcap
-          cat group-reply-evidence/driver.log
-          exit "$status"
-      - name: Preserve group reply diagnostic evidence (no binaries)
-        if: always() && matrix.profile == 'handshake'
-        uses: actions/upload-artifact@v7
-        with:
-          name: group-reply-${{ github.run_id }}-${{ github.run_attempt }}
-          path: group-reply-evidence/
-          retention-days: 7
-          if-no-files-found: warn
+        run: >-
+          python3 interop/run_group_interop.py
+          --robotweax-peer build/robotweax_srt_group_peer
+          --reference-peer ./reference-group-peer
+          --expected-reference-version "$REFERENCE_SRT_VERSION"
+          --baseline-only
       - name: Run individual Message and Stream receive contracts
         if: matrix.profile == 'handshake'
         run: >-
