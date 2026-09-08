@@ -66,6 +66,10 @@ or receiver loss observation.
 
 ## Reorder tolerance
 
+This evaluation branch adds a time cap and Live budget guard to the packet-count
+behavior below. See [reorder evaluation](reorder-evaluation.md) for the active
+experimental policy and matched comparison settings.
+
 An original DATA packet that arrives below the highest physical sequence and
 does not carry the retransmission flag is reorder evidence. The current
 tolerance starts at zero and may grow up to `SRTO_LOSSMAXTTL`.

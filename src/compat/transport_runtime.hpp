@@ -151,6 +151,8 @@ struct RuntimeBufferPacketCounts {
 struct RuntimePollResult {
     bool immediate_work = false;
     std::optional<std::chrono::microseconds> next_work_delay;
+    // A timer deadline must not inherit the pacing sub-millisecond yield loop.
+    std::optional<std::chrono::microseconds> next_timer_delay;
 };
 
 struct MessageIoResult {

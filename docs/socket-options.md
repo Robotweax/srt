@@ -278,6 +278,9 @@ packet-count-based Fresh-Loss aging and bounds the adaptive receive reorder
 tolerance; it does not initialize the current tolerance to the bound.
 Increasing the bound preserves the current estimator, while reducing it clamps
 the current value. Accepted sockets inherit the listener's value.
+On this experimental branch, positive tolerance also uses a 2-ms fresh-gap
+cap and an opt-in-by-branch Live recovery-budget guard. See the
+[evaluation plan](reorder-evaluation.md); these changes are not release guarantees.
 `SRTO_PACKETFILTER` accepts up to 512 bytes using
 `fec,cols:N[,rows:N][,layout:even|staircase][,arq:never|onreq|always]`.
 Enabling it reserves the four-byte FEC control header from the maximum live

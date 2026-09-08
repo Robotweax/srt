@@ -1100,11 +1100,17 @@ RuntimePollResult DatagramChannel::run_once() noexcept
 
     bool send_work = false;
     std::optional<std::chrono::microseconds> next_work_delay;
+    std::optional<std::chrono::microseconds> next_timer_delay;
     {
         std::lock_guard lock(routes_mutex_);
         for (const auto& route : routes_) {
             const RuntimePollResult result = route.second->poll();
             send_work = result.immediate_work || send_work;
+            if (result.next_timer_delay.has_value()
+                && (!next_timer_delay.has_value()
+                    || *result.next_timer_delay < *next_timer_delay)) {
+                next_timer_delay = result.next_timer_delay;
+            }
             if (result.next_work_delay.has_value()
                 && (!next_work_delay.has_value()
                     || *result.next_work_delay < *next_work_delay)) {
@@ -1134,10 +1140,13 @@ RuntimePollResult DatagramChannel::run_once() noexcept
                   std::chrono::duration_cast<std::chrono::milliseconds>(
                       *next_work_delay)))
         : idle_wait_;
-    return {
-        .next_work_delay =
-            std::chrono::duration_cast<std::chrono::microseconds>(delay),
-    };
+    auto scheduled_delay =
+        std::chrono::duration_cast<std::chrono::microseconds>(delay);
+    if (next_timer_delay.has_value()) {
+        scheduled_delay = std::min(scheduled_delay,
+            std::max(std::chrono::microseconds {0}, *next_timer_delay));
+    }
+    return {.next_work_delay = scheduled_delay};
 }
 
 ConnectionRuntime::ConnectionRuntime(Configuration configuration)
@@ -1155,6 +1164,7 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
           .receive_capacity_packets = effective_receive_capacity(configuration),
           .maximum_payload_size = effective_maximum_payload_size(configuration),
           .start_microseconds = elapsed_microseconds(configuration.origin),
+          .experimental_recovery_budget = true,
       })
     , pacer_(100'000'000U, effective_peer_flow_window(configuration))
     , options_(configuration.options)
@@ -2871,11 +2881,16 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
         && crypto_->enabled() && !crypto_->ready_to_send_data();
     const bool paced_work =
         filter_pending || (pending && !flow_blocked && !crypto_blocked);
+    const std::uint64_t current = now_microseconds();
+    const auto fresh_deadline = session_.next_fresh_deadline();
+    const auto fresh_delay = fresh_deadline == 0U
+        ? std::optional<std::chrono::microseconds> {}
+        : std::optional<std::chrono::microseconds> {std::chrono::microseconds {
+              fresh_deadline <= current ? 0U : fresh_deadline - current}};
     if (!paced_work) {
-        return {};
+        return {.next_timer_delay = fresh_delay};
     }
 
-    const std::uint64_t current = now_microseconds();
     const PaceDecision pace = pacer_.query(current,
         filter_pending || retransmission
             ? 0U
@@ -2889,6 +2904,7 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
     return {
         .next_work_delay =
             std::chrono::microseconds {pace.next_ready_microseconds - current},
+        .next_timer_delay = fresh_delay,
     };
 }
 

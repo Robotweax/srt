@@ -1,5 +1,9 @@
 # Robotweax SRT
 
+> **Experimental comparison branch — not a release.** See the
+> [reorder-budget evaluation plan](docs/reorder-evaluation.md) for active behavior,
+> matched main/branch builds, known limitations and acceptance criteria.
+
 Robotweax SRT is an independent implementation of Secure Reliable Transport
 (SRT). It provides the familiar public SRT C API, reliable low-latency UDP
 transport, encryption, rendezvous connections, File/Stream mode, packet

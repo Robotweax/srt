@@ -1384,11 +1384,11 @@ TEST(maximum_multi_range_nak_fits_one_srt_datagram)
 
 TEST(session_adapts_and_decays_reorder_tolerance_without_allocating)
 {
-    ReliabilitySession receiver{{
-        .local_initial_sequence = SequenceNumber{200},
-        .peer_initial_sequence = SequenceNumber{10},
-        .send_capacity_packets = 128,
-        .receive_capacity_packets = 128,
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {200},
+        .peer_initial_sequence = SequenceNumber {10},
+        .send_capacity_packets = 4096,
+        .receive_capacity_packets = 4096,
     }};
     receiver.configure_live({
         .periodic_nak = false,
@@ -1428,7 +1428,8 @@ TEST(session_adapts_and_decays_reorder_tolerance_without_allocating)
     REQUIRE_EQ(receiver.reorder_tolerance_packets(), 3U);
     REQUIRE_EQ(receiver.reorder_distance_packets(), 3U);
 
-    for (std::uint32_t sequence = 64; sequence <= 113; ++sequence) {
+    // Evaluation branch: decay only after 2,000 ordered packets.
+    for (std::uint32_t sequence = 64; sequence <= 2063; ++sequence) {
         packet.data.sequence = SequenceNumber{sequence};
         packet.data.message_number = sequence;
         REQUIRE(receiver.receive(packet, sequence + 1U));

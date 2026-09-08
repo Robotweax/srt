@@ -60,14 +60,16 @@ ReceiveLossList::ReceiveLossList(std::size_t capacity)
     }
 }
 
-bool ReceiveLossList::add(
-    SequenceRange range, std::uint32_t initial_ttl) noexcept
+bool ReceiveLossList::add(SequenceRange range, std::uint32_t initial_ttl,
+    std::uint64_t fresh_deadline_microseconds) noexcept
 {
-    return add_all(std::span<const SequenceRange> {&range, 1U}, initial_ttl);
+    return add_all(std::span<const SequenceRange> {&range, 1U}, initial_ttl,
+        fresh_deadline_microseconds);
 }
 
-bool ReceiveLossList::add_all(
-    std::span<const SequenceRange> ranges, std::uint32_t initial_ttl) noexcept
+bool ReceiveLossList::add_all(std::span<const SequenceRange> ranges,
+    std::uint32_t initial_ttl,
+    std::uint64_t fresh_deadline_microseconds) noexcept
 {
     if (!can_append(ranges)) {
         return false;
@@ -76,11 +78,18 @@ bool ReceiveLossList::add_all(
     for (const auto& range : ranges) {
         entries_[size_] = {
             .range = range,
+            .fresh_deadline_microseconds = fresh_deadline_microseconds,
             .ttl = initial_ttl,
             .fresh = initial_ttl != 0U,
             .initial_report_pending = initial_ttl == 0U,
         };
         ++size_;
+        if (initial_ttl != 0U && fresh_deadline_microseconds != 0U
+            && (next_fresh_deadline_microseconds_ == 0U
+                || fresh_deadline_microseconds
+                    < next_fresh_deadline_microseconds_)) {
+            next_fresh_deadline_microseconds_ = fresh_deadline_microseconds;
+        }
     }
     return true;
 }
@@ -202,10 +211,58 @@ void ReceiveLossList::age_fresh() noexcept
     }
 }
 
+void ReceiveLossList::expire_fresh(std::uint64_t now_microseconds) noexcept
+{
+    if (next_fresh_deadline_microseconds_ == 0U
+        || now_microseconds < next_fresh_deadline_microseconds_) {
+        return;
+    }
+    next_fresh_deadline_microseconds_ = 0U;
+    for (std::size_t index = 0; index < size_; ++index) {
+        auto& entry = entries_[index];
+        if (entry.fresh && entry.fresh_deadline_microseconds != 0U
+            && now_microseconds >= entry.fresh_deadline_microseconds) {
+            entry.fresh = false;
+            entry.ttl = 0;
+            entry.initial_report_pending = true;
+        }
+        if (entry.fresh && entry.fresh_deadline_microseconds != 0U
+            && (next_fresh_deadline_microseconds_ == 0U
+                || entry.fresh_deadline_microseconds
+                    < next_fresh_deadline_microseconds_)) {
+            next_fresh_deadline_microseconds_ =
+                entry.fresh_deadline_microseconds;
+        }
+    }
+}
+
 void ReceiveLossList::mark_periodic_reports() noexcept
 {
     for (std::size_t index = 0; index < size_; ++index) {
         entries_[index].periodic_report_pending = true;
+    }
+}
+
+void ReceiveLossList::tighten_fresh_deadlines(
+    std::uint64_t latest_report, std::uint64_t now_microseconds) noexcept
+{
+    next_fresh_deadline_microseconds_ = 0;
+    for (std::size_t i = 0; i < size_; ++i) {
+        auto& entry = entries_[i];
+        if (!entry.fresh || entry.fresh_deadline_microseconds == 0U)
+            continue;
+        entry.fresh_deadline_microseconds =
+            std::min(entry.fresh_deadline_microseconds, latest_report);
+        if (entry.fresh_deadline_microseconds <= now_microseconds) {
+            entry.fresh = false;
+            entry.ttl = 0;
+            entry.initial_report_pending = true;
+        } else if (next_fresh_deadline_microseconds_ == 0U
+            || entry.fresh_deadline_microseconds
+                < next_fresh_deadline_microseconds_) {
+            next_fresh_deadline_microseconds_ =
+                entry.fresh_deadline_microseconds;
+        }
     }
 }
 

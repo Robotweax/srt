@@ -160,6 +160,9 @@ public:
             default_srt_buffer_capacity_packets;
         std::size_t maximum_payload_size = maximum_data_payload_size;
         std::uint64_t start_microseconds = 0;
+        // Experiment opt-in only; no production reserve has been selected.
+        std::optional<std::uint64_t> experimental_recovery_reserve;
+        bool experimental_recovery_budget = false;
     };
 
     explicit ReliabilitySession(Configuration configuration);
@@ -331,6 +334,10 @@ public:
     }
     [[nodiscard]] ReliabilityActions poll_timers(
         std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] std::uint64_t next_fresh_deadline() const noexcept
+    {
+        return receive_loss_list_.next_fresh_deadline();
+    }
     [[nodiscard]] bool poll_sender_retransmission_timeout(
         std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] ReliabilityActions drop_too_late_sender(
@@ -392,6 +399,9 @@ public:
     }
 
 private:
+    std::optional<std::uint64_t> experimental_recovery_reserve_;
+    bool experimental_recovery_budget_ = false;
+    void constrain_fresh_loss_wait(std::uint64_t now) noexcept;
     friend class compat::ConnectionRuntime;
     [[nodiscard]] ReliabilityAction make_acknowledgement(
         std::uint64_t now_microseconds,

@@ -281,6 +281,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_runtime_work_executor.cpp
         tests/test_send_buffer.cpp
         tests/test_session.cpp
+        tests/test_reorder_budget.cpp
         tests/test_srt_compat.cpp
         tests/test_socket_options.cpp
         tests/test_simulation.cpp

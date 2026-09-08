@@ -95,6 +95,9 @@ ReliabilitySession::ReliabilitySession(Configuration configuration)
               SequenceNumber::mask))
     , peer_socket_id_(configuration.peer_socket_id)
 {
+    experimental_recovery_reserve_ =
+        configuration.experimental_recovery_reserve;
+    experimental_recovery_budget_ = configuration.experimental_recovery_budget;
 }
 
 Error ReliabilitySession::queue_message(std::span<const std::byte> message,
@@ -391,7 +394,7 @@ void ReliabilitySession::note_reordered_packet(
 void ReliabilitySession::note_ordered_packet() noexcept
 {
     ++consecutive_ordered_packets_;
-    if (consecutive_ordered_packets_ < 50U) {
+    if (consecutive_ordered_packets_ < 2000U) {
         return;
     }
     consecutive_ordered_packets_ = 0;
@@ -629,8 +632,15 @@ ReliabilityProcessResult ReliabilitySession::receive(
                         .last = packet.data.sequence.advanced(
                             SequenceNumber::mask),
                     };
-                    (void)receive_loss_list_.add(
-                        gap, initial_loss_ttl);
+                    // Experimental only: keep the learned tolerance but cap
+                    // each fresh gap's wait at 2 ms, independent of DATA flow.
+                    constexpr std::uint64_t fresh_wait_us = 2'000;
+                    const auto deadline = now_microseconds
+                        + std::min(fresh_wait_us,
+                            std::numeric_limits<std::uint64_t>::max()
+                                - now_microseconds);
+                    (void)receive_loss_list_.add(gap, initial_loss_ttl,
+                        initial_loss_ttl != 0U ? deadline : 0U);
                 }
                 highest_received_sequence_ =
                     packet.data.sequence;
@@ -661,6 +671,8 @@ ReliabilityProcessResult ReliabilitySession::receive(
             && initial_loss_ttl != 0U) {
             receive_loss_list_.age_fresh();
         }
+        constrain_fresh_loss_wait(now_microseconds);
+        receive_loss_list_.expire_fresh(now_microseconds);
         if (!context.defer_feedback) {
             append_pending_loss_report(
                 result.actions,
@@ -1168,10 +1180,30 @@ ReliabilitySession::report_filter_losses(
     return result;
 }
 
+void ReliabilitySession::constrain_fresh_loss_wait(std::uint64_t now) noexcept
+{
+    if ((!experimental_recovery_reserve_ && !experimental_recovery_budget_)
+        || receive_loss_list_.next_fresh_deadline() == 0U || !tsbpd_clock_
+        || !live_options_.receive_tsbpd || !live_options_.too_late_packet_drop)
+        return;
+    const auto deadline = next_receive_delivery_time();
+    // Evaluation branch only: conservative estimate, not a recovery guarantee.
+    const auto reserve = experimental_recovery_reserve_.value_or(
+        std::uint64_t {rtt_.smoothed_microseconds()}
+        + 4U * std::uint64_t {rtt_.variation_microseconds()} + 2'000U);
+    auto latest = now;
+    if (deadline && *deadline > now && *deadline - now > reserve) {
+        latest = *deadline - reserve - 1U;
+    }
+    receive_loss_list_.tighten_fresh_deadlines(latest, now);
+}
+
 ReliabilityActions ReliabilitySession::poll_timers(
     std::uint64_t now_microseconds) noexcept
 {
     ReliabilityActions actions;
+    constrain_fresh_loss_wait(now_microseconds);
+    receive_loss_list_.expire_fresh(now_microseconds);
     const auto due = timer_scheduler_.poll(now_microseconds);
     const std::size_t reserved_for_timers =
         std::min(due.size, actions.values.size());

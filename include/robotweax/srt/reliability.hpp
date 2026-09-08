@@ -57,14 +57,22 @@ public:
 
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
     [[nodiscard]] bool empty() const noexcept { return size_ == 0U; }
-    [[nodiscard]] bool add(
-        SequenceRange range, std::uint32_t initial_ttl) noexcept;
+    [[nodiscard]] bool add(SequenceRange range, std::uint32_t initial_ttl,
+        std::uint64_t fresh_deadline_microseconds = 0) noexcept;
     [[nodiscard]] bool add_all(std::span<const SequenceRange> ranges,
-        std::uint32_t initial_ttl) noexcept;
+        std::uint32_t initial_ttl,
+        std::uint64_t fresh_deadline_microseconds = 0) noexcept;
     [[nodiscard]] ReceiveLossRemoval remove(
         SequenceNumber sequence) noexcept;
     void remove_through(SequenceNumber last) noexcept;
     void age_fresh() noexcept;
+    void expire_fresh(std::uint64_t now_microseconds) noexcept;
+    void tighten_fresh_deadlines(
+        std::uint64_t latest_report, std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] std::uint64_t next_fresh_deadline() const noexcept
+    {
+        return next_fresh_deadline_microseconds_;
+    }
     void mark_periodic_reports() noexcept;
     [[nodiscard]] std::size_t take_pending_reports(
         std::span<SequenceRange> destination) noexcept;
@@ -75,6 +83,7 @@ public:
 private:
     struct Entry {
         SequenceRange range{};
+        std::uint64_t fresh_deadline_microseconds = 0;
         std::uint32_t ttl = 0;
         bool fresh = false;
         bool initial_report_pending = false;
@@ -87,6 +96,9 @@ private:
 
     std::vector<Entry> entries_;
     std::size_t size_ = 0;
+    // Conservative lower bound: removal/packet aging may leave it early,
+    // never late. Recompute only when that bound becomes due.
+    std::uint64_t next_fresh_deadline_microseconds_ = 0;
 };
 
 } // namespace robotweax::srt
