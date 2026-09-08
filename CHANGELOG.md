@@ -6,6 +6,11 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Install the standalone `<srt/access_control.h>` compatibility header with
+  all 21 `SRT_REJX_*` application rejection constants, including
+  `SRT_REJX_OVERLOAD`. Add installed C/C++ consumer coverage to prevent
+  accidental fallback to another SRT provider's header (issue #4).
+
 - Fix cleanup from an application singleton destructor when sockets, groups,
   or epoll resources are first created after startup returns. Initialize
   dormant cleanup dependencies before the application owner completes

@@ -9,6 +9,7 @@
 #include "compat/socket_io.hpp"
 #include "compat/socket_registry.hpp"
 #include "srt.h"
+#include "srt/access_control.h"
 
 #include <algorithm>
 #include <array>
@@ -367,7 +368,7 @@ int reject_listener_connection(
     observation.socket = socket;
     observation.stream_id = stream_id != nullptr ? stream_id : "";
     observation.reason_update_succeeded =
-        srt_setrejectreason(socket, 1'404) == 0;
+        srt_setrejectreason(socket, SRT_REJX_OVERLOAD) == 0;
     if (!observation.reason_update_succeeded) {
         return SRT_ERROR;
     }
@@ -4177,7 +4178,7 @@ TEST(srt_compat_listener_callback_rejects_before_accept)
                    static_cast<int>(sizeof(listener_name))),
         SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNREJ);
-    REQUIRE_EQ(srt_getrejectreason(caller), 1'404);
+    REQUIRE_EQ(srt_getrejectreason(caller), SRT_REJX_OVERLOAD);
     REQUIRE_EQ(callback_observation.calls, 1);
     REQUIRE(callback_observation.socket != SRT_INVALID_SOCK);
     REQUIRE_EQ(callback_observation.stream_id,

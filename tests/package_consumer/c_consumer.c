@@ -1,4 +1,30 @@
+#include <srt/access_control.h>
 #include <srt/srt.h>
+
+#ifndef ROBOTWEAX_SRT_COMPAT_ACCESS_CONTROL_H
+#error "access_control.h must come from the Robotweax installation"
+#endif
+_Static_assert(SRT_REJX_FALLBACK == 1000, "SRT_REJX_FALLBACK");
+_Static_assert(SRT_REJX_KEY_NOTSUP == 1001, "SRT_REJX_KEY_NOTSUP");
+_Static_assert(SRT_REJX_FILEPATH == 1002, "SRT_REJX_FILEPATH");
+_Static_assert(SRT_REJX_HOSTNOTFOUND == 1003, "SRT_REJX_HOSTNOTFOUND");
+_Static_assert(SRT_REJX_BAD_REQUEST == 1400, "SRT_REJX_BAD_REQUEST");
+_Static_assert(SRT_REJX_UNAUTHORIZED == 1401, "SRT_REJX_UNAUTHORIZED");
+_Static_assert(SRT_REJX_OVERLOAD == 1402, "SRT_REJX_OVERLOAD");
+_Static_assert(SRT_REJX_FORBIDDEN == 1403, "SRT_REJX_FORBIDDEN");
+_Static_assert(SRT_REJX_NOTFOUND == 1404, "SRT_REJX_NOTFOUND");
+_Static_assert(SRT_REJX_BAD_MODE == 1405, "SRT_REJX_BAD_MODE");
+_Static_assert(SRT_REJX_UNACCEPTABLE == 1406, "SRT_REJX_UNACCEPTABLE");
+_Static_assert(SRT_REJX_CONFLICT == 1409, "SRT_REJX_CONFLICT");
+_Static_assert(SRT_REJX_NOTSUP_MEDIA == 1415, "SRT_REJX_NOTSUP_MEDIA");
+_Static_assert(SRT_REJX_LOCKED == 1423, "SRT_REJX_LOCKED");
+_Static_assert(SRT_REJX_FAILED_DEPEND == 1424, "SRT_REJX_FAILED_DEPEND");
+_Static_assert(SRT_REJX_ISE == 1500, "SRT_REJX_ISE");
+_Static_assert(SRT_REJX_UNIMPLEMENTED == 1501, "SRT_REJX_UNIMPLEMENTED");
+_Static_assert(SRT_REJX_GW == 1502, "SRT_REJX_GW");
+_Static_assert(SRT_REJX_DOWN == 1503, "SRT_REJX_DOWN");
+_Static_assert(SRT_REJX_VERSION == 1505, "SRT_REJX_VERSION");
+_Static_assert(SRT_REJX_NOROOM == 1507, "SRT_REJX_NOROOM");
 
 #if defined(ROBOTWEAX_SRT_EXPECT_AEAD_API_PREVIEW)                             \
     && !defined(ENABLE_AEAD_API_PREVIEW)

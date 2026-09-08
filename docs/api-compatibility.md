@@ -195,6 +195,14 @@ a complete SRT packet.
 
 ## Error contract
 
+Include `<srt/access_control.h>` for the `SRT_REJX_*` application rejection
+constants. For example, a listener callback can use
+`srt_setrejectreason(socket, SRT_REJX_OVERLOAD)` before rejecting a connection.
+These constants describe application policy; they do not provide an
+authentication or access-control engine. The header is standalone and is
+installed with Robotweax's other public headers, so no Haivision header is
+required. Legacy UDT headers are not part of this compatibility surface.
+
 Public calls return the compatible success or error sentinel and update a
 thread-local last-error record. Unsupported combinations fail explicitly.
 Connection rejection reasons, asynchronous completion errors, peer errors,
