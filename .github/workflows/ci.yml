@@ -454,6 +454,7 @@ jobs:
           --parallel
           --target robotweax_srt_shared_lifecycle_tests
           robotweax_srt_global_lifecycle_tests
+          robotweax_srt_late_cleanup_tests
           robotweax_srt_c_api_test
           robotweax_srt_compatible_header_test
       - name: Test
