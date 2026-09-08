@@ -6,6 +6,12 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Fix cleanup from an application singleton destructor when sockets, groups,
+  or epoll resources are first created after startup returns. Initialize
+  dormant cleanup dependencies before the application owner completes
+  construction; add process-exit coverage, including static SRT embedded in
+  a shared library (issue #5).
+
 - Add the opt-in `robotweax_srt_udp_bridge` demo for continuous raw MPEG-TS
   UDP → SRT → UDP forwarding using the public API. Supports IPv4 unicast/multicast,
   Caller/Listener and Rendezvous in either media direction, configurable

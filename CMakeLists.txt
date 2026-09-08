@@ -369,6 +369,38 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         robotweax_srt_global_lifecycle_tests
         PROPERTIES TIMEOUT 5)
 
+    add_executable(robotweax_srt_late_cleanup_tests
+        tests/late_cleanup_main.cpp tests/late_cleanup_probe.cpp)
+    target_link_libraries(robotweax_srt_late_cleanup_tests PRIVATE RobotweaxSRT::srt)
+    target_compile_features(robotweax_srt_late_cleanup_tests PRIVATE cxx_std_20)
+    set(ROBOTWEAX_SRT_LATE_CLEANUP_MODES
+        socket startup-only retained epoll group restart explicit
+        implicit-socket implicit-group implicit-epoll)
+    foreach(mode IN LISTS ROBOTWEAX_SRT_LATE_CLEANUP_MODES)
+        add_test(NAME robotweax_srt_late_cleanup_${mode}
+            COMMAND robotweax_srt_late_cleanup_tests ${mode})
+        set_tests_properties(robotweax_srt_late_cleanup_${mode} PROPERTIES TIMEOUT 10)
+        if(BUILD_SHARED_LIBS)
+            set_tests_properties(robotweax_srt_late_cleanup_${mode}
+                PROPERTIES LABELS "shared-library")
+        endif()
+    endforeach()
+    if(NOT BUILD_SHARED_LIBS)
+        # Exercise a static libsrt embedded in a downstream shared library.
+        set_property(TARGET robotweax_srt PROPERTY POSITION_INDEPENDENT_CODE ON)
+        add_library(robotweax_srt_late_cleanup_wrapper SHARED tests/late_cleanup_probe.cpp)
+        target_link_libraries(robotweax_srt_late_cleanup_wrapper PRIVATE RobotweaxSRT::srt)
+        target_compile_features(robotweax_srt_late_cleanup_wrapper PRIVATE cxx_std_20)
+        set_property(TARGET robotweax_srt_late_cleanup_wrapper PROPERTY WINDOWS_EXPORT_ALL_SYMBOLS ON)
+        add_executable(robotweax_srt_embedded_cleanup_tests tests/late_cleanup_main.cpp)
+        target_link_libraries(robotweax_srt_embedded_cleanup_tests PRIVATE robotweax_srt_late_cleanup_wrapper)
+        foreach(mode IN LISTS ROBOTWEAX_SRT_LATE_CLEANUP_MODES)
+            add_test(NAME robotweax_srt_embedded_cleanup_${mode}
+                COMMAND robotweax_srt_embedded_cleanup_tests ${mode})
+            set_tests_properties(robotweax_srt_embedded_cleanup_${mode} PROPERTIES TIMEOUT 10)
+        endforeach()
+    endif()
+
     if(BUILD_SHARED_LIBS)
         # This probe must not link against Robotweax SRT: it loads only the
         # produced shared object and resolves the compatible C ABI at runtime.

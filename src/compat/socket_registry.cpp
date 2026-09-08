@@ -373,6 +373,7 @@ SocketRegistry& SocketRegistry::instance() noexcept
     prepare_runtime_work_executor_service();
     epoll_initialize();
     (void)default_crypto_provider();
+    (void)GroupRegistry::instance();
     static SocketRegistry registry;
     return registry;
 }
@@ -525,6 +526,11 @@ std::size_t service_deferred_closes(
 void runtime_start() noexcept
 {
     auto& lifecycle = runtime_lifecycle();
+    // Finish constructing cleanup dependencies before an application RAII
+    // owner finishes its constructor. Creating the first socket later must
+    // not register those destructors after the owner's cleanup destructor.
+    // These owners are dormant: no socket or worker is started here.
+    (void)SocketRegistry::instance();
     std::lock_guard lifecycle_lock(lifecycle.mutex);
     if (lifecycle.startup_count
         != std::numeric_limits<std::uint32_t>::max()) {
@@ -545,6 +551,7 @@ SRTSOCKET runtime_create_socket() noexcept
 SRTSOCKET runtime_create_group(SRT_GROUP_TYPE type) noexcept
 {
     auto& lifecycle = runtime_lifecycle();
+    (void)SocketRegistry::instance();
     std::lock_guard lifecycle_lock(lifecycle.mutex);
     if (lifecycle.startup_count == 0U) {
         lifecycle.startup_count = 1U;
@@ -555,6 +562,7 @@ SRTSOCKET runtime_create_group(SRT_GROUP_TYPE type) noexcept
 int runtime_create_epoll() noexcept
 {
     auto& lifecycle = runtime_lifecycle();
+    (void)SocketRegistry::instance();
     std::lock_guard lifecycle_lock(lifecycle.mutex);
     if (lifecycle.startup_count == 0U) {
         lifecycle.startup_count = 1U;
