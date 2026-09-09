@@ -10,6 +10,8 @@ on:
       - 'interop/run_encrypted_interop.py'
       - 'interop/run_aead_interop.py'
       - 'interop/run_encrypted_file_interop.py'
+      - 'interop/srt_handshake_trace.py'
+      - 'interop/tests/test_rendezvous_interop.py'
       - 'tests/test_crypto.cpp'
       - 'CMakeLists.txt'
       - 'cmake/**'
