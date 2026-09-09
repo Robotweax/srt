@@ -1,0 +1,89 @@
+name: Windows SDK candidate
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'packaging/windows/**'
+      - '.github/workflows/windows-sdk.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [Win32, x64, Arm64]
+        configuration: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: openssl/openssl
+          ref: aae016bfd52fcad2bc9657c2c782cfdf73b1ed5f
+          path: openssl-source
+          persist-credentials: false
+      - name: Build dependency and SDK in target environment
+        shell: pwsh
+        env:
+          SDK_PLATFORM: ${{ matrix.platform }}
+          SDK_CONFIGURATION: ${{ matrix.configuration }}
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $arch = @{Win32='x86'; x64='amd64'; Arm64='amd64_arm64'}[$env:SDK_PLATFORM]
+          $script = Join-Path $PWD 'packaging\windows\build-ci.ps1'
+          & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" $arch && powershell -NoProfile -ExecutionPolicy Bypass -File `"$script`" -Platform $env:SDK_PLATFORM -Configuration $env:SDK_CONFIGURATION"
+          if ($LASTEXITCODE -ne 0) { throw 'SDK build failed' }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdk-${{ matrix.configuration }}-${{ matrix.platform }}
+          path: output/sdk-${{ matrix.configuration }}-${{ matrix.platform }}/
+          if-no-files-found: error
+          retention-days: 7
+  installer:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: sdk-*
+          path: variants
+      - name: Assemble and compile installer candidate
+        shell: pwsh
+        run: |
+          ./packaging/windows/package.ps1 -Variants variants -Destination sdk
+          $version = [regex]::Match((Get-Content CMakeLists.txt -Raw), 'project\(robotweax_srt VERSION ([0-9.]+)').Groups[1].Value
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) { throw 'Inno Setup 6 is required' }
+          & $iscc "/DSdkRoot=$PWD\sdk" "/DProductVersion=$version" packaging/windows/sdk.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+      - name: Smoke test silent install and uninstall
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem packaging/windows/Output/*.exe).FullName
+          $destination = Join-Path $env:RUNNER_TEMP 'Robotweax SDK test'
+          $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$destination`""
+          if ($process.ExitCode -ne 0) { throw 'Installation failed' }
+          if ([Environment]::GetEnvironmentVariable('ROBOTWEAX_SRT','Machine') -ne $destination) { throw 'SDK environment variable missing' }
+          foreach ($config in 'Debug','Release') {
+            foreach ($platform in 'Win32','x64','Arm64') {
+              if (!(Test-Path "$destination/lib/$config-$platform/robotweax-srt.lib")) { throw 'Missing installed variant' }
+            }
+          }
+          $process = Start-Process -Wait -PassThru "$destination/unins000.exe" -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+          if ($process.ExitCode -ne 0) { throw 'Uninstallation failed' }
+          if (Test-Path "$destination/srt.props") { throw 'SDK files remained installed' }
+          if ([Environment]::GetEnvironmentVariable('ROBOTWEAX_SRT','Machine') -eq $destination) { throw 'Stale SDK environment variable' }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-sdk-installer-candidate
+          path: packaging/windows/Output/*.exe
+          if-no-files-found: error
+          retention-days: 7
