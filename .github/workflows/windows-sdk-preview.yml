@@ -1,0 +1,39 @@
+name: Prepare Windows SDK preview draft
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful main Windows SDK candidate run ID
+        required: true
+        type: string
+      tag:
+        description: Existing SDK preview tag pointing to the candidate commit
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: windows-sdk-preview-draft
+  cancel-in-progress: false
+jobs:
+  draft:
+    if: github.ref == 'refs/heads/main'
+    environment: windows-sdk-preview
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Verify candidate and prepare draft only
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SDK_RUN_ID: ${{ inputs.run_id }}
+          SDK_TAG: ${{ inputs.tag }}
+          SDK_SIGNER: ${{ vars.WINDOWS_SDK_SIGNER_THUMBPRINT }}
+        run: ./packaging/windows/prepare-preview.ps1

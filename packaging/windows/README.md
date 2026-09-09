@@ -63,3 +63,33 @@ environment variable only when it still points to this installation.
 
 References: [Inno Setup command-line options](https://jrsoftware.org/ishelp/topic_setupcmdline.htm),
 [OpenSSL Windows build notes](https://github.com/openssl/openssl/blob/openssl-3.6.3/NOTES-WINDOWS.md).
+
+## Preview release preparation (blocked until signing is configured)
+
+`Prepare Windows SDK preview draft` is manual-only and accepts an existing
+`windows-sdk-vX.Y.Z-preview.N` tag and a successful manually dispatched **main**
+`Windows SDK candidate` run. The tag must resolve to the exact candidate commit.
+It does not rebuild the six variants and never publishes a release automatically.
+It creates a new draft prerelease containing only the installer and SHA-256 file;
+existing releases are not overwritten. No Haivision binaries are included.
+
+Before enabling this process, maintainers must:
+
+1. Select and integrate the Robotweax code-signing service into the candidate
+   build, including a trusted timestamp. This integration is **not implemented**
+   yet; today's unsigned candidates are deliberately rejected.
+2. Configure the `windows-sdk-preview` GitHub environment with required reviewer
+   approval and main-only deployment restrictions. Set its variable
+   `WINDOWS_SDK_SIGNER_THUMBPRINT` to the approved certificate's 40 hex digits.
+   No private signing key belongs in a repository or build artifact.
+3. Run the signed candidate workflow on main. Record a clean Windows installation,
+   Visual Studio consumer build/run, and uninstall test before public release.
+4. Explicitly create the preview tag at that run's commit, then dispatch the draft
+   workflow with its run ID and tag before artifacts expire (seven days).
+5. Review draft assets, signature, checksums, license bundle, evidence and limitations.
+   Publishing the draft requires a separate human decision. Do not attach these
+   previews to an existing stable protocol release.
+
+The draft workflow itself verifies the installer signature, timestamp presence and
+approved signer. It does not execute the downloaded installer. ARM64 execution,
+throughput qualification and signing-service integration remain open work.

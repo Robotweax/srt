@@ -7,6 +7,17 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WindowsSdkTests(unittest.TestCase):
+    def test_preview_is_manual_signed_and_draft_only(self):
+        workflow = (ROOT / '.github/workflows/windows-sdk-preview.yml').read_text()
+        self.assertIn('workflow_dispatch:', workflow)
+        self.assertNotIn('pull_request:', workflow)
+        self.assertIn('environment: windows-sdk-preview', workflow)
+        script = (ROOT / 'packaging/windows/prepare-preview.ps1').read_text()
+        for guard in ('Get-AuthenticodeSignature', 'TimeStamperCertificate',
+                      '$commit.sha -ne $run.head_sha', "'--verify-tag','--draft','--prerelease'",
+                      "$run.head_branch -ne 'main'", 'Approved signer is not configured'):
+            self.assertIn(guard, script)
+
     def test_crypto_assembly_is_required_for_every_target(self):
         script = (ROOT / 'packaging/windows/build-ci.ps1').read_text()
         self.assertNotIn("'no-asm'", script)
