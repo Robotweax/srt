@@ -405,11 +405,10 @@ void RuntimeStatisticsState::apply_average_buffers(
 {
     values.sender_buffer_packets =
         sender_buffer_average_.packets();
-    values.sender_buffer_bytes = saturated_add(
-        sender_buffer_average_.payload_bytes(),
-        saturated_multiply(
-            values.sender_buffer_packets,
-            packet_header_bytes_));
+    values.sender_buffer_bytes = narrowed<std::size_t>(
+        saturated_add(sender_buffer_average_.payload_bytes(),
+            saturated_multiply(
+                values.sender_buffer_packets, packet_header_bytes_)));
     values.sender_buffer_milliseconds =
         sender_buffer_average_.milliseconds();
     values.receiver_buffer_packets =
