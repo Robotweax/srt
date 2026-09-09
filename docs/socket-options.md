@@ -5,6 +5,39 @@ surface. Use `srt_setsockflag()` and `srt_getsockflag()` with the declared
 `SRT_SOCKOPT` value and value representation. Pre-connection, pre-bind,
 post-connection, and read-only constraints are part of each option's contract.
 
+## Identify the local implementation
+
+`<srt/srt.h>` exposes `ROBOTWEAX_SRT_VERSION_MAJOR`, `_MINOR`, `_PATCH`,
+`_STRING` and `_VALUE` (each with the `ROBOTWEAX_SRT_VERSION` prefix).
+These describe the headers' product release. They do not replace `SRT_VERSION_*`,
+which describe SRT compatibility. The packed numeric format is
+`major * 0x10000 + minor * 0x100 + patch`.
+
+`SRTO_ROBOTWEAX_VERSION` (`0x01000001`) is a read-only extension returning an
+`int32_t` containing the loaded library's product version. Query it using
+`srt_getsockflag()` with a valid socket or group, even before connecting. An
+`int` length must initially be at least `sizeof(int32_t)`; success sets it to
+that size. Null pointers or short buffers are invalid. The option is local:
+it is never negotiated or transmitted and says nothing about the peer.
+
+```c
+#if defined(ROBOTWEAX_SRT_VERSION_VALUE)
+int32_t product_version = 0;
+int length = sizeof(product_version);
+if (srt_getsockflag(socket, SRTO_ROBOTWEAX_VERSION,
+        &product_version, &length) == 0) {
+    /* product_version identifies the loaded implementation, not the headers. */
+}
+#endif
+```
+
+Failure means identification was unsuccessful, not proof of Haivision: older
+Robotweax releases lack this option, and invalid handles also fail. Handle the
+error normally. `srt_getversion()`, `SRTO_VERSION`, `SRTO_PEERVERSION` and all
+existing option numbers retain their compatibility semantics. This extension
+adds no exported function or structure field. A high option number reduces
+collision risk but is not an upstream namespace reservation.
+
 ```c
 #include <srt/srt.h>
 

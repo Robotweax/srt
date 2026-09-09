@@ -5270,6 +5270,50 @@ TEST(srt_compat_last_error_is_thread_local)
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_SUCCESS);
 }
 
+TEST(srt_compat_robotweax_version_identifies_local_implementation)
+{
+    static_assert(SRTO_ROBOTWEAX_VERSION == 0x01000001);
+    const SRTSOCKET socket = srt_create_socket();
+    const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    REQUIRE(group != SRT_INVALID_SOCK);
+    for (const SRTSOCKET handle : {socket, group}) {
+        std::int32_t value = -1;
+        int size = sizeof(value);
+        REQUIRE_EQ(
+            srt_getsockflag(handle, SRTO_ROBOTWEAX_VERSION, &value, &size), 0);
+        REQUIRE_EQ(value, ROBOTWEAX_SRT_VERSION_VALUE);
+        REQUIRE_EQ(size, static_cast<int>(sizeof(value)));
+        REQUIRE_EQ(srt_setsockflag(
+                       handle, SRTO_ROBOTWEAX_VERSION, &value, sizeof(value)),
+            SRT_ERROR);
+        size = 1;
+        value = -1;
+        REQUIRE_EQ(
+            srt_getsockflag(handle, SRTO_ROBOTWEAX_VERSION, &value, &size),
+            SRT_ERROR);
+        REQUIRE_EQ(value, -1);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+        size = sizeof(value);
+        REQUIRE_EQ(
+            srt_getsockflag(handle, SRTO_ROBOTWEAX_VERSION, nullptr, &size),
+            SRT_ERROR);
+        REQUIRE_EQ(
+            srt_getsockflag(handle, SRTO_ROBOTWEAX_VERSION, &value, nullptr),
+            SRT_ERROR);
+    }
+    std::int32_t value = 0;
+    int size = sizeof(value);
+    REQUIRE_EQ(srt_getsockflag(socket, SRTO_VERSION, &value, &size), 0);
+    REQUIRE_EQ(value, SRT_VERSION_VALUE);
+    REQUIRE_EQ(srt_getversion(), static_cast<std::uint32_t>(SRT_VERSION_VALUE));
+    REQUIRE_EQ(srt_close(socket), 0);
+    REQUIRE_EQ(srt_close(group), 0);
+    REQUIRE_EQ(srt_getsockflag(socket, SRTO_ROBOTWEAX_VERSION, &value, &size),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
+}
+
 TEST(srt_compat_message_control_and_helpers_match_public_layout)
 {
     SRT_MSGCTRL control{};

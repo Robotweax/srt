@@ -392,6 +392,9 @@ int GroupRegistry::get_io_option(
             return SRT_ERROR;
         }
         switch (option) {
+        case SRTO_ROBOTWEAX_VERSION:
+            result = static_cast<std::int32_t>(ROBOTWEAX_SRT_VERSION_VALUE);
+            break;
         case SRTO_SNDSYN:
             boolean_result = record->send_synchronous;
             boolean_option = true;
