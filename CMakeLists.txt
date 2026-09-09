@@ -1520,6 +1520,8 @@ install(FILES
 install(DIRECTORY docs/
     DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/docs
     FILES_MATCHING PATTERN "*.md")
+install(FILES examples/ios/README.md
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/ios)
 install(FILES examples/README.md
     DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples)
 install(FILES

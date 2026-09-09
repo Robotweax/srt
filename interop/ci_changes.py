@@ -25,6 +25,8 @@ FORMAT_TOOLING_FILES = {
     "interop/tests/test_clang_format_tool.py",
 }
 PYTHON_TOOLING_FILES = {
+    "tools/mobile_configure.py",
+    "interop/tests/test_mobile_configure.py",
     "tools/check_dco.py",
     "tools/python",
     "interop/tests/test_dco.py",
