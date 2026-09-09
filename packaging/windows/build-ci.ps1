@@ -24,6 +24,6 @@ if (!$?) { throw 'SDK build failed' }
 $Sdk = "$Root/output/sdk-$Configuration-$Platform"
 $Runtime = if ($Configuration -eq 'Debug') { '/MDd' } else { '/MD' }
 # Link every architecture; execute only architectures supported by this runner.
-Run cl @('/nologo',$Runtime,"/I$Sdk/include",'/c',"$Root/tests/package_consumer/c_consumer.c",'/Foconsumer.obj')
+Run cl @('/nologo','/std:c11',$Runtime,"/I$Sdk/include",'/c',"$Root/tests/package_consumer/c_consumer.c",'/Foconsumer.obj')
 Run link @('/nologo','consumer.obj',"/LIBPATH:$Sdk/lib/$Configuration-$Platform",'robotweax-srt.lib','libcrypto.lib','ws2_32.lib','crypt32.lib','advapi32.lib','user32.lib','bcrypt.lib','/OUT:consumer.exe')
 if ($Platform -ne 'Arm64') { Run "$Root/consumer.exe" @() }

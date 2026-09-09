@@ -6,6 +6,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WindowsSdkTests(unittest.TestCase):
+    def test_public_c_consumer_uses_c11(self):
+        script = (ROOT / 'packaging/windows/build-ci.ps1').read_text()
+        self.assertIn("Run cl @('/nologo','/std:c11'", script)
+
     def test_msvc_crypto_configurations_are_explicit(self):
         script = (ROOT / 'packaging/windows/build-sdk.ps1').read_text()
         for config in ('DEBUG', 'RELEASE'):
