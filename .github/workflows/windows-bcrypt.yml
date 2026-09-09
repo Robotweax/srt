@@ -6,6 +6,10 @@ on:
       - 'src/crypto*'
       - 'include/robotweax/srt/crypto*'
       - 'tests/crypto_provider_comparison/**'
+      - 'tests/crypto_provider_peer/**'
+      - 'interop/run_encrypted_interop.py'
+      - 'interop/run_aead_interop.py'
+      - 'interop/run_encrypted_file_interop.py'
       - 'tests/test_crypto.cpp'
       - 'CMakeLists.txt'
       - 'cmake/**'
@@ -13,6 +17,74 @@ on:
 permissions:
   contents: read
 jobs:
+  shared:
+    name: Shared x64 (${{ matrix.configuration }})
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Release, Debug]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        if: matrix.configuration == 'Release'
+        with:
+          repository: Haivision/srt
+          ref: 899348d8318eb9a3c5a5b6ec43c4a1114288773a
+          path: reference-source
+          persist-credentials: false
+      - name: Build isolated shared providers and installed consumers
+        shell: pwsh
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
+        run: |
+          function Run([string]$Program, [string[]]$Arguments) {
+            & $Program @Arguments
+            if ($LASTEXITCODE -ne 0) { throw "$Program failed" }
+          }
+          $version = [regex]::Match((Get-Content CMakeLists.txt -Raw), 'project\(robotweax_srt VERSION ([0-9.]+)').Groups[1].Value
+          foreach ($backend in 'bcrypt','openssl') {
+            $prefix = "$PWD/installed-$backend"
+            $options = @('-S','.', '-B',"shared-$backend",'-A','x64',"-DROBOTWEAX_SRT_CRYPTO_BACKEND=$backend",'-DBUILD_SHARED_LIBS=ON','-DROBOTWEAX_SRT_BUILD_TESTS=OFF','-DENABLE_AEAD_API_PREVIEW=ON')
+            if ($backend -eq 'bcrypt') { $options += '-DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON' }
+            Run cmake $options
+            Run cmake @('--build',"shared-$backend",'--config',$env:CONFIGURATION,'--parallel','2')
+            Run cmake @('--install',"shared-$backend",'--config',$env:CONFIGURATION,'--prefix',$prefix)
+            $consumerOptions = @('-S','tests/package_consumer','-B',"consumer-$backend",'-A','x64',"-DCMAKE_PREFIX_PATH=$prefix", "-DROBOTWEAX_SRT_PACKAGE_VERSION=$version",'-DROBOTWEAX_SRT_EXPECT_AEAD_API_PREVIEW=ON')
+            if ($backend -eq 'bcrypt') { $consumerOptions += '-DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON' }
+            Run cmake $consumerOptions
+            Run cmake @('--build',"consumer-$backend",'--config',$env:CONFIGURATION,'--parallel','2')
+            Copy-Item "$prefix/bin/*.dll" "consumer-$backend/$env:CONFIGURATION/"
+            Run ctest @('--test-dir',"consumer-$backend",'-C',$env:CONFIGURATION,'--output-on-failure')
+            Run cmake @('-S','tests/crypto_provider_peer','-B',"peer-$backend",'-A','x64',"-DCMAKE_PREFIX_PATH=$prefix")
+            Run cmake @('--build',"peer-$backend",'--config',$env:CONFIGURATION,'--parallel','2')
+          }
+      - name: BCrypt versus OpenSSL encrypted public API
+        shell: pwsh
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
+        run: |
+          python -c "import sys; assert sys.version_info >= (3, 10)"
+          if ($LASTEXITCODE -ne 0) { throw 'Python 3.10+ required' }
+          python interop/run_encrypted_interop.py --robotweax-peer "peer-bcrypt/$env:CONFIGURATION/crypto_peer.exe" --reference-peer "peer-openssl/$env:CONFIGURATION/crypto_peer.exe" --bytes 524288 --km-refresh-rate 64 --km-preannounce 20
+          if ($LASTEXITCODE -ne 0) { throw 'CTR backend interoperability failed' }
+          python interop/run_aead_interop.py --robotweax-peer "peer-bcrypt/$env:CONFIGURATION/crypto_peer.exe" --reference-peer "peer-openssl/$env:CONFIGURATION/crypto_peer.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'GCM backend interoperability failed' }
+          python interop/run_encrypted_file_interop.py --profile base --robotweax-peer "peer-bcrypt/$env:CONFIGURATION/crypto_peer.exe" --reference-peer "peer-openssl/$env:CONFIGURATION/crypto_peer.exe" --bytes 524667 --km-refresh-rate 64 --km-preannounce 20
+          if ($LASTEXITCODE -ne 0) { throw 'Encrypted file backend interoperability failed' }
+      - name: Build runner-local Haivision peer and test CTR
+        if: matrix.configuration == 'Release'
+        shell: pwsh
+        run: |
+          cmake -S tests/crypto_provider_peer -B peer-haivision -A x64 "-DHAIVISION_SOURCE=$PWD/reference-source"
+          if ($LASTEXITCODE -ne 0) { throw 'Reference configure failed' }
+          cmake --build peer-haivision --config Release --parallel 2 --target crypto_peer
+          if ($LASTEXITCODE -ne 0) { throw 'Reference build failed' }
+          python interop/run_encrypted_interop.py --robotweax-peer peer-bcrypt/Release/crypto_peer.exe --reference-peer peer-haivision/Release/crypto_peer.exe --bytes 524288 --km-refresh-rate 64 --km-preannounce 20
+          if ($LASTEXITCODE -ne 0) { throw 'Haivision CTR interoperability failed' }
   native:
     runs-on: windows-latest
     timeout-minutes: 15

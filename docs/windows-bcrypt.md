@@ -44,12 +44,21 @@ blocks, batch boundaries, all AES key sizes, key wrap, GCM tags, in-place data a
 bad-tag rejection. OpenSSL in that executable is an oracle, not a runtime
 dependency of the BCrypt SRT library.
 
+The next CI stage adds x64 Shared/Release and Shared/Debug builds of both
+Robotweax backends, installed C/C++ consumers and separately linked public-API
+peers. Each peer loads its own adjacent Robotweax DLL. Existing harnesses test
+bidirectional CTR with rotation, GCM (including rendezvous), and the encrypted
+FileCC base profile. The Release job additionally builds the pinned Haivision
+1.5.7 reference (`899348d8318eb9a3c5a5b6ec43c4a1114288773a`) locally and runs
+CTR interoperability. No reference binaries are uploaded. These are validation
+jobs, not evidence of success until their CI results have been reviewed.
+
 Before recommending or making this the Windows default, complete:
 
 1. Successful Windows CI and review of error-path/input-size parity.
 2. Expanded encrypted public-API interoperability with OpenSSL/Haivision peers,
    including rotation, retransmission, file mode and AEAD preview.
-3. Shared-library and Debug configuration qualification.
+3. Review the new Shared/Debug CI results; non-x64 Shared/Debug coverage remains open.
 4. Serial benchmarks against assembler-enabled OpenSSL on the same hardware;
    no speedup is claimed from the historical numbers in issue #13.
 5. Native ARM64 execution and a focused cryptographic implementation review.
