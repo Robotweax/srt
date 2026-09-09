@@ -1,0 +1,36 @@
+name: Feature request / Enhancement
+description: Suggest a new capability or an improvement
+title: "[Enhancement] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search existing issues before submitting a suggestion.
+        This is a public issue. Do not include credentials, passphrases, private addresses, or sensitive payloads.
+        For security-sensitive reports, follow [SECURITY.md](https://github.com/Robotweax/srt/blob/main/SECURITY.md).
+  - type: textarea
+    id: need
+    attributes:
+      label: Problem or use case
+      description: What are you trying to achieve, and what limitation do you encounter?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested improvement
+      description: Describe the desired behavior and how you would know it meets your needs. A detailed implementation design is not required.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds
+      description: What alternatives have you considered or tried?
+  - type: textarea
+    id: context
+    attributes:
+      label: Compatibility and additional context
+      description: If relevant, include affected platforms, applications, peer versions, public specifications, or API compatibility requirements.
