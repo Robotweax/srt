@@ -10,6 +10,8 @@ developers and transport integrators using the installed public API.
   basic socket lifecycle.
 - [Building and installing](building.md) — build profiles, CMake options,
   installation, package discovery, and platform notes.
+- [Experimental mobile builds](mobile-building.md) — Android and iOS cross-build
+  instructions, local verification evidence, and qualification boundaries.
 - [Integration guide](integration.md) — public headers, endpoint roles, I/O,
   readiness, encryption, errors, and shutdown.
 - [FFmpeg integration](ffmpeg-integration.md) — opt-in package discovery,
