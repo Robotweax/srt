@@ -29,6 +29,25 @@ The public support boundary is documented in
 [Compatibility status](docs/compatibility.md). Unsupported behavior must fail
 explicitly; it must not be approximated silently.
 
+## Questions, bug reports, and suggestions
+
+Use [GitHub Issues](https://github.com/Robotweax/srt/issues/new/choose) as the
+preferred channel for technical questions and suggestions so others can find and
+benefit from the answers. Search existing issues and the
+[documentation](docs/README.md) first, then choose the appropriate template:
+
+- **Question / Integration help** for API, configuration, build, or integration
+  questions. Environment details are optional for general questions.
+- **Feature request / Enhancement** for new capabilities or improvements. Explain
+  the use case and desired behavior; an implementation proposal is not required.
+- **Bug report** for reproducible unexpected behavior.
+- **Interoperability failure** for problems communicating with another SRT
+  implementation.
+
+Keep reports focused on one topic and redact credentials, passphrases, private
+addresses, and sensitive payloads. Do not post vulnerabilities in public issues;
+use the private reporting process in [SECURITY.md](SECURITY.md).
+
 ## Developer Certificate of Origin
 
 Every commit contributed through a pull request must carry a `Signed-off-by`
