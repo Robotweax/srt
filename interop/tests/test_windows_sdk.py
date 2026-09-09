@@ -12,6 +12,9 @@ class WindowsSdkTests(unittest.TestCase):
         namespace = {'m': 'http://schemas.microsoft.com/developer/msbuild/2003'}
         imports = [entry.attrib['Project'] for entry in project.findall('m:Import', namespace)]
         self.assertIn('$(ROBOTWEAX_SRT)\\srt.props', imports)
+        toolset = project.find('m:PropertyGroup[@Label="Configuration"]/m:PlatformToolset', namespace)
+        self.assertIsNotNone(toolset)
+        self.assertEqual(toolset.text, '$(DefaultPlatformToolset)')
         ET.parse(ROOT / 'packaging/windows/srt.props')
 
     def test_existing_install_is_guarded_independent_of_destination(self):
