@@ -1,8 +1,31 @@
 # Experimental Android and iOS builds
 
-Mobile support is under development. These configuration recipes are not evidence
-of a successful mobile build, device interoperability or a supported minimum OS.
+Mobile support is under development. Initial compile/link checks pass as recorded
+below; device interoperability and a supported minimum OS are not yet established.
 The desktop build matrix remains the qualified platform set.
+
+## Initial compile/link evidence (2026-09-09)
+
+All three targets built the Release static SRT library with AES-GCM enabled and
+linked `tests/package_consumer/c_consumer.c` (compiled as C11, linked with the target
+C++ driver) against SRT and target OpenSSL 3.6.3. The source is the mobile branch
+with explicit `std::int64_t` template selection in the two timeout `std::min`
+calls in `compat/connection.cpp` and `compat/epoll.cpp`. Android libc++ exposes
+different `long` / `long long` aliases here; implicit template deduction failed.
+The bound calculation and public API are unchanged.
+
+| Target | Toolchain / target setting | Result |
+| --- | --- | --- |
+| Android ARM64 | NDK r27d (27.3.13750724), Clang 18.0.4, API 28 | Static library + AArch64 ELF consumer link passed |
+| iOS ARM64 device | Xcode 26.6, AppleClang 21.0.0, SDK 26.5, deployment 15.0 | Static library + Mach-O consumer link passed |
+| iOS ARM64 simulator | Same Xcode, simulator SDK 26.5, deployment 15.0 | Static library + simulator consumer link passed |
+
+Host: macOS ARM64; CMake 4.4.2, Ninja. OpenSSL revision and recipes appear below.
+These were local cross-build checks, not mobile CI or runtime tests. Consumers
+were not executed on devices/simulators. Signing, app packaging, JNI/Swift wrappers,
+network transfers, timing and background behavior remain unqualified. Android NDK
+emitted CMake deprecation warnings; OpenSSL's Android API define emitted a macro
+redefinition warning. Neither was a SRT compiler error.
 
 ## Prerequisites
 
@@ -18,6 +41,45 @@ compiler, SDK, OpenSSL revision/configuration and SRT commit with each result.
 The helper supplies explicit Crypto/include paths, but does not prove the archive
 has the correct platform or deployment target. A final application link and device
 test are mandatory; creating a static archive alone cannot prove dependency linkage.
+
+Select Xcode for this shell without changing the machine-wide developer directory:
+
+```sh
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+xcrun --sdk iphoneos --show-sdk-path
+xcrun --sdk iphonesimulator --show-sdk-path
+```
+
+Keep the Android NDK in a permanent installation directory rather than relying on
+a mounted installer volume. Pass that exact directory to `--ndk`.
+
+### Building target OpenSSL
+
+The initial experiment pins OpenSSL 3.6.3 at commit
+`aae016bfd52fcad2bc9657c2c782cfdf73b1ed5f`. This is a reproduction pin, not a
+recommendation to freeze security updates indefinitely. Use separate empty build
+directories and installation prefixes for each target. With `OPENSSL_SOURCE`
+pointing to that checkout and `PREFIX` to the target installation, run one of:
+
+```sh
+# iOS device, from its empty OpenSSL build directory:
+perl "$OPENSSL_SOURCE/Configure" ios64-xcrun no-shared no-tests \
+  --prefix="$PREFIX" --libdir=lib -miphoneos-version-min=15.0
+
+# iOS ARM64 simulator, from a different empty directory:
+perl "$OPENSSL_SOURCE/Configure" iossimulator-arm64-xcrun no-shared no-tests \
+  --prefix="$PREFIX" --libdir=lib -mios-simulator-version-min=15.0
+
+# Android ARM64 on a macOS build host, from another empty directory:
+export ANDROID_NDK_ROOT=/path/to/android-ndk
+export PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/bin:$PATH"
+perl "$OPENSSL_SOURCE/Configure" android-arm64 no-shared no-tests \
+  --prefix="$PREFIX" --libdir=lib -D__ANDROID_API__=28 -fPIC
+```
+
+After the selected configuration, run `make -j2 build_libs` and
+`make install_dev`. These commands build libraries; they do not execute OpenSSL's
+test suite or qualify cryptographic behavior on a device.
 
 ## Configure and build
 

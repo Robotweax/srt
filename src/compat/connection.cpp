@@ -4617,7 +4617,7 @@ SRTSOCKET accept_bond_sockets(
             std::chrono::milliseconds>(
             Clock::time_point::max() - now).count();
         return now + std::chrono::milliseconds{
-            std::min(timeout_milliseconds, maximum)};
+            std::min<std::int64_t>(timeout_milliseconds, maximum)};
     }();
 
     for (;;) {
