@@ -6,15 +6,34 @@ function Run([string]$Program, [string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "$Program failed: $LASTEXITCODE" }
 }
 $Root = (Get-Location).Path
-$Target = @{Win32='VC-WIN32';x64='VC-WIN64A';Arm64='VC-WIN64-ARM'}[$Platform]
+$Target = @{Win32='VC-WIN32';x64='VC-WIN64A';Arm64='VC-WIN64-CLANGASM-ARM'}[$Platform]
 if (!$Target) { throw 'Invalid platform' }
+$Assembler = if ($Platform -eq 'Arm64') { 'clang-cl.exe' } else { 'nasm.exe' }
+$Candidates = if ($Platform -eq 'Arm64') {
+    @("${env:VSINSTALLDIR}VC\Tools\Llvm\bin", "${env:ProgramFiles}\LLVM\bin")
+} else {
+    @("${env:ProgramFiles}\NASM", "${env:ProgramFiles(x86)}\NASM")
+}
+if (!(Get-Command $Assembler -ErrorAction SilentlyContinue)) {
+    foreach ($Directory in $Candidates) {
+        if (Test-Path (Join-Path $Directory $Assembler)) {
+            $env:PATH = "$Directory;$env:PATH"
+            break
+        }
+    }
+}
+if (!(Get-Command $Assembler -ErrorAction SilentlyContinue)) { throw "Required assembler missing: $Assembler" }
+Run $Assembler @('--version')
 $Prefix = "$Root/crypto-install"
 New-Item -ItemType Directory crypto-build | Out-Null
 Push-Location crypto-build
 try {
-    $Options = @("$Root/openssl-source/Configure",$Target,'no-shared','no-tests','no-asm',"--prefix=$Prefix",'--libdir=lib')
+    $Options = @("$Root/openssl-source/Configure",$Target,'no-shared','no-tests',"--prefix=$Prefix",'--libdir=lib')
     if ($Configuration -eq 'Debug') { $Options += '--debug' }
     Run perl $Options
+    # Fail closed if Configure disables assembly; retain its full configuration.
+    Run perl @('-I.','-Mconfigdata','-e','die "OpenSSL assembly disabled" if exists $configdata::disabled{asm}; die "Missing assembly architecture" unless $configdata::target{asm_arch};')
+    Run perl @('configdata.pm','--dump')
     Run nmake @()
     Run nmake @('install_dev')
 } finally { Pop-Location }

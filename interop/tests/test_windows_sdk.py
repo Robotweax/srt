@@ -7,6 +7,16 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WindowsSdkTests(unittest.TestCase):
+    def test_crypto_assembly_is_required_for_every_target(self):
+        script = (ROOT / 'packaging/windows/build-ci.ps1').read_text()
+        self.assertNotIn("'no-asm'", script)
+        self.assertIn('VC-WIN64-CLANGASM-ARM', script)
+        self.assertIn('nasm.exe', script)
+        self.assertIn('clang-cl.exe', script)
+        self.assertIn('Required assembler missing', script)
+        self.assertIn('$configdata::disabled{asm}', script)
+        self.assertIn('$configdata::target{asm_arch}', script)
+
     def test_msbuild_probe_imports_shipped_props(self):
         project = ET.parse(ROOT / 'packaging/windows/consumer/consumer.vcxproj')
         namespace = {'m': 'http://schemas.microsoft.com/developer/msbuild/2003'}

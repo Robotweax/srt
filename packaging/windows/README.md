@@ -20,10 +20,12 @@ qualified release installer. No existing release assets are modified.
 The `Windows SDK candidate` workflow builds the six variants from a
 pinned OpenSSL 3.6.3 revision and uploads short-lived candidate artifacts only.
 It links a public C consumer for every target and runs it for Win32/x64; ARM64
-execution is not verified by the x64 runner. The dependency baseline uses
-`no-asm` for initial reproducibility across the targets and is **not a performance
-qualification**. Optimized dependency builds must be addressed before recommending
-these candidates for production throughput. This workflow runs manually or for
+execution is not verified by the x64 runner. OpenSSL assembly is enabled using
+NASM for Win32/x64 and the `VC-WIN64-CLANGASM-ARM` target (MSVC C compiler,
+clang-cl assembler) for ARM64. Missing assemblers or disabled assembly fail the
+build; assembler versions and OpenSSL configuration are recorded in CI logs.
+This is **not a performance qualification**; production throughput still needs
+measurement on the target hardware. This workflow runs manually or for
 PRs changing Windows packaging; it does not run on ordinary pushes or
 automatically publish release assets.
 
