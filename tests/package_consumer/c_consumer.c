@@ -49,6 +49,18 @@ int main(void)
         return 2;
     }
 
+    int32_t implementation_version = 0;
+    int implementation_size = (int)sizeof(implementation_version);
+    if (srt_getsockflag(socket, SRTO_ROBOTWEAX_VERSION, &implementation_version,
+            &implementation_size)
+            == SRT_ERROR
+        || implementation_size != (int)sizeof(implementation_version)
+        || implementation_version != ROBOTWEAX_SRT_VERSION_VALUE) {
+        (void)srt_close(socket);
+        (void)srt_cleanup();
+        return 10;
+    }
+
 #ifdef ENABLE_AEAD_API_PREVIEW
     int crypto_mode = 2;
     if (srt_setsockflag(

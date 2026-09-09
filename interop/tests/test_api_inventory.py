@@ -8,6 +8,14 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ApiInventoryTests(unittest.TestCase):
+    def test_product_version_macros_match_cmake_release(self):
+        cmake = (REPOSITORY_ROOT / "CMakeLists.txt").read_text()
+        version = re.search(r"project\(robotweax_srt VERSION ([0-9.]+)", cmake).group(1)
+        header = (REPOSITORY_ROOT / "include/srt/version.h").read_text()
+        for component, value in zip(("MAJOR", "MINOR", "PATCH"), version.split(".")):
+            self.assertRegex(header, rf"#define ROBOTWEAX_SRT_VERSION_{component} {value}\n")
+        self.assertIn(f'#define ROBOTWEAX_SRT_VERSION_STRING "{version}"', header)
+
     def test_installed_public_headers_have_machine_readable_license(self):
         for relative_path in (
             "include/robotweax_srt.h",

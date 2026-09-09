@@ -143,6 +143,11 @@ typedef enum SRT_SOCKOPT {
     SRTO_GROUPTYPE = 59,
     SRTO_PACKETFILTER = 60,
     SRTO_RETRANSMITALGO = 61,
+    /** Local library release as int32_t; read-only, not a peer/wire version.
+     * Requires a valid socket or group. Unsupported by older implementations.
+     * This extension does not change SRTO_E_SIZE or compatibility options.
+     */
+    SRTO_ROBOTWEAX_VERSION = 0x01000001,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
     SRTO_E_SIZE = 63
