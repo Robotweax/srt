@@ -21,11 +21,51 @@ The bound calculation and public API are unchanged.
 | iOS ARM64 simulator | Same Xcode, simulator SDK 26.5, deployment 15.0 | Static library + simulator consumer link passed |
 
 Host: macOS ARM64; CMake 4.4.2, Ninja. OpenSSL revision and recipes appear below.
-These were local cross-build checks, not mobile CI or runtime tests. Consumers
-were not executed on devices/simulators. Signing, app packaging, JNI/Swift wrappers,
-network transfers, timing and background behavior remain unqualified. Android NDK
+These were local cross-build checks, not mobile CI. Subsequent runtime smoke
+checks are recorded below. Signing, app packaging, JNI/Swift wrappers,
+device networking, timing and background behavior remain unqualified. Android NDK
 emitted CMake deprecation warnings; OpenSSL's Android API define emitted a macro
 redefinition warning. Neither was a SRT compiler error.
+
+## Initial emulator runtime checks (2026-09-09)
+
+Source baseline: mobile branch commit `739ce62`. Android was tested first and
+shut down before iOS was started, to avoid concurrent emulator memory pressure.
+
+| Environment | Public C consumer | Encrypted message demo |
+| --- | --- | --- |
+| Android 15/API 35 AOSP ARM64, emulator 37.1.11 | Exit 0 | 4/4 two-process loopback cases passed |
+| iOS 26.5, iPhone 17 Pro simulator | Exit 0 | 4/4 simulator caller to macOS listener cases passed |
+
+Each four-case set used AES-256-CTR and AES-256-GCM, each in blocking and
+epoll-driven nonblocking mode. `examples/srt_message_demo.cpp` verified an exact
+synthetic payload echo, called `srt_bistats`, exchanged completion messages and
+exited successfully on both ends. Each case sent one short application message;
+these are smoke checks, not throughput, key-rotation or endurance qualification.
+
+Android execution used `adb shell` with the matching `libc++_shared.so` in
+`LD_LIBRARY_PATH`; iOS used `simctl spawn` on the simulator-built executable.
+These are native process tests, not installed APK/iOS-app tests, and do not validate
+application sandbox permissions or background execution.
+
+The attempted Android-to-macOS cases did **not** pass: `sendto(10.0.2.2)` returned
+`ENETUNREACH`. A separate shell `ip route get 10.0.2.2` and ping also reported
+unreachable, while socket creation, options and bind succeeded. This identifies a
+routing problem in the test environment, not a demonstrated SRT handshake defect.
+Host interoperability remains open until routing is resolved and the cases rerun.
+Do not count the Android loopback results as desktop interoperability evidence.
+
+To repeat a case, run the message demo as `listener --port PORT` and as
+`caller --host HOST --port PORT --message TEXT`, adding identical
+`--crypto ctr` or `--crypto gcm`, `--passphrase-env SRT_TEST_KEY` and
+`--timeout-ms 15000` on both sides. Add `--nonblocking` to both for the asynchronous
+case. Use only a synthetic test key. For iOS `simctl spawn`, propagate it via
+`SIMCTL_CHILD_SRT_TEST_KEY`; for Android, set it in the remote process environment.
+For Android loopback both processes run inside the emulator with host `127.0.0.1`;
+for the iOS test only the caller runs in the simulator, against the macOS listener.
+Apply an outer process timeout as the blocking listener may otherwise wait for a
+peer indefinitely. Preserve failed attempts and do not infer performance from RTT
+values produced by this one-message exchange.
 
 ## Prerequisites
 
