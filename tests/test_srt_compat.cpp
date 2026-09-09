@@ -520,12 +520,17 @@ static_assert(sizeof(SRT_SOCKGROUPDATA) == 160);
 static_assert(offsetof(SRT_SOCKGROUPDATA, peeraddr) == 8);
 static_assert(offsetof(SRT_SOCKGROUPDATA, weight) == 140);
 static_assert(offsetof(SRT_SOCKGROUPDATA, token) == 152);
-static_assert(sizeof(SRT_SOCKGROUPCONFIG) == 288);
+// The config pointer changes both padding and trailing offsets on Win32.
+// Keep exact ABI checks for both pointer widths; do not alter the public layout.
+static_assert(sizeof(void*) == 4 || sizeof(void*) == 8);
+static_assert(sizeof(SRT_SOCKGROUPCONFIG) == (sizeof(void*) == 8 ? 288 : 280));
 static_assert(offsetof(SRT_SOCKGROUPCONFIG, srcaddr) == 8);
 static_assert(offsetof(SRT_SOCKGROUPCONFIG, peeraddr) == 136);
 static_assert(offsetof(SRT_SOCKGROUPCONFIG, weight) == 264);
-static_assert(offsetof(SRT_SOCKGROUPCONFIG, config) == 272);
-static_assert(offsetof(SRT_SOCKGROUPCONFIG, token) == 284);
+static_assert(offsetof(SRT_SOCKGROUPCONFIG, config)
+    == (sizeof(void*) == 8 ? 272 : 268));
+static_assert(offsetof(SRT_SOCKGROUPCONFIG, token)
+    == (sizeof(void*) == 8 ? 284 : 276));
 
 TEST(compat_group_accept_bond_and_connect_validation_are_explicit)
 {
