@@ -9,6 +9,8 @@
 #include <climits>
 #include <cstring>
 #include <new>
+#include <type_traits>
+#include <utility>
 
 namespace robotweax::srt {
 namespace {
@@ -16,10 +18,17 @@ bool ok(NTSTATUS status) noexcept
 {
     return status >= 0;
 }
-PUCHAR data(std::span<const std::byte> bytes) noexcept
+PUCHAR bcrypt_bytes(std::span<const std::byte> bytes) noexcept
 {
     return reinterpret_cast<PUCHAR>(const_cast<std::byte*>(bytes.data()));
 }
+// Avoid unqualified data(): ADL selects std::data for mutable spans/arrays.
+static_assert(
+    std::is_same_v<decltype(bcrypt_bytes(std::declval<std::span<std::byte>>())),
+        PUCHAR>);
+static_assert(std::is_same_v<decltype(bcrypt_bytes(
+                                 std::declval<std::array<std::byte, 12>&>())),
+    PUCHAR>);
 void erase(std::span<std::byte> bytes) noexcept
 {
     if (!bytes.empty()) {
@@ -69,8 +78,8 @@ public:
                 reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(mode)),
                 static_cast<ULONG>(length), 0))) {
             if (!ok(BCryptGenerateSymmetricKey(algorithm_.handle, &handle,
-                    nullptr, 0, data(secret), static_cast<ULONG>(secret.size()),
-                    0))) {
+                    nullptr, 0, bcrypt_bytes(secret),
+                    static_cast<ULONG>(secret.size()), 0))) {
                 handle = nullptr;
             }
         }
@@ -89,8 +98,8 @@ public:
         const auto size = static_cast<ULONG>(bytes.size());
         const auto function = encrypt ? BCryptEncrypt : BCryptDecrypt;
         return handle
-            && ok(function(handle, data(bytes), size, nullptr, nullptr, 0,
-                data(bytes), size, &written, 0))
+            && ok(function(handle, bcrypt_bytes(bytes), size, nullptr, nullptr,
+                0, bcrypt_bytes(bytes), size, &written, 0))
             && written == size;
     }
     BCRYPT_KEY_HANDLE handle = nullptr;
@@ -231,19 +240,20 @@ private:
         std::copy(iv.begin(), iv.end(), nonce.begin());
         BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
         BCRYPT_INIT_AUTH_MODE_INFO(info);
-        info.pbNonce = data(nonce);
+        info.pbNonce = bcrypt_bytes(nonce);
         info.cbNonce = static_cast<ULONG>(nonce.size());
-        info.pbAuthData = data(aad);
+        info.pbAuthData = bcrypt_bytes(aad);
         info.cbAuthData = static_cast<ULONG>(aad.size());
-        info.pbTag = data(tag);
+        info.pbTag = bcrypt_bytes(tag);
         info.cbTag = static_cast<ULONG>(tag.size());
         ULONG written = 0;
         const auto size = static_cast<ULONG>(input.size());
         const auto function = encrypt ? BCryptEncrypt : BCryptDecrypt;
         // Both pointers must be null for CNG's authenticated empty-message case.
         const auto status = function(key_.handle,
-            input.empty() ? nullptr : data(input), size, &info, nullptr, 0,
-            input.empty() ? nullptr : data(output), size, &written, 0);
+            input.empty() ? nullptr : bcrypt_bytes(input), size, &info, nullptr,
+            0, input.empty() ? nullptr : bcrypt_bytes(output), size, &written,
+            0);
         if (status == static_cast<NTSTATUS>(0xC000A002L)) {
             return Error::authentication_failure;
         }
@@ -263,7 +273,7 @@ public:
         if (output.empty()) {
             return Error::none;
         }
-        return ok(BCryptGenRandom(nullptr, data(output),
+        return ok(BCryptGenRandom(nullptr, bcrypt_bytes(output),
                    static_cast<ULONG>(output.size()),
                    BCRYPT_USE_SYSTEM_PREFERRED_RNG))
             ? Error::none
@@ -279,10 +289,11 @@ public:
         }
         Algorithm algorithm(BCRYPT_SHA1_ALGORITHM, BCRYPT_ALG_HANDLE_HMAC_FLAG);
         return algorithm.handle
-                && ok(BCryptDeriveKeyPBKDF2(algorithm.handle, data(passphrase),
-                    static_cast<ULONG>(passphrase.size()), data(salt),
-                    static_cast<ULONG>(salt.size()), iterations, data(output),
-                    static_cast<ULONG>(output.size()), 0))
+                && ok(BCryptDeriveKeyPBKDF2(algorithm.handle,
+                    bcrypt_bytes(passphrase),
+                    static_cast<ULONG>(passphrase.size()), bcrypt_bytes(salt),
+                    static_cast<ULONG>(salt.size()), iterations,
+                    bcrypt_bytes(output), static_cast<ULONG>(output.size()), 0))
             ? Error::none
             : Error::cryptographic_failure;
     }
