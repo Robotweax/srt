@@ -27,7 +27,8 @@ Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environmen
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
-  if FileExists(ExpandConstant('{app}\unins000.exe')) then
+  if RegKeyExists(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\Robotweax.SRT.SDK_is1')
+     or FileExists(ExpandConstant('{app}\unins000.exe')) then
     Result := 'Uninstall the previous Robotweax SRT SDK before installing this candidate.';
 end;
 

@@ -1,11 +1,24 @@
 """Static guardrails for the Windows-only SDK build workflow."""
 from pathlib import Path
 import unittest
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 class WindowsSdkTests(unittest.TestCase):
+    def test_msbuild_probe_imports_shipped_props(self):
+        project = ET.parse(ROOT / 'packaging/windows/consumer/consumer.vcxproj')
+        namespace = {'m': 'http://schemas.microsoft.com/developer/msbuild/2003'}
+        imports = [entry.attrib['Project'] for entry in project.findall('m:Import', namespace)]
+        self.assertIn('$(ROBOTWEAX_SRT)\\srt.props', imports)
+        ET.parse(ROOT / 'packaging/windows/srt.props')
+
+    def test_existing_install_is_guarded_independent_of_destination(self):
+        script = (ROOT / 'packaging/windows/sdk.iss').read_text()
+        self.assertIn('RegKeyExists(HKLM,', script)
+        self.assertIn('Robotweax.SRT.SDK_is1', script)
+
     def test_public_c_consumer_uses_c11(self):
         script = (ROOT / 'packaging/windows/build-ci.ps1').read_text()
         self.assertIn("Run cl @('/nologo','/std:c11'", script)

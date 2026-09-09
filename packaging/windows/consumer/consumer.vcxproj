@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="$(Configuration)|$(Platform)">
+      <Configuration>$(Configuration)</Configuration>
+      <Platform>$(Platform)</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{953FAF3A-CA21-46C8-BC69-1AA60B3FEEB5}</ProjectGuid>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries Condition="'$(Configuration)' == 'Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)' != 'Debug'">false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(MSBuildThisFileDirectory)out\$(Configuration)-$(Platform)\</OutDir>
+    <IntDir>$(OutDir)obj\</IntDir>
+    <TargetName>sdk-consumer</TargetName>
+    <SdkTestRuntime Condition="'$(SdkTestRuntime)' == '' and '$(Configuration)' == 'Debug'">MultiThreadedDebugDLL</SdkTestRuntime>
+    <SdkTestRuntime Condition="'$(SdkTestRuntime)' == ''">MultiThreadedDLL</SdkTestRuntime>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <RuntimeLibrary>$(SdkTestRuntime)</RuntimeLibrary>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <Import Project="$(ROBOTWEAX_SRT)\srt.props" />
+  <ItemGroup>
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\..\..\tests\package_consumer\c_consumer.c" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

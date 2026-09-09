@@ -73,6 +73,13 @@ jobs:
           $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$destination`""
           if ($process.ExitCode -ne 0) { throw 'Installation failed' }
           if ([Environment]::GetEnvironmentVariable('ROBOTWEAX_SRT','Machine') -ne $destination) { throw 'SDK environment variable missing' }
+          $before = (Get-FileHash "$destination/srt.props").Hash
+          $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$destination`""
+          if ($process.ExitCode -eq 0) { throw 'Existing installation was not rejected' }
+          $other = Join-Path $env:RUNNER_TEMP 'Robotweax SDK alternate'
+          $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$other`""
+          if ($process.ExitCode -eq 0) { throw 'Parallel installation was not rejected' }
+          if ((Get-FileHash "$destination/srt.props").Hash -ne $before) { throw 'Rejected installation changed existing SDK' }
           foreach ($config in 'Debug','Release') {
             foreach ($platform in 'Win32','x64','Arm64') {
               if (!(Test-Path "$destination/lib/$config-$platform/robotweax-srt.lib")) { throw 'Missing installed variant' }
@@ -82,6 +89,11 @@ jobs:
           if ($process.ExitCode -ne 0) { throw 'Uninstallation failed' }
           if (Test-Path "$destination/srt.props") { throw 'SDK files remained installed' }
           if ([Environment]::GetEnvironmentVariable('ROBOTWEAX_SRT','Machine') -eq $destination) { throw 'Stale SDK environment variable' }
+          $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$other`""
+          if ($process.ExitCode -ne 0) { throw 'Reinstallation after uninstall failed' }
+          if (!(Test-Path "$other/include/srt/srt.h")) { throw 'Reinstalled headers missing' }
+          $process = Start-Process -Wait -PassThru "$other/unins000.exe" -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+          if ($process.ExitCode -ne 0) { throw 'Final cleanup failed' }
       - uses: actions/upload-artifact@v7
         with:
           name: windows-sdk-installer-candidate

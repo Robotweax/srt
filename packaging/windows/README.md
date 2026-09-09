@@ -46,7 +46,16 @@ not install over a system Haivision installation. OpenSSL Crypto is an explicit
 static link dependency. Applications with another OpenSSL dependency must resolve
 version/link compatibility; static linkage does not remove symbol conflicts.
 
-Upgrades currently require uninstalling the previous SDK first. Do not install
+The candidate workflow also builds the public C consumer through
+`consumer/consumer.vcxproj`, importing the staged `srt.props` for all six
+combinations. It executes Win32/x64 consumers and deliberately checks that a
+static-CRT profile is rejected. ARM64 remains compile/link-only on this runner.
+
+Upgrades currently require uninstalling the previous SDK first. The installer
+rejects an already registered SDK even when a different destination is selected.
+CI checks rejection, preservation of the existing props file, uninstall and
+reinstallation into another path. This is not an automatic in-place upgrade test.
+Do not install
 over an older SDK with a different file inventory. Uninstall removes the
 environment variable only when it still points to this installation.
 
