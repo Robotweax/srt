@@ -23,8 +23,21 @@ Invoke-Checked cmake @('-S',$Source,'-B',$Build,'-G','Ninja',
     '-DBUILD_SHARED_LIBS=OFF','-DROBOTWEAX_SRT_BUILD_TESTS=OFF',
     '-DROBOTWEAX_SRT_BUILD_TOOLS=OFF','-DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF',
     '-DROBOTWEAX_SRT_BUILD_EXAMPLES=OFF','-DROBOTWEAX_SRT_INSTALL_LAYOUT=namespaced',
-    '-DOPENSSL_USE_STATIC_LIBS=ON',"-DOPENSSL_INCLUDE_DIR=$OpenSSLRoot/include",
-    "-DOPENSSL_CRYPTO_LIBRARY=$Crypto")
+    '-DOPENSSL_USE_STATIC_LIBS=ON',"-DOPENSSL_ROOT_DIR=$OpenSSLRoot",
+    "-DOPENSSL_INCLUDE_DIR=$OpenSSLRoot/include",
+    "-DOPENSSL_CRYPTO_LIBRARY=$Crypto",
+    "-DLIB_EAY_DEBUG:FILEPATH=$Crypto","-DLIB_EAY_RELEASE:FILEPATH=$Crypto")
+# FindOpenSSL on MSVC derives its imported target from LIB_EAY_DEBUG/RELEASE,
+# not just OPENSSL_CRYPTO_LIBRARY. Fail before compilation if that pin changes.
+$Cache = Get-Content "$Build/CMakeCache.txt"
+foreach ($Name in @('LIB_EAY_DEBUG', 'LIB_EAY_RELEASE')) {
+    $Entry = @($Cache | Where-Object { $_ -like "${Name}:FILEPATH=*" })
+    if ($Entry.Count -ne 1) { throw "Missing pinned $Name" }
+    $Selected = $Entry[0].Substring($Entry[0].IndexOf('=') + 1)
+    if ([IO.Path]::GetFullPath($Selected) -ne [IO.Path]::GetFullPath($Crypto)) {
+        throw "Unexpected OpenSSL selection: $Selected"
+    }
+}
 Invoke-Checked cmake @('--build',$Build,'--parallel','2','--target','robotweax_srt')
 New-Item -ItemType Directory -Path "$Stage/lib/$Configuration-$Platform" -Force | Out-Null
 Copy-Item "$Build/robotweax-srt.lib" "$Stage/lib/$Configuration-$Platform/"

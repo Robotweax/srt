@@ -35,7 +35,8 @@ jobs:
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $arch = @{Win32='x86'; x64='amd64'; Arm64='amd64_arm64'}[$env:SDK_PLATFORM]
           $script = Join-Path $PWD 'packaging\windows\build-ci.ps1'
-          & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" $arch && powershell -NoProfile -ExecutionPolicy Bypass -File `"$script`" -Platform $env:SDK_PLATFORM -Configuration $env:SDK_CONFIGURATION"
+          $pwsh = Join-Path $PSHOME 'pwsh.exe'
+          & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" $arch && `"$pwsh`" -NoProfile -File `"$script`" -Platform $env:SDK_PLATFORM -Configuration $env:SDK_CONFIGURATION"
           if ($LASTEXITCODE -ne 0) { throw 'SDK build failed' }
       - uses: actions/upload-artifact@v7
         with:
