@@ -195,6 +195,10 @@ this step does not yet create an XCFramework or Swift package.
 
 ## Qualification still required
 
+An experimental [UIKit encrypted echo app](../examples/ios/README.md) is available
+for actual Simulator app-process testing. It is separate from the native CLI smoke
+tests and does not constitute physical-device qualification.
+
 1. Compile all three target variants and link a consumer calling the public C API.
 2. Verify startup/cleanup, encrypted caller/listener send/receive against a desktop
    peer, exact payload integrity, statistics and timeout/cancellation behavior.
