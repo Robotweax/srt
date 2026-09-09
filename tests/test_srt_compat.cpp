@@ -527,10 +527,10 @@ static_assert(sizeof(SRT_SOCKGROUPCONFIG) == (sizeof(void*) == 8 ? 288 : 280));
 static_assert(offsetof(SRT_SOCKGROUPCONFIG, srcaddr) == 8);
 static_assert(offsetof(SRT_SOCKGROUPCONFIG, peeraddr) == 136);
 static_assert(offsetof(SRT_SOCKGROUPCONFIG, weight) == 264);
-static_assert(offsetof(SRT_SOCKGROUPCONFIG, config)
-    == (sizeof(void*) == 8 ? 272 : 268));
-static_assert(offsetof(SRT_SOCKGROUPCONFIG, token)
-    == (sizeof(void*) == 8 ? 284 : 276));
+static_assert(
+    offsetof(SRT_SOCKGROUPCONFIG, config) == (sizeof(void*) == 8 ? 272 : 268));
+static_assert(
+    offsetof(SRT_SOCKGROUPCONFIG, token) == (sizeof(void*) == 8 ? 284 : 276));
 
 TEST(compat_group_accept_bond_and_connect_validation_are_explicit)
 {
