@@ -52,8 +52,47 @@ The attempted Android-to-macOS cases did **not** pass: `sendto(10.0.2.2)` return
 `ENETUNREACH`. A separate shell `ip route get 10.0.2.2` and ping also reported
 unreachable, while socket creation, options and bind succeeded. This identifies a
 routing problem in the test environment, not a demonstrated SRT handshake defect.
-Host interoperability remains open until routing is resolved and the cases rerun.
-Do not count the Android loopback results as desktop interoperability evidence.
+The original failures remain part of the test record; loopback alone is not
+desktop interoperability evidence. After emulator restart and network initialization,
+the separate host tests passed as described below.
+
+### Android routing recovery and network readiness
+
+On the subsequent 2026-09-09 run, restarting the same AVD and allowing Android's
+network services to initialize restored routing without root, manual routes,
+firewall changes or SRT modifications. The initial boot observation had only the
+dummy network and no connectivity service; the later observation had a default
+Wi-Fi network and a policy route to `10.0.2.2` through `wlan0` (table 1016).
+Host ping then passed, followed by **4/4 Android caller to macOS listener** cases:
+AES-256-CTR/GCM, each blocking/nonblocking, with exact echo, statistics and both
+processes exiting 0. These extend, rather than replace, the original loopback tests.
+
+The exact reason the previous run remained without a usable route is not proven.
+Recovery after restart does not establish a permanent emulator fix. Treat ADB
+availability and `sys.boot_completed=1` as insufficient network readiness signals.
+Before launching a network case, check the actual target route with a bounded wait:
+
+```sh
+ADB="$HOME/Library/Android/sdk/platform-tools/adb"
+SERIAL=emulator-5554
+ready=false
+for attempt in $(seq 1 30); do
+  if "$ADB" -s "$SERIAL" shell ip route get 10.0.2.2; then
+    ready=true
+    break
+  fi
+  sleep 2
+done
+if [ "$ready" != true ]; then
+  echo "Android host route unavailable; do not start SRT tests" >&2
+  exit 1
+fi
+```
+
+This is a routing precondition, not proof that a UDP listener is reachable. Keep
+the actual encrypted transfer as the end-to-end gate. On failure retain `ip rule`,
+`ip route show table all` and network-service diagnostics; do not disable Android
+security protections or retry SRT tests until a failed run disappears.
 
 To repeat a case, run the message demo as `listener --port PORT` and as
 `caller --host HOST --port PORT --message TEXT`, adding identical
