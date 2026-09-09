@@ -465,6 +465,16 @@ jobs:
           --verbose
           --timeout 120
 
+      - name: Configure legacy packaging
+        run: cmake -S . -B build -DROBOTWEAX_SRT_INSTALL_LAYOUT=legacy
+      - name: Relink legacy library
+        run: cmake --build build --config Release --parallel --target robotweax_srt
+      - name: Test legacy package consumer
+        run: >-
+          ctest --test-dir build -C Release
+          -R robotweax_srt_package_consumer_tests
+          --no-tests=error --output-on-failure
+
   ffmpeg_integration:
     name: FFmpeg integration
     needs: changes
@@ -515,7 +525,7 @@ jobs:
         run: |
           set -euo pipefail
           ldd ffmpeg-source/ffmpeg | \
-            grep -F "$RUNNER_TEMP/robotweax-srt/lib/libsrt.so.0.2"
+            grep -F "$RUNNER_TEMP/robotweax-srt/lib/librobotweax-srt.so.0.2"
           ffmpeg-source/ffmpeg -hide_banner -protocols | \
             grep -Eq '^[[:space:]]+srt$'
       - name: Run FFmpeg live-transfer smoke test
@@ -1008,7 +1018,7 @@ jobs:
         if: needs.changes.outputs.handshake_interop == 'true'
         run: >-
           c++ -std=c++17 -O2 interop/binding_peer.cpp
-          -Iinclude build/libsrt.a -lcrypto -lpthread -ldl
+          -Iinclude build/librobotweax-srt.a -lcrypto -lpthread -ldl
           -o robotweax-binding-peer
       - name: Package Robotweax interoperability tools
         shell: bash

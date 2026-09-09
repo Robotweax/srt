@@ -19,7 +19,7 @@ cmake -S examples/ios -B build-ios-app -G Ninja \
   -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
   -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
   -DSRT_INCLUDE_DIR="$PWD/include" \
-  -DSRT_ARCHIVE=/absolute/path/to/simulator/libsrt.a \
+  -DSRT_ARCHIVE=/absolute/path/to/simulator/librobotweax-srt.a \
   -DCRYPTO_ARCHIVE=/absolute/path/to/simulator/libcrypto.a
 cmake --build build-ios-app
 xcrun simctl install booted build-ios-app/SRTMobileDemo.app

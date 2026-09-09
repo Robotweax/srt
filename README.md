@@ -119,9 +119,11 @@ If Robotweax SRT is installed under a custom prefix, add that prefix to
 pkg-config --cflags --libs robotweax-srt
 ```
 
-The installed library uses the conventional `srt` output name (`libsrt` on
-Unix-like systems and `srt.dll` for a Windows shared build). Use package
-metadata instead of hard-coding filenames.
+The default library name is `robotweax-srt` (`librobotweax-srt` on Unix-like
+systems, `robotweax-srt.dll` for Windows shared builds). Headers live below
+`include/robotweax-srt`; package metadata supplies that include root, preserving
+`#include <srt/srt.h>`. See [installation layouts](docs/building.md#installation-layouts)
+for the optional legacy layout and migration guidance.
 
 ## Public API
 
