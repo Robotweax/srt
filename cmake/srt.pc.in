@@ -8,7 +8,7 @@ robotweax_abi=@ROBOTWEAX_SRT_ABI_VERSION@
 Name: Robotweax SRT libsrt compatibility
 Description: Opt-in libsrt-compatible metadata for FFmpeg and similar consumers
 Version: @ROBOTWEAX_SRT_COMPATIBLE_SRT_VERSION@
-Requires.private: libcrypto >= 3.0
+Requires.private: @ROBOTWEAX_SRT_PC_CRYPTO_REQUIRES@
 Libs: -L${libdir} -l@ROBOTWEAX_SRT_LIBRARY_NAME@
 Libs.private: @ROBOTWEAX_SRT_PC_PRIVATE_LIBS@
 Cflags: -I${includedir} @ROBOTWEAX_SRT_PC_CFLAGS@

@@ -1,0 +1,64 @@
+name: Experimental BCrypt backend
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/crypto*'
+      - 'include/robotweax/srt/crypto*'
+      - 'tests/crypto_provider_comparison/**'
+      - 'tests/test_crypto.cpp'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - '.github/workflows/windows-bcrypt.yml'
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [Win32, x64, ARM64]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure without OpenSSL discovery
+        run: cmake -S . -B build -A ${{ matrix.arch }} -DROBOTWEAX_SRT_CRYPTO_BACKEND=bcrypt -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON -DENABLE_AEAD_API_PREVIEW=ON -DROBOTWEAX_SRT_BUILD_TOOLS=OFF -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+      - name: Build library and unit tests
+        run: cmake --build build --config Release --parallel 2 --target robotweax_srt_tests
+      - name: Provider vectors and crypto sessions
+        if: matrix.arch != 'ARM64'
+        shell: pwsh
+        run: |
+          & ./build/Release/robotweax_srt_tests.exe provider
+          if ($LASTEXITCODE -ne 0) { throw 'Provider vectors failed' }
+          & ./build/Release/robotweax_srt_tests.exe crypto
+          if ($LASTEXITCODE -ne 0) { throw 'Crypto sessions failed' }
+      - name: Differential comparison against OpenSSL
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          cmake -S tests/crypto_provider_comparison -B compare -A x64
+          if ($LASTEXITCODE -ne 0) { throw 'Comparison configure failed' }
+          cmake --build compare --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Comparison build failed' }
+          ctest --test-dir compare -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Comparison failed' }
+      - name: Installed package without OpenSSL discovery
+        shell: pwsh
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          cmake --install build --config Release --prefix "$PWD/installed"
+          if ($LASTEXITCODE -ne 0) { throw 'Install failed' }
+          $version = [regex]::Match((Get-Content CMakeLists.txt -Raw), 'project\(robotweax_srt VERSION ([0-9.]+)').Groups[1].Value
+          cmake -S tests/package_consumer -B consumer -A $env:TARGET_ARCH "-DCMAKE_PREFIX_PATH=$PWD/installed" "-DROBOTWEAX_SRT_PACKAGE_VERSION=$version" -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON -DROBOTWEAX_SRT_EXPECT_AEAD_API_PREVIEW=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Consumer configure failed' }
+          cmake --build consumer --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Consumer build failed' }
+          if ($env:TARGET_ARCH -ne 'ARM64') {
+            ctest --test-dir consumer -C Release --output-on-failure
+            if ($LASTEXITCODE -ne 0) { throw 'Consumer execution failed' }
+          }
