@@ -20,6 +20,9 @@ matches the compiler and generator.
 
 ## Important CMake options
 
+For unqualified mobile cross-build experiments, see
+[Experimental Android and iOS builds](mobile-building.md).
+
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `BUILD_SHARED_LIBS` | `OFF` | Build a shared rather than static library |
