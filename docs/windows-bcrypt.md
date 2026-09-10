@@ -20,7 +20,7 @@ separate packaging work requested in [issue #12](https://github.com/Robotweax/sr
 not a standalone streaming application. It bundles public headers, static
 Robotweax SRT and OpenSSL Crypto libraries for Debug/Release on Win32, x64 and
 ARM64, and an MSBuild property sheet. See the
-[Windows SDK packaging documentation](../packaging/windows/README.md).
+[Windows SDK packaging documentation](https://github.com/Robotweax/srt/blob/main/packaging/windows/README.md).
 The installer candidate remains OpenSSL-based and is not yet a signed,
 qualified release installer. The optional BCrypt backend is available in
 `main`; it does not switch the installer packaging or the default backend.
