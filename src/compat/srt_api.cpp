@@ -16,8 +16,46 @@
 #include <algorithm>
 #include <chrono>
 #include <limits>
+#include <cstdio>
+#include "udp_buffer_policy.hpp"
 
 namespace {
+
+// Emit only after internal socket locks have been released. Logging callbacks
+// are application code and may call back into the socket API.
+struct UdpBufferLogScope {
+    bool owner = !robotweax::srt::detail::collect_udp_buffer_notices;
+    UdpBufferLogScope()
+    {
+        if (!owner)
+            return;
+        robotweax::srt::detail::udp_buffer_notice_count = 0;
+        robotweax::srt::detail::collect_udp_buffer_notices = true;
+    }
+    ~UdpBufferLogScope()
+    {
+        if (!owner)
+            return;
+        const auto saved_error = robotweax::srt::compat::last_error();
+        using namespace robotweax::srt::detail;
+        const auto notices = udp_buffer_notices;
+        const auto count = udp_buffer_notice_count;
+        collect_udp_buffer_notices = false;
+        udp_buffer_notice_count = 0;
+        for (unsigned i = 0; i < count; ++i) {
+            char message[160];
+            std::snprintf(message, sizeof(message),
+                "UDP buffer request rejected by OS; requested=%d effective=%d "
+                "bytes",
+                static_cast<int>(notices[i].requested),
+                static_cast<int>(notices[i].effective));
+            ROBOTWEAX_SRT_COMPAT_LOG(
+                LOG_WARNING, SRT_LOGFA_SOCKMGMT, "W", "socket", message);
+        }
+        robotweax::srt::compat::set_last_error(
+            saved_error.code, saved_error.system_error);
+    }
+};
 
 [[nodiscard]] bool stateful_api_available() noexcept
 {
@@ -135,6 +173,7 @@ SRTSOCKET srt_create_socket(void)
 
 int srt_bind(SRTSOCKET socket, const sockaddr* name, int name_size)
 {
+    const UdpBufferLogScope buffer_log;
     if (!stateful_api_available()) {
         return SRT_ERROR;
     }
@@ -147,6 +186,7 @@ int srt_bind(SRTSOCKET socket, const sockaddr* name, int name_size)
 int srt_bind_acquire(
     SRTSOCKET socket, UDPSOCKET native_socket)
 {
+    const UdpBufferLogScope buffer_log;
     if (!stateful_api_available()) {
         return SRT_ERROR;
     }
@@ -221,6 +261,7 @@ int srt_connect_callback(
 int srt_connect(
     SRTSOCKET socket, const sockaddr* name, int name_size)
 {
+    const UdpBufferLogScope buffer_log;
     if (!stateful_api_available()) {
         return SRT_ERROR;
     }
@@ -244,6 +285,7 @@ int srt_connect_debug(
     SRTSOCKET socket, const sockaddr* name, int name_size,
     int forced_initial_sequence)
 {
+    const UdpBufferLogScope buffer_log;
     if (!stateful_api_available()) {
         return SRT_ERROR;
     }
@@ -263,6 +305,7 @@ int srt_connect_bind(
     const sockaddr* target,
     int name_size)
 {
+    const UdpBufferLogScope buffer_log;
     if (!stateful_api_available()) {
         return SRT_ERROR;
     }

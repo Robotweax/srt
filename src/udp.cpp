@@ -1,4 +1,5 @@
 #include "robotweax/srt/udp.hpp"
+#include "udp_buffer_policy.hpp"
 
 #include "compat/platform_networking.hpp"
 
@@ -338,11 +339,36 @@ Error UdpSocket::set_send_buffer_size(std::int32_t bytes) noexcept
     const int result = ::setsockopt(to_native(native_), SOL_SOCKET, SO_SNDBUF,
         reinterpret_cast<const char*>(&bytes), static_cast<int>(sizeof(bytes)));
 #else
-    const int result = ::setsockopt(to_native(native_), SOL_SOCKET, SO_SNDBUF,
-        &bytes, static_cast<SocketLength>(sizeof(bytes)));
+    const int error = detail::configure_udp_buffer(
+        bytes,
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)         \
+    || defined(__NetBSD__) || defined(__DragonFly__)
+        true,
+#else
+        false,
 #endif
+        [&](std::int32_t value) {
+            return ::setsockopt(to_native(native_), SOL_SOCKET, SO_SNDBUF,
+                       &value, sizeof(value))
+                    == 0
+                ? 0
+                : last_socket_error();
+        },
+        [&](std::int32_t& value) {
+            SocketLength size = sizeof(value);
+            return ::getsockopt(
+                       to_native(native_), SOL_SOCKET, SO_SNDBUF, &value, &size)
+                    == 0
+                ? 0
+                : last_socket_error();
+        });
+    last_system_error_ = error;
+    return error == 0 ? Error::none : Error::io_error;
+#endif
+#if defined(_WIN32)
     last_system_error_ = result == 0 ? 0 : last_socket_error();
     return result == 0 ? Error::none : Error::io_error;
+#endif
 }
 
 Error UdpSocket::set_receive_buffer_size(std::int32_t bytes) noexcept
@@ -359,11 +385,36 @@ Error UdpSocket::set_receive_buffer_size(std::int32_t bytes) noexcept
     const int result = ::setsockopt(to_native(native_), SOL_SOCKET, SO_RCVBUF,
         reinterpret_cast<const char*>(&bytes), static_cast<int>(sizeof(bytes)));
 #else
-    const int result = ::setsockopt(to_native(native_), SOL_SOCKET, SO_RCVBUF,
-        &bytes, static_cast<SocketLength>(sizeof(bytes)));
+    const int error = detail::configure_udp_buffer(
+        bytes,
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)         \
+    || defined(__NetBSD__) || defined(__DragonFly__)
+        true,
+#else
+        false,
 #endif
+        [&](std::int32_t value) {
+            return ::setsockopt(to_native(native_), SOL_SOCKET, SO_RCVBUF,
+                       &value, sizeof(value))
+                    == 0
+                ? 0
+                : last_socket_error();
+        },
+        [&](std::int32_t& value) {
+            SocketLength size = sizeof(value);
+            return ::getsockopt(
+                       to_native(native_), SOL_SOCKET, SO_RCVBUF, &value, &size)
+                    == 0
+                ? 0
+                : last_socket_error();
+        });
+    last_system_error_ = error;
+    return error == 0 ? Error::none : Error::io_error;
+#endif
+#if defined(_WIN32)
     last_system_error_ = result == 0 ? 0 : last_socket_error();
     return result == 0 ? Error::none : Error::io_error;
+#endif
 }
 
 Error UdpSocket::set_ipv6_only(bool enabled) noexcept

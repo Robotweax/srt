@@ -4,6 +4,7 @@
 #include "robotweax/srt/handshake.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
 #include "robotweax/srt/udp.hpp"
+#include "udp_buffer_policy.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,6 +13,114 @@
 #include <thread>
 
 using namespace robotweax::srt;
+
+TEST(udp_buffer_fallback_preserves_existing_buffer)
+{
+    int calls = 0;
+    REQUIRE_EQ(detail::configure_udp_buffer(
+                   12'288'000, true,
+                   [&](std::int32_t) {
+                       ++calls;
+                       return ENOBUFS;
+                   },
+                   [](std::int32_t& value) {
+                       value = 262'144;
+                       return 0;
+                   }),
+        0);
+    REQUIRE_EQ(calls, 1);
+}
+
+TEST(udp_buffer_fallback_retries_small_buffer)
+{
+    int calls = 0;
+    REQUIRE_EQ(detail::configure_udp_buffer(
+                   12'288'000, true,
+                   [&](std::int32_t value) {
+                       ++calls;
+                       return value == 64'000 ? 0 : ENOBUFS;
+                   },
+                   [](std::int32_t& value) {
+                       value = 8192;
+                       return 0;
+                   }),
+        0);
+    REQUIRE_EQ(calls, 2);
+}
+
+TEST(udp_buffer_fallback_does_not_hide_other_errors)
+{
+    for (const int error : {EBADF, EINVAL, EACCES}) {
+        REQUIRE_EQ(detail::configure_udp_buffer(
+                       262'144, true,
+                       [=](std::int32_t) {
+                           return error;
+                       },
+                       [](std::int32_t&) {
+                           return 0;
+                       }),
+            error);
+    }
+    REQUIRE_EQ(detail::configure_udp_buffer(
+                   262'144, false,
+                   [](std::int32_t) {
+                       return ENOBUFS;
+                   },
+                   [](std::int32_t&) {
+                       return 0;
+                   }),
+        ENOBUFS);
+    REQUIRE_EQ(detail::configure_udp_buffer(
+                   262'144, true,
+                   [](std::int32_t) {
+                       return ENOBUFS;
+                   },
+                   [](std::int32_t&) {
+                       return EBADF;
+                   }),
+        EBADF);
+    REQUIRE_EQ(detail::configure_udp_buffer(
+                   262'144, true,
+                   [](std::int32_t) {
+                       return ENOBUFS;
+                   },
+                   [](std::int32_t& value) {
+                       value = 8192;
+                       return 0;
+                   }),
+        ENOBUFS);
+}
+
+TEST(udp_buffer_fallback_records_actual_size_and_respects_small_requests)
+{
+    detail::collect_udp_buffer_notices = true;
+    detail::udp_buffer_notice_count = 0;
+    const int result = detail::configure_udp_buffer(
+        12'288'000, true,
+        [](std::int32_t) {
+            return ENOBUFS;
+        },
+        [](std::int32_t& value) {
+            value = 262'144;
+            return 0;
+        });
+    detail::collect_udp_buffer_notices = false;
+    REQUIRE_EQ(result, 0);
+    REQUIRE_EQ(detail::udp_buffer_notice_count, 1U);
+    REQUIRE_EQ(detail::udp_buffer_notices[0].requested, 12'288'000);
+    REQUIRE_EQ(detail::udp_buffer_notices[0].effective, 262'144);
+    detail::udp_buffer_notice_count = 0;
+    REQUIRE_EQ(detail::configure_udp_buffer(
+                   4096, true,
+                   [](std::int32_t) {
+                       return ENOBUFS;
+                   },
+                   [](std::int32_t& value) {
+                       value = 8192;
+                       return 0;
+                   }),
+        ENOBUFS);
+}
 
 namespace {
 
