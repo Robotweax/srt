@@ -64,41 +64,6 @@ jobs:
             Run cmake @('-S','tests/crypto_provider_peer','-B',"peer-$backend",'-A','x64',"-DCMAKE_PREFIX_PATH=$prefix")
             Run cmake @('--build',"peer-$backend",'--config',$env:CONFIGURATION,'--parallel','2')
           }
-      - name: Serial CTR baseline investigation (Release only)
-        if: matrix.configuration == 'Release'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force ctr-diagnostics | Out-Null
-          git rev-parse HEAD | Set-Content ctr-diagnostics/commit.txt
-          python --version | Set-Content ctr-diagnostics/python.txt
-          $failures = 0
-          # Alternate direct and traced runs: the proxy changes scheduling and
-          # must not replace the original direct-path control.
-          foreach ($index in 0..9) {
-            foreach ($mode in 'direct','trace') {
-              $arguments = @('interop/run_encrypted_interop.py','--baseline-only',
-                '--robotweax-peer','peer-bcrypt/Release/crypto_peer.exe',
-                '--reference-peer','peer-openssl/Release/crypto_peer.exe',
-                '--bytes','524288','--km-refresh-rate','64','--km-preannounce','20')
-              if ($mode -eq 'trace') { $arguments += '--trace-baseline-handshake' }
-              $log = "ctr-diagnostics/$index-$mode.log"
-              & python @arguments > $log 2>&1
-              $code = $LASTEXITCODE
-              Get-Content $log
-              @{ index=$index; mode=$mode; exit_code=$code } |
-                ConvertTo-Json -Compress | Add-Content ctr-diagnostics/results.jsonl
-              if ($code -ne 0) { $failures++ }
-            }
-          }
-          if ($failures -ne 0) { throw "$failures diagnostic runs failed (all runs retained)" }
-      - name: Preserve CTR diagnostic logs only
-        if: always() && matrix.configuration == 'Release'
-        uses: actions/upload-artifact@v7
-        with:
-          name: bcrypt-ctr-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ctr-diagnostics/
-          if-no-files-found: ignore
-          retention-days: 7
       - name: BCrypt versus OpenSSL encrypted public API
         shell: pwsh
         env:

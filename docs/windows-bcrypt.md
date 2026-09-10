@@ -60,6 +60,25 @@ sanitizers, reference interoperability and FFmpeg integration, also passed.
 This supports merging the opt-in experimental backend; it is not a production
 qualification or an independent cryptographic audit.
 
+### Open intermittent setup observation
+
+[Run 34444279850](https://github.com/Robotweax/srt/actions/runs/34444279850)
+failed in the first Release AES-128 CTR baseline: the BCrypt caller timed out
+(`reject_reason=16`), while the OpenSSL listener had accepted a connection but
+received no payload. This is an unresolved setup observation, not a confirmed
+cryptographic calculation failure or a proven fix.
+
+On commit `087d3a3866870a17ab3af31e7deab27596c749f1`,
+[diagnostic run 34444918718](https://github.com/Robotweax/srt/actions/runs/34444918718)
+completed ten alternating direct/handshake-proxy pairs, each in both directions:
+20 invocations and 40 successful transfers, with no reproduced failure. The
+regular CI also passed. The proxy changes scheduling, so traced successes do
+not replace direct controls. These results do not establish a failure-rate
+bound or resolve the original timeout. The temporary repetitions were removed
+to avoid recurring CI costs; normal baseline checks and timeouts remain intact.
+The diagnostic recipe remains available in that commit. Reinvestigate with
+direct controls and handshake traces if the setup failure recurs.
+
 Before recommending or making this the Windows default, complete:
 
 1. Broader error-path/input-size parity review, including injected CNG failures.
