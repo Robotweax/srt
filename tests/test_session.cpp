@@ -2178,6 +2178,109 @@ TEST(live_session_periodic_nak_retains_sender_rto_for_flight_tail_loss)
     REQUIRE(!sender.next_data_packet().has_value());
 }
 
+TEST(live_session_duplicate_ack_does_not_starve_tail_retransmission)
+{
+    ReliabilitySession sender {{
+        .local_initial_sequence = SequenceNumber {10},
+        .peer_initial_sequence = SequenceNumber {100},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 4,
+        .receive_capacity_packets = 4,
+        .maximum_payload_size = 1,
+    }};
+    sender.configure_live(
+        NegotiatedLiveOptions {.periodic_nak = true}, 0, PacketTimestamp {0});
+    const std::array<std::byte, 2> input {std::byte {'x'}, std::byte {'y'}};
+    for (const auto byte : input) {
+        REQUIRE_EQ(
+            sender.queue_message(std::span {&byte, 1}, PacketTimestamp {0}),
+            Error::none);
+        const auto packet = sender.next_data_packet();
+        REQUIRE(packet.has_value());
+        sender.note_data_packet_sent(100);
+    }
+
+    std::array<std::byte, 64> control_storage {};
+    ReliabilityAction acknowledgement {
+        .kind = ReliabilityActionKind::acknowledgement,
+        .acknowledgement =
+            {
+                .kind = AcknowledgementKind::lite,
+                .next_sequence = SequenceNumber {11},
+            },
+    };
+    REQUIRE(sender.receive(
+        encode_and_decode(acknowledgement, control_storage), 1'000));
+
+    // Full/lite ACKs can repeat the same next sequence while the final DATA
+    // packet is missing. They are not progress and must not postpone RTO.
+    for (std::uint64_t now = 10'000; now <= 330'000; now += 10'000) {
+        REQUIRE(sender.receive(
+            encode_and_decode(acknowledgement, control_storage), now));
+    }
+
+    REQUIRE(!sender.poll_sender_retransmission_timeout(330'999));
+    REQUIRE(sender.poll_sender_retransmission_timeout(331'000));
+    const auto retransmission = sender.next_data_packet();
+    REQUIRE(retransmission.has_value());
+    REQUIRE_EQ(retransmission->header.sequence, SequenceNumber {11});
+    REQUIRE(retransmission->header.retransmitted);
+    REQUIRE(!sender.next_data_packet().has_value());
+}
+
+TEST(live_session_duplicate_full_ack_does_not_starve_tail_retransmission)
+{
+    ReliabilitySession sender {{
+        .local_initial_sequence = SequenceNumber {10},
+        .peer_initial_sequence = SequenceNumber {100},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 4,
+        .receive_capacity_packets = 4,
+        .maximum_payload_size = 1,
+    }};
+    sender.configure_live(
+        NegotiatedLiveOptions {.periodic_nak = true}, 0, PacketTimestamp {0});
+    const std::array<std::byte, 2> input {std::byte {'x'}, std::byte {'y'}};
+    for (const auto byte : input) {
+        REQUIRE_EQ(
+            sender.queue_message(std::span {&byte, 1}, PacketTimestamp {0}),
+            Error::none);
+        const auto packet = sender.next_data_packet();
+        REQUIRE(packet.has_value());
+        sender.note_data_packet_sent(100);
+    }
+
+    std::array<std::byte, 64> control_storage {};
+    ReliabilityAction acknowledgement {
+        .kind = ReliabilityActionKind::acknowledgement,
+        .acknowledgement =
+            {
+                .kind = AcknowledgementKind::full,
+                .acknowledgement_number = 1,
+                .next_sequence = SequenceNumber {11},
+                .round_trip_time_microseconds = 100'000,
+                .round_trip_time_variance_microseconds = 50'000,
+            },
+    };
+    REQUIRE(sender.receive(
+        encode_and_decode(acknowledgement, control_storage), 1'000));
+
+    // Full/lite ACKs can repeat the same next sequence while the final DATA
+    // packet is missing. They are not progress and must not postpone RTO.
+    for (std::uint64_t now = 10'000; now <= 330'000; now += 10'000) {
+        REQUIRE(sender.receive(
+            encode_and_decode(acknowledgement, control_storage), now));
+    }
+
+    REQUIRE(!sender.poll_sender_retransmission_timeout(330'999));
+    REQUIRE(sender.poll_sender_retransmission_timeout(331'000));
+    const auto retransmission = sender.next_data_packet();
+    REQUIRE(retransmission.has_value());
+    REQUIRE_EQ(retransmission->header.sequence, SequenceNumber {11});
+    REQUIRE(retransmission->header.retransmitted);
+    REQUIRE(!sender.next_data_packet().has_value());
+}
+
 TEST(live_session_periodic_nak_preserves_selected_loss_at_sender_rto)
 {
     ReliabilitySession sender {{

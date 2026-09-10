@@ -433,3 +433,32 @@ With the reference-only nonblocking path, the subsequent
 [60-case Linux run](https://github.com/Robotweax/srt/actions/runs/34282747581)
 passed without phase logging. This validates the harness mitigation, not a
 repair of Haivision's internal blocking implementation.
+
+### Live flight-tail recovery
+
+`robotweax_srt_live_tail_recovery` drops exactly the last original DATA datagram
+of a six-second, source-paced Live transfer through the existing deterministic
+UDP fault relay. The two-second TSBPD budget is shorter than the source run, so
+application reads are already freeing receive-buffer space when the flight tail
+is lost. This matters: repeated ACKs can advertise window updates without
+advancing the cumulative acknowledgement. They must not restart the sender RTO.
+
+The test requires the tail retransmission, its cumulative ACK, complete payload
+integrity and successful peer exits. It leaves no temporary artifacts by default:
+
+```sh
+ctest --test-dir build -R '^robotweax_srt_live_tail_recovery$' --output-on-failure
+```
+
+To retain the peer logs and fault metadata, or compare a different sender build:
+
+```sh
+python3 interop/run_live_tail_interop.py \
+  --sender-peer build/robotweax_srt_interop_peer \
+  --receiver-peer build/robotweax_srt_interop_peer \
+  --artifacts /path/to/new-tail-results
+```
+
+This regression preserves the retransmission timeout formula and its backoff.
+Only an ACK that advances the send-buffer sequence restarts the timer; valid
+non-progress ACKs still participate in receive-window and RTT processing.
