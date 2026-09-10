@@ -436,6 +436,12 @@ repair of Haivision's internal blocking implementation.
 
 ### Live flight-tail recovery
 
+The duplicate-ACK tail fix applies to Live sessions with ordinary ARQ
+(`always`). FileCC and filter-controlled `onreq`/`never` recovery retain their
+existing ACK timer behavior. In particular, an ACK stalled behind an FEC gap
+must not be treated as evidence that the flight tail is lost. This test does
+not establish tail-loss recovery for those filter-controlled modes.
+
 `robotweax_srt_live_tail_recovery` drops exactly the last original DATA datagram
 of a six-second, source-paced Live transfer through the existing deterministic
 UDP fault relay. The two-second TSBPD budget is shorter than the source run, so

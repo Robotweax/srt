@@ -706,10 +706,15 @@ ReliabilityProcessResult ReliabilitySession::receive(
         // Repeated ACKs can update the receive window while a lost flight
         // tail remains unacknowledged. Resetting RTO on those non-progress
         // ACKs can postpone recovery until the Live delivery deadline expires.
-        if (acknowledgement_progress > 0) {
+        // Keep filter-controlled recovery and FileCC unchanged: duplicate
+        // ACKs can cover a gap that FEC is still reconstructing, not a tail.
+        const bool live_tail_recovery = live_rate_controller_.has_value()
+            && packet_filter_policy_.effective_arq_level()
+                == PacketFilterArqLevel::always;
+        if (acknowledgement_progress > 0
+            || (acknowledgement_is_current && !live_tail_recovery)) {
             sender_retransmission_timer_.on_acknowledgement_received(
-                now_microseconds,
-                send_buffer_.packets_in_flight() != 0U);
+                now_microseconds, send_buffer_.packets_in_flight() != 0U);
         }
         if (decoded.acknowledgement.kind != AcknowledgementKind::lite) {
             if (acknowledgement_is_current) {

@@ -2281,6 +2281,62 @@ TEST(live_session_duplicate_full_ack_does_not_starve_tail_retransmission)
     REQUIRE(!sender.next_data_packet().has_value());
 }
 
+TEST(filter_and_file_duplicate_ack_preserves_recovery_timer)
+{
+    for (const auto kind :
+        {AcknowledgementKind::lite, AcknowledgementKind::full}) {
+        for (int mode = 0; mode < 3; ++mode) {
+            ReliabilitySession sender {{
+                .local_initial_sequence = SequenceNumber {10},
+                .peer_initial_sequence = SequenceNumber {100},
+                .peer_socket_id = 900,
+                .send_capacity_packets = 4,
+                .receive_capacity_packets = 4,
+                .maximum_payload_size = 1,
+            }};
+            if (mode == 2) {
+                sender.configure_file(true);
+            } else {
+                sender.configure_live(
+                    NegotiatedLiveOptions {.periodic_nak = true}, 0,
+                    PacketTimestamp {0});
+                const auto filter = parse_packet_filter_configuration(mode == 0
+                        ? "fec,cols:4,rows:1,arq:onreq"
+                        : "fec,cols:4,rows:1,arq:never");
+                REQUIRE(filter);
+                sender.configure_packet_filter(filter.configuration, true);
+            }
+            const std::array<std::byte, 1> input {std::byte {'x'}};
+            for (int i = 0; i < 2; ++i) {
+                REQUIRE_EQ(sender.queue_message(input, PacketTimestamp {0}),
+                    Error::none);
+                REQUIRE(sender.next_data_packet().has_value());
+                sender.note_data_packet_sent(100);
+            }
+            std::array<std::byte, 64> storage {};
+            ReliabilityAction acknowledgement {
+                .kind = ReliabilityActionKind::acknowledgement,
+                .acknowledgement =
+                    {
+                        .kind = kind,
+                        .acknowledgement_number = 1,
+                        .next_sequence = SequenceNumber {11},
+                        .round_trip_time_microseconds = 100'000,
+                        .round_trip_time_variance_microseconds = 50'000,
+                    },
+            };
+            REQUIRE(sender.receive(
+                encode_and_decode(acknowledgement, storage), 1'000));
+            for (std::uint64_t now = 10'000; now <= 330'000; now += 10'000) {
+                REQUIRE(sender.receive(
+                    encode_and_decode(acknowledgement, storage), now));
+            }
+            REQUIRE(!sender.poll_sender_retransmission_timeout(331'000));
+            REQUIRE(!sender.next_data_packet().has_value());
+        }
+    }
+}
+
 TEST(live_session_periodic_nak_preserves_selected_loss_at_sender_rto)
 {
     ReliabilitySession sender {{
