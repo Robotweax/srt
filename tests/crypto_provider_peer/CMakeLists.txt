@@ -20,6 +20,11 @@ if(WIN32)
 endif()
 if(DEFINED HAIVISION_SOURCE)
     target_include_directories(crypto_peer PRIVATE "${HAIVISION_SOURCE}/srtcore" "${CMAKE_CURRENT_BINARY_DIR}/reference")
+    if(WIN32)
+        # Haivision logging_api.h includes win/syslog_defs.h on Windows.
+        # This source-tree-only header lives under common, not srtcore.
+        target_include_directories(crypto_peer PRIVATE "${HAIVISION_SOURCE}/common")
+    endif()
 else()
     # The DLL must live beside this peer, not be resolved through a shared PATH
     # containing two identically named Robotweax provider builds.
