@@ -243,6 +243,17 @@ Their effective values are applied to `SO_SNDBUF` and `SO_RCVBUF` before
 explicit listener binding or implicit caller binding; accepted sockets inherit
 the listener values. A getter returns the portable effective SRT value rather
 than an operating-system-specific doubled or clamped kernel value.
+On macOS/BSD, an `ENOBUFS` rejection of a UDP buffer request uses a
+best-effort fallback, for both created and acquired UDP sockets: an existing
+buffer of at least 64,000 bytes is retained; otherwise 64,000 bytes is attempted
+when the request was at least that large. Other errors and failed fallbacks
+remain errors. This applies to explicit settings as well as defaults, matching
+Haivision's best-effort macOS/BSD behavior without shrinking an already useful
+buffer. Explicit bind/acquire and caller setup report requested and actual
+buffer bytes through the socket-management warning logger after releasing
+internal locks. The SRT option getter still reports the configured value, not
+the kernel allocation. Size buffers and validate packet loss under realistic
+traffic; a successful bind alone does not qualify throughput.
 `SRTO_REUSEADDR` is a pre-bind boolean and defaults to `true`. Independent
 IPv4 or IPv6 SRT sockets that bind the same exact address and port with
 matching native UDP buffer settings share one UDP channel and its
