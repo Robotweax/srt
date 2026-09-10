@@ -8,14 +8,14 @@
 #include <stdexcept>
 #include <vector>
 
-// Diagnostic-only complete CTR candidate. Keep the production provider intact
-// until the same-process comparison and differential tests justify promotion.
+// Retained pre-optimization CTR baseline, diagnostic-only. The other variant
+// uses the production provider so measurements exercise the shipped code.
 namespace {
-class CandidateCtr final : public robotweax::srt::PayloadCipher {
+class BaselineCtr final : public robotweax::srt::PayloadCipher {
     robotweax::srt::Key key_;
 
 public:
-    explicit CandidateCtr(std::span<const std::byte> key)
+    explicit BaselineCtr(std::span<const std::byte> key)
         : key_(key, false)
     {
     }
@@ -51,23 +51,7 @@ public:
                 erase(output);
                 return Error::cryptographic_failure;
             }
-            std::size_t i = 0;
-#if defined(_M_ARM64) || defined(__aarch64__)
-            constexpr bool word_path = true;
-#else
-            const bool word_path = input.data() == output.data();
-#endif
-            if (word_path) {
-                for (; count - i >= sizeof(std::uint64_t);
-                    i += sizeof(std::uint64_t)) {
-                    std::uint64_t a, b;
-                    std::memcpy(&a, input.data() + offset + i, sizeof(a));
-                    std::memcpy(&b, stream.data() + i, sizeof(b));
-                    a ^= b;
-                    std::memcpy(output.data() + offset + i, &a, sizeof(a));
-                }
-            }
-            for (; i < count; ++i)
+            for (std::size_t i = 0; i < count; ++i)
                 output[offset + i] = input[offset + i] ^ stream[i];
             offset += count;
         }
@@ -78,10 +62,10 @@ public:
 };
 }
 
-std::unique_ptr<robotweax::srt::PayloadCipher> candidate_ctr(
+std::unique_ptr<robotweax::srt::PayloadCipher> baseline_ctr(
     std::span<const std::byte> key)
 {
-    return std::make_unique<CandidateCtr>(key);
+    return std::make_unique<BaselineCtr>(key);
 }
 
 void measure_ecb()

@@ -11,7 +11,7 @@ using namespace robotweax::srt;
 namespace robotweax::srt {
 CryptoProvider& openssl_test_provider() noexcept;
 }
-std::unique_ptr<PayloadCipher> candidate_ctr(std::span<const std::byte> key);
+std::unique_ptr<PayloadCipher> baseline_ctr(std::span<const std::byte> key);
 void check(Error);
 
 void measure_ctr_candidate()
@@ -19,7 +19,8 @@ void measure_ctr_candidate()
     // Include counter carries/full wrap, chunk boundaries, tails and alignment.
     for (auto key_size : {16U, 24U, 32U}) {
         std::vector<std::byte> key(key_size, std::byte {0x53});
-        auto candidate = candidate_ctr(key);
+        std::unique_ptr<PayloadCipher> candidate;
+        check(default_crypto_provider().make_aes_ctr_cipher(key, candidate));
         std::unique_ptr<PayloadCipher> oracle;
         check(openssl_test_provider().make_aes_ctr_cipher(key, oracle));
         for (auto size : {0U, 1U, 7U, 8U, 15U, 16U, 17U, 1008U, 1023U, 1024U,
@@ -56,10 +57,10 @@ void measure_ctr_candidate()
                     std::array<std::byte, 32> key {};
                     key[0] = std::byte(round);
                     std::unique_ptr<PayloadCipher> cipher;
-                    if (variant == 1)
-                        cipher = candidate_ctr(key);
+                    if (variant == 0)
+                        cipher = baseline_ctr(key);
                     else
-                        check((variant == 0 ? default_crypto_provider()
+                        check((variant == 1 ? default_crypto_provider()
                                             : openssl_test_provider())
                                 .make_aes_ctr_cipher(key, cipher));
                     std::array<std::byte, 16> iv {};

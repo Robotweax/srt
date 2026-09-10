@@ -154,7 +154,26 @@ public:
                 erase(output);
                 return Error::cryptographic_failure;
             }
-            for (std::size_t i = 0; i < count; ++i) {
+            std::size_t i = 0;
+            // Native qualification favors words on ARM64 and for exact
+            // in-place buffers. Retain the byte loop for other x64 buffers.
+            // memcpy permits unaligned addresses without aliasing violations.
+#if defined(_M_ARM64) || defined(__aarch64__)
+            constexpr bool word_path = true;
+#else
+            const bool word_path = input.data() == output.data();
+#endif
+            if (word_path) {
+                for (; count - i >= sizeof(std::uint64_t);
+                    i += sizeof(std::uint64_t)) {
+                    std::uint64_t a, b;
+                    std::memcpy(&a, input.data() + offset + i, sizeof(a));
+                    std::memcpy(&b, stream.data() + i, sizeof(b));
+                    a ^= b;
+                    std::memcpy(output.data() + offset + i, &a, sizeof(a));
+                }
+            }
+            for (; i < count; ++i) {
                 output[offset + i] = input[offset + i] ^ stream[i];
             }
             offset += count;
