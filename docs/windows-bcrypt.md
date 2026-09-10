@@ -13,8 +13,17 @@ cmake --build build-bcrypt --config Release --parallel 2
 Use a separate build directory for each backend. BCrypt is rejected on non-Windows
 platforms and unknown backend values are errors. BCrypt builds link the native
 `bcrypt` system library and do not discover or require OpenSSL. Installed CMake
-and pkg-config metadata reflect the selected provider. The Windows SDK installer
-remains OpenSSL-based; its packaging is not switched by this change.
+and pkg-config metadata reflect the selected provider.
+
+The **experimental Windows SDK installer for application developers** is the
+separate packaging work requested in [issue #12](https://github.com/Robotweax/srt/issues/12),
+not a standalone streaming application. It bundles public headers, static
+Robotweax SRT and OpenSSL Crypto libraries for Debug/Release on Win32, x64 and
+ARM64, and an MSBuild property sheet. See the
+[Windows SDK packaging documentation](../packaging/windows/README.md).
+The installer candidate remains OpenSSL-based and is not yet a signed,
+qualified release installer. The optional BCrypt backend is available in
+`main`; it does not switch the installer packaging or the default backend.
 
 ## Implementation boundary
 

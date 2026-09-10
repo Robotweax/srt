@@ -1,6 +1,12 @@
 # Windows SDK installer (experimental)
 
 This is an SDK for application developers, not a standalone streaming app.
+It implements the packaging work requested in
+[issue #12](https://github.com/Robotweax/srt/issues/12).
+The candidate remains OpenSSL-based; the separately available
+[experimental BCrypt backend](../../docs/windows-bcrypt.md) does not change
+this installer or the default backend. Manual target-machine acceptance and
+release signing remain pending; this is not a qualified release installer.
 The intended bundle contains static Robotweax SRT and static OpenSSL Crypto for
 Debug/Release × Win32/x64/Arm64. Consumers use `/MDd` for Debug and `/MD` for
 Release. Debug binaries are development-only; applications must deploy the
