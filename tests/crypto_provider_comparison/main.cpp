@@ -50,6 +50,41 @@ int main()
             require(oracle.make_aes_ctr_cipher(key, ctr_b) == Error::none);
             require(native.make_aes_gcm_cipher(key, gcm_a) == Error::none);
             require(oracle.make_aes_gcm_cipher(key, gcm_b) == Error::none);
+            // Compare failure semantics, including whether caller storage is
+            // erased or preserved. Success vectors alone cannot establish this.
+            for (int fault = 0; fault < 4; ++fault) {
+                std::array<std::byte, 12> nonce {};
+                std::array<std::byte, 16> tag {};
+                std::array<std::byte, 17> input {};
+                std::array<std::byte, 17> a, b;
+                a.fill(std::byte {0x5a});
+                b = a;
+                const auto iv = std::span<const std::byte>(nonce).first(
+                    fault == 0 ? 11 : 12);
+                const auto auth_tag =
+                    std::span<const std::byte>(tag).first(fault == 1 ? 15 : 16);
+                auto out_a =
+                    std::span<std::byte>(a).first(fault == 2 ? 16 : 17);
+                auto out_b =
+                    std::span<std::byte>(b).first(fault == 2 ? 16 : 17);
+                const auto result =
+                    gcm_a->open(iv, key, input, auth_tag, out_a);
+                require(result != Error::none);
+                require(result == gcm_b->open(iv, key, input, auth_tag, out_b));
+                require(a == b);
+            }
+            {
+                std::array<std::byte, 16> iv {};
+                std::array<std::byte, 17> input {};
+                std::array<std::byte, 16> a, b;
+                a.fill(std::byte {0x5a});
+                b = a;
+                require(
+                    ctr_a->transform(iv, input, a) == Error::buffer_too_small);
+                require(
+                    ctr_b->transform(iv, input, b) == Error::buffer_too_small);
+                require(a == b);
+            }
             for (const std::size_t size :
                 {0U, 1U, 15U, 16U, 17U, 1023U, 1024U, 1025U, 1316U, 4097U}) {
                 std::vector<std::byte> plain(size, std::byte {0x29}), a(size),
