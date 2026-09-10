@@ -133,6 +133,7 @@ jobs:
             Run cmake @('--build',"peer-$backend",'--config',$env:CONFIGURATION,'--parallel','2')
           }
       - name: BCrypt versus OpenSSL encrypted public API
+        id: backend-interop
         shell: pwsh
         env:
           CONFIGURATION: ${{ matrix.configuration }}
@@ -145,6 +146,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'GCM backend interoperability failed' }
           python interop/run_encrypted_file_interop.py --profile base --reference-provider robotweax --robotweax-peer "peer-bcrypt/$env:CONFIGURATION/crypto_peer.exe" --reference-peer "peer-openssl/$env:CONFIGURATION/crypto_peer.exe" --bytes 524667 --km-refresh-rate 64 --km-preannounce 20
           if ($LASTEXITCODE -ne 0) { throw 'Encrypted file backend interoperability failed' }
+      - name: Diagnostic direct and traced baselines after failure (not a retry gate)
+        if: failure() && steps.backend-interop.outcome == 'failure'
+        shell: pwsh
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
+        run: |
+          # The original step remains failed even if these diagnostic controls pass.
+          python interop/run_encrypted_interop.py --robotweax-peer "peer-bcrypt/$env:CONFIGURATION/crypto_peer.exe" --reference-peer "peer-openssl/$env:CONFIGURATION/crypto_peer.exe" --km-refresh-rate 64 --km-preannounce 20 --baseline-only
+          $direct = $LASTEXITCODE
+          python interop/run_encrypted_interop.py --robotweax-peer "peer-bcrypt/$env:CONFIGURATION/crypto_peer.exe" --reference-peer "peer-openssl/$env:CONFIGURATION/crypto_peer.exe" --km-refresh-rate 64 --km-preannounce 20 --baseline-only --trace-baseline-handshake
+          $traced = $LASTEXITCODE
+          Write-Output "Diagnostic exit codes: direct=$direct traced=$traced. Neither supersedes the original failure."
+          if ($direct -ne 0 -or $traced -ne 0) { throw 'Diagnostic baseline failure retained' }
       - name: Build runner-local Haivision peer and test CTR
         if: matrix.configuration == 'Release'
         shell: pwsh

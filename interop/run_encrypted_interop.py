@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
+import json
 import os
 import secrets
 import subprocess
@@ -201,6 +202,25 @@ def render_failure(
     return report
 
 
+def wait_for_listener_ready(listener, output, port: int, timeout: float) -> None:
+    """Wait for this peer's complete ready event, never merely a live process."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if listener.poll() is not None:
+            raise RuntimeError("listener exited before readiness")
+        stdout, _ = output()
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(event, dict) and event.get("event") == "ready" and event.get("port") == port:
+                return
+        if time.monotonic() >= deadline:
+            raise RuntimeError("listener readiness timed out")
+        time.sleep(0.01)
+
+
 def run_scenario(
     scenario: Scenario,
     options: RunOptions,
@@ -269,13 +289,15 @@ def run_scenario(
             )
 
         try:
-            time.sleep(0.2)
-            if listener.poll() is not None:
+            try:
+                wait_for_listener_ready(listener, listener_output, listener_port,
+                                        options.timeout_seconds)
+            except RuntimeError as error:
                 listener_stdout, listener_stderr = listener_output()
                 trace = handshake_trace()
                 raise RuntimeError(
                     f"{scenario.name}: "
-                    "listener exited before the caller started\n"
+                    f"{error}\n"
                     + listener_stdout
                     + listener_stderr
                     + (
@@ -284,7 +306,7 @@ def run_scenario(
                         if trace is not None
                         else ""
                     )
-                )
+                ) from error
 
             try:
                 caller = subprocess.run(
