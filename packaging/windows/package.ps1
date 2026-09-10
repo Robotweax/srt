@@ -4,12 +4,27 @@ $ErrorActionPreference = 'Stop'
 if (Test-Path $Destination) { throw 'Destination must not exist' }
 New-Item -ItemType Directory $Destination | Out-Null
 $Hashes = @{}
+$Backend = $null
 foreach ($Configuration in @('Debug','Release')) {
     foreach ($Platform in @('Win32','x64','Arm64')) {
         $Variant = Join-Path $Variants "sdk-$Configuration-$Platform"
-        foreach ($Required in @("lib/$Configuration-$Platform/robotweax-srt.lib", "lib/$Configuration-$Platform/libcrypto.lib", 'include/srt/srt.h','LICENSE.txt','OpenSSL-LICENSE.txt','srt.props')) {
+        $MetadataPath = "$Variant/lib/$Configuration-$Platform/build.json"
+        $Metadata = Get-Content $MetadataPath -Raw | ConvertFrom-Json
+        if ($Metadata.crypto_backend -notin @('openssl','bcrypt')) { throw 'Missing or invalid crypto backend' }
+        if ($Metadata.platform -ne $Platform -or $Metadata.configuration -ne $Configuration) { throw 'Variant metadata mismatch' }
+        if ($Backend -and $Backend -ne $Metadata.crypto_backend) { throw 'Mixed crypto backends are not supported' }
+        $Backend = $Metadata.crypto_backend
+        $RequiredFiles = @("lib/$Configuration-$Platform/robotweax-srt.lib", 'include/srt/srt.h','LICENSE.txt','srt.props','srt-backend.props')
+        if ($Backend -eq 'openssl') {
+            $RequiredFiles += @("lib/$Configuration-$Platform/libcrypto.lib", 'OpenSSL-LICENSE.txt')
+        } elseif (@(Get-ChildItem $Variant -Recurse -File | Where-Object { $_.Name -match '(?i)libcrypto|openssl' }).Count) {
+            throw 'BCrypt SDK must not contain OpenSSL files'
+        }
+        foreach ($Required in $RequiredFiles) {
             if (!(Test-Path "$Variant/$Required")) { throw "Missing $Variant/$Required" }
         }
+        [xml]$Props = Get-Content "$Variant/srt-backend.props" -Raw
+        if ($Props.Project.PropertyGroup.RobotweaxSrtCryptoBackend -ne $Backend) { throw 'Backend props mismatch' }
         foreach ($File in Get-ChildItem $Variant -Recurse -File) {
             $Relative = $File.FullName.Substring((Resolve-Path $Variant).Path.Length + 1)
             $Hash = (Get-FileHash $File.FullName).Hash

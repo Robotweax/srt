@@ -18,12 +18,13 @@ and pkg-config metadata reflect the selected provider.
 The **experimental Windows SDK installer for application developers** is the
 separate packaging work requested in [issue #12](https://github.com/Robotweax/srt/issues/12),
 not a standalone streaming application. It bundles public headers, static
-Robotweax SRT and OpenSSL Crypto libraries for Debug/Release on Win32, x64 and
+Robotweax SRT libraries for Debug/Release on Win32, x64 and
 ARM64, and an MSBuild property sheet. See the
 [Windows SDK packaging documentation](https://github.com/Robotweax/srt/blob/main/packaging/windows/README.md).
-The installer candidate remains OpenSSL-based and is not yet a signed,
-qualified release installer. The optional BCrypt backend is available in
-`main`; it does not switch the installer packaging or the default backend.
+The installer candidate defaults to OpenSSL and is not yet a signed,
+qualified release installer. SDK builders can explicitly choose BCrypt without
+bundling OpenSSL, or retain OpenSSL and its dependency/license. This does not
+change the library's default backend or qualify the installer for release.
 
 ## Implementation boundary
 
@@ -97,6 +98,32 @@ Before recommending or making this the Windows default, complete:
 4. Serial benchmarks against assembler-enabled OpenSSL on the same hardware;
    no speedup is claimed from the historical numbers in issue #13.
 5. Native ARM64 execution and a focused cryptographic implementation review.
+
+## Planned Windows-default transition
+
+The transition is not enabled yet. Qualification must precede changing the
+default; a successful retry of a setup timeout does not explain its cause.
+The provider comparison also checks invalid GCM nonce/tag lengths, short
+output buffers and failed authentication, comparing both errors and output
+storage against OpenSSL. These checks do not inject CNG failures.
+
+Implementation acceptance criteria:
+
+- Select BCrypt only for fresh Windows configurations. Preserve explicit
+  `ROBOTWEAX_SRT_CRYPTO_BACKEND=openssl` and existing cache selections; never
+  silently fall back between providers. Other platforms retain OpenSSL.
+- Exercise the implicit Windows default with OpenSSL discovery disabled,
+  including installed static/shared consumers. Keep a smaller explicit OpenSSL
+  compatibility job and the cross-provider interoperability tests.
+- Make SDK construction, MSBuild properties and package validation backend-aware.
+  BCrypt bundles must neither require nor ship `libcrypto.lib`; OpenSSL bundles
+  retain their exact dependency and license. Record the backend in build metadata
+  and reject mixed-backend variant bundles.
+- Keep the installer candidate designation until installer qualification is
+  complete. A backend-default change alone does not qualify the installer.
+- Record native ARM64 execution, failure-injection and performance evidence
+  separately. Compile/link success is not runtime validation, and no performance
+  advantage over OpenSSL is assumed.
 
 References: [Issue #13](https://github.com/Robotweax/srt/issues/13),
 [BCryptEncrypt](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptencrypt),
