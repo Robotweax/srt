@@ -468,3 +468,20 @@ python3 interop/run_live_tail_interop.py \
 This regression preserves the retransmission timeout formula and its backoff.
 Only an ACK that advances the send-buffer sequence restarts the timer; valid
 non-progress ACKs still participate in receive-window and RTT processing.
+
+The periodic-NAK Live sender uses one last-sent DATA probe when its RTO expires
+without pending selective retransmissions. Replaying the whole unacknowledged
+flight during an outage caused hundreds of redundant retransmissions. The probe
+repairs a single lost tail and exposes preceding losses to the receiver's NAK
+logic. File mode, peers without periodic NAK, and filter-controlled ARQ retain
+their existing fallback behavior; timeout timing and backoff are unchanged.
+
+`robotweax_srt_live_tail_burst_recovery` drops the last three original DATA
+packets and requires complete recovery and cumulative ACKs. Run both tail cases:
+
+```sh
+ctest --test-dir build -R '^robotweax_srt_live_tail.*recovery$' --repeat until-fail:3 --output-on-failure
+```
+
+The Python harness also accepts `--tail-packets 1..16` with `--artifacts` to retain
+packet traces for a larger deterministic tail burst.

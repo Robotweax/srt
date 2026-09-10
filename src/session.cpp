@@ -1263,7 +1263,17 @@ bool ReliabilitySession::poll_sender_retransmission_timeout(
         || (live_rate_controller_.has_value() && periodic_nak_enabled_);
     if (!selective_retransmission
         || !send_buffer_.has_pending_retransmission()) {
-        (void)send_buffer_.request_retransmission_of_all_sent();
+        if (live_rate_controller_.has_value() && periodic_nak_enabled_
+            && packet_filter_policy_.effective_arq_level()
+                == PacketFilterArqLevel::always) {
+            // Probe the last sent packet: its arrival exposes older gaps to
+            // periodic NAK recovery and also repairs a lost flight tail.
+            // Replaying the whole growing flight on every RTO amplifies an
+            // outage even though the receiver can request specific losses.
+            (void)send_buffer_.request_retransmission_of_last_sent();
+        } else {
+            (void)send_buffer_.request_retransmission_of_all_sent();
+        }
     }
     if (file_rate_controller_.has_value()) {
         file_rate_controller_->on_timeout(

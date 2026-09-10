@@ -411,3 +411,46 @@ TEST(send_buffer_statistics_update_span_after_prefix_acknowledgement)
     REQUIRE_EQ(buffer.buffered_payload_bytes(), 2U);
     REQUIRE_EQ(buffer.buffered_span_milliseconds(), 3U);
 }
+
+TEST(send_buffer_tail_probe_skips_unsent_packets_and_empty_buffer)
+{
+    SendBuffer buffer {SequenceNumber {100}, 8, 1};
+    REQUIRE(!buffer.request_retransmission_of_last_sent());
+    const std::array<std::byte, 3> input {};
+    REQUIRE_EQ(buffer.enqueue_message(input, 1, PacketTimestamp {0}, 900),
+        Error::none);
+    REQUIRE(!buffer.request_retransmission_of_last_sent());
+    REQUIRE(buffer.next_packet().has_value());
+    REQUIRE(buffer.next_packet().has_value());
+    REQUIRE(buffer.request_retransmission_of_last_sent());
+    REQUIRE(buffer.request_retransmission_of_last_sent());
+    const auto probe = buffer.next_packet();
+    REQUIRE(probe.has_value());
+    REQUIRE_EQ(probe->header.sequence, SequenceNumber {101});
+    REQUIRE(probe->header.retransmitted);
+    const auto unsent = buffer.next_packet();
+    REQUIRE(unsent.has_value());
+    REQUIRE_EQ(unsent->header.sequence, SequenceNumber {102});
+    REQUIRE(!unsent->header.retransmitted);
+    REQUIRE(!buffer.next_packet().has_value());
+}
+
+TEST(send_buffer_tail_probe_skips_expired_tail_across_sequence_wrap)
+{
+    SendBuffer buffer {SequenceNumber {SequenceNumber::mask}, 4, 1};
+    const std::array<std::byte, 1> input {};
+    REQUIRE_EQ(
+        buffer.enqueue_message(input, 1, PacketTimestamp {0}, 900, true, 0, 0),
+        Error::none);
+    REQUIRE_EQ(buffer.enqueue_message(
+                   input, 2, PacketTimestamp {0}, 900, true, 0, 100),
+        Error::none);
+    REQUIRE(buffer.next_packet().has_value());
+    REQUIRE(buffer.next_packet().has_value());
+    REQUIRE(buffer.drop_expired_message(101));
+    REQUIRE(buffer.request_retransmission_of_last_sent());
+    const auto probe = buffer.next_packet();
+    REQUIRE(probe.has_value());
+    REQUIRE_EQ(probe->header.sequence, SequenceNumber {SequenceNumber::mask});
+    REQUIRE(probe->header.retransmitted);
+}

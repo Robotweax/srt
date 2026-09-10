@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drop exactly the final original Live DATA datagram and require recovery."""
+"""Drop final original Live DATA datagrams and require recovery."""
 import argparse
 import hashlib
 import json
@@ -12,17 +12,19 @@ from interop_common import free_udp_port, terminate, write_deterministic_payload
 from srt_handshake_trace import CallerListenerFaultProxy, RendezvousFault
 
 
-def run(sender_peer, receiver_peer, output):
+def run(sender_peer, receiver_peer, output, tail_packets=1):
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     sender_peer, receiver_peer = sender_peer.resolve(), receiver_peer.resolve()
     count, size = 600, 1200
     digest = write_deterministic_payload(output / 'input.bin', count * size, 1005)
     port = free_udp_port('127.0.0.1')
-    relay = CallerListenerFaultProxy(port, RendezvousFault('drop', 'sender_to_receiver', count))
+    relay = CallerListenerFaultProxy(port, tuple(
+        RendezvousFault('drop', 'sender_to_receiver', index)
+        for index in range(count - tail_packets + 1, count + 1)))
     processes, handles = [], []
     report = {'scenario': 'live-final-original-data-drop', 'messages': count,
-              'message_bytes': size, 'latency_ms': 2000, 'input_bytes_per_second': 120000,
+              'tail_packets': tail_packets, 'message_bytes': size, 'latency_ms': 2000, 'input_bytes_per_second': 120000,
               'expected_sha256': digest, 'started_at_unix': time.time(),
               'binary_sha256': {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in (sender_peer, receiver_peer)},
               'passed': False}
@@ -57,13 +59,16 @@ def run(sender_peer, receiver_peer, output):
         report['received_sha256'] = hashlib.sha256(received).hexdigest()
         faults = report['fault_observations']
         tail_recovered = (
-            len(faults) == 1
-            and faults[0].get('occurrence') == count
-            and faults[0].get('payload_bytes') == size
-            and faults[0].get('retransmission_observed') is True
-            and faults[0].get('retransmission_flag') is True
-            and faults[0].get('later_data_observed_before_retransmission') is False
-            and faults[0].get('cumulative_ack_observed') is True
+            len(faults) == tail_packets
+            and {f.get('occurrence') for f in faults}
+                == set(range(count - tail_packets + 1, count + 1))
+            and all(f.get('payload_bytes') == size
+                    and f.get('retransmission_observed') is True
+                    and f.get('retransmission_flag') is True
+                    and f.get('cumulative_ack_observed') is True
+                    for f in faults)
+            and next(f for f in faults if f['occurrence'] == count)
+                .get('later_data_observed_before_retransmission') is False
         )
         report['passed'] = (
             all(p.returncode == 0 for p in processes)
@@ -89,13 +94,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sender-peer', type=Path, required=True)
     parser.add_argument('--receiver-peer', type=Path, required=True)
+    parser.add_argument('--tail-packets', type=int, choices=range(1, 17), default=1)
     parser.add_argument('--artifacts', type=Path,
                         help='Retain evidence in a new directory; otherwise use cleaned temporary storage')
     args = parser.parse_args()
     if args.artifacts is not None:
-        return run(args.sender_peer, args.receiver_peer, args.artifacts)
+        return run(args.sender_peer, args.receiver_peer, args.artifacts, args.tail_packets)
     with tempfile.TemporaryDirectory(prefix='srt-live-tail-') as temporary:
-        return run(args.sender_peer, args.receiver_peer, Path(temporary) / 'run')
+        return run(args.sender_peer, args.receiver_peer, Path(temporary) / 'run', args.tail_packets)
 
 
 if __name__ == '__main__':

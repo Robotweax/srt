@@ -2602,3 +2602,46 @@ TEST(session_rejects_filter_loss_batches_transactionally)
     REQUIRE_EQ(
         accepted.actions.values[0].kind, ReliabilityActionKind::loss_report);
 }
+
+TEST(live_session_periodic_nak_rto_probes_only_tail_of_unacknowledged_flight)
+{
+    ReliabilitySession sender {{
+        .local_initial_sequence = SequenceNumber {10},
+        .peer_initial_sequence = SequenceNumber {100},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 4,
+        .receive_capacity_packets = 4,
+        .maximum_payload_size = 1,
+    }};
+    sender.configure_live(
+        NegotiatedLiveOptions {.periodic_nak = true}, 0, PacketTimestamp {0});
+    const std::array<std::byte, 2> input {std::byte {'x'}, std::byte {'y'}};
+    for (const auto byte : input) {
+        REQUIRE_EQ(
+            sender.queue_message(std::span {&byte, 1}, PacketTimestamp {0}),
+            Error::none);
+        const auto packet = sender.next_data_packet();
+        REQUIRE(packet.has_value());
+        sender.note_data_packet_sent(100);
+    }
+
+    std::array<std::byte, 64> control_storage {};
+    ReliabilityAction acknowledgement {
+        .kind = ReliabilityActionKind::acknowledgement,
+        .acknowledgement =
+            {
+                .kind = AcknowledgementKind::lite,
+                .next_sequence = SequenceNumber {10},
+            },
+    };
+    REQUIRE(sender.receive(
+        encode_and_decode(acknowledgement, control_storage), 1'000));
+
+    REQUIRE(!sender.poll_sender_retransmission_timeout(330'099));
+    REQUIRE(sender.poll_sender_retransmission_timeout(330'100));
+    const auto retransmission = sender.next_data_packet();
+    REQUIRE(retransmission.has_value());
+    REQUIRE_EQ(retransmission->header.sequence, SequenceNumber {11});
+    REQUIRE(retransmission->header.retransmitted);
+    REQUIRE(!sender.next_data_packet().has_value());
+}
