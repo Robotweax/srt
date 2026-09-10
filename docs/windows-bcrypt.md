@@ -44,21 +44,28 @@ blocks, batch boundaries, all AES key sizes, key wrap, GCM tags, in-place data a
 bad-tag rejection. OpenSSL in that executable is an oracle, not a runtime
 dependency of the BCrypt SRT library.
 
-The next CI stage adds x64 Shared/Release and Shared/Debug builds of both
+The dedicated CI also covers x64 Shared/Release and Shared/Debug builds of both
 Robotweax backends, installed C/C++ consumers and separately linked public-API
 peers. Each peer loads its own adjacent Robotweax DLL. Existing harnesses test
 bidirectional CTR with rotation, GCM (including rendezvous), and the encrypted
 FileCC base profile. The Release job additionally builds the pinned Haivision
 1.5.7 reference (`899348d8318eb9a3c5a5b6ec43c4a1114288773a`) locally and runs
-CTR interoperability. No reference binaries are uploaded. These are validation
-jobs, not evidence of success until their CI results have been reviewed.
+CTR interoperability. No reference binaries are uploaded.
+
+The above qualification jobs passed for commit
+`5c428c82f25e20f77806cd37fe448d9ef56e4ca2` in
+[PR #19](https://github.com/Robotweax/srt/pull/19), and their results were reviewed
+on 2026-09-10. The selected standard CI checks, including platform builds,
+sanitizers, reference interoperability and FFmpeg integration, also passed.
+This supports merging the opt-in experimental backend; it is not a production
+qualification or an independent cryptographic audit.
 
 Before recommending or making this the Windows default, complete:
 
-1. Successful Windows CI and review of error-path/input-size parity.
+1. Broader error-path/input-size parity review, including injected CNG failures.
 2. Expanded encrypted public-API interoperability with OpenSSL/Haivision peers,
    including rotation, retransmission, file mode and AEAD preview.
-3. Review the new Shared/Debug CI results; non-x64 Shared/Debug coverage remains open.
+3. Non-x64 Shared/Debug coverage beyond the existing compile/link and static tests.
 4. Serial benchmarks against assembler-enabled OpenSSL on the same hardware;
    no speedup is claimed from the historical numbers in issue #13.
 5. Native ARM64 execution and a focused cryptographic implementation review.
