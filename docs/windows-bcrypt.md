@@ -98,6 +98,32 @@ Before recommending or making this the Windows default, complete:
    no speedup is claimed from the historical numbers in issue #13.
 5. Native ARM64 execution and a focused cryptographic implementation review.
 
+## Planned Windows-default transition
+
+The transition is not enabled yet. Qualification must precede changing the
+default; a successful retry of a setup timeout does not explain its cause.
+The provider comparison also checks invalid GCM nonce/tag lengths, short
+output buffers and failed authentication, comparing both errors and output
+storage against OpenSSL. These checks do not inject CNG failures.
+
+Implementation acceptance criteria:
+
+- Select BCrypt only for fresh Windows configurations. Preserve explicit
+  `ROBOTWEAX_SRT_CRYPTO_BACKEND=openssl` and existing cache selections; never
+  silently fall back between providers. Other platforms retain OpenSSL.
+- Exercise the implicit Windows default with OpenSSL discovery disabled,
+  including installed static/shared consumers. Keep a smaller explicit OpenSSL
+  compatibility job and the cross-provider interoperability tests.
+- Make SDK construction, MSBuild properties and package validation backend-aware.
+  BCrypt bundles must neither require nor ship `libcrypto.lib`; OpenSSL bundles
+  retain their exact dependency and license. Record the backend in build metadata
+  and reject mixed-backend variant bundles.
+- Keep the installer candidate designation until installer qualification is
+  complete. A backend-default change alone does not qualify the installer.
+- Record native ARM64 execution, failure-injection and performance evidence
+  separately. Compile/link success is not runtime validation, and no performance
+  advantage over OpenSSL is assumed.
+
 References: [Issue #13](https://github.com/Robotweax/srt/issues/13),
 [BCryptEncrypt](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptencrypt),
 [CNG key ownership](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptgeneratesymmetrickey).
