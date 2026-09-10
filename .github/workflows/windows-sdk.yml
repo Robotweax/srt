@@ -1,6 +1,12 @@
 name: Windows SDK candidate
 on:
   workflow_dispatch:
+    inputs:
+      crypto_backend:
+        description: SDK crypto backend
+        type: choice
+        options: [openssl, bcrypt]
+        default: openssl
   pull_request:
     paths:
       - 'packaging/windows/**'
@@ -8,6 +14,27 @@ on:
 permissions:
   contents: read
 jobs:
+  bcrypt-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: BCrypt SDK consumers without OpenSSL
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $script = Join-Path $PWD 'packaging\windows\build-ci.ps1'
+          $pwsh = Join-Path $PSHOME 'pwsh.exe'
+          foreach ($configuration in 'Debug','Release') {
+            & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" amd64 && `"$pwsh`" -NoProfile -File `"$script`" -Platform x64 -Configuration $configuration -CryptoBackend bcrypt"
+            if ($LASTEXITCODE -ne 0) { throw 'BCrypt SDK consumer failed' }
+          }
+      - name: Package validation regression tests
+        shell: pwsh
+        run: ./packaging/windows/test-package.ps1
   build:
     runs-on: windows-latest
     timeout-minutes: 35
@@ -21,6 +48,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/checkout@v7
+        if: github.event_name != 'workflow_dispatch' || inputs.crypto_backend != 'bcrypt'
         with:
           repository: openssl/openssl
           ref: aae016bfd52fcad2bc9657c2c782cfdf73b1ed5f
@@ -31,12 +59,13 @@ jobs:
         env:
           SDK_PLATFORM: ${{ matrix.platform }}
           SDK_CONFIGURATION: ${{ matrix.configuration }}
+          SDK_CRYPTO_BACKEND: ${{ inputs.crypto_backend || 'openssl' }}
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $arch = @{Win32='x86'; x64='amd64'; Arm64='amd64_arm64'}[$env:SDK_PLATFORM]
           $script = Join-Path $PWD 'packaging\windows\build-ci.ps1'
           $pwsh = Join-Path $PSHOME 'pwsh.exe'
-          & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" $arch && `"$pwsh`" -NoProfile -File `"$script`" -Platform $env:SDK_PLATFORM -Configuration $env:SDK_CONFIGURATION"
+          & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" $arch && `"$pwsh`" -NoProfile -File `"$script`" -Platform $env:SDK_PLATFORM -Configuration $env:SDK_CONFIGURATION -CryptoBackend $env:SDK_CRYPTO_BACKEND"
           if ($LASTEXITCODE -ne 0) { throw 'SDK build failed' }
       - uses: actions/upload-artifact@v7
         with:

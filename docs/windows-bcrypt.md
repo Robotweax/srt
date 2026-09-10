@@ -18,12 +18,13 @@ and pkg-config metadata reflect the selected provider.
 The **experimental Windows SDK installer for application developers** is the
 separate packaging work requested in [issue #12](https://github.com/Robotweax/srt/issues/12),
 not a standalone streaming application. It bundles public headers, static
-Robotweax SRT and OpenSSL Crypto libraries for Debug/Release on Win32, x64 and
+Robotweax SRT libraries for Debug/Release on Win32, x64 and
 ARM64, and an MSBuild property sheet. See the
 [Windows SDK packaging documentation](https://github.com/Robotweax/srt/blob/main/packaging/windows/README.md).
-The installer candidate remains OpenSSL-based and is not yet a signed,
-qualified release installer. The optional BCrypt backend is available in
-`main`; it does not switch the installer packaging or the default backend.
+The installer candidate defaults to OpenSSL and is not yet a signed,
+qualified release installer. SDK builders can explicitly choose BCrypt without
+bundling OpenSSL, or retain OpenSSL and its dependency/license. This does not
+change the library's default backend or qualify the installer for release.
 
 ## Implementation boundary
 

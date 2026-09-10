@@ -3,28 +3,43 @@
 This is an SDK for application developers, not a standalone streaming app.
 It implements the packaging work requested in
 [issue #12](https://github.com/Robotweax/srt/issues/12).
-The candidate remains OpenSSL-based; the separately available
-[experimental BCrypt backend](../../docs/windows-bcrypt.md) does not change
-this installer or the default backend. Manual target-machine acceptance and
+The candidate defaults to OpenSSL; builders can explicitly select the
+[experimental BCrypt backend](../../docs/windows-bcrypt.md).
+Manual target-machine acceptance and
 release signing remain pending; this is not a qualified release installer.
-The intended bundle contains static Robotweax SRT and static OpenSSL Crypto for
+The intended bundle contains static Robotweax SRT for
 Debug/Release × Win32/x64/Arm64. Consumers use `/MDd` for Debug and `/MD` for
 Release. Debug binaries are development-only; applications must deploy the
 appropriate Microsoft runtime for Release. AES-GCM preview is not enabled.
 
 Build each variant using `build-sdk.ps1` in the corresponding Visual Studio
-developer environment, supplying matching static OpenSSL headers/library and
-its `LICENSE.txt`. Do not mix architectures or CRT profiles. The script refuses
+developer environment. The default `-CryptoBackend openssl` requires
+`-OpenSSLRoot` with matching static OpenSSL headers/library and its `LICENSE.txt`.
+Use `-CryptoBackend bcrypt` without `-OpenSSLRoot` for a native Windows package;
+this disables OpenSSL discovery and ships no OpenSSL library or license file.
+For example, from a matching x64 developer shell:
+
+```powershell
+./packaging/windows/build-sdk.ps1 -Platform x64 -Configuration Release -CryptoBackend bcrypt -OutputRoot C:/srt-sdk-bcrypt
+```
+
+Do not mix architectures or CRT profiles. The script refuses
 existing build/stage directories. Combine the six SDK variants only after
-checking that shared headers and license files are identical.
+checking that shared headers and license files are identical. Each variant's
+`build.json` records its backend; `package.ps1` rejects mixed backends and OpenSSL
+files in BCrypt inventories. Distribute `srt-backend.props` alongside `srt.props`;
+it supplies the package's backend-specific link dependencies.
 
 Compile `sdk.iss` with Inno Setup, supplying `/DSdkRoot=...` and
 `/DProductVersion=...`. Do not publish until Windows install/uninstall and all
 six consumer link checks pass. This initial packaging work is not a signed or
 qualified release installer. No existing release assets are modified.
 
-The `Windows SDK candidate` workflow builds the six variants from a
-pinned OpenSSL 3.6.3 revision and uploads short-lived candidate artifacts only.
+The `Windows SDK candidate` workflow builds six variants and uploads short-lived
+candidate artifacts only. Manual runs select `crypto_backend`; the default is
+OpenSSL with a pinned 3.6.3 dependency. BCrypt runs skip that dependency entirely.
+Packaging PRs additionally smoke-test BCrypt x64 Debug/Release consumers and
+package rejection rules without doubling the full installer matrix.
 It links a public C consumer for every target and runs it for Win32/x64; ARM64
 execution is not verified by the x64 runner. OpenSSL assembly is enabled using
 NASM for Win32/x64 and the `VC-WIN64-CLANGASM-ARM` target (MSVC C compiler,
@@ -50,9 +65,10 @@ Import `$(ROBOTWEAX_SRT)\srt.props` after project compiler settings:
 ```
 
 Header includes remain `<srt/srt.h>`; the root is private to this SDK and does
-not install over a system Haivision installation. OpenSSL Crypto is an explicit
+not install over a system Haivision installation. For OpenSSL packages, Crypto is an explicit
 static link dependency. Applications with another OpenSSL dependency must resolve
 version/link compatibility; static linkage does not remove symbol conflicts.
+BCrypt packages instead link the Windows `bcrypt.lib` system import library.
 
 The candidate workflow also builds the public C consumer through
 `consumer/consumer.vcxproj`, importing the staged `srt.props` for all six

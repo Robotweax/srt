@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: MIT
-param([string]$Platform, [string]$Configuration)
+param([string]$Platform, [string]$Configuration,
+    [ValidateSet('openssl','bcrypt')][string]$CryptoBackend = 'openssl')
 $ErrorActionPreference = 'Stop'
 function Run([string]$Program, [string[]]$Arguments) {
     & $Program @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Program failed: $LASTEXITCODE" }
 }
 $Root = (Get-Location).Path
+if ($CryptoBackend -eq 'openssl') {
 $Target = @{Win32='VC-WIN32';x64='VC-WIN64A';Arm64='VC-WIN64-CLANGASM-ARM'}[$Platform]
 if (!$Target) { throw 'Invalid platform' }
 $Assembler = if ($Platform -eq 'Arm64') { 'clang-cl.exe' } else { 'nasm.exe' }
@@ -38,13 +40,18 @@ try {
     Run nmake @('install_dev')
 } finally { Pop-Location }
 Copy-Item "$Root/openssl-source/LICENSE.txt" "$Prefix/LICENSE.txt"
-& "$PSScriptRoot/build-sdk.ps1" -Platform $Platform -Configuration $Configuration -OpenSSLRoot $Prefix -OutputRoot "$Root/output"
+}
+$SdkOptions = @{Platform=$Platform; Configuration=$Configuration; CryptoBackend=$CryptoBackend; OutputRoot="$Root/output"}
+if ($CryptoBackend -eq 'openssl') { $SdkOptions.OpenSSLRoot = $Prefix }
+& "$PSScriptRoot/build-sdk.ps1" @SdkOptions
 if (!$?) { throw 'SDK build failed' }
 $Sdk = "$Root/output/sdk-$Configuration-$Platform"
 $Runtime = if ($Configuration -eq 'Debug') { '/MDd' } else { '/MD' }
 # Link every architecture; execute only architectures supported by this runner.
 Run cl @('/nologo','/std:c11',$Runtime,"/I$Sdk/include",'/c',"$Root/tests/package_consumer/c_consumer.c",'/Foconsumer.obj')
-Run link @('/nologo','consumer.obj',"/LIBPATH:$Sdk/lib/$Configuration-$Platform",'robotweax-srt.lib','libcrypto.lib','ws2_32.lib','crypt32.lib','advapi32.lib','user32.lib','bcrypt.lib','/OUT:consumer.exe')
+$Libraries = @('robotweax-srt.lib','ws2_32.lib','bcrypt.lib')
+if ($CryptoBackend -eq 'openssl') { $Libraries += @('libcrypto.lib','crypt32.lib','advapi32.lib','user32.lib') }
+Run link (@('/nologo','consumer.obj',"/LIBPATH:$Sdk/lib/$Configuration-$Platform",'/OUT:consumer.exe') + $Libraries)
 if ($Platform -ne 'Arm64') { Run "$Root/consumer.exe" @() }
 
 # Exercise the shipped props rather than duplicating its linker settings.

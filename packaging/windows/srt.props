@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildThisFileDirectory)srt-backend.props" />
   <PropertyGroup>
     <RobotweaxSrtRoot>$(MSBuildThisFileDirectory)</RobotweaxSrtRoot>
     <RobotweaxSrtLibDir>$(RobotweaxSrtRoot)lib\$(Configuration)-$(Platform)</RobotweaxSrtLibDir>
@@ -11,7 +12,7 @@
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(RobotweaxSrtLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>robotweax-srt.lib;libcrypto.lib;ws2_32.lib;crypt32.lib;advapi32.lib;user32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>robotweax-srt.lib;ws2_32.lib;$(RobotweaxSrtCryptoDependencies);%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <Target Name="ValidateRobotweaxSrtSdk" BeforeTargets="ClCompile">
