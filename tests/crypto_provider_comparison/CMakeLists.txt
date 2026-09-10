@@ -21,7 +21,7 @@ target_compile_definitions(compare_providers PRIVATE NOMINMAX WIN32_LEAN_AND_MEA
 target_link_libraries(compare_providers PRIVATE OpenSSL::Crypto bcrypt)
 add_test(NAME compare_providers COMMAND compare_providers)
 if(BUILD_PROVIDER_BENCHMARK)
-    add_executable(provider_benchmark benchmark.cpp ecb_benchmark.cpp $<TARGET_OBJECTS:openssl_oracle>)
+    add_executable(provider_benchmark benchmark.cpp ecb_benchmark.cpp ctr_components.cpp $<TARGET_OBJECTS:openssl_oracle>)
     target_compile_features(provider_benchmark PRIVATE cxx_std_20)
     target_include_directories(provider_benchmark PRIVATE "${ROOT}/include")
     target_compile_definitions(provider_benchmark PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

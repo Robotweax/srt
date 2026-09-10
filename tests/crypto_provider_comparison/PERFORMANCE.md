@@ -30,6 +30,23 @@ independently finalized/authenticated SRT packet on every call. XTS uses
 directly equating its bulk throughput ratios with our packet-operation times.
 No upstream benchmark code is copied into this test.
 
+## Isolated CTR components
+
+`--ctr-components` compares byte-wise XOR with a diagnostic-only 64-bit
+`memcpy` XOR candidate, including unaligned and exact in-place buffers. Before
+measurement it checks every length from 0 through 1456 and offsets 0 through 7
+against the byte implementation. Counter generation and secure clearing have
+separate rows. This is not a production change or a security qualification.
+
+Kernels are kept out of line to prevent loop elimination/fusion. They do not
+replicate production inlining, cache effects, 1024-byte chunking, or the entire
+CTR call. Counter/erase rows process a block-rounded buffer (and counter fill
+also clears its local counter); therefore do not sum/subtract these timings to
+claim an exact production cost breakdown. Five rounds rotate kernel order.
+Use results to select a candidate, then verify it against the unchanged full
+provider benchmark, failure-injection tests, counter rollover vectors and
+interoperability before accepting a production optimization.
+
 ## CTR size sweep
 
 `provider_benchmark --ctr-sweep` uses AES-256 and five rounds with alternating

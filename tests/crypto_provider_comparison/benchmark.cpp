@@ -15,6 +15,7 @@ CryptoProvider& openssl_test_provider() noexcept;
 }
 using namespace robotweax::srt;
 void measure_ecb();
+void measure_ctr_components();
 void check(Error error)
 {
     if (error != Error::none)
@@ -122,6 +123,10 @@ void measure_ctr_batch(CryptoProvider& provider, const char* name,
 int main(int argc, char** argv)
 {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--ctr-components") {
+            measure_ctr_components();
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--ecb") {
             measure_ecb();
             return 0;

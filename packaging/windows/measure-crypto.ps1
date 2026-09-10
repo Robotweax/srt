@@ -33,4 +33,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'CTR sweep failed' }
     & ./measure/Release/provider_benchmark.exe --ecb | Set-Content evidence/ecb.csv
     if ($LASTEXITCODE -ne 0) { throw 'ECB benchmark failed' }
+    & ./measure/Release/provider_benchmark.exe --ctr-components | Set-Content evidence/ctr-components.csv
+    if ($LASTEXITCODE -ne 0) { throw 'CTR component benchmark failed' }
 } finally { Stop-Transcript }
