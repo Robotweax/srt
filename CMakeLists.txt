@@ -57,7 +57,20 @@ if(BUILD_SHARED_LIBS AND
         "shared artifact deliberately exports only the public C ABI.")
 endif()
 
-find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+set(ROBOTWEAX_SRT_CRYPTO_BACKEND "openssl" CACHE STRING "Crypto backend: openssl or bcrypt (experimental Windows only)")
+set_property(CACHE ROBOTWEAX_SRT_CRYPTO_BACKEND PROPERTY STRINGS openssl bcrypt)
+if(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "openssl")
+    find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+    set(ROBOTWEAX_SRT_CRYPTO_SOURCE src/crypto_openssl.cpp)
+    set(ROBOTWEAX_SRT_CRYPTO_LIBRARY OpenSSL::Crypto)
+    set(ROBOTWEAX_SRT_PC_CRYPTO_REQUIRES "libcrypto >= 3.0")
+elseif(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "bcrypt" AND WIN32)
+    set(ROBOTWEAX_SRT_CRYPTO_SOURCE src/crypto_bcrypt.cpp)
+    set(ROBOTWEAX_SRT_CRYPTO_LIBRARY bcrypt)
+    set(ROBOTWEAX_SRT_PC_CRYPTO_REQUIRES "")
+else()
+    message(FATAL_ERROR "Unsupported crypto backend/platform: ${ROBOTWEAX_SRT_CRYPTO_BACKEND}; bcrypt requires Windows")
+endif()
 find_package(Threads REQUIRED)
 
 add_library(robotweax_srt
@@ -97,7 +110,7 @@ add_library(robotweax_srt
     src/connection_group.cpp
     src/codec.cpp
     src/crypto.cpp
-    src/crypto_openssl.cpp
+    ${ROBOTWEAX_SRT_CRYPTO_SOURCE}
     src/fec.cpp
     src/file.cpp
     src/handshake.cpp
@@ -135,7 +148,7 @@ if(WIN32)
     target_link_libraries(robotweax_srt PRIVATE ws2_32)
 endif()
 target_link_libraries(
-    robotweax_srt PRIVATE OpenSSL::Crypto Threads::Threads)
+    robotweax_srt PRIVATE ${ROBOTWEAX_SRT_CRYPTO_LIBRARY} Threads::Threads)
 
 target_compile_features(robotweax_srt PUBLIC cxx_std_20)
 target_include_directories(robotweax_srt
@@ -1484,6 +1497,9 @@ else()
         "\${prefix}/${ROBOTWEAX_SRT_PUBLIC_INCLUDEDIR}")
 endif()
 set(ROBOTWEAX_SRT_PC_PRIVATE_LIBS "${CMAKE_THREAD_LIBS_INIT}")
+if(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "bcrypt")
+    string(APPEND ROBOTWEAX_SRT_PC_PRIVATE_LIBS " -lbcrypt")
+endif()
 set(ROBOTWEAX_SRT_PC_CFLAGS "")
 if(ENABLE_AEAD_API_PREVIEW)
     set(ROBOTWEAX_SRT_PC_CFLAGS "-DENABLE_AEAD_API_PREVIEW")

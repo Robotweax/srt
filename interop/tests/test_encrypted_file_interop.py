@@ -442,6 +442,23 @@ class EncryptedFileInteropTests(unittest.TestCase):
                     **{**common, **mutation}
                 )
 
+        robotweax_reference = {
+            **common, "caller_is_reference": True,
+            "reference_provider": "robotweax",
+        }
+        run_encrypted_file_interop.validate_passphrase_mismatch(
+            **robotweax_reference
+        )
+        for mutation in mutations:
+            with self.subTest(provider="robotweax", mutation=mutation), self.assertRaises(RuntimeError):
+                run_encrypted_file_interop.validate_passphrase_mismatch(
+                    **{**robotweax_reference, **mutation}
+                )
+        with self.assertRaises(ValueError):
+            run_encrypted_file_interop.validate_passphrase_mismatch(
+                **{**common, "reference_provider": "unknown"}
+            )
+
         with self.assertRaisesRegex(RuntimeError, "incomplete"):
             run_encrypted_file_interop.validate_passphrase_mismatch(
                 **{

@@ -308,7 +308,11 @@ def validate_passphrase_mismatch(
     output_bytes: int,
     relay: CallerListenerFaultProxy,
     caller_is_reference: bool,
+    reference_provider: str = "haivision",
 ) -> None:
+    if reference_provider not in ("haivision", "robotweax"):
+        raise ValueError("unknown reference provider")
+    caller_is_haivision = caller_is_reference and reference_provider == "haivision"
     lines = [line for line in caller_stderr.splitlines() if line]
     observation = relay.data_key_observation("sender_to_receiver")
     exact_empty_data_observation = {
@@ -332,10 +336,10 @@ def validate_passphrase_mismatch(
         or lines.count(PASSPHRASE_REJECTION_LINE) != 1
         or any("Connection established" in line for line in lines[:-1])
         or (
-            caller_is_reference
+            caller_is_haivision
             and not any("ERROR:BADSECRET" in line for line in lines[:-1])
         )
-        or (not caller_is_reference and len(lines) != 1)
+        or (not caller_is_haivision and len(lines) != 1)
     ):
         raise RuntimeError(
             f"{scenario.name}: wrong-passphrase rejection evidence "
@@ -349,6 +353,7 @@ def run_passphrase_mismatch_scenario(
     options: RunOptions,
     directory: Path,
     base_environment: dict[str, str],
+    reference_provider: str = "haivision",
 ) -> None:
     listener_port = free_udp_port()
     input_path = directory / f"{scenario.name}.input"
@@ -439,6 +444,7 @@ def run_passphrase_mismatch_scenario(
                 output_path.stat().st_size if output_path.exists() else 0,
                 relay,
                 scenario.caller == reference,
+                reference_provider,
             )
             print(
                 f"PASS {scenario.name} reject_reason="
@@ -758,6 +764,11 @@ def main() -> int:
     parser.add_argument("--robotweax-peer", type=Path, required=True)
     parser.add_argument("--reference-peer", type=Path, required=True)
     parser.add_argument(
+        "--reference-provider", choices=("haivision", "robotweax"),
+        default="haivision",
+        help="Reference implementation (controls provider-specific log evidence)",
+    )
+    parser.add_argument(
         "--profile",
         choices=ENCRYPTED_FILE_PROFILES,
         default="all",
@@ -892,6 +903,7 @@ def main() -> int:
                             options,
                             work,
                             environment,
+                            reference_provider=arguments.reference_provider,
                         )
                     except (
                         OSError,
