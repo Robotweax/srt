@@ -75,7 +75,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'CTR backend interoperability failed' }
           python interop/run_aead_interop.py --robotweax-peer "peer-bcrypt/$env:CONFIGURATION/crypto_peer.exe" --reference-peer "peer-openssl/$env:CONFIGURATION/crypto_peer.exe"
           if ($LASTEXITCODE -ne 0) { throw 'GCM backend interoperability failed' }
-          python interop/run_encrypted_file_interop.py --profile base --robotweax-peer "peer-bcrypt/$env:CONFIGURATION/crypto_peer.exe" --reference-peer "peer-openssl/$env:CONFIGURATION/crypto_peer.exe" --bytes 524667 --km-refresh-rate 64 --km-preannounce 20
+          python interop/run_encrypted_file_interop.py --profile base --reference-provider robotweax --robotweax-peer "peer-bcrypt/$env:CONFIGURATION/crypto_peer.exe" --reference-peer "peer-openssl/$env:CONFIGURATION/crypto_peer.exe" --bytes 524667 --km-refresh-rate 64 --km-preannounce 20
           if ($LASTEXITCODE -ne 0) { throw 'Encrypted file backend interoperability failed' }
       - name: Build runner-local Haivision peer and test CTR
         if: matrix.configuration == 'Release'
