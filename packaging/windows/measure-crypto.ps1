@@ -28,4 +28,6 @@ try {
     Start-Sleep -Seconds 15
     & ./measure/Release/provider_benchmark.exe | Set-Content evidence/provider.csv
     if ($LASTEXITCODE -ne 0) { throw 'Benchmark failed' }
+    & ./measure/Release/provider_benchmark.exe --ctr-sweep | Set-Content evidence/ctr-sweep.csv
+    if ($LASTEXITCODE -ne 0) { throw 'CTR sweep failed' }
 } finally { Stop-Transcript }
