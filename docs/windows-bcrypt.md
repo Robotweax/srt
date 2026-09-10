@@ -101,6 +101,16 @@ Before recommending or making this the Windows default, complete:
 
 ## Planned Windows-default transition
 
+The Windows comparison project includes a separate `provider_failures` test
+executable that injects an unsuccessful CNG status into algorithm opening,
+property setup, key creation, encryption/decryption, RNG and PBKDF2 calls.
+It checks setup failure, handle cleanup, CTR failure after a completed batch,
+GCM destination/tag erasure and key-wrap failure with no committed output.
+The interposition is compiled only into that executable; production binaries
+contain no injection hooks. It does not simulate every CNG status, allocation
+failure, cleanup failure or provider implementation, and is not an independent
+cryptographic review. Execution evidence must come from Windows CI.
+
 The transition is not enabled yet. Qualification must precede changing the
 default; a successful retry of a setup timeout does not explain its cause.
 The provider comparison also checks invalid GCM nonce/tag lengths, short
