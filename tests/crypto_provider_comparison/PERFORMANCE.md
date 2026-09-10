@@ -47,6 +47,23 @@ Use results to select a candidate, then verify it against the unchanged full
 provider benchmark, failure-injection tests, counter rollover vectors and
 interoperability before accepting a production optimization.
 
+## Complete CTR candidate
+
+`--ctr-candidate` rotates baseline BCrypt, diagnostic candidate and OpenSSL
+within each size/in-place case over five rounds. The candidate copies the
+current CTR algorithm and changes only XOR: memcpy-based 64-bit words on
+ARM64 or exact in-place buffers; byte-wise otherwise. It is compiled only in
+the benchmark. Production source, counter handling and secure erasure are
+unchanged. Review the copied algorithm against production before promotion.
+
+Preflight comparisons against OpenSSL cover 128/192/256-bit keys, unaligned
+buffers, tails, chunk boundaries and all-ones IV wrap. Timing uses synthetic
+fixed IVs and prepared keys, 200 warmups and 100 batches of 256 calls. This
+deliberate benchmark-only reuse is not a safe traffic encryption pattern.
+Percentiles are batch-average times; compare variants within this run, not
+absolute values from other runners. Failure-injection qualification of the
+candidate and end-to-end throughput remain required before production use.
+
 ## CTR size sweep
 
 `provider_benchmark --ctr-sweep` uses AES-256 and five rounds with alternating

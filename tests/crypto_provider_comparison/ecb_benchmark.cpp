@@ -8,6 +8,82 @@
 #include <stdexcept>
 #include <vector>
 
+// Diagnostic-only complete CTR candidate. Keep the production provider intact
+// until the same-process comparison and differential tests justify promotion.
+namespace {
+class CandidateCtr final : public robotweax::srt::PayloadCipher {
+    robotweax::srt::Key key_;
+
+public:
+    explicit CandidateCtr(std::span<const std::byte> key)
+        : key_(key, false)
+    {
+    }
+    robotweax::srt::Error transform(std::span<const std::byte, 16> iv,
+        std::span<const std::byte> input,
+        std::span<std::byte> output) noexcept override
+    {
+        using namespace robotweax::srt;
+        if (output.size() < input.size())
+            return Error::buffer_too_small;
+        if (!key_.handle || !fits(input))
+            return Error::cryptographic_failure;
+        std::array<std::byte, 16> counter {};
+        std::copy(iv.begin(), iv.end(), counter.begin());
+        std::array<std::byte, 1024> stream {};
+        for (std::size_t offset = 0; offset < input.size();) {
+            const auto count = (std::min)(stream.size(), input.size() - offset);
+            const auto padded = ((count + 15) / 16) * 16;
+            for (std::size_t block = 0; block < padded; block += 16) {
+                std::copy(
+                    counter.begin(), counter.end(), stream.begin() + block);
+                for (std::size_t i = counter.size(); i > 0; --i) {
+                    const auto next =
+                        std::to_integer<unsigned>(counter[i - 1]) + 1U;
+                    counter[i - 1] = static_cast<std::byte>(next & 255U);
+                    if (next <= 255U)
+                        break;
+                }
+            }
+            if (!key_.block(std::span {stream}.first(padded))) {
+                erase(stream);
+                erase(counter);
+                erase(output);
+                return Error::cryptographic_failure;
+            }
+            std::size_t i = 0;
+#if defined(_M_ARM64) || defined(__aarch64__)
+            constexpr bool word_path = true;
+#else
+            const bool word_path = input.data() == output.data();
+#endif
+            if (word_path) {
+                for (; count - i >= sizeof(std::uint64_t);
+                    i += sizeof(std::uint64_t)) {
+                    std::uint64_t a, b;
+                    std::memcpy(&a, input.data() + offset + i, sizeof(a));
+                    std::memcpy(&b, stream.data() + i, sizeof(b));
+                    a ^= b;
+                    std::memcpy(output.data() + offset + i, &a, sizeof(a));
+                }
+            }
+            for (; i < count; ++i)
+                output[offset + i] = input[offset + i] ^ stream[i];
+            offset += count;
+        }
+        erase(stream);
+        erase(counter);
+        return Error::none;
+    }
+};
+}
+
+std::unique_ptr<robotweax::srt::PayloadCipher> candidate_ctr(
+    std::span<const std::byte> key)
+{
+    return std::make_unique<CandidateCtr>(key);
+}
+
 void measure_ecb()
 {
     using namespace robotweax::srt;

@@ -35,4 +35,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'ECB benchmark failed' }
     & ./measure/Release/provider_benchmark.exe --ctr-components | Set-Content evidence/ctr-components.csv
     if ($LASTEXITCODE -ne 0) { throw 'CTR component benchmark failed' }
+    & ./measure/Release/provider_benchmark.exe --ctr-candidate | Set-Content evidence/ctr-candidate.csv
+    if ($LASTEXITCODE -ne 0) { throw 'CTR candidate benchmark failed' }
 } finally { Stop-Transcript }
