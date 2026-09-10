@@ -14,6 +14,7 @@ namespace robotweax::srt {
 CryptoProvider& openssl_test_provider() noexcept;
 }
 using namespace robotweax::srt;
+void measure_ecb();
 void check(Error error)
 {
     if (error != Error::none)
@@ -121,6 +122,10 @@ void measure_ctr_batch(CryptoProvider& provider, const char* name,
 int main(int argc, char** argv)
 {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--ecb") {
+            measure_ecb();
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--ctr-sweep") {
             std::cout
                 << "provider,round,key_bytes,payload_bytes,operation,batches,"
@@ -139,7 +144,8 @@ int main(int argc, char** argv)
             return 0;
         }
         if (argc != 1)
-            throw std::runtime_error("usage: provider_benchmark [--ctr-sweep]");
+            throw std::runtime_error(
+                "usage: provider_benchmark [--ctr-sweep|--ecb]");
         std::cout << "provider,round,key_bytes,payload_bytes,operation,samples,"
                      "median_ns,p95_ns,mean_ns\n";
         for (unsigned round = 0; round < 5; ++round) {

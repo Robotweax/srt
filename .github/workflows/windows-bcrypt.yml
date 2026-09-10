@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       qualification:
-        description: Run native ARM64 and serial x64 performance diagnostics only
+        description: Run native ARM64 and serial x64/ARM64 performance diagnostics only
         type: boolean
         default: false
   pull_request:
@@ -60,7 +60,17 @@ jobs:
           retention-days: 7
   serial-performance:
     if: github.event_name == 'workflow_dispatch' && inputs.qualification
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: x64
+            environment: amd64
+          - runner: windows-11-arm
+            platform: Arm64
+            environment: amd64_arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
@@ -78,12 +88,13 @@ jobs:
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $script = Join-Path $PWD 'packaging/windows/measure-crypto.ps1'
           $pwsh = Join-Path $PSHOME 'pwsh.exe'
-          & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" amd64 && `"$pwsh`" -NoProfile -File `"$script`""
+          if ('${{ matrix.platform }}' -eq 'Arm64' -and $env:RUNNER_ARCH -ne 'ARM64') { throw 'Native ARM64 runner required' }
+          & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" ${{ matrix.environment }} && `"$pwsh`" -NoProfile -File `"$script`" -Platform ${{ matrix.platform }}"
           if ($LASTEXITCODE -ne 0) { throw 'Qualification failed' }
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-crypto-performance-evidence
+          name: windows-crypto-performance-evidence-${{ matrix.platform }}
           path: evidence/
           retention-days: 7
   shared:

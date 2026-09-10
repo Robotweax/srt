@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Manual CI diagnostic. Only logs/CSV are uploaded, never reference binaries.
+param([ValidateSet('x64','Arm64')][string]$Platform = 'x64')
 $ErrorActionPreference = 'Stop'
 function Run([string]$Program, [string[]]$Arguments) {
     & $Program @Arguments
@@ -10,10 +11,10 @@ Start-Transcript -Path evidence/build-and-measurement.log
 try {
     # Reuse the pinned, assembly-checked SDK dependency recipe and its consumer
     # checks rather than benchmarking an unknown runner OpenSSL installation.
-    & "$PSScriptRoot/build-ci.ps1" -Platform x64 -Configuration Release -CryptoBackend openssl
+    & "$PSScriptRoot/build-ci.ps1" -Platform $Platform -Configuration Release -CryptoBackend openssl
     if (!$?) { throw 'Pinned dependency build failed' }
     $Crypto = "$PWD/crypto-install/lib/libcrypto.lib"
-    Run cmake @('-S','tests/crypto_provider_comparison','-B','measure','-A','x64',
+    Run cmake @('-S','tests/crypto_provider_comparison','-B','measure','-A',$Platform,
         '-DBUILD_PROVIDER_BENCHMARK=ON','-DOPENSSL_USE_STATIC_LIBS=ON',
         "-DOPENSSL_ROOT_DIR=$PWD/crypto-install","-DOPENSSL_INCLUDE_DIR=$PWD/crypto-install/include",
         "-DLIB_EAY_DEBUG:FILEPATH=$Crypto","-DLIB_EAY_RELEASE:FILEPATH=$Crypto")
@@ -30,4 +31,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Benchmark failed' }
     & ./measure/Release/provider_benchmark.exe --ctr-sweep | Set-Content evidence/ctr-sweep.csv
     if ($LASTEXITCODE -ne 0) { throw 'CTR sweep failed' }
+    & ./measure/Release/provider_benchmark.exe --ecb | Set-Content evidence/ecb.csv
+    if ($LASTEXITCODE -ne 0) { throw 'ECB benchmark failed' }
 } finally { Stop-Transcript }

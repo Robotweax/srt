@@ -5,6 +5,31 @@ gates on shared runners. Run the optional qualification workflow to obtain
 `provider.csv`, `ctr-sweep.csv`, build metadata and binary hashes. Reference
 binaries are not uploaded.
 
+## ECB control and ARM64 comparison
+
+The manual qualification now measures x64 and native ARM64 separately, using
+the pinned SDK OpenSSL recipe (including its assembly-enabled check). ARM64
+uses `VC-WIN64-CLANGASM-ARM`; this is not a portable-C/no-assembly baseline.
+No claim about old ARM64 OpenSSL builds should be inferred from these results.
+
+`--ecb` measures prepared AES-256 ECB in-place, without counter generation,
+XOR or per-packet cleanup. The CNG path uses the exact production key wrapper,
+included only in the diagnostic executable. OpenSSL uses a prepared EVP ECB
+context with padding disabled. A differential check precedes each size case.
+Five rounds alternate providers; 100 batches of 256 calls follow warmup.
+The percentiles describe batch averages, not individual calls. Sizes include
+1328 bytes (1316 rounded to an AES block) and 16000 bytes. ECB timings are a
+control, not an additive decomposition of CTR: memory access patterns differ.
+
+Thierry's referenced benchmark at
+https://github.com/lelegard/aesbench/blob/d0c5aa30051a1d7e2ed0e63750b11021ac7e2e84/windows/aesbench-bcrypt.cpp
+uses 16000-byte buffers for ECB/GCM, process CPU time, at least two seconds of
+CPU time and 100000-call inner loops. Its GCM path uses chained calls, not an
+independently finalized/authenticated SRT packet on every call. XTS uses
+4096-byte messages. It does not benchmark CTR. These differences preclude
+directly equating its bulk throughput ratios with our packet-operation times.
+No upstream benchmark code is copied into this test.
+
 ## CTR size sweep
 
 `provider_benchmark --ctr-sweep` uses AES-256 and five rounds with alternating
