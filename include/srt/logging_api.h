@@ -37,6 +37,21 @@
 #define SRT_LOG_LEVEL_MIN LOG_CRIT
 #define SRT_LOG_LEVEL_MAX LOG_DEBUG
 
+#ifdef __cplusplus
+/** C++ source-compatible names for the public syslog severity levels. */
+namespace srt_logging {
+namespace LogLevel {
+enum type {
+    fatal = LOG_CRIT,
+    error = LOG_ERR,
+    warning = LOG_WARNING,
+    note = LOG_NOTICE,
+    debug = LOG_DEBUG
+};
+} // namespace LogLevel
+} // namespace srt_logging
+#endif
+
 #define SRT_LOGF_DISABLE_TIME 1
 #define SRT_LOGF_DISABLE_THREADNAME 2
 #define SRT_LOGF_DISABLE_SEVERITY 4
