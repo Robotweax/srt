@@ -399,7 +399,8 @@ def enable_file_interop_profiles(
 
 def enable_interop_profiles(change_set: ChangeSet, path: str) -> None:
     normalized = path.lower()
-    if "scalability_scorecard" in normalized:
+    if any(token in normalized for token in
+           ("scalability_scorecard", "throughput_diagnostics")):
         # The scorecard uses existing public-API peers. Its own deterministic
         # unit tests validate orchestration and aggregation; comparative runs
         # belong on an explicitly controlled benchmark host, not shared CI.
