@@ -37,7 +37,16 @@ HOOKS = {
         ("    , peer_socket_id_(configuration.peer_socket_id)\n{\n",
          '    , peer_socket_id_(configuration.peer_socket_id)\n{\n'
          '    RWX_TRACE("bind", this, reinterpret_cast<std::uintptr_t>(&send_buffer_),\n'
-         '        configuration.local_initial_sequence.value(), peer_socket_id_);\n'),
+         '        configuration.local_initial_sequence.value(), peer_socket_id_,\n'
+         '        reinterpret_cast<std::uintptr_t>(&receive_buffer_));\n'),
+        ("        const auto inserted = receive_buffer_.insert(packet);\n",
+         '        RWX_TRACE("rx_window", this, packet.data.sequence.value(),\n'
+         '            receive_buffer_.first_stored_sequence().value(),\n'
+         '            receive_buffer_.occupied(), receive_buffer_.capacity());\n'
+         "        const auto inserted = receive_buffer_.insert(packet);\n"
+         '        RWX_TRACE("rx_insert", this, packet.data.sequence.value(),\n'
+         '            static_cast<std::uint64_t>(inserted.status),\n'
+         '            static_cast<std::uint64_t>(inserted.error), packet.data.retransmitted);\n'),
         ("        // Repeated ACKs can update the receive window while a lost flight\n",
          '        RWX_TRACE("ack_state", this, decoded.acknowledgement.next_sequence.value(),\n'
          '            send_buffer_.packets_in_flight(), acknowledgement_progress > 0, now_microseconds);\n'
@@ -67,6 +76,16 @@ HOOKS = {
          '        periodic_nak_enabled_);\n'
          "    // A periodic NAK can select only a gap exposed by later DATA. It cannot\n"),
     ],
+    "src/receive_buffer.cpp": [
+        ("    return {\n        .bytes_written = written,\n        .message_number = message_number,\n        .first_sequence = message_first_sequence,\n",
+         '    RWX_TRACE("rx_pop", this, first_stored_sequence_.value(), occupied_,\n'
+         '        next_ack_sequence_.value(), written);\n'
+         "    return {\n        .bytes_written = written,\n        .message_number = message_number,\n        .first_sequence = message_first_sequence,\n"),
+        ("    return {\n        .bytes_written = written,\n        .message_number = message_number,\n        .first_sequence = first_sequence,\n",
+         '    RWX_TRACE("rx_pop", this, first_stored_sequence_.value(), occupied_,\n'
+         '        next_ack_sequence_.value(), written);\n'
+         "    return {\n        .bytes_written = written,\n        .message_number = message_number,\n        .first_sequence = first_sequence,\n"),
+    ],
     "src/compat/transport_runtime.cpp": [
         ("    const std::size_t application_payload_size = authenticated_data\n",
          '    RWX_TRACE("wire_send", &session_, packet.header.sequence.value(),\n'
@@ -78,6 +97,13 @@ HOOKS = {
          '        RWX_TRACE("data_receive", &session_, clear_packet.data.sequence.value(),\n'
          '            clear_packet.data.retransmitted, static_cast<std::uint64_t>(processed.error), now);\n'
          '    }\n'),
+        ("    if (packet.kind == PacketKind::data) {\n        sample_receiver_buffer_statistics(now);\n",
+         '    if (clear_packet.kind == PacketKind::control\n'
+         '        && clear_packet.control.type == ControlType::acknowledgement) {\n'
+         '        RWX_TRACE("tx_window", &session_, session_.send_buffer().first_sequence().value(),\n'
+         '            flow_window_packets_, session_.send_buffer().packets_in_flight(), now);\n'
+         '    }\n'
+         "    if (packet.kind == PacketKind::data) {\n        sample_receiver_buffer_statistics(now);\n"),
     ],
 }
 
@@ -138,11 +164,47 @@ def read_events(directory: Path) -> list[dict]:
     return sorted(events, key=lambda e: (e["ns"], e["file"], e["index"]))
 
 
+def receive_evidence(events: list[dict], receiver_pid: int) -> tuple[dict, dict]:
+    """Insertion status is evidence of acceptance; Error::none alone is not."""
+    statuses = ("accepted_in_order", "accepted_out_of_order", "duplicate",
+                "older_than_window", "beyond_window")
+    windows, insertions, accepted = {}, {}, set()
+    counts, errors, pop_count, popped_bytes = Counter(), [], 0, 0
+    buffers = {e["d"] for e in events if e["pid"] == receiver_pid and e["kind"] == "bind" and e["d"]}
+    for e in events:
+        if e["pid"] != receiver_pid:
+            continue
+        key = (e["object"], e["a"])
+        if e["kind"] == "rx_window":
+            windows[key] = e
+        elif e["kind"] == "rx_insert":
+            window = windows.pop(key, None)
+            if window is None:
+                errors.append("receive insertion without pre-insert window")
+            status = statuses[e["b"]] if 0 <= e["b"] < len(statuses) else "unknown"
+            if status == "unknown":
+                errors.append("unknown receive insertion status")
+            counts[status if e["c"] == 0 else "error"] += 1
+            if e["c"] == 0 and e["b"] in (0, 1):
+                accepted.add(key)
+            insertions.setdefault(e["a"], []).append({"event": e, "status": status, "window_before": window})
+        elif e["kind"] == "rx_pop":
+            if e["object"] not in buffers:
+                errors.append("unmapped receive-buffer pop")
+            pop_count += 1
+            popped_bytes += e["d"]
+    if windows:
+        errors.append("receive window without insertion outcome")
+    return {"available": bool(insertions), "errors": sorted(set(errors)),
+            "insert_status_counts": dict(counts), "accepted_unique_sequences": len(accepted),
+            "pop_events": pop_count, "popped_bytes": popped_bytes}, insertions
+
+
 def analyze_events(events: list[dict], sender_pid: int, expected_originals: int,
                    expected_retransmissions: int) -> dict:
     mapping = {(e["pid"], e["a"]): e["object"] for e in events if e["kind"] == "bind"}
     causes, pending, selected, originals, latest_ack, latest_timer = {}, {}, {}, {}, {}, {}
-    latest_nak, latest_ack_state = {}, {}
+    latest_nak, latest_ack_state, latest_window = {}, {}, {}
     rows, errors = [], []
     counts = Counter()
     wire_originals = []
@@ -178,6 +240,8 @@ def analyze_events(events: list[dict], sender_pid: int, expected_originals: int,
             latest_ack[session] = e
         elif kind == "ack_state":
             latest_ack_state[session] = e
+        elif kind == "tx_window":
+            latest_window[session] = e
         elif kind == "nak":
             latest_nak[session] = e
         elif kind == "timer":
@@ -192,7 +256,8 @@ def analyze_events(events: list[dict], sender_pid: int, expected_originals: int,
                     errors.append("retransmission without original/request/selection")
                 rows.append({"sequence": e["a"], "session": session, "send": e,
                              "original": originals.get(key), "lineage": lineage,
-                             "latest_ack": latest_ack.get(session), "ack_state": latest_ack_state.get(session)})
+                             "latest_ack": latest_ack.get(session), "ack_state": latest_ack_state.get(session),
+                             "applied_send_window": latest_window.get(session)})
     if len(wire_originals) != expected_originals:
         errors.append(f"original coverage {len(wire_originals)} != {expected_originals}")
     if len(rows) != expected_retransmissions:
@@ -226,10 +291,19 @@ def analyze_case(directory: Path, result: dict) -> dict:
         analysis = analyze_events(events, sender_pid, stats["pktSentUniqueTotal"], stats["pktRetransTotal"])
         receiver_pid = result["peer_process_resources"]["receiver"]["pid"]
         if result["receiver_implementation"] == "robotweax":
-            receiver_events = [e for e in events if e["pid"] == receiver_pid and e["kind"] == "data_receive" and e["c"] == 0]
-            if len({e["a"] for e in receiver_events}) != result["messages_per_connection"]:
-                analysis["errors"].append("incomplete Robotweax receive-sequence coverage")
-                analysis["valid"] = False
+            evidence, insertions = receive_evidence(events, receiver_pid)
+            analysis["receiver_evidence"] = evidence
+            analysis["errors"].extend(evidence["errors"])
+            if not evidence["available"] or evidence["accepted_unique_sequences"] != result["messages_per_connection"]:
+                analysis["errors"].append("incomplete Robotweax accepted receive-sequence coverage")
+            if evidence["popped_bytes"] != result["messages_per_connection"] * result["message_size_bytes"]:
+                analysis["errors"].append("incomplete Robotweax application-pop coverage")
+            for row in analysis["retransmissions"]:
+                row["receiver_insertions"] = insertions.get(row["sequence"], [])
+        if not analysis["counts"].get("tx_window"):
+            analysis["errors"].append("missing applied sender-window evidence")
+        analysis["valid"] = not analysis["errors"]
+        analysis["receiver_observations_semantics"] = "legacy data_receive/Error::none is processing, not proof of insertion"
         sc.write_report(directory / "retransmissions.json", analysis)
         return {key: value for key, value in analysis.items() if key != "retransmissions"}
     except (ValueError, KeyError, OSError, StopIteration) as error:

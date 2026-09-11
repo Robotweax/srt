@@ -278,7 +278,7 @@ of causality. Validate an optimization with identical before/after blocks on
 the same host, and retain all incomplete transfers.
 
 The first profiles selected the empty receive-side message search in an active
-sender, not `SendBuffer::next_packet()`. This branch therefore adds only an
+sender, not `SendBuffer::next_packet()`. The first candidate therefore adds only an
 `occupied_ == 0` return to `ReceiveBuffer::first_complete_message()`. Occupied
 buffers follow the original search; no send-only shortcut disables receiving.
 The send-buffer cursor and pacing/notification changes are separate work with explicit
@@ -407,7 +407,7 @@ done
 ```
 
 `--transport-trace` exports only committed source to a fresh build-local copy.
-Exact unique anchors insert diagnostic hooks into three implementation files;
+Exact unique anchors insert diagnostic hooks into four implementation files;
 the original checkout and public headers/ABI remain untouched. Original and
 instrumented file hashes, overlay/header hashes, library and peer hashes are
 recorded in the build manifest. Reject dirty source for the overlay. Normal
@@ -465,18 +465,23 @@ Every Robotweax sender trace records:
   variance; flight size, timeout multiplier after poll and periodic-NAK mode.
 - Accepted ACK sequence/kind, cumulative progress, remaining flight and local/
   peer RTT estimates. Lite ACK's absent peer fields are not valid RTT samples.
-- Original packet sends and, for the Robotweax receiver, accepted DATA sequence
-  and retransmit flag. This is userspace observation, not kernel/wire time.
+- Original packet sends and the applied sender flow window after ACK processing.
+- For the Robotweax receiver, pre-insert sequence base/occupancy/capacity,
+  actual `ReceiveStatus`/error/retransmit flag, and successful application pops
+  with remaining occupancy and next ACK sequence. These are userspace
+  observations, not kernel/wire times. The older `data_receive` event with
+  `Error::none` means processing succeeded, **not** that insertion succeeded.
 
 `retransmissions.json` contains **one row per actual retransmission**, with its
 original send, first enqueue cause (`nak`, `tail`, `all`), trigger record,
-latest ACK/progress/RTT and receiver observations where available. Repeated NAKs
+latest ACK/progress/RTT, applied window and receiver insertion outcomes where
+available. Repeated NAKs
 do not overwrite a timer cause if the packet was already queued; a timer firing
 does not imply it actually selected a packet. ACK/NAK/timer records remain in
 the raw JSONL files for independent sequence/time correlation.
 
 Missing headers/trailers, overflow, missing cause/original/selection, incomplete
-Robotweax receive-sequence coverage or mismatch against public original and
+Robotweax accepted-insertion/application-pop coverage or mismatch against public original and
 retransmission counters invalidate the trace. A crash can leave incomplete
 files; those are evidence, not a zero-retransmission result. Haivision receiver
 internals are not instrumented; its ACK/NAK messages are observed at the
@@ -490,3 +495,94 @@ exonerate the unpaced behavior. A missing high-rate symptom under instrumentatio
 is inconclusive, not fixed. Keep this merge/release question open until the
 unpaced retransmissions are explained. WAN, encryption, multiple connections,
 live deadlines and new optimization work remain separate qualification tasks.
+
+## Lite-ACK window-credit correction: focused follow-up
+
+The [matched-rate lab report](https://github.com/Robotweax/srt_network_lab/blob/b7afe84b4a90835343fba06bf997b837ceb0fb03/results/2026-09-11-matched-rate-retransmissions/report-de.md)
+retains all 48 transfers and the failed mixed-direction offered-rate contract.
+Unpaced candidate retransmissions were 650 NAK + 2 tail (self) and 392 NAK +
+3 tail (to Haivision). Timers did not precede their deadlines. Missing sequences
+begin at the 16384/16383 receive-window boundary, but the old trace did not
+record insertion status. Do not reinterpret those files as acceptance evidence.
+
+A deterministic runtime regression now models an undrained four-packet
+receiver: send four, Full ACK two with two free slots, then Lite ACK the remaining
+two. Previously, acknowledging the flight left the window budget unchanged and
+allowed two additional originals. Both `a5c428b` and `40387f2` contain that path;
+this was not introduced by the empty-buffer fast path. Haivision 1.5.7
+[debits Lite-ACK progress](https://github.com/Haivision/srt/blob/899348d8318eb9a3c5a5b6ec43c4a1114288773a/srtcore/core.cpp#L8755).
+
+The correction consumes validated cumulative ACK advancement from the remaining
+window budget, saturating at zero. It runs under the existing connection lock,
+adds no allocation or public API/ABI, and leaves Full/Small-ACK advertisements,
+retransmission permission, counters, and timers unchanged. Four deterministic
+tests cover Live/FileCC, sequence rollover, duplicate/stale/invalid ACKs,
+saturation, and reopening by an actual buffer advertisement. This is not a
+redesign of sender-drop or group sequence-synchronization semantics.
+
+### First run only four unpaced diagnostic transfers
+
+Use the original Linux ARM64 VM, not local macOS or hosted x86-64 results as a
+substitute. Compare the old fast-path candidate `40387f2` (A) against the clean
+tip containing the Lite-ACK correction (B), with the **same new harness/overlay**.
+Record all full SHAs. Do not run the older 48-transfer runner for this stage;
+its fixed pins and matched-rate plan describe a different experiment.
+
+Assume `SRT` is this clean branch checkout, `REFERENCE` the exact clean Haivision
+1.5.7 checkout, and `WORK` a new directory. Build both before measuring:
+
+```sh
+FIX=$(git -C "$SRT" rev-parse HEAD)
+git -C "$SRT" worktree add --detach "$WORK/before-source" 40387f2dc70b7701b266be1c91f048f2d4fa3b61
+git -C "$SRT" worktree add --detach "$WORK/after-source" "$FIX"
+for variant in before after; do
+  python3 "$SRT/benchmarks/prepare_throughput.py" \
+    --robotweax-source "$WORK/$variant-source" --reference-source "$REFERENCE" \
+    --output-directory "$WORK/$variant-trace" --transport-trace --jobs 2
+done
+```
+
+Stop if either build fails. As before, record/temporarily configure/restore
+Linux UDP maxima in the operator's trap; do not silently lower the 8-MiB socket
+requests. Then run these serially, retaining both statuses even if A fails:
+
+```sh
+for variant in before after; do
+  python3 "$SRT/benchmarks/throughput_diagnostics.py" \
+    --build-manifest "$WORK/$variant-trace/build-manifest.json" \
+    --output-directory "$WORK/$variant-results" --capture transport \
+    --profile robotweax-self --profile robotweax-to-haivision \
+    --repetitions 1 --warmups 0 --target-bps 0 --cooldown-seconds 30
+  status=$?
+  printf '%s\n' "variant=$variant exit=$status"
+done
+```
+
+The unchanged defaults retain 128 MiB, 1316-byte messages, FC 16384, pending
+8192, 120-ms TSBPD, TLPKTDROP off, MAXBW and timeout. No retries or relaxed
+integrity/trace checks. Review the first window fill and each repeated sequence:
+
+- `rx_window`: sequence, base, occupied slots, capacity **before** insertion.
+- `rx_insert`: sequence, status (0 in-order, 1 out-of-order, 2 duplicate,
+  3 old, 4 beyond-window), error, retransmit flag. Only error zero and status
+  0/1 prove insertion. A `bind` event's `d` maps its receive buffer.
+- `rx_pop`: receive-buffer object, new base, remaining occupancy, next ACK,
+  bytes delivered; correlate with the first actual drain.
+- `tx_window`: session, validated send-buffer boundary, effective window,
+  remaining flight, runtime time; correlate with Full/Lite ACKs and original sends.
+
+The current analyzer requires outcome/pop evidence for Robotweax self-tests
+and applied-window evidence for either direction. Old traces remain valid
+historical evidence under their original analyzer, not under these new checks.
+New raw events, rejected originals and successful retransmission insertions
+must remain available even when all payloads eventually match.
+
+Acceptance of this diagnostic stage requires a visible pre-fix symptom and
+evidence connecting each rejection to window/base/drain state. An absent
+symptom under instrumentation is inconclusive. Any remaining repetitions must
+still be explained; zero UDP error deltas are not proof of zero network loss.
+After that review, perform separate plain ABBA measurements for performance
+and a new lower common offered rate if needed. Preserve the failed 100-Mbit/s
+results; do not change their tolerance. No broad transport/release approval,
+WAN, encryption or multi-connection throughput claim follows from these four
+diagnostic transfers alone.

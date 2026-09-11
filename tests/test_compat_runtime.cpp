@@ -1145,6 +1145,159 @@ TEST(compat_runtime_honors_peer_receive_window_from_full_ack)
     REQUIRE_EQ(decoded.packet.data.sequence, SequenceNumber {701});
 }
 
+namespace {
+
+void exercise_lite_ack_receive_window(
+    SequenceNumber initial, CongestionController controller)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {
+        .address = {192, 0, 2, 31},
+        .port = 12'031,
+    };
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 8), Error::none);
+    REQUIRE_EQ(options.set_congestion_controller(
+                   controller == CongestionController::file ? "file" : "live"),
+        Error::none);
+    std::uint64_t now = 1'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 301,
+        .initial_sequence = initial,
+        .flow_window_packets = 4,
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now(),
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+    const std::array<std::byte, 1> payload {std::byte {'x'}};
+    for (int index = 0; index < 8; ++index) {
+        REQUIRE_EQ(runtime.queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+    }
+    const auto poll_data = [&] {
+        for (int index = 0; index < 4; ++index) {
+            now += 1'000;
+            (void)runtime.poll();
+        }
+        std::vector<SequenceNumber> sequences;
+        for (const auto& datagram : take_datagrams(output)) {
+            const auto decoded = decode_packet(datagram);
+            REQUIRE(decoded);
+            if (decoded.packet.kind == PacketKind::data) {
+                REQUIRE(!decoded.packet.data.retransmitted);
+                sequences.push_back(decoded.packet.data.sequence);
+            }
+        }
+        return sequences;
+    };
+    std::uint32_t ack_number = 0;
+    const auto acknowledge = [&](AcknowledgementKind kind,
+                                 std::uint32_t advance, std::uint32_t free) {
+        std::array<std::byte, 32> bytes {};
+        const Acknowledgement acknowledgement {
+            .kind = kind,
+            .acknowledgement_number =
+                kind == AcknowledgementKind::full ? ++ack_number : 0U,
+            .next_sequence = initial.advanced(advance),
+            .available_receive_buffer_packets = free,
+        };
+        const auto encoded =
+            encode_acknowledgement_payload(acknowledgement, bytes);
+        REQUIRE(encoded);
+        runtime.process_packet(
+            {
+                .kind = PacketKind::control,
+                .control =
+                    {
+                        .type = ControlType::acknowledgement,
+                        .type_specific = acknowledgement.acknowledgement_number,
+                        .destination_socket_id = 301,
+                    },
+                .payload = std::span {bytes}.first(encoded.bytes_written),
+            },
+            peer);
+    };
+    const auto window = [&] {
+        return runtime.statistics(false, true)
+            .instantaneous.flow_window_packets;
+    };
+
+    const auto first = poll_data();
+    REQUIRE_EQ(first.size(), 4U);
+    REQUIRE_EQ(first.front(), initial);
+    REQUIRE_EQ(first.back(), initial.advanced(3));
+    // Two packets received, two still in flight; the four-slot receiver
+    // has not delivered anything to its application.
+    acknowledge(AcknowledgementKind::full, 2, 2);
+    REQUIRE_EQ(window(), 2U);
+    REQUIRE(poll_data().empty());
+    acknowledge(AcknowledgementKind::lite, 3, 0);
+    REQUIRE_EQ(window(), 1U);
+    REQUIRE(poll_data().empty());
+
+    // Duplicated/stale ACKs and an invalid future ACK cannot consume credit
+    // twice or reopen the window. No wall-clock sleeps or network are used.
+    acknowledge(AcknowledgementKind::lite, 3, 0);
+    acknowledge(AcknowledgementKind::lite, 2, 0);
+    acknowledge(AcknowledgementKind::full, 2, 100);
+    acknowledge(AcknowledgementKind::lite, 9, 0);
+    REQUIRE_EQ(window(), 1U);
+    acknowledge(AcknowledgementKind::lite, 4, 0);
+    REQUIRE_EQ(window(), 0U);
+    REQUIRE(poll_data().empty());
+
+    // Only a fresh buffer advertisement permits new data again.
+    acknowledge(AcknowledgementKind::full, 4, 2);
+    REQUIRE_EQ(window(), 2U);
+    const auto second = poll_data();
+    REQUIRE_EQ(second.size(), 2U);
+    REQUIRE_EQ(second.front(), initial.advanced(4));
+    REQUIRE_EQ(second.back(), initial.advanced(5));
+    // A shrinking advertisement can be smaller than the outstanding flight.
+    // Its following Lite ACK must saturate at zero, not wrap to a huge window.
+    acknowledge(AcknowledgementKind::full, 4, 1);
+    acknowledge(AcknowledgementKind::lite, 6, 0);
+    REQUIRE_EQ(window(), 0U);
+    REQUIRE(poll_data().empty());
+    acknowledge(AcknowledgementKind::small, 6, 2);
+    REQUIRE_EQ(window(), 2U);
+    const auto last = poll_data();
+    REQUIRE_EQ(last.size(), 2U);
+    REQUIRE_EQ(last.front(), initial.advanced(6));
+    REQUIRE_EQ(last.back(), initial.advanced(7));
+}
+
+} // namespace
+
+TEST(compat_runtime_lite_ack_consumes_live_receive_window_credit)
+{
+    exercise_lite_ack_receive_window(
+        SequenceNumber {700}, CongestionController::live);
+}
+
+TEST(compat_runtime_lite_ack_consumes_file_receive_window_credit)
+{
+    exercise_lite_ack_receive_window(
+        SequenceNumber {700}, CongestionController::file);
+}
+
+TEST(compat_runtime_lite_ack_receive_window_handles_live_sequence_rollover)
+{
+    exercise_lite_ack_receive_window(
+        SequenceNumber {SequenceNumber::mask - 1}, CongestionController::live);
+}
+
+TEST(compat_runtime_lite_ack_receive_window_handles_file_sequence_rollover)
+{
+    exercise_lite_ack_receive_window(
+        SequenceNumber {SequenceNumber::mask - 1}, CongestionController::file);
+}
+
 TEST(compat_runtime_initializes_sender_window_from_peer_handshake)
 {
     SocketOptions options;

@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "benchmarks"))
@@ -107,6 +108,64 @@ class RetransmissionTraceTests(unittest.TestCase):
         result = rt.analyze_events(e, 1, 1, 1)
         self.assertTrue(result["valid"])
         self.assertEqual(len(result["retransmissions"][0]["receiver_observations"]), 1)
+
+    def test_receive_error_none_is_not_proof_of_insertion(self):
+        events = [self.event("bind", d=300, pid=2),
+                  self.event("rx_window", a=42, b=10, c=32, d=32, pid=2),
+                  self.event("rx_insert", a=42, b=4, c=0, pid=2),
+                  self.event("data_receive", a=42, c=0, pid=2)]
+        summary, insertions = rt.receive_evidence(events, 2)
+        self.assertEqual(summary["accepted_unique_sequences"], 0)
+        self.assertEqual(summary["insert_status_counts"], {"beyond_window": 1})
+        self.assertEqual(insertions[42][0]["window_before"]["b"], 10)
+
+    def test_receive_outcome_and_pop_mapping_are_required(self):
+        events = [self.event("rx_insert", a=42, pid=2), self.event("rx_pop", obj=300, pid=2)]
+        summary, _ = rt.receive_evidence(events, 2)
+        self.assertIn("receive insertion without pre-insert window", summary["errors"])
+        self.assertIn("unmapped receive-buffer pop", summary["errors"])
+
+    def test_receive_acceptance_is_unique_and_retains_rejected_original(self):
+        events = [self.event("bind", d=300, pid=2)]
+        for status, retransmitted in ((4, 0), (0, 1), (2, 1)):
+            events += [self.event("rx_window", a=42, b=42, d=32, pid=2),
+                       self.event("rx_insert", a=42, b=status, d=retransmitted, pid=2)]
+        events.append(self.event("rx_pop", a=43, c=43, d=1316, obj=300, pid=2))
+        summary, insertions = rt.receive_evidence(events, 2)
+        self.assertEqual(summary["errors"], [])
+        self.assertEqual(summary["accepted_unique_sequences"], 1)
+        self.assertEqual(summary["popped_bytes"], 1316)
+        self.assertEqual([i["status"] for i in insertions[42]],
+                         ["beyond_window", "accepted_in_order", "duplicate"])
+
+    def test_case_requires_accepted_insertions_and_complete_application_drain(self):
+        events = self.base() + [self.event("tx_window", a=43), self.event("bind", d=300, pid=2),
+                               self.event("rx_window", a=42, d=32, pid=2),
+                               self.event("rx_insert", a=42, pid=2),
+                               self.event("rx_pop", a=43, c=43, d=1316, obj=300, pid=2)]
+        result = {"peer_process_resources": {"sender": {"pid": 1}, "receiver": {"pid": 2}},
+                  "receiver_implementation": "robotweax", "messages_per_connection": 1,
+                  "message_size_bytes": 1316}
+        complete = [{"event": "complete", "stats": {"pktSentUniqueTotal": 1, "pktRetransTotal": 0}}]
+        with patch.object(rt, "read_events", return_value=events), \
+             patch.object(rt.sc, "read_output", return_value=""), \
+             patch.object(rt.sc, "parse_json_events", return_value=complete), \
+             patch.object(rt.sc, "write_report"):
+            self.assertTrue(rt.analyze_case(Path("unused"), result)["valid"])
+            events[-1]["d"] = 1315
+            self.assertFalse(rt.analyze_case(Path("unused"), result)["valid"])
+            events[-1]["d"] = 1316
+            events[-2]["b"] = 4
+            self.assertFalse(rt.analyze_case(Path("unused"), result)["valid"])
+
+    def test_retransmission_includes_applied_send_window(self):
+        events = self.base() + [self.event("tx_window", a=42, b=0, c=1),
+            self.event("nak", a=42), self.event("request_nak", obj=200),
+            self.event("queued", a=42, obj=200), self.event("selected", a=42, obj=200),
+            self.event("wire_send", a=42, b=1)]
+        result = rt.analyze_events(events, 1, 1, 1)
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["retransmissions"][0]["applied_send_window"]["b"], 0)
 
     def test_missing_or_truncated_or_overflow_trace_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
