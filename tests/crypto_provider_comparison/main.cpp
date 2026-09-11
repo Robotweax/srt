@@ -96,6 +96,18 @@ int main()
                     ctr_b->transform(iv, plain, b) == Error::none && a == b);
                 require(
                     ctr_a->transform(iv, a, a) == Error::none && a == plain);
+                for (std::size_t offset = 1; offset < 8; ++offset) {
+                    std::vector<std::byte> unaligned(
+                        size + offset + 1, std::byte {0x6d});
+                    auto payload = std::span(unaligned).subspan(offset, size);
+                    std::copy(plain.begin(), plain.end(), payload.begin());
+                    require(
+                        ctr_a->transform(iv, payload, payload) == Error::none);
+                    require(
+                        std::equal(payload.begin(), payload.end(), b.begin()));
+                    require(unaligned.front() == std::byte {0x6d}
+                        && unaligned.back() == std::byte {0x6d});
+                }
                 std::array<std::byte, 12> nonce {};
                 std::array<std::byte, 16> tag_a {}, tag_b {};
                 require(

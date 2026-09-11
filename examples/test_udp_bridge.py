@@ -15,6 +15,7 @@ import time
 
 class Peer:
     def __init__(self, command: list[str], environment: dict[str, str]) -> None:
+        self.program = command[0]
         self.process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, env=environment,
@@ -42,7 +43,11 @@ class Peer:
                 return line
             if line == "EOF":
                 break
-        raise AssertionError(f"missing {prefix}: {''.join(self.lines)}")
+        raise AssertionError(
+            f"missing {prefix}: program={self.program}, "
+            f"pid={self.process.pid}, exit_code={self.process.poll()}\n"
+            f"{''.join(self.lines)}"
+        )
 
     def close(self) -> None:
         if self.process.poll() is None:

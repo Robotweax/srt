@@ -140,6 +140,12 @@ int main()
                 == Error::cryptographic_failure);
             require(fault::remaining == 0 && zero(output));
             require(cipher->transform(iv, input, output) == Error::none);
+            input.fill(std::byte {0x5a});
+            fault::arm(fault::Call::encrypt, 2);
+            require(cipher->transform(iv, input, input)
+                == Error::cryptographic_failure);
+            require(fault::remaining == 0 && zero(input));
+            require(cipher->transform(iv, input, input) == Error::none);
         }
         {
             std::unique_ptr<AuthenticatedPayloadCipher> cipher;

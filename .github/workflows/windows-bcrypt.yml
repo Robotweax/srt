@@ -1,6 +1,11 @@
 name: Experimental BCrypt backend
 on:
   workflow_dispatch:
+    inputs:
+      qualification:
+        description: Run native ARM64 and serial x64/ARM64 performance diagnostics only
+        type: boolean
+        default: false
   pull_request:
     paths:
       - 'src/crypto*'
@@ -19,7 +24,81 @@ on:
 permissions:
   contents: read
 jobs:
+  arm64-runtime:
+    if: github.event_name == 'workflow_dispatch' && inputs.qualification
+    runs-on: windows-11-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Native ARM64 Release and Debug execution
+        shell: pwsh
+        run: |
+          function Run([string]$Program, [string[]]$Arguments) {
+            & $Program @Arguments
+            if ($LASTEXITCODE -ne 0) { throw "$Program failed" }
+          }
+          New-Item -ItemType Directory evidence | Out-Null
+          "runner=$env:RUNNER_ARCH; process=$([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture); sha=$env:GITHUB_SHA" | Set-Content evidence/architecture.txt
+          if ($env:RUNNER_ARCH -ne 'ARM64') { throw 'Native ARM64 runner required' }
+          Run cmake @('-S','.', '-B','arm-build','-A','ARM64','-DROBOTWEAX_SRT_CRYPTO_BACKEND=bcrypt','-DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON','-DENABLE_AEAD_API_PREVIEW=ON')
+          Run cmake @('-S','tests/crypto_provider_comparison','-B','failures','-A','ARM64','-DCOMPARE_OPENSSL=OFF','-DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON')
+          foreach ($config in 'Release','Debug') {
+            Run cmake @('--build','arm-build','--config',$config,'--parallel','2','--target','robotweax_srt_tests')
+            Run "./arm-build/$config/robotweax_srt_tests.exe" @('provider')
+            Run "./arm-build/$config/robotweax_srt_tests.exe" @('crypto')
+            Run cmake @('--build','failures','--config',$config,'--parallel','2')
+            Run ctest @('--test-dir','failures','-C',$config,'--output-on-failure')
+            Copy-Item failures/Testing/Temporary/LastTest.log "evidence/failures-$config.log"
+          }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-arm64-crypto-evidence
+          path: evidence/
+          retention-days: 7
+  serial-performance:
+    if: github.event_name == 'workflow_dispatch' && inputs.qualification
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: x64
+            environment: amd64
+          - runner: windows-11-arm
+            platform: Arm64
+            environment: amd64_arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: openssl/openssl
+          ref: aae016bfd52fcad2bc9657c2c782cfdf73b1ed5f
+          path: openssl-source
+          persist-credentials: false
+      - name: Build pinned assembler-enabled OpenSSL and run serial measurements
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $script = Join-Path $PWD 'packaging/windows/measure-crypto.ps1'
+          $pwsh = Join-Path $PSHOME 'pwsh.exe'
+          if ('${{ matrix.platform }}' -eq 'Arm64' -and $env:RUNNER_ARCH -ne 'ARM64') { throw 'Native ARM64 runner required' }
+          & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" ${{ matrix.environment }} && `"$pwsh`" -NoProfile -File `"$script`" -Platform ${{ matrix.platform }}"
+          if ($LASTEXITCODE -ne 0) { throw 'Qualification failed' }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-crypto-performance-evidence-${{ matrix.platform }}
+          path: evidence/
+          retention-days: 7
   shared:
+    if: github.event_name != 'workflow_dispatch' || !inputs.qualification
     name: Shared x64 (${{ matrix.configuration }})
     runs-on: windows-latest
     timeout-minutes: 25
@@ -65,6 +144,7 @@ jobs:
             Run cmake @('--build',"peer-$backend",'--config',$env:CONFIGURATION,'--parallel','2')
           }
       - name: BCrypt versus OpenSSL encrypted public API
+        id: backend-interop
         shell: pwsh
         env:
           CONFIGURATION: ${{ matrix.configuration }}
@@ -77,6 +157,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'GCM backend interoperability failed' }
           python interop/run_encrypted_file_interop.py --profile base --reference-provider robotweax --robotweax-peer "peer-bcrypt/$env:CONFIGURATION/crypto_peer.exe" --reference-peer "peer-openssl/$env:CONFIGURATION/crypto_peer.exe" --bytes 524667 --km-refresh-rate 64 --km-preannounce 20
           if ($LASTEXITCODE -ne 0) { throw 'Encrypted file backend interoperability failed' }
+      - name: Diagnostic direct and traced baselines after failure (not a retry gate)
+        if: failure() && steps.backend-interop.outcome == 'failure'
+        shell: pwsh
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
+        run: |
+          # The original step remains failed even if these diagnostic controls pass.
+          python interop/run_encrypted_interop.py --robotweax-peer "peer-bcrypt/$env:CONFIGURATION/crypto_peer.exe" --reference-peer "peer-openssl/$env:CONFIGURATION/crypto_peer.exe" --km-refresh-rate 64 --km-preannounce 20 --baseline-only
+          $direct = $LASTEXITCODE
+          python interop/run_encrypted_interop.py --robotweax-peer "peer-bcrypt/$env:CONFIGURATION/crypto_peer.exe" --reference-peer "peer-openssl/$env:CONFIGURATION/crypto_peer.exe" --km-refresh-rate 64 --km-preannounce 20 --baseline-only --trace-baseline-handshake
+          $traced = $LASTEXITCODE
+          Write-Output "Diagnostic exit codes: direct=$direct traced=$traced. Neither supersedes the original failure."
+          if ($direct -ne 0 -or $traced -ne 0) { throw 'Diagnostic baseline failure retained' }
       - name: Build runner-local Haivision peer and test CTR
         if: matrix.configuration == 'Release'
         shell: pwsh
@@ -88,6 +181,7 @@ jobs:
           python interop/run_encrypted_interop.py --robotweax-peer peer-bcrypt/Release/crypto_peer.exe --reference-peer peer-haivision/Release/crypto_peer.exe --bytes 524288 --km-refresh-rate 64 --km-preannounce 20
           if ($LASTEXITCODE -ne 0) { throw 'Haivision CTR interoperability failed' }
   native:
+    if: github.event_name != 'workflow_dispatch' || !inputs.qualification
     runs-on: windows-latest
     timeout-minutes: 15
     strategy:

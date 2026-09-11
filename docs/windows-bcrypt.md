@@ -101,6 +101,27 @@ Before recommending or making this the Windows default, complete:
 
 ## Planned Windows-default transition
 
+### Manual runtime and performance evidence
+
+Dispatch `windows-bcrypt.yml` with `qualification=true` on the revision under
+review. This runs only the two qualification jobs, not the regular matrix:
+
+- Native `windows-11-arm` builds and executes ARM64 provider/crypto tests and
+  injected CNG failures in Release and Debug. This is not full ARM64 application
+  or network qualification.
+- The x64 job builds checksum-identifiable, pinned, assembler-enabled OpenSSL
+  using the SDK recipe, runs comparison tests, then measures the providers
+  serially. Five rounds alternate provider order. CSV reports median, nearest-rank
+  p95 and mean of 2,000 calls after 200 warm-ups for each AES key size, 1,200/1,316
+  byte payload, CTR transform and GCM seal/open. Cipher preparation is excluded;
+  clock overhead is included. Synthetic keys/nonces are used only for this test.
+
+Logs, build settings and CSV are retained for seven days; no dependency binaries
+are uploaded. Preserve reviewed evidence before expiry. Shared-runner scheduling,
+CPU frequency and power management are not controlled. These measurements are
+diagnostics, not an automatic performance gate, throughput guarantee or proof of
+equivalence under production load. No default is changed by a successful run.
+
 The Windows comparison project includes a separate `provider_failures` test
 executable that injects an unsuccessful CNG status into algorithm opening,
 property setup, key creation, encryption/decryption, RNG and PBKDF2 calls.
