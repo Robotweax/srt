@@ -362,6 +362,9 @@ int get_socket_option(
     case SRTO_ROBOTWEAX_VERSION:
         return write_value(value, value_size,
             static_cast<std::int32_t>(ROBOTWEAX_SRT_VERSION_VALUE));
+    case SRTO_ROBOTWEAX_CRYPTO_BACKEND:
+        return write_value(value, value_size,
+            static_cast<std::int32_t>(ROBOTWEAX_SRT_COMPILED_CRYPTO_BACKEND));
     case SRTO_PEERVERSION:
         return write_value(value, value_size,
             static_cast<std::int32_t>(socket.peer_srt_version));

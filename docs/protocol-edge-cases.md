@@ -3,7 +3,7 @@
 Robotweax SRT follows the selected
 [`draft-sharabayko-srt-01`](https://datatracker.ietf.org/doc/html/draft-sharabayko-srt-01)
 wire description and the public compatibility contract documented for release
-0.2.3. This page collects security- or interoperability-sensitive rules that
+0.2.4. This page collects security- or interoperability-sensitive rules that
 are easy to miss when integrating SRT.
 
 ## UDP datagram boundaries

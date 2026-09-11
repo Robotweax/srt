@@ -1,6 +1,6 @@
 # Public SRT API compatibility
 
-Robotweax SRT 0.2.3 provides a compatible public C boundary for the selected
+Robotweax SRT 0.2.4 provides a compatible public C boundary for the selected
 Haivision SRT v1.5.7 API profile. It is an independent implementation, not a
 source fork and not a claim of complete compatibility with every historical or
 future `libsrt` behavior.
@@ -18,9 +18,9 @@ differ, the manifest is authoritative.
 
 These values are intentionally independent:
 
-| Axis | Robotweax SRT 0.2.3 |
+| Axis | Robotweax SRT 0.2.4 |
 | --- | --- |
-| Project release | `0.2.3` |
+| Project release | `0.2.4` |
 | Shared-library ABI line | `0.2` |
 | Default compatible public API | Haivision SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -35,7 +35,7 @@ not change the default v1.5.7 API claim. The upstream-preview
 `SRT_KM_S_BADCRYPTOMODE` and the `SRT_KM_S_E_SIZE = 6` sentinel are part of
 the unconditional v1.5.7 key-management enum.
 
-## Unreleased caller replay correction
+## Caller replay correction
 
 After an HSv5 caller advances to CONCLUSION, a delayed INDUCTION response is
 ignored before version/crypto policy, routing metadata, or protocol state can
@@ -65,7 +65,7 @@ and the compatibility forwarding header:
 
 The CMake target is `RobotweaxSRT::srt`; POSIX installations also provide
 `robotweax-srt.pc`. Static and shared artifacts use the conventional `srt`
-library name. The 0.2.3 package exports an exact, versioned 80-symbol C ABI.
+library name. The 0.2.4 package exports an exact, versioned 80-symbol C ABI.
 The installed `<robotweax_srt.h>` header contributes the six native packet and
 option symbols in that ABI. Source-tree headers below `include/robotweax/srt/`
 are private C++ implementation interfaces and are not installed.
@@ -214,7 +214,7 @@ the manifest as the contract.
 
 ## Compatibility limits
 
-Robotweax SRT 0.2.3 is not yet a link-compatible replacement for arbitrary
+Robotweax SRT 0.2.4 is not yet a link-compatible replacement for arbitrary
 `libsrt` applications. In particular:
 
 - HSv4 positive connection establishment is not supported in 0.2;

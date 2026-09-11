@@ -5,6 +5,11 @@ Windows CNG provider. The default remains `openssl`, on every platform.
 No public SRT API or wire-format change is intended. This backend is under
 qualification, not recommended as a production replacement yet.
 
+Starting with 0.2.4, applications can identify the loaded library's backend
+with the read-only `SRTO_ROBOTWEAX_CRYPTO_BACKEND` extension through
+`srt_getsockflag()`. See [runtime backend identification](socket-options.md#identify-the-loaded-crypto-backend).
+Do not infer the loaded backend from version numbers or installed headers.
+
 ```powershell
 cmake -S . -B build-bcrypt -A x64 -DROBOTWEAX_SRT_CRYPTO_BACKEND=bcrypt
 cmake --build build-bcrypt --config Release --parallel 2
@@ -21,10 +26,10 @@ not a standalone streaming application. It bundles public headers, static
 Robotweax SRT libraries for Debug/Release on Win32, x64 and
 ARM64, and an MSBuild property sheet. See the
 [Windows SDK packaging documentation](https://github.com/Robotweax/srt/blob/main/packaging/windows/README.md).
-The installer candidate defaults to OpenSSL and is not yet a signed,
-qualified release installer. SDK builders can explicitly choose BCrypt without
-bundling OpenSSL, or retain OpenSSL and its dependency/license. This does not
-change the library's default backend or qualify the installer for release.
+Separate OpenSSL and BCrypt installer candidates are built. The BCrypt SDK
+does not bundle OpenSSL; the OpenSSL SDK includes its dependency and license.
+Both are currently unsigned. Installer qualification is distinct from provider
+qualification; neither switches the library's OpenSSL source-build default.
 
 ## Implementation boundary
 

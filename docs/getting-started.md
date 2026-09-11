@@ -1,7 +1,7 @@
 # Getting started
 
 This guide takes a new developer from a clean checkout to a tested Robotweax
-SRT 0.2.3 build and outlines the first application integration steps.
+SRT 0.2.4 build and outlines the first application integration steps.
 
 ## 1. Install prerequisites
 

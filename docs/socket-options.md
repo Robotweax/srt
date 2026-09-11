@@ -5,6 +5,35 @@ surface. Use `srt_setsockflag()` and `srt_getsockflag()` with the declared
 `SRT_SOCKOPT` value and value representation. Pre-connection, pre-bind,
 post-connection, and read-only constraints are part of each option's contract.
 
+## Identify the loaded crypto backend
+
+Since 0.2.4, `SRTO_ROBOTWEAX_CRYPTO_BACKEND` (`0x01000002`) returns an
+`int32_t`: `ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL` (1) or
+`ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT` (2). This read-only query identifies the
+loaded library, not the application's headers, selected cipher or remote peer.
+It works on valid sockets and groups before connecting, including unencrypted
+sockets, and never enables encryption or initializes a connection.
+
+```c
+int32_t backend = 0;
+int length = sizeof(backend);
+const char* name = "unknown";
+if (srt_getsockflag(socket, SRTO_ROBOTWEAX_CRYPTO_BACKEND,
+        &backend, &length) == 0) {
+    if (backend == ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL) name = "OpenSSL";
+    else if (backend == ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT) name = "BCrypt";
+}
+```
+
+Create a valid socket after `srt_startup()` if the application has none yet,
+then close it when finished. Null pointers and buffers smaller than four bytes
+are rejected without writing the result; success sets the length to four.
+Setting this option is unsupported. Older Robotweax and other SRT libraries may
+reject the query: report unknown, not OpenSSL, on failure or an unknown future
+value. When compiling against older headers, guard the example with
+`#ifdef ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL`. No exported symbol, structure
+layout, upstream option value or `SRTO_E_SIZE` changes.
+
 ## Identify the local implementation
 
 `<srt/srt.h>` exposes `ROBOTWEAX_SRT_VERSION_MAJOR`, `_MINOR`, `_PATCH`,

@@ -20,7 +20,7 @@ HISTORICAL_ABI_PATH = ROOT / "cmake" / "abi" / "robotweax-srt-0.1.0.txt"
 FROZEN_0_2_0_ABI_PATH = (
     ROOT / "cmake" / "abi" / "robotweax-srt-0.2.0.txt"
 )
-CURRENT_PROJECT_VERSION = "0.2.3"
+CURRENT_PROJECT_VERSION = "0.2.4"
 CURRENT_ABI_PATH = (
     ROOT / "cmake" / "abi" / f"robotweax-srt-{CURRENT_PROJECT_VERSION}.txt"
 )

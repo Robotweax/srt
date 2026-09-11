@@ -1,6 +1,6 @@
 # Integration guide
 
-This guide describes the stable integration surface of Robotweax SRT 0.2.3.
+This guide describes the stable integration surface of Robotweax SRT 0.2.4.
 It assumes the library has been installed or provided through a package built
 as described in [Building and installing](building.md).
 
@@ -32,7 +32,7 @@ native packet/options boundary, not a replacement for the socket API.
 
 These values describe different things:
 
-- Robotweax release: 0.2.3;
+- Robotweax release: 0.2.4;
 - shared-library ABI: 0.2;
 - default compatible API and `srt_getversion()`: 1.5.7;
 - connection establishment: HSv5.

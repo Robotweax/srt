@@ -12,13 +12,13 @@ depending on implementation-specific C++ internals.
 
 ## Release status
 
-Version **0.2.3** is a pre-1.0 maintenance release with documented
-[qualification limits](docs/release-notes-0.2.3.md#qualification-limits-and-release-acceptance),
+Version **0.2.4** is a pre-1.0 maintenance release with documented
+[qualification limits](docs/release-notes-0.2.4.md#qualification-limits-and-release-acceptance),
 including outstanding independent cryptographic review.
 
-| Axis | Robotweax SRT 0.2.3 |
+| Axis | Robotweax SRT 0.2.4 |
 | --- | --- |
-| Project release | `0.2.3` |
+| Project release | `0.2.4` |
 | Shared-library ABI | `0.2` |
 | Default public API target | SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -32,7 +32,7 @@ handshake, and encryption profile are separate version axes. In particular,
 release number.
 
 Version 0.2 is a pre-1.0 release. Rebuild applications and dependencies when
-moving between ABI lines. See the [0.2.3 release notes](docs/release-notes-0.2.3.md)
+moving between ABI lines. See the [0.2.4 release notes](docs/release-notes-0.2.4.md)
 and [0.1-to-0.2 migration guide](docs/migration-0.2.md).
 
 ## Highlights

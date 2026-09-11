@@ -1,7 +1,7 @@
 # Robotweax SRT documentation
 
 This directory contains the public documentation for building, integrating,
-operating, and evaluating Robotweax SRT 0.2.3. It is written for application
+operating, and evaluating Robotweax SRT 0.2.4. It is written for application
 developers and transport integrators using the installed public API.
 
 ## Start here
@@ -66,6 +66,7 @@ named as public contracts may change between pre-1.0 releases.
 
 ## Releases and migration
 
+- [Robotweax SRT 0.2.4 release notes](release-notes-0.2.4.md)
 - [Robotweax SRT 0.2.3 release notes](release-notes-0.2.3.md)
 - [Robotweax SRT 0.2.2 release notes](release-notes-0.2.2.md)
 - [Robotweax SRT 0.2.1 release notes](release-notes-0.2.1.md)
@@ -75,7 +76,7 @@ named as public contracts may change between pre-1.0 releases.
 - [Project changelog](../CHANGELOG.md)
 
 Robotweax release numbers, the shared-library ABI, the compatible SRT API
-value, and the wire handshake generation are independent. For 0.2.3, the ABI
+value, and the wire handshake generation are independent. For 0.2.4, the ABI
 line is 0.2, the default public API and `srt_getversion()` value are 1.5.7,
 and supported connection establishment uses HSv5.
 
