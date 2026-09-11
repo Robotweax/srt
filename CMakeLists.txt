@@ -60,11 +60,13 @@ endif()
 set(ROBOTWEAX_SRT_CRYPTO_BACKEND "openssl" CACHE STRING "Crypto backend: openssl or bcrypt (experimental Windows only)")
 set_property(CACHE ROBOTWEAX_SRT_CRYPTO_BACKEND PROPERTY STRINGS openssl bcrypt)
 if(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "openssl")
+    set(ROBOTWEAX_SRT_CRYPTO_BACKEND_ID 1)
     find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
     set(ROBOTWEAX_SRT_CRYPTO_SOURCE src/crypto_openssl.cpp)
     set(ROBOTWEAX_SRT_CRYPTO_LIBRARY OpenSSL::Crypto)
     set(ROBOTWEAX_SRT_PC_CRYPTO_REQUIRES "libcrypto >= 3.0")
 elseif(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "bcrypt" AND WIN32)
+    set(ROBOTWEAX_SRT_CRYPTO_BACKEND_ID 2)
     set(ROBOTWEAX_SRT_CRYPTO_SOURCE src/crypto_bcrypt.cpp)
     set(ROBOTWEAX_SRT_CRYPTO_LIBRARY bcrypt)
     set(ROBOTWEAX_SRT_PC_CRYPTO_REQUIRES "")
@@ -132,6 +134,8 @@ add_library(robotweax_srt
 add_library(RobotweaxSRT::srt ALIAS robotweax_srt)
 
 target_compile_definitions(robotweax_srt PRIVATE ROBOTWEAX_SRT_BUILDING)
+target_compile_definitions(robotweax_srt PRIVATE
+    ROBOTWEAX_SRT_COMPILED_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
 if(ENABLE_AEAD_API_PREVIEW)
     target_compile_definitions(robotweax_srt
         PUBLIC ENABLE_AEAD_API_PREVIEW)
@@ -316,6 +320,8 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_compat_epoll.cpp
         tests/test_compat_groups.cpp
         tests/test_compat_runtime.cpp)
+    target_compile_definitions(robotweax_srt_tests PRIVATE
+        ROBOTWEAX_SRT_EXPECT_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
     target_link_libraries(robotweax_srt_tests
         PRIVATE RobotweaxSRT::srt Threads::Threads)
     target_include_directories(robotweax_srt_tests

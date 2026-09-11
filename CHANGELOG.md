@@ -8,6 +8,8 @@ version returned by `srt_getversion()`.
 
 ## 0.2.4 — release candidate
 
+- Add `SRTO_ROBOTWEAX_CRYPTO_BACKEND`, a read-only runtime backend query
+  through the existing socket API, without adding exported symbols.
 Release preparation; no publication date or final qualification is asserted.
 See [release notes](docs/release-notes-0.2.4.md) for distribution and limitations.
 

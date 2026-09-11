@@ -38,6 +38,8 @@ universal superiority over OpenSSL. See [BCrypt qualification](windows-bcrypt.md
 
 ## Runtime and integration changes
 
+- Add the read-only `SRTO_ROBOTWEAX_CRYPTO_BACKEND` runtime query to identify
+  OpenSSL or BCrypt in the loaded library; see [socket options](socket-options.md).
 - Add the [UDP/SRT bridge](udp-srt-bridge.md): MPEG-TS datagram forwarding,
   IPv4 multicast, Caller/Listener/Rendezvous in both media directions, live
   statistics and optional reconnect.

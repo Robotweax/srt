@@ -5,6 +5,11 @@ Windows CNG provider. The default remains `openssl`, on every platform.
 No public SRT API or wire-format change is intended. This backend is under
 qualification, not recommended as a production replacement yet.
 
+Starting with 0.2.4, applications can identify the loaded library's backend
+with the read-only `SRTO_ROBOTWEAX_CRYPTO_BACKEND` extension through
+`srt_getsockflag()`. See [runtime backend identification](socket-options.md#identify-the-loaded-crypto-backend).
+Do not infer the loaded backend from version numbers or installed headers.
+
 ```powershell
 cmake -S . -B build-bcrypt -A x64 -DROBOTWEAX_SRT_CRYPTO_BACKEND=bcrypt
 cmake --build build-bcrypt --config Release --parallel 2

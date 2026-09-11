@@ -148,6 +148,11 @@ typedef enum SRT_SOCKOPT {
      * This extension does not change SRTO_E_SIZE or compatibility options.
      */
     SRTO_ROBOTWEAX_VERSION = 0x01000001,
+    /** Loaded library's crypto backend as int32_t; read-only and local.
+     * Returns ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL or _BCRYPT.
+     * Requires a valid socket or group, even when encryption is disabled.
+     */
+    SRTO_ROBOTWEAX_CRYPTO_BACKEND = 0x01000002,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
     SRTO_E_SIZE = 63
@@ -155,6 +160,10 @@ typedef enum SRT_SOCKOPT {
     SRTO_E_SIZE = 62
 #endif
 } SRT_SOCKOPT;
+
+/* Values returned by SRTO_ROBOTWEAX_CRYPTO_BACKEND (not cipher modes). */
+#define ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL 1
+#define ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT 2
 
 typedef enum SRT_TRANSTYPE {
     SRTT_LIVE = 0,

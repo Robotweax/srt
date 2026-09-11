@@ -49,6 +49,19 @@ int main(void)
         return 2;
     }
 
+    int32_t backend = 0;
+    int backend_size = (int)sizeof(backend);
+    if (srt_getsockflag(
+            socket, SRTO_ROBOTWEAX_CRYPTO_BACKEND, &backend, &backend_size)
+            == SRT_ERROR
+        || backend_size != (int)sizeof(backend)
+        || (backend != ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL
+            && backend != ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT)) {
+        (void)srt_close(socket);
+        (void)srt_cleanup();
+        return 11;
+    }
+
     int32_t implementation_version = 0;
     int implementation_size = (int)sizeof(implementation_version);
     if (srt_getsockflag(socket, SRTO_ROBOTWEAX_VERSION, &implementation_version,
