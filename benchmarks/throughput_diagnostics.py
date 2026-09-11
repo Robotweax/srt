@@ -22,6 +22,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import scalability_scorecard as sc
+import retransmission_trace as rt
 
 try:
     import resource
@@ -66,10 +67,11 @@ def udp_snapshot() -> dict:
 
 
 def peer_arguments(args) -> tuple[str, ...]:
+    pacing = getattr(args, "pacing_burst_packets", 0)
     return ("--pending-packets", str(args.pending_packets), "--flow-window", "16384",
             "--send-buffer", "33554432", "--receive-buffer", "33554432",
             "--udp-buffer", str(args.udp_buffer), "--max-bandwidth", "1250000000",
-            "--target-bps", str(args.target_bps))
+            "--target-bps", str(args.target_bps)) + (("--pacing-burst-packets", str(pacing)) if pacing else ())
 
 
 def case_plan(profiles: list[str], repetitions: int, warmups: int,
@@ -88,7 +90,7 @@ def case_plan(profiles: list[str], repetitions: int, warmups: int,
 
 
 def perf_command(capture: str, data: Path, command: list[str], perf: str) -> list[str]:
-    if capture == "none":
+    if capture in ("none", "transport"):
         return command
     if capture == "cpu":
         # Software clock works without a virtualized hardware PMU. DWARF avoids
@@ -143,6 +145,14 @@ def run_case(path: Path) -> int:
     entry = {"transfer_pass": False, "started_unix_ns": time.time_ns()}
     before = udp_snapshot()
     try:
+        # This child process runs exactly one case. The environment is inherited
+        # by both peers, not by concurrent/unrelated callers of the scorecard.
+        if request.get("capture") == "transport":
+            trace_directory = directory / "transport-trace"
+            trace_directory.mkdir(exist_ok=False)
+            os.environ["ROBOTWEAX_TRANSPORT_TRACE_DIR"] = str(trace_directory)
+        else:
+            os.environ.pop("ROBOTWEAX_TRANSPORT_TRACE_DIR", None)
         result = sc.run_many_socket_profile(
             request["profile"], {k: Path(v) for k, v in request["programs"].items()},
             sc.RunOptions(**request["options"]), directory,
@@ -159,6 +169,18 @@ def run_case(path: Path) -> int:
             raise sc.ScorecardFailure("peer lacks capacity-option readbacks; rebuild both peers")
         entry.update(transfer_pass=True, result=result,
                      rate_pass=(request["target_bps"] == 0 or result["rates"]["useful_bits_per_second"] >= .95 * request["target_bps"]))
+        offered = [e for e in sc.parse_json_events(sc.read_output(directory / "many-socket-caller.stdout"))
+                   if e.get("event") == "offered-rate"]
+        if request.get("pacing_burst_packets", 0):
+            if len(offered) != 1:
+                raise sc.ScorecardFailure("missing bounded-pacer evidence")
+            entry["offered_rate"] = offered[0]
+            entry["matched_rate_pass"] = (
+                .98 * request["target_bps"] <= offered[0]["enqueue_bps"] <= 1.02 * request["target_bps"]
+                and offered[0]["catchup_credit_packets"] == request["pacing_burst_packets"]
+                and entry["rate_pass"])
+        if request.get("capture") == "transport":
+            entry["profiling"] = rt.analyze_case(directory, result)
         return 0
     except Exception as error:
         entry["error"] = str(error)
@@ -240,11 +262,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-manifest", type=Path, required=True)
     parser.add_argument("--output-directory", type=Path, required=True)
     parser.add_argument("--profile", action="append", choices=PROFILES)
-    parser.add_argument("--capture", choices=("none", "cpu", "scheduler"), default="none")
+    parser.add_argument("--capture", choices=("none", "cpu", "scheduler", "transport"), default="none")
     parser.add_argument("--repetitions", type=bounded_int(1, 10))
     parser.add_argument("--warmups", type=bounded_int(0, 2), default=1)
     parser.add_argument("--bytes-per-connection", type=bounded_int(1316, 1024**3), default=128 * 1024**2)
     parser.add_argument("--target-bps", type=bounded_int(0, 100_000_000_000), default=0)
+    parser.add_argument("--pacing-burst-packets", type=bounded_int(0, 64), default=0)
     parser.add_argument("--pending-packets", type=bounded_int(1, 65536), default=8192)
     parser.add_argument("--udp-buffer", type=bounded_int(65536, 32 * 1024**2), default=8 * 1024**2)
     parser.add_argument("--timeout-seconds", type=bounded_int(10, 90), default=45)
@@ -254,21 +277,28 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if platform.system() not in ("Linux", "Darwin"):
         parser.error("this process-group diagnostic runner requires Linux or macOS")
-    if args.capture != "none" and platform.system() != "Linux":
+    if args.capture in ("cpu", "scheduler") and platform.system() != "Linux":
         parser.error("perf capture requires Linux; use Instruments separately on macOS")
     if args.capture == "scheduler" and not args.allow_system_wide:
         parser.error("scheduler capture requires --allow-system-wide on a dedicated test VM")
     perf = shutil.which("perf") or "perf"
-    if args.capture != "none" and not shutil.which("perf"):
+    if args.capture in ("cpu", "scheduler") and not shutil.which("perf"):
         parser.error("perf is not installed; no fallback to an unprofiled success")
     manifest = json.loads(args.build_manifest.read_text())
     if manifest.get("complete") is not True:
         parser.error("build manifest is incomplete")
+    traced_build = manifest.get("transport_trace", {}).get("enabled", False)
+    if traced_build != (args.capture == "transport"):
+        parser.error("transport capture requires an overlay build; overlay builds cannot produce plain/perf capacity results")
+    if args.pacing_burst_packets and not args.target_bps:
+        parser.error("bounded pacing requires a positive target rate")
     for identity in [*manifest["programs"].values(), *manifest["libraries"].values()]:
         if sc.file_sha256(Path(identity["path"])) != identity["sha256"]:
             parser.error("a peer or library changed since the recorded build")
     programs = {name: value["path"] for name, value in manifest["programs"].items()}
     profiles = args.profile or ["robotweax-self", "robotweax-to-haivision"]
+    if args.capture == "transport" and any(sc.PROFILE_IMPLEMENTATIONS[p][0] != "robotweax" for p in profiles):
+        parser.error("transport attribution currently requires a Robotweax sender")
     if any("haivision" in sc.PROFILE_IMPLEMENTATIONS[p] for p in profiles) and "haivision" not in programs:
         parser.error("selected profile needs the reference peer")
     environment = host_metadata()
@@ -286,7 +316,8 @@ def main(argv: list[str] | None = None) -> int:
               "profiling_scope": "driver and descendant peers, including connection setup and drain; filter by peer PID",
               "started_unix_ns": time.time_ns()}
     report["harness_files"] = [sc.program_identity(path) for path in
-                               (Path(__file__).resolve(), ROOT / "benchmarks/scalability_scorecard.py")]
+                               (Path(__file__).resolve(), ROOT / "benchmarks/scalability_scorecard.py",
+                                ROOT / "benchmarks/retransmission_trace.py")]
     sc.write_report(out / "report.json", report)
     options = sc.RunOptions("127.0.0.1", 1, args.bytes_per_connection, 1316,
                             args.timeout_seconds, 120, 500, .02)
@@ -296,7 +327,8 @@ def main(argv: list[str] | None = None) -> int:
             directory = out / f"{index:02}-{item['profile']}-{item['kind']}"
             directory.mkdir()
             request = {**item, "index": index, "programs": programs, "options": asdict(options),
-                       "target_bps": args.target_bps, "peer_arguments": peer_arguments(args)}
+                       "target_bps": args.target_bps, "peer_arguments": peer_arguments(args), "capture": args.capture,
+                       "pacing_burst_packets": args.pacing_burst_packets}
             sc.write_report(directory / "request.json", request)
             command = perf_command(args.capture, directory / "perf.data",
                                    [sys.executable, str(Path(__file__).resolve()), "--case-file", str(directory / "request.json")], perf)
@@ -307,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
                     entry.update(json.loads((directory / "case.json").read_text()))
                 else:
                     entry["error"] = "capture/driver exited without a case report; see command.log"
-                if args.capture != "none":
+                if args.capture in ("cpu", "scheduler"):
                     entry["profiling"] = render_capture(args.capture, directory, entry.get("result", {}), perf)
             except Exception as error:
                 entry["error"] = str(error)
@@ -319,7 +351,8 @@ def main(argv: list[str] | None = None) -> int:
         report["finished"] = True
         report["all_transfers_pass"] = all(e["transfer_pass"] and e.get("exit_code") == 0 for e in report["runs"])
         report["all_captures_usable"] = args.capture == "none" or all(e.get("profiling", {}).get("valid") for e in report["runs"])
-        return 0 if report["all_transfers_pass"] and report["all_captures_usable"] else 1
+        report["all_matched_rates_pass"] = not args.pacing_burst_packets or all(e.get("matched_rate_pass") for e in report["runs"])
+        return 0 if report["all_transfers_pass"] and report["all_captures_usable"] and report["all_matched_rates_pass"] else 1
     finally:
         report["finished_unix_ns"] = time.time_ns()
         sc.write_report(out / "report.json", report)

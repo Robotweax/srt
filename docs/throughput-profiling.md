@@ -355,4 +355,138 @@ Acceptance requires correct payloads, no regression of the existing contracts,
 repeatable throughput gain beyond host drift, and reduced work in the measured
 receive scan. This experiment does not establish WAN/media-deadline behavior,
 multi-connection scaling, encrypted throughput or superiority to Haivision.
-No Linux before/after improvement is claimed until those results are reviewed.
+The completed [Linux ARM64 A/B report](https://github.com/Robotweax/srt_network_lab/blob/main/results/2026-09-11-empty-receive-ab/report-de.md)
+(private lab evidence) confirms the receive-scan and throughput improvement.
+It also records additional candidate retransmissions: 0.51–1.84% relative to
+original packets in the unpaced plain measurements. These are **not measured
+network-loss percentages**. Zero observed UDP error counters do not rule out
+delayed ACKs, gaps, bursts or timer-triggered retransmission. The candidate is
+not transport-qualified for merge/release on that evidence alone.
+
+## Matched-rate retransmission investigation
+
+Keep all previous unpaced results, manifests and raw profiles unchanged. This
+follow-up uses the **same original VM**, baseline `a5c428b725b5373651041b0e30678406b2d5c38c`,
+candidate `40387f2dc70b7701b266be1c91f048f2d4fa3b61`, and the same pinned Haivision
+1.5.7 revision above. Record the exact new harness commit; the peer now has an
+optional bounded pacer. Do not label these new measurements as harness `98425af`.
+
+Start at **100,000,000 payload bit/s**, comfortably below the slowest historical
+baseline (~177 Mbit/s). It is a proposed common offered load, **not an assumed
+achieved rate**. `--pacing-burst-packets 4` bounds catch-up credit to four packets;
+long scheduling/backpressure stalls cannot create unbounded application catch-up
+bursts. No sleep/spin changes to the library. With the default value zero, the
+previous peer pacing and all unpaced behavior are preserved.
+
+Each paced caller records first-to-last successful enqueue rate, duration,
+forgiven pacing time and maximum **fixed** 1-ms bucket occupancy (not a sliding
+window or a wire-burst measurement). A matched run requires enqueue rate within
+±2% of target and end-to-end useful throughput at least 95% of target. If either
+variant misses that contract, retain the result and do not claim equal-load
+qualification. Do not silently reduce only one side's rate or retry failures.
+
+### Four fresh builds, identical diagnostic overlay
+
+Use this branch's scripts at one recorded harness commit. Create detached clean
+worktrees for the two library revisions; never reset a working checkout. The
+following assumes `SRT` names that harness checkout, `REFERENCE` the clean pinned
+Haivision checkout, and `WORK` a **new** investigation directory on the VM.
+
+```sh
+git -C "$SRT" worktree add --detach "$WORK/baseline-source" a5c428b725b5373651041b0e30678406b2d5c38c
+git -C "$SRT" worktree add --detach "$WORK/candidate-source" 40387f2dc70b7701b266be1c91f048f2d4fa3b61
+
+for variant in baseline candidate; do
+  python3 "$SRT/benchmarks/prepare_throughput.py" \
+    --robotweax-source "$WORK/$variant-source" --reference-source "$REFERENCE" \
+    --output-directory "$WORK/$variant-plain"
+  python3 "$SRT/benchmarks/prepare_throughput.py" \
+    --robotweax-source "$WORK/$variant-source" --reference-source "$REFERENCE" \
+    --output-directory "$WORK/$variant-trace" --transport-trace
+done
+```
+
+`--transport-trace` exports only committed source to a fresh build-local copy.
+Exact unique anchors insert diagnostic hooks into three implementation files;
+the original checkout and public headers/ABI remain untouched. Original and
+instrumented file hashes, overlay/header hashes, library and peer hashes are
+recorded in the build manifest. Reject dirty source for the overlay. Normal
+builds contain **none** of these hooks. The same overlay must be used on both
+revisions. Source exports/reference programs are runner-local, not artifacts.
+
+This is an intrusive diagnostic build: timestamping/memory stores, initial
+thread-local allocation and the larger working set can alter behavior. Each
+participating thread has at most 32 MiB of event storage (524288 events), no
+per-event heap allocation, synchronization with another trace writer or file
+write. Files are flushed at thread exit, outside transfer completion. It must
+not be sold as a zero-overhead tracer or mixed into plain throughput figures.
+
+### Serial execution and preserved failures
+
+Record the VM's original UDP limits, temporarily raise them as for the previous
+A/B experiment, and restore them in the operator's `finally`/shell trap even
+after interruption. The runner does not use `sudo` or change sysctls. Keep builds
+and unrelated load tests outside the measurement period. Use plain VM-user
+execution; neither `perf` nor system-wide packet capture is needed for these hooks.
+
+```sh
+python3 "$SRT/benchmarks/run_retransmission_ab.py" \
+  --baseline-plain "$WORK/baseline-plain/build-manifest.json" \
+  --candidate-plain "$WORK/candidate-plain/build-manifest.json" \
+  --baseline-trace "$WORK/baseline-trace/build-manifest.json" \
+  --candidate-trace "$WORK/candidate-trace/build-manifest.json" \
+  --output-directory "$WORK/results"
+```
+
+The bounded plan contains **48 transfers**, serially, with 30 s cooldown before
+each block and unchanged 128-MiB payload/FC/buffer/latency/MAXBW parameters:
+
+- Four plain **A–B–B–A** blocks at 100 Mbit/s. Each contains Haivision controls
+  before/after, one excluded warmup per direction and three measurements per
+  direction: 40 transfers, 24 retained measured values in total.
+- Separate traced A/B at 100 Mbit/s: one transfer per direction/variant (4).
+- Separate traced A/B unpaced: one transfer per direction/variant (4), to connect
+  the equal-load findings with the original high-rate symptom. These are new,
+  instrumented experiments; they do not replace the old unpaced A/B results.
+
+All block statuses, including failures, remain in `ab-report.json`; no automatic
+retries. Each block retains `report.json`, case reports, commands, stdout/stderr,
+options, public statistics and VM UDP counter deltas. Captures are labelled
+`transport`, not `measurement`; their rates never enter plain summaries.
+
+### Causal records and acceptance
+
+Every Robotweax sender trace records:
+
+- Validated NAK ranges, including ranges partially older than the active buffer.
+- Actual **new** retransmission queue entries, selection and successful UDP
+  send completion, keyed by send buffer/session and 31-bit packet sequence.
+- Timer expiration with the **pre-poll deadline**, poll time, smoothed RTT and
+  variance; flight size, timeout multiplier after poll and periodic-NAK mode.
+- Accepted ACK sequence/kind, cumulative progress, remaining flight and local/
+  peer RTT estimates. Lite ACK's absent peer fields are not valid RTT samples.
+- Original packet sends and, for the Robotweax receiver, accepted DATA sequence
+  and retransmit flag. This is userspace observation, not kernel/wire time.
+
+`retransmissions.json` contains **one row per actual retransmission**, with its
+original send, first enqueue cause (`nak`, `tail`, `all`), trigger record,
+latest ACK/progress/RTT and receiver observations where available. Repeated NAKs
+do not overwrite a timer cause if the packet was already queued; a timer firing
+does not imply it actually selected a packet. ACK/NAK/timer records remain in
+the raw JSONL files for independent sequence/time correlation.
+
+Missing headers/trailers, overflow, missing cause/original/selection, incomplete
+Robotweax receive-sequence coverage or mismatch against public original and
+retransmission counters invalidate the trace. A crash can leave incomplete
+files; those are evidence, not a zero-retransmission result. Haivision receiver
+internals are not instrumented; its ACK/NAK messages are observed at the
+Robotweax sender. No payload contents, keys or reference binaries are recorded.
+
+Analyze each direction separately: offered-rate/bucket comparability; count and
+ratio of each retransmission reason; timer deadline vs last progressing ACK;
+RTT/variance; NAK ranges vs original send/receiver sequence; queue-to-send delay;
+and changes between plain and traced behavior. No repeats at 100 Mbit/s alone
+exonerate the unpaced behavior. A missing high-rate symptom under instrumentation
+is inconclusive, not fixed. Keep this merge/release question open until the
+unpaced retransmissions are explained. WAN, encryption, multiple connections,
+live deadlines and new optimization work remain separate qualification tasks.

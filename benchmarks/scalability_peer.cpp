@@ -63,6 +63,7 @@ struct Configuration {
     int udp_buffer = 0;
     std::int64_t maximum_bandwidth = -1;
     std::uint64_t target_bits_per_second = 0;
+    std::uint32_t pacing_burst_packets = 0;
 };
 
 struct EndpointAddress {
@@ -276,6 +277,12 @@ bool parse_arguments(int argc, char** argv, Configuration& configuration)
             if (!parse_integer(value, configuration.maximum_bandwidth)
                 || configuration.maximum_bandwidth < -1
                 || configuration.maximum_bandwidth > 12'500'000'000LL) {
+                return false;
+            }
+        } else if (option == "--pacing-burst-packets"
+            && take_value(index, argc, argv, value)) {
+            if (!parse_integer(value, configuration.pacing_burst_packets)
+                || configuration.pacing_burst_packets > 64U) {
                 return false;
             }
         } else if (option == "--target-bps"
@@ -646,6 +653,11 @@ bool run_sender(const Configuration& configuration,
     std::uint64_t sent_messages = 0;
     std::size_t cursor = 0;
     const auto started = Clock::now();
+    auto pacing_origin = started;
+    Clock::time_point first_enqueue {}, last_enqueue {};
+    std::int64_t pacing_forgiven_nanoseconds = 0;
+    std::uint64_t enqueue_bucket = 0, bucket_packets = 0,
+                  maximum_bucket_packets = 0;
     const auto deadline = started
         + std::chrono::milliseconds {configuration.timeout_milliseconds};
 
@@ -706,8 +718,28 @@ bool run_sender(const Configuration& configuration,
                         * static_cast<double>(configuration.message_size) * 8.0
                         / static_cast<double>(
                             configuration.target_bits_per_second)};
-                    const auto due = started
+                    auto due = pacing_origin
                         + std::chrono::duration_cast<Clock::duration>(offset);
+                    if (configuration.pacing_burst_packets != 0U) {
+                        const auto credit = std::chrono::duration<double> {
+                            static_cast<double>(
+                                configuration.pacing_burst_packets - 1U)
+                            * configuration.message_size * 8.0
+                            / static_cast<double>(
+                                configuration.target_bits_per_second)};
+                        const auto earliest = Clock::now()
+                            - std::chrono::duration_cast<Clock::duration>(
+                                credit);
+                        if (due < earliest) {
+                            const auto forgiven = earliest - due;
+                            pacing_origin += forgiven;
+                            due = earliest;
+                            pacing_forgiven_nanoseconds +=
+                                std::chrono::duration_cast<
+                                    std::chrono::nanoseconds>(forgiven)
+                                    .count();
+                        }
+                    }
                     if (due >= deadline) {
                         std::cerr << "offered-rate duration exceeds timeout\n";
                         return false;
@@ -736,6 +768,22 @@ bool run_sender(const Configuration& configuration,
                 if (sent != configuration.message_size) {
                     std::cerr << "message send was unexpectedly partial\n";
                     return false;
+                }
+                if (configuration.target_bits_per_second != 0U) {
+                    last_enqueue = Clock::now();
+                    if (sent_messages == 0U) {
+                        first_enqueue = last_enqueue;
+                    }
+                    const auto bucket = static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            last_enqueue - first_enqueue)
+                            .count());
+                    if (bucket != enqueue_bucket) {
+                        bucket_packets = 0;
+                        enqueue_bucket = bucket;
+                    }
+                    maximum_bucket_packets =
+                        std::max(maximum_bucket_packets, ++bucket_packets);
                 }
                 ++progress[index];
                 ++sent_messages;
@@ -807,6 +855,27 @@ bool run_sender(const Configuration& configuration,
         std::this_thread::sleep_for(std::chrono::milliseconds {1});
     }
 
+    if (configuration.target_bits_per_second != 0U) {
+        const auto span = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            last_enqueue - first_enqueue)
+                              .count();
+        const double offered_bps = span > 0
+            ? static_cast<double>(sent_messages - 1U)
+                * configuration.message_size * 8.0 * 1e9
+                / static_cast<double>(span)
+            : 0.0;
+        std::cout << "{\"event\":\"offered-rate\",\"target_bps\":"
+                  << configuration.target_bits_per_second
+                  << ",\"enqueue_bps\":" << offered_bps
+                  << ",\"enqueue_span_ns\":" << span
+                  << ",\"messages\":" << sent_messages
+                  << ",\"catchup_credit_packets\":"
+                  << configuration.pacing_burst_packets
+                  << ",\"forgiven_ns\":" << pacing_forgiven_nanoseconds
+                  << ",\"maximum_fixed_1ms_bucket_packets\":"
+                  << maximum_bucket_packets << "}\n"
+                  << std::flush;
+    }
     const AggregateStatistics statistics = capture_statistics(sockets);
     print_complete("caller", configuration, Clock::now() - started,
         establishment, completion, statistics);

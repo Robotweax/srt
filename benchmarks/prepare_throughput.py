@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 
 import scalability_scorecard as sc
+import retransmission_trace as rt
 
 REFERENCE_REVISION = "899348d8318eb9a3c5a5b6ec43c4a1114288773a"
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,9 +44,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--jobs", type=int, default=2, choices=range(1, 9))
     parser.add_argument("--allow-dirty-robotweax", action="store_true",
                         help="development smoke only, recorded in manifest")
+    parser.add_argument("--transport-trace", action="store_true",
+                        help="instrument a fresh committed-source export; never a capacity result")
     args = parser.parse_args(argv)
     if platform.system() not in ("Linux", "Darwin"):
         parser.error("this diagnostic builder currently supports Linux and macOS")
+    if args.transport_trace and args.allow_dirty_robotweax:
+        parser.error("transport overlay requires a clean committed Robotweax source")
     compiler = shutil.which(args.cxx)
     if not compiler:
         parser.error("C++ compiler not found")
@@ -78,6 +83,11 @@ def main(argv: list[str] | None = None) -> int:
         return (out / f"{label}.log").read_text()
 
     try:
+        if args.transport_trace:
+            exported = out / "robotweax-traced-source"
+            manifest["transport_trace"] = rt.export_overlay(
+                sources["robotweax"], identities["robotweax"]["revision"], exported)
+            sources["robotweax"] = exported
         run([compiler, "--version"], "compiler")
         run(["cmake", "--version"], "cmake")
         crypto_flags = shlex.split(run(["pkg-config", "--cflags", "--libs", "libcrypto"], "crypto-flags"))
