@@ -210,10 +210,16 @@ def render_capture(capture: str, directory: Path, result: dict, perf: str) -> di
         return {"valid": completed.returncode == 0 and all(counts.values()),
                 "samples_by_peer_pid": counts,
                 "call_stack_quality_requires_review": True}
-    # A successful renderer is not proof of a usable per-peer schedule trace.
+    # Linux 6.8/perf 6.8.12 ARM64 can print both endpoint PIDs while omitting
+    # seconds of worker runtime. PID presence is only diagnostic evidence.
+    # Fail closed until thread-family coverage and runtime plausibility have
+    # an independently validated check; do not bless a partial native summary.
     content = (directory / "perf-scheduler.txt").read_text()
     found = all(re.search(rf"(?<!\d){pid}(?!\d)", content) for pid in pids)
-    return {"valid": found, "peer_pids": pids, "trace_coverage_requires_review": True}
+    return {"valid": False, "peer_pids": pids, "peer_pid_mentions": found,
+            "render_succeeded": True, "worker_coverage_validated": False,
+            "runtime_coverage_validated": False, "trace_coverage_requires_review": True,
+            "error": "native scheduler summary is unqualified: independent worker and runtime coverage review required"}
 
 
 def summarize(entries: list[dict]) -> list[dict]:

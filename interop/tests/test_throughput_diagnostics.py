@@ -130,19 +130,48 @@ class ThroughputDiagnosticsTests(unittest.TestCase):
                 self.assertIn("comm,pid,dso,symbol", run.call_args_list[0].args[0])
                 self.assertTrue(capture["call_stack_quality_requires_review"])
 
-    def test_scheduler_render_rejects_partial_pid_matches(self):
+    def test_scheduler_pid_presence_never_qualifies_worker_runtime(self):
         result = {"peer_process_resources": {"sender": {"pid": 100}, "receiver": {"pid": 200}}}
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             (directory / "perf.data").touch()
-            for content, valid in (("rwx-capacity[100] hvs-capacity[200]", True),
-                                   ("rwx-capacity[1000] hvs-capacity[200]", False)):
+            for content, mentioned in (("rwx-capacity[100] hvs-capacity[200]", True),
+                                       ("rwx-capacity[1000] hvs-capacity[200]", False)):
                 def render(command, **kwargs):
                     self.assertIn("100,200", command)
                     kwargs["stdout"].write(content)
                     return subprocess.CompletedProcess(command, 0)
                 with mock.patch.object(diag.subprocess, "run", side_effect=render):
-                    self.assertEqual(diag.render_capture("scheduler", directory, result, "perf")["valid"], valid)
+                    capture = diag.render_capture("scheduler", directory, result, "perf")
+                self.assertFalse(capture["valid"])
+                self.assertEqual(capture["peer_pid_mentions"], mentioned)
+                self.assertTrue(capture["render_succeeded"])
+                self.assertFalse(capture["worker_coverage_validated"])
+                self.assertFalse(capture["runtime_coverage_validated"])
+
+    def test_scheduler_millisecond_only_native_summary_is_not_a_pass(self):
+        # Shape of the observed ARM64 renderer failure, with synthetic PIDs.
+        summary = """Samples of sched_switch event do not have callchains.
+Runtime summary
+comm parent sched-in run-time min-run avg-run max-run stddev migrations
+                 :100[100] -1 1 3.442 3.442 3.442 3.442 0.00 0
+                 :200[200] -1 1 0.766 0.766 0.766 0.766 0.00 0
+"""
+        result = {"peer_process_resources": {
+            "sender": {"pid": 100, "user_cpu_us": 4_800_000, "system_cpu_us": 1_200_000},
+            "receiver": {"pid": 200, "user_cpu_us": 200_000, "system_cpu_us": 170_000}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "perf.data").touch()
+            def render(command, **kwargs):
+                kwargs["stdout"].write(summary)
+                return subprocess.CompletedProcess(command, 0)
+            with mock.patch.object(diag.subprocess, "run", side_effect=render):
+                capture = diag.render_capture("scheduler", directory, result, "perf")
+            self.assertTrue(capture["peer_pid_mentions"])
+            self.assertFalse(capture["valid"])
+            self.assertIn("worker", capture["error"])
+            self.assertEqual((directory / "perf-scheduler.txt").read_text(), summary)
 
     @unittest.skipUnless(os.name == "posix", "POSIX process groups")
     def test_bounded_command_preserves_nonzero_status(self):
