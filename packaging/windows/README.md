@@ -3,7 +3,7 @@
 This is an SDK for application developers, not a standalone streaming app.
 It implements the packaging work requested in
 [issue #12](https://github.com/Robotweax/srt/issues/12).
-The candidate defaults to OpenSSL; builders can explicitly select the
+Two separate installers offer OpenSSL and the
 [experimental BCrypt backend](../../docs/windows-bcrypt.md).
 Manual target-machine acceptance and
 release signing remain pending; this is not a qualified release installer.
@@ -30,16 +30,16 @@ checking that shared headers and license files are identical. Each variant's
 files in BCrypt inventories. Distribute `srt-backend.props` alongside `srt.props`;
 it supplies the package's backend-specific link dependencies.
 
-Compile `sdk.iss` with Inno Setup, supplying `/DSdkRoot=...` and
-`/DProductVersion=...`. Do not publish until Windows install/uninstall and all
+Compile `sdk.iss` with Inno Setup, supplying `/DSdkRoot=...`,
+`/DProductVersion=...` and `/DCryptoBackend=openssl` or `bcrypt`.
+The supplied SDK must match this backend. Do not publish until Windows install/uninstall and all
 six consumer link checks pass. This initial packaging work is not a signed or
 qualified release installer. No existing release assets are modified.
 
-The `Windows SDK candidate` workflow builds six variants and uploads short-lived
-candidate artifacts only. Manual runs select `crypto_backend`; the default is
-OpenSSL with a pinned 3.6.3 dependency. BCrypt runs skip that dependency entirely.
-Packaging PRs additionally smoke-test BCrypt x64 Debug/Release consumers and
-package rejection rules without doubling the full installer matrix.
+The `Windows SDK installers` workflow builds six variants per backend and uploads
+short-lived candidate artifacts. OpenSSL uses a pinned 3.6.3 dependency; BCrypt
+skips that dependency entirely. Package regression tests reject mixed or
+incorrectly labelled backend inventories.
 It links a public C consumer for every target and runs it for Win32/x64; ARM64
 execution is not verified by the x64 runner. OpenSSL assembly is enabled using
 NASM for Win32/x64 and the `VC-WIN64-CLANGASM-ARM` target (MSVC C compiler,
@@ -47,21 +47,29 @@ clang-cl assembler) for ARM64. Missing assemblers or disabled assembly fail the
 build; assembler versions and OpenSSL configuration are recorded in CI logs.
 This is **not a performance qualification**; production throughput still needs
 measurement on the target hardware. This workflow runs manually or for
-PRs changing Windows packaging; it does not run on ordinary pushes or
-automatically publish release assets.
+PRs changing Windows packaging, and on `v*` tags, but not ordinary branch pushes.
+Tags must exactly match `v` plus the CMake project version. Only after both
+installers and their side-by-side tests pass are both executables and
+`SHA256SUMS` attached to a draft release. Publishing remains a manual review step;
+an existing published release is never modified. Re-running an upload with
+existing asset names fails rather than replacing them. Manual runs only produce
+CI artifacts and are the qualification path before tagging. No tag is needed
+to test packaging. Installers are currently unsigned.
 
 Interactive installation shows the installer UI. Unattended installation:
 
 ```powershell
-Start-Process -Wait -FilePath .\robotweax-srt-VERSION-windows-sdk.exe -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+Start-Process -Wait -FilePath .\robotweax-srt-VERSION-windows-sdk-openssl.exe -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
 ```
 
 Use `/DIR="C:\custom\Robotweax-SRT"` to select another directory. The installer
-sets machine-wide `ROBOTWEAX_SRT`; open a new shell to observe the change.
-Import `$(ROBOTWEAX_SRT)\srt.props` after project compiler settings:
+sets machine-wide `ROBOTWEAX_SRT_OPENSSL` or `ROBOTWEAX_SRT_BCRYPT`; open a new
+shell to observe the change. Default folders are `Robotweax-SRT-openssl` and
+`Robotweax-SRT-bcrypt` under Program Files. Select exactly one backend by importing
+its props after project compiler settings (replace OPENSSL with BCRYPT as needed):
 
 ```xml
-<Import Project="$(ROBOTWEAX_SRT)\srt.props" />
+<Import Project="$(ROBOTWEAX_SRT_OPENSSL)\srt.props" />
 ```
 
 Header includes remain `<srt/srt.h>`; the root is private to this SDK and does
@@ -75,8 +83,16 @@ The candidate workflow also builds the public C consumer through
 combinations. It executes Win32/x64 consumers and deliberately checks that a
 static-CRT profile is rejected. ARM64 remains compile/link-only on this runner.
 
-Upgrades currently require uninstalling the previous SDK first. The installer
-rejects an already registered SDK even when a different destination is selected.
+The installers do not set or change the legacy `ROBOTWEAX_SRT` variable.
+Existing projects may explicitly set that variable to the selected SDK root.
+This does not change the CMake default backend (OpenSSL).
+
+Upgrades currently require uninstalling the previous SDK of the same backend
+first. Legacy, backend-neutral SDK candidates must also be uninstalled first.
+The installer rejects an already registered same-backend SDK even when a
+different destination is selected. Different backends can coexist in distinct
+folders. CI tests both installation orders, rejects cross-backend overwrites,
+and verifies that removing one SDK preserves the other's files and variable.
 CI checks rejection, preservation of the existing props file, uninstall and
 reinstallation into another path. This is not an automatic in-place upgrade test.
 Do not install

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-param([Parameter(Mandatory)][string]$Variants, [Parameter(Mandatory)][string]$Destination)
+param([Parameter(Mandatory)][string]$Variants, [Parameter(Mandatory)][string]$Destination,
+      [string]$ArtifactPrefix = 'sdk', [ValidateSet('openssl','bcrypt')][string]$ExpectedBackend)
 $ErrorActionPreference = 'Stop'
 if (Test-Path $Destination) { throw 'Destination must not exist' }
 New-Item -ItemType Directory $Destination | Out-Null
@@ -7,10 +8,11 @@ $Hashes = @{}
 $Backend = $null
 foreach ($Configuration in @('Debug','Release')) {
     foreach ($Platform in @('Win32','x64','Arm64')) {
-        $Variant = Join-Path $Variants "sdk-$Configuration-$Platform"
+        $Variant = Join-Path $Variants "$ArtifactPrefix-$Configuration-$Platform"
         $MetadataPath = "$Variant/lib/$Configuration-$Platform/build.json"
         $Metadata = Get-Content $MetadataPath -Raw | ConvertFrom-Json
         if ($Metadata.crypto_backend -notin @('openssl','bcrypt')) { throw 'Missing or invalid crypto backend' }
+        if ($ExpectedBackend -and $Metadata.crypto_backend -ne $ExpectedBackend) { throw 'Unexpected crypto backend' }
         if ($Metadata.platform -ne $Platform -or $Metadata.configuration -ne $Configuration) { throw 'Variant metadata mismatch' }
         if ($Backend -and $Backend -ne $Metadata.crypto_backend) { throw 'Mixed crypto backends are not supported' }
         $Backend = $Metadata.crypto_backend

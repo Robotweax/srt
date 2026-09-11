@@ -1,12 +1,8 @@
-name: Windows SDK candidate
+name: Windows SDK installers
 on:
   workflow_dispatch:
-    inputs:
-      crypto_backend:
-        description: SDK crypto backend
-        type: choice
-        options: [openssl, bcrypt]
-        default: openssl
+  push:
+    tags: ['v*']
   pull_request:
     paths:
       - 'packaging/windows/**'
@@ -14,33 +10,30 @@ on:
 permissions:
   contents: read
 jobs:
-  bcrypt-smoke:
-    if: github.event_name == 'pull_request'
+  validate:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: BCrypt SDK consumers without OpenSSL
+      - name: Validate release tag
+        if: github.ref_type == 'tag'
         shell: pwsh
         run: |
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          $script = Join-Path $PWD 'packaging\windows\build-ci.ps1'
-          $pwsh = Join-Path $PSHOME 'pwsh.exe'
-          foreach ($configuration in 'Debug','Release') {
-            & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" amd64 && `"$pwsh`" -NoProfile -File `"$script`" -Platform x64 -Configuration $configuration -CryptoBackend bcrypt"
-            if ($LASTEXITCODE -ne 0) { throw 'BCrypt SDK consumer failed' }
-          }
+          $version = [regex]::Match((Get-Content CMakeLists.txt -Raw), 'project\(robotweax_srt VERSION ([0-9.]+)').Groups[1].Value
+          if (!$version -or $env:GITHUB_REF_NAME -cne "v$version") { throw 'Tag must match the CMake project version exactly' }
       - name: Package validation regression tests
         shell: pwsh
         run: ./packaging/windows/test-package.ps1
   build:
+    needs: validate
     runs-on: windows-latest
     timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
+        backend: [openssl, bcrypt]
         platform: [Win32, x64, Arm64]
         configuration: [Debug, Release]
     steps:
@@ -48,7 +41,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/checkout@v7
-        if: github.event_name != 'workflow_dispatch' || inputs.crypto_backend != 'bcrypt'
+        if: matrix.backend == 'openssl'
         with:
           repository: openssl/openssl
           ref: aae016bfd52fcad2bc9657c2c782cfdf73b1ed5f
@@ -59,7 +52,7 @@ jobs:
         env:
           SDK_PLATFORM: ${{ matrix.platform }}
           SDK_CONFIGURATION: ${{ matrix.configuration }}
-          SDK_CRYPTO_BACKEND: ${{ inputs.crypto_backend || 'openssl' }}
+          SDK_CRYPTO_BACKEND: ${{ matrix.backend }}
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $arch = @{Win32='x86'; x64='amd64'; Arm64='amd64_arm64'}[$env:SDK_PLATFORM]
@@ -69,7 +62,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'SDK build failed' }
       - uses: actions/upload-artifact@v7
         with:
-          name: sdk-${{ matrix.configuration }}-${{ matrix.platform }}
+          name: sdk-${{ matrix.backend }}-${{ matrix.configuration }}-${{ matrix.platform }}
           path: output/sdk-${{ matrix.configuration }}-${{ matrix.platform }}/
           if-no-files-found: error
           retention-days: 7
@@ -77,31 +70,38 @@ jobs:
     needs: build
     runs-on: windows-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [openssl, bcrypt]
+    env:
+      SDK_BACKEND: ${{ matrix.backend }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
-          pattern: sdk-*
+          pattern: sdk-${{ matrix.backend }}-*
           path: variants
       - name: Assemble and compile installer candidate
         shell: pwsh
         run: |
-          ./packaging/windows/package.ps1 -Variants variants -Destination sdk
+          ./packaging/windows/package.ps1 -Variants variants -Destination sdk -ArtifactPrefix "sdk-$env:SDK_BACKEND" -ExpectedBackend $env:SDK_BACKEND
           $version = [regex]::Match((Get-Content CMakeLists.txt -Raw), 'project\(robotweax_srt VERSION ([0-9.]+)').Groups[1].Value
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (!(Test-Path $iscc)) { throw 'Inno Setup 6 is required' }
-          & $iscc "/DSdkRoot=$PWD\sdk" "/DProductVersion=$version" packaging/windows/sdk.iss
+          & $iscc "/DSdkRoot=$PWD\sdk" "/DProductVersion=$version" "/DCryptoBackend=$env:SDK_BACKEND" packaging/windows/sdk.iss
           if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
       - name: Smoke test silent install and uninstall
         shell: pwsh
         run: |
           $installer = (Get-ChildItem packaging/windows/Output/*.exe).FullName
           $destination = Join-Path $env:RUNNER_TEMP 'Robotweax SDK test'
+          $variable = 'ROBOTWEAX_SRT_' + $env:SDK_BACKEND.ToUpperInvariant()
           $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$destination`""
           if ($process.ExitCode -ne 0) { throw 'Installation failed' }
-          if ([Environment]::GetEnvironmentVariable('ROBOTWEAX_SRT','Machine') -ne $destination) { throw 'SDK environment variable missing' }
+          if ([Environment]::GetEnvironmentVariable($variable,'Machine') -ne $destination) { throw 'SDK environment variable missing' }
           $before = (Get-FileHash "$destination/srt.props").Hash
           $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$destination`""
           if ($process.ExitCode -eq 0) { throw 'Existing installation was not rejected' }
@@ -117,7 +117,7 @@ jobs:
           $process = Start-Process -Wait -PassThru "$destination/unins000.exe" -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
           if ($process.ExitCode -ne 0) { throw 'Uninstallation failed' }
           if (Test-Path "$destination/srt.props") { throw 'SDK files remained installed' }
-          if ([Environment]::GetEnvironmentVariable('ROBOTWEAX_SRT','Machine') -eq $destination) { throw 'Stale SDK environment variable' }
+          if ([Environment]::GetEnvironmentVariable($variable,'Machine') -eq $destination) { throw 'Stale SDK environment variable' }
           $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$other`""
           if ($process.ExitCode -ne 0) { throw 'Reinstallation after uninstall failed' }
           if (!(Test-Path "$other/include/srt/srt.h")) { throw 'Reinstalled headers missing' }
@@ -125,7 +125,56 @@ jobs:
           if ($process.ExitCode -ne 0) { throw 'Final cleanup failed' }
       - uses: actions/upload-artifact@v7
         with:
-          name: windows-sdk-installer-candidate
+          name: windows-sdk-installer-${{ matrix.backend }}
           path: packaging/windows/Output/*.exe
           if-no-files-found: error
           retention-days: 7
+  coexistence:
+    needs: installer
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: windows-sdk-installer-*
+          path: installers
+          merge-multiple: true
+      - name: Verify side-by-side installation and independent removal
+        shell: pwsh
+        run: ./packaging/windows/test-installers.ps1 -Installers installers
+  release-draft:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: coexistence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: windows-sdk-installer-*
+          path: installers
+          merge-multiple: true
+      - name: Attach both installers to a draft only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        working-directory: installers
+        run: |
+          set -euo pipefail
+          openssl="robotweax-srt-${RELEASE_TAG#v}-windows-sdk-openssl.exe"
+          bcrypt="robotweax-srt-${RELEASE_TAG#v}-windows-sdk-bcrypt.exe"
+          test -s "$openssl"
+          test -s "$bcrypt"
+          sha256sum "$openssl" "$bcrypt" > SHA256SUMS
+          if gh release view "$RELEASE_TAG" --json isDraft > release.json; then
+            test "$(jq -r .isDraft release.json)" = true || { echo 'Refusing to modify a published release'; exit 1; }
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Robotweax SRT ${RELEASE_TAG#v}" --notes 'Windows SDK installers: OpenSSL and BCrypt. Unsigned; review qualification and release notes before publishing.'
+          fi
+          gh release upload "$RELEASE_TAG" "$openssl" "$bcrypt" SHA256SUMS

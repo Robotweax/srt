@@ -25,6 +25,21 @@ try {
             }
         }
         & "$PSScriptRoot/package.ps1" -Variants $Variants -Destination "$Root/valid-$Backend"
+        $Rejected = $false
+        $Other = if ($Backend -eq 'openssl') { 'bcrypt' } else { 'openssl' }
+        try { & "$PSScriptRoot/package.ps1" -Variants $Variants -Destination "$Root/wrong-$Backend" -ExpectedBackend $Other }
+        catch {
+            if ($_.Exception.Message -notmatch 'Unexpected crypto backend') { throw }
+            $Rejected = $true
+        }
+        if (!$Rejected) { throw 'Incorrect installer backend accepted' }
+        foreach ($Variant in Get-ChildItem $Variants -Directory) {
+            Rename-Item $Variant.FullName ($Variant.Name -replace '^sdk-', "sdk-$Backend-")
+        }
+        & "$PSScriptRoot/package.ps1" -Variants $Variants -Destination "$Root/prefixed-$Backend" -ArtifactPrefix "sdk-$Backend" -ExpectedBackend $Backend
+        foreach ($Variant in Get-ChildItem $Variants -Directory) {
+            Rename-Item $Variant.FullName ($Variant.Name -replace "^sdk-$Backend-", 'sdk-')
+        }
     }
     function Expect-Rejection([string]$Name, [string]$Pattern) {
         $Rejected = $false
