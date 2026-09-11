@@ -64,6 +64,28 @@ Percentiles are batch-average times; compare variants within this run, not
 absolute values from other runners. Failure-injection qualification of the
 production change and end-to-end throughput remain required before merging.
 
+## Public-API loopback transfer
+
+Manual qualification also builds `tests/crypto_end_to_end` as separate static
+Release executables for BCrypt and pinned OpenSSL. Three serial rounds
+alternate backend order. Each executable transfers 131072 application blocks of 1316
+bytes over an IPv4 loopback caller/listener connection, using File/Stream
+mode, first without encryption, then AES-256-CTR and AES-256-GCM. No artificial
+pacing or loss is injected. The receiver compares every byte including the
+full message sequence. Failures are retained and fail the job; no retry hides
+them. These are independent connections, not a steady-state long soak.
+
+`end-to-end.jsonl` records delivered payload Mbps, wall time and Windows
+process CPU time (user plus kernel) for sender and receiver together.
+`cpu_core_equivalents` is CPU seconds divided by wall seconds, not a percentage
+of the whole machine. Measurement begins after connection/accept and includes
+thread startup, payload generation/validation and final sender join, but not
+socket shutdown or crypto setup. Short transfers and shared-runner scheduling
+limit precision. Unencrypted runs provide a transport/harness control.
+These results are not NIC throughput, live MPEG-TS timing or a guarantee that
+CPU differences translate into higher application throughput. Local macOS
+execution validates the harness only, not Windows provider performance.
+
 ## CTR size sweep
 
 `provider_benchmark --ctr-sweep` uses AES-256 and five rounds with alternating

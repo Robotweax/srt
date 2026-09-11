@@ -37,4 +37,32 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'CTR component benchmark failed' }
     & ./measure/Release/provider_benchmark.exe --ctr-candidate | Set-Content evidence/ctr-candidate.csv
     if ($LASTEXITCODE -ne 0) { throw 'CTR candidate benchmark failed' }
+    foreach ($backend in 'bcrypt','openssl') {
+        $options = @('-S','tests/crypto_end_to_end','-B',"e2e-$backend",'-A',$Platform,
+            "-DROBOTWEAX_SRT_CRYPTO_BACKEND=$backend",'-DBUILD_SHARED_LIBS=OFF')
+        if ($backend -eq 'openssl') {
+            $options += @('-DOPENSSL_USE_STATIC_LIBS=ON',"-DOPENSSL_ROOT_DIR=$PWD/crypto-install",
+                "-DOPENSSL_INCLUDE_DIR=$PWD/crypto-install/include",
+                "-DLIB_EAY_DEBUG:FILEPATH=$Crypto","-DLIB_EAY_RELEASE:FILEPATH=$Crypto")
+        } else { $options += '-DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON' }
+        Run cmake $options
+        Run cmake @('--build',"e2e-$backend",'--config','Release','--parallel','2','--target','crypto_end_to_end')
+        Copy-Item "e2e-$backend/CMakeCache.txt" "evidence/e2e-$backend-cache.txt"
+        Get-FileHash "e2e-$backend/Release/crypto_end_to_end.exe" | ConvertTo-Json | Set-Content "evidence/e2e-$backend-hash.json"
+    }
+    Start-Sleep -Seconds 15
+    for ($round = 0; $round -lt 3; $round++) {
+        $backends = if ($round % 2) { @('openssl','bcrypt') } else { @('bcrypt','openssl') }
+        foreach ($backend in $backends) {
+            foreach ($mode in 0,1,2) {
+                $result = & "./e2e-$backend/Release/crypto_end_to_end.exe" $mode 2> "evidence/e2e-$round-$backend-$mode-error.log"
+                if ($LASTEXITCODE -ne 0) { throw "End-to-end failure: $round $backend $mode" }
+                $record = $result | ConvertFrom-Json
+                if (!$record.integrity) { throw 'End-to-end integrity failed' }
+                $record | Add-Member -NotePropertyName backend -NotePropertyValue $backend
+                $record | Add-Member -NotePropertyName round -NotePropertyValue $round
+                $record | ConvertTo-Json -Compress | Add-Content evidence/end-to-end.jsonl
+            }
+        }
+    }
 } finally { Stop-Transcript }
