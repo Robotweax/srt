@@ -6,6 +6,25 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+## 0.2.4 — release candidate
+
+Release preparation; no publication date or final qualification is asserted.
+See [release notes](docs/release-notes-0.2.4.md) for distribution and limitations.
+
+- Add separate OpenSSL and BCrypt Windows SDK installers, each containing
+  Debug/Release static libraries for Win32/x64/ARM64, MSBuild integration,
+  backend-specific environment variables and side-by-side installation tests.
+  Matching version tags prepare both installers and checksums in a draft release.
+- Add an optional experimental Windows BCrypt provider, differential and CNG
+  failure tests, and a measured CTR XOR-path optimization. OpenSSL stays default.
+- Add experimental Android/iOS build support and simulator/emulator smoke examples.
+- Namespace installed files by default with an explicit legacy layout option.
+- Add Robotweax-specific compile-time and runtime version identification and
+  compatible C++ logging level names, without changing the SRT API version.
+- Preserve usable UDP buffers when BSD/macOS rejects a larger allocation.
+- Correct Live tail recovery when non-progress ACKs recur; bound periodic-NAK
+  timeout recovery to a paced tail probe while retaining fallback behavior.
+
 - Install the standalone `<srt/access_control.h>` compatibility header with
   all 21 `SRT_REJX_*` application rejection constants, including
   `SRT_REJX_OVERLOAD`. Add installed C/C++ consumer coverage to prevent

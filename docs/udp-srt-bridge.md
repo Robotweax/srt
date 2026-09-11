@@ -1,6 +1,6 @@
 # Live MPEG-TS UDP ↔ SRT bridge
 
-This demo is an unreleased addition; it is not included in the `v0.2.3` tag.
+This demo is included starting with Robotweax SRT 0.2.4.
 
 `robotweax_srt_udp_bridge` demonstrates a continuous live bridge using only
 the public `<srt/srt.h>` API. The same executable has two application modes:
@@ -155,7 +155,7 @@ This selects AES-CTR with a 256-bit key. No passphrase means no encryption.
 This bridge deliberately does not expose AES-GCM selection, even when built
 with the extension enabled. AES-CTR does not authenticate payload integrity;
 read [Security](../SECURITY.md) and the
-[0.2.3 qualification limits](release-notes-0.2.3.md#qualification-limits-and-release-acceptance).
+[0.2.4 qualification limits](release-notes-0.2.4.md#qualification-limits-and-release-acceptance).
 The independent cryptographic review remains outstanding.
 
 ## UDP multicast

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(robotweax_srt VERSION 0.2.3 LANGUAGES C CXX)
+project(robotweax_srt VERSION 0.2.4 LANGUAGES C CXX)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)

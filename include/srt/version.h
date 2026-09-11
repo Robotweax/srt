@@ -25,8 +25,8 @@
 /* Local implementation release, not the wire/API compatibility version. */
 #define ROBOTWEAX_SRT_VERSION_MAJOR 0
 #define ROBOTWEAX_SRT_VERSION_MINOR 2
-#define ROBOTWEAX_SRT_VERSION_PATCH 3
-#define ROBOTWEAX_SRT_VERSION_STRING "0.2.3"
+#define ROBOTWEAX_SRT_VERSION_PATCH 4
+#define ROBOTWEAX_SRT_VERSION_STRING "0.2.4"
 #define ROBOTWEAX_SRT_VERSION_VALUE                                            \
     SRT_MAKE_VERSION_VALUE(ROBOTWEAX_SRT_VERSION_MAJOR,                        \
         ROBOTWEAX_SRT_VERSION_MINOR, ROBOTWEAX_SRT_VERSION_PATCH)

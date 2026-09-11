@@ -21,10 +21,10 @@ not a standalone streaming application. It bundles public headers, static
 Robotweax SRT libraries for Debug/Release on Win32, x64 and
 ARM64, and an MSBuild property sheet. See the
 [Windows SDK packaging documentation](https://github.com/Robotweax/srt/blob/main/packaging/windows/README.md).
-The installer candidate defaults to OpenSSL and is not yet a signed,
-qualified release installer. SDK builders can explicitly choose BCrypt without
-bundling OpenSSL, or retain OpenSSL and its dependency/license. This does not
-change the library's default backend or qualify the installer for release.
+Separate OpenSSL and BCrypt installer candidates are built. The BCrypt SDK
+does not bundle OpenSSL; the OpenSSL SDK includes its dependency and license.
+Both are currently unsigned. Installer qualification is distinct from provider
+qualification; neither switches the library's OpenSSL source-build default.
 
 ## Implementation boundary
 

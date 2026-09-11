@@ -54,7 +54,7 @@ PACKAGE_FILES = {
     "tests/package_consumer/ffmpeg_configure_probe.c",
 } | {
     f"cmake/abi/robotweax-srt-{version}.txt"
-    for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2", "0.2.3")
+    for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2", "0.2.3", "0.2.4")
 }
 AEAD_CONTRACT_FILES = {
     "compat/robotweax-0.2-aead-fixtures.json",

@@ -18,7 +18,7 @@ require the conventional libsrt package identity:
 
 | Metadata | Version field | Purpose |
 | --- | --- | --- |
-| `robotweax-srt.pc` | Robotweax release, currently `0.2.3` | Canonical Robotweax package discovery |
+| `robotweax-srt.pc` | Robotweax release, currently `0.2.4` | Canonical Robotweax package discovery |
 | `srt.pc` | Compatible SRT API, currently `1.5.7` | Opt-in FFmpeg/libsrt-compatible discovery |
 
 The compatibility metadata also exposes `robotweax_release` and
