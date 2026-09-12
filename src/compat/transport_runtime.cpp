@@ -781,7 +781,7 @@ bool DatagramChannel::start(std::shared_ptr<RuntimeScheduler> scheduler,
     send_work_notification_pending_ = false;
     active_thread_ = {};
     running_.store(true, std::memory_order_release);
-    if (schedule_next_locked(true, std::chrono::microseconds {0})) {
+    if (schedule_next_locked(true, {})) {
         return true;
     }
     running_.store(false, std::memory_order_release);
@@ -813,8 +813,8 @@ void DatagramChannel::notify_send_work() noexcept
         }
         scheduled_timer_ = {};
         send_work_notification_pending_ = false;
-        if (!schedule_next_locked(true, std::chrono::microseconds {0})
-            && !schedule_next_locked(false, std::chrono::microseconds {0})) {
+        if (!schedule_next_locked(true, {})
+            && !schedule_next_locked(false, {})) {
             running_.store(false, std::memory_order_release);
             scheduling_failed = true;
         }
@@ -861,7 +861,7 @@ void DatagramChannel::stop() noexcept
 }
 
 bool DatagramChannel::schedule_next_locked(
-    bool immediate, std::chrono::microseconds delay) noexcept
+    bool immediate, std::chrono::steady_clock::time_point deadline) noexcept
 {
     if (!running_.load(std::memory_order_relaxed) || scheduler_ == nullptr
         || scheduled_work_context_ == nullptr) {
@@ -880,8 +880,8 @@ bool DatagramChannel::schedule_next_locked(
         scheduled_timer_ = {};
         return true;
     }
-    const RuntimeScheduler::ScheduleResult scheduled = scheduler_->schedule_at(
-        affinity_, std::chrono::steady_clock::now() + delay, std::move(task));
+    const RuntimeScheduler::ScheduleResult scheduled =
+        scheduler_->schedule_at(affinity_, deadline, std::move(task));
     if (scheduled.status != RuntimeScheduler::SubmitStatus::accepted) {
         return false;
     }
@@ -923,11 +923,10 @@ void DatagramChannel::run_scheduled(
             const bool send_work_notification_pending =
                 send_work_notification_pending_;
             send_work_notification_pending_ = false;
-            const std::chrono::microseconds delay =
-                result.next_work_delay.value_or(idle_wait_);
             if (!schedule_next_locked(
                     result.immediate_work || send_work_notification_pending,
-                    delay)) {
+                    result.next_work_deadline.value_or(
+                        std::chrono::steady_clock::time_point {}))) {
                 running_.store(false, std::memory_order_release);
                 scheduling_failed = true;
             }
@@ -1099,44 +1098,33 @@ RuntimePollResult DatagramChannel::run_once() noexcept
     }
 
     bool send_work = false;
-    std::optional<std::chrono::microseconds> next_work_delay;
+    std::optional<std::chrono::steady_clock::time_point> next_work_deadline;
     {
         std::lock_guard lock(routes_mutex_);
         for (const auto& route : routes_) {
             const RuntimePollResult result = route.second->poll();
             send_work = result.immediate_work || send_work;
-            if (result.next_work_delay.has_value()
-                && (!next_work_delay.has_value()
-                    || *result.next_work_delay < *next_work_delay)) {
-                next_work_delay = result.next_work_delay;
+            if (result.next_work_deadline.has_value()
+                && (!next_work_deadline.has_value()
+                    || *result.next_work_deadline < *next_work_deadline)) {
+                next_work_deadline = result.next_work_deadline;
             }
         }
     }
     if (send_work || received_any) {
         return {
             .immediate_work = true,
-            .next_work_delay = std::nullopt,
+            .next_work_deadline = std::nullopt,
         };
     }
-    if (next_work_delay.has_value()
-        && *next_work_delay < std::chrono::milliseconds {1}) {
-        // Queue the final sub-millisecond pacing slice behind other work on
-        // this affinity shard. This preserves the old yield semantics while
-        // preventing one hot channel from monopolizing the shard.
-        return {
-            .immediate_work = true,
-            .next_work_delay = std::nullopt,
-        };
-    }
-    const auto delay = next_work_delay.has_value()
-        ? std::min(idle_wait_,
-              std::max(std::chrono::milliseconds {1},
-                  std::chrono::duration_cast<std::chrono::milliseconds>(
-                      *next_work_delay)))
-        : idle_wait_;
+    // Retain the pacer's absolute deadline, including sub-millisecond slices.
+    // Reconstructing it from a remaining delay would add poll/scheduling time.
+    // Keep the existing idle bound for inbound/control work on this channel.
+    const auto idle_deadline = std::chrono::steady_clock::now() + idle_wait_;
     return {
-        .next_work_delay =
-            std::chrono::duration_cast<std::chrono::microseconds>(delay),
+        .next_work_deadline = next_work_deadline.has_value()
+            ? std::min(*next_work_deadline, idle_deadline)
+            : idle_deadline,
     };
 }
 
@@ -2875,7 +2863,7 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
     if (session_.has_pending_drop_requests()) {
         return {
             .immediate_work = true,
-            .next_work_delay = std::nullopt,
+            .next_work_deadline = std::nullopt,
         };
     }
 
@@ -2900,12 +2888,12 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
     if (pace.ready || pace.next_ready_microseconds <= current) {
         return {
             .immediate_work = true,
-            .next_work_delay = std::nullopt,
+            .next_work_deadline = std::nullopt,
         };
     }
     return {
-        .next_work_delay =
-            std::chrono::microseconds {pace.next_ready_microseconds - current},
+        .next_work_deadline = deadline_from_origin_microseconds(
+            origin_, pace.next_ready_microseconds),
     };
 }
 

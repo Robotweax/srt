@@ -150,7 +150,7 @@ struct RuntimeBufferPacketCounts {
 
 struct RuntimePollResult {
     bool immediate_work = false;
-    std::optional<std::chrono::microseconds> next_work_delay;
+    std::optional<std::chrono::steady_clock::time_point> next_work_deadline;
 };
 
 struct MessageIoResult {
@@ -217,6 +217,8 @@ public:
     }
 
 private:
+    friend struct DatagramChannelTestAccess;
+
     struct ScheduledWorkContext {
         std::weak_ptr<DatagramChannel> owner;
     };
@@ -231,8 +233,8 @@ private:
     static void run_scheduled(void* context) noexcept;
     void run_scheduled(const ScheduledWorkContext* context) noexcept;
     [[nodiscard]] RuntimePollResult run_once() noexcept;
-    [[nodiscard]] bool schedule_next_locked(
-        bool immediate, std::chrono::microseconds delay) noexcept;
+    [[nodiscard]] bool schedule_next_locked(bool immediate,
+        std::chrono::steady_clock::time_point deadline) noexcept;
     void dispatch(
         const PacketView& packet,
         std::span<const std::byte> datagram,
