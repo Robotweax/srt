@@ -133,11 +133,19 @@ class PacerDeadlineABTests(unittest.TestCase):
             with self.subTest(signal=signum), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 ready = root / "ready.json"
+                peer_ready = root / "peer-ready"
                 workload = root / "workload.py"
+                peer_code = ("import signal,time; from pathlib import Path; "
+                             "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+                             "signal.signal(signal.SIGINT,signal.SIG_IGN); "
+                             f"Path({str(peer_ready)!r}).write_text('ready'); time.sleep(60)")
                 workload.write_text("import os,signal,subprocess,sys,time,json\n"
                     "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
                     "signal.signal(signal.SIGINT,signal.SIG_IGN)\n"
-                    "p=subprocess.Popen([sys.executable,'-c','import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); signal.signal(signal.SIGINT,signal.SIG_IGN); time.sleep(60)'])\n"
+                    f"p=subprocess.Popen([sys.executable,'-c',{peer_code!r}])\n"
+                    "deadline=time.monotonic()+3\n"
+                    f"while not os.path.exists({str(peer_ready)!r}) and time.monotonic()<deadline:time.sleep(.01)\n"
+                    f"assert os.path.exists({str(peer_ready)!r})\n"
                     f"open({str(ready)!r},'w').write(json.dumps({{'case':os.getpid(),'peer':p.pid,'group':os.getpgrp()}}))\n"
                     "time.sleep(60)\n")
                 driver = root / "driver.py"
@@ -173,8 +181,12 @@ class PacerDeadlineABTests(unittest.TestCase):
                     self.assertEqual(report["blocks"][0]["exit_code"], 128 + signum)
                 finally:
                     if process.poll() is None:
-                        process.kill()
-                        process.wait()
+                        process.send_signal(signal.SIGTERM)
+                        try:
+                            process.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
                     if ids:
                         try:
                             os.killpg(ids["group"], signal.SIGKILL)
