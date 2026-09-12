@@ -1,8 +1,21 @@
 cmake_minimum_required(VERSION 3.20)
-project(robotweax_srt VERSION 0.2.3 LANGUAGES C CXX)
+project(robotweax_srt VERSION 0.2.4 LANGUAGES C CXX)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
+
+set(ROBOTWEAX_SRT_INSTALL_LAYOUT "namespaced" CACHE STRING
+    "Installation layout: namespaced (coinstallable) or legacy (libsrt paths)")
+set_property(CACHE ROBOTWEAX_SRT_INSTALL_LAYOUT PROPERTY STRINGS namespaced legacy)
+if(ROBOTWEAX_SRT_INSTALL_LAYOUT STREQUAL "namespaced")
+    set(ROBOTWEAX_SRT_LIBRARY_NAME robotweax-srt)
+    set(ROBOTWEAX_SRT_PUBLIC_INCLUDEDIR "${CMAKE_INSTALL_INCLUDEDIR}/robotweax-srt")
+elseif(ROBOTWEAX_SRT_INSTALL_LAYOUT STREQUAL "legacy")
+    set(ROBOTWEAX_SRT_LIBRARY_NAME srt)
+    set(ROBOTWEAX_SRT_PUBLIC_INCLUDEDIR "${CMAKE_INSTALL_INCLUDEDIR}")
+else()
+    message(FATAL_ERROR "ROBOTWEAX_SRT_INSTALL_LAYOUT must be namespaced or legacy")
+endif()
 
 set(ROBOTWEAX_SRT_ABI_VERSION
     "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}")
@@ -44,7 +57,22 @@ if(BUILD_SHARED_LIBS AND
         "shared artifact deliberately exports only the public C ABI.")
 endif()
 
-find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+set(ROBOTWEAX_SRT_CRYPTO_BACKEND "openssl" CACHE STRING "Crypto backend: openssl or bcrypt (experimental Windows only)")
+set_property(CACHE ROBOTWEAX_SRT_CRYPTO_BACKEND PROPERTY STRINGS openssl bcrypt)
+if(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "openssl")
+    set(ROBOTWEAX_SRT_CRYPTO_BACKEND_ID 1)
+    find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+    set(ROBOTWEAX_SRT_CRYPTO_SOURCE src/crypto_openssl.cpp)
+    set(ROBOTWEAX_SRT_CRYPTO_LIBRARY OpenSSL::Crypto)
+    set(ROBOTWEAX_SRT_PC_CRYPTO_REQUIRES "libcrypto >= 3.0")
+elseif(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "bcrypt" AND WIN32)
+    set(ROBOTWEAX_SRT_CRYPTO_BACKEND_ID 2)
+    set(ROBOTWEAX_SRT_CRYPTO_SOURCE src/crypto_bcrypt.cpp)
+    set(ROBOTWEAX_SRT_CRYPTO_LIBRARY bcrypt)
+    set(ROBOTWEAX_SRT_PC_CRYPTO_REQUIRES "")
+else()
+    message(FATAL_ERROR "Unsupported crypto backend/platform: ${ROBOTWEAX_SRT_CRYPTO_BACKEND}; bcrypt requires Windows")
+endif()
 find_package(Threads REQUIRED)
 
 add_library(robotweax_srt
@@ -84,7 +112,7 @@ add_library(robotweax_srt
     src/connection_group.cpp
     src/codec.cpp
     src/crypto.cpp
-    src/crypto_openssl.cpp
+    ${ROBOTWEAX_SRT_CRYPTO_SOURCE}
     src/fec.cpp
     src/file.cpp
     src/handshake.cpp
@@ -106,6 +134,8 @@ add_library(robotweax_srt
 add_library(RobotweaxSRT::srt ALIAS robotweax_srt)
 
 target_compile_definitions(robotweax_srt PRIVATE ROBOTWEAX_SRT_BUILDING)
+target_compile_definitions(robotweax_srt PRIVATE
+    ROBOTWEAX_SRT_COMPILED_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
 if(ENABLE_AEAD_API_PREVIEW)
     target_compile_definitions(robotweax_srt
         PUBLIC ENABLE_AEAD_API_PREVIEW)
@@ -122,13 +152,13 @@ if(WIN32)
     target_link_libraries(robotweax_srt PRIVATE ws2_32)
 endif()
 target_link_libraries(
-    robotweax_srt PRIVATE OpenSSL::Crypto Threads::Threads)
+    robotweax_srt PRIVATE ${ROBOTWEAX_SRT_CRYPTO_LIBRARY} Threads::Threads)
 
 target_compile_features(robotweax_srt PUBLIC cxx_std_20)
 target_include_directories(robotweax_srt
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+        $<INSTALL_INTERFACE:${ROBOTWEAX_SRT_PUBLIC_INCLUDEDIR}>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -179,7 +209,7 @@ endif()
 
 set_target_properties(robotweax_srt PROPERTIES
     EXPORT_NAME srt
-    OUTPUT_NAME srt
+    OUTPUT_NAME ${ROBOTWEAX_SRT_LIBRARY_NAME}
     VERSION ${PROJECT_VERSION}
     SOVERSION ${ROBOTWEAX_SRT_ABI_VERSION}
     CXX_EXTENSIONS OFF
@@ -291,6 +321,8 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_compat_epoll.cpp
         tests/test_compat_groups.cpp
         tests/test_compat_runtime.cpp)
+    target_compile_definitions(robotweax_srt_tests PRIVATE
+        ROBOTWEAX_SRT_EXPECT_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
     target_link_libraries(robotweax_srt_tests
         PRIVATE RobotweaxSRT::srt Threads::Threads)
     target_include_directories(robotweax_srt_tests
@@ -369,6 +401,38 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     set_tests_properties(
         robotweax_srt_global_lifecycle_tests
         PROPERTIES TIMEOUT 5)
+
+    add_executable(robotweax_srt_late_cleanup_tests
+        tests/late_cleanup_main.cpp tests/late_cleanup_probe.cpp)
+    target_link_libraries(robotweax_srt_late_cleanup_tests PRIVATE RobotweaxSRT::srt)
+    target_compile_features(robotweax_srt_late_cleanup_tests PRIVATE cxx_std_20)
+    set(ROBOTWEAX_SRT_LATE_CLEANUP_MODES
+        socket startup-only retained epoll group restart explicit
+        implicit-socket implicit-group implicit-epoll)
+    foreach(mode IN LISTS ROBOTWEAX_SRT_LATE_CLEANUP_MODES)
+        add_test(NAME robotweax_srt_late_cleanup_${mode}
+            COMMAND robotweax_srt_late_cleanup_tests ${mode})
+        set_tests_properties(robotweax_srt_late_cleanup_${mode} PROPERTIES TIMEOUT 10)
+        if(BUILD_SHARED_LIBS)
+            set_tests_properties(robotweax_srt_late_cleanup_${mode}
+                PROPERTIES LABELS "shared-library")
+        endif()
+    endforeach()
+    if(NOT BUILD_SHARED_LIBS)
+        # Exercise a static libsrt embedded in a downstream shared library.
+        set_property(TARGET robotweax_srt PROPERTY POSITION_INDEPENDENT_CODE ON)
+        add_library(robotweax_srt_late_cleanup_wrapper SHARED tests/late_cleanup_probe.cpp)
+        target_link_libraries(robotweax_srt_late_cleanup_wrapper PRIVATE RobotweaxSRT::srt)
+        target_compile_features(robotweax_srt_late_cleanup_wrapper PRIVATE cxx_std_20)
+        set_property(TARGET robotweax_srt_late_cleanup_wrapper PROPERTY WINDOWS_EXPORT_ALL_SYMBOLS ON)
+        add_executable(robotweax_srt_embedded_cleanup_tests tests/late_cleanup_main.cpp)
+        target_link_libraries(robotweax_srt_embedded_cleanup_tests PRIVATE robotweax_srt_late_cleanup_wrapper)
+        foreach(mode IN LISTS ROBOTWEAX_SRT_LATE_CLEANUP_MODES)
+            add_test(NAME robotweax_srt_embedded_cleanup_${mode}
+                COMMAND robotweax_srt_embedded_cleanup_tests ${mode})
+            set_tests_properties(robotweax_srt_embedded_cleanup_${mode} PROPERTIES TIMEOUT 10)
+        endforeach()
+    endif()
 
     if(BUILD_SHARED_LIBS)
         # This probe must not link against Robotweax SRT: it loads only the
@@ -704,6 +768,25 @@ if(ROBOTWEAX_SRT_BUILD_TOOLS)
     target_compile_features(robotweax_srt_group_peer PRIVATE cxx_std_17)
 
     if(ROBOTWEAX_SRT_BUILD_TESTS AND Python3_Interpreter_FOUND AND UNIX)
+        add_test(
+            NAME robotweax_srt_live_tail_recovery
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_live_tail_interop.py
+                --sender-peer $<TARGET_FILE:robotweax_srt_interop_peer>
+                --receiver-peer $<TARGET_FILE:robotweax_srt_interop_peer>)
+        set_tests_properties(robotweax_srt_live_tail_recovery
+            PROPERTIES TIMEOUT 40 LABELS "integration;live;reliability")
+
+        add_test(
+            NAME robotweax_srt_live_tail_burst_recovery
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_live_tail_interop.py
+                --sender-peer $<TARGET_FILE:robotweax_srt_interop_peer>
+                --receiver-peer $<TARGET_FILE:robotweax_srt_interop_peer>
+                --tail-packets 3)
+        set_tests_properties(robotweax_srt_live_tail_burst_recovery
+            PROPERTIES TIMEOUT 40 LABELS "integration;live;reliability")
+
         add_test(
             NAME robotweax_srt_live_timing_smoke
             COMMAND ${Python3_EXECUTABLE}
@@ -1433,13 +1516,16 @@ else()
     set(ROBOTWEAX_SRT_PC_LIBDIR
         "\${prefix}/${CMAKE_INSTALL_LIBDIR}")
 endif()
-if(IS_ABSOLUTE "${CMAKE_INSTALL_INCLUDEDIR}")
-    set(ROBOTWEAX_SRT_PC_INCLUDEDIR "${CMAKE_INSTALL_INCLUDEDIR}")
+if(IS_ABSOLUTE "${ROBOTWEAX_SRT_PUBLIC_INCLUDEDIR}")
+    set(ROBOTWEAX_SRT_PC_INCLUDEDIR "${ROBOTWEAX_SRT_PUBLIC_INCLUDEDIR}")
 else()
     set(ROBOTWEAX_SRT_PC_INCLUDEDIR
-        "\${prefix}/${CMAKE_INSTALL_INCLUDEDIR}")
+        "\${prefix}/${ROBOTWEAX_SRT_PUBLIC_INCLUDEDIR}")
 endif()
 set(ROBOTWEAX_SRT_PC_PRIVATE_LIBS "${CMAKE_THREAD_LIBS_INIT}")
+if(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "bcrypt")
+    string(APPEND ROBOTWEAX_SRT_PC_PRIVATE_LIBS " -lbcrypt")
+endif()
 set(ROBOTWEAX_SRT_PC_CFLAGS "")
 if(ENABLE_AEAD_API_PREVIEW)
     set(ROBOTWEAX_SRT_PC_CFLAGS "-DENABLE_AEAD_API_PREVIEW")
@@ -1463,16 +1549,17 @@ install(TARGETS robotweax_srt EXPORT RobotweaxSRTTargets
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    INCLUDES DESTINATION ${ROBOTWEAX_SRT_PUBLIC_INCLUDEDIR})
 install(FILES
     include/robotweax_srt.h
     include/srt.h
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    DESTINATION ${ROBOTWEAX_SRT_PUBLIC_INCLUDEDIR})
 install(FILES
+    include/srt/access_control.h
     include/srt/logging_api.h
     include/srt/srt.h
     include/srt/version.h
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/srt)
+    DESTINATION ${ROBOTWEAX_SRT_PUBLIC_INCLUDEDIR}/srt)
 set(ROBOTWEAX_SRT_PUBLIC_COMPATIBILITY_MANIFESTS
     compat/robotweax-0.2-aead-fixtures.json
     compat/robotweax-0.2-aead.json
@@ -1488,6 +1575,8 @@ install(FILES
 install(DIRECTORY docs/
     DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/docs
     FILES_MATCHING PATTERN "*.md")
+install(FILES examples/ios/README.md
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/ios)
 install(FILES examples/README.md
     DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples)
 install(FILES
@@ -1538,7 +1627,9 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             -DROBOTWEAX_SRT_OPENSSL_ROOT_DIR=${OPENSSL_ROOT_DIR}
             -DROBOTWEAX_SRT_INSTALL_BINDIR=${CMAKE_INSTALL_BINDIR}
             -DROBOTWEAX_SRT_INSTALL_DATADIR=${CMAKE_INSTALL_DATADIR}
-            -DROBOTWEAX_SRT_INSTALL_INCLUDEDIR=${CMAKE_INSTALL_INCLUDEDIR}
+            -DROBOTWEAX_SRT_INSTALL_INCLUDEDIR=${ROBOTWEAX_SRT_PUBLIC_INCLUDEDIR}
+            -DROBOTWEAX_SRT_INSTALL_LAYOUT=${ROBOTWEAX_SRT_INSTALL_LAYOUT}
+            -DROBOTWEAX_SRT_BASE_INCLUDEDIR=${CMAKE_INSTALL_INCLUDEDIR}
             -DROBOTWEAX_SRT_INSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}
             -DROBOTWEAX_SRT_INSTALL_CMAKEDIR=${ROBOTWEAX_SRT_INSTALL_CMAKEDIR}
             -DROBOTWEAX_SRT_C_COMPILER=${CMAKE_C_COMPILER}

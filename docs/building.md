@@ -4,6 +4,33 @@ Robotweax SRT uses CMake and builds as a C++20 library. This guide covers
 development builds, lean installation builds, static and shared linkage, and
 package consumption.
 
+## Installation layouts
+
+The default `ROBOTWEAX_SRT_INSTALL_LAYOUT=namespaced` installs public headers
+under `include/robotweax-srt` and names the library `robotweax-srt`. CMake's
+`RobotweaxSRT::srt` and `robotweax-srt.pc` supply the correct include root and
+library. Application includes such as `<srt/srt.h>` remain unchanged.
+
+For old integrations that require the original paths, explicitly configure
+`-DROBOTWEAX_SRT_INSTALL_LAYOUT=legacy`: headers use `include`, and the library
+is named `srt`. Use a separate prefix if Haivision is installed. Invalid layout
+values are rejected. Both layouts support static and shared builds.
+
+The optional `ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT=ON` still provides
+`srt.pc`, referencing the selected library name. It conflicts with Haivision's
+`srt.pc` and is therefore OFF by default even with the namespaced layout.
+No `libsrt` alias or symlink is created in the default layout.
+
+Migration: rebuild applications using the package metadata. Update hard-coded
+`-lsrt` to `-lrobotweax-srt` and include paths to the new root, or select legacy.
+Changing layout does not remove files from an earlier installation: use a clean
+prefix or remove only files owned by that prior installation. Existing binaries
+requiring the old library name must retain that library or be rebuilt.
+
+This permits separate applications to use separate providers on one system.
+It does not guarantee both providers can safely coexist in one process: their
+public `srt_*` symbols remain identical. No symbol renaming is introduced.
+
 ## Requirements
 
 | Dependency | Requirement |
@@ -19,6 +46,9 @@ OpenSSL development package for your platform and ensure its architecture
 matches the compiler and generator.
 
 ## Important CMake options
+
+For unqualified mobile cross-build experiments, see
+[Experimental Android and iOS builds](mobile-building.md).
 
 | Option | Default | Purpose |
 | --- | --- | --- |
@@ -180,7 +210,7 @@ c++ app.o $(pkg-config --static --libs robotweax-srt) -o app
 ```
 
 `--static` supplies the package's private OpenSSL and platform dependencies;
-it does not select a C++ runtime or force the linker to prefer `libsrt.a` over
+it does not select a C++ runtime or force the linker to prefer `librobotweax-srt.a` over
 a shared library in the same search directory. Use a static-only installation
 for this recipe. The C and C++ compiler drivers must use a compatible toolchain
 and target architecture. Do not compile the `.c` source as C++ merely to obtain

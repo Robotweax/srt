@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import errno
 import json
 import socket
 import struct
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 
@@ -18,6 +20,30 @@ import srt_handshake_trace  # noqa: E402
 
 
 class RendezvousInteropUnitTests(unittest.TestCase):
+    def test_udp_port_unreachable_is_narrowly_classified(self):
+        windows_error = OSError(errno.ECONNRESET, "UDP ICMP")
+        windows_error.winerror = 10054
+        self.assertTrue(srt_handshake_trace.udp_peer_not_ready(windows_error))
+        self.assertTrue(srt_handshake_trace.udp_peer_not_ready(
+            OSError(errno.ECONNREFUSED, "port unreachable")))
+        for code in (errno.ECONNRESET, errno.EBADF, errno.ENOBUFS):
+            self.assertFalse(srt_handshake_trace.udp_peer_not_ready(
+                OSError(code, "not a transient UDP start")))
+
+    def test_rendezvous_relay_continues_after_windows_icmp(self):
+        proxy = Mock()
+        proxy._stop.is_set.side_effect = [False, False, True]
+        proxy._delay_deadline = None
+        proxy._late_duplicates = []
+        error = OSError(errno.ECONNRESET, "UDP ICMP")
+        error.winerror = 10054
+        proxy._sender_socket.recvfrom.side_effect = [error, (b"packet", None)]
+        with patch.object(srt_handshake_trace.select, "select",
+                          return_value=([proxy._sender_socket], [], [])):
+            srt_handshake_trace.RendezvousTraceProxy._run(proxy)
+        proxy._set_error.assert_not_called()
+        proxy._forward.assert_called_once_with(b"packet", "sender_to_receiver")
+
     def setUp(self) -> None:
         self.options = run_rendezvous_interop.RunOptions(
             byte_count=4_194_304,

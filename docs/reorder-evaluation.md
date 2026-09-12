@@ -4,8 +4,15 @@ This branch is for comparative testing only. **Do not deploy it as a release.**
 It is intentionally not merged into `main` and does not change the release version.
 
 Branch: `codex/reorder-budget-evaluation`.
-Pinned control: `ac9c14d7815bfd6f76f8b60308c5465095625eb7` (main at branch creation).
+Pinned control: `8e1bdebed836cb7b732db852f51ef6a7b212e925` (main integrated in this update).
 Record the candidate commit with `git rev-parse HEAD` for every result.
+
+The branch now includes main's changes through the throughput fast path and
+Lite-ACK window-credit correction (PR #32). Its experimental reorder behavior
+remains separate from main. The original control was
+`ac9c14d7815bfd6f76f8b60308c5465095625eb7`; preserve historical results with that
+pin, but use the updated control for new matched comparisons. Do not pool the
+old and new cohorts or treat this synchronization as performance qualification.
 
 ## Initial local verification
 
@@ -55,7 +62,7 @@ From a clean clone, fetch the branch and create separate worktrees:
 
 ```sh
 git fetch origin main codex/reorder-budget-evaluation
-git worktree add --detach ../srt-control ac9c14d7815bfd6f76f8b60308c5465095625eb7
+git worktree add --detach ../srt-control 8e1bdebed836cb7b732db852f51ef6a7b212e925
 git worktree add --detach ../srt-candidate origin/codex/reorder-budget-evaluation
 cmake -S ../srt-control -B ../srt-control-build -DCMAKE_BUILD_TYPE=Release
 cmake --build ../srt-control-build --config Release --parallel 2
@@ -135,6 +142,15 @@ If these gates cannot be met, retain main's current behavior and archive the
 candidate as an evaluated experiment rather than merging it.
 
 ## Known limitations and reporting
+
+### Main synchronization verification (2026-09-12)
+
+After integrating main at `8e1bdebed836cb7b732db852f51ef6a7b212e925`, a clean
+macOS Release build with AppleClang 21, OpenSSL 3.6.3 and Python 3.13 passed all
+54 registered CTest tests and all 621 Python harness tests. The documentation
+validator and changed-line C++ format check also passed. The experimental
+reorder rules were not changed by this synchronization. These local checks do
+not replace the matched transport evaluation or Linux/Windows qualification.
 
 A previous fixed-deadline experiment lost one packet at 20 ms configured latency
 with about 37.7 ms observed recovery. It remains unresolved. Later successful

@@ -1,0 +1,29 @@
+name: Question / Integration help
+description: Ask about the API, configuration, builds, or integration
+title: "[Question] "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search existing issues and check the [documentation](https://github.com/Robotweax/srt/blob/main/docs/README.md) first.
+        This is a public issue. Do not include credentials, passphrases, private addresses, or sensitive payloads.
+        For security-sensitive reports, follow [SECURITY.md](https://github.com/Robotweax/srt/blob/main/SECURITY.md).
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What would you like to understand or accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and integration context
+      description: If relevant, include the Robotweax version or commit, OS, compiler, application, peer library/version, and connection mode. Leave blank for general questions.
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you have checked or tried
+      description: Link relevant documentation or issues and include any minimal example or sanitized output that helps explain the question.

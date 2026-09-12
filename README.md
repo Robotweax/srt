@@ -16,13 +16,13 @@ depending on implementation-specific C++ internals.
 
 ## Release status
 
-Version **0.2.3** is a pre-1.0 maintenance release with documented
-[qualification limits](docs/release-notes-0.2.3.md#qualification-limits-and-release-acceptance),
+Version **0.2.4** is a pre-1.0 maintenance release with documented
+[qualification limits](docs/release-notes-0.2.4.md#qualification-limits-and-release-acceptance),
 including outstanding independent cryptographic review.
 
-| Axis | Robotweax SRT 0.2.3 |
+| Axis | Robotweax SRT 0.2.4 |
 | --- | --- |
-| Project release | `0.2.3` |
+| Project release | `0.2.4` |
 | Shared-library ABI | `0.2` |
 | Default public API target | SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -36,7 +36,7 @@ handshake, and encryption profile are separate version axes. In particular,
 release number.
 
 Version 0.2 is a pre-1.0 release. Rebuild applications and dependencies when
-moving between ABI lines. See the [0.2.3 release notes](docs/release-notes-0.2.3.md)
+moving between ABI lines. See the [0.2.4 release notes](docs/release-notes-0.2.4.md)
 and [0.1-to-0.2 migration guide](docs/migration-0.2.md).
 
 ## Highlights
@@ -123,9 +123,11 @@ If Robotweax SRT is installed under a custom prefix, add that prefix to
 pkg-config --cflags --libs robotweax-srt
 ```
 
-The installed library uses the conventional `srt` output name (`libsrt` on
-Unix-like systems and `srt.dll` for a Windows shared build). Use package
-metadata instead of hard-coding filenames.
+The default library name is `robotweax-srt` (`librobotweax-srt` on Unix-like
+systems, `robotweax-srt.dll` for Windows shared builds). Headers live below
+`include/robotweax-srt`; package metadata supplies that include root, preserving
+`#include <srt/srt.h>`. See [installation layouts](docs/building.md#installation-layouts)
+for the optional legacy layout and migration guidance.
 
 ## Public API
 

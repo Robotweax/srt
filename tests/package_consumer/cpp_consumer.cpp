@@ -1,4 +1,15 @@
+#include <srt/access_control.h>
 #include <srt/srt.h>
+
+#ifndef ROBOTWEAX_SRT_COMPAT_ACCESS_CONTROL_H
+#error "access_control.h must come from the Robotweax installation"
+#endif
+static_assert(SRT_REJX_OVERLOAD == 1402);
+static_assert(srt_logging::LogLevel::fatal == LOG_CRIT);
+static_assert(srt_logging::LogLevel::error == LOG_ERR);
+static_assert(srt_logging::LogLevel::warning == LOG_WARNING);
+static_assert(srt_logging::LogLevel::note == LOG_NOTICE);
+static_assert(srt_logging::LogLevel::debug == LOG_DEBUG);
 
 #include <cstdint>
 #include <stdexcept>
@@ -38,6 +49,8 @@ public:
 int main()
 {
     Runtime runtime;
+    const srt_logging::LogLevel::type level = srt_logging::LogLevel::note;
+    srt_setloglevel(level);
     const SRTSOCKET socket = srt_socket(AF_INET, SOCK_DGRAM, 0);
     if (socket == SRT_INVALID_SOCK) {
         return 1;

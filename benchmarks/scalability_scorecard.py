@@ -802,6 +802,7 @@ def run_many_socket_profile(
     *,
     iteration: int,
     warmup: bool,
+    peer_arguments: tuple[str, ...] = (),
 ) -> dict[str, object]:
     sender_name, receiver_name = PROFILE_IMPLEMENTATIONS[profile_name]
     try:
@@ -820,7 +821,7 @@ def run_many_socket_profile(
         listener = spawn_command_peer(
             many_socket_peer_command(
                 receiver_program, "listener", port, options
-            ),
+            ) + list(peer_arguments),
             receiver_name,
             "listener",
             directory,
@@ -831,7 +832,7 @@ def run_many_socket_profile(
         caller = spawn_command_peer(
             many_socket_peer_command(
                 sender_program, "caller", port, options
-            ),
+            ) + list(peer_arguments),
             sender_name,
             "caller",
             directory,
@@ -961,6 +962,11 @@ def run_many_socket_profile(
         "versions": {
             "sender": [caller_event.get("srt_version")],
             "receiver": [listener_event.get("srt_version")],
+        },
+        "peer_process_resources": {
+            "scope": "process start through completion event (includes setup)",
+            "sender": caller_event.get("process_resources"),
+            "receiver": listener_event.get("process_resources"),
         },
     }
 

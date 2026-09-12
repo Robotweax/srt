@@ -25,6 +25,8 @@ FORMAT_TOOLING_FILES = {
     "interop/tests/test_clang_format_tool.py",
 }
 PYTHON_TOOLING_FILES = {
+    "tools/mobile_configure.py",
+    "interop/tests/test_mobile_configure.py",
     "tools/check_dco.py",
     "tools/python",
     "interop/tests/test_dco.py",
@@ -52,7 +54,7 @@ PACKAGE_FILES = {
     "tests/package_consumer/ffmpeg_configure_probe.c",
 } | {
     f"cmake/abi/robotweax-srt-{version}.txt"
-    for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2", "0.2.3")
+    for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2", "0.2.3", "0.2.4")
 }
 AEAD_CONTRACT_FILES = {
     "compat/robotweax-0.2-aead-fixtures.json",
@@ -397,7 +399,8 @@ def enable_file_interop_profiles(
 
 def enable_interop_profiles(change_set: ChangeSet, path: str) -> None:
     normalized = path.lower()
-    if "scalability_scorecard" in normalized:
+    if any(token in normalized for token in
+           ("scalability_scorecard", "throughput_diagnostics", "retransmission_trace")):
         # The scorecard uses existing public-API peers. Its own deterministic
         # unit tests validate orchestration and aggregation; comparative runs
         # belong on an explicitly controlled benchmark host, not shared CI.

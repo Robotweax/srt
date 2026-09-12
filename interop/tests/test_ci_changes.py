@@ -15,6 +15,8 @@ import ci_changes  # noqa: E402
 class CiChangeClassifierTests(unittest.TestCase):
     def test_python_ci_tooling_does_not_start_protocol_builds(self) -> None:
         for path in (
+            "tools/mobile_configure.py",
+            "interop/tests/test_mobile_configure.py",
             "tools/python",
             "interop/tests/test_python_launcher.py",
             "interop/tests/test_ci_gate.py",
@@ -673,6 +675,12 @@ class CiChangeClassifierTests(unittest.TestCase):
             [
                 "benchmarks/scalability_scorecard.py",
                 "interop/tests/test_scalability_scorecard.py",
+                "benchmarks/throughput_diagnostics.py",
+                "benchmarks/prepare_throughput.py",
+                "interop/tests/test_throughput_diagnostics.py",
+                "benchmarks/retransmission_trace.py",
+                "benchmarks/run_retransmission_ab.py",
+                "interop/tests/test_retransmission_trace.py",
                 "docs/performance.md",
             ]
         )

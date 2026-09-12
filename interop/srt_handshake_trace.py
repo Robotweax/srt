@@ -13,6 +13,17 @@ import time
 from dataclasses import dataclass
 
 
+def udp_peer_not_ready(error: OSError) -> bool:
+    """ICMP port-unreachable feedback on these UDP-only relay sockets.
+
+    A staggered rendezvous start intentionally sends before the second peer
+    binds. Winsock reports that ICMP response as WSAECONNRESET, not Unix's
+    ECONNREFUSED. Do not suppress generic connection resets on other platforms.
+    """
+    return (error.errno == errno.ECONNREFUSED
+            or getattr(error, "winerror", None) == 10054)
+
+
 PACKET_HEADER_SIZE = 16
 HANDSHAKE_SIZE = 48
 HANDSHAKE_DATAGRAM_SIZE = PACKET_HEADER_SIZE + HANDSHAKE_SIZE
@@ -2464,7 +2475,7 @@ class RendezvousTraceProxy(_HandshakeTraceRecorder):
                     )
                     self._forward(payload, direction)
             except OSError as error:
-                if error.errno == errno.ECONNREFUSED:
+                if udp_peer_not_ready(error):
                     continue
                 if not self._stop.is_set():
                     self._set_error(error)
@@ -2621,7 +2632,7 @@ class CallerListenerFaultProxy(RendezvousTraceProxy):
             except socket.timeout:
                 continue
             except OSError as error:
-                if error.errno == errno.ECONNREFUSED:
+                if udp_peer_not_ready(error):
                     continue
                 if not self._stop.is_set():
                     self._set_error(error)

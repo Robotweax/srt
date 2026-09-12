@@ -9,6 +9,7 @@
 #include "compat/socket_io.hpp"
 #include "compat/socket_registry.hpp"
 #include "srt.h"
+#include "srt/access_control.h"
 
 #include <algorithm>
 #include <array>
@@ -367,7 +368,7 @@ int reject_listener_connection(
     observation.socket = socket;
     observation.stream_id = stream_id != nullptr ? stream_id : "";
     observation.reason_update_succeeded =
-        srt_setrejectreason(socket, 1'404) == 0;
+        srt_setrejectreason(socket, SRT_REJX_OVERLOAD) == 0;
     if (!observation.reason_update_succeeded) {
         return SRT_ERROR;
     }
@@ -519,12 +520,17 @@ static_assert(sizeof(SRT_SOCKGROUPDATA) == 160);
 static_assert(offsetof(SRT_SOCKGROUPDATA, peeraddr) == 8);
 static_assert(offsetof(SRT_SOCKGROUPDATA, weight) == 140);
 static_assert(offsetof(SRT_SOCKGROUPDATA, token) == 152);
-static_assert(sizeof(SRT_SOCKGROUPCONFIG) == 288);
+// The config pointer changes both padding and trailing offsets on Win32.
+// Keep exact ABI checks for both pointer widths; do not alter the public layout.
+static_assert(sizeof(void*) == 4 || sizeof(void*) == 8);
+static_assert(sizeof(SRT_SOCKGROUPCONFIG) == (sizeof(void*) == 8 ? 288 : 280));
 static_assert(offsetof(SRT_SOCKGROUPCONFIG, srcaddr) == 8);
 static_assert(offsetof(SRT_SOCKGROUPCONFIG, peeraddr) == 136);
 static_assert(offsetof(SRT_SOCKGROUPCONFIG, weight) == 264);
-static_assert(offsetof(SRT_SOCKGROUPCONFIG, config) == 272);
-static_assert(offsetof(SRT_SOCKGROUPCONFIG, token) == 284);
+static_assert(
+    offsetof(SRT_SOCKGROUPCONFIG, config) == (sizeof(void*) == 8 ? 272 : 268));
+static_assert(
+    offsetof(SRT_SOCKGROUPCONFIG, token) == (sizeof(void*) == 8 ? 284 : 276));
 
 TEST(compat_group_accept_bond_and_connect_validation_are_explicit)
 {
@@ -4177,7 +4183,7 @@ TEST(srt_compat_listener_callback_rejects_before_accept)
                    static_cast<int>(sizeof(listener_name))),
         SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNREJ);
-    REQUIRE_EQ(srt_getrejectreason(caller), 1'404);
+    REQUIRE_EQ(srt_getrejectreason(caller), SRT_REJX_OVERLOAD);
     REQUIRE_EQ(callback_observation.calls, 1);
     REQUIRE(callback_observation.socket != SRT_INVALID_SOCK);
     REQUIRE_EQ(callback_observation.stream_id,
@@ -5267,6 +5273,96 @@ TEST(srt_compat_last_error_is_thread_local)
 
     REQUIRE_EQ(worker_error, SRT_EINVSOCK);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_SUCCESS);
+}
+
+TEST(srt_compat_robotweax_version_identifies_local_implementation)
+{
+    static_assert(SRTO_ROBOTWEAX_VERSION == 0x01000001);
+    const SRTSOCKET socket = srt_create_socket();
+    const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    REQUIRE(group != SRT_INVALID_SOCK);
+    for (const SRTSOCKET handle : {socket, group}) {
+        std::int32_t value = -1;
+        int size = sizeof(value);
+        REQUIRE_EQ(
+            srt_getsockflag(handle, SRTO_ROBOTWEAX_VERSION, &value, &size), 0);
+        REQUIRE_EQ(value, ROBOTWEAX_SRT_VERSION_VALUE);
+        REQUIRE_EQ(size, static_cast<int>(sizeof(value)));
+        REQUIRE_EQ(srt_setsockflag(
+                       handle, SRTO_ROBOTWEAX_VERSION, &value, sizeof(value)),
+            SRT_ERROR);
+        size = 1;
+        value = -1;
+        REQUIRE_EQ(
+            srt_getsockflag(handle, SRTO_ROBOTWEAX_VERSION, &value, &size),
+            SRT_ERROR);
+        REQUIRE_EQ(value, -1);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+        size = sizeof(value);
+        REQUIRE_EQ(
+            srt_getsockflag(handle, SRTO_ROBOTWEAX_VERSION, nullptr, &size),
+            SRT_ERROR);
+        REQUIRE_EQ(
+            srt_getsockflag(handle, SRTO_ROBOTWEAX_VERSION, &value, nullptr),
+            SRT_ERROR);
+    }
+    std::int32_t value = 0;
+    int size = sizeof(value);
+    REQUIRE_EQ(srt_getsockflag(socket, SRTO_VERSION, &value, &size), 0);
+    REQUIRE_EQ(value, SRT_VERSION_VALUE);
+    REQUIRE_EQ(srt_getversion(), static_cast<std::uint32_t>(SRT_VERSION_VALUE));
+    REQUIRE_EQ(srt_close(socket), 0);
+    REQUIRE_EQ(srt_close(group), 0);
+    REQUIRE_EQ(srt_getsockflag(socket, SRTO_ROBOTWEAX_VERSION, &value, &size),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
+}
+
+TEST(srt_compat_robotweax_crypto_backend_identifies_loaded_library)
+{
+    static_assert(SRTO_ROBOTWEAX_CRYPTO_BACKEND == 0x01000002);
+    const SRTSOCKET socket = srt_create_socket();
+    const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    REQUIRE(group != SRT_INVALID_SOCK);
+    for (const SRTSOCKET handle : {socket, group}) {
+        std::int32_t value = -1;
+        int size = sizeof(value);
+        REQUIRE_EQ(srt_getsockflag(
+                       handle, SRTO_ROBOTWEAX_CRYPTO_BACKEND, &value, &size),
+            0);
+        REQUIRE_EQ(value, ROBOTWEAX_SRT_EXPECT_CRYPTO_BACKEND);
+        REQUIRE_EQ(size, static_cast<int>(sizeof(value)));
+        REQUIRE_EQ(srt_setsockflag(handle, SRTO_ROBOTWEAX_CRYPTO_BACKEND,
+                       &value, sizeof(value)),
+            SRT_ERROR);
+        size = 1;
+        value = -1;
+        REQUIRE_EQ(srt_getsockflag(
+                       handle, SRTO_ROBOTWEAX_CRYPTO_BACKEND, &value, &size),
+            SRT_ERROR);
+        REQUIRE_EQ(value, -1);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+        size = sizeof(value);
+        REQUIRE_EQ(srt_getsockflag(
+                       handle, SRTO_ROBOTWEAX_CRYPTO_BACKEND, nullptr, &size),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getsockflag(
+                       handle, SRTO_ROBOTWEAX_CRYPTO_BACKEND, &value, nullptr),
+            SRT_ERROR);
+    }
+    std::int32_t value = 0;
+    int size = sizeof(value);
+    REQUIRE_EQ(srt_getsockflag(socket, SRTO_VERSION, &value, &size), 0);
+    REQUIRE_EQ(value, SRT_VERSION_VALUE);
+    REQUIRE_EQ(srt_getversion(), static_cast<std::uint32_t>(SRT_VERSION_VALUE));
+    REQUIRE_EQ(srt_close(socket), 0);
+    REQUIRE_EQ(srt_close(group), 0);
+    REQUIRE_EQ(
+        srt_getsockflag(socket, SRTO_ROBOTWEAX_CRYPTO_BACKEND, &value, &size),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
 }
 
 TEST(srt_compat_message_control_and_helpers_match_public_layout)

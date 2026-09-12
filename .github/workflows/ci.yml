@@ -454,6 +454,7 @@ jobs:
           --parallel
           --target robotweax_srt_shared_lifecycle_tests
           robotweax_srt_global_lifecycle_tests
+          robotweax_srt_late_cleanup_tests
           robotweax_srt_c_api_test
           robotweax_srt_compatible_header_test
       - name: Test
@@ -463,6 +464,16 @@ jobs:
           -L shared-library
           --verbose
           --timeout 120
+
+      - name: Configure legacy packaging
+        run: cmake -S . -B build -DROBOTWEAX_SRT_INSTALL_LAYOUT=legacy
+      - name: Relink legacy library
+        run: cmake --build build --config Release --parallel --target robotweax_srt
+      - name: Test legacy package consumer
+        run: >-
+          ctest --test-dir build -C Release
+          -R robotweax_srt_package_consumer_tests
+          --no-tests=error --output-on-failure
 
   ffmpeg_integration:
     name: FFmpeg integration
@@ -514,7 +525,7 @@ jobs:
         run: |
           set -euo pipefail
           ldd ffmpeg-source/ffmpeg | \
-            grep -F "$RUNNER_TEMP/robotweax-srt/lib/libsrt.so.0.2"
+            grep -F "$RUNNER_TEMP/robotweax-srt/lib/librobotweax-srt.so.0.2"
           ffmpeg-source/ffmpeg -hide_banner -protocols | \
             grep -Eq '^[[:space:]]+srt$'
       - name: Run FFmpeg live-transfer smoke test
@@ -1007,7 +1018,7 @@ jobs:
         if: needs.changes.outputs.handshake_interop == 'true'
         run: >-
           c++ -std=c++17 -O2 interop/binding_peer.cpp
-          -Iinclude build/libsrt.a -lcrypto -lpthread -ldl
+          -Iinclude build/librobotweax-srt.a -lcrypto -lpthread -ldl
           -o robotweax-binding-peer
       - name: Package Robotweax interoperability tools
         shell: bash
@@ -1407,7 +1418,7 @@ jobs:
       - name: Build reference connection-group peer locally
         if: matrix.profile == 'handshake'
         run: >-
-          c++ -std=c++17 -O2 interop/group_peer.cpp
+          c++ -std=c++17 -O2 -DROBOTWEAX_SRT_REFERENCE_GROUP_RECEIVE=1 interop/group_peer.cpp
           -Ireference-srt/srtcore -Ireference-build
           reference-build/libsrt.a -lcrypto -lpthread -ldl
           -o reference-group-peer

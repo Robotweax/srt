@@ -437,7 +437,7 @@ void collect_system_events(PollRecord& record)
     const auto maximum = std::chrono::duration_cast<
         std::chrono::milliseconds>(
         Clock::time_point::max() - Clock::now()).count();
-    const auto bounded = std::min(timeout_milliseconds, maximum);
+    const auto bounded = std::min<std::int64_t>(timeout_milliseconds, maximum);
     return Clock::now() + std::chrono::milliseconds{bounded};
 }
 

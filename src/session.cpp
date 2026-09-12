@@ -706,18 +706,27 @@ ReliabilityProcessResult ReliabilitySession::receive(
         if (!decoded) {
             return {.error = decoded.error};
         }
-        const bool acknowledgement_is_current =
+        const auto acknowledgement_progress =
             decoded.acknowledgement.next_sequence.distance_from(
-                send_buffer_.first_sequence()) >= 0;
+                send_buffer_.first_sequence());
+        const bool acknowledgement_is_current = acknowledgement_progress >= 0;
         const auto error = send_buffer_.acknowledge_before(
             decoded.acknowledgement.next_sequence);
         if (error != Error::none) {
             return {.error = error};
         }
-        if (acknowledgement_is_current) {
+        // Repeated ACKs can update the receive window while a lost flight
+        // tail remains unacknowledged. Resetting RTO on those non-progress
+        // ACKs can postpone recovery until the Live delivery deadline expires.
+        // Keep filter-controlled recovery and FileCC unchanged: duplicate
+        // ACKs can cover a gap that FEC is still reconstructing, not a tail.
+        const bool live_tail_recovery = live_rate_controller_.has_value()
+            && packet_filter_policy_.effective_arq_level()
+                == PacketFilterArqLevel::always;
+        if (acknowledgement_progress > 0
+            || (acknowledgement_is_current && !live_tail_recovery)) {
             sender_retransmission_timer_.on_acknowledgement_received(
-                now_microseconds,
-                send_buffer_.packets_in_flight() != 0U);
+                now_microseconds, send_buffer_.packets_in_flight() != 0U);
         }
         if (decoded.acknowledgement.kind != AcknowledgementKind::lite) {
             if (acknowledgement_is_current) {
@@ -1286,7 +1295,17 @@ bool ReliabilitySession::poll_sender_retransmission_timeout(
         || (live_rate_controller_.has_value() && periodic_nak_enabled_);
     if (!selective_retransmission
         || !send_buffer_.has_pending_retransmission()) {
-        (void)send_buffer_.request_retransmission_of_all_sent();
+        if (live_rate_controller_.has_value() && periodic_nak_enabled_
+            && packet_filter_policy_.effective_arq_level()
+                == PacketFilterArqLevel::always) {
+            // Probe the last sent packet: its arrival exposes older gaps to
+            // periodic NAK recovery and also repairs a lost flight tail.
+            // Replaying the whole growing flight on every RTO amplifies an
+            // outage even though the receiver can request specific losses.
+            (void)send_buffer_.request_retransmission_of_last_sent();
+        } else {
+            (void)send_buffer_.request_retransmission_of_all_sent();
+        }
     }
     if (file_rate_controller_.has_value()) {
         file_rate_controller_->on_timeout(

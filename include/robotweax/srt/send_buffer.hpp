@@ -120,6 +120,7 @@ public:
         SequenceRange range,
         std::size_t* newly_queued_packets = nullptr,
         std::size_t* newly_queued_bytes = nullptr) noexcept;
+    [[nodiscard]] bool request_retransmission_of_last_sent() noexcept;
     [[nodiscard]] std::size_t request_retransmission_of_all_sent() noexcept;
     [[nodiscard]] std::optional<SendDropResult>
     next_pending_drop_request() noexcept;

@@ -1,4 +1,10 @@
+#include <srt/access_control.h>
 #include <srt/srt.h>
+
+#ifndef ROBOTWEAX_SRT_COMPAT_ACCESS_CONTROL_H
+#error "access_control.h must come from the Robotweax installation"
+#endif
+static_assert(SRT_REJX_OVERLOAD == 1402);
 
 #if defined(ROBOTWEAX_SRT_EXPECT_AEAD_API_PREVIEW)                             \
     && !defined(ENABLE_AEAD_API_PREVIEW)

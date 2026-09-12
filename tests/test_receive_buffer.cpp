@@ -24,6 +24,126 @@ PacketView data_packet(SequenceNumber sequence, std::uint32_t message_number,
 
 } // namespace
 
+TEST(receive_buffer_empty_readiness_is_non_mutating_at_all_capacities)
+{
+    for (const std::size_t capacity : {1U, 8U, 16'384U}) {
+        const SequenceNumber initial {SequenceNumber::mask};
+        ReceiveBuffer buffer {initial, capacity};
+        for (int query = 0; query < 4; ++query) {
+            REQUIRE(!buffer.first_complete_message());
+            REQUIRE(!buffer.has_complete_message());
+            REQUIRE(!buffer.has_stream_data());
+            REQUIRE_EQ(buffer.occupied(), 0U);
+            REQUIRE_EQ(buffer.available(), capacity);
+            REQUIRE_EQ(buffer.first_stored_sequence(), initial);
+            REQUIRE_EQ(buffer.next_ack_sequence(), initial);
+        }
+    }
+}
+
+TEST(
+    receive_buffer_empty_fragmented_empty_queries_survive_sequence_and_ring_wrap)
+{
+    ReceiveBuffer buffer {SequenceNumber {SequenceNumber::mask - 1U}, 8};
+    const std::array<std::byte, 1> payload {std::byte {'x'}};
+    for (std::uint32_t message = 1; message <= 4; ++message) {
+        const auto first = buffer.first_stored_sequence();
+        REQUIRE(!buffer.first_complete_message());
+        // Out-of-order fragments are occupied, but not yet a complete message.
+        REQUIRE(buffer.insert(data_packet(
+            first.advanced(2), message, MessageBoundary::last, payload)));
+        REQUIRE(!buffer.first_complete_message());
+        REQUIRE(buffer.insert(
+            data_packet(first, message, MessageBoundary::first, payload)));
+        REQUIRE(!buffer.first_complete_message());
+        REQUIRE(buffer.insert(data_packet(
+            first.next(), message, MessageBoundary::subsequent, payload)));
+        const auto complete = buffer.first_complete_message();
+        REQUIRE(complete);
+        REQUIRE_EQ(complete->first_sequence, first);
+        REQUIRE_EQ(complete->last_sequence, first.advanced(2));
+        REQUIRE(buffer.has_complete_message());
+        REQUIRE_EQ(buffer.occupied(), 3U);
+        std::array<std::byte, 3> output {};
+        REQUIRE_EQ(buffer.pop_message(output).bytes_written, 3U);
+        REQUIRE_EQ(output,
+            (std::array<std::byte, 3> {payload[0], payload[0], payload[0]}));
+        REQUIRE_EQ(buffer.occupied(), 0U);
+        REQUIRE(!buffer.first_complete_message());
+        REQUIRE_EQ(buffer.next_ack_sequence(), first.advanced(3));
+    }
+}
+
+TEST(receive_buffer_empty_readiness_preserves_drop_markers_and_reuse)
+{
+    ReceiveBuffer buffer {SequenceNumber {100}, 8};
+    const std::array<std::byte, 1> payload {std::byte {'d'}};
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {102}, 1, MessageBoundary::solo, payload)));
+    REQUIRE_EQ(buffer.drop_range({SequenceNumber {101}, SequenceNumber {102}}),
+        Error::none);
+    // Interior tombstones are not occupied payload, but must remain in place.
+    REQUIRE_EQ(buffer.occupied(), 0U);
+    REQUIRE(!buffer.first_complete_message());
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {100});
+    REQUIRE_EQ(buffer.next_ack_sequence(), SequenceNumber {100});
+    REQUIRE_EQ(buffer
+                   .insert(data_packet(
+                       SequenceNumber {102}, 1, MessageBoundary::solo, payload))
+                   .status,
+        ReceiveStatus::duplicate);
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {100}, 2, MessageBoundary::solo, payload)));
+    REQUIRE(buffer.has_complete_message());
+    REQUIRE_EQ(buffer.next_ack_sequence(), SequenceNumber {103});
+    std::array<std::byte, 1> output {};
+    REQUIRE(buffer.pop_message(output));
+    REQUIRE(!buffer.first_complete_message());
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {103});
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {103}, 3, MessageBoundary::solo, payload)));
+    REQUIRE(buffer.has_complete_message());
+    REQUIRE(buffer.pop_message(output));
+    REQUIRE(!buffer.first_complete_message());
+}
+
+TEST(receive_buffer_empty_readiness_after_discard_and_partial_stream_drain)
+{
+    ReceiveBuffer buffer {SequenceNumber {SequenceNumber::mask}, 4};
+    const std::array<std::byte, 2> payload {std::byte {'a'}, std::byte {'b'}};
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {0}, 1, MessageBoundary::solo, payload)));
+    REQUIRE_EQ(buffer.discard_before(SequenceNumber {1}), Error::none);
+    REQUIRE_EQ(buffer.occupied(), 0U);
+    REQUIRE(!buffer.first_complete_message());
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {1}, 2, MessageBoundary::solo, payload)));
+    std::array<std::byte, 1> output {};
+    REQUIRE_EQ(buffer.pop_stream(output).bytes_written, 1U);
+    REQUIRE_EQ(output[0], payload[0]);
+    REQUIRE_EQ(buffer.occupied(), 1U);
+    REQUIRE(buffer.first_complete_message());
+    REQUIRE_EQ(buffer.pop_stream(output).bytes_written, 1U);
+    REQUIRE_EQ(output[0], payload[1]);
+    REQUIRE_EQ(buffer.occupied(), 0U);
+    REQUIRE(!buffer.first_complete_message());
+    REQUIRE(!buffer.has_stream_data());
+}
+
+TEST(receive_buffer_empty_payload_is_not_an_empty_buffer)
+{
+    ReceiveBuffer buffer {SequenceNumber {10}, 1};
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {10}, 1, MessageBoundary::solo, {})));
+    REQUIRE_EQ(buffer.buffered_payload_bytes(), 0U);
+    REQUIRE_EQ(buffer.occupied(), 1U);
+    REQUIRE(buffer.first_complete_message());
+    REQUIRE(buffer.has_complete_message());
+    REQUIRE(buffer.pop_message({}));
+    REQUIRE_EQ(buffer.occupied(), 0U);
+    REQUIRE(!buffer.first_complete_message());
+}
+
 TEST(receive_buffer_reports_gap_then_advances_ack_when_filled)
 {
     ReceiveBuffer buffer{SequenceNumber{100}, 8};

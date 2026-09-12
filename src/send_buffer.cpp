@@ -503,6 +503,17 @@ Error SendBuffer::request_retransmission(
     return Error::none;
 }
 
+bool SendBuffer::request_retransmission_of_last_sent() noexcept
+{
+    for (std::size_t offset = sequence_span_; offset > 0U; --offset) {
+        const auto& slot = slots_[(head_ + offset - 1U) % capacity()];
+        if (slot.occupied && slot.sent && !slot.dropped) {
+            return queue_retransmission(slot.header.sequence);
+        }
+    }
+    return false;
+}
+
 std::size_t SendBuffer::request_retransmission_of_all_sent() noexcept
 {
     std::size_t queued = 0;

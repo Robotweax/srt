@@ -407,3 +407,85 @@ When a test fails:
 Use a clean build directory before attributing a result to source changes.
 See [Building](building.md) for cache hygiene and [Known limitations](limitations.md)
 for combinations that are intentionally unsupported.
+
+### Pinned reference group receive
+
+The Haivision 1.5.7 group helper is compiled with
+`ROBOTWEAX_SRT_REFERENCE_GROUP_RECEIVE=1`. This selects bounded nonblocking
+receive only for the helper's payload-range verification. It retries only
+`SRT_EASYNCRCV`, retains the five-second per-message deadline and all payload,
+hash, sequence and member-metadata checks, then restores the receive mode.
+Robotweax's helper and the separate blocking receive-contract probes are
+unchanged. This is not a transport-library workaround or a relaxed gate.
+
+The reason is a reproduced Linux reference-side stall: payload was ACKed, but
+the reference application remained in `CUDTGroup::recv_WaitForReadReady` /
+`CEPoll::swait`; its send queue was empty. The final hash reply appeared only
+after the caller timed out and started closing its members. Packet capture
+and two post-stall thread snapshots established this distinction from a
+Robotweax reply-receive failure. See diagnostic runs
+[34282020452](https://github.com/Robotweax/srt/actions/runs/34282020452) and
+[34282329261](https://github.com/Robotweax/srt/actions/runs/34282329261).
+The precise internal reference readiness race remains unproven; a passing
+retry or added logging alone must not be treated as a fix.
+
+With the reference-only nonblocking path, the subsequent
+[60-case Linux run](https://github.com/Robotweax/srt/actions/runs/34282747581)
+passed without phase logging. This validates the harness mitigation, not a
+repair of Haivision's internal blocking implementation.
+
+### Live flight-tail recovery
+
+The duplicate-ACK tail fix applies to Live sessions with ordinary ARQ
+(`always`). FileCC and filter-controlled `onreq`/`never` recovery retain their
+existing ACK timer behavior. In particular, an ACK stalled behind an FEC gap
+must not be treated as evidence that the flight tail is lost. This test does
+not establish tail-loss recovery for those filter-controlled modes.
+
+`robotweax_srt_live_tail_recovery` drops exactly the last original DATA datagram
+of a six-second, source-paced Live transfer through the existing deterministic
+UDP fault relay. The two-second TSBPD budget is shorter than the source run, so
+application reads are already freeing receive-buffer space when the flight tail
+is lost. This matters: repeated ACKs can advertise window updates without
+advancing the cumulative acknowledgement. They must not restart the sender RTO.
+
+The test requires the tail retransmission, its cumulative ACK, complete payload
+integrity and successful peer exits. It leaves no temporary artifacts by default:
+
+```sh
+ctest --test-dir build -R '^robotweax_srt_live_tail_recovery$' --output-on-failure
+```
+
+To retain the peer logs and fault metadata, or compare a different sender build:
+
+```sh
+python3 interop/run_live_tail_interop.py \
+  --sender-peer build/robotweax_srt_interop_peer \
+  --receiver-peer build/robotweax_srt_interop_peer \
+  --artifacts /path/to/new-tail-results
+```
+
+This regression preserves the retransmission timeout formula and its backoff.
+For Live sessions with ordinary ARQ, only an ACK that advances the send-buffer
+sequence restarts the timer; valid
+non-progress ACKs still participate in receive-window and RTT processing.
+
+The periodic-NAK Live sender uses one last-sent DATA probe when its RTO expires
+without pending selective retransmissions. Replaying the whole unacknowledged
+flight during an outage caused hundreds of redundant retransmissions. The probe
+repairs a single lost tail and exposes preceding losses to the receiver's NAK
+logic. File mode, peers without periodic NAK, and filter-controlled ARQ retain
+their existing fallback behavior; timeout timing and backoff are unchanged.
+Session unit tests also check repeated probing without an ACK, termination after
+a cumulative ACK, and the unchanged full-flight fallback outside periodic-NAK
+Live ordinary ARQ. These deterministic checks do not measure outage bandwidth.
+
+`robotweax_srt_live_tail_burst_recovery` drops the last three original DATA
+packets and requires complete recovery and cumulative ACKs. Run both tail cases:
+
+```sh
+ctest --test-dir build -R '^robotweax_srt_live_tail.*recovery$' --repeat until-fail:3 --output-on-failure
+```
+
+The Python harness also accepts `--tail-packets 1..16` with `--artifacts` to retain
+packet traces for a larger deterministic tail burst.

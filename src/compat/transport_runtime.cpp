@@ -2340,6 +2340,8 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         }
     }
 
+    const SequenceNumber first_unacknowledged =
+        session_.send_buffer().first_sequence();
     const auto processed = session_.receive(
         clear_packet, now, context);
     if (!processed) {
@@ -2351,6 +2353,21 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         pacer_.set_flow_window(flow_window_packets_);
         if (flow_window_packets_ > previous_flow_window) {
             send_ready_.notify_all();
+        }
+    } else if (clear_packet.kind == PacketKind::control
+        && clear_packet.control.type == ControlType::acknowledgement) {
+        // Lite ACKs advance the cumulative ACK but do not advertise newly
+        // freed receive space. Consume that progress from the last window
+        // budget, or removing the acknowledged flight would permit new data
+        // beyond an undrained receiver's window. Rejected/stale/duplicate ACKs
+        // cannot advance this validated send-buffer boundary.
+        const auto progress =
+            session_.send_buffer().first_sequence().distance_from(
+                first_unacknowledged);
+        if (progress > 0) {
+            flow_window_packets_ -= std::min(
+                flow_window_packets_, static_cast<std::size_t>(progress));
+            pacer_.set_flow_window(flow_window_packets_);
         }
     }
     if (packet.kind == PacketKind::data) {

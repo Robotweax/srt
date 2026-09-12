@@ -22,6 +22,11 @@
 #include <utility>
 #include <vector>
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
+
 #if defined(_WIN32)
 #include <ws2tcpip.h>
 #else
@@ -50,6 +55,15 @@ struct Configuration {
     int timeout_milliseconds = 60'000;
     int latency_milliseconds = 20;
     int shutdown_grace_milliseconds = 50;
+    // Opt-in capacity controls. Defaults preserve the scalability scorecard.
+    std::size_t pending_packets = maximum_pending_packets_per_socket;
+    int flow_window = 1'024;
+    int send_buffer = 4 * 1'024 * 1'024;
+    int receive_buffer = 0;
+    int udp_buffer = 0;
+    std::int64_t maximum_bandwidth = -1;
+    std::uint64_t target_bits_per_second = 0;
+    std::uint32_t pacing_burst_packets = 0;
 };
 
 struct EndpointAddress {
@@ -229,6 +243,54 @@ bool parse_arguments(int argc, char** argv, Configuration& configuration)
                 || configuration.shutdown_grace_milliseconds < 0) {
                 return false;
             }
+        } else if (option == "--pending-packets"
+            && take_value(index, argc, argv, value)) {
+            if (!parse_integer(value, configuration.pending_packets)
+                || configuration.pending_packets == 0U
+                || configuration.pending_packets > 65'536U) {
+                return false;
+            }
+        } else if (option == "--flow-window"
+            && take_value(index, argc, argv, value)) {
+            if (!parse_integer(value, configuration.flow_window)
+                || configuration.flow_window < 32
+                || configuration.flow_window > 65'536) {
+                return false;
+            }
+        } else if ((option == "--send-buffer" || option == "--receive-buffer"
+                       || option == "--udp-buffer")
+            && take_value(index, argc, argv, value)) {
+            int bytes = 0;
+            if (!parse_integer(value, bytes) || bytes < 65'536
+                || bytes > 256 * 1'024 * 1'024) {
+                return false;
+            }
+            if (option == "--send-buffer") {
+                configuration.send_buffer = bytes;
+            } else if (option == "--receive-buffer") {
+                configuration.receive_buffer = bytes;
+            } else {
+                configuration.udp_buffer = bytes;
+            }
+        } else if (option == "--max-bandwidth"
+            && take_value(index, argc, argv, value)) {
+            if (!parse_integer(value, configuration.maximum_bandwidth)
+                || configuration.maximum_bandwidth < -1
+                || configuration.maximum_bandwidth > 12'500'000'000LL) {
+                return false;
+            }
+        } else if (option == "--pacing-burst-packets"
+            && take_value(index, argc, argv, value)) {
+            if (!parse_integer(value, configuration.pacing_burst_packets)
+                || configuration.pacing_burst_packets > 64U) {
+                return false;
+            }
+        } else if (option == "--target-bps"
+            && take_value(index, argc, argv, value)) {
+            if (!parse_integer(value, configuration.target_bits_per_second)
+                || configuration.target_bits_per_second > 100'000'000'000ULL) {
+                return false;
+            }
         } else {
             return false;
         }
@@ -280,23 +342,26 @@ bool configure_socket(
 {
     const SRT_TRANSTYPE transport = SRTT_LIVE;
     const bool message_api = true;
-    const int flow_window = 1'024;
-    const int send_buffer = 4 * 1'024 * 1'024;
     const int maximum_segment_size = 1'500;
-    const std::int64_t maximum_bandwidth = -1;
     const bool too_late_packet_drop = false;
     return set_option(socket, SRTO_TRANSTYPE, transport)
         && set_option(socket, SRTO_MESSAGEAPI, message_api)
         && set_option(socket, SRTO_SENDER, sender)
         && set_option(socket, SRTO_SNDTIMEO, configuration.timeout_milliseconds)
         && set_option(socket, SRTO_RCVTIMEO, configuration.timeout_milliseconds)
-        && set_option(socket, SRTO_FC, flow_window)
-        && set_option(socket, SRTO_SNDBUF, send_buffer)
+        && set_option(socket, SRTO_FC, configuration.flow_window)
+        && set_option(socket, SRTO_SNDBUF, configuration.send_buffer)
+        && (configuration.receive_buffer == 0
+            || set_option(socket, SRTO_RCVBUF, configuration.receive_buffer))
+        && (configuration.udp_buffer == 0
+            || (set_option(socket, SRTO_UDP_SNDBUF, configuration.udp_buffer)
+                && set_option(
+                    socket, SRTO_UDP_RCVBUF, configuration.udp_buffer)))
         && set_option(socket, SRTO_MSS, maximum_segment_size)
         && set_option(socket, SRTO_PAYLOADSIZE, configuration.message_size)
         && set_option(socket, SRTO_LATENCY, configuration.latency_milliseconds)
         && set_option(socket, SRTO_TLPKTDROP, too_late_packet_drop)
-        && set_option(socket, SRTO_MAXBW, maximum_bandwidth);
+        && set_option(socket, SRTO_MAXBW, configuration.maximum_bandwidth);
 }
 
 bool make_nonblocking(SRTSOCKET socket)
@@ -304,6 +369,40 @@ bool make_nonblocking(SRTSOCKET socket)
     const bool synchronous = false;
     return set_option(socket, SRTO_SNDSYN, synchronous)
         && set_option(socket, SRTO_RCVSYN, synchronous);
+}
+
+bool print_capacity_options(
+    SRTSOCKET socket, const Configuration& configuration)
+{
+    if (configuration.udp_buffer == 0) {
+        return true;
+    }
+    const std::array<SRT_SOCKOPT, 5> options {
+        SRTO_FC, SRTO_SNDBUF, SRTO_RCVBUF, SRTO_UDP_SNDBUF, SRTO_UDP_RCVBUF};
+    std::array<int, 5> values {};
+    for (std::size_t index = 0; index < options.size(); ++index) {
+        int size = sizeof(int);
+        if (srt_getsockflag(socket, options[index], &values[index], &size)
+            == SRT_ERROR) {
+            std::cerr << "capacity option query failed: "
+                      << srt_getlasterror_str() << '\n';
+            return false;
+        }
+    }
+    // API readbacks are not measurements of the actual OS socket buffer size.
+    std::cout << "{\"event\":\"capacity-options\",\"api_fc\":" << values[0]
+              << ",\"api_sndbuf\":" << values[1]
+              << ",\"api_rcvbuf\":" << values[2]
+              << ",\"api_udp_sndbuf\":" << values[3]
+              << ",\"api_udp_rcvbuf\":" << values[4]
+              << ",\"requested_maxbw_bytes_per_second\":"
+              << configuration.maximum_bandwidth
+              << ",\"pending_packets\":" << configuration.pending_packets
+              << ",\"target_bits_per_second\":"
+              << configuration.target_bits_per_second
+              << ",\"encryption\":\"none\",\"tlpktdrop\":false}\n"
+              << std::flush;
+    return true;
 }
 
 void store_u32(char* output, std::uint32_t value) noexcept
@@ -445,6 +544,23 @@ void print_complete(const char* role, const Configuration& configuration,
               << ",\"srt_version\":" << srt_getversion()
               << ",\"integrity\":true,\"connection_completion_us\":";
     print_distribution(connection_completion);
+#if defined(__unix__) || defined(__APPLE__)
+    rusage usage {};
+    if (getrusage(RUSAGE_SELF, &usage) == 0) {
+        std::cout << ",\"process_resources\":{\"pid\":" << getpid()
+                  << ",\"user_cpu_us\":"
+                  << static_cast<std::int64_t>(usage.ru_utime.tv_sec)
+                    * 1'000'000
+                + usage.ru_utime.tv_usec
+                  << ",\"system_cpu_us\":"
+                  << static_cast<std::int64_t>(usage.ru_stime.tv_sec)
+                    * 1'000'000
+                + usage.ru_stime.tv_usec
+                  << ",\"voluntary_context_switches\":" << usage.ru_nvcsw
+                  << ",\"involuntary_context_switches\":" << usage.ru_nivcsw
+                  << '}';
+    }
+#endif
     if (statistics.available) {
         std::cout << ",\"stats\":{\"pktSentTotal\":" << statistics.packets_sent
                   << ",\"pktRecvTotal\":" << statistics.packets_received
@@ -537,6 +653,11 @@ bool run_sender(const Configuration& configuration,
     std::uint64_t sent_messages = 0;
     std::size_t cursor = 0;
     const auto started = Clock::now();
+    auto pacing_origin = started;
+    Clock::time_point first_enqueue {}, last_enqueue {};
+    std::int64_t pacing_forgiven_nanoseconds = 0;
+    std::uint64_t enqueue_bucket = 0, bucket_packets = 0,
+                  maximum_bucket_packets = 0;
     const auto deadline = started
         + std::chrono::milliseconds {configuration.timeout_milliseconds};
 
@@ -580,17 +701,51 @@ bool run_sender(const Configuration& configuration,
                           << ' ' << srt_getlasterror_str() << '\n';
                 return false;
             }
-            if (pending_blocks >= maximum_pending_packets_per_socket) {
+            if (pending_blocks >= configuration.pending_packets) {
                 application_window_blocked = true;
                 continue;
             }
             const int socket_budget =
                 static_cast<int>(std::min<std::size_t>(maximum_burst_messages,
-                    maximum_pending_packets_per_socket - pending_blocks));
+                    configuration.pending_packets - pending_blocks));
             int burst = 0;
             while (progress[index] < configuration.messages_per_connection
                 && burst < socket_budget
                 && round_messages < maximum_round_messages) {
+                if (configuration.target_bits_per_second != 0U) {
+                    const auto offset = std::chrono::duration<double> {
+                        static_cast<double>(sent_messages)
+                        * static_cast<double>(configuration.message_size) * 8.0
+                        / static_cast<double>(
+                            configuration.target_bits_per_second)};
+                    auto due = pacing_origin
+                        + std::chrono::duration_cast<Clock::duration>(offset);
+                    if (configuration.pacing_burst_packets != 0U) {
+                        const auto credit = std::chrono::duration<double> {
+                            static_cast<double>(
+                                configuration.pacing_burst_packets - 1U)
+                            * configuration.message_size * 8.0
+                            / static_cast<double>(
+                                configuration.target_bits_per_second)};
+                        const auto earliest = Clock::now()
+                            - std::chrono::duration_cast<Clock::duration>(
+                                credit);
+                        if (due < earliest) {
+                            const auto forgiven = earliest - due;
+                            pacing_origin += forgiven;
+                            due = earliest;
+                            pacing_forgiven_nanoseconds +=
+                                std::chrono::duration_cast<
+                                    std::chrono::nanoseconds>(forgiven)
+                                    .count();
+                        }
+                    }
+                    if (due >= deadline) {
+                        std::cerr << "offered-rate duration exceeds timeout\n";
+                        return false;
+                    }
+                    std::this_thread::sleep_until(due);
+                }
                 prepare_payload(payloads[index],
                     static_cast<std::uint32_t>(index), progress[index]);
                 const int sent = srt_sendmsg(sockets[index],
@@ -613,6 +768,22 @@ bool run_sender(const Configuration& configuration,
                 if (sent != configuration.message_size) {
                     std::cerr << "message send was unexpectedly partial\n";
                     return false;
+                }
+                if (configuration.target_bits_per_second != 0U) {
+                    last_enqueue = Clock::now();
+                    if (sent_messages == 0U) {
+                        first_enqueue = last_enqueue;
+                    }
+                    const auto bucket = static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            last_enqueue - first_enqueue)
+                            .count());
+                    if (bucket != enqueue_bucket) {
+                        bucket_packets = 0;
+                        enqueue_bucket = bucket;
+                    }
+                    maximum_bucket_packets =
+                        std::max(maximum_bucket_packets, ++bucket_packets);
                 }
                 ++progress[index];
                 ++sent_messages;
@@ -684,6 +855,27 @@ bool run_sender(const Configuration& configuration,
         std::this_thread::sleep_for(std::chrono::milliseconds {1});
     }
 
+    if (configuration.target_bits_per_second != 0U) {
+        const auto span = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            last_enqueue - first_enqueue)
+                              .count();
+        const double offered_bps = span > 0
+            ? static_cast<double>(sent_messages - 1U)
+                * configuration.message_size * 8.0 * 1e9
+                / static_cast<double>(span)
+            : 0.0;
+        std::cout << "{\"event\":\"offered-rate\",\"target_bps\":"
+                  << configuration.target_bits_per_second
+                  << ",\"enqueue_bps\":" << offered_bps
+                  << ",\"enqueue_span_ns\":" << span
+                  << ",\"messages\":" << sent_messages
+                  << ",\"catchup_credit_packets\":"
+                  << configuration.pacing_burst_packets
+                  << ",\"forgiven_ns\":" << pacing_forgiven_nanoseconds
+                  << ",\"maximum_fixed_1ms_bucket_packets\":"
+                  << maximum_bucket_packets << "}\n"
+                  << std::flush;
+    }
     const AggregateStatistics statistics = capture_statistics(sockets);
     print_complete("caller", configuration, Clock::now() - started,
         establishment, completion, statistics);
@@ -897,6 +1089,9 @@ int run_listener(const Configuration& configuration)
         accepted.add(socket);
     }
     const auto establishment = Clock::now() - establishment_started;
+    if (!print_capacity_options(accepted.values().front(), configuration)) {
+        return 5;
+    }
     std::cout << "{\"event\":\"established\",\"role\":\"listener\","
                  "\"connections\":"
               << configuration.connections << "}\n"
@@ -931,6 +1126,9 @@ int run_caller(const Configuration& configuration)
         connected.add(socket);
     }
     const auto establishment = Clock::now() - establishment_started;
+    if (!print_capacity_options(connected.values().front(), configuration)) {
+        return 5;
+    }
     std::cout << "{\"event\":\"established\",\"role\":\"caller\","
                  "\"connections\":"
               << configuration.connections << "}\n"
@@ -940,10 +1138,14 @@ int run_caller(const Configuration& configuration)
 
 void usage()
 {
-    std::cerr << "usage: robotweax_srt_scalability_peer listener|caller"
-                 " --host IP --port PORT --connections N --messages N"
-                 " --message-size 16..1456 [--timeout-ms N] [--latency-ms N]"
-                 " [--shutdown-grace-ms N]\n";
+    std::cerr
+        << "usage: robotweax_srt_scalability_peer listener|caller"
+           " --host IP --port PORT --connections N --messages N"
+           " --message-size 16..1456 [--timeout-ms N] [--latency-ms N]"
+           " [--shutdown-grace-ms N] [--pending-packets N]"
+           " [--flow-window N] [--send-buffer BYTES] [--receive-buffer BYTES]"
+           " [--udp-buffer BYTES] [--max-bandwidth BYTES_PER_SECOND]"
+           " [--target-bps BITS_PER_SECOND]\n";
 }
 
 } // namespace

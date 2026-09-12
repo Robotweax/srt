@@ -5,6 +5,68 @@ surface. Use `srt_setsockflag()` and `srt_getsockflag()` with the declared
 `SRT_SOCKOPT` value and value representation. Pre-connection, pre-bind,
 post-connection, and read-only constraints are part of each option's contract.
 
+## Identify the loaded crypto backend
+
+Since 0.2.4, `SRTO_ROBOTWEAX_CRYPTO_BACKEND` (`0x01000002`) returns an
+`int32_t`: `ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL` (1) or
+`ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT` (2). This read-only query identifies the
+loaded library, not the application's headers, selected cipher or remote peer.
+It works on valid sockets and groups before connecting, including unencrypted
+sockets, and never enables encryption or initializes a connection.
+
+```c
+int32_t backend = 0;
+int length = sizeof(backend);
+const char* name = "unknown";
+if (srt_getsockflag(socket, SRTO_ROBOTWEAX_CRYPTO_BACKEND,
+        &backend, &length) == 0) {
+    if (backend == ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL) name = "OpenSSL";
+    else if (backend == ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT) name = "BCrypt";
+}
+```
+
+Create a valid socket after `srt_startup()` if the application has none yet,
+then close it when finished. Null pointers and buffers smaller than four bytes
+are rejected without writing the result; success sets the length to four.
+Setting this option is unsupported. Older Robotweax and other SRT libraries may
+reject the query: report unknown, not OpenSSL, on failure or an unknown future
+value. When compiling against older headers, guard the example with
+`#ifdef ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL`. No exported symbol, structure
+layout, upstream option value or `SRTO_E_SIZE` changes.
+
+## Identify the local implementation
+
+`<srt/srt.h>` exposes `ROBOTWEAX_SRT_VERSION_MAJOR`, `_MINOR`, `_PATCH`,
+`_STRING` and `_VALUE` (each with the `ROBOTWEAX_SRT_VERSION` prefix).
+These describe the headers' product release. They do not replace `SRT_VERSION_*`,
+which describe SRT compatibility. The packed numeric format is
+`major * 0x10000 + minor * 0x100 + patch`.
+
+`SRTO_ROBOTWEAX_VERSION` (`0x01000001`) is a read-only extension returning an
+`int32_t` containing the loaded library's product version. Query it using
+`srt_getsockflag()` with a valid socket or group, even before connecting. An
+`int` length must initially be at least `sizeof(int32_t)`; success sets it to
+that size. Null pointers or short buffers are invalid. The option is local:
+it is never negotiated or transmitted and says nothing about the peer.
+
+```c
+#if defined(ROBOTWEAX_SRT_VERSION_VALUE)
+int32_t product_version = 0;
+int length = sizeof(product_version);
+if (srt_getsockflag(socket, SRTO_ROBOTWEAX_VERSION,
+        &product_version, &length) == 0) {
+    /* product_version identifies the loaded implementation, not the headers. */
+}
+#endif
+```
+
+Failure means identification was unsuccessful, not proof of Haivision: older
+Robotweax releases lack this option, and invalid handles also fail. Handle the
+error normally. `srt_getversion()`, `SRTO_VERSION`, `SRTO_PEERVERSION` and all
+existing option numbers retain their compatibility semantics. This extension
+adds no exported function or structure field. A high option number reduces
+collision risk but is not an upstream namespace reservation.
+
 ```c
 #include <srt/srt.h>
 
@@ -210,6 +272,17 @@ Their effective values are applied to `SO_SNDBUF` and `SO_RCVBUF` before
 explicit listener binding or implicit caller binding; accepted sockets inherit
 the listener values. A getter returns the portable effective SRT value rather
 than an operating-system-specific doubled or clamped kernel value.
+On macOS/BSD, an `ENOBUFS` rejection of a UDP buffer request uses a
+best-effort fallback, for both created and acquired UDP sockets: an existing
+buffer of at least 64,000 bytes is retained; otherwise 64,000 bytes is attempted
+when the request was at least that large. Other errors and failed fallbacks
+remain errors. This applies to explicit settings as well as defaults, matching
+Haivision's best-effort macOS/BSD behavior without shrinking an already useful
+buffer. Explicit bind/acquire and caller setup report requested and actual
+buffer bytes through the socket-management warning logger after releasing
+internal locks. The SRT option getter still reports the configured value, not
+the kernel allocation. Size buffers and validate packet loss under realistic
+traffic; a successful bind alone does not qualify throughput.
 `SRTO_REUSEADDR` is a pre-bind boolean and defaults to `true`. Independent
 IPv4 or IPv6 SRT sockets that bind the same exact address and port with
 matching native UDP buffer settings share one UDP channel and its

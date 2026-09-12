@@ -72,11 +72,27 @@ if(NOT "${ROBOTWEAX_SRT_BUILD_CONFIG}" STREQUAL "")
 endif()
 run_checked("Robotweax SRT installation" ${install_command})
 
+if(ROBOTWEAX_SRT_INSTALL_LAYOUT STREQUAL "namespaced")
+    foreach(conflicting_header IN ITEMS srt.h srt/srt.h srt/version.h)
+        if(EXISTS "${stage_directory}/${ROBOTWEAX_SRT_BASE_INCLUDEDIR}/${conflicting_header}")
+            message(FATAL_ERROR "namespaced installation overwrote a legacy header")
+        endif()
+    endforeach()
+    file(GLOB conflicting_libraries
+        "${stage_directory}/${ROBOTWEAX_SRT_INSTALL_LIBDIR}/libsrt.*"
+        "${stage_directory}/${ROBOTWEAX_SRT_INSTALL_LIBDIR}/srt.lib"
+        "${stage_directory}/${ROBOTWEAX_SRT_INSTALL_BINDIR}/srt.dll")
+    if(conflicting_libraries)
+        message(FATAL_ERROR "namespaced installation contains legacy library names")
+    endif()
+endif()
+
 set(installed_include_directory
     "${stage_directory}/${ROBOTWEAX_SRT_INSTALL_INCLUDEDIR}")
 foreach(public_header IN ITEMS
         robotweax_srt.h
         srt.h
+        srt/access_control.h
         srt/logging_api.h
         srt/srt.h
         srt/version.h)

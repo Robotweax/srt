@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 
@@ -143,6 +144,20 @@ TEST(statistics_snapshot_maps_totals_interval_and_clear_semantics)
     REQUIRE_EQ(
         public_after_clear.pktRcvAvgBelatedTime, 12.0);
     REQUIRE_EQ(public_after_clear.byteSent, 0U);
+}
+
+TEST(statistics_buffer_average_saturates_at_size_t_limit)
+{
+    RuntimeStatisticsState state {1'000};
+    state.sample_buffers(1'000,
+        {
+            .sender_packets = 1,
+            .sender_payload_bytes = std::numeric_limits<std::size_t>::max(),
+        });
+    RuntimeStatisticsInstantaneous values {};
+    state.apply_average_buffers(values);
+    REQUIRE_EQ(
+        values.sender_buffer_bytes, std::numeric_limits<std::size_t>::max());
 }
 
 TEST(statistics_buffer_average_uses_reference_time_weighting)

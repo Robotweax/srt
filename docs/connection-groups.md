@@ -1,6 +1,6 @@
 # Connection Groups
 
-Robotweax SRT 0.2.3 implements the Haivision SRT v1.5.7 Connection Group ABI
+Robotweax SRT 0.2.4 implements the Haivision SRT v1.5.7 Connection Group ABI
 for Live-mode Caller/Listener Broadcast and weighted Main/Backup operation.
 Groups provide one public handle over several SRT connections. Members retain
 independent crypto, transport-sequence, and congestion state.

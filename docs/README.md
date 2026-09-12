@@ -1,7 +1,7 @@
 # Robotweax SRT documentation
 
 This directory contains the public documentation for building, integrating,
-operating, and evaluating Robotweax SRT 0.2.3. It is written for application
+operating, and evaluating Robotweax SRT 0.2.4. It is written for application
 developers and transport integrators using the installed public API.
 
 ## Start here
@@ -10,6 +10,10 @@ developers and transport integrators using the installed public API.
   basic socket lifecycle.
 - [Building and installing](building.md) — build profiles, CMake options,
   installation, package discovery, and platform notes.
+- [Experimental mobile builds](mobile-building.md) — Android and iOS cross-build
+  instructions, local verification evidence, and qualification boundaries.
+- [Experimental BCrypt backend](windows-bcrypt.md) — optional native Windows
+  cryptography, validation plan, and remaining qualification work.
 - [Integration guide](integration.md) — public headers, endpoint roles, I/O,
   readiness, encryption, errors, and shutdown.
 - [FFmpeg integration](ffmpeg-integration.md) — opt-in package discovery,
@@ -55,13 +59,22 @@ combining features.
 - [ACK and ACKACK semantics](acknowledgements.md)
 - [Protocol edge-case policy](protocol-edge-cases.md)
 - [Performance and scalability measurement](performance.md)
+- [Throughput profiling and empty-receive-buffer experiment](throughput-profiling.md)
 
 These pages document stable protocol behavior, resource contracts, and
 reproducible measurement methods. Internal implementation details that are not
 named as public contracts may change between pre-1.0 releases.
 
+## Experimental branch evaluation
+
+- [Reorder-budget evaluation (not release-qualified)](reorder-evaluation.md)
+
+This evaluation changes reorder waiting only on its dedicated branch; it is
+not a statement of main's default behavior or a released performance guarantee.
+
 ## Releases and migration
 
+- [Robotweax SRT 0.2.4 release notes](release-notes-0.2.4.md)
 - [Robotweax SRT 0.2.3 release notes](release-notes-0.2.3.md)
 - [Robotweax SRT 0.2.2 release notes](release-notes-0.2.2.md)
 - [Robotweax SRT 0.2.1 release notes](release-notes-0.2.1.md)
@@ -71,7 +84,7 @@ named as public contracts may change between pre-1.0 releases.
 - [Project changelog](../CHANGELOG.md)
 
 Robotweax release numbers, the shared-library ABI, the compatible SRT API
-value, and the wire handshake generation are independent. For 0.2.3, the ABI
+value, and the wire handshake generation are independent. For 0.2.4, the ABI
 line is 0.2, the default public API and `srt_getversion()` value are 1.5.7,
 and supported connection establishment uses HSv5.
 
