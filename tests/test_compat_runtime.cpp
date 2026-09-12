@@ -170,6 +170,7 @@ RuntimeScheduler::Snapshot await_channel_timer(
 std::shared_ptr<ConnectionRuntime> queue_paced_fixture(
     const std::shared_ptr<DatagramChannel>& channel, std::uint64_t& now)
 {
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
     auto runtime = std::make_shared<
         ConnectionRuntime>(ConnectionRuntime::Configuration {
         .channel = channel,
@@ -831,6 +832,7 @@ TEST(compat_runtime_reports_the_next_paced_send_deadline)
 TEST(compat_dispatcher_preserves_the_earliest_absolute_pacer_deadline)
 {
     auto channel = std::make_shared<DatagramChannel>();
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
     CapturedDatagrams output;
     channel->set_send_hook_for_testing(capture_datagram, &output);
     std::uint64_t now = 1'000;
@@ -966,6 +968,7 @@ TEST(compat_dispatcher_pacer_timer_exhaustion_breaks_the_connection)
     // stop waits for any active callback; broken-state publication follows the
     // scheduling failure and must be visible before another message is queued.
     scheduler->stop();
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
     const std::array<std::byte, 1> payload {};
     REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, 0).status,
         MessageIoStatus::broken);
