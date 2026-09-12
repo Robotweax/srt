@@ -23,6 +23,7 @@ from pathlib import Path
 
 import scalability_scorecard as sc
 import retransmission_trace as rt
+import poll_wake_counters as pc
 
 try:
     import resource
@@ -90,7 +91,7 @@ def case_plan(profiles: list[str], repetitions: int, warmups: int,
 
 
 def perf_command(capture: str, data: Path, command: list[str], perf: str) -> list[str]:
-    if capture in ("none", "transport"):
+    if capture in ("none", "transport", "counters"):
         return command
     if capture == "cpu":
         # Software clock works without a virtualized hardware PMU. DWARF avoids
@@ -153,6 +154,12 @@ def run_case(path: Path) -> int:
             os.environ["ROBOTWEAX_TRANSPORT_TRACE_DIR"] = str(trace_directory)
         else:
             os.environ.pop("ROBOTWEAX_TRANSPORT_TRACE_DIR", None)
+        if request.get("capture") == "counters":
+            counter_directory = directory / "poll-counters"
+            counter_directory.mkdir(exist_ok=False)
+            os.environ["ROBOTWEAX_POLL_COUNTER_DIR"] = str(counter_directory)
+        else:
+            os.environ.pop("ROBOTWEAX_POLL_COUNTER_DIR", None)
         result = sc.run_many_socket_profile(
             request["profile"], {k: Path(v) for k, v in request["programs"].items()},
             sc.RunOptions(**request["options"]), directory,
@@ -181,6 +188,10 @@ def run_case(path: Path) -> int:
                 and entry["rate_pass"])
         if request.get("capture") == "transport":
             entry["profiling"] = rt.analyze_case(directory, result)
+        if request.get("capture") == "counters":
+            entry["profiling"] = pc.analyze_case(directory, result, request["profile"])
+            if not entry["profiling"]["valid"]:
+                return 1
         return 0
     except Exception as error:
         entry["error"] = str(error)
@@ -262,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-manifest", type=Path, required=True)
     parser.add_argument("--output-directory", type=Path, required=True)
     parser.add_argument("--profile", action="append", choices=PROFILES)
-    parser.add_argument("--capture", choices=("none", "cpu", "scheduler", "transport"), default="none")
+    parser.add_argument("--capture", choices=("none", "cpu", "scheduler", "transport", "counters"), default="none")
     parser.add_argument("--repetitions", type=bounded_int(1, 10))
     parser.add_argument("--warmups", type=bounded_int(0, 2), default=1)
     parser.add_argument("--bytes-per-connection", type=bounded_int(1316, 1024**3), default=128 * 1024**2)
@@ -288,6 +299,15 @@ def main(argv: list[str] | None = None) -> int:
     if manifest.get("complete") is not True:
         parser.error("build manifest is incomplete")
     traced_build = manifest.get("transport_trace", {}).get("enabled", False)
+    counter_build = manifest.get("poll_counters", {}).get("enabled", False)
+    if counter_build != (args.capture == "counters") or (counter_build and traced_build):
+        parser.error("counter overlay requires capture=counters and cannot produce plain/perf/transport results")
+    if counter_build:
+        overlay = manifest["poll_counters"]
+        if (overlay.get("source_revision") != pc.SOURCE_REVISION
+                or overlay.get("overlay_script", {}).get("sha256") != sc.file_sha256(Path(pc.__file__))
+                or overlay.get("collector_header", {}).get("sha256") != sc.file_sha256(pc.HEADER)):
+            parser.error("counter source, overlay or collector differs from this runner")
     if traced_build != (args.capture == "transport"):
         parser.error("transport capture requires an overlay build; overlay builds cannot produce plain/perf capacity results")
     if args.pacing_burst_packets and not args.target_bps:
@@ -317,7 +337,8 @@ def main(argv: list[str] | None = None) -> int:
               "started_unix_ns": time.time_ns()}
     report["harness_files"] = [sc.program_identity(path) for path in
                                (Path(__file__).resolve(), ROOT / "benchmarks/scalability_scorecard.py",
-                                ROOT / "benchmarks/retransmission_trace.py")]
+                                ROOT / "benchmarks/retransmission_trace.py",
+                                ROOT / "benchmarks/poll_wake_counters.py", pc.HEADER)]
     sc.write_report(out / "report.json", report)
     options = sc.RunOptions("127.0.0.1", 1, args.bytes_per_connection, 1316,
                             args.timeout_seconds, 120, 500, .02)
@@ -352,7 +373,10 @@ def main(argv: list[str] | None = None) -> int:
         report["all_transfers_pass"] = all(e["transfer_pass"] and e.get("exit_code") == 0 for e in report["runs"])
         report["all_captures_usable"] = args.capture == "none" or all(e.get("profiling", {}).get("valid") for e in report["runs"])
         report["all_matched_rates_pass"] = not args.pacing_burst_packets or all(e.get("matched_rate_pass") for e in report["runs"])
-        return 0 if report["all_transfers_pass"] and report["all_captures_usable"] and report["all_matched_rates_pass"] else 1
+        report["counter_measurement_contract_pass"] = (args.capture != "counters"
+            or all(pc.measurement_contract(e) for e in report["runs"]))
+        return 0 if (report["all_transfers_pass"] and report["all_captures_usable"]
+                     and report["all_matched_rates_pass"] and report["counter_measurement_contract_pass"]) else 1
     finally:
         report["finished_unix_ns"] = time.time_ns()
         sc.write_report(out / "report.json", report)

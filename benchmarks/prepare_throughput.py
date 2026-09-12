@@ -17,6 +17,7 @@ from pathlib import Path
 
 import scalability_scorecard as sc
 import retransmission_trace as rt
+import poll_wake_counters as pc
 
 REFERENCE_REVISION = "899348d8318eb9a3c5a5b6ec43c4a1114288773a"
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,10 +47,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="development smoke only, recorded in manifest")
     parser.add_argument("--transport-trace", action="store_true",
                         help="instrument a fresh committed-source export; never a capacity result")
+    parser.add_argument("--poll-counters", action="store_true",
+                        help="aggregate poll/wake counters in an exact-source export; diagnostic only")
     args = parser.parse_args(argv)
     if platform.system() not in ("Linux", "Darwin"):
         parser.error("this diagnostic builder currently supports Linux and macOS")
-    if args.transport_trace and args.allow_dirty_robotweax:
+    if args.transport_trace and args.poll_counters:
+        parser.error("transport tracing and poll counters are separate experiments")
+    if (args.transport_trace or args.poll_counters) and args.allow_dirty_robotweax:
         parser.error("transport overlay requires a clean committed Robotweax source")
     compiler = shutil.which(args.cxx)
     if not compiler:
@@ -86,6 +91,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.transport_trace:
             exported = out / "robotweax-traced-source"
             manifest["transport_trace"] = rt.export_overlay(
+                sources["robotweax"], identities["robotweax"]["revision"], exported)
+            sources["robotweax"] = exported
+        if args.poll_counters:
+            exported = out / "robotweax-counter-source"
+            manifest["poll_counters"] = pc.export_overlay(
                 sources["robotweax"], identities["robotweax"]["revision"], exported)
             sources["robotweax"] = exported
         run([compiler, "--version"], "compiler")
