@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <iterator>
 #include <limits>
 #include <new>
 
@@ -1102,13 +1103,29 @@ RuntimePollResult DatagramChannel::run_once() noexcept
     std::optional<std::chrono::microseconds> next_work_delay;
     {
         std::lock_guard lock(routes_mutex_);
-        for (const auto& route : routes_) {
-            const RuntimePollResult result = route.second->poll();
+        SendWorkBudget budget;
+        auto route = routes_.find(next_poll_socket_id_);
+        if (route == routes_.end()) {
+            route = routes_.begin();
+        }
+        // Advance the starting connection even if the current callback uses
+        // its entire budget on one route. No iterator survives this lock.
+        if (route != routes_.end()) {
+            auto next = std::next(route);
+            next_poll_socket_id_ =
+                (next == routes_.end() ? routes_.begin() : next)->first;
+        }
+        for (std::size_t remaining = routes_.size(); remaining > 0;
+            --remaining) {
+            const RuntimePollResult result = route->second->poll(budget);
             send_work = result.immediate_work || send_work;
             if (result.next_work_delay.has_value()
                 && (!next_work_delay.has_value()
                     || *result.next_work_delay < *next_work_delay)) {
                 next_work_delay = result.next_work_delay;
+            }
+            if (++route == routes_.end()) {
+                route = routes_.begin();
             }
         }
     }
@@ -2743,6 +2760,12 @@ bool ConnectionRuntime::process_handshake(
 
 RuntimePollResult ConnectionRuntime::poll() noexcept
 {
+    SendWorkBudget budget;
+    return poll(budget);
+}
+
+RuntimePollResult ConnectionRuntime::poll(SendWorkBudget& budget) noexcept
+{
     std::lock_guard lock(mutex_);
     if (locally_closed_ || peer_closed_ || broken_) {
         return {};
@@ -2795,7 +2818,7 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
     sample_receiver_buffer_statistics(now);
     (void)session_.poll_sender_retransmission_timeout(now);
 
-    for (std::size_t index = 0; index < maximum_send_batch; ++index) {
+    for (;;) {
         const std::uint64_t packet_time = now_microseconds();
         if (crypto_ != nullptr && crypto_->enabled()) {
             if (!service_key_rotation(packet_time)) {
@@ -2804,6 +2827,9 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
         }
         if (fec_control_ready()
             && !session_.has_pending_retransmission()) {
+            if (!budget.admit(Clock::now())) {
+                break;
+            }
             const std::uint64_t live_rate =
                 session_
                     .live_pacing_rate_bytes_per_second();
@@ -2818,7 +2844,16 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
                     session_
                         .file_congestion_window_packets());
             }
-            if (!pacer_.query(packet_time, 0U).ready) {
+            const auto pace = pacer_.query(packet_time, 0U);
+            if (!pace.ready) {
+                if (now_function_ == nullptr
+                    && budget.bridge(deadline_from_origin_microseconds(
+                                         origin_, pace.next_ready_microseconds),
+                        [] {
+                            return Clock::now();
+                        })) {
+                    continue;
+                }
                 break;
             }
             const auto control =
@@ -2835,6 +2870,7 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
             }
             pacer_.on_packet_sent(
                 wire_size, packet_time);
+            budget.sent();
             continue;
         }
         // New data needs the next key acknowledgement. A retransmission
@@ -2850,6 +2886,9 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
                 >= flow_window_packets_) {
             break;
         }
+        if (!session_.has_pending_send_work() || !budget.admit(Clock::now())) {
+            break;
+        }
         const std::size_t new_packet_wire_overhead =
             crypto_ != nullptr && crypto_->authenticated_data_enabled()
             ? srt_gcm_authentication_tag_size
@@ -2857,11 +2896,25 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
         const auto packet = session_.next_paced_data_packet(
             pacer_, packet_time, new_packet_wire_overhead);
         if (!packet.has_value()) {
+            const auto pace = pacer_.query(packet_time,
+                retransmission ? 0U
+                               : session_.send_buffer().packets_in_flight());
+            // A deterministic protocol clock must not spin against wall time.
+            // Production clocks always use the channel's steady-clock origin.
+            if (!pace.ready && now_function_ == nullptr
+                && budget.bridge(deadline_from_origin_microseconds(
+                                     origin_, pace.next_ready_microseconds),
+                    [] {
+                        return Clock::now();
+                    })) {
+                continue;
+            }
             break;
         }
         if (!send_data(*packet, packet_time)) {
             return {};
         }
+        budget.sent();
     }
 
     const bool retransmission =

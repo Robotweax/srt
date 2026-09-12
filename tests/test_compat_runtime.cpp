@@ -25,6 +25,70 @@
 using namespace robotweax::srt;
 using namespace robotweax::srt::compat;
 
+TEST(compat_send_budget_never_bridges_early_or_beyond_its_total_deadline)
+{
+    using namespace std::chrono_literals;
+    const SendWorkBudget::Time start {1s};
+    SendWorkBudget budget;
+    REQUIRE(budget.admit(start));
+    auto clock = start;
+    const auto now = [&] {
+        const auto observed = clock;
+        clock += 1us;
+        return observed;
+    };
+    REQUIRE(budget.bridge(start + 5us, now));
+    REQUIRE(clock >= start + 5us);
+    // A distant deadline is deferred immediately, without a spin or renewal.
+    const auto before = clock;
+    REQUIRE(!budget.bridge(start + 30us, now));
+    REQUIRE_EQ(clock, before + 1us);
+    clock = start + 48us;
+    REQUIRE(!budget.bridge(start + 50us, now));
+    REQUIRE(!budget.admit(start + 50us));
+    REQUIRE(!budget.admit(start + 1s));
+    SendWorkBudget overdue;
+    REQUIRE(overdue.bridge(SendWorkBudget::Time::min(), [&] {
+        return start;
+    }));
+}
+
+TEST(compat_send_budget_preemption_and_packet_limit_end_the_bridge)
+{
+    using namespace std::chrono_literals;
+    const SendWorkBudget::Time start {1s};
+    SendWorkBudget budget;
+    REQUIRE(budget.admit(start));
+    int reads = 0;
+    REQUIRE(!budget.bridge(start + 4us, [&] {
+        return reads++ == 0 ? start : start + 100us;
+    }));
+    REQUIRE_EQ(reads, 2);
+
+    SendWorkBudget packets;
+    for (std::size_t i = 0; i < SendWorkBudget::packet_limit; ++i) {
+        REQUIRE(packets.admit(start));
+        packets.sent();
+    }
+    REQUIRE(!packets.admit(start));
+    REQUIRE(!packets.bridge(start + 1us, [&] {
+        return start;
+    }));
+}
+
+namespace robotweax::srt::compat {
+struct DatagramChannelTestAccess {
+    static RuntimePollResult poll(DatagramChannel& channel)
+    {
+        return channel.run_once();
+    }
+    static void stop(DatagramChannel& channel)
+    {
+        channel.stop();
+    }
+};
+} // namespace robotweax::srt::compat
+
 namespace {
 
 struct InboxReadinessObserver {
@@ -61,6 +125,20 @@ UdpIoResult capture_datagram(
     } catch (...) {
         return {.error = Error::io_error};
     }
+}
+
+UdpIoResult slow_data_datagram(
+    std::span<const std::byte> bytes, Ipv4Endpoint, void* context) noexcept
+{
+    const auto decoded = decode_packet(bytes);
+    if (decoded && decoded.packet.kind == PacketKind::data) {
+        static_cast<std::vector<std::uint32_t>*>(context)->push_back(
+            decoded.packet.data.destination_socket_id);
+        // Deliberately exceed the cooperative budget in a single send. The
+        // next connection must not start another DATA packet this callback.
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+    return {.bytes_transferred = bytes.size()};
 }
 
 std::vector<std::vector<std::byte>> take_datagrams(
@@ -710,6 +788,94 @@ TEST(compat_runtime_reports_the_next_paced_send_deadline)
     REQUIRE(!ready.immediate_work);
     REQUIRE(!ready.next_work_delay.has_value());
     REQUIRE_EQ(take_datagrams(output).size(), 1U);
+}
+
+TEST(compat_dispatcher_budget_keeps_baseline_near_deadlines_in_ready_queue)
+{
+    auto channel = std::make_shared<DatagramChannel>();
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    std::uint64_t now = 1'000;
+    auto runtime =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
+            .channel = channel,
+            .peer = {.address = {192, 0, 2, 20}, .port = 10'020},
+            .peer_socket_id = 1,
+            .initial_sequence = SequenceNumber {900},
+            .flow_window_packets = 256,
+            .origin = ConnectionRuntime::Clock::now(),
+            .now_function = injected_now,
+            .now_context = &now,
+        });
+    REQUIRE(channel->register_connection(1, runtime));
+    const std::array<std::byte, 1'200> payload {};
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, 0).status,
+            MessageIoStatus::success);
+    }
+    REQUIRE_EQ(
+        *runtime->poll().next_work_delay, std::chrono::microseconds {10});
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
+    const auto near = DatagramChannelTestAccess::poll(*channel);
+    REQUIRE(near.immediate_work);
+    REQUIRE(!near.next_work_delay.has_value());
+    REQUIRE(take_datagrams(output).empty());
+    now += 10;
+    const auto drained = DatagramChannelTestAccess::poll(*channel);
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
+    REQUIRE(!drained.immediate_work);
+    REQUIRE_EQ(*drained.next_work_delay, std::chrono::milliseconds {2});
+}
+
+TEST(compat_dispatcher_shares_send_time_budget_and_rotates_busy_routes)
+{
+    auto channel = std::make_shared<DatagramChannel>();
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+    std::vector<std::uint32_t> sent;
+    sent.reserve(16);
+    channel->set_send_hook_for_testing(slow_data_datagram, &sent);
+    std::uint64_t now = 1'000;
+    std::vector<std::shared_ptr<ConnectionRuntime>> runtimes;
+    for (std::uint32_t id = 1; id <= 3; ++id) {
+        auto runtime = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {
+                .channel = channel,
+                .peer = {.address = {192, 0, 2, 20}, .port = 10'020},
+                .peer_socket_id = id,
+                .initial_sequence = SequenceNumber {900},
+                .flow_window_packets = 256,
+                .origin = ConnectionRuntime::Clock::now(),
+                .now_function = injected_now,
+                .now_context = &now,
+            });
+        REQUIRE(channel->register_connection(id, runtime));
+        const std::array<std::byte, 1'200> payload {};
+        for (int i = 0; i < 4; ++i) {
+            REQUIRE_EQ(
+                runtime->queue_message(payload, 0, true, false, 0).status,
+                MessageIoStatus::success);
+        }
+        runtimes.push_back(runtime);
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+        now += 1'000;
+        (void)DatagramChannelTestAccess::poll(*channel);
+        REQUIRE_EQ(sent.size(), i + 1);
+    }
+    auto order = sent;
+    std::sort(order.begin(), order.end());
+    REQUIRE_EQ(order, (std::vector<std::uint32_t> {1, 2, 3}));
+    // Removing the next route cannot leave a dangling iterator or starve the
+    // remaining routes. A new callback owns a fresh budget.
+    channel->unregister_connection(sent.front());
+    sent.clear();
+    for (std::size_t i = 0; i < 2; ++i) {
+        now += 1'000;
+        (void)DatagramChannelTestAccess::poll(*channel);
+        REQUIRE_EQ(sent.size(), i + 1);
+    }
+    REQUIRE(sent[0] != sent[1]);
 }
 
 TEST(compat_runtime_waits_for_key_response_without_runnable_send_work)

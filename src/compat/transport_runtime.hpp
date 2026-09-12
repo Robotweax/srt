@@ -7,6 +7,7 @@
 #include "robotweax/srt/udp.hpp"
 #include "compat/runtime_scheduler.hpp"
 #include "compat/statistics.hpp"
+#include "compat/send_work_budget.hpp"
 
 #include <array>
 #include <atomic>
@@ -217,6 +218,8 @@ public:
     }
 
 private:
+    friend struct DatagramChannelTestAccess;
+
     struct ScheduledWorkContext {
         std::weak_ptr<DatagramChannel> owner;
     };
@@ -248,6 +251,7 @@ private:
     std::mutex routes_mutex_;
     std::unordered_map<std::uint32_t,
         std::shared_ptr<ConnectionRuntime>> routes_;
+    std::uint32_t next_poll_socket_id_ = 0;
     std::unordered_map<HandshakeRouteKey,
         std::shared_ptr<ConnectionRuntime>,
         HandshakeRouteKeyHash> handshake_routes_;
@@ -353,6 +357,7 @@ public:
         const HandshakeMessage& message,
         IpEndpoint peer) noexcept;
     [[nodiscard]] RuntimePollResult poll() noexcept;
+    [[nodiscard]] RuntimePollResult poll(SendWorkBudget& budget) noexcept;
     void apply_options(const SocketOptions& options) noexcept;
     void mark_broken(int system_error) noexcept;
     [[nodiscard]] bool report_peer_error(
