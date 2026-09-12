@@ -235,6 +235,9 @@ RuntimeScheduler::Snapshot await_channel_timer(
 std::shared_ptr<ConnectionRuntime> queue_paced_fixture(
     const std::shared_ptr<DatagramChannel>& channel, std::uint64_t& now)
 {
+    // The dispatcher receives before polling routes. Winsock requires a
+    // bound UDP socket even when the test intercepts every outgoing datagram.
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
     auto runtime = std::make_shared<
         ConnectionRuntime>(ConnectionRuntime::Configuration {
         .channel = channel,
@@ -896,6 +899,7 @@ TEST(compat_runtime_reports_the_next_paced_send_deadline)
 TEST(compat_dispatcher_preserves_the_earliest_absolute_pacer_deadline)
 {
     auto channel = std::make_shared<DatagramChannel>();
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
     CapturedDatagrams output;
     channel->set_send_hook_for_testing(capture_datagram, &output);
     std::uint64_t now = 1'000;
@@ -903,6 +907,7 @@ TEST(compat_dispatcher_preserves_the_earliest_absolute_pacer_deadline)
     // They are already due on the scheduler clock; they must not move forward
     // when the dispatcher aggregates or schedules them.
     const auto origin = ConnectionRuntime::Clock::time_point {};
+    std::vector<std::shared_ptr<ConnectionRuntime>> runtimes;
     for (std::uint32_t id = 1; id <= 2; ++id) {
         auto runtime = std::make_shared<ConnectionRuntime>(
             ConnectionRuntime::Configuration {
@@ -922,22 +927,31 @@ TEST(compat_dispatcher_preserves_the_earliest_absolute_pacer_deadline)
                 runtime->queue_message(payload, 0, true, false, 0).status,
                 MessageIoStatus::success);
         }
+        // Prime each pacer separately: aggregation must not depend on two
+        // sends fitting inside one callback's wall-clock budget on the host.
+        REQUIRE(runtime->poll().next_work_deadline.has_value());
+        runtimes.push_back(runtime);
     }
+    REQUIRE_EQ(take_datagrams(output).size(), 2U);
     const auto first = DatagramChannelTestAccess::poll(*channel);
     REQUIRE(!first.immediate_work);
     REQUIRE_EQ(
         *first.next_work_deadline, origin + std::chrono::microseconds {1'110});
-    REQUIRE_EQ(take_datagrams(output).size(), 2U);
+    REQUIRE(take_datagrams(output).empty());
     now += 9;
     const auto early = DatagramChannelTestAccess::poll(*channel);
     REQUIRE(!early.immediate_work);
     REQUIRE_EQ(early.next_work_deadline, first.next_work_deadline);
     REQUIRE(take_datagrams(output).empty());
     ++now;
+    for (const auto& runtime : runtimes) {
+        REQUIRE(!runtime->poll().next_work_deadline.has_value());
+    }
+    REQUIRE_EQ(take_datagrams(output).size(), 2U);
     const auto before = ConnectionRuntime::Clock::now();
     const auto drained = DatagramChannelTestAccess::poll(*channel);
     const auto after = ConnectionRuntime::Clock::now();
-    REQUIRE_EQ(take_datagrams(output).size(), 2U);
+    REQUIRE(take_datagrams(output).empty());
     REQUIRE(!drained.immediate_work);
     REQUIRE(
         *drained.next_work_deadline >= before + std::chrono::milliseconds {2});
@@ -948,6 +962,7 @@ TEST(compat_dispatcher_preserves_the_earliest_absolute_pacer_deadline)
 TEST(compat_dispatcher_shares_send_time_budget_and_rotates_busy_routes)
 {
     auto channel = std::make_shared<DatagramChannel>();
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
     std::vector<std::uint32_t> sent;
     sent.reserve(16);
     channel->set_send_hook_for_testing(slow_data_datagram, &sent);
