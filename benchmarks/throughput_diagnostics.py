@@ -23,6 +23,7 @@ from pathlib import Path
 
 import scalability_scorecard as sc
 import retransmission_trace as rt
+import pacer_deadline_diagnostics as dd
 
 try:
     import resource
@@ -90,7 +91,7 @@ def case_plan(profiles: list[str], repetitions: int, warmups: int,
 
 
 def perf_command(capture: str, data: Path, command: list[str], perf: str) -> list[str]:
-    if capture in ("none", "transport"):
+    if capture in ("none", "transport", "pacer"):
         return command
     if capture == "cpu":
         # Software clock works without a virtualized hardware PMU. DWARF avoids
@@ -153,6 +154,12 @@ def run_case(path: Path) -> int:
             os.environ["ROBOTWEAX_TRANSPORT_TRACE_DIR"] = str(trace_directory)
         else:
             os.environ.pop("ROBOTWEAX_TRANSPORT_TRACE_DIR", None)
+        if request.get("capture") == "pacer":
+            diagnostic_directory = directory / "pacer-deadline"
+            diagnostic_directory.mkdir(exist_ok=False)
+            os.environ["ROBOTWEAX_PACER_DEADLINE_DIR"] = str(diagnostic_directory)
+        else:
+            os.environ.pop("ROBOTWEAX_PACER_DEADLINE_DIR", None)
         result = sc.run_many_socket_profile(
             request["profile"], {k: Path(v) for k, v in request["programs"].items()},
             sc.RunOptions(**request["options"]), directory,
@@ -186,6 +193,13 @@ def run_case(path: Path) -> int:
         entry["error"] = str(error)
         return 1
     finally:
+        if request.get("capture") == "pacer":
+            # A timeout may still leave useful checkpoints. Preserve them even
+            # when no peer completion event/result exists; do not infer success.
+            try:
+                entry["profiling"] = dd.analyze_case(directory, entry.get("result", {}))
+            except Exception as error:
+                entry["profiling"] = {"valid": False, "errors": [str(error)]}
         after = udp_snapshot()
         entry["system_udp_delta"] = {k: after[k] - v for k, v in before.items() if k in after}
         entry["finished_unix_ns"] = time.time_ns()
@@ -262,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-manifest", type=Path, required=True)
     parser.add_argument("--output-directory", type=Path, required=True)
     parser.add_argument("--profile", action="append", choices=PROFILES)
-    parser.add_argument("--capture", choices=("none", "cpu", "scheduler", "transport"), default="none")
+    parser.add_argument("--capture", choices=("none", "cpu", "scheduler", "transport", "pacer"), default="none")
     parser.add_argument("--repetitions", type=bounded_int(1, 10))
     parser.add_argument("--warmups", type=bounded_int(0, 2), default=1)
     parser.add_argument("--bytes-per-connection", type=bounded_int(1316, 1024**3), default=128 * 1024**2)
@@ -290,6 +304,8 @@ def main(argv: list[str] | None = None) -> int:
     traced_build = manifest.get("transport_trace", {}).get("enabled", False)
     if traced_build != (args.capture == "transport"):
         parser.error("transport capture requires an overlay build; overlay builds cannot produce plain/perf capacity results")
+    if manifest.get("pacer_deadline_diagnostics", {}).get("enabled", False) != (args.capture == "pacer"):
+        parser.error("pacer capture requires its overlay; that overlay cannot produce plain/perf results")
     if args.pacing_burst_packets and not args.target_bps:
         parser.error("bounded pacing requires a positive target rate")
     for identity in [*manifest["programs"].values(), *manifest["libraries"].values()]:
@@ -297,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("a peer or library changed since the recorded build")
     programs = {name: value["path"] for name, value in manifest["programs"].items()}
     profiles = args.profile or ["robotweax-self", "robotweax-to-haivision"]
-    if args.capture == "transport" and any(sc.PROFILE_IMPLEMENTATIONS[p][0] != "robotweax" for p in profiles):
+    if args.capture in ("transport", "pacer") and any(sc.PROFILE_IMPLEMENTATIONS[p][0] != "robotweax" for p in profiles):
         parser.error("transport attribution currently requires a Robotweax sender")
     if any("haivision" in sc.PROFILE_IMPLEMENTATIONS[p] for p in profiles) and "haivision" not in programs:
         parser.error("selected profile needs the reference peer")
@@ -317,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
               "started_unix_ns": time.time_ns()}
     report["harness_files"] = [sc.program_identity(path) for path in
                                (Path(__file__).resolve(), ROOT / "benchmarks/scalability_scorecard.py",
-                                ROOT / "benchmarks/retransmission_trace.py")]
+                                ROOT / "benchmarks/retransmission_trace.py", ROOT / "benchmarks/pacer_deadline_diagnostics.py")]
     sc.write_report(out / "report.json", report)
     options = sc.RunOptions("127.0.0.1", 1, args.bytes_per_connection, 1316,
                             args.timeout_seconds, 120, 500, .02)
@@ -339,6 +355,8 @@ def main(argv: list[str] | None = None) -> int:
                     entry.update(json.loads((directory / "case.json").read_text()))
                 else:
                     entry["error"] = "capture/driver exited without a case report; see command.log"
+                    if args.capture == "pacer":
+                        entry["profiling"] = dd.analyze_case(directory, {})
                 if args.capture in ("cpu", "scheduler"):
                     entry["profiling"] = render_capture(args.capture, directory, entry.get("result", {}), perf)
             except Exception as error:

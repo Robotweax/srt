@@ -4,7 +4,7 @@ This diagnostic branch includes an **experimental empty-receive-buffer
 fast path and Lite-ACK receive-window credit correction**, not a complete transport
 qualification or a released throughput claim. Public API, locking and transport
 configuration remain unchanged. The latest follow-up is the
-[fixed-pin plain ABBA stage](#plain-abba-after-the-lite-ack-diagnosis); earlier
+[pacer deadline/dispatch/send diagnosis](pacer-deadline-diagnostics.md); earlier
 experiments below retain their original pins and contracts. Use a dedicated Linux test VM to reproduce a Linux
 capacity observation; native macOS and hosted x86-64 CI are separate platform
 controls, not substitutes for that environment.
