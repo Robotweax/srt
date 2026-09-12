@@ -7,6 +7,7 @@
 #include "robotweax/srt/udp.hpp"
 #include "compat/runtime_scheduler.hpp"
 #include "compat/statistics.hpp"
+#include "compat/send_work_budget.hpp"
 
 #include <array>
 #include <atomic>
@@ -150,7 +151,7 @@ struct RuntimeBufferPacketCounts {
 
 struct RuntimePollResult {
     bool immediate_work = false;
-    std::optional<std::chrono::microseconds> next_work_delay;
+    std::optional<std::chrono::steady_clock::time_point> next_work_deadline;
 };
 
 struct MessageIoResult {
@@ -217,6 +218,8 @@ public:
     }
 
 private:
+    friend struct DatagramChannelTestAccess;
+
     struct ScheduledWorkContext {
         std::weak_ptr<DatagramChannel> owner;
     };
@@ -231,8 +234,8 @@ private:
     static void run_scheduled(void* context) noexcept;
     void run_scheduled(const ScheduledWorkContext* context) noexcept;
     [[nodiscard]] RuntimePollResult run_once() noexcept;
-    [[nodiscard]] bool schedule_next_locked(
-        bool immediate, std::chrono::microseconds delay) noexcept;
+    [[nodiscard]] bool schedule_next_locked(bool immediate,
+        std::chrono::steady_clock::time_point deadline) noexcept;
     void dispatch(
         const PacketView& packet,
         std::span<const std::byte> datagram,
@@ -248,6 +251,7 @@ private:
     std::mutex routes_mutex_;
     std::unordered_map<std::uint32_t,
         std::shared_ptr<ConnectionRuntime>> routes_;
+    std::uint32_t next_poll_socket_id_ = 0;
     std::unordered_map<HandshakeRouteKey,
         std::shared_ptr<ConnectionRuntime>,
         HandshakeRouteKeyHash> handshake_routes_;
@@ -353,6 +357,7 @@ public:
         const HandshakeMessage& message,
         IpEndpoint peer) noexcept;
     [[nodiscard]] RuntimePollResult poll() noexcept;
+    [[nodiscard]] RuntimePollResult poll(SendWorkBudget& budget) noexcept;
     void apply_options(const SocketOptions& options) noexcept;
     void mark_broken(int system_error) noexcept;
     [[nodiscard]] bool report_peer_error(

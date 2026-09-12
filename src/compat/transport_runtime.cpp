@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <iterator>
 #include <limits>
 #include <new>
 
@@ -781,7 +782,7 @@ bool DatagramChannel::start(std::shared_ptr<RuntimeScheduler> scheduler,
     send_work_notification_pending_ = false;
     active_thread_ = {};
     running_.store(true, std::memory_order_release);
-    if (schedule_next_locked(true, std::chrono::microseconds {0})) {
+    if (schedule_next_locked(true, {})) {
         return true;
     }
     running_.store(false, std::memory_order_release);
@@ -813,8 +814,8 @@ void DatagramChannel::notify_send_work() noexcept
         }
         scheduled_timer_ = {};
         send_work_notification_pending_ = false;
-        if (!schedule_next_locked(true, std::chrono::microseconds {0})
-            && !schedule_next_locked(false, std::chrono::microseconds {0})) {
+        if (!schedule_next_locked(true, {})
+            && !schedule_next_locked(false, {})) {
             running_.store(false, std::memory_order_release);
             scheduling_failed = true;
         }
@@ -861,7 +862,7 @@ void DatagramChannel::stop() noexcept
 }
 
 bool DatagramChannel::schedule_next_locked(
-    bool immediate, std::chrono::microseconds delay) noexcept
+    bool immediate, std::chrono::steady_clock::time_point deadline) noexcept
 {
     if (!running_.load(std::memory_order_relaxed) || scheduler_ == nullptr
         || scheduled_work_context_ == nullptr) {
@@ -880,8 +881,8 @@ bool DatagramChannel::schedule_next_locked(
         scheduled_timer_ = {};
         return true;
     }
-    const RuntimeScheduler::ScheduleResult scheduled = scheduler_->schedule_at(
-        affinity_, std::chrono::steady_clock::now() + delay, std::move(task));
+    const RuntimeScheduler::ScheduleResult scheduled =
+        scheduler_->schedule_at(affinity_, deadline, std::move(task));
     if (scheduled.status != RuntimeScheduler::SubmitStatus::accepted) {
         return false;
     }
@@ -923,11 +924,10 @@ void DatagramChannel::run_scheduled(
             const bool send_work_notification_pending =
                 send_work_notification_pending_;
             send_work_notification_pending_ = false;
-            const std::chrono::microseconds delay =
-                result.next_work_delay.value_or(idle_wait_);
             if (!schedule_next_locked(
                     result.immediate_work || send_work_notification_pending,
-                    delay)) {
+                    result.next_work_deadline.value_or(
+                        std::chrono::steady_clock::time_point {}))) {
                 running_.store(false, std::memory_order_release);
                 scheduling_failed = true;
             }
@@ -1099,44 +1099,49 @@ RuntimePollResult DatagramChannel::run_once() noexcept
     }
 
     bool send_work = false;
-    std::optional<std::chrono::microseconds> next_work_delay;
+    std::optional<std::chrono::steady_clock::time_point> next_work_deadline;
     {
         std::lock_guard lock(routes_mutex_);
-        for (const auto& route : routes_) {
-            const RuntimePollResult result = route.second->poll();
+        SendWorkBudget budget;
+        auto route = routes_.find(next_poll_socket_id_);
+        if (route == routes_.end()) {
+            route = routes_.begin();
+        }
+        // Advance the starting connection even if the current callback uses
+        // its entire budget on one route. No iterator survives this lock.
+        if (route != routes_.end()) {
+            auto next = std::next(route);
+            next_poll_socket_id_ =
+                (next == routes_.end() ? routes_.begin() : next)->first;
+        }
+        for (std::size_t remaining = routes_.size(); remaining > 0;
+            --remaining) {
+            const RuntimePollResult result = route->second->poll(budget);
             send_work = result.immediate_work || send_work;
-            if (result.next_work_delay.has_value()
-                && (!next_work_delay.has_value()
-                    || *result.next_work_delay < *next_work_delay)) {
-                next_work_delay = result.next_work_delay;
+            if (result.next_work_deadline.has_value()
+                && (!next_work_deadline.has_value()
+                    || *result.next_work_deadline < *next_work_deadline)) {
+                next_work_deadline = result.next_work_deadline;
+            }
+            if (++route == routes_.end()) {
+                route = routes_.begin();
             }
         }
     }
     if (send_work || received_any) {
         return {
             .immediate_work = true,
-            .next_work_delay = std::nullopt,
+            .next_work_deadline = std::nullopt,
         };
     }
-    if (next_work_delay.has_value()
-        && *next_work_delay < std::chrono::milliseconds {1}) {
-        // Queue the final sub-millisecond pacing slice behind other work on
-        // this affinity shard. This preserves the old yield semantics while
-        // preventing one hot channel from monopolizing the shard.
-        return {
-            .immediate_work = true,
-            .next_work_delay = std::nullopt,
-        };
-    }
-    const auto delay = next_work_delay.has_value()
-        ? std::min(idle_wait_,
-              std::max(std::chrono::milliseconds {1},
-                  std::chrono::duration_cast<std::chrono::milliseconds>(
-                      *next_work_delay)))
-        : idle_wait_;
+    // Retain the pacer's absolute deadline, including sub-millisecond slices.
+    // Reconstructing it from a remaining delay would add poll/scheduling time.
+    // Keep the existing idle bound for inbound/control work on this channel.
+    const auto idle_deadline = std::chrono::steady_clock::now() + idle_wait_;
     return {
-        .next_work_delay =
-            std::chrono::duration_cast<std::chrono::microseconds>(delay),
+        .next_work_deadline = next_work_deadline.has_value()
+            ? std::min(*next_work_deadline, idle_deadline)
+            : idle_deadline,
     };
 }
 
@@ -2743,6 +2748,12 @@ bool ConnectionRuntime::process_handshake(
 
 RuntimePollResult ConnectionRuntime::poll() noexcept
 {
+    SendWorkBudget budget;
+    return poll(budget);
+}
+
+RuntimePollResult ConnectionRuntime::poll(SendWorkBudget& budget) noexcept
+{
     std::lock_guard lock(mutex_);
     if (locally_closed_ || peer_closed_ || broken_) {
         return {};
@@ -2795,7 +2806,7 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
     sample_receiver_buffer_statistics(now);
     (void)session_.poll_sender_retransmission_timeout(now);
 
-    for (std::size_t index = 0; index < maximum_send_batch; ++index) {
+    for (;;) {
         const std::uint64_t packet_time = now_microseconds();
         if (crypto_ != nullptr && crypto_->enabled()) {
             if (!service_key_rotation(packet_time)) {
@@ -2804,6 +2815,9 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
         }
         if (fec_control_ready()
             && !session_.has_pending_retransmission()) {
+            if (!budget.admit(Clock::now())) {
+                break;
+            }
             const std::uint64_t live_rate =
                 session_
                     .live_pacing_rate_bytes_per_second();
@@ -2818,7 +2832,16 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
                     session_
                         .file_congestion_window_packets());
             }
-            if (!pacer_.query(packet_time, 0U).ready) {
+            const auto pace = pacer_.query(packet_time, 0U);
+            if (!pace.ready) {
+                if (now_function_ == nullptr
+                    && budget.bridge(deadline_from_origin_microseconds(
+                                         origin_, pace.next_ready_microseconds),
+                        [] {
+                            return Clock::now();
+                        })) {
+                    continue;
+                }
                 break;
             }
             const auto control =
@@ -2835,6 +2858,7 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
             }
             pacer_.on_packet_sent(
                 wire_size, packet_time);
+            budget.sent();
             continue;
         }
         // New data needs the next key acknowledgement. A retransmission
@@ -2850,6 +2874,9 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
                 >= flow_window_packets_) {
             break;
         }
+        if (!session_.has_pending_send_work() || !budget.admit(Clock::now())) {
+            break;
+        }
         const std::size_t new_packet_wire_overhead =
             crypto_ != nullptr && crypto_->authenticated_data_enabled()
             ? srt_gcm_authentication_tag_size
@@ -2857,11 +2884,25 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
         const auto packet = session_.next_paced_data_packet(
             pacer_, packet_time, new_packet_wire_overhead);
         if (!packet.has_value()) {
+            const auto pace = pacer_.query(packet_time,
+                retransmission ? 0U
+                               : session_.send_buffer().packets_in_flight());
+            // A deterministic protocol clock must not spin against wall time.
+            // Production clocks always use the channel's steady-clock origin.
+            if (!pace.ready && now_function_ == nullptr
+                && budget.bridge(deadline_from_origin_microseconds(
+                                     origin_, pace.next_ready_microseconds),
+                    [] {
+                        return Clock::now();
+                    })) {
+                continue;
+            }
             break;
         }
         if (!send_data(*packet, packet_time)) {
             return {};
         }
+        budget.sent();
     }
 
     const bool retransmission =
@@ -2875,7 +2916,7 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
     if (session_.has_pending_drop_requests()) {
         return {
             .immediate_work = true,
-            .next_work_delay = std::nullopt,
+            .next_work_deadline = std::nullopt,
         };
     }
 
@@ -2900,12 +2941,12 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
     if (pace.ready || pace.next_ready_microseconds <= current) {
         return {
             .immediate_work = true,
-            .next_work_delay = std::nullopt,
+            .next_work_deadline = std::nullopt,
         };
     }
     return {
-        .next_work_delay =
-            std::chrono::microseconds {pace.next_ready_microseconds - current},
+        .next_work_deadline = deadline_from_origin_microseconds(
+            origin_, pace.next_ready_microseconds),
     };
 }
 

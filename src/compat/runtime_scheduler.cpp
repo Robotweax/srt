@@ -348,6 +348,7 @@ RuntimeScheduler::Snapshot RuntimeScheduler::snapshot() const noexcept
 void RuntimeScheduler::run(std::size_t shard_index) noexcept
 {
     Shard& shard = *shards_[shard_index];
+    bool prefer_ready = false;
     for (;;) {
         Task task;
         {
@@ -357,8 +358,13 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
                     const std::size_t timer_slot = shard.timer_heap.front();
                     const auto deadline =
                         shard.timer_slots[timer_slot].deadline;
-                    if (std::chrono::steady_clock::now() >= deadline) {
+                    // A hot channel can rearm a timer already due by the next
+                    // dispatch. Alternate with ready work so neither source
+                    // can monopolize a shard while both remain runnable.
+                    if ((!prefer_ready || shard.size == 0U)
+                        && std::chrono::steady_clock::now() >= deadline) {
                         task = shard.remove_timer(0U);
+                        prefer_ready = true;
                         break;
                     }
                 }
@@ -367,6 +373,7 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
                     shard.entries[shard.head] = {};
                     shard.head = (shard.head + 1U) % shard.entries.size();
                     --shard.size;
+                    prefer_ready = false;
                     break;
                 }
                 if (shard.stop_requested) {
