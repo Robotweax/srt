@@ -55,7 +55,8 @@ def validate_manifests(manifests: dict, harness: dict, environment: dict) -> Non
             source = manifest["sources"][library]
             if source.get("dirty") is not False or source.get("revision") != revision:
                 raise ValueError(f"unexpected/dirty {variant} {library} source")
-        if manifest.get("transport_trace", {}).get("enabled", False) is not False:
+        if (manifest.get("transport_trace", {}).get("enabled", False) is not False
+                or manifest.get("poll_counters", {}).get("enabled", False) is not False):
             raise ValueError("instrumented builds cannot produce plain capacity evidence")
         if manifest.get("crypto") != "openssl" or manifest.get("linkage") != "static":
             raise ValueError("this follow-up requires the original static OpenSSL build profile")

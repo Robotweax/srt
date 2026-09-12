@@ -33,6 +33,8 @@ def validate_manifests(manifests: dict) -> None:
         raise ValueError("exactly four A/B plain/trace manifests are required")
     helpers, platforms, overlays = set(), set(), set()
     for (variant, mode), manifest in manifests.items():
+        if manifest.get("poll_counters", {}).get("enabled", False):
+            raise ValueError("poll counters cannot be used in this experiment")
         if not manifest.get("complete") or manifest["sources"]["robotweax"]["dirty"]:
             raise ValueError("all builds must be complete and based on clean revisions")
         if manifest["sources"]["robotweax"]["revision"] != REVISIONS[variant]:
