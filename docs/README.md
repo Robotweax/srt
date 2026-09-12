@@ -60,6 +60,7 @@ combining features.
 - [Protocol edge-case policy](protocol-edge-cases.md)
 - [Performance and scalability measurement](performance.md)
 - [Throughput profiling and empty-receive-buffer experiment](throughput-profiling.md)
+- [Absolute pacer-deadline experiment and fixed ABBA handoff](pacer-deadline-experiment.md)
 
 These pages document stable protocol behavior, resource contracts, and
 reproducible measurement methods. Internal implementation details that are not

@@ -42,20 +42,22 @@ def cases() -> list[dict]:
     return diag.case_plan(PROFILES, 3, 1, True, "none")
 
 
-def validate_manifests(manifests: dict, harness: dict, environment: dict) -> None:
-    if set(manifests) != set(REVISIONS):
+def validate_manifests(manifests: dict, harness: dict, environment: dict,
+                       *, revisions: dict = REVISIONS) -> None:
+    if set(manifests) != set(revisions):
         raise ValueError("exactly two plain build manifests are required")
     if harness.get("dirty") is not False:
         raise ValueError("run from a clean committed harness checkout")
     for variant, manifest in manifests.items():
         if manifest.get("complete") is not True:
             raise ValueError("incomplete build")
-        for library, revision in (("robotweax", REVISIONS[variant]),
+        for library, revision in (("robotweax", revisions[variant]),
                                   ("haivision", build.REFERENCE_REVISION)):
             source = manifest["sources"][library]
             if source.get("dirty") is not False or source.get("revision") != revision:
                 raise ValueError(f"unexpected/dirty {variant} {library} source")
-        if manifest.get("transport_trace", {}).get("enabled", False) is not False:
+        if (manifest.get("transport_trace", {}).get("enabled", False) is not False
+                or manifest.get("poll_counters", {}).get("enabled", False) is not False):
             raise ValueError("instrumented builds cannot produce plain capacity evidence")
         if manifest.get("crypto") != "openssl" or manifest.get("linkage") != "static":
             raise ValueError("this follow-up requires the original static OpenSSL build profile")
@@ -105,27 +107,29 @@ def number(value, *, integer: bool = False, positive: bool = False) -> bool:
             and math.isfinite(value) and value >= (1 if positive else 0))
 
 
-def analyze_block(report: dict, manifest: dict, exit_code: int) -> dict:
+def analyze_block(report: dict, manifest: dict, exit_code: int,
+                  *, arguments: dict = ARGUMENTS, profiles: list = PROFILES) -> dict:
     """Missing/partial evidence is a failure, never an inferred zero count."""
     errors, rows = [], []
+    expected_cases = diag.case_plan(profiles, arguments["repetitions"], arguments["warmups"], True, "none")
     if exit_code != 0 or report.get("finished") is not True or report.get("all_transfers_pass") is not True:
         errors.append("diagnostic block did not finish successfully")
     if report.get("capture") != "none" or report.get("udp_capacity_controlled") is not True:
         errors.append("not an uninstrumented UDP-capacity-controlled block")
-    arguments = report.get("arguments", {})
-    if (any(arguments.get(key) != value for key, value in ARGUMENTS.items())
-            or arguments.get("profile") != PROFILES
-            or arguments.get("allow_small_udp_buffers") is not False):
+    observed_arguments = report.get("arguments", {})
+    if (any(observed_arguments.get(key) != value for key, value in arguments.items())
+            or observed_arguments.get("profile") != profiles
+            or observed_arguments.get("allow_small_udp_buffers") is not False):
         errors.append("measurement arguments changed")
     if report.get("build_manifest") != manifest:
         errors.append("reported build differs from preflight manifest")
     runs = report.get("runs", [])
-    if len(runs) != len(cases()):
+    if len(runs) != len(expected_cases):
         errors.append("missing or extra transfers")
-    packets = math.ceil(ARGUMENTS["bytes_per_connection"] / 1316)
+    packets = math.ceil(arguments["bytes_per_connection"] / 1316)
     for index, entry in enumerate(runs):
         problems = []
-        if index >= len(cases()) or any(entry.get(key) != value for key, value in cases()[index].items()):
+        if index >= len(expected_cases) or any(entry.get(key) != value for key, value in expected_cases[index].items()):
             problems.append("unexpected case order/profile/kind")
         if entry.get("index") != index or entry.get("exit_code") != 0 or entry.get("transfer_pass") is not True:
             problems.append("failed/incomplete transfer")
@@ -134,7 +138,7 @@ def analyze_block(report: dict, manifest: dict, exit_code: int) -> dict:
         if (integrity.get("deterministic_payload_verified") is not True
                 or integrity.get("verified_connections") != 1
                 or result.get("connections") != 1 or result.get("message_size_bytes") != 1316
-                or result.get("requested_bytes_per_connection") != ARGUMENTS["bytes_per_connection"]
+                or result.get("requested_bytes_per_connection") != arguments["bytes_per_connection"]
                 or result.get("messages_per_connection") != packets
                 or result.get("bytes_per_connection") != packets * 1316):
             problems.append("payload/transfer contract not proven")
@@ -154,8 +158,8 @@ def analyze_block(report: dict, manifest: dict, exit_code: int) -> dict:
             options = result.get("capacity_options", {}).get(role, [])
             expected = {"encryption": "none", "tlpktdrop": False, "pending_packets": 8192,
                         "requested_maxbw_bytes_per_second": 1250000000, "target_bits_per_second": 0,
-                        "api_fc": 16384, "api_udp_rcvbuf": ARGUMENTS["udp_buffer"],
-                        "api_udp_sndbuf": ARGUMENTS["udp_buffer"]}
+                        "api_fc": 16384, "api_udp_rcvbuf": arguments["udp_buffer"],
+                        "api_udp_sndbuf": arguments["udp_buffer"]}
             if len(options) != 1 or any(options[0].get(key) != value for key, value in expected.items()):
                 problems.append(f"{role} capacity-option contract missing/changed")
         rate = result.get("rates", {}).get("useful_bits_per_second")
@@ -173,7 +177,7 @@ def analyze_block(report: dict, manifest: dict, exit_code: int) -> dict:
         rows.append(row)
         errors.extend(f"case {index}: {problem}" for problem in problems)
     summaries = []
-    for profile in PROFILES:
+    for profile in profiles:
         selected = [row for row in rows if row["kind"] == "measurement" and row["profile"] == profile]
         summary = {"profile": profile, "attempts": len(selected),
                    "transfer_successes": sum(row["transfer_pass"] for row in selected),
