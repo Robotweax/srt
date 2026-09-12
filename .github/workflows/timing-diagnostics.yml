@@ -13,6 +13,9 @@ on:
           - group-matrix-context
           - group-receive-stack
           - group-strace-stack
+          - throughput-baseline
+          - throughput-cpu
+          - throughput-scheduler
         default: timing
   pull_request:
     paths:
@@ -29,6 +32,98 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  throughput:
+    if: github.event_name == 'workflow_dispatch' && startsWith(inputs.investigation, 'throughput-')
+    name: Linux serial throughput profiling (${{ inputs.investigation }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          path: source
+      - name: Fetch exact reference (runner-local only)
+        uses: actions/checkout@v7
+        with:
+          repository: Haivision/srt
+          ref: 899348d8318eb9a3c5a5b6ec43c4a1114288773a
+          path: reference
+          persist-credentials: false
+      - name: Install build and profiling tools
+        env:
+          INVESTIGATION: ${{ inputs.investigation }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libssl-dev pkg-config
+          if [[ "$INVESTIGATION" != throughput-baseline ]]; then
+            sudo apt-get install --no-install-recommends -y linux-tools-common linux-tools-generic
+            # Hosted kernels do not always match the distribution perf wrapper.
+            for candidate in /usr/lib/linux-tools/*/perf /usr/lib/linux-tools-*/perf; do
+              if [[ -x "$candidate" ]]; then
+                dirname "$candidate" >> "$GITHUB_PATH"
+                break
+              fi
+            done
+          fi
+      - name: Build Release with symbols, without changing Release optimization
+        run: |
+          python3 source/benchmarks/prepare_throughput.py \
+            --robotweax-source source --reference-source reference \
+            --output-directory "$RUNNER_TEMP/throughput-build" --jobs 2
+      - name: Serial controls or one separately instrumented transfer per direction
+        env:
+          INVESTIGATION: ${{ inputs.investigation }}
+        run: |
+          set -euo pipefail
+          mkdir -p throughput-metadata
+          uname -a > throughput-metadata/kernel.txt
+          lscpu > throughput-metadata/cpu.txt
+          old_rmem="$(sysctl -n net.core.rmem_max)"
+          old_wmem="$(sysctl -n net.core.wmem_max)"
+          printf '%s\n' "$old_rmem" > throughput-metadata/original-rmem-max.txt
+          printf '%s\n' "$old_wmem" > throughput-metadata/original-wmem-max.txt
+          trap 'sudo sysctl -w net.core.rmem_max="$old_rmem" net.core.wmem_max="$old_wmem"' EXIT
+          # Only this ephemeral diagnostic runner is changed, never a user host.
+          sudo sysctl -w net.core.rmem_max=33554432 net.core.wmem_max=33554432
+          capture=none
+          extra=()
+          prefix=()
+          if [[ "$INVESTIGATION" != throughput-baseline ]]; then
+            perf --version > throughput-metadata/perf-version.txt
+            capture="${INVESTIGATION#throughput-}"
+            prefix=(sudo env "PATH=$PATH")
+          fi
+          if [[ "$capture" == scheduler ]]; then
+            extra=(--allow-system-wide)
+          fi
+          "${prefix[@]}" python3 source/benchmarks/throughput_diagnostics.py \
+            --build-manifest "$RUNNER_TEMP/throughput-build/build-manifest.json" \
+            --output-directory "$GITHUB_WORKSPACE/throughput-results" \
+            --capture "$capture" --cooldown-seconds 30 "${extra[@]}"
+      - name: Collect build metadata, never libraries or executables
+        if: always()
+        run: |
+          mkdir -p throughput-metadata
+          for evidence in "$RUNNER_TEMP/throughput-build/"*.json \
+                          "$RUNNER_TEMP/throughput-build/"*.txt \
+                          "$RUNNER_TEMP/throughput-build/"*.log; do
+            if [[ -f "$evidence" ]]; then cp "$evidence" throughput-metadata/; fi
+          done
+      - name: Preserve text evidence including failed transfers and captures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: throughput-${{ inputs.investigation }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            throughput-results/**/*.json
+            throughput-results/**/*.txt
+            throughput-results/**/*.stdout
+            throughput-results/**/*.stderr
+            throughput-results/**/*.log
+            throughput-metadata/
+          retention-days: 14
+          if-no-files-found: warn
+
   linux:
     if: github.event_name != 'workflow_dispatch' || inputs.investigation == 'timing'
     name: Linux serial timing investigation

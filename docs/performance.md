@@ -5,6 +5,11 @@ size, lock counts, or one unusually fast local transfer are not substitutes for
 a controlled comparison. Protocol correctness and timing semantics remain
 mandatory while measuring speed.
 
+For serial single-connection capacity investigations with explicit buffer and
+bandwidth settings, optimized symbolized builds and separate Linux CPU/scheduler
+captures, see [Throughput profiling](throughput-profiling.md). These diagnostics
+are opt-in and do not change the library's runtime defaults.
+
 ## Comparative scorecard
 
 `benchmarks/scalability_scorecard.py` runs public-API peer source linked
@@ -36,7 +41,7 @@ Every connection receives an exact deterministic payload. Process-isolated
 runs validate output SHA-256; the many-socket receiver validates every message,
 logical connection ID, sequence number, and payload byte in memory. Both
 implementations receive the same Live/Message configuration,
-MSS, payload size, flow window, send buffer, unlimited `SRTO_MAXBW`, latency,
+MSS, payload size, flow window, send buffer, default `SRTO_MAXBW=-1`, latency,
 and shutdown grace. The integrity-oriented scorecard explicitly disables
 `SRTO_TLPKTDROP`: packets that miss a deliberately dense benchmark burst must
 remain observable as late delivery rather than being silently removed from a

@@ -326,6 +326,11 @@ bool ReceiveBuffer::has_complete_message() const noexcept
 std::optional<BufferedMessageInfo>
 ReceiveBuffer::first_complete_message() const noexcept
 {
+    // Runtime readiness also queries idle receive sides of active senders.
+    // No occupied packet means no complete message, regardless of capacity.
+    if (occupied_ == 0U) {
+        return std::nullopt;
+    }
     SequenceNumber candidate = first_stored_sequence_;
     for (std::size_t offset = 0; offset < capacity(); ++offset) {
         const auto* first = find(candidate);

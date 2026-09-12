@@ -675,6 +675,12 @@ class CiChangeClassifierTests(unittest.TestCase):
             [
                 "benchmarks/scalability_scorecard.py",
                 "interop/tests/test_scalability_scorecard.py",
+                "benchmarks/throughput_diagnostics.py",
+                "benchmarks/prepare_throughput.py",
+                "interop/tests/test_throughput_diagnostics.py",
+                "benchmarks/retransmission_trace.py",
+                "benchmarks/run_retransmission_ab.py",
+                "interop/tests/test_retransmission_trace.py",
                 "docs/performance.md",
             ]
         )

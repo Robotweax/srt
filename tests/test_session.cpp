@@ -413,6 +413,46 @@ TEST(session_tsbpd_gate_holds_complete_message_until_delivery_time)
     REQUIRE_EQ(output[0], std::byte{'x'});
 }
 
+TEST(session_active_sender_empty_receive_side_can_become_tsbpd_readable)
+{
+    ReliabilitySession session {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {SequenceNumber::mask},
+        .send_capacity_packets = 4,
+        .receive_capacity_packets = 4,
+    }};
+    session.enable_tsbpd(1'000, PacketTimestamp {0}, 100);
+    const std::array<std::byte, 1> payload {std::byte {'x'}};
+    REQUIRE_EQ(
+        session.queue_message(payload, PacketTimestamp {0}), Error::none);
+    REQUIRE_EQ(session.send_buffer().size(), 1U);
+    REQUIRE(!session.message_ready_at(1'000));
+    REQUIRE(!session.next_receive_delivery_time());
+    REQUIRE_EQ(session.drop_too_late_receiver(1'000).receiver_drop_packets, 0U);
+
+    PacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.sequence = SequenceNumber {SequenceNumber::mask};
+    packet.data.boundary = MessageBoundary::solo;
+    packet.data.timestamp = PacketTimestamp {50};
+    packet.payload = payload;
+    std::array<std::byte, 1> output {};
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        REQUIRE(session.receive(packet, 1'010));
+        REQUIRE(!session.message_ready_at(1'149));
+        REQUIRE_EQ(session.next_receive_delivery_time(),
+            std::optional<std::uint64_t> {1'150});
+        REQUIRE(session.message_ready_at(1'150));
+        REQUIRE(session.pop_message_at(output, 1'150));
+        REQUIRE_EQ(output, payload);
+        REQUIRE(!session.message_ready_at(1'151));
+        REQUIRE(!session.next_receive_delivery_time());
+        REQUIRE_EQ(session.send_buffer().size(), 1U);
+        packet.data.sequence = packet.data.sequence.next();
+    }
+    REQUIRE(session.next_data_packet());
+}
+
 TEST(session_receiver_tlpktdrop_releases_a_due_message_and_fakes_ack)
 {
     ReliabilitySession receiver{{
