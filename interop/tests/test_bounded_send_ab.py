@@ -163,6 +163,23 @@ class BoundedSendABTests(unittest.TestCase):
         self.assertEqual(len(report["stages"]), 1)
         self.assertEqual(report["stages"][0]["blocks"][0]["exit_code"], 130)
         self.assertEqual(signal.getsignal(signal.SIGINT), saved)
+        for suppress in (False, True):
+            def interrupted_cleanup(_argv):
+                try:
+                    signal.raise_signal(signal.SIGTERM)
+                except KeyboardInterrupt:
+                    if suppress:
+                        return 7
+                    raise PermissionError("injected cleanup error after SIGTERM")
+            with tempfile.TemporaryDirectory() as d, patch.object(runner.diag, "main", side_effect=interrupted_cleanup):
+                report = {}
+                code = runner.run_blocks({"baseline": Path("manifest")}, {}, Path(d) / "out", report)
+            self.assertEqual(code, 143)
+            block = report["stages"][0]["blocks"][0]
+            self.assertEqual(block["exit_code"], 143)
+            self.assertEqual(block["driver_exit_code_before_interruption"], 7 if suppress else 1)
+            if not suppress:self.assertIn("injected cleanup error", report["interruption_cleanup_error"])
+            self.assertEqual(signal.getsignal(signal.SIGINT), saved)
 
 
 if __name__ == "__main__":

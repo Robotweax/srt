@@ -817,9 +817,9 @@ TEST(compat_dispatcher_budget_keeps_baseline_near_deadlines_in_ready_queue)
     REQUIRE_EQ(
         *runtime->poll().next_work_delay, std::chrono::microseconds {10});
     REQUIRE_EQ(take_datagrams(output).size(), 1U);
-    const auto near = DatagramChannelTestAccess::poll(*channel);
-    REQUIRE(near.immediate_work);
-    REQUIRE(!near.next_work_delay.has_value());
+    const auto near_result = DatagramChannelTestAccess::poll(*channel);
+    REQUIRE(near_result.immediate_work);
+    REQUIRE(!near_result.next_work_delay.has_value());
     REQUIRE(take_datagrams(output).empty());
     now += 10;
     const auto drained = DatagramChannelTestAccess::poll(*channel);

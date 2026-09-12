@@ -115,6 +115,10 @@ Complete all eight blocks despite ordinary transfer/report failures or poor
 performance. Preserve original block and case exit codes. No replacement
 cases, retries, parameter changes or selective deletion. A signal stops the
 whole plan and the owning runner cleans/reaps its case process group.
+An already observed signal retains its 128+signal status if nested cleanup
+raises another error or suppresses the interruption. The cleanup error and
+any returned driver code remain separately recorded; completed block codes
+are retained.
 
 Use the existing outer operator once; it temporarily sets both UDP maxima to
 33554432, records and independently restores their prior values, and preserves

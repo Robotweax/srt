@@ -135,6 +135,34 @@ class SendDispatchFactorialTests(unittest.TestCase):
         self.assertTrue(report["interrupted"]);self.assertFalse(report["complete"])
         self.assertEqual(report["blocks"][-1]["exit_code"], 130)
         self.assertIs(signal.getsignal(signal.SIGINT), handler)
+        for suppress in (False, True):
+            def interrupted_cleanup(_argv):
+                try:
+                    signal.raise_signal(signal.SIGTERM)
+                except KeyboardInterrupt:
+                    if suppress:
+                        return 7
+                    raise OSError("injected cleanup error after SIGTERM")
+            with tempfile.TemporaryDirectory() as d, patch.object(runner.diag, "main", side_effect=interrupted_cleanup):
+                report = {}
+                code = runner.run_blocks({"a": Path("manifest")}, {}, Path(d) / "out", report)
+            self.assertEqual(code, 143)
+            self.assertEqual(len(report["blocks"]), 1)
+            self.assertEqual(report["blocks"][0]["exit_code"], 143)
+            self.assertEqual(report["blocks"][0]["driver_exit_code_before_interruption"], 7 if suppress else 1)
+            if not suppress:self.assertIn("injected cleanup error", report["interruption_cleanup_error"])
+        write = runner.sc.write_report
+        signalled = False
+        def signal_after_completed_block(path, value):
+            nonlocal signalled
+            write(path, value)
+            if not signalled and value.get("blocks") and "analysis" in value["blocks"][-1]:
+                signalled = True
+                signal.raise_signal(signal.SIGTERM)
+        with tempfile.TemporaryDirectory() as d, patch.object(runner.sc, "write_report", side_effect=signal_after_completed_block):
+            code, report, calls = self.execute(Path(d) / "out")
+        self.assertEqual(code, 143);self.assertEqual(len(calls), 1)
+        self.assertEqual(report["blocks"][0]["exit_code"], 0)
 
     def test_all_four_manifest_pins_and_plain_guards(self):
         seed = fixtures.fixtures.PlainCapacityABTests().manifests()["baseline"]

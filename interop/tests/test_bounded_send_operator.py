@@ -31,7 +31,7 @@ class BoundedSendOperatorTests(unittest.TestCase):
             ids=json.loads((root/'ready.json').read_text());proc.send_signal(getattr(signal,mode))
            _,err=proc.communicate(timeout=15);e=json.loads((root/'operator/execution.json').read_text())
            expected=128+getattr(signal,mode) if mode.startswith('SIG') else 7 if mode in ['runner-failure','restore-first-fails'] else 0
-           assert proc.returncode==expected and e['runner_exit_code']==expected,(mode,e,err)
+           assert proc.returncode==expected and e['runner_exit_code']==expected,(mode,e,err,{str(p.relative_to(root)):p.read_text() for p in (root/'operator/runner.stderr',root/'operator/runner.stdout',root/'result/factorial-report.json',root/'result/qualification-report.json',root/'case-output/command.log') if p.exists()})
            assert e['cleanup_pass']==(mode!='restore-first-fails')
            assert len(e['restoration'])==2 and json.loads(state.read_text())['net.core.wmem_max']=='212992'
            for pid in ids.values():

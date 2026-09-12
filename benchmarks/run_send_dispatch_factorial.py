@@ -153,6 +153,13 @@ def run_blocks(paths: dict, manifests: dict, out: Path, report: dict) -> int:
                     active["exit_code"] = error.code if type(error.code) is int else 1
                 except Exception as error:
                     active["exit_code"], active["error"] = 1, repr(error)
+                    if report.get("interruption_signal") is not None:
+                        report["interruption_cleanup_error"] = repr(error)
+                        raise KeyboardInterrupt from error
+            # Keep an observed signal even if nested cleanup replaces or
+            # suppresses KeyboardInterrupt. Never enter the next block.
+            if report.get("interruption_signal") is not None:
+                raise KeyboardInterrupt
             try:
                 raw = json.loads((out / name / "report.json").read_text())
                 active["analysis"] = analyze_block(raw, manifests[variant], active["exit_code"])
@@ -172,7 +179,9 @@ def run_blocks(paths: dict, manifests: dict, out: Path, report: dict) -> int:
         report["interrupted"] = True
         code = 128 + report.get("interruption_signal", signal.SIGINT)
         report["interruption_exit_code"] = report["runner_exit_code"] = code
-        if active is not None and active["exit_code"] is None:
+        if active is not None and "analysis" not in active:
+            if active["exit_code"] is not None:
+                active["driver_exit_code_before_interruption"] = active["exit_code"]
             active["exit_code"] = code
         return code
     finally:
