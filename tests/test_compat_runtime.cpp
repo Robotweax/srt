@@ -25,6 +25,19 @@
 using namespace robotweax::srt;
 using namespace robotweax::srt::compat;
 
+namespace robotweax::srt::compat {
+struct DatagramChannelTestAccess {
+    static RuntimePollResult poll(DatagramChannel& channel)
+    {
+        return channel.run_once();
+    }
+    static void stop(DatagramChannel& channel)
+    {
+        channel.stop();
+    }
+};
+} // namespace robotweax::srt::compat
+
 namespace {
 
 struct InboxReadinessObserver {
@@ -87,6 +100,97 @@ void deliver(
 std::uint64_t injected_now(void* context) noexcept
 {
     return *static_cast<const std::uint64_t*>(context);
+}
+
+struct PollGate {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered = false;
+    bool released = false;
+};
+
+void wait_at_poll_gate(void* context) noexcept
+{
+    auto& gate = *static_cast<PollGate*>(context);
+    std::unique_lock lock(gate.mutex);
+    gate.entered = true;
+    gate.changed.notify_all();
+    gate.changed.wait(lock, [&] {
+        return gate.released;
+    });
+}
+
+UdpIoResult gate_datagram(
+    std::span<const std::byte> bytes, Ipv4Endpoint, void* context) noexcept
+{
+    wait_at_poll_gate(context);
+    return {.bytes_transferred = bytes.size()};
+}
+
+struct PollGateRelease {
+    std::shared_ptr<PollGate> gate;
+    void release()
+    {
+        std::lock_guard lock(gate->mutex);
+        gate->released = true;
+        gate->changed.notify_all();
+    }
+    ~PollGateRelease()
+    {
+        release();
+    }
+};
+
+void await_poll_gate(const std::shared_ptr<PollGate>& gate)
+{
+    std::unique_lock lock(gate->mutex);
+    REQUIRE(gate->changed.wait_for(lock, std::chrono::seconds {2}, [&] {
+        return gate->entered;
+    }));
+}
+
+RuntimeScheduler::Snapshot await_channel_timer(
+    const RuntimeScheduler& scheduler, std::uint64_t completed)
+{
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    auto state = scheduler.snapshot();
+    while ((state.timers != 1U || state.executing || state.queued != 0U
+               || state.completed < completed)
+        && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+        state = scheduler.snapshot();
+    }
+    REQUIRE_EQ(state.timers, 1U);
+    REQUIRE_EQ(state.queued, 0U);
+    REQUIRE_EQ(state.executing, 0U);
+    return state;
+}
+
+std::shared_ptr<ConnectionRuntime> queue_paced_fixture(
+    const std::shared_ptr<DatagramChannel>& channel, std::uint64_t& now)
+{
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+    auto runtime = std::make_shared<
+        ConnectionRuntime>(ConnectionRuntime::Configuration {
+        .channel = channel,
+        .peer = {.address = {192, 0, 2, 20}, .port = 10'020},
+        .peer_socket_id = 1,
+        .initial_sequence = SequenceNumber {900},
+        .flow_window_packets = 256,
+        // Keep the clock-controlled pacer pending while inspecting scheduling.
+        .origin = ConnectionRuntime::Clock::now() + std::chrono::hours {1},
+        .now_function = injected_now,
+        .now_context = &now,
+    });
+    REQUIRE(channel->register_connection(1, runtime));
+    channel->set_idle_wait_for_testing(std::chrono::seconds {5});
+    const std::array<std::byte, 1'200> payload {};
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, 0).status,
+            MessageIoStatus::success);
+    }
+    return runtime;
 }
 
 std::vector<std::byte> encrypt_fixture(
@@ -671,6 +775,7 @@ TEST(compat_runtime_reports_the_next_paced_send_deadline)
     CapturedDatagrams output;
     channel->set_send_hook_for_testing(capture_datagram, &output);
     std::uint64_t now = 1'000;
+    const auto origin = ConnectionRuntime::Clock::now();
     ConnectionRuntime runtime {{
         .channel = channel,
         .peer =
@@ -681,7 +786,7 @@ TEST(compat_runtime_reports_the_next_paced_send_deadline)
         .peer_socket_id = 0x3400U,
         .initial_sequence = SequenceNumber {900},
         .flow_window_packets = 256,
-        .origin = ConnectionRuntime::Clock::now(),
+        .origin = origin,
         .now_function = injected_now,
         .now_context = &now,
     }};
@@ -694,22 +799,182 @@ TEST(compat_runtime_reports_the_next_paced_send_deadline)
 
     const RuntimePollResult first = runtime.poll();
     REQUIRE(!first.immediate_work);
-    REQUIRE(first.next_work_delay.has_value());
-    REQUIRE_EQ(*first.next_work_delay, std::chrono::microseconds {10});
+    REQUIRE(first.next_work_deadline.has_value());
+    REQUIRE_EQ(
+        *first.next_work_deadline, origin + std::chrono::microseconds {1'010});
     REQUIRE_EQ(take_datagrams(output).size(), 1U);
 
     now += 9;
     const RuntimePollResult early = runtime.poll();
     REQUIRE(!early.immediate_work);
-    REQUIRE(early.next_work_delay.has_value());
-    REQUIRE_EQ(*early.next_work_delay, std::chrono::microseconds {1});
+    REQUIRE(early.next_work_deadline.has_value());
+    REQUIRE_EQ(*early.next_work_deadline, *first.next_work_deadline);
     REQUIRE(take_datagrams(output).empty());
 
     ++now;
     const RuntimePollResult ready = runtime.poll();
     REQUIRE(!ready.immediate_work);
-    REQUIRE(!ready.next_work_delay.has_value());
+    REQUIRE(!ready.next_work_deadline.has_value());
     REQUIRE_EQ(take_datagrams(output).size(), 1U);
+
+    // A late wake keeps the original pacing rule: no catch-up credit or burst.
+    REQUIRE_EQ(runtime.queue_message(payload, 0, true, false, 0).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(runtime.queue_message(payload, 0, true, false, 0).status,
+        MessageIoStatus::success);
+    now += 50;
+    const auto late = runtime.poll();
+    REQUIRE_EQ(*late.next_work_deadline,
+        origin + std::chrono::microseconds {now + 10});
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
+}
+
+TEST(compat_dispatcher_preserves_the_earliest_absolute_pacer_deadline)
+{
+    auto channel = std::make_shared<DatagramChannel>();
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    std::uint64_t now = 1'000;
+    // Controlled origins make the deadlines independent of wall-clock timing.
+    // They are already due on the scheduler clock; they must not move forward
+    // when the dispatcher aggregates or schedules them.
+    const auto origin = ConnectionRuntime::Clock::time_point {};
+    for (std::uint32_t id = 1; id <= 2; ++id) {
+        auto runtime = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {
+                .channel = channel,
+                .peer = {.address = {192, 0, 2, 20}, .port = 10'020},
+                .peer_socket_id = id,
+                .initial_sequence = SequenceNumber {900},
+                .flow_window_packets = 256,
+                .origin = origin + std::chrono::microseconds {id * 100},
+                .now_function = injected_now,
+                .now_context = &now,
+            });
+        REQUIRE(channel->register_connection(id, runtime));
+        const std::array<std::byte, 1'200> payload {};
+        for (int index = 0; index < 2; ++index) {
+            REQUIRE_EQ(
+                runtime->queue_message(payload, 0, true, false, 0).status,
+                MessageIoStatus::success);
+        }
+    }
+    const auto first = DatagramChannelTestAccess::poll(*channel);
+    REQUIRE(!first.immediate_work);
+    REQUIRE_EQ(
+        *first.next_work_deadline, origin + std::chrono::microseconds {1'110});
+    REQUIRE_EQ(take_datagrams(output).size(), 2U);
+    now += 9;
+    const auto early = DatagramChannelTestAccess::poll(*channel);
+    REQUIRE(!early.immediate_work);
+    REQUIRE_EQ(early.next_work_deadline, first.next_work_deadline);
+    REQUIRE(take_datagrams(output).empty());
+    ++now;
+    const auto before = ConnectionRuntime::Clock::now();
+    const auto drained = DatagramChannelTestAccess::poll(*channel);
+    const auto after = ConnectionRuntime::Clock::now();
+    REQUIRE_EQ(take_datagrams(output).size(), 2U);
+    REQUIRE(!drained.immediate_work);
+    REQUIRE(
+        *drained.next_work_deadline >= before + std::chrono::milliseconds {2});
+    REQUIRE(
+        *drained.next_work_deadline <= after + std::chrono::milliseconds {2});
+}
+
+TEST(compat_dispatcher_pacer_notifications_rearm_once_and_survive_restart)
+{
+    auto scheduler =
+        std::make_shared<RuntimeScheduler>(RuntimeScheduler::Configuration {
+            .shard_count = 1,
+            .queue_capacity_per_shard = 1,
+            .timer_capacity_per_shard = 1,
+        });
+    REQUIRE(scheduler->start());
+    auto channel = std::make_shared<DatagramChannel>();
+    auto sending = std::make_shared<PollGate>();
+    channel->set_send_hook_for_testing(gate_datagram, sending.get());
+    std::uint64_t now = 1'000;
+    auto runtime = queue_paced_fixture(channel, now);
+    PollGateRelease release_sending {sending};
+    REQUIRE(channel->start(scheduler, 0U));
+    await_poll_gate(sending);
+    // Multiple notifications during an active poll require exactly one follow-up.
+    for (int i = 0; i < 16; ++i) {
+        channel->notify_send_work();
+    }
+    release_sending.release();
+    const auto timed = await_channel_timer(*scheduler, 2U);
+    REQUIRE_EQ(timed.completed, 2U);
+    REQUIRE_EQ(timed.timers_scheduled, 1U);
+
+    auto busy = std::make_shared<PollGate>();
+    PollGateRelease release_busy {busy};
+    REQUIRE_EQ(scheduler->submit(0U, {wait_at_poll_gate, busy}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    await_poll_gate(busy);
+    // Cancel the future timer, then coalesce notifications while its replacement
+    // waits in the ready queue. No second callback or timer may be created.
+    for (int i = 0; i < 16; ++i) {
+        channel->notify_send_work();
+    }
+    REQUIRE_EQ(scheduler->snapshot().queued, 1U);
+    REQUIRE_EQ(scheduler->snapshot().timers, 0U);
+    release_busy.release();
+    const auto rearmed = await_channel_timer(*scheduler, timed.completed + 2U);
+    REQUIRE_EQ(rearmed.completed, timed.completed + 2U);
+    REQUIRE_EQ(rearmed.timers_canceled, 1U);
+    REQUIRE_EQ(rearmed.timers_scheduled, 2U);
+
+    DatagramChannelTestAccess::stop(*channel);
+    REQUIRE_EQ(scheduler->snapshot().timers, 0U);
+    REQUIRE(!channel->running());
+    REQUIRE(channel->start(scheduler, 0U));
+    const auto restarted =
+        await_channel_timer(*scheduler, rearmed.completed + 1U);
+    REQUIRE_EQ(restarted.completed, rearmed.completed + 1U);
+    REQUIRE_EQ(restarted.timers_scheduled, 3U);
+    DatagramChannelTestAccess::stop(*channel);
+    REQUIRE_EQ(scheduler->snapshot().timers, 0U);
+    REQUIRE_EQ(scheduler->snapshot().queued, 0U);
+    scheduler->stop();
+}
+
+TEST(compat_dispatcher_pacer_timer_exhaustion_breaks_the_connection)
+{
+    auto scheduler =
+        std::make_shared<RuntimeScheduler>(RuntimeScheduler::Configuration {
+            .shard_count = 1,
+            .queue_capacity_per_shard = 1,
+            .timer_capacity_per_shard = 1,
+        });
+    REQUIRE(scheduler->start());
+    const auto unrelated = scheduler->schedule_at(0U,
+        ConnectionRuntime::Clock::now() + std::chrono::hours {1},
+        {wait_at_poll_gate, std::make_shared<PollGate>()});
+    REQUIRE_EQ(unrelated.status, RuntimeScheduler::SubmitStatus::accepted);
+    auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    std::uint64_t now = 1'000;
+    auto runtime = queue_paced_fixture(channel, now);
+    REQUIRE(channel->start(scheduler, 0U));
+    const auto deadline =
+        ConnectionRuntime::Clock::now() + std::chrono::seconds {2};
+    while (channel->running() && ConnectionRuntime::Clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    REQUIRE(!channel->running());
+    // stop waits for any active callback; broken-state publication follows the
+    // scheduling failure and must be visible before another message is queued.
+    scheduler->stop();
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
+    const std::array<std::byte, 1> payload {};
+    REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, 0).status,
+        MessageIoStatus::broken);
+    REQUIRE_EQ(scheduler->snapshot().rejected_full, 1U);
+    REQUIRE_EQ(scheduler->snapshot().timers, 0U);
+    REQUIRE_EQ(scheduler->snapshot().queued, 0U);
 }
 
 TEST(compat_runtime_waits_for_key_response_without_runnable_send_work)
@@ -744,7 +1009,7 @@ TEST(compat_runtime_waits_for_key_response_without_runnable_send_work)
 
     const RuntimePollResult waiting = runtime.poll();
     REQUIRE(!waiting.immediate_work);
-    REQUIRE(!waiting.next_work_delay.has_value());
+    REQUIRE(!waiting.next_work_deadline.has_value());
     const auto datagrams = take_datagrams(output);
     REQUIRE_EQ(datagrams.size(), 1U);
     const auto decoded = decode_packet(datagrams.front());

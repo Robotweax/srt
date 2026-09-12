@@ -62,8 +62,8 @@ void wait_until_started(const std::shared_ptr<Gate>& gate)
 struct OrderedRecord {
     std::mutex mutex;
     std::condition_variable changed;
-    std::array<int, 2> values {};
-    std::array<std::thread::id, 2> threads {};
+    std::array<int, 4> values {};
+    std::array<std::thread::id, 4> threads {};
     std::size_t size = 0;
 };
 
@@ -314,6 +314,46 @@ TEST(compat_runtime_scheduler_preserves_equal_deadline_timer_order)
     REQUIRE_EQ(ordered->values[0], 10);
     REQUIRE_EQ(ordered->values[1], 20);
     REQUIRE_EQ(ordered->threads[0], ordered->threads[1]);
+}
+
+TEST(compat_runtime_scheduler_alternates_due_timers_and_ready_work)
+{
+    RuntimeScheduler scheduler({
+        .shard_count = 1,
+        .queue_capacity_per_shard = 2,
+        .timer_capacity_per_shard = 2,
+    });
+    REQUIRE(scheduler.start());
+    const auto gate = std::make_shared<Gate>();
+    GateRelease release {gate};
+    // Hold the worker after it has claimed a timer. Cancellation must report
+    // that ownership, and both classes of subsequent work must make progress.
+    const auto claimed = scheduler.schedule_at(0U, {}, {wait_at_gate, gate});
+    REQUIRE_EQ(claimed.status, RuntimeScheduler::SubmitStatus::accepted);
+    wait_until_started(gate);
+    REQUIRE(!scheduler.cancel_timer(claimed.token));
+    const auto ordered = std::make_shared<OrderedRecord>();
+    for (int value = 1; value <= 4; ++value) {
+        RuntimeScheduler::Task task {
+            record_order,
+            std::make_shared<OrderedTask>(OrderedTask {ordered, value}),
+        };
+        if (value % 2 == 0) {
+            REQUIRE_EQ(scheduler.schedule_at(0U, {}, std::move(task)).status,
+                RuntimeScheduler::SubmitStatus::accepted);
+        } else {
+            REQUIRE_EQ(scheduler.submit(0U, std::move(task)),
+                RuntimeScheduler::SubmitStatus::accepted);
+        }
+    }
+    release_gate(gate);
+    wait_until_completed(scheduler, 5U);
+    scheduler.stop();
+    REQUIRE_EQ(ordered->size, 4U);
+    for (std::size_t index = 0; index < ordered->size; ++index) {
+        REQUIRE_EQ(ordered->values[index], static_cast<int>(index + 1U));
+        REQUIRE_EQ(ordered->threads[index], ordered->threads[0]);
+    }
 }
 
 TEST(compat_runtime_scheduler_bounds_and_serializes_affinity_shards)
