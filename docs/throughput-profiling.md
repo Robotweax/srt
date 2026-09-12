@@ -1,9 +1,11 @@
 # Throughput profiling (diagnostic branch)
 
-This diagnostic branch now includes an **experimental empty-receive-buffer
-fast path**, not a performance qualification or a released throughput claim.
-Only an empty message search returns earlier; public API, locking and transport
-configuration remain unchanged. Use a dedicated Linux test VM to reproduce a Linux
+This diagnostic branch includes an **experimental empty-receive-buffer
+fast path and Lite-ACK receive-window credit correction**, not a complete transport
+qualification or a released throughput claim. Public API, locking and transport
+configuration remain unchanged. The latest follow-up is the
+[fixed-pin plain ABBA stage](#plain-abba-after-the-lite-ack-diagnosis); earlier
+experiments below retain their original pins and contracts. Use a dedicated Linux test VM to reproduce a Linux
 capacity observation; native macOS and hosted x86-64 CI are separate platform
 controls, not substitutes for that environment.
 
@@ -586,3 +588,123 @@ and a new lower common offered rate if needed. Preserve the failed 100-Mbit/s
 results; do not change their tolerance. No broad transport/release approval,
 WAN, encryption or multi-connection throughput claim follows from these four
 diagnostic transfers alone.
+
+## Plain ABBA after the Lite-ACK diagnosis
+
+The [four-transfer diagnostic report from Lab PR #23](https://github.com/Robotweax/srt_network_lab/blob/292dd3c0352f479456b23c21e962276fa9cb6efb/results/2026-09-12-lite-ack-window/report-de.md)
+connects the old self-test repeats to 508 originals rejected beyond a full
+16384-packet receive window before the first application drain. The corrected
+sender stopped at exactly 16384 originals before that drain, with no insertion
+rejections. Instrumented retransmissions fell from 510 to zero (self) and from
+1362 to zero (to Haivision). Haivision receiver internals were not instrumented.
+These are causal diagnostics, not uninstrumented throughput measurements.
+
+The next stage asks whether the original throughput improvement remains with
+the corrected window accounting and without tracing. It does **not** rerun
+the old 48-transfer matched-rate experiment or change its failed 100-Mbit/s
+offered-rate contract. Use only these library revisions:
+
+| Role | Exact library revision |
+|---|---|
+| A: original slow baseline | `a5c428b725b5373651041b0e30678406b2d5c38c` |
+| B: fast path plus Lite-ACK correction | `09c852b40374d21e60e68b8aadaaabb5aa7294b8` |
+| Haivision 1.5.7 | `899348d8318eb9a3c5a5b6ec43c4a1114288773a` |
+
+All builds and the runner use one clean, committed checkout of this updated
+diagnostic harness. Record that harness's full SHA separately; **do not** use
+its tip as the candidate library revision. The shared peer source remains
+byte-identical to the previous experiment (SHA-256
+`faf487b34f5661e4dc602130628ed216b8054a2ab364abcc275bdda1d826d2ae`).
+
+### Lab-agent handoff: fresh builds, then one serial run
+
+Run on the same dedicated `srt-network-lab-runtime` Ubuntu ARM64 VM, retaining
+the original 4-vCPU/6-GiB configuration. Linux ARM64 alone does not identify
+that VM: the operator must verify its identity and the absence of competing
+workloads. Do not substitute hosted CI or local macOS. Do not run builds,
+profilers, packet capture or other capacity tests during the measurement.
+
+Use a clean checkout of `codex/throughput-send-path` containing this section as
+`SRT`, an existing clean exact-pinned Haivision checkout as `REFERENCE`, and a
+new `WORK` directory. Build **both** pairs before the first measurement; stop
+on any build error. These commands do not modify source checkouts:
+
+```sh
+HARNESS=$(git -C "$SRT" rev-parse HEAD)
+printf '%s\n' "harness=$HARNESS"
+git -C "$SRT" worktree add --detach "$WORK/baseline-source" a5c428b725b5373651041b0e30678406b2d5c38c || exit 1
+git -C "$SRT" worktree add --detach "$WORK/candidate-source" 09c852b40374d21e60e68b8aadaaabb5aa7294b8 || exit 1
+for variant in baseline candidate; do
+  python3 "$SRT/benchmarks/prepare_throughput.py" \
+    --robotweax-source "$WORK/$variant-source" --reference-source "$REFERENCE" \
+    --output-directory "$WORK/$variant-plain" --linkage static --jobs 2 || exit 1
+done
+```
+
+Record, temporarily configure and restore UDP maxima using the operator trap
+in section 2, in the same shell. Run as the normal VM user, with no profiler:
+
+```sh
+python3 "$SRT/benchmarks/run_plain_capacity_ab.py" \
+  --baseline-plain "$WORK/baseline-plain/build-manifest.json" \
+  --candidate-plain "$WORK/candidate-plain/build-manifest.json" \
+  --output-directory "$WORK/plain-abba-results"
+status=$?
+printf '%s\n' "plain-abba-exit=$status"
+```
+
+No automatic retries, selective deletion, alternate parameters or extra
+qualification runs. Preserve the nonzero status if the runner fails. The
+runner finishes subsequent planned blocks after a failed block, but an
+interruption leaves an incomplete report. It never changes sysctls or creates
+hosted CI runs. It rejects wrong/dirty pins, mixed harnesses, overlay builds,
+different toolchain evidence, changed binary hashes and unexpected Release
+flags. Both libraries are static OpenSSL Release `-O3 -DNDEBUG` with `-g`;
+peers retain the builder's common `-O2 -g` flags.
+
+### Fixed measurement plan and interpretation
+
+Four blocks in **A → B → B → A** order, with 30 seconds' cooldown per block.
+Each block has one Haivision self-control before and after, one excluded warmup
+per direction, and **three measured transfers per direction**. Total:
+**40 transfers = 24 measurements + 8 warmups + 8 controls**. This bounded
+confirmation uses six measured samples per variant/direction across its two
+blocks; it is not a long-term stability or tail-distribution qualification.
+
+Every transfer remains unpaced (`target-bps=0`, no bounded pacer), at least
+128 MiB rounded to 101990 messages / 134218840 bytes, 1316-byte payload,
+one connection, Live/Message, 120-ms TSBPD, TLPKTDROP off, pending 8192,
+FC 16384, 32-MiB SRT buffers, 8-MiB requested UDP buffers, MAXBW
+1,250,000,000 bytes/s, 45-second timeout and 500-ms shutdown grace.
+
+`ab-report.json` retains every block status and every case's rate, sender CPU,
+original/retransmitted packet counts, retransmission ratio and host UDP error
+deltas. Per-block/direction summaries provide median, mean and interpolated
+p95 for throughput and sender CPU seconds. With three observations, p95 is
+descriptive only. CPU is sender process user+system time through completion,
+including setup, not a CPU-sample percentage. Warmups and Haivision controls
+remain individually visible and are excluded from those summaries.
+
+The automated `measurement_contract_pass` requires all 40 payloads, complete
+consistent counters, **zero retransmissions in all variants, warmups and
+controls**, and recorded zero host UDP `InErrors`, `RcvbufErrors`,
+`SndbufErrors` and `InCsumErrors` deltas. Missing data is not zero. Nonzero
+retransmissions still remain in throughput summaries if the transfer completed;
+they are never filtered away as outliers. Host counter deltas are not a
+measured network-loss rate.
+
+Even exit zero is **not automatic performance or transport approval**. Review
+all four blocks separately, compare A/B throughput and sender CPU per equal
+transfer, and compare the eight Haivision controls for host drift. Report
+median/mean/p95 and individual retransmissions, not only the best runs. There
+is no new hard-coded 1.4-Gbit/s threshold: decide whether the gain is repeatable
+and substantially larger than control variation. If not, mark the result
+inconclusive; do not silently rerun until green.
+
+Deliver a new Lab result directory/PR with raw JSON/stdout/stderr/logs, build
+commands/caches/compiler/OpenSSL/loader evidence, exact SHAs, SHA-256 manifest,
+runner status and verified cleanup/restored sysctls. Keep all earlier archives
+unchanged. **Do not upload Haivision binaries, static libraries or whole build
+directories.** No WAN, encryption, multi-connection, Live-deadline or release
+claim follows from this loopback stage. Keep the SRT branch unmerged pending
+review of the results and a separate decision on further qualification.
