@@ -17,7 +17,7 @@ import run_bounded_send_ab as budget
 common, build, diag, sc = budget.common, budget.build, budget.diag, budget.sc
 REVISIONS = {
     "baseline": "8e1bdebed836cb7b732db852f51ef6a7b212e925",
-    "candidate": "a56b2c5642f8a04ae75cb35650c8120c278f19cf",
+    "candidate": "9207a1be4c3156eb2866bc00dbbd883ec38c1431",
 }
 STAGE = {"connections": 1, "bytes_per_connection": 128 * 1024**2, "repetitions": 2, "warmups": 0}
 PROFILES = budget.PROFILES
@@ -43,12 +43,19 @@ def analyze_block(report: dict, manifest: dict, exit_code: int) -> dict:
                     value * 1024**3 / actual_bytes if common.number(value, integer=True) else None)
     for row, case in zip(result["cases"], report.get("runs", [])):
         raw = case.get("result", {})
-        waits = case.get("peer_exit_status", {}).get("peers", {})
-        valid = raw.get("peer_exit_codes") == {"sender": 0, "receiver": 0}
+        status = case.get("peer_exit_status")
+        waits = status.get("peers") if isinstance(status, dict) else None
+        waits = waits if isinstance(waits, dict) else {}
+        codes = raw.get("peer_exit_codes")
+        valid = (isinstance(codes, dict) and set(codes) == {"sender", "receiver"}
+                 and all(type(value) is int and value == 0 for value in codes.values()))
         for role, side in (("sender", "caller"), ("receiver", "listener")):
-            observed = waits.get(side, {})
+            observed = waits.get(side)
+            observed = observed if isinstance(observed, dict) else {}
+            resource = raw.get("peer_process_resources", {}).get(role) or {}
             valid &= (type(observed.get("returncode")) is int and observed["returncode"] == 0
-                      and observed.get("pid") == raw.get("peer_process_resources", {}).get(role, {}).get("pid"))
+                      and type(observed.get("pid")) is int and observed["pid"] > 0
+                      and observed["pid"] == resource.get("pid"))
         if not valid:
             message = f"case {row['index']}: missing/nonzero raw peer wait status or PID mismatch"
             row["errors"].append(message);result["errors"].append(message)

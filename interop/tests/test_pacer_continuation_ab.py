@@ -28,7 +28,13 @@ class PacerContinuationABTests(unittest.TestCase):
         self.assertFalse(a['long_transfer_qualification_performed'])
         for p in a['profiles']:self.assertAlmostEqual(p['candidate_over_baseline']['mbps'],1.2)
     def test_raw_wait_status_and_pid_are_required(self):
-        for mutate in (lambda c:c.pop('peer_exit_status'),lambda c:c['result'].pop('peer_exit_codes'),lambda c:c['peer_exit_status']['peers']['caller'].update(returncode=7),lambda c:c['peer_exit_status']['peers']['listener'].update(pid=-1)):
+        for mutate in (lambda c:c.pop('peer_exit_status'),lambda c:c['result'].pop('peer_exit_codes'),lambda c:c['peer_exit_status']['peers']['caller'].update(returncode=7),lambda c:c['peer_exit_status']['peers']['listener'].update(pid=-1),
+                       lambda c:c.update(peer_exit_status=None),lambda c:c.update(peer_exit_status=[]),
+                       lambda c:c['peer_exit_status'].update(peers=None),lambda c:c['peer_exit_status'].update(peers=[]),
+                       lambda c:c['peer_exit_status']['peers'].update(caller=None),lambda c:c['peer_exit_status']['peers'].update(listener=[]),
+                       lambda c:c['result']['peer_process_resources'].update(sender=None),
+                       lambda c:c['result']['peer_exit_codes'].update(sender=False),
+                       lambda c:c['peer_exit_status']['peers']['caller'].update(returncode=False)):
             raw=self.raw();mutate(raw['runs'][0]);self.assertFalse(runner.analyze_block(raw,{},0)['measurement_contract_pass'])
     def test_both_profiles_check_rate_and_sender_total_cpu(self):
         for metric,value in [('mbps',1),('sender_cpu_seconds_per_gib',100),('total_cpu_seconds_per_gib',100)]:
@@ -49,6 +55,7 @@ class PacerContinuationABTests(unittest.TestCase):
             variant='candidate' if 'candidate' in dest.name else 'baseline';calls.append(dest)
             if mode=='interrupt' and len(calls)==2:raise KeyboardInterrupt
             raw=self.raw(variant,gain=mode!='no-gain')
+            if mode=='null-status' and len(calls)==1:raw['runs'][0]['peer_exit_status']=None
             (dest/'report.json').write_text('bad-json' if mode=='json' and len(calls)==1 else json.dumps(raw))
             return 7 if mode=='exit' and len(calls)==1 else 0
         report={}
@@ -61,7 +68,7 @@ class PacerContinuationABTests(unittest.TestCase):
             self.assertEqual(code,0);self.assertEqual(len(calls),4);self.assertTrue(r['analysis']['comparison_valid'])
             self.assertEqual(r['analysis']['followup_candidates'],[] if mode else ['candidate'])
     def test_failed_cases_keep_four_attempts_and_original_exit(self):
-        for mode in ('exit','json'):
+        for mode in ('exit','json','null-status'):
             with tempfile.TemporaryDirectory() as d:code,r,calls=self.execute(Path(d)/'out',mode)
             self.assertEqual(code,1);self.assertEqual(len(calls),4);self.assertTrue(r['complete'])
             self.assertEqual(r['blocks'][0]['exit_code'],7 if mode=='exit' else 0)

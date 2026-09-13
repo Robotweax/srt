@@ -8,7 +8,7 @@ It is a hypothesis, not a demonstrated performance improvement.
 ## Product contract
 
 Baseline A: `8e1bdebed836cb7b732db852f51ef6a7b212e925`.
-Candidate: `a56b2c5642f8a04ae75cb35650c8120c278f19cf`.
+Candidate: `9207a1be4c3156eb2866bc00dbbd883ec38c1431`.
 Haivision 1.5.7: `899348d8318eb9a3c5a5b6ec43c4a1114288773a`.
 The handoff pins a separate clean common harness commit for both builds.
 The common public peer remains SHA-256
@@ -62,7 +62,7 @@ bundle hashes, both product objects and the unchanged peer before any build.
 ```sh
 for pin in \
   8e1bdebed836cb7b732db852f51ef6a7b212e925 \
-  a56b2c5642f8a04ae75cb35650c8120c278f19cf; do
+  9207a1be4c3156eb2866bc00dbbd883ec38c1431; do
   git -C "$SRT" cat-file -e "$pin^{commit}" || exit 1
 done
 python3 -m unittest discover -s "$SRT/interop/tests" \
@@ -72,7 +72,7 @@ python3 -m unittest discover -s "$SRT/interop/tests" \
 git -C "$SRT" worktree add --detach "$WORK/baseline-source" \
   8e1bdebed836cb7b732db852f51ef6a7b212e925 || exit 1
 git -C "$SRT" worktree add --detach "$WORK/candidate-source" \
-  a56b2c5642f8a04ae75cb35650c8120c278f19cf || exit 1
+  9207a1be4c3156eb2866bc00dbbd883ec38c1431 || exit 1
 for variant in baseline candidate; do
   python3 "$SRT/benchmarks/prepare_throughput.py" \
     --robotweax-source "$WORK/$variant-source" --reference-source "$REFERENCE" \
