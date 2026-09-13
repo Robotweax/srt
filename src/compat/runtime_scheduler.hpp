@@ -76,6 +76,11 @@ public:
     [[nodiscard]] bool start() noexcept;
     [[nodiscard]] SubmitStatus submit(
         std::uint64_t affinity, Task task) noexcept;
+    // Once per invocation, transfer the currently executing task to the tail
+    // of its own shard. Preserve queue capacity/FIFO and avoid copying its
+    // context or notifying the worker that is already executing this call.
+    [[nodiscard]] SubmitStatus resubmit_current(
+        std::uint64_t affinity) noexcept;
     [[nodiscard]] ScheduleResult schedule_at(std::uint64_t affinity,
         std::chrono::steady_clock::time_point deadline, Task task) noexcept;
     [[nodiscard]] bool cancel_timer(TimerToken token) noexcept;
@@ -85,6 +90,13 @@ public:
     [[nodiscard]] Snapshot snapshot() const noexcept;
 
 private:
+    struct ActiveTask {
+        RuntimeScheduler* scheduler;
+        Task* task;
+        std::size_t shard;
+    };
+    inline static thread_local ActiveTask* active_task_ = nullptr;
+
     struct Shard {
         struct TimerSlot {
             Task task;

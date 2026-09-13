@@ -925,9 +925,13 @@ void DatagramChannel::run_scheduled(
             send_work_notification_pending_ = false;
             const std::chrono::microseconds delay =
                 result.next_work_delay.value_or(idle_wait_);
-            if (!schedule_next_locked(
-                    result.immediate_work || send_work_notification_pending,
-                    delay)) {
+            const bool immediate =
+                result.immediate_work || send_work_notification_pending;
+            const bool scheduled = immediate
+                ? scheduler_->resubmit_current(affinity_)
+                    == RuntimeScheduler::SubmitStatus::accepted
+                : schedule_next_locked(false, delay);
+            if (!scheduled) {
                 running_.store(false, std::memory_order_release);
                 scheduling_failed = true;
             }

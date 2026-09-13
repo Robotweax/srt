@@ -219,6 +219,40 @@ RuntimeScheduler::SubmitStatus RuntimeScheduler::submit(
     return SubmitStatus::accepted;
 }
 
+RuntimeScheduler::SubmitStatus RuntimeScheduler::resubmit_current(
+    std::uint64_t affinity) noexcept
+{
+    ActiveTask* active = active_task_;
+    if (active == nullptr || active->scheduler != this
+        || active->task == nullptr || active->shard != shard_for(affinity)) {
+        rejected_invalid_.fetch_add(1U, std::memory_order_relaxed);
+        return SubmitStatus::invalid;
+    }
+    if (!accepting_.load(std::memory_order_acquire)) {
+        rejected_stopped_.fetch_add(1U, std::memory_order_relaxed);
+        return SubmitStatus::stopped;
+    }
+
+    Shard& shard = *shards_[active->shard];
+    std::lock_guard lock(shard.mutex);
+    if (!accepting_.load(std::memory_order_relaxed) || shard.stop_requested) {
+        rejected_stopped_.fetch_add(1U, std::memory_order_relaxed);
+        return SubmitStatus::stopped;
+    }
+    if (shard.size == shard.entries.size()) {
+        rejected_full_.fetch_add(1U, std::memory_order_relaxed);
+        return SubmitStatus::full;
+    }
+    const std::size_t tail = (shard.head + shard.size) % shard.entries.size();
+    shard.entries[tail] = std::move(*active->task);
+    active->task = nullptr;
+    ++shard.size;
+    accepted_.fetch_add(1U, std::memory_order_relaxed);
+    // This shard has one worker and it is still in the callback. The queued
+    // context keeps the current invocation alive until that callback returns.
+    return SubmitStatus::accepted;
+}
+
 RuntimeScheduler::ScheduleResult RuntimeScheduler::schedule_at(
     std::uint64_t affinity, std::chrono::steady_clock::time_point deadline,
     Task task) noexcept
@@ -383,7 +417,11 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
             shard.executing = true;
         }
 
+        ActiveTask active {this, &task, shard_index};
+        ActiveTask* previous = active_task_;
+        active_task_ = &active;
         task.function(task.context.get());
+        active_task_ = previous;
         {
             std::lock_guard lock(shard.mutex);
             shard.executing = false;

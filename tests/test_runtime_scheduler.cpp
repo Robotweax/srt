@@ -62,8 +62,8 @@ void wait_until_started(const std::shared_ptr<Gate>& gate)
 struct OrderedRecord {
     std::mutex mutex;
     std::condition_variable changed;
-    std::array<int, 2> values {};
-    std::array<std::thread::id, 2> threads {};
+    std::array<int, 4> values {};
+    std::array<std::thread::id, 4> threads {};
     std::size_t size = 0;
 };
 
@@ -431,4 +431,244 @@ TEST(compat_runtime_scheduler_drains_owned_tasks_before_stop_returns)
     const auto snapshot = scheduler.snapshot();
     REQUIRE_EQ(snapshot.completed, 2U);
     REQUIRE_EQ(snapshot.rejected_stopped, 1U);
+}
+
+namespace {
+
+struct ResubmitRecord {
+    RuntimeScheduler* scheduler = nullptr;
+    RuntimeScheduler* other_scheduler = nullptr;
+    std::shared_ptr<Gate> entered;
+    std::shared_ptr<Gate> submitted;
+    std::shared_ptr<OrderedRecord> order;
+    RuntimeScheduler::SubmitStatus result =
+        RuntimeScheduler::SubmitStatus::invalid;
+    RuntimeScheduler::SubmitStatus repeated =
+        RuntimeScheduler::SubmitStatus::accepted;
+    RuntimeScheduler::SubmitStatus wrong_shard =
+        RuntimeScheduler::SubmitStatus::accepted;
+    RuntimeScheduler::SubmitStatus wrong_scheduler =
+        RuntimeScheduler::SubmitStatus::accepted;
+    std::array<std::thread::id, 2> threads {};
+    std::size_t calls = 0;
+    long owners_before = 0;
+    long owners_after = 0;
+};
+
+struct ResubmitContext {
+    std::shared_ptr<ResubmitRecord> record;
+    std::weak_ptr<ResubmitContext> self;
+};
+
+void resubmit_probe(void* context) noexcept
+{
+    auto& owned = *static_cast<ResubmitContext*>(context);
+    auto& record = *owned.record;
+    const std::size_t call = record.calls++;
+    if (call < record.threads.size()) {
+        record.threads[call] = std::this_thread::get_id();
+    }
+    if (call != 0U) {
+        if (record.order != nullptr) {
+            OrderedTask task {.record = record.order, .value = 20};
+            record_order(&task);
+        }
+        return;
+    }
+    wait_at_gate(record.entered.get());
+    record.owners_before = owned.self.use_count();
+    if (record.other_scheduler != nullptr) {
+        record.wrong_shard = record.scheduler->resubmit_current(1U);
+        record.wrong_scheduler = record.other_scheduler->resubmit_current(0U);
+    }
+    record.result = record.scheduler->resubmit_current(0U);
+    record.owners_after = owned.self.use_count();
+    if (record.result == RuntimeScheduler::SubmitStatus::accepted) {
+        record.repeated = record.scheduler->resubmit_current(0U);
+    }
+    if (record.submitted != nullptr) {
+        wait_at_gate(record.submitted.get());
+    }
+}
+
+std::weak_ptr<ResubmitContext> start_resubmit_probe(RuntimeScheduler& scheduler,
+    const std::shared_ptr<ResubmitRecord>& record, bool timer = false)
+{
+    auto context = std::make_shared<ResubmitContext>();
+    context->record = record;
+    context->self = context;
+    record->scheduler = &scheduler;
+    RuntimeScheduler::Task task {
+        .function = resubmit_probe, .context = context};
+    const auto status = timer
+        ? scheduler
+              .schedule_at(
+                  0U, std::chrono::steady_clock::now(), std::move(task))
+              .status
+        : scheduler.submit(0U, std::move(task));
+    REQUIRE_EQ(status, RuntimeScheduler::SubmitStatus::accepted);
+    return context;
+}
+
+bool wait_until_not_accepting(const RuntimeScheduler& scheduler)
+{
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    while (scheduler.snapshot().accepting
+        && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    return !scheduler.snapshot().accepting;
+}
+
+} // namespace
+
+TEST(
+    compat_runtime_scheduler_resubmits_ready_and_timer_tasks_without_extra_ownership)
+{
+    for (const bool timer : {false, true}) {
+        RuntimeScheduler scheduler(
+            {.shard_count = 2, .queue_capacity_per_shard = 2});
+        RuntimeScheduler other(
+            {.shard_count = 1, .queue_capacity_per_shard = 1});
+        REQUIRE(scheduler.start());
+        REQUIRE_EQ(scheduler.resubmit_current(0U),
+            RuntimeScheduler::SubmitStatus::invalid);
+        auto record = std::make_shared<ResubmitRecord>();
+        record->other_scheduler = &other;
+        record->entered = std::make_shared<Gate>();
+        const GateRelease release_on_exit {record->entered};
+        const auto lifetime = start_resubmit_probe(scheduler, record, timer);
+        wait_until_started(record->entered);
+        release_gate(record->entered);
+        wait_until_completed(scheduler, 2U);
+        scheduler.stop();
+        REQUIRE(lifetime.expired());
+        REQUIRE_EQ(record->calls, 2U);
+        REQUIRE_EQ(record->owners_before, 1L);
+        REQUIRE_EQ(record->owners_after, 1L);
+        REQUIRE_EQ(record->result, RuntimeScheduler::SubmitStatus::accepted);
+        REQUIRE_EQ(record->repeated, RuntimeScheduler::SubmitStatus::invalid);
+        REQUIRE_EQ(
+            record->wrong_shard, RuntimeScheduler::SubmitStatus::invalid);
+        REQUIRE_EQ(
+            record->wrong_scheduler, RuntimeScheduler::SubmitStatus::invalid);
+        REQUIRE_EQ(record->threads[0], record->threads[1]);
+        REQUIRE_EQ(scheduler.snapshot().accepted, 2U);
+        REQUIRE_EQ(scheduler.snapshot().completed, 2U);
+        REQUIRE_EQ(scheduler.snapshot().rejected_invalid, 3U);
+    }
+}
+
+TEST(compat_runtime_scheduler_resubmit_preserves_fifo_and_due_timer_priority)
+{
+    RuntimeScheduler scheduler({.shard_count = 1,
+        .queue_capacity_per_shard = 3,
+        .timer_capacity_per_shard = 1});
+    REQUIRE(scheduler.start());
+    auto record = std::make_shared<ResubmitRecord>();
+    record->entered = std::make_shared<Gate>();
+    record->submitted = std::make_shared<Gate>();
+    record->order = std::make_shared<OrderedRecord>();
+    const GateRelease release_entered {record->entered};
+    const GateRelease release_submitted {record->submitted};
+    const auto lifetime = start_resubmit_probe(scheduler, record);
+    wait_until_started(record->entered);
+    auto early = std::make_shared<OrderedTask>(
+        OrderedTask {.record = record->order, .value = 10});
+    auto due = std::make_shared<OrderedTask>(
+        OrderedTask {.record = record->order, .value = 5});
+    auto late = std::make_shared<OrderedTask>(
+        OrderedTask {.record = record->order, .value = 30});
+    REQUIRE_EQ(
+        scheduler.submit(0U, {.function = record_order, .context = early}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(scheduler
+                   .schedule_at(0U, std::chrono::steady_clock::now(),
+                       {.function = record_order, .context = due})
+                   .status,
+        RuntimeScheduler::SubmitStatus::accepted);
+    release_gate(record->entered);
+    wait_until_started(record->submitted);
+    REQUIRE_EQ(
+        scheduler.submit(0U, {.function = record_order, .context = late}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(scheduler.snapshot().queued, 3U);
+    release_gate(record->submitted);
+    wait_until_completed(scheduler, 5U);
+    scheduler.stop();
+    REQUIRE(lifetime.expired());
+    REQUIRE_EQ(record->result, RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(record->order->size, 4U);
+    REQUIRE_EQ(record->order->values[0], 5);
+    REQUIRE_EQ(record->order->values[1], 10);
+    REQUIRE_EQ(record->order->values[2], 20);
+    REQUIRE_EQ(record->order->values[3], 30);
+    REQUIRE_EQ(scheduler.snapshot().accepted, 5U);
+}
+
+TEST(
+    compat_runtime_scheduler_full_queue_rejects_resubmit_without_losing_context)
+{
+    RuntimeScheduler scheduler(
+        {.shard_count = 1, .queue_capacity_per_shard = 1});
+    REQUIRE(scheduler.start());
+    auto record = std::make_shared<ResubmitRecord>();
+    record->entered = std::make_shared<Gate>();
+    const GateRelease release_on_exit {record->entered};
+    const auto lifetime = start_resubmit_probe(scheduler, record);
+    wait_until_started(record->entered);
+    const auto queued = std::make_shared<Completion>();
+    REQUIRE_EQ(scheduler.submit(
+                   0U, {.function = record_completion, .context = queued}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    release_gate(record->entered);
+    wait_until_complete(queued);
+    scheduler.stop();
+    REQUIRE(lifetime.expired());
+    REQUIRE_EQ(record->calls, 1U);
+    REQUIRE_EQ(record->owners_before, 1L);
+    REQUIRE_EQ(record->owners_after, 1L);
+    REQUIRE_EQ(record->result, RuntimeScheduler::SubmitStatus::full);
+    REQUIRE_EQ(scheduler.snapshot().rejected_full, 1U);
+    REQUIRE_EQ(scheduler.snapshot().accepted, 2U);
+    REQUIRE_EQ(scheduler.snapshot().completed, 2U);
+}
+
+TEST(
+    compat_runtime_scheduler_stop_rejects_new_resubmit_and_drains_accepted_resubmit)
+{
+    for (const bool accepted_before_stop : {false, true}) {
+        RuntimeScheduler scheduler(
+            {.shard_count = 1, .queue_capacity_per_shard = 1});
+        REQUIRE(scheduler.start());
+        auto record = std::make_shared<ResubmitRecord>();
+        record->entered = std::make_shared<Gate>();
+        record->submitted = std::make_shared<Gate>();
+        const GateRelease release_entered {record->entered};
+        const GateRelease release_submitted {record->submitted};
+        const auto lifetime = start_resubmit_probe(scheduler, record);
+        wait_until_started(record->entered);
+        if (accepted_before_stop) {
+            release_gate(record->entered);
+            wait_until_started(record->submitted);
+        }
+        std::thread stopper([&scheduler] {
+            scheduler.stop();
+        });
+        const bool stopped_accepting = wait_until_not_accepting(scheduler);
+        release_gate(record->entered);
+        release_gate(record->submitted);
+        stopper.join();
+        REQUIRE(stopped_accepting);
+        REQUIRE(lifetime.expired());
+        REQUIRE_EQ(record->result,
+            accepted_before_stop ? RuntimeScheduler::SubmitStatus::accepted
+                                 : RuntimeScheduler::SubmitStatus::stopped);
+        REQUIRE_EQ(record->calls, accepted_before_stop ? 2U : 1U);
+        REQUIRE_EQ(scheduler.snapshot().accepted, record->calls);
+        REQUIRE_EQ(scheduler.snapshot().completed, record->calls);
+        REQUIRE_EQ(scheduler.snapshot().queued, 0U);
+        REQUIRE_EQ(scheduler.snapshot().executing, 0U);
+    }
 }
