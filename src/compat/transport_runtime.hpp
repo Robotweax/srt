@@ -6,6 +6,7 @@
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/udp.hpp"
 #include "compat/runtime_scheduler.hpp"
+#include "compat/paced_poll_continuation.hpp"
 #include "compat/statistics.hpp"
 
 #include <array>
@@ -151,6 +152,9 @@ struct RuntimeBufferPacketCounts {
 struct RuntimePollResult {
     bool immediate_work = false;
     std::optional<std::chrono::microseconds> next_work_delay;
+    // Advisory only: the scheduler continues to use the original relative delay.
+    std::optional<std::chrono::steady_clock::time_point> paced_poll_deadline =
+        std::nullopt;
 };
 
 struct MessageIoResult {
@@ -217,6 +221,14 @@ public:
     }
 
 private:
+    friend class ConnectionRuntime;
+    friend struct DatagramChannelTestAccess;
+
+    void invalidate_paced_poll() noexcept
+    {
+        paced_poll_epoch_.fetch_add(1U, std::memory_order_release);
+    }
+
     struct ScheduledWorkContext {
         std::weak_ptr<DatagramChannel> owner;
     };
@@ -230,7 +242,8 @@ private:
         IpEndpoint peer) noexcept;
     static void run_scheduled(void* context) noexcept;
     void run_scheduled(const ScheduledWorkContext* context) noexcept;
-    [[nodiscard]] RuntimePollResult run_once() noexcept;
+    [[nodiscard]] RuntimePollResult run_once(
+        const PacedPollContinuation::Time* test_now = nullptr) noexcept;
     [[nodiscard]] bool schedule_next_locked(
         bool immediate, std::chrono::microseconds delay) noexcept;
     void dispatch(
@@ -268,6 +281,8 @@ private:
     bool task_active_ = false;
     bool send_work_notification_pending_ = false;
     std::atomic_bool running_ = false;
+    std::atomic<std::uint64_t> paced_poll_epoch_ {0};
+    PacedPollContinuation paced_poll_continuation_;
 };
 
 class ConnectionRuntime {
@@ -405,6 +420,7 @@ private:
     void sample_receiver_buffer_statistics(
         std::uint64_t now_microseconds) noexcept;
     void notify_channel_send_work() noexcept;
+    void invalidate_channel_paced_poll() noexcept;
     [[nodiscard]] bool send_actions(
         const ReliabilityActions& actions,
         std::uint64_t now_microseconds) noexcept;

@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Fixed 24-case ABBA for the one-shot paced-poll continuation."""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import math
+import platform
+import signal
+import socket
+import statistics
+from pathlib import Path
+
+import run_bounded_send_ab as budget
+
+common, build, diag, sc = budget.common, budget.build, budget.diag, budget.sc
+REVISIONS = {
+    "baseline": "8e1bdebed836cb7b732db852f51ef6a7b212e925",
+    "candidate": "9207a1be4c3156eb2866bc00dbbd883ec38c1431",
+}
+STAGE = {"connections": 1, "bytes_per_connection": 128 * 1024**2, "repetitions": 2, "warmups": 0}
+PROFILES = budget.PROFILES
+THRESHOLDS = budget.THRESHOLDS
+CORE_METRICS = ("mbps", "sender_cpu_seconds_per_gib", "receiver_cpu_seconds_per_gib", "total_cpu_seconds_per_gib")
+RESOURCE_METRICS = ("user_cpu_us", "system_cpu_us", "voluntary_context_switches", "involuntary_context_switches")
+EXTRA_METRICS = tuple(f"{role}_{metric}_per_gib" for role in ("sender", "receiver") for metric in RESOURCE_METRICS)
+
+
+def plan() -> list[str]:
+    return ["baseline", "candidate", "candidate", "baseline"]
+
+
+def analyze_block(report: dict, manifest: dict, exit_code: int) -> dict:
+    result = budget.analyze_block(report, manifest, exit_code, STAGE)
+    actual_bytes = math.ceil(STAGE["bytes_per_connection"] / 1316) * 1316
+    for row in result["cases"]:
+        for role in ("sender", "receiver"):
+            own = row["peer_process_resources"].get(role) or {}
+            for key in RESOURCE_METRICS:
+                value = own.get(key)
+                row[f"{role}_{key}_per_gib"] = (
+                    value * 1024**3 / actual_bytes if common.number(value, integer=True) else None)
+    for row, case in zip(result["cases"], report.get("runs", [])):
+        raw = case.get("result", {})
+        status = case.get("peer_exit_status")
+        waits = status.get("peers") if isinstance(status, dict) else None
+        waits = waits if isinstance(waits, dict) else {}
+        codes = raw.get("peer_exit_codes")
+        valid = (isinstance(codes, dict) and set(codes) == {"sender", "receiver"}
+                 and all(type(value) is int and value == 0 for value in codes.values()))
+        for role, side in (("sender", "caller"), ("receiver", "listener")):
+            observed = waits.get(side)
+            observed = observed if isinstance(observed, dict) else {}
+            resource = raw.get("peer_process_resources", {}).get(role) or {}
+            valid &= (type(observed.get("returncode")) is int and observed["returncode"] == 0
+                      and type(observed.get("pid")) is int and observed["pid"] > 0
+                      and observed["pid"] == resource.get("pid"))
+        if not valid:
+            message = f"case {row['index']}: missing/nonzero raw peer wait status or PID mismatch"
+            row["errors"].append(message);result["errors"].append(message)
+            result["measurement_contract_pass"] = False
+    return result
+
+
+def analyze_experiment(report: dict) -> dict:
+    blocks = report["blocks"]
+    contract = (report.get("complete") is True and not report.get("interrupted")
+                and [b["variant"] for b in blocks] == plan()
+                and all(b["analysis"]["measurement_contract_pass"] for b in blocks))
+    gate = {"eligible_for_long_transfer_followup": False, "reasons": []}
+    result = {"measurement_contract_pass": contract, "comparison_valid": False,
+              "profiles": [], "candidate_gate": gate, "followup_candidates": [],
+              "long_transfer_qualification_performed": False, "errors": []}
+    if not contract:
+        gate["reasons"].append("incomplete/failed 24-case evidence; no candidate nomination")
+        result["errors"] = list(gate["reasons"])
+        return result
+    controls = [row["mbps"] for b in blocks for row in b["analysis"]["cases"]
+                if row["kind"] in ("control-before", "control-after")]
+    valid_controls = len(controls) == 8 and all(common.number(x, positive=True) for x in controls)
+    result["haivision_controls"] = controls
+    result["control_spread"] = max(controls) / min(controls) if valid_controls else None
+    if not valid_controls or result["control_spread"] > THRESHOLDS["maximum_control_spread"]:
+        result["errors"].append("missing/nonpositive H controls or spread exceeds 15%")
+    improved = False
+    for profile in PROFILES:
+        medians = {}
+        for variant in REVISIONS:
+            rows = [row for b in blocks if b["variant"] == variant for row in b["analysis"]["cases"]
+                    if row["kind"] == "measurement" and row["profile"] == profile]
+            if len(rows) != 4 or any(not common.number(row.get(k), positive=k in CORE_METRICS)
+                                     for row in rows for k in (*CORE_METRICS, *EXTRA_METRICS)):
+                result["errors"].append(f"missing/invalid {variant}/{profile} metrics")
+                result["measurement_contract_pass"] = False
+                continue
+            medians[variant] = {k: statistics.median(row[k] for row in rows) for k in (*CORE_METRICS, *EXTRA_METRICS)}
+        if set(medians) != set(REVISIONS):
+            continue
+        ratios = {k: medians["candidate"][k] / medians["baseline"][k]
+                  if medians["baseline"][k] > 0 else None for k in (*CORE_METRICS, *EXTRA_METRICS)}
+        result["profiles"].append({"profile": profile, "samples_per_variant": 4, "medians": medians,
+                                   "candidate_over_baseline": ratios})
+        if ratios["mbps"] < THRESHOLDS["minimum_rate_ratio"]:
+            gate["reasons"].append(f"{profile}: throughput regression exceeds 5%")
+        if any(ratios[k] > THRESHOLDS["maximum_cpu_ratio"] for k in
+               ("sender_cpu_seconds_per_gib", "total_cpu_seconds_per_gib")):
+            gate["reasons"].append(f"{profile}: sender/total CPU regression exceeds 5%")
+        improved |= (ratios["mbps"] >= THRESHOLDS["improved_rate_ratio"]
+                     or ratios["total_cpu_seconds_per_gib"] <= THRESHOLDS["improved_cpu_ratio"])
+    result["comparison_valid"] = not result["errors"]
+    if not result["comparison_valid"]:
+        gate["reasons"].append("comparison invalid; no candidate nomination")
+    if not improved:
+        gate["reasons"].append("no profile improves throughput or total CPU by at least 5%")
+    gate["eligible_for_long_transfer_followup"] = not gate["reasons"]
+    if not gate["reasons"]:
+        result["followup_candidates"] = ["candidate"]
+    return result
+
+
+def run_blocks(paths: dict, manifests: dict, out: Path, report: dict) -> int:
+    out.mkdir(parents=True, exist_ok=False)
+    report.update(schema_version=1, complete=False, interrupted=False, plan=plan(),
+                  stage=STAGE, thresholds=THRESHOLDS, blocks=[], analysis=None,
+                  long_transfer_qualification_performed=False)
+    watched = [getattr(signal, n) for n in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, n)]
+    saved = {sig: signal.getsignal(sig) for sig in watched}
+    active = None
+
+    def interrupted(signum, _frame):
+        for sig in watched:
+            signal.signal(sig, signal.SIG_IGN)
+        report["interruption_signal"] = signum
+        raise KeyboardInterrupt
+
+    for sig in watched:
+        signal.signal(sig, interrupted)
+    try:
+        for index, variant in enumerate(plan()):
+            name = f"{index:02}-{variant}-plain"
+            argv = ["--build-manifest", str(paths[variant]), "--output-directory", str(out / name)]
+            for key, value in budget.arguments(STAGE).items():
+                argv += ["--" + key.replace("_", "-"), str(value)]
+            for profile in PROFILES:
+                argv += ["--profile", profile]
+            active = {"name": name, "variant": variant, "exit_code": None, "driver_arguments": argv}
+            report["blocks"].append(active)
+            sc.write_report(out / "pacer-fast-path-report.json", report)
+            with (out / f"{name}.log").open("x") as log:
+                try:
+                    with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+                        active["exit_code"] = diag.main(argv)
+                except SystemExit as error:
+                    active["exit_code"] = error.code if type(error.code) is int else 1
+                except Exception as error:
+                    active["exit_code"], active["error"] = 1, repr(error)
+                    if report.get("interruption_signal") is not None:
+                        report["interruption_cleanup_error"] = repr(error)
+                        raise KeyboardInterrupt from error
+            # Keep an observed signal even if nested cleanup replaces or
+            # suppresses KeyboardInterrupt. Never enter the next block.
+            if report.get("interruption_signal") is not None:
+                raise KeyboardInterrupt
+            try:
+                raw = json.loads((out / name / "report.json").read_text())
+                active["analysis"] = analyze_block(raw, manifests[variant], active["exit_code"])
+            except (OSError, ValueError, TypeError, KeyError, OverflowError) as error:
+                active["analysis"] = {"measurement_contract_pass": False, "cases": [], "errors": [f"unusable report: {error}"]}
+            sc.write_report(out / "pacer-fast-path-report.json", report)
+            print(json.dumps({"block": name, "exit_code": active["exit_code"],
+                              "measurement_contract_pass": active["analysis"]["measurement_contract_pass"]}), flush=True)
+        report["complete"] = True
+        report["analysis"] = analyze_experiment(report)
+        if not report["analysis"]["measurement_contract_pass"]:
+            report["runner_exit_code"] = 1
+        else:
+            report["runner_exit_code"] = 0 if report["analysis"]["comparison_valid"] else 2
+        return report["runner_exit_code"]
+    except KeyboardInterrupt:
+        report["interrupted"] = True
+        code = 128 + report.get("interruption_signal", signal.SIGINT)
+        report["interruption_exit_code"] = report["runner_exit_code"] = code
+        if active is not None and "analysis" not in active:
+            if active["exit_code"] is not None:
+                active["driver_exit_code_before_interruption"] = active["exit_code"]
+            active["exit_code"] = code
+        report["analysis"] = analyze_experiment(report)
+        return code
+    finally:
+        try:
+            sc.write_report(out / "pacer-fast-path-report.json", report)
+        finally:
+            for sig, handler in saved.items():
+                signal.signal(sig, handler)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    for variant in REVISIONS:
+        parser.add_argument(f"--{variant}-plain", required=True, type=Path)
+    parser.add_argument("--output-directory", required=True, type=Path)
+    args = parser.parse_args(argv)
+    if (platform.system() != "Linux" or platform.machine() not in ("arm64", "aarch64")
+            or socket.gethostname() != "lima-srt-network-lab-runtime"):
+        parser.error("use the original dedicated srt-network-lab-runtime Linux ARM64 VM")
+    environment = diag.host_metadata()
+    if environment["cpu_count"] != 4:
+        parser.error("retain the original four-vCPU configuration")
+    paths = {v: getattr(args, v + "_plain").resolve() for v in REVISIONS}
+    manifests = {v: json.loads(p.read_text()) for v, p in paths.items()}
+    harness = build.source_identity(Path(__file__).resolve().parents[1])
+    common.validate_manifests(manifests, harness, environment, revisions=REVISIONS)
+    signatures = common.validate_build_files(paths, manifests)
+    if any(int(environment["sysctls"].get(f"net/core/{k}_max") or 0) < common.ARGUMENTS["udp_buffer"] for k in ("rmem", "wmem")):
+        parser.error("operator must configure and restore sufficient UDP maxima")
+    report = {"harness_checkout": harness, "environment": environment, "manifests": manifests,
+              "toolchain_signatures": signatures, "runner": sc.program_identity(Path(__file__)),
+              "harness_files": [sc.program_identity(Path(m.__file__)) for m in (budget, common, diag, sc, build)]}
+    return run_blocks(paths, manifests, args.output_directory.resolve(), report)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
