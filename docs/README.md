@@ -93,3 +93,5 @@ headers and the versioned release artifacts as the integration boundary and
 open an issue with a minimal reproducer.
 
 - [Paced-poll continuation: fixed 24-case experiment](pacer-continuation-experiment.md)
+
+- [Worker-owned resubmission experiment](worker-owned-resubmit-experiment.md)

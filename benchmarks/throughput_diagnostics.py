@@ -147,6 +147,7 @@ def run_case(path: Path) -> int:
     try:
         # This child process runs exactly one case. The environment is inherited
         # by both peers, not by concurrent/unrelated callers of the scorecard.
+        os.environ.pop("ROBOTWEAX_CONTINUATION_COUNTER_DIR", None)
         if request.get("capture") == "transport":
             trace_directory = directory / "transport-trace"
             trace_directory.mkdir(exist_ok=False)
