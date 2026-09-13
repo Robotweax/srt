@@ -1,5 +1,10 @@
 # One early paced-poll continuation: fixed ABBA experiment
 
+This experiment is concluded. Lab [#33](https://github.com/Robotweax/srt_network_lab/pull/33)
+and [#34](https://github.com/Robotweax/srt_network_lab/pull/34) found no qualifying
+plain performance gain. The product skip is removed; the fixed source pins,
+runner and evidence remain available for reproduction.
+
 Lab [#32](https://github.com/Robotweax/srt_network_lab/pull/32) rejected the
 bounded-send variants even with the original dispatcher. This candidate starts
 again from A and changes only the cost of one early ready-queue continuation.
