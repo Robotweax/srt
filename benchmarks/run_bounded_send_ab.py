@@ -37,9 +37,9 @@ def arguments(stage: dict) -> dict:
     return {**common.ARGUMENTS, **{k: v for k, v in stage.items() if k != "name"}}
 
 
-def analyze_block(report: dict, manifest: dict, exit_code: int, stage: dict) -> dict:
+def analyze_block(report: dict, manifest: dict, exit_code: int, stage: dict, *, capture: str = "none") -> dict:
     result = common.analyze_block(report, manifest, exit_code,
-                                  arguments=arguments(stage), profiles=PROFILES)
+                                  arguments={**arguments(stage), "capture": capture}, profiles=PROFILES, capture=capture)
     for row, case in zip(result["cases"], report.get("runs", [])):
         raw = case.get("result", {})
         resources = raw.get("peer_process_resources", {})

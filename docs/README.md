@@ -93,3 +93,5 @@ headers and the versioned release artifacts as the integration boundary and
 open an issue with a minimal reproducer.
 
 - [Paced-poll continuation: fixed 24-case experiment](pacer-continuation-experiment.md)
+
+- [Fixed A/B continuation mechanism diagnostics](continuation-diagnostics.md)

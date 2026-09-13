@@ -23,6 +23,7 @@ from pathlib import Path
 
 import scalability_scorecard as sc
 import retransmission_trace as rt
+import continuation_diagnostics as cd
 
 try:
     import resource
@@ -90,7 +91,7 @@ def case_plan(profiles: list[str], repetitions: int, warmups: int,
 
 
 def perf_command(capture: str, data: Path, command: list[str], perf: str) -> list[str]:
-    if capture in ("none", "transport"):
+    if capture in ("none", "transport", "continuation"):
         return command
     if capture == "cpu":
         # Software clock works without a virtualized hardware PMU. DWARF avoids
@@ -153,6 +154,13 @@ def run_case(path: Path) -> int:
             os.environ["ROBOTWEAX_TRANSPORT_TRACE_DIR"] = str(trace_directory)
         else:
             os.environ.pop("ROBOTWEAX_TRANSPORT_TRACE_DIR", None)
+        os.environ.pop("ROBOTWEAX_POLL_COUNTER_DIR", None)
+        if request.get("capture") == "continuation":
+            counter_directory = directory / "continuation-counters"
+            counter_directory.mkdir(exist_ok=False)
+            os.environ["ROBOTWEAX_CONTINUATION_COUNTER_DIR"] = str(counter_directory)
+        else:
+            os.environ.pop("ROBOTWEAX_CONTINUATION_COUNTER_DIR", None)
         result = sc.run_many_socket_profile(
             request["profile"], {k: Path(v) for k, v in request["programs"].items()},
             sc.RunOptions(**request["options"]), directory,
@@ -181,6 +189,10 @@ def run_case(path: Path) -> int:
                 and entry["rate_pass"])
         if request.get("capture") == "transport":
             entry["profiling"] = rt.analyze_case(directory, result)
+        if request.get("capture") == "continuation":
+            entry["profiling"] = cd.analyze_case(directory, result, request["profile"], request["diagnostic_revision"])
+            if not entry["profiling"]["valid"]:
+                return 1
         return 0
     except Exception as error:
         entry["error"] = str(error)
@@ -266,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-manifest", type=Path, required=True)
     parser.add_argument("--output-directory", type=Path, required=True)
     parser.add_argument("--profile", action="append", choices=PROFILES)
-    parser.add_argument("--capture", choices=("none", "cpu", "scheduler", "transport"), default="none")
+    parser.add_argument("--capture", choices=("none", "cpu", "scheduler", "transport", "continuation"), default="none")
     parser.add_argument("--repetitions", type=bounded_int(1, 10))
     parser.add_argument("--warmups", type=bounded_int(0, 2), default=1)
     parser.add_argument("--bytes-per-connection", type=bounded_int(1316, 1024**3), default=128 * 1024**2)
@@ -292,6 +304,14 @@ def main(argv: list[str] | None = None) -> int:
     manifest = json.loads(args.build_manifest.read_text())
     if manifest.get("complete") is not True:
         parser.error("build manifest is incomplete")
+    counter_build = manifest.get("continuation_diagnostics", {}).get("enabled", False)
+    if counter_build != (args.capture == "continuation"):
+        parser.error("continuation capture requires its exact overlay; overlay builds cannot produce plain/perf evidence")
+    if counter_build:
+        try:
+            cd.validate_overlay(manifest, manifest["sources"]["robotweax"]["revision"])
+        except (KeyError, ValueError) as error:
+            parser.error(str(error))
     traced_build = manifest.get("transport_trace", {}).get("enabled", False)
     if traced_build != (args.capture == "transport"):
         parser.error("transport capture requires an overlay build; overlay builds cannot produce plain/perf capacity results")
@@ -334,6 +354,8 @@ def main(argv: list[str] | None = None) -> int:
             request = {**item, "index": index, "programs": programs, "options": asdict(options),
                        "target_bps": args.target_bps, "peer_arguments": peer_arguments(args), "capture": args.capture,
                        "pacing_burst_packets": args.pacing_burst_packets}
+            if args.capture == "continuation":
+                request["diagnostic_revision"] = manifest["sources"]["robotweax"]["revision"]
             sc.write_report(directory / "request.json", request)
             command = perf_command(args.capture, directory / "perf.data",
                                    [sys.executable, str(Path(__file__).resolve()), "--case-file", str(directory / "request.json")], perf)

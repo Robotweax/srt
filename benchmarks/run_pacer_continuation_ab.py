@@ -31,9 +31,9 @@ def plan() -> list[str]:
     return ["baseline", "candidate", "candidate", "baseline"]
 
 
-def analyze_block(report: dict, manifest: dict, exit_code: int) -> dict:
-    result = budget.analyze_block(report, manifest, exit_code, STAGE)
-    actual_bytes = math.ceil(STAGE["bytes_per_connection"] / 1316) * 1316
+def analyze_block(report: dict, manifest: dict, exit_code: int, *, stage: dict = STAGE, capture: str = "none") -> dict:
+    result = budget.analyze_block(report, manifest, exit_code, stage, capture=capture)
+    actual_bytes = math.ceil(stage["bytes_per_connection"] / 1316) * 1316
     for row in result["cases"]:
         for role in ("sender", "receiver"):
             own = row["peer_process_resources"].get(role) or {}
