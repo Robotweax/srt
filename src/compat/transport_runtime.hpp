@@ -153,7 +153,8 @@ struct RuntimePollResult {
     bool immediate_work = false;
     std::optional<std::chrono::microseconds> next_work_delay;
     // Advisory only: the scheduler continues to use the original relative delay.
-    std::optional<std::chrono::steady_clock::time_point> paced_poll_deadline;
+    std::optional<std::chrono::steady_clock::time_point> paced_poll_deadline =
+        std::nullopt;
 };
 
 struct MessageIoResult {

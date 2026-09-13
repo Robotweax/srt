@@ -1090,7 +1090,10 @@ RuntimePollResult DatagramChannel::run_once(
             epoch)) {
         // Yield through A's ready queue exactly once. A following invocation
         // must receive and service every route, even if DATA is still early.
-        return {.immediate_work = true};
+        return {
+            .immediate_work = true,
+            .next_work_delay = std::nullopt,
+        };
     }
 
     std::array<std::byte, 1500> datagram {};
