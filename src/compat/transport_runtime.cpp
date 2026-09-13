@@ -573,7 +573,6 @@ bool DatagramChannel::register_connection_locked(
     std::uint32_t protocol_socket_id,
     const std::shared_ptr<ConnectionRuntime>& runtime)
 {
-    invalidate_paced_poll();
     const auto replay_key = runtime->handshake_replay_key();
     const auto inserted = routes_.emplace(
         protocol_socket_id, runtime);
@@ -664,7 +663,6 @@ void DatagramChannel::unregister_connection(
     std::uint32_t protocol_socket_id) noexcept
 {
     std::lock_guard lock(routes_mutex_);
-    invalidate_paced_poll();
     const auto route = routes_.find(protocol_socket_id);
     if (route == routes_.end()) {
         return;
@@ -703,7 +701,6 @@ bool DatagramChannel::register_setup_inbox(std::uint32_t protocol_socket_id,
     }
     try {
         std::lock_guard lock(routes_mutex_);
-        invalidate_paced_poll();
         return setup_routes_
             .emplace(protocol_socket_id,
                 SetupRoute {
@@ -722,7 +719,6 @@ void DatagramChannel::unregister_setup_inbox(
     const std::shared_ptr<DatagramInbox>& inbox) noexcept
 {
     std::lock_guard lock(routes_mutex_);
-    invalidate_paced_poll();
     const auto route =
         setup_routes_.find(protocol_socket_id);
     if (route != setup_routes_.end()
@@ -738,7 +734,6 @@ bool DatagramChannel::set_listener_inbox(
         return false;
     }
     std::lock_guard lock(routes_mutex_);
-    invalidate_paced_poll();
     if (!listener_inbox_.expired()) {
         return false;
     }
@@ -750,7 +745,6 @@ void DatagramChannel::clear_listener_inbox(
     const std::shared_ptr<HandshakeInbox>& inbox) noexcept
 {
     std::lock_guard lock(routes_mutex_);
-    invalidate_paced_poll();
     if (listener_inbox_.lock() == inbox) {
         listener_inbox_.reset();
     }
@@ -764,7 +758,6 @@ bool DatagramChannel::start() noexcept
 bool DatagramChannel::start(std::shared_ptr<RuntimeScheduler> scheduler,
     std::uint64_t affinity) noexcept
 {
-    invalidate_paced_poll();
     std::shared_ptr<ScheduledWorkContext> context;
     try {
         context = std::make_shared<ScheduledWorkContext>();
@@ -799,7 +792,6 @@ bool DatagramChannel::start(std::shared_ptr<RuntimeScheduler> scheduler,
 
 void DatagramChannel::notify_send_work() noexcept
 {
-    invalidate_paced_poll();
     bool scheduling_failed = false;
     {
         std::lock_guard lifecycle_lock(lifecycle_mutex_);
@@ -844,7 +836,6 @@ void DatagramChannel::set_idle_wait_for_testing(
 
 void DatagramChannel::stop() noexcept
 {
-    invalidate_paced_poll();
     std::shared_ptr<RuntimeScheduler> scheduler;
     RuntimeScheduler::TimerToken timer;
     {
@@ -1080,22 +1071,8 @@ void DatagramChannel::mark_connections_broken(int system_error) noexcept
     }
 }
 
-RuntimePollResult DatagramChannel::run_once(
-    const PacedPollContinuation::Time* test_now) noexcept
+RuntimePollResult DatagramChannel::run_once() noexcept
 {
-    const auto epoch = paced_poll_epoch_.load(std::memory_order_acquire);
-    if (paced_poll_continuation_.pending()
-        && paced_poll_continuation_.take(
-            test_now != nullptr ? *test_now : std::chrono::steady_clock::now(),
-            epoch)) {
-        // Yield through A's ready queue exactly once. A following invocation
-        // must receive and service every route, even if DATA is still early.
-        return {
-            .immediate_work = true,
-            .next_work_delay = std::nullopt,
-        };
-    }
-
     std::array<std::byte, 1500> datagram {};
     bool received_any = false;
     for (std::size_t index = 0; index < maximum_receive_batch; ++index) {
@@ -1123,16 +1100,10 @@ RuntimePollResult DatagramChannel::run_once(
 
     bool send_work = false;
     std::optional<std::chrono::microseconds> next_work_delay;
-    std::optional<std::chrono::steady_clock::time_point> paced_poll_deadline;
     {
         std::lock_guard lock(routes_mutex_);
-        const bool isolated = routes_.size() == 1U && setup_routes_.empty()
-            && listener_inbox_.expired();
         for (const auto& route : routes_) {
             const RuntimePollResult result = route.second->poll();
-            if (isolated) {
-                paced_poll_deadline = result.paced_poll_deadline;
-            }
             send_work = result.immediate_work || send_work;
             if (result.next_work_delay.has_value()
                 && (!next_work_delay.has_value()
@@ -1149,13 +1120,6 @@ RuntimePollResult DatagramChannel::run_once(
     }
     if (next_work_delay.has_value()
         && *next_work_delay < std::chrono::milliseconds {1}) {
-        if (paced_poll_deadline.has_value()
-            && paced_poll_epoch_.load(std::memory_order_acquire) == epoch) {
-            paced_poll_continuation_.arm(*paced_poll_deadline,
-                test_now != nullptr ? *test_now
-                                    : std::chrono::steady_clock::now(),
-                epoch);
-        }
         // Queue the final sub-millisecond pacing slice behind other work on
         // this affinity shard. This preserves the old yield semantics while
         // preventing one hot channel from monopolizing the shard.
@@ -1499,7 +1463,6 @@ MessageIoResult ConnectionRuntime::skip_group_sequences(
     SequenceNumber next_sequence) noexcept
 {
     std::lock_guard lock(mutex_);
-    invalidate_channel_paced_poll();
     if (locally_closed_) {
         return {.status = MessageIoStatus::local_closed};
     }
@@ -1549,7 +1512,6 @@ MessageIoResult ConnectionRuntime::receive_message(
             if (receive_pop_hook_for_testing_ != nullptr) {
                 receive_pop_hook_for_testing_(receive_pop_context_for_testing_);
             }
-            invalidate_channel_paced_poll();
             session_.note_receive_buffer_released(now);
             sample_receiver_buffer_statistics(now);
             std::int64_t source_time = 0;
@@ -1633,7 +1595,6 @@ bool ConnectionRuntime::discard_received_before(
     SequenceNumber next_sequence) noexcept
 {
     std::lock_guard lock(mutex_);
-    invalidate_channel_paced_poll();
     const SequenceNumber previous_sequence =
         session_.receive_buffer().first_stored_sequence();
     const Error result = session_.discard_received_before(
@@ -1730,7 +1691,6 @@ MessageIoResult ConnectionRuntime::receive_stream(
         const auto received = session_.pop_stream(destination);
         if (received) {
             const std::uint64_t now = now_microseconds();
-            invalidate_channel_paced_poll();
             session_.note_receive_buffer_released(now);
             sample_receiver_buffer_statistics(now);
             ReadinessSignal::notify();
@@ -2537,7 +2497,6 @@ void ConnectionRuntime::process_packet(
         return;
     }
     std::lock_guard lock(mutex_);
-    invalidate_channel_paced_poll();
     if (locally_closed_ || broken_) {
         return;
     }
@@ -2736,7 +2695,6 @@ bool ConnectionRuntime::process_handshake(
     IpEndpoint peer) noexcept
 {
     std::lock_guard lock(mutex_);
-    invalidate_channel_paced_poll();
     if (peer != peer_
         || locally_closed_
         || broken_
@@ -2948,11 +2906,6 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
     return {
         .next_work_delay =
             std::chrono::microseconds {pace.next_ready_microseconds - current},
-        .paced_poll_deadline = now_function_ == nullptr
-            ? std::optional<
-                  Clock::time_point> {deadline_from_origin_microseconds(
-                  origin_, pace.next_ready_microseconds)}
-            : std::nullopt,
     };
 }
 
@@ -2960,7 +2913,6 @@ void ConnectionRuntime::apply_options(
     const SocketOptions& options) noexcept
 {
     std::lock_guard lock(mutex_);
-    invalidate_channel_paced_poll();
     options_ = options;
     (void)session_.apply_dynamic_options(options_);
     statistics_.update_reorder_state(
@@ -2970,7 +2922,6 @@ void ConnectionRuntime::apply_options(
 
 void ConnectionRuntime::break_locked(int system_error) noexcept
 {
-    invalidate_channel_paced_poll();
     const std::uint64_t now = now_microseconds();
     statistics_.update_send_duration(
         now, session_.send_buffer().size() != 0U);
@@ -2980,13 +2931,6 @@ void ConnectionRuntime::break_locked(int system_error) noexcept
     receive_ready_.notify_all();
     send_ready_.notify_all();
     ReadinessSignal::notify();
-}
-
-void ConnectionRuntime::invalidate_channel_paced_poll() noexcept
-{
-    if (const auto channel = channel_.lock(); channel != nullptr) {
-        channel->invalidate_paced_poll();
-    }
 }
 
 void ConnectionRuntime::notify_channel_send_work() noexcept
@@ -3006,7 +2950,6 @@ bool ConnectionRuntime::report_peer_error(
     std::int32_t error_code) noexcept
 {
     std::lock_guard lock(mutex_);
-    invalidate_channel_paced_poll();
     if (locally_closed_ || peer_closed_ || broken_) {
         return false;
     }
@@ -3017,7 +2960,6 @@ bool ConnectionRuntime::report_peer_error(
 void ConnectionRuntime::close() noexcept
 {
     std::lock_guard lock(mutex_);
-    invalidate_channel_paced_poll();
     if (locally_closed_) {
         return;
     }
