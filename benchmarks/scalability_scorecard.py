@@ -845,12 +845,24 @@ def run_many_socket_profile(
         )
         for peer in peers:
             peer.process.wait()
-    except Exception:
+    except BaseException:
         terminate_all(peers)
         raise
     finally:
-        for peer in peers:
-            peer.close_streams()
+        original_error = sys.exc_info()[1]
+        try:
+            write_report(directory / "peer-exit-status.json", {
+                "scope": "raw subprocess wait returncodes after case cleanup",
+                "peers": {peer.role: {"pid": peer.process.pid,
+                                      "returncode": peer.process.returncode} for peer in peers},
+            })
+        except OSError as error:
+            if original_error is None:
+                raise
+            print(f"could not preserve peer wait statuses: {error}", file=sys.stderr)
+        finally:
+            for peer in peers:
+                peer.close_streams()
 
     messages_per_connection = many_socket_message_count(options)
     effective_bytes_per_connection = (
@@ -876,6 +888,7 @@ def run_many_socket_profile(
 
     return {
         "profile": profile_name,
+        "peer_exit_codes": {"sender": caller.process.returncode, "receiver": listener.process.returncode},
         "sender_implementation": sender_name,
         "receiver_implementation": receiver_name,
         "connections": options.connections,

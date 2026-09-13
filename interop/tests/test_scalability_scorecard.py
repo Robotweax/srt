@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 import tempfile
 import unittest
@@ -351,6 +353,11 @@ if role == "listener":
                     warmup=False,
                 )
 
+            raw_waits = json.loads((directory / "peer-exit-status.json").read_text())
+            self.assertEqual(set(raw_waits["peers"]), {"caller", "listener"})
+            self.assertTrue(all(p["returncode"] == 0 and p["pid"] > 0 for p in raw_waits["peers"].values()))
+
+        self.assertEqual(result["peer_exit_codes"], {"sender": 0, "receiver": 0})
         self.assertEqual(result["connections"], 3)
         self.assertEqual(result["messages_per_connection"], 22)
         self.assertEqual(result["bytes_per_connection"], 4136)
@@ -362,6 +369,22 @@ if role == "listener":
             0.0015,
         )
 
+
+    @unittest.skipUnless(os.name == "posix", "executable synthetic peer")
+    def test_failed_many_socket_case_preserves_raw_peer_exit_status(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            peer = directory / "failing-peer"
+            peer.write_text(f"#!{sys.executable}\nimport sys,time\nif sys.argv[1]=='listener':\n print('{{\"event\":\"ready\"}}',flush=True)\n time.sleep(30)\nelse:sys.exit(7)\n")
+            peer.chmod(0o755)
+            options = scalability_scorecard.RunOptions(host="127.0.0.1", connections=1, bytes_per_connection=1316, message_size=1316, timeout_seconds=5, latency_milliseconds=120, shutdown_grace_milliseconds=0, sampling_interval_seconds=.005)
+            with mock.patch.object(scalability_scorecard, "free_udp_port", return_value=9001):
+                with self.assertRaises(scalability_scorecard.ScorecardFailure):
+                    scalability_scorecard.run_many_socket_profile("robotweax-self", {"robotweax": peer}, options, directory, iteration=0, warmup=False)
+            statuses = json.loads((directory / "peer-exit-status.json").read_text())["peers"]
+            self.assertEqual(statuses["caller"]["returncode"], 7)
+            self.assertEqual(statuses["listener"]["returncode"], -15)
+            self.assertTrue(all(p["pid"] > 0 for p in statuses.values()))
 
 if __name__ == "__main__":
     unittest.main()

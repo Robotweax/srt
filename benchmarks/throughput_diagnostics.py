@@ -189,6 +189,10 @@ def run_case(path: Path) -> int:
         after = udp_snapshot()
         entry["system_udp_delta"] = {k: after[k] - v for k, v in before.items() if k in after}
         entry["finished_unix_ns"] = time.time_ns()
+        try:
+            entry["peer_exit_status"] = json.loads((directory / "peer-exit-status.json").read_text())
+        except (OSError, ValueError) as error:
+            entry["peer_exit_status_error"] = str(error)
         sc.write_report(directory / "case.json", entry)
 
 
@@ -266,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repetitions", type=bounded_int(1, 10))
     parser.add_argument("--warmups", type=bounded_int(0, 2), default=1)
     parser.add_argument("--bytes-per-connection", type=bounded_int(1316, 1024**3), default=128 * 1024**2)
+    parser.add_argument("--connections", type=bounded_int(1, 10), default=1)
     parser.add_argument("--target-bps", type=bounded_int(0, 100_000_000_000), default=0)
     parser.add_argument("--pacing-burst-packets", type=bounded_int(0, 64), default=0)
     parser.add_argument("--pending-packets", type=bounded_int(1, 65536), default=8192)
@@ -319,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
                                (Path(__file__).resolve(), ROOT / "benchmarks/scalability_scorecard.py",
                                 ROOT / "benchmarks/retransmission_trace.py")]
     sc.write_report(out / "report.json", report)
-    options = sc.RunOptions("127.0.0.1", 1, args.bytes_per_connection, 1316,
+    options = sc.RunOptions("127.0.0.1", args.connections, args.bytes_per_connection, 1316,
                             args.timeout_seconds, 120, 500, .02)
     try:
         time.sleep(args.cooldown_seconds)
