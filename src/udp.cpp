@@ -335,40 +335,42 @@ Error UdpSocket::set_send_buffer_size(std::int32_t bytes) noexcept
         last_system_error_ = 0;
         return Error::invalid_state;
     }
-#if defined(_WIN32)
-    const int result = ::setsockopt(to_native(native_), SOL_SOCKET, SO_SNDBUF,
-        reinterpret_cast<const char*>(&bytes), static_cast<int>(sizeof(bytes)));
-#else
     const int error = detail::configure_udp_buffer(
-        bytes,
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)         \
-    || defined(__NetBSD__) || defined(__DragonFly__)
-        true,
+        bytes, detail::UdpBufferKind::send,
+#if defined(_WIN32)
+        {false, WSAENOBUFS, WSAEINVAL},
+#elif defined(__linux__)
+        {true, ENOBUFS, EINVAL},
 #else
-        false,
+        {false, ENOBUFS, EINVAL},
 #endif
         [&](std::int32_t value) {
             return ::setsockopt(to_native(native_), SOL_SOCKET, SO_SNDBUF,
-                       &value, sizeof(value))
+#if defined(_WIN32)
+                       reinterpret_cast<const char*>(&value),
+#else
+                       &value,
+#endif
+                       sizeof(value))
                     == 0
                 ? 0
                 : last_socket_error();
         },
         [&](std::int32_t& value) {
             SocketLength size = sizeof(value);
-            return ::getsockopt(
-                       to_native(native_), SOL_SOCKET, SO_SNDBUF, &value, &size)
+            return ::getsockopt(to_native(native_), SOL_SOCKET, SO_SNDBUF,
+#if defined(_WIN32)
+                       reinterpret_cast<char*>(&value),
+#else
+                       &value,
+#endif
+                       &size)
                     == 0
                 ? 0
                 : last_socket_error();
         });
     last_system_error_ = error;
     return error == 0 ? Error::none : Error::io_error;
-#endif
-#if defined(_WIN32)
-    last_system_error_ = result == 0 ? 0 : last_socket_error();
-    return result == 0 ? Error::none : Error::io_error;
-#endif
 }
 
 Error UdpSocket::set_receive_buffer_size(std::int32_t bytes) noexcept
@@ -381,40 +383,42 @@ Error UdpSocket::set_receive_buffer_size(std::int32_t bytes) noexcept
         last_system_error_ = 0;
         return Error::invalid_state;
     }
-#if defined(_WIN32)
-    const int result = ::setsockopt(to_native(native_), SOL_SOCKET, SO_RCVBUF,
-        reinterpret_cast<const char*>(&bytes), static_cast<int>(sizeof(bytes)));
-#else
     const int error = detail::configure_udp_buffer(
-        bytes,
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)         \
-    || defined(__NetBSD__) || defined(__DragonFly__)
-        true,
+        bytes, detail::UdpBufferKind::receive,
+#if defined(_WIN32)
+        {false, WSAENOBUFS, WSAEINVAL},
+#elif defined(__linux__)
+        {true, ENOBUFS, EINVAL},
 #else
-        false,
+        {false, ENOBUFS, EINVAL},
 #endif
         [&](std::int32_t value) {
             return ::setsockopt(to_native(native_), SOL_SOCKET, SO_RCVBUF,
-                       &value, sizeof(value))
+#if defined(_WIN32)
+                       reinterpret_cast<const char*>(&value),
+#else
+                       &value,
+#endif
+                       sizeof(value))
                     == 0
                 ? 0
                 : last_socket_error();
         },
         [&](std::int32_t& value) {
             SocketLength size = sizeof(value);
-            return ::getsockopt(
-                       to_native(native_), SOL_SOCKET, SO_RCVBUF, &value, &size)
+            return ::getsockopt(to_native(native_), SOL_SOCKET, SO_RCVBUF,
+#if defined(_WIN32)
+                       reinterpret_cast<char*>(&value),
+#else
+                       &value,
+#endif
+                       &size)
                     == 0
                 ? 0
                 : last_socket_error();
         });
     last_system_error_ = error;
     return error == 0 ? Error::none : Error::io_error;
-#endif
-#if defined(_WIN32)
-    last_system_error_ = result == 0 ? 0 : last_socket_error();
-    return result == 0 ? Error::none : Error::io_error;
-#endif
 }
 
 Error UdpSocket::set_ipv6_only(bool enabled) noexcept

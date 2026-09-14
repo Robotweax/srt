@@ -43,14 +43,20 @@ struct UdpBufferLogScope {
         collect_udp_buffer_notices = false;
         udp_buffer_notice_count = 0;
         for (unsigned i = 0; i < count; ++i) {
-            char message[160];
+            const auto& notice = notices[i];
+            const bool limited =
+                notice.fallback || notice.effective < notice.requested;
+            char message[224];
             std::snprintf(message, sizeof(message),
-                "UDP buffer request rejected by OS; requested=%d effective=%d "
-                "bytes",
-                static_cast<int>(notices[i].requested),
-                static_cast<int>(notices[i].effective));
-            ROBOTWEAX_SRT_COMPAT_LOG(
-                LOG_WARNING, SRT_LOGFA_SOCKMGMT, "W", "socket", message);
+                "UDP %s buffer: requested=%d effective=%d kernel=%d bytes; "
+                "attempts=%u fallback=%s",
+                notice.kind == UdpBufferKind::send ? "send" : "receive",
+                static_cast<int>(notice.requested),
+                static_cast<int>(notice.effective),
+                static_cast<int>(notice.kernel_bytes), notice.attempts,
+                notice.fallback ? "yes" : "no");
+            ROBOTWEAX_SRT_COMPAT_LOG(limited ? LOG_WARNING : LOG_DEBUG,
+                SRT_LOGFA_SOCKMGMT, limited ? "W" : "D", "socket", message);
         }
         robotweax::srt::compat::set_last_error(
             saved_error.code, saved_error.system_error);

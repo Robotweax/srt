@@ -1,14 +1,18 @@
 #include "test.hpp"
 
 #include "srt/srt.h"
+#include "robotweax/srt/udp.hpp"
+#include "compat/error_state.hpp"
 
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <cstdio>
 #include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -269,4 +273,107 @@ TEST(logging_handler_replacement_is_coherent_during_delivery)
     }
     REQUIRE_EQ(srt_close(first_socket), 0);
     REQUIRE_EQ(srt_close(second_socket), 0);
+}
+
+namespace {
+
+struct BufferLogObservation {
+    SRTSOCKET socket = SRT_INVALID_SOCK;
+    bool getters_ok = true;
+    std::vector<LogEntry> entries;
+};
+
+void capture_buffer_log(
+    void* opaque, int level, const char*, int, const char*, const char* message)
+{
+    auto& observation = *static_cast<BufferLogObservation*>(opaque);
+    if (message == nullptr || std::string_view {message}.find(": UDP ") != 0)
+        return;
+    observation.entries.push_back({level, "", 0, "", message});
+    for (auto option : {SRTO_UDP_SNDBUF, SRTO_UDP_RCVBUF}) {
+        int value = 0;
+        int size = sizeof(value);
+        const int result =
+            srt_getsockflag(observation.socket, option, &value, &size);
+        observation.getters_ok &= result == 0 && value == 65'536;
+    }
+    // Verify that the deferred logger also preserves the API's error state.
+    int value = 0;
+    int size = sizeof(value);
+    static_cast<void>(
+        srt_getsockflag(SRT_INVALID_SOCK, SRTO_UDP_RCVBUF, &value, &size));
+}
+
+} // namespace
+
+TEST(logging_udp_buffers_report_both_sizes_after_unlock_and_preserve_getters)
+{
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    ScopedLoggingReset reset;
+    const int area = SRT_LOGFA_SOCKMGMT;
+    srt_resetlogfa(&area, 1U);
+    srt_setlogflags(deterministic_flags);
+    srt_setloglevel(LOG_DEBUG);
+    for (bool acquire : {false, true}) {
+        BufferLogObservation observation;
+        observation.socket = srt_create_socket();
+        REQUIRE(observation.socket != SRT_INVALID_SOCK);
+        const int requested = 65'536;
+        for (auto option : {SRTO_UDP_SNDBUF, SRTO_UDP_RCVBUF}) {
+            REQUIRE_EQ(srt_setsockflag(observation.socket, option, &requested,
+                           sizeof(requested)),
+                0);
+        }
+        srt_setloghandler(&observation, capture_buffer_log);
+        robotweax::srt::compat::set_last_error(SRT_EASYNCRCV, 77);
+        if (acquire) {
+            robotweax::srt::UdpSocket native;
+            REQUIRE_EQ(native.bind(robotweax::srt::IpEndpoint::loopback(0)),
+                robotweax::srt::Error::none);
+            const auto handle = native.release_native();
+            REQUIRE_EQ(srt_bind_acquire(
+                           observation.socket, static_cast<UDPSOCKET>(handle)),
+                0);
+        } else {
+            sockaddr_in local {};
+            local.sin_family = AF_INET;
+            local.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            REQUIRE_EQ(
+                srt_bind(observation.socket,
+                    reinterpret_cast<const sockaddr*>(&local), sizeof(local)),
+                0);
+        }
+        int system_error = 0;
+        REQUIRE_EQ(srt_getlasterror(&system_error), SRT_EASYNCRCV);
+        REQUIRE_EQ(system_error, 77);
+        REQUIRE(observation.getters_ok);
+        REQUIRE_EQ(observation.entries.size(), 2U);
+        for (unsigned i = 0; i < 2; ++i) {
+            const auto& entry = observation.entries[i];
+            char direction[16] {};
+            int seen_request = 0, effective = 0, kernel = 0;
+            unsigned attempts = 0;
+            REQUIRE_EQ(
+                std::sscanf(entry.message.c_str(),
+                    ": UDP %15s buffer: requested=%d effective=%d kernel=%d "
+                    "bytes; attempts=%u",
+                    direction, &seen_request, &effective, &kernel, &attempts),
+                5);
+            REQUIRE_EQ(std::string {direction}, i == 0 ? "send" : "receive");
+            REQUIRE_EQ(seen_request, requested);
+            REQUIRE(effective > 0);
+#if defined(__linux__)
+            REQUIRE_EQ(effective, kernel / 2);
+#else
+            REQUIRE_EQ(effective, kernel);
+#endif
+            REQUIRE(attempts >= 1U && attempts <= 32U);
+            const bool limited = effective < requested
+                || entry.message.find("fallback=yes") != std::string::npos;
+            REQUIRE_EQ(entry.level, limited ? LOG_WARNING : LOG_DEBUG);
+        }
+        srt_setloghandler(nullptr, nullptr);
+        REQUIRE_EQ(srt_close(observation.socket), 0);
+    }
 }

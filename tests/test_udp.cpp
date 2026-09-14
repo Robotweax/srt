@@ -5,121 +5,318 @@
 #include "robotweax/srt/handshake_extensions.hpp"
 #include "robotweax/srt/udp.hpp"
 #include "udp_buffer_policy.hpp"
+#include "srt.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cerrno>
+#include <limits>
+#include <vector>
 #include <cstddef>
 #include <thread>
 
 using namespace robotweax::srt;
 
-TEST(udp_buffer_fallback_preserves_existing_buffer)
-{
-    int calls = 0;
-    REQUIRE_EQ(detail::configure_udp_buffer(
-                   12'288'000, true,
-                   [&](std::int32_t) {
-                       ++calls;
-                       return ENOBUFS;
-                   },
-                   [](std::int32_t& value) {
-                       value = 262'144;
-                       return 0;
-                   }),
-        0);
-    REQUIRE_EQ(calls, 1);
-}
+namespace {
 
-TEST(udp_buffer_fallback_retries_small_buffer)
-{
-    int calls = 0;
-    REQUIRE_EQ(detail::configure_udp_buffer(
-                   12'288'000, true,
-                   [&](std::int32_t value) {
-                       ++calls;
-                       return value == 64'000 ? 0 : ENOBUFS;
-                   },
-                   [](std::int32_t& value) {
-                       value = 8192;
-                       return 0;
-                   }),
-        0);
-    REQUIRE_EQ(calls, 2);
-}
-
-TEST(udp_buffer_fallback_does_not_hide_other_errors)
-{
-    for (const int error : {EBADF, EINVAL, EACCES}) {
-        REQUIRE_EQ(detail::configure_udp_buffer(
-                       262'144, true,
-                       [=](std::int32_t) {
-                           return error;
-                       },
-                       [](std::int32_t&) {
-                           return 0;
-                       }),
-            error);
+struct BufferNotices {
+    BufferNotices()
+    {
+        detail::collect_udp_buffer_notices = true;
+        detail::udp_buffer_notice_count = 0;
     }
-    REQUIRE_EQ(detail::configure_udp_buffer(
-                   262'144, false,
-                   [](std::int32_t) {
-                       return ENOBUFS;
-                   },
-                   [](std::int32_t&) {
-                       return 0;
-                   }),
-        ENOBUFS);
-    REQUIRE_EQ(detail::configure_udp_buffer(
-                   262'144, true,
-                   [](std::int32_t) {
-                       return ENOBUFS;
-                   },
-                   [](std::int32_t&) {
-                       return EBADF;
-                   }),
-        EBADF);
-    REQUIRE_EQ(detail::configure_udp_buffer(
-                   262'144, true,
-                   [](std::int32_t) {
-                       return ENOBUFS;
-                   },
-                   [](std::int32_t& value) {
-                       value = 8192;
-                       return 0;
-                   }),
-        ENOBUFS);
+    ~BufferNotices()
+    {
+        detail::collect_udp_buffer_notices = false;
+        detail::udp_buffer_notice_count = 0;
+    }
+};
+
+struct BufferModel {
+    std::int32_t current = 8192;
+    std::int32_t maximum = 1'048'576;
+    bool clamp = false;
+    detail::UdpBufferPolicy policy {false, ENOBUFS, EINVAL};
+    std::vector<std::int32_t> requests;
+    unsigned reads = 0;
+    int set_error = 0;
+    int read_error = 0;
+
+    int set(std::int32_t value)
+    {
+        requests.push_back(value);
+        if (set_error != 0)
+            return set_error;
+        if (value > maximum && !clamp)
+            return policy.capacity_error;
+        current = std::min(value, maximum);
+        return 0;
+    }
+    int get(std::int32_t& value)
+    {
+        ++reads;
+        value = policy.doubled_readback ? current * 2 : current;
+        return read_error;
+    }
+    int configure(std::int32_t requested,
+        detail::UdpBufferKind kind = detail::UdpBufferKind::receive)
+    {
+        return detail::configure_udp_buffer(
+            requested, kind, policy,
+            [&](std::int32_t value) {
+                return set(value);
+            },
+            [&](std::int32_t& value) {
+                return get(value);
+            });
+    }
+};
+
+} // namespace
+
+TEST(udp_buffer_success_reads_back_clamping_and_linux_bookkeeping)
+{
+    for (bool doubled : {false, true}) {
+        for (std::int32_t maximum : {32'768, 65'536, 131'072}) {
+            BufferNotices notices;
+            BufferModel model;
+            model.clamp = true;
+            model.maximum = maximum;
+            model.policy.doubled_readback = doubled;
+            REQUIRE_EQ(model.configure(65'536), 0);
+            REQUIRE_EQ(model.requests.size(), 1U);
+            REQUIRE_EQ(model.reads, 1U);
+            REQUIRE_EQ(detail::udp_buffer_notice_count, 1U);
+            const auto notice = detail::udp_buffer_notices[0];
+            REQUIRE_EQ(notice.kind, detail::UdpBufferKind::receive);
+            REQUIRE_EQ(notice.requested, 65'536);
+            REQUIRE_EQ(notice.effective, std::min(maximum, 65'536));
+            REQUIRE_EQ(
+                notice.kernel_bytes, notice.effective * (doubled ? 2 : 1));
+            REQUIRE_EQ(notice.attempts, 1U);
+            REQUIRE(!notice.fallback);
+        }
+    }
 }
 
-TEST(udp_buffer_fallback_records_actual_size_and_respects_small_requests)
+TEST(udp_buffer_capacity_search_grows_to_supported_size_without_shrinking)
 {
-    detail::collect_udp_buffer_notices = true;
-    detail::udp_buffer_notice_count = 0;
-    const int result = detail::configure_udp_buffer(
-        12'288'000, true,
-        [](std::int32_t) {
-            return ENOBUFS;
-        },
-        [](std::int32_t& value) {
-            value = 262'144;
-            return 0;
-        });
-    detail::collect_udp_buffer_notices = false;
-    REQUIRE_EQ(result, 0);
-    REQUIRE_EQ(detail::udp_buffer_notice_count, 1U);
-    REQUIRE_EQ(detail::udp_buffer_notices[0].requested, 12'288'000);
+    // Native Windows WSAENOBUFS is not POSIX ENOBUFS. Exercise both identities.
+    for (int capacity_error : {ENOBUFS, 10055}) {
+        for (std::int32_t maximum : {64'000, 262'145, 1'048'576}) {
+            BufferNotices notices;
+            BufferModel model;
+            model.policy.capacity_error = capacity_error;
+            model.maximum = maximum;
+            const auto original = model.current;
+            REQUIRE_EQ(model.configure(12'288'000), 0);
+            REQUIRE_EQ(model.current, maximum);
+            REQUIRE(model.requests.size() <= 32U);
+            REQUIRE(std::all_of(
+                model.requests.begin(), model.requests.end(), [&](auto value) {
+                    return value > original && value <= 12'288'000;
+                }));
+            const auto notice = detail::udp_buffer_notices[0];
+            REQUIRE_EQ(notice.effective, maximum);
+            REQUIRE_EQ(notice.attempts, model.requests.size());
+            REQUIRE(notice.fallback);
+        }
+    }
+}
+
+TEST(udp_buffer_capacity_search_preserves_existing_buffer_and_is_bounded)
+{
+    BufferNotices notices;
+    BufferModel model;
+    model.current = model.maximum = 262'144;
+    REQUIRE_EQ(model.configure((std::numeric_limits<std::int32_t>::max)()), 0);
+    REQUIRE_EQ(model.current, 262'144);
+    REQUIRE(model.requests.size() <= 32U);
     REQUIRE_EQ(detail::udp_buffer_notices[0].effective, 262'144);
-    detail::udp_buffer_notice_count = 0;
+    REQUIRE(detail::udp_buffer_notices[0].fallback);
+}
+
+TEST(udp_buffer_rejected_shrink_does_not_silently_exceed_user_request)
+{
+    BufferNotices notices;
+    BufferModel model;
+    model.set_error = ENOBUFS;
+    REQUIRE_EQ(model.configure(4096), ENOBUFS);
+    REQUIRE_EQ(model.requests.size(), 1U);
+    REQUIRE_EQ(model.current, 8192);
+    REQUIRE_EQ(detail::udp_buffer_notice_count, 0U);
+}
+
+TEST(udp_buffer_unrelated_errors_and_failed_readbacks_remain_errors)
+{
+    for (int error : {EBADF, EINVAL, EACCES}) {
+        BufferNotices notices;
+        BufferModel model;
+        model.set_error = error;
+        REQUIRE_EQ(model.configure(65'536), error);
+        REQUIRE_EQ(model.requests.size(), 1U);
+        REQUIRE_EQ(model.reads, 0U);
+        REQUIRE_EQ(detail::udp_buffer_notice_count, 0U);
+    }
+    for (bool reject : {false, true}) {
+        BufferNotices notices;
+        BufferModel model;
+        model.set_error = reject ? ENOBUFS : 0;
+        model.read_error = EBADF;
+        REQUIRE_EQ(model.configure(65'536), EBADF);
+        REQUIRE_EQ(model.requests.size(), 1U);
+        REQUIRE_EQ(detail::udp_buffer_notice_count, 0U);
+    }
+}
+
+TEST(udp_buffer_search_does_not_hide_later_set_or_read_errors)
+{
+    for (bool read_failure : {false, true}) {
+        BufferNotices notices;
+        BufferModel model;
+        REQUIRE_EQ(detail::configure_udp_buffer(
+                       65'536, detail::UdpBufferKind::send, model.policy,
+                       [&](std::int32_t value) {
+                           if (model.requests.empty()) {
+                               model.requests.push_back(value);
+                               return ENOBUFS;
+                           }
+                           if (!read_failure)
+                               return EACCES;
+                           model.read_error = EBADF;
+                           return model.set(value);
+                       },
+                       [&](std::int32_t& value) {
+                           return model.get(value);
+                       }),
+            read_failure ? EBADF : EACCES);
+        REQUIRE_EQ(detail::udp_buffer_notice_count, 0U);
+    }
+}
+
+TEST(udp_buffer_invalid_kernel_sizes_are_not_success)
+{
+    for (std::int32_t raw : {-1, 0, 1}) {
+        BufferNotices notices;
+        REQUIRE_EQ(
+            detail::configure_udp_buffer(
+                65'536, detail::UdpBufferKind::send, {true, ENOBUFS, EINVAL},
+                [](std::int32_t) {
+                    return 0;
+                },
+                [&](std::int32_t& value) {
+                    value = raw;
+                    return 0;
+                }),
+            EINVAL);
+        REQUIRE_EQ(detail::udp_buffer_notice_count, 0U);
+    }
+}
+
+TEST(udp_buffer_search_retains_clamped_readback_within_attempt_bound)
+{
+    BufferNotices notices;
+    BufferModel model;
+    model.maximum = 65'536;
     REQUIRE_EQ(detail::configure_udp_buffer(
-                   4096, true,
-                   [](std::int32_t) {
-                       return ENOBUFS;
+                   1'048'576, detail::UdpBufferKind::send, model.policy,
+                   [&](std::int32_t value) {
+                       if (!model.requests.empty())
+                           model.clamp = true;
+                       return model.set(value);
                    },
-                   [](std::int32_t& value) {
-                       value = 8192;
-                       return 0;
+                   [&](std::int32_t& value) {
+                       return model.get(value);
                    }),
-        ENOBUFS);
+        0);
+    REQUIRE(model.requests.size() <= 32U);
+    REQUIRE_EQ(detail::udp_buffer_notices[0].effective, 65'536);
+}
+
+TEST(udp_buffer_search_does_not_mistake_rounding_for_the_os_limit)
+{
+    BufferNotices notices;
+    BufferModel model;
+    REQUIRE_EQ(detail::configure_udp_buffer(
+                   12'288'000, detail::UdpBufferKind::send, model.policy,
+                   [&](std::int32_t value) {
+                       const int error = model.set(value);
+                       if (error == 0)
+                           model.current = (model.current / 4096) * 4096;
+                       return error;
+                   },
+                   [&](std::int32_t& value) {
+                       return model.get(value);
+                   }),
+        0);
+    REQUIRE(model.requests.size() <= 32U);
+    REQUIRE_EQ(detail::udp_buffer_notices[0].effective, model.maximum);
+}
+
+TEST(udp_buffer_search_requires_valid_final_readback)
+{
+    for (bool lost_capacity : {false, true}) {
+        BufferNotices notices;
+        unsigned reads = 0;
+        REQUIRE_EQ(
+            detail::configure_udp_buffer(
+                8193, detail::UdpBufferKind::send, {false, ENOBUFS, EINVAL},
+                [](std::int32_t) {
+                    return ENOBUFS;
+                },
+                [&](std::int32_t& value) {
+                    value = ++reads == 1 ? 8192 : 4096;
+                    return reads == 1 || lost_capacity ? 0 : EBADF;
+                }),
+            lost_capacity ? ENOBUFS : EBADF);
+        REQUIRE_EQ(detail::udp_buffer_notice_count, 0U);
+    }
+}
+
+TEST(udp_buffer_native_readbacks_match_send_and_receive_diagnostics)
+{
+    for (auto family : {IpAddressFamily::ipv4, IpAddressFamily::ipv6}) {
+        UdpSocket original {family};
+        REQUIRE(original.valid());
+        REQUIRE_EQ(original.bind(family == IpAddressFamily::ipv4
+                           ? IpEndpoint::loopback(0)
+                           : IpEndpoint::ipv6_loopback(0)),
+            Error::none);
+        const auto handle = original.release_native();
+        UdpSocket socket = UdpSocket::acquire_native(handle);
+        REQUIRE(socket.valid());
+        BufferNotices notices;
+        REQUIRE_EQ(socket.set_send_buffer_size(65'536), Error::none);
+        REQUIRE_EQ(socket.set_receive_buffer_size(262'144), Error::none);
+        REQUIRE_EQ(detail::udp_buffer_notice_count, 2U);
+        for (unsigned i = 0; i < 2; ++i) {
+            int raw = 0;
+#if defined(_WIN32)
+            int size = sizeof(raw);
+            const int status = ::getsockopt(static_cast<SOCKET>(handle),
+                SOL_SOCKET, i == 0 ? SO_SNDBUF : SO_RCVBUF,
+                reinterpret_cast<char*>(&raw), &size);
+#else
+            socklen_t size = sizeof(raw);
+            const int status = ::getsockopt(static_cast<int>(handle),
+                SOL_SOCKET, i == 0 ? SO_SNDBUF : SO_RCVBUF, &raw, &size);
+#endif
+            REQUIRE_EQ(status, 0);
+            const auto notice = detail::udp_buffer_notices[i];
+            REQUIRE_EQ(notice.kernel_bytes, raw);
+            REQUIRE_EQ(notice.kind,
+                i == 0 ? detail::UdpBufferKind::send
+                       : detail::UdpBufferKind::receive);
+            REQUIRE_EQ(notice.requested, i == 0 ? 65'536 : 262'144);
+#if defined(__linux__)
+            REQUIRE_EQ(notice.effective, raw / 2);
+#else
+            REQUIRE_EQ(notice.effective, raw);
+#endif
+            REQUIRE(notice.effective > 0);
+        }
+    }
 }
 
 namespace {
