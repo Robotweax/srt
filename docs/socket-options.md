@@ -268,21 +268,47 @@ to SRT packet decoding and does not break other sockets sharing the channel.
 
 `SRTO_UDP_SNDBUF` and `SRTO_UDP_RCVBUF` are also pre-bind `int32_t` byte
 counts. Positive values below the configured MSS are clamped to MSS.
-Their effective values are applied to `SO_SNDBUF` and `SO_RCVBUF` before
+The requested values are applied to `SO_SNDBUF` and `SO_RCVBUF` before
 explicit listener binding or implicit caller binding; accepted sockets inherit
-the listener values. A getter returns the portable effective SRT value rather
-than an operating-system-specific doubled or clamped kernel value.
-On macOS/BSD, an `ENOBUFS` rejection of a UDP buffer request uses a
-best-effort fallback, for both created and acquired UDP sockets: an existing
-buffer of at least 64,000 bytes is retained; otherwise 64,000 bytes is attempted
-when the request was at least that large. Other errors and failed fallbacks
-remain errors. This applies to explicit settings as well as defaults, matching
-Haivision's best-effort macOS/BSD behavior without shrinking an already useful
-buffer. Explicit bind/acquire and caller setup report requested and actual
-buffer bytes through the socket-management warning logger after releasing
-internal locks. The SRT option getter still reports the configured value, not
-the kernel allocation. Size buffers and validate packet loss under realistic
-traffic; a successful bind alone does not qualify throughput.
+the listener values. Existing SRT option getters retain their configured byte
+values (including the MSS minimum), independently of the kernel readback.
+
+On Linux, macOS/BSD and Windows, every successful native buffer setting is
+checked with `getsockopt`. The raw kernel value and the normalized effective
+setting are distinct: Linux returns twice the setting for bookkeeping, so its
+normalized value is half the raw value. Neither value guarantees that the
+same number of application payload bytes fits in the queue; packet overhead
+also consumes kernel buffer space.
+
+An `ENOBUFS`/`WSAENOBUFS` capacity rejection triggers a bounded search between
+the current buffer and the user's rejected request, with at most 32 native
+set attempts including the original request. For a stable monotonic limit,
+this finds the largest accepted argument below the request. Successful
+clamping or rounding stops the search; actual readback remains authoritative.
+The existing buffer is retained if no growth succeeds. A rejected request to
+shrink an existing buffer does not silently keep a larger size as success.
+Other errors, invalid/failed readbacks, or a fallback that reduces the
+original effective size remain errors. This policy applies to both created
+and acquired UDP sockets. It does not query a presumed universal OS maximum,
+change sysctls or request elevated privileges.
+
+Explicit bind/acquire and ordinary caller setup defer socket-management logs
+until internal locks have been released. The entries identify `send` or
+`receive` and include `requested`, `effective`, raw `kernel` bytes, `attempts`
+and `fallback`. Reduced settings and fallbacks use warning level; fully
+satisfied requests use debug level. For example, a Linux request of 8388608
+bytes limited to 212992 may report `requested=8388608 effective=212992
+kernel=425984 bytes; attempts=1 fallback=no`. Applications can enable the
+existing `SRT_LOGFA_SOCKMGMT` logger to collect these diagnostics. A shared
+UDP channel is configured once, so this is channel setup information rather
+than a separate allocation for each accepted SRT connection.
+
+These limits apply to UDP kernel buffers (`SRTO_UDP_SNDBUF`/`SRTO_UDP_RCVBUF`).
+SRT's own send/receive buffers (`SRTO_SNDBUF`/`SRTO_RCVBUF`), flow control and
+TSBPD are separate and are not resized by this policy. Size buffers and
+validate packet loss under realistic traffic; a successful bind alone does
+not qualify throughput.
+
 `SRTO_REUSEADDR` is a pre-bind boolean and defaults to `true`. Independent
 IPv4 or IPv6 SRT sockets that bind the same exact address and port with
 matching native UDP buffer settings share one UDP channel and its
