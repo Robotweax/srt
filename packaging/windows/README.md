@@ -5,8 +5,9 @@ It implements the packaging work requested in
 [issue #12](https://github.com/Robotweax/srt/issues/12).
 Two separate installers offer OpenSSL and the
 [experimental BCrypt backend](../../docs/windows-bcrypt.md).
-Manual target-machine acceptance and
-release signing remain pending; this is not a qualified release installer.
+Manual target-machine acceptance remains pending. Release signing uses
+Microsoft Artifact Signing as described below; the first live signed-pair
+qualification remains required before publishing a signed release.
 The intended bundle contains static Robotweax SRT for
 Debug/Release × Win32/x64/Arm64. Consumers use `/MDd` for Debug and `/MD` for
 Release. Debug binaries are development-only; applications must deploy the
@@ -33,8 +34,8 @@ it supplies the package's backend-specific link dependencies.
 Compile `sdk.iss` with Inno Setup, supplying `/DSdkRoot=...`,
 `/DProductVersion=...` and `/DCryptoBackend=openssl` or `bcrypt`.
 The supplied SDK must match this backend. Do not publish until Windows install/uninstall and all
-six consumer link checks pass. This initial packaging work is not a signed or
-qualified release installer. No existing release assets are modified.
+six consumer link checks pass. Compiled candidates are unsigned until they pass
+the separate signing job. No existing release assets are modified.
 
 The `Windows SDK installers` workflow builds six variants per backend and uploads
 short-lived candidate artifacts. OpenSSL uses a pinned 3.6.3 dependency; BCrypt
@@ -48,13 +49,97 @@ build; assembler versions and OpenSSL configuration are recorded in CI logs.
 This is **not a performance qualification**; production throughput still needs
 measurement on the target hardware. This workflow runs manually or for
 PRs changing Windows packaging, and on `v*` tags, but not ordinary branch pushes.
-Tags must exactly match `v` plus the CMake project version. Only after both
-installers and their side-by-side tests pass are both executables and
-`SHA256SUMS` attached to a draft release. Publishing remains a manual review step;
+Tags must exactly match `v` plus the CMake project version and refer to a commit
+on main history. Both candidates pass their existing installation tests first.
+The protected signing job then signs both final executables, verifies their
+publisher and timestamps, generates `SHA256SUMS`, and repeats the side-by-side
+installation tests on those exact signed bytes. Only the verified signed pair
+and its checksums can be attached to a draft release. Publishing remains a manual review step;
 an existing published release is never modified. Re-running an upload with
 existing asset names fails rather than replacing them. Manual runs only produce
-CI artifacts and are the qualification path before tagging. No tag is needed
-to test packaging. Installers are currently unsigned.
+CI artifacts and are the qualification path before tagging. Select `main` and
+set the manual `sign` input to true to request signed qualification artifacts;
+this waits for approval of the signing environment and never creates a release.
+The default manual run and every PR run produce unsigned candidates. Historical
+v0.2.4 release assets remain unsigned and unchanged.
+
+## Signing configuration and operations
+
+Robotweax GmbH owns the Microsoft Artifact Signing account, Azure subscription,
+identity validation and certificate profile. Maintainers approve service costs,
+profile changes and each signing run. This repository does not provision Azure
+resources, change pricing tiers or store signing private keys.
+
+Configure the `windows-release-signing` GitHub Environment with a required
+maintainer reviewer and selected deployment policies: branch `main` and tags
+`v*`. PR refs and other branches must not be permitted. The designated maintainer
+can approve their own manually initiated run; review is still an explicit action.
+Environment protection and the job's event/ref checks both apply. OIDC
+`id-token: write` is granted only to the signing job. PR jobs have no signing
+environment or Azure credentials. Do not change this workflow to use
+`pull_request_target` or sign artifacts supplied by a different workflow run.
+
+Environment secrets (OIDC identifiers, not client passwords):
+
+| Name | Value source |
+|---|---|
+| `AZURE_CLIENT_ID` | Entra signing application's Application ID |
+| `AZURE_TENANT_ID` | Directory ID of the owning tenant |
+| `AZURE_SUBSCRIPTION_ID` | Subscription containing the signing account |
+
+Environment variables:
+
+| Name | Configured signing resource |
+|---|---|
+| `SIGNING_ACCOUNT_NAME` | `Robotweax-Code-Signing` |
+| `SIGNING_CERTIFICATE_PROFILE` | `Robotweax-SRT-Runtime` (Public Trust) |
+| `SIGNING_ENDPOINT` | `https://neu.codesigning.azure.net` (North Europe) |
+
+The Entra application needs `Artifact Signing Certificate Profile Signer` on
+the intended signing resource. Its federated credential uses issuer
+`https://token.actions.githubusercontent.com`, audience
+`api://AzureADTokenExchange` and the exact GitHub subject:
+
+```text
+repo:Robotweax@309742787/srt@1360228841:environment:windows-release-signing
+```
+
+This repository uses immutable owner/repository IDs in its OIDC subject. Check
+the repository OIDC settings again after a rename or transfer. Do not substitute
+the older name-only subject. Azure Login and Artifact Signing actions are pinned
+to full commits; review updates before changing those pins.
+
+Each final executable must have a valid embedded Authenticode signature with
+the exact publisher CN `Robotweax GmbH`, Code Signing EKU, and a trusted timestamp.
+The verifier also runs Windows SDK SignTool with `/pa /all /v /tw`; every
+nonzero exit, including timestamp warnings, fails the job. Certificates rotate,
+so validation does not pin a short-lived leaf thumbprint. The workflow uses
+SHA-256 for both file and RFC3161 timestamp digests. The checksum manifest is
+generated after signing, compared again after installation, and checked with
+signature validation again immediately before release upload. No unsigned or
+partially signed pair is a release fallback.
+
+`test-signing.ps1` runs on Windows even for PRs. It builds isolated executable
+fixtures and temporarily trusts its own one-day test certificate in the current
+user's stores, removing it in `finally`. Real unsigned, modified, unapproved
+publisher and untimestamped signatures are rejected. Synthetic timestamp records
+exercise policy only; a successful real Microsoft signing run is still needed
+to qualify the service integration. Pair/manifest tests reject missing, extra,
+duplicate and modified artifacts.
+
+Maintainers must monitor Azure identity-validation expiry and renewal notices.
+Renew the identity validation and follow Microsoft's profile reassociation
+procedure before expiry; otherwise certificate renewal and signing can stop.
+Keep the approver and Azure account ownership current. Failed login, expired
+validation, unavailable timestamping or failed signature/install checks block
+the signed artifact and release upload. Investigate and rerun after correction;
+never disable checks to publish an unsigned fallback.
+
+Sources: [Artifact Signing OIDC](https://github.com/Azure/artifact-signing-action/blob/main/docs/OIDC.md),
+[identity renewal](https://learn.microsoft.com/en-us/azure/artifact-signing/how-to-renew-identity-validation),
+[GitHub immutable subjects](https://docs.github.com/en/actions/reference/security/oidc#immutable-subject-claims).
+
+## Installing the SDK
 
 Interactive installation shows the installer UI. Unattended installation:
 
