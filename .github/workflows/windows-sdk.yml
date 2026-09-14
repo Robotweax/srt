@@ -1,6 +1,11 @@
 name: Windows SDK installers
 on:
   workflow_dispatch:
+    inputs:
+      sign:
+        description: 'Sign and test both installers (main only; requires release approval)'
+        type: boolean
+        default: false
   push:
     tags: ['v*']
   pull_request:
@@ -13,19 +18,29 @@ jobs:
   validate:
     runs-on: windows-latest
     timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Validate release tag
-        if: github.ref_type == 'tag'
+        id: version
         shell: pwsh
+        env:
+          SIGN_REQUESTED: ${{ inputs.sign }}
         run: |
           $version = [regex]::Match((Get-Content CMakeLists.txt -Raw), 'project\(robotweax_srt VERSION ([0-9.]+)').Groups[1].Value
-          if (!$version -or $env:GITHUB_REF_NAME -cne "v$version") { throw 'Tag must match the CMake project version exactly' }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid CMake project version' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne "v$version") { throw 'Tag must match the CMake project version exactly' }
+          if ($env:SIGN_REQUESTED -eq 'true' -and $env:GITHUB_REF -cne 'refs/heads/main') { throw 'Manual signing requires main' }
+          "version=$version" >> $env:GITHUB_OUTPUT
       - name: Package validation regression tests
         shell: pwsh
         run: ./packaging/windows/test-package.ps1
+      - name: Authenticode rejection regression tests
+        shell: pwsh
+        run: ./packaging/windows/test-signing.ps1
   build:
     needs: validate
     runs-on: windows-latest
@@ -145,19 +160,123 @@ jobs:
       - name: Verify side-by-side installation and independent removal
         shell: pwsh
         run: ./packaging/windows/test-installers.ps1 -Installers installers
-  release-draft:
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: coexistence
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+  sign:
+    if: >-
+      (github.event_name == 'push' && github.ref_type == 'tag') ||
+      (github.event_name == 'workflow_dispatch' && inputs.sign && github.ref == 'refs/heads/main')
+    needs: [validate, coexistence]
+    runs-on: windows-latest
+    timeout-minutes: 20
+    environment: windows-release-signing
+    concurrency:
+      group: windows-release-signing
+      cancel-in-progress: false
     permissions:
-      contents: write
+      contents: read
+      id-token: write
+    env:
+      SDK_VERSION: ${{ needs.validate.outputs.version }}
+      SIGNING_ACCOUNT_NAME: ${{ vars.SIGNING_ACCOUNT_NAME }}
+      SIGNING_CERTIFICATE_PROFILE: ${{ vars.SIGNING_CERTIFICATE_PROFILE }}
+      SIGNING_ENDPOINT: ${{ vars.SIGNING_ENDPOINT }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
           pattern: windows-sdk-installer-*
           path: installers
           merge-multiple: true
+      - name: Validate signing inputs and source ancestry
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          foreach ($name in 'AZURE_CLIENT_ID','AZURE_TENANT_ID','AZURE_SUBSCRIPTION_ID') {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            $parsed = [guid]::Empty
+            if (![guid]::TryParse($value, [ref]$parsed) -or $parsed -eq [guid]::Empty) { throw "Missing or invalid $name" }
+          }
+          if (!$env:SIGNING_ACCOUNT_NAME -or !$env:SIGNING_CERTIFICATE_PROFILE -or
+              $env:SIGNING_ENDPOINT -notmatch '^https://[a-z]+\.codesigning\.azure\.net/?$') { throw 'Missing or invalid signing configuration' }
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Signing requires a commit on main history' }
+          . ./packaging/windows/signing.ps1
+          foreach ($file in @(Get-SdkInstallerPair installers $env:SDK_VERSION)) {
+            if ([string](Get-AuthenticodeSignature -LiteralPath $file.FullName).Status -cne 'NotSigned') {
+              throw 'Expected an unsigned installer candidate before signing'
+            }
+          }
+      - name: Authenticate to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign both final installer executables
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.SIGNING_CERTIFICATE_PROFILE }}
+          files-folder: ${{ github.workspace }}\installers
+          files-folder-filter: exe
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          append-signature: false
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+      - name: Verify signed pair and generate checksums after signing
+        shell: pwsh
+        run: ./packaging/windows/verify-signed-installers.ps1 -Installers installers -Version $env:SDK_VERSION -Publisher 'Robotweax GmbH' -WriteManifest
+      - name: Install and test the exact signed executables
+        shell: pwsh
+        run: ./packaging/windows/test-installers.ps1 -Installers installers
+      - name: Verify signed bytes remained unchanged after installation tests
+        shell: pwsh
+        run: ./packaging/windows/verify-signed-installers.ps1 -Installers installers -Version $env:SDK_VERSION -Publisher 'Robotweax GmbH' -RequireManifest
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-sdk-signed-installers
+          path: |
+            installers/*.exe
+            installers/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+  release-draft:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [validate, sign]
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-sdk-signed-installers
+          path: installers
+      - name: Reverify exact signed pair before release upload
+        shell: pwsh
+        env:
+          SDK_VERSION: ${{ needs.validate.outputs.version }}
+        run: ./packaging/windows/verify-signed-installers.ps1 -Installers installers -Version $env:SDK_VERSION -Publisher 'Robotweax GmbH' -RequireManifest
       - name: Attach both installers to a draft only
         env:
           GH_TOKEN: ${{ github.token }}
@@ -171,10 +290,10 @@ jobs:
           bcrypt="robotweax-srt-${RELEASE_TAG#v}-windows-sdk-bcrypt.exe"
           test -s "$openssl"
           test -s "$bcrypt"
-          sha256sum "$openssl" "$bcrypt" > SHA256SUMS
+          sha256sum --check SHA256SUMS
           if gh release view "$RELEASE_TAG" --json isDraft > release.json; then
             test "$(jq -r .isDraft release.json)" = true || { echo 'Refusing to modify a published release'; exit 1; }
           else
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Robotweax SRT ${RELEASE_TAG#v}" --notes 'Windows SDK installers: OpenSSL and BCrypt. Unsigned; review qualification and release notes before publishing.'
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Robotweax SRT ${RELEASE_TAG#v}" --notes 'Windows SDK installers: OpenSSL and BCrypt. Authenticode-signed by Robotweax GmbH with trusted timestamps; review qualification and release notes before publishing.'
           fi
           gh release upload "$RELEASE_TAG" "$openssl" "$bcrypt" SHA256SUMS
