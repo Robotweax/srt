@@ -434,6 +434,37 @@ class EncryptedFileInteropTests(unittest.TestCase):
             "relay": relay,
             "caller_is_reference": False,
         }
+        buffer_notice = (
+            "1789402438247330/139920894588800W:socket: UDP receive buffer: "
+            "requested=12288000 effective=1048576 kernel=2097152 bytes; "
+            "attempts=1 fallback=no"
+        )
+        buffered = {**common, "caller_stderr": buffer_notice + "\n" + rejection + "\n"}
+        run_encrypted_file_interop.validate_passphrase_mismatch(**buffered)
+        # A recognized diagnostic must not relax any of the negative checks.
+        for mutation in mutations:
+            with self.subTest(buffered_mutation=mutation), self.assertRaises(RuntimeError):
+                run_encrypted_file_interop.validate_passphrase_mismatch(**{**buffered, **mutation})
+        for prefix in (
+            "unexpected warning",
+            buffer_notice + " extra text",
+            buffer_notice + "\n" + buffer_notice,
+            buffer_notice.replace("effective=1048576", "effective=0"),
+            buffer_notice.replace("kernel=2097152", "kernel=2097153"),
+            buffer_notice.replace("attempts=1", "attempts=33"),
+            buffer_notice.replace("W:socket", "D:socket"),
+        ):
+            with self.subTest(prefix=prefix), self.assertRaises(RuntimeError):
+                run_encrypted_file_interop.validate_passphrase_mismatch(**{
+                    **common, "caller_stderr": prefix + "\n" + rejection + "\n"})
+        with self.assertRaises(RuntimeError):
+            run_encrypted_file_interop.validate_passphrase_mismatch(**{
+                **common, "caller_stderr": rejection + "\n" + buffer_notice + "\n"})
+        # Normalized Linux and native BSD/Windows entries may both be present.
+        send_notice = buffer_notice.replace("receive", "send").replace(
+            "kernel=2097152", "kernel=1048576").replace("attempts=1 fallback=no", "attempts=24 fallback=yes")
+        run_encrypted_file_interop.validate_passphrase_mismatch(**{
+            **common, "caller_stderr": send_notice + "\n" + buffer_notice + "\n" + rejection + "\n"})
         for mutation in mutations:
             with self.subTest(mutation=mutation), self.assertRaises(
                 RuntimeError
