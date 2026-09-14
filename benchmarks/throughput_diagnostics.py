@@ -269,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--capture", choices=("none", "cpu", "scheduler", "transport"), default="none")
     parser.add_argument("--repetitions", type=bounded_int(1, 10))
     parser.add_argument("--warmups", type=bounded_int(0, 2), default=1)
-    parser.add_argument("--bytes-per-connection", type=bounded_int(1316, 1024**3), default=128 * 1024**2)
+    parser.add_argument("--bytes-per-connection", type=bounded_int(1316, 4 * 1024**3), default=128 * 1024**2)
     parser.add_argument("--connections", type=bounded_int(1, 10), default=1)
     parser.add_argument("--target-bps", type=bounded_int(0, 100_000_000_000), default=0)
     parser.add_argument("--pacing-burst-packets", type=bounded_int(0, 64), default=0)
