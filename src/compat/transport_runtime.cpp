@@ -1462,7 +1462,8 @@ MessageIoResult ConnectionRuntime::queue_group_message(
 MessageIoResult ConnectionRuntime::skip_group_sequences(
     SequenceNumber next_sequence) noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     if (locally_closed_) {
         return {.status = MessageIoStatus::local_closed};
     }
@@ -1499,6 +1500,7 @@ MessageIoResult ConnectionRuntime::receive_message(
         ? Clock::now() + std::chrono::milliseconds{timeout_milliseconds}
         : Clock::time_point{};
     for (;;) {
+        wait_for_data_output_locked(lock);
         const std::uint64_t now = now_microseconds();
         if (!service_receiver_tlpktdrop_locked(now)) {
             return {
@@ -1580,7 +1582,8 @@ MessageIoResult ConnectionRuntime::receive_message(
 std::optional<SequenceNumber>
 ConnectionRuntime::next_readable_message_sequence() noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     const std::uint64_t now = now_microseconds();
     if (!service_receiver_tlpktdrop_locked(now)) {
         return std::nullopt;
@@ -1594,7 +1597,8 @@ ConnectionRuntime::next_readable_message_sequence() noexcept
 bool ConnectionRuntime::discard_received_before(
     SequenceNumber next_sequence) noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     const SequenceNumber previous_sequence =
         session_.receive_buffer().first_stored_sequence();
     const Error result = session_.discard_received_before(
@@ -1688,6 +1692,7 @@ MessageIoResult ConnectionRuntime::receive_stream(
         ? Clock::now() + std::chrono::milliseconds{timeout_milliseconds}
         : Clock::time_point{};
     for (;;) {
+        wait_for_data_output_locked(lock);
         const auto received = session_.pop_stream(destination);
         if (received) {
             const std::uint64_t now = now_microseconds();
@@ -1837,6 +1842,81 @@ bool ConnectionRuntime::send_actions(
         session_.note_packet_sent(now);
     }
     return true;
+}
+
+void ConnectionRuntime::wait_for_data_output_locked(
+    std::unique_lock<std::mutex>& lock) const
+{
+    if (data_output_in_progress_) {
+        data_output_finished_.wait(lock,
+            [this] { return !data_output_in_progress_; });
+    }
+}
+
+bool ConnectionRuntime::send_plain_data_with_unlocked_io(
+    std::unique_lock<std::mutex>& lock) noexcept
+{
+    if (!session_.has_pending_send_work()) {
+        return true;
+    }
+    const auto channel = channel_.lock();
+    if (channel == nullptr) {
+        break_locked(0);
+        return false;
+    }
+    const IpEndpoint peer = peer_;
+    bool success = true;
+    data_output_in_progress_ = true;
+    for (std::size_t index = 0; index < maximum_send_batch; ++index) {
+        const bool retransmission = session_.has_pending_retransmission();
+        if (!retransmission
+            && session_.send_buffer().packets_in_flight()
+                >= flow_window_packets_) {
+            break;
+        }
+        const std::uint64_t packet_time = now_microseconds();
+        const auto packet = session_.next_paced_data_packet(pacer_, packet_time);
+        if (!packet.has_value()) {
+            break;
+        }
+        std::array<std::byte, 1500> datagram;
+        const MutablePacketView view {
+            .kind = PacketKind::data,
+            .data = packet->header,
+            .payload = packet->payload,
+        };
+        const auto encoded = encode_packet(view, datagram);
+        if (!encoded) {
+            break_locked(0);
+            success = false;
+            break;
+        }
+        const std::size_t payload_size = packet->payload.size();
+        const bool retransmitted = packet->header.retransmitted;
+
+        // The unlocked phase reads only owned wire bytes and a pinned channel.
+        // ACK, close, options and competing polls wait for the send commit;
+        // producers may append under mutex_. Never read packet->payload here.
+        lock.unlock();
+        const auto sent = channel->send_datagram(
+            std::span {datagram}.first(encoded.bytes_written), peer);
+        lock.lock();
+        if (!sent) {
+            // The reserved packet stays in the terminal send buffer, exactly
+            // as in send_data. Only completed sends contribute to statistics.
+            break_locked(sent.system_error);
+            success = false;
+            break;
+        }
+        statistics_.note_data_sent(payload_size, retransmitted);
+        session_.note_data_packet_sent(packet_time);
+        // The pacer rebases each deadline on the current time, with no saved
+        // burst credit. Prepare the next packet only after this send finishes,
+        // preserving that behavior and the original 64-packet poll budget.
+    }
+    data_output_in_progress_ = false;
+    data_output_finished_.notify_all();
+    return success;
 }
 
 bool ConnectionRuntime::send_data(
@@ -2496,7 +2576,8 @@ void ConnectionRuntime::process_packet(
     if (peer != peer_) {
         return;
     }
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     if (locally_closed_ || broken_) {
         return;
     }
@@ -2694,7 +2775,8 @@ bool ConnectionRuntime::process_handshake(
     const HandshakeMessage& message,
     IpEndpoint peer) noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     if (peer != peer_
         || locally_closed_
         || broken_
@@ -2743,7 +2825,8 @@ bool ConnectionRuntime::process_handshake(
 
 RuntimePollResult ConnectionRuntime::poll() noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     if (locally_closed_ || peer_closed_ || broken_) {
         return {};
     }
@@ -2795,72 +2878,78 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
     sample_receiver_buffer_statistics(now);
     (void)session_.poll_sender_retransmission_timeout(now);
 
-    for (std::size_t index = 0; index < maximum_send_batch; ++index) {
-        const std::uint64_t packet_time = now_microseconds();
-        if (crypto_ != nullptr && crypto_->enabled()) {
-            if (!service_key_rotation(packet_time)) {
-                return {};
-            }
+    if (crypto_ == nullptr && !fec_encoder_active()) {
+        if (!send_plain_data_with_unlocked_io(lock)) {
+            return {};
         }
-        if (fec_control_ready()
-            && !session_.has_pending_retransmission()) {
-            const std::uint64_t live_rate =
-                session_
-                    .live_pacing_rate_bytes_per_second();
-            const std::uint64_t file_rate =
-                session_
-                    .file_pacing_rate_bytes_per_second();
-            if (live_rate != 0U) {
-                pacer_.set_rate(live_rate);
-            } else if (file_rate != 0U) {
-                pacer_.set_rate(file_rate);
-                pacer_.set_flow_window(
-                    session_
-                        .file_congestion_window_packets());
+    } else {
+        for (std::size_t index = 0; index < maximum_send_batch; ++index) {
+            const std::uint64_t packet_time = now_microseconds();
+            if (crypto_ != nullptr && crypto_->enabled()) {
+                if (!service_key_rotation(packet_time)) {
+                    return {};
+                }
             }
-            if (!pacer_.query(packet_time, 0U).ready) {
+            if (fec_control_ready()
+                && !session_.has_pending_retransmission()) {
+                const std::uint64_t live_rate =
+                    session_
+                        .live_pacing_rate_bytes_per_second();
+                const std::uint64_t file_rate =
+                    session_
+                        .file_pacing_rate_bytes_per_second();
+                if (live_rate != 0U) {
+                    pacer_.set_rate(live_rate);
+                } else if (file_rate != 0U) {
+                    pacer_.set_rate(file_rate);
+                    pacer_.set_flow_window(
+                        session_
+                            .file_congestion_window_packets());
+                }
+                if (!pacer_.query(packet_time, 0U).ready) {
+                    break;
+                }
+                const auto control =
+                    fec_control_packet();
+                if (!control.has_value()) {
+                    break_locked(0);
+                    return {};
+                }
+                const std::size_t wire_size =
+                    packet_header_size
+                    + control->payload.size();
+                if (!send_filter_control(packet_time)) {
+                    return {};
+                }
+                pacer_.on_packet_sent(
+                    wire_size, packet_time);
+                continue;
+            }
+            // New data needs the next key acknowledgement. A retransmission
+            // already owns its original ciphertext and does not depend on it.
+            if (crypto_ != nullptr && crypto_->enabled()
+                && !crypto_->ready_to_send_data()
+                && !session_.has_pending_retransmission()) {
                 break;
             }
-            const auto control =
-                fec_control_packet();
-            if (!control.has_value()) {
-                break_locked(0);
+            const bool retransmission = session_.has_pending_retransmission();
+            if (!retransmission
+                && session_.send_buffer().packets_in_flight()
+                    >= flow_window_packets_) {
+                break;
+            }
+            const std::size_t new_packet_wire_overhead =
+                crypto_ != nullptr && crypto_->authenticated_data_enabled()
+                ? srt_gcm_authentication_tag_size
+                : 0U;
+            const auto packet = session_.next_paced_data_packet(
+                pacer_, packet_time, new_packet_wire_overhead);
+            if (!packet.has_value()) {
+                break;
+            }
+            if (!send_data(*packet, packet_time)) {
                 return {};
             }
-            const std::size_t wire_size =
-                packet_header_size
-                + control->payload.size();
-            if (!send_filter_control(packet_time)) {
-                return {};
-            }
-            pacer_.on_packet_sent(
-                wire_size, packet_time);
-            continue;
-        }
-        // New data needs the next key acknowledgement. A retransmission
-        // already owns its original ciphertext and does not depend on it.
-        if (crypto_ != nullptr && crypto_->enabled()
-            && !crypto_->ready_to_send_data()
-            && !session_.has_pending_retransmission()) {
-            break;
-        }
-        const bool retransmission = session_.has_pending_retransmission();
-        if (!retransmission
-            && session_.send_buffer().packets_in_flight()
-                >= flow_window_packets_) {
-            break;
-        }
-        const std::size_t new_packet_wire_overhead =
-            crypto_ != nullptr && crypto_->authenticated_data_enabled()
-            ? srt_gcm_authentication_tag_size
-            : 0U;
-        const auto packet = session_.next_paced_data_packet(
-            pacer_, packet_time, new_packet_wire_overhead);
-        if (!packet.has_value()) {
-            break;
-        }
-        if (!send_data(*packet, packet_time)) {
-            return {};
         }
     }
 
@@ -2912,7 +3001,8 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
 void ConnectionRuntime::apply_options(
     const SocketOptions& options) noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     options_ = options;
     (void)session_.apply_dynamic_options(options_);
     statistics_.update_reorder_state(
@@ -2942,14 +3032,16 @@ void ConnectionRuntime::notify_channel_send_work() noexcept
 
 void ConnectionRuntime::mark_broken(int system_error) noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     break_locked(system_error);
 }
 
 bool ConnectionRuntime::report_peer_error(
     std::int32_t error_code) noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     if (locally_closed_ || peer_closed_ || broken_) {
         return false;
     }
@@ -2959,7 +3051,8 @@ bool ConnectionRuntime::report_peer_error(
 
 void ConnectionRuntime::close() noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     if (locally_closed_) {
         return;
     }
@@ -2992,7 +3085,8 @@ bool ConnectionRuntime::peer_closed() const noexcept
 
 bool ConnectionRuntime::readable() noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     if (locally_closed_) {
         return false;
     }
@@ -3012,7 +3106,8 @@ bool ConnectionRuntime::readable() noexcept
 std::optional<ConnectionRuntime::Clock::time_point>
 ConnectionRuntime::next_readable_deadline() noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     if (locally_closed_) {
         return std::nullopt;
     }
@@ -3085,7 +3180,8 @@ CryptoMode ConnectionRuntime::crypto_mode() const noexcept
 RuntimeStatisticsSnapshot ConnectionRuntime::statistics(
     bool clear_interval, bool instantaneous) noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     const std::uint64_t now = now_microseconds();
     statistics_.update_send_duration(
         now, session_.send_buffer().size() != 0U);
@@ -3176,7 +3272,8 @@ RuntimeStatisticsSnapshot ConnectionRuntime::statistics(
 
 RuntimeResponseHealth ConnectionRuntime::response_health() const noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     const auto& live_options = session_.live_options();
     return {
         .now_microseconds = now_microseconds(),
@@ -3201,7 +3298,8 @@ RuntimeResponseHealth ConnectionRuntime::response_health() const noexcept
 
 SenderBufferStatus ConnectionRuntime::sender_buffer_status() noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     const auto& send_buffer = session_.send_buffer();
     return {
         .packets = send_buffer.size(),
@@ -3214,7 +3312,8 @@ SenderBufferStatus ConnectionRuntime::sender_buffer_status() noexcept
 RuntimeBufferPacketCounts
 ConnectionRuntime::buffer_packet_counts() const noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
+    wait_for_data_output_locked(lock);
     return {
         .unacknowledged_send = session_.send_buffer().size(),
         .available_receive = session_.receive_buffer().occupied(),

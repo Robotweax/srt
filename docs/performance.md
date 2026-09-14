@@ -10,6 +10,11 @@ bandwidth settings, optimized symbolized builds and separate Linux CPU/scheduler
 captures, see [Throughput profiling](throughput-profiling.md). These diagnostics
 are opt-in and do not change the library's runtime defaults.
 
+For the unqualified Connection-mutex experiment motivated by lab #43, see
+[Two-phase plain sender poll](two-phase-sender-poll.md). It changes only the
+plain DATA critical section and requires a controlled A/B comparison before
+any performance claim.
+
 ## Comparative scorecard
 
 `benchmarks/scalability_scorecard.py` runs public-API peer source linked

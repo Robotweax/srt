@@ -334,6 +334,19 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         robotweax_srt_tests
         PROPERTIES TIMEOUT 30)
 
+    add_executable(robotweax_srt_sender_poll_tests
+        tests/test_main.cpp
+        tests/test_sender_poll.cpp)
+    target_link_libraries(robotweax_srt_sender_poll_tests
+        PRIVATE RobotweaxSRT::srt Threads::Threads)
+    target_include_directories(robotweax_srt_sender_poll_tests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(robotweax_srt_sender_poll_tests PRIVATE cxx_std_20)
+    add_test(NAME robotweax_srt_sender_poll_tests
+        COMMAND robotweax_srt_sender_poll_tests)
+    set_tests_properties(robotweax_srt_sender_poll_tests
+        PROPERTIES TIMEOUT 30)
+
     add_executable(robotweax_srt_scheduler_tests
         tests/test_main.cpp
         tests/test_caller_handshake_events.cpp

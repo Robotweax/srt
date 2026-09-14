@@ -408,6 +408,11 @@ private:
     [[nodiscard]] bool send_actions(
         const ReliabilityActions& actions,
         std::uint64_t now_microseconds) noexcept;
+    // Called with mutex_ held. Protocol transitions wait while owned plain
+    // DATA is on the wire; producers may append to the send buffer meanwhile.
+    void wait_for_data_output_locked(std::unique_lock<std::mutex>& lock) const;
+    [[nodiscard]] bool send_plain_data_with_unlocked_io(
+        std::unique_lock<std::mutex>& lock) noexcept;
     [[nodiscard]] bool send_data(
         const OutboundPacket& packet,
         std::uint64_t now_microseconds) noexcept;
@@ -448,6 +453,8 @@ private:
     void break_locked(int system_error) noexcept;
 
     mutable std::mutex mutex_;
+    mutable std::condition_variable data_output_finished_;
+    bool data_output_in_progress_ = false;
     std::condition_variable receive_ready_;
     std::condition_variable send_ready_;
     std::weak_ptr<DatagramChannel> channel_;
