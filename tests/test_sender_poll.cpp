@@ -45,8 +45,8 @@ struct PollOutput {
     std::size_t fail_data_attempt = 0;
     std::vector<std::vector<std::byte>> datagrams;
 
-    static UdpIoResult send(std::span<const std::byte> bytes,
-        IpEndpoint, void* context) noexcept
+    static UdpIoResult send(
+        std::span<const std::byte> bytes, IpEndpoint, void* context) noexcept
     {
         auto& output = *static_cast<PollOutput*>(context);
         std::unique_lock lock(output.mutex);
@@ -57,16 +57,17 @@ struct PollOutput {
         if (decoded.packet.kind == PacketKind::data) {
             ++output.data_attempts;
             if (output.observe_clock != nullptr) {
-                output.data_times.push_back(output.observe_clock->now.load(
-                    std::memory_order_relaxed));
+                output.data_times.push_back(
+                    output.observe_clock->now.load(std::memory_order_relaxed));
             }
             if (output.block_first_data && output.data_attempts == 1U) {
                 output.entered = true;
                 output.changed.notify_all();
                 // Bound failures even if a regression retains mutex_ while
                 // the test's producer/protocol thread tries to acquire it.
-                if (!output.changed.wait_for(lock, 2s,
-                        [&output] { return output.released; })) {
+                if (!output.changed.wait_for(lock, 2s, [&output] {
+                        return output.released;
+                    })) {
                     output.timed_out = true;
                     return {.error = Error::io_error, .system_error = 123};
                 }
@@ -85,7 +86,9 @@ struct PollOutput {
     bool await_output()
     {
         std::unique_lock lock(mutex);
-        return changed.wait_for(lock, 2s, [this] { return entered; });
+        return changed.wait_for(lock, 2s, [this] {
+            return entered;
+        });
     }
 
     void release()
@@ -108,8 +111,8 @@ struct PollFixture {
     {
         channel->set_send_hook_for_testing(PollOutput::send, &output);
         SocketOptions options;
-        REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 256),
-            Error::none);
+        REQUIRE_EQ(
+            options.set(SocketOption::send_buffer_packets, 256), Error::none);
         REQUIRE_EQ(options.set(SocketOption::maximum_bandwidth_bytes_per_second,
                        1'250'000'000),
             Error::none);
@@ -146,18 +149,20 @@ struct PollFixture {
                 .acknowledgement_number = 1,
                 .next_sequence = SequenceNumber {next},
                 .available_receive_buffer_packets = window,
-            }, bytes);
+            },
+            bytes);
         REQUIRE(encoded);
-        runtime->process_packet(PacketView {
-                                    .kind = PacketKind::control,
-                                    .control = {
-                                        .type = ControlType::acknowledgement,
-                                        .type_specific = 1,
-                                        .destination_socket_id = 343,
-                                    },
-                                    .payload = std::span {bytes}.first(
-                                        encoded.bytes_written),
-                                },
+        runtime->process_packet(
+            PacketView {
+                .kind = PacketKind::control,
+                .control =
+                    {
+                        .type = ControlType::acknowledgement,
+                        .type_specific = 1,
+                        .destination_socket_id = 343,
+                    },
+                .payload = std::span {bytes}.first(encoded.bytes_written),
+            },
             peer);
     }
 
@@ -181,8 +186,9 @@ TEST(sender_poll_allows_enqueue_during_output_and_pins_channel)
     PollFixture fixture;
     fixture.queue(4);
     fixture.output.block_first_data = true;
-    auto poll = std::async(std::launch::async,
-        [&] { return fixture.runtime->poll(); });
+    auto poll = std::async(std::launch::async, [&] {
+        return fixture.runtime->poll();
+    });
     REQUIRE(fixture.output.await_output());
     const std::weak_ptr<DatagramChannel> weak = fixture.channel;
     fixture.channel.reset();
@@ -221,8 +227,9 @@ TEST(sender_poll_serializes_ack_and_competing_poll_until_commit)
     PollFixture fixture;
     fixture.queue(4);
     fixture.output.block_first_data = true;
-    auto first = std::async(std::launch::async,
-        [&] { return fixture.runtime->poll(); });
+    auto first = std::async(std::launch::async, [&] {
+        return fixture.runtime->poll();
+    });
     REQUIRE(fixture.output.await_output());
     std::promise<void> ack_started;
     auto ack = std::async(std::launch::async, [&] {
@@ -240,8 +247,9 @@ TEST(sender_poll_serializes_ack_and_competing_poll_until_commit)
     const auto poll_status = second.wait_for(30ms);
     // Waiting protocol calls must release mutex_, not block on the channel's
     // send mutex while retaining the connection lock needed for the commit.
-    auto writable = std::async(std::launch::async,
-        [&] { return fixture.runtime->writable(); });
+    auto writable = std::async(std::launch::async, [&] {
+        return fixture.runtime->writable();
+    });
     const auto writable_status = writable.wait_for(250ms);
     fixture.output.release();
     (void)first.get();
@@ -265,8 +273,9 @@ TEST(sender_poll_orders_close_after_prepared_output)
     PollFixture fixture;
     fixture.queue(4);
     fixture.output.block_first_data = true;
-    auto poll = std::async(std::launch::async,
-        [&] { return fixture.runtime->poll(); });
+    auto poll = std::async(std::launch::async, [&] {
+        return fixture.runtime->poll();
+    });
     REQUIRE(fixture.output.await_output());
     std::promise<void> close_started;
     auto close = std::async(std::launch::async, [&] {
@@ -296,11 +305,13 @@ TEST(sender_poll_commits_only_successful_prefix_and_releases_waiters_on_error)
     fixture.queue(5);
     fixture.output.block_first_data = true;
     fixture.output.fail_data_attempt = 3;
-    auto poll = std::async(std::launch::async,
-        [&] { return fixture.runtime->poll(); });
+    auto poll = std::async(std::launch::async, [&] {
+        return fixture.runtime->poll();
+    });
     REQUIRE(fixture.output.await_output());
-    auto snapshot = std::async(std::launch::async,
-        [&] { return fixture.runtime->statistics(false, true); });
+    auto snapshot = std::async(std::launch::async, [&] {
+        return fixture.runtime->statistics(false, true);
+    });
     fixture.output.release();
     (void)poll.get();
     const auto statistics = snapshot.get();
@@ -311,7 +322,8 @@ TEST(sender_poll_commits_only_successful_prefix_and_releases_waiters_on_error)
     REQUIRE_EQ(statistics.total.sent.packets, 2U);
     REQUIRE_EQ(statistics.total.sent.payload_bytes, 200U);
     const std::array<std::byte, 1> bytes {};
-    const auto queued = fixture.runtime->queue_message(bytes, 0, true, false, 0);
+    const auto queued =
+        fixture.runtime->queue_message(bytes, 0, true, false, 0);
     REQUIRE_EQ(queued.status, MessageIoStatus::broken);
     REQUIRE_EQ(queued.system_error, 456);
     (void)fixture.runtime->poll();
@@ -336,15 +348,16 @@ TEST(sender_poll_preserves_budget_flow_window_and_retransmission_priority)
         .first = SequenceNumber {700}, .last = SequenceNumber {701}}};
     const auto encoded = encode_loss_ranges(losses, bytes);
     REQUIRE(encoded);
-    fixture.runtime->process_packet(PacketView {
-                                        .kind = PacketKind::control,
-                                        .control = {
-                                            .type = ControlType::negative_acknowledgement,
-                                            .destination_socket_id = 343,
-                                        },
-                                        .payload = std::span {bytes}.first(
-                                            encoded.bytes_written),
-                                    },
+    fixture.runtime->process_packet(
+        PacketView {
+            .kind = PacketKind::control,
+            .control =
+                {
+                    .type = ControlType::negative_acknowledgement,
+                    .destination_socket_id = 343,
+                },
+            .payload = std::span {bytes}.first(encoded.bytes_written),
+        },
         PollFixture::peer);
     (void)fixture.runtime->poll();
     auto packets = fixture.data();
@@ -359,7 +372,8 @@ TEST(sender_poll_preserves_budget_flow_window_and_retransmission_priority)
     (void)fixture.runtime->poll();
     packets = fixture.data();
     REQUIRE_EQ(packets.size(), 82U);
-    REQUIRE_EQ(fixture.runtime->statistics(false, true).total.sent_unique.packets,
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, true).total.sent_unique.packets,
         80U);
 }
 

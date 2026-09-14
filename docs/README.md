@@ -59,6 +59,7 @@ combining features.
 - [ACK and ACKACK semantics](acknowledgements.md)
 - [Protocol edge-case policy](protocol-edge-cases.md)
 - [Performance and scalability measurement](performance.md)
+- [Two-phase plain sender poll candidate](two-phase-sender-poll.md)
 - [Throughput profiling and empty-receive-buffer experiment](throughput-profiling.md)
 
 These pages document stable protocol behavior, resource contracts, and

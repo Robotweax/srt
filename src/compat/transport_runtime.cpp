@@ -1848,8 +1848,9 @@ void ConnectionRuntime::wait_for_data_output_locked(
     std::unique_lock<std::mutex>& lock) const
 {
     if (data_output_in_progress_) {
-        data_output_finished_.wait(lock,
-            [this] { return !data_output_in_progress_; });
+        data_output_finished_.wait(lock, [this] {
+            return !data_output_in_progress_;
+        });
     }
 }
 
@@ -1875,7 +1876,8 @@ bool ConnectionRuntime::send_plain_data_with_unlocked_io(
             break;
         }
         const std::uint64_t packet_time = now_microseconds();
-        const auto packet = session_.next_paced_data_packet(pacer_, packet_time);
+        const auto packet =
+            session_.next_paced_data_packet(pacer_, packet_time);
         if (!packet.has_value()) {
             break;
         }
@@ -2890,39 +2892,32 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
                     return {};
                 }
             }
-            if (fec_control_ready()
-                && !session_.has_pending_retransmission()) {
+            if (fec_control_ready() && !session_.has_pending_retransmission()) {
                 const std::uint64_t live_rate =
-                    session_
-                        .live_pacing_rate_bytes_per_second();
+                    session_.live_pacing_rate_bytes_per_second();
                 const std::uint64_t file_rate =
-                    session_
-                        .file_pacing_rate_bytes_per_second();
+                    session_.file_pacing_rate_bytes_per_second();
                 if (live_rate != 0U) {
                     pacer_.set_rate(live_rate);
                 } else if (file_rate != 0U) {
                     pacer_.set_rate(file_rate);
                     pacer_.set_flow_window(
-                        session_
-                            .file_congestion_window_packets());
+                        session_.file_congestion_window_packets());
                 }
                 if (!pacer_.query(packet_time, 0U).ready) {
                     break;
                 }
-                const auto control =
-                    fec_control_packet();
+                const auto control = fec_control_packet();
                 if (!control.has_value()) {
                     break_locked(0);
                     return {};
                 }
                 const std::size_t wire_size =
-                    packet_header_size
-                    + control->payload.size();
+                    packet_header_size + control->payload.size();
                 if (!send_filter_control(packet_time)) {
                     return {};
                 }
-                pacer_.on_packet_sent(
-                    wire_size, packet_time);
+                pacer_.on_packet_sent(wire_size, packet_time);
                 continue;
             }
             // New data needs the next key acknowledgement. A retransmission
