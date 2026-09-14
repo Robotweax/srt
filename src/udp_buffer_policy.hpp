@@ -95,10 +95,9 @@ int configure_udp_buffer(std::int32_t requested, UdpBufferKind kind,
         if (notice.effective < original)
             return policy.capacity_error;
         lower = probe;
-        // A successful but clamped/rounded readback already supplies the
-        // supported value; do not keep increasing the requested argument.
-        if (notice.effective < probe)
-            break;
+        // A rounded readback may be slightly below the accepted argument.
+        // Continue within the bound: rounding alone does not prove that the
+        // OS ceiling was reached.
     }
     const int final_error = read();
     if (final_error != 0)

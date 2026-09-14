@@ -214,7 +214,7 @@ TEST(udp_buffer_invalid_kernel_sizes_are_not_success)
     }
 }
 
-TEST(udp_buffer_search_stops_on_successful_kernel_clamping)
+TEST(udp_buffer_search_retains_clamped_readback_within_attempt_bound)
 {
     BufferNotices notices;
     BufferModel model;
@@ -230,8 +230,28 @@ TEST(udp_buffer_search_stops_on_successful_kernel_clamping)
                        return model.get(value);
                    }),
         0);
-    REQUIRE_EQ(model.requests.size(), 2U);
+    REQUIRE(model.requests.size() <= 32U);
     REQUIRE_EQ(detail::udp_buffer_notices[0].effective, 65'536);
+}
+
+TEST(udp_buffer_search_does_not_mistake_rounding_for_the_os_limit)
+{
+    BufferNotices notices;
+    BufferModel model;
+    REQUIRE_EQ(detail::configure_udp_buffer(
+                   12'288'000, detail::UdpBufferKind::send, model.policy,
+                   [&](std::int32_t value) {
+                       const int error = model.set(value);
+                       if (error == 0)
+                           model.current = (model.current / 4096) * 4096;
+                       return error;
+                   },
+                   [&](std::int32_t& value) {
+                       return model.get(value);
+                   }),
+        0);
+    REQUIRE(model.requests.size() <= 32U);
+    REQUIRE_EQ(detail::udp_buffer_notices[0].effective, model.maximum);
 }
 
 TEST(udp_buffer_search_requires_valid_final_readback)

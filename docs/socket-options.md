@@ -283,8 +283,8 @@ also consumes kernel buffer space.
 An `ENOBUFS`/`WSAENOBUFS` capacity rejection triggers a bounded search between
 the current buffer and the user's rejected request, with at most 32 native
 set attempts including the original request. For a stable monotonic limit,
-this finds the largest accepted argument below the request. Successful
-clamping or rounding stops the search; actual readback remains authoritative.
+this finds the largest accepted argument below the request. Rounded values
+do not prematurely stop the search; actual readback remains authoritative.
 The existing buffer is retained if no growth succeeds. A rejected request to
 shrink an existing buffer does not silently keep a larger size as success.
 Other errors, invalid/failed readbacks, or a fallback that reduces the
