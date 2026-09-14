@@ -140,6 +140,10 @@ experiments use a new output directory each time:
 - `--target-bps 250000000` changes only offered application rate.
 - `--pending-packets 512` changes only the application window.
 - `--bytes-per-connection 536870912` extends a too-short capture/transfer.
+- The CLI accepts 1,316 bytes through 4 GiB (`4294967296`) per connection;
+  the default remains 128 MiB. The peer rounds up to whole 1,316-byte messages,
+  so a 4-GiB request transfers 4,294,967,348 useful bytes. Increasing the volume
+  does not change the process timeout or the profiling file-size limits.
 
 The runner checks recorded executable/library hashes before starting. It does
 not overwrite result directories. A throughput summary contains median, p95,
