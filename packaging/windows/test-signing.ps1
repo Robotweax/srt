@@ -17,20 +17,26 @@ try {
     'class Fixture { static int Main() { return 0; } }' | Set-Content $Source
     $Compiler = "$env:WINDIR/Microsoft.NET/Framework64/v4.0.30319/csc.exe"
     $Unsigned = Join-Path $Root 'unsigned.exe'
+    Write-Output 'Compiling Authenticode fixture'
     & $Compiler /nologo /target:exe "/out:$Unsigned" $Source
     if ($LASTEXITCODE -ne 0) { throw 'Fixture compilation failed' }
+    Write-Output 'Locating SignTool and checking unsigned fixture'
     $SignTool = Get-SdkSignTool
     Expect-Rejection { Assert-SdkInstallerSignature $Unsigned 'SDK Signing Test' $SignTool } 'Invalid Authenticode'
+    Write-Output 'Creating temporary signing certificate'
     $Certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=SDK Signing Test' `
         -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddDays(1)
     foreach ($StoreName in 'Root', 'TrustedPublisher') {
-        $Store = [Security.Cryptography.X509Certificates.X509Store]::new($StoreName, 'CurrentUser')
+        Write-Output "Importing temporary certificate into LocalMachine/$StoreName"
+        $Store = [Security.Cryptography.X509Certificates.X509Store]::new($StoreName, 'LocalMachine')
         try { $Store.Open('ReadWrite'); $Store.Add($Certificate) } finally { $Store.Close() }
     }
     $Signed = Join-Path $Root 'signed.exe'
     Copy-Item $Unsigned $Signed
+    Write-Output 'Signing local fixture without a timestamp'
     & $SignTool sign /fd SHA256 /sha1 $Certificate.Thumbprint /s My $Signed | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Fixture signing failed' }
+    Write-Output 'Checking real Authenticode rejection cases'
     $Signature = Get-AuthenticodeSignature -LiteralPath $Signed
     if ([string]$Signature.Status -cne 'Valid') { throw 'Local test certificate was not trusted' }
     Expect-Rejection { Assert-SdkInstallerSignature $Signed 'Other Publisher' $SignTool } 'Unapproved signer'
@@ -40,6 +46,7 @@ try {
     $Bytes[64] = $Bytes[64] -bxor 1
     [IO.File]::WriteAllBytes($Tampered, $Bytes)
     Expect-Rejection { Assert-SdkInstallerSignature $Tampered 'SDK Signing Test' $SignTool } 'Invalid Authenticode'
+    Write-Output 'Checking signature policy and exact pair/checksum cases'
     # This record only tests policy; it is not a cryptographic timestamp test.
     $Record = [pscustomobject]@{Status='Valid'; SignatureType='Authenticode';
         SignerCertificate=$Certificate; TimeStamperCertificate=$Certificate}
@@ -75,7 +82,8 @@ try {
 } finally {
     if ($null -ne $Certificate) {
         foreach ($StoreName in 'Root', 'TrustedPublisher', 'My') {
-            $Store = [Security.Cryptography.X509Certificates.X509Store]::new($StoreName, 'CurrentUser')
+            $Location = if ($StoreName -eq 'My') { 'CurrentUser' } else { 'LocalMachine' }
+            $Store = [Security.Cryptography.X509Certificates.X509Store]::new($StoreName, $Location)
             try { $Store.Open('ReadWrite'); $Store.Remove($Certificate) } finally { $Store.Close() }
         }
     }

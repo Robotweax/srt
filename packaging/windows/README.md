@@ -121,7 +121,8 @@ partially signed pair is a release fallback.
 
 `test-signing.ps1` runs on Windows even for PRs. It builds isolated executable
 fixtures and temporarily trusts its own one-day test certificate in the current
-user's stores, removing it in `finally`. Real unsigned, modified, unapproved
+user's personal store and the disposable runner's machine trust stores, removing
+it in `finally`. The fixture test requires an elevated Windows session. Real unsigned, modified, unapproved
 publisher and untimestamped signatures are rejected. Synthetic timestamp records
 exercise policy only; a successful real Microsoft signing run is still needed
 to qualify the service integration. Pair/manifest tests reject missing, extra,
