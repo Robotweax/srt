@@ -120,7 +120,8 @@ jobs:
             : > "$changed_file"
           else
             if git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
-              git diff --name-only "$BASE_SHA" "$HEAD_SHA" > "$changed_file"
+              # Classify both sides of renames, including removed source code.
+              git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA" > "$changed_file"
             else
               git ls-tree -r --name-only "$HEAD_SHA" > "$changed_file"
             fi

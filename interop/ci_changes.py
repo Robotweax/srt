@@ -285,7 +285,9 @@ def enable_cpp(change_set: ChangeSet, path: str) -> None:
     normalized = path.lower()
     if any(token in normalized for token in THREAD_TOKENS):
         change_set.thread_sanitizer = True
-    if any(token in normalized for token in FUZZ_TOKENS):
+    if path.startswith("fuzz/") or any(
+        token in normalized for token in FUZZ_TOKENS
+    ):
         change_set.fuzz = True
     if path.startswith("include/") or path.startswith("src/compat/"):
         change_set.shared = True
