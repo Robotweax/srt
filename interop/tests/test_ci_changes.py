@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import subprocess
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -13,6 +17,52 @@ import ci_changes  # noqa: E402
 
 
 class CiChangeClassifierTests(unittest.TestCase):
+    def test_new_fuzz_targets_select_fuzz_without_name_keywords(self) -> None:
+        for path in ("fuzz/fuzz_control.cpp", "fuzz/fuzz_session.cpp",
+                     "fuzz/helpers/input_cursor.hpp"):
+            with self.subTest(path=path):
+                result = ci_changes.classify([path])
+                self.assertTrue(result.fuzz)
+                self.assertTrue(result.sanitizers)
+
+    def test_workflow_keeps_security_relevant_rename_source(self) -> None:
+        workflow = (INTEROP_DIRECTORY.parent / ".github/workflows/ci.yml").read_text()
+        command = re.search(r'^\s*(git diff --name-only[^\n]+) > "\$changed_file"$',
+                            workflow, re.MULTILINE)
+        self.assertIsNotNone(command)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def git(*args: str) -> str:
+                return subprocess.check_output(
+                    ["git", *args], cwd=root, text=True,
+                    stderr=subprocess.PIPE).strip()
+
+            git("init", "-q")
+            git("config", "user.name", "CI fixture")
+            git("config", "user.email", "ci@example.invalid")
+            git("config", "commit.gpgsign", "false")
+            git("config", "diff.renames", "true")
+            (root / "src").mkdir()
+            (root / "src/crypto.cpp").write_text("retired implementation\n" * 20)
+            git("add", ".")
+            git("commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            (root / "docs").mkdir()
+            git("mv", "src/crypto.cpp", "docs/retired.md")
+            git("commit", "-qm", "rename")
+            head = git("rev-parse", "HEAD")
+            # Exercise the actual workflow command, including Git rename detection.
+            paths = subprocess.check_output(
+                ["bash", "-c", command[1]], cwd=root, text=True,
+                env={**os.environ, "BASE_SHA": base, "HEAD_SHA": head}).splitlines()
+            self.assertIn("src/crypto.cpp", paths)
+            self.assertIn("docs/retired.md", paths)
+            selected = ci_changes.classify(paths)
+            self.assertTrue(selected.sanitizers)
+            self.assertTrue(selected.fuzz)
+            self.assertFalse(selected.docs_only)
+
     def test_python_ci_tooling_does_not_start_protocol_builds(self) -> None:
         for path in (
             "tools/mobile_configure.py",
