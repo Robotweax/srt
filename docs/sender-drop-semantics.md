@@ -136,3 +136,25 @@ binary hash verifies artifact identity but does not independently reproduce its
 source-to-binary mapping. `evidence/build-provenance.json` preserves this
 explicit distinction. The runner forwards the declared identities into the
 experiment metadata instead of substituting fixed revisions or ARM64 labels.
+
+## Delayed NAKs after cumulative acknowledgement
+
+A source can be cumulatively acknowledged while its payload is still waiting in
+the receiver's TSBPD buffer. A NAK sent before recovery may arrive at the sender
+after that ACK. Answering this obsolete NAK with a sequence-only DROPREQ would
+remove the already received payload before application delivery.
+
+The session therefore tracks the exclusive cumulative peer-ACK boundary
+separately from the send buffer's first sequence. Local TTL or TLPKTDROP removal
+can advance the latter without any peer acknowledgement. A stale NAK produces a
+DROPREQ only for its not-yet-acknowledged portion; its acknowledged portion is
+ignored. Current buffered sources retain ordinary retransmission behavior.
+This also preserves retries for genuinely abandoned sources when a previous
+DROPREQ was lost. The boundary advances only after a validated ACK and does not
+move backward for older ACKs.
+
+`tests/test_acknowledged_source_drop.cpp` covers TSBPD delivery after the ACK/NAK
+race, 31-bit sequence wrap, mixed acknowledged/abandoned/current ranges,
+partially acknowledged fragmented messages, invalid and older ACKs, and repeated
+DROPREQs for abandoned sources. These tests use controlled event times and do
+not depend on random network loss.
