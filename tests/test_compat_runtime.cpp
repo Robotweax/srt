@@ -1484,8 +1484,22 @@ TEST(compat_runtime_tlpktdrop_has_a_distinct_internal_counter)
                    payload, 0, true, false, -1)
                    .status,
         MessageIoStatus::success);
+    (void)runtime.poll();
+    const auto submitted = take_datagrams(output);
+    REQUIRE_EQ(submitted.size(), 1U);
+    const auto submitted_packet = decode_packet(submitted.front());
+    REQUIRE(submitted_packet);
+    REQUIRE_EQ(submitted_packet.packet.kind, PacketKind::data);
+    REQUIRE_EQ(submitted_packet.packet.data.sequence, SequenceNumber {720});
+
     now = 1'021'001;
     (void)runtime.poll();
+    const auto abandonment = take_datagrams(output);
+    REQUIRE_EQ(abandonment.size(), 1U);
+    const auto drop_request = decode_packet(abandonment.front());
+    REQUIRE(drop_request);
+    REQUIRE_EQ(drop_request.packet.kind, PacketKind::control);
+    REQUIRE_EQ(drop_request.packet.control.type, ControlType::drop_request);
 
     const auto snapshot = runtime.statistics(false, true);
     REQUIRE_EQ(

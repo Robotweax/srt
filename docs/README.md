@@ -57,6 +57,7 @@ combining features.
 
 - [Architecture](architecture.md)
 - [ACK and ACKACK semantics](acknowledgements.md)
+- [Sender-drop semantics under kernel shaping](sender-drop-semantics.md)
 - [Protocol edge-case policy](protocol-edge-cases.md)
 - [Performance and scalability measurement](performance.md)
 - [Throughput profiling and empty-receive-buffer experiment](throughput-profiling.md)

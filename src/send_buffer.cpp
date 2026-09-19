@@ -1,5 +1,7 @@
 #include "robotweax/srt/send_buffer.hpp"
 
+#include "sender_drop_trace.hpp"
+
 #include <algorithm>
 #include <stdexcept>
 
@@ -667,7 +669,7 @@ bool SendBuffer::queue_range_drop_requests(
 }
 
 SendDropResult SendBuffer::drop_messages_older_than(
-    std::uint64_t cutoff_microseconds) noexcept
+    std::uint64_t cutoff_microseconds, std::uint64_t now_microseconds) noexcept
 {
     SendDropResult result;
     if (sequence_span_ == 0U) {
@@ -686,6 +688,10 @@ SendDropResult SendBuffer::drop_messages_older_than(
             || slot.enqueue_microseconds > cutoff_microseconds) {
             break;
         }
+        diagnostics::trace_tlpktdrop(now_microseconds, cutoff_microseconds,
+            slot.header.sequence.value(), slot.enqueue_microseconds, slot.sent,
+            slot.retransmission_queued, slot.plaintext_size, occupied_count_,
+            packets_in_flight_);
         result.bytes += slot.plaintext_size;
         discard_slot(slot);
         ++result.packets;
