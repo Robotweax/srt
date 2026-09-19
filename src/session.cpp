@@ -85,16 +85,17 @@ struct NakRangeSlices {
 
 ReliabilitySession::ReliabilitySession(Configuration configuration)
     : send_buffer_(configuration.local_initial_sequence,
-        configuration.send_capacity_packets, configuration.maximum_payload_size)
+          configuration.send_capacity_packets,
+          configuration.maximum_payload_size)
+    , peer_acknowledged_sequence_(configuration.local_initial_sequence)
     , receive_buffer_(configuration.peer_initial_sequence,
-        configuration.receive_capacity_packets)
+          configuration.receive_capacity_packets)
     , receive_loss_list_(configuration.receive_capacity_packets)
     , filter_loss_list_(configuration.receive_capacity_packets)
     , timer_scheduler_(configuration.start_microseconds)
     , sender_retransmission_timer_(configuration.start_microseconds)
     , highest_received_sequence_(
-          configuration.peer_initial_sequence.advanced(
-              SequenceNumber::mask))
+          configuration.peer_initial_sequence.advanced(SequenceNumber::mask))
     , peer_socket_id_(configuration.peer_socket_id)
 {
 }
@@ -708,6 +709,11 @@ ReliabilityProcessResult ReliabilitySession::receive(
         if (error != Error::none) {
             return {.error = error};
         }
+        if (decoded.acknowledgement.next_sequence.distance_from(
+                peer_acknowledged_sequence_)
+            > 0) {
+            peer_acknowledged_sequence_ = decoded.acknowledgement.next_sequence;
+        }
         diagnostics::trace_ack(now_microseconds,
             decoded.acknowledgement.next_sequence.value(),
             acknowledgement_progress, first_before.value(),
@@ -795,10 +801,21 @@ ReliabilityProcessResult ReliabilitySession::receive(
                 }
             }
             if (slices.stale.has_value()) {
-                if (stale_range_count == stale_ranges.size()) {
-                    return {.error = Error::buffer_too_small};
+                auto stale = *slices.stale;
+                // A delayed NAK can arrive after the cumulative ACK released
+                // this source. Sending DROPREQ then would delete data still
+                // waiting in the peer's TSBPD buffer. Only abandoned sources
+                // not yet cumulatively acknowledged need a repeated DROPREQ.
+                if (stale.last.distance_from(peer_acknowledged_sequence_)
+                    >= 0) {
+                    if (stale.first.distance_from(peer_acknowledged_sequence_)
+                        < 0)
+                        stale.first = peer_acknowledged_sequence_;
+                    if (stale_range_count == stale_ranges.size()) {
+                        return {.error = Error::buffer_too_small};
+                    }
+                    stale_ranges[stale_range_count++] = stale;
                 }
-                stale_ranges[stale_range_count++] = *slices.stale;
             }
             validation_payload =
                 validation_payload.subspan(loss.bytes_consumed);

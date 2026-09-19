@@ -412,6 +412,9 @@ private:
         std::uint64_t arrival_microseconds) noexcept;
 
     SendBuffer send_buffer_;
+    // Exclusive cumulative peer ACK boundary. Local TTL/TLPKTDROP advancement
+    // of the send buffer is not evidence that the receiver has the sources.
+    SequenceNumber peer_acknowledged_sequence_;
     ReceiveBuffer receive_buffer_;
     ReceiveLossList receive_loss_list_;
     ReceiveLossList filter_loss_list_;
