@@ -4,6 +4,7 @@
 #include "compat/readiness.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/runtime_scheduler_service.hpp"
+#include "sender_drop_trace.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1800,6 +1801,11 @@ bool ConnectionRuntime::send_actions(
         case SenderDropReason::too_late_packet_drop:
             statistics_.note_sender_tlpktdrop(
                 action.dropped_packets, action.dropped_bytes);
+            diagnostics::trace_tlpktdrop_counter(now,
+                action.drop.sequences.first.value(),
+                action.drop.sequences.last.value(), action.dropped_packets,
+                action.dropped_bytes, session_.send_buffer().size(),
+                session_.send_buffer().packets_in_flight());
             break;
         case SenderDropReason::none:
             break;
@@ -1958,6 +1964,10 @@ bool ConnectionRuntime::send_data(
         : packet.payload.size();
     statistics_.note_data_sent(
         application_payload_size, packet.header.retransmitted);
+    diagnostics::trace_udp_submit(now, packet.header.sequence.value(),
+        packet.header.retransmitted, application_payload_size,
+        session_.send_buffer().size(),
+        session_.send_buffer().packets_in_flight());
     session_.note_data_packet_sent(now);
     if (crypto_ != nullptr
         && !packet.header.retransmitted

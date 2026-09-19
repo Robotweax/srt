@@ -36,6 +36,8 @@ option(ROBOTWEAX_SRT_BUILD_TOOLS "Build protocol development tools"
     ${ROBOTWEAX_SRT_NATIVE_PROGRAMS_DEFAULT})
 option(ROBOTWEAX_SRT_BUILD_EXAMPLES "Build public API examples" OFF)
 option(ROBOTWEAX_SRT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
+option(ROBOTWEAX_SRT_SENDER_DROP_TRACE
+    "Enable the Linux sender-drop JSONL diagnostic" OFF)
 option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
     "Install opt-in srt.pc metadata for libsrt-compatible consumers" OFF)
 option(ENABLE_AEAD_API_PREVIEW
@@ -136,6 +138,14 @@ add_library(RobotweaxSRT::srt ALIAS robotweax_srt)
 target_compile_definitions(robotweax_srt PRIVATE ROBOTWEAX_SRT_BUILDING)
 target_compile_definitions(robotweax_srt PRIVATE
     ROBOTWEAX_SRT_COMPILED_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
+if(ROBOTWEAX_SRT_SENDER_DROP_TRACE)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR
+            "ROBOTWEAX_SRT_SENDER_DROP_TRACE is a Linux-only diagnostic")
+    endif()
+    target_compile_definitions(robotweax_srt
+        PRIVATE ROBOTWEAX_SRT_SENDER_DROP_TRACE)
+endif()
 if(ENABLE_AEAD_API_PREVIEW)
     target_compile_definitions(robotweax_srt
         PUBLIC ENABLE_AEAD_API_PREVIEW)

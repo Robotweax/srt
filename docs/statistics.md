@@ -109,8 +109,20 @@ Finite per-message TTL and negotiated TLPKTDROP are distinct protocol causes.
 The v1.5.7 public layout has no separate fields, so `pktSndDrop*` and
 `byteSndDrop*` report their combined result.
 
-Sender and receiver drop counters describe local action. They are not proof
-that a peer observed the same event.
+For TLPKTDROP, a sender increment means that the packet aged beyond the
+negotiated sender-drop deadline while it was still unacknowledged, so the
+sender removed its retained copy from the send/retransmission buffer and will
+no longer retransmit it. The sender also emits a DROPREQ for the abandoned
+sequence range. A packet can already have been accepted by the UDP socket and
+remain in a kernel qdisc or elsewhere on the path when this happens. Such a
+packet can subsequently reach the peer and application as a unique packet.
+
+Consequently, sender and receiver drop counters describe local protocol
+actions. `pktSndDrop*` is neither a network-loss counter nor proof of lost
+application payload. Interpret it together with unique-send/receive,
+retransmission, receiver-drop, belated-packet and end-to-end payload-integrity
+evidence. See [Sender-drop semantics](sender-drop-semantics.md) for the
+packet-level qualification.
 
 ## Packet-filter and FEC counters
 

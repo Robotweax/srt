@@ -1,5 +1,7 @@
 #include "robotweax/srt/session.hpp"
 
+#include "sender_drop_trace.hpp"
+
 #include "robotweax/srt/codec.hpp"
 
 #include <algorithm>
@@ -694,6 +696,9 @@ ReliabilityProcessResult ReliabilitySession::receive(
         if (!decoded) {
             return {.error = decoded.error};
         }
+        const auto first_before = send_buffer_.first_sequence();
+        const auto buffered_before = send_buffer_.size();
+        const auto in_flight_before = send_buffer_.packets_in_flight();
         const auto acknowledgement_progress =
             decoded.acknowledgement.next_sequence.distance_from(
                 send_buffer_.first_sequence());
@@ -703,6 +708,12 @@ ReliabilityProcessResult ReliabilitySession::receive(
         if (error != Error::none) {
             return {.error = error};
         }
+        diagnostics::trace_ack(now_microseconds,
+            decoded.acknowledgement.next_sequence.value(),
+            acknowledgement_progress, first_before.value(),
+            send_buffer_.first_sequence().value(), buffered_before,
+            send_buffer_.size(), in_flight_before,
+            send_buffer_.packets_in_flight());
         // Repeated ACKs can update the receive window while a lost flight
         // tail remains unacknowledged. Resetting RTO on those non-progress
         // ACKs can postpone recovery until the Live delivery deadline expires.
@@ -938,7 +949,7 @@ ReliabilityActions ReliabilitySession::drop_too_late_sender(
         return actions;
     }
     const auto dropped = send_buffer_.drop_messages_older_than(
-        now_microseconds - threshold_microseconds);
+        now_microseconds - threshold_microseconds, now_microseconds);
     if (dropped) {
         actions.push({
             .kind = ReliabilityActionKind::drop_request,

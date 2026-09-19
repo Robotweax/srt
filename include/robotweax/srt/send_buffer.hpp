@@ -130,7 +130,8 @@ public:
     [[nodiscard]] bool queue_range_drop_requests(
         std::span<const SequenceRange> ranges) noexcept;
     [[nodiscard]] SendDropResult drop_messages_older_than(
-        std::uint64_t cutoff_microseconds) noexcept;
+        std::uint64_t cutoff_microseconds,
+        std::uint64_t now_microseconds = 0U) noexcept;
     [[nodiscard]] SendDropResult drop_expired_message(
         std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] std::size_t buffered_payload_bytes() const noexcept;
