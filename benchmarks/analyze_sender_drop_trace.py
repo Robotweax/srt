@@ -45,6 +45,47 @@ def neighboring_ack(acks, timestamp, before):
     return max(candidates, key=key) if before else min(candidates, key=key)
 
 
+def validate_drop_mapping(submissions, drops, counters, name):
+    """Prove submission-before-removal and one exact counter per removed range."""
+    submitted = {event["sequence"]: event for event in submissions}
+    removed = {event["sequence"]: event for event in drops}
+    if len(removed) != len(drops):
+        fail(f"duplicate TLPKTDROP sequence: {name}")
+    for drop in drops:
+        submit = submitted.get(drop["sequence"])
+        if (submit is None or submit["monotonicNs"] <= 0
+                or submit["monotonicNs"] >= drop["monotonicNs"]):
+            fail(f"TLPKTDROP without prior UDP submission: {name}")
+        if (drop["enqueueUs"] > drop["cutoffUs"]
+                or drop["protocolNowUs"] < drop["enqueueUs"]
+                or drop["ageUs"] != drop["protocolNowUs"] - drop["enqueueUs"]):
+            fail(f"inconsistent drop age/cutoff: {name}")
+    matched = set()
+    mask = (1 << 31) - 1
+    for counter in counters:
+        first, last = counter["firstSequence"], counter["lastSequence"]
+        if not (0 <= first <= mask and 0 <= last <= mask):
+            fail(f"invalid counter sequence: {name}")
+        count = ((last - first) & mask) + 1
+        if count > len(drops) or count != counter["packetDelta"]:
+            fail(f"counter range/count mismatch: {name}")
+        payload_bytes = 0
+        for offset in range(count):
+            sequence = (first + offset) & mask
+            drop = removed.get(sequence)
+            if drop is None or sequence in matched:
+                fail(f"counter range missing or overlapping removals: {name}")
+            if (drop["protocolNowUs"] != counter["protocolNowUs"]
+                    or drop["monotonicNs"] > counter["monotonicNs"]):
+                fail(f"counter precedes removal or uses another poll: {name}")
+            matched.add(sequence)
+            payload_bytes += drop["payloadBytes"]
+        if payload_bytes != counter["payloadByteDelta"]:
+            fail(f"counter byte delta mismatch: {name}")
+    if matched != set(removed):
+        fail(f"removals without exact counter coverage: {name}")
+
+
 def analyze_run(root, name, active_pps):
     directory = root / name
     if (directory / "runner.exit").read_text().strip() != "0":
@@ -89,14 +130,7 @@ def analyze_run(root, name, active_pps):
             if qdisc.get("drops") != 0 or qdisc.get("requeues") != 0:
                 fail(f"qdisc loss in {name}")
 
-    missing_submissions = [
-        event["sequence"] for event in drops
-        if event["sequence"] not in submission_by_sequence
-    ]
-    if missing_submissions:
-        fail(f"TLPKTDROP without prior UDP submission: {name}")
-    if len({event["sequence"] for event in drops}) != len(drops):
-        fail(f"duplicate TLPKTDROP sequence: {name}")
+    validate_drop_mapping(submissions, drops, counter_events, name)
     if drops and min(event["ageUs"] for event in drops) < 1_020_000:
         fail(f"TLPKTDROP before the effective deadline: {name}")
     if active_pps == 2800 and drops:
@@ -138,7 +172,7 @@ def analyze_run(root, name, active_pps):
         "tlpktdropEvents": len(drops),
         "publicSenderDropPacketTotal": public_drop_total,
         "tlpktdropCounterEvents": counter_events,
-        "allDroppedSequencesPreviouslySubmittedToUdp": not missing_submissions,
+        "allDroppedSequencesPreviouslySubmittedToUdp": True,
         "payloadIntegrityVerified": run["payload"]["integrityVerified"],
         "uniqueSentPackets": run["payload"]["uniqueSentPackets"],
         "uniqueReceivedPackets": run["payload"]["uniqueReceivedPackets"],

@@ -78,3 +78,61 @@ contains application payload.
 
 `benchmarks/analyze_sender_drop_trace.py RESULT_ROOT` validates the four-run
 evidence and emits the packet/ACK mapping as JSON.
+
+The analyzer requires each counted sequence to have an earlier successful
+original UDP submission on the monotonic clock. Each counter range must cover
+exactly its recorded removals (including 31-bit sequence wrap), in the same
+protocol poll and after the removals, with matching packet and payload-byte
+deltas. Missing, overlapping or unrelated counter ranges fail validation.
+Synthetic regression fixtures exercise these rejection paths; they do not
+replace the Linux experiment. The historical observations above have not been
+rerun as part of the analyzer-validation corrections.
+
+## Reproducing with build provenance
+
+The fixed runner takes five arguments and requires a fresh output directory:
+
+```sh
+bash benchmarks/run_sender_drop_kernel_shaping.sh \
+  VM_WORK_ROOT DIAGNOSTIC_INSTALL OUTPUT_ROOT NETEM_RUNNER BUILD_MANIFEST.json
+```
+
+Use Linux with Bash 4.4 or newer. Before changing host socket limits or running
+any network experiment, the runner checks the manifest's SHA-256 values against
+both libraries and both Telemetry peers. It also checks the Telemetry checkout
+revision and requires a clean working tree. Mismatches stop the run. Trace files
+are isolated inside the new output directory, so stale `/tmp` traces cannot be
+appended to a new experiment.
+
+The build producer must create and retain a JSON manifest with this structure
+(replace placeholders with the actual build identities and 64-digit hashes):
+
+```json
+{
+  "schemaVersion": 1,
+  "robotweax": {
+    "version": "actual diagnostic build version",
+    "revision": "40-digit commit containing the instrumentation",
+    "buildProfile": "actual OS-architecture-config-crypto-trace profile",
+    "librarySha256": "SHA256 of the installed Robotweax library",
+    "peerSha256": "SHA256 of the Robotweax-linked Telemetry peer"
+  },
+  "haivision": {
+    "version": "actual reference version",
+    "revision": "40-digit reference source commit",
+    "buildProfile": "actual reference build profile",
+    "librarySha256": "SHA256 of the installed reference library",
+    "peerSha256": "SHA256 of the reference-linked Telemetry peer"
+  },
+  "telemetryRevision": "40-digit clean Telemetry source commit"
+}
+```
+
+Generate hashes with `sha256sum` on the exact installed files used by the
+runner. Use a committed diagnostic source revision, not merely the unmodified
+base revision. Retain the build logs tying source revisions to those artifacts.
+Version, source revision and build profile are builder declarations: matching a
+binary hash verifies artifact identity but does not independently reproduce its
+source-to-binary mapping. `evidence/build-provenance.json` preserves this
+explicit distinction. The runner forwards the declared identities into the
+experiment metadata instead of substituting fixed revisions or ARM64 labels.

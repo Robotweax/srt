@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-set -u
+set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-  echo "usage: $0 VM_WORK_ROOT DIAGNOSTIC_INSTALL OUTPUT_ROOT NETEM_RUNNER" >&2
+if [[ $# -ne 5 ]]; then
+  echo "usage: $0 VM_WORK_ROOT DIAGNOSTIC_INSTALL OUTPUT_ROOT NETEM_RUNNER BUILD_MANIFEST" >&2
   exit 2
 fi
 
@@ -10,6 +10,21 @@ work_root=$1
 diagnostic_install=$2
 output_root=$3
 runner=$4
+manifest=$5
+script_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# Never overwrite or append to a prior evidence set.
+mkdir "$output_root"
+output_root=$(cd -- "$output_root" && pwd)
+mkdir "$output_root/evidence"
+python3 "$script_root/sender_drop_provenance.py" "$manifest" \
+  --robotweax-library "$diagnostic_install/lib/libsrt.so.0.2.4" \
+  --robotweax-peer "$work_root/telemetry-robotweax-build/robotweax_srt_telemetry_public_srt_incident_peer" \
+  --haivision-library "$work_root/haivision-install/lib/libsrt.so.1.5.7" \
+  --haivision-peer "$work_root/telemetry-haivision-build/robotweax_srt_telemetry_public_srt_incident_peer" \
+  --telemetry-source "$work_root/telemetry" \
+  --output "$output_root/evidence/build-provenance.json" \
+  --args-output "$output_root/evidence/provenance-args.bin"
+mapfile -d '' -t provenance_args < "$output_root/evidence/provenance-args.bin"
 uid_value=$(id -u)
 gid_value=$(id -g)
 old_rmem=$(sysctl -n net.core.rmem_max)
@@ -42,24 +57,18 @@ LD_LIBRARY_PATH="$diagnostic_install/lib" \
   > "$output_root/evidence/peer-ldd.txt"
 
 common=(
+  "${provenance_args[@]}"
   --telemetry-source "$work_root/telemetry"
   --uid "$uid_value" --gid "$gid_value"
   --robotweax-peer "$work_root/telemetry-robotweax-build/robotweax_srt_telemetry_public_srt_incident_peer"
   --robotweax-library "$diagnostic_install/lib/libsrt.so.0.2.4"
-  --robotweax-version v0.2.4-26-gce3d36f
-  --robotweax-revision ce3d36f77c567b69c0429f7f8aea6d9717d91045
-  --robotweax-build-profile linux-arm64-release-shared-openssl-sender-drop-trace
   --haivision-peer "$work_root/telemetry-haivision-build/robotweax_srt_telemetry_public_srt_incident_peer"
   --haivision-library "$work_root/haivision-install/lib/libsrt.so.1.5.7"
-  --haivision-version v1.5.7
-  --haivision-revision 899348d8318eb9a3c5a5b6ec43c4a1114288773a
-  --haivision-build-profile linux-arm64-release-shared-openssl
-  --telemetry-revision 9fe30a833c0c5f755a5f57249103f1a955790b80
 )
 
 run_case() {
   local name=$1 active_pps=$2
-  local trace="/tmp/robotweax-sender-drop-${name}.jsonl"
+  local trace="$output_root/$name/sender-drop-trace.jsonl"
   mkdir -p "$output_root/$name"
   local -a argv=(
     sudo -E env
@@ -80,9 +89,8 @@ run_case() {
   local code=$?
   set -e
   printf '%s\n' "$code" > "$output_root/$name/runner.exit"
-  if [[ -f "$trace" ]]; then
-    mv "$trace" "$output_root/$name/sender-drop-trace.jsonl"
-  fi
+  test "$code" -eq 0
+  test -s "$trace"
   printf '%s active_pps=%s exit=%s\n' "$name" "$active_pps" "$code"
 }
 
