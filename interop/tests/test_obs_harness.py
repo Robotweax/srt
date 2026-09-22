@@ -41,25 +41,36 @@ class ObsHarnessTests(unittest.TestCase):
             target = root / windows_prepare.TARGET
             target.parent.mkdir(parents=True)
             target.write_bytes(original)
+            arch_original = b"function(test)\n" + windows_prepare.ARCH_ORIGINAL + b"endfunction()\n"
+            arch_target = root / windows_prepare.ARCH_TARGET
+            arch_target.write_bytes(arch_original)
             prepared = original.replace(
                 windows_prepare.ORIGINAL, windows_prepare.PREPARED
             ).replace(
                 windows_prepare.QT_ORIGINAL, windows_prepare.QT_PREPARED
             )
+            arch_prepared = arch_original.replace(
+                windows_prepare.ARCH_ORIGINAL, windows_prepare.ARCH_PREPARED
+            )
             with mock.patch.multiple(
                 windows_prepare,
                 ORIGINAL_SHA256=hashlib.sha256(original).hexdigest(),
                 PREPARED_SHA256=hashlib.sha256(prepared).hexdigest(),
+                ARCH_ORIGINAL_SHA256=hashlib.sha256(arch_original).hexdigest(),
+                ARCH_PREPARED_SHA256=hashlib.sha256(arch_prepared).hexdigest(),
             ):
                 target.write_bytes(original.replace(b"\n", b"\r\n"))
+                arch_target.write_bytes(arch_original.replace(b"\n", b"\r\n"))
                 self.assertTrue(windows_prepare.prepare(root))
                 self.assertEqual(target.read_bytes().count(windows_prepare.PREPARED), 1)
                 self.assertEqual(target.read_bytes().count(windows_prepare.QT_PREPARED), 1)
+                self.assertEqual(arch_target.read_bytes(), arch_prepared)
                 self.assertFalse(windows_prepare.prepare(root))
                 target.write_bytes(target.read_bytes() + b"unknown\n")
                 with self.assertRaisesRegex(RuntimeError, "unrecognized"):
                     windows_prepare.prepare(root)
                 self.assertEqual(target.read_bytes(), prepared + b"unknown\n")
+                self.assertEqual(arch_target.read_bytes(), arch_prepared)
 
     def test_windows_transport_capture_requires_coherent_mpeg_ts(self):
         with tempfile.TemporaryDirectory() as directory:
