@@ -22,6 +22,8 @@ developers and transport integrators using the installed public API.
   provider selection, interoperability tests, and controlled shutdown.
 - [VLC integration](vlc-integration.md) — headless SRT module builds, decoded
   media checks, provider selection, and lifecycle qualification.
+- [OBS integration](obs-integration.md) — native SRT output and FFmpeg media
+  sources using one provider, with headless audio/video qualification.
 - [Testing](testing.md) — local verification and focused test selection.
 - [Live UDP/SRT bridge](udp-srt-bridge.md) — continuous MPEG-TS UDP → SRT → UDP
   forwarding with the public API.

@@ -205,6 +205,15 @@ and verifies the runtime provider. Run `tests/vlc/build_and_test.sh` with the
 five source/work paths documented in that guide. GUI and platform installers
 are outside this initial qualification.
 
+## OBS integration gate
+
+The [OBS integration](obs-integration.md) builds libobs and its production
+media modules with a shared FFmpeg profile. The Linux gate exercises native
+SRT output and FFmpeg-backed media sources against a separate reference
+provider, including simultaneous encrypted send/receive, decoded video and
+audio, negative authentication, restart and bounded shutdown. The complete
+build command and pinned dependencies are documented in that guide.
+
 ## AES-GCM validation
 
 The default build tests the AES-CTR profile. Validate the released AES-GCM

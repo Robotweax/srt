@@ -13,6 +13,7 @@ permissions:
   contents: read
 
 env:
+  OBS_COMMIT: ba2f32bdf791005443988a4955e963663e16b1ed
   VLC_COMMIT: 6de05adcbaf2e8b85fe86aad4169393098628119
   GSTREAMER_COMMIT: 070125524a8422e29d3b69a372ed4f62fd343ffa
   FFMPEG_COMMIT: 3acec0a1af2dda0a0838689b8b8649e7deb080a0
@@ -56,6 +57,7 @@ jobs:
       ffmpeg: ${{ steps.classify.outputs.ffmpeg }}
       gstreamer: ${{ steps.classify.outputs.gstreamer }}
       vlc: ${{ steps.classify.outputs.vlc }}
+      obs: ${{ steps.classify.outputs.obs }}
       aead_platform: ${{ steps.classify.outputs.aead_platform }}
       sanitizers: ${{ steps.classify.outputs.sanitizers }}
       thread_sanitizer: ${{ steps.classify.outputs.thread_sanitizer }}
@@ -605,6 +607,66 @@ jobs:
             ${{ runner.temp }}/gstreamer-qualification/evidence/*.txt
             ${{ runner.temp }}/gstreamer-qualification/gst-robotweax-build/meson-logs/
             ${{ runner.temp }}/gstreamer-qualification/gst-reference-build/meson-logs/
+
+  obs_integration:
+    name: OBS integration
+    needs: changes
+    if: needs.changes.outputs.obs == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: obsproject/obs-studio
+          ref: ${{ env.OBS_COMMIT }}
+          path: obs-source
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: GStreamer/gstreamer
+          ref: ${{ env.GSTREAMER_COMMIT }}
+          path: gstreamer-source
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: FFmpeg/FFmpeg
+          ref: ${{ env.FFMPEG_COMMIT }}
+          path: ffmpeg-source
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: Haivision/srt
+          ref: ${{ env.REFERENCE_SRT_COMMIT }}
+          path: reference-source
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build git pkg-config python3-venv libssl-dev libglib2.0-dev flex bison extra-cmake-modules libsimde-dev uthash-dev libjansson-dev uuid-dev libx11-dev libx11-xcb-dev libxcb1-dev libxcb-randr0-dev libxcb-xinput-dev libgl1-mesa-dev libegl1-mesa-dev libdrm-dev libva-dev libpci-dev librist-dev libx264-dev xvfb xauth libgl1-mesa-dri
+          python3 -m venv "$RUNNER_TEMP/obs-tools"
+          "$RUNNER_TEMP/obs-tools/bin/pip" install meson==1.9.1
+          echo "$RUNNER_TEMP/obs-tools/bin" >> "$GITHUB_PATH"
+      - name: Build and qualify OBS with Robotweax SRT
+        run: >-
+          tests/obs/build_and_test.sh
+          "$GITHUB_WORKSPACE/obs-source"
+          "$GITHUB_WORKSPACE/gstreamer-source"
+          "$GITHUB_WORKSPACE/ffmpeg-source"
+          "$GITHUB_WORKSPACE/reference-source"
+          "$RUNNER_TEMP/obs-qualification"
+      - name: Preserve OBS qualification diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: obs-evidence
+          path: |
+            ${{ runner.temp }}/obs-qualification/evidence/*.log
+            ${{ runner.temp }}/obs-qualification/evidence/*.txt
+            ${{ runner.temp }}/obs-qualification/evidence/*.frames
+          retention-days: 7
 
   vlc_integration:
     name: VLC integration
@@ -1829,6 +1891,7 @@ jobs:
       - ffmpeg_integration
       - gstreamer_integration
       - vlc_integration
+      - obs_integration
       - aead_platform
       - sanitizers
       - thread_sanitizer
@@ -1858,6 +1921,7 @@ jobs:
           FFMPEG_INTEGRATION: ${{ needs.ffmpeg_integration.result }}
           GSTREAMER_INTEGRATION: ${{ needs.gstreamer_integration.result }}
           VLC_INTEGRATION: ${{ needs.vlc_integration.result }}
+          OBS_INTEGRATION: ${{ needs.obs_integration.result }}
           AEAD_PLATFORM: ${{ needs.aead_platform.result }}
           SANITIZERS: ${{ needs.sanitizers.result }}
           THREAD_SANITIZER: ${{ needs.thread_sanitizer.result }}
@@ -1876,6 +1940,7 @@ jobs:
           EXPECT_ffmpeg_integration: ${{ needs.changes.outputs.ffmpeg == 'true' }}
           EXPECT_gstreamer_integration: ${{ needs.changes.outputs.gstreamer == 'true' }}
           EXPECT_vlc_integration: ${{ needs.changes.outputs.vlc == 'true' }}
+          EXPECT_obs_integration: ${{ needs.changes.outputs.obs == 'true' }}
           EXPECT_aead_platform: ${{ needs.changes.outputs.aead_platform == 'true' || needs.changes.outputs.examples == 'true' }}
           EXPECT_sanitizers: ${{ needs.changes.outputs.sanitizers == 'true' }}
           EXPECT_thread_sanitizer: ${{ needs.changes.outputs.thread_sanitizer == 'true' }}
@@ -1898,6 +1963,7 @@ jobs:
             "ffmpeg-integration=$FFMPEG_INTEGRATION" \
             "gstreamer-integration=$GSTREAMER_INTEGRATION" \
             "vlc-integration=$VLC_INTEGRATION" \
+            "obs-integration=$OBS_INTEGRATION" \
             "aead-platform=$AEAD_PLATFORM" \
             "sanitizers=$SANITIZERS" \
             "thread-sanitizer=$THREAD_SANITIZER" \

@@ -276,3 +276,5 @@ configure a new one; never delete source files to repair a CMake cache.
 See [Testing](testing.md) and [Integration](integration.md) for the next steps.
 See [FFmpeg integration](ffmpeg-integration.md) for the isolated shared-library
 profile required by FFmpeg's conventional libsrt discovery.
+See [OBS integration](obs-integration.md) to build OBS's native SRT output
+and FFmpeg-backed media sources against the same isolated Robotweax provider.
