@@ -18,6 +18,8 @@ For the separate Qt frontend build and user-facing acceptance procedure, see
 [OBS Linux desktop qualification](obs-desktop.md).
 For the narrower Windows x64 module and media-path profile, see
 [OBS Windows integration](obs-windows.md).
+For the Windows Qt frontend, see
+[OBS Windows desktop qualification](obs-windows-desktop.md).
 The profile does not qualify RIST, hardware encoders, Rendezvous, IPv6,
 AES-GCM, adverse-network performance, or quantitative A/V synchronization.
 

@@ -739,6 +739,45 @@ jobs:
             ${{ runner.temp }}/obs-windows-qualification/srt-build/CMakeFiles/CMakeConfigureLog.yaml
           retention-days: 7
 
+  obs_windows_desktop:
+    name: OBS Windows desktop
+    needs: changes
+    if: needs.changes.outputs.obs == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: obsproject/obs-studio
+          ref: ${{ env.OBS_COMMIT }}
+          path: obs-desktop-source
+          persist-credentials: false
+      - name: Build and qualify OBS Qt desktop on Windows
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Visual Studio C++ tools are required' }
+          $script = Join-Path $PWD 'tests\obs\build_windows.ps1'
+          $pwsh = Join-Path $PSHOME 'pwsh.exe'
+          $work = Join-Path $env:RUNNER_TEMP 'obs-windows-desktop-qualification'
+          & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" amd64 && `"$pwsh`" -NoProfile -File `"$script`" -ObsSource `"$PWD\obs-desktop-source`" -WorkDirectory `"$work`" -Desktop"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows OBS desktop qualification failed' }
+      - name: Preserve Windows OBS desktop diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: obs-windows-desktop-evidence
+          path: |
+            ${{ runner.temp }}/obs-windows-desktop-qualification/evidence/*.txt
+            ${{ runner.temp }}/obs-windows-desktop-qualification/evidence/runtime/*.log
+            ${{ runner.temp }}/obs-windows-desktop-qualification/evidence/desktop/*.log
+            ${{ runner.temp }}/obs-windows-desktop-qualification/obs-build/CMakeCache.txt
+            ${{ runner.temp }}/obs-windows-desktop-qualification/obs-build/CMakeFiles/CMakeConfigureLog.yaml
+          retention-days: 7
+
   vlc_integration:
     name: VLC integration
     needs: changes
@@ -1964,6 +2003,7 @@ jobs:
       - vlc_integration
       - obs_integration
       - obs_windows_integration
+      - obs_windows_desktop
       - aead_platform
       - sanitizers
       - thread_sanitizer
@@ -1995,6 +2035,7 @@ jobs:
           VLC_INTEGRATION: ${{ needs.vlc_integration.result }}
           OBS_INTEGRATION: ${{ needs.obs_integration.result }}
           OBS_WINDOWS_INTEGRATION: ${{ needs.obs_windows_integration.result }}
+          OBS_WINDOWS_DESKTOP: ${{ needs.obs_windows_desktop.result }}
           AEAD_PLATFORM: ${{ needs.aead_platform.result }}
           SANITIZERS: ${{ needs.sanitizers.result }}
           THREAD_SANITIZER: ${{ needs.thread_sanitizer.result }}
@@ -2015,6 +2056,7 @@ jobs:
           EXPECT_vlc_integration: ${{ needs.changes.outputs.vlc == 'true' }}
           EXPECT_obs_integration: ${{ needs.changes.outputs.obs == 'true' }}
           EXPECT_obs_windows_integration: ${{ needs.changes.outputs.obs == 'true' }}
+          EXPECT_obs_windows_desktop: ${{ needs.changes.outputs.obs == 'true' }}
           EXPECT_aead_platform: ${{ needs.changes.outputs.aead_platform == 'true' || needs.changes.outputs.examples == 'true' }}
           EXPECT_sanitizers: ${{ needs.changes.outputs.sanitizers == 'true' }}
           EXPECT_thread_sanitizer: ${{ needs.changes.outputs.thread_sanitizer == 'true' }}
@@ -2039,6 +2081,7 @@ jobs:
             "vlc-integration=$VLC_INTEGRATION" \
             "obs-integration=$OBS_INTEGRATION" \
             "obs-windows-integration=$OBS_WINDOWS_INTEGRATION" \
+            "obs-windows-desktop=$OBS_WINDOWS_DESKTOP" \
             "aead-platform=$AEAD_PLATFORM" \
             "sanitizers=$SANITIZERS" \
             "thread-sanitizer=$THREAD_SANITIZER" \

@@ -1165,7 +1165,7 @@ class CiChangeClassifierTests(unittest.TestCase):
             INTEROP_DIRECTORY.parent / ".github/workflows/ci.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 7)
+        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 8)
         timing_evidence = workflow.split(
             "      - name: Preserve AES-GCM timing failure diagnostics\n", 1
         )[1].split("      - name:", 1)[0]

@@ -9,6 +9,8 @@ peer.
 The Windows profile complements the broader [Linux OBS qualification](obs-integration.md).
 It is a headless module and media-path qualification, not a signed OBS installer
 or a complete Qt desktop distribution.
+The separate [Windows desktop qualification](obs-windows-desktop.md) exercises
+the installed Qt frontend and automatic encrypted output reconnection.
 
 ## Pinned inputs and dependency boundary
 
