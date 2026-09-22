@@ -6,6 +6,10 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Added an isolated Linux OBS Qt desktop build profile, frontend streaming
+  smoke tests, PNG support for desktop assets, and interactive acceptance
+  criteria without changing the headless profile's default selection.
+
 - Added a pinned headless OBS integration profile with explicit Robotweax
   selection for native SRT output and FFmpeg media sources, real A/V and
   lifecycle qualification, provider checks, and a required Linux CI gate.

@@ -24,6 +24,8 @@ developers and transport integrators using the installed public API.
   media checks, provider selection, and lifecycle qualification.
 - [OBS integration](obs-integration.md) — native SRT output and FFmpeg media
   sources using one provider, with headless audio/video qualification.
+- [OBS Linux desktop](obs-desktop.md) — isolated Qt frontend build, desktop
+  streaming smoke tests and interactive acceptance criteria.
 - [Testing](testing.md) — local verification and focused test selection.
 - [Live UDP/SRT bridge](udp-srt-bridge.md) — continuous MPEG-TS UDP → SRT → UDP
   forwarding with the public API.

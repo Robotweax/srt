@@ -214,6 +214,13 @@ provider, including simultaneous encrypted send/receive, decoded video and
 audio, negative authentication, restart and bounded shutdown. The complete
 build command and pinned dependencies are documented in that guide.
 
+The same required job also builds the [OBS Linux desktop](obs-desktop.md)
+in a separate source/build/install tree and tests its actual frontend
+streaming controls under Xvfb. It retains diagnostic logs and frame hashes,
+not third-party binaries or user profiles. Longer interactive, reconnect
+and adverse-network acceptance cases are documented separately and are not
+implied by a successful short desktop smoke test.
+
 ## AES-GCM validation
 
 The default build tests the AES-CTR profile. Validate the released AES-GCM

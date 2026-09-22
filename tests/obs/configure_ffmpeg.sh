@@ -19,12 +19,12 @@ cd "$build"
 "$source_directory/configure" --prefix="$prefix" --libdir="$prefix/lib" \
     --disable-autodetect --disable-debug --disable-doc --disable-static \
     --enable-shared --disable-everything --disable-x86asm \
-    --enable-gpl --enable-libx264 --enable-libsrt \
+    --enable-gpl --enable-libx264 --enable-libsrt --enable-zlib \
     --enable-ffmpeg --enable-ffprobe --enable-avdevice --enable-avfilter \
     --enable-swscale --enable-swresample \
     --enable-encoder=libx264,aac,pcm_s16le,rawvideo,wrapped_avframe \
-    --enable-decoder=h264,aac,pcm_s16le,rawvideo,wrapped_avframe \
-    --enable-parser=h264,aac --enable-demuxer=mpegts \
+    --enable-decoder=h264,aac,pcm_s16le,rawvideo,wrapped_avframe,png \
+    --enable-parser=h264,aac --enable-demuxer=mpegts,image2,image2pipe \
     --enable-muxer=mpegts,framehash,null,pcm_s16le \
     --enable-protocol=file,pipe,libsrt \
     --enable-filter=testsrc2,sine,aresample,scale,format,aformat,anull,null \
