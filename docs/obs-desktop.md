@@ -10,11 +10,34 @@ profile or qualify a general-purpose OBS distribution.
 Use the same immutable OBS, FFmpeg, GStreamer and reference-SRT revisions
 listed in the integration guide. The desktop profile selects `obs-ffmpeg`,
 `obs-x264`, `rtmp-services` (including its custom SRT service), and
-`obs-transitions`. It enables the Qt frontend without patching its media or
-transport implementation. Service-list updates and the What's New dialog
+`obs-transitions`. It enables the Qt frontend with the narrowly scoped,
+version-locked MPEG-TS lifecycle correction described below. It does not
+change the SRT protocol implementation. Service-list updates and the What's New dialog
 are disabled for this isolated build.
 The source revisions and build profile are pinned; distribution dependency
 updates mean this is not a promise of bit-identical binaries.
+
+### Desktop MPEG-TS lifecycle correction
+
+The desktop recipe applies `tests/obs/prepare_desktop_lifecycle.py` to the
+pinned OBS 32.2.2 MPEG-TS module. This independently authored correction
+releases the previous FFmpeg state before reinitializing it, and releases
+partially initialized state before reporting a failed start. Without this
+cleanup, reconnect can discard the previous error-string allocation and
+FFmpeg state. Existing serialized start/writer joins remain unchanged.
+The correction validates the original file's SHA-256, is idempotent, and
+rejects unknown or partially modified source. The headless recipe remains
+unpatched; do not reuse a desktop checkout for it.
+
+The lifecycle analysis used OBS revision
+`ba2f32bdf791005443988a4955e963663e16b1ed`,
+`plugins/obs-ffmpeg/obs-ffmpeg-mpegts.c`, its `obs-ffmpeg-srt.h` companion,
+`libobs/obs-output.c` and `libobs/util/bmem.c`. Runtime allocation tracing
+on the synthetic reconnect fixture identified a retained 61-byte error
+string in the MPEG-TS logging path per tested interruption. This is an
+OBS-version-scoped lifecycle finding, not an SRT wire-compatibility rule.
+The script contains no copied upstream implementation. The modified OBS
+build retains OBS's upstream license; this does not relicense its source.
 
 The supported test setup is Ubuntu 24.04, X11/Xvfb, Mesa software rendering,
 IPv4 loopback, H.264/AAC MPEG-TS, and cleartext or AES-CTR. The restricted
@@ -92,11 +115,42 @@ streaming; this comparison does not certify that OBS or Qt is leak-free.
 The separate headless gate continues to verify the native and FFmpeg symbol
 providers and its full existing interoperability matrix.
 
-Logs and decoded frame hashes are diagnostic evidence. They do not establish
-GUI reconnect behavior, long-duration reliability, A/V synchronization,
-adverse-network performance or every desktop workflow.
+Logs and decoded frame hashes are diagnostic evidence. The default invocation
+does not exercise reconnect or long durations; use the additional options
+below. Neither mode establishes A/V synchronization, adverse-network
+performance or every desktop workflow.
 
 ## Interactive acceptance procedure
+
+### Optional automated reconnect and soak run
+
+Add `--reconnect-cycles 3 --soak-seconds 3600` to the desktop smoke command
+above, with a fresh evidence directory. CI selects three reconnects and a
+30-second soak; this is a regression check, not a long-duration qualification.
+The additional checks use the encrypted native output and a looping local
+synthetic source. They terminate the receiver, leave it absent for eight
+seconds, and restart it on the same port. OBS automatic reconnect is enabled;
+no additional start hotkey is sent. Each new receiver must decode moving
+video and non-silent audio within 15 seconds of restarting.
+
+The soak starts after recovery and repeatedly decodes fresh byte ranges, so
+old successful media cannot hide a later stall. Bounded two-MiB snapshots
+avoid loading an hour-long capture into memory. The full transport capture
+remains on disk; allow at least one GiB of free space per hour. The
+`desktop-soak-memory.jsonl` evidence records elapsed time, OBS resident memory
+and received bytes. Memory is recorded for analysis, not judged against an
+arbitrary universal growth threshold. Existing provider and normal-shutdown
+allocation checks still apply. This does not measure A/V synchronization,
+qualify network-source reconnect, or inject packet loss/jitter.
+For a soak, the harness explicitly sets `ROBOTWEAX_TEST_PEER_TIMEOUT_SECONDS`
+to the requested duration plus 60 seconds. The reference test peer retains
+its 20-second default otherwise and rejects values outside 1..86500 seconds.
+
+Shorter durations are useful harness checks, but must not be reported as a
+60-minute qualification. A failed recovery fails the run; there is no manual
+restart fallback.
+
+### Manual desktop checks
 
 Run on a Linux desktop with a display, using a new dedicated state directory:
 
@@ -158,3 +212,6 @@ revision's `frontend/CMakeLists.txt`, `frontend/cmake/ui-qt.cmake`,
 `plugins/rtmp-services/{CMakeLists.txt,rtmp-custom.c}`. Configuration
 fixtures and build selection are independently authored; no upstream
 implementation is copied into Robotweax.
+The same pinned revision's `frontend/utility/SimpleOutput.cpp` and
+`frontend/utility/AdvancedOutput.cpp` were inspected to confirm the public
+profile keys `Output/Reconnect`, `Output/RetryDelay` and `Output/MaxRetries`.

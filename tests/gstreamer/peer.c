@@ -106,6 +106,14 @@ int main(int argc, char** argv)
     if (!verify_provider()) {
         return 1;
     }
+    guint64 timeout_seconds = 20;
+    const gchar* timeout = g_getenv("ROBOTWEAX_TEST_PEER_TIMEOUT_SECONDS");
+    if (timeout != NULL
+        && !g_ascii_string_to_unsigned(
+            timeout, 10, 1, 86500, &timeout_seconds, NULL)) {
+        g_printerr("invalid test peer timeout\n");
+        return 1;
+    }
     if (argc != 5) {
         g_printerr(
             "usage: peer send|receive|receive-repeat|stop-source|stop-sink URI "
@@ -195,7 +203,8 @@ int main(int argc, char** argv)
 
     guint64 total = 0;
     guint64 stats_bytes = 0;
-    const gint64 deadline = g_get_monotonic_time() + 20000000;
+    const gint64 deadline =
+        g_get_monotonic_time() + (gint64)timeout_seconds * G_USEC_PER_SEC;
     gboolean finished = FALSE;
     while (g_get_monotonic_time() < deadline) {
         if (sending) {

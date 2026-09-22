@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Select production media plugins in a dedicated, pinned OBS checkout."""
+
 import argparse
 import hashlib
 from pathlib import Path
@@ -13,9 +14,10 @@ add_subdirectory(obs-x264)
 """
 
 
-DESKTOP_PROFILE = PROFILE.replace(b"headless", b"desktop") + (
-    b"add_subdirectory(rtmp-services)\nadd_subdirectory(obs-transitions)\n"
-)
+DESKTOP_PROFILE = PROFILE.replace(b"headless", b"desktop").replace(
+    b"# The OBS module implementation and module CMakeLists remain unmodified.",
+    b"# Includes the version-locked MPEG-TS lifecycle correction; see obs-desktop.md.",
+) + (b"add_subdirectory(rtmp-services)\nadd_subdirectory(obs-transitions)\n")
 
 
 def prepare(source, profile="headless"):

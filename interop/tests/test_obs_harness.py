@@ -23,9 +23,93 @@ def load(name, filename):
 obs = load("obs_smoke", "run_smoke.py")
 prepare = load("obs_prepare", "prepare_source.py")
 desktop = load("obs_desktop", "run_desktop_smoke.py")
+lifecycle = load("obs_desktop_lifecycle", "prepare_desktop_lifecycle.py")
 
 
 class ObsHarnessTests(unittest.TestCase):
+    def test_desktop_lifecycle_fix_is_pinned_idempotent_and_rejects_partial_edits(self):
+        # Independently authored minimal fixture, not copied upstream source.
+        original = (
+            b"bool ffmpeg_mpegts_data_init(void) {\n"
+            + lifecycle.RESET
+            + b"\n}\nstatic bool set_config(void) {\nfail:\nreturn false;\n}\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / lifecycle.TARGET
+            target.parent.mkdir(parents=True)
+            target.write_bytes(original)
+            with mock.patch.object(
+                lifecycle, "ORIGINAL_SHA256", hashlib.sha256(original).hexdigest()
+            ):
+                self.assertTrue(lifecycle.prepare(root))
+                fixed = target.read_bytes()
+                self.assertIn(lifecycle.RELEASE, fixed)
+                self.assertIn(lifecycle.CLEAN_FAILURE, fixed)
+                self.assertNotIn(lifecycle.RESET, fixed)
+                self.assertFalse(lifecycle.prepare(root))
+                target.write_bytes(
+                    fixed.replace(lifecycle.CLEAN_FAILURE, lifecycle.FAIL)
+                )
+                with self.assertRaisesRegex(RuntimeError, "partially applied"):
+                    lifecycle.prepare(root)
+                target.write_bytes(fixed + b"unrelated change\n")
+                with self.assertRaisesRegex(RuntimeError, "unrecognized"):
+                    lifecycle.prepare(root)
+                self.assertEqual(target.read_bytes(), fixed + b"unrelated change\n")
+
+    def test_desktop_checkpoint_reads_only_fresh_bounded_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory)
+            output = artifacts / "output.ts"
+            output.write_bytes(b"old" + b"n" * (3 * 1024 * 1024))
+            child = mock.Mock()
+            child.poll.return_value = None
+            with mock.patch.object(desktop.media, "decoded_file") as decode:
+                desktop.wait_decoded(
+                    child, child, Path("/ffmpeg"), output, artifacts, "fresh", offset=3
+                )
+            decode.assert_called_once()
+            self.assertEqual(
+                (artifacts / "fresh-snapshot.ts").read_bytes(), b"n" * (2 * 1024 * 1024)
+            )
+
+    def test_desktop_reconnect_is_opt_in(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for enabled in (False, True):
+                profile = root / str(enabled)
+                desktop.prepare_profile(
+                    profile, "/fixture.ts", "srt://localhost:9000", reconnect=enabled
+                )
+                settings = (
+                    profile / "config/obs-studio/basic/profiles/Robotweax/basic.ini"
+                ).read_text()
+                self.assertIn(f"Reconnect={str(enabled).lower()}\n", settings)
+                self.assertIn("RetryDelay=1\nMaxRetries=60\n", settings)
+
+    def test_desktop_checkpoint_rejects_old_media(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory)
+            output = artifacts / "output.ts"
+            output.write_bytes(b"x" * 500000)
+            child = mock.Mock()
+            child.poll.return_value = None
+            with mock.patch.object(desktop.time, "sleep"), mock.patch.object(
+                desktop.time, "monotonic", side_effect=[0, 0, 16]
+            ), mock.patch.object(desktop.media, "decoded_file") as decode:
+                with self.assertRaisesRegex(RuntimeError, "decoded-media deadline"):
+                    desktop.wait_decoded(
+                        child,
+                        child,
+                        Path("/ffmpeg"),
+                        output,
+                        artifacts,
+                        "fresh",
+                        offset=500000,
+                    )
+            decode.assert_not_called()
+
     def test_desktop_media_wait_does_not_accept_transport_bytes_without_motion(self):
         with tempfile.TemporaryDirectory() as directory:
             artifacts = Path(directory)
@@ -295,10 +379,12 @@ class ObsHarnessTests(unittest.TestCase):
                 "${{ runner.temp }}/obs-desktop/evidence/runtime/*.log",
                 "${{ runner.temp }}/obs-desktop/evidence/runtime/*.txt",
                 "${{ runner.temp }}/obs-desktop/evidence/runtime/*.frames",
+                "${{ runner.temp }}/obs-desktop/evidence/runtime/*.jsonl",
             ],
         )
         self.assertIn("tests/obs/build_desktop.sh", job)
         self.assertIn("tests/obs/run_desktop_smoke.py", job)
+        self.assertIn("--reconnect-cycles 3 --soak-seconds 30", job)
         self.assertNotIn("continue-on-error", job)
 
 

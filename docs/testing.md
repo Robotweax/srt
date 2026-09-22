@@ -216,10 +216,11 @@ build command and pinned dependencies are documented in that guide.
 
 The same required job also builds the [OBS Linux desktop](obs-desktop.md)
 in a separate source/build/install tree and tests its actual frontend
-streaming controls under Xvfb. It retains diagnostic logs and frame hashes,
-not third-party binaries or user profiles. Longer interactive, reconnect
-and adverse-network acceptance cases are documented separately and are not
-implied by a successful short desktop smoke test.
+streaming controls under Xvfb, including three automatic output reconnects
+and a short decoded-media soak. It retains diagnostic logs, frame hashes and
+memory samples, not third-party binaries or user profiles. A 60-minute soak
+is opt-in; longer interactive and adverse-network acceptance cases are not
+implied by a successful short desktop regression run.
 
 ## AES-GCM validation
 
