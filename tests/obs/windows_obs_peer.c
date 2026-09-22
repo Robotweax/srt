@@ -261,7 +261,7 @@ int main(int argc, char** argv)
             "EXPECTED_PROVIDER\n");
         return 2;
     }
-    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);
     stage("obs-startup");
     if (!obs_startup("en-US", NULL, NULL))
         return 2;

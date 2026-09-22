@@ -411,6 +411,11 @@ class ObsHarnessTests(unittest.TestCase):
         )[0]
         self.assertNotIn("'--target'", obs_build)
 
+    def test_windows_peer_uses_valid_unbuffered_stdout(self):
+        source = (ROOT / "tests/obs/windows_obs_peer.c").read_text()
+        self.assertIn("setvbuf(stdout, NULL, _IONBF, 0);", source)
+        self.assertNotIn("setvbuf(stdout, NULL, _IOLBF, 0);", source)
+
     def test_windows_obs_job_is_required_and_uploads_only_diagnostics(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         job = workflow.split("  obs_windows_integration:\n", 1)[1].split(
