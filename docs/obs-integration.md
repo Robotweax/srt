@@ -16,6 +16,8 @@ public libobs API. It is not an OBS Studio GUI installer, a binary drop-in
 replacement for an existing distribution, or Windows/macOS qualification.
 For the separate Qt frontend build and user-facing acceptance procedure, see
 [OBS Linux desktop qualification](obs-desktop.md).
+For the narrower Windows x64 module and media-path profile, see
+[OBS Windows integration](obs-windows.md).
 The profile does not qualify RIST, hardware encoders, Rendezvous, IPv6,
 AES-GCM, adverse-network performance, or quantitative A/V synchronization.
 

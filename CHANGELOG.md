@@ -6,6 +6,10 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Added a pinned Windows x64 OBS module profile using one shared Robotweax
+  compatibility DLL for native SRT output and FFmpeg media input, with a
+  separate reference provider, real MPEG-TS/A/V checks and a required CI gate.
+
 - Added OBS desktop automatic-reconnect regression checks and an opt-in
   decoded-media soak with resident-memory evidence. The pinned desktop build
   applies a hash-guarded MPEG-TS state cleanup correction between starts and

@@ -699,6 +699,46 @@ jobs:
             ${{ runner.temp }}/obs-desktop/evidence/runtime/*.jsonl
           retention-days: 7
 
+  obs_windows_integration:
+    name: OBS Windows integration
+    needs: changes
+    if: needs.changes.outputs.obs == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: obsproject/obs-studio
+          ref: ${{ env.OBS_COMMIT }}
+          path: obs-source
+          persist-credentials: false
+      - name: Build and qualify OBS on Windows
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Visual Studio C++ tools are required' }
+          $script = Join-Path $PWD 'tests\obs\build_windows.ps1'
+          $pwsh = Join-Path $PSHOME 'pwsh.exe'
+          $work = Join-Path $env:RUNNER_TEMP 'obs-windows-qualification'
+          & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" amd64 && `"$pwsh`" -NoProfile -File `"$script`" -ObsSource `"$PWD\obs-source`" -WorkDirectory `"$work`""
+          if ($LASTEXITCODE -ne 0) { throw 'Windows OBS qualification failed' }
+      - name: Preserve Windows OBS qualification diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: obs-windows-evidence
+          path: |
+            ${{ runner.temp }}/obs-windows-qualification/evidence/*.txt
+            ${{ runner.temp }}/obs-windows-qualification/evidence/runtime/*.log
+            ${{ runner.temp }}/obs-windows-qualification/obs-build/CMakeCache.txt
+            ${{ runner.temp }}/obs-windows-qualification/obs-build/CMakeFiles/CMakeConfigureLog.yaml
+            ${{ runner.temp }}/obs-windows-qualification/srt-build/CMakeCache.txt
+            ${{ runner.temp }}/obs-windows-qualification/srt-build/CMakeFiles/CMakeConfigureLog.yaml
+          retention-days: 7
+
   vlc_integration:
     name: VLC integration
     needs: changes
@@ -1923,6 +1963,7 @@ jobs:
       - gstreamer_integration
       - vlc_integration
       - obs_integration
+      - obs_windows_integration
       - aead_platform
       - sanitizers
       - thread_sanitizer
@@ -1953,6 +1994,7 @@ jobs:
           GSTREAMER_INTEGRATION: ${{ needs.gstreamer_integration.result }}
           VLC_INTEGRATION: ${{ needs.vlc_integration.result }}
           OBS_INTEGRATION: ${{ needs.obs_integration.result }}
+          OBS_WINDOWS_INTEGRATION: ${{ needs.obs_windows_integration.result }}
           AEAD_PLATFORM: ${{ needs.aead_platform.result }}
           SANITIZERS: ${{ needs.sanitizers.result }}
           THREAD_SANITIZER: ${{ needs.thread_sanitizer.result }}
@@ -1972,6 +2014,7 @@ jobs:
           EXPECT_gstreamer_integration: ${{ needs.changes.outputs.gstreamer == 'true' }}
           EXPECT_vlc_integration: ${{ needs.changes.outputs.vlc == 'true' }}
           EXPECT_obs_integration: ${{ needs.changes.outputs.obs == 'true' }}
+          EXPECT_obs_windows_integration: ${{ needs.changes.outputs.obs == 'true' }}
           EXPECT_aead_platform: ${{ needs.changes.outputs.aead_platform == 'true' || needs.changes.outputs.examples == 'true' }}
           EXPECT_sanitizers: ${{ needs.changes.outputs.sanitizers == 'true' }}
           EXPECT_thread_sanitizer: ${{ needs.changes.outputs.thread_sanitizer == 'true' }}
@@ -1995,6 +2038,7 @@ jobs:
             "gstreamer-integration=$GSTREAMER_INTEGRATION" \
             "vlc-integration=$VLC_INTEGRATION" \
             "obs-integration=$OBS_INTEGRATION" \
+            "obs-windows-integration=$OBS_WINDOWS_INTEGRATION" \
             "aead-platform=$AEAD_PLATFORM" \
             "sanitizers=$SANITIZERS" \
             "thread-sanitizer=$THREAD_SANITIZER" \

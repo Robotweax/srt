@@ -24,9 +24,53 @@ obs = load("obs_smoke", "run_smoke.py")
 prepare = load("obs_prepare", "prepare_source.py")
 desktop = load("obs_desktop", "run_desktop_smoke.py")
 lifecycle = load("obs_desktop_lifecycle", "prepare_desktop_lifecycle.py")
+windows_prepare = load("obs_windows_prepare", "prepare_windows_source.py")
+windows = load("obs_windows_smoke", "run_windows_smoke.py")
 
 
 class ObsHarnessTests(unittest.TestCase):
+    def test_windows_dependency_preparation_is_pinned_and_idempotent(self):
+        original = (
+            b"function(test)\n"
+            + windows_prepare.ORIGINAL
+            + windows_prepare.QT_ORIGINAL
+            + b"endfunction()\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / windows_prepare.TARGET
+            target.parent.mkdir(parents=True)
+            target.write_bytes(original)
+            prepared = original.replace(
+                windows_prepare.ORIGINAL, windows_prepare.PREPARED
+            ).replace(
+                windows_prepare.QT_ORIGINAL, windows_prepare.QT_PREPARED
+            )
+            with mock.patch.multiple(
+                windows_prepare,
+                ORIGINAL_SHA256=hashlib.sha256(original).hexdigest(),
+                PREPARED_SHA256=hashlib.sha256(prepared).hexdigest(),
+            ):
+                self.assertTrue(windows_prepare.prepare(root))
+                self.assertEqual(target.read_bytes().count(windows_prepare.PREPARED), 1)
+                self.assertEqual(target.read_bytes().count(windows_prepare.QT_PREPARED), 1)
+                self.assertFalse(windows_prepare.prepare(root))
+                target.write_bytes(target.read_bytes() + b"unknown\n")
+                with self.assertRaisesRegex(RuntimeError, "unrecognized"):
+                    windows_prepare.prepare(root)
+
+    def test_windows_transport_capture_requires_coherent_mpeg_ts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "capture.ts"
+            packet = bytes([0x47]) + bytes(187)
+            capture.write_bytes(packet * 120)
+            packets, ratio = windows.ts_packets(capture)
+            self.assertEqual(packets, 120)
+            self.assertEqual(ratio, 1.0)
+            capture.write_bytes(bytes(188 * 120))
+            with self.assertRaisesRegex(RuntimeError, "not coherent MPEG-TS"):
+                windows.ts_packets(capture)
+
     def test_desktop_lifecycle_fix_is_pinned_idempotent_and_rejects_partial_edits(self):
         # Independently authored minimal fixture, not copied upstream source.
         original = (
@@ -335,6 +379,48 @@ class ObsHarnessTests(unittest.TestCase):
             builder.count('REVISION="$(<"$ffmpeg_source/RELEASE")-3acec0a"'), 2
         )
 
+    def test_windows_build_selects_one_shared_compatibility_provider(self):
+        script = (ROOT / "tests/obs/build_windows.ps1").read_text()
+        self.assertIn("-DBUILD_SHARED_LIBS=ON", script)
+        self.assertIn("-DROBOTWEAX_SRT_INSTALL_LAYOUT=legacy", script)
+        self.assertIn("-DROBOTWEAX_SRT_CRYPTO_BACKEND=bcrypt", script)
+        self.assertIn("-DLibsrt_LIBRARY:FILEPATH=$SrtLibrary", script)
+        self.assertIn("Get-FileHash $RobotweaxDll", script)
+        self.assertIn("Get-FileHash $ReferenceDll", script)
+        self.assertIn("Where-Object { $_.Name -cne 'srt.dll' }", script)
+        self.assertIn('Copy-Item $RobotweaxDll "$RuntimeDirectory/srt.dll"', script)
+        obs_build = script.split("'-S', $ObsSource", 1)[1].split(
+            "Invoke-Checked cmake @('--install', $ObsBuild", 1
+        )[0]
+        self.assertNotIn("'--target'", obs_build)
+
+    def test_windows_obs_job_is_required_and_uploads_only_diagnostics(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = workflow.split("  obs_windows_integration:\n", 1)[1].split(
+            "  vlc_integration:\n", 1
+        )[0]
+        self.assertIn("tests\\obs\\build_windows.ps1", job)
+        paths = job.split("          path: |\n", 1)[1].split(
+            "          retention-days:", 1
+        )[0]
+        self.assertTrue(
+            all(
+                "qualification" in line
+                for line in paths.splitlines()
+                if line.strip()
+            )
+        )
+        self.assertNotIn(".dll", paths)
+        self.assertNotIn(".exe", paths)
+        required = workflow.split("  ci_gate:\n", 1)[1]
+        self.assertIn("      - obs_windows_integration\n", required)
+        self.assertIn(
+            "${{ needs.obs_windows_integration.result }}", required
+        )
+        self.assertIn(
+            '"obs-windows-integration=$OBS_WINDOWS_INTEGRATION"', required
+        )
+
     def test_classification_selects_obs_without_unrelated_media_jobs(self):
         from interop.ci_changes import classify
 
@@ -343,6 +429,10 @@ class ObsHarnessTests(unittest.TestCase):
             "tests/obs/qualification.cmake",
             "tests/obs/peer.c",
             "tests/obs/run_smoke.py",
+            "tests/obs/windows_obs_peer.c",
+            "tests/obs/windows_reference_peer.c",
+            "tests/obs/run_windows_smoke.py",
+            "tests/obs/prepare_windows_source.py",
             "interop/tests/test_obs_harness.py",
         ):
             with self.subTest(path=path):
