@@ -4,7 +4,6 @@
 #include <windows.h>
 #include <psapi.h>
 
-#include <obs-service.h>
 #include <obs.h>
 
 #include <ctype.h>
