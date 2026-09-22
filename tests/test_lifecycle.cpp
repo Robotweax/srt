@@ -21,6 +21,7 @@
 #include <future>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -969,6 +970,97 @@ TEST(lifecycle_cleanup_closes_listener_caller_and_accepted_socket)
     REQUIRE_EQ(srt_getsockstate(listener), SRTS_NONEXIST);
     REQUIRE_EQ(srt_getsockstate(caller), SRTS_NONEXIST);
     REQUIRE_EQ(srt_getsockstate(accepted), SRTS_NONEXIST);
+}
+
+TEST(sensor_profile_negotiates_and_transfers_loopback_datagrams)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    constexpr char profile[] = "fec-sensor-v1,cols:4,rows:1,arq:never";
+    constexpr std::int32_t timeout_milliseconds = 2'000;
+
+    const SRTSOCKET listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_PACKETFILTER, profile,
+                   static_cast<int>(sizeof(profile) - 1U)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_port = 0;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (srt_bind(listener, reinterpret_cast<const sockaddr*>(&address),
+            static_cast<int>(sizeof(address)))
+        == SRT_ERROR) {
+        int system_error = 0;
+        REQUIRE_EQ(srt_getlasterror(&system_error), SRT_ESOCKFAIL);
+        REQUIRE(system_error != 0);
+        REQUIRE_EQ(srt_close(listener), 0);
+        REQUIRE_EQ(srt_cleanup(), 0);
+        return;
+    }
+    REQUIRE_EQ(srt_listen(listener, 1), 0);
+
+    sockaddr_in listener_name {};
+    int listener_name_size = static_cast<int>(sizeof(listener_name));
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&listener_name),
+            &listener_name_size),
+        0);
+
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_PACKETFILTER, profile,
+                   static_cast<int>(sizeof(profile) - 1U)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    REQUIRE_EQ(
+        srt_connect(caller, reinterpret_cast<const sockaddr*>(&listener_name),
+            static_cast<int>(sizeof(listener_name))),
+        0);
+    const SRTSOCKET accepted = srt_accept(listener, nullptr, nullptr);
+    REQUIRE(accepted != SRT_INVALID_SOCK);
+
+    std::array<char, 96> negotiated {};
+    int negotiated_size = static_cast<int>(negotiated.size());
+    REQUIRE_EQ(srt_getsockflag(caller, SRTO_PACKETFILTER, negotiated.data(),
+                   &negotiated_size),
+        0);
+    REQUIRE((std::string_view {
+                 negotiated.data(), static_cast<std::size_t>(negotiated_size)}
+        == profile));
+
+    bool tsbpd = true;
+    int option_size = static_cast<int>(sizeof(tsbpd));
+    REQUIRE_EQ(
+        srt_getsockflag(caller, SRTO_TSBPDMODE, &tsbpd, &option_size), 0);
+    REQUIRE(!tsbpd);
+
+    constexpr std::array<std::string_view, 4> messages {
+        "imu:1", "imu:2", "imu:3", "imu:4"};
+    for (const auto message : messages) {
+        REQUIRE_EQ(srt_sendmsg(caller, message.data(),
+                       static_cast<int>(message.size()), -1, 1),
+            static_cast<int>(message.size()));
+    }
+    for (const auto expected : messages) {
+        std::array<char, 64> received {};
+        const int size = srt_recvmsg(
+            accepted, received.data(), static_cast<int>(received.size()));
+        REQUIRE_EQ(size, static_cast<int>(expected.size()));
+        REQUIRE(
+            (std::string_view {received.data(), static_cast<std::size_t>(size)}
+                == expected));
+    }
+
+    REQUIRE_EQ(srt_close(accepted), 0);
+    REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_close(listener), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
 }
 
 TEST(lifecycle_cleanup_bypasses_connected_socket_linger_deadlines)

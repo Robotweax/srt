@@ -2900,6 +2900,31 @@ TEST(sender_rto_keeps_full_fallback_outside_periodic_live_arq)
     }
 }
 
+TEST(sensor_profile_disarms_sender_rto_without_changing_ordinary_fec)
+{
+    ReliabilitySession sender {{
+        .local_initial_sequence = SequenceNumber {10},
+        .peer_initial_sequence = SequenceNumber {100},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 4,
+        .receive_capacity_packets = 4,
+        .maximum_payload_size = 1,
+    }};
+    sender.configure_live(
+        NegotiatedLiveOptions {.periodic_nak = false}, 0, PacketTimestamp {0});
+    const auto filter = parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,arq:never");
+    REQUIRE(filter);
+    sender.configure_packet_filter(filter.configuration, true);
+
+    const std::array<std::byte, 1> input {std::byte {'s'}};
+    REQUIRE_EQ(sender.queue_message(input, PacketTimestamp {0}), Error::none);
+    REQUIRE(sender.next_data_packet().has_value());
+    sender.note_data_packet_sent(100);
+    REQUIRE(!sender.poll_sender_retransmission_timeout(1'000'000));
+    REQUIRE(!sender.next_data_packet().has_value());
+}
+
 TEST(live_session_periodic_nak_rto_probes_only_tail_of_unacknowledged_flight)
 {
     ReliabilitySession sender {{

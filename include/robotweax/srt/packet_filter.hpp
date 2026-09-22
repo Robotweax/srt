@@ -74,6 +74,13 @@ struct PacketFilterConfiguration {
         return {text.data(), text_size};
     }
 
+    [[nodiscard]] constexpr bool sensor_profile() const noexcept
+    {
+        // Identity remains in the negotiated filter string, avoiding any
+        // data-layout change to this existing public C++ configuration type.
+        return view().starts_with("fec-sensor-v1,");
+    }
+
     [[nodiscard]] constexpr std::size_t extra_header_size() const noexcept
     {
         return enabled ? fec_filter_header_size : 0U;
@@ -131,6 +138,11 @@ public:
     [[nodiscard]] constexpr bool enabled() const noexcept
     {
         return configuration_.enabled;
+    }
+
+    [[nodiscard]] constexpr bool sensor_profile() const noexcept
+    {
+        return configuration_.sensor_profile();
     }
 
     [[nodiscard]] constexpr PacketFilterArqLevel

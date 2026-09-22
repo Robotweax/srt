@@ -286,6 +286,19 @@ TEST(socket_options_enable_gcm_only_through_the_preview_contract)
     REQUIRE_EQ(later_scope.set(SocketOption::transmission_type,
                    static_cast<std::int64_t>(TransmissionType::file)),
         Error::invalid_state);
+
+    SocketOptions sensor_after_gcm;
+    REQUIRE_EQ(sensor_after_gcm.set(SocketOption::crypto_mode, 2), Error::none);
+    REQUIRE_EQ(sensor_after_gcm.set_packet_filter(
+                   "fec-sensor-v1,cols:4,rows:1,arq:never"),
+        Error::invalid_state);
+
+    SocketOptions gcm_after_sensor;
+    REQUIRE_EQ(gcm_after_sensor.set_packet_filter(
+                   "fec-sensor-v1,cols:4,rows:1,arq:never"),
+        Error::none);
+    REQUIRE_EQ(gcm_after_sensor.set(SocketOption::crypto_mode, 2),
+        Error::invalid_state);
 }
 #endif
 
@@ -389,4 +402,41 @@ TEST(packet_filter_option_reserves_the_fec_header)
     REQUIRE_EQ(options.set_packet_filter({}), Error::none);
     REQUIRE_EQ(options.maximum_payload_size_limit(),
         maximum_data_payload_size);
+}
+
+TEST(sensor_profile_applies_and_locks_its_transport_bundle)
+{
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set_packet_filter("fec-sensor-v1,cols:4,rows:1,arq:never"),
+        Error::none);
+    REQUIRE(options.packet_filter_configuration().sensor_profile());
+    REQUIRE(options.message_api());
+    REQUIRE_EQ(options.transmission_type(), TransmissionType::live);
+    REQUIRE_EQ(options.congestion_controller(), CongestionController::live);
+    REQUIRE_EQ(options.get(SocketOption::tsbpd_mode).value, 0);
+    REQUIRE_EQ(options.get(SocketOption::too_late_packet_drop).value, 0);
+    REQUIRE_EQ(options.get(SocketOption::periodic_nak).value, 0);
+    REQUIRE_EQ(options.get(SocketOption::retransmit_flag).value, 0);
+
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 1), Error::invalid_state);
+    REQUIRE_EQ(options.set(SocketOption::too_late_packet_drop, 1),
+        Error::invalid_state);
+    REQUIRE_EQ(
+        options.set(SocketOption::periodic_nak, 1), Error::invalid_state);
+    REQUIRE_EQ(
+        options.set(SocketOption::retransmit_flag, 1), Error::invalid_state);
+    REQUIRE_EQ(options.set(SocketOption::message_api, 0), Error::invalid_state);
+    REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::file)),
+        Error::invalid_state);
+    REQUIRE_EQ(options.set_congestion_controller("file"), Error::invalid_state);
+
+    // Reapplying LIVE must preserve the profile bundle rather than restoring
+    // the ordinary live defaults.
+    REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::live)),
+        Error::none);
+    REQUIRE_EQ(options.get(SocketOption::tsbpd_mode).value, 0);
+    REQUIRE_EQ(options.get(SocketOption::periodic_nak).value, 0);
 }

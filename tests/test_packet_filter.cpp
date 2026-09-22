@@ -102,6 +102,55 @@ TEST(packet_filter_parser_is_strict_and_bounded)
             'x')));
 }
 
+TEST(sensor_profile_parser_requires_the_versioned_fixed_contract)
+{
+    const auto parsed = parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,arq:never");
+    REQUIRE(parsed);
+    REQUIRE(parsed.configuration.enabled);
+    REQUIRE(parsed.configuration.sensor_profile());
+    REQUIRE_EQ(parsed.configuration.columns, 4U);
+    REQUIRE_EQ(parsed.configuration.rows, 1);
+    REQUIRE_EQ(parsed.configuration.arq, PacketFilterArqLevel::never);
+
+    REQUIRE(!parse_packet_filter_configuration("fec-sensor-v1"));
+    REQUIRE(!parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:5,rows:1,arq:never"));
+    REQUIRE(!parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:2,arq:never"));
+    REQUIRE(!parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,arq:onreq"));
+    REQUIRE(!parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,layout:even,arq:never"));
+    REQUIRE(!parse_packet_filter_configuration(
+        "fec-sensor-v1,arq:never,cols:4,rows:1"));
+    REQUIRE(!parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,layout:staircase,arq:never"));
+}
+
+TEST(sensor_profile_negotiation_is_strictly_bilateral)
+{
+    const auto sensor = parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,arq:never");
+    const auto ordinary =
+        parse_packet_filter_configuration("fec,cols:4,rows:1,arq:never");
+    REQUIRE(sensor);
+    REQUIRE(ordinary);
+
+    const auto negotiated = negotiate_packet_filter_configuration(
+        sensor.configuration, sensor.configuration);
+    REQUIRE(negotiated);
+    REQUIRE(negotiated.configuration.sensor_profile());
+    REQUIRE_EQ(negotiated.configuration.view(),
+        std::string_view {"fec-sensor-v1,cols:4,rows:1,arq:never"});
+    REQUIRE(!negotiate_packet_filter_configuration(
+        sensor.configuration, ordinary.configuration));
+    REQUIRE(!negotiate_packet_filter_configuration(
+        sensor.configuration, PacketFilterConfiguration {}));
+    REQUIRE(!apply_packet_filter_response(
+        sensor.configuration, ordinary.configuration));
+}
+
 TEST(packet_filter_negotiation_merges_parameters_and_defaults)
 {
     const auto local =

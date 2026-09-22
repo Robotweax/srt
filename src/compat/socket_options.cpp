@@ -1018,6 +1018,17 @@ int set_socket_option(
             static_cast<std::int32_t>(
                 socket.native_options
                     .maximum_payload_size());
+        options.tsbpd_mode =
+            socket.native_options.get(SocketOption::tsbpd_mode).value != 0;
+        options.too_late_packet_drop =
+            socket.native_options.get(SocketOption::too_late_packet_drop).value
+            != 0;
+        options.message_api =
+            socket.native_options.get(SocketOption::message_api).value != 0;
+        options.periodic_nak =
+            socket.native_options.get(SocketOption::periodic_nak).value != 0;
+        options.retransmission_algorithm = static_cast<std::int32_t>(
+            socket.native_options.get(SocketOption::retransmit_flag).value);
         return 0;
     }
     case SRTO_RETRANSMITALGO: {

@@ -213,6 +213,7 @@ public:
         IpAddressFamily family) noexcept;
 
 private:
+    void apply_sensor_profile_bundle() noexcept;
 #ifdef ENABLE_AEAD_API_PREVIEW
     [[nodiscard]] bool supports_aes_gcm_transport_bundle(
         TransmissionType transmission_type,

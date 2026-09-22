@@ -1346,6 +1346,13 @@ void ReliabilitySession::note_data_packet_sent(
 bool ReliabilitySession::poll_sender_retransmission_timeout(
     std::uint64_t now_microseconds) noexcept
 {
+    // fec-sensor-v1 is a deliberate no-ARQ delivery contract. Disarming the
+    // RTO here prevents the generic flight-tail fallback from reintroducing
+    // retransmissions behind the packet-filter policy.
+    if (packet_filter_policy_.sensor_profile()) {
+        sender_retransmission_timer_.on_no_packets_in_flight();
+        return false;
+    }
     if (send_buffer_.packets_in_flight() == 0U) {
         sender_retransmission_timer_.on_no_packets_in_flight();
         return false;

@@ -93,10 +93,13 @@ template <typename Integer>
 }
 
 [[nodiscard]] bool format_effective(
-    PacketFilterConfiguration& configuration) noexcept
+    PacketFilterConfiguration& configuration, bool sensor_profile) noexcept
 {
     configuration.text.fill('\0');
     configuration.text_size = 0;
+    if (sensor_profile) {
+        return append(configuration, "fec-sensor-v1,cols:4,rows:1,arq:never");
+    }
     const std::string_view arq =
         configuration.arq == PacketFilterArqLevel::never
         ? "never"
@@ -106,16 +109,12 @@ template <typename Integer>
     const std::string_view layout =
         configuration.layout == PacketFilterLayout::even
         ? "even" : "staircase";
-    return append(configuration, "fec,arq:")
-        && append(configuration, arq)
+    return append(configuration, "fec,arq:") && append(configuration, arq)
         && append(configuration, ",cols:")
-        && append_integer(configuration,
-            configuration.columns)
-        && append(configuration, ",layout:")
-        && append(configuration, layout)
+        && append_integer(configuration, configuration.columns)
+        && append(configuration, ",layout:") && append(configuration, layout)
         && append(configuration, ",rows:")
-        && append_integer(configuration,
-            configuration.rows);
+        && append_integer(configuration, configuration.rows);
 }
 
 template <typename Value>
@@ -151,6 +150,12 @@ resolve_effective_configuration(
 {
     if (!local.enabled && !peer.enabled) {
         return {};
+    }
+    // The sensor profile changes delivery and retransmission semantics, so it
+    // may only be selected when both endpoints explicitly name it.
+    const bool sensor_profile = local.sensor_profile();
+    if (sensor_profile != peer.sensor_profile()) {
+        return {.error = Error::invalid_state};
     }
 
     PacketFilterConfiguration result;
@@ -206,7 +211,7 @@ resolve_effective_configuration(
     result.rows_specified = true;
     result.layout_specified = true;
     result.arq_specified = true;
-    if (!format_effective(result)) {
+    if (!format_effective(result, sensor_profile)) {
         return {.error = Error::invalid_state};
     }
     return {.configuration = result};
@@ -287,11 +292,15 @@ parse_packet_filter_configuration(
     const std::size_t first_comma = text.find(',');
     const std::string_view type = text.substr(
         0, first_comma);
-    if (type != "fec") {
+    if (type != "fec" && type != "fec-sensor-v1") {
         return {.error = Error::unsupported};
     }
     configuration.enabled = true;
+    const bool sensor_profile = type == "fec-sensor-v1";
     if (first_comma == std::string_view::npos) {
+        if (sensor_profile) {
+            return {.error = Error::invalid_state};
+        }
         return {.configuration = configuration};
     }
 
@@ -378,6 +387,16 @@ parse_packet_filter_configuration(
         && !valid_fec_geometry(
             configuration.columns,
             configuration.rows)) {
+        return {.error = Error::invalid_state};
+    }
+    if (sensor_profile
+        && (text != "fec-sensor-v1,cols:4,rows:1,arq:never"
+            || !configuration.columns_specified || configuration.columns != 4U
+            || !configuration.rows_specified || configuration.rows != 1
+            || !configuration.arq_specified
+            || configuration.arq != PacketFilterArqLevel::never
+            || (configuration.layout_specified
+                && configuration.layout != PacketFilterLayout::staircase))) {
         return {.error = Error::invalid_state};
     }
     return {.configuration = configuration};
