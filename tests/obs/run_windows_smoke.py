@@ -32,7 +32,13 @@ def read(log: Path) -> str:
 
 
 class Child:
-    def __init__(self, command: list[str], log: Path, environment: dict[str, str]):
+    def __init__(
+        self,
+        command: list[str],
+        log: Path,
+        environment: dict[str, str],
+        cwd: Path | None = None,
+    ):
         self.log_path = log
         self.log_file = log.open("wb")
         self.process = subprocess.Popen(
@@ -41,6 +47,7 @@ class Child:
             stdout=self.log_file,
             stderr=subprocess.STDOUT,
             env=environment,
+            cwd=cwd,
         )
 
     def wait_for(self, predicate, description: str, timeout: float = 20) -> None:
@@ -86,6 +93,14 @@ def environment(directory: Path) -> dict[str, str]:
     }
     result["PATH"] = str(directory) + os.pathsep + result.get("PATH", "")
     return result
+
+
+def obs_working_directory(prefix: Path) -> Path:
+    # The installed Windows libobs runtime resolves its effects relative to this directory.
+    runtime = prefix / "bin/64bit"
+    if not (runtime / "../../data/libobs/default.effect").is_file():
+        raise RuntimeError("OBS runtime is missing its installed libobs effects")
+    return runtime
 
 
 def uri(port: int, mode: str, encrypted: bool) -> str:
@@ -178,7 +193,7 @@ def require_binary_contract(obs_prefix: Path, reference_srt: Path) -> None:
 
 def qualify(args: argparse.Namespace) -> None:
     args.artifacts.mkdir(parents=True)
-    obs_runtime = args.obs_prefix / "bin/64bit"
+    obs_runtime = obs_working_directory(args.obs_prefix)
     reference_runtime = args.reference_srt.parent
     obs_provider = (obs_runtime / "srt.dll").resolve()
     reference_provider = args.reference_srt.resolve()
@@ -215,6 +230,7 @@ def qualify(args: argparse.Namespace) -> None:
             ],
             observer_log,
             environment(obs_runtime),
+            cwd=obs_runtime,
         )
         sender.wait_for(lambda: "READY" in read(observer_log), "OBS output startup")
         sender.wait_for(
@@ -252,6 +268,7 @@ def qualify(args: argparse.Namespace) -> None:
         ],
         observer_log,
         environment(obs_runtime),
+        cwd=obs_runtime,
     )
     sender = None
     try:

@@ -84,6 +84,24 @@ class ObsHarnessTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "not coherent MPEG-TS"):
                 windows.ts_packets(capture)
 
+    def test_windows_obs_peer_runs_beside_installed_libobs_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            runtime = prefix / "bin/64bit"
+            runtime.mkdir(parents=True)
+            with self.assertRaisesRegex(RuntimeError, "libobs effects"):
+                windows.obs_working_directory(prefix)
+            effects = prefix / "data/libobs"
+            effects.mkdir(parents=True)
+            (effects / "default.effect").write_text("synthetic effect")
+            self.assertEqual(windows.obs_working_directory(prefix), runtime)
+            with mock.patch.object(windows.subprocess, "Popen") as popen:
+                child = windows.Child(["peer"], prefix / "peer.log", {}, cwd=runtime)
+                child.log_file.close()
+            self.assertEqual(popen.call_args.kwargs["cwd"], runtime)
+            source = (ROOT / "tests/obs/run_windows_smoke.py").read_text()
+            self.assertEqual(source.count("cwd=obs_runtime,"), 2)
+
     def test_desktop_lifecycle_fix_is_pinned_idempotent_and_rejects_partial_edits(self):
         # Independently authored minimal fixture, not copied upstream source.
         original = (
