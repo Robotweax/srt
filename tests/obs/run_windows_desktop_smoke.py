@@ -201,11 +201,18 @@ def close_desktop(desktop: subprocess.Popen, window: int) -> None:
 
 
 def check_shutdown(log: str, label: str, baseline: int | None = None) -> int:
-    if "Loaded scenes:" not in log or "Streaming Start" not in log \
-            or "Streaming Stop" not in log or "Freeing OBS context data" not in log:
-        raise RuntimeError(f"{label}: OBS frontend log lacks startup, streaming, stop or shutdown")
+    loaded = log.find("Loaded scenes:")
+    started = log.find("Streaming Start", loaded + 1)
+    shutting_down = log.find("==== Shutting down", started + 1)
+    connection_closed = log.find("SRT connection closed", shutting_down + 1)
+    output_stopped = log.find("Output 'simple_stream': stopping", shutting_down + 1)
+    context_freed = log.find("Freeing OBS context data", max(connection_closed, output_stopped) + 1)
+    if min(loaded, started, shutting_down, connection_closed, output_stopped,
+           context_freed) < 0:
+        raise RuntimeError(f"{label}: OBS frontend lacks ordered streaming shutdown evidence")
     leaks = re.findall(r"Number of memory leaks: (\d+)", log)
-    if len(leaks) != 1 or int(leaks[0]) > 1 \
+    if len(leaks) != 1 or log.find("Number of memory leaks:", context_freed + 1) < 0 \
+            or int(leaks[0]) > 1 \
             or (baseline is not None and int(leaks[0]) != baseline):
         raise RuntimeError(f"{label}: OBS frontend allocation baseline regressed: {leaks}")
     return int(leaks[0])

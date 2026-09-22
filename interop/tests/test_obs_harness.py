@@ -81,11 +81,27 @@ class ObsHarnessTests(unittest.TestCase):
 
     def test_windows_desktop_shutdown_rejects_extra_allocations(self):
         clean = (
-            "Loaded scenes:\nStreaming Start\nStreaming Stop\n"
+            "Loaded scenes:\nStreaming Start\n==== Shutting down\n"
+            "SRT connection closed\nOutput 'simple_stream': stopping\n"
             "Freeing OBS context data\nNumber of memory leaks: 1\n"
         )
         self.assertEqual(windows_desktop.check_shutdown(clean, "output"), 1)
         self.assertEqual(windows_desktop.check_shutdown(clean, "source", 1), 1)
+        for invalid in (
+            clean.replace("==== Shutting down\n", ""),
+            clean.replace("SRT connection closed\n", ""),
+            clean.replace("Output 'simple_stream': stopping\n", ""),
+            clean.replace("Freeing OBS context data\n", ""),
+            clean.replace(
+                "==== Shutting down\nSRT connection closed\n"
+                "Output 'simple_stream': stopping\n",
+                "SRT connection closed\nOutput 'simple_stream': stopping\n"
+                "==== Shutting down\n",
+            ),
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(RuntimeError, "ordered streaming shutdown"):
+                    windows_desktop.check_shutdown(invalid, "output")
         with self.assertRaisesRegex(RuntimeError, "allocation baseline regressed"):
             windows_desktop.check_shutdown(clean.replace("leaks: 1", "leaks: 2"), "output")
         with self.assertRaisesRegex(RuntimeError, "allocation baseline regressed"):
