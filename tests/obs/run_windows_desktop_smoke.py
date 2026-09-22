@@ -32,7 +32,8 @@ def prepare_profile(prefix: Path, fixture: Path, destination: str) -> Path:
     scenes.mkdir(parents=True, exist_ok=False)
     (config / "global.ini").write_text("[General]\nEnableAutoUpdates=false\n")
     (config / "user.ini").write_text(
-        "[General]\nFirstRun=true\n[Basic]\nProfile=Robotweax\n"
+        "[General]\nFirstRun=true\nConfirmOnExit=false\n"
+        "[Basic]\nProfile=Robotweax\n"
         "ProfileDir=Robotweax\nSceneCollection=Robotweax\n"
         "SceneCollectionFile=Robotweax\n[BasicWindow]\n"
         "WarnBeforeStartingStream=false\nWarnBeforeStoppingStream=false\n"

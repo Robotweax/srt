@@ -36,7 +36,9 @@ OBS's native encrypted SRT output to the separate reference listener, and
 decodes the received MPEG-TS with FFmpeg. After the listener is interrupted
 for eight seconds, OBS must automatically reconnect to a new listener on the
 same port without another start command. Both captures must contain moving
-decoded video and audible audio. Normal frontend shutdown and its allocation
+decoded video and audible audio. The private test profile disables OBS's
+interactive exit confirmation so the active stream can shut down normally in
+unattended CI. Normal frontend shutdown and its allocation
 count are checked. A second GUI launch uses a separately encrypted SRT
 listener as its FFmpeg media source, while OBS forwards the decoded picture
 and sound through a different encrypted native SRT output. The reference

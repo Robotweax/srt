@@ -40,6 +40,8 @@ class ObsHarnessTests(unittest.TestCase):
                 "srt://127.0.0.1:12345?mode=caller",
             )
             self.assertEqual(config, prefix / "config/obs-studio")
+            user = (config / "user.ini").read_text()
+            self.assertIn("ConfirmOnExit=false", user)
             profile = (config / "basic/profiles/Robotweax/basic.ini").read_text()
             self.assertIn("Reconnect=true", profile)
             self.assertIn("MaxRetries=60", profile)
