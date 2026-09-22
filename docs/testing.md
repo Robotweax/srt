@@ -196,6 +196,15 @@ tests/gstreamer/build_and_test.sh /path/to/gstreamer-source \
 See [GStreamer integration](gstreamer-integration.md) for dependencies,
 version pins, individual build commands, and the shutdown boundary.
 
+## VLC integration gate
+
+The [VLC integration](vlc-integration.md) has a separate Linux gate. It builds
+the pinned VLC SRT modules, checks actual decoded MPEG-2 frames and outgoing
+media, exercises encrypted reference peers and controlled stop/reconnect,
+and verifies the runtime provider. Run `tests/vlc/build_and_test.sh` with the
+five source/work paths documented in that guide. GUI and platform installers
+are outside this initial qualification.
+
 ## AES-GCM validation
 
 The default build tests the AES-CTR profile. Validate the released AES-GCM

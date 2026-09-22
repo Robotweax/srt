@@ -172,6 +172,7 @@ class CiChangeClassifierTests(unittest.TestCase):
         self.assertTrue(result.ffmpeg)
         self.assertTrue(result.examples)
         self.assertTrue(result.gstreamer)
+        self.assertTrue(result.vlc)
 
     def test_public_example_changes_select_release_smoke_tests(self) -> None:
         source = ci_changes.classify(["examples/srt_message_demo.cpp"])
@@ -879,7 +880,7 @@ class CiChangeClassifierTests(unittest.TestCase):
             with self.subTest(path=path):
                 result = ci_changes.classify([path])
                 for flag in ("package", "portable", "shared", "aead_platform",
-                             "ffmpeg", "gstreamer", "documentation", "python"):
+                             "ffmpeg", "gstreamer", "vlc", "documentation", "python"):
                     self.assertTrue(getattr(result, flag), flag)
                 for flag in ("core_tests", "cpp", "examples", "interop", "full",
                              "debug", "sanitizers", "fuzz", "thread_sanitizer"):
@@ -961,6 +962,7 @@ class CiChangeClassifierTests(unittest.TestCase):
                 result = ci_changes.classify([path])
                 self.assertTrue(result.code)
                 self.assertTrue(result.gstreamer)
+                self.assertTrue(result.vlc)
                 self.assertEqual(result.format, path.endswith(".c"))
                 self.assertFalse(result.full)
                 self.assertFalse(result.interop)
@@ -975,6 +977,32 @@ class CiChangeClassifierTests(unittest.TestCase):
         self.assertIn('"gstreamer-integration=$GSTREAMER_INTEGRATION"', required_gate)
         self.assertTrue(ci_changes.classify([], force_full=True).gstreamer)
 
+    def test_vlc_harness_selects_integration_and_c_formatting(self) -> None:
+        for path in ("tests/vlc/configure.sh", "tests/vlc/build_and_test.sh",
+                     "tests/vlc/run_smoke.py", "tests/vlc/peer.c"):
+            with self.subTest(path=path):
+                result = ci_changes.classify([path])
+                self.assertTrue(result.vlc)
+                self.assertTrue(result.code)
+                self.assertEqual(result.format, path.endswith(".c"))
+                self.assertEqual(result.python, path.endswith(".py"))
+                self.assertFalse(result.full)
+                self.assertFalse(result.gstreamer)
+                self.assertFalse(result.ffmpeg)
+        self.assertTrue(ci_changes.classify([], force_full=True).vlc)
+
+    def test_vlc_artifact_is_diagnostics_only(self) -> None:
+        workflow = (INTEROP_DIRECTORY.parent / ".github/workflows/ci.yml").read_text()
+        job = workflow.split("  vlc_integration:\n", 1)[1].split("  aead_platform:\n", 1)[0]
+        paths = job.split("          path: |\n", 1)[1].split("          retention-days:", 1)[0]
+        self.assertEqual([line.strip() for line in paths.splitlines()], [
+            "${{ runner.temp }}/vlc-qualification/evidence/*.log",
+            "${{ runner.temp }}/vlc-qualification/evidence/*.txt",
+            "${{ runner.temp }}/vlc-qualification/evidence/*.frames",
+            "${{ runner.temp }}/vlc-qualification/vlc-build/config.log",
+            "${{ runner.temp }}/vlc-qualification/gst-build/meson-logs/",
+        ])
+
     def test_ffmpeg_harness_selects_dependent_media_gates(self) -> None:
         result = ci_changes.classify(["tests/ffmpeg/run_smoke.sh"])
 
@@ -983,6 +1011,7 @@ class CiChangeClassifierTests(unittest.TestCase):
         self.assertTrue(result.shared)
         self.assertTrue(result.ffmpeg)
         self.assertTrue(result.gstreamer)
+        self.assertTrue(result.vlc)
         self.assertFalse(result.full)
         self.assertFalse(result.interop)
 
@@ -1136,7 +1165,7 @@ class CiChangeClassifierTests(unittest.TestCase):
             INTEROP_DIRECTORY.parent / ".github/workflows/ci.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 4)
+        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 5)
         timing_evidence = workflow.split(
             "      - name: Preserve AES-GCM timing failure diagnostics\n", 1
         )[1].split("      - name:", 1)[0]

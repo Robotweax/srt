@@ -207,6 +207,7 @@ Start with the [documentation index](docs/README.md):
 - [Integration guide](docs/integration.md)
 - [FFmpeg integration](docs/ffmpeg-integration.md)
 - [GStreamer integration](docs/gstreamer-integration.md)
+- [VLC integration](docs/vlc-integration.md)
 - [Testing](docs/testing.md)
 - [Known limitations](docs/limitations.md)
 - [File/Stream mode](docs/file-mode.md)

@@ -13,6 +13,7 @@ permissions:
   contents: read
 
 env:
+  VLC_COMMIT: 6de05adcbaf2e8b85fe86aad4169393098628119
   GSTREAMER_COMMIT: 070125524a8422e29d3b69a372ed4f62fd343ffa
   FFMPEG_COMMIT: 3acec0a1af2dda0a0838689b8b8649e7deb080a0
   REFERENCE_SRT_COMMIT: 899348d8318eb9a3c5a5b6ec43c4a1114288773a
@@ -54,6 +55,7 @@ jobs:
       shared: ${{ steps.classify.outputs.shared }}
       ffmpeg: ${{ steps.classify.outputs.ffmpeg }}
       gstreamer: ${{ steps.classify.outputs.gstreamer }}
+      vlc: ${{ steps.classify.outputs.vlc }}
       aead_platform: ${{ steps.classify.outputs.aead_platform }}
       sanitizers: ${{ steps.classify.outputs.sanitizers }}
       thread_sanitizer: ${{ steps.classify.outputs.thread_sanitizer }}
@@ -603,6 +605,68 @@ jobs:
             ${{ runner.temp }}/gstreamer-qualification/evidence/*.txt
             ${{ runner.temp }}/gstreamer-qualification/gst-robotweax-build/meson-logs/
             ${{ runner.temp }}/gstreamer-qualification/gst-reference-build/meson-logs/
+
+  vlc_integration:
+    name: VLC integration
+    needs: changes
+    if: needs.changes.outputs.vlc == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: videolan/vlc
+          ref: ${{ env.VLC_COMMIT }}
+          path: vlc-source
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: GStreamer/gstreamer
+          ref: ${{ env.GSTREAMER_COMMIT }}
+          path: gstreamer-source
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: FFmpeg/FFmpeg
+          ref: ${{ env.FFMPEG_COMMIT }}
+          path: ffmpeg-source
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: Haivision/srt
+          ref: ${{ env.REFERENCE_SRT_COMMIT }}
+          path: reference-source
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git python3-venv ninja-build pkg-config libglib2.0-dev libssl-dev flex bison autoconf automake libtool gettext autopoint libmpeg2-4-dev libdvbpsi-dev
+          python3 -m venv "$RUNNER_TEMP/vlc-tools"
+          "$RUNNER_TEMP/vlc-tools/bin/pip" install meson==1.9.1
+          echo "$RUNNER_TEMP/vlc-tools/bin" >> "$GITHUB_PATH"
+      - name: Build and qualify VLC with Robotweax SRT
+        run: >-
+          tests/vlc/build_and_test.sh
+          "$GITHUB_WORKSPACE/vlc-source"
+          "$GITHUB_WORKSPACE/gstreamer-source"
+          "$GITHUB_WORKSPACE/ffmpeg-source"
+          "$GITHUB_WORKSPACE/reference-source"
+          "$RUNNER_TEMP/vlc-qualification"
+      - name: Preserve VLC qualification diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vlc-evidence
+          path: |
+            ${{ runner.temp }}/vlc-qualification/evidence/*.log
+            ${{ runner.temp }}/vlc-qualification/evidence/*.txt
+            ${{ runner.temp }}/vlc-qualification/evidence/*.frames
+            ${{ runner.temp }}/vlc-qualification/vlc-build/config.log
+            ${{ runner.temp }}/vlc-qualification/gst-build/meson-logs/
+          retention-days: 7
 
   aead_platform:
     name: AES-GCM platform/ABI (${{ matrix.os }})
@@ -1764,6 +1828,7 @@ jobs:
       - shared_library
       - ffmpeg_integration
       - gstreamer_integration
+      - vlc_integration
       - aead_platform
       - sanitizers
       - thread_sanitizer
@@ -1792,6 +1857,7 @@ jobs:
           SHARED_LIBRARY: ${{ needs.shared_library.result }}
           FFMPEG_INTEGRATION: ${{ needs.ffmpeg_integration.result }}
           GSTREAMER_INTEGRATION: ${{ needs.gstreamer_integration.result }}
+          VLC_INTEGRATION: ${{ needs.vlc_integration.result }}
           AEAD_PLATFORM: ${{ needs.aead_platform.result }}
           SANITIZERS: ${{ needs.sanitizers.result }}
           THREAD_SANITIZER: ${{ needs.thread_sanitizer.result }}
@@ -1809,6 +1875,7 @@ jobs:
           EXPECT_shared_library: ${{ needs.changes.outputs.shared == 'true' }}
           EXPECT_ffmpeg_integration: ${{ needs.changes.outputs.ffmpeg == 'true' }}
           EXPECT_gstreamer_integration: ${{ needs.changes.outputs.gstreamer == 'true' }}
+          EXPECT_vlc_integration: ${{ needs.changes.outputs.vlc == 'true' }}
           EXPECT_aead_platform: ${{ needs.changes.outputs.aead_platform == 'true' || needs.changes.outputs.examples == 'true' }}
           EXPECT_sanitizers: ${{ needs.changes.outputs.sanitizers == 'true' }}
           EXPECT_thread_sanitizer: ${{ needs.changes.outputs.thread_sanitizer == 'true' }}
@@ -1830,6 +1897,7 @@ jobs:
             "shared-library=$SHARED_LIBRARY" \
             "ffmpeg-integration=$FFMPEG_INTEGRATION" \
             "gstreamer-integration=$GSTREAMER_INTEGRATION" \
+            "vlc-integration=$VLC_INTEGRATION" \
             "aead-platform=$AEAD_PLATFORM" \
             "sanitizers=$SANITIZERS" \
             "thread-sanitizer=$THREAD_SANITIZER" \
