@@ -393,6 +393,12 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 }
                 negotiated_packet_filter_ =
                     filter.configuration;
+            } else if (configuration_.packet_filter_configuration
+                           .sensor_profile()) {
+                // The experimental sensor contract changes delivery and ACK
+                // semantics, so a configured listener cannot silently accept
+                // a caller that did not offer the exact profile.
+                return reject(packet_filter_rejection_reason);
             }
             if (message.has_stream_id_extension
                 && message.has_handshake_extension

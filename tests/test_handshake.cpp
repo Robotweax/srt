@@ -1088,3 +1088,35 @@ TEST(configured_listener_does_not_force_an_unrequested_packet_filter)
         HandshakeActionKind::connected);
     REQUIRE(!caller.has_negotiated_packet_filter());
 }
+
+TEST(sensor_profile_listener_rejects_a_caller_without_the_profile)
+{
+    const auto profile = parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,arq:never");
+    REQUIRE(profile);
+    std::uint32_t cookie_salt = 0x81a5'5001U;
+    HandshakeMachine caller {{
+        .role = ConnectionRole::caller,
+        .local_socket_id = 100,
+    }};
+    HandshakeMachine listener {{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 200,
+        .packet_filter_configuration = profile.configuration,
+        .cookie_generator = test_cookie,
+        .cookie_context = &cookie_salt,
+    }};
+
+    const auto induction = caller.start();
+    const auto induction_response =
+        listener.receive(message_from(induction.values[0]));
+    const auto conclusion =
+        caller.receive(message_from(induction_response.values[0]));
+    REQUIRE(!conclusion.values[0].has_packet_filter_extension);
+    const auto rejected = listener.receive(message_from(conclusion.values[0]));
+    REQUIRE_EQ(listener.state(), HandshakeState::rejected);
+    REQUIRE_EQ(listener.rejection_reason(), 14);
+    REQUIRE_EQ(
+        static_cast<std::int32_t>(rejected.values[0].packet.request), 1'014);
+    REQUIRE_EQ(rejected.values[1].kind, HandshakeActionKind::rejected);
+}

@@ -1063,6 +1063,218 @@ TEST(sensor_profile_negotiates_and_transfers_loopback_datagrams)
     REQUIRE_EQ(srt_cleanup(), 0);
 }
 
+TEST(sensor_profile_crosses_a_real_udp_fault_relay_without_arq)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    constexpr char profile[] = "fec-sensor-v1,cols:4,rows:1,arq:never";
+    constexpr std::int32_t timeout_milliseconds = 2'000;
+
+    const SRTSOCKET listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_PACKETFILTER, profile,
+                   static_cast<int>(sizeof(profile) - 1U)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_port = 0;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&address),
+                   static_cast<int>(sizeof(address))),
+        0);
+    REQUIRE_EQ(srt_listen(listener, 1), 0);
+    sockaddr_in listener_name {};
+    int listener_name_size = static_cast<int>(sizeof(listener_name));
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&listener_name),
+            &listener_name_size),
+        0);
+    const IpEndpoint listener_endpoint =
+        IpEndpoint::loopback(ntohs(listener_name.sin_port));
+
+    UdpSocket relay;
+    REQUIRE(relay.valid());
+    REQUIRE_EQ(relay.bind(IpEndpoint::loopback()), Error::none);
+    const auto relay_endpoint = relay.local_endpoint();
+    REQUIRE(relay_endpoint);
+    std::atomic_size_t source_packets = 0U;
+    std::atomic_size_t parity_packets = 0U;
+    std::atomic_size_t duplicate_sources = 0U;
+    std::atomic_size_t relay_errors = 0U;
+    std::jthread relay_thread([&](std::stop_token stop) {
+        std::array<std::byte, 65'536> datagram {};
+        std::array<std::byte, 65'536> held_source {};
+        std::array<std::uint32_t, 8> observed_sequences {};
+        std::size_t observed_sequence_count = 0U;
+        std::size_t held_size = 0U;
+        IpEndpoint caller_endpoint {};
+        bool caller_known = false;
+        const auto forward = [&](std::span<const std::byte> bytes,
+                                 IpEndpoint destination) {
+            const auto sent = relay.send_to(bytes, destination);
+            if (!sent || sent.bytes_transferred != bytes.size()) {
+                ++relay_errors;
+            }
+        };
+        while (!stop.stop_requested()) {
+            const auto ready = relay.wait_readable(10);
+            if (!ready) {
+                ++relay_errors;
+                break;
+            }
+            if (!ready.ready) {
+                continue;
+            }
+            const auto received = relay.receive_from(datagram);
+            if (!received) {
+                ++relay_errors;
+                continue;
+            }
+            const auto bytes = std::span<const std::byte> {
+                datagram.data(), received.bytes_transferred};
+            if (received.peer == listener_endpoint) {
+                if (caller_known) {
+                    forward(bytes, caller_endpoint);
+                } else {
+                    ++relay_errors;
+                }
+                continue;
+            }
+
+            caller_endpoint = received.peer;
+            caller_known = true;
+            const auto decoded = decode_packet(bytes);
+            if (!decoded || decoded.packet.kind != PacketKind::data) {
+                forward(bytes, listener_endpoint);
+                continue;
+            }
+            if (decoded.packet.data.message_number == 0U) {
+                const std::size_t parity = ++parity_packets;
+                if (parity != 2U) {
+                    forward(bytes, listener_endpoint);
+                }
+                continue;
+            }
+
+            const std::uint32_t sequence = decoded.packet.data.sequence.value();
+            for (std::size_t index = 0U; index < observed_sequence_count;
+                ++index) {
+                if (observed_sequences[index] == sequence) {
+                    ++duplicate_sources;
+                }
+            }
+            if (observed_sequence_count < observed_sequences.size()) {
+                observed_sequences[observed_sequence_count++] = sequence;
+            }
+            const std::size_t source = ++source_packets;
+            if (source == 2U || source == 5U) {
+                continue;
+            }
+            if (source == 7U) {
+                std::copy(bytes.begin(), bytes.end(), held_source.begin());
+                held_size = bytes.size();
+                continue;
+            }
+            forward(bytes, listener_endpoint);
+            if (source == 8U && held_size != 0U) {
+                forward(
+                    std::span<const std::byte> {held_source.data(), held_size},
+                    listener_endpoint);
+                held_size = 0U;
+            }
+        }
+    });
+
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_PACKETFILTER, profile,
+                   static_cast<int>(sizeof(profile) - 1U)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    sockaddr_in relay_name {};
+    relay_name.sin_family = AF_INET;
+    relay_name.sin_port = htons(relay_endpoint.endpoint.port);
+    relay_name.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(
+        srt_connect(caller, reinterpret_cast<const sockaddr*>(&relay_name),
+            static_cast<int>(sizeof(relay_name))),
+        0);
+    const SRTSOCKET accepted = srt_accept(listener, nullptr, nullptr);
+    REQUIRE(accepted != SRT_INVALID_SOCK);
+
+    const auto send_sample = [&](char value) {
+        REQUIRE_EQ(srt_sendmsg(caller, &value, 1, -1, 1), 1);
+    };
+    std::array<bool, 8> delivered {};
+    const auto receive_sample = [&] {
+        char value = 0;
+        REQUIRE_EQ(srt_recvmsg(accepted, &value, 1), 1);
+        REQUIRE(value >= 'a');
+        REQUIRE(value <= 'h');
+        const std::size_t index = static_cast<std::size_t>(value - 'a');
+        REQUIRE(!delivered[index]);
+        delivered[index] = true;
+    };
+
+    for (char value = 'a'; value <= 'd'; ++value) {
+        send_sample(value);
+    }
+    for (std::size_t index = 0U; index < 4U; ++index) {
+        receive_sample();
+    }
+    for (std::size_t index = 0U; index < 4U; ++index) {
+        REQUIRE(delivered[index]);
+    }
+
+    const auto second_row_start = std::chrono::steady_clock::now();
+    for (char value = 'e'; value <= 'h'; ++value) {
+        send_sample(value);
+    }
+    for (std::size_t index = 0U; index < 3U; ++index) {
+        receive_sample();
+    }
+    const auto second_row_elapsed =
+        std::chrono::steady_clock::now() - second_row_start;
+    REQUIRE(second_row_elapsed < 500ms);
+    REQUIRE(!delivered[4]);
+    REQUIRE(delivered[5]);
+    REQUIRE(delivered[6]);
+    REQUIRE(delivered[7]);
+
+    SRT_TRACEBSTATS sender_statistics {};
+    SRT_TRACEBSTATS receiver_statistics {};
+    const auto acknowledgement_deadline = std::chrono::steady_clock::now() + 1s;
+    do {
+        REQUIRE_EQ(srt_bstats(caller, &sender_statistics, 0), 0);
+        if (sender_statistics.pktSndBuf == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(2ms);
+    } while (std::chrono::steady_clock::now() < acknowledgement_deadline);
+    REQUIRE_EQ(sender_statistics.pktSndBuf, 0);
+    REQUIRE_EQ(sender_statistics.pktRetransTotal, 0);
+    REQUIRE_EQ(sender_statistics.pktRecvNAKTotal, 0);
+    REQUIRE_EQ(srt_bstats(accepted, &receiver_statistics, 0), 0);
+    REQUIRE(receiver_statistics.pktRcvFilterSupplyTotal >= 1);
+    REQUIRE(receiver_statistics.pktRcvDropTotal >= 1);
+
+    REQUIRE_EQ(source_packets.load(std::memory_order_acquire), 8U);
+    REQUIRE_EQ(parity_packets.load(std::memory_order_acquire), 2U);
+    REQUIRE_EQ(duplicate_sources.load(std::memory_order_acquire), 0U);
+    REQUIRE_EQ(relay_errors.load(std::memory_order_acquire), 0U);
+
+    REQUIRE_EQ(srt_close(accepted), 0);
+    REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_close(listener), 0);
+    relay_thread.request_stop();
+    relay_thread.join();
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
+
 TEST(lifecycle_cleanup_bypasses_connected_socket_linger_deadlines)
 {
     REQUIRE_EQ(srt_startup(), 0);
