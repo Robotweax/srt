@@ -91,6 +91,12 @@ a released FFmpeg version; component ABI versions remain unchanged.
 
 ## Build adaptations and provenance
 
+The helper supplies OBS's `OBS_VERSION_OVERRIDE` as
+`32.2.2-robotweax-qualification` after verifying the exact source revision.
+This keeps version detection independent of Git tags, including in shallow
+SHA-only checkouts, and identifies the restricted build profile. The canonical
+OBS version remains `32.2.2`.
+
 OBS's `FindLibsrt.cmake` searches for `libsrt.pc` and library names `srt` or
 `libsrt`. Robotweax's opt-in metadata is `srt.pc` and its namespaced library
 is `librobotweax-srt`. The helper therefore validates pkg-config provenance
@@ -117,6 +123,7 @@ existing build requires librist even though RIST is not exercised here.
 These conclusions were derived from the pinned OBS revision's
 `cmake/finders/FindLibsrt.cmake`, `cmake/finders/FindFFmpeg.cmake`,
 `cmake/linux/helpers.cmake`,
+`cmake/common/versionconfig.cmake`,
 `plugins/CMakeLists.txt`, `plugins/obs-ffmpeg/CMakeLists.txt`,
 `plugins/obs-ffmpeg/cmake/dependencies.cmake`, `obs-ffmpeg-srt.h`,
 `obs-ffmpeg-mpegts.c`, and `obs-ffmpeg-source.c` within that plugin directory,

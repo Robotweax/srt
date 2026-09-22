@@ -22,7 +22,10 @@ export PKG_CONFIG_PATH="$srt_prefix/lib/pkgconfig:$ffmpeg_prefix/lib/pkgconfig${
 for component in libavcodec libavdevice libavfilter libavformat libavutil libswscale libswresample; do
     [[ "$(pkg-config --variable=pcfiledir "$component")" == "$ffmpeg_prefix/lib/pkgconfig" ]]
 done
+# A SHA-only checkout has no release tags for OBS's git-describe version probe.
+# The validated source revision above fixes the version; label this build profile.
 cmake -S "$source_directory" -B "$build" -G Ninja \
+    -DOBS_VERSION_OVERRIDE=32.2.2-robotweax-qualification \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
     -DCMAKE_INSTALL_LIBDIR=lib \
     -DCMAKE_PREFIX_PATH="$ffmpeg_prefix;$srt_prefix" \

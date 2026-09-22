@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 from pathlib import Path
+import shlex
 import tempfile
 import unittest
 from unittest import mock
@@ -22,6 +23,20 @@ prepare = load("obs_prepare", "prepare_source.py")
 
 
 class ObsHarnessTests(unittest.TestCase):
+    def test_obs_version_does_not_depend_on_tags_in_shallow_checkout(self):
+        script = (ROOT / "tests/obs/configure.sh").read_text()
+        # Inspect the actual configure command, not comments or unused variables.
+        command = shlex.split("cmake " + script.split("\ncmake ", 1)[1])
+        versions = [arg for arg in command if arg.startswith("-DOBS_VERSION_OVERRIDE=")]
+        self.assertEqual(
+            versions, ["-DOBS_VERSION_OVERRIDE=32.2.2-robotweax-qualification"]
+        )
+        self.assertIn(
+            '"$(git -C "$source_directory" rev-parse HEAD)" == '
+            "ba2f32bdf791005443988a4955e963663e16b1ed",
+            script,
+        )
+
     def test_preparation_is_hash_guarded_and_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
