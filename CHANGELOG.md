@@ -6,6 +6,14 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Added a pinned GStreamer 1.28.7 integration build and required CI gate using
+  the existing `srtsrc`/`srtsink` plugin and opt-in `srt.pc` metadata.
+- Added runtime provider verification, MPEG-TS and AES-CTR media checks,
+  bidirectional Haivision and FFmpeg interoperability, pipeline stop and
+  authenticated listener reconnection tests.
+- Documented the controlled live-stream shutdown profile and the boundary
+  around immediate sender teardown; no lossless abrupt-EOF claim is made.
+
 ## 0.2.4 — release candidate
 
 - Add `SRTO_ROBOTWEAX_CRYPTO_BACKEND`, a read-only runtime backend query

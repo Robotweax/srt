@@ -171,6 +171,7 @@ class CiChangeClassifierTests(unittest.TestCase):
         self.assertTrue(result.format)
         self.assertTrue(result.ffmpeg)
         self.assertTrue(result.examples)
+        self.assertTrue(result.gstreamer)
 
     def test_public_example_changes_select_release_smoke_tests(self) -> None:
         source = ci_changes.classify(["examples/srt_message_demo.cpp"])
@@ -878,7 +879,7 @@ class CiChangeClassifierTests(unittest.TestCase):
             with self.subTest(path=path):
                 result = ci_changes.classify([path])
                 for flag in ("package", "portable", "shared", "aead_platform",
-                             "ffmpeg", "documentation", "python"):
+                             "ffmpeg", "gstreamer", "documentation", "python"):
                     self.assertTrue(getattr(result, flag), flag)
                 for flag in ("core_tests", "cpp", "examples", "interop", "full",
                              "debug", "sanitizers", "fuzz", "thread_sanitizer"):
@@ -950,13 +951,38 @@ class CiChangeClassifierTests(unittest.TestCase):
             ),
         )
 
-    def test_ffmpeg_harness_selects_only_the_shared_ffmpeg_gate(self) -> None:
+    def test_gstreamer_harness_selects_integration_and_c_formatting(self) -> None:
+        for path in (
+            "tests/gstreamer/configure.sh",
+            "tests/gstreamer/run_smoke.py",
+            "tests/gstreamer/peer.c",
+        ):
+            with self.subTest(path=path):
+                result = ci_changes.classify([path])
+                self.assertTrue(result.code)
+                self.assertTrue(result.gstreamer)
+                self.assertEqual(result.format, path.endswith(".c"))
+                self.assertFalse(result.full)
+                self.assertFalse(result.interop)
+
+    def test_gstreamer_result_is_included_in_required_gate(self) -> None:
+        workflow = (
+            INTEROP_DIRECTORY.parent / ".github/workflows/ci.yml"
+        ).read_text(encoding="utf-8")
+        required_gate = workflow.split("  ci_gate:\n", 1)[1]
+        self.assertIn("      - gstreamer_integration\n", required_gate)
+        self.assertIn("${{ needs.gstreamer_integration.result }}", required_gate)
+        self.assertIn('"gstreamer-integration=$GSTREAMER_INTEGRATION"', required_gate)
+        self.assertTrue(ci_changes.classify([], force_full=True).gstreamer)
+
+    def test_ffmpeg_harness_selects_dependent_media_gates(self) -> None:
         result = ci_changes.classify(["tests/ffmpeg/run_smoke.sh"])
 
         self.assertFalse(result.docs_only)
         self.assertTrue(result.code)
         self.assertTrue(result.shared)
         self.assertTrue(result.ffmpeg)
+        self.assertTrue(result.gstreamer)
         self.assertFalse(result.full)
         self.assertFalse(result.interop)
 
@@ -1110,7 +1136,7 @@ class CiChangeClassifierTests(unittest.TestCase):
             INTEROP_DIRECTORY.parent / ".github/workflows/ci.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 3)
+        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 4)
         timing_evidence = workflow.split(
             "      - name: Preserve AES-GCM timing failure diagnostics\n", 1
         )[1].split("      - name:", 1)[0]
@@ -1126,7 +1152,7 @@ class CiChangeClassifierTests(unittest.TestCase):
              for suffix in ("json", "log")],
         )
         ffmpeg_job = workflow.split("  ffmpeg_integration:\n", 1)[1].split(
-            "  aead_platform:\n", 1
+            "  gstreamer_integration:\n", 1
         )[0]
         self.assertEqual(ffmpeg_job.count("uses: actions/upload-artifact@"), 1)
         self.assertIn("name: ffmpeg-smoke-failure", ffmpeg_job)

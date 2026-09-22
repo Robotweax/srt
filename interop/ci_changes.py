@@ -143,6 +143,7 @@ class ChangeSet:
     debug: bool = False
     shared: bool = False
     ffmpeg: bool = False
+    gstreamer: bool = False
     aead_platform: bool = False
     sanitizers: bool = False
     thread_sanitizer: bool = False
@@ -278,6 +279,7 @@ def enable_cpp(change_set: ChangeSet, path: str) -> None:
     change_set.sanitizers = True
     if path.startswith(("src/", "include/")):
         change_set.ffmpeg = True
+        change_set.gstreamer = True
         change_set.examples = True
         # Preserve the former examples-triggered ABI matrix for production
         # changes. Only isolated demo changes lose that implicit dependency.
@@ -560,6 +562,7 @@ def classify(
             change_set.shared = True
             change_set.aead_platform = True
             change_set.ffmpeg = True
+            change_set.gstreamer = True
             change_set.documentation = True
             change_set.python = True
             change_set.format |= PurePosixPath(path).suffix.lower() in CPP_SUFFIXES
@@ -571,6 +574,12 @@ def classify(
             change_set.code = True
             change_set.shared = True
             change_set.ffmpeg = True
+            change_set.gstreamer = True
+            continue
+        if path.startswith("tests/gstreamer/"):
+            change_set.code = True
+            change_set.gstreamer = True
+            change_set.format = path.endswith((".c", ".h")) or change_set.format
             continue
         suffix = PurePosixPath(path).suffix.lower()
         if path.startswith("interop/"):

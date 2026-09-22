@@ -13,6 +13,7 @@ permissions:
   contents: read
 
 env:
+  GSTREAMER_COMMIT: 070125524a8422e29d3b69a372ed4f62fd343ffa
   FFMPEG_COMMIT: 3acec0a1af2dda0a0838689b8b8649e7deb080a0
   REFERENCE_SRT_COMMIT: 899348d8318eb9a3c5a5b6ec43c4a1114288773a
   REFERENCE_SRT_VERSION: "1.5.7"
@@ -52,6 +53,7 @@ jobs:
       debug: ${{ steps.classify.outputs.debug }}
       shared: ${{ steps.classify.outputs.shared }}
       ffmpeg: ${{ steps.classify.outputs.ffmpeg }}
+      gstreamer: ${{ steps.classify.outputs.gstreamer }}
       aead_platform: ${{ steps.classify.outputs.aead_platform }}
       sanitizers: ${{ steps.classify.outputs.sanitizers }}
       thread_sanitizer: ${{ steps.classify.outputs.thread_sanitizer }}
@@ -548,6 +550,59 @@ jobs:
             ${{ runner.temp }}/ffmpeg-smoke/robotweax-ffmpeg.*/*.m2v
           if-no-files-found: warn
           retention-days: 7
+
+  gstreamer_integration:
+    name: GStreamer integration
+    needs: changes
+    if: needs.changes.outputs.gstreamer == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: GStreamer/gstreamer
+          ref: ${{ env.GSTREAMER_COMMIT }}
+          path: gstreamer-source
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: FFmpeg/FFmpeg
+          ref: ${{ env.FFMPEG_COMMIT }}
+          path: ffmpeg-source
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: Haivision/srt
+          ref: ${{ env.REFERENCE_SRT_COMMIT }}
+          path: reference-source
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git python3-venv ninja-build pkg-config libglib2.0-dev libssl-dev flex bison
+          python3 -m venv "$RUNNER_TEMP/gst-tools"
+          "$RUNNER_TEMP/gst-tools/bin/pip" install meson==1.9.1
+          echo "$RUNNER_TEMP/gst-tools/bin" >> "$GITHUB_PATH"
+      - name: Build and qualify both providers and FFmpeg
+        run: >-
+          tests/gstreamer/build_and_test.sh
+          "$GITHUB_WORKSPACE/gstreamer-source"
+          "$GITHUB_WORKSPACE/ffmpeg-source"
+          "$GITHUB_WORKSPACE/reference-source"
+          "$RUNNER_TEMP/gstreamer-qualification"
+      - name: Preserve qualification diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gstreamer-evidence
+          path: |
+            ${{ runner.temp }}/gstreamer-qualification/evidence/*.log
+            ${{ runner.temp }}/gstreamer-qualification/evidence/*.txt
+            ${{ runner.temp }}/gstreamer-qualification/gst-robotweax-build/meson-logs/
+            ${{ runner.temp }}/gstreamer-qualification/gst-reference-build/meson-logs/
 
   aead_platform:
     name: AES-GCM platform/ABI (${{ matrix.os }})
@@ -1708,6 +1763,7 @@ jobs:
       - debug_matrix
       - shared_library
       - ffmpeg_integration
+      - gstreamer_integration
       - aead_platform
       - sanitizers
       - thread_sanitizer
@@ -1735,6 +1791,7 @@ jobs:
           DEBUG_MATRIX: ${{ needs.debug_matrix.result }}
           SHARED_LIBRARY: ${{ needs.shared_library.result }}
           FFMPEG_INTEGRATION: ${{ needs.ffmpeg_integration.result }}
+          GSTREAMER_INTEGRATION: ${{ needs.gstreamer_integration.result }}
           AEAD_PLATFORM: ${{ needs.aead_platform.result }}
           SANITIZERS: ${{ needs.sanitizers.result }}
           THREAD_SANITIZER: ${{ needs.thread_sanitizer.result }}
@@ -1751,6 +1808,7 @@ jobs:
           EXPECT_debug_matrix: ${{ needs.changes.outputs.debug == 'true' }}
           EXPECT_shared_library: ${{ needs.changes.outputs.shared == 'true' }}
           EXPECT_ffmpeg_integration: ${{ needs.changes.outputs.ffmpeg == 'true' }}
+          EXPECT_gstreamer_integration: ${{ needs.changes.outputs.gstreamer == 'true' }}
           EXPECT_aead_platform: ${{ needs.changes.outputs.aead_platform == 'true' || needs.changes.outputs.examples == 'true' }}
           EXPECT_sanitizers: ${{ needs.changes.outputs.sanitizers == 'true' }}
           EXPECT_thread_sanitizer: ${{ needs.changes.outputs.thread_sanitizer == 'true' }}
@@ -1771,6 +1829,7 @@ jobs:
             "debug-matrix=$DEBUG_MATRIX" \
             "shared-library=$SHARED_LIBRARY" \
             "ffmpeg-integration=$FFMPEG_INTEGRATION" \
+            "gstreamer-integration=$GSTREAMER_INTEGRATION" \
             "aead-platform=$AEAD_PLATFORM" \
             "sanitizers=$SANITIZERS" \
             "thread-sanitizer=$THREAD_SANITIZER" \
