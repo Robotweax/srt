@@ -5,6 +5,7 @@
 #include <psapi.h>
 
 #include <obs.h>
+#include <util/platform.h>
 
 #include <ctype.h>
 #include <math.h>
@@ -339,14 +340,12 @@ int main(int argc, char** argv)
     if (!source)
         return 2;
     stage("source-ready");
-    if (!sending) {
-        filter =
-            obs_source_create_private("robotweax-observer", "observer", NULL);
-        if (!filter)
-            return 2;
-        obs_source_filter_add(source, filter);
+    filter = obs_source_create_private("robotweax-observer", "observer", NULL);
+    if (!filter)
+        return 2;
+    obs_source_filter_add(source, filter);
+    if (!sending)
         obs_source_add_audio_capture_callback(source, inspect_audio, NULL);
-    }
     obs_set_output_source(0, source);
 
     if (sending) {
@@ -401,7 +400,7 @@ int main(int argc, char** argv)
     while (GetTickCount64() - start < 30000) {
         uint64_t now = GetTickCount64();
         if (sending && now >= next_frame) {
-            emit_synthetic(source, now * UINT64_C(1000000), frame_index++);
+            emit_synthetic(source, os_gettime_ns(), frame_index++);
             next_frame += 40;
         }
         if (command_ready()) {
@@ -422,11 +421,10 @@ int main(int argc, char** argv)
     obs_encoder_release(aencoder);
     obs_service_release(service);
     obs_set_output_source(0, NULL);
-    if (!sending) {
+    if (!sending)
         obs_source_remove_audio_capture_callback(source, inspect_audio, NULL);
-        obs_source_filter_remove(source, filter);
-        obs_source_release(filter);
-    }
+    obs_source_filter_remove(source, filter);
+    obs_source_release(filter);
     obs_source_release(source);
     obs_shutdown();
     puts("SHUTDOWN");

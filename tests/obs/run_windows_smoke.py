@@ -146,6 +146,15 @@ def require_media(log: Path) -> None:
         raise RuntimeError(f"{log.name}: insufficient decoded moving A/V")
 
 
+def require_video_motion(log: Path) -> None:
+    samples = MEDIA.findall(read(log))
+    if not samples:
+        raise RuntimeError(f"{log.name}: no native video observations")
+    video, changed = map(int, samples[-1][:2])
+    if video < 20 or changed < 10:
+        raise RuntimeError(f"{log.name}: synthetic OBS video did not move")
+
+
 def canonical(path: str | Path) -> str:
     return os.path.normcase(os.path.normpath(os.path.abspath(path)))
 
@@ -251,6 +260,7 @@ def qualify(args: argparse.Namespace) -> None:
             sender.stop()
         receiver.stop()
     packets, ratio = ts_packets(capture)
+    require_video_motion(observer_log)
     require_provider(observer_log, obs_provider)
     if canonical(reference_provider) not in {
         canonical(value)

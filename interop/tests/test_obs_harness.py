@@ -118,6 +118,22 @@ class ObsHarnessTests(unittest.TestCase):
         self.assertLess(queued, decoded)
         self.assertLess(decoded, closed)
 
+    def test_windows_synthetic_video_uses_obs_clock_and_must_move(self):
+        peer = (ROOT / "tests/obs/windows_obs_peer.c").read_text()
+        self.assertIn("emit_synthetic(source, os_gettime_ns(), frame_index++);", peer)
+        self.assertNotIn("now * UINT64_C(1000000)", peer)
+        self.assertLess(
+            peer.index("obs_source_filter_add(source, filter);"),
+            peer.index("if (!sending)\n        obs_source_add_audio_capture_callback"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "native-obs.log"
+            log.write_text("MEDIA video=20 changed=10 audio=0 audible=0 bytes=500000\n")
+            windows.require_video_motion(log)
+            log.write_text("MEDIA video=20 changed=1 audio=0 audible=0 bytes=500000\n")
+            with self.assertRaisesRegex(RuntimeError, "did not move"):
+                windows.require_video_motion(log)
+
     def test_desktop_lifecycle_fix_is_pinned_idempotent_and_rejects_partial_edits(self):
         # Independently authored minimal fixture, not copied upstream source.
         original = (
