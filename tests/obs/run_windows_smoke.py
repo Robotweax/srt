@@ -292,12 +292,16 @@ def qualify(args: argparse.Namespace) -> None:
             reference_log,
             environment(reference_runtime),
         )
-        sender.finish()
+        sender.wait_for(
+            lambda: "QUEUED" in read(reference_log), "reference live replay"
+        )
         receiver.wait_for(
             lambda: bool(MEDIA.findall(read(observer_log)))
             and min(map(int, MEDIA.findall(read(observer_log))[-1][:4])) >= 20,
             "decoded encrypted A/V",
         )
+        sender.command("quit")
+        sender.finish()
         receiver.command("quit")
         receiver.finish()
     finally:

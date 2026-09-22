@@ -107,6 +107,17 @@ class ObsHarnessTests(unittest.TestCase):
             source = (ROOT / "tests/obs/run_windows_smoke.py").read_text()
             self.assertEqual(source.count("cwd=obs_runtime,"), 2)
 
+    def test_windows_reference_live_replay_waits_for_decoded_media(self):
+        reference = (ROOT / "tests/obs/windows_reference_peer.c").read_text()
+        self.assertIn("Sleep(15);", reference)
+        self.assertIn('printf("QUEUED %llu\\n"', reference)
+        smoke = (ROOT / "tests/obs/run_windows_smoke.py").read_text()
+        queued = smoke.index('"QUEUED" in read(reference_log)')
+        decoded = smoke.index('"decoded encrypted A/V"')
+        closed = smoke.index('sender.command("quit")', decoded)
+        self.assertLess(queued, decoded)
+        self.assertLess(decoded, closed)
+
     def test_desktop_lifecycle_fix_is_pinned_idempotent_and_rejects_partial_edits(self):
         # Independently authored minimal fixture, not copied upstream source.
         original = (

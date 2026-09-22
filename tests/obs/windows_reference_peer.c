@@ -126,6 +126,8 @@ static uint64_t send_file(SRTSOCKET socket, const char* path)
         if (sent != (int)size)
             fail("cannot send reference payload");
         total += size;
+        /* Replay the captured transport stream as live media, not a burst. */
+        Sleep(15);
     }
     fclose(input);
     return total;
@@ -161,6 +163,17 @@ int main(int argc, char** argv)
         connect_socket(listener, sender, (uint16_t)parsed_port, argv[4]);
     uint64_t total =
         sender ? send_file(socket, argv[5]) : receive_file(socket, argv[5]);
+    if (sender) {
+        /* Keep the connection open until OBS has observed decoded media. */
+        char command[16];
+        printf("QUEUED %llu\n", (unsigned long long)total);
+        fflush(stdout);
+        if (!fgets(command, sizeof(command), stdin)
+            || strncmp(command, "quit", 4) != 0) {
+            fprintf(stderr, "reference sender did not receive quit command\n");
+            return 2;
+        }
+    }
     srt_close(socket);
     srt_cleanup();
     printf("BYTES %llu\n", (unsigned long long)total);
