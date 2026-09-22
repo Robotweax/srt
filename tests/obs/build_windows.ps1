@@ -80,6 +80,7 @@ if ((Get-FileHash $RobotweaxDll).Hash -cne (Get-FileHash $BundledDll).Hash) {
     throw 'OBS did not bundle the selected Robotweax compatibility DLL.'
 }
 $ReferenceDll = (Resolve-Path "$DependencyPrefix/bin/srt.dll").Path
+$FfmpegCli = (Resolve-Path "$DependencyPrefix/bin/ffmpeg.exe").Path
 if ((Get-FileHash $ReferenceDll).Hash -ceq (Get-FileHash $BundledDll).Hash) {
     throw 'Reference and OBS providers must remain separate binaries.'
 }
@@ -114,6 +115,7 @@ python "$Repository/tests/obs/run_windows_smoke.py" `
     --obs-peer $ObsPeer `
     --reference-peer $ReferencePeer `
     --reference-srt "$Reference/srt.dll" `
+    --ffmpeg-cli $FfmpegCli `
     --artifacts "$Evidence/runtime" |
     Tee-Object -FilePath "$Evidence/results.txt"
 if ($LASTEXITCODE -ne 0) { throw "Windows OBS qualification failed: $LASTEXITCODE" }

@@ -84,6 +84,19 @@ class ObsHarnessTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "not coherent MPEG-TS"):
                 windows.ts_packets(capture)
 
+    def test_windows_capture_reports_decoded_frame_diversity(self):
+        first = "0" * 32
+        second = "1" * 32
+        report = (
+            "#format: frame checksums\n"
+            f"0, 0, 0, 1, 86400, {first}\n"
+            f"0, 1, 1, 1, 86400, {first}\n"
+            f"0, 2, 2, 1, 86400, {second}\n"
+        )
+        self.assertEqual(windows.decoded_frame_hashes(report), (3, 2))
+        with self.assertRaisesRegex(RuntimeError, "no decoded video"):
+            windows.decoded_frame_hashes("# empty\n")
+
     def test_windows_obs_peer_runs_beside_installed_libobs_data(self):
         with tempfile.TemporaryDirectory() as directory:
             prefix = Path(directory)
@@ -456,6 +469,7 @@ class ObsHarnessTests(unittest.TestCase):
         self.assertIn("Where-Object { $_.Name -cne 'srt.dll' }", script)
         self.assertIn('Copy-Item $RobotweaxDll "$RuntimeDirectory/srt.dll"', script)
         self.assertIn("'--component', 'Development'", script)
+        self.assertIn('--ffmpeg-cli $FfmpegCli', script)
         self.assertIn('$ObsPeer = "$ObsPrefix/bin/64bit/windows-obs-peer.exe"', script)
         obs_build = script.split("'-S', $ObsSource", 1)[1].split(
             "Invoke-Checked cmake @('--install', $ObsBuild", 1

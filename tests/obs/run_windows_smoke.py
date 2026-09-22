@@ -137,6 +137,44 @@ def ts_packets(path: Path) -> tuple[int, float]:
     return best_count, best_ratio
 
 
+def decoded_frame_hashes(output: str) -> tuple[int, int]:
+    hashes = []
+    for line in output.splitlines():
+        columns = [column.strip() for column in line.split(",")]
+        if len(columns) == 6 and re.fullmatch(r"[0-9a-fA-F]{32}", columns[-1]):
+            hashes.append(columns[-1].lower())
+    if not hashes:
+        raise RuntimeError("captured native MPEG-TS has no decoded video frames")
+    return len(hashes), len(set(hashes))
+
+
+def inspect_captured_video(ffmpeg: Path, capture: Path, env: dict[str, str]) -> None:
+    result = subprocess.run(
+        [
+            str(ffmpeg),
+            "-hide_banner",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-i",
+            str(capture),
+            "-map",
+            "0:v:0",
+            "-an",
+            "-f",
+            "framemd5",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+    frames, unique = decoded_frame_hashes(result.stdout)
+    print(f"FRAME_HASHES decoded={frames} unique={unique}")
+
+
 def require_media(log: Path) -> None:
     samples = MEDIA.findall(read(log))
     if not samples:
@@ -261,6 +299,7 @@ def qualify(args: argparse.Namespace) -> None:
         receiver.stop()
     packets, ratio = ts_packets(capture)
     require_video_motion(observer_log)
+    inspect_captured_video(args.ffmpeg_cli, capture, environment(reference_runtime))
     require_provider(observer_log, obs_provider)
     if canonical(reference_provider) not in {
         canonical(value)
@@ -330,6 +369,7 @@ def main() -> None:
         "obs-peer",
         "reference-peer",
         "reference-srt",
+        "ffmpeg-cli",
         "artifacts",
     ):
         parser.add_argument("--" + name, type=Path, required=True)
