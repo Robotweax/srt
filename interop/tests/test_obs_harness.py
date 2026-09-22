@@ -115,7 +115,7 @@ class ObsHarnessTests(unittest.TestCase):
 
     def test_windows_synthetic_i420_frames_have_conversion_metadata(self):
         peer = (ROOT / "tests/obs/windows_obs_peer.c").read_text()
-        self.assertIn("frame->range = VIDEO_RANGE_PARTIAL;", peer)
+        self.assertIn("frame->full_range = false;", peer)
         self.assertIn(
             "VIDEO_RANGE_PARTIAL, VIDEO_FORMAT_I420, frame->color_matrix,",
             peer,

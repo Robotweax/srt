@@ -200,7 +200,7 @@ static void emit_synthetic(
         obs_source_frame_create(VIDEO_FORMAT_I420, 320, 180);
     if (!frame)
         exit(2);
-    frame->range = VIDEO_RANGE_PARTIAL;
+    frame->full_range = false;
     if (!video_format_get_parameters_for_format(VIDEO_CS_709,
             VIDEO_RANGE_PARTIAL, VIDEO_FORMAT_I420, frame->color_matrix,
             frame->color_range_min, frame->color_range_max))
