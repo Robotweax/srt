@@ -25,9 +25,10 @@ def prepare(source, profile="headless"):
     selected = profiles[profile]
     target = source / "plugins/CMakeLists.txt"
     current = target.read_bytes()
-    if current == selected:
+    normalized = current.replace(b"\r\n", b"\n")
+    if normalized == selected:
         return False
-    if hashlib.sha256(current).hexdigest() != ORIGINAL_SHA256:
+    if hashlib.sha256(normalized).hexdigest() != ORIGINAL_SHA256:
         raise RuntimeError(
             "unrecognized OBS plugin selection; use a dedicated pinned checkout"
         )

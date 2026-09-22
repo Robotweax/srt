@@ -222,6 +222,13 @@ memory samples, not third-party binaries or user profiles. A 60-minute soak
 is opt-in; longer interactive and adverse-network acceptance cases are not
 implied by a successful short desktop regression run.
 
+The separate required [OBS Windows integration](obs-windows.md) job builds the
+pinned x64 production modules with a shared Robotweax compatibility DLL. It
+checks the PE dependency and runtime provider identity, captures coherent
+MPEG-TS from native output through a separately loaded reference provider, and
+feeds that capture back through encrypted SRT for decoded moving video and
+non-silent audio in the FFmpeg media source. It retains text diagnostics only.
+
 ## AES-GCM validation
 
 The default build tests the AES-CTR profile. Validate the released AES-GCM

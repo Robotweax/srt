@@ -24,9 +24,156 @@ obs = load("obs_smoke", "run_smoke.py")
 prepare = load("obs_prepare", "prepare_source.py")
 desktop = load("obs_desktop", "run_desktop_smoke.py")
 lifecycle = load("obs_desktop_lifecycle", "prepare_desktop_lifecycle.py")
+windows_prepare = load("obs_windows_prepare", "prepare_windows_source.py")
+windows = load("obs_windows_smoke", "run_windows_smoke.py")
 
 
 class ObsHarnessTests(unittest.TestCase):
+    def test_windows_dependency_preparation_is_pinned_and_idempotent(self):
+        original = (
+            b"function(test)\n"
+            + windows_prepare.ORIGINAL
+            + windows_prepare.QT_ORIGINAL
+            + b"endfunction()\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / windows_prepare.TARGET
+            target.parent.mkdir(parents=True)
+            target.write_bytes(original)
+            arch_original = b"function(test)\n" + windows_prepare.ARCH_ORIGINAL + b"endfunction()\n"
+            arch_target = root / windows_prepare.ARCH_TARGET
+            arch_target.write_bytes(arch_original)
+            prepared = original.replace(
+                windows_prepare.ORIGINAL, windows_prepare.PREPARED
+            ).replace(
+                windows_prepare.QT_ORIGINAL, windows_prepare.QT_PREPARED
+            )
+            arch_prepared = arch_original.replace(
+                windows_prepare.ARCH_ORIGINAL, windows_prepare.ARCH_PREPARED
+            )
+            with mock.patch.multiple(
+                windows_prepare,
+                ORIGINAL_SHA256=hashlib.sha256(original).hexdigest(),
+                PREPARED_SHA256=hashlib.sha256(prepared).hexdigest(),
+                ARCH_ORIGINAL_SHA256=hashlib.sha256(arch_original).hexdigest(),
+                ARCH_PREPARED_SHA256=hashlib.sha256(arch_prepared).hexdigest(),
+            ):
+                target.write_bytes(original.replace(b"\n", b"\r\n"))
+                arch_target.write_bytes(arch_original.replace(b"\n", b"\r\n"))
+                self.assertTrue(windows_prepare.prepare(root))
+                self.assertEqual(target.read_bytes().count(windows_prepare.PREPARED), 1)
+                self.assertEqual(target.read_bytes().count(windows_prepare.QT_PREPARED), 1)
+                self.assertEqual(arch_target.read_bytes(), arch_prepared)
+                self.assertFalse(windows_prepare.prepare(root))
+                target.write_bytes(target.read_bytes() + b"unknown\n")
+                with self.assertRaisesRegex(RuntimeError, "unrecognized"):
+                    windows_prepare.prepare(root)
+                self.assertEqual(target.read_bytes(), prepared + b"unknown\n")
+                self.assertEqual(arch_target.read_bytes(), arch_prepared)
+
+    def test_windows_transport_capture_requires_coherent_mpeg_ts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "capture.ts"
+            packet = bytes([0x47]) + bytes(187)
+            capture.write_bytes(packet * 120)
+            packets, ratio = windows.ts_packets(capture)
+            self.assertEqual(packets, 120)
+            self.assertEqual(ratio, 1.0)
+            capture.write_bytes(bytes(188 * 120))
+            with self.assertRaisesRegex(RuntimeError, "not coherent MPEG-TS"):
+                windows.ts_packets(capture)
+
+    def test_windows_capture_reports_decoded_frame_diversity(self):
+        first = "0" * 32
+        second = "1" * 32
+        report = (
+            "#format: frame checksums\n"
+            f"0, 0, 0, 1, 86400, {first}\n"
+            f"0, 1, 1, 1, 86400, {first}\n"
+            f"0, 2, 2, 1, 86400, {second}\n"
+        )
+        self.assertEqual(windows.decoded_frame_hashes(report), (3, 2))
+        with self.assertRaisesRegex(RuntimeError, "no decoded video"):
+            windows.decoded_frame_hashes("# empty\n")
+
+    def test_windows_capture_requires_moving_decoded_video(self):
+        def report(unique):
+            return "".join(
+                f"0, {index}, {index}, 1, 86400, {index % unique:032x}\n"
+                for index in range(20)
+            )
+
+        ffmpeg = Path("ffmpeg.exe")
+        capture = Path("capture.ts")
+        with mock.patch.object(windows.subprocess, "run") as run:
+            run.return_value.stdout = report(6)
+            with self.assertRaisesRegex(RuntimeError, "insufficient decoded moving"):
+                windows.inspect_captured_video(ffmpeg, capture, {})
+            run.return_value.stdout = report(11)
+            windows.inspect_captured_video(ffmpeg, capture, {})
+
+    def test_windows_synthetic_i420_frames_have_conversion_metadata(self):
+        peer = (ROOT / "tests/obs/windows_obs_peer.c").read_text()
+        self.assertIn("frame->full_range = false;", peer)
+        self.assertIn(
+            "VIDEO_RANGE_PARTIAL, VIDEO_FORMAT_I420, frame->color_matrix,",
+            peer,
+        )
+        self.assertIn("frame->color_range_min, frame->color_range_max", peer)
+        smoke = (ROOT / "tests/obs/run_windows_smoke.py").read_text()
+        self.assertIn("if frames < 20 or unique < 10:", smoke)
+
+    def test_windows_obs_peer_runs_beside_installed_libobs_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            runtime = prefix / "bin/64bit"
+            runtime.mkdir(parents=True)
+            with self.assertRaisesRegex(RuntimeError, "libobs effects"):
+                windows.obs_working_directory(prefix)
+            effects = prefix / "data/libobs"
+            effects.mkdir(parents=True)
+            (effects / "default.effect").write_text("synthetic effect")
+            self.assertEqual(windows.obs_working_directory(prefix), runtime)
+            windows.require_obs_peer_directory(runtime / "windows-obs-peer.exe", runtime)
+            with self.assertRaisesRegex(RuntimeError, "OBS binary directory"):
+                windows.require_obs_peer_directory(
+                    prefix / "bin/windows-obs-peer.exe", runtime
+                )
+            with mock.patch.object(windows.subprocess, "Popen") as popen:
+                child = windows.Child(["peer"], prefix / "peer.log", {}, cwd=runtime)
+                child.log_file.close()
+            self.assertEqual(popen.call_args.kwargs["cwd"], runtime)
+            source = (ROOT / "tests/obs/run_windows_smoke.py").read_text()
+            self.assertEqual(source.count("cwd=obs_runtime,"), 2)
+
+    def test_windows_reference_live_replay_waits_for_decoded_media(self):
+        reference = (ROOT / "tests/obs/windows_reference_peer.c").read_text()
+        self.assertIn("Sleep(15);", reference)
+        self.assertIn('printf("QUEUED %llu\\n"', reference)
+        smoke = (ROOT / "tests/obs/run_windows_smoke.py").read_text()
+        queued = smoke.index('"QUEUED" in read(reference_log)')
+        decoded = smoke.index('"decoded encrypted A/V"')
+        closed = smoke.index('sender.command("quit")', decoded)
+        self.assertLess(queued, decoded)
+        self.assertLess(decoded, closed)
+
+    def test_windows_synthetic_video_uses_obs_clock_and_must_move(self):
+        peer = (ROOT / "tests/obs/windows_obs_peer.c").read_text()
+        self.assertIn("emit_synthetic(source, os_gettime_ns(), frame_index++);", peer)
+        self.assertNotIn("now * UINT64_C(1000000)", peer)
+        self.assertLess(
+            peer.index("obs_source_filter_add(source, filter);"),
+            peer.index("if (!sending)\n        obs_source_add_audio_capture_callback"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "native-obs.log"
+            log.write_text("MEDIA video=20 changed=10 audio=0 audible=0 bytes=500000\n")
+            windows.require_video_motion(log)
+            log.write_text("MEDIA video=20 changed=1 audio=0 audible=0 bytes=500000\n")
+            with self.assertRaisesRegex(RuntimeError, "did not move"):
+                windows.require_video_motion(log)
+
     def test_desktop_lifecycle_fix_is_pinned_idempotent_and_rejects_partial_edits(self):
         # Independently authored minimal fixture, not copied upstream source.
         original = (
@@ -245,6 +392,7 @@ class ObsHarnessTests(unittest.TestCase):
             with mock.patch.object(
                 prepare, "ORIGINAL_SHA256", hashlib.sha256(original).hexdigest()
             ):
+                target.write_bytes(original.replace(b"\n", b"\r\n"))
                 self.assertTrue(prepare.prepare(source))
                 self.assertEqual(target.read_bytes(), prepare.PROFILE)
                 with mock.patch.object(Path, "write_bytes") as write:
@@ -335,6 +483,58 @@ class ObsHarnessTests(unittest.TestCase):
             builder.count('REVISION="$(<"$ffmpeg_source/RELEASE")-3acec0a"'), 2
         )
 
+    def test_windows_build_selects_one_shared_compatibility_provider(self):
+        script = (ROOT / "tests/obs/build_windows.ps1").read_text()
+        self.assertIn("-DBUILD_SHARED_LIBS=ON", script)
+        self.assertIn("-DROBOTWEAX_SRT_INSTALL_LAYOUT=legacy", script)
+        self.assertIn("-DROBOTWEAX_SRT_CRYPTO_BACKEND=bcrypt", script)
+        self.assertIn("-DENABLE_FRONTEND=OFF", script)
+        self.assertNotIn("-DENABLE_UI=OFF", script)
+        self.assertIn("-DLibsrt_LIBRARY:FILEPATH=$SrtLibrary", script)
+        self.assertIn("Get-FileHash $RobotweaxDll", script)
+        self.assertIn("Get-FileHash $ReferenceDll", script)
+        self.assertIn("Where-Object { $_.Name -cne 'srt.dll' }", script)
+        self.assertIn('Copy-Item $RobotweaxDll "$RuntimeDirectory/srt.dll"', script)
+        self.assertIn("'--component', 'Development'", script)
+        self.assertIn('--ffmpeg-cli $FfmpegCli', script)
+        self.assertIn('$ObsPeer = "$ObsPrefix/bin/64bit/windows-obs-peer.exe"', script)
+        obs_build = script.split("'-S', $ObsSource", 1)[1].split(
+            "Invoke-Checked cmake @('--install', $ObsBuild", 1
+        )[0]
+        self.assertNotIn("'--target'", obs_build)
+
+    def test_windows_peer_uses_valid_unbuffered_stdout(self):
+        source = (ROOT / "tests/obs/windows_obs_peer.c").read_text()
+        self.assertIn("setvbuf(stdout, NULL, _IONBF, 0);", source)
+        self.assertNotIn("setvbuf(stdout, NULL, _IOLBF, 0);", source)
+
+    def test_windows_obs_job_is_required_and_uploads_only_diagnostics(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = workflow.split("  obs_windows_integration:\n", 1)[1].split(
+            "  vlc_integration:\n", 1
+        )[0]
+        self.assertIn("tests\\obs\\build_windows.ps1", job)
+        paths = job.split("          path: |\n", 1)[1].split(
+            "          retention-days:", 1
+        )[0]
+        self.assertTrue(
+            all(
+                "qualification" in line
+                for line in paths.splitlines()
+                if line.strip()
+            )
+        )
+        self.assertNotIn(".dll", paths)
+        self.assertNotIn(".exe", paths)
+        required = workflow.split("  ci_gate:\n", 1)[1]
+        self.assertIn("      - obs_windows_integration\n", required)
+        self.assertIn(
+            "${{ needs.obs_windows_integration.result }}", required
+        )
+        self.assertIn(
+            '"obs-windows-integration=$OBS_WINDOWS_INTEGRATION"', required
+        )
+
     def test_classification_selects_obs_without_unrelated_media_jobs(self):
         from interop.ci_changes import classify
 
@@ -343,6 +543,10 @@ class ObsHarnessTests(unittest.TestCase):
             "tests/obs/qualification.cmake",
             "tests/obs/peer.c",
             "tests/obs/run_smoke.py",
+            "tests/obs/windows_obs_peer.c",
+            "tests/obs/windows_reference_peer.c",
+            "tests/obs/run_windows_smoke.py",
+            "tests/obs/prepare_windows_source.py",
             "interop/tests/test_obs_harness.py",
         ):
             with self.subTest(path=path):
