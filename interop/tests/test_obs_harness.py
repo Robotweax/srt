@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shlex
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -28,9 +29,84 @@ lifecycle = load("obs_desktop_lifecycle", "prepare_desktop_lifecycle.py")
 windows_prepare = load("obs_windows_prepare", "prepare_windows_source.py")
 windows = load("obs_windows_smoke", "run_windows_smoke.py")
 windows_desktop = load("obs_windows_desktop", "run_windows_desktop_smoke.py")
+windows_preview = load("obs_windows_preview", "package_windows_preview.py")
 
 
 class ObsHarnessTests(unittest.TestCase):
+    def test_windows_preview_isolated_deterministic_and_provider_guarded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prefix = root / "obs"
+            source = root / "obs-source"
+            robotweax = root / "robotweax"
+            dependency = root / "dependency"
+            qt = root / "qt"
+            for relative in windows_preview.REQUIRED_RUNTIME:
+                target = prefix / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"robotweax" if relative.endswith("/srt.dll") else relative.encode())
+            for relative in ("bin/64bit/windows-obs-peer.exe", "bin/64bit/obs.pdb",
+                             "config/obs-studio/user.ini"):
+                target = prefix / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("not part of the preview")
+            for relative in ("deps", "libobs", "shared", "frontend",
+                             "plugins/obs-ffmpeg", "plugins/obs-x264",
+                             "plugins/rtmp-services", "plugins/obs-transitions"):
+                (source / relative).mkdir(parents=True)
+            (source / "COPYING").write_text("OBS GPL test fixture")
+            (robotweax / "LICENSE").parent.mkdir()
+            (robotweax / "LICENSE").write_text("Robotweax MIT test fixture")
+            (dependency / "licenses/FFmpeg").mkdir(parents=True)
+            (dependency / "licenses/FFmpeg/COPYING.GPLv2").write_text("FFmpeg fixture")
+            (qt / "licenses/qt6").mkdir(parents=True)
+            (qt / "licenses/qt6/LICENSE.GPL2").write_text("Qt fixture")
+            selected = root / "selected-srt.dll"
+            selected.write_bytes(b"robotweax")
+            reference = root / "reference-srt.dll"
+            reference.write_bytes(b"reference")
+            args = SimpleNamespace(
+                obs_prefix=prefix, obs_source=source,
+                robotweax_source=robotweax, robotweax_dll=selected,
+                reference_srt=reference, dependency_prefix=dependency,
+                qt_prefix=qt, output_dir=root / "first",
+            )
+            with mock.patch.object(windows_preview, "git_head", side_effect=[
+                windows_preview.OBS_COMMIT, "robotweax-test-commit",
+            ]):
+                first = windows_preview.build(args)
+            manifest = json.loads((args.output_dir / "MANIFEST.json").read_text())
+            windows_preview.verify_archive(first, manifest)
+            names = {item["path"] for item in manifest["files"]}
+            self.assertIn("bin/64bit/obs64.exe", names)
+            self.assertIn("bin/64bit/srt.dll", names)
+            self.assertIn("LICENSES/obs-deps/FFmpeg/COPYING.GPLv2", names)
+            self.assertIn("LICENSES/obs-qt/qt6/LICENSE.GPL2", names)
+            self.assertNotIn("bin/64bit/windows-obs-peer.exe", names)
+            self.assertNotIn("bin/64bit/obs.pdb", names)
+            self.assertFalse(any(name.startswith("config/") for name in names))
+            with self.assertRaisesRegex(RuntimeError, "fresh preview output"):
+                windows_preview.build(args)
+            args.output_dir = root / "second"
+            with mock.patch.object(windows_preview, "git_head", side_effect=[
+                windows_preview.OBS_COMMIT, "robotweax-test-commit",
+            ]):
+                second = windows_preview.build(args)
+            self.assertEqual(windows_preview.digest(first), windows_preview.digest(second))
+            (prefix / "obs-plugins/64bit/srt.dll").write_bytes(b"competing")
+            with mock.patch.object(windows_preview, "git_head", side_effect=[
+                windows_preview.OBS_COMMIT, "robotweax-test-commit",
+            ]):
+                with self.assertRaisesRegex(RuntimeError, "unexpected SRT providers"):
+                    windows_preview.collect(args)
+            (prefix / "obs-plugins/64bit/srt.dll").unlink()
+            (prefix / "bin/64bit/srt.dll").write_bytes(b"reference")
+            with mock.patch.object(windows_preview, "git_head", side_effect=[
+                windows_preview.OBS_COMMIT, "robotweax-test-commit",
+            ]):
+                with self.assertRaisesRegex(RuntimeError, "selected Robotweax SRT DLL"):
+                    windows_preview.collect(args)
+
     def test_windows_desktop_profile_is_isolated_and_rejects_reuse(self):
         with tempfile.TemporaryDirectory() as directory:
             prefix = Path(directory)
@@ -590,14 +666,22 @@ class ObsHarnessTests(unittest.TestCase):
         self.assertIn("-DENABLE_FRONTEND=ON", script)
         self.assertIn("run_windows_desktop_smoke.py", script)
         self.assertIn("$ObsPrefix/bin/64bit/obs64.exe", script)
+        self.assertIn("if ($Preview -and !$Desktop)", script)
+        self.assertIn("package_windows_preview.py", script)
+        self.assertIn('"$WorkDirectory/preview/MANIFEST.json"', script)
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         job = workflow.split("  obs_windows_desktop:\n", 1)[1].split(
             "  vlc_integration:\n", 1
         )[0]
-        self.assertIn("-Desktop", job)
+        self.assertIn("-Desktop -Preview", job)
         self.assertIn("ref: ${{ env.OBS_COMMIT }}", job)
-        self.assertNotIn(".dll\n", job.split("          path: |\n", 1)[1])
-        self.assertNotIn(".exe\n", job.split("          path: |\n", 1)[1])
+        artifact_paths = job.split("          path: |\n", 1)[1].split(
+            "          retention-days:", 1
+        )[0]
+        self.assertIn("preview-manifest.json", artifact_paths)
+        self.assertIn("evidence/*.txt", artifact_paths)
+        for binary_suffix in (".dll", ".exe", ".zip"):
+            self.assertNotIn(binary_suffix, artifact_paths)
         required = workflow.split("  ci_gate:\n", 1)[1]
         self.assertIn("      - obs_windows_desktop\n", required)
         self.assertIn("${{ needs.obs_windows_desktop.result }}", required)

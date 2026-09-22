@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)][string]$ObsSource,
     [Parameter(Mandatory)][string]$WorkDirectory,
-    [switch]$Desktop
+    [switch]$Desktop,
+    [switch]$Preview
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,6 +16,9 @@ function Invoke-Checked([string]$Program, [string[]]$Arguments) {
 $Repository = (Resolve-Path "$PSScriptRoot/../..").Path
 $ObsSource = (Resolve-Path $ObsSource).Path
 $WorkDirectory = [IO.Path]::GetFullPath($WorkDirectory)
+if ($Preview -and !$Desktop) {
+    throw 'A Windows preview requires the qualified OBS Qt desktop profile.'
+}
 if (Test-Path $WorkDirectory) {
     throw 'Use a fresh Windows OBS work directory; existing files are never deleted.'
 }
@@ -148,4 +152,21 @@ if ($Desktop) {
         --artifacts "$Evidence/desktop" |
         Tee-Object -FilePath "$Evidence/desktop-results.txt"
     if ($LASTEXITCODE -ne 0) { throw "Windows OBS desktop qualification failed: $LASTEXITCODE" }
+}
+
+if ($Preview) {
+    $QtPrefix = (Resolve-Path "$ObsSource/.deps/obs-deps-qt6-2026-07-15-x64").Path
+    Invoke-Checked python @(
+        "$Repository/tests/obs/package_windows_preview.py",
+        '--obs-prefix', $ObsPrefix,
+        '--obs-source', $ObsSource,
+        '--robotweax-source', $Repository,
+        '--robotweax-dll', $RobotweaxDll,
+        '--reference-srt', $ReferenceDll,
+        '--dependency-prefix', $DependencyPrefix,
+        '--qt-prefix', $QtPrefix,
+        '--output-dir', "$WorkDirectory/preview"
+    )
+    Copy-Item "$WorkDirectory/preview/MANIFEST.json" "$Evidence/preview-manifest.json"
+    Copy-Item "$WorkDirectory/preview/SHA256SUMS.txt" "$Evidence/preview-sha256.txt"
 }
