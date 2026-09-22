@@ -30,16 +30,17 @@ def transform(original):
 def prepare(source):
     target = source / TARGET
     current = target.read_bytes()
+    normalized = current.replace(b"\r\n", b"\n")
     # Undo only our exact additions for verification; unknown edits are rejected.
-    before, separator, after = current.partition(INIT)
+    before, separator, after = normalized.partition(INIT)
     restored = before + separator + after.replace(RELEASE, RESET, 1)
     restored = restored.replace(CLEAN_FAILURE, FAIL, 1)
     if hashlib.sha256(restored).hexdigest() != ORIGINAL_SHA256:
         raise RuntimeError("unrecognized OBS MPEG-TS source; use the pinned checkout")
     fixed = transform(restored)
-    if current == fixed:
+    if normalized == fixed:
         return False
-    if current != restored:
+    if normalized != restored:
         raise RuntimeError("partially applied OBS MPEG-TS lifecycle correction")
     target.write_bytes(fixed)
     return True

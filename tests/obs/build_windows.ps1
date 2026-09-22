@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 param(
     [Parameter(Mandatory)][string]$ObsSource,
-    [Parameter(Mandatory)][string]$WorkDirectory
+    [Parameter(Mandatory)][string]$WorkDirectory,
+    [switch]$Desktop
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,7 +33,12 @@ $ObsBuild = "$WorkDirectory/obs-build"
 $ObsPrefix = "$WorkDirectory/obs"
 $Reference = New-Item -ItemType Directory -Path "$WorkDirectory/reference"
 
-Invoke-Checked python @("$Repository/tests/obs/prepare_source.py", $ObsSource, '--profile', 'headless')
+if ($Desktop) {
+    Invoke-Checked python @("$Repository/tests/obs/prepare_desktop_lifecycle.py", $ObsSource)
+    Invoke-Checked python @("$Repository/tests/obs/prepare_source.py", $ObsSource, '--profile', 'desktop')
+} else {
+    Invoke-Checked python @("$Repository/tests/obs/prepare_source.py", $ObsSource, '--profile', 'headless')
+}
 Invoke-Checked python @("$Repository/tests/obs/prepare_windows_source.py", $ObsSource)
 
 Invoke-Checked cmake @(
@@ -52,16 +58,22 @@ Invoke-Checked cmake @('--install', $SrtBuild, '--config', 'Release')
 
 $SrtLibrary = (Resolve-Path "$SrtPrefix/lib/srt.lib").Path
 $SrtInclude = (Resolve-Path "$SrtPrefix/include").Path
-Invoke-Checked cmake @(
+$ObsOptions = @(
     '-S', $ObsSource, '-B', $ObsBuild, '-A', 'x64',
     '-DOBS_VERSION_OVERRIDE=32.2.2-robotweax-windows-qualification',
-    '-DENABLE_FRONTEND=OFF', '-DENABLE_BROWSER=OFF', '-DENABLE_SCRIPTING=OFF',
+    '-DENABLE_BROWSER=OFF', '-DENABLE_SCRIPTING=OFF',
     '-DENABLE_VIRTUALCAM=OFF', '-DENABLE_WEBSOCKET=OFF', '-DENABLE_AJA=OFF',
     '-DENABLE_VLC=OFF', '-DENABLE_DECKLINK=OFF', '-DENABLE_NEW_MPEGTS_OUTPUT=ON',
     "-DLibsrt_LIBRARY:FILEPATH=$SrtLibrary",
     "-DLibsrt_INCLUDE_DIR:PATH=$SrtInclude",
     "-DCMAKE_INSTALL_PREFIX=$ObsPrefix"
 )
+if ($Desktop) {
+    $ObsOptions += @('-DENABLE_FRONTEND=ON', '-DENABLE_WHATSNEW=OFF', '-DENABLE_SERVICE_UPDATES=OFF')
+} else {
+    $ObsOptions += '-DENABLE_FRONTEND=OFF'
+}
+Invoke-Checked cmake $ObsOptions
 Invoke-Checked cmake @(
     '--build', $ObsBuild, '--config', 'Release', '--parallel', '2'
 )
@@ -119,3 +131,21 @@ python "$Repository/tests/obs/run_windows_smoke.py" `
     --artifacts "$Evidence/runtime" |
     Tee-Object -FilePath "$Evidence/results.txt"
 if ($LASTEXITCODE -ne 0) { throw "Windows OBS qualification failed: $LASTEXITCODE" }
+
+if ($Desktop) {
+    $ObsExecutable = (Resolve-Path "$ObsPrefix/bin/64bit/obs64.exe").Path
+    $QtPlatform = (Resolve-Path "$ObsPrefix/bin/64bit/platforms/qwindows.dll").Path
+    $Services = (Resolve-Path "$ObsPrefix/obs-plugins/64bit/rtmp-services.dll").Path
+    python "$Repository/tests/obs/run_windows_desktop_smoke.py" `
+        --obs-prefix $ObsPrefix `
+        --obs-executable $ObsExecutable `
+        --qt-platform $QtPlatform `
+        --services $Services `
+        --reference-peer $ReferencePeer `
+        --reference-srt "$Reference/srt.dll" `
+        --ffmpeg-cli $FfmpegCli `
+        --fixture "$Evidence/runtime/native-output.ts" `
+        --artifacts "$Evidence/desktop" |
+        Tee-Object -FilePath "$Evidence/desktop-results.txt"
+    if ($LASTEXITCODE -ne 0) { throw "Windows OBS desktop qualification failed: $LASTEXITCODE" }
+}

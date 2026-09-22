@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from array import array
 import hashlib
 import importlib.util
 import json
@@ -26,9 +27,86 @@ desktop = load("obs_desktop", "run_desktop_smoke.py")
 lifecycle = load("obs_desktop_lifecycle", "prepare_desktop_lifecycle.py")
 windows_prepare = load("obs_windows_prepare", "prepare_windows_source.py")
 windows = load("obs_windows_smoke", "run_windows_smoke.py")
+windows_desktop = load("obs_windows_desktop", "run_windows_desktop_smoke.py")
 
 
 class ObsHarnessTests(unittest.TestCase):
+    def test_windows_desktop_profile_is_isolated_and_rejects_reuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            config = windows_desktop.prepare_profile(
+                prefix,
+                prefix / "fixture.ts",
+                "srt://127.0.0.1:12345?mode=caller",
+            )
+            self.assertEqual(config, prefix / "config/obs-studio")
+            user = (config / "user.ini").read_text()
+            self.assertIn("ConfirmOnExit=false", user)
+            profile = (config / "basic/profiles/Robotweax/basic.ini").read_text()
+            self.assertIn("Reconnect=true", profile)
+            self.assertIn("MaxRetries=60", profile)
+            service = json.loads(
+                (config / "basic/profiles/Robotweax/service.json").read_text()
+            )
+            self.assertEqual(service["type"], "rtmp_custom")
+            with self.assertRaises(FileExistsError):
+                windows_desktop.prepare_profile(prefix, prefix / "fixture.ts", "srt://other")
+
+    def test_windows_desktop_requires_audible_audio(self):
+        with mock.patch.object(windows_desktop.subprocess, "run") as run:
+            run.return_value.stdout = array("f", [0.0] * 4800).tobytes()
+            with self.assertRaisesRegex(RuntimeError, "no audible decoded audio"):
+                windows_desktop.decoded_audio(Path("ffmpeg.exe"), Path("media.ts"), {})
+            run.return_value.stdout = array("f", [0.02] * 4800).tobytes()
+            windows_desktop.decoded_audio(Path("ffmpeg.exe"), Path("media.ts"), {})
+
+    def test_windows_desktop_switches_only_test_profile_to_encrypted_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            config = windows_desktop.prepare_profile(
+                prefix, prefix / "fixture.ts", "srt://output-one"
+            )
+            windows_desktop.use_network_source(
+                config, "srt://encrypted-input", "srt://output-two"
+            )
+            scene = json.loads((config / "basic/scenes/Robotweax.json").read_text())
+            media = next(item for item in scene["sources"] if item["name"] == "Media")
+            self.assertFalse(media["settings"]["is_local_file"])
+            self.assertEqual(media["settings"]["input"], "srt://encrypted-input")
+            self.assertEqual(media["settings"]["input_format"], "mpegts")
+            service = json.loads(
+                (config / "basic/profiles/Robotweax/service.json").read_text()
+            )
+            self.assertEqual(service["settings"]["server"], "srt://output-two")
+
+    def test_windows_desktop_shutdown_rejects_extra_allocations(self):
+        clean = (
+            "Loaded scenes:\nStreaming Start\n==== Shutting down\n"
+            "SRT connection closed\nOutput 'simple_stream': stopping\n"
+            "Freeing OBS context data\nNumber of memory leaks: 1\n"
+        )
+        self.assertEqual(windows_desktop.check_shutdown(clean, "output"), 1)
+        self.assertEqual(windows_desktop.check_shutdown(clean, "source", 1), 1)
+        for invalid in (
+            clean.replace("==== Shutting down\n", ""),
+            clean.replace("SRT connection closed\n", ""),
+            clean.replace("Output 'simple_stream': stopping\n", ""),
+            clean.replace("Freeing OBS context data\n", ""),
+            clean.replace(
+                "==== Shutting down\nSRT connection closed\n"
+                "Output 'simple_stream': stopping\n",
+                "SRT connection closed\nOutput 'simple_stream': stopping\n"
+                "==== Shutting down\n",
+            ),
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(RuntimeError, "ordered streaming shutdown"):
+                    windows_desktop.check_shutdown(invalid, "output")
+        with self.assertRaisesRegex(RuntimeError, "allocation baseline regressed"):
+            windows_desktop.check_shutdown(clean.replace("leaks: 1", "leaks: 2"), "output")
+        with self.assertRaisesRegex(RuntimeError, "allocation baseline regressed"):
+            windows_desktop.check_shutdown(clean.replace("leaks: 1", "leaks: 0"), "source", 1)
+
     def test_windows_dependency_preparation_is_pinned_and_idempotent(self):
         original = (
             b"function(test)\n"
@@ -189,6 +267,7 @@ class ObsHarnessTests(unittest.TestCase):
             with mock.patch.object(
                 lifecycle, "ORIGINAL_SHA256", hashlib.sha256(original).hexdigest()
             ):
+                target.write_bytes(original.replace(b"\n", b"\r\n"))
                 self.assertTrue(lifecycle.prepare(root))
                 fixed = target.read_bytes()
                 self.assertIn(lifecycle.RELEASE, fixed)
@@ -502,6 +581,27 @@ class ObsHarnessTests(unittest.TestCase):
             "Invoke-Checked cmake @('--install', $ObsBuild", 1
         )[0]
         self.assertNotIn("'--target'", obs_build)
+
+    def test_windows_desktop_build_and_required_ci_job(self):
+        script = (ROOT / "tests/obs/build_windows.ps1").read_text()
+        self.assertIn("[switch]$Desktop", script)
+        self.assertIn("prepare_desktop_lifecycle.py", script)
+        self.assertIn("'--profile', 'desktop'", script)
+        self.assertIn("-DENABLE_FRONTEND=ON", script)
+        self.assertIn("run_windows_desktop_smoke.py", script)
+        self.assertIn("$ObsPrefix/bin/64bit/obs64.exe", script)
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = workflow.split("  obs_windows_desktop:\n", 1)[1].split(
+            "  vlc_integration:\n", 1
+        )[0]
+        self.assertIn("-Desktop", job)
+        self.assertIn("ref: ${{ env.OBS_COMMIT }}", job)
+        self.assertNotIn(".dll\n", job.split("          path: |\n", 1)[1])
+        self.assertNotIn(".exe\n", job.split("          path: |\n", 1)[1])
+        required = workflow.split("  ci_gate:\n", 1)[1]
+        self.assertIn("      - obs_windows_desktop\n", required)
+        self.assertIn("${{ needs.obs_windows_desktop.result }}", required)
+        self.assertIn('"obs-windows-desktop=$OBS_WINDOWS_DESKTOP"', required)
 
     def test_windows_peer_uses_valid_unbuffered_stdout(self):
         source = (ROOT / "tests/obs/windows_obs_peer.c").read_text()
