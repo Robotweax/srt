@@ -207,7 +207,7 @@ int main(int argc, char** argv)
         "--no-audio", "--no-video-title-show", "--no-osd",
         "--no-drop-late-frames", "--no-skip-frames", "--network-caching=100",
         "--file-caching=100", "--verbose=2", stream_option, "--latency=80",
-        "--key-length=16", secret_option};
+        "--key-length=16", "--payload-size=1316", secret_option};
     libvlc_instance_t* instance =
         libvlc_new((int)(sizeof(options) / sizeof(options[0])), options);
     if (instance == NULL) {

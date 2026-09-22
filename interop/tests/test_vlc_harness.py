@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -12,9 +14,68 @@ spec = importlib.util.spec_from_file_location(
 )
 vlc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(vlc)
+prepare_spec = importlib.util.spec_from_file_location(
+    "vlc_prepare", ROOT / "tests/vlc/prepare_source.py"
+)
+prepare = importlib.util.module_from_spec(prepare_spec)
+prepare_spec.loader.exec_module(prepare)
 
 
 class VlcHarnessTests(unittest.TestCase):
+    def test_source_preparation_is_exact_and_idempotent(self):
+        # Synthetic declaration, not a copy of the upstream source file.
+        before = b"prefix\n\tadd_obsolete_integer(SRT_PARAM_PAYLOAD_SIZE)\nsuffix\n"
+        after = b"prefix\nsuffix\n"
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            target = source / "modules/access/srt.c"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(before)
+            with mock.patch.object(
+                prepare, "ORIGINAL_SHA256", hashlib.sha256(before).hexdigest()
+            ), mock.patch.object(
+                prepare, "PREPARED_SHA256", hashlib.sha256(after).hexdigest()
+            ):
+                self.assertTrue(prepare.prepare(source))
+                self.assertEqual(target.read_bytes(), after)
+                with mock.patch.object(Path, "write_bytes") as write:
+                    self.assertFalse(prepare.prepare(source))
+                    write.assert_not_called()
+
+    def test_source_preparation_rejects_unknown_or_modified_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            target = source / "modules/access/srt.c"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"unrecognized source\n")
+            with self.assertRaisesRegex(RuntimeError, "unrecognized"):
+                prepare.prepare(source)
+            self.assertEqual(target.read_bytes(), b"unrecognized source\n")
+
+    def test_source_preparation_checks_replacement_count_and_digest(self):
+        declaration = b"add_obsolete_integer(SRT_PARAM_PAYLOAD_SIZE)\n"
+        for before, after in ((declaration * 2, b""), (declaration, b"wrong")):
+            with self.subTest(
+                before=before
+            ), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory)
+                target = source / "modules/access/srt.c"
+                target.parent.mkdir(parents=True)
+                target.write_bytes(before)
+                with mock.patch.object(
+                    prepare, "ORIGINAL_SHA256", hashlib.sha256(before).hexdigest()
+                ), mock.patch.object(
+                    prepare, "PREPARED_SHA256", hashlib.sha256(after).hexdigest()
+                ), self.assertRaisesRegex(
+                    RuntimeError, "unexpected"
+                ):
+                    prepare.prepare(source)
+                self.assertEqual(target.read_bytes(), before)
+
+    def test_configure_prepares_source_before_bootstrap(self):
+        helper = (ROOT / "tests/vlc/configure.sh").read_text()
+        self.assertLess(helper.index("prepare_source.py"), helper.index("./bootstrap"))
+
     def test_frames_require_media_identity_and_real_input_module(self):
         frames = [f"{value:016x}" for value in range(20)]
         with tempfile.TemporaryDirectory() as directory:

@@ -21,6 +21,8 @@ pc_directory="$srt_prefix/lib/pkgconfig"
 export PKG_CONFIG_PATH="$pc_directory${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 [[ "$(pkg-config --variable=pcfiledir srt)" == "$pc_directory" ]]
 pkg-config --atleast-version=1.3.0 srt
+repository="$(cd "$(dirname "$0")/../.." && pwd -P)"
+"$repository/tools/python" "$repository/tests/vlc/prepare_source.py" "$source_directory"
 if [[ ! -x "$source_directory/configure" ]]; then
     (cd "$source_directory" && ./bootstrap)
 fi

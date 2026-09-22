@@ -58,8 +58,9 @@ make -C "$vlc_build" -j4
 make -C "$vlc_build" install
 ```
 
-Use a fresh build directory and a writable VLC source checkout for bootstrap's
-generated build files. The helper validates the selected `srt.pc`, disables
+Use a fresh build directory and a dedicated writable VLC source checkout for
+the compatibility adjustment below and bootstrap's generated build files.
+The helper validates the selected `srt.pc`, disables
 VLC's contrib prefix selection, and sets runtime paths for both installations.
 It enables the SRT modules, TS demux/mux and libmpeg2 decoding. GUI, libavcodec
 and libavformat integration are disabled in this qualification build; the
@@ -67,6 +68,29 @@ latter also avoids indirectly loading a second SRT provider through FFmpeg.
 
 VLC's contrib recipes can otherwise supply Haivision SRT independently of
 Robotweax. Do not replace a shared library underneath a prebuilt VLC plugin.
+
+### Pinned VLC payload-option compatibility
+
+At this VLC revision, the SRT input module registers `payload-size` as obsolete,
+while the output module registers the same global option with a 1316-byte
+default. In the x86-64 qualification, VLC selected the obsolete registration:
+it ignored an explicit `--payload-size=1316` and passed a zero payload size to
+the output module. The connection succeeded, but the module emitted no SRT
+messages despite receiving MPEG-TS blocks from its muxer.
+
+`configure.sh` runs `prepare_source.py` before bootstrap/configure. This removes
+only the obsolete input registration, leaving the active output option as the
+single owner. The preparation checks SHA-256 hashes of the original and
+prepared `modules/access/srt.c`, is idempotent, and refuses unfamiliar or edited
+source files. It modifies the dedicated VLC checkout, not Robotweax's transport
+or public ABI. This adjustment is part of the qualified build; the unadjusted
+VLC revision is not qualified for output by this guide. Revalidate it when
+updating VLC instead of bypassing the source checks.
+
+The test peer also sets `--payload-size=1316` explicitly. Both SRT modules remain
+installed and discoverable; no plugin is hidden to avoid the conflict.
+
+### Run the installed CLI
 
 Run the installed CLI as a regular user, for example:
 
@@ -135,6 +159,13 @@ The integration was reviewed at the pinned VLC revision in `configure.ac`,
 libVLC media/player headers define the test API. Relevant behaviors are
 pkg-config discovery, the separate contrib provider, input/output role
 differences, and interrupting an SRT epoll wait by removing its socket.
+The payload-option investigation also inspected `src/libvlc-module.c`,
+`src/stream_output/stream_output.c`, `modules/mux/mpeg/ts.c`, and
+`modules/packetizer/mpegvideo.c` at the same revision. Local API tracing
+confirmed that the muxer supplied TS blocks, the configured SRT payload size
+was zero, and no SRT send occurred before the compatibility adjustment; with
+the obsolete registration removed, the payload size was 1316 and sends succeeded.
+The temporary tracing code is not part of the build or published artifacts.
 GStreamer's `ext/srt/gstsrtelement.c` at the revision pinned in the
 [GStreamer guide](gstreamer-integration.md) was checked for its `srtlib` log
 category so wrong-key tests can retain the reference rejection reason.
