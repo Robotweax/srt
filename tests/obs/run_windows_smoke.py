@@ -173,6 +173,8 @@ def inspect_captured_video(ffmpeg: Path, capture: Path, env: dict[str, str]) -> 
     )
     frames, unique = decoded_frame_hashes(result.stdout)
     print(f"FRAME_HASHES decoded={frames} unique={unique}")
+    if frames < 20 or unique < 10:
+        raise RuntimeError("native OBS capture has insufficient decoded moving video")
 
 
 def require_media(log: Path) -> None:

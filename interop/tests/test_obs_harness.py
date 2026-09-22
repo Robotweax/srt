@@ -97,6 +97,33 @@ class ObsHarnessTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no decoded video"):
             windows.decoded_frame_hashes("# empty\n")
 
+    def test_windows_capture_requires_moving_decoded_video(self):
+        def report(unique):
+            return "".join(
+                f"0, {index}, {index}, 1, 86400, {index % unique:032x}\n"
+                for index in range(20)
+            )
+
+        ffmpeg = Path("ffmpeg.exe")
+        capture = Path("capture.ts")
+        with mock.patch.object(windows.subprocess, "run") as run:
+            run.return_value.stdout = report(6)
+            with self.assertRaisesRegex(RuntimeError, "insufficient decoded moving"):
+                windows.inspect_captured_video(ffmpeg, capture, {})
+            run.return_value.stdout = report(11)
+            windows.inspect_captured_video(ffmpeg, capture, {})
+
+    def test_windows_synthetic_i420_frames_have_conversion_metadata(self):
+        peer = (ROOT / "tests/obs/windows_obs_peer.c").read_text()
+        self.assertIn("frame->range = VIDEO_RANGE_PARTIAL;", peer)
+        self.assertIn(
+            "VIDEO_RANGE_PARTIAL, VIDEO_FORMAT_I420, frame->color_matrix,",
+            peer,
+        )
+        self.assertIn("frame->color_range_min, frame->color_range_max", peer)
+        smoke = (ROOT / "tests/obs/run_windows_smoke.py").read_text()
+        self.assertIn("if frames < 20 or unique < 10:", smoke)
+
     def test_windows_obs_peer_runs_beside_installed_libobs_data(self):
         with tempfile.TemporaryDirectory() as directory:
             prefix = Path(directory)
