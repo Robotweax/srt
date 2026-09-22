@@ -145,6 +145,7 @@ class ChangeSet:
     ffmpeg: bool = False
     gstreamer: bool = False
     vlc: bool = False
+    obs: bool = False
     aead_platform: bool = False
     sanitizers: bool = False
     thread_sanitizer: bool = False
@@ -282,6 +283,7 @@ def enable_cpp(change_set: ChangeSet, path: str) -> None:
         change_set.ffmpeg = True
         change_set.gstreamer = True
         change_set.vlc = True
+        change_set.obs = True
         change_set.examples = True
         # Preserve the former examples-triggered ABI matrix for production
         # changes. Only isolated demo changes lose that implicit dependency.
@@ -567,6 +569,7 @@ def classify(
             change_set.gstreamer = True
             change_set.documentation = True
             change_set.vlc = True
+            change_set.obs = True
             change_set.python = True
             change_set.format |= PurePosixPath(path).suffix.lower() in CPP_SUFFIXES
             continue
@@ -584,6 +587,13 @@ def classify(
             change_set.code = True
             change_set.gstreamer = True
             change_set.vlc = True
+            change_set.obs = True
+            change_set.format = path.endswith((".c", ".h")) or change_set.format
+            continue
+        if path.startswith("tests/obs/") or path == "interop/tests/test_obs_harness.py":
+            change_set.code = True
+            change_set.obs = True
+            change_set.python = path.endswith(".py") or change_set.python
             change_set.format = path.endswith((".c", ".h")) or change_set.format
             continue
         if path.startswith("tests/vlc/"):

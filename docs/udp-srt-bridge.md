@@ -245,9 +245,12 @@ Logs include the SRT error code, not the passphrase. A cable interruption
 and a peer process restart are not reliably distinguishable from SRT error
 codes alone; `input=IDLE` while connected is reported separately.
 
-UDP input is bound/joined **only after SRT connects** and is closed on session
-failure. Input during an outage is not buffered or replayed. There is no
-promise of lossless restart: the datagram involved in a failed send has
+Before connecting, a temporary socket reserves the UDP input port so SRT's
+ephemeral port allocation cannot take it. This socket does not join multicast
+groups and is closed, discarding its entire queue, once SRT connects. The
+actual UDP input socket is then freshly bound/joined and is closed on session
+failure. Input during an outage is not retained for forwarding or replayed.
+There is no promise of lossless restart: the datagram involved in a failed send has
 unknown delivery status, and the number of UDP datagrams lost outside the
 socket's lifetime is unknown. Retry never blindly resends that datagram.
 
@@ -289,7 +292,9 @@ ctest --test-dir build-bridge-tests -C Release \
 The test checks all seven datagram sizes byte-for-byte, both Caller/Listener
 directions, Rendezvous with either sender or receiver started first, plain
 and AES-CTR Rendezvous transfer, multicast input/output, active and idle status,
-and sender/receiver restarts in all three SRT roles. Invalid UDP payloads are
-rejected even with reconnect enabled. It does
-not measure maximum throughput or simulate WAN loss. Python 3.10+ is required
+and sender/receiver restarts in all three SRT roles. It also verifies exclusive
+input-port reservation before connection, discarding of stale pre-connect input,
+and port release after shutdown. Invalid UDP payloads are rejected even with
+reconnect enabled. It does not measure maximum throughput or simulate WAN loss.
+Python 3.10+ is required
 when tests are enabled.

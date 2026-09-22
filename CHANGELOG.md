@@ -6,6 +6,10 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Added a pinned headless OBS integration profile with explicit Robotweax
+  selection for native SRT output and FFmpeg media sources, real A/V and
+  lifecycle qualification, provider checks, and a required Linux CI gate.
+
 - Added a pinned Linux VLC integration build using the existing SRT modules,
   decoded-video and outgoing-media checks, interoperability/lifecycle tests,
   and a required CI gate for the namespaced Robotweax installation.

@@ -473,6 +473,20 @@ void udp_option(SYSSOCKET socket, int level, int name, const T& value)
     }
 }
 
+void bind_udp_input(SYSSOCKET udp, const sockaddr_in& address)
+{
+    auto binding = address;
+    if ((ntohl(address.sin_addr.s_addr) & 0xf0000000U) == 0xe0000000U) {
+        udp_option(udp, SOL_SOCKET, SO_REUSEADDR, 1);
+        binding.sin_addr.s_addr = htonl(INADDR_ANY);
+    }
+    if (::bind(
+            udp, reinterpret_cast<const sockaddr*>(&binding), sizeof(binding))
+        != 0) {
+        udp_error("UDP bind");
+    }
+}
+
 void configure_udp(
     SYSSOCKET udp, const Configuration& c, const sockaddr_in& address)
 {
@@ -486,16 +500,7 @@ void configure_udp(
         (ntohl(address.sin_addr.s_addr) & 0xf0000000U) == 0xe0000000U;
     const auto local_interface = endpoint(c.udp_interface, 0, true).sin_addr;
     if (c.sender) {
-        auto binding = address;
-        if (multicast) {
-            udp_option(udp, SOL_SOCKET, SO_REUSEADDR, 1);
-            binding.sin_addr.s_addr = htonl(INADDR_ANY);
-        }
-        if (::bind(udp, reinterpret_cast<const sockaddr*>(&binding),
-                sizeof(binding))
-            != 0) {
-            udp_error("UDP bind");
-        }
+        bind_udp_input(udp, address);
         if (multicast) {
             ip_mreq membership {};
             membership.imr_multiaddr = address.sin_addr;
@@ -524,12 +529,15 @@ struct ConnectionHistory {
     std::optional<Clock::time_point> disconnected;
 };
 
-void relay(SRTSOCKET srt, const Configuration& c, ConnectionHistory& history)
+void relay(SRTSOCKET srt, const Configuration& c, ConnectionHistory& history,
+    std::optional<UdpSocket>& input_reservation)
 {
     const bool sender = c.sender;
     const auto destination = endpoint(c.udp_host, c.udp_port, sender, true);
     // Do not buffer live input while disconnected. Rejoining/binding only after
     // SRT establishment prevents stale UDP backlog crossing connection epochs.
+    // Discard the reservation socket and its entire queue, never relay from it.
+    input_reservation.reset();
     UdpSocket udp_socket;
     const auto udp = udp_socket.get();
     configure_udp(udp, c, destination);
@@ -651,6 +659,14 @@ void relay(SRTSOCKET srt, const Configuration& c, ConnectionHistory& history)
 
 void session(const Configuration& c, ConnectionHistory& history)
 {
+    // Keep SRT's ephemeral bind from acquiring the future UDP input port.
+    // This socket never joins a multicast group or supplies relay payloads.
+    std::optional<UdpSocket> input_reservation;
+    if (c.sender) {
+        input_reservation.emplace();
+        bind_udp_input(input_reservation->get(),
+            endpoint(c.udp_host, c.udp_port, true, true));
+    }
     const auto srt_address = endpoint(c.srt_host, c.srt_port, c.listener);
     SrtSocket socket {srt_create_socket()};
     if (socket.get() == SRT_INVALID_SOCK) {
@@ -671,7 +687,7 @@ void session(const Configuration& c, ConnectionHistory& history)
             == SRT_ERROR) {
             transport_error("srt_rendezvous");
         }
-        relay(socket.get(), c, history);
+        relay(socket.get(), c, history, input_reservation);
     } else if (c.listener) {
         if (srt_bind(socket.get(),
                 reinterpret_cast<const sockaddr*>(&srt_address),
@@ -683,7 +699,7 @@ void session(const Configuration& c, ConnectionHistory& history)
         if (accepted.get() != SRT_INVALID_SOCK) {
             option(accepted.get(), SRTO_RCVSYN, true);
             option(accepted.get(), SRTO_RCVTIMEO, 250);
-            relay(accepted.get(), c, history);
+            relay(accepted.get(), c, history, input_reservation);
         }
     } else {
         std::cout << "CONNECTING SRT caller peer=" << c.srt_host << ':'
@@ -694,7 +710,7 @@ void session(const Configuration& c, ConnectionHistory& history)
             == SRT_ERROR) {
             transport_error("srt_connect");
         }
-        relay(socket.get(), c, history);
+        relay(socket.get(), c, history, input_reservation);
     }
 }
 
