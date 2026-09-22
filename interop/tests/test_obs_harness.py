@@ -95,6 +95,11 @@ class ObsHarnessTests(unittest.TestCase):
             effects.mkdir(parents=True)
             (effects / "default.effect").write_text("synthetic effect")
             self.assertEqual(windows.obs_working_directory(prefix), runtime)
+            windows.require_obs_peer_directory(runtime / "windows-obs-peer.exe", runtime)
+            with self.assertRaisesRegex(RuntimeError, "OBS binary directory"):
+                windows.require_obs_peer_directory(
+                    prefix / "bin/windows-obs-peer.exe", runtime
+                )
             with mock.patch.object(windows.subprocess, "Popen") as popen:
                 child = windows.Child(["peer"], prefix / "peer.log", {}, cwd=runtime)
                 child.log_file.close()
@@ -424,6 +429,7 @@ class ObsHarnessTests(unittest.TestCase):
         self.assertIn("Where-Object { $_.Name -cne 'srt.dll' }", script)
         self.assertIn('Copy-Item $RobotweaxDll "$RuntimeDirectory/srt.dll"', script)
         self.assertIn("'--component', 'Development'", script)
+        self.assertIn('$ObsPeer = "$ObsPrefix/bin/64bit/windows-obs-peer.exe"', script)
         obs_build = script.split("'-S', $ObsSource", 1)[1].split(
             "Invoke-Checked cmake @('--install', $ObsBuild", 1
         )[0]

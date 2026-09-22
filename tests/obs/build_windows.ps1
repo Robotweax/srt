@@ -30,7 +30,6 @@ $SrtBuild = "$WorkDirectory/srt-build"
 $SrtPrefix = "$WorkDirectory/robotweax-srt"
 $ObsBuild = "$WorkDirectory/obs-build"
 $ObsPrefix = "$WorkDirectory/obs"
-$Bin = New-Item -ItemType Directory -Path "$WorkDirectory/bin"
 $Reference = New-Item -ItemType Directory -Path "$WorkDirectory/reference"
 
 Invoke-Checked python @("$Repository/tests/obs/prepare_source.py", $ObsSource, '--profile', 'headless')
@@ -86,7 +85,7 @@ if ((Get-FileHash $ReferenceDll).Hash -ceq (Get-FileHash $BundledDll).Hash) {
 }
 
 $ObsObject = "$WorkDirectory/obs-peer.obj"
-$ObsPeer = "$Bin/windows-obs-peer.exe"
+$ObsPeer = "$ObsPrefix/bin/64bit/windows-obs-peer.exe"
 Invoke-Checked cl @(
     '/nologo', '/std:c11', '/W4', '/WX', '/D_CRT_SECURE_NO_WARNINGS',
     "/I$ObsPrefix/include", '/c', "$Repository/tests/obs/windows_obs_peer.c",

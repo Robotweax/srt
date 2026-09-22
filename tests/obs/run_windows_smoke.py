@@ -103,6 +103,11 @@ def obs_working_directory(prefix: Path) -> Path:
     return runtime
 
 
+def require_obs_peer_directory(peer: Path, runtime: Path) -> None:
+    if peer.resolve().parent != runtime.resolve():
+        raise RuntimeError("OBS peer must run from the installed OBS binary directory")
+
+
 def uri(port: int, mode: str, encrypted: bool) -> str:
     query = {"mode": mode, "transtype": "live", "latency": "120"}
     if encrypted:
@@ -194,6 +199,7 @@ def require_binary_contract(obs_prefix: Path, reference_srt: Path) -> None:
 def qualify(args: argparse.Namespace) -> None:
     args.artifacts.mkdir(parents=True)
     obs_runtime = obs_working_directory(args.obs_prefix)
+    require_obs_peer_directory(args.obs_peer, obs_runtime)
     reference_runtime = args.reference_srt.parent
     obs_provider = (obs_runtime / "srt.dll").resolve()
     reference_provider = args.reference_srt.resolve()
