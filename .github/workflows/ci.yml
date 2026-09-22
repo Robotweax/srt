@@ -680,6 +680,7 @@ jobs:
             --gst-prefix "$RUNNER_TEMP/obs-qualification/gstreamer" \
             --reference-srt-prefix "$RUNNER_TEMP/obs-qualification/reference-srt" \
             --artifacts "$RUNNER_TEMP/obs-desktop/evidence/runtime" \
+            --reconnect-cycles 3 --soak-seconds 30 \
             | tee "$RUNNER_TEMP/obs-desktop/evidence/results.txt"
       - name: Preserve OBS qualification diagnostics
         if: always()
@@ -695,6 +696,7 @@ jobs:
             ${{ runner.temp }}/obs-desktop/evidence/runtime/*.log
             ${{ runner.temp }}/obs-desktop/evidence/runtime/*.txt
             ${{ runner.temp }}/obs-desktop/evidence/runtime/*.frames
+            ${{ runner.temp }}/obs-desktop/evidence/runtime/*.jsonl
           retention-days: 7
 
   vlc_integration:

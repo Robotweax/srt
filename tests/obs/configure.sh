@@ -24,7 +24,14 @@ esac
 [[ "$(uname -s)" == Linux && "$build" == /* && "$prefix" == /* ]]
 [[ ! -e "$build/CMakeCache.txt" ]] || { echo "use a fresh OBS build" >&2; exit 1; }
 [[ "$(git -C "$source_directory" rev-parse HEAD)" == ba2f32bdf791005443988a4955e963663e16b1ed ]]
-[[ -z "$(git -C "$source_directory" status --porcelain --untracked-files=no -- . ':!plugins/CMakeLists.txt')" ]]
+source_exclusions=(':!plugins/CMakeLists.txt')
+if [[ "$profile" == desktop ]]; then
+    source_exclusions+=(':!plugins/obs-ffmpeg/obs-ffmpeg-mpegts.c')
+fi
+[[ -z "$(git -C "$source_directory" status --porcelain --untracked-files=no -- . "${source_exclusions[@]}")" ]]
+if [[ "$profile" == desktop ]]; then
+    "$repository/tools/python" "$repository/tests/obs/prepare_desktop_lifecycle.py" "$source_directory"
+fi
 "$repository/tools/python" "$repository/tests/obs/prepare_source.py" "$source_directory" --profile "$profile"
 export PKG_CONFIG_PATH="$srt_prefix/lib/pkgconfig:$ffmpeg_prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 [[ "$(pkg-config --variable=pcfiledir srt)" == "$srt_prefix/lib/pkgconfig" ]]

@@ -6,6 +6,11 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Added OBS desktop automatic-reconnect regression checks and an opt-in
+  decoded-media soak with resident-memory evidence. The pinned desktop build
+  applies a hash-guarded MPEG-TS state cleanup correction between starts and
+  after failed initialization; the headless build remains unpatched.
+
 - Added an isolated Linux OBS Qt desktop build profile, frontend streaming
   smoke tests, PNG support for desktop assets, and interactive acceptance
   criteria without changing the headless profile's default selection.

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run the installed Qt frontend with an isolated synthetic OBS user profile."""
+
 from __future__ import annotations
 
 import argparse
@@ -21,7 +22,7 @@ spec.loader.exec_module(media)
 gst = media.gst
 
 
-def prepare_profile(root, source, destination, *, network=False):
+def prepare_profile(root, source, destination, *, network=False, reconnect=False):
     """Never read or overwrite a real user's settings; reject directory reuse."""
     root.mkdir(parents=True, exist_ok=False)
     config = root / "config/obs-studio"
@@ -43,7 +44,8 @@ def prepare_profile(root, source, destination, *, network=False):
         "[General]\nName=Robotweax\n[Video]\nBaseCX=320\nBaseCY=180\n"
         "OutputCX=320\nOutputCY=180\nFPSType=1\nFPSInt=25\n"
         "[Audio]\nSampleRate=48000\nChannelSetup=Stereo\n"
-        "[Output]\nMode=Simple\nReconnect=false\n"
+        f"[Output]\nMode=Simple\nReconnect={str(reconnect).lower()}\n"
+        "RetryDelay=1\nMaxRetries=60\n"
         "[SimpleOutput]\nStreamEncoder=x264\nStreamAudioEncoder=aac\n"
         "VBitrate=500\nABitrate=128\nPreset=ultrafast\nRecFormat2=mkv\n"
         '[Hotkeys]\nOBSBasic.StartStreaming={"bindings":[{"key":"OBS_KEY_F9"}]}\n'
@@ -185,7 +187,7 @@ def hotkey(key):
         subprocess.run(["xdotool", "keyup", key], check=True, timeout=5)
 
 
-def wait_decoded(desktop, receiver, ffmpeg, output, artifacts, label):
+def wait_decoded(desktop, receiver, ffmpeg, output, artifacts, label, offset=0):
     """Wait for media, not padded MPEG-TS bytes emitted before input is ready."""
     deadline = time.monotonic() + 15
     snapshot = artifacts / f"{label}-snapshot.ts"
@@ -193,8 +195,10 @@ def wait_decoded(desktop, receiver, ffmpeg, output, artifacts, label):
     while time.monotonic() < deadline:
         if desktop.poll() is not None or receiver.poll() is not None:
             raise RuntimeError(f"{label}: endpoint exited before decoded media")
-        if output.exists() and output.stat().st_size >= 500000:
-            snapshot.write_bytes(output.read_bytes())
+        if output.exists() and output.stat().st_size - offset >= 500000:
+            with output.open("rb") as stream:
+                stream.seek(offset)
+                snapshot.write_bytes(stream.read(2 * 1024 * 1024))
             try:
                 media.decoded_file(ffmpeg, snapshot, artifacts, f"{label}-probe")
             except (RuntimeError, subprocess.CalledProcessError) as error:
@@ -205,12 +209,48 @@ def wait_decoded(desktop, receiver, ffmpeg, output, artifacts, label):
     raise RuntimeError(f"{label}: decoded-media deadline: {last_error}")
 
 
+def soak(desktop, receiver, ffmpeg, output, artifacts, seconds):
+    """Each checkpoint must decode newly received bytes, never old good media."""
+    started = time.monotonic()
+    deadline = started + seconds
+    with (artifacts / "desktop-soak-memory.jsonl").open("w") as evidence:
+        while time.monotonic() < deadline:
+            offset = output.stat().st_size
+            wait_decoded(
+                desktop, receiver, ffmpeg, output, artifacts, "desktop-soak", offset
+            )
+            status = Path(f"/proc/{desktop.pid}/status").read_text()
+            rss = re.search(r"^VmRSS:\s+(\d+) kB$", status, re.M)
+            if rss is None:
+                raise RuntimeError("missing OBS resident-memory evidence")
+            evidence.write(
+                json.dumps(
+                    {
+                        "seconds": time.monotonic() - started,
+                        "rss_kib": int(rss[1]),
+                        "received_bytes": output.stat().st_size,
+                    }
+                )
+                + "\n"
+            )
+            evidence.flush()
+    print(f"PASS desktop soak: {time.monotonic() - started:.1f} seconds", flush=True)
+
+
 def qualify(args):
     artifacts = args.artifacts
     artifacts.mkdir(parents=True, exist_ok=False)
     reference = gst.provider(
         args.gst_prefix, args.reference_srt_prefix, artifacts, "desktop-reference"
     )
+    if args.soak_seconds:
+        reference = (
+            reference[0],
+            dict(
+                reference[1],
+                ROBOTWEAX_TEST_PEER_TIMEOUT_SECONDS=str(args.soak_seconds + 60),
+            ),
+        )
     ffmpeg = args.ffmpeg_prefix / "bin/ffmpeg"
     fixture = artifacts / "fixture.ts"
     gst.run(
@@ -272,11 +312,14 @@ def qualify(args):
         root = artifacts / label
         prepare_profile(
             root,
-            gst.uri(incoming, "listener", encrypted, ffmpeg=True)
-            if network
-            else fixture,
+            (
+                gst.uri(incoming, "listener", encrypted, ffmpeg=True)
+                if network
+                else fixture
+            ),
             gst.uri(number, "caller", encrypted, ffmpeg=True),
             network=network,
+            reconnect=encrypted and not network and args.reconnect_cycles > 0,
         )
         output = artifacts / f"{label}.ts"
         sink = gst.gst_command(
@@ -331,6 +374,47 @@ def qualify(args):
                 # Exercise real frontend hotkeys, not a substitute libobs driver.
                 hotkey("F9")
                 wait_decoded(desktop, receiver, ffmpeg, output, artifacts, label)
+                if encrypted and not network:
+                    for cycle in range(args.reconnect_cycles):
+                        receiver.terminate()
+                        receiver.wait(timeout=10)
+                        # Keep the listener absent long enough for peer timeout;
+                        # no F9/manual start is issued during recovery.
+                        time.sleep(8)
+                        output = artifacts / f"{label}-reconnect-{cycle + 1}.ts"
+                        receiver = senders.enter_context(
+                            gst.process(
+                                *gst.gst_command(
+                                    reference,
+                                    False,
+                                    gst.uri(number, "listener", True),
+                                    output,
+                                    0,
+                                ),
+                                artifacts / f"{label}-reconnect-{cycle + 1}.log",
+                            )
+                        )
+                        gst.wait_listener(receiver, number)
+                        wait_decoded(
+                            desktop,
+                            receiver,
+                            ffmpeg,
+                            output,
+                            artifacts,
+                            f"{label}-reconnect-{cycle + 1}",
+                        )
+                        print(
+                            f"PASS desktop automatic reconnect {cycle + 1}", flush=True
+                        )
+                    if args.soak_seconds:
+                        soak(
+                            desktop,
+                            receiver,
+                            ffmpeg,
+                            output,
+                            artifacts,
+                            args.soak_seconds,
+                        )
                 if receiver.poll() is not None or "Streaming Stop" in log.read_text():
                     raise RuntimeError(
                         "stream stopped before the frontend stop command"
@@ -347,7 +431,9 @@ def qualify(args):
                     gst.release_sender(source)
                     gst.require_success(source, f"{label} source")
                 stop_desktop(desktop, log, baseline)
-        media.decoded_file(ffmpeg, output, artifacts, label)
+        # Long captures are validated in bounded, fresh windows above.
+        if not (encrypted and not network and args.soak_seconds):
+            media.decoded_file(ffmpeg, output, artifacts, label)
         print(
             f"PASS {label}: Qt frontend start/stop, decoded moving video and audio",
             flush=True,
@@ -365,9 +451,14 @@ def main():
         "artifacts",
     ):
         parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--soak-seconds", type=int, default=0)
+    parser.add_argument("--reconnect-cycles", type=int, default=0)
     args = parser.parse_args()
+    if not 0 <= args.soak_seconds <= 86400 or not 0 <= args.reconnect_cycles <= 100:
+        parser.error("soak seconds must be 0..86400 and reconnect cycles 0..100")
     for name, value in vars(args).items():
-        setattr(args, name, value.resolve())
+        if isinstance(value, Path):
+            setattr(args, name, value.resolve())
     qualify(args)
 
 
