@@ -20,6 +20,8 @@ developers and transport integrators using the installed public API.
   reproducible builds, runtime verification, and the qualified media profile.
 - [GStreamer integration](gstreamer-integration.md) — `srtsrc`/`srtsink` builds,
   provider selection, interoperability tests, and controlled shutdown.
+- [VLC integration](vlc-integration.md) — headless SRT module builds, decoded
+  media checks, provider selection, and lifecycle qualification.
 - [Testing](testing.md) — local verification and focused test selection.
 - [Live UDP/SRT bridge](udp-srt-bridge.md) — continuous MPEG-TS UDP → SRT → UDP
   forwarding with the public API.

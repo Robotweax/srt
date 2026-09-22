@@ -6,6 +6,11 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Added a pinned Linux VLC integration build using the existing SRT modules,
+  decoded-video and outgoing-media checks, interoperability/lifecycle tests,
+  and a required CI gate for the namespaced Robotweax installation.
+- Added a hash-guarded compatibility adjustment for the pinned VLC build to
+  remove a conflicting obsolete payload option that prevents SRT output.
 - Added a pinned GStreamer 1.28.7 integration build and required CI gate using
   the existing `srtsrc`/`srtsink` plugin and opt-in `srt.pc` metadata.
 - Added runtime provider verification, MPEG-TS and AES-CTR media checks,
