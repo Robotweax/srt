@@ -13,20 +13,31 @@ add_subdirectory(obs-x264)
 """
 
 
-def prepare(source):
+DESKTOP_PROFILE = PROFILE.replace(b"headless", b"desktop") + (
+    b"add_subdirectory(rtmp-services)\nadd_subdirectory(obs-transitions)\n"
+)
+
+
+def prepare(source, profile="headless"):
+    profiles = {"headless": PROFILE, "desktop": DESKTOP_PROFILE}
+    selected = profiles[profile]
     target = source / "plugins/CMakeLists.txt"
     current = target.read_bytes()
-    if current == PROFILE:
+    if current == selected:
         return False
     if hashlib.sha256(current).hexdigest() != ORIGINAL_SHA256:
         raise RuntimeError(
             "unrecognized OBS plugin selection; use a dedicated pinned checkout"
         )
-    target.write_bytes(PROFILE)
+    target.write_bytes(selected)
     return True
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path)
-    prepare(parser.parse_args().source)
+    parser.add_argument(
+        "--profile", choices=("headless", "desktop"), default="headless"
+    )
+    arguments = parser.parse_args()
+    prepare(arguments.source, arguments.profile)

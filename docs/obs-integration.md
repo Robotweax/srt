@@ -14,6 +14,8 @@ audio, cleartext and AES-CTR with 128-bit keys. It builds real libobs, media
 source, native SRT output, and software encoders; the test driver uses the
 public libobs API. It is not an OBS Studio GUI installer, a binary drop-in
 replacement for an existing distribution, or Windows/macOS qualification.
+For the separate Qt frontend build and user-facing acceptance procedure, see
+[OBS Linux desktop qualification](obs-desktop.md).
 The profile does not qualify RIST, hardware encoders, Rendezvous, IPv6,
 AES-GCM, adverse-network performance, or quantitative A/V synchronization.
 
@@ -39,7 +41,7 @@ sudo apt-get install build-essential cmake ninja-build git pkg-config \
   libsimde-dev uthash-dev libjansson-dev uuid-dev libx11-dev libx11-xcb-dev \
   libxcb1-dev libxcb-randr0-dev libxcb-xinput-dev libgl1-mesa-dev \
   libegl1-mesa-dev libdrm-dev libva-dev libpci-dev librist-dev libx264-dev \
-  xvfb xauth libgl1-mesa-dri
+  xvfb xauth libgl1-mesa-dri zlib1g-dev
 python3 -m venv /path/to/obs-tools
 /path/to/obs-tools/bin/pip install meson==1.9.1
 export PATH="/path/to/obs-tools/bin:$PATH"
@@ -82,6 +84,8 @@ The standard [FFmpeg smoke profile](ffmpeg-integration.md) is intentionally
 smaller and is not sufficient for OBS. This profile installs shared avcodec,
 avformat, avdevice, avfilter, avutil, swscale and swresample, along with the
 software codecs and fixture filters used by the qualification.
+PNG decoding and image demuxers are enabled for OBS desktop interface assets;
+this does not make the profile a general-purpose FFmpeg build.
 
 The `REVISION` make variable is FFmpeg's supported version-string input. For
 this pinned snapshot it preserves the source `RELEASE` baseline (`8.0.git`)

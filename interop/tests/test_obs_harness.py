@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
+import os
 from pathlib import Path
 import shlex
 import tempfile
@@ -20,9 +22,118 @@ def load(name, filename):
 
 obs = load("obs_smoke", "run_smoke.py")
 prepare = load("obs_prepare", "prepare_source.py")
+desktop = load("obs_desktop", "run_desktop_smoke.py")
 
 
 class ObsHarnessTests(unittest.TestCase):
+    def test_desktop_media_wait_does_not_accept_transport_bytes_without_motion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory)
+            output = artifacts / "output.ts"
+            output.write_bytes(b"x" * 500000)
+            child = mock.Mock()
+            child.poll.return_value = None
+            with mock.patch.object(desktop.time, "sleep"), mock.patch.object(
+                desktop.time, "monotonic", side_effect=[0, 0, 1]
+            ), mock.patch.object(
+                desktop.media, "decoded_file", side_effect=[RuntimeError("black"), None]
+            ) as decode:
+                desktop.wait_decoded(
+                    child, child, Path("/ffmpeg"), output, artifacts, "test"
+                )
+            self.assertEqual(decode.call_count, 2)
+            with mock.patch.object(desktop.time, "sleep"), mock.patch.object(
+                desktop.time, "monotonic", side_effect=[0, 0, 16]
+            ), mock.patch.object(
+                desktop.media, "decoded_file", side_effect=RuntimeError("black")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "decoded-media deadline"):
+                    desktop.wait_decoded(
+                        child, child, Path("/ffmpeg"), output, artifacts, "test"
+                    )
+
+    def test_desktop_shutdown_requires_normal_exit_and_no_allocation_regression(self):
+        clean = "Freeing OBS context data\nNumber of memory leaks: 0\n"
+        observed = clean.replace("leaks: 0", "leaks: 1")
+        self.assertEqual(desktop.check_shutdown(0, clean), 0)
+        self.assertEqual(desktop.check_shutdown(0, observed), 1)
+        self.assertEqual(desktop.check_shutdown(0, observed, 1), 1)
+        for status, text, baseline in (
+            (1, clean, 0),
+            (0, "", 0),
+            (0, observed, 0),
+            (0, observed.replace("leaks: 1", "leaks: 2"), None),
+            (0, observed.replace("leaks: 1", "leaks: 2"), 1),
+            (0, clean + clean, 0),
+        ):
+            with self.subTest(status=status, text=text, baseline=baseline):
+                with self.assertRaises(RuntimeError):
+                    desktop.check_shutdown(status, text, baseline)
+
+    def test_desktop_preparation_is_separate_and_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            target = source / "plugins/CMakeLists.txt"
+            target.parent.mkdir()
+            original = b"synthetic original\n"
+            target.write_bytes(original)
+            with mock.patch.object(
+                prepare, "ORIGINAL_SHA256", hashlib.sha256(original).hexdigest()
+            ):
+                self.assertTrue(prepare.prepare(source, "desktop"))
+                self.assertEqual(target.read_bytes(), prepare.DESKTOP_PROFILE)
+                self.assertFalse(prepare.prepare(source, "desktop"))
+                with self.assertRaises(RuntimeError):
+                    prepare.prepare(source, "headless")
+            self.assertEqual(target.read_bytes(), prepare.DESKTOP_PROFILE)
+            self.assertIn(b"add_subdirectory(rtmp-services)", prepare.DESKTOP_PROFILE)
+            self.assertIn(b"add_subdirectory(obs-transitions)", prepare.DESKTOP_PROFILE)
+            self.assertNotIn(b"rtmp-services", prepare.PROFILE)
+
+    def test_desktop_fixture_profile_never_overwrites_existing_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "isolated"
+            desktop.prepare_profile(root, "/fixture.ts", "srt://127.0.0.1:9000")
+            config = root / "config/obs-studio"
+            scenes = json.loads((config / "basic/scenes/Robotweax.json").read_text())
+            source = scenes["sources"][0]
+            self.assertEqual(source["id"], "ffmpeg_source")
+            self.assertTrue(source["settings"]["is_local_file"])
+            service = config / "basic/profiles/Robotweax/service.json"
+            before = service.read_bytes()
+            self.assertEqual(json.loads(before)["type"], "rtmp_custom")
+            with self.assertRaises(FileExistsError):
+                desktop.prepare_profile(root, "/other.ts", "srt://other")
+            self.assertEqual(service.read_bytes(), before)
+
+    def test_desktop_network_source_and_environment_are_isolated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "isolated"
+            desktop.prepare_profile(root, "srt://source", "srt://dest", network=True)
+            scene = root / "config/obs-studio/basic/scenes/Robotweax.json"
+            settings = json.loads(scene.read_text())["sources"][0]["settings"]
+            self.assertFalse(settings["is_local_file"])
+            self.assertEqual(settings["input"], "srt://source")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "LD_PRELOAD": "/unexpected.so",
+                    "QT_PLUGIN_PATH": "/unexpected",
+                    "OBS_PLUGINS_PATH": "/unexpected",
+                    "XDG_CONFIG_HOME": "/real-user",
+                    "HOME": "/real-home",
+                    "DISPLAY": ":99",
+                },
+                clear=True,
+            ):
+                command, environment = desktop.desktop_command(Path("/obs"), root)
+            self.assertEqual(command[0], "/obs/bin/obs")
+            self.assertEqual(environment["DISPLAY"], ":99")
+            self.assertEqual(environment["HOME"], str(root / "home"))
+            self.assertEqual(environment["XDG_CONFIG_HOME"], str(root / "config"))
+            for variable in ("LD_PRELOAD", "QT_PLUGIN_PATH", "OBS_PLUGINS_PATH"):
+                self.assertNotIn(variable, environment)
+
     def test_obs_version_does_not_depend_on_tags_in_shallow_checkout(self):
         script = (ROOT / "tests/obs/configure.sh").read_text()
         # Inspect the actual configure command, not comments or unused variables.
@@ -131,6 +242,10 @@ class ObsHarnessTests(unittest.TestCase):
         self.assertNotIn(
             "--disable-avformat", (ROOT / "tests/obs/configure_ffmpeg.sh").read_text()
         )
+        ffmpeg = (ROOT / "tests/obs/configure_ffmpeg.sh").read_text()
+        self.assertIn("--enable-zlib", ffmpeg)
+        self.assertIn("wrapped_avframe,png", ffmpeg)
+        self.assertIn("--enable-demuxer=mpegts,image2,image2pipe", ffmpeg)
         builder = (ROOT / "tests/obs/build_and_test.sh").read_text()
         self.assertEqual(
             builder.count('REVISION="$(<"$ffmpeg_source/RELEASE")-3acec0a"'), 2
@@ -175,8 +290,16 @@ class ObsHarnessTests(unittest.TestCase):
                 "${{ runner.temp }}/obs-qualification/evidence/*.log",
                 "${{ runner.temp }}/obs-qualification/evidence/*.txt",
                 "${{ runner.temp }}/obs-qualification/evidence/*.frames",
+                "${{ runner.temp }}/obs-desktop/evidence/*.log",
+                "${{ runner.temp }}/obs-desktop/evidence/*.txt",
+                "${{ runner.temp }}/obs-desktop/evidence/runtime/*.log",
+                "${{ runner.temp }}/obs-desktop/evidence/runtime/*.txt",
+                "${{ runner.temp }}/obs-desktop/evidence/runtime/*.frames",
             ],
         )
+        self.assertIn("tests/obs/build_desktop.sh", job)
+        self.assertIn("tests/obs/run_desktop_smoke.py", job)
+        self.assertNotIn("continue-on-error", job)
 
 
 if __name__ == "__main__":

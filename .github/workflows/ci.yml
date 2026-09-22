@@ -626,6 +626,12 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
+          repository: obsproject/obs-studio
+          ref: ${{ env.OBS_COMMIT }}
+          path: obs-desktop-source
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
           repository: GStreamer/gstreamer
           ref: ${{ env.GSTREAMER_COMMIT }}
           path: gstreamer-source
@@ -645,7 +651,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build git pkg-config python3-venv libssl-dev libglib2.0-dev flex bison extra-cmake-modules libsimde-dev uthash-dev libjansson-dev uuid-dev libx11-dev libx11-xcb-dev libxcb1-dev libxcb-randr0-dev libxcb-xinput-dev libgl1-mesa-dev libegl1-mesa-dev libdrm-dev libva-dev libpci-dev librist-dev libx264-dev xvfb xauth libgl1-mesa-dri
+          sudo apt-get install -y build-essential cmake ninja-build git pkg-config python3-venv libssl-dev libglib2.0-dev flex bison extra-cmake-modules libsimde-dev uthash-dev libjansson-dev uuid-dev libx11-dev libx11-xcb-dev libxcb1-dev libxcb-randr0-dev libxcb-xinput-dev libgl1-mesa-dev libegl1-mesa-dev libdrm-dev libva-dev libpci-dev librist-dev libx264-dev xvfb xauth libgl1-mesa-dri zlib1g-dev qt6-base-dev qt6-base-private-dev libqt6svg6-dev libcurl4-openssl-dev nlohmann-json3-dev libxkbcommon-dev xdotool
           python3 -m venv "$RUNNER_TEMP/obs-tools"
           "$RUNNER_TEMP/obs-tools/bin/pip" install meson==1.9.1
           echo "$RUNNER_TEMP/obs-tools/bin" >> "$GITHUB_PATH"
@@ -657,6 +663,24 @@ jobs:
           "$GITHUB_WORKSPACE/ffmpeg-source"
           "$GITHUB_WORKSPACE/reference-source"
           "$RUNNER_TEMP/obs-qualification"
+      - name: Build isolated OBS Qt desktop
+        run: >-
+          tests/obs/build_desktop.sh
+          "$GITHUB_WORKSPACE/obs-desktop-source"
+          "$RUNNER_TEMP/obs-qualification/robotweax-srt"
+          "$RUNNER_TEMP/obs-qualification/ffmpeg"
+          "$RUNNER_TEMP/obs-desktop"
+      - name: Exercise actual OBS desktop streaming controls
+        run: |
+          set -euo pipefail
+          xvfb-run -a ./tools/python tests/obs/run_desktop_smoke.py \
+            --obs-prefix "$RUNNER_TEMP/obs-desktop/obs" \
+            --srt-prefix "$RUNNER_TEMP/obs-qualification/robotweax-srt" \
+            --ffmpeg-prefix "$RUNNER_TEMP/obs-qualification/ffmpeg" \
+            --gst-prefix "$RUNNER_TEMP/obs-qualification/gstreamer" \
+            --reference-srt-prefix "$RUNNER_TEMP/obs-qualification/reference-srt" \
+            --artifacts "$RUNNER_TEMP/obs-desktop/evidence/runtime" \
+            | tee "$RUNNER_TEMP/obs-desktop/evidence/results.txt"
       - name: Preserve OBS qualification diagnostics
         if: always()
         uses: actions/upload-artifact@v7
@@ -666,6 +690,11 @@ jobs:
             ${{ runner.temp }}/obs-qualification/evidence/*.log
             ${{ runner.temp }}/obs-qualification/evidence/*.txt
             ${{ runner.temp }}/obs-qualification/evidence/*.frames
+            ${{ runner.temp }}/obs-desktop/evidence/*.log
+            ${{ runner.temp }}/obs-desktop/evidence/*.txt
+            ${{ runner.temp }}/obs-desktop/evidence/runtime/*.log
+            ${{ runner.temp }}/obs-desktop/evidence/runtime/*.txt
+            ${{ runner.temp }}/obs-desktop/evidence/runtime/*.frames
           retention-days: 7
 
   vlc_integration:
