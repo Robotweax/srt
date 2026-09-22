@@ -20,6 +20,12 @@ static volatile LONG audio_count;
 static volatile LONG audible_count;
 static uint64_t previous_hash;
 
+static void stage(const char* name)
+{
+    fprintf(stderr, "STAGE %s\n", name);
+    fflush(stderr);
+}
+
 static const char* test_name(void* unused)
 {
     (void)unused;
@@ -247,6 +253,7 @@ static bool stop_output(obs_output_t* output)
 
 int main(int argc, char** argv)
 {
+    stage("main");
     if (argc != 5
         || (strcmp(argv[2], "send") != 0 && strcmp(argv[2], "receive") != 0)) {
         fprintf(stderr,
@@ -255,8 +262,10 @@ int main(int argc, char** argv)
         return 2;
     }
     setvbuf(stdout, NULL, _IOLBF, 0);
+    stage("obs-startup");
     if (!obs_startup("en-US", NULL, NULL))
         return 2;
+    stage("obs-started");
     char graphics[MAX_PATH];
     path(graphics, sizeof(graphics), argv[1], "bin/64bit/libobs-d3d11.dll");
     struct obs_video_info video = {.graphics_module = graphics,
@@ -275,9 +284,13 @@ int main(int argc, char** argv)
     if (!obs_reset_audio(&audio)
         || obs_reset_video(&video) != OBS_VIDEO_SUCCESS)
         return 2;
+    stage("audio-video-ready");
     module(argv[1], "obs-ffmpeg");
+    stage("ffmpeg-module-ready");
     module(argv[1], "obs-x264");
+    stage("x264-module-ready");
     obs_post_load_modules();
+    stage("modules-ready");
 
     struct obs_source_info synthetic_info = {.id = "robotweax-synthetic",
         .type = OBS_SOURCE_TYPE_INPUT,
@@ -301,6 +314,7 @@ int main(int argc, char** argv)
     obs_register_source(&synthetic_info);
     obs_register_source(&filter_info);
     obs_register_service(&service_type);
+    stage("types-registered");
 
     bool sending = strcmp(argv[2], "send") == 0;
     obs_source_t* source = NULL;
@@ -324,6 +338,7 @@ int main(int argc, char** argv)
     obs_data_release(settings);
     if (!source)
         return 2;
+    stage("source-ready");
     if (!sending) {
         filter =
             obs_source_create_private("robotweax-observer", "observer", NULL);
@@ -367,6 +382,7 @@ int main(int argc, char** argv)
         obs_output_set_service(output, service);
         if (!obs_output_start(output))
             return 2;
+        stage("output-started");
     }
     modules();
     char loaded[MAX_PATH];
