@@ -51,6 +51,7 @@ class ObsHarnessTests(unittest.TestCase):
                 ORIGINAL_SHA256=hashlib.sha256(original).hexdigest(),
                 PREPARED_SHA256=hashlib.sha256(prepared).hexdigest(),
             ):
+                target.write_bytes(original.replace(b"\n", b"\r\n"))
                 self.assertTrue(windows_prepare.prepare(root))
                 self.assertEqual(target.read_bytes().count(windows_prepare.PREPARED), 1)
                 self.assertEqual(target.read_bytes().count(windows_prepare.QT_PREPARED), 1)
@@ -58,6 +59,7 @@ class ObsHarnessTests(unittest.TestCase):
                 target.write_bytes(target.read_bytes() + b"unknown\n")
                 with self.assertRaisesRegex(RuntimeError, "unrecognized"):
                     windows_prepare.prepare(root)
+                self.assertEqual(target.read_bytes(), prepared + b"unknown\n")
 
     def test_windows_transport_capture_requires_coherent_mpeg_ts(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -289,6 +291,7 @@ class ObsHarnessTests(unittest.TestCase):
             with mock.patch.object(
                 prepare, "ORIGINAL_SHA256", hashlib.sha256(original).hexdigest()
             ):
+                target.write_bytes(original.replace(b"\n", b"\r\n"))
                 self.assertTrue(prepare.prepare(source))
                 self.assertEqual(target.read_bytes(), prepare.PROFILE)
                 with mock.patch.object(Path, "write_bytes") as write:

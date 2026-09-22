@@ -34,7 +34,8 @@ QT_PREPARED = QT_ORIGINAL.replace(
 def prepare(source: Path) -> bool:
     target = source / TARGET
     content = target.read_bytes()
-    digest = hashlib.sha256(content).hexdigest()
+    normalized = content.replace(b"\r\n", b"\n")
+    digest = hashlib.sha256(normalized).hexdigest()
     if digest == PREPARED_SHA256:
         return False
     if digest != ORIGINAL_SHA256:
@@ -42,10 +43,10 @@ def prepare(source: Path) -> bool:
             "unrecognized OBS Windows dependency selection; use the pinned "
             "unmodified checkout"
         )
-    if content.count(ORIGINAL) != 1 or content.count(QT_ORIGINAL) != 1:
+    if normalized.count(ORIGINAL) != 1 or normalized.count(QT_ORIGINAL) != 1:
         raise RuntimeError("unrecognized OBS Windows dependency selection")
     target.write_bytes(
-        content.replace(ORIGINAL, PREPARED).replace(QT_ORIGINAL, QT_PREPARED)
+        normalized.replace(ORIGINAL, PREPARED).replace(QT_ORIGINAL, QT_PREPARED)
     )
     return True
 
