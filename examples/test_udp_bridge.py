@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 from pathlib import Path
 import queue
@@ -228,6 +229,67 @@ def run_bridge(demo: Path, reverse: bool = False, encrypted: bool = False,
                 peer.close()
 
 
+def run_input_reservation(demo: Path) -> None:
+    """Reserve input before SRT binds, but never replay pre-connect datagrams."""
+    peers: list[Peer] = []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sink, \
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as source:
+        sink.bind(("127.0.0.1", 0))
+        sink.settimeout(5)
+        output_port = int(sink.getsockname()[1])
+        input_port = free_port({output_port})
+        srt_port = free_port({input_port, output_port})
+        common = ["--srt-host", "127.0.0.1", "--srt-port", str(srt_port),
+                  "--connect-timeout-ms", "2000", "--latency-ms", "40"]
+        try:
+            sender = Peer([str(demo), "send", "--udp-port", str(input_port),
+                           "--srt-mode", "listener", *common], os.environ.copy())
+            peers.append(sender)
+            sender.wait_for("READY")
+            # Deterministically try the collision that an ephemeral SRT bind
+            # could otherwise cause before the real UDP input socket exists.
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as contender:
+                try:
+                    contender.bind(("127.0.0.1", input_port))
+                except OSError as error:
+                    if error.errno not in (errno.EADDRINUSE, 10048):
+                        raise
+                else:
+                    raise AssertionError(
+                        "UDP input port is not reserved before SRT connects")
+            # If the reservation queue is reused, this invalid datagram kills
+            # the sender. A fresh relay socket must discard it completely.
+            source.sendto(b"pre-connect data must not be replayed",
+                          ("127.0.0.1", input_port))
+            receiver = Peer([str(demo), "receive", "--udp-port", str(output_port),
+                             "--srt-mode", "caller", *common], os.environ.copy())
+            peers.append(receiver)
+            sender.wait_for("CONNECTED")
+            receiver.wait_for("CONNECTED")
+            payload = (b"\x47" + b"\x2a" * 187) * 7
+            source.sendto(payload, ("127.0.0.1", input_port))
+            assert sink.recv(65536) == payload, "post-connect payload mismatch"
+            assert sender.process.poll() is None, "sender replayed stale input"
+            sink.settimeout(0.1)
+            try:
+                sink.recv(65536)
+            except socket.timeout:
+                pass
+            else:
+                raise AssertionError("unexpected pre-connect or duplicate datagram")
+        except Exception as error:
+            raise AssertionError(
+                f"UDP input reservation: {error}\n"
+                + "\n".join("".join(peer.lines) for peer in peers)
+            ) from error
+        finally:
+            for peer in reversed(peers):
+                peer.close()
+    # All reservation and relay sockets must also be released on shutdown.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as released:
+        released.bind(("127.0.0.1", input_port))
+
+
 def run_failure_policy(demo: Path) -> None:
     """No-server retry, default-off disconnect and fatal auth rejection."""
     for scenario in ("late-listener", "reconnect-off", "wrong-passphrase"):
@@ -310,6 +372,7 @@ def main() -> None:
             capture_output=True, timeout=5, env=environment,
         )
         assert rejected.returncode == 1, extra
+    run_input_reservation(demo)
     for reverse, encrypted in ((False, False), (True, False), (False, True)):
         run_bridge(demo, reverse=reverse, encrypted=encrypted)
     for reverse in (False, True):
