@@ -18,6 +18,8 @@ developers and transport integrators using the installed public API.
   readiness, encryption, errors, and shutdown.
 - [FFmpeg integration](ffmpeg-integration.md) — opt-in package discovery,
   reproducible builds, runtime verification, and the qualified media profile.
+- [GStreamer integration](gstreamer-integration.md) — `srtsrc`/`srtsink` builds,
+  provider selection, interoperability tests, and controlled shutdown.
 - [Testing](testing.md) — local verification and focused test selection.
 - [Live UDP/SRT bridge](udp-srt-bridge.md) — continuous MPEG-TS UDP → SRT → UDP
   forwarding with the public API.

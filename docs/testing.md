@@ -179,6 +179,23 @@ tests/ffmpeg/run_smoke.sh /path/to/ffmpeg/ffmpeg
 See [FFmpeg integration](ffmpeg-integration.md) for the complete build and
 provider-verification procedure.
 
+## GStreamer integration gate
+
+The pinned GStreamer 1.28.7 gate builds the existing SRT plugin against
+isolated Robotweax and Haivision installations. It checks loaded providers,
+MPEG-TS payloads, AES-CTR, FFmpeg interoperability, blocked pipeline teardown,
+and authenticated listener reconnection. The test uses controlled application
+shutdown; it does not qualify immediate sender teardown as lossless EOF.
+
+```sh
+tests/gstreamer/build_and_test.sh /path/to/gstreamer-source \
+  /path/to/ffmpeg-source /path/to/haivision-srt-source \
+  "$PWD/build-gstreamer-qualification"
+```
+
+See [GStreamer integration](gstreamer-integration.md) for dependencies,
+version pins, individual build commands, and the shutdown boundary.
+
 ## AES-GCM validation
 
 The default build tests the AES-CTR profile. Validate the released AES-GCM
