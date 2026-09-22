@@ -56,7 +56,7 @@ $SrtInclude = (Resolve-Path "$SrtPrefix/include").Path
 Invoke-Checked cmake @(
     '-S', $ObsSource, '-B', $ObsBuild, '-A', 'x64',
     '-DOBS_VERSION_OVERRIDE=32.2.2-robotweax-windows-qualification',
-    '-DENABLE_UI=OFF', '-DENABLE_BROWSER=OFF', '-DENABLE_SCRIPTING=OFF',
+    '-DENABLE_FRONTEND=OFF', '-DENABLE_BROWSER=OFF', '-DENABLE_SCRIPTING=OFF',
     '-DENABLE_VIRTUALCAM=OFF', '-DENABLE_WEBSOCKET=OFF', '-DENABLE_AJA=OFF',
     '-DENABLE_VLC=OFF', '-DENABLE_DECKLINK=OFF', '-DENABLE_NEW_MPEGTS_OUTPUT=ON',
     "-DLibsrt_LIBRARY:FILEPATH=$SrtLibrary",

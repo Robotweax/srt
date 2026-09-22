@@ -10,10 +10,10 @@ from pathlib import Path
 
 TARGET = Path("cmake/windows/buildspec.cmake")
 ORIGINAL_SHA256 = "ae738576d0f7764ca91a4a85f94c2ac9cdca97c675b3c1b07c4012854b8b9540"
-PREPARED_SHA256 = "e35b03aa7a8106cb86ccbd407da65e305c2066d78c45dde14be923ade9b59b13"
+PREPARED_SHA256 = "dbd2c3c875186d48368dc45a12b1eb0f73363c3d9fa25cab5c631c6148f210ad"
 ORIGINAL = b"  set(dependencies_list prebuilt qt6 cef)\n"
 PREPARED = (
-    b"  if(ENABLE_UI)\n"
+    b"  if(NOT DEFINED ENABLE_FRONTEND OR ENABLE_FRONTEND)\n"
     b"    set(dependencies_list prebuilt qt6 cef)\n"
     b"  else()\n"
     b"    set(dependencies_list prebuilt)\n"
@@ -27,7 +27,8 @@ QT_ORIGINAL = (
 )
 QT_PREPARED = QT_ORIGINAL.replace(
     b"if(NOT CMAKE_VS_PLATFORM_NAME STREQUAL Win32)",
-    b"if(NOT CMAKE_VS_PLATFORM_NAME STREQUAL Win32 AND ENABLE_UI)",
+    b"if(NOT CMAKE_VS_PLATFORM_NAME STREQUAL Win32 AND "
+    b"(NOT DEFINED ENABLE_FRONTEND OR ENABLE_FRONTEND))",
 )
 
 

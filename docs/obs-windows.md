@@ -54,7 +54,7 @@ directories and retains qualification logs under `evidence`.
 OBS's Windows dependency setup normally downloads and checks Qt even when the
 frontend is disabled. `prepare_windows_source.py` applies a hash-guarded
 build-only change that selects only the pinned non-Qt dependency archive and
-skips the Qt cross-compile check for `ENABLE_UI=OFF`. The pinned source
+skips the Qt cross-compile check for `ENABLE_FRONTEND=OFF`. The pinned source
 validation accepts either LF or Windows CRLF checkout line endings.
 Unknown or partially modified sources are rejected. The existing minimal OBS
 plugin selection remains separately hash-guarded.

@@ -387,6 +387,8 @@ class ObsHarnessTests(unittest.TestCase):
         self.assertIn("-DBUILD_SHARED_LIBS=ON", script)
         self.assertIn("-DROBOTWEAX_SRT_INSTALL_LAYOUT=legacy", script)
         self.assertIn("-DROBOTWEAX_SRT_CRYPTO_BACKEND=bcrypt", script)
+        self.assertIn("-DENABLE_FRONTEND=OFF", script)
+        self.assertNotIn("-DENABLE_UI=OFF", script)
         self.assertIn("-DLibsrt_LIBRARY:FILEPATH=$SrtLibrary", script)
         self.assertIn("Get-FileHash $RobotweaxDll", script)
         self.assertIn("Get-FileHash $ReferenceDll", script)
