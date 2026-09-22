@@ -49,7 +49,9 @@ at the revision above. From the Robotweax repository:
 
 The work directory must not exist. The script never repurposes an existing
 build tree. It creates separate Robotweax, OBS and reference-provider runtime
-directories and retains qualification logs under `evidence`.
+directories and retains qualification logs under `evidence`. The recipe
+installs OBS's runtime and public Development headers/import library into its
+isolated prefix before compiling the qualification peer.
 
 OBS's Windows dependency setup normally downloads and checks Qt even when the
 frontend is disabled. `prepare_windows_source.py` applies a hash-guarded

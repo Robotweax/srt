@@ -405,6 +405,7 @@ class ObsHarnessTests(unittest.TestCase):
         self.assertIn("Get-FileHash $ReferenceDll", script)
         self.assertIn("Where-Object { $_.Name -cne 'srt.dll' }", script)
         self.assertIn('Copy-Item $RobotweaxDll "$RuntimeDirectory/srt.dll"', script)
+        self.assertIn("'--component', 'Development'", script)
         obs_build = script.split("'-S', $ObsSource", 1)[1].split(
             "Invoke-Checked cmake @('--install', $ObsBuild", 1
         )[0]

@@ -67,6 +67,7 @@ Invoke-Checked cmake @(
     '--build', $ObsBuild, '--config', 'Release', '--parallel', '2'
 )
 Invoke-Checked cmake @('--install', $ObsBuild, '--config', 'Release')
+Invoke-Checked cmake @('--install', $ObsBuild, '--config', 'Release', '--component', 'Development')
 
 $DependencyPrefix = (Resolve-Path "$ObsSource/.deps/obs-deps-2026-07-15-x64").Path
 $RobotweaxDll = (Resolve-Path "$SrtPrefix/bin/srt.dll").Path

@@ -4,8 +4,8 @@
 #include <windows.h>
 #include <psapi.h>
 
-#include <obs/obs-service.h>
-#include <obs/obs.h>
+#include <obs-service.h>
+#include <obs.h>
 
 #include <ctype.h>
 #include <math.h>
