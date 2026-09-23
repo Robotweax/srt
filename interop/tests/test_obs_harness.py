@@ -79,6 +79,18 @@ class ObsHarnessTests(unittest.TestCase):
         reference = (ROOT / "tests/obs/macos_reference_peer.c").read_text()
         self.assertIn('printf("SENT %llu\\n"', reference)
 
+    def test_macos_live_source_uses_bounded_ffmpeg_probe(self):
+        peer = (ROOT / "tests/obs/peer.c").read_text()
+        self.assertIn('if (!local)\n        obs_data_set_string(settings, "ffmpeg_options",', peer)
+        self.assertIn('"probesize=131072 analyzeduration=3000000"', peer)
+        smoke = (ROOT / "tests/obs/run_macos_smoke.py").read_text()
+        self.assertIn("if video < 20 or changed < 10 or audio < 20 or audible < 10:", smoke)
+        queued = smoke.index('until(source, sender_log, "QUEUED", 35)')
+        observed = smoke.index("require_media(obs_log)", queued)
+        closed = smoke.index('tell(source, "quit")', observed)
+        self.assertLess(queued, observed)
+        self.assertLess(observed, closed)
+
     def test_macos_cache_rejects_prebuilt_provider(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

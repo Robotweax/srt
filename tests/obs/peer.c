@@ -271,6 +271,9 @@ int main(int argc, char** argv)
     obs_data_set_bool(settings, "is_local_file", local);
     obs_data_set_string(settings, local ? "local_file" : "input", argv[2]);
     obs_data_set_string(settings, "input_format", "mpegts");
+    if (!local)
+        obs_data_set_string(settings, "ffmpeg_options",
+            "probesize=131072 analyzeduration=3000000");
     obs_data_set_bool(settings, "looping", local);
     obs_data_set_bool(settings, "restart_on_activate", false);
     obs_data_set_int(settings, "reconnect_delay_sec", 1);
