@@ -46,6 +46,10 @@ sender remains active until the round-trip capture proves moving video and
 audible audio. Results and diagnostic logs are in the fresh work
 directory's `evidence` folder; CI uploads text diagnostics only.
 
+Use [`-Desktop -Preview`](obs-windows-preview.md) to assemble a separate
+portable ZIP after the same strict qualification. The ZIP is a local
+development output; CI publishes only its text manifest and hash.
+
 This is a reproducible development qualification, **not** a signed installer,
 a release package, or proof for every Windows desktop workflow. It does not
 qualify ARM64, hardware encoders, device/screen capture, adverse networks,
