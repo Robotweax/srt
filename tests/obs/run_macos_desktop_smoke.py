@@ -124,7 +124,12 @@ def prepare_profile(
     scenes = config / "basic/scenes"
     profile.mkdir(parents=True)
     scenes.mkdir(parents=True)
-    (config / "global.ini").write_text("[General]\nEnableAutoUpdates=false\n")
+    # OBS 32.2.2 shows a modal permissions dialog on first launch. The smoke
+    # uses media files and SRT, not protected capture devices, so dismiss that
+    # first-run dialog in this private profile without changing host permissions.
+    (config / "global.ini").write_text(
+        "[General]\nEnableAutoUpdates=false\nMacOSPermissionsDialogLastShown=1\n"
+    )
     (config / "user.ini").write_text(
         "[General]\nFirstRun=true\nConfirmOnExit=false\n"
         "[Basic]\nProfile=Robotweax\nProfileDir=Robotweax\n"
@@ -249,6 +254,19 @@ def visible_window(child: subprocess.Popen, probe: Path, evidence: Path) -> bool
     if result.returncode not in (0, 1):
         raise RuntimeError(f"macOS window inspection failed: {result.stderr}")
     return result.returncode == 0
+
+
+def ready_window(
+    child: subprocess.Popen, probe: Path, evidence: Path, config: Path
+) -> bool:
+    if not visible_window(child, probe, evidence):
+        return False
+    # A first-run modal dialog is also an on-screen window. Require the scene
+    # initialization marker before accepting the actual OBS desktop as ready.
+    return any(
+        "Loaded scenes:" in path.read_text(errors="replace")
+        for path in (config / "logs").glob("*.txt")
+    )
 
 
 def verify_maps(child: subprocess.Popen, args: argparse.Namespace, evidence: Path):
@@ -428,7 +446,9 @@ def qualify(args: argparse.Namespace) -> None:
     with module.process(command, stdout, env, cwd=executable.parent) as child:
         wait_for(
             child,
-            lambda: visible_window(child, probe, args.artifacts / "idle-window.txt"),
+            lambda: ready_window(
+                child, probe, args.artifacts / "idle-window.txt", idle_config
+            ),
             "visible idle OBS window",
         )
         baseline = stop_desktop(child, idle_config, stdout, args.artifacts, "idle")
@@ -450,8 +470,8 @@ def qualify(args: argparse.Namespace) -> None:
         with module.process(command, stdout, env, cwd=executable.parent) as child:
             wait_for(
                 child,
-                lambda: visible_window(
-                    child, probe, args.artifacts / "native-window.txt"
+                lambda: ready_window(
+                    child, probe, args.artifacts / "native-window.txt", config
                 ),
                 "visible streaming OBS window",
             )
@@ -520,8 +540,8 @@ def qualify(args: argparse.Namespace) -> None:
             with module.process(command, stdout, env, cwd=executable.parent) as child:
                 wait_for(
                     child,
-                    lambda: visible_window(
-                        child, probe, args.artifacts / "source-window.txt"
+                    lambda: ready_window(
+                        child, probe, args.artifacts / "source-window.txt", config
                     ),
                     "visible OBS source window",
                 )

@@ -77,6 +77,10 @@ class ObsHarnessTests(unittest.TestCase):
             self.assertEqual(env["CFFIXED_USER_HOME"], env["HOME"])
             self.assertIn("--startstreaming", command)
             self.assertTrue(config.is_relative_to(root))
+            self.assertIn(
+                "MacOSPermissionsDialogLastShown=1\n",
+                (config / "global.ini").read_text(),
+            )
             self.assertEqual(
                 json.loads((config / "basic/scenes/Robotweax.json").read_text())
                 ["sources"][0]["settings"]["local_file"],
@@ -92,6 +96,23 @@ class ObsHarnessTests(unittest.TestCase):
             )["sources"][0]["settings"]
             self.assertFalse(settings["is_local_file"])
             self.assertEqual(settings["input"], "srt://input")
+
+    def test_macos_desktop_window_requires_initialized_scenes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory)
+            logs = config / "logs"
+            logs.mkdir()
+            log = logs / "obs.txt"
+            with mock.patch.object(macos_desktop, "visible_window", return_value=True):
+                self.assertFalse(
+                    macos_desktop.ready_window(None, None, None, config)
+                )
+                log.write_text("Permissions dialog opened\n")
+                self.assertFalse(
+                    macos_desktop.ready_window(None, None, None, config)
+                )
+                log.write_text("Loaded scenes:\n")
+                self.assertTrue(macos_desktop.ready_window(None, None, None, config))
 
     def test_macos_desktop_requires_exact_embedded_provider_and_normal_shutdown(self):
         with tempfile.TemporaryDirectory() as directory:
