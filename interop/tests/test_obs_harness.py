@@ -343,6 +343,42 @@ class ObsHarnessTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "competing SRT"):
                 macos.require_provider(log, srt, ffmpeg, plugin)
 
+    @unittest.skipUnless(
+        shutil.which("cmake") and shutil.which("cc"), "requires CMake and C"
+    )
+    def test_macos_metal_warning_exception_is_desktop_only(self):
+        build = (ROOT / "tests/obs/build_macos.sh").read_text()
+        self.assertIn("-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0", build)
+        self.assertIn('"${desktop_cmake[@]}"', build)
+        qualification = ROOT / "tests/obs/macos_qualification.cmake"
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            source.mkdir()
+            (source / "dummy.c").write_text("int dummy(void) { return 0; }\n")
+            (source / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.20)\n"
+                "project(obs_qualification_probe C)\n"
+                "add_library(obs-ffmpeg STATIC dummy.c)\n"
+                "add_library(libobs-metal STATIC dummy.c)\n"
+                f'include("{qualification}")\n'
+                'file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/result.txt" CONTENT '
+                '"$<TARGET_PROPERTY:libobs-metal,COMPILE_WARNING_AS_ERROR>|'
+                '$<TARGET_PROPERTY:libobs-metal,XCODE_ATTRIBUTE_GCC_TREAT_WARNINGS_AS_ERRORS>|'
+                '$<TARGET_PROPERTY:libobs-metal,XCODE_ATTRIBUTE_SWIFT_TREAT_WARNINGS_AS_ERRORS>")\n'
+            )
+            for enabled, expected in ((False, "||"), (True, "OFF|NO|NO")):
+                output = Path(directory) / ("desktop" if enabled else "modules")
+                subprocess.run(
+                    [
+                        "cmake", "-S", str(source), "-B", str(output),
+                        f"-DROBOTWEAX_OBS_MACOS_DESKTOP={'ON' if enabled else 'OFF'}",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual((output / "result.txt").read_text(), expected)
+
     def test_macos_job_is_required_and_uploads_text_only(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         build = (ROOT / "tests/obs/build_macos.sh").read_text()

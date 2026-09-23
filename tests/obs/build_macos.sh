@@ -8,8 +8,8 @@ if [[ $# -lt 3 || $# -gt 4 ]]; then
 fi
 profile="${4:-modules}"
 case "$profile" in
-    modules) frontend=OFF; selection=headless ;;
-    desktop) frontend=ON; selection=desktop ;;
+    modules) frontend=OFF; selection=headless; desktop_cmake=() ;;
+    desktop) frontend=ON; selection=desktop; desktop_cmake=(-DROBOTWEAX_OBS_MACOS_DESKTOP=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0) ;;
     *) echo "unknown OBS profile: $profile" >&2; exit 2 ;;
 esac
 repository="$(cd "$(dirname "$0")/../.." && pwd -P)"
@@ -97,6 +97,7 @@ cmake -S "$obs_source" -B "$work/obs-build" -G Xcode \
     -DLibsrt_LIBRARY="$robotweax_dylib" \
     -DLibsrt_INCLUDE_DIR="$work/srt/include" \
     -DCMAKE_PROJECT_obs-studio_INCLUDE="$repository/tests/obs/macos_qualification.cmake" \
+    "${desktop_cmake[@]}" \
     -DENABLE_FRONTEND="$frontend" -DENABLE_BROWSER=OFF -DENABLE_SCRIPTING=OFF \
     -DENABLE_PLUGINS=ON -DENABLE_VLC=OFF -DENABLE_AJA=OFF \
     -DENABLE_NEW_MPEGTS_OUTPUT=ON \
