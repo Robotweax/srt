@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -35,9 +36,264 @@ windows_desktop = load("obs_windows_desktop", "run_windows_desktop_smoke.py")
 windows_preview = load("obs_windows_preview", "package_windows_preview.py")
 macos_cache = load("obs_macos_cache", "check_macos_cache.py")
 macos = load("obs_macos_smoke", "run_macos_smoke.py")
+macos_desktop = load("obs_macos_desktop", "run_macos_desktop_smoke.py")
+
+
+def signed_macho(payload: bytes, signature: bytes = b"signature") -> bytes:
+    """A minimal Mach-O fixture with independently variable signing data."""
+    header = struct.pack("<IiiIIIII", 0xFEEDFACF, 0x100000C, 0, 6, 2, 88, 0, 0)
+    segment = struct.pack(
+        "<II16sQQQQiiII", 0x19, 72, b"__LINKEDIT", 0,
+        len(payload) + len(signature), 120, len(payload) + len(signature),
+        0, 0, 0, 0,
+    )
+    code_signature = struct.pack("<IIII", 0x1D, 16, 120 + len(payload), len(signature))
+    return header + segment + code_signature + payload + signature
+
+
+def universal_macho(arm64: bytes, *, fat64: bool = False) -> bytes:
+    x86 = bytearray(signed_macho(b"unrelated x86 code"))
+    struct.pack_into("<I", x86, 4, 0x01000007)
+    entry_size = 32 if fat64 else 20
+    first = 8 + 2 * entry_size
+    second = first + len(x86)
+    if fat64:
+        entries = struct.pack(">IIQQII", 0x01000007, 0, first, len(x86), 0, 0)
+        entries += struct.pack(">IIQQII", 0x0100000C, 0, second, len(arm64), 0, 0)
+    else:
+        entries = struct.pack(">IIIII", 0x01000007, 0, first, len(x86), 0)
+        entries += struct.pack(">IIIII", 0x0100000C, 0, second, len(arm64), 0)
+    magic = 0xCAFEBABF if fat64 else 0xCAFEBABE
+    return struct.pack(">II", magic, 2) + entries + x86 + arm64
 
 
 class ObsHarnessTests(unittest.TestCase):
+    def test_macos_signed_macho_hash_ignores_only_signing_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "library.dylib"
+            path.write_bytes(signed_macho(b"Robotweax", b"first"))
+            expected = macos_desktop.macho_payload_sha256(path)
+            path.write_bytes(signed_macho(b"Robotweax", b"different signature"))
+            self.assertEqual(macos_desktop.macho_payload_sha256(path), expected)
+            path.write_bytes(signed_macho(b"other code", b"first"))
+            self.assertNotEqual(macos_desktop.macho_payload_sha256(path), expected)
+            path.write_bytes(b"not a Mach-O")
+            with self.assertRaisesRegex(RuntimeError, "Mach-O"):
+                macos_desktop.macho_payload_sha256(path)
+
+    def test_macos_universal_macho_hashes_only_arm64_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "universal.dylib"
+            expected = signed_macho(b"pinned arm64 code", b"original signature")
+            path.write_bytes(expected)
+            original_hash = macos_desktop.macho_payload_sha256(path)
+            for fat64 in (False, True):
+                path.write_bytes(
+                    universal_macho(
+                        signed_macho(b"pinned arm64 code", b"resigned by Xcode"),
+                        fat64=fat64,
+                    )
+                )
+                self.assertEqual(
+                    macos_desktop.macho_payload_sha256(path), original_hash
+                )
+                path.write_bytes(
+                    universal_macho(signed_macho(b"different arm64 code"), fat64=fat64)
+                )
+                self.assertNotEqual(
+                    macos_desktop.macho_payload_sha256(path), original_hash
+                )
+            path.write_bytes(struct.pack(">II", 0xCAFEBABE, 2))
+            with self.assertRaisesRegex(RuntimeError, "architecture table"):
+                macos_desktop.macho_payload_sha256(path)
+
+    def test_macos_desktop_uses_private_cocoa_profile_and_rejects_reuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "desktop"
+            fixture = Path(directory) / "fixture.ts"
+            config = macos_desktop.prepare_profile(root, fixture, "srt://output")
+            command, env = macos_desktop.desktop_command(
+                Path(directory) / "OBS", config, stream=True
+            )
+            self.assertEqual(env["HOME"], str(root / "home"))
+            self.assertEqual(env["CFFIXED_USER_HOME"], env["HOME"])
+            self.assertIn("--startstreaming", command)
+            self.assertTrue(config.is_relative_to(root))
+            self.assertIn(
+                "MacOSPermissionsDialogLastShown=1\n",
+                (config / "global.ini").read_text(),
+            )
+            self.assertEqual(
+                json.loads((config / "basic/scenes/Robotweax.json").read_text())
+                ["sources"][0]["settings"]["local_file"],
+                str(fixture),
+            )
+            with self.assertRaises(FileExistsError):
+                macos_desktop.prepare_profile(root, fixture, "srt://other")
+            network = macos_desktop.prepare_profile(
+                Path(directory) / "source", fixture, "srt://output", source="srt://input"
+            )
+            settings = json.loads(
+                (network / "basic/scenes/Robotweax.json").read_text()
+            )["sources"][0]["settings"]
+            self.assertFalse(settings["is_local_file"])
+            self.assertEqual(settings["input"], "srt://input")
+            self.assertEqual(
+                settings["ffmpeg_options"],
+                "probesize=131072 analyzeduration=3000000",
+            )
+
+    def test_macos_desktop_decodes_frames_after_initial_black_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = root / "output.ts"
+            capture.write_bytes(b"\x47" * (2 * 1024 * 1024) + b"late-frame" * 188)
+            endpoint = SimpleNamespace(poll=lambda: None)
+
+            def check_snapshot(_ffmpeg, snapshot, _artifacts, _label):
+                self.assertIn(b"late-frame", snapshot.read_bytes())
+
+            with mock.patch.object(
+                macos_desktop.module, "decoded", side_effect=check_snapshot
+            ) as decoded:
+                macos_desktop.wait_decoded(
+                    endpoint, endpoint, root / "ffmpeg", capture, root, "source"
+                )
+            decoded.assert_called_once()
+
+    def test_macos_desktop_window_requires_initialized_scenes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory)
+            logs = config / "logs"
+            logs.mkdir()
+            log = logs / "obs.txt"
+            with mock.patch.object(macos_desktop, "visible_window", return_value=True):
+                self.assertFalse(
+                    macos_desktop.ready_window(None, None, None, config)
+                )
+                log.write_text("Permissions dialog opened\n")
+                self.assertFalse(
+                    macos_desktop.ready_window(None, None, None, config)
+                )
+                log.write_text("Loaded scenes:\n")
+                self.assertTrue(macos_desktop.ready_window(None, None, None, config))
+
+    def test_macos_desktop_requires_exact_embedded_provider_and_normal_shutdown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / "build/frontend/Release/OBS.app"
+            for relative in (
+                "Contents/MacOS/OBS",
+                "Contents/PlugIns/obs-ffmpeg.plugin/Contents/MacOS/obs-ffmpeg",
+                "Contents/PlugIns/rtmp-services.plugin/Contents/MacOS/rtmp-services",
+            ):
+                target = app / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"OBS")
+            srt = root / "srt/lib/librobotweax-srt.dylib"
+            ffmpeg = root / "ffmpeg/lib/libavformat.dylib"
+            crypto = root / "deps/lib/libmbedcrypto.dylib"
+            for target, content in (
+                (srt, b"Robotweax"),
+                (ffmpeg, b"FFmpeg"),
+                (crypto, b"pinned crypto"),
+            ):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(signed_macho(content, b"original"))
+                embedded = app / "Contents/Frameworks" / target.name
+                embedded.parent.mkdir(parents=True, exist_ok=True)
+                embedded.write_bytes(signed_macho(content, b"resigned by Xcode"))
+            args = SimpleNamespace(obs_build=root / "build", srt_prefix=root / "srt",
+                                   ffmpeg_prefix=root / "ffmpeg", reference_prefix=root / "deps")
+            self.assertEqual(
+                macos_desktop.bundle_contract(args), app / "Contents/MacOS/OBS"
+            )
+            (app / "Contents/Frameworks/libmbedcrypto.dylib").write_bytes(
+                signed_macho(b"wrong crypto")
+            )
+            with self.assertRaisesRegex(RuntimeError, "Librist crypto"):
+                macos_desktop.bundle_contract(args)
+            (app / "Contents/Frameworks/libmbedcrypto.dylib").write_bytes(
+                signed_macho(b"pinned crypto", b"resigned by Xcode")
+            )
+            (app / "Contents/Frameworks/librobotweax-srt.dylib").write_bytes(
+                signed_macho(b"wrong")
+            )
+            with self.assertRaisesRegex(RuntimeError, "non-Robotweax"):
+                macos_desktop.bundle_contract(args)
+            (app / "Contents/Frameworks/librobotweax-srt.dylib").write_bytes(
+                signed_macho(b"Robotweax", b"resigned by Xcode")
+            )
+            (app / "Contents/Frameworks/libsrt.dylib").write_bytes(b"competing")
+            with self.assertRaisesRegex(RuntimeError, "competing"):
+                macos_desktop.bundle_contract(args)
+
+        log = "Loaded scenes:\n==== Shutting down\nFreeing OBS context data\n"
+        self.assertEqual(
+            macos_desktop.check_shutdown(0, log, "Number of memory leaks: 1\n"), 1
+        )
+        with self.assertRaisesRegex(RuntimeError, "allocation regression"):
+            macos_desktop.check_shutdown(0, log, "Number of memory leaks: 2\n", 1)
+        with self.assertRaisesRegex(RuntimeError, "normally"):
+            macos_desktop.check_shutdown(1, log, "Number of memory leaks: 1\n")
+        with self.assertRaisesRegex(RuntimeError, "streaming shutdown"):
+            macos_desktop.check_shutdown(
+                0, log, "Number of memory leaks: 1\n", 1, streamed=True
+            )
+
+    def test_macos_desktop_runtime_mapping_rejects_other_srt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            srt = root / "srt/lib/librobotweax-srt.dylib"
+            avformat = root / "ffmpeg/lib/libavformat.dylib"
+            plugin = root / "obs-ffmpeg.plugin/Contents/MacOS/obs-ffmpeg"
+            other = root / "other/libsrt.dylib"
+            for path in (srt, avformat, plugin, other):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(signed_macho(path.name.encode()))
+            args = SimpleNamespace(srt_prefix=root / "srt", ffmpeg_prefix=root / "ffmpeg")
+            lines = f"__TEXT  {srt}\n__TEXT  {avformat}\n__TEXT  {plugin}\n"
+            result = SimpleNamespace(returncode=0, stdout=lines, stderr="")
+            evidence = root / "mappings.txt"
+            with mock.patch.object(macos_desktop.subprocess, "run", return_value=result):
+                macos_desktop.verify_maps(SimpleNamespace(pid=1234), args, evidence)
+                self.assertIn(str(srt), evidence.read_text())
+                result.stdout += f"__TEXT  {other}\n"
+                with self.assertRaisesRegex(RuntimeError, "competing SRT"):
+                    macos_desktop.verify_maps(SimpleNamespace(pid=1234), args, evidence)
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("cc"), "requires macOS compiler")
+    def test_macos_window_probe_compiles_and_rejects_invalid_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "window-probe"
+            subprocess.run(
+                ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                 str(ROOT / "tests/obs/macos_window_probe.c"),
+                 "-framework", "CoreGraphics", "-framework", "CoreFoundation",
+                 "-o", str(binary)],
+                check=True, capture_output=True,
+            )
+            result = subprocess.run(
+                [str(binary), "0"], capture_output=True, text=True
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_macos_desktop_ci_keeps_binary_out_of_uploaded_artifacts(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = workflow.split("  obs_macos_desktop:\n", 1)[1].split(
+            "  vlc_integration:\n", 1
+        )[0]
+        self.assertIn("tests/obs/build_macos.sh", job)
+        self.assertIn(" desktop\n", job)
+        self.assertIn("runs-on: macos-26", job)
+        paths = job.split("          path: |\n", 1)[1].split(
+            "          retention-days:", 1
+        )[0]
+        self.assertNotIn(".app", paths)
+        self.assertNotIn(".dylib", paths)
+        self.assertNotIn(".plugin", paths)
+        self.assertIn("      - obs_macos_desktop\n", workflow)
+
     @unittest.skipUnless(shutil.which("cc"), "requires a C compiler")
     def test_reference_pacing_handles_late_wakeups_without_unbounded_bursts(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -214,6 +470,96 @@ class ObsHarnessTests(unittest.TestCase):
             log.write_text(log.read_text() + f"MAP {root}/deps/libsrt.dylib\n")
             with self.assertRaisesRegex(RuntimeError, "competing SRT"):
                 macos.require_provider(log, srt, ffmpeg, plugin)
+
+    @unittest.skipUnless(
+        shutil.which("cmake") and shutil.which("cc"), "requires CMake and C"
+    )
+    def test_macos_metal_warning_exception_is_desktop_only(self):
+        build = (ROOT / "tests/obs/build_macos.sh").read_text()
+        self.assertIn("-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0", build)
+        self.assertIn('"${desktop_cmake[@]}"', build)
+        case_block = build.split('case "$profile" in\n', 1)[1].split("\nesac", 1)[0]
+        for profile, expected in (("modules", "OFF"), ("desktop", "ON")):
+            result = subprocess.run(
+                ["/bin/bash", "-c", "set -u\nprofile=" + profile + "\ncase $profile in\n"
+                 + case_block + "\nesac\nprintf '%s' \"${desktop_cmake[@]}\""],
+                check=True, capture_output=True, text=True,
+            )
+            self.assertIn(f"ROBOTWEAX_OBS_MACOS_DESKTOP={expected}", result.stdout)
+        qualification = ROOT / "tests/obs/macos_qualification.cmake"
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            source.mkdir()
+            (source / "dummy.c").write_text("int dummy(void) { return 0; }\n")
+            (source / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.20)\n"
+                "project(obs_qualification_probe C)\n"
+                "add_library(obs-ffmpeg STATIC dummy.c)\n"
+                "add_library(libobs-metal STATIC dummy.c)\n"
+                "add_executable(obs-studio dummy.c)\n"
+                f'include("{qualification}")\n'
+                'file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/result.txt" CONTENT '
+                '"$<TARGET_PROPERTY:libobs-metal,COMPILE_WARNING_AS_ERROR>|'
+                '$<TARGET_PROPERTY:libobs-metal,XCODE_ATTRIBUTE_GCC_TREAT_WARNINGS_AS_ERRORS>|'
+                '$<TARGET_PROPERTY:libobs-metal,XCODE_ATTRIBUTE_SWIFT_TREAT_WARNINGS_AS_ERRORS>")\n'
+            )
+            deps = Path(directory) / "deps/lib"
+            deps.mkdir(parents=True)
+            (deps / "libmbedcrypto.dylib").write_bytes(b"pinned library fixture")
+            for enabled, expected in ((False, "||"), (True, "OFF|NO|NO")):
+                output = Path(directory) / ("desktop" if enabled else "modules")
+                subprocess.run(
+                    [
+                        "cmake", "-S", str(source), "-B", str(output),
+                        f"-DROBOTWEAX_OBS_MACOS_DESKTOP={'ON' if enabled else 'OFF'}",
+                        f"-DROBOTWEAX_OBS_MACOS_DEPS_PREFIX={deps.parent}",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual((output / "result.txt").read_text(), expected)
+
+    @unittest.skipUnless(
+        shutil.which("cmake") and shutil.which("cc"), "requires CMake and C"
+    )
+    def test_macos_desktop_embeds_pinned_librist_crypto_dependency(self):
+        build = (ROOT / "tests/obs/build_macos.sh").read_text()
+        self.assertIn('-DROBOTWEAX_OBS_MACOS_DEPS_PREFIX="$work/deps/obs"', build)
+        qualification = ROOT / "tests/obs/macos_qualification.cmake"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "dummy.c").write_text("int main(void) { return 0; }\n")
+            (source / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.20)\n"
+                "project(obs_qualification_probe C)\n"
+                "add_library(obs-ffmpeg STATIC dummy.c)\n"
+                "add_library(libobs-metal STATIC dummy.c)\n"
+                "add_executable(obs-studio dummy.c)\n"
+                f'include("{qualification}")\n'
+                'file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/embedded.txt" CONTENT '
+                '"$<TARGET_PROPERTY:obs-studio,XCODE_EMBED_FRAMEWORKS>")\n'
+            )
+            deps = root / "deps/lib"
+            deps.mkdir(parents=True)
+            crypto = deps / "libmbedcrypto.dylib"
+            crypto.write_bytes(b"pinned library fixture")
+            command = [
+                "cmake", "-S", str(source), "-B", str(root / "desktop"),
+                "-DROBOTWEAX_OBS_MACOS_DESKTOP=ON",
+                f"-DROBOTWEAX_OBS_MACOS_DEPS_PREFIX={deps.parent}",
+            ]
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            self.assertEqual(
+                (root / "desktop/embedded.txt").read_text(), str(crypto)
+            )
+            crypto.unlink()
+            command[command.index(str(root / "desktop"))] = str(root / "missing")
+            missing = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("missing pinned OBS libmbedcrypto.dylib", missing.stderr)
 
     def test_macos_job_is_required_and_uploads_text_only(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

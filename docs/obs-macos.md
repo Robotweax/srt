@@ -8,6 +8,9 @@ OBS process. A separate process linked to the pinned Haivision SRT library
 acts as the independent reference peer. This is **not** a signed OBS app,
 installer, portable ZIP, or a release artifact.
 
+For the separate Qt application and automatic reconnect qualification, see
+[OBS macOS desktop](obs-macos-desktop.md).
+
 ## Reproduce the qualification
 
 Use macOS arm64 with full Xcode and macOS SDK 26.5 or newer, CMake 3.28+, Ninja,

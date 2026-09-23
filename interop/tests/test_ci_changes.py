@@ -1165,8 +1165,8 @@ class CiChangeClassifierTests(unittest.TestCase):
             INTEROP_DIRECTORY.parent / ".github/workflows/ci.yml"
         ).read_text(encoding="utf-8")
 
-        # The macOS OBS job adds one text-only diagnostic artifact.
-        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 9)
+        # Both macOS OBS jobs upload text diagnostics only.
+        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 10)
         timing_evidence = workflow.split(
             "      - name: Preserve AES-GCM timing failure diagnostics\n", 1
         )[1].split("      - name:", 1)[0]

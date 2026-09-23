@@ -32,6 +32,8 @@ developers and transport integrators using the installed public API.
   encrypted GUI output and automatic reconnect qualification.
 - [OBS macOS integration](obs-macos.md) — Apple Silicon source build and
   encrypted native-output/FFmpeg-input qualification without packaging.
+- [OBS macOS desktop](obs-macos-desktop.md) — isolated Qt application build,
+  encrypted GUI streaming, reconnect and duplex media qualification.
 - [OBS Windows portable preview](obs-windows-preview.md) — isolated ZIP assembly,
   integrity checks, physical-Windows acceptance and distribution boundary.
 - [Testing](testing.md) — local verification and focused test selection.
