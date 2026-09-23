@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: MIT
+#ifndef __APPLE__
 #define _GNU_SOURCE
+#endif
 #include <dlfcn.h>
+#ifdef __APPLE__
+#include "obs.h"
+#include "obs-service.h"
+#include <mach-o/dyld.h>
+#else
 #include <obs/obs.h>
 #include <obs/obs-service.h>
+#endif
 #include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -110,6 +118,15 @@ static void report(obs_output_t* output)
 
 static void maps(void)
 {
+#ifdef __APPLE__
+    for (uint32_t i = 0; i < _dyld_image_count(); ++i) {
+        const char* path = _dyld_get_image_name(i);
+        if (path
+            && (strstr(path, "robotweax-srt") || strstr(path, "libsrt")
+                || strstr(path, "libavformat") || strstr(path, "obs-ffmpeg")))
+            printf("MAP %s\n", path);
+    }
+#else
     FILE* file = fopen("/proc/self/maps", "r");
     if (!file)
         exit(2);
@@ -120,6 +137,7 @@ static void maps(void)
             || strstr(line, "/obs-ffmpeg.so"))
             printf("MAP %s", line);
     fclose(file);
+#endif
     fflush(stdout);
 }
 
@@ -139,8 +157,19 @@ static void binding(const char* path, const char* label)
 static void module(const char* prefix, const char* name)
 {
     char path[4096], data[4096];
+#ifdef __APPLE__
+    (void)prefix;
+    const char* bundle = strcmp(name, "obs-ffmpeg") == 0
+        ? getenv("ROBOTWEAX_OBS_FFMPEG_PLUGIN")
+        : getenv("ROBOTWEAX_OBS_X264_PLUGIN");
+    if (!bundle)
+        exit(2);
+    snprintf(path, sizeof(path), "%s/Contents/MacOS/%s", bundle, name);
+    snprintf(data, sizeof(data), "%s/Contents/Resources", bundle);
+#else
     snprintf(path, sizeof(path), "%s/lib/obs-plugins/%s.so", prefix, name);
     snprintf(data, sizeof(data), "%s/share/obs/obs-plugins/%s", prefix, name);
+#endif
     obs_module_t* loaded = NULL;
     if (obs_open_module(&loaded, path, data) != MODULE_SUCCESS
         || !obs_init_module(loaded)) {
@@ -174,7 +203,14 @@ int main(int argc, char** argv)
     if (!obs_startup("en-US", NULL, NULL))
         return 2;
     char graphics[4096];
+#ifdef __APPLE__
+    const char* graphics_module = getenv("ROBOTWEAX_OBS_GRAPHICS");
+    if (!graphics_module)
+        return 2;
+    snprintf(graphics, sizeof(graphics), "%s", graphics_module);
+#else
     snprintf(graphics, sizeof(graphics), "%s/lib/libobs-opengl.so", argv[1]);
+#endif
     struct obs_video_info video = {.graphics_module = graphics,
         .fps_num = 25,
         .fps_den = 1,
@@ -195,8 +231,13 @@ int main(int argc, char** argv)
     module(argv[1], "obs-x264");
     obs_post_load_modules();
     char plugin[4096];
+#ifdef __APPLE__
+    snprintf(plugin, sizeof(plugin), "%s/Contents/MacOS/obs-ffmpeg",
+        getenv("ROBOTWEAX_OBS_FFMPEG_PLUGIN"));
+#else
     snprintf(
         plugin, sizeof(plugin), "%s/lib/obs-plugins/obs-ffmpeg.so", argv[1]);
+#endif
     binding(plugin, "native");
     const char* avformat = getenv("ROBOTWEAX_OBS_AVFORMAT");
     if (!avformat)

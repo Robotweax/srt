@@ -13,13 +13,15 @@ software rendering, IPv4 loopback, Live/Message MPEG-TS, H.264 video and AAC
 audio, cleartext and AES-CTR with 128-bit keys. It builds real libobs, media
 source, native SRT output, and software encoders; the test driver uses the
 public libobs API. It is not an OBS Studio GUI installer, a binary drop-in
-replacement for an existing distribution, or Windows/macOS qualification.
+replacement for an existing distribution, or qualification on other platforms.
 For the separate Qt frontend build and user-facing acceptance procedure, see
 [OBS Linux desktop qualification](obs-desktop.md).
 For the narrower Windows x64 module and media-path profile, see
 [OBS Windows integration](obs-windows.md).
 For the Windows Qt frontend, see
 [OBS Windows desktop qualification](obs-windows-desktop.md).
+For the Apple Silicon module and media-path profile, see
+[OBS macOS integration](obs-macos.md).
 The profile does not qualify RIST, hardware encoders, Rendezvous, IPv6,
 AES-GCM, adverse-network performance, or quantitative A/V synchronization.
 
