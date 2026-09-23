@@ -86,6 +86,24 @@ def tell(child: subprocess.Popen, message: str) -> None:
     child.stdin.flush()
 
 
+def sample_process(child: subprocess.Popen, destination: Path) -> None:
+    """Keep a text stack sample if a macOS OBS source stalls during connection."""
+    try:
+        result = subprocess.run(
+            ["sample", str(child.pid), "2", "-file", str(destination)],
+            capture_output=True,
+            text=True,
+            timeout=12,
+            check=False,
+        )
+        if result.returncode or not destination.is_file():
+            destination.write_text(
+                f"sample exit={result.returncode}\n{result.stdout}\n{result.stderr}"
+            )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        destination.write_text(f"sample unavailable: {error}\n")
+
+
 def require_media(log: Path) -> None:
     matches = MEDIA.findall(log.read_text(errors="replace"))
     if not matches:
@@ -337,7 +355,11 @@ def qualify(args: argparse.Namespace) -> None:
         with process(
             [str(peer), str(build), url, "-", "network"], obs_log, env
         ) as child:
-            until(source, sender_log, "QUEUED", 35)
+            try:
+                until(source, sender_log, "QUEUED", 35)
+            except RuntimeError:
+                sample_process(child, artifacts / "source-obs-stacks.txt")
+                raise
             deadline = time.monotonic() + 20
             while True:
                 try:

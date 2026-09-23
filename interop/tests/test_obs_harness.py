@@ -59,6 +59,19 @@ class ObsHarnessTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "missing OBS runtime binary"):
                 macos.runtime_paths(build)
 
+    def test_macos_stalled_source_collects_text_stack_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "source-obs-stacks.txt"
+            with mock.patch.object(macos.subprocess, "run") as run:
+                run.return_value.returncode = 0
+                macos.sample_process(SimpleNamespace(pid=1234), destination)
+            self.assertEqual(
+                run.call_args.args[0],
+                ["sample", "1234", "2", "-file", str(destination)],
+            )
+            self.assertTrue(destination.is_file())
+            self.assertIn("sample exit=0", destination.read_text())
+
     def test_macos_cache_rejects_prebuilt_provider(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
