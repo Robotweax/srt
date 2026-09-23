@@ -138,6 +138,28 @@ class ObsHarnessTests(unittest.TestCase):
             )["sources"][0]["settings"]
             self.assertFalse(settings["is_local_file"])
             self.assertEqual(settings["input"], "srt://input")
+            self.assertEqual(
+                settings["ffmpeg_options"],
+                "probesize=131072 analyzeduration=3000000",
+            )
+
+    def test_macos_desktop_decodes_frames_after_initial_black_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = root / "output.ts"
+            capture.write_bytes(b"\x47" * (2 * 1024 * 1024) + b"late-frame" * 188)
+            endpoint = SimpleNamespace(poll=lambda: None)
+
+            def check_snapshot(_ffmpeg, snapshot, _artifacts, _label):
+                self.assertIn(b"late-frame", snapshot.read_bytes())
+
+            with mock.patch.object(
+                macos_desktop.module, "decoded", side_effect=check_snapshot
+            ) as decoded:
+                macos_desktop.wait_decoded(
+                    endpoint, endpoint, root / "ffmpeg", capture, root, "source"
+                )
+            decoded.assert_called_once()
 
     def test_macos_desktop_window_requires_initialized_scenes(self):
         with tempfile.TemporaryDirectory() as directory:

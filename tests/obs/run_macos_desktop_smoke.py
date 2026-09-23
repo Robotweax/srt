@@ -196,6 +196,7 @@ def prepare_profile(
             "is_local_file": False,
             "input": source,
             "input_format": "mpegts",
+            "ffmpeg_options": "probesize=131072 analyzeduration=3000000",
             "reconnect_delay_sec": 1,
             "buffering_mb": 0,
         }
@@ -413,7 +414,13 @@ def wait_decoded(
             raise RuntimeError(f"{label}: endpoint exited before decoded media")
         if capture.is_file() and capture.stat().st_size >= 500000:
             with capture.open("rb") as stream:
-                snapshot.write_bytes(stream.read(2 * 1024 * 1024))
+                size = capture.stat().st_size
+                # The network source can begin after the output starts. Keep
+                # the most recent bounded TS window instead of retrying the
+                # same initial black frames on every probe.
+                start = max(0, size - 8 * 1024 * 1024) // 188 * 188
+                stream.seek(start)
+                snapshot.write_bytes(stream.read((size - start) // 188 * 188))
             try:
                 module.decoded(ffmpeg, snapshot, artifacts, label)
             except (RuntimeError, subprocess.CalledProcessError) as failure:
