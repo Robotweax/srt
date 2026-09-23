@@ -16,7 +16,7 @@ import time
 from urllib.parse import urlencode
 
 
-FULL_MARKER = "Full validation selected (v1)"
+FULL_MARKER = "Full validation selected (v2)"
 MAX_AGE = timedelta(hours=24)
 
 

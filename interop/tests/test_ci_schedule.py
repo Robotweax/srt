@@ -158,12 +158,21 @@ class ScheduledWorkflowTests(unittest.TestCase):
     def test_evidence_marker_is_bound_to_full_selection_and_strict_gate(self):
         gate = job_blocks(self.workflow)["ci_gate"]
         self.assertIn(f"- name: {ci_schedule.FULL_MARKER}\n"
-                      "        if: needs.changes.outputs.full == 'true'\n"
+                      "        if: needs.changes.outputs.full == 'true' && needs.changes.outputs.obs_platforms == 'true'\n"
                       "        run: ':'", gate)
         self.assertIn("- name: Require every selected job to pass", gate)
         check = self.workflow.split("      - name: Check recent full CI evidence\n")[1]
         self.assertIn("if: github.event_name == 'schedule'", check.split(
             "      - name:")[0])
+
+    def test_obs_platform_jobs_and_gate_share_full_only_selection(self):
+        jobs = job_blocks(self.workflow)
+        for name in ("obs_windows_integration", "obs_macos_integration",
+                     "obs_windows_desktop", "obs_macos_desktop"):
+            self.assertIn("if: needs.changes.outputs.obs_platforms == 'true'", jobs[name])
+            self.assertIn("EXPECT_" + name + ": ${{ needs.changes.outputs.obs_platforms == 'true' }}", jobs["ci_gate"])
+        self.assertIn("if: needs.changes.outputs.obs == 'true'", jobs["obs_integration"])
+        self.assertIn('    tags: ["v*"]', self.workflow.split("permissions:", 1)[0])
 
     def test_scheduler_logic_changes_select_full_ci(self):
         for path in ("interop/ci_schedule.py", "interop/tests/test_ci_schedule.py"):
@@ -173,18 +182,19 @@ class ScheduledWorkflowTests(unittest.TestCase):
         step = self.workflow.split("      - name: Classify changed paths\n", 1)[1]
         script = textwrap.dedent(step.split("        run: |\n", 1)[1].split(
             "\n  dco:", 1)[0])
-        for event, evidence, full in (("schedule", "19", False),
-                                      ("schedule", "", True),
-                                      ("schedule", "invalid", True),
-                                      ("push", "19", True),
-                                      ("pull_request", "19", True),
-                                      ("workflow_dispatch", "19", True)):
+        for event, evidence, full, ref_type in (("schedule", "19", False, "branch"),
+                                      ("schedule", "", True, "branch"),
+                                      ("schedule", "invalid", True, "branch"),
+                                      ("push", "19", True, "branch"),
+                                      ("push", "", True, "tag"),
+                                      ("pull_request", "19", True, "branch"),
+                                      ("workflow_dispatch", "19", True, "branch")):
             with self.subTest(event=event, evidence=evidence), \
                     tempfile.TemporaryDirectory() as directory:
                 out = Path(directory) / "output"
                 summary = Path(directory) / "summary"
                 result = subprocess.run(["bash", "-c", script], cwd=ROOT,
-                    env={**os.environ, "EVENT_NAME": event, "EVIDENCE_RUN_ID": evidence,
+                    env={**os.environ, "EVENT_NAME": event, "EVIDENCE_RUN_ID": evidence, "REF_TYPE": ref_type,
                          "RUNNER_TEMP": directory, "GITHUB_OUTPUT": str(out),
                          "GITHUB_STEP_SUMMARY": str(summary),
                          "GITHUB_SERVER_URL": "https://github.com",
@@ -193,6 +203,7 @@ class ScheduledWorkflowTests(unittest.TestCase):
                     capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 flags = dict(line.split("=", 1) for line in out.read_text().splitlines())
+                self.assertEqual(flags["obs_platforms"], str(full and (event in {"schedule", "workflow_dispatch"} or ref_type == "tag")).lower())
                 self.assertEqual(flags["full"], str(full).lower())
                 self.assertEqual(flags["interop"], str(full).lower())
                 if not full:

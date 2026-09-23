@@ -180,6 +180,25 @@ decision loop. The Python harness tests verify both coverage and the actual
 gate shell's handling of unsuccessful results. This aggregate does not itself
 configure GitHub branch protection or required status checks.
 
+### CI selection
+
+Normal pull requests and main pushes use changed-path selection. Documentation
+changes run documentation checks; protocol, crypto, packaging and test changes
+select their corresponding build, regression and interoperability checks.
+Unknown inputs and build/workflow changes conservatively select broad coverage.
+Linux OBS remains part of the selected integration coverage.
+
+The four OBS Windows/macOS module and desktop jobs run only in an explicit full
+run: manually dispatch the `CI` workflow, push a `v*` release tag, or use the
+weekly full-validation schedule. They do not run on ordinary PR/main changes,
+including changes to OBS recipes or workflow/build files. Request manual full
+CI on the exact candidate branch before merging platform integration changes.
+
+The required gate still rejects any failed or unexpectedly skipped selected job.
+Only a successful full run that also selected all four platform jobs can provide
+the same-commit, 24-hour evidence used to omit a duplicate scheduled run. Windows
+SDK installer/signing qualification remains a separate release workflow.
+
 ## Documentation changes
 
 Public documentation is for users, integrators, and external contributors. It

@@ -80,7 +80,7 @@ operating-system matrix:
 | Public demos and their test harnesses only | Build the three demos; run example tests with the default library and with AES-GCM enabled on Linux, macOS, and Windows. Do not build the unrelated native suite or shared AEAD package. |
 | Explicitly listed package templates, export/ABI manifests, or package-consumer fixtures | Static and shared package/ABI checks with AES-GCM off and on across all three platforms, plus FFmpeg integration and Python/documentation checks. No unrelated protocol interop matrix. |
 | Production code or native tests | Retain the existing native Release, sanitizer, and domain-specific interoperability selection. Production changes retain AEAD platform/ABI coverage. |
-| Top-level CMake, workflows, classifier, or unknown build/package inputs | Conservative full validation. |
+| Top-level CMake, workflows, classifier, or unknown build/package inputs | Conservative broad validation, excluding the four full-run-only OBS platform jobs. |
 
 `core_tests` selects the native suite, while `examples` and `package` select
 public-consumer checks. Mixed commits take the union: a demo change never
@@ -91,20 +91,31 @@ Consumer-only CTest calls reject empty selections, and the required gate rejects
 unexpectedly skipped jobs that the classifier selected. Explicit manual runs
 always retain the complete validation matrix.
 
+### Explicit full ecosystem validation
+
+OBS Windows integration, OBS macOS integration, OBS Windows desktop and OBS
+macOS desktop use the separate `obs_platforms` selection. Ordinary PR and main
+pushes never select these four jobs, including broad build-system fallbacks.
+Linux OBS remains selected by relevant changes. To qualify platform integration
+changes before merging, dispatch the `CI` workflow manually on that branch.
+Manual runs, `v*` release-tag pushes and the weekly full run select all four jobs.
+Release tags now trigger the core CI matrix as well as the separate SDK workflow.
+
 ### Avoiding duplicate scheduled full runs
 
 The weekly run checks for a successful full `CI` run on `main` for the exact
 same commit, created within the preceding 24 hours. Only push, manual, or
 scheduled runs from this repository and workflow qualify. The successful
-`Required CI gate` must contain the successful `Full validation selected (v1)`
-step; a green selective run is not enough. API errors, missing evidence,
+`Required CI gate` must contain the successful `Full validation selected (v2)`
+step, which requires the OBS platform jobs to be selected; a green selective
+or broad ordinary PR/main run is not enough. API errors, missing evidence,
 unfinished/failed runs, or expired evidence retain the complete matrix.
 
 When evidence qualifies, only classification, the DCO no-op, and the required
 gate run. The classification summary links to the original full run. This
 scheduled no-op cannot renew the 24-hour window: its full-selection marker is
 skipped. Weekly revalidation therefore remains active even on unchanged code.
-PR and push selection, test counts, and platform frequency are unchanged.
+Deduplication affects scheduled runs only.
 Concurrent unfinished runs are not cancelled or treated as evidence; they may
 still overlap. Use `workflow_dispatch` when a fresh full run is needed regardless
 of recent evidence. No reference binaries or additional artifacts are stored.
@@ -222,7 +233,7 @@ memory samples, not third-party binaries or user profiles. A 60-minute soak
 is opt-in; longer interactive and adverse-network acceptance cases are not
 implied by a successful short desktop regression run.
 
-The separate required [OBS Windows integration](obs-windows.md) job builds the
+The full-run-only [OBS Windows integration](obs-windows.md) job builds the
 pinned x64 production modules with a shared Robotweax compatibility DLL. It
 checks the PE dependency and runtime provider identity, captures coherent
 MPEG-TS from native output through a separately loaded reference provider, and
