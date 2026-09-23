@@ -170,3 +170,7 @@ case and its result is included in the required CI gate.
 IPv6, Rendezvous, FEC, connection groups, AES-GCM properties, impaired-network
 and long-duration tests, and Windows packaging require separate qualification.
 The baseline does not infer their GStreamer support from the core SRT tests.
+
+The complete `build_and_test.sh` helper verifies every supplied upstream HEAD
+against the qualified pins before creating build output. Use clean dedicated
+checkouts; pin checks identify revisions but do not certify arbitrary local edits.

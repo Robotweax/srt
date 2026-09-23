@@ -54,7 +54,7 @@ PACKAGE_FILES = {
     "tests/package_consumer/ffmpeg_configure_probe.c",
 } | {
     f"cmake/abi/robotweax-srt-{version}.txt"
-    for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2", "0.2.3", "0.2.4")
+    for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2", "0.2.3", "0.2.4", "0.2.5")
 }
 AEAD_CONTRACT_FILES = {
     "compat/robotweax-0.2-aead-fixtures.json",
@@ -580,6 +580,13 @@ def classify(
             change_set.code = True
             change_set.shared = True
             change_set.ffmpeg = True
+            change_set.gstreamer = True
+            change_set.vlc = True
+            continue
+        if path in {"tests/check_source_revision.py",
+                    "interop/tests/test_integration_source_revision.py"}:
+            change_set.code = True
+            change_set.python = True
             change_set.gstreamer = True
             change_set.vlc = True
             continue

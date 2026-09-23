@@ -66,10 +66,22 @@ def git_head(source: Path) -> str:
     ).stdout.strip()
 
 
+def require_clean_source(source: Path) -> None:
+    status = subprocess.run(
+        ["git", "-C", str(source), "status", "--porcelain", "--untracked-files=normal"],
+        check=True, capture_output=True, text=True, timeout=15,
+    ).stdout
+    if status.strip():
+        raise RuntimeError("Robotweax preview requires a clean source checkout")
+
+
 def collect(args) -> tuple[dict[str, Path], dict]:
     if git_head(args.obs_source) != OBS_COMMIT:
         raise RuntimeError("OBS source does not match the pinned desktop build")
+    require_clean_source(args.robotweax_source)
     robotweax_commit = git_head(args.robotweax_source)
+    if robotweax_commit != args.robotweax_build_commit:
+        raise RuntimeError("Robotweax source changed since the preview build started")
     runtime = {}
     for relative in ("bin/64bit", "data", "obs-plugins/64bit"):
         runtime.update(files_below(args.obs_prefix / relative, relative))
@@ -208,9 +220,11 @@ def main() -> None:
     for name in ("obs-prefix", "obs-source", "robotweax-source", "robotweax-dll",
                  "reference-srt", "dependency-prefix", "qt-prefix", "output-dir"):
         parser.add_argument("--" + name, required=True, type=Path)
+    parser.add_argument("--robotweax-build-commit", required=True)
     args = parser.parse_args()
     for name, value in vars(args).items():
-        setattr(args, name, value.resolve())
+        if isinstance(value, Path):
+            setattr(args, name, value.resolve())
     print(build(args))
 
 

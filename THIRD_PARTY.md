@@ -58,3 +58,24 @@ Protocol behavior is derived from applicable public SRT documents, including
 the frozen `draft-sharabayko-srt-01`, and from public API documentation. Where
 those documents are silent or ambiguous, behavior is established through
 retained black-box tests against explicitly pinned releases.
+
+## Ecosystem build and qualification dependencies
+
+The repository contains independently authored recipes and test drivers for
+[GStreamer](docs/gstreamer-integration.md), [VLC](docs/vlc-integration.md) and
+[OBS Studio](docs/obs-integration.md), with FFmpeg and their selected build
+and codec dependencies. Their immutable source pins, archive hashes, reviewed
+upstream files and scoped qualifications are recorded in those guides and the
+[ecosystem matrix](docs/compatibility.md#ecosystem-build-profiles).
+
+The VLC recipe adjusts an obsolete option registration. OBS recipes select
+restricted plugin sets; desktop profiles additionally apply a pinned lifecycle
+correction, and platform recipes make documented build-only adaptations.
+These hash-guarded transformations do not relicense the upstream projects.
+Source-built and prebuilt dependencies retain their own licenses and notices.
+
+CI publishes diagnostic evidence, not these third-party application binaries.
+The optional [OBS Windows preview](docs/obs-windows-preview.md) is manually
+invoked and is not an SRT SDK release asset. Bundled notices alone do not
+establish redistribution permission or fulfill every corresponding-source
+obligation; follow that guide's distribution boundary before sharing a build.

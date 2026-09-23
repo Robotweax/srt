@@ -1,7 +1,7 @@
 # Compatibility status
 
 This document describes the public compatibility boundary of Robotweax SRT
-0.2.4. A listed capability is part of the supported boundary only for the
+0.2.5. A listed capability is part of the supported boundary only for the
 roles, transport mode, address family, and encryption profile stated here.
 
 Robotweax SRT is an independent implementation. Compatibility means that the
@@ -11,9 +11,9 @@ drop-in compatibility with every `libsrt` deployment.
 
 ## Version boundary
 
-| Axis | Robotweax SRT 0.2.4 |
+| Axis | Robotweax SRT 0.2.5 |
 | --- | --- |
-| Project version | `0.2.4` |
+| Project version | `0.2.5` |
 | Shared-library ABI line | `0.2` |
 | Default public SRT API profile | Haivision SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -31,7 +31,7 @@ v1.5.7 tag at commit
 `899348d8318eb9a3c5a5b6ec43c4a1114288773a`. Focused 1.5.5 backward and 1.5.6
 security lanes remain separate evidence; they do not replace the 1.5.7 gate.
 
-Robotweax SRT 0.2.4 does not establish positive HSv4 sessions. Applications
+Robotweax SRT 0.2.5 does not establish positive HSv4 sessions. Applications
 that require genuine HSv4 must remain on the immutable 0.1 line or upgrade the
 peer. Valid unsupported legacy establishment attempts fail deterministically
 instead of causing an automatic downgrade.
@@ -49,7 +49,7 @@ instead of causing an automatic downgrade.
 
 ## Transport and protocol matrix
 
-| Capability | Status | Public scope in 0.2.4 |
+| Capability | Status | Public scope in 0.2.5 |
 | --- | --- | --- |
 | HSv5 Caller/Listener | Supported | Blocking and nonblocking establishment, admission callbacks, connection completion, Stream ID, IPv4 and IPv6 |
 | HSv5 Rendezvous | Supported | IPv4 and IPv6 simultaneous open with deterministic role resolution |
@@ -136,7 +136,7 @@ by [Encryption and key rotation](encryption.md).
 
 ## Known limits
 
-- Robotweax SRT 0.2.4 is a pre-1.0 release and does not promise binary
+- Robotweax SRT 0.2.5 is a pre-1.0 release and does not promise binary
   compatibility with 0.1. Applications must be rebuilt against ABI line 0.2.
 - The default public header intentionally matches the SRT 1.5.7 profile;
   AES-GCM does not constitute a complete SRT 1.6 API or ABI claim.
@@ -149,3 +149,37 @@ by [Encryption and key rotation](encryption.md).
   workload, latency, and failure model.
 
 For upgrades from 0.1, see the [0.2 migration guide](migration-0.2.md).
+
+## Ecosystem build profiles
+
+These 0.2.5 source-build profiles use the existing upstream SRT interfaces.
+They qualify only the pinned, adapted builds and the cases below, not arbitrary
+installed binaries. See [0.2.5 release acceptance](release-notes-0.2.5.md#qualification-limits-and-release-acceptance).
+
+| Application | Platform / backend | Qualified profile | Required adjustment / boundary |
+| --- | --- | --- | --- |
+| [GStreamer 1.28.7](gstreamer-integration.md) | Linux / OpenSSL | IPv4 Live, Caller/Listener in both directions, cleartext/AES-128-CTR, byte/media checks, listener reconnect and rejection tests | Unmodified plugin; namespaced Robotweax selected by opt-in `srt.pc`. macOS recipe is not a current macOS CI gate; Windows not qualified. No lossless abrupt EOF claim. |
+| [VLC 3.0.24-rc1 pin](vlc-integration.md) | Linux headless / OpenSSL | IPv4 Live MPEG-TS/MPEG-2 video, input Caller/Listener, output Caller, cleartext/AES-128-CTR, media and reconnect checks | Hash-guarded obsolete payload-option removal. No GUI, audio, Windows or macOS qualification. |
+| [OBS 32.2.2 Linux](obs-integration.md), [desktop](obs-desktop.md) | Linux Xvfb/Mesa / OpenSSL | Modules and Qt frontend, H.264/AAC, cleartext/AES-128-CTR, both module roles, desktop duplex/reconnect and short soak | Restricted plugins/FFmpeg; pinned lifecycle fix for desktop only. |
+| [OBS 32.2.2 Windows](obs-windows.md), [desktop](obs-windows-desktop.md) | Windows x64 / experimental BCrypt | Modules and Qt frontend, native Caller output and Listener media input, encrypted duplex/reconnect and normal exit | One isolated legacy `srt.dll`, pinned dependency FFmpeg. No OpenSSL-SDK-in-OBS or Windows ARM64 claim. |
+| [OBS 32.2.2 macOS](obs-macos.md), [desktop](obs-macos-desktop.md) | Apple Silicon / OpenSSL | Modules and Qt frontend, encrypted native output/media input, duplex/reconnect and normal exit | Locally built app; pinned desktop lifecycle fix. No Intel, signing/notarization or distributable app claim. |
+
+Immutable application source pins:
+
+- GStreamer: `070125524a8422e29d3b69a372ed4f62fd343ffa`.
+- VLC: `6de05adcbaf2e8b85fe86aad4169393098628119`.
+- OBS: `ba2f32bdf791005443988a4955e963663e16b1ed`.
+- Source-built FFmpeg: `3acec0a1af2dda0a0838689b8b8649e7deb080a0`.
+
+Individual guides pin reference peers and dependency archives separately.
+Windows uses the OBS dependency archive's FFmpeg. Keep one SRT provider per
+application process; never infer provider identity solely from a connection.
+The [Windows preview](obs-windows-preview.md) is a manual development recipe,
+not a CI-produced or official release artifact. Third-party licenses continue
+to apply to adapted application builds.
+
+IPv6, Rendezvous, groups, FEC, AES-GCM, device capture, hardware encoders,
+physical-network resilience, long-duration operation and quantitative A/V sync
+are not established by this matrix. Existing core support for a feature does
+not extend the application's qualification. Reconnect checks demonstrate media
+resuming, not preservation of every frame during interruption.

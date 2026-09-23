@@ -4,7 +4,33 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
-## Unreleased
+## 0.2.5 — Ecosystem Support (release candidate)
+
+Publication pending. See [release notes](docs/release-notes-0.2.5.md) and the
+[qualified ecosystem matrix](docs/compatibility.md#ecosystem-build-profiles).
+
+- Add Windows x64 and Apple Silicon OBS Qt desktop qualification with encrypted
+  media input/output, automatic reconnect and isolated profile/provider checks.
+- Keep the optional Windows OBS portable preview strictly user-invoked; no OBS
+  binary is created or distributed by CI or by the SRT SDK release pipeline.
+- Reject mismatched integration source pins and require identified, clean
+  Robotweax sources for the optional Windows preview.
+- Preserve already acknowledged receiver data when delayed NAKs arrive; keep
+  DROPREQ retries for abandoned, unacknowledged packets.
+- Add opt-in Linux sender-drop diagnostics with causal trace validation and
+  binary provenance checks. A sender-drop counter is not proof of receiver loss.
+- Read back effective UDP buffer capacities and bound fallback searches when
+  the OS rejects the requested size; retain strict rejection of invalid inputs.
+- Correct Lite-ACK receive-window credit and avoid empty-receive-buffer scans.
+  Remove the unqualified one-shot paced-poll skip; no new throughput guarantee.
+- Preserve CI coverage for renamed sources and new fuzz targets and extend
+  fixed-size diagnostic harness coverage.
+- Add Azure Artifact Signing and signature checks for both Windows SDK variants.
+  Existing v0.2.4 assets remain unsigned and unchanged.
+- Reserve the UDP bridge input port before SRT connection setup to prevent an
+  ephemeral-port collision, discarding queued input before starting the relay.
+- Prepare the unchanged public C export inventory for 0.2.5; ABI line remains
+  0.2 and the compatible SRT API remains 1.5.7. Rebuild direct C++ consumers.
 
 - Added an Apple Silicon OBS module build and required macOS CI qualification
   for encrypted native SRT output and FFmpeg media input against an independent
@@ -40,11 +66,12 @@ version returned by `srt_getversion()`.
 - Documented the controlled live-stream shutdown profile and the boundary
   around immediate sender teardown; no lossless abrupt-EOF claim is made.
 
-## 0.2.4 — release candidate
+## 0.2.4 — 2026-09-11
 
 - Add `SRTO_ROBOTWEAX_CRYPTO_BACKEND`, a read-only runtime backend query
   through the existing socket API, without adding exported symbols.
-Release preparation; no publication date or final qualification is asserted.
+Published as v0.2.4; installer assets are unsigned. Historical qualification
+limits remain applicable.
 See [release notes](docs/release-notes-0.2.4.md) for distribution and limitations.
 
 - Add separate OpenSSL and BCrypt Windows SDK installers, each containing

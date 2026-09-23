@@ -29,6 +29,14 @@ if (git -C $ObsSource status --porcelain) {
     throw 'Use an otherwise unmodified OBS checkout.'
 }
 
+$RobotweaxBuildCommit = (git -C $Repository rev-parse HEAD)
+if ($LASTEXITCODE -ne 0) { throw 'Cannot identify Robotweax build source.' }
+if ($Preview) {
+    $SourceStatus = git -C $Repository status --porcelain --untracked-files=normal
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect Robotweax build source.' }
+    if ($SourceStatus) { throw 'Robotweax preview requires a clean source checkout.' }
+}
+
 New-Item -ItemType Directory -Path $WorkDirectory | Out-Null
 $Evidence = New-Item -ItemType Directory -Path "$WorkDirectory/evidence"
 $SrtBuild = "$WorkDirectory/srt-build"
@@ -161,6 +169,7 @@ if ($Preview) {
         '--obs-prefix', $ObsPrefix,
         '--obs-source', $ObsSource,
         '--robotweax-source', $Repository,
+        '--robotweax-build-commit', $RobotweaxBuildCommit,
         '--robotweax-dll', $RobotweaxDll,
         '--reference-srt', $ReferenceDll,
         '--dependency-prefix', $DependencyPrefix,
