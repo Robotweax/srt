@@ -38,8 +38,16 @@ class Child:
         log: Path,
         environment: dict[str, str],
         cwd: Path | None = None,
+        evidence: Path | None = None,
     ):
         self.log_path = log
+        if evidence is not None:
+            if evidence.resolve() == log.resolve():
+                raise ValueError("OBS evidence must be separate from runtime logs")
+            evidence.write_text("")
+            environment = dict(
+                environment, ROBOTWEAX_OBS_EVIDENCE=str(evidence.resolve())
+            )
         self.log_file = log.open("wb")
         self.process = subprocess.Popen(
             command,
@@ -283,9 +291,10 @@ def qualify(args: argparse.Namespace) -> None:
                 uri(port, "caller", False),
                 str(obs_provider),
             ],
-            observer_log,
+            observer_log.with_name("native-obs-runtime.log"),
             environment(obs_runtime),
             cwd=obs_runtime,
+            evidence=observer_log,
         )
         sender.wait_for(lambda: "READY" in read(observer_log), "OBS output startup")
         sender.wait_for(
@@ -323,9 +332,10 @@ def qualify(args: argparse.Namespace) -> None:
             uri(port, "listener", True),
             str(obs_provider),
         ],
-        observer_log,
+        observer_log.with_name("source-obs-runtime.log"),
         environment(obs_runtime),
         cwd=obs_runtime,
+        evidence=observer_log,
     )
     sender = None
     try:

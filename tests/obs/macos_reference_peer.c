@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Independent Haivision SRT peer. Never load into the OBS test process.
 #include <srt/srt.h>
+#include "reference_pacing.h"
 
 #include <arpa/inet.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -15,6 +17,16 @@ static void fail(const char* message)
 {
     fprintf(stderr, "%s: %s\n", message, srt_getlasterror_str());
     exit(2);
+}
+
+static uint64_t monotonic_ns(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) {
+        perror("clock_gettime");
+        exit(2);
+    }
+    return (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
 }
 
 static void option(
@@ -73,17 +85,35 @@ static uint64_t transfer(SRTSOCKET socket, bool sender, const char* path)
     char buffer[2048];
     uint64_t total = 0;
     uint64_t next_progress = 65536;
+    uint64_t started = monotonic_ns(), send_ns = 0, sleep_ns = 0;
+    uint64_t requested_sleep_ns = 0, packets = 0;
+    struct obs_reference_pacer pacer = obs_reference_pacer_start(started);
     for (;;) {
         int size;
         if (sender) {
             size_t read_size = fread(buffer, 1, 1316, file);
             if (!read_size)
                 break;
+            uint64_t wait_ns;
+            while ((wait_ns = obs_reference_pacer_delay(&pacer, monotonic_ns()))
+                != 0) {
+                struct timespec delay = {
+                    .tv_sec = (time_t)(wait_ns / UINT64_C(1000000000)),
+                    .tv_nsec = (long)(wait_ns % UINT64_C(1000000000))};
+                uint64_t before = monotonic_ns();
+                if (nanosleep(&delay, NULL) && errno != EINTR) {
+                    perror("nanosleep");
+                    exit(2);
+                }
+                sleep_ns += monotonic_ns() - before;
+                requested_sleep_ns += wait_ns;
+            }
+            uint64_t before = monotonic_ns();
             size = srt_sendmsg(socket, buffer, (int)read_size, -1, 1);
+            send_ns += monotonic_ns() - before;
             if (size != (int)read_size)
                 fail("cannot send reference payload");
-            struct timespec delay = {.tv_nsec = 15000000};
-            nanosleep(&delay, NULL);
+            ++packets;
         } else {
             size = srt_recvmsg(socket, buffer, sizeof(buffer));
             if (size == SRT_ERROR)
@@ -98,12 +128,24 @@ static uint64_t transfer(SRTSOCKET socket, bool sender, const char* path)
         total += (uint64_t)size;
         if (sender && total >= next_progress) {
             printf("SENT %llu\n", (unsigned long long)total);
+            printf("PACING elapsed_ns=%llu send_ns=%llu sleep_ns=%llu "
+                   "requested_sleep_ns=%llu\n",
+                (unsigned long long)(monotonic_ns() - started),
+                (unsigned long long)send_ns, (unsigned long long)sleep_ns,
+                (unsigned long long)requested_sleep_ns);
             fflush(stdout);
             next_progress += 65536;
         }
         if (!sender && total >= 200000)
             break;
     }
+    if (sender)
+        printf("PACING packets=%llu elapsed_ns=%llu send_ns=%llu "
+               "sleep_ns=%llu requested_sleep_ns=%llu\n",
+            (unsigned long long)packets,
+            (unsigned long long)(monotonic_ns() - started),
+            (unsigned long long)send_ns, (unsigned long long)sleep_ns,
+            (unsigned long long)requested_sleep_ns);
     fclose(file);
     return total;
 }

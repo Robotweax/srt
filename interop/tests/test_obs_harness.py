@@ -7,6 +7,9 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -35,6 +38,59 @@ macos = load("obs_macos_smoke", "run_macos_smoke.py")
 
 
 class ObsHarnessTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("cc"), "requires a C compiler")
+    def test_reference_pacing_handles_late_wakeups_without_unbounded_bursts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "pacing-test"
+            subprocess.run(
+                ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                 str(ROOT / "tests/obs/test_reference_pacing.c"), "-o", str(binary)],
+                check=True, capture_output=True,
+            )
+            subprocess.run([str(binary)], check=True, capture_output=True)
+
+    def test_windows_provider_records_are_isolated_from_runtime_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provider = root / "srt.dll"
+            records = root / "evidence.log"
+            runtime = root / "runtime.log"
+            content = (
+                f"MODULE {provider}\nMODULE {root / 'obs-ffmpeg.dll'}\n"
+                f"MODULE {root / 'avformat-62.dll'}\n"
+                f"BINDING {provider}\nBINDING {provider}\n"
+                "MEDIA video=30 changed=25 audio=40 audible=35 bytes=500000\n"
+                "SHUTDOWN\n"
+            )
+            records.write_text("stale evidence")
+            env = dict(os.environ)
+            script = (
+                "import os, pathlib, sys; "
+                "records = pathlib.Path(os.environ['ROBOTWEAX_OBS_EVIDENCE']); "
+                "assert records.read_text() == ''; "
+                "print('BINDING bad.dllwarning: concurrent OBS log', flush=True); "
+                "records.write_text(sys.argv[1])"
+            )
+            child = windows.Child(
+                [sys.executable, "-c", script, content], runtime, env, evidence=records
+            )
+            try:
+                child.finish()
+            finally:
+                child.stop()
+                child.process.stdin.close()
+            self.assertEqual(env, dict(os.environ))
+            self.assertIn("concurrent OBS log", runtime.read_text())
+            windows.require_provider(records, provider)
+            windows.require_media(records)
+            records.write_text(
+                content.replace(f"BINDING {provider}\n", "BINDING bad.dll\n", 1)
+            )
+            with self.assertRaisesRegex(RuntimeError, "unexpected SRT bindings"):
+                windows.require_provider(records, provider)
+            with self.assertRaisesRegex(ValueError, "separate"):
+                windows.Child(["unused"], runtime, env, evidence=runtime)
+
     def test_macos_runtime_paths_ignore_xcode_linker_stub(self):
         with tempfile.TemporaryDirectory() as directory:
             build = Path(directory)
