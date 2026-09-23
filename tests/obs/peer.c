@@ -243,6 +243,13 @@ int main(int argc, char** argv)
     if (!avformat)
         return 2;
     binding(avformat, "ffmpeg");
+    if (strcmp(argv[4], "network") == 0) {
+        void (*set_av_log_level)(int) = dlsym(RTLD_DEFAULT, "av_log_set_level");
+        if (set_av_log_level)
+            set_av_log_level(48); // AV_LOG_DEBUG in the pinned FFmpeg API.
+        else
+            puts("SOURCE_DIAGNOSTICS unavailable");
+    }
     struct obs_source_info filter_info = {.id = "robotweax-observer",
         .type = OBS_SOURCE_TYPE_FILTER,
         .output_flags = OBS_SOURCE_ASYNC_VIDEO,
@@ -322,6 +329,10 @@ int main(int argc, char** argv)
     }
     maps();
     puts("READY");
+    if (!local)
+        printf("SOURCE active=%d showing=%d media=%d\n",
+            obs_source_active(source), obs_source_showing(source),
+            obs_source_media_get_state(source));
     bool good = true;
     bool pending_output = output != NULL && !local;
     for (unsigned tick = 0; tick < 600; ++tick) {
@@ -351,8 +362,13 @@ int main(int argc, char** argv)
                 puts("RESTARTED");
             }
         }
-        if (tick % 10 == 0)
+        if (tick % 10 == 0) {
             report(output);
+            if (!local)
+                printf("SOURCE active=%d showing=%d media=%d\n",
+                    obs_source_active(source), obs_source_showing(source),
+                    obs_source_media_get_state(source));
+        }
     }
     report(output);
     maps();
