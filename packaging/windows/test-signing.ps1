@@ -64,7 +64,19 @@ try {
     if ($Files.Count -ne 2) { throw 'Valid installer pair rejected' }
     $Before = @(Get-SdkChecksumLines $Files)
     $Manifest = Join-Path $Pair 'SHA256SUMS'
-    [IO.File]::WriteAllLines($Manifest, $Before)
+    Write-SdkChecksumManifest $Manifest $Before
+    $ManifestBytes = [IO.File]::ReadAllBytes($Manifest)
+    if ($ManifestBytes -contains 13 -or $ManifestBytes[-1] -ne 10) {
+        throw 'Checksum manifest must use LF line endings'
+    }
+    Expect-Rejection { Write-SdkChecksumManifest $Manifest $Before } 'Refusing to replace'
+    $GitBash = Join-Path $env:ProgramFiles 'Git/bin/bash.exe'
+    if (!(Test-Path $GitBash)) { throw 'Git Bash is required for checksum compatibility regression' }
+    Push-Location $Pair
+    try {
+        & $GitBash --noprofile --norc -c 'sha256sum --check SHA256SUMS'
+        if ($LASTEXITCODE -ne 0) { throw 'Git Bash rejected the generated checksum manifest' }
+    } finally { Pop-Location }
     Assert-SdkChecksumManifest $Manifest $Before
     Copy-Item $Tampered $Files[1].FullName -Force
     $After = @(Get-SdkChecksumLines $Files)
