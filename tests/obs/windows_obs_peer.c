@@ -20,6 +20,7 @@ static volatile LONG changed_count;
 static volatile LONG audio_count;
 static volatile LONG audible_count;
 static uint64_t previous_hash;
+static FILE* evidence;
 
 static void stage(const char* name)
 {
@@ -170,7 +171,7 @@ static void modules(void)
         if (GetModuleFileNameExA(
                 GetCurrentProcess(), handles[i], value, sizeof(value))
             && interesting(value))
-            printf("MODULE %s\n", value);
+            fprintf(evidence, "MODULE %s\n", value);
     }
     HMODULE provider = GetModuleHandleA("srt.dll");
     char value[MAX_PATH];
@@ -180,17 +181,18 @@ static void modules(void)
         fprintf(stderr, "cannot resolve loaded SRT provider\n");
         exit(2);
     }
-    printf("BINDING %s\n", value);
-    fflush(stdout);
+    fprintf(evidence, "BINDING %s\n", value);
+    fflush(evidence);
 }
 
 static void report(obs_output_t* output)
 {
-    printf("MEDIA video=%ld changed=%ld audio=%ld audible=%ld bytes=%llu\n",
+    fprintf(evidence,
+        "MEDIA video=%ld changed=%ld audio=%ld audible=%ld bytes=%llu\n",
         InterlockedAdd(&video_count, 0), InterlockedAdd(&changed_count, 0),
         InterlockedAdd(&audio_count, 0), InterlockedAdd(&audible_count, 0),
         (unsigned long long)(output ? obs_output_get_total_bytes(output) : 0));
-    fflush(stdout);
+    fflush(evidence);
 }
 
 static void emit_synthetic(
@@ -268,6 +270,11 @@ int main(int argc, char** argv)
         return 2;
     }
     setvbuf(stdout, NULL, _IONBF, 0);
+    const char* evidence_path = getenv("ROBOTWEAX_OBS_EVIDENCE");
+    if (!evidence_path || !(evidence = fopen(evidence_path, "w"))) {
+        fprintf(stderr, "cannot open OBS evidence file\n");
+        return 2;
+    }
     stage("obs-startup");
     if (!obs_startup("en-US", NULL, NULL))
         return 2;
@@ -396,7 +403,8 @@ int main(int argc, char** argv)
         fprintf(stderr, "unexpected OBS SRT provider: %s\n", loaded);
         return 2;
     }
-    puts("READY");
+    fputs("READY\n", evidence);
+    fflush(evidence);
 
     uint64_t start = GetTickCount64();
     uint64_t next_frame = start;
@@ -432,6 +440,8 @@ int main(int argc, char** argv)
     obs_source_release(filter);
     obs_source_release(source);
     obs_shutdown();
-    puts("SHUTDOWN");
+    fputs("SHUTDOWN\n", evidence);
+    if (fclose(evidence))
+        return 2;
     return good ? 0 : 1;
 }

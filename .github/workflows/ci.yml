@@ -739,6 +739,50 @@ jobs:
             ${{ runner.temp }}/obs-windows-qualification/srt-build/CMakeFiles/CMakeConfigureLog.yaml
           retention-days: 7
 
+  obs_macos_integration:
+    name: OBS macOS integration
+    needs: changes
+    if: needs.changes.outputs.obs == 'true'
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: obsproject/obs-studio
+          ref: ${{ env.OBS_COMMIT }}
+          path: obs-source
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: FFmpeg/FFmpeg
+          ref: ${{ env.FFMPEG_COMMIT }}
+          path: ffmpeg-source
+          persist-credentials: false
+      - name: Build and qualify OBS on Apple Silicon
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-platform-version
+          JOBS=3 tests/obs/build_macos.sh \
+            "$GITHUB_WORKSPACE/obs-source" \
+            "$GITHUB_WORKSPACE/ffmpeg-source" \
+            "$RUNNER_TEMP/obs-macos-qualification"
+      - name: Preserve macOS OBS qualification diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: obs-macos-evidence
+          path: |
+            ${{ runner.temp }}/obs-macos-qualification/evidence/*.log
+            ${{ runner.temp }}/obs-macos-qualification/evidence/*.txt
+            ${{ runner.temp }}/obs-macos-qualification/evidence/*.frames
+            ${{ runner.temp }}/obs-macos-qualification/obs-build/CMakeCache.txt
+          retention-days: 7
+
   obs_windows_desktop:
     name: OBS Windows desktop
     needs: changes
@@ -2003,6 +2047,7 @@ jobs:
       - vlc_integration
       - obs_integration
       - obs_windows_integration
+      - obs_macos_integration
       - obs_windows_desktop
       - aead_platform
       - sanitizers
@@ -2035,6 +2080,7 @@ jobs:
           VLC_INTEGRATION: ${{ needs.vlc_integration.result }}
           OBS_INTEGRATION: ${{ needs.obs_integration.result }}
           OBS_WINDOWS_INTEGRATION: ${{ needs.obs_windows_integration.result }}
+          OBS_MACOS_INTEGRATION: ${{ needs.obs_macos_integration.result }}
           OBS_WINDOWS_DESKTOP: ${{ needs.obs_windows_desktop.result }}
           AEAD_PLATFORM: ${{ needs.aead_platform.result }}
           SANITIZERS: ${{ needs.sanitizers.result }}
@@ -2056,6 +2102,7 @@ jobs:
           EXPECT_vlc_integration: ${{ needs.changes.outputs.vlc == 'true' }}
           EXPECT_obs_integration: ${{ needs.changes.outputs.obs == 'true' }}
           EXPECT_obs_windows_integration: ${{ needs.changes.outputs.obs == 'true' }}
+          EXPECT_obs_macos_integration: ${{ needs.changes.outputs.obs == 'true' }}
           EXPECT_obs_windows_desktop: ${{ needs.changes.outputs.obs == 'true' }}
           EXPECT_aead_platform: ${{ needs.changes.outputs.aead_platform == 'true' || needs.changes.outputs.examples == 'true' }}
           EXPECT_sanitizers: ${{ needs.changes.outputs.sanitizers == 'true' }}
@@ -2081,6 +2128,7 @@ jobs:
             "vlc-integration=$VLC_INTEGRATION" \
             "obs-integration=$OBS_INTEGRATION" \
             "obs-windows-integration=$OBS_WINDOWS_INTEGRATION" \
+            "obs-macos-integration=$OBS_MACOS_INTEGRATION" \
             "obs-windows-desktop=$OBS_WINDOWS_DESKTOP" \
             "aead-platform=$AEAD_PLATFORM" \
             "sanitizers=$SANITIZERS" \

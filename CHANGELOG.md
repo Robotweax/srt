@@ -6,6 +6,10 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Added an Apple Silicon OBS module build and required macOS CI qualification
+  for encrypted native SRT output and FFmpeg media input against an independent
+  reference peer. CI retains text diagnostics only, not an OBS package.
+
 - Added a pinned Windows x64 OBS module profile using one shared Robotweax
   compatibility DLL for native SRT output and FFmpeg media input, with a
   separate reference provider, real MPEG-TS/A/V checks and a required CI gate.

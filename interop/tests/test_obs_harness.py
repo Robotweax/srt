@@ -7,6 +7,9 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -30,9 +33,210 @@ windows_prepare = load("obs_windows_prepare", "prepare_windows_source.py")
 windows = load("obs_windows_smoke", "run_windows_smoke.py")
 windows_desktop = load("obs_windows_desktop", "run_windows_desktop_smoke.py")
 windows_preview = load("obs_windows_preview", "package_windows_preview.py")
+macos_cache = load("obs_macos_cache", "check_macos_cache.py")
+macos = load("obs_macos_smoke", "run_macos_smoke.py")
 
 
 class ObsHarnessTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("cc"), "requires a C compiler")
+    def test_reference_pacing_handles_late_wakeups_without_unbounded_bursts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "pacing-test"
+            subprocess.run(
+                ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                 str(ROOT / "tests/obs/test_reference_pacing.c"), "-o", str(binary)],
+                check=True, capture_output=True,
+            )
+            subprocess.run([str(binary)], check=True, capture_output=True)
+
+    def test_windows_provider_records_are_isolated_from_runtime_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provider = root / "srt.dll"
+            records = root / "evidence.log"
+            runtime = root / "runtime.log"
+            content = (
+                f"MODULE {provider}\nMODULE {root / 'obs-ffmpeg.dll'}\n"
+                f"MODULE {root / 'avformat-62.dll'}\n"
+                f"BINDING {provider}\nBINDING {provider}\n"
+                "MEDIA video=30 changed=25 audio=40 audible=35 bytes=500000\n"
+                "SHUTDOWN\n"
+            )
+            records.write_text("stale evidence")
+            env = dict(os.environ)
+            script = (
+                "import os, pathlib, sys; "
+                "records = pathlib.Path(os.environ['ROBOTWEAX_OBS_EVIDENCE']); "
+                "assert records.read_text() == ''; "
+                "print('BINDING bad.dllwarning: concurrent OBS log', flush=True); "
+                "records.write_text(sys.argv[1])"
+            )
+            child = windows.Child(
+                [sys.executable, "-c", script, content], runtime, env, evidence=records
+            )
+            try:
+                child.finish()
+            finally:
+                child.stop()
+                child.process.stdin.close()
+            self.assertEqual(env, dict(os.environ))
+            self.assertIn("concurrent OBS log", runtime.read_text())
+            windows.require_provider(records, provider)
+            windows.require_media(records)
+            records.write_text(
+                content.replace(f"BINDING {provider}\n", "BINDING bad.dll\n", 1)
+            )
+            with self.assertRaisesRegex(RuntimeError, "unexpected SRT bindings"):
+                windows.require_provider(records, provider)
+            with self.assertRaisesRegex(ValueError, "separate"):
+                windows.Child(["unused"], runtime, env, evidence=runtime)
+
+    def test_macos_runtime_paths_ignore_xcode_linker_stub(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory)
+            binaries = (
+                "libobs/Release/libobs.framework/Versions/A/libobs",
+                "plugins/obs-ffmpeg/Release/obs-ffmpeg.plugin/Contents/MacOS/obs-ffmpeg",
+                "plugins/obs-x264/Release/obs-x264.plugin/Contents/MacOS/obs-x264",
+                "libobs-opengl/Release/libobs-opengl.dylib",
+            )
+            for relative in binaries:
+                binary = build / relative
+                binary.parent.mkdir(parents=True, exist_ok=True)
+                binary.write_bytes(b"fixture")
+            stub = build / "build/EagerLinkingTBDs/Release/libobs.framework"
+            stub.mkdir(parents=True)
+            framework, ffmpeg_plugin, x264_plugin, graphics = macos.runtime_paths(build)
+            self.assertEqual(framework, build / "libobs/Release/libobs.framework")
+            self.assertEqual(ffmpeg_plugin, build / "plugins/obs-ffmpeg/Release/obs-ffmpeg.plugin")
+            self.assertEqual(x264_plugin, build / "plugins/obs-x264/Release/obs-x264.plugin")
+            self.assertEqual(graphics, build / "libobs-opengl/Release/libobs-opengl.dylib")
+            (build / binaries[1]).unlink()
+            with self.assertRaisesRegex(RuntimeError, "missing OBS runtime binary"):
+                macos.runtime_paths(build)
+
+    def test_macos_stalled_source_collects_text_stack_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "source-obs-stacks.txt"
+            with mock.patch.object(macos.subprocess, "run") as run:
+                run.return_value.returncode = 0
+                macos.sample_process(SimpleNamespace(pid=1234), destination)
+            self.assertEqual(
+                run.call_args.args[0],
+                ["sample", "1234", "2", "-file", str(destination)],
+            )
+            self.assertTrue(destination.is_file())
+            self.assertIn("sample exit=0", destination.read_text())
+        smoke = (ROOT / "tests/obs/run_macos_smoke.py").read_text()
+        self.assertIn(
+            'sample_process(source, artifacts / "source-reference-stacks.txt")',
+            smoke,
+        )
+        reference = (ROOT / "tests/obs/macos_reference_peer.c").read_text()
+        self.assertIn('printf("SENT %llu\\n"', reference)
+
+    def test_macos_native_shutdown_timeout_collects_text_stack_sample(self):
+        smoke = (ROOT / "tests/obs/run_macos_smoke.py").read_text()
+        self.assertIn(
+            'except subprocess.TimeoutExpired:\n'
+            '                sample_process(child, artifacts / "native-obs-stacks.txt")',
+            smoke,
+        )
+        peer = (ROOT / "tests/obs/peer.c").read_text()
+        stop = peer.index('puts("TEARDOWN stop-output")')
+        release = peer.index('puts("TEARDOWN release-output")')
+        shutdown = peer.index('puts("TEARDOWN obs-shutdown")')
+        self.assertLess(stop, release)
+        self.assertLess(release, shutdown)
+        self.assertLess(shutdown, peer.index("obs_shutdown();"))
+
+    def test_macos_live_source_uses_bounded_ffmpeg_probe(self):
+        peer = (ROOT / "tests/obs/peer.c").read_text()
+        self.assertIn('if (!local)\n        obs_data_set_string(settings, "ffmpeg_options",', peer)
+        self.assertIn('"probesize=131072 analyzeduration=3000000"', peer)
+        smoke = (ROOT / "tests/obs/run_macos_smoke.py").read_text()
+        self.assertIn("if video < 20 or changed < 10 or audio < 20 or audible < 10:", smoke)
+        queued = smoke.index('until(source, sender_log, "QUEUED", 35)')
+        observed = smoke.index("require_media(obs_log)", queued)
+        closed = smoke.index('tell(source, "quit")', observed)
+        self.assertLess(queued, observed)
+        self.assertLess(observed, closed)
+
+    def test_macos_cache_rejects_prebuilt_provider(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ffmpeg = root / "ffmpeg"
+            srt = root / "srt"
+            cache = root / "CMakeCache.txt"
+            values = {
+                "Libsrt_LIBRARY": srt / "lib/librobotweax-srt.dylib",
+                "Libsrt_INCLUDE_DIR": srt / "include",
+            }
+            for component in ("avcodec", "avdevice", "avfilter", "avformat",
+                              "avutil", "swscale", "swresample"):
+                values[f"FFmpeg_{component}_LIBRARY"] = ffmpeg / "lib" / f"lib{component}.dylib"
+                values[f"FFmpeg_{component}_INCLUDE_DIR"] = ffmpeg / "include"
+
+            def write_cache():
+                cache.write_text("".join(
+                    f"\n// Generated CMake comment for {key}\n{key}:FILEPATH={value}\n"
+                    for key, value in values.items()
+                ))
+
+            write_cache()
+            macos_cache.check(cache, ffmpeg, srt)
+            values["FFmpeg_avformat_LIBRARY"] = root / "obs-deps/lib/libavformat.dylib"
+            write_cache()
+            with self.assertRaisesRegex(RuntimeError, "unexpected avformat"):
+                macos_cache.check(cache, ffmpeg, srt)
+            values["FFmpeg_avformat_LIBRARY"] = ffmpeg / "lib/libavformat.dylib"
+            values["Libsrt_LIBRARY"] = root / "obs-deps/lib/libsrt.dylib"
+            write_cache()
+            with self.assertRaisesRegex(RuntimeError, "non-Robotweax"):
+                macos_cache.check(cache, ffmpeg, srt)
+
+    def test_macos_runtime_guard_requires_one_provider_and_decoded_media(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            srt, ffmpeg, plugin = (root / name for name in ("srt", "ffmpeg", "obs-ffmpeg.plugin"))
+            log = root / "obs.log"
+            provider = srt / "lib/librobotweax-srt.dylib"
+            log.write_text(
+                f"MAP {provider}\nMAP {ffmpeg}/lib/libavformat.dylib\n"
+                f"MAP {plugin}/Contents/MacOS/obs-ffmpeg\n"
+                f"BINDING native {provider}\nBINDING ffmpeg {provider}\n"
+                "MEDIA video=25 changed=20 audio=30 audible=25 bytes=50000\n"
+            )
+            macos.require_provider(log, srt, ffmpeg, plugin)
+            macos.require_media(log)
+            log.write_text(log.read_text() + f"MAP {provider}\n")
+            macos.require_provider(log, srt, ffmpeg, plugin)
+            log.write_text(log.read_text() + f"MAP {root}/deps/libsrt.dylib\n")
+            with self.assertRaisesRegex(RuntimeError, "competing SRT"):
+                macos.require_provider(log, srt, ffmpeg, plugin)
+
+    def test_macos_job_is_required_and_uploads_text_only(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        build = (ROOT / "tests/obs/build_macos.sh").read_text()
+        self.assertIn('-G Xcode', build)
+        self.assertIn('ENABLE_NEW_MPEGTS_OUTPUT=ON', build)
+        self.assertIn('check_macos_cache.py', build)
+        self.assertIn('run_macos_smoke.py', build)
+        self.assertIn('--target libobs libobs-opengl obs-ffmpeg obs-x264 obs-ffmpeg-mux', build)
+        self.assertNotIn('zip ', build)
+        job = workflow.split("  obs_macos_integration:\n", 1)[1].split(
+            "  obs_windows_desktop:\n", 1
+        )[0]
+        self.assertIn("runs-on: macos-26", job)
+        self.assertIn("tests/obs/build_macos.sh", job)
+        paths = job.split("          path: |\n", 1)[1].split(
+            "          retention-days:", 1
+        )[0]
+        self.assertNotIn(".zip", paths)
+        self.assertNotIn(".dylib", paths)
+        self.assertNotIn(".plugin", paths)
+        self.assertIn("      - obs_macos_integration\n", workflow)
+
     def test_windows_preview_isolated_deterministic_and_provider_guarded(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -733,6 +937,11 @@ class ObsHarnessTests(unittest.TestCase):
             "tests/obs/windows_reference_peer.c",
             "tests/obs/run_windows_smoke.py",
             "tests/obs/prepare_windows_source.py",
+            "tests/obs/build_macos.sh",
+            "tests/obs/check_macos_cache.py",
+            "tests/obs/macos_qualification.cmake",
+            "tests/obs/macos_reference_peer.c",
+            "tests/obs/run_macos_smoke.py",
             "interop/tests/test_obs_harness.py",
         ):
             with self.subTest(path=path):

@@ -30,6 +30,8 @@ developers and transport integrators using the installed public API.
   builds using one Robotweax compatibility DLL.
 - [OBS Windows desktop](obs-windows-desktop.md) — isolated Qt frontend build,
   encrypted GUI output and automatic reconnect qualification.
+- [OBS macOS integration](obs-macos.md) — Apple Silicon source build and
+  encrypted native-output/FFmpeg-input qualification without packaging.
 - [OBS Windows portable preview](obs-windows-preview.md) — isolated ZIP assembly,
   integrity checks, physical-Windows acceptance and distribution boundary.
 - [Testing](testing.md) — local verification and focused test selection.
