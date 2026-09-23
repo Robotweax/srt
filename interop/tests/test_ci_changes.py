@@ -916,6 +916,16 @@ class CiChangeClassifierTests(unittest.TestCase):
                 self.assertTrue(result.examples)
                 self.assertTrue(result.aead_platform)
 
+    def test_obs_platforms_require_explicit_full_selection(self) -> None:
+        for paths in (["tests/obs/run_macos_desktop_smoke.py"],
+                      ["src/session.cpp"], ["CMakeLists.txt"],
+                      [".github/workflows/ci.yml"], ["unknown-input"]):
+            with self.subTest(paths=paths):
+                result = ci_changes.classify(paths)
+                self.assertFalse(result.obs_platforms)
+                self.assertTrue(ci_changes.classify(paths, force_full=True).obs_platforms)
+        self.assertTrue(ci_changes.classify([], force_full=True).obs_platforms)
+
     def test_explicit_full_run_needs_no_paths(self) -> None:
         result = ci_changes.classify([], force_full=True)
 

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
   schedule:
@@ -58,6 +59,7 @@ jobs:
       gstreamer: ${{ steps.classify.outputs.gstreamer }}
       vlc: ${{ steps.classify.outputs.vlc }}
       obs: ${{ steps.classify.outputs.obs }}
+      obs_platforms: ${{ steps.classify.outputs.obs_platforms }}
       aead_platform: ${{ steps.classify.outputs.aead_platform }}
       sanitizers: ${{ steps.classify.outputs.sanitizers }}
       thread_sanitizer: ${{ steps.classify.outputs.thread_sanitizer }}
@@ -106,6 +108,7 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
           BASE_SHA: >-
             ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: >-
@@ -121,7 +124,8 @@ jobs:
             python3 interop/ci_changes.py > "$output_file"
             : > "$changed_file"
           elif [[ "$EVENT_NAME" == "workflow_dispatch" \
-                || "$EVENT_NAME" == "schedule" ]]; then
+                || "$EVENT_NAME" == "schedule" \
+                || "$REF_TYPE" == "tag" ]]; then
             python3 interop/ci_changes.py --full > "$output_file"
             : > "$changed_file"
           else
@@ -145,7 +149,7 @@ jobs:
             elif [[ "$EVENT_NAME" == "schedule" && -n "$evidence_run_id" ]]; then
               echo "Scheduled duplicate omitted: same-commit full CI passed within 24 hours."
               echo "Evidence: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$evidence_run_id"
-            elif [[ "$EVENT_NAME" == "schedule" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            elif [[ "$EVENT_NAME" == "schedule" || "$EVENT_NAME" == "workflow_dispatch" || "$REF_TYPE" == "tag" ]]; then
               echo "Full validation ($EVENT_NAME)."
             else
               echo "No changed paths."
@@ -702,7 +706,7 @@ jobs:
   obs_windows_integration:
     name: OBS Windows integration
     needs: changes
-    if: needs.changes.outputs.obs == 'true'
+    if: needs.changes.outputs.obs_platforms == 'true'
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -742,7 +746,7 @@ jobs:
   obs_macos_integration:
     name: OBS macOS integration
     needs: changes
-    if: needs.changes.outputs.obs == 'true'
+    if: needs.changes.outputs.obs_platforms == 'true'
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -786,7 +790,7 @@ jobs:
   obs_windows_desktop:
     name: OBS Windows desktop
     needs: changes
-    if: needs.changes.outputs.obs == 'true'
+    if: needs.changes.outputs.obs_platforms == 'true'
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -825,7 +829,7 @@ jobs:
   obs_macos_desktop:
     name: OBS macOS desktop
     needs: changes
-    if: needs.changes.outputs.obs == 'true'
+    if: needs.changes.outputs.obs_platforms == 'true'
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -2105,8 +2109,8 @@ jobs:
     steps:
       # A successful run plus this successful step proves full selection.
       # A deduplicated schedule has full=false and cannot renew the evidence.
-      - name: Full validation selected (v1)
-        if: needs.changes.outputs.full == 'true'
+      - name: Full validation selected (v2)
+        if: needs.changes.outputs.full == 'true' && needs.changes.outputs.obs_platforms == 'true'
         run: ':'
       - name: Require every selected job to pass
         shell: bash
@@ -2148,10 +2152,10 @@ jobs:
           EXPECT_gstreamer_integration: ${{ needs.changes.outputs.gstreamer == 'true' }}
           EXPECT_vlc_integration: ${{ needs.changes.outputs.vlc == 'true' }}
           EXPECT_obs_integration: ${{ needs.changes.outputs.obs == 'true' }}
-          EXPECT_obs_windows_integration: ${{ needs.changes.outputs.obs == 'true' }}
-          EXPECT_obs_macos_integration: ${{ needs.changes.outputs.obs == 'true' }}
-          EXPECT_obs_windows_desktop: ${{ needs.changes.outputs.obs == 'true' }}
-          EXPECT_obs_macos_desktop: ${{ needs.changes.outputs.obs == 'true' }}
+          EXPECT_obs_windows_integration: ${{ needs.changes.outputs.obs_platforms == 'true' }}
+          EXPECT_obs_macos_integration: ${{ needs.changes.outputs.obs_platforms == 'true' }}
+          EXPECT_obs_windows_desktop: ${{ needs.changes.outputs.obs_platforms == 'true' }}
+          EXPECT_obs_macos_desktop: ${{ needs.changes.outputs.obs_platforms == 'true' }}
           EXPECT_aead_platform: ${{ needs.changes.outputs.aead_platform == 'true' || needs.changes.outputs.examples == 'true' }}
           EXPECT_sanitizers: ${{ needs.changes.outputs.sanitizers == 'true' }}
           EXPECT_thread_sanitizer: ${{ needs.changes.outputs.thread_sanitizer == 'true' }}

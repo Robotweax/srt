@@ -146,6 +146,7 @@ class ChangeSet:
     gstreamer: bool = False
     vlc: bool = False
     obs: bool = False
+    obs_platforms: bool = False
     aead_platform: bool = False
     sanitizers: bool = False
     thread_sanitizer: bool = False
@@ -176,7 +177,7 @@ class ChangeSet:
     def enable_all(self) -> None:
         self.docs_only = False
         for field in fields(self):
-            if field.name != "docs_only":
+            if field.name not in {"docs_only", "obs_platforms"}:
                 setattr(self, field.name, True)
 
     def enable_all_interop(self) -> None:
@@ -514,6 +515,7 @@ def classify(
     )
     if force_full:
         change_set.enable_all()
+        change_set.obs_platforms = True
         return change_set
 
     for path in normalized_paths:
