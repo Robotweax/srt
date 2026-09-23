@@ -58,6 +58,12 @@ function Get-SdkChecksumLines($Files) {
     }
 }
 
+function Write-SdkChecksumManifest([string]$Manifest, [string[]]$Lines) {
+    if (Test-Path -LiteralPath $Manifest) { throw 'Refusing to replace an existing checksum manifest' }
+    # GNU sha256sum in Git Bash treats CR as part of the filename.
+    [IO.File]::WriteAllText($Manifest, (($Lines -join "`n") + "`n"), [Text.Encoding]::ASCII)
+}
+
 function Assert-SdkChecksumManifest([string]$Manifest, [string[]]$ExpectedLines) {
     $Actual = @(Get-Content -LiteralPath $Manifest)
     if ($ExpectedLines.Count -ne 2 -or $Actual.Count -ne 2 -or

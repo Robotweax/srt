@@ -17,7 +17,6 @@ if ($RequireManifest) {
     Assert-SdkChecksumManifest $Manifest $Lines
 }
 if ($WriteManifest) {
-    if (Test-Path -LiteralPath $Manifest) { throw 'Refusing to replace an existing checksum manifest' }
-    [IO.File]::WriteAllLines($Manifest, $Lines, [Text.Encoding]::ASCII)
+    Write-SdkChecksumManifest $Manifest $Lines
 }
 Write-Output 'Both signed installers have the approved publisher and trusted timestamps'
