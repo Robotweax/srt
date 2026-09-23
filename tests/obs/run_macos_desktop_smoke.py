@@ -22,15 +22,52 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
+def arm64_macho(data: bytes, path: Path) -> bytearray:
+    """Select the Apple Silicon slice from a thin or universal Mach-O dylib."""
+    if data[:4] == b"\xcf\xfa\xed\xfe":
+        if len(data) < 32 or struct.unpack_from("<I", data, 4)[0] != 0x0100000C:
+            raise RuntimeError(f"not an arm64 Mach-O dylib: {path}")
+        return bytearray(data)
+    if data[:4] not in (b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf"):
+        raise RuntimeError(f"not a 64-bit Mach-O dylib: {path}")
+    if len(data) < 8:
+        raise RuntimeError(f"truncated Mach-O architecture table: {path}")
+    is_fat64 = data[:4] == b"\xca\xfe\xba\xbf"
+    count = struct.unpack_from(">I", data, 4)[0]
+    entry_size = 32 if is_fat64 else 20
+    table_end = 8 + count * entry_size
+    if not 1 <= count <= 16 or table_end > len(data):
+        raise RuntimeError(f"invalid Mach-O architecture table: {path}")
+    matches = []
+    for index in range(count):
+        entry = 8 + index * entry_size
+        if is_fat64:
+            cpu, _, offset, size, _, _ = struct.unpack_from(">IIQQII", data, entry)
+        else:
+            cpu, _, offset, size, _ = struct.unpack_from(">IIIII", data, entry)
+        if offset < table_end or size < 32 or offset + size > len(data):
+            raise RuntimeError(f"invalid Mach-O architecture slice: {path}")
+        if cpu == 0x0100000C:
+            matches.append((offset, size))
+    if len(matches) != 1:
+        raise RuntimeError(f"Mach-O must contain exactly one arm64 slice: {path}")
+    offset, size = matches[0]
+    slice_data = data[offset : offset + size]
+    if (
+        slice_data[:4] != b"\xcf\xfa\xed\xfe"
+        or struct.unpack_from("<I", slice_data, 4)[0] != 0x0100000C
+    ):
+        raise RuntimeError(f"not an arm64 Mach-O slice: {path}")
+    return bytearray(slice_data)
+
+
 def macho_payload_sha256(path: Path) -> str:
-    """Hash the signed Mach-O payload while ignoring only signing metadata.
+    """Hash the arm64 Mach-O payload while ignoring only signing metadata.
 
     Xcode re-signs dylibs copied into OBS.app, changing the signature and the
     __LINKEDIT size fields even when all executable and library bytes agree.
     """
-    data = bytearray(path.read_bytes())
-    if len(data) < 32 or data[:4] != b"\xcf\xfa\xed\xfe":
-        raise RuntimeError(f"not a 64-bit Mach-O dylib: {path}")
+    data = arm64_macho(path.read_bytes(), path)
     count, command_bytes = struct.unpack_from("<II", data, 16)
     end = 32 + command_bytes
     if count > 1024 or end > len(data):

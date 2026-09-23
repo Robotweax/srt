@@ -51,6 +51,22 @@ def signed_macho(payload: bytes, signature: bytes = b"signature") -> bytes:
     return header + segment + code_signature + payload + signature
 
 
+def universal_macho(arm64: bytes, *, fat64: bool = False) -> bytes:
+    x86 = bytearray(signed_macho(b"unrelated x86 code"))
+    struct.pack_into("<I", x86, 4, 0x01000007)
+    entry_size = 32 if fat64 else 20
+    first = 8 + 2 * entry_size
+    second = first + len(x86)
+    if fat64:
+        entries = struct.pack(">IIQQII", 0x01000007, 0, first, len(x86), 0, 0)
+        entries += struct.pack(">IIQQII", 0x0100000C, 0, second, len(arm64), 0, 0)
+    else:
+        entries = struct.pack(">IIIII", 0x01000007, 0, first, len(x86), 0)
+        entries += struct.pack(">IIIII", 0x0100000C, 0, second, len(arm64), 0)
+    magic = 0xCAFEBABF if fat64 else 0xCAFEBABE
+    return struct.pack(">II", magic, 2) + entries + x86 + arm64
+
+
 class ObsHarnessTests(unittest.TestCase):
     def test_macos_signed_macho_hash_ignores_only_signing_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -63,6 +79,32 @@ class ObsHarnessTests(unittest.TestCase):
             self.assertNotEqual(macos_desktop.macho_payload_sha256(path), expected)
             path.write_bytes(b"not a Mach-O")
             with self.assertRaisesRegex(RuntimeError, "Mach-O"):
+                macos_desktop.macho_payload_sha256(path)
+
+    def test_macos_universal_macho_hashes_only_arm64_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "universal.dylib"
+            expected = signed_macho(b"pinned arm64 code", b"original signature")
+            path.write_bytes(expected)
+            original_hash = macos_desktop.macho_payload_sha256(path)
+            for fat64 in (False, True):
+                path.write_bytes(
+                    universal_macho(
+                        signed_macho(b"pinned arm64 code", b"resigned by Xcode"),
+                        fat64=fat64,
+                    )
+                )
+                self.assertEqual(
+                    macos_desktop.macho_payload_sha256(path), original_hash
+                )
+                path.write_bytes(
+                    universal_macho(signed_macho(b"different arm64 code"), fat64=fat64)
+                )
+                self.assertNotEqual(
+                    macos_desktop.macho_payload_sha256(path), original_hash
+                )
+            path.write_bytes(struct.pack(">II", 0xCAFEBABE, 2))
+            with self.assertRaisesRegex(RuntimeError, "architecture table"):
                 macos_desktop.macho_payload_sha256(path)
 
     def test_macos_desktop_uses_private_cocoa_profile_and_rejects_reuse(self):
