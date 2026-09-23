@@ -583,7 +583,8 @@ class ObsHarnessTests(unittest.TestCase):
         self.assertNotIn(".plugin", paths)
         self.assertIn("      - obs_macos_integration\n", workflow)
 
-    def test_windows_preview_isolated_deterministic_and_provider_guarded(self):
+    @mock.patch.object(windows_preview, "require_clean_source")
+    def test_windows_preview_isolated_deterministic_and_provider_guarded(self, clean_source):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             prefix = root / "obs"
@@ -618,6 +619,7 @@ class ObsHarnessTests(unittest.TestCase):
             args = SimpleNamespace(
                 obs_prefix=prefix, obs_source=source,
                 robotweax_source=robotweax, robotweax_dll=selected,
+                robotweax_build_commit="robotweax-test-commit",
                 reference_srt=reference, dependency_prefix=dependency,
                 qt_prefix=qt, output_dir=root / "first",
             )
@@ -656,6 +658,24 @@ class ObsHarnessTests(unittest.TestCase):
             ]):
                 with self.assertRaisesRegex(RuntimeError, "selected Robotweax SRT DLL"):
                     windows_preview.collect(args)
+
+    def test_preview_rejects_source_change_before_reading_runtime(self):
+        args = SimpleNamespace(obs_source=Path("obs"), robotweax_source=Path("srt"),
+                               robotweax_build_commit="original")
+        with mock.patch.object(windows_preview, "require_clean_source"), \
+             mock.patch.object(windows_preview, "git_head", side_effect=[windows_preview.OBS_COMMIT, "changed"]):
+            with self.assertRaisesRegex(RuntimeError, "changed since"):
+                windows_preview.collect(args)
+
+    def test_preview_rejects_dirty_source(self):
+        for status in (" M src/session.cpp\n", "?? injected.cpp\n"):
+            with self.subTest(status=status), mock.patch.object(
+                windows_preview.subprocess, "run", return_value=SimpleNamespace(stdout=status)
+            ):
+                with self.assertRaisesRegex(RuntimeError, "clean source"):
+                    windows_preview.require_clean_source(Path("source"))
+        with mock.patch.object(windows_preview.subprocess, "run", return_value=SimpleNamespace(stdout="")):
+            windows_preview.require_clean_source(Path("source"))
 
     def test_windows_desktop_profile_is_isolated_and_rejects_reuse(self):
         with tempfile.TemporaryDirectory() as directory:

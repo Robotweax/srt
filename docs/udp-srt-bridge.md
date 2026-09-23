@@ -155,7 +155,7 @@ This selects AES-CTR with a 256-bit key. No passphrase means no encryption.
 This bridge deliberately does not expose AES-GCM selection, even when built
 with the extension enabled. AES-CTR does not authenticate payload integrity;
 read [Security](../SECURITY.md) and the
-[0.2.4 qualification limits](release-notes-0.2.4.md#qualification-limits-and-release-acceptance).
+[0.2.5 qualification limits](release-notes-0.2.5.md#qualification-limits-and-release-acceptance).
 The independent cryptographic review remains outstanding.
 
 ## UDP multicast

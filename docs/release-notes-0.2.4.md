@@ -1,6 +1,11 @@
 # Robotweax SRT 0.2.4 release notes
 
-Status: **release candidate; publication pending**.
+Status: **published 2026-09-11 as v0.2.4**.
+
+The text below preserves the original preparation scope and acceptance limits.
+The published assets remain unsigned and unchanged; later signing support does
+not retroactively qualify or modify them. See the
+[v0.2.4 release](https://github.com/Robotweax/srt/releases/tag/v0.2.4).
 
 Project version: **0.2.4**. Shared-library ABI line: **0.2**.
 Default Haivision-compatible API profile and `srt_getversion()`: **SRT 1.5.7**.
@@ -26,8 +31,8 @@ Import the selected root's `srt.props`. Legacy installer candidates must be
 uninstalled first; same-backend upgrades require uninstall/reinstall.
 
 The tag pipeline creates a draft with both installers and `SHA256SUMS` after
-its checks pass. These filenames describe intended assets, not downloads
-already published. Installers are unsigned; do not bypass organizational
+its checks pass. These are the v0.2.4 installer filenames. Installers are
+unsigned; do not bypass organizational
 security policy to install them. See the
 [Windows SDK guide](https://github.com/Robotweax/srt/blob/main/packaging/windows/README.md).
 
@@ -73,7 +78,9 @@ the final 0.2.4 tag. ARM64 SDK packaging is build/link-tested on the x64 runner;
 separate earlier ARM64 runtime evidence must not be conflated with final
 installer acceptance.
 
-Before publication: require green release-PR/Main CI, successful tag-triggered
-installer builds and tests, and review both draft assets and checksums. Record
-the publication date and final evidence at release acceptance. No previous tag
-is moved or overwritten. Haivision reference binaries are not redistributed.
+The original acceptance checklist required green release-PR/Main CI, successful
+tag-triggered installer builds and tests, and review of both draft assets and
+checksums. The release page records publication; the earlier checks above remain
+version-scoped evidence, not a substitute for final artifact verification. No
+previous tag is moved or overwritten. Haivision reference binaries are not
+redistributed.

@@ -10,6 +10,10 @@ vlc_source="$(cd "$1" && pwd -P)"
 gst_source="$(cd "$2" && pwd -P)"
 ffmpeg_source="$(cd "$3" && pwd -P)"
 reference_source="$(cd "$4" && pwd -P)"
+"$repository/tools/python" "$repository/tests/check_source_revision.py" "$vlc_source" 6de05adcbaf2e8b85fe86aad4169393098628119
+"$repository/tools/python" "$repository/tests/check_source_revision.py" "$gst_source" 070125524a8422e29d3b69a372ed4f62fd343ffa
+"$repository/tools/python" "$repository/tests/check_source_revision.py" "$ffmpeg_source" 3acec0a1af2dda0a0838689b8b8649e7deb080a0
+"$repository/tools/python" "$repository/tests/check_source_revision.py" "$reference_source" 899348d8318eb9a3c5a5b6ec43c4a1114288773a
 mkdir -p "$5"
 work="$(cd "$5" && pwd -P)"
 jobs="${JOBS:-2}"

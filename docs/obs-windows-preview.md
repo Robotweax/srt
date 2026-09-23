@@ -23,6 +23,11 @@ directory:
   -Desktop -Preview
 ```
 
+The Robotweax checkout must be clean, including non-ignored untracked files.
+Its commit is captured before building and checked again during packaging; use
+a work directory outside that checkout. Commit local changes before building a
+source-identified preview.
+
 The strict Windows module and real Qt desktop SRT smoke tests must pass before
 the ZIP is made. The resulting files are in `C:/build/robotweax-obs-preview/preview/`:
 

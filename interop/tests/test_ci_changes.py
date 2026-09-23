@@ -952,6 +952,15 @@ class CiChangeClassifierTests(unittest.TestCase):
             ),
         )
 
+    def test_source_revision_guard_selects_both_integration_consumers(self) -> None:
+        for path in ("tests/check_source_revision.py",
+                     "interop/tests/test_integration_source_revision.py"):
+            with self.subTest(path=path):
+                result = ci_changes.classify([path])
+                self.assertTrue(result.python)
+                self.assertTrue(result.gstreamer)
+                self.assertTrue(result.vlc)
+
     def test_gstreamer_harness_selects_integration_and_c_formatting(self) -> None:
         for path in (
             "tests/gstreamer/configure.sh",

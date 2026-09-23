@@ -170,3 +170,7 @@ GStreamer's `ext/srt/gstsrtelement.c` at the revision pinned in the
 [GStreamer guide](gstreamer-integration.md) was checked for its `srtlib` log
 category so wrong-key tests can retain the reference rejection reason.
 No upstream transport implementation was copied into Robotweax.
+
+The complete `build_and_test.sh` helper verifies every supplied upstream HEAD
+against the qualified pins before creating build output. Use clean dedicated
+checkouts; pin checks identify revisions but do not certify arbitrary local edits.
