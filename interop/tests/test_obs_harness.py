@@ -51,8 +51,10 @@ class ObsHarnessTests(unittest.TestCase):
                 values[f"FFmpeg_{component}_INCLUDE_DIR"] = ffmpeg / "include"
 
             def write_cache():
-                cache.write_text("".join(f"{key}:FILEPATH={value}\n"
-                                         for key, value in values.items()))
+                cache.write_text("".join(
+                    f"\n// Generated CMake comment for {key}\n{key}:FILEPATH={value}\n"
+                    for key, value in values.items()
+                ))
 
             write_cache()
             macos_cache.check(cache, ffmpeg, srt)

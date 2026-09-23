@@ -7,7 +7,13 @@ import re
 
 
 def check(cache: Path, ffmpeg: Path, srt: Path) -> None:
-    values = dict(re.findall(r"^([^/#=][^:=]*):[^=]*=(.*)$", cache.read_text(), re.M))
+    values = dict(
+        re.findall(
+            r"^([^/#=\r\n][^:=\r\n]*):[^=\r\n]*=([^\r\n]*)$",
+            cache.read_text(),
+            re.M,
+        )
+    )
     srt_library = Path(values["Libsrt_LIBRARY"]).resolve()
     if srt_library.parent != (srt / "lib").resolve() or not srt_library.name.startswith(
         "librobotweax-srt"
