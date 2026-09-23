@@ -47,8 +47,9 @@ audible audio. Results and diagnostic logs are in the fresh work
 directory's `evidence` folder; CI uploads text diagnostics only.
 
 Use [`-Desktop -Preview`](obs-windows-preview.md) to assemble a separate
-portable ZIP after the same strict qualification. The ZIP is a local
-development output; CI publishes only its text manifest and hash.
+portable ZIP after the same strict qualification. This is an optional local
+user action; Robotweax CI does not invoke the switch or create an OBS runtime
+ZIP.
 
 This is a reproducible development qualification, **not** a signed installer,
 a release package, or proof for every Windows desktop workflow. It does not

@@ -763,7 +763,7 @@ jobs:
           $script = Join-Path $PWD 'tests\obs\build_windows.ps1'
           $pwsh = Join-Path $PSHOME 'pwsh.exe'
           $work = Join-Path $env:RUNNER_TEMP 'obs-windows-desktop-qualification'
-          & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" amd64 && `"$pwsh`" -NoProfile -File `"$script`" -ObsSource `"$PWD\obs-desktop-source`" -WorkDirectory `"$work`" -Desktop -Preview"
+          & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" amd64 && `"$pwsh`" -NoProfile -File `"$script`" -ObsSource `"$PWD\obs-desktop-source`" -WorkDirectory `"$work`" -Desktop"
           if ($LASTEXITCODE -ne 0) { throw 'Windows OBS desktop qualification failed' }
       - name: Preserve Windows OBS desktop diagnostics
         if: always()
@@ -772,7 +772,6 @@ jobs:
           name: obs-windows-desktop-evidence
           path: |
             ${{ runner.temp }}/obs-windows-desktop-qualification/evidence/*.txt
-            ${{ runner.temp }}/obs-windows-desktop-qualification/evidence/preview-manifest.json
             ${{ runner.temp }}/obs-windows-desktop-qualification/evidence/runtime/*.log
             ${{ runner.temp }}/obs-windows-desktop-qualification/evidence/desktop/*.log
             ${{ runner.temp }}/obs-windows-desktop-qualification/obs-build/CMakeCache.txt
