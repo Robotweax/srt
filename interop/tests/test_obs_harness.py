@@ -35,6 +35,30 @@ macos = load("obs_macos_smoke", "run_macos_smoke.py")
 
 
 class ObsHarnessTests(unittest.TestCase):
+    def test_macos_runtime_paths_ignore_xcode_linker_stub(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory)
+            binaries = (
+                "libobs/Release/libobs.framework/Versions/A/libobs",
+                "plugins/obs-ffmpeg/Release/obs-ffmpeg.plugin/Contents/MacOS/obs-ffmpeg",
+                "plugins/obs-x264/Release/obs-x264.plugin/Contents/MacOS/obs-x264",
+                "libobs-opengl/Release/libobs-opengl.dylib",
+            )
+            for relative in binaries:
+                binary = build / relative
+                binary.parent.mkdir(parents=True, exist_ok=True)
+                binary.write_bytes(b"fixture")
+            stub = build / "build/EagerLinkingTBDs/Release/libobs.framework"
+            stub.mkdir(parents=True)
+            framework, ffmpeg_plugin, x264_plugin, graphics = macos.runtime_paths(build)
+            self.assertEqual(framework, build / "libobs/Release/libobs.framework")
+            self.assertEqual(ffmpeg_plugin, build / "plugins/obs-ffmpeg/Release/obs-ffmpeg.plugin")
+            self.assertEqual(x264_plugin, build / "plugins/obs-x264/Release/obs-x264.plugin")
+            self.assertEqual(graphics, build / "libobs-opengl/Release/libobs-opengl.dylib")
+            (build / binaries[1]).unlink()
+            with self.assertRaisesRegex(RuntimeError, "missing OBS runtime binary"):
+                macos.runtime_paths(build)
+
     def test_macos_cache_rejects_prebuilt_provider(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

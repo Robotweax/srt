@@ -18,11 +18,21 @@ MEDIA = re.compile(
 )
 
 
-def one(root: Path, pattern: str) -> Path:
-    found = [path for path in root.rglob(pattern) if path.exists()]
-    if len(found) != 1:
-        raise RuntimeError(f"expected one {pattern} in {root}, found {found}")
-    return found[0]
+def runtime_paths(build: Path) -> tuple[Path, Path, Path, Path]:
+    """Select Xcode products, excluding its EagerLinkingTBDs stub frameworks."""
+    framework = build / "libobs/Release/libobs.framework"
+    ffmpeg_plugin = build / "plugins/obs-ffmpeg/Release/obs-ffmpeg.plugin"
+    x264_plugin = build / "plugins/obs-x264/Release/obs-x264.plugin"
+    graphics = build / "libobs-opengl/Release/libobs-opengl.dylib"
+    for binary in (
+        framework / "Versions/A/libobs",
+        ffmpeg_plugin / "Contents/MacOS/obs-ffmpeg",
+        x264_plugin / "Contents/MacOS/obs-x264",
+        graphics,
+    ):
+        if not binary.is_file():
+            raise RuntimeError(f"missing OBS runtime binary: {binary}")
+    return framework, ffmpeg_plugin, x264_plugin, graphics
 
 
 def run(command: list[str], *, env: dict[str, str] | None = None) -> str:
@@ -155,13 +165,7 @@ def qualify(args: argparse.Namespace) -> None:
     artifacts = args.artifacts
     artifacts.mkdir(parents=True, exist_ok=True)
     build = args.obs_build
-    framework = one(build, "libobs.framework")
-    ffmpeg_plugin = one(build, "obs-ffmpeg.plugin")
-    x264_plugin = one(build, "obs-x264.plugin")
-    graphics = one(build, "libobs-opengl.dylib")
-    libobs = framework / "Versions/A/libobs"
-    if not libobs.exists():
-        raise RuntimeError(f"missing libobs framework binary: {libobs}")
+    framework, ffmpeg_plugin, x264_plugin, graphics = runtime_paths(build)
     ffmpeg = args.ffmpeg_prefix / "bin/ffmpeg"
     avformat = args.ffmpeg_prefix / "lib/libavformat.dylib"
     if not avformat.exists():
