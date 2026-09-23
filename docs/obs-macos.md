@@ -42,6 +42,8 @@ required CI job uses an Apple Silicon macOS runner and uploads only text
 diagnostics. It does not assemble or distribute a binary package.
 
 The scope is IPv4 loopback, AES-CTR with a 128-bit key, MPEG-TS, moving video,
-non-silent audio, and clean shutdown. It does not qualify the OBS Qt frontend,
+non-silent audio, OpenGL rendering, and clean shutdown. Only the required OBS
+module/renderer targets are built; the unrelated Metal renderer is not part of
+this profile. It does not qualify the OBS Qt frontend,
 physical-network reliability, hardware encoders, Rendezvous, IPv6, AES-GCM,
 performance, quantitative A/V sync, or a distributable macOS application.

@@ -88,7 +88,11 @@ cmake -S "$obs_source" -B "$work/obs-build" -G Xcode \
     -DENABLE_NEW_MPEGTS_OUTPUT=ON
 "$repository/tools/python" "$repository/tests/obs/check_macos_cache.py" \
     "$work/obs-build/CMakeCache.txt" "$work/ffmpeg" "$work/srt"
-cmake --build "$work/obs-build" --config Release --parallel "$jobs"
+# The isolated peer uses OpenGL. Building ALL_BUILD also compiles OBS's
+# unrelated Metal renderer, which is not part of this qualification and whose
+# pinned Swift source treats macOS 26 display-link deprecations as errors.
+cmake --build "$work/obs-build" --config Release --parallel "$jobs" \
+    --target libobs libobs-opengl obs-ffmpeg obs-x264 obs-ffmpeg-mux
 "$repository/tools/python" "$repository/tests/obs/run_macos_smoke.py" \
     --obs-source "$obs_source" --obs-build "$work/obs-build" \
     --ffmpeg-prefix "$work/ffmpeg" --srt-prefix "$work/srt" \

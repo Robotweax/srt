@@ -93,6 +93,7 @@ class ObsHarnessTests(unittest.TestCase):
         self.assertIn('ENABLE_NEW_MPEGTS_OUTPUT=ON', build)
         self.assertIn('check_macos_cache.py', build)
         self.assertIn('run_macos_smoke.py', build)
+        self.assertIn('--target libobs libobs-opengl obs-ffmpeg obs-x264 obs-ffmpeg-mux', build)
         self.assertNotIn('zip ', build)
         job = workflow.split("  obs_macos_integration:\n", 1)[1].split(
             "  obs_windows_desktop:\n", 1
