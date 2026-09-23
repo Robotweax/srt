@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -38,7 +39,32 @@ macos = load("obs_macos_smoke", "run_macos_smoke.py")
 macos_desktop = load("obs_macos_desktop", "run_macos_desktop_smoke.py")
 
 
+def signed_macho(payload: bytes, signature: bytes = b"signature") -> bytes:
+    """A minimal Mach-O fixture with independently variable signing data."""
+    header = struct.pack("<IiiIIIII", 0xFEEDFACF, 0x100000C, 0, 6, 2, 88, 0, 0)
+    segment = struct.pack(
+        "<II16sQQQQiiII", 0x19, 72, b"__LINKEDIT", 0,
+        len(payload) + len(signature), 120, len(payload) + len(signature),
+        0, 0, 0, 0,
+    )
+    code_signature = struct.pack("<IIII", 0x1D, 16, 120 + len(payload), len(signature))
+    return header + segment + code_signature + payload + signature
+
+
 class ObsHarnessTests(unittest.TestCase):
+    def test_macos_signed_macho_hash_ignores_only_signing_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "library.dylib"
+            path.write_bytes(signed_macho(b"Robotweax", b"first"))
+            expected = macos_desktop.macho_payload_sha256(path)
+            path.write_bytes(signed_macho(b"Robotweax", b"different signature"))
+            self.assertEqual(macos_desktop.macho_payload_sha256(path), expected)
+            path.write_bytes(signed_macho(b"other code", b"first"))
+            self.assertNotEqual(macos_desktop.macho_payload_sha256(path), expected)
+            path.write_bytes(b"not a Mach-O")
+            with self.assertRaisesRegex(RuntimeError, "Mach-O"):
+                macos_desktop.macho_payload_sha256(path)
+
     def test_macos_desktop_uses_private_cocoa_profile_and_rejects_reuse(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "desktop"
@@ -83,19 +109,23 @@ class ObsHarnessTests(unittest.TestCase):
             ffmpeg = root / "ffmpeg/lib/libavformat.dylib"
             for target, content in ((srt, b"Robotweax"), (ffmpeg, b"FFmpeg")):
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(content)
+                target.write_bytes(signed_macho(content, b"original"))
                 embedded = app / "Contents/Frameworks" / target.name
                 embedded.parent.mkdir(parents=True, exist_ok=True)
-                embedded.write_bytes(content)
+                embedded.write_bytes(signed_macho(content, b"resigned by Xcode"))
             args = SimpleNamespace(obs_build=root / "build", srt_prefix=root / "srt",
                                    ffmpeg_prefix=root / "ffmpeg")
             self.assertEqual(
                 macos_desktop.bundle_contract(args), app / "Contents/MacOS/OBS"
             )
-            (app / "Contents/Frameworks/librobotweax-srt.dylib").write_bytes(b"wrong")
+            (app / "Contents/Frameworks/librobotweax-srt.dylib").write_bytes(
+                signed_macho(b"wrong")
+            )
             with self.assertRaisesRegex(RuntimeError, "non-Robotweax"):
                 macos_desktop.bundle_contract(args)
-            (app / "Contents/Frameworks/librobotweax-srt.dylib").write_bytes(b"Robotweax")
+            (app / "Contents/Frameworks/librobotweax-srt.dylib").write_bytes(
+                signed_macho(b"Robotweax", b"resigned by Xcode")
+            )
             (app / "Contents/Frameworks/libsrt.dylib").write_bytes(b"competing")
             with self.assertRaisesRegex(RuntimeError, "competing"):
                 macos_desktop.bundle_contract(args)
@@ -122,7 +152,7 @@ class ObsHarnessTests(unittest.TestCase):
             other = root / "other/libsrt.dylib"
             for path in (srt, avformat, plugin, other):
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(path.name.encode())
+                path.write_bytes(signed_macho(path.name.encode()))
             args = SimpleNamespace(srt_prefix=root / "srt", ffmpeg_prefix=root / "ffmpeg")
             lines = f"__TEXT  {srt}\n__TEXT  {avformat}\n__TEXT  {plugin}\n"
             result = SimpleNamespace(returncode=0, stdout=lines, stderr="")
@@ -350,6 +380,14 @@ class ObsHarnessTests(unittest.TestCase):
         build = (ROOT / "tests/obs/build_macos.sh").read_text()
         self.assertIn("-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0", build)
         self.assertIn('"${desktop_cmake[@]}"', build)
+        case_block = build.split('case "$profile" in\n', 1)[1].split("\nesac", 1)[0]
+        for profile, expected in (("modules", "OFF"), ("desktop", "ON")):
+            result = subprocess.run(
+                ["/bin/bash", "-c", "set -u\nprofile=" + profile + "\ncase $profile in\n"
+                 + case_block + "\nesac\nprintf '%s' \"${desktop_cmake[@]}\""],
+                check=True, capture_output=True, text=True,
+            )
+            self.assertIn(f"ROBOTWEAX_OBS_MACOS_DESKTOP={expected}", result.stdout)
         qualification = ROOT / "tests/obs/macos_qualification.cmake"
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source"

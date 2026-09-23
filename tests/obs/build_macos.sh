@@ -8,7 +8,7 @@ if [[ $# -lt 3 || $# -gt 4 ]]; then
 fi
 profile="${4:-modules}"
 case "$profile" in
-    modules) frontend=OFF; selection=headless; desktop_cmake=() ;;
+    modules) frontend=OFF; selection=headless; desktop_cmake=(-DROBOTWEAX_OBS_MACOS_DESKTOP=OFF) ;;
     desktop) frontend=ON; selection=desktop; desktop_cmake=(-DROBOTWEAX_OBS_MACOS_DESKTOP=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0) ;;
     *) echo "unknown OBS profile: $profile" >&2; exit 2 ;;
 esac

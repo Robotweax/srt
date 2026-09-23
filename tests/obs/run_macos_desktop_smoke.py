@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import struct
 import subprocess
 import time
 
@@ -21,12 +22,52 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+def macho_payload_sha256(path: Path) -> str:
+    """Hash the signed Mach-O payload while ignoring only signing metadata.
+
+    Xcode re-signs dylibs copied into OBS.app, changing the signature and the
+    __LINKEDIT size fields even when all executable and library bytes agree.
+    """
+    data = bytearray(path.read_bytes())
+    if len(data) < 32 or data[:4] != b"\xcf\xfa\xed\xfe":
+        raise RuntimeError(f"not a 64-bit Mach-O dylib: {path}")
+    count, command_bytes = struct.unpack_from("<II", data, 16)
+    end = 32 + command_bytes
+    if count > 1024 or end > len(data):
+        raise RuntimeError(f"invalid Mach-O load commands: {path}")
+    offset = 32
+    signature_offset = None
+    linkedit = False
+    for _ in range(count):
+        if offset + 8 > end:
+            raise RuntimeError(f"truncated Mach-O load command: {path}")
+        command, size = struct.unpack_from("<II", data, offset)
+        if size < 8 or offset + size > end:
+            raise RuntimeError(f"invalid Mach-O load command size: {path}")
+        if command == 0x19 and size >= 72:  # LC_SEGMENT_64
+            if data[offset + 8 : offset + 24].rstrip(b"\0") == b"__LINKEDIT":
+                if linkedit:
+                    raise RuntimeError(f"duplicate Mach-O __LINKEDIT: {path}")
+                linkedit = True
+                struct.pack_into("<Q", data, offset + 32, 0)  # vmsize
+                struct.pack_into("<Q", data, offset + 48, 0)  # filesize
+        elif command == 0x1D and size == 16:  # LC_CODE_SIGNATURE
+            if signature_offset is not None:
+                raise RuntimeError(f"duplicate Mach-O signature: {path}")
+            signature_offset, signature_size = struct.unpack_from(
+                "<II", data, offset + 8
+            )
+            if (
+                not signature_size
+                or signature_offset < end
+                or signature_offset + signature_size > len(data)
+            ):
+                raise RuntimeError(f"invalid Mach-O signature range: {path}")
+            struct.pack_into("<I", data, offset + 12, 0)  # signature size
+        offset += size
+    if offset != end or not linkedit or signature_offset is None:
+        raise RuntimeError(f"missing Mach-O signing metadata: {path}")
+    return hashlib.sha256(data[:signature_offset]).hexdigest()
 
 
 def one_bundle_file(app: Path, pattern: str) -> Path:
@@ -57,9 +98,9 @@ def bundle_contract(args: argparse.Namespace) -> Path:
     expected_avformat = one_bundle_file(
         args.ffmpeg_prefix / "lib", "libavformat*.dylib"
     )
-    if sha256(robotweax) != sha256(expected_srt):
+    if macho_payload_sha256(robotweax) != macho_payload_sha256(expected_srt):
         raise RuntimeError("OBS.app embeds a non-Robotweax SRT binary")
-    if sha256(avformat) != sha256(expected_avformat):
+    if macho_payload_sha256(avformat) != macho_payload_sha256(expected_avformat):
         raise RuntimeError("OBS.app embeds a different FFmpeg libavformat")
     return executable
 
@@ -238,7 +279,9 @@ def verify_maps(child: subprocess.Popen, args: argparse.Namespace, evidence: Pat
     ):
         matches = {path for path in paths if path.name.startswith(name)}
         expected = one_bundle_file(prefix, f"{name}*.dylib")
-        if len(matches) != 1 or sha256(next(iter(matches))) != sha256(expected):
+        if len(matches) != 1 or macho_payload_sha256(
+            next(iter(matches))
+        ) != macho_payload_sha256(expected):
             raise RuntimeError(f"OBS desktop mapped unexpected {name}: {matches}")
     if not any(path.name == "obs-ffmpeg" for path in paths):
         raise RuntimeError("OBS desktop did not load the production FFmpeg module")
