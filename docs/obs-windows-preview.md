@@ -1,9 +1,13 @@
 # OBS Windows portable preview
 
-This optional profile assembles the [qualified Windows desktop build](obs-windows-desktop.md)
-as an isolated, portable OBS Studio 32.2.2 x64 ZIP. It is a development
-preview, not a signed installer or an official OBS Project distribution. It
-does not replace an existing OBS installation.
+This optional, user-invoked profile assembles the
+[qualified Windows desktop build](obs-windows-desktop.md) as an isolated,
+portable OBS Studio 32.2.2 x64 ZIP. The Robotweax CI does **not** invoke the
+`-Preview` build mode against the real OBS runtime or publish a binary
+artifact. A synthetic unit test checks the packager with fixture files, but
+does not produce a usable OBS distribution. This is a development preview,
+not a signed installer or an official OBS Project distribution. It does not
+replace an existing OBS installation.
 
 ## Build and inspect
 
@@ -73,14 +77,15 @@ this qualification.
 
 ## Distribution boundary
 
-GitHub Actions uploads **text diagnostics only**, including the manifest and
-ZIP hash. It does not publish the binary ZIP or a release. Although the ZIP
-includes collected OBS, Robotweax and dependency license files, that alone
-does not establish compliance with every source-offer, patch, attribution,
-patent or redistribution obligation. Before public distribution, review the
+GitHub Actions runs the desktop qualification without `-Preview` and uploads
+text diagnostics only. It neither creates nor distributes the OBS runtime ZIP.
+Users who invoke the optional packaging switch are responsible for the
+resulting local artifact and any distribution. The ZIP includes collected
+OBS, Robotweax and dependency license files, but that alone does not
+establish compliance with every source-offer, patch, attribution, patent or
+redistribution obligation. Before sharing the ZIP with others, review the
 exact pinned OBS/dependency licenses and make the corresponding modified
-source and build scripts available as required; complete the physical-Windows
-acceptance above and decide how to sign and support the package. The build's
+source and build scripts available as required. The build's
 OBS modifications are applied by `tests/obs/prepare_source.py`,
 `tests/obs/prepare_desktop_lifecycle.py`, and
 `tests/obs/prepare_windows_source.py` in the Robotweax source commit recorded

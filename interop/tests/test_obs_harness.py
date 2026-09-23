@@ -673,13 +673,15 @@ class ObsHarnessTests(unittest.TestCase):
         job = workflow.split("  obs_windows_desktop:\n", 1)[1].split(
             "  vlc_integration:\n", 1
         )[0]
-        self.assertIn("-Desktop -Preview", job)
+        self.assertIn("-Desktop", job)
+        self.assertNotIn("-Preview", job)
+        self.assertNotIn("package_windows_preview.py", job)
         self.assertIn("ref: ${{ env.OBS_COMMIT }}", job)
         artifact_paths = job.split("          path: |\n", 1)[1].split(
             "          retention-days:", 1
         )[0]
-        self.assertIn("preview-manifest.json", artifact_paths)
         self.assertIn("evidence/*.txt", artifact_paths)
+        self.assertNotIn("preview-", artifact_paths)
         for binary_suffix in (".dll", ".exe", ".zip"):
             self.assertNotIn(binary_suffix, artifact_paths)
         required = workflow.split("  ci_gate:\n", 1)[1]
