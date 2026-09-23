@@ -375,7 +375,9 @@ int main(int argc, char** argv)
     }
     report(output);
     maps();
+    puts("TEARDOWN stop-output");
     good = stop_output(output) && good;
+    puts("TEARDOWN release-output");
     obs_output_release(output);
     obs_encoder_release(vencoder);
     obs_encoder_release(aencoder);
@@ -385,6 +387,7 @@ int main(int argc, char** argv)
     obs_source_filter_remove(source, filter);
     obs_source_release(filter);
     obs_source_release(source);
+    puts("TEARDOWN obs-shutdown");
     obs_shutdown();
     puts("SHUTDOWN");
     return good ? 0 : 1;

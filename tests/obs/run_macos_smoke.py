@@ -87,7 +87,7 @@ def tell(child: subprocess.Popen, message: str) -> None:
 
 
 def sample_process(child: subprocess.Popen, destination: Path) -> None:
-    """Keep a text stack sample if a macOS OBS source stalls during connection."""
+    """Keep a text stack sample if a macOS OBS peer stalls."""
     try:
         result = subprocess.run(
             ["sample", str(child.pid), "2", "-file", str(destination)],
@@ -324,7 +324,12 @@ def qualify(args: argparse.Namespace) -> None:
         with process(obs, obs_log, env) as child:
             until(receiver, listener_log, "BYTES", 40)
             tell(child, "quit")
-            if child.wait(timeout=10) or "SHUTDOWN" not in obs_log.read_text():
+            try:
+                exit_code = child.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                sample_process(child, artifacts / "native-obs-stacks.txt")
+                raise
+            if exit_code or "SHUTDOWN" not in obs_log.read_text():
                 raise RuntimeError("native OBS output did not shut down cleanly")
         if receiver.wait(timeout=5):
             raise RuntimeError("reference listener failed")

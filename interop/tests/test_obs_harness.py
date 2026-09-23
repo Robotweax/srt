@@ -79,6 +79,21 @@ class ObsHarnessTests(unittest.TestCase):
         reference = (ROOT / "tests/obs/macos_reference_peer.c").read_text()
         self.assertIn('printf("SENT %llu\\n"', reference)
 
+    def test_macos_native_shutdown_timeout_collects_text_stack_sample(self):
+        smoke = (ROOT / "tests/obs/run_macos_smoke.py").read_text()
+        self.assertIn(
+            'except subprocess.TimeoutExpired:\n'
+            '                sample_process(child, artifacts / "native-obs-stacks.txt")',
+            smoke,
+        )
+        peer = (ROOT / "tests/obs/peer.c").read_text()
+        stop = peer.index('puts("TEARDOWN stop-output")')
+        release = peer.index('puts("TEARDOWN release-output")')
+        shutdown = peer.index('puts("TEARDOWN obs-shutdown")')
+        self.assertLess(stop, release)
+        self.assertLess(release, shutdown)
+        self.assertLess(shutdown, peer.index("obs_shutdown();"))
+
     def test_macos_live_source_uses_bounded_ffmpeg_probe(self):
         peer = (ROOT / "tests/obs/peer.c").read_text()
         self.assertIn('if (!local)\n        obs_data_set_string(settings, "ffmpeg_options",', peer)
