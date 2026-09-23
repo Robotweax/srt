@@ -99,7 +99,8 @@ def require_media(log: Path) -> None:
 
 def require_provider(log: Path, srt: Path, ffmpeg: Path, plugin: Path) -> None:
     text = log.read_text(errors="replace")
-    paths = [Path(path).resolve() for path in re.findall(r"^MAP (/.+)$", text, re.M)]
+    # The peer records loaded modules both before streaming and at shutdown.
+    paths = {Path(path).resolve() for path in re.findall(r"^MAP (/.+)$", text, re.M)}
     expected = (
         ("librobotweax-srt", srt / "lib"),
         ("libavformat", ffmpeg / "lib"),

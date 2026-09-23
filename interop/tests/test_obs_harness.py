@@ -106,6 +106,8 @@ class ObsHarnessTests(unittest.TestCase):
             )
             macos.require_provider(log, srt, ffmpeg, plugin)
             macos.require_media(log)
+            log.write_text(log.read_text() + f"MAP {provider}\n")
+            macos.require_provider(log, srt, ffmpeg, plugin)
             log.write_text(log.read_text() + f"MAP {root}/deps/libsrt.dylib\n")
             with self.assertRaisesRegex(RuntimeError, "competing SRT"):
                 macos.require_provider(log, srt, ffmpeg, plugin)
