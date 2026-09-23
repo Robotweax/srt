@@ -2,10 +2,16 @@
 # SPDX-License-Identifier: MIT
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-    echo "usage: $0 OBS_SOURCE FFMPEG_SOURCE WORK_DIRECTORY" >&2
+if [[ $# -lt 3 || $# -gt 4 ]]; then
+    echo "usage: $0 OBS_SOURCE FFMPEG_SOURCE WORK_DIRECTORY [modules|desktop]" >&2
     exit 2
 fi
+profile="${4:-modules}"
+case "$profile" in
+    modules) frontend=OFF; selection=headless ;;
+    desktop) frontend=ON; selection=desktop ;;
+    *) echo "unknown OBS profile: $profile" >&2; exit 2 ;;
+esac
 repository="$(cd "$(dirname "$0")/../.." && pwd -P)"
 obs_source="$(cd "$1" && pwd -P)"
 ffmpeg_source="$(cd "$2" && pwd -P)"
@@ -14,7 +20,11 @@ work="$(cd "$3" && pwd -P)"
 [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]
 [[ "$(git -C "$obs_source" rev-parse HEAD)" == ba2f32bdf791005443988a4955e963663e16b1ed ]]
 [[ "$(git -C "$ffmpeg_source" rev-parse HEAD)" == 3acec0a1af2dda0a0838689b8b8649e7deb080a0 ]]
-[[ -z "$(git -C "$obs_source" status --porcelain --untracked-files=no -- . ':!plugins/CMakeLists.txt')" ]]
+source_exclusions=(':!plugins/CMakeLists.txt')
+if [[ "$profile" == desktop ]]; then
+    source_exclusions+=(':!plugins/obs-ffmpeg/obs-ffmpeg-mpegts.c')
+fi
+[[ -z "$(git -C "$obs_source" status --porcelain --untracked-files=no -- . "${source_exclusions[@]}")" ]]
 for directory in srt-build srt ffmpeg-build ffmpeg obs-build deps evidence; do
     [[ ! -e "$work/$directory" ]] || { echo "use a fresh work directory" >&2; exit 1; }
 done
@@ -69,7 +79,11 @@ mkdir -p "$work/ffmpeg-build"
 make -C "$work/ffmpeg-build" REVISION="$(<"$ffmpeg_source/RELEASE")-3acec0a" -j"$jobs"
 make -C "$work/ffmpeg-build" REVISION="$(<"$ffmpeg_source/RELEASE")-3acec0a" install
 
-"$repository/tools/python" "$repository/tests/obs/prepare_source.py" "$obs_source"
+if [[ "$profile" == desktop ]]; then
+    "$repository/tools/python" "$repository/tests/obs/prepare_desktop_lifecycle.py" "$obs_source"
+fi
+"$repository/tools/python" "$repository/tests/obs/prepare_source.py" "$obs_source" \
+    --profile "$selection"
 export PKG_CONFIG_PATH="$work/ffmpeg/lib/pkgconfig:$work/srt/lib/pkgconfig"
 for component in libavcodec libavdevice libavfilter libavformat libavutil libswscale libswresample; do
     [[ "$(pkg-config --variable=pcfiledir "$component")" == "$work/ffmpeg/lib/pkgconfig" ]]
@@ -83,18 +97,32 @@ cmake -S "$obs_source" -B "$work/obs-build" -G Xcode \
     -DLibsrt_LIBRARY="$robotweax_dylib" \
     -DLibsrt_INCLUDE_DIR="$work/srt/include" \
     -DCMAKE_PROJECT_obs-studio_INCLUDE="$repository/tests/obs/macos_qualification.cmake" \
-    -DENABLE_FRONTEND=OFF -DENABLE_BROWSER=OFF -DENABLE_SCRIPTING=OFF \
+    -DENABLE_FRONTEND="$frontend" -DENABLE_BROWSER=OFF -DENABLE_SCRIPTING=OFF \
     -DENABLE_PLUGINS=ON -DENABLE_VLC=OFF -DENABLE_AJA=OFF \
-    -DENABLE_NEW_MPEGTS_OUTPUT=ON
+    -DENABLE_NEW_MPEGTS_OUTPUT=ON \
+    -DENABLE_SERVICE_UPDATES=OFF -DENABLE_WHATSNEW=OFF
 "$repository/tools/python" "$repository/tests/obs/check_macos_cache.py" \
     "$work/obs-build/CMakeCache.txt" "$work/ffmpeg" "$work/srt"
-# The isolated peer uses OpenGL. Building ALL_BUILD also compiles OBS's
-# unrelated Metal renderer, which is not part of this qualification and whose
-# pinned Swift source treats macOS 26 display-link deprecations as errors.
-cmake --build "$work/obs-build" --config Release --parallel "$jobs" \
-    --target libobs libobs-opengl obs-ffmpeg obs-x264 obs-ffmpeg-mux
+if [[ "$profile" == desktop ]]; then
+    cmake --build "$work/obs-build" --config Release --parallel "$jobs" \
+        --target obs-studio
+else
+    # Building ALL_BUILD also compiles OBS's unrelated Metal renderer, whose
+    # pinned Swift source treats macOS 26 display-link deprecations as errors.
+    cmake --build "$work/obs-build" --config Release --parallel "$jobs" \
+        --target libobs libobs-opengl obs-ffmpeg obs-x264 obs-ffmpeg-mux
+fi
 "$repository/tools/python" "$repository/tests/obs/run_macos_smoke.py" \
     --obs-source "$obs_source" --obs-build "$work/obs-build" \
     --ffmpeg-prefix "$work/ffmpeg" --srt-prefix "$work/srt" \
     --reference-prefix "$work/deps/obs" --artifacts "$work/evidence" \
     | tee "$work/evidence/results.txt"
+if [[ "$profile" == desktop ]]; then
+    "$repository/tools/python" "$repository/tests/obs/run_macos_desktop_smoke.py" \
+        --obs-build "$work/obs-build" --ffmpeg-prefix "$work/ffmpeg" \
+        --srt-prefix "$work/srt" --reference-prefix "$work/deps/obs" \
+        --fixture "$work/evidence/fixture.ts" \
+        --reference-peer "$work/evidence/macos-reference-peer" \
+        --artifacts "$work/evidence/desktop" \
+        | tee "$work/evidence/desktop-results.txt"
+fi

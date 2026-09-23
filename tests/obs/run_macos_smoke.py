@@ -48,7 +48,9 @@ def port() -> int:
 
 
 @contextmanager
-def process(command: list[str], log: Path, env: dict[str, str]):
+def process(
+    command: list[str], log: Path, env: dict[str, str], *, cwd: Path | None = None
+):
     with log.open("w+") as stream:
         child = subprocess.Popen(
             command,
@@ -56,6 +58,7 @@ def process(command: list[str], log: Path, env: dict[str, str]):
             stdout=stream,
             stderr=subprocess.STDOUT,
             env=env,
+            cwd=cwd,
         )
         try:
             yield child

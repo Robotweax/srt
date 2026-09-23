@@ -35,9 +35,137 @@ windows_desktop = load("obs_windows_desktop", "run_windows_desktop_smoke.py")
 windows_preview = load("obs_windows_preview", "package_windows_preview.py")
 macos_cache = load("obs_macos_cache", "check_macos_cache.py")
 macos = load("obs_macos_smoke", "run_macos_smoke.py")
+macos_desktop = load("obs_macos_desktop", "run_macos_desktop_smoke.py")
 
 
 class ObsHarnessTests(unittest.TestCase):
+    def test_macos_desktop_uses_private_cocoa_profile_and_rejects_reuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "desktop"
+            fixture = Path(directory) / "fixture.ts"
+            config = macos_desktop.prepare_profile(root, fixture, "srt://output")
+            command, env = macos_desktop.desktop_command(
+                Path(directory) / "OBS", config, stream=True
+            )
+            self.assertEqual(env["HOME"], str(root / "home"))
+            self.assertEqual(env["CFFIXED_USER_HOME"], env["HOME"])
+            self.assertIn("--startstreaming", command)
+            self.assertTrue(config.is_relative_to(root))
+            self.assertEqual(
+                json.loads((config / "basic/scenes/Robotweax.json").read_text())
+                ["sources"][0]["settings"]["local_file"],
+                str(fixture),
+            )
+            with self.assertRaises(FileExistsError):
+                macos_desktop.prepare_profile(root, fixture, "srt://other")
+            network = macos_desktop.prepare_profile(
+                Path(directory) / "source", fixture, "srt://output", source="srt://input"
+            )
+            settings = json.loads(
+                (network / "basic/scenes/Robotweax.json").read_text()
+            )["sources"][0]["settings"]
+            self.assertFalse(settings["is_local_file"])
+            self.assertEqual(settings["input"], "srt://input")
+
+    def test_macos_desktop_requires_exact_embedded_provider_and_normal_shutdown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / "build/frontend/Release/OBS.app"
+            for relative in (
+                "Contents/MacOS/OBS",
+                "Contents/PlugIns/obs-ffmpeg.plugin/Contents/MacOS/obs-ffmpeg",
+                "Contents/PlugIns/rtmp-services.plugin/Contents/MacOS/rtmp-services",
+            ):
+                target = app / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"OBS")
+            srt = root / "srt/lib/librobotweax-srt.dylib"
+            ffmpeg = root / "ffmpeg/lib/libavformat.dylib"
+            for target, content in ((srt, b"Robotweax"), (ffmpeg, b"FFmpeg")):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+                embedded = app / "Contents/Frameworks" / target.name
+                embedded.parent.mkdir(parents=True, exist_ok=True)
+                embedded.write_bytes(content)
+            args = SimpleNamespace(obs_build=root / "build", srt_prefix=root / "srt",
+                                   ffmpeg_prefix=root / "ffmpeg")
+            self.assertEqual(
+                macos_desktop.bundle_contract(args), app / "Contents/MacOS/OBS"
+            )
+            (app / "Contents/Frameworks/librobotweax-srt.dylib").write_bytes(b"wrong")
+            with self.assertRaisesRegex(RuntimeError, "non-Robotweax"):
+                macos_desktop.bundle_contract(args)
+            (app / "Contents/Frameworks/librobotweax-srt.dylib").write_bytes(b"Robotweax")
+            (app / "Contents/Frameworks/libsrt.dylib").write_bytes(b"competing")
+            with self.assertRaisesRegex(RuntimeError, "competing"):
+                macos_desktop.bundle_contract(args)
+
+        log = "Loaded scenes:\n==== Shutting down\nFreeing OBS context data\n"
+        self.assertEqual(
+            macos_desktop.check_shutdown(0, log, "Number of memory leaks: 1\n"), 1
+        )
+        with self.assertRaisesRegex(RuntimeError, "allocation regression"):
+            macos_desktop.check_shutdown(0, log, "Number of memory leaks: 2\n", 1)
+        with self.assertRaisesRegex(RuntimeError, "normally"):
+            macos_desktop.check_shutdown(1, log, "Number of memory leaks: 1\n")
+        with self.assertRaisesRegex(RuntimeError, "streaming shutdown"):
+            macos_desktop.check_shutdown(
+                0, log, "Number of memory leaks: 1\n", 1, streamed=True
+            )
+
+    def test_macos_desktop_runtime_mapping_rejects_other_srt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            srt = root / "srt/lib/librobotweax-srt.dylib"
+            avformat = root / "ffmpeg/lib/libavformat.dylib"
+            plugin = root / "obs-ffmpeg.plugin/Contents/MacOS/obs-ffmpeg"
+            other = root / "other/libsrt.dylib"
+            for path in (srt, avformat, plugin, other):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(path.name.encode())
+            args = SimpleNamespace(srt_prefix=root / "srt", ffmpeg_prefix=root / "ffmpeg")
+            lines = f"__TEXT  {srt}\n__TEXT  {avformat}\n__TEXT  {plugin}\n"
+            result = SimpleNamespace(returncode=0, stdout=lines, stderr="")
+            evidence = root / "mappings.txt"
+            with mock.patch.object(macos_desktop.subprocess, "run", return_value=result):
+                macos_desktop.verify_maps(SimpleNamespace(pid=1234), args, evidence)
+                self.assertIn(str(srt), evidence.read_text())
+                result.stdout += f"__TEXT  {other}\n"
+                with self.assertRaisesRegex(RuntimeError, "competing SRT"):
+                    macos_desktop.verify_maps(SimpleNamespace(pid=1234), args, evidence)
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("cc"), "requires macOS compiler")
+    def test_macos_window_probe_compiles_and_rejects_invalid_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "window-probe"
+            subprocess.run(
+                ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                 str(ROOT / "tests/obs/macos_window_probe.c"),
+                 "-framework", "CoreGraphics", "-framework", "CoreFoundation",
+                 "-o", str(binary)],
+                check=True, capture_output=True,
+            )
+            result = subprocess.run(
+                [str(binary), "0"], capture_output=True, text=True
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_macos_desktop_ci_keeps_binary_out_of_uploaded_artifacts(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = workflow.split("  obs_macos_desktop:\n", 1)[1].split(
+            "  vlc_integration:\n", 1
+        )[0]
+        self.assertIn("tests/obs/build_macos.sh", job)
+        self.assertIn(" desktop\n", job)
+        self.assertIn("runs-on: macos-26", job)
+        paths = job.split("          path: |\n", 1)[1].split(
+            "          retention-days:", 1
+        )[0]
+        self.assertNotIn(".app", paths)
+        self.assertNotIn(".dylib", paths)
+        self.assertNotIn(".plugin", paths)
+        self.assertIn("      - obs_macos_desktop\n", workflow)
+
     @unittest.skipUnless(shutil.which("cc"), "requires a C compiler")
     def test_reference_pacing_handles_late_wakeups_without_unbounded_bursts(self):
         with tempfile.TemporaryDirectory() as directory:

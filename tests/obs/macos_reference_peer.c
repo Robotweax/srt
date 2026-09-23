@@ -75,7 +75,8 @@ static SRTSOCKET connect_peer(
     return socket;
 }
 
-static uint64_t transfer(SRTSOCKET socket, bool sender, const char* path)
+static uint64_t transfer(
+    SRTSOCKET socket, bool sender, const char* path, uint64_t receive_limit)
 {
     FILE* file = fopen(path, sender ? "rb" : "wb");
     if (!file) {
@@ -136,7 +137,7 @@ static uint64_t transfer(SRTSOCKET socket, bool sender, const char* path)
             fflush(stdout);
             next_progress += 65536;
         }
-        if (!sender && total >= 200000)
+        if (!sender && total >= receive_limit)
             break;
     }
     if (sender)
@@ -152,10 +153,10 @@ static uint64_t transfer(SRTSOCKET socket, bool sender, const char* path)
 
 int main(int argc, char** argv)
 {
-    if (argc != 7) {
+    if (argc != 7 && argc != 8) {
         fprintf(stderr,
             "usage: peer send|receive caller|listener PORT KEY FILE "
-            "EXPECTED_DYLIB\n");
+            "EXPECTED_DYLIB [RECEIVE_LIMIT_BYTES]\n");
         return 2;
     }
     bool sender = strcmp(argv[1], "send") == 0;
@@ -163,8 +164,17 @@ int main(int argc, char** argv)
     bool listener = strcmp(argv[2], "listener") == 0;
     unsigned port = (unsigned)strtoul(argv[3], NULL, 10);
     if ((!sender && !receiver) || (!listener && strcmp(argv[2], "caller") != 0)
-        || port == 0 || port > UINT16_MAX)
+        || port == 0 || port > UINT16_MAX || (sender && argc == 8))
         return 2;
+    uint64_t receive_limit = 200000;
+    if (argc == 8) {
+        char* end = NULL;
+        errno = 0;
+        unsigned long long parsed = strtoull(argv[7], &end, 10);
+        if (errno || !end || *end || parsed < 200000 || parsed > 100000000)
+            return 2;
+        receive_limit = (uint64_t)parsed;
+    }
     if (srt_startup() == SRT_ERROR)
         fail("reference startup failed");
     Dl_info info;
@@ -184,7 +194,7 @@ int main(int argc, char** argv)
     printf("PROVIDER %s\n", info.dli_fname);
     fflush(stdout);
     SRTSOCKET socket = connect_peer(listener, sender, port, argv[4]);
-    uint64_t total = transfer(socket, sender, argv[5]);
+    uint64_t total = transfer(socket, sender, argv[5], receive_limit);
     if (sender) {
         char command[16];
         printf("QUEUED %llu\n", (unsigned long long)total);
