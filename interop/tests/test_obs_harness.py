@@ -128,16 +128,29 @@ class ObsHarnessTests(unittest.TestCase):
                 target.write_bytes(b"OBS")
             srt = root / "srt/lib/librobotweax-srt.dylib"
             ffmpeg = root / "ffmpeg/lib/libavformat.dylib"
-            for target, content in ((srt, b"Robotweax"), (ffmpeg, b"FFmpeg")):
+            crypto = root / "deps/lib/libmbedcrypto.dylib"
+            for target, content in (
+                (srt, b"Robotweax"),
+                (ffmpeg, b"FFmpeg"),
+                (crypto, b"pinned crypto"),
+            ):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(signed_macho(content, b"original"))
                 embedded = app / "Contents/Frameworks" / target.name
                 embedded.parent.mkdir(parents=True, exist_ok=True)
                 embedded.write_bytes(signed_macho(content, b"resigned by Xcode"))
             args = SimpleNamespace(obs_build=root / "build", srt_prefix=root / "srt",
-                                   ffmpeg_prefix=root / "ffmpeg")
+                                   ffmpeg_prefix=root / "ffmpeg", reference_prefix=root / "deps")
             self.assertEqual(
                 macos_desktop.bundle_contract(args), app / "Contents/MacOS/OBS"
+            )
+            (app / "Contents/Frameworks/libmbedcrypto.dylib").write_bytes(
+                signed_macho(b"wrong crypto")
+            )
+            with self.assertRaisesRegex(RuntimeError, "Librist crypto"):
+                macos_desktop.bundle_contract(args)
+            (app / "Contents/Frameworks/libmbedcrypto.dylib").write_bytes(
+                signed_macho(b"pinned crypto", b"resigned by Xcode")
             )
             (app / "Contents/Frameworks/librobotweax-srt.dylib").write_bytes(
                 signed_macho(b"wrong")
@@ -419,24 +432,70 @@ class ObsHarnessTests(unittest.TestCase):
                 "project(obs_qualification_probe C)\n"
                 "add_library(obs-ffmpeg STATIC dummy.c)\n"
                 "add_library(libobs-metal STATIC dummy.c)\n"
+                "add_executable(obs-studio dummy.c)\n"
                 f'include("{qualification}")\n'
                 'file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/result.txt" CONTENT '
                 '"$<TARGET_PROPERTY:libobs-metal,COMPILE_WARNING_AS_ERROR>|'
                 '$<TARGET_PROPERTY:libobs-metal,XCODE_ATTRIBUTE_GCC_TREAT_WARNINGS_AS_ERRORS>|'
                 '$<TARGET_PROPERTY:libobs-metal,XCODE_ATTRIBUTE_SWIFT_TREAT_WARNINGS_AS_ERRORS>")\n'
             )
+            deps = Path(directory) / "deps/lib"
+            deps.mkdir(parents=True)
+            (deps / "libmbedcrypto.dylib").write_bytes(b"pinned library fixture")
             for enabled, expected in ((False, "||"), (True, "OFF|NO|NO")):
                 output = Path(directory) / ("desktop" if enabled else "modules")
                 subprocess.run(
                     [
                         "cmake", "-S", str(source), "-B", str(output),
                         f"-DROBOTWEAX_OBS_MACOS_DESKTOP={'ON' if enabled else 'OFF'}",
+                        f"-DROBOTWEAX_OBS_MACOS_DEPS_PREFIX={deps.parent}",
                     ],
                     check=True,
                     capture_output=True,
                     text=True,
                 )
                 self.assertEqual((output / "result.txt").read_text(), expected)
+
+    @unittest.skipUnless(
+        shutil.which("cmake") and shutil.which("cc"), "requires CMake and C"
+    )
+    def test_macos_desktop_embeds_pinned_librist_crypto_dependency(self):
+        build = (ROOT / "tests/obs/build_macos.sh").read_text()
+        self.assertIn('-DROBOTWEAX_OBS_MACOS_DEPS_PREFIX="$work/deps/obs"', build)
+        qualification = ROOT / "tests/obs/macos_qualification.cmake"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "dummy.c").write_text("int main(void) { return 0; }\n")
+            (source / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.20)\n"
+                "project(obs_qualification_probe C)\n"
+                "add_library(obs-ffmpeg STATIC dummy.c)\n"
+                "add_library(libobs-metal STATIC dummy.c)\n"
+                "add_executable(obs-studio dummy.c)\n"
+                f'include("{qualification}")\n'
+                'file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/embedded.txt" CONTENT '
+                '"$<TARGET_PROPERTY:obs-studio,XCODE_EMBED_FRAMEWORKS>")\n'
+            )
+            deps = root / "deps/lib"
+            deps.mkdir(parents=True)
+            crypto = deps / "libmbedcrypto.dylib"
+            crypto.write_bytes(b"pinned library fixture")
+            command = [
+                "cmake", "-S", str(source), "-B", str(root / "desktop"),
+                "-DROBOTWEAX_OBS_MACOS_DESKTOP=ON",
+                f"-DROBOTWEAX_OBS_MACOS_DEPS_PREFIX={deps.parent}",
+            ]
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            self.assertEqual(
+                (root / "desktop/embedded.txt").read_text(), str(crypto)
+            )
+            crypto.unlink()
+            command[command.index(str(root / "desktop"))] = str(root / "missing")
+            missing = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("missing pinned OBS libmbedcrypto.dylib", missing.stderr)
 
     def test_macos_job_is_required_and_uploads_text_only(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

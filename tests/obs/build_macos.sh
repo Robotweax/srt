@@ -42,6 +42,7 @@ echo '4ecb4c598dfa853168df6c2a0c4e0ffec8495a81fbd1ba051ef88ecd5e0f7e53  '"$archi
 mkdir -p "$work/deps/obs"
 tar -xf "$archive" -C "$work/deps/obs"
 [[ -f "$work/deps/obs/include/srt/srt.h" ]]
+[[ -f "$work/deps/obs/lib/libmbedcrypto.dylib" ]]
 
 openssl_prefix="$(brew --prefix openssl@3)"
 cmake -S "$repository" -B "$work/srt-build" -G Ninja \
@@ -96,6 +97,7 @@ cmake -S "$obs_source" -B "$work/obs-build" -G Xcode \
     -DCMAKE_PREFIX_PATH="$work/ffmpeg;$work/srt;$work/deps/obs" \
     -DLibsrt_LIBRARY="$robotweax_dylib" \
     -DLibsrt_INCLUDE_DIR="$work/srt/include" \
+    -DROBOTWEAX_OBS_MACOS_DEPS_PREFIX="$work/deps/obs" \
     -DCMAKE_PROJECT_obs-studio_INCLUDE="$repository/tests/obs/macos_qualification.cmake" \
     "${desktop_cmake[@]}" \
     -DENABLE_FRONTEND="$frontend" -DENABLE_BROWSER=OFF -DENABLE_SCRIPTING=OFF \

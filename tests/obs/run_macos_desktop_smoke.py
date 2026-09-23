@@ -98,10 +98,14 @@ def bundle_contract(args: argparse.Namespace) -> Path:
     expected_avformat = one_bundle_file(
         args.ffmpeg_prefix / "lib", "libavformat*.dylib"
     )
+    bundled_crypto = app / "Contents/Frameworks/libmbedcrypto.dylib"
+    expected_crypto = args.reference_prefix / "lib/libmbedcrypto.dylib"
     if macho_payload_sha256(robotweax) != macho_payload_sha256(expected_srt):
         raise RuntimeError("OBS.app embeds a non-Robotweax SRT binary")
     if macho_payload_sha256(avformat) != macho_payload_sha256(expected_avformat):
         raise RuntimeError("OBS.app embeds a different FFmpeg libavformat")
+    if macho_payload_sha256(bundled_crypto) != macho_payload_sha256(expected_crypto):
+        raise RuntimeError("OBS.app embeds a different pinned Librist crypto binary")
     return executable
 
 

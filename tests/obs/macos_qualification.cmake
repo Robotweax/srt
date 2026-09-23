@@ -11,6 +11,14 @@ function(robotweax_obs_macos_qualification)
                               XCODE_ATTRIBUTE_GCC_TREAT_WARNINGS_AS_ERRORS NO
                               XCODE_ATTRIBUTE_SWIFT_TREAT_WARNINGS_AS_ERRORS NO
     )
+    # The pinned OBS 32.2.2 macOS bundle embeds librist but omits its direct
+    # @rpath/libmbedcrypto.dylib dependency. Embed that pinned library in this
+    # isolated desktop build so obs-ffmpeg can load from the app bundle.
+    set(mbedcrypto "${ROBOTWEAX_OBS_MACOS_DEPS_PREFIX}/lib/libmbedcrypto.dylib")
+    if(NOT EXISTS "${mbedcrypto}")
+      message(FATAL_ERROR "missing pinned OBS libmbedcrypto.dylib: ${mbedcrypto}")
+    endif()
+    set_property(TARGET obs-studio APPEND PROPERTY XCODE_EMBED_FRAMEWORKS "${mbedcrypto}")
   endif()
 endfunction()
 cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL robotweax_obs_macos_qualification)
