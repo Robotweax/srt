@@ -72,6 +72,7 @@ static uint64_t transfer(SRTSOCKET socket, bool sender, const char* path)
     }
     char buffer[2048];
     uint64_t total = 0;
+    uint64_t next_progress = 65536;
     for (;;) {
         int size;
         if (sender) {
@@ -95,6 +96,11 @@ static uint64_t transfer(SRTSOCKET socket, bool sender, const char* path)
             fflush(file);
         }
         total += (uint64_t)size;
+        if (sender && total >= next_progress) {
+            printf("SENT %llu\n", (unsigned long long)total);
+            fflush(stdout);
+            next_progress += 65536;
+        }
         if (!sender && total >= 200000)
             break;
     }

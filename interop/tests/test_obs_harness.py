@@ -71,6 +71,13 @@ class ObsHarnessTests(unittest.TestCase):
             )
             self.assertTrue(destination.is_file())
             self.assertIn("sample exit=0", destination.read_text())
+        smoke = (ROOT / "tests/obs/run_macos_smoke.py").read_text()
+        self.assertIn(
+            'sample_process(source, artifacts / "source-reference-stacks.txt")',
+            smoke,
+        )
+        reference = (ROOT / "tests/obs/macos_reference_peer.c").read_text()
+        self.assertIn('printf("SENT %llu\\n"', reference)
 
     def test_macos_cache_rejects_prebuilt_provider(self):
         with tempfile.TemporaryDirectory() as directory:

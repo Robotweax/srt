@@ -359,6 +359,7 @@ def qualify(args: argparse.Namespace) -> None:
                 until(source, sender_log, "QUEUED", 35)
             except RuntimeError:
                 sample_process(child, artifacts / "source-obs-stacks.txt")
+                sample_process(source, artifacts / "source-reference-stacks.txt")
                 raise
             deadline = time.monotonic() + 20
             while True:
