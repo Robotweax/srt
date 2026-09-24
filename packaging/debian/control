@@ -2,8 +2,8 @@ Source: robotweax-srt
 Section: libs
 Priority: optional
 Maintainer: Robotweax GmbH <srtpioneer@proton.me>
-Build-Depends: debhelper-compat (= 13), cmake (>= 3.20), g++, libssl-dev (>= 3.0), pkgconf
-Standards-Version: 4.7.0
+Build-Depends: debhelper-compat (= 13), cmake (>= 3.20), libssl-dev (>= 3.0), pkgconf
+Standards-Version: 4.6.2
 Homepage: https://github.com/Robotweax/srt
 Rules-Requires-Root: no
 

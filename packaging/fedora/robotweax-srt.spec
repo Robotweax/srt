@@ -1,7 +1,7 @@
 Name:           robotweax-srt
 Version:        0.2.5
 Release:        1%{?dist}
-Summary:        Independent Secure Reliable Transport implementation
+Summary:        Robotweax Secure Reliable Transport library
 License:        MIT
 URL:            https://github.com/Robotweax/srt
 Source0:        https://github.com/Robotweax/srt/archive/492a7d61390cbec86e44e177ec034f0f5d9a5cc3.tar.gz
