@@ -3,14 +3,18 @@ name: Package managers
 on:
   pull_request:
     paths:
-      - 'packaging/**'
+      - 'packaging/homebrew/**'
+      - 'packaging/vcpkg/**'
+      - 'packaging/tests/**'
       - 'tests/package_consumer/**'
       - '.github/workflows/package-managers.yml'
   push:
     branches: [main]
     tags: ['v*']
     paths:
-      - 'packaging/**'
+      - 'packaging/homebrew/**'
+      - 'packaging/vcpkg/**'
+      - 'packaging/tests/**'
       - 'tests/package_consumer/**'
       - '.github/workflows/package-managers.yml'
   workflow_dispatch:
