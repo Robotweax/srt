@@ -1,0 +1,70 @@
+name: Linux packages
+
+on:
+  pull_request:
+    paths:
+      - 'packaging/debian/**'
+      - 'packaging/fedora/**'
+      - 'packaging/linux/**'
+      - 'packaging/tests/**'
+      - 'tests/package_consumer/**'
+      - '.github/workflows/linux-packages.yml'
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'packaging/debian/**'
+      - 'packaging/fedora/**'
+      - 'packaging/linux/**'
+      - 'packaging/tests/**'
+      - 'tests/package_consumer/**'
+      - '.github/workflows/linux-packages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-packages-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: ubuntu-24.04, image: 'ubuntu:24.04', script: qualify-ubuntu.sh}
+          - {name: fedora-44, image: 'fedora:44', script: qualify-fedora.sh}
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Download and verify immutable 0.2.5 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --output "$RUNNER_TEMP/source.tar.gz" \
+            https://github.com/Robotweax/srt/archive/492a7d61390cbec86e44e177ec034f0f5d9a5cc3.tar.gz
+          echo "dc55b9e1c2583eec6ff5ab82db70de6bfb0cc9c6e18cfd1ed15376f61d8fca5f  $RUNNER_TEMP/source.tar.gz" |
+            sha256sum --check -
+      - name: Build, install, test coexistence and removal
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/package-output"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work:ro" \
+            -v "$RUNNER_TEMP/source.tar.gz:/source.tar.gz:ro" \
+            -v "$RUNNER_TEMP/package-output:/out" \
+            "${{ matrix.image }}" bash "/work/packaging/linux/${{ matrix.script }}"
+      - name: Retain packages for review
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-packages-${{ matrix.name }}
+          path: ${{ runner.temp }}/package-output/*
+          if-no-files-found: ignore
