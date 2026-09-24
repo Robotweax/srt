@@ -17,7 +17,7 @@ Native Apple Silicon, AppleClang 21, macOS; no cross-compilation:
   and `arm64-osx-dynamic`. vcpkg post-build validation and all three Release
   installed-consumer tests passed per triplet (6/6). Removing Robotweax left
   both Haivision consumers working (2/2). Debug packages built successfully;
-  executing Debug consumers remains an additional qualification step.
+  Debug consumer execution was added in the follow-up qualification below.
 - The recipe's immutable source archive also passed the existing shared
   `abi_baseline` and `package_consumer` source-build tests (2/2).
 
@@ -30,8 +30,6 @@ runtime requirements.
 
 ## Release gates still open
 
-- Hosted Windows/Linux results must be inspected; a matrix
-  in a workflow is not evidence that a platform passed.
 - Test on clean machines without Haivision as well as the coexistence case.
 - Qualify bottles/relocation, upgrades and rollback when introducing a public
   tap or registry. There is no previous Robotweax package to upgrade here.
@@ -49,4 +47,22 @@ Static Windows built and installed both packages but failed to link the C++
 consumer: the package used `/MT`, while the consumer defaulted to `/MD`
 (`LNK2038 RuntimeLibrary` mismatch). The workflow now explicitly configures
 the static triplet's consumer runtime, including the Debug generator expression.
-The corrected Windows result still needs verification in a new run.
+[Run 35988239811](https://github.com/Robotweax/srt/actions/runs/35988239811)
+passed all seven package jobs at `1300db0ab1638a946a7cdea73e275556a086c8af`,
+including static Windows. The regular CI and required gate also passed in
+[run 35988239725](https://github.com/Robotweax/srt/actions/runs/35988239725).
+PR #64 merged as `6c79ef364534b636484cf46df88a0fa5e86c6e68`.
+
+## Expanded qualification after PR #64
+
+The follow-up workflow runs fresh, isolated vcpkg installations in this order:
+standalone Robotweax, coexistence with Haivision, relocation of the complete
+installed prefix (the original path is absent), and removal of Robotweax.
+C and C++ consumers execute in both Release and Debug; Haivision Debug uses its
+Debug library rather than mixing configurations. Logs are retained as CI artifacts.
+
+Native macOS arm64 static and dynamic qualification each passed all 18 test
+executions (4 standalone, 6 coexistence, 6 relocated, 2 after removal; 36 total). Hosted results for this
+expanded workflow are pending; the earlier green run covers the smaller matrix.
+Homebrew gains a standalone consumer stage on its hosted runner; no further
+Homebrew changes were made on the developer machine for this follow-up.
