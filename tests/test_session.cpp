@@ -2925,6 +2925,146 @@ TEST(sensor_profile_disarms_sender_rto_without_changing_ordinary_fec)
     REQUIRE(!sender.next_data_packet().has_value());
 }
 
+TEST(sensor_profile_rejects_fragmented_samples_and_peer_nak_replay)
+{
+    ReliabilitySession sender {{
+        .local_initial_sequence = SequenceNumber {10},
+        .peer_initial_sequence = SequenceNumber {100},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 4,
+        .receive_capacity_packets = 4,
+        .maximum_payload_size = 2,
+    }};
+    const auto filter = parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,arq:never");
+    REQUIRE(filter);
+    sender.configure_packet_filter(filter.configuration, true);
+
+    const std::array<std::byte, 3> oversized {};
+    REQUIRE_EQ(sender.queue_message(oversized, PacketTimestamp {0}),
+        Error::invalid_payload_size);
+    const std::array<std::byte, 1> input {std::byte {'s'}};
+    REQUIRE_EQ(sender.queue_message(input, PacketTimestamp {0}), Error::none);
+    REQUIRE(sender.next_data_packet().has_value());
+    const ReliabilityAction loss {
+        .kind = ReliabilityActionKind::loss_report,
+        .loss =
+            {
+                .first = SequenceNumber {10},
+                .last = SequenceNumber {10},
+            },
+    };
+    std::array<std::byte, 64> storage {};
+    const auto nak = encode_and_decode(loss, storage);
+    const auto ignored = sender.receive(nak, 100U);
+    REQUIRE(ignored);
+    REQUIRE_EQ(ignored.sender_loss_packets, 0U);
+    REQUIRE_EQ(ignored.actions.size, 0U);
+    REQUIRE(!sender.next_data_packet().has_value());
+}
+
+TEST(sensor_profile_repeats_single_sequence_retirement_until_cumulative_ack)
+{
+    ReliabilitySession sender {{
+        .local_initial_sequence = SequenceNumber {SequenceNumber::mask},
+        .peer_initial_sequence = SequenceNumber {100},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 4,
+        .receive_capacity_packets = 4,
+        .maximum_payload_size = 4,
+    }};
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {SequenceNumber::mask},
+        .peer_socket_id = 800,
+        .send_capacity_packets = 4,
+        .receive_capacity_packets = 4,
+        .maximum_payload_size = 4,
+    }};
+    const auto filter = parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,arq:never");
+    REQUIRE(filter);
+    sender.configure_live(
+        NegotiatedLiveOptions {.periodic_nak = false}, 0, PacketTimestamp {0});
+    receiver.configure_live(
+        NegotiatedLiveOptions {.periodic_nak = false}, 0, PacketTimestamp {0});
+    sender.configure_packet_filter(filter.configuration, true);
+    receiver.configure_packet_filter(filter.configuration, true);
+
+    const std::array<std::byte, 1> expired {std::byte {'x'}};
+    const std::array<std::byte, 1> following {std::byte {'y'}};
+    REQUIRE_EQ(
+        sender.queue_message(expired, PacketTimestamp {1}, true, 1U, 100U),
+        Error::none);
+    REQUIRE_EQ(
+        sender.queue_message(following, PacketTimestamp {2}, true, 2U, 0U),
+        Error::none);
+    const auto lost_data = sender.next_data_packet();
+    const auto later_data = sender.next_data_packet();
+    REQUIRE(lost_data.has_value());
+    REQUIRE(later_data.has_value());
+    REQUIRE_EQ(
+        lost_data->header.sequence, SequenceNumber {SequenceNumber::mask});
+    REQUIRE_EQ(later_data->header.sequence, SequenceNumber {0});
+    REQUIRE(receiver.receive(view_of(*later_data), 10U));
+
+    std::array<std::byte, 1> output {};
+    REQUIRE_EQ(receiver.pop_message(output).error, Error::would_block);
+
+    // Lose the initial retirement control.
+    const auto initial = sender.drop_expired_sender_message(101U);
+    REQUIRE_EQ(initial.size, 1U);
+    REQUIRE_EQ(initial.values[0].drop.message_number, 0U);
+    REQUIRE_EQ(initial.values[0].drop.sequences.first,
+        SequenceNumber {SequenceNumber::mask});
+    REQUIRE_EQ(initial.values[0].drop.sequences.last,
+        SequenceNumber {SequenceNumber::mask});
+    REQUIRE_EQ(*sender.next_sender_retirement_deadline(), 10'101U);
+    REQUIRE_EQ(sender.poll_timers(10'100U).size, 0U);
+    REQUIRE(!sender.has_pending_drop_requests());
+
+    // The timer recreates the same control without replaying DATA.
+    REQUIRE_EQ(sender.poll_timers(10'101U).size, 0U);
+    REQUIRE(sender.has_pending_drop_requests());
+    const auto repeated = sender.take_pending_drop_requests();
+    REQUIRE_EQ(repeated.size, 1U);
+    REQUIRE_EQ(repeated.values[0].drop.message_number, 0U);
+    REQUIRE_EQ(repeated.values[0].drop.sequences.first,
+        SequenceNumber {SequenceNumber::mask});
+    REQUIRE_EQ(repeated.values[0].drop.sequences.last,
+        SequenceNumber {SequenceNumber::mask});
+    REQUIRE(!sender.next_data_packet().has_value());
+
+    std::array<std::byte, 64> control_storage {};
+    auto drop_packet = encode_and_decode(repeated.values[0], control_storage);
+    const auto retired = receiver.receive(drop_packet, 10'102U);
+    REQUIRE(retired);
+    REQUIRE_EQ(retired.receiver_drop_packets, 1U);
+    REQUIRE_EQ(retired.actions.size, 1U);
+    REQUIRE_EQ(
+        retired.actions.values[0].kind, ReliabilityActionKind::acknowledgement);
+    REQUIRE_EQ(retired.actions.values[0].acknowledgement.kind,
+        AcknowledgementKind::lite);
+    const auto delivered = receiver.pop_message(output);
+    REQUIRE(delivered);
+    REQUIRE_EQ(output, following);
+
+    // Lose that ACK. The duplicate is idempotent and produces a new ACK.
+    REQUIRE_EQ(sender.poll_timers(20'101U).size, 0U);
+    const auto retry = sender.take_pending_drop_requests();
+    REQUIRE_EQ(retry.size, 1U);
+    drop_packet = encode_and_decode(retry.values[0], control_storage);
+    const auto duplicate = receiver.receive(drop_packet, 20'102U);
+    REQUIRE(duplicate);
+    REQUIRE_EQ(duplicate.receiver_drop_packets, 0U);
+    REQUIRE_EQ(duplicate.actions.size, 1U);
+    const auto ack_packet =
+        encode_and_decode(duplicate.actions.values[0], control_storage);
+    REQUIRE(sender.receive(ack_packet, 20'103U));
+    REQUIRE_EQ(sender.send_buffer().sequence_span(), 0U);
+    REQUIRE(!sender.next_sender_retirement_deadline().has_value());
+}
+
 TEST(live_session_periodic_nak_rto_probes_only_tail_of_unacknowledged_flight)
 {
     ReliabilitySession sender {{

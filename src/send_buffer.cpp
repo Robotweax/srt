@@ -34,6 +34,7 @@ bool SendBuffer::synchronize_empty(
     head_ = 0U;
     buffered_plaintext_bytes_ = 0U;
     expiring_packet_count_ = 0U;
+    retained_drop_count_ = 0U;
     first_buffered_enqueue_microseconds_ = 0U;
     last_buffered_enqueue_microseconds_ = 0U;
     return true;
@@ -151,6 +152,7 @@ SendBuffer::Slot* SendBuffer::find(SequenceNumber sequence) noexcept
 void SendBuffer::discard_slot(
     Slot& slot, bool retain_drop_marker) noexcept
 {
+    const bool was_dropped = slot.dropped;
     if (slot.occupied) {
         if (slot.sent) {
             --packets_in_flight_;
@@ -167,6 +169,13 @@ void SendBuffer::discard_slot(
     }
     slot.occupied = false;
     slot.dropped = retain_drop_marker;
+    if (was_dropped != retain_drop_marker) {
+        if (retain_drop_marker) {
+            ++retained_drop_count_;
+        } else {
+            --retained_drop_count_;
+        }
+    }
     slot.drop_request_queued = false;
     slot.sent = false;
     slot.retransmission_queued = false;
@@ -601,6 +610,54 @@ bool SendBuffer::has_pending_drop_request() noexcept
         compact_drop_request_queue();
     }
     return drop_request_size_ != 0U || range_drop_request_size_ != 0U;
+}
+
+std::size_t SendBuffer::queue_retained_drop_requests() noexcept
+{
+    std::size_t queued = 0U;
+    for (std::size_t offset = 0U; offset < sequence_span_;) {
+        const auto& slot = slots_[(head_ + offset) % capacity()];
+        if (!slot.dropped) {
+            ++offset;
+            continue;
+        }
+        const std::uint32_t message_number = slot.header.message_number;
+        if (queue_drop_request(
+                first_sequence_.advanced(static_cast<std::uint32_t>(offset)))) {
+            ++queued;
+        }
+        do {
+            ++offset;
+        } while (offset < sequence_span_
+            && slots_[(head_ + offset) % capacity()].dropped
+            && slots_[(head_ + offset) % capacity()].header.message_number
+                == message_number);
+    }
+    return queued;
+}
+
+bool SendBuffer::has_retained_drop() const noexcept
+{
+    return retained_drop_count_ != 0U;
+}
+
+std::optional<std::uint64_t>
+SendBuffer::next_expiration_microseconds() const noexcept
+{
+    if (expiring_packet_count_ == 0U) {
+        return std::nullopt;
+    }
+    std::optional<std::uint64_t> earliest;
+    for (std::size_t offset = 0U; offset < sequence_span_; ++offset) {
+        const auto& slot = slots_[(head_ + offset) % capacity()];
+        if (!slot.occupied || slot.expiration_microseconds == 0U) {
+            continue;
+        }
+        if (!earliest.has_value() || slot.expiration_microseconds < *earliest) {
+            earliest = slot.expiration_microseconds;
+        }
+    }
+    return earliest;
 }
 
 bool SendBuffer::queue_range_drop_requests(

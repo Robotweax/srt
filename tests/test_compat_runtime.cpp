@@ -1408,6 +1408,192 @@ TEST(compat_runtime_message_ttl_uses_injected_clock_and_sends_dropreq)
         }));
 }
 
+TEST(compat_runtime_sensor_fec_and_repeated_retirement_survive_faults)
+{
+    const auto sender_channel = std::make_shared<DatagramChannel>();
+    const auto receiver_channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams sender_output;
+    CapturedDatagrams receiver_output;
+    sender_channel->set_send_hook_for_testing(capture_datagram, &sender_output);
+    receiver_channel->set_send_hook_for_testing(
+        capture_datagram, &receiver_output);
+    const Ipv4Endpoint sender_endpoint {
+        .address = {192, 0, 2, 81},
+        .port = 14'601,
+    };
+    const Ipv4Endpoint receiver_endpoint {
+        .address = {192, 0, 2, 82},
+        .port = 14'602,
+    };
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_payload_size, 16), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 16), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::receive_buffer_packets, 16), Error::none);
+    REQUIRE_EQ(
+        options.set_packet_filter("fec-sensor-v1,cols:4,rows:1,arq:never"),
+        Error::none);
+    const auto origin = ConnectionRuntime::Clock::now();
+    std::uint64_t sender_now = 1'000U;
+    std::uint64_t receiver_now = 1'000U;
+    ConnectionRuntime sender {{
+        .channel = sender_channel,
+        .peer = receiver_endpoint,
+        .peer_socket_id = 820,
+        .initial_sequence = SequenceNumber {700},
+        .flow_window_packets = 256,
+        .options = options,
+        .origin = origin,
+        .now_function = injected_now,
+        .now_context = &sender_now,
+    }};
+    ConnectionRuntime receiver {{
+        .channel = receiver_channel,
+        .peer = sender_endpoint,
+        .peer_socket_id = 810,
+        .initial_sequence = SequenceNumber {700},
+        .flow_window_packets = 256,
+        .options = options,
+        .origin = origin,
+        .now_function = injected_now,
+        .now_context = &receiver_now,
+    }};
+
+    // First row: lose one source, retain parity, and recover through FEC.
+    for (std::uint32_t index = 0U; index < 4U; ++index) {
+        const std::array payload {
+            static_cast<std::byte>(static_cast<unsigned char>('a') + index)};
+        REQUIRE_EQ(sender.queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+    }
+    for (std::size_t attempt = 0U; attempt < 40U; ++attempt) {
+        (void)sender.poll();
+        sender_now += 10U;
+    }
+    for (const auto& datagram : take_datagrams(sender_output)) {
+        const auto decoded = decode_packet(datagram);
+        REQUIRE(decoded);
+        REQUIRE_EQ(decoded.packet.kind, PacketKind::data);
+        if (decoded.packet.data.message_number == 0U
+            || decoded.packet.data.sequence != SequenceNumber {701}) {
+            receiver.process_packet(decoded.packet, sender_endpoint);
+        }
+    }
+    std::array<std::byte, 4> output {};
+    for (std::uint32_t index = 0U; index < 4U; ++index) {
+        const auto received = receiver.receive_message(output, false, -1);
+        REQUIRE_EQ(received.status, MessageIoStatus::success);
+        REQUIRE_EQ(output[0],
+            static_cast<std::byte>(static_cast<unsigned char>('a') + index));
+    }
+    REQUIRE_EQ(
+        receiver.statistics(false, true).total.receiver_filter_supply, 1U);
+    receiver_now += 10'000U;
+    (void)receiver.poll();
+    deliver(receiver_output, sender, receiver_endpoint);
+    (void)take_datagrams(sender_output); // ACKACK is unrelated to the fault.
+
+    // Second row: lose one source and its parity, so only TTL retirement can
+    // release the three later samples.
+    sender_now = 20'000U;
+    for (std::uint32_t index = 0U; index < 4U; ++index) {
+        const std::array payload {
+            static_cast<std::byte>(static_cast<unsigned char>('A') + index)};
+        REQUIRE_EQ(sender
+                       .queue_message(
+                           payload, 0, true, false, -1, index == 0U ? 1 : -1)
+                       .status,
+            MessageIoStatus::success);
+    }
+    for (std::size_t attempt = 0U; attempt < 40U; ++attempt) {
+        (void)sender.poll();
+        sender_now += 10U;
+    }
+    std::size_t source_packets = 0U;
+    std::size_t parity_packets = 0U;
+    for (const auto& datagram : take_datagrams(sender_output)) {
+        const auto decoded = decode_packet(datagram);
+        REQUIRE(decoded);
+        if (decoded.packet.kind != PacketKind::data) {
+            continue;
+        }
+        if (decoded.packet.data.message_number == 0U) {
+            ++parity_packets;
+            continue;
+        }
+        ++source_packets;
+        if (decoded.packet.data.sequence != SequenceNumber {704}) {
+            receiver.process_packet(decoded.packet, sender_endpoint);
+        }
+    }
+    REQUIRE_EQ(source_packets, 4U);
+    REQUIRE_EQ(parity_packets, 1U);
+    REQUIRE_EQ(receiver.receive_message(output, false, -1).status,
+        MessageIoStatus::would_block);
+
+    sender_now = 21'001U;
+    const auto initial_poll = sender.poll();
+    REQUIRE(initial_poll.next_work_delay.has_value());
+    REQUIRE_EQ(
+        *initial_poll.next_work_delay, std::chrono::microseconds {10'000});
+    const auto initial_control = take_datagrams(sender_output);
+    REQUIRE(std::any_of(initial_control.begin(), initial_control.end(),
+        [](const auto& datagram) {
+            const auto decoded = decode_packet(datagram);
+            if (!decoded || decoded.packet.kind != PacketKind::control
+                || decoded.packet.control.type != ControlType::drop_request) {
+                return false;
+            }
+            const auto drop = decode_drop_request(decoded.packet);
+            return drop && drop.request.message_number == 0U
+                && drop.request.sequences.first == SequenceNumber {704}
+            && drop.request.sequences.last == SequenceNumber {704};
+        }));
+    // The first DROPREQ is lost.
+
+    sender_now = 31'001U;
+    (void)sender.poll();
+    auto retry_control = take_datagrams(sender_output);
+    REQUIRE_EQ(retry_control.size(), 1U);
+    auto retry_packet = decode_packet(retry_control.front());
+    REQUIRE(retry_packet);
+    REQUIRE_EQ(retry_packet.packet.control.type, ControlType::drop_request);
+    receiver_now = sender_now;
+    receiver.process_packet(retry_packet.packet, sender_endpoint);
+    REQUIRE_EQ(take_datagrams(receiver_output).size(), 1U); // Lose the ACK.
+
+    sender_now = 41'001U;
+    (void)sender.poll();
+    retry_control = take_datagrams(sender_output);
+    REQUIRE_EQ(retry_control.size(), 1U);
+    retry_packet = decode_packet(retry_control.front());
+    REQUIRE(retry_packet);
+    receiver_now = sender_now;
+    receiver.process_packet(retry_packet.packet, sender_endpoint);
+    auto second_ack = take_datagrams(receiver_output);
+    REQUIRE_EQ(second_ack.size(), 1U);
+    const auto ack_packet = decode_packet(second_ack.front());
+    REQUIRE(ack_packet);
+    sender.process_packet(ack_packet.packet, receiver_endpoint);
+    REQUIRE_EQ(sender.buffer_packet_counts().unacknowledged_send, 0U);
+
+    for (std::uint32_t index = 1U; index < 4U; ++index) {
+        const auto received = receiver.receive_message(output, false, -1);
+        REQUIRE_EQ(received.status, MessageIoStatus::success);
+        REQUIRE_EQ(output[0],
+            static_cast<std::byte>(static_cast<unsigned char>('A') + index));
+    }
+    sender_now = 51'001U;
+    (void)sender.poll();
+    for (const auto& datagram : take_datagrams(sender_output)) {
+        const auto decoded = decode_packet(datagram);
+        REQUIRE(decoded);
+        REQUIRE_EQ(decoded.packet.kind, PacketKind::control);
+        REQUIRE(decoded.packet.control.type != ControlType::drop_request);
+    }
+}
+
 TEST(compat_runtime_stamps_an_explicit_application_source_time)
 {
     const auto channel = std::make_shared<DatagramChannel>();

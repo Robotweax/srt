@@ -342,6 +342,8 @@ public:
     [[nodiscard]] ReliabilityActions drop_expired_sender_message(
         std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] ReliabilityActions take_pending_drop_requests() noexcept;
+    [[nodiscard]] std::optional<std::uint64_t>
+    next_sender_retirement_deadline() const noexcept;
     [[nodiscard]] bool has_pending_drop_requests() noexcept
     {
         return send_buffer_.has_pending_drop_request();
@@ -449,6 +451,7 @@ private:
     bool periodic_nak_enabled_ = true;
     bool drift_tracer_enabled_ = true;
     PacketFilterPolicy packet_filter_policy_{};
+    std::uint64_t next_sensor_retirement_repeat_microseconds_ = 0;
     std::uint64_t drift_correction_count_ = 0;
     std::int64_t total_drift_correction_microseconds_ = 0;
     std::uint32_t peer_socket_id_ = 0;

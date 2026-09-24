@@ -61,6 +61,10 @@ public:
         std::size_t maximum_payload_size = maximum_data_payload_size);
 
     [[nodiscard]] std::size_t capacity() const noexcept { return slots_.size(); }
+    [[nodiscard]] std::size_t maximum_payload_size() const noexcept
+    {
+        return maximum_payload_size_;
+    }
     [[nodiscard]] std::size_t size() const noexcept { return occupied_count_; }
     [[nodiscard]] std::size_t sequence_span() const noexcept
     {
@@ -125,6 +129,13 @@ public:
     [[nodiscard]] std::optional<SendDropResult>
     next_pending_drop_request() noexcept;
     [[nodiscard]] bool has_pending_drop_request() noexcept;
+    // Requeues one DROPREQ for every retained message tombstone. This is used
+    // by delivery profiles that cannot rely on a receiver NAK to recover a
+    // lost DROPREQ.
+    [[nodiscard]] std::size_t queue_retained_drop_requests() noexcept;
+    [[nodiscard]] bool has_retained_drop() const noexcept;
+    [[nodiscard]] std::optional<std::uint64_t>
+    next_expiration_microseconds() const noexcept;
     // Queues sequence-only DROPREQ replies for NAK ranges that predate the
     // sender buffer. Capacity validation is transactional.
     [[nodiscard]] bool queue_range_drop_requests(
@@ -176,6 +187,7 @@ private:
     // occupied_count_ counts packets that can still be sent or retransmitted.
     std::size_t sequence_span_ = 0;
     std::size_t occupied_count_ = 0;
+    std::size_t retained_drop_count_ = 0;
     std::size_t buffered_plaintext_bytes_ = 0;
     std::size_t expiring_packet_count_ = 0;
     std::uint64_t first_buffered_enqueue_microseconds_ = 0;

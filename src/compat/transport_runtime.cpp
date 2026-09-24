@@ -2899,11 +2899,23 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
         && crypto_->enabled() && !crypto_->ready_to_send_data();
     const bool paced_work =
         filter_pending || (pending && !flow_blocked && !crypto_blocked);
+    const std::uint64_t current = now_microseconds();
+    const auto retirement_deadline = session_.next_sender_retirement_deadline();
+    std::optional<std::chrono::microseconds> retirement_delay;
+    if (retirement_deadline.has_value()) {
+        if (*retirement_deadline <= current) {
+            return {
+                .immediate_work = true,
+                .next_work_delay = std::nullopt,
+            };
+        }
+        retirement_delay =
+            std::chrono::microseconds {*retirement_deadline - current};
+    }
     if (!paced_work) {
-        return {};
+        return {.next_work_delay = retirement_delay};
     }
 
-    const std::uint64_t current = now_microseconds();
     const PaceDecision pace = pacer_.query(current,
         filter_pending || retransmission
             ? 0U
@@ -2914,10 +2926,11 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
             .next_work_delay = std::nullopt,
         };
     }
-    return {
-        .next_work_delay =
-            std::chrono::microseconds {pace.next_ready_microseconds - current},
-    };
+    const auto pace_delay =
+        std::chrono::microseconds {pace.next_ready_microseconds - current};
+    return {.next_work_delay = retirement_delay.has_value()
+            ? std::min(pace_delay, *retirement_delay)
+            : pace_delay};
 }
 
 void ConnectionRuntime::apply_options(
