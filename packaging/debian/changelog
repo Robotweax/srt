@@ -1,0 +1,5 @@
+robotweax-srt (0.2.5-1) noble; urgency=medium
+
+  * Package the immutable Robotweax SRT 0.2.5 release with namespaced files.
+
+ -- Robotweax GmbH <srtpioneer@proton.me>  Thu, 24 Sep 2026 12:00:00 +0000

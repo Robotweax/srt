@@ -1,0 +1,22 @@
+#!/usr/bin/make -f
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@ --buildsystem=cmake
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DBUILD_SHARED_LIBS=ON \
+		-DROBOTWEAX_SRT_INSTALL_LAYOUT=namespaced \
+		-DROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT=OFF \
+		-DROBOTWEAX_SRT_BUILD_TESTS=OFF \
+		-DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF \
+		-DROBOTWEAX_SRT_BUILD_TOOLS=OFF \
+		-DROBOTWEAX_SRT_BUILD_EXAMPLES=OFF \
+		-DROBOTWEAX_SRT_WARNINGS_AS_ERRORS=OFF \
+		-DROBOTWEAX_SRT_CRYPTO_BACKEND=openssl \
+		-DENABLE_AEAD_API_PREVIEW=OFF
+
+override_dh_auto_install:
+	dh_auto_install --destdir=debian/tmp
+	mv debian/tmp/usr/share/doc/robotweax_srt debian/tmp/usr/share/doc/librobotweax-srt-dev

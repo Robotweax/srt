@@ -17,6 +17,21 @@ import ci_changes  # noqa: E402
 
 
 class CiChangeClassifierTests(unittest.TestCase):
+    def test_package_manager_recipes_do_not_select_application_builds(self) -> None:
+        for path in ("packaging/homebrew/robotweax-srt.rb",
+                     "packaging/vcpkg/ports/robotweax-srt/portfile.cmake",
+                     "packaging/tests/CMakeLists.txt",
+                     ".github/workflows/package-managers.yml"):
+            with self.subTest(path=path):
+                result = ci_changes.classify([path])
+                self.assertFalse(result.docs_only)
+                self.assertTrue(result.python)
+                self.assertFalse(result.obs)
+                self.assertFalse(result.obs_platforms)
+                self.assertFalse(result.vlc)
+                self.assertFalse(result.gstreamer)
+                self.assertFalse(result.interop)
+
     def test_new_fuzz_targets_select_fuzz_without_name_keywords(self) -> None:
         for path in ("fuzz/fuzz_control.cpp", "fuzz/fuzz_session.cpp",
                      "fuzz/helpers/input_cursor.hpp"):

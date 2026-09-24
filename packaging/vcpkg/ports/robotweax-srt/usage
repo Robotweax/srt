@@ -1,0 +1,15 @@
+Robotweax SRT provides a namespaced CMake package:
+
+    find_package(RobotweaxSRT CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE RobotweaxSRT::srt)
+
+For static linking, use CXX as the consumer linker language.
+Headers remain #include <srt/srt.h> through the target's include path.
+This port does not replace libsrt or select Robotweax in other ports.
+Only load one SRT implementation into an application process.
+
+For x64-windows-static, match the port's static MSVC runtime in consumers:
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+Set this before creating executable/library targets (CMake >= 3.15 with
+CMP0091 NEW). Library linkage and CRT linkage are separate choices; use the
+runtime required by your selected triplet, including its Debug variant.
