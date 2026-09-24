@@ -1,4 +1,4 @@
-robotweax-srt (0.2.5-1) unstable; urgency=medium
+robotweax-srt (0.2.5-1) noble; urgency=medium
 
   * Package the immutable Robotweax SRT 0.2.5 release with namespaced files.
 

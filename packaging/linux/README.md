@@ -14,11 +14,24 @@ package in place. The qualification scripts build packages, install and run
 Robotweax consumers before and after installing Haivision, then remove
 Robotweax and rerun the Haivision consumer.
 
+The Ubuntu recipe targets the `noble` series. Its test also creates an
+unsigned `robotweax-srt_0.2.5-1_source.changes`, `.dsc`, packaging diff
+and the original tarball. Lintian checks the source package, and extraction
+checks that the original tarball is byte-for-byte the pinned upstream archive.
+The Fedora test creates an SRPM, checks its MIT license metadata and extracts
+the embedded source archive for the same comparison. CI retains these source
+artifacts for review; its unsigned Ubuntu upload cannot be sent to Launchpad.
+
 The recipes and CI checks are packaging prototypes. They are not an Ubuntu
 PPA, Fedora COPR, official distribution packages or a supported upgrade path.
-Before publication, review distribution policy, licenses, source-package
-generation, supported architectures, upgrade behavior, signing and repository
-ownership. In particular, a clean build/install test is not upgrade evidence.
+Before publication, review distribution policy, supported architectures,
+upgrade behavior, signing and repository ownership. In particular, a clean
+build/install test is not upgrade evidence. Launchpad needs a source `.changes`
+and `.dsc` signed with an upload key associated with the PPA owner; `dput`
+sends the signed upload to `ppa:<owner>/<archive>`. COPR accepts an SRPM through
+its web UI or `copr-cli build <owner>/<project> <source-rpm>` after its
+owner has configured a project and the desired chroots. Neither upload is
+performed by CI, and no package repository credentials belong in this tree.
 
 To repeat the CI test on a Docker host, download the pinned archive, verify
 the SHA-256 above, and mount it as `/source.tar.gz`, this repository as
