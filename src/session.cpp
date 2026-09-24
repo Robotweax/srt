@@ -932,6 +932,12 @@ ReliabilityProcessResult ReliabilitySession::receive(
                 pending_peer_drops_.push_back(
                     {decoded.request.sequences, deadline});
             }
+            const bool acknowledged =
+                receive_buffer_.acknowledge_peer_drop_range(
+                    decoded.request.sequences);
+            if (acknowledged) {
+                result.actions.push(make_acknowledgement(now_microseconds));
+            }
         } else {
             const auto error = receive_buffer_.drop_peer_requested_range(
                 decoded.request.sequences, decoded.request.message_number,
@@ -1166,8 +1172,7 @@ ReliabilitySession::next_receive_delivery_time() noexcept
     return std::min(message_delivery, next_delivery.value_or(message_delivery));
 }
 
-ReliabilityProcessResult
-ReliabilitySession::drop_too_late_receiver(
+ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
     std::uint64_t now_microseconds) noexcept
 {
     ReliabilityProcessResult result;
@@ -1176,7 +1181,7 @@ ReliabilitySession::drop_too_late_receiver(
         return result;
     }
 
-    bool released = false;
+    bool peer_released = false;
     for (std::size_t index = 0; index < pending_peer_drops_.size();) {
         const auto pending = pending_peer_drops_[index];
         if (pending.sequences.last.distance_from(
@@ -1198,33 +1203,36 @@ ReliabilitySession::drop_too_late_receiver(
             return result;
         }
         result.receiver_drop_packets += newly_dropped;
-        released |= newly_dropped != 0U;
+        peer_released |= newly_dropped != 0U;
         pending_peer_drops_.erase(
             pending_peer_drops_.begin() + static_cast<std::ptrdiff_t>(index));
     }
 
     const auto message = receive_buffer_.first_complete_message();
-    if (message.has_value()
-        && message->first_sequence != receive_buffer_.first_stored_sequence()
-        && tsbpd_clock_->ready(message->timestamp, now_microseconds)) {
-        const SequenceNumber first = receive_buffer_.first_stored_sequence();
-        const SequenceNumber last =
-            message->first_sequence.advanced(SequenceNumber::mask);
-        std::size_t newly_dropped = 0U;
-        const Error error = receive_buffer_.drop_range(
-            {.first = first, .last = last}, 0, &newly_dropped);
-        if (error != Error::none) {
-            result.error = error;
-            return result;
+    if (!message.has_value()
+        || message->first_sequence == receive_buffer_.first_stored_sequence()
+        || !tsbpd_clock_->ready(message->timestamp, now_microseconds)) {
+        if (peer_released) {
+            timer_scheduler_.on_receive_buffer_released(now_microseconds);
+            update_loss_timer(now_microseconds);
+            result.actions.push(make_acknowledgement(now_microseconds));
         }
-        result.receiver_drop_packets += newly_dropped;
-        released |= newly_dropped != 0U;
-        receive_loss_list_.remove_through(last);
-        filter_loss_list_.remove_through(last);
-    }
-    if (!released) {
         return result;
     }
+
+    const SequenceNumber first = receive_buffer_.first_stored_sequence();
+    const SequenceNumber last =
+        message->first_sequence.advanced(SequenceNumber::mask);
+    std::size_t newly_dropped = 0U;
+    const Error error = receive_buffer_.drop_range(
+        {.first = first, .last = last}, 0, &newly_dropped);
+    if (error != Error::none) {
+        result.error = error;
+        return result;
+    }
+    result.receiver_drop_packets += newly_dropped;
+    receive_loss_list_.remove_through(last);
+    filter_loss_list_.remove_through(last);
     timer_scheduler_.on_receive_buffer_released(now_microseconds);
     update_loss_timer(now_microseconds);
     result.actions.push(make_acknowledgement(now_microseconds));

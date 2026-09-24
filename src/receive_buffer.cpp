@@ -450,6 +450,18 @@ Error ReceiveBuffer::drop_peer_requested_range(SequenceRange range,
     return drop_range_impl(range, message_number, newly_dropped_packets, true);
 }
 
+bool ReceiveBuffer::acknowledge_peer_drop_range(SequenceRange range) noexcept
+{
+    if (range.last.distance_from(range.first) < 0
+        || range.first.distance_from(next_ack_sequence_) > 0
+        || range.last.distance_from(next_ack_sequence_) < 0) {
+        return false;
+    }
+    next_ack_sequence_ = range.last.next();
+    advance_acknowledgement();
+    return true;
+}
+
 std::optional<std::size_t> ReceiveBuffer::complete_message_last_offset(
     std::size_t offset) const noexcept
 {

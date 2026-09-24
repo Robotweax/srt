@@ -240,6 +240,11 @@ TEST(session_live_drop_request_retains_received_and_in_flight_solo_packets)
     REQUIRE(processed);
     REQUIRE_EQ(processed.receiver_drop_packets, 0U);
     REQUIRE_EQ(receiver.receive_buffer().occupied(), 1U);
+    REQUIRE_EQ(processed.actions.size, 1U);
+    REQUIRE_EQ(processed.actions.values[0].kind,
+        ReliabilityActionKind::acknowledgement);
+    REQUIRE_EQ(processed.actions.values[0].acknowledgement.next_sequence,
+        SequenceNumber {12});
 
     data.data.sequence = SequenceNumber {11};
     data.data.message_number = 2;
@@ -247,6 +252,8 @@ TEST(session_live_drop_request_retains_received_and_in_flight_solo_packets)
     const auto delayed = receiver.receive(data, 1'030);
     REQUIRE(delayed);
     REQUIRE(delayed.receiver_packet_accepted_unique);
+    REQUIRE_EQ(
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {12});
     std::array<std::byte, 1> output {};
     REQUIRE_EQ(
         receiver.pop_message_at(output, 101'049).error, Error::would_block);

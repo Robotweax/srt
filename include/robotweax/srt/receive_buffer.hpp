@@ -86,6 +86,10 @@ public:
     [[nodiscard]] Error drop_peer_requested_range(SequenceRange range,
         std::uint32_t message_number = 0,
         std::size_t* newly_dropped_packets = nullptr) noexcept;
+    // The sender no longer retransmits a DROPREQ range. Advance cumulative
+    // feedback without closing the receive slots to late original packets.
+    [[nodiscard]] bool acknowledge_peer_drop_range(
+        SequenceRange range) noexcept;
     [[nodiscard]] Error discard_before(
         SequenceNumber next_sequence) noexcept;
 
