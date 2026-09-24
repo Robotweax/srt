@@ -30,6 +30,7 @@ To evaluate it in your own development tap, copy the formula to that tap's
 
 ```sh
 brew install --build-from-source YOUR_USER/YOUR_TAP/robotweax-srt
+brew install --only-dependencies --include-test YOUR_USER/YOUR_TAP/robotweax-srt
 brew test YOUR_USER/YOUR_TAP/robotweax-srt
 brew audit --strict YOUR_USER/YOUR_TAP/robotweax-srt
 ```
@@ -66,3 +67,22 @@ Native execution evidence must be distinguished from cross-compilation.
 Package recipe changes need package-focused CI. Full architecture, coexistence
 and upgrade matrices belong to release qualification; routine packaging edits
 do not require all OBS desktop builds.
+
+## Automated qualification
+
+`Package managers` runs when recipes, the consumer fixtures or its workflow
+change, on matching main pushes, on version tags and on manual dispatch. It
+builds the pinned release archive, **not the current protocol source checkout**.
+The normal source CI remains responsible for changes to the protocol itself.
+
+Homebrew runs a source installation, formula test and strict audit on macOS,
+then C/C++ consumers with Haivision installed. The vcpkg matrix uses a pinned
+vcpkg revision on Windows x64, Linux x64 and macOS arm64, with static and dynamic
+triplets. Both providers execute in separate processes; removing Robotweax is
+followed by running the Haivision consumer again. Consumer sources are shared
+with the existing installed-package tests and must remain compatible with the
+pinned recipe version, or the recipe and fixtures must move together.
+
+Passing this workflow does not qualify an upgrade from an older package, binary
+bottles, all OS versions, or official distribution admission. See
+[qualification evidence](qualification-0.2.5.md) for observed results and gaps.

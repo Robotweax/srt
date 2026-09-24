@@ -1,0 +1,92 @@
+name: Package managers
+
+on:
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'tests/package_consumer/**'
+      - '.github/workflows/package-managers.yml'
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'packaging/**'
+      - 'tests/package_consumer/**'
+      - '.github/workflows/package-managers.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  homebrew:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+      HOMEBREW_NO_AUTOREMOVE: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install both providers
+        run: |
+          brew tap-new robotweax/validation
+          cp packaging/homebrew/robotweax-srt.rb "$(brew --repository)/Library/Taps/robotweax/homebrew-validation/Formula/"
+          brew install srt
+          brew install --build-from-source robotweax/validation/robotweax-srt
+          brew install --only-dependencies --include-test robotweax/validation/robotweax-srt
+      - name: Audit and execute consumers
+        run: |
+          brew test robotweax/validation/robotweax-srt
+          brew audit --strict robotweax/validation/robotweax-srt
+          cmake -S packaging/tests -B package-consumers -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix robotweax-srt);$(brew --prefix openssl@3)" -DHAIVISION_PREFIX="$(brew --prefix srt)"
+          cmake --build package-consumers --config Release
+          ctest --test-dir package-consumers -C Release --output-on-failure
+      - name: Remove Robotweax and retain Haivision
+        run: |
+          brew uninstall robotweax-srt
+          ./package-consumers/haivision
+          test "$(pkg-config --modversion srt)" != ''
+
+  vcpkg:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, triplet: x64-linux}
+          - {os: ubuntu-24.04, triplet: x64-linux-dynamic}
+          - {os: windows-2022, triplet: x64-windows-static}
+          - {os: windows-2022, triplet: x64-windows}
+          - {os: macos-15, triplet: arm64-osx}
+          - {os: macos-15, triplet: arm64-osx-dynamic}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: microsoft/vcpkg
+          ref: dc1232a6e05dcc49703091e83743e3b4df9b9b7c
+          path: .vcpkg
+      - name: Bootstrap vcpkg (Unix)
+        if: runner.os != 'Windows'
+        run: ./.vcpkg/bootstrap-vcpkg.sh -disableMetrics
+      - name: Bootstrap vcpkg (Windows)
+        if: runner.os == 'Windows'
+        run: ./.vcpkg/bootstrap-vcpkg.bat -disableMetrics
+      - name: Install both providers and run consumers
+        shell: bash
+        env:
+          TRIPLET: ${{ matrix.triplet }}
+        run: |
+          ./.vcpkg/vcpkg install "robotweax-srt:$TRIPLET" "libsrt:$TRIPLET" --overlay-ports="$PWD/packaging/vcpkg/ports" --classic
+          cmake -S packaging/tests -B package-consumers -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$PWD/.vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET="$TRIPLET" -DHAIVISION_PREFIX="$PWD/.vcpkg/installed/$TRIPLET"
+          cmake --build package-consumers --config Release
+          export PATH="$PWD/.vcpkg/installed/$TRIPLET/bin:$PATH"
+          ctest --test-dir package-consumers -C Release --output-on-failure
+          ./.vcpkg/vcpkg remove "robotweax-srt:$TRIPLET" --classic
+          ctest --test-dir package-consumers -C Release -R '^haivision$' --output-on-failure
