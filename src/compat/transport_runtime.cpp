@@ -2445,17 +2445,18 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     if (!send_actions(processed.actions, now)) {
         return false;
     }
-    if (packet.kind == PacketKind::data
-        && !processed.receiver_filter_control_packet) {
+    if ((packet.kind == PacketKind::data
+            && !processed.receiver_filter_control_packet)
+        || (packet.kind == PacketKind::control
+            && packet.control.type == ControlType::drop_request)) {
+        // A deferred DROPREQ gives blocked receivers a new wake-up deadline.
         receive_ready_.notify_all();
-    } else if (packet.control.type
-        == ControlType::shutdown) {
+    } else if (packet.control.type == ControlType::shutdown) {
         peer_closed_ = true;
         broken_ = true;
         receive_ready_.notify_all();
         send_ready_.notify_all();
-    } else if (packet.control.type
-        == ControlType::peer_error) {
+    } else if (packet.control.type == ControlType::peer_error) {
         peer_error_pending_ = true;
         send_ready_.notify_all();
     }
@@ -3015,8 +3016,8 @@ bool ConnectionRuntime::readable() noexcept
     }
     // Report end-of-stream only after no complete TSBPD-delayed message
     // remains ahead of it.
-    return peer_closed_
-        && !session_.receive_buffer().has_complete_message();
+    return peer_closed_ && !session_.receive_buffer().has_complete_message()
+        && !session_.next_receive_delivery_time().has_value();
 }
 
 std::optional<ConnectionRuntime::Clock::time_point>

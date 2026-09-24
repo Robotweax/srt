@@ -5026,6 +5026,68 @@ TEST(compat_runtime_drains_tsbpd_message_after_peer_shutdown)
         MessageIoStatus::peer_closed);
 }
 
+TEST(compat_runtime_finishes_a_deferred_peer_drop_before_end_of_stream)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {
+        .address = {192, 0, 2, 13},
+        .port = 11'003,
+    };
+    std::uint64_t now = 2'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 300,
+        .initial_sequence = SequenceNumber {3'000},
+        .negotiated_options =
+            {
+                .receive_tsbpd = true,
+                .too_late_packet_drop = true,
+                .receive_delay_milliseconds = 120,
+            },
+        .origin = ConnectionRuntime::Clock::now(),
+        .handshake_arrival_microseconds = 1'000,
+        .peer_handshake_timestamp = PacketTimestamp {0},
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+
+    std::array<std::byte, 8> drop_payload {};
+    REQUIRE(encode_drop_request_payload(
+        {1, {SequenceNumber {3'000}, SequenceNumber {3'000}}}, drop_payload));
+    PacketView drop;
+    drop.kind = PacketKind::control;
+    drop.control.type = ControlType::drop_request;
+    drop.control.timestamp = PacketTimestamp {1'000};
+    drop.control.destination_socket_id = 300;
+    drop.payload = drop_payload;
+    runtime.process_packet(drop, peer);
+
+    PacketView shutdown;
+    shutdown.kind = PacketKind::control;
+    shutdown.control.type = ControlType::shutdown;
+    shutdown.control.destination_socket_id = 300;
+    const std::array<std::byte, 4> shutdown_padding {};
+    shutdown.payload = shutdown_padding;
+    runtime.process_packet(shutdown, peer);
+
+    REQUIRE(runtime.peer_closed());
+    REQUIRE(!runtime.readable());
+    std::array<std::byte, 1> received {};
+    REQUIRE_EQ(runtime.receive_message(received, false, -1).status,
+        MessageIoStatus::would_block);
+    now = 121'999;
+    REQUIRE(!runtime.readable());
+    now = 122'000;
+    REQUIRE(runtime.readable());
+    REQUIRE_EQ(runtime.receive_message(received, false, -1).status,
+        MessageIoStatus::peer_closed);
+    REQUIRE_EQ(
+        runtime.statistics(false, true).total.receiver_dropped.packets, 1U);
+}
+
 TEST(compat_runtime_exposes_the_exact_next_tsbpd_deadline)
 {
     const auto channel =

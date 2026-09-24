@@ -1179,6 +1179,13 @@ ReliabilitySession::drop_too_late_receiver(
     bool released = false;
     for (std::size_t index = 0; index < pending_peer_drops_.size();) {
         const auto pending = pending_peer_drops_[index];
+        if (pending.sequences.last.distance_from(
+                receive_buffer_.first_stored_sequence())
+            < 0) {
+            pending_peer_drops_.erase(pending_peer_drops_.begin()
+                + static_cast<std::ptrdiff_t>(index));
+            continue;
+        }
         if (now_microseconds < pending.deadline_microseconds) {
             ++index;
             continue;
