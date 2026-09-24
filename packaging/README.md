@@ -81,9 +81,11 @@ builds the pinned release archive, **not the current protocol source checkout**.
 The normal source CI remains responsible for changes to the protocol itself.
 
 Homebrew runs a source installation, formula test and strict audit on macOS,
-then C/C++ consumers with Haivision installed. The vcpkg matrix uses a pinned
+then C/C++ consumers first without and then with Haivision installed. The vcpkg matrix uses a pinned
 vcpkg revision on Windows x64, Linux x64 and macOS arm64, with static and dynamic
-triplets. Both providers execute in separate processes; removing Robotweax is
+triplets. Each triplet executes Release and Debug consumers first standalone,
+then alongside Haivision, then from a moved installation prefix with the original
+path absent. Both providers execute in separate processes; removing Robotweax is
 followed by running the Haivision consumer again. Consumer sources are shared
 with the existing installed-package tests and must remain compatible with the
 pinned recipe version, or the recipe and fixtures must move together.
@@ -91,3 +93,17 @@ pinned recipe version, or the recipe and fixtures must move together.
 Passing this workflow does not qualify an upgrade from an older package, binary
 bottles, all OS versions, or official distribution admission. See
 [qualification evidence](qualification-0.2.5.md) for observed results and gaps.
+
+The vcpkg qualification can also run locally using a bootstrapped checkout of
+the pinned vcpkg revision (a new work directory is required):
+
+```sh
+TRIPLET=arm64-osx python3 packaging/tests/qualify_vcpkg.py \
+  --vcpkg-root /path/to/vcpkg --work-root /tmp/srt-qualification
+```
+
+Set `MSVC_RUNTIME` as described above when using `x64-windows-static`. The
+script isolates installed packages below its work directory. Relocation covers
+the complete vcpkg installation including dependencies; it does not claim that
+an individual library can be copied without its dependencies, or that Homebrew
+bottles are relocatable.

@@ -32,13 +32,21 @@ jobs:
       HOMEBREW_NO_AUTOREMOVE: '1'
     steps:
       - uses: actions/checkout@v7
-      - name: Install both providers
+      - name: Install Robotweax without Haivision
         run: |
+          if brew list --formula srt >/dev/null 2>&1; then
+            brew uninstall srt
+          fi
           brew tap-new robotweax/validation
           cp packaging/homebrew/robotweax-srt.rb "$(brew --repository)/Library/Taps/robotweax/homebrew-validation/Formula/"
-          brew install srt
           brew install --build-from-source robotweax/validation/robotweax-srt
           brew install --only-dependencies --include-test robotweax/validation/robotweax-srt
+      - name: Execute standalone consumers before installing Haivision
+        run: |
+          cmake -S packaging/tests -B package-standalone -DCMAKE_BUILD_TYPE=Release -DTEST_HAIVISION=OFF -DCMAKE_PREFIX_PATH="$(brew --prefix robotweax-srt);$(brew --prefix openssl@3)"
+          cmake --build package-standalone
+          ctest --test-dir package-standalone --output-on-failure
+          brew install srt
       - name: Audit and execute consumers
         run: |
           brew test robotweax/validation/robotweax-srt
@@ -80,20 +88,18 @@ jobs:
       - name: Bootstrap vcpkg (Windows)
         if: runner.os == 'Windows'
         run: ./.vcpkg/bootstrap-vcpkg.bat -disableMetrics
-      - name: Install both providers and run consumers
-        shell: bash
+      - name: Qualify standalone, coexistence, relocation and removal
         env:
           TRIPLET: ${{ matrix.triplet }}
           MSVC_RUNTIME: ${{ matrix.msvc_runtime }}
-        run: |
-          ./.vcpkg/vcpkg install "robotweax-srt:$TRIPLET" "libsrt:$TRIPLET" --overlay-ports="$PWD/packaging/vcpkg/ports" --classic
-          consumer_options=()
-          if [[ -n "$MSVC_RUNTIME" ]]; then
-            consumer_options+=("-DCMAKE_MSVC_RUNTIME_LIBRARY=$MSVC_RUNTIME")
-          fi
-          cmake -S packaging/tests -B package-consumers "${consumer_options[@]}" -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$PWD/.vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET="$TRIPLET" -DHAIVISION_PREFIX="$PWD/.vcpkg/installed/$TRIPLET"
-          cmake --build package-consumers --config Release
-          export PATH="$PWD/.vcpkg/installed/$TRIPLET/bin:$PATH"
-          ctest --test-dir package-consumers -C Release --output-on-failure
-          ./.vcpkg/vcpkg remove "robotweax-srt:$TRIPLET" --classic
-          ctest --test-dir package-consumers -C Release -R '^haivision$' --output-on-failure
+        run: python packaging/tests/qualify_vcpkg.py --vcpkg-root .vcpkg --work-root package-qualification
+      - name: Retain qualification logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: package-qualification-${{ matrix.triplet }}
+          path: |
+            package-qualification/*/Testing/Temporary/*.log
+            package-qualification/*/CMakeCache.txt
+            .vcpkg/buildtrees/robotweax-srt/*.log
+          if-no-files-found: ignore
