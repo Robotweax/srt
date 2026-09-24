@@ -357,6 +357,96 @@ TEST(interior_drop_range_remains_acknowledged_until_delivery_reaches_it)
     REQUIRE_EQ(buffer.occupied(), 0U);
 }
 
+TEST(peer_drop_request_keeps_received_solo_and_discards_missing_and_fragments)
+{
+    ReceiveBuffer buffer {SequenceNumber {100}, 8};
+    const std::array<std::byte, 1> payload {std::byte {'x'}};
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {101}, 1, MessageBoundary::solo, payload)));
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {103}, 2, MessageBoundary::first, payload)));
+    REQUIRE(buffer.insert(data_packet(
+        SequenceNumber {104}, 2, MessageBoundary::subsequent, payload)));
+    std::size_t dropped = 0U;
+    REQUIRE_EQ(buffer.drop_peer_requested_range(
+                   {SequenceNumber {100}, SequenceNumber {104}}, 1, &dropped),
+        Error::none);
+    REQUIRE_EQ(dropped, 4U);
+    REQUIRE_EQ(buffer.occupied(), 1U);
+    REQUIRE_EQ(buffer.buffered_payload_bytes(), 1U);
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {101});
+    REQUIRE_EQ(buffer.next_ack_sequence(), SequenceNumber {105});
+    std::array<std::byte, 1> output {};
+    REQUIRE(buffer.pop_message(output));
+    REQUIRE_EQ(output, payload);
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {105});
+}
+
+TEST(peer_drop_request_preserves_solo_across_sequence_wrap)
+{
+    ReceiveBuffer buffer {SequenceNumber {SequenceNumber::mask}, 4};
+    const std::array<std::byte, 1> payload {std::byte {'w'}};
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {0}, 1, MessageBoundary::solo, payload)));
+    std::size_t dropped = 0U;
+    REQUIRE_EQ(buffer.drop_peer_requested_range(
+                   {SequenceNumber {SequenceNumber::mask}, SequenceNumber {1}},
+                   1, &dropped),
+        Error::none);
+    REQUIRE_EQ(dropped, 2U);
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {0});
+    std::array<std::byte, 1> output {};
+    REQUIRE(buffer.pop_message(output));
+    REQUIRE_EQ(output, payload);
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {2});
+}
+
+TEST(peer_drop_request_preserves_a_complete_fragmented_message)
+{
+    ReceiveBuffer buffer {SequenceNumber {100}, 8};
+    const std::array<std::byte, 1> first {std::byte {'a'}};
+    const std::array<std::byte, 1> last {std::byte {'b'}};
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {101}, 7, MessageBoundary::first, first)));
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {102}, 7, MessageBoundary::last, last)));
+    std::size_t dropped = 0U;
+    REQUIRE_EQ(buffer.drop_peer_requested_range(
+                   {SequenceNumber {100}, SequenceNumber {102}}, 7, &dropped),
+        Error::none);
+    REQUIRE_EQ(dropped, 1U);
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {101});
+    REQUIRE_EQ(buffer.occupied(), 2U);
+    std::array<std::byte, 2> output {};
+    REQUIRE(buffer.pop_message(output));
+    REQUIRE_EQ(output[0], first[0]);
+    REQUIRE_EQ(output[1], last[0]);
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {103});
+}
+
+TEST(peer_drop_acknowledges_sender_without_closing_late_receive_slots)
+{
+    ReceiveBuffer buffer {SequenceNumber {100}, 8};
+    const std::array<std::byte, 1> payload {std::byte {'x'}};
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {102}, 3, MessageBoundary::solo, payload)));
+    REQUIRE(!buffer.acknowledge_peer_drop_range(
+        {SequenceNumber {101}, SequenceNumber {102}}));
+    REQUIRE_EQ(buffer.next_ack_sequence(), SequenceNumber {100});
+    REQUIRE(buffer.acknowledge_peer_drop_range(
+        {SequenceNumber {100}, SequenceNumber {101}}));
+    REQUIRE_EQ(buffer.next_ack_sequence(), SequenceNumber {103});
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {100});
+    REQUIRE_EQ(buffer.occupied(), 1U);
+
+    const auto late = buffer.insert(
+        data_packet(SequenceNumber {100}, 1, MessageBoundary::solo, payload));
+    REQUIRE(late);
+    REQUIRE_EQ(late.status, ReceiveStatus::accepted_out_of_order);
+    REQUIRE_EQ(buffer.next_ack_sequence(), SequenceNumber {103});
+    REQUIRE_EQ(buffer.occupied(), 2U);
+}
+
 TEST(drop_range_outside_the_receive_window_cannot_corrupt_buffer_state)
 {
     ReceiveBuffer buffer{SequenceNumber{100}, 4};
