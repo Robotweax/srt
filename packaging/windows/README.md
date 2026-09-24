@@ -158,6 +158,11 @@ its props after project compiler settings (replace OPENSSL with BCRYPT as needed
 <Import Project="$(ROBOTWEAX_SRT_OPENSSL)\srt.props" />
 ```
 
+For the library lookup, `srt.props` also maps a project platform named `x86`
+to the packaged `Win32` SDK and `Win64` to the packaged `x64` SDK. This does
+not configure a Visual C++ toolset for a custom project platform; the consumer
+project must select the intended compiler architecture separately.
+
 Header includes remain `<srt/srt.h>`; the root is private to this SDK and does
 not install over a system Haivision installation. For OpenSSL packages, Crypto is an explicit
 static link dependency. Applications with another OpenSSL dependency must resolve
