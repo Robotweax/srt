@@ -1,0 +1,13 @@
+{
+  "name": "robotweax-srt",
+  "version": "0.2.5",
+  "description": "Independent Secure Reliable Transport implementation",
+  "homepage": "https://github.com/Robotweax/srt",
+  "license": "MIT",
+  "supports": "(windows & !uwp & !mingw & !xbox) | linux | osx",
+  "dependencies": [
+    "openssl",
+    { "name": "vcpkg-cmake", "host": true },
+    { "name": "vcpkg-cmake-config", "host": true }
+  ]
+}
