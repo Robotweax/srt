@@ -428,8 +428,8 @@ TEST(peer_drop_acknowledges_sender_without_closing_late_receive_slots)
 {
     ReceiveBuffer buffer {SequenceNumber {100}, 8};
     const std::array<std::byte, 1> payload {std::byte {'x'}};
-    REQUIRE(buffer.insert(data_packet(
-        SequenceNumber {102}, 3, MessageBoundary::solo, payload)));
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {102}, 3, MessageBoundary::solo, payload)));
     REQUIRE(!buffer.acknowledge_peer_drop_range(
         {SequenceNumber {101}, SequenceNumber {102}}));
     REQUIRE_EQ(buffer.next_ack_sequence(), SequenceNumber {100});
@@ -439,8 +439,8 @@ TEST(peer_drop_acknowledges_sender_without_closing_late_receive_slots)
     REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {100});
     REQUIRE_EQ(buffer.occupied(), 1U);
 
-    const auto late = buffer.insert(data_packet(
-        SequenceNumber {100}, 1, MessageBoundary::solo, payload));
+    const auto late = buffer.insert(
+        data_packet(SequenceNumber {100}, 1, MessageBoundary::solo, payload));
     REQUIRE(late);
     REQUIRE_EQ(late.status, ReceiveStatus::accepted_out_of_order);
     REQUIRE_EQ(buffer.next_ack_sequence(), SequenceNumber {103});
