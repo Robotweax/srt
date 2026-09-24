@@ -38,6 +38,9 @@ jobs:
       - name: Package validation regression tests
         shell: pwsh
         run: ./packaging/windows/test-package.ps1
+      - name: SDK platform alias path tests
+        shell: pwsh
+        run: ./packaging/windows/test-platform-aliases.ps1
       - name: Authenticode rejection regression tests
         shell: pwsh
         run: ./packaging/windows/test-signing.ps1
