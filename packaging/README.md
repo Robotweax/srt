@@ -1,9 +1,10 @@
 # Package manager recipes
 
-These initial recipes package the immutable Robotweax SRT 0.2.5 source commit
-`492a7d61390cbec86e44e177ec034f0f5d9a5cc3`. They are development recipes, not
-published package-manager entries. No Homebrew tap, vcpkg registry, PPA or COPR
-availability is claimed by their presence here.
+These recipes package the immutable Robotweax SRT 0.2.5 source commit
+`492a7d61390cbec86e44e177ec034f0f5d9a5cc3`. The reviewed Homebrew formula
+is published in [Robotweax/homebrew-tap](https://github.com/Robotweax/homebrew-tap),
+with an Apple Silicon macOS 15 bottle. The vcpkg overlay is available below; no
+vcpkg registry, PPA or COPR is published yet.
 
 ## Package contract
 
@@ -24,9 +25,17 @@ availability is claimed by their presence here.
 
 ## Homebrew recipe
 
-`homebrew/robotweax-srt.rb` builds a shared library using Homebrew OpenSSL.
-To evaluate it in your own development tap, copy the formula to that tap's
-`Formula/` directory, then run:
+`homebrew/robotweax-srt.rb` is the canonical shared-library recipe using Homebrew
+OpenSSL. Install the reviewed copy from the public tap:
+
+```sh
+brew install robotweax/tap/robotweax-srt
+```
+
+Homebrew may ask you to trust this external formula. The published bottle is
+qualified for Apple Silicon macOS 15. A source installation from the public tap
+also passed on Apple Silicon macOS 26. To evaluate a proposed recipe change in
+a development tap, copy the formula to its `Formula/` directory, then run:
 
 ```sh
 brew install --build-from-source YOUR_USER/YOUR_TAP/robotweax-srt
@@ -36,8 +45,9 @@ brew audit --strict YOUR_USER/YOUR_TAP/robotweax-srt
 ```
 
 The formula includes a C consumer using Robotweax-specific symbols and checks
-that generic Haivision paths were not installed. Native package-manager tests
-and bottles for each advertised platform are required before distribution.
+that generic Haivision paths were not installed. The macOS 15 bottle passed Homebrew test-bot, including installation from the
+created bottle; its published SHA-256 matches the reviewed CI artifact. Other
+Homebrew bottle platforms require their own native checks.
 
 ## vcpkg overlay
 

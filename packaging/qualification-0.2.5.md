@@ -1,6 +1,7 @@
 # Package qualification: 0.2.5
 
-Status: development recipes; no public package channel has been published.
+Status: Homebrew tap published for Robotweax SRT 0.2.5 on 2026-09-24;
+vcpkg remains an overlay and no registry, PPA or COPR is published.
 Source: `492a7d61390cbec86e44e177ec034f0f5d9a5cc3` (release 0.2.5).
 
 ## Local evidence, 2026-09-24
@@ -30,9 +31,10 @@ runtime requirements.
 
 ## Release gates still open
 
-- Qualify Homebrew bottles and their relocation before publishing a tap.
-- Qualify upgrades and rollback when introducing a public tap or registry.
-  There is no previous Robotweax package to upgrade here.
+- Qualify Intel macOS, Linux Homebrew and newer macOS bottles before advertising
+  them. Only the Apple Silicon macOS 15 bottle is published today.
+- Qualify upgrades and rollback for future package versions. There is no
+  previous Robotweax package to upgrade from here.
 - Confirm supported OS versions and architectures before advertising support.
 - Ubuntu/PPA and Fedora/COPR packaging remain the following workstream.
 
@@ -76,5 +78,26 @@ on the developer machine for this follow-up.
 
 This validates the complete vcpkg prefix being moved with its dependencies;
 it does not qualify moving an individual library or a Homebrew bottle. Official
-package submission, a public tap/registry, and Ubuntu/Fedora packaging remain
-separate milestones.
+official package submission, a vcpkg registry, and Ubuntu/Fedora packaging
+remain separate milestones.
+
+## Public Homebrew tap
+
+The [Robotweax Homebrew tap](https://github.com/Robotweax/homebrew-tap) was
+published on 2026-09-24 using the generated `brew pr-pull` workflow with the
+reviewed head `7b89e8add61e02f4ad1ab43ef2a18d22959c18aa`. The
+[macOS 15 arm64 test-bot run](https://github.com/Robotweax/homebrew-tap/actions/runs/35993079194)
+passed syntax, source build, bottle creation, bottle installation and formula
+tests. The published `arm64_sequoia` asset in
+[release robotweax-srt-0.2.5](https://github.com/Robotweax/homebrew-tap/releases/tag/robotweax-srt-0.2.5)
+has SHA-256 `66b6cb080c0c633495572fb306dcec0136a8ba6783eef00f13e06582e8930d1b`,
+matching the CI artifact and the formula's bottle block. A direct installation
+and formula test from the public tap also passed on Apple Silicon macOS 26;
+that host used the source fallback. Public installation:
+
+```sh
+brew install robotweax/tap/robotweax-srt
+```
+
+This tap does not replace Haivision's formula or redirect applications already
+linked against it. The test installation on the development Mac was removed.
