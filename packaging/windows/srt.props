@@ -4,6 +4,8 @@
   <PropertyGroup>
     <RobotweaxSrtRoot>$(MSBuildThisFileDirectory)</RobotweaxSrtRoot>
     <RobotweaxSrtLibDir>$(RobotweaxSrtRoot)lib\$(Configuration)-$(Platform)</RobotweaxSrtLibDir>
+    <RobotweaxSrtLibDir Condition="'$(Platform)'=='Win64'">$(RobotweaxSrtRoot)lib\$(Configuration)-x64</RobotweaxSrtLibDir>
+    <RobotweaxSrtLibDir Condition="'$(Platform)'=='x86'">$(RobotweaxSrtRoot)lib\$(Configuration)-Win32</RobotweaxSrtLibDir>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>

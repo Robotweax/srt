@@ -1,0 +1,6 @@
+usr/include/robotweax-srt
+usr/lib/*/librobotweax-srt.so
+usr/lib/*/cmake/RobotweaxSRT
+usr/lib/*/pkgconfig/robotweax-srt.pc
+usr/share/doc/librobotweax-srt-dev
+usr/share/robotweax_srt/abi

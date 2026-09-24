@@ -562,7 +562,10 @@ def classify(
             change_set.documentation = True
             continue
         if (path.startswith("packaging/")
-                or path == ".github/workflows/package-managers.yml"):
+                or path in {
+                    ".github/workflows/package-managers.yml",
+                    ".github/workflows/linux-packages.yml",
+                }):
             # Immutable release recipes are exercised by Package managers CI.
             # They do not change the protocol or require application builds.
             change_set.code = True

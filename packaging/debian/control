@@ -1,0 +1,25 @@
+Source: robotweax-srt
+Section: libs
+Priority: optional
+Maintainer: Robotweax GmbH <srtpioneer@proton.me>
+Build-Depends: debhelper-compat (= 13), cmake (>= 3.20), libssl-dev (>= 3.0), pkgconf
+Standards-Version: 4.6.2
+Homepage: https://github.com/Robotweax/srt
+Rules-Requires-Root: no
+
+Package: librobotweax-srt0.2
+Architecture: any
+Multi-Arch: same
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Robotweax Secure Reliable Transport shared library
+ Independent SRT implementation with a namespaced library and SONAME 0.2.
+ It does not replace the Haivision SRT shared library.
+
+Package: librobotweax-srt-dev
+Section: libdevel
+Architecture: any
+Multi-Arch: same
+Depends: librobotweax-srt0.2 (= ${binary:Version}), libssl-dev, ${misc:Depends}
+Description: development files for Robotweax Secure Reliable Transport
+ Headers, CMake target and pkg-config file for the Robotweax SRT library.
+ Select this provider explicitly when building an application.
