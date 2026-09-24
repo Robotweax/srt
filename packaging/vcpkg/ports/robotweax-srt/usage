@@ -1,0 +1,9 @@
+Robotweax SRT provides a namespaced CMake package:
+
+    find_package(RobotweaxSRT CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE RobotweaxSRT::srt)
+
+For static linking, use CXX as the consumer linker language.
+Headers remain #include <srt/srt.h> through the target's include path.
+This port does not replace libsrt or select Robotweax in other ports.
+Only load one SRT implementation into an application process.
