@@ -287,6 +287,23 @@ int run_data_probe(UdpSocket& socket, Ipv4Endpoint peer,
     while (Clock::now() < deadline) {
         const auto now_microseconds = session_time_since(origin,
             request.clock_skew_parts_per_million);
+        if (request.operation == ProbeOperation::receive) {
+            const auto released =
+                session.drop_too_late_receiver(now_microseconds);
+            if (!released) {
+                std::cerr << "receiver deadline processing failed\n";
+                return 5;
+            }
+            for (std::size_t index = 0; index < released.actions.size;
+                ++index) {
+                if (!send_reliability_action(socket, peer,
+                        released.actions.values[index], peer_socket_id,
+                        origin)) {
+                    return 5;
+                }
+                session.note_packet_sent(now_microseconds);
+            }
+        }
         const auto received = socket.receive_from(datagram);
         if (received.error == Error::would_block) {
             const auto due = session.poll_timers(now_microseconds);

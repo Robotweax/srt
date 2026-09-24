@@ -98,6 +98,7 @@ ReliabilitySession::ReliabilitySession(Configuration configuration)
           configuration.peer_initial_sequence.advanced(SequenceNumber::mask))
     , peer_socket_id_(configuration.peer_socket_id)
 {
+    pending_peer_drops_.reserve(configuration.receive_capacity_packets);
 }
 
 Error ReliabilitySession::queue_message(std::span<const std::byte> message,
@@ -894,13 +895,44 @@ ReliabilityProcessResult ReliabilitySession::receive(
         if (!decoded) {
             return {.error = decoded.error};
         }
-        // In Live TSBPD/TLPKTDROP, an original packet can still arrive from
-        // the network after its sender issues DROPREQ. Let the local playout
-        // deadline resolve actual gaps instead of discarding in-flight media.
-        // Outside that mode, discard the requested gaps while retaining any
-        // complete SOLO message already buffered before the control packet.
-        if (!live_options_.receive_tsbpd
-            || !live_options_.too_late_packet_drop) {
+        // DROPREQ can overtake an original datagram. Keep that datagram's
+        // receive window open until the control packet's TSBPD deadline, but
+        // retain the peer's range so a final gap can advance without needing
+        // a later complete message to provide a local playout deadline.
+        const bool defer_drop = live_options_.receive_tsbpd
+            && live_options_.too_late_packet_drop && tsbpd_clock_.has_value();
+        const std::uint64_t control_deadline = defer_drop
+            ? tsbpd_clock_->delivery_time(packet.control.timestamp)
+            : 0U;
+        const std::uint64_t maximum_grace =
+            static_cast<std::uint64_t>(live_options_.receive_delay_milliseconds)
+            * 1'000U;
+        const std::uint64_t latest_deadline = now_microseconds
+                > std::numeric_limits<std::uint64_t>::max() - maximum_grace
+            ? std::numeric_limits<std::uint64_t>::max()
+            : now_microseconds + maximum_grace;
+        const std::uint64_t deadline =
+            std::min(control_deadline, latest_deadline);
+        if (defer_drop && now_microseconds < deadline
+            && decoded.request.sequences.last.distance_from(
+                   receive_buffer_.first_stored_sequence())
+                >= 0) {
+            const auto existing = std::find_if(pending_peer_drops_.begin(),
+                pending_peer_drops_.end(), [&](const PendingPeerDrop& pending) {
+                    return pending.sequences.first
+                        == decoded.request.sequences.first
+                        && pending.sequences.last
+                        == decoded.request.sequences.last;
+                });
+            if (existing == pending_peer_drops_.end()) {
+                if (pending_peer_drops_.size()
+                    == pending_peer_drops_.capacity()) {
+                    return {.error = Error::buffer_too_small};
+                }
+                pending_peer_drops_.push_back(
+                    {decoded.request.sequences, deadline});
+            }
+        } else {
             const auto error = receive_buffer_.drop_peer_requested_range(
                 decoded.request.sequences, decoded.request.message_number,
                 &result.receiver_drop_packets);
@@ -908,16 +940,15 @@ ReliabilityProcessResult ReliabilitySession::receive(
                 return {.error = error};
             }
         }
-        receive_loss_list_.remove_through(
-            decoded.request.sequences.last);
-        filter_loss_list_.remove_through(
-            decoded.request.sequences.last);
+        receive_loss_list_.remove_through(decoded.request.sequences.last);
+        filter_loss_list_.remove_through(decoded.request.sequences.last);
         if (decoded.request.sequences.first.distance_from(
-                highest_received_sequence_.next()) <= 0
+                highest_received_sequence_.next())
+                <= 0
             && decoded.request.sequences.last.distance_from(
-                highest_received_sequence_) > 0) {
-            highest_received_sequence_ =
-                decoded.request.sequences.last;
+                   highest_received_sequence_)
+                > 0) {
+            highest_received_sequence_ = decoded.request.sequences.last;
         }
         update_loss_timer(now_microseconds);
         return result;
@@ -1115,16 +1146,24 @@ ReliabilitySession::next_receive_delivery_time() noexcept
     if (!tsbpd_clock_.has_value()) {
         return std::nullopt;
     }
+    std::optional<std::uint64_t> next_delivery;
+    for (const auto& pending : pending_peer_drops_) {
+        if (!next_delivery.has_value()
+            || pending.deadline_microseconds < *next_delivery) {
+            next_delivery = pending.deadline_microseconds;
+        }
+    }
     const auto message = receive_buffer_.first_complete_message();
     if (!message.has_value()) {
-        return std::nullopt;
+        return next_delivery;
     }
-    if (message->first_sequence
-            != receive_buffer_.first_stored_sequence()
+    if (message->first_sequence != receive_buffer_.first_stored_sequence()
         && !live_options_.too_late_packet_drop) {
-        return std::nullopt;
+        return next_delivery;
     }
-    return tsbpd_clock_->delivery_time(message->timestamp);
+    const auto message_delivery =
+        tsbpd_clock_->delivery_time(message->timestamp);
+    return std::min(message_delivery, next_delivery.value_or(message_delivery));
 }
 
 ReliabilityProcessResult
@@ -1132,40 +1171,56 @@ ReliabilitySession::drop_too_late_receiver(
     std::uint64_t now_microseconds) noexcept
 {
     ReliabilityProcessResult result;
-    if (!tsbpd_clock_.has_value()
-        || !live_options_.receive_tsbpd
+    if (!tsbpd_clock_.has_value() || !live_options_.receive_tsbpd
         || !live_options_.too_late_packet_drop) {
         return result;
     }
 
+    bool released = false;
+    for (std::size_t index = 0; index < pending_peer_drops_.size();) {
+        const auto pending = pending_peer_drops_[index];
+        if (now_microseconds < pending.deadline_microseconds) {
+            ++index;
+            continue;
+        }
+        std::size_t newly_dropped = 0U;
+        const Error error = receive_buffer_.drop_peer_requested_range(
+            pending.sequences, 0U, &newly_dropped);
+        if (error != Error::none) {
+            result.error = error;
+            return result;
+        }
+        result.receiver_drop_packets += newly_dropped;
+        released |= newly_dropped != 0U;
+        pending_peer_drops_.erase(
+            pending_peer_drops_.begin() + static_cast<std::ptrdiff_t>(index));
+    }
+
     const auto message = receive_buffer_.first_complete_message();
-    if (!message.has_value()
-        || message->first_sequence
-            == receive_buffer_.first_stored_sequence()
-        || !tsbpd_clock_->ready(
-            message->timestamp, now_microseconds)) {
+    if (message.has_value()
+        && message->first_sequence != receive_buffer_.first_stored_sequence()
+        && tsbpd_clock_->ready(message->timestamp, now_microseconds)) {
+        const SequenceNumber first = receive_buffer_.first_stored_sequence();
+        const SequenceNumber last =
+            message->first_sequence.advanced(SequenceNumber::mask);
+        std::size_t newly_dropped = 0U;
+        const Error error = receive_buffer_.drop_range(
+            {.first = first, .last = last}, 0, &newly_dropped);
+        if (error != Error::none) {
+            result.error = error;
+            return result;
+        }
+        result.receiver_drop_packets += newly_dropped;
+        released |= newly_dropped != 0U;
+        receive_loss_list_.remove_through(last);
+        filter_loss_list_.remove_through(last);
+    }
+    if (!released) {
         return result;
     }
-
-    const SequenceNumber first =
-        receive_buffer_.first_stored_sequence();
-    const SequenceNumber last =
-        message->first_sequence.advanced(SequenceNumber::mask);
-    const Error error = receive_buffer_.drop_range(
-        {.first = first, .last = last},
-        0, &result.receiver_drop_packets);
-    if (error != Error::none) {
-        result.error = error;
-        return result;
-    }
-
-    receive_loss_list_.remove_through(last);
-    filter_loss_list_.remove_through(last);
-    timer_scheduler_.on_receive_buffer_released(
-        now_microseconds);
+    timer_scheduler_.on_receive_buffer_released(now_microseconds);
     update_loss_timer(now_microseconds);
-    result.actions.push(
-        make_acknowledgement(now_microseconds));
+    result.actions.push(make_acknowledgement(now_microseconds));
     return result;
 }
 

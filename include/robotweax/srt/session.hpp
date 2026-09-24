@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <vector>
 
 namespace robotweax::srt {
 
@@ -392,6 +393,11 @@ public:
     }
 
 private:
+    struct PendingPeerDrop {
+        SequenceRange sequences {};
+        std::uint64_t deadline_microseconds = 0;
+    };
+
     friend class compat::ConnectionRuntime;
     [[nodiscard]] ReliabilityAction make_acknowledgement(
         std::uint64_t now_microseconds,
@@ -416,6 +422,9 @@ private:
     // of the send buffer is not evidence that the receiver has the sources.
     SequenceNumber peer_acknowledged_sequence_;
     ReceiveBuffer receive_buffer_;
+    // Preallocated at construction so peer DROPREQs cannot allocate on the
+    // receive path. A request remains pending until its playout grace expires.
+    std::vector<PendingPeerDrop> pending_peer_drops_;
     ReceiveLossList receive_loss_list_;
     ReceiveLossList filter_loss_list_;
     AcknowledgementTracker acknowledgement_tracker_{64};

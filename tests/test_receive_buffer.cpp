@@ -365,8 +365,8 @@ TEST(peer_drop_request_keeps_received_solo_and_discards_missing_and_fragments)
         data_packet(SequenceNumber {101}, 1, MessageBoundary::solo, payload)));
     REQUIRE(buffer.insert(
         data_packet(SequenceNumber {103}, 2, MessageBoundary::first, payload)));
-    REQUIRE(buffer.insert(
-        data_packet(SequenceNumber {104}, 2, MessageBoundary::last, payload)));
+    REQUIRE(buffer.insert(data_packet(
+        SequenceNumber {104}, 2, MessageBoundary::subsequent, payload)));
     std::size_t dropped = 0U;
     REQUIRE_EQ(buffer.drop_peer_requested_range(
                    {SequenceNumber {100}, SequenceNumber {104}}, 1, &dropped),
@@ -399,6 +399,29 @@ TEST(peer_drop_request_preserves_solo_across_sequence_wrap)
     REQUIRE(buffer.pop_message(output));
     REQUIRE_EQ(output, payload);
     REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {2});
+}
+
+TEST(peer_drop_request_preserves_a_complete_fragmented_message)
+{
+    ReceiveBuffer buffer {SequenceNumber {100}, 8};
+    const std::array<std::byte, 1> first {std::byte {'a'}};
+    const std::array<std::byte, 1> last {std::byte {'b'}};
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {101}, 7, MessageBoundary::first, first)));
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {102}, 7, MessageBoundary::last, last)));
+    std::size_t dropped = 0U;
+    REQUIRE_EQ(buffer.drop_peer_requested_range(
+                   {SequenceNumber {100}, SequenceNumber {102}}, 7, &dropped),
+        Error::none);
+    REQUIRE_EQ(dropped, 1U);
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {101});
+    REQUIRE_EQ(buffer.occupied(), 2U);
+    std::array<std::byte, 2> output {};
+    REQUIRE(buffer.pop_message(output));
+    REQUIRE_EQ(output[0], first[0]);
+    REQUIRE_EQ(output[1], last[0]);
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {103});
 }
 
 TEST(drop_range_outside_the_receive_window_cannot_corrupt_buffer_state)
