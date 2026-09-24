@@ -12,6 +12,7 @@ namespace {
 
 constexpr std::uint64_t sensor_retirement_repeat_interval_microseconds =
     10'000U;
+constexpr std::uint64_t sensor_repair_deadline_microseconds = 20'000U;
 
 struct NakRangeSlices {
     Error error = Error::none;
@@ -497,7 +498,9 @@ ReliabilityAction ReliabilitySession::make_acknowledgement(
     acknowledgement.round_trip_time_microseconds = rtt_.smoothed_microseconds();
     acknowledgement.round_trip_time_variance_microseconds = rtt_.variation_microseconds();
     acknowledgement.available_receive_buffer_packets =
-        static_cast<std::uint32_t>(receive_buffer_.available());
+        static_cast<std::uint32_t>(packet_filter_policy_.sensor_profile()
+                ? receive_buffer_.window_available()
+                : receive_buffer_.available());
     const auto rates = arrival_rate_estimator_.rates();
     if (rates.valid) {
         acknowledgement.receive_rate_packets_per_second = rates.packets_per_second;
@@ -540,6 +543,17 @@ ReliabilityProcessResult ReliabilitySession::receive(
 {
     ReliabilityProcessResult result;
     if (packet.kind == PacketKind::data) {
+        if (packet_filter_policy_.sensor_profile()) {
+            const auto expired = expire_sensor_receive_gaps(now_microseconds);
+            if (!expired) {
+                return expired;
+            }
+            result.receiver_drop_packets = expired.receiver_drop_packets;
+            for (std::size_t index = 0U; index < expired.actions.size;
+                ++index) {
+                result.actions.push(expired.actions.values[index]);
+            }
+        }
         const auto filter_disposition =
             packet_filter_policy_.inspect(packet);
         if (filter_disposition
@@ -554,6 +568,11 @@ ReliabilityProcessResult ReliabilitySession::receive(
                 consume_filter_control) {
             result.receiver_filter_control_packet = true;
             return result;
+        }
+        if (packet_filter_policy_.sensor_profile()
+            && (packet.data.boundary != MessageBoundary::solo
+                || (packet.data.retransmitted && !context.filter_supplied))) {
+            return {.error = Error::invalid_control_payload};
         }
         const std::uint32_t initial_loss_ttl =
             live_options_.retransmit_flag
@@ -597,6 +616,15 @@ ReliabilityProcessResult ReliabilitySession::receive(
         const auto inserted = receive_buffer_.insert(packet);
         if (!inserted) {
             return {.error = inserted.error};
+        }
+        if (packet_filter_policy_.sensor_profile() && inserted.has_gap) {
+            const std::uint64_t maximum =
+                std::numeric_limits<std::uint64_t>::max();
+            const std::uint64_t deadline =
+                now_microseconds > maximum - sensor_repair_deadline_microseconds
+                ? maximum
+                : now_microseconds + sensor_repair_deadline_microseconds;
+            receive_buffer_.mark_gap(inserted.gap_before_packet, deadline);
         }
         result.receiver_packet_accepted_unique =
             inserted.status == ReceiveStatus::accepted_in_order
@@ -1158,7 +1186,9 @@ ReceivedMessageResult ReliabilitySession::pop_message_at(
             return {.error = Error::would_block};
         }
     }
-    auto result = receive_buffer_.pop_message(destination);
+    auto result = packet_filter_policy_.sensor_profile()
+        ? receive_buffer_.pop_message_unordered(destination)
+        : receive_buffer_.pop_message(destination);
     if (result) {
         result.delivery_time_microseconds = delivery;
     }
@@ -1197,15 +1227,17 @@ Error ReliabilitySession::discard_received_before(
 bool ReliabilitySession::message_ready_at(
     std::uint64_t now_microseconds) noexcept
 {
-    if (!receive_buffer_.has_complete_message()) {
+    const auto message = receive_buffer_.first_complete_message();
+    if (!message.has_value()
+        || (!packet_filter_policy_.sensor_profile()
+            && message->first_sequence
+                != receive_buffer_.first_stored_sequence())) {
         return false;
     }
     if (!tsbpd_clock_.has_value()) {
         return true;
     }
-    const auto timestamp = receive_buffer_.next_message_timestamp();
-    return timestamp.has_value()
-        && tsbpd_clock_->ready(*timestamp, now_microseconds);
+    return tsbpd_clock_->ready(message->timestamp, now_microseconds);
 }
 
 std::optional<std::uint64_t>
@@ -1299,6 +1331,46 @@ ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
     update_loss_timer(now_microseconds);
     result.actions.push(make_acknowledgement(now_microseconds));
     return result;
+}
+
+ReliabilityProcessResult ReliabilitySession::expire_sensor_receive_gaps(
+    std::uint64_t now_microseconds) noexcept
+{
+    ReliabilityProcessResult result;
+    if (!packet_filter_policy_.sensor_profile()) {
+        return result;
+    }
+
+    while (const auto sequence =
+               receive_buffer_.next_expired_gap(now_microseconds)) {
+        std::size_t dropped = 0U;
+        const Error error = receive_buffer_.drop_range(
+            {.first = *sequence, .last = *sequence}, 0U, &dropped);
+        if (error != Error::none) {
+            result.error = error;
+            return result;
+        }
+        result.receiver_drop_packets += dropped;
+        (void)receive_loss_list_.remove(*sequence);
+        (void)filter_loss_list_.remove(*sequence);
+    }
+    if (result.receiver_drop_packets == 0U) {
+        return result;
+    }
+
+    timer_scheduler_.on_receive_buffer_released(now_microseconds);
+    update_loss_timer(now_microseconds);
+    result.actions.push(
+        make_acknowledgement(now_microseconds, AcknowledgementKind::lite));
+    return result;
+}
+
+std::optional<std::uint64_t>
+ReliabilitySession::next_sensor_receive_gap_deadline() const noexcept
+{
+    return packet_filter_policy_.sensor_profile()
+        ? receive_buffer_.next_gap_deadline()
+        : std::nullopt;
 }
 
 ReliabilityProcessResult

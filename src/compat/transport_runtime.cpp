@@ -1589,7 +1589,10 @@ ConnectionRuntime::next_readable_message_sequence() noexcept
     if (!session_.message_ready_at(now)) {
         return std::nullopt;
     }
-    return session_.receive_buffer().first_stored_sequence();
+    const auto message = session_.receive_buffer().first_complete_message();
+    return message.has_value()
+        ? std::optional<SequenceNumber> {message->first_sequence}
+        : std::nullopt;
 }
 
 bool ConnectionRuntime::discard_received_before(
@@ -1737,6 +1740,29 @@ MessageIoResult ConnectionRuntime::receive_stream(
 bool ConnectionRuntime::service_receiver_tlpktdrop_locked(
     std::uint64_t now) noexcept
 {
+    const auto expired_sensor_gaps = session_.expire_sensor_receive_gaps(now);
+    if (!expired_sensor_gaps) {
+        break_locked(0);
+        return false;
+    }
+    if (expired_sensor_gaps.receiver_drop_packets != 0U) {
+        std::size_t average_payload =
+            statistics_.average_received_payload_bytes();
+        if (average_payload == 0U) {
+            average_payload = options_.maximum_payload_size();
+        }
+        statistics_.note_receiver_drop(
+            expired_sensor_gaps.receiver_drop_packets,
+            saturated_multiply(
+                expired_sensor_gaps.receiver_drop_packets, average_payload));
+        sample_receiver_buffer_statistics(now);
+        if (!send_actions(expired_sensor_gaps.actions, now)) {
+            return false;
+        }
+        receive_ready_.notify_all();
+        ReadinessSignal::notify();
+    }
+
     const auto dropped =
         session_.drop_too_late_receiver(now);
     if (!dropped) {
@@ -2900,7 +2926,14 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
     const bool paced_work =
         filter_pending || (pending && !flow_blocked && !crypto_blocked);
     const std::uint64_t current = now_microseconds();
-    const auto retirement_deadline = session_.next_sender_retirement_deadline();
+    auto retirement_deadline = session_.next_sender_retirement_deadline();
+    const auto receive_gap_deadline =
+        session_.next_sensor_receive_gap_deadline();
+    if (receive_gap_deadline.has_value()
+        && (!retirement_deadline.has_value()
+            || *receive_gap_deadline < *retirement_deadline)) {
+        retirement_deadline = receive_gap_deadline;
+    }
     std::optional<std::chrono::microseconds> retirement_delay;
     if (retirement_deadline.has_value()) {
         if (*retirement_deadline <= current) {

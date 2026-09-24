@@ -99,6 +99,7 @@ void ReceiveBuffer::trim_dropped_prefix() noexcept
         slot.dropped = false;
         slot.payload_size = 0;
         slot.payload_offset = 0;
+        slot.gap_deadline_microseconds = 0;
         head_ = (head_ + 1U) % capacity();
         first_stored_sequence_ = first_stored_sequence_.next();
     }
@@ -130,6 +131,7 @@ ReceiveInsertResult ReceiveBuffer::insert(const PacketView& packet) noexcept
     slot.payload_offset = 0;
     slot.occupied = true;
     slot.dropped = false;
+    slot.gap_deadline_microseconds = 0;
     if (occupied_ == 0U) {
         first_buffered_sequence_ = sequence;
         last_buffered_sequence_ = sequence;
@@ -238,6 +240,7 @@ ReceivedMessageResult ReceiveBuffer::pop_message(
         slot.dropped = false;
         slot.payload_size = 0;
         slot.payload_offset = 0;
+        slot.gap_deadline_microseconds = 0;
     }
     head_ = (head_ + packet_count) % capacity();
     occupied_ -= packet_count;
@@ -249,6 +252,53 @@ ReceivedMessageResult ReceiveBuffer::pop_message(
         .bytes_written = written,
         .message_number = message_number,
         .first_sequence = message_first_sequence,
+        .timestamp = timestamp,
+    };
+}
+
+ReceivedMessageResult ReceiveBuffer::pop_message_unordered(
+    std::span<std::byte> destination) noexcept
+{
+    const auto message = first_complete_message();
+    if (!message.has_value()) {
+        return {.error = Error::would_block};
+    }
+    if (message->first_sequence == first_stored_sequence_) {
+        return pop_message(destination);
+    }
+    if (message->first_sequence != message->last_sequence) {
+        return {.error = Error::invalid_state};
+    }
+    auto* slot = find(message->first_sequence);
+    if (slot == nullptr || slot->header.boundary != MessageBoundary::solo
+        || slot->payload_offset != 0U) {
+        return {.error = Error::invalid_state};
+    }
+    if (destination.size() < slot->payload_size) {
+        return {.error = Error::buffer_too_small};
+    }
+
+    const std::size_t size = slot->payload_size;
+    const std::uint32_t message_number = slot->header.message_number;
+    const PacketTimestamp timestamp = slot->header.timestamp;
+    std::copy_n(slot->payload.begin(), size, destination.begin());
+    buffered_payload_bytes_ -= size;
+    --occupied_;
+    slot->occupied = false;
+    // A delivered marker remains in the fixed sequence slot until the
+    // cumulative frontier reaches it. It suppresses duplicates and lets ACK
+    // progression distinguish a resolved sample from an unobserved gap.
+    slot->dropped = true;
+    slot->payload_size = 0;
+    slot->payload_offset = 0;
+    slot->gap_deadline_microseconds = 0;
+    advance_acknowledgement();
+    trim_dropped_prefix();
+    refresh_buffered_timestamp_bounds();
+    return {
+        .bytes_written = size,
+        .message_number = message_number,
+        .first_sequence = message->first_sequence,
         .timestamp = timestamp,
     };
 }
@@ -298,6 +348,7 @@ ReceivedMessageResult ReceiveBuffer::pop_stream(
         slot->dropped = false;
         slot->payload_size = 0;
         slot->payload_offset = 0;
+        slot->gap_deadline_microseconds = 0;
         head_ = (head_ + 1U) % capacity();
         --occupied_;
         removed_packet = true;
@@ -314,6 +365,73 @@ ReceivedMessageResult ReceiveBuffer::pop_stream(
         .first_sequence = first_sequence,
         .timestamp = timestamp,
     };
+}
+
+std::size_t ReceiveBuffer::window_available() const noexcept
+{
+    for (std::size_t offset = capacity(); offset > 0U; --offset) {
+        const auto& slot = slots_[(head_ + offset - 1U) % capacity()];
+        if (slot.occupied || slot.dropped) {
+            return capacity() - offset;
+        }
+    }
+    return capacity();
+}
+
+void ReceiveBuffer::mark_gap(
+    SequenceRange range, std::uint64_t deadline_microseconds) noexcept
+{
+    if (deadline_microseconds == 0U
+        || range.last.distance_from(range.first) < 0) {
+        return;
+    }
+    SequenceNumber sequence = range.first;
+    for (;;) {
+        const std::int32_t signed_offset =
+            sequence.distance_from(first_stored_sequence_);
+        if (signed_offset >= 0
+            && static_cast<std::size_t>(signed_offset) < capacity()) {
+            auto& slot =
+                slots_[(head_ + static_cast<std::size_t>(signed_offset))
+                    % capacity()];
+            if (!slot.occupied && !slot.dropped
+                && slot.gap_deadline_microseconds == 0U) {
+                slot.gap_deadline_microseconds = deadline_microseconds;
+            }
+        }
+        if (sequence == range.last) {
+            break;
+        }
+        sequence = sequence.next();
+    }
+}
+
+std::optional<std::uint64_t> ReceiveBuffer::next_gap_deadline() const noexcept
+{
+    std::optional<std::uint64_t> earliest;
+    for (const auto& slot : slots_) {
+        if (slot.gap_deadline_microseconds != 0U
+            && (!earliest.has_value()
+                || slot.gap_deadline_microseconds < *earliest)) {
+            earliest = slot.gap_deadline_microseconds;
+        }
+    }
+    return earliest;
+}
+
+std::optional<SequenceNumber> ReceiveBuffer::next_expired_gap(
+    std::uint64_t now_microseconds) const noexcept
+{
+    for (std::size_t offset = 0U; offset < capacity(); ++offset) {
+        const auto& slot = slots_[(head_ + offset) % capacity()];
+        if (!slot.occupied && !slot.dropped
+            && slot.gap_deadline_microseconds != 0U
+            && slot.gap_deadline_microseconds <= now_microseconds) {
+            return first_stored_sequence_.advanced(
+                static_cast<std::uint32_t>(offset));
+        }
+    }
+    return std::nullopt;
 }
 
 bool ReceiveBuffer::has_complete_message() const noexcept
@@ -581,6 +699,7 @@ Error ReceiveBuffer::drop_range_impl(SequenceRange range,
             --occupied_;
         }
         slot.dropped = true;
+        slot.gap_deadline_microseconds = 0;
     }
 
     advance_acknowledgement();

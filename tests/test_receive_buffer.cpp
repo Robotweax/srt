@@ -194,6 +194,44 @@ TEST(receive_buffer_finds_the_first_complete_message_after_a_gap)
         PacketTimestamp{9'000});
 }
 
+TEST(receive_buffer_unordered_pop_preserves_gap_and_window_frontier)
+{
+    ReceiveBuffer buffer {SequenceNumber {100}, 8};
+    const std::array<std::byte, 1> payload {std::byte {'u'}};
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {102}, 7, MessageBoundary::solo, payload)));
+    buffer.mark_gap(
+        {.first = SequenceNumber {100}, .last = SequenceNumber {101}}, 500U);
+
+    REQUIRE_EQ(buffer.window_available(), 5U);
+    REQUIRE_EQ(buffer.next_gap_deadline(), std::optional<std::uint64_t> {500U});
+    std::array<std::byte, 1> output {};
+    const auto delivered = buffer.pop_message_unordered(output);
+    REQUIRE(delivered);
+    REQUIRE_EQ(delivered.first_sequence, SequenceNumber {102});
+    REQUIRE_EQ(output, payload);
+    REQUIRE_EQ(buffer.next_ack_sequence(), SequenceNumber {100});
+    REQUIRE_EQ(buffer.window_available(), 5U);
+    const auto duplicate = buffer.insert(
+        data_packet(SequenceNumber {102}, 7, MessageBoundary::solo, payload));
+    REQUIRE_EQ(duplicate.status, ReceiveStatus::duplicate);
+
+    REQUIRE(!buffer.next_expired_gap(499U).has_value());
+    REQUIRE_EQ(buffer.next_expired_gap(500U),
+        std::optional<SequenceNumber> {SequenceNumber {100}});
+    REQUIRE_EQ(buffer.drop_range({.first = SequenceNumber {100},
+                   .last = SequenceNumber {100}}),
+        Error::none);
+    REQUIRE_EQ(buffer.next_expired_gap(500U),
+        std::optional<SequenceNumber> {SequenceNumber {101}});
+    REQUIRE_EQ(buffer.drop_range({.first = SequenceNumber {101},
+                   .last = SequenceNumber {101}}),
+        Error::none);
+    REQUIRE_EQ(buffer.next_ack_sequence(), SequenceNumber {103});
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {103});
+    REQUIRE_EQ(buffer.window_available(), 8U);
+}
+
 TEST(receive_buffer_discards_redundant_prefix_for_group_delivery)
 {
     ReceiveBuffer buffer{SequenceNumber{100}, 8};

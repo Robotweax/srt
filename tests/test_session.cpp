@@ -2961,6 +2961,28 @@ TEST(sensor_profile_rejects_fragmented_samples_and_peer_nak_replay)
     REQUIRE_EQ(ignored.sender_loss_packets, 0U);
     REQUIRE_EQ(ignored.actions.size, 0U);
     REQUIRE(!sender.next_data_packet().has_value());
+
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {20},
+        .peer_socket_id = 800,
+        .send_capacity_packets = 4,
+        .receive_capacity_packets = 4,
+        .maximum_payload_size = 2,
+    }};
+    receiver.configure_packet_filter(filter.configuration, true);
+    PacketView invalid;
+    invalid.kind = PacketKind::data;
+    invalid.data.sequence = SequenceNumber {20};
+    invalid.data.message_number = 1U;
+    invalid.data.boundary = MessageBoundary::first;
+    invalid.payload = input;
+    REQUIRE_EQ(
+        receiver.receive(invalid, 100U).error, Error::invalid_control_payload);
+    invalid.data.boundary = MessageBoundary::solo;
+    invalid.data.retransmitted = true;
+    REQUIRE_EQ(
+        receiver.receive(invalid, 100U).error, Error::invalid_control_payload);
 }
 
 TEST(sensor_profile_repeats_single_sequence_retirement_until_cumulative_ack)
@@ -3009,7 +3031,9 @@ TEST(sensor_profile_repeats_single_sequence_retirement_until_cumulative_ack)
     REQUIRE(receiver.receive(view_of(*later_data), 10U));
 
     std::array<std::byte, 1> output {};
-    REQUIRE_EQ(receiver.pop_message(output).error, Error::would_block);
+    const auto delivered = receiver.pop_message(output);
+    REQUIRE(delivered);
+    REQUIRE_EQ(output, following);
 
     // Lose the initial retirement control.
     const auto initial = sender.drop_expired_sender_message(101U);
@@ -3045,9 +3069,7 @@ TEST(sensor_profile_repeats_single_sequence_retirement_until_cumulative_ack)
         retired.actions.values[0].kind, ReliabilityActionKind::acknowledgement);
     REQUIRE_EQ(retired.actions.values[0].acknowledgement.kind,
         AcknowledgementKind::lite);
-    const auto delivered = receiver.pop_message(output);
-    REQUIRE(delivered);
-    REQUIRE_EQ(output, following);
+    REQUIRE_EQ(receiver.pop_message(output).error, Error::would_block);
 
     // Lose that ACK. The duplicate is idempotent and produces a new ACK.
     REQUIRE_EQ(sender.poll_timers(20'101U).size, 0U);
@@ -3063,6 +3085,158 @@ TEST(sensor_profile_repeats_single_sequence_retirement_until_cumulative_ack)
     REQUIRE(sender.receive(ack_packet, 20'103U));
     REQUIRE_EQ(sender.send_buffer().sequence_span(), 0U);
     REQUIRE(!sender.next_sender_retirement_deadline().has_value());
+}
+
+TEST(sensor_profile_delivers_newer_samples_before_gap_repair)
+{
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .peer_socket_id = 800,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+        .maximum_payload_size = 4,
+    }};
+    const auto filter = parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,arq:never");
+    REQUIRE(filter);
+    receiver.configure_live(
+        NegotiatedLiveOptions {.periodic_nak = false}, 0, PacketTimestamp {0});
+    receiver.configure_packet_filter(filter.configuration, true);
+
+    const std::array<std::byte, 1> newer {std::byte {'n'}};
+    PacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.sequence = SequenceNumber {11};
+    packet.data.message_number = 2U;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.payload = newer;
+    REQUIRE(receiver.receive(packet, 100U));
+    REQUIRE(receiver.message_ready_at(100U));
+    REQUIRE_EQ(receiver.next_sensor_receive_gap_deadline(),
+        std::optional<std::uint64_t> {20'100U});
+
+    std::array<std::byte, 1> output {};
+    const auto delivered_newer = receiver.pop_message_at(output, 100U);
+    REQUIRE(delivered_newer);
+    REQUIRE_EQ(delivered_newer.first_sequence, SequenceNumber {11});
+    REQUIRE_EQ(output, newer);
+    REQUIRE_EQ(
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {10});
+
+    const std::array<std::byte, 1> repair {std::byte {'r'}};
+    packet.data.sequence = SequenceNumber {10};
+    packet.data.message_number = 1U;
+    packet.payload = repair;
+    REQUIRE(receiver.receive(packet, 20'099U));
+    REQUIRE_EQ(
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {12});
+    const auto delivered_repair = receiver.pop_message_at(output, 20'099U);
+    REQUIRE(delivered_repair);
+    REQUIRE_EQ(delivered_repair.first_sequence, SequenceNumber {10});
+    REQUIRE_EQ(output, repair);
+    REQUIRE(!receiver.next_sensor_receive_gap_deadline().has_value());
+}
+
+TEST(sensor_profile_expires_a_gap_at_deadline_during_silence)
+{
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {SequenceNumber::mask},
+        .peer_socket_id = 800,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+        .maximum_payload_size = 4,
+    }};
+    const auto filter = parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,arq:never");
+    REQUIRE(filter);
+    receiver.configure_live(
+        NegotiatedLiveOptions {.periodic_nak = false}, 0, PacketTimestamp {0});
+    receiver.configure_packet_filter(filter.configuration, true);
+
+    const std::array<std::byte, 1> later {std::byte {'l'}};
+    PacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.sequence = SequenceNumber {0};
+    packet.data.message_number = 2U;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.payload = later;
+    REQUIRE(receiver.receive(packet, 500U));
+    REQUIRE_EQ(receiver.next_sensor_receive_gap_deadline(),
+        std::optional<std::uint64_t> {20'500U});
+
+    const auto early = receiver.expire_sensor_receive_gaps(20'499U);
+    REQUIRE(early);
+    REQUIRE_EQ(early.receiver_drop_packets, 0U);
+    const auto expired = receiver.expire_sensor_receive_gaps(20'500U);
+    REQUIRE(expired);
+    REQUIRE_EQ(expired.receiver_drop_packets, 1U);
+    REQUIRE_EQ(expired.actions.size, 1U);
+    REQUIRE_EQ(expired.actions.values[0].acknowledgement.kind,
+        AcknowledgementKind::lite);
+    REQUIRE_EQ(expired.actions.values[0].acknowledgement.next_sequence,
+        SequenceNumber {1});
+    REQUIRE(!receiver.next_sensor_receive_gap_deadline().has_value());
+
+    const std::array<std::byte, 1> late {std::byte {'x'}};
+    packet.data.sequence = SequenceNumber {SequenceNumber::mask};
+    packet.data.message_number = 1U;
+    packet.payload = late;
+    const auto rejected = receiver.receive(packet, 20'500U);
+    REQUIRE(rejected);
+    REQUIRE(rejected.receiver_packet_belated);
+    REQUIRE(!rejected.receiver_packet_accepted_unique);
+}
+
+TEST(sensor_profile_gap_deadlines_are_independent_and_do_not_extend)
+{
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .peer_socket_id = 800,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+        .maximum_payload_size = 4,
+    }};
+    const auto filter = parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,arq:never");
+    REQUIRE(filter);
+    receiver.configure_live(
+        NegotiatedLiveOptions {.periodic_nak = false}, 0, PacketTimestamp {0});
+    receiver.configure_packet_filter(filter.configuration, true);
+
+    const std::array<std::byte, 1> payload {std::byte {'s'}};
+    PacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.payload = payload;
+    packet.data.sequence = SequenceNumber {11};
+    packet.data.message_number = 2U;
+    REQUIRE(receiver.receive(packet, 100U));
+    REQUIRE_EQ(receiver.next_sensor_receive_gap_deadline(),
+        std::optional<std::uint64_t> {20'100U});
+
+    packet.data.sequence = SequenceNumber {13};
+    packet.data.message_number = 4U;
+    REQUIRE(receiver.receive(packet, 1'000U));
+    REQUIRE_EQ(receiver.next_sensor_receive_gap_deadline(),
+        std::optional<std::uint64_t> {20'100U});
+
+    const auto first_expiration = receiver.expire_sensor_receive_gaps(20'100U);
+    REQUIRE(first_expiration);
+    REQUIRE_EQ(first_expiration.receiver_drop_packets, 1U);
+    REQUIRE_EQ(
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {12});
+    REQUIRE_EQ(receiver.next_sensor_receive_gap_deadline(),
+        std::optional<std::uint64_t> {21'000U});
+
+    packet.data.sequence = SequenceNumber {12};
+    packet.data.message_number = 3U;
+    REQUIRE(receiver.receive(packet, 20'999U));
+    REQUIRE_EQ(
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {14});
+    REQUIRE(!receiver.next_sensor_receive_gap_deadline().has_value());
 }
 
 TEST(live_session_periodic_nak_rto_probes_only_tail_of_unacknowledged_flight)

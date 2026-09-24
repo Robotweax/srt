@@ -292,7 +292,9 @@ public:
     [[nodiscard]] ReceivedMessageResult pop_message(
         std::span<std::byte> destination) noexcept
     {
-        return receive_buffer_.pop_message(destination);
+        return packet_filter_policy_.sensor_profile()
+            ? receive_buffer_.pop_message_unordered(destination)
+            : receive_buffer_.pop_message(destination);
     }
     [[nodiscard]] ReceivedMessageResult pop_stream(
         std::span<std::byte> destination) noexcept
@@ -315,6 +317,10 @@ public:
     [[nodiscard]] ReliabilityProcessResult
     drop_too_late_receiver(
         std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] ReliabilityProcessResult expire_sensor_receive_gaps(
+        std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] std::optional<std::uint64_t>
+    next_sensor_receive_gap_deadline() const noexcept;
     [[nodiscard]] bool data_ready_at(
         std::uint64_t now_microseconds) noexcept
     {

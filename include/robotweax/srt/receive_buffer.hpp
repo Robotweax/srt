@@ -56,6 +56,10 @@ public:
     [[nodiscard]] std::size_t capacity() const noexcept { return slots_.size(); }
     [[nodiscard]] std::size_t occupied() const noexcept { return occupied_; }
     [[nodiscard]] std::size_t available() const noexcept { return capacity() - occupied_; }
+    // Sequence space available beyond the furthest received or resolved slot.
+    // This is stricter than payload storage availability while a leading gap
+    // keeps the receive window anchored.
+    [[nodiscard]] std::size_t window_available() const noexcept;
     [[nodiscard]] std::size_t buffered_payload_bytes() const noexcept;
     [[nodiscard]] std::uint64_t
     buffered_span_milliseconds() const noexcept;
@@ -76,6 +80,8 @@ public:
     [[nodiscard]] ReceiveInsertResult insert(const PacketView& packet) noexcept;
     [[nodiscard]] ReceivedMessageResult pop_message(
         std::span<std::byte> destination) noexcept;
+    [[nodiscard]] ReceivedMessageResult pop_message_unordered(
+        std::span<std::byte> destination) noexcept;
     [[nodiscard]] ReceivedMessageResult pop_stream(
         std::span<std::byte> destination) noexcept;
     [[nodiscard]] Error drop_range(SequenceRange range,
@@ -92,6 +98,12 @@ public:
         SequenceRange range) noexcept;
     [[nodiscard]] Error discard_before(
         SequenceNumber next_sequence) noexcept;
+    void mark_gap(
+        SequenceRange range, std::uint64_t deadline_microseconds) noexcept;
+    [[nodiscard]] std::optional<std::uint64_t>
+    next_gap_deadline() const noexcept;
+    [[nodiscard]] std::optional<SequenceNumber> next_expired_gap(
+        std::uint64_t now_microseconds) const noexcept;
 
 private:
     struct Slot {
@@ -101,6 +113,7 @@ private:
         std::uint16_t payload_offset = 0;
         bool occupied = false;
         bool dropped = false;
+        std::uint64_t gap_deadline_microseconds = 0;
     };
 
     [[nodiscard]] Slot* find(SequenceNumber sequence) noexcept;
