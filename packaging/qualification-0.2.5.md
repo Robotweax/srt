@@ -30,9 +30,9 @@ runtime requirements.
 
 ## Release gates still open
 
-- Test on clean machines without Haivision as well as the coexistence case.
-- Qualify bottles/relocation, upgrades and rollback when introducing a public
-  tap or registry. There is no previous Robotweax package to upgrade here.
+- Qualify Homebrew bottles and their relocation before publishing a tap.
+- Qualify upgrades and rollback when introducing a public tap or registry.
+  There is no previous Robotweax package to upgrade here.
 - Confirm supported OS versions and architectures before advertising support.
 - Ubuntu/PPA and Fedora/COPR packaging remain the following workstream.
 
@@ -62,7 +62,19 @@ C and C++ consumers execute in both Release and Debug; Haivision Debug uses its
 Debug library rather than mixing configurations. Logs are retained as CI artifacts.
 
 Native macOS arm64 static and dynamic qualification each passed all 18 test
-executions (4 standalone, 6 coexistence, 6 relocated, 2 after removal; 36 total). Hosted results for this
-expanded workflow are pending; the earlier green run covers the smaller matrix.
-Homebrew gains a standalone consumer stage on its hosted runner; no further
-Homebrew changes were made on the developer machine for this follow-up.
+executions (4 standalone, 6 coexistence, 6 relocated, 2 after removal; 36 total).
+
+[Hosted package run 35990225375](https://github.com/Robotweax/srt/actions/runs/35990225375)
+passed all seven jobs at `995573520c86cc7c2b74678beec3fa0327dcffe6`:
+Homebrew on macOS, static and dynamic vcpkg on Linux x64, Windows x64, and
+macOS arm64. The [regular CI and required gate](https://github.com/Robotweax/srt/actions/runs/35990225360)
+also passed. The static Windows log confirms Debug, relocated-prefix, and
+post-removal consumers executed. PR #65 merged as
+`3a339236f13664c7565a6dbea28f8c2bd9fabae2`. Homebrew ran standalone
+consumers before installing Haivision. No additional Homebrew test was performed
+on the developer machine for this follow-up.
+
+This validates the complete vcpkg prefix being moved with its dependencies;
+it does not qualify moving an individual library or a Homebrew bottle. Official
+package submission, a public tap/registry, and Ubuntu/Fedora packaging remain
+separate milestones.
