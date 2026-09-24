@@ -1,5 +1,5 @@
 class RobotweaxSrt < Formula
-  desc "Independent Secure Reliable Transport implementation"
+  desc "Robotweax Secure Reliable Transport"
   homepage "https://github.com/Robotweax/srt"
   url "https://github.com/Robotweax/srt/archive/492a7d61390cbec86e44e177ec034f0f5d9a5cc3.tar.gz"
   version "0.2.5"
