@@ -59,7 +59,9 @@ jobs:
         include:
           - {os: ubuntu-24.04, triplet: x64-linux}
           - {os: ubuntu-24.04, triplet: x64-linux-dynamic}
-          - {os: windows-2022, triplet: x64-windows-static}
+          - os: windows-2022
+            triplet: x64-windows-static
+            msvc_runtime: 'MultiThreaded$<$<CONFIG:Debug>:Debug>'
           - {os: windows-2022, triplet: x64-windows}
           - {os: macos-15, triplet: arm64-osx}
           - {os: macos-15, triplet: arm64-osx-dynamic}
@@ -82,9 +84,14 @@ jobs:
         shell: bash
         env:
           TRIPLET: ${{ matrix.triplet }}
+          MSVC_RUNTIME: ${{ matrix.msvc_runtime }}
         run: |
           ./.vcpkg/vcpkg install "robotweax-srt:$TRIPLET" "libsrt:$TRIPLET" --overlay-ports="$PWD/packaging/vcpkg/ports" --classic
-          cmake -S packaging/tests -B package-consumers -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$PWD/.vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET="$TRIPLET" -DHAIVISION_PREFIX="$PWD/.vcpkg/installed/$TRIPLET"
+          consumer_options=()
+          if [[ -n "$MSVC_RUNTIME" ]]; then
+            consumer_options+=("-DCMAKE_MSVC_RUNTIME_LIBRARY=$MSVC_RUNTIME")
+          fi
+          cmake -S packaging/tests -B package-consumers "${consumer_options[@]}" -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$PWD/.vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET="$TRIPLET" -DHAIVISION_PREFIX="$PWD/.vcpkg/installed/$TRIPLET"
           cmake --build package-consumers --config Release
           export PATH="$PWD/.vcpkg/installed/$TRIPLET/bin:$PATH"
           ctest --test-dir package-consumers -C Release --output-on-failure

@@ -40,3 +40,13 @@ runtime requirements.
 
 Installing Robotweax does not switch existing applications from Haivision.
 The coexistence test uses separate processes, never both providers in one.
+
+## First hosted run
+
+[Run 35987215907](https://github.com/Robotweax/srt/actions/runs/35987215907)
+passed Homebrew, both Linux triplets, both macOS triplets and dynamic Windows.
+Static Windows built and installed both packages but failed to link the C++
+consumer: the package used `/MT`, while the consumer defaulted to `/MD`
+(`LNK2038 RuntimeLibrary` mismatch). The workflow now explicitly configures
+the static triplet's consumer runtime, including the Debug generator expression.
+The corrected Windows result still needs verification in a new run.

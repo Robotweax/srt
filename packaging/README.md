@@ -52,7 +52,12 @@ vcpkg install robotweax-srt --overlay-ports=packaging/vcpkg/ports --triplet=arm6
 Select the triplet for your platform. For manifest consumers, configure the
 same overlay directory and add `robotweax-srt` to dependencies. Link through
 `find_package(RobotweaxSRT CONFIG REQUIRED)` and `RobotweaxSRT::srt`. Static C
-consumers need the C++ linker. This overlay intentionally does not shadow the
+consumers need the C++ linker. Windows consumers must also match the triplet's
+MSVC runtime: `x64-windows-static` uses `/MT` (`/MTd` for Debug), whereas
+`x64-windows` uses `/MD` (`/MDd` for Debug). For the static triplet, set
+`CMAKE_MSVC_RUNTIME_LIBRARY` to `MultiThreaded$<$<CONFIG:Debug>:Debug>` before
+creating consumer targets; selecting a triplet alone does not configure the
+consumer's runtime. This overlay intentionally does not shadow the
 existing `libsrt` port or rewrite other ports' dependencies.
 
 ## Acceptance before publishing a package
