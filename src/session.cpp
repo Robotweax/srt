@@ -894,12 +894,19 @@ ReliabilityProcessResult ReliabilitySession::receive(
         if (!decoded) {
             return {.error = decoded.error};
         }
-        const auto error = receive_buffer_.drop_range(
-            decoded.request.sequences,
-            decoded.request.message_number,
-            &result.receiver_drop_packets);
-        if (error != Error::none) {
-            return {.error = error};
+        // In Live TSBPD/TLPKTDROP, an original packet can still arrive from
+        // the network after its sender issues DROPREQ. Let the local playout
+        // deadline resolve actual gaps instead of discarding in-flight media.
+        // Outside that mode, discard the requested gaps while retaining any
+        // complete SOLO message already buffered before the control packet.
+        if (!live_options_.receive_tsbpd
+            || !live_options_.too_late_packet_drop) {
+            const auto error = receive_buffer_.drop_peer_requested_range(
+                decoded.request.sequences, decoded.request.message_number,
+                &result.receiver_drop_packets);
+            if (error != Error::none) {
+                return {.error = error};
+            }
         }
         receive_loss_list_.remove_through(
             decoded.request.sequences.last);

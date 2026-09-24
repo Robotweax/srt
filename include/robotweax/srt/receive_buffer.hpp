@@ -81,6 +81,12 @@ public:
     [[nodiscard]] Error drop_range(SequenceRange range,
         std::uint32_t message_number = 0,
         std::size_t* newly_dropped_packets = nullptr) noexcept;
+    // A peer DROPREQ must not erase a complete single-packet message that
+    // arrived before the control packet. Missing and fragmented packets in
+    // the requested range are still discarded.
+    [[nodiscard]] Error drop_peer_requested_range(SequenceRange range,
+        std::uint32_t message_number = 0,
+        std::size_t* newly_dropped_packets = nullptr) noexcept;
     [[nodiscard]] Error discard_before(
         SequenceNumber next_sequence) noexcept;
 
@@ -100,6 +106,9 @@ private:
     void refresh_buffered_timestamp_bounds() noexcept;
     void advance_acknowledgement() noexcept;
     void trim_dropped_prefix() noexcept;
+    [[nodiscard]] Error drop_range_impl(SequenceRange range,
+        std::uint32_t message_number, std::size_t* newly_dropped_packets,
+        bool preserve_existing_solo) noexcept;
 
     std::vector<Slot> slots_;
     SequenceNumber first_stored_sequence_;

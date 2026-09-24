@@ -442,6 +442,19 @@ Error ReceiveBuffer::drop_range(SequenceRange range,
     std::uint32_t message_number,
     std::size_t* newly_dropped_packets) noexcept
 {
+    return drop_range_impl(range, message_number, newly_dropped_packets, false);
+}
+
+Error ReceiveBuffer::drop_peer_requested_range(SequenceRange range,
+    std::uint32_t message_number, std::size_t* newly_dropped_packets) noexcept
+{
+    return drop_range_impl(range, message_number, newly_dropped_packets, true);
+}
+
+Error ReceiveBuffer::drop_range_impl(SequenceRange range,
+    std::uint32_t message_number, std::size_t* newly_dropped_packets,
+    bool preserve_existing_solo) noexcept
+{
     // The sequence range is authoritative. The message number is advisory
     // metadata used by the wire protocol and may refer to packets that have
     // not reached this receiver yet.
@@ -463,8 +476,16 @@ Error ReceiveBuffer::drop_range(SequenceRange range,
         ? static_cast<std::size_t>(start_offset) : 0U;
     const std::size_t final_offset = std::min<std::size_t>(
         static_cast<std::size_t>(end_offset), capacity() - 1U);
+    std::optional<SequenceNumber> first_preserved_solo;
     for (std::size_t offset = first_offset; offset <= final_offset; ++offset) {
         auto& slot = slots_[(head_ + offset) % capacity()];
+        if (preserve_existing_solo && slot.occupied
+            && slot.header.boundary == MessageBoundary::solo) {
+            if (!first_preserved_solo.has_value()) {
+                first_preserved_solo = slot.header.sequence;
+            }
+            continue;
+        }
         if (!slot.dropped && newly_dropped_packets != nullptr) {
             ++*newly_dropped_packets;
         }
@@ -484,7 +505,12 @@ Error ReceiveBuffer::drop_range(SequenceRange range,
     trim_dropped_prefix();
     if (start_offset <= 0
         && range.last.distance_from(first_stored_sequence_) >= 0) {
-        const SequenceNumber target = range.last.next();
+        SequenceNumber target = range.last.next();
+        if (first_preserved_solo.has_value()
+            && first_preserved_solo->distance_from(first_stored_sequence_) >= 0
+            && target.distance_from(*first_preserved_solo) > 0) {
+            target = *first_preserved_solo;
+        }
         const auto additional_advance = static_cast<std::size_t>(
             target.distance_from(first_stored_sequence_));
         if (newly_dropped_packets != nullptr) {

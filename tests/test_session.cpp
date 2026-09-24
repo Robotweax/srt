@@ -203,6 +203,103 @@ TEST(session_group_sequence_skip_is_rollover_safe)
     REQUIRE_EQ(drops.values[0].drop.sequences.last, SequenceNumber {0});
 }
 
+TEST(session_live_drop_request_retains_received_and_in_flight_solo_packets)
+{
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+    }};
+    receiver.configure_live(
+        {
+            .receive_tsbpd = true,
+            .too_late_packet_drop = true,
+            .receive_delay_milliseconds = 100,
+        },
+        1'000, PacketTimestamp {0});
+    const std::array<std::byte, 1> payload {std::byte {'p'}};
+    PacketView data;
+    data.kind = PacketKind::data;
+    data.data.sequence = SequenceNumber {10};
+    data.data.message_number = 1;
+    data.data.boundary = MessageBoundary::solo;
+    data.data.timestamp = PacketTimestamp {50};
+    data.payload = payload;
+    REQUIRE(receiver.receive(data, 1'010));
+
+    std::array<std::byte, 64> storage {};
+    const auto drop = encode_and_decode(
+        {
+            .kind = ReliabilityActionKind::drop_request,
+            .drop = {1, {SequenceNumber {10}, SequenceNumber {11}}},
+        },
+        storage);
+    const auto processed = receiver.receive(drop, 1'020);
+    REQUIRE(processed);
+    REQUIRE_EQ(processed.receiver_drop_packets, 0U);
+    REQUIRE_EQ(receiver.receive_buffer().occupied(), 1U);
+
+    data.data.sequence = SequenceNumber {11};
+    data.data.message_number = 2;
+    data.data.timestamp = PacketTimestamp {60};
+    const auto delayed = receiver.receive(data, 1'030);
+    REQUIRE(delayed);
+    REQUIRE(delayed.receiver_packet_accepted_unique);
+    std::array<std::byte, 1> output {};
+    REQUIRE_EQ(
+        receiver.pop_message_at(output, 101'049).error, Error::would_block);
+    REQUIRE(receiver.pop_message_at(output, 101'050));
+    REQUIRE_EQ(output, payload);
+    REQUIRE(receiver.pop_message_at(output, 101'060));
+    REQUIRE_EQ(output, payload);
+}
+
+TEST(session_live_drop_request_leaves_true_gap_to_local_deadline_drop)
+{
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+    }};
+    receiver.configure_live(
+        {
+            .receive_tsbpd = true,
+            .too_late_packet_drop = true,
+            .receive_delay_milliseconds = 100,
+        },
+        1'000, PacketTimestamp {0});
+    const std::array<std::byte, 1> payload {std::byte {'p'}};
+    PacketView data;
+    data.kind = PacketKind::data;
+    data.data.sequence = SequenceNumber {11};
+    data.data.message_number = 2;
+    data.data.boundary = MessageBoundary::solo;
+    data.data.timestamp = PacketTimestamp {50};
+    data.payload = payload;
+    REQUIRE(receiver.receive(data, 1'010));
+    std::array<std::byte, 64> storage {};
+    const auto drop = encode_and_decode(
+        {
+            .kind = ReliabilityActionKind::drop_request,
+            .drop = {1, {SequenceNumber {10}, SequenceNumber {10}}},
+        },
+        storage);
+    const auto processed = receiver.receive(drop, 1'020);
+    REQUIRE(processed);
+    REQUIRE_EQ(processed.receiver_drop_packets, 0U);
+    REQUIRE_EQ(
+        receiver.drop_too_late_receiver(101'049).receiver_drop_packets, 0U);
+    REQUIRE_EQ(
+        receiver.drop_too_late_receiver(101'050).receiver_drop_packets, 1U);
+    std::array<std::byte, 1> output {};
+    REQUIRE(receiver.pop_message_at(output, 101'050));
+    REQUIRE_EQ(output, payload);
+}
+
 TEST(session_late_group_member_adopts_current_message_identity)
 {
     ReliabilitySession session{{
