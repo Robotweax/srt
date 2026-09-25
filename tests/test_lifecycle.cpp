@@ -1073,6 +1073,91 @@ TEST(sensor_profile_negotiates_and_transfers_loopback_datagrams)
     REQUIRE_EQ(srt_cleanup(), 0);
 }
 
+TEST(control_profile_negotiates_and_transfers_ordered_loopback_commands)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    const SRT_TRANSTYPE control_type = SRTT_CONTROL;
+    constexpr std::int32_t timeout_milliseconds = 3'000;
+    const SRTSOCKET listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_TRANSTYPE, &control_type,
+                   static_cast<int>(sizeof(control_type))),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_port = 0;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (srt_bind(listener, reinterpret_cast<const sockaddr*>(&address),
+            static_cast<int>(sizeof(address)))
+        == SRT_ERROR) {
+        int system_error = 0;
+        REQUIRE_EQ(srt_getlasterror(&system_error), SRT_ESOCKFAIL);
+        REQUIRE(system_error != 0);
+        REQUIRE_EQ(srt_close(listener), 0);
+        REQUIRE_EQ(srt_cleanup(), 0);
+        return;
+    }
+    REQUIRE_EQ(srt_listen(listener, 1), 0);
+    sockaddr_in listener_name {};
+    int listener_name_size = static_cast<int>(sizeof(listener_name));
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&listener_name),
+            &listener_name_size),
+        0);
+
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_TRANSTYPE, &control_type,
+                   static_cast<int>(sizeof(control_type))),
+        0);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    REQUIRE_EQ(
+        srt_connect(caller, reinterpret_cast<const sockaddr*>(&listener_name),
+            static_cast<int>(sizeof(listener_name))),
+        0);
+    const SRTSOCKET accepted = srt_accept(listener, nullptr, nullptr);
+    REQUIRE(accepted != SRT_INVALID_SOCK);
+    for (const SRTSOCKET endpoint : {caller, accepted}) {
+        SRT_TRANSTYPE actual_type = SRTT_INVALID;
+        int size = static_cast<int>(sizeof(actual_type));
+        REQUIRE_EQ(
+            srt_getsockflag(endpoint, SRTO_TRANSTYPE, &actual_type, &size), 0);
+        REQUIRE_EQ(actual_type, SRTT_CONTROL);
+    }
+
+    SRT_MSGCTRL finite_lifetime = srt_msgctrl_default;
+    finite_lifetime.msgttl = 25;
+    constexpr char first[] = "arm";
+    REQUIRE_EQ(srt_sendmsg2(caller, first, static_cast<int>(sizeof(first) - 1U),
+                   &finite_lifetime),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVALMSGAPI);
+
+    for (const std::string_view command : {"arm", "move", "stop"}) {
+        REQUIRE_EQ(srt_sendmsg(caller, command.data(),
+                       static_cast<int>(command.size()), -1, 0),
+            static_cast<int>(command.size()));
+    }
+    for (const std::string_view expected : {"arm", "move", "stop"}) {
+        std::array<char, 32> received {};
+        const int size = srt_recvmsg(
+            accepted, received.data(), static_cast<int>(received.size()));
+        REQUIRE_EQ(size, static_cast<int>(expected.size()));
+        REQUIRE(
+            (std::string_view {received.data(), static_cast<std::size_t>(size)}
+                == expected));
+    }
+    REQUIRE_EQ(srt_close(accepted), 0);
+    REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_close(listener), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
+
 TEST(sensor_profile_crosses_a_real_udp_fault_relay_without_arq)
 {
     REQUIRE_EQ(srt_startup(), 0);

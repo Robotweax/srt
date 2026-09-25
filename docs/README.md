@@ -62,6 +62,7 @@ and are not a source- or binary-compatibility contract.
 - [Encryption and key rotation](encryption.md)
 - [AES-GCM extension contract](aes-gcm-contract.md)
 - [File/Stream mode](file-mode.md)
+- [Reliable control-message profile](control-profile.md)
 - [Rendezvous](rendezvous.md)
 - [Connection groups and bonding](connection-groups.md)
 - [Packet-filter FEC](packet-filter.md)

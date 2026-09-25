@@ -1,6 +1,7 @@
 #include "test.hpp"
 
 #include "robotweax/srt/handshake.hpp"
+#include "robotweax/srt/socket_options.hpp"
 
 #include <array>
 #include <cstddef>
@@ -887,6 +888,101 @@ TEST(listener_rejects_a_congestion_controller_mismatch)
         1'013);
     REQUIRE_EQ(rejected.values[1].kind,
         HandshakeActionKind::rejected);
+}
+
+TEST(control_profile_requires_a_matching_confirmed_wire_identity)
+{
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::control)),
+        Error::none);
+    std::uint32_t cookie_salt = 0x41c0'0001U;
+    const HandshakeMachine::Configuration caller_configuration {
+        .role = ConnectionRole::caller,
+        .local_socket_id = 100,
+        .extension_parameters = options.handshake_parameters(),
+        .congestion_controller = CongestionController::control,
+    };
+    HandshakeMachine caller {caller_configuration};
+    HandshakeMachine listener {{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 200,
+        .extension_parameters = options.handshake_parameters(),
+        .congestion_controller = CongestionController::control,
+        .cookie_generator = test_cookie,
+        .cookie_context = &cookie_salt,
+    }};
+    const auto induction = caller.start();
+    const auto induction_response =
+        listener.receive(message_from(induction.values[0]));
+    const auto conclusion =
+        caller.receive(message_from(induction_response.values[0]));
+    REQUIRE(conclusion.values[0].has_congestion_extension);
+    REQUIRE_EQ(conclusion.values[0].congestion_controller,
+        CongestionController::control);
+    const auto listener_done =
+        listener.receive(message_from(conclusion.values[0]));
+    REQUIRE_EQ(listener.state(), HandshakeState::connected);
+    REQUIRE(listener_done.values[0].has_congestion_extension);
+    const auto caller_done =
+        caller.receive(message_from(listener_done.values[0]));
+    REQUIRE_EQ(caller_done.values[0].kind, HandshakeActionKind::connected);
+
+    HandshakeMachine unconfirmed {caller_configuration};
+    (void)unconfirmed.start();
+    (void)unconfirmed.receive(message_from(induction_response.values[0]));
+    auto missing_confirmation = message_from(listener_done.values[0]);
+    missing_confirmation.has_congestion_extension = false;
+    const auto rejected = unconfirmed.receive(missing_confirmation);
+    REQUIRE_EQ(rejected.values[0].kind, HandshakeActionKind::rejected);
+    REQUIRE_EQ(unconfirmed.rejection_reason(), 13);
+
+    HandshakeMachine file_listener {{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 300,
+        .extension_parameters = options.handshake_parameters(),
+        .congestion_controller = CongestionController::file,
+        .cookie_generator = test_cookie,
+        .cookie_context = &cookie_salt,
+    }};
+    HandshakeMachine control_caller {caller_configuration};
+    const auto file_induction = control_caller.start();
+    const auto file_induction_response =
+        file_listener.receive(message_from(file_induction.values[0]));
+    const auto file_conclusion =
+        control_caller.receive(message_from(file_induction_response.values[0]));
+    const auto file_rejected =
+        file_listener.receive(message_from(file_conclusion.values[0]));
+    REQUIRE_EQ(file_listener.rejection_reason(), 13);
+    REQUIRE_EQ(file_rejected.values[1].kind, HandshakeActionKind::rejected);
+}
+
+TEST(control_profile_rejects_a_peer_requested_packet_filter)
+{
+    const auto filter = parse_packet_filter_configuration("fec,cols:4");
+    REQUIRE(filter);
+    std::uint32_t cookie_salt = 0x41c0'0002U;
+    HandshakeMachine caller {{
+        .role = ConnectionRole::caller,
+        .local_socket_id = 100,
+        .congestion_controller = CongestionController::control,
+        .packet_filter_configuration = filter.configuration,
+    }};
+    HandshakeMachine listener {{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 200,
+        .congestion_controller = CongestionController::control,
+        .cookie_generator = test_cookie,
+        .cookie_context = &cookie_salt,
+    }};
+    const auto induction = caller.start();
+    const auto induction_response =
+        listener.receive(message_from(induction.values[0]));
+    const auto conclusion =
+        caller.receive(message_from(induction_response.values[0]));
+    const auto rejected = listener.receive(message_from(conclusion.values[0]));
+    REQUIRE_EQ(listener.rejection_reason(), 14);
+    REQUIRE_EQ(rejected.values[1].kind, HandshakeActionKind::rejected);
 }
 
 TEST(caller_and_listener_negotiate_complementary_packet_filter_parameters)

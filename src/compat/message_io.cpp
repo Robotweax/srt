@@ -611,6 +611,7 @@ int send_message(
     std::int32_t maximum_payload_size = 0;
     bool message_api = true;
     bool tsbpd_mode = true;
+    bool control_profile = false;
     {
         std::lock_guard lock(socket->mutex);
         if (socket->state == SRTS_CLOSED) {
@@ -633,6 +634,10 @@ int send_message(
             socket->public_options.message_api;
         tsbpd_mode =
             socket->public_options.tsbpd_mode;
+        control_profile = socket->native_options.control_profile();
+    }
+    if (control_profile && local_control.msgttl >= 0) {
+        return fail(SRT_EINVALMSGAPI);
     }
     if (message_api && tsbpd_mode
         && length > maximum_payload_size) {

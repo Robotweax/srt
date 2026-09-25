@@ -217,6 +217,7 @@ Start with the [documentation index](docs/README.md):
 - [Testing](docs/testing.md)
 - [Known limitations](docs/limitations.md)
 - [File/Stream mode](docs/file-mode.md)
+- [Reliable control-message profile](docs/control-profile.md)
 - [Rendezvous](docs/rendezvous.md)
 - [Connection groups](docs/connection-groups.md)
 - [Packet-filter FEC](docs/packet-filter.md)

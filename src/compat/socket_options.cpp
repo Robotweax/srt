@@ -964,7 +964,8 @@ int set_socket_option(
         if (!read_value(value, value_size, parsed)
             || (parsed != static_cast<std::int32_t>(SRTT_LIVE)
                 && parsed != static_cast<std::int32_t>(SRTT_FILE)
-                && parsed != static_cast<std::int32_t>(SRTT_SENSOR))) {
+                && parsed != static_cast<std::int32_t>(SRTT_SENSOR)
+                && parsed != static_cast<std::int32_t>(SRTT_CONTROL))) {
             return invalid_parameter();
         }
         SocketOptions selected = socket.native_options;
@@ -973,9 +974,16 @@ int set_socket_option(
             && selected.set_packet_filter({}) != Error::none) {
             return invalid_parameter();
         }
+        if (parsed == static_cast<std::int32_t>(SRTT_CONTROL)
+            && selected.packet_filter_configuration().enabled
+            && selected.set_packet_filter({}) != Error::none) {
+            return invalid_parameter();
+        }
         const std::int32_t base_type =
             parsed == static_cast<std::int32_t>(SRTT_SENSOR)
             ? static_cast<std::int32_t>(SRTT_LIVE)
+            : parsed == static_cast<std::int32_t>(SRTT_CONTROL)
+            ? static_cast<std::int32_t>(TransmissionType::control)
             : parsed;
         if (selected.set(SocketOption::transmission_type, base_type)
                 != Error::none
@@ -987,7 +995,8 @@ int set_socket_option(
         socket.native_options = selected;
         options.transmission_type =
             static_cast<SRT_TRANSTYPE>(parsed);
-        if (options.transmission_type != SRTT_FILE) {
+        if (options.transmission_type == SRTT_LIVE
+            || options.transmission_type == SRTT_SENSOR) {
             const bool sensor = options.transmission_type == SRTT_SENSOR;
             options.tsbpd_mode = !sensor;
             options.receiver_latency_milliseconds = 120;
@@ -1004,12 +1013,13 @@ int set_socket_option(
             options.linger_enabled = false;
             options.linger_seconds = 0;
         } else {
+            const bool control = options.transmission_type == SRTT_CONTROL;
             options.tsbpd_mode = false;
             options.receiver_latency_milliseconds = 0;
             options.peer_latency_milliseconds = 0;
             options.too_late_packet_drop = false;
             options.sender_drop_delay_milliseconds = -1;
-            options.message_api = false;
+            options.message_api = control;
             options.periodic_nak = false;
             options.retransmission_algorithm = 0;
             options.maximum_payload_size =

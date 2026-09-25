@@ -373,6 +373,10 @@ the same filter as `SRTO_PACKETFILTER` with that exact string, so the two
 configuration styles interoperate; `SRTO_TRANSTYPE` reads back `SRTT_SENSOR`
 for either style. Switching to `SRTT_LIVE` or `SRTT_FILE` clears the sensor
 filter and selects that type's normal bundle. `SRTT_INVALID` remains `2`.
+`SRTO_TRANSTYPE=SRTT_CONTROL` (`4`) selects Robotweax's versioned,
+reliable ordered-message profile with FileCC, no TSBPD, and a distinct
+`control-v1` handshake identity. Both endpoints must opt in. See
+[Reliable control-message profile](control-profile.md).
 `SRTO_MESSAGEAPI` may select message
 extraction before connection; the STREAM handshake flag is derived from that
 same value. `SRTO_LINGER` accepts `struct linger`: live mode defaults to

@@ -380,6 +380,11 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             }
             const bool negotiate_filter =
                 message.has_packet_filter_extension;
+            if (configuration_.congestion_controller
+                    == CongestionController::control
+                && negotiate_filter) {
+                return reject(packet_filter_rejection_reason);
+            }
             if (negotiate_filter) {
                 const auto filter =
                     negotiate_packet_filter_configuration(
@@ -631,6 +636,14 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             // CONFIG extensions are proposals validated by the responder.
             // A successful CONCLUSION need not echo the accepted controller.
             // If it does include one, it must still match the proposal.
+            // control-v1 is a versioned delivery contract, so unlike FileCC
+            // its response must explicitly confirm the profile identity.
+            if (configuration_.congestion_controller
+                    == CongestionController::control
+                && (!message.has_congestion_extension
+                    || !message.has_handshake_extension)) {
+                return reject_locally(congestion_rejection_reason);
+            }
             if (message.has_congestion_extension
                 && message.congestion_controller
                     != configuration_.congestion_controller) {
@@ -644,6 +657,11 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                         congestion_rejection_reason,
                 });
                 return actions;
+            }
+            if (configuration_.congestion_controller
+                    == CongestionController::control
+                && message.has_packet_filter_extension) {
+                return reject_locally(packet_filter_rejection_reason);
             }
             if (message.has_packet_filter_extension) {
                 const auto filter =

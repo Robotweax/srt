@@ -1321,6 +1321,42 @@ TEST(compat_runtime_initializes_sender_window_from_peer_handshake)
         runtime.statistics(false, true).instantaneous.flow_window_packets, 2U);
 }
 
+TEST(compat_runtime_control_profile_forces_order_and_infinite_ttl)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::control)),
+        Error::none);
+    std::uint64_t now = 1'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = {.address = {192, 0, 2, 20}, .port = 12'020},
+        .peer_socket_id = 200,
+        .initial_sequence = SequenceNumber {700},
+        .flow_window_packets = 256,
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now(),
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+    const std::array<std::byte, 3> command {
+        std::byte {'r'}, std::byte {'u'}, std::byte {'n'}};
+    REQUIRE_EQ(runtime.queue_message(command, 0, false, false, -1, 25).status,
+        MessageIoStatus::invalid_state);
+    REQUIRE_EQ(runtime.queue_message(command, 0, false, false, -1, -1).status,
+        MessageIoStatus::success);
+    (void)runtime.poll();
+    const auto datagrams = take_datagrams(output);
+    REQUIRE_EQ(datagrams.size(), 1U);
+    const auto decoded = decode_packet(datagrams[0]);
+    REQUIRE(decoded);
+    REQUIRE_EQ(decoded.packet.kind, PacketKind::data);
+    REQUIRE(decoded.packet.data.in_order);
+}
+
 TEST(compat_runtime_message_ttl_uses_injected_clock_and_sends_dropreq)
 {
     const auto channel = std::make_shared<DatagramChannel>();

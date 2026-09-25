@@ -532,12 +532,19 @@ HandshakeActions RendezvousHandshakeMachine::receive(
             return reject_congestion_controller();
         }
     } else if (response
-        && message.has_congestion_extension
-        && message.congestion_controller
-            != configuration_.congestion_controller) {
-        // CONFIG is a proposal validated by the responder. Its echo is
-        // optional, but an explicit response value must still agree.
+        && ((configuration_.congestion_controller
+                    == CongestionController::control
+                && !message.has_congestion_extension)
+            || (message.has_congestion_extension
+                && message.congestion_controller
+                    != configuration_.congestion_controller))) {
+        // Ordinary CONFIG echoes are optional; control-v1 requires an
+        // explicit response because it changes the delivery contract.
         return reject_congestion_controller();
+    }
+    if (configuration_.congestion_controller == CongestionController::control
+        && message.has_packet_filter_extension) {
+        return reject_packet_filter();
     }
     if (request) {
         if (message.has_packet_filter_extension) {

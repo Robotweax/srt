@@ -24,6 +24,7 @@ inline constexpr std::size_t ipv6_srt_packet_overhead = 64;
 enum class TransmissionType : std::uint8_t {
     live = 0,
     file = 1,
+    control = 2,
 };
 
 // Public options for every transport feature currently implemented by Robotweax.
@@ -124,6 +125,10 @@ public:
     [[nodiscard]] TransmissionType transmission_type() const noexcept
     {
         return transmission_type_;
+    }
+    [[nodiscard]] bool control_profile() const noexcept
+    {
+        return transmission_type_ == TransmissionType::control;
     }
     [[nodiscard]] CongestionController
     congestion_controller() const noexcept

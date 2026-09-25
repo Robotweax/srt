@@ -2723,6 +2723,13 @@ TEST(srt_compat_crypto_mode_preview_matches_upstream_option_contract)
     size = static_cast<int>(sizeof(actual_type));
     REQUIRE_EQ(srt_getsockflag(socket, SRTO_TRANSTYPE, &actual_type, &size), 0);
     REQUIRE_EQ(actual_type, SRTT_LIVE);
+    const SRT_TRANSTYPE control_type = SRTT_CONTROL;
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_TRANSTYPE, &control_type,
+                   static_cast<int>(sizeof(control_type))),
+        SRT_ERROR);
+    size = static_cast<int>(sizeof(actual_type));
+    REQUIRE_EQ(srt_getsockflag(socket, SRTO_TRANSTYPE, &actual_type, &size), 0);
+    REQUIRE_EQ(actual_type, SRTT_LIVE);
     const bool rendezvous = true;
     REQUIRE_EQ(srt_setsockflag(socket, SRTO_RENDEZVOUS, &rendezvous,
                    static_cast<int>(sizeof(rendezvous))),
@@ -2957,6 +2964,64 @@ TEST(srt_compat_sensor_type_selects_and_leaves_the_versioned_filter)
 
     REQUIRE_EQ(set_type(SRTT_INVALID), SRT_ERROR);
     REQUIRE_EQ(get_type(), SRTT_FILE);
+    REQUIRE_EQ(srt_close(socket), 0);
+}
+
+TEST(srt_compat_control_type_sets_a_distinct_reliable_message_bundle)
+{
+    const SRTSOCKET socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    const auto set_type = [&](SRT_TRANSTYPE type) {
+        return srt_setsockflag(
+            socket, SRTO_TRANSTYPE, &type, static_cast<int>(sizeof(type)));
+    };
+    const auto get_type = [&] {
+        SRT_TRANSTYPE actual = SRTT_INVALID;
+        int size = static_cast<int>(sizeof(actual));
+        REQUIRE_EQ(srt_getsockflag(socket, SRTO_TRANSTYPE, &actual, &size), 0);
+        return actual;
+    };
+    REQUIRE_EQ(set_type(SRTT_CONTROL), 0);
+    REQUIRE_EQ(get_type(), SRTT_CONTROL);
+    for (const SRT_SOCKOPT option :
+        {SRTO_TSBPDMODE, SRTO_TLPKTDROP, SRTO_NAKREPORT}) {
+        bool enabled = true;
+        int size = static_cast<int>(sizeof(enabled));
+        REQUIRE_EQ(srt_getsockflag(socket, option, &enabled, &size), 0);
+        REQUIRE(!enabled);
+    }
+    bool message_api = false;
+    int size = static_cast<int>(sizeof(message_api));
+    REQUIRE_EQ(
+        srt_getsockflag(socket, SRTO_MESSAGEAPI, &message_api, &size), 0);
+    REQUIRE(message_api);
+    const bool disabled = false;
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_MESSAGEAPI, &disabled,
+                   static_cast<int>(sizeof(disabled))),
+        SRT_ERROR);
+    constexpr char fec[] = "fec,cols:4";
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_PACKETFILTER, fec,
+                   static_cast<int>(sizeof(fec) - 1U)),
+        SRT_ERROR);
+    REQUIRE_EQ(get_type(), SRTT_CONTROL);
+
+    REQUIRE_EQ(set_type(SRTT_FILE), 0);
+    REQUIRE_EQ(get_type(), SRTT_FILE);
+    REQUIRE_EQ(set_type(SRTT_CONTROL), 0);
+    REQUIRE_EQ(set_type(SRTT_LIVE), 0);
+    REQUIRE_EQ(get_type(), SRTT_LIVE);
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_PACKETFILTER, fec,
+                   static_cast<int>(sizeof(fec) - 1U)),
+        0);
+    REQUIRE_EQ(set_type(SRTT_CONTROL), 0);
+    std::array<char, 64> filter {};
+    size = static_cast<int>(filter.size());
+    REQUIRE_EQ(
+        srt_getsockflag(socket, SRTO_PACKETFILTER, filter.data(), &size), 0);
+    REQUIRE_EQ(size, 0);
+    REQUIRE_EQ(set_type(SRTT_SENSOR), 0);
+    REQUIRE_EQ(set_type(SRTT_CONTROL), 0);
+    REQUIRE_EQ(get_type(), SRTT_CONTROL);
     REQUIRE_EQ(srt_close(socket), 0);
 }
 

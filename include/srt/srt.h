@@ -170,7 +170,9 @@ typedef enum SRT_TRANSTYPE {
     SRTT_FILE = 1,
     SRTT_INVALID = 2,
     /* Robotweax-only preset for the negotiated fec-sensor-v1 profile. */
-    SRTT_SENSOR = 3
+    SRTT_SENSOR = 3,
+    /* Robotweax-only reliable, ordered control-v1 Message profile. */
+    SRTT_CONTROL = 4
 } SRT_TRANSTYPE;
 
 typedef enum SRT_KM_STATE {

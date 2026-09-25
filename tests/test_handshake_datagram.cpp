@@ -326,6 +326,25 @@ TEST(handshake_datagram_chains_and_decodes_packet_filter_configuration)
         PacketFilterArqLevel::on_request);
 }
 
+TEST(handshake_datagram_round_trips_the_control_v1_wire_identity)
+{
+    HandshakeAction action;
+    action.kind = HandshakeActionKind::send;
+    action.packet.version = handshake_version_5;
+    action.packet.request = HandshakeRequest::conclusion;
+    action.packet.extension_field = 5U;
+    action.has_handshake_extension = true;
+    action.extension_type = HandshakeExtensionType::handshake_request;
+    action.has_congestion_extension = true;
+    action.congestion_controller = CongestionController::control;
+
+    const auto decoded = encode_then_decode(action, 905U);
+    REQUIRE(decoded);
+    REQUIRE(decoded.message.has_congestion_extension);
+    REQUIRE_EQ(
+        decoded.message.congestion_controller, CongestionController::control);
+}
+
 TEST(handshake_datagram_chains_congestion_and_packet_filter_configuration)
 {
     const auto filter =

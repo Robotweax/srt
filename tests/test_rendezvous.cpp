@@ -767,6 +767,31 @@ TEST(rendezvous_initiator_accepts_file_response_without_config_echo)
         RendezvousState::connected);
 }
 
+TEST(rendezvous_control_profile_requires_a_config_echo)
+{
+    RendezvousHandshakeMachine initiator {{
+        .local_socket_id = 10U,
+        .local_cookie = 200U,
+        .congestion_controller = CongestionController::control,
+    }};
+    RendezvousHandshakeMachine responder {{
+        .local_socket_id = 20U,
+        .local_cookie = 100U,
+        .congestion_controller = CongestionController::control,
+    }};
+    const auto initiator_wave = initiator.start();
+    const auto responder_wave = responder.start();
+    const auto request = initiator.receive(message_from(sent(responder_wave)));
+    (void)responder.receive(message_from(sent(initiator_wave)));
+    const auto response = responder.receive(message_from(sent(request)));
+    REQUIRE(sent(response).has_congestion_extension);
+    auto missing_echo = message_from(sent(response));
+    missing_echo.has_congestion_extension = false;
+    const auto rejected = initiator.receive(missing_echo);
+    REQUIRE(has_action(rejected, HandshakeActionKind::rejected));
+    REQUIRE_EQ(initiator.rejection_reason(), 13);
+}
+
 TEST(rendezvous_initiator_rejects_explicit_response_controller_mismatch)
 {
     auto initiator = make_file_machine(10U, 200U);

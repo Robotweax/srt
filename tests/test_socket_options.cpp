@@ -440,3 +440,35 @@ TEST(sensor_profile_applies_and_locks_its_transport_bundle)
     REQUIRE_EQ(options.get(SocketOption::tsbpd_mode).value, 0);
     REQUIRE_EQ(options.get(SocketOption::periodic_nak).value, 0);
 }
+
+TEST(control_profile_selects_file_cc_with_reliable_message_defaults)
+{
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::control)),
+        Error::none);
+    REQUIRE(options.control_profile());
+    REQUIRE_EQ(options.congestion_controller(), CongestionController::control);
+    REQUIRE(options.message_api());
+    REQUIRE_EQ(options.get(SocketOption::tsbpd_mode).value, 0);
+    REQUIRE_EQ(options.get(SocketOption::too_late_packet_drop).value, 0);
+    REQUIRE_EQ(options.get(SocketOption::periodic_nak).value, 0);
+    REQUIRE_EQ(
+        options.get(SocketOption::sender_drop_delay_milliseconds).value, -1);
+    REQUIRE_EQ(congestion_controller_name(options.congestion_controller()),
+        std::string_view {"control-v1"});
+    REQUIRE_EQ(options.set(SocketOption::message_api, 0), Error::invalid_state);
+    REQUIRE_EQ(options.set(SocketOption::too_late_packet_drop, 1),
+        Error::invalid_state);
+    REQUIRE_EQ(options.set(SocketOption::sender_drop_delay_milliseconds, 0),
+        Error::invalid_state);
+    REQUIRE_EQ(options.set_packet_filter("fec,cols:4"), Error::invalid_state);
+    REQUIRE_EQ(options.set_congestion_controller("file"), Error::invalid_state);
+
+    REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::file)),
+        Error::none);
+    REQUIRE(!options.control_profile());
+    REQUIRE_EQ(options.congestion_controller(), CongestionController::file);
+    REQUIRE(!options.message_api());
+}
