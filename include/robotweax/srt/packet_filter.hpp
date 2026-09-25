@@ -12,6 +12,8 @@ namespace robotweax::srt {
 
 inline constexpr std::size_t maximum_packet_filter_configuration_size = 512;
 inline constexpr std::size_t fec_filter_header_size = 4;
+inline constexpr std::string_view sensor_profile_filter_v1 =
+    "fec-sensor-v1,cols:4,rows:1,arq:never";
 
 struct FecControlHeader {
     std::int8_t group_index = -1;

@@ -98,7 +98,7 @@ template <typename Integer>
     configuration.text.fill('\0');
     configuration.text_size = 0;
     if (sensor_profile) {
-        return append(configuration, "fec-sensor-v1,cols:4,rows:1,arq:never");
+        return append(configuration, sensor_profile_filter_v1);
     }
     const std::string_view arq =
         configuration.arq == PacketFilterArqLevel::never
@@ -390,10 +390,9 @@ parse_packet_filter_configuration(
         return {.error = Error::invalid_state};
     }
     if (sensor_profile
-        && (text != "fec-sensor-v1,cols:4,rows:1,arq:never"
-            || !configuration.columns_specified || configuration.columns != 4U
-            || !configuration.rows_specified || configuration.rows != 1
-            || !configuration.arq_specified
+        && (text != sensor_profile_filter_v1 || !configuration.columns_specified
+            || configuration.columns != 4U || !configuration.rows_specified
+            || configuration.rows != 1 || !configuration.arq_specified
             || configuration.arq != PacketFilterArqLevel::never
             || (configuration.layout_specified
                 && configuration.layout != PacketFilterLayout::staircase))) {

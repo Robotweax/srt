@@ -365,7 +365,15 @@ member.
 connect requires an explicitly bound socket, and listen/accept is invalid in
 that mode. `SRTO_TRANSTYPE=SRTT_FILE` is a pre-bind bundle that selects
 FileCC, maximum payload, buffer-mode extraction, and disables the live-only
-TSBPD/TLPKTDROP/periodic-NAK behavior. `SRTO_MESSAGEAPI` may select message
+TSBPD/TLPKTDROP/periodic-NAK behavior. The Robotweax extension
+`SRTO_TRANSTYPE=SRTT_SENSOR` (`3`) is a pre-bind shortcut for the versioned
+`fec-sensor-v1,cols:4,rows:1,arq:never` filter and its Live/Message sensor
+bundle. Set it on both caller and listener before bind/connect. It negotiates
+the same filter as `SRTO_PACKETFILTER` with that exact string, so the two
+configuration styles interoperate; `SRTO_TRANSTYPE` reads back `SRTT_SENSOR`
+for either style. Switching to `SRTT_LIVE` or `SRTT_FILE` clears the sensor
+filter and selects that type's normal bundle. `SRTT_INVALID` remains `2`.
+`SRTO_MESSAGEAPI` may select message
 extraction before connection; the STREAM handshake flag is derived from that
 same value. `SRTO_LINGER` accepts `struct linger`: live mode defaults to
 `{0, 0}`, file mode to `{1, 180}`, and synchronous close waits for send-buffer

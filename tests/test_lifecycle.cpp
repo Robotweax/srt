@@ -980,8 +980,9 @@ TEST(sensor_profile_negotiates_and_transfers_loopback_datagrams)
 
     const SRTSOCKET listener = srt_create_socket();
     REQUIRE(listener != SRT_INVALID_SOCK);
-    REQUIRE_EQ(srt_setsockflag(listener, SRTO_PACKETFILTER, profile,
-                   static_cast<int>(sizeof(profile) - 1U)),
+    const SRT_TRANSTYPE sensor_type = SRTT_SENSOR;
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_TRANSTYPE, &sensor_type,
+                   static_cast<int>(sizeof(sensor_type))),
         0);
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVTIMEO, &timeout_milliseconds,
                    static_cast<int>(sizeof(timeout_milliseconds))),
@@ -1024,6 +1025,15 @@ TEST(sensor_profile_negotiates_and_transfers_loopback_datagrams)
         0);
     const SRTSOCKET accepted = srt_accept(listener, nullptr, nullptr);
     REQUIRE(accepted != SRT_INVALID_SOCK);
+
+    for (const SRTSOCKET endpoint : {listener, caller, accepted}) {
+        SRT_TRANSTYPE actual_type = SRTT_INVALID;
+        int type_size = static_cast<int>(sizeof(actual_type));
+        REQUIRE_EQ(
+            srt_getsockflag(endpoint, SRTO_TRANSTYPE, &actual_type, &type_size),
+            0);
+        REQUIRE_EQ(actual_type, SRTT_SENSOR);
+    }
 
     std::array<char, 96> negotiated {};
     int negotiated_size = static_cast<int>(negotiated.size());

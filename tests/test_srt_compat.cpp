@@ -2715,6 +2715,14 @@ TEST(srt_compat_crypto_mode_preview_matches_upstream_option_contract)
     REQUIRE_EQ(srt_setsockflag(socket, SRTO_CRYPTOMODE, &mode,
                    static_cast<int>(sizeof(mode))),
         0);
+    const SRT_TRANSTYPE sensor_type = SRTT_SENSOR;
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_TRANSTYPE, &sensor_type,
+                   static_cast<int>(sizeof(sensor_type))),
+        SRT_ERROR);
+    SRT_TRANSTYPE actual_type = SRTT_INVALID;
+    size = static_cast<int>(sizeof(actual_type));
+    REQUIRE_EQ(srt_getsockflag(socket, SRTO_TRANSTYPE, &actual_type, &size), 0);
+    REQUIRE_EQ(actual_type, SRTT_LIVE);
     const bool rendezvous = true;
     REQUIRE_EQ(srt_setsockflag(socket, SRTO_RENDEZVOUS, &rendezvous,
                    static_cast<int>(sizeof(rendezvous))),
@@ -2878,6 +2886,77 @@ TEST(srt_compat_file_type_exposes_the_implemented_reference_option_bundle)
                    &message_api,
                    static_cast<int>(sizeof(message_api))),
         0);
+    REQUIRE_EQ(srt_close(socket), 0);
+}
+
+TEST(srt_compat_sensor_type_selects_and_leaves_the_versioned_filter)
+{
+    const SRTSOCKET socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+
+    const auto set_type = [&](SRT_TRANSTYPE type) {
+        return srt_setsockflag(
+            socket, SRTO_TRANSTYPE, &type, static_cast<int>(sizeof(type)));
+    };
+    const auto get_type = [&] {
+        SRT_TRANSTYPE type = SRTT_INVALID;
+        int size = static_cast<int>(sizeof(type));
+        REQUIRE_EQ(srt_getsockflag(socket, SRTO_TRANSTYPE, &type, &size), 0);
+        return type;
+    };
+    const auto get_filter = [&] {
+        std::array<char, 96> filter {};
+        int size = static_cast<int>(filter.size());
+        REQUIRE_EQ(
+            srt_getsockflag(socket, SRTO_PACKETFILTER, filter.data(), &size),
+            0);
+        return std::string {filter.data(), static_cast<std::size_t>(size)};
+    };
+
+    constexpr std::string_view sensor_filter =
+        "fec-sensor-v1,cols:4,rows:1,arq:never";
+    REQUIRE_EQ(set_type(SRTT_SENSOR), 0);
+    REQUIRE_EQ(get_type(), SRTT_SENSOR);
+    REQUIRE_EQ(get_filter(), sensor_filter);
+    for (const SRT_SOCKOPT option :
+        {SRTO_TSBPDMODE, SRTO_TLPKTDROP, SRTO_NAKREPORT}) {
+        bool enabled = true;
+        int size = static_cast<int>(sizeof(enabled));
+        REQUIRE_EQ(srt_getsockflag(socket, option, &enabled, &size), 0);
+        REQUIRE(!enabled);
+    }
+    bool message_api = false;
+    int size = static_cast<int>(sizeof(message_api));
+    REQUIRE_EQ(
+        srt_getsockflag(socket, SRTO_MESSAGEAPI, &message_api, &size), 0);
+    REQUIRE(message_api);
+    std::int32_t retransmission = -1;
+    size = static_cast<int>(sizeof(retransmission));
+    REQUIRE_EQ(
+        srt_getsockflag(socket, SRTO_RETRANSMITALGO, &retransmission, &size),
+        0);
+    REQUIRE_EQ(retransmission, 0);
+
+    constexpr std::string_view generic_filter = "fec,cols:4";
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_PACKETFILTER, generic_filter.data(),
+                   static_cast<int>(generic_filter.size())),
+        SRT_ERROR);
+    REQUIRE_EQ(get_type(), SRTT_SENSOR);
+    REQUIRE_EQ(get_filter(), sensor_filter);
+
+    REQUIRE_EQ(set_type(SRTT_LIVE), 0);
+    REQUIRE_EQ(get_type(), SRTT_LIVE);
+    REQUIRE(get_filter().empty());
+    REQUIRE_EQ(set_type(SRTT_FILE), 0);
+    REQUIRE_EQ(get_type(), SRTT_FILE);
+    REQUIRE_EQ(set_type(SRTT_SENSOR), 0);
+    REQUIRE_EQ(get_type(), SRTT_SENSOR);
+    REQUIRE_EQ(get_filter(), sensor_filter);
+    REQUIRE_EQ(set_type(SRTT_FILE), 0);
+    REQUIRE(get_filter().empty());
+
+    REQUIRE_EQ(set_type(SRTT_INVALID), SRT_ERROR);
+    REQUIRE_EQ(get_type(), SRTT_FILE);
     REQUIRE_EQ(srt_close(socket), 0);
 }
 
