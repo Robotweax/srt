@@ -6,7 +6,8 @@ version returned by `srt_getversion()`.
 
 ## 0.2.6 — Performance Optimization (release candidate)
 
-Final qualification and publication pending. See the
+Runtime and package qualification passed; final tag artifacts and publication
+remain pending. See the
 [release notes](docs/release-notes-0.2.6.md) for compatibility and evidence limits.
 
 - Avoid repeated send-buffer prefix scans and quadratic receive-loss retirement.
