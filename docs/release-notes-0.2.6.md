@@ -54,6 +54,13 @@ implementation headers are not the installed public C API.
 
 ## Qualification limits and release acceptance
 
+The final implementation source is `daac593ffcb9bbddd25126a2bd97ddb607792fc2`.
+[Main CI](https://github.com/Robotweax/srt/actions/runs/36245587102) passed on
+that revision after correcting receive-budget test assumptions about UDP burst
+arrival and unbound Windows sockets. The receive budget and protocol behavior
+are unchanged. Final distribution evidence is tracked in the
+[package qualification record](../packaging/qualification-0.2.6.md).
+
 A functional transfer at a fixed offered rate is not a maximum-capacity result.
 Performance depends on role, occupancy, pacing, encryption, loss, operating
 system and workload. Fewer threads do not by themselves guarantee less CPU or
@@ -70,7 +77,7 @@ of a different final release commit. Keep original failures and unresolved
 reference/environment findings visible when evaluating support claims.
 
 The distribution recipes under packaging/ target the immutable 0.2.6 source
-commit `30505346cc6bb935abf68cab806b69e73d428bc1`. Package-manager and Linux
+commit `daac593ffcb9bbddd25126a2bd97ddb607792fc2`. Package-manager and Linux
 package qualification are pending. The separately published Homebrew tap still
 provides 0.2.5 until its recipe and bottle update is reviewed and qualified;
 changing this project's version does not publish a distribution package.
