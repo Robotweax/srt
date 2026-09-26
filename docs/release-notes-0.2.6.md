@@ -59,7 +59,7 @@ The final implementation source is `daac593ffcb9bbddd25126a2bd97ddb607792fc2`.
 that revision after correcting receive-budget test assumptions about UDP burst
 arrival and unbound Windows sockets. The receive budget and protocol behavior
 are unchanged. Final distribution evidence is tracked in the
-[package qualification record](../packaging/qualification-0.2.6.md).
+[package qualification record](https://github.com/Robotweax/srt/blob/c991c399ed9a9479f7a1b421cc43b0f25ffc2b40/packaging/qualification-0.2.6.md).
 
 A functional transfer at a fixed offered rate is not a maximum-capacity result.
 Performance depends on role, occupancy, pacing, encryption, loss, operating
@@ -79,6 +79,6 @@ reference/environment findings visible when evaluating support claims.
 The distribution recipes under packaging/ target the immutable 0.2.6 source
 commit `daac593ffcb9bbddd25126a2bd97ddb607792fc2`. Package-manager and Linux
 package qualification passed on the recipe commit recorded in the
-[qualification report](../packaging/qualification-0.2.6.md). The separately published Homebrew tap still
+[qualification report](https://github.com/Robotweax/srt/blob/c991c399ed9a9479f7a1b421cc43b0f25ffc2b40/packaging/qualification-0.2.6.md). The separately published Homebrew tap still
 provides 0.2.5 until its recipe and bottle update is reviewed and qualified;
 changing this project's version does not publish a distribution package.
