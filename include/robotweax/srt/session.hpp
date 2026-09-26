@@ -187,9 +187,12 @@ public:
     {
         return send_buffer_.next_packet();
     }
+    // A transport that defers the pacing commit must call pacer.on_packet_sent
+    // only after successful submission, before selecting the next packet.
     [[nodiscard]] std::optional<OutboundPacket> next_paced_data_packet(
         PacketPacer& pacer, std::uint64_t now_microseconds,
-        std::size_t new_packet_wire_overhead = 0U) noexcept;
+        std::size_t new_packet_wire_overhead = 0U,
+        bool defer_pacing_commit = false) noexcept;
     [[nodiscard]] Error preserve_encrypted_payload(
         SequenceNumber sequence,
         EncryptionKey key,
@@ -332,6 +335,17 @@ public:
     }
     [[nodiscard]] ReliabilityActions poll_timers(
         std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] bool idle_for_receive_wait() const noexcept
+    {
+        return send_buffer_.size() == 0U && receive_buffer_.occupied() == 0U
+            && pending_peer_drops_.empty() && receive_loss_list_.empty()
+            && filter_loss_list_.empty();
+    }
+    [[nodiscard]] std::uint64_t next_control_deadline(
+        std::uint64_t now) const noexcept
+    {
+        return timer_scheduler_.next_deadline(now);
+    }
     [[nodiscard]] bool poll_sender_retransmission_timeout(
         std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] ReliabilityActions drop_too_late_sender(

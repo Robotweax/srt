@@ -208,7 +208,7 @@ StreamEnqueueResult ReliabilitySession::queue_stream(
 
 std::optional<OutboundPacket> ReliabilitySession::next_paced_data_packet(
     PacketPacer& pacer, std::uint64_t now_microseconds,
-    std::size_t new_packet_wire_overhead) noexcept
+    std::size_t new_packet_wire_overhead, bool defer_pacing_commit) noexcept
 {
     if (live_rate_controller_.has_value()) {
         pacer.set_rate(live_rate_controller_->pacing_rate_bytes_per_second());
@@ -232,9 +232,11 @@ std::optional<OutboundPacket> ReliabilitySession::next_paced_data_packet(
         }
         const std::size_t wire_overhead =
             retransmission ? 0U : new_packet_wire_overhead;
-        pacer.on_packet_sent(
-            packet_header_size + packet->payload.size() + wire_overhead,
-            now_microseconds);
+        if (!defer_pacing_commit) {
+            pacer.on_packet_sent(
+                packet_header_size + packet->payload.size() + wire_overhead,
+                now_microseconds);
+        }
     }
     return packet;
 }

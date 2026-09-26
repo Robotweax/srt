@@ -2144,6 +2144,15 @@ TEST(dynamic_socket_options_change_livecc_rate_without_recreating_session)
         Error::none);
     REQUIRE_EQ(session.apply_dynamic_options(options), Error::none);
     REQUIRE_EQ(session.live_pacing_rate_bytes_per_second(), 420'000U);
+    REQUIRE_EQ(options.set(SocketOption::maximum_bandwidth_bytes_per_second,
+                   1'250'000'000),
+        Error::none);
+    REQUIRE_EQ(session.apply_dynamic_options(options), Error::none);
+    REQUIRE_EQ(session.live_pacing_rate_bytes_per_second(), 1'250'000'000U);
+    REQUIRE_EQ(options.set(SocketOption::maximum_bandwidth_bytes_per_second, 0),
+        Error::none);
+    REQUIRE_EQ(session.apply_dynamic_options(options), Error::none);
+    REQUIRE_EQ(session.live_pacing_rate_bytes_per_second(), 440'000U);
 }
 
 TEST(

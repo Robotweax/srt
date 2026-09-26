@@ -4,6 +4,26 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
+## 0.2.6 — Performance Optimization (release candidate)
+
+Final qualification and publication pending. See the
+[release notes](docs/release-notes-0.2.6.md) for compatibility and evidence limits.
+
+- Avoid repeated send-buffer prefix scans and quadratic receive-loss retirement.
+- Retry transient UDP backpressure without premature pacing/send commits.
+- Bound channel work, rotate connection visits and preserve continuation deadlines.
+- Use shared idle readiness, coalesced receive-release notifications and targeted
+  epoll updates; avoid unnecessary receive continuations after UDP input drains.
+- Reuse payload storage without shrinking configured packet capacity.
+- Reuse connect-callback workers and join retired workers outside the runtime
+  generation lock to preserve reentrant TLS cleanup.
+- Correct channel-affinity allocation on redundant starts and remove a redundant
+  timer-cancellation signal without claiming a measured CPU benefit for it.
+- Correct positive Live MAXBW handling; strengthen File/group test interpretation
+  and benchmark deadline enforcement with opt-in progress diagnostics.
+- Keep the public C export inventory and ABI line 0.2; retain SRT API target 1.5.7.
+  Rebuild direct source-tree C++ consumers with matching headers and library.
+
 ## 0.2.5 — Ecosystem Support (release candidate)
 
 Publication pending. See [release notes](docs/release-notes-0.2.5.md) and the

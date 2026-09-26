@@ -68,6 +68,33 @@ TEST(live_rate_controller_estimates_input_with_fixed_memory)
     REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 20'000U);
 }
 
+TEST(live_rate_controller_absolute_bandwidth_ignores_relative_inputs)
+{
+    LiveRateController controller {{
+        .input_bandwidth_bytes_per_second = 1'000'000,
+        .minimum_input_bandwidth_bytes_per_second = 2'000'000,
+        .maximum_bandwidth_bytes_per_second = 1'250'000'000,
+        .overhead_percent = 25,
+    }};
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 1'250'000'000U);
+    controller.set_input_bandwidth(0);
+    controller.observe_input(1'000, 1);
+    controller.observe_input(1'000, 100'001);
+    controller.set_overhead_percent(50);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 1'250'000'000U);
+
+    controller.set_maximum_bandwidth(0);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 3'000'000U);
+    controller.set_minimum_input_bandwidth(0);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 30'000U);
+    controller.set_maximum_bandwidth(10'000);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 10'000U);
+    controller.set_maximum_bandwidth(1'250'000'000);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 1'250'000'000U);
+    controller.set_maximum_bandwidth(-1);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 125'000'000U);
+}
+
 TEST(drift_sampler_bounds_each_timebase_correction)
 {
     DriftSampler sampler{4, 5'000};

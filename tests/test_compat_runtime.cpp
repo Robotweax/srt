@@ -574,6 +574,82 @@ TEST(compat_dispatcher_scheduler_starts_and_stops_without_network_traffic)
     channel.reset();
 }
 
+namespace {
+struct ChannelOwnerObservation {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::thread::id application_thread = std::this_thread::get_id();
+    std::thread::id worker;
+    bool changed_worker = false;
+};
+
+std::uint64_t observe_channel_owner(void* context) noexcept
+{
+    auto& observation = *static_cast<ChannelOwnerObservation*>(context);
+    const auto thread = std::this_thread::get_id();
+    if (thread != observation.application_thread) {
+        std::lock_guard lock(observation.mutex);
+        if (observation.worker == std::thread::id {})
+            observation.worker = thread;
+        else if (observation.worker != thread)
+            observation.changed_worker = true;
+        observation.changed.notify_all();
+    }
+    return 0U;
+}
+} // namespace
+
+TEST(compat_dispatcher_repeated_start_preserves_default_shard_distribution)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    std::array<ChannelOwnerObservation, 8> observations;
+    std::vector<std::shared_ptr<DatagramChannel>> channels;
+    std::array<std::thread::id, 8> owners;
+    bool all_observed = true;
+    bool stable = true;
+    for (std::size_t index = 0; index < observations.size(); ++index) {
+        auto channel = std::make_shared<DatagramChannel>();
+        REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+        auto runtime = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {
+                .channel = channel,
+                .peer = IpEndpoint::loopback(9),
+                .peer_socket_id = 1U,
+                .initial_sequence = SequenceNumber {1},
+                .flow_window_packets = 32,
+                .origin = ConnectionRuntime::Clock::now(),
+                .now_function = observe_channel_owner,
+                .now_context = &observations[index],
+            });
+        REQUIRE(channel->register_connection(
+            static_cast<std::uint32_t>(index + 1U), runtime));
+        REQUIRE(channel->start());
+        // Caller setup and established-runtime installation both start the
+        // same channel. The second call must not consume another placement.
+        REQUIRE(channel->start());
+        channels.push_back(channel);
+        auto& observation = observations[index];
+        std::unique_lock lock(observation.mutex);
+        all_observed &=
+            observation.changed.wait_for(lock, std::chrono::seconds {2}, [&] {
+                return observation.worker != std::thread::id {};
+            });
+        owners[index] = observation.worker;
+    }
+    // Join the service workers before their observation contexts leave scope.
+    REQUIRE_EQ(srt_cleanup(), 0);
+    channels.clear();
+    for (auto& observation : observations) {
+        std::lock_guard lock(observation.mutex);
+        stable &= !observation.changed_worker;
+    }
+    REQUIRE(all_observed);
+    REQUIRE(stable);
+    REQUIRE(owners[0] != owners[1]);
+    for (std::size_t index = 2; index < owners.size(); ++index)
+        REQUIRE_EQ(owners[index], owners[index % 2U]);
+}
+
 TEST(compat_dispatcher_rearms_a_timed_channel_for_send_work_notification)
 {
     auto scheduler =
@@ -5614,4 +5690,1146 @@ TEST(compat_channel_reroutes_a_queued_duplicate_listener_conclusion)
     REQUIRE(!channel->replay_established_handshake(duplicate));
     REQUIRE(take_datagrams(output).empty());
     channel->unregister_connection(701);
+}
+
+namespace {
+
+struct BackpressureOutput {
+    bool blocked = true;
+    bool alternate = false;
+    Error failure = Error::would_block;
+    std::vector<std::vector<std::byte>> attempts;
+    CapturedDatagrams accepted;
+};
+
+UdpIoResult backpressure_datagram(
+    std::span<const std::byte> bytes, Ipv4Endpoint peer, void* context) noexcept
+{
+    auto& output = *static_cast<BackpressureOutput*>(context);
+    try {
+        output.attempts.emplace_back(bytes.begin(), bytes.end());
+        const bool blocked = output.blocked;
+        if (output.alternate) {
+            output.blocked = !output.blocked;
+        }
+        if (blocked) {
+            return {.error = output.failure};
+        }
+        return capture_datagram(bytes, peer, &output.accepted);
+    } catch (...) {
+        return {.error = Error::io_error};
+    }
+}
+
+struct BackpressureFixture {
+    std::shared_ptr<DatagramChannel> channel =
+        std::make_shared<DatagramChannel>();
+    BackpressureOutput output;
+    std::uint64_t now = 1'000;
+    Ipv4Endpoint peer {.address = {192, 0, 2, 91}, .port = 15'091};
+    std::unique_ptr<ConnectionRuntime> runtime;
+
+    explicit BackpressureFixture(bool too_late_drop = false)
+    {
+        channel->set_send_hook_for_testing(backpressure_datagram, &output);
+        SocketOptions options;
+        REQUIRE_EQ(
+            options.set(SocketOption::send_buffer_packets, 64), Error::none);
+        REQUIRE_EQ(
+            options.set(SocketOption::receive_buffer_packets, 64), Error::none);
+        REQUIRE_EQ(options.set(SocketOption::maximum_bandwidth_bytes_per_second,
+                       100'000),
+            Error::none);
+        runtime = std::make_unique<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {
+                .channel = channel,
+                .peer = peer,
+                .peer_socket_id = 910,
+                .initial_sequence = SequenceNumber {700},
+                .flow_window_packets = 64,
+                .options = options,
+                .negotiated_options = {.too_late_packet_drop = too_late_drop,
+                    .retransmit_flag = true},
+                .origin = ConnectionRuntime::Clock::now(),
+                .now_function = injected_now,
+                .now_context = &now,
+            });
+    }
+
+    void enqueue(int ttl = -1)
+    {
+        const std::array payload {std::byte {'x'}};
+        REQUIRE_EQ(
+            runtime->queue_message(payload, 0, true, false, -1, ttl).status,
+            MessageIoStatus::success);
+    }
+};
+
+} // namespace
+
+TEST(compat_runtime_backpressure_retries_identical_data_without_busy_polling)
+{
+    BackpressureFixture fixture;
+    auto& runtime = *fixture.runtime;
+    fixture.enqueue();
+    fixture.enqueue();
+    const auto first_poll = runtime.poll();
+    REQUIRE(!first_poll.immediate_work);
+    REQUIRE(first_poll.next_work_delay.has_value());
+    REQUIRE(!runtime.broken());
+    REQUIRE_EQ(fixture.output.attempts.size(), 1U);
+    REQUIRE_EQ(runtime.statistics(false, true).total.sent.packets, 0U);
+    for (fixture.now = 1'001; fixture.now < 2'000; ++fixture.now) {
+        (void)runtime.poll();
+    }
+    REQUIRE_EQ(fixture.output.attempts.size(), 1U);
+    (void)runtime.poll();
+    REQUIRE_EQ(fixture.output.attempts.size(), 2U);
+    fixture.output.blocked = false;
+    fixture.now = 3'000;
+    (void)runtime.poll();
+    REQUIRE_EQ(fixture.output.attempts.size(), 3U);
+    REQUIRE_EQ(fixture.output.attempts[0], fixture.output.attempts[1]);
+    REQUIRE_EQ(fixture.output.attempts[0], fixture.output.attempts[2]);
+    REQUIRE_EQ(runtime.statistics(false, true).total.sent.packets, 1U);
+    // Pacing starts at successful UDP submission, so a deferred packet cannot
+    // create a catch-up burst of newly selected data in the same poll.
+    (void)runtime.poll();
+    REQUIRE_EQ(fixture.output.attempts.size(), 3U);
+    fixture.now = 4'000;
+    (void)runtime.poll();
+    REQUIRE_EQ(fixture.output.attempts.size(), 4U);
+    REQUIRE_EQ(runtime.statistics(false, true).total.sent_unique.packets, 2U);
+    REQUIRE_EQ(
+        decode_packet(fixture.output.attempts.back()).packet.data.sequence,
+        SequenceNumber {701});
+}
+
+TEST(compat_runtime_backpressure_does_not_revive_expired_or_too_late_data)
+{
+    for (const bool too_late_drop : {false, true}) {
+        BackpressureFixture fixture {too_late_drop};
+        fixture.enqueue(too_late_drop ? -1 : 2);
+        (void)fixture.runtime->poll();
+        REQUIRE_EQ(fixture.output.attempts.size(), 1U);
+        fixture.output.blocked = false;
+        fixture.now = too_late_drop ? 1'021'001 : 3'001;
+        (void)fixture.runtime->poll();
+        REQUIRE(!fixture.runtime->broken());
+        const auto sent = take_datagrams(fixture.output.accepted);
+        REQUIRE(!sent.empty());
+        bool saw_drop = false;
+        for (const auto& datagram : sent) {
+            const auto packet = decode_packet(datagram);
+            REQUIRE(packet);
+            REQUIRE_EQ(packet.packet.kind, PacketKind::control);
+            saw_drop |= packet.packet.control.type == ControlType::drop_request;
+        }
+        REQUIRE(saw_drop);
+        const auto stats = fixture.runtime->statistics(false, true);
+        REQUIRE_EQ(stats.total.sent.packets, 0U);
+        REQUIRE_EQ(too_late_drop
+                ? stats.total.sender_tlpktdrop_dropped.packets
+                : stats.total.sender_message_ttl_dropped.packets,
+            1U);
+        fixture.enqueue();
+        fixture.now += 1'000;
+        (void)fixture.runtime->poll();
+        const auto fresh = take_datagrams(fixture.output.accepted);
+        REQUIRE(std::any_of(fresh.begin(), fresh.end(), [](const auto& bytes) {
+            const auto packet = decode_packet(bytes);
+            return packet && packet.packet.kind == PacketKind::data
+                && packet.packet.data.sequence == SequenceNumber {701};
+        }));
+    }
+}
+
+TEST(compat_runtime_backpressure_controls_preserve_fifo_and_drain)
+{
+    BackpressureFixture fixture;
+    REQUIRE(fixture.runtime->report_peer_error(41));
+    REQUIRE(fixture.runtime->report_peer_error(42));
+    REQUIRE_EQ(fixture.output.attempts.size(), 1U);
+    REQUIRE(
+        !fixture.runtime->wait_for_send_drain(std::chrono::milliseconds {0}));
+    fixture.now += 1'000;
+    fixture.output.blocked = false;
+    (void)fixture.runtime->poll();
+    const auto sent = take_datagrams(fixture.output.accepted);
+    REQUIRE_EQ(sent.size(), 2U);
+    REQUIRE_EQ(decode_packet(sent[0]).packet.control.type_specific, 41U);
+    REQUIRE_EQ(decode_packet(sent[1]).packet.control.type_specific, 42U);
+    REQUIRE(
+        fixture.runtime->wait_for_send_drain(std::chrono::milliseconds {0}));
+    REQUIRE(!fixture.runtime->broken());
+}
+
+TEST(compat_runtime_backpressure_close_cancels_and_permanent_errors_still_break)
+{
+    BackpressureFixture fixture;
+    fixture.enqueue();
+    (void)fixture.runtime->poll();
+    fixture.runtime->close();
+    fixture.now += 1'000;
+    fixture.output.blocked = false;
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(fixture.output.attempts.size(), 1U);
+    REQUIRE(take_datagrams(fixture.output.accepted).empty());
+
+    BackpressureFixture permanent;
+    permanent.output.failure = Error::io_error;
+    permanent.enqueue();
+    (void)permanent.runtime->poll();
+    REQUIRE(permanent.runtime->broken());
+}
+
+TEST(compat_runtime_backpressure_control_queue_has_a_bounded_failure)
+{
+    BackpressureFixture fixture;
+    for (int index = 0; index < 128; ++index) {
+        REQUIRE(fixture.runtime->report_peer_error(index));
+    }
+    REQUIRE(!fixture.runtime->broken());
+    REQUIRE(!fixture.runtime->report_peer_error(128));
+    REQUIRE(fixture.runtime->broken());
+    REQUIRE_EQ(fixture.output.attempts.size(), 1U);
+}
+
+TEST(compat_runtime_backpressure_ack_cancels_a_deferred_retransmission)
+{
+    BackpressureFixture fixture;
+    fixture.output.blocked = false;
+    fixture.enqueue();
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, true).total.sent_unique.packets, 1U);
+    std::array<std::byte, 8> loss_bytes {};
+    const std::array losses {
+        SequenceRange {SequenceNumber {700}, SequenceNumber {700}}};
+    const auto encoded_loss = encode_loss_ranges(losses, loss_bytes);
+    REQUIRE(encoded_loss);
+    fixture.runtime->process_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::negative_acknowledgement},
+            .payload =
+                std::span {loss_bytes}.first(encoded_loss.bytes_written)},
+        fixture.peer);
+    fixture.output.blocked = true;
+    fixture.now += 1'000;
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(fixture.output.attempts.size(), 2U);
+    REQUIRE(decode_packet(fixture.output.attempts.back())
+            .packet.data.retransmitted);
+    std::array<std::byte, 32> ack_bytes {};
+    const auto encoded_ack = encode_acknowledgement_payload(
+        {.kind = AcknowledgementKind::lite,
+            .next_sequence = SequenceNumber {701}},
+        ack_bytes);
+    REQUIRE(encoded_ack);
+    fixture.runtime->process_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::acknowledgement},
+            .payload = std::span {ack_bytes}.first(encoded_ack.bytes_written)},
+        fixture.peer);
+    fixture.output.blocked = false;
+    fixture.now += 1'000;
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(fixture.output.attempts.size(), 2U);
+    REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                   .total.sent_retransmitted.packets,
+        0U);
+    REQUIRE(
+        fixture.runtime->wait_for_send_drain(std::chrono::milliseconds {0}));
+}
+
+TEST(compat_runtime_backpressure_preserves_crypto_rotation_and_fec)
+{
+    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        const auto sender_channel = std::make_shared<DatagramChannel>();
+        const auto receiver_channel = std::make_shared<DatagramChannel>();
+        BackpressureOutput sender_output;
+        BackpressureOutput receiver_output;
+        sender_output.alternate = receiver_output.alternate = true;
+        sender_channel->set_send_hook_for_testing(
+            backpressure_datagram, &sender_output);
+        receiver_channel->set_send_hook_for_testing(
+            backpressure_datagram, &receiver_output);
+        const Ipv4Endpoint sender_peer {
+            .address = {192, 0, 2, 92}, .port = 15'092};
+        const Ipv4Endpoint receiver_peer {
+            .address = {192, 0, 2, 93}, .port = 15'093};
+        const CryptoConfiguration crypto_configuration {
+            .passphrase = "backpressure test fixture",
+            .mode = mode,
+            .enable_aes_gcm = mode == CryptoMode::aes_gcm,
+            .key_length = 32,
+            .refresh_rate_packets = 4,
+            .preannouncement_packets = 1,
+        };
+        auto sender_crypto =
+            std::make_shared<CryptoSession>(crypto_configuration);
+        auto receiver_crypto =
+            std::make_shared<CryptoSession>(crypto_configuration);
+        REQUIRE_EQ(sender_crypto->start_initiator(), Error::none);
+        REQUIRE_EQ(receiver_crypto->accept_key_material(
+                       sender_crypto->pending_key_material(), true),
+            Error::none);
+        REQUIRE_EQ(sender_crypto->acknowledge_key_material(
+                       receiver_crypto->key_material_response(), true),
+            Error::none);
+        confirm_directional_test_keys(*sender_crypto, *receiver_crypto);
+        SocketOptions options;
+        REQUIRE_EQ(
+            options.set(SocketOption::send_buffer_packets, 64), Error::none);
+        REQUIRE_EQ(
+            options.set(SocketOption::receive_buffer_packets, 64), Error::none);
+        REQUIRE_EQ(
+            options.set(SocketOption::maximum_payload_size, 16), Error::none);
+        REQUIRE_EQ(options.set_packet_filter("fec,cols:2,rows:1,arq:always"),
+            Error::none);
+        std::uint64_t now = 1'000;
+        const auto origin = ConnectionRuntime::Clock::now();
+        ConnectionRuntime sender {{.channel = sender_channel,
+            .peer = receiver_peer,
+            .peer_socket_id = 930,
+            .initial_sequence = SequenceNumber {700},
+            .flow_window_packets = 64,
+            .options = options,
+            .negotiated_options = {.periodic_nak = true,
+                .retransmit_flag = true},
+            .origin = origin,
+            .crypto = sender_crypto,
+            .now_function = injected_now,
+            .now_context = &now}};
+        ConnectionRuntime receiver {{.channel = receiver_channel,
+            .peer = sender_peer,
+            .peer_socket_id = 920,
+            .initial_sequence = SequenceNumber {700},
+            .flow_window_packets = 64,
+            .options = options,
+            .negotiated_options = {.periodic_nak = true,
+                .retransmit_flag = true},
+            .origin = origin,
+            .crypto = receiver_crypto,
+            .now_function = injected_now,
+            .now_context = &now}};
+        for (unsigned index = 0; index < 8; ++index) {
+            const std::array payload {static_cast<std::byte>(index)};
+            REQUIRE_EQ(
+                sender.queue_message(payload, 0, false, false, -1).status,
+                MessageIoStatus::success);
+        }
+        unsigned received = 0;
+        bool saw_even = false;
+        bool saw_odd = false;
+        bool saw_key_request = false;
+        bool saw_key_response = false;
+        for (unsigned step = 0; step < 100; ++step, now += 1'000) {
+            (void)sender.poll();
+            for (const auto& bytes : take_datagrams(sender_output.accepted)) {
+                const auto packet = decode_packet(bytes);
+                REQUIRE(packet);
+                if (packet.packet.kind == PacketKind::data
+                    && packet.packet.data.message_number != 0U) {
+                    saw_even |= packet.packet.data.encryption_key
+                        == EncryptionKey::even;
+                    saw_odd |=
+                        packet.packet.data.encryption_key == EncryptionKey::odd;
+                } else if (packet.packet.kind == PacketKind::control) {
+                    saw_key_request |=
+                        packet.packet.control.type == ControlType::user_defined
+                        && packet.packet.control.subtype
+                            == key_material_request_subtype;
+                }
+                receiver.process_packet(packet.packet, sender_peer);
+            }
+            (void)receiver.poll();
+            for (const auto& bytes : take_datagrams(receiver_output.accepted)) {
+                const auto packet = decode_packet(bytes);
+                REQUIRE(packet);
+                saw_key_response |= packet.packet.kind == PacketKind::control
+                    && packet.packet.control.type == ControlType::user_defined
+                    && packet.packet.control.subtype
+                        == key_material_response_subtype;
+                sender.process_packet(packet.packet, receiver_peer);
+            }
+            std::array<std::byte, 16> payload {};
+            while (true) {
+                const auto result =
+                    receiver.receive_message(payload, false, -1);
+                if (result.status == MessageIoStatus::would_block) {
+                    break;
+                }
+                REQUIRE_EQ(result.status, MessageIoStatus::success);
+                REQUIRE_EQ(result.bytes, 1U);
+                REQUIRE_EQ(payload[0], static_cast<std::byte>(received));
+                ++received;
+            }
+            REQUIRE(!sender.broken());
+            REQUIRE(!receiver.broken());
+        }
+        REQUIRE_EQ(received, 8U);
+        REQUIRE(saw_even && saw_odd && saw_key_request && saw_key_response);
+        REQUIRE_EQ(
+            sender.statistics(false, true).total.sent_unique.packets, 8U);
+        REQUIRE_EQ(
+            sender.statistics(false, true).total.sender_filter_extra, 4U);
+        REQUIRE_EQ(
+            receiver.statistics(false, true).total.receiver_filter_extra, 4U);
+        REQUIRE_EQ(receiver.statistics(false, true)
+                       .total.receiver_undecryptable.packets,
+            0U);
+        for (const auto* output : {&sender_output, &receiver_output}) {
+            REQUIRE(output->attempts.size() >= 2U);
+            for (std::size_t index = 1; index < output->attempts.size();
+                index += 2) {
+                REQUIRE_EQ(
+                    output->attempts[index - 1], output->attempts[index]);
+            }
+        }
+    }
+}
+
+TEST(compat_runtime_backpressure_counts_control_packets_only_after_submission)
+{
+    BackpressureFixture fixture;
+    const std::array payload {std::byte {'n'}};
+    fixture.runtime->process_packet(
+        {.kind = PacketKind::data,
+            .data = {.sequence = SequenceNumber {702},
+                .message_number = 3,
+                .boundary = MessageBoundary::solo},
+            .payload = payload},
+        fixture.peer);
+    REQUIRE_EQ(fixture.output.attempts.size(), 1U);
+    REQUIRE_EQ(
+        decode_packet(fixture.output.attempts.front()).packet.control.type,
+        ControlType::negative_acknowledgement);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, true).total.sent_loss_reports, 0U);
+    fixture.output.blocked = false;
+    fixture.now += 1'000;
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, true).total.sent_loss_reports, 1U);
+    REQUIRE_EQ(fixture.output.attempts[0], fixture.output.attempts[1]);
+    REQUIRE(!fixture.runtime->broken());
+}
+
+namespace {
+
+struct FairnessClock {
+    std::uint64_t* now = nullptr;
+    std::size_t reads = 0;
+};
+
+std::uint64_t fairness_now(void* context) noexcept
+{
+    auto& clock = *static_cast<FairnessClock*>(context);
+    ++clock.reads;
+    return *clock.now;
+}
+
+struct FairnessFixture {
+    std::shared_ptr<DatagramChannel> channel =
+        std::make_shared<DatagramChannel>();
+    std::uint64_t now = 1'000;
+    std::uint32_t blocked_id = 0;
+    std::vector<std::uint32_t> attempted_ids;
+    std::vector<std::unique_ptr<FairnessClock>> clocks;
+    std::vector<std::shared_ptr<ConnectionRuntime>> runtimes;
+
+    FairnessFixture()
+    {
+        channel->set_send_hook_for_testing(send, this);
+    }
+
+    static UdpIoResult send(
+        std::span<const std::byte> bytes, IpEndpoint, void* context) noexcept
+    {
+        auto& fixture = *static_cast<FairnessFixture*>(context);
+        const auto packet = decode_packet(bytes);
+        if (!packet) {
+            return {.error = Error::io_error};
+        }
+        const auto id = packet.packet.kind == PacketKind::data
+            ? packet.packet.data.destination_socket_id
+            : packet.packet.control.destination_socket_id;
+        fixture.attempted_ids.push_back(id);
+        // Advance protocol time without sleeps so every next DATA is due.
+        fixture.now += 10;
+        return id == fixture.blocked_id
+            ? UdpIoResult {.error = Error::would_block}
+            : UdpIoResult {.bytes_transferred = bytes.size()};
+    }
+
+    std::shared_ptr<ConnectionRuntime> add(
+        std::uint32_t id, std::size_t messages = 0, bool register_route = true)
+    {
+        auto clock = std::make_unique<FairnessClock>();
+        clock->now = &now;
+        SocketOptions options;
+        REQUIRE_EQ(options.set(SocketOption::send_buffer_packets,
+                       messages == 0 ? 4 : 128),
+            Error::none);
+        REQUIRE_EQ(
+            options.set(SocketOption::receive_buffer_packets, 4), Error::none);
+        REQUIRE_EQ(
+            options.set(SocketOption::maximum_payload_size, 16), Error::none);
+        REQUIRE_EQ(options.set(SocketOption::maximum_bandwidth_bytes_per_second,
+                       1'000'000'000),
+            Error::none);
+        auto runtime = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {
+                .channel = channel,
+                .peer = {.address = {192, 0, 2, 94}, .port = 15'094},
+                .peer_socket_id = id,
+                .initial_sequence = SequenceNumber {700},
+                .flow_window_packets = 128,
+                .options = options,
+                .origin = ConnectionRuntime::Clock::now(),
+                .now_function = fairness_now,
+                .now_context = clock.get(),
+            });
+        if (register_route) {
+            REQUIRE(channel->register_connection(id, runtime));
+        }
+        const std::array payload {std::byte {7}};
+        for (std::size_t index = 0; index < messages; ++index) {
+            REQUIRE_EQ(
+                runtime->queue_message(payload, 0, true, false, -1).status,
+                MessageIoStatus::success);
+        }
+        clock->reads = 0;
+        clocks.push_back(std::move(clock));
+        runtimes.push_back(runtime);
+        return runtime;
+    }
+
+    RuntimePollResult poll(std::chrono::microseconds elapsed = {})
+    {
+        return channel->poll_connections_for_testing(
+            ConnectionRuntime::Clock::time_point {} + elapsed);
+    }
+};
+
+} // namespace
+
+TEST(compat_channel_fairness_shares_send_budget_and_rotates_busy_routes)
+{
+    FairnessFixture fixture;
+    for (std::uint32_t id = 1; id <= 3; ++id) {
+        fixture.add(id, 70);
+    }
+    for (std::uint32_t id = 1; id <= 3; ++id) {
+        fixture.attempted_ids.clear();
+        REQUIRE(fixture.poll().immediate_work);
+        REQUIRE_EQ(fixture.attempted_ids.size(), 64U);
+        REQUIRE(std::all_of(fixture.attempted_ids.begin(),
+            fixture.attempted_ids.end(), [id](auto sent_id) {
+                return sent_id == id;
+            }));
+    }
+    fixture.attempted_ids.clear();
+    (void)fixture.poll();
+    REQUIRE_EQ(fixture.attempted_ids.size(), 18U);
+    for (std::uint32_t id = 1; id <= 3; ++id) {
+        REQUIRE_EQ(std::count(fixture.attempted_ids.begin(),
+                       fixture.attempted_ids.end(), id),
+            6);
+        REQUIRE_EQ(fixture.runtimes[id - 1]
+                       ->statistics(false, true)
+                       .total.sent_unique.packets,
+            70U);
+        REQUIRE(!fixture.runtimes[id - 1]->broken());
+    }
+}
+
+TEST(compat_channel_fairness_bounds_idle_sweeps_and_then_sleeps)
+{
+    FairnessFixture fixture;
+    for (std::uint32_t id = 1; id <= 130; ++id) {
+        fixture.add(id);
+    }
+    REQUIRE(fixture.poll().immediate_work);
+    for (std::size_t index = 0; index < 130; ++index) {
+        REQUIRE_EQ(fixture.clocks[index]->reads != 0U, index < 64U);
+    }
+    REQUIRE(fixture.poll().immediate_work);
+    for (std::size_t index = 0; index < 130; ++index) {
+        REQUIRE_EQ(fixture.clocks[index]->reads != 0U, index < 128U);
+    }
+    const auto reads_per_idle_poll = fixture.clocks.front()->reads;
+    REQUIRE(reads_per_idle_poll != 0U);
+    const auto finished = fixture.poll();
+    REQUIRE(!finished.immediate_work);
+    REQUIRE_EQ(finished.next_work_delay, std::chrono::milliseconds {2});
+    REQUIRE(fixture.attempted_ids.empty());
+    for (const auto& clock : fixture.clocks) {
+        REQUIRE_EQ(clock->reads, reads_per_idle_poll);
+    }
+}
+
+TEST(compat_channel_fairness_preserves_deadlines_across_continuations)
+{
+    FairnessFixture fixture;
+    fixture.blocked_id = 1;
+    fixture.add(1, 1);
+    for (std::uint32_t id = 2; id <= 65; ++id) {
+        fixture.add(id);
+    }
+    REQUIRE(fixture.poll().immediate_work);
+    REQUIRE_EQ(fixture.attempted_ids.size(), 1U);
+    // Only the last idle connection remains. The earlier 1 ms retry deadline
+    // must not restart when this continuation runs half a millisecond later.
+    fixture.now = 1'500;
+    REQUIRE(fixture.poll(std::chrono::microseconds {500}).immediate_work);
+    REQUIRE_EQ(fixture.attempted_ids.size(), 1U);
+    REQUIRE(!fixture.runtimes.front()->broken());
+}
+
+TEST(compat_channel_fairness_survives_cursor_erasure_rehash_and_empty_restart)
+{
+    FairnessFixture fixture;
+    for (std::uint32_t id = 1; id <= 65; ++id) {
+        fixture.add(id);
+    }
+    REQUIRE(fixture.poll().immediate_work);
+    fixture.channel->unregister_connection(65); // The next route to be polled.
+    for (std::uint32_t id = 66; id <= 265; ++id) {
+        fixture.add(
+            id); // Force unordered_map rehash while retaining the cursor.
+    }
+    REQUIRE(!fixture.channel->register_connection(1, fixture.runtimes[0]));
+    for (unsigned turn = 0; turn < 6; ++turn) {
+        (void)fixture.poll();
+    }
+    REQUIRE_EQ(fixture.clocks[64]->reads, 0U);
+    for (std::size_t index = 0; index < fixture.clocks.size(); ++index) {
+        if (index != 64U) {
+            REQUIRE(fixture.clocks[index]->reads != 0U);
+        }
+    }
+    for (std::uint32_t id = 1; id <= 265; ++id) {
+        fixture.channel->unregister_connection(id);
+    }
+    REQUIRE(!fixture.poll().immediate_work);
+    fixture.add(266, 1);
+    (void)fixture.poll();
+    REQUIRE_EQ(fixture.attempted_ids, std::vector<std::uint32_t> {266});
+}
+
+TEST(compat_channel_fairness_releases_route_lock_before_udp_submission)
+{
+    FairnessFixture fixture;
+    fixture.add(1, 1);
+    fixture.add(2, 1);
+    auto replacement = fixture.add(3, 1, false);
+    struct Mutation {
+        FairnessFixture* fixture;
+        std::shared_ptr<ConnectionRuntime> replacement;
+        bool changed = false;
+        bool registered = false;
+    } mutation {&fixture, replacement};
+    fixture.channel->set_send_hook_for_testing(
+        [](std::span<const std::byte> bytes, IpEndpoint peer,
+            void* context) noexcept {
+            auto& state = *static_cast<Mutation*>(context);
+            if (!state.changed) {
+                state.changed = true;
+                state.fixture->channel->unregister_connection(2);
+                state.registered = state.fixture->channel->register_connection(
+                    3, state.replacement);
+            }
+            return FairnessFixture::send(bytes, peer, state.fixture);
+        },
+        &mutation);
+    (void)fixture.poll();
+    (void)fixture.poll();
+    REQUIRE(mutation.registered);
+    REQUIRE_EQ(fixture.attempted_ids, (std::vector<std::uint32_t> {1, 3}));
+}
+
+TEST(compat_channel_fairness_blocked_route_does_not_starve_a_healthy_route)
+{
+    FairnessFixture fixture;
+    fixture.blocked_id = 1;
+    fixture.add(1, 70);
+    fixture.add(2, 70);
+    REQUIRE(fixture.poll().immediate_work);
+    REQUIRE_EQ(fixture.attempted_ids.size(), 64U);
+    REQUIRE_EQ(fixture.attempted_ids.front(), 1U);
+    REQUIRE_EQ(std::count(fixture.attempted_ids.begin(),
+                   fixture.attempted_ids.end(), 2U),
+        63);
+    fixture.attempted_ids.clear();
+    (void)fixture.poll();
+    REQUIRE_EQ(
+        fixture.runtimes[1]->statistics(false, true).total.sent_unique.packets,
+        70U);
+    REQUIRE_EQ(
+        fixture.runtimes[0]->statistics(false, true).total.sent.packets, 0U);
+    REQUIRE(!fixture.runtimes[0]->broken());
+}
+
+TEST(compat_runtime_fairness_budget_covers_queued_controls_without_backoff)
+{
+    BackpressureFixture fixture;
+    for (int index = 0; index < 3; ++index) {
+        REQUIRE(fixture.runtime->report_peer_error(index));
+    }
+    fixture.now += 1'000;
+    fixture.output.blocked = false;
+    for (int index = 0; index < 3; ++index) {
+        std::size_t budget = 1;
+        const auto result = fixture.runtime->poll(budget);
+        REQUIRE_EQ(budget, 0U);
+        const auto sent = take_datagrams(fixture.output.accepted);
+        REQUIRE_EQ(sent.size(), 1U);
+        REQUIRE_EQ(decode_packet(sent.front()).packet.control.type_specific,
+            static_cast<std::uint32_t>(index));
+        if (index != 2) {
+            REQUIRE(result.immediate_work);
+        }
+        // No clock advance: exhausting a scheduler budget is not EAGAIN.
+    }
+    REQUIRE(
+        fixture.runtime->wait_for_send_drain(std::chrono::milliseconds {0}));
+    REQUIRE(!fixture.runtime->broken());
+}
+
+namespace {
+template <class Predicate> void await_idle_readiness(Predicate predicate)
+{
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    while (!predicate() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+    REQUIRE(predicate());
+}
+
+struct IdleReadinessFixture {
+    std::shared_ptr<RuntimeScheduler> scheduler =
+        std::make_shared<RuntimeScheduler>(
+            RuntimeScheduler::Configuration {1, 8, 8});
+    CapturedDatagrams output;
+    std::shared_ptr<DatagramChannel> channel =
+        std::make_shared<DatagramChannel>();
+    std::shared_ptr<SocketReadiness> watcher;
+    IdleReadinessFixture()
+    {
+        REQUIRE(scheduler->start());
+        REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+        channel->set_send_hook_for_testing(capture_datagram, &output);
+        REQUIRE(channel->start(scheduler, 0));
+        watcher = scheduler->acquire_socket_readiness();
+        REQUIRE(watcher != nullptr);
+        await_idle_readiness([&] {
+            const auto state = scheduler->snapshot();
+            return watcher->snapshot().armed == 1U && state.executing == 0U
+                && state.queued == 0U && state.timers == 0U;
+        });
+    }
+    ~IdleReadinessFixture()
+    {
+        channel.reset();
+        scheduler->stop();
+    }
+};
+}
+
+TEST(
+    compat_idle_readiness_parks_empty_channel_and_dispatches_repeated_datagrams)
+{
+    IdleReadinessFixture fixture;
+    const auto before = fixture.scheduler->snapshot().completed;
+    std::this_thread::sleep_for(std::chrono::milliseconds {30});
+    REQUIRE_EQ(fixture.scheduler->snapshot().completed, before);
+    UdpSocket source;
+    REQUIRE_EQ(source.bind(IpEndpoint::loopback()), Error::none);
+    const auto peer = source.local_endpoint();
+    REQUIRE(peer);
+    const auto target = fixture.channel->socket.local_endpoint();
+    REQUIRE(target);
+    auto inbox = std::make_shared<DatagramInbox>(2);
+    REQUIRE(fixture.channel->register_setup_inbox(42, peer.endpoint, inbox));
+    MutablePacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.destination_socket_id = 42;
+    packet.data.boundary = MessageBoundary::solo;
+    const std::array payload {std::byte {7}};
+    packet.payload = payload;
+    std::array<std::byte, 64> bytes {};
+    const auto encoded = encode_packet(packet, bytes);
+    REQUIRE(encoded);
+    for (unsigned index = 0; index < 3; ++index) {
+        REQUIRE(source.send_to(
+            std::span {bytes}.first(encoded.bytes_written), target.endpoint));
+        DatagramEnvelope received;
+        REQUIRE_EQ(inbox->pop_for(received, std::chrono::seconds {2}),
+            InboxPopStatus::received);
+        REQUIRE_EQ(received.size, encoded.bytes_written);
+        await_idle_readiness([&] {
+            return fixture.watcher->snapshot().armed == 1U;
+        });
+    }
+    REQUIRE(fixture.watcher->snapshot().notifications >= 3U);
+    fixture.channel.reset();
+    await_idle_readiness([&] {
+        return fixture.watcher->snapshot().registered == 0U;
+    });
+}
+
+TEST(compat_idle_readiness_registration_and_new_send_wake_a_quiet_channel)
+{
+    IdleReadinessFixture fixture;
+    auto runtime =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
+            .channel = fixture.channel,
+            .peer = Ipv4Endpoint::loopback(10000),
+            .peer_socket_id = 43,
+            .initial_sequence = SequenceNumber {100},
+            .flow_window_packets = 256,
+            .origin = ConnectionRuntime::Clock::now(),
+        });
+    const auto before = fixture.scheduler->snapshot().completed;
+    REQUIRE(fixture.channel->register_connection(42, runtime));
+    await_idle_readiness([&] {
+        return fixture.scheduler->snapshot().completed > before
+            && fixture.scheduler->snapshot().timers == 1U;
+    });
+    const auto quiet = fixture.scheduler->snapshot().completed;
+    std::this_thread::sleep_for(std::chrono::milliseconds {30});
+    REQUIRE_EQ(fixture.scheduler->snapshot().completed, quiet);
+    const std::array payload {std::byte {9}};
+    REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    await_idle_readiness([&] {
+        return runtime->statistics(false, true).total.sent_unique.packets == 1U;
+    });
+    REQUIRE(fixture.scheduler->snapshot().timers_canceled >= 1U);
+    REQUIRE(!runtime->broken());
+}
+
+TEST(compat_idle_readiness_protocol_timer_expires_without_inbound_traffic)
+{
+    IdleReadinessFixture fixture;
+    auto runtime =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
+            .channel = fixture.channel,
+            .peer = Ipv4Endpoint::loopback(10000),
+            .peer_socket_id = 43,
+            .initial_sequence = SequenceNumber {100},
+            .origin = ConnectionRuntime::Clock::now(),
+            .peer_idle_timeout_milliseconds = 80,
+        });
+    REQUIRE(fixture.channel->register_connection(42, runtime));
+    await_idle_readiness([&] {
+        return fixture.scheduler->snapshot().timers == 1U;
+    });
+    REQUIRE(!runtime->broken());
+    await_idle_readiness([&] {
+        return runtime->broken();
+    });
+    REQUIRE_EQ(fixture.watcher->snapshot().notifications, 0U);
+}
+
+TEST(compat_idle_readiness_capacity_falls_back_to_timer_polling)
+{
+    IdleReadinessFixture fixture;
+    // Exhaust the remaining watcher slots with disarmed registrations.
+    std::vector<SocketReadiness::Token> slots;
+    for (unsigned index = 0; index < 7; ++index) {
+        const auto token =
+            fixture.watcher->watch(fixture.channel->socket.native_handle(),
+                {[](void*) noexcept { }, {}});
+        REQUIRE(token.valid());
+        slots.push_back(token);
+    }
+    auto fallback = std::make_shared<DatagramChannel>();
+    REQUIRE_EQ(fallback->socket.bind(IpEndpoint::loopback()), Error::none);
+    REQUIRE(fallback->start(fixture.scheduler, 0));
+    await_idle_readiness([&] {
+        return fixture.scheduler->snapshot().completed >= 4U;
+    });
+    REQUIRE(fallback->running());
+    REQUIRE_EQ(fixture.watcher->snapshot().registered, 8U);
+    UdpSocket source;
+    REQUIRE_EQ(source.bind(IpEndpoint::loopback()), Error::none);
+    auto inbox = std::make_shared<DatagramInbox>(1);
+    REQUIRE(fallback->register_setup_inbox(
+        42, source.local_endpoint().endpoint, inbox));
+    MutablePacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.destination_socket_id = 42;
+    std::array<std::byte, 64> bytes {};
+    const auto encoded = encode_packet(packet, bytes);
+    REQUIRE(encoded);
+    REQUIRE(source.send_to(std::span {bytes}.first(encoded.bytes_written),
+        fallback->socket.local_endpoint().endpoint));
+    DatagramEnvelope received;
+    REQUIRE_EQ(inbox->pop_for(received, std::chrono::seconds {2}),
+        InboxPopStatus::received);
+    fallback.reset();
+    for (auto token : slots) {
+        fixture.watcher->cancel(token);
+    }
+}
+
+TEST(compat_idle_readiness_runtime_deadlines_preserve_keepalive_and_timeout)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    std::uint64_t now = 0;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = Ipv4Endpoint::loopback(10000),
+        .peer_socket_id = 43,
+        .initial_sequence = SequenceNumber {100},
+        .origin = ConnectionRuntime::Clock::now(),
+        .peer_idle_timeout_milliseconds = 1500,
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+    auto result = runtime.poll();
+    REQUIRE(result.receive_wait_safe);
+    REQUIRE_EQ(result.next_work_delay, std::chrono::seconds {1});
+    now = 1'100'000;
+    result = runtime.poll();
+    REQUIRE(result.receive_wait_safe);
+    REQUIRE_EQ(result.next_work_delay, std::chrono::microseconds {400'001});
+    const auto packets = take_datagrams(output);
+    REQUIRE_EQ(packets.size(), 1U);
+    REQUIRE_EQ(decode_packet(packets.front()).packet.control.type,
+        ControlType::keepalive);
+    now = 1'500'000;
+    REQUIRE_EQ(runtime.poll().next_work_delay, std::chrono::microseconds {1});
+    REQUIRE(!runtime.broken());
+    ++now;
+    (void)runtime.poll();
+    REQUIRE(runtime.broken());
+}
+
+TEST(compat_idle_readiness_application_read_advertises_reopened_window)
+{
+    IdleReadinessFixture fixture;
+    UdpSocket source;
+    REQUIRE_EQ(source.bind(IpEndpoint::loopback()), Error::none);
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::receive_buffer_packets, 2), Error::none);
+    auto runtime =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
+            .channel = fixture.channel,
+            .peer = source.local_endpoint().endpoint,
+            .peer_socket_id = 43,
+            .initial_sequence = SequenceNumber {100},
+            .flow_window_packets = 256,
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+        });
+    REQUIRE(fixture.channel->register_connection(42, runtime));
+    MutablePacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.destination_socket_id = 42;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.data.in_order = true;
+    const std::array payload {std::byte {7}};
+    packet.payload = payload;
+    std::array<std::byte, 64> bytes {};
+    for (unsigned index = 0; index < 2; ++index) {
+        packet.data.sequence = SequenceNumber {100 + index};
+        packet.data.message_number = 1 + index;
+        const auto encoded = encode_packet(packet, bytes);
+        REQUIRE(encoded);
+        REQUIRE(source.send_to(std::span {bytes}.first(encoded.bytes_written),
+            fixture.channel->socket.local_endpoint().endpoint));
+    }
+    const auto advertised_window = [&](unsigned expected) {
+        std::lock_guard lock(fixture.output.mutex);
+        for (const auto& bytes : fixture.output.values) {
+            const auto decoded = decode_packet(bytes);
+            if (decoded && decoded.packet.kind == PacketKind::control
+                && decoded.packet.control.type
+                    == ControlType::acknowledgement) {
+                const auto ack = decode_acknowledgement(decoded.packet);
+                if (ack
+                    && ack.acknowledgement.available_receive_buffer_packets
+                        == expected) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    await_idle_readiness([&] {
+        return advertised_window(0);
+    });
+    (void)take_datagrams(fixture.output);
+    std::array<std::byte, 1> received {};
+    for (unsigned index = 0; index < 2; ++index) {
+        REQUIRE_EQ(runtime->receive_message(received, false, -1).status,
+            MessageIoStatus::success);
+        REQUIRE_EQ(received, payload);
+    }
+    await_idle_readiness([&] {
+        return advertised_window(2);
+    });
+    await_idle_readiness([&] {
+        return fixture.watcher->snapshot().armed == 1U;
+    });
+    REQUIRE(!runtime->broken());
+}
+
+TEST(compat_idle_readiness_application_read_reuses_scheduled_poll)
+{
+    for (const bool stream : {false, true}) {
+        auto scheduler = std::make_shared<RuntimeScheduler>(
+            RuntimeScheduler::Configuration {1, 8, 8});
+        REQUIRE(scheduler->start());
+        auto channel = std::make_shared<DatagramChannel>();
+        REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+        // Stretch the normal polling interval so the assertion does not race a
+        // two-millisecond timer. No wait for this timer is needed.
+        channel->set_idle_wait_for_testing(std::chrono::seconds {10});
+        REQUIRE(channel->start(scheduler, 0));
+        await_idle_readiness([&] {
+            return scheduler->snapshot().timers == 1U;
+        });
+        const auto before = scheduler->snapshot();
+        SocketOptions options;
+        if (stream) {
+            REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                           static_cast<std::int64_t>(TransmissionType::file)),
+                Error::none);
+        }
+        ConnectionRuntime runtime {{
+            .channel = channel,
+            .peer = Ipv4Endpoint::loopback(10000),
+            .peer_socket_id = 43,
+            .initial_sequence = SequenceNumber {100},
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+        }};
+        const std::array payload {std::byte {7}};
+        PacketView packet;
+        packet.kind = PacketKind::data;
+        packet.data.sequence = SequenceNumber {100};
+        packet.data.message_number = 1;
+        packet.data.boundary = MessageBoundary::solo;
+        packet.payload = payload;
+        runtime.process_packet(packet, Ipv4Endpoint::loopback(10000));
+        std::array<std::byte, 1> received {};
+        const auto read = stream ? runtime.receive_stream(received, false, -1)
+                                 : runtime.receive_message(received, false, -1);
+        REQUIRE_EQ(read.status, MessageIoStatus::success);
+        REQUIRE_EQ(received, payload);
+        REQUIRE_EQ(
+            scheduler->snapshot().timers_canceled, before.timers_canceled);
+        REQUIRE_EQ(
+            scheduler->snapshot().timers_scheduled, before.timers_scheduled);
+        // Actual outbound work must still interrupt that same timer immediately.
+        channel->notify_send_work();
+        REQUIRE_EQ(
+            scheduler->snapshot().timers_canceled, before.timers_canceled + 1U);
+        channel.reset();
+        scheduler->stop();
+    }
+}
+
+namespace {
+
+IpEndpoint bind_receive_slice(DatagramChannel& channel)
+{
+    // Keep the 64-datagram budget test independent of small OS defaults.
+    REQUIRE_EQ(
+        channel.socket.set_receive_buffer_size(1'024 * 1'024), Error::none);
+    REQUIRE_EQ(channel.socket.bind(IpEndpoint::loopback()), Error::none);
+    const auto endpoint = channel.socket.local_endpoint();
+    REQUIRE(endpoint);
+    return endpoint.endpoint;
+}
+
+void queue_receive_slice(UdpSocket& sender, IpEndpoint destination,
+    std::size_t packets, std::size_t bytes = 16)
+{
+    // A canonical DATA header for an unknown route, or an invalid/truncated
+    // datagram. All are received from a real nonblocking loopback socket.
+    const std::array<std::byte, 1'501> datagram {};
+    for (std::size_t index = 0; index < packets; ++index) {
+        REQUIRE(sender.send_to(std::span {datagram}.first(bytes), destination));
+    }
+}
+
+} // namespace
+
+TEST(compat_channel_receive_slice_drained_burst_preserves_the_poll_wait)
+{
+    for (const std::size_t packets : {0U, 1U, 63U}) {
+        DatagramChannel channel;
+        UdpSocket sender;
+        const auto endpoint = bind_receive_slice(channel);
+        queue_receive_slice(sender, endpoint, packets);
+        const auto result = channel.run_once_for_testing();
+        REQUIRE(!result.immediate_work);
+        REQUIRE(result.next_work_delay.has_value());
+        REQUIRE(*result.next_work_delay > std::chrono::microseconds::zero());
+        std::array<std::byte, 1'500> remainder {};
+        REQUIRE_EQ(
+            channel.socket.receive_from(remainder).error, Error::would_block);
+    }
+}
+
+TEST(compat_channel_receive_slice_full_budget_retains_immediate_continuation)
+{
+    for (const std::size_t packets : {64U, 65U}) {
+        DatagramChannel channel;
+        UdpSocket sender;
+        const auto endpoint = bind_receive_slice(channel);
+        queue_receive_slice(sender, endpoint, packets);
+        const auto first = channel.run_once_for_testing();
+        REQUIRE(first.immediate_work);
+        REQUIRE(!first.next_work_delay.has_value());
+        REQUIRE(!channel.run_once_for_testing().immediate_work);
+        std::array<std::byte, 1'500> remainder {};
+        REQUIRE_EQ(
+            channel.socket.receive_from(remainder).error, Error::would_block);
+    }
+}
+
+TEST(compat_channel_receive_slice_discarded_packets_follow_the_same_budget)
+{
+    for (const std::size_t bytes : {0U, 1U, 1'501U}) {
+        DatagramChannel channel;
+        UdpSocket sender;
+        const auto endpoint = bind_receive_slice(channel);
+        queue_receive_slice(sender, endpoint, 1, bytes);
+        REQUIRE(!channel.run_once_for_testing().immediate_work);
+        queue_receive_slice(sender, endpoint, 64, bytes);
+        REQUIRE(channel.run_once_for_testing().immediate_work);
+        REQUIRE(!channel.run_once_for_testing().immediate_work);
+    }
+}
+
+TEST(compat_channel_receive_slice_keeps_pending_send_and_round_continuations)
+{
+    FairnessFixture fixture;
+    const auto endpoint = bind_receive_slice(*fixture.channel);
+    fixture.add(1, 70);
+    UdpSocket sender;
+    queue_receive_slice(sender, endpoint, 1);
+    REQUIRE(fixture.channel->run_once_for_testing().immediate_work);
+    REQUIRE_EQ(fixture.attempted_ids.size(), 64U);
+    (void)fixture.channel->run_once_for_testing();
+    REQUIRE_EQ(fixture.attempted_ids.size(), 70U);
+
+    FairnessFixture idle;
+    (void)bind_receive_slice(*idle.channel);
+    for (std::uint32_t id = 1; id <= 65; ++id) {
+        idle.add(id);
+    }
+    REQUIRE(idle.channel->run_once_for_testing().immediate_work);
+    REQUIRE(!idle.channel->run_once_for_testing().immediate_work);
 }

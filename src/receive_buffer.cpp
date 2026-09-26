@@ -5,8 +5,19 @@
 
 namespace robotweax::srt {
 
-ReceiveBuffer::ReceiveBuffer(SequenceNumber initial_sequence, std::size_t capacity_packets)
-    : slots_(capacity_packets)
+ReceiveBuffer& ReceiveBuffer::operator=(const ReceiveBuffer& other)
+{
+    if (this != &other) {
+        ReceiveBuffer copy(other);
+        *this = std::move(copy);
+    }
+    return *this;
+}
+
+ReceiveBuffer::ReceiveBuffer(
+    SequenceNumber initial_sequence, std::size_t capacity_packets)
+    : payloads_(capacity_packets)
+    , slots_(capacity_packets)
     , first_stored_sequence_(initial_sequence)
     , next_ack_sequence_(initial_sequence)
 {
@@ -125,7 +136,7 @@ ReceiveInsertResult ReceiveBuffer::insert(const PacketView& packet) noexcept
     }
 
     slot.header = packet.data;
-    std::copy(packet.payload.begin(), packet.payload.end(), slot.payload.begin());
+    slot.payload_index = payloads_.acquire(packet.payload);
     slot.payload_size = static_cast<std::uint16_t>(packet.payload.size());
     slot.payload_offset = 0;
     slot.occupied = true;
@@ -230,10 +241,12 @@ ReceivedMessageResult ReceiveBuffer::pop_message(
     std::size_t written = 0;
     for (std::size_t index = 0; index < packet_count; ++index) {
         auto& slot = slots_[(head_ + index) % capacity()];
-        std::copy_n(slot.payload.begin(), slot.payload_size,
+        std::copy_n(payloads_.get(slot.payload_index).begin(),
+            slot.payload_size,
             destination.begin() + static_cast<std::ptrdiff_t>(written));
         written += slot.payload_size;
         buffered_payload_bytes_ -= slot.payload_size;
+        payloads_.release(slot.payload_index);
         slot.occupied = false;
         slot.dropped = false;
         slot.payload_size = 0;
@@ -280,12 +293,9 @@ ReceivedMessageResult ReceiveBuffer::pop_stream(
             - static_cast<std::size_t>(slot->payload_offset);
         const std::size_t copied = std::min(
             remaining, destination.size() - written);
-        std::copy_n(
-            slot->payload.begin()
+        std::copy_n(payloads_.get(slot->payload_index).begin()
                 + static_cast<std::ptrdiff_t>(slot->payload_offset),
-            copied,
-            destination.begin()
-                + static_cast<std::ptrdiff_t>(written));
+            copied, destination.begin() + static_cast<std::ptrdiff_t>(written));
         written += copied;
         buffered_payload_bytes_ -= copied;
         slot->payload_offset = static_cast<std::uint16_t>(
@@ -294,6 +304,7 @@ ReceivedMessageResult ReceiveBuffer::pop_stream(
         if (slot->payload_offset != slot->payload_size) {
             break;
         }
+        payloads_.release(slot->payload_index);
         slot->occupied = false;
         slot->dropped = false;
         slot->payload_size = 0;
@@ -401,6 +412,7 @@ Error ReceiveBuffer::discard_before(
             buffered_payload_bytes_ -=
                 static_cast<std::size_t>(slot.payload_size)
                 - static_cast<std::size_t>(slot.payload_offset);
+            payloads_.release(slot.payload_index);
             --occupied_;
         }
         slot = {};
@@ -575,6 +587,7 @@ Error ReceiveBuffer::drop_range_impl(SequenceRange range,
             buffered_payload_bytes_ -=
                 static_cast<std::size_t>(slot.payload_size)
                 - static_cast<std::size_t>(slot.payload_offset);
+            payloads_.release(slot.payload_index);
             slot.occupied = false;
             slot.payload_size = 0;
             slot.payload_offset = 0;

@@ -187,3 +187,137 @@ TEST(receive_loss_list_validates_batch_append_without_mutation)
     }};
     REQUIRE(!losses.add_all(overflow, 0));
 }
+
+TEST(receive_loss_list_prefix_matches_packet_set_across_all_small_gap_patterns)
+{
+    for (const auto origin :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 3}}) {
+        for (unsigned missing = 0; missing < 256; ++missing) {
+            for (int cutoff = -1; cutoff <= 8; ++cutoff) {
+                ReceiveLossList losses {8};
+                for (unsigned index = 0; index < 8;) {
+                    if ((missing & (1U << index)) == 0U) {
+                        ++index;
+                        continue;
+                    }
+                    const auto first = index;
+                    while (
+                        index + 1 < 8 && (missing & (1U << (index + 1))) != 0U)
+                        ++index;
+                    REQUIRE(losses.add(
+                        {origin.advanced(first), origin.advanced(index)}, 0));
+                    ++index;
+                }
+                const auto last = origin.advanced(cutoff < 0
+                        ? SequenceNumber::mask
+                        : static_cast<std::uint32_t>(cutoff));
+                const unsigned covered = cutoff < 0
+                    ? 0U
+                    : (1U << static_cast<unsigned>(cutoff + 1)) - 1U;
+                const unsigned expected = missing & ~covered;
+                for (unsigned repeat = 0; repeat < 2; ++repeat) {
+                    losses.remove_through(last);
+                    if (repeat != 0U)
+                        losses.mark_periodic_reports();
+                    std::array<SequenceRange, 8> reports {};
+                    const auto count = losses.take_pending_reports(reports);
+                    REQUIRE_EQ(count, losses.size());
+                    unsigned observed = 0;
+                    for (std::size_t index = 0; index < count; ++index) {
+                        const int first =
+                            reports[index].first.distance_from(origin);
+                        const int end =
+                            reports[index].last.distance_from(origin);
+                        REQUIRE(first >= 0 && first <= end && end < 8);
+                        for (int bit = first; bit <= end; ++bit) {
+                            REQUIRE(
+                                (observed & (1U << static_cast<unsigned>(bit)))
+                                == 0U);
+                            observed |= 1U << static_cast<unsigned>(bit);
+                        }
+                    }
+                    REQUIRE_EQ(observed, expected);
+                    REQUIRE(!losses.has_pending_report());
+                }
+            }
+        }
+    }
+}
+
+TEST(receive_loss_list_prefix_preserves_report_flags_ttl_and_split_capacity)
+{
+    ReceiveLossList losses {4};
+    REQUIRE(losses.add({SequenceNumber {10}, SequenceNumber {10}}, 0));
+    REQUIRE(losses.add({SequenceNumber {20}, SequenceNumber {24}}, 3));
+    losses.mark_periodic_reports();
+    REQUIRE(
+        losses.take_pending_report().has_value()); // Consume only the prefix.
+    REQUIRE(losses.add({SequenceNumber {30}, SequenceNumber {32}}, 0));
+    REQUIRE(losses.add({SequenceNumber {40}, SequenceNumber {44}}, 2));
+    losses.remove_through(SequenceNumber {21});
+    REQUIRE_EQ(losses.size(), 3U);
+    std::array<SequenceRange, 4> reports {};
+    REQUIRE_EQ(losses.take_pending_reports(reports), 2U);
+    REQUIRE_EQ(reports[0].first, SequenceNumber {22});
+    REQUIRE_EQ(reports[0].last, SequenceNumber {24});
+    REQUIRE_EQ(reports[1].first, SequenceNumber {30});
+    REQUIRE_EQ(reports[1].last, SequenceNumber {32});
+    REQUIRE(!losses.has_pending_report());
+    const auto split = losses.remove(SequenceNumber {23});
+    REQUIRE(split.removed);
+    REQUIRE_EQ(split.remaining_ttl, 3U);
+    REQUIRE_EQ(losses.size(), 4U);
+    REQUIRE(!losses.remove(SequenceNumber {31})
+            .removed); // Full: split is transactional.
+    REQUIRE_EQ(losses.size(), 4U);
+    losses.remove_through(SequenceNumber {24});
+    const auto recovered = losses.remove(SequenceNumber {31});
+    REQUIRE(recovered.removed);
+    REQUIRE_EQ(recovered.remaining_ttl, 0U);
+    REQUIRE_EQ(losses.size(), 3U);
+    losses.remove_through(SequenceNumber {32});
+    REQUIRE_EQ(losses.size(), 1U);
+    losses.age_fresh();
+    const auto fresh = losses.remove(SequenceNumber {40});
+    REQUIRE(fresh.removed);
+    REQUIRE_EQ(fresh.remaining_ttl, 1U);
+    losses.age_fresh();
+    REQUIRE(!losses.has_pending_report());
+    losses.age_fresh();
+    REQUIRE_EQ(losses.take_pending_reports(reports), 1U);
+    REQUIRE_EQ(reports[0].first, SequenceNumber {41});
+    REQUIRE_EQ(reports[0].last, SequenceNumber {44});
+    REQUIRE(!losses.has_pending_report());
+}
+
+TEST(
+    receive_loss_list_fragmented_prefix_removal_reuses_full_capacity_after_wrap)
+{
+    constexpr unsigned count = 256;
+    const SequenceNumber first {SequenceNumber::mask - 300};
+    ReceiveLossList losses {count};
+    for (unsigned index = 0; index < count; ++index) {
+        const auto sequence = first.advanced(index * 2);
+        REQUIRE(losses.add({sequence, sequence}, 0));
+    }
+    losses.remove_through(
+        first.advanced(255)); // Cut in a gap after 128 ranges.
+    REQUIRE_EQ(losses.size(), 128U);
+    losses.remove_through(first.advanced(510));
+    REQUIRE(losses.empty());
+    REQUIRE(!losses.has_pending_report());
+    losses.remove_through(first.advanced(510));
+    for (unsigned index = 0; index < count; ++index) {
+        const auto sequence = first.advanced(512 + index * 2);
+        REQUIRE(losses.add({sequence, sequence}, 2));
+    }
+    REQUIRE_EQ(losses.size(), count);
+    REQUIRE(!losses.has_pending_report());
+    const auto overflow = first.advanced(512 + count * 2);
+    REQUIRE(!losses.add({overflow, overflow}, 0));
+    losses.mark_periodic_reports();
+    std::array<SequenceRange, count> reports {};
+    REQUIRE_EQ(losses.take_pending_reports(reports), count);
+    REQUIRE_EQ(reports.front().first, first.advanced(512));
+    REQUIRE_EQ(reports.back().last, first.advanced(512 + (count - 1) * 2));
+}

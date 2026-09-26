@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(robotweax_srt VERSION 0.2.5 LANGUAGES C CXX)
+project(robotweax_srt VERSION 0.2.6 LANGUAGES C CXX)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
@@ -100,8 +100,10 @@ add_library(robotweax_srt
     src/compat/platform_networking.cpp
     src/compat/process_state.cpp
     src/compat/readiness.cpp
+    src/compat/socket_readiness.cpp
     src/compat/runtime_scheduler.cpp
     src/compat/runtime_scheduler_service.cpp
+    src/compat/connect_callback_executor.cpp
     src/compat/runtime_work_executor.cpp
     src/compat/runtime_work_executor_service.cpp
     src/compat/socket_io.cpp
@@ -317,7 +319,10 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_receive_buffer.cpp
         tests/test_reliability.cpp
         tests/test_rendezvous.cpp
+        tests/test_socket_readiness.cpp
         tests/test_runtime_scheduler.cpp
+        tests/test_connect_callback_executor.cpp
+        tests/test_connect_callback_lifecycle.cpp
         tests/test_runtime_work_executor.cpp
         tests/test_send_buffer.cpp
         tests/test_session.cpp
@@ -709,6 +714,13 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
 endif()
 
 if(ROBOTWEAX_SRT_BUILD_BENCHMARKS)
+    add_executable(robotweax_srt_send_buffer_benchmark
+        benchmarks/send_buffer_benchmark.cpp)
+    target_link_libraries(robotweax_srt_send_buffer_benchmark
+        PRIVATE RobotweaxSRT::srt)
+    target_compile_features(robotweax_srt_send_buffer_benchmark
+        PRIVATE cxx_std_20)
+
     add_executable(robotweax_srt_codec_benchmark benchmarks/codec_benchmark.cpp)
     target_link_libraries(robotweax_srt_codec_benchmark PRIVATE RobotweaxSRT::srt)
     target_compile_features(robotweax_srt_codec_benchmark PRIVATE cxx_std_20)

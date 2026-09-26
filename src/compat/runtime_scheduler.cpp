@@ -1,4 +1,5 @@
 #include "compat/runtime_scheduler.hpp"
+#include "compat/socket_readiness.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -281,8 +282,36 @@ bool RuntimeScheduler::cancel_timer(TimerToken token) noexcept
         canceled = shard.remove_timer(slot.heap_position);
         timers_canceled_.fetch_add(1U, std::memory_order_relaxed);
     }
-    shard.ready.notify_one();
+    // Removing a timer cannot make the next deadline earlier. A worker
+    // sleeping until the old deadline may wake early, but cannot miss work.
+    // New tasks/timers and stop still signal under their own protocols. In
+    // particular, cancel-then-submit must not wake the worker before the new
+    // task has even been queued. Keep canceled-context destruction outside
+    // the shard lock, as before.
     return true;
+}
+
+std::shared_ptr<SocketReadiness>
+RuntimeScheduler::acquire_socket_readiness() noexcept
+{
+    std::lock_guard lock(lifecycle_mutex_);
+    if (!accepting_.load(std::memory_order_acquire)) {
+        return {};
+    }
+    if (socket_readiness_ == nullptr) {
+        try {
+            auto watcher =
+                std::make_shared<SocketReadiness>(configuration_.shard_count
+                    * configuration_.queue_capacity_per_shard);
+            if (!watcher->start()) {
+                return {};
+            }
+            socket_readiness_ = std::move(watcher);
+        } catch (...) {
+            return {};
+        }
+    }
+    return socket_readiness_;
 }
 
 void RuntimeScheduler::stop() noexcept
@@ -290,6 +319,9 @@ void RuntimeScheduler::stop() noexcept
     std::lock_guard lifecycle_lock(lifecycle_mutex_);
     start_attempted_ = true;
     accepting_.store(false, std::memory_order_release);
+    if (socket_readiness_ != nullptr) {
+        socket_readiness_->stop();
+    }
     for (const auto& shard : shards_) {
         std::unique_lock lock(shard->mutex);
         shard->stop_requested = true;

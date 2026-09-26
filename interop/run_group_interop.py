@@ -13,14 +13,16 @@ import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from interop_common import free_udp_port, resolve_program_path, terminate
+from interop_common import (
+    free_udp_port, resolve_program_path, terminate, valid_buffer_diagnostics,
+)
 from srt_handshake_trace import (
     PEER_ERROR_ACK_HOLD_MILLISECONDS,
     CallerListenerFaultProxy,
     CallerListenerPeerErrorProxy,
 )
 from run_live_timing_interop import GroupPathOutageTraceProxy
-from reference_version import compatible_srt_version, parse_srt_version
+from reference_version import compatible_srt_version, parse_srt_version, format_srt_version
 
 
 PINNED_SRT_VERSION = compatible_srt_version()
@@ -417,26 +419,25 @@ def has_expected_pinned_caller_replacement_failure(
     listener_returncode: int | None,
     replacement_retransmissions: int,
 ) -> bool:
-    """Classify v1.5.5 failing to isolate a PEERERROR group member."""
+    """Classify the pinned reference failing to isolate a PEERERROR member."""
     sender_ready = parse_event(
         caller_output, "peer_error_sender_ready", "caller"
     )
     unavailable = parse_event(
         caller_output, "peer_error_replacement_unavailable", "caller"
     )
+    # Two Robotweax listener sockets may each log a bounded UDP buffer
+    # diagnostic before the application reports its expected timeout. These
+    # messages are unrelated to the pinned caller's failure to isolate a member.
+    listener_lines = [line.strip() for line in listener_error.splitlines()
+                      if line.strip()]
+    listener_timeout = bool(listener_lines) and (
+        listener_lines[-1] == EXPECTED_REVERSE_LISTENER_TIMEOUT
+    )
+    listener_diagnostics = listener_lines[:-1] if listener_timeout else listener_lines
     listener_state_valid = (
-        listener_returncode is None
-        and (
-            listener_error.strip() == ""
-            or has_expected_pinned_stderr(
-                listener_error, (EXPECTED_REVERSE_LISTENER_TIMEOUT,)
-            )
-        )
-    ) or (
-        listener_returncode == 6
-        and has_expected_pinned_stderr(
-            listener_error, (EXPECTED_REVERSE_LISTENER_TIMEOUT,)
-        )
+        (listener_returncode is None or (listener_returncode == 6 and listener_timeout))
+        and valid_buffer_diagnostics(listener_diagnostics, maximum_per_direction=2)
     )
     return (
         caller_returncode == 5
@@ -1514,6 +1515,11 @@ def run_peer_error_case(
                 if pinned_caller_failure_path:
                     assert caller is not None
                     assert replacement_relay is not None
+                    # The peer can emit its terminal failure before its socket
+                    # destructor finishes. A listener timeout is not evidence
+                    # that the caller has exited. Require its natural, bounded
+                    # exit before freezing the diagnostic snapshot.
+                    caller.wait(timeout=PEER_ERROR_PHASE_TIMEOUT_SECONDS)
                     replacement_caller_failure_observation = (
                         replacement_relay.forwarded_data_observation(
                             "sender_to_receiver"
@@ -1652,7 +1658,8 @@ def run_peer_error_case(
             )
             print(
                 "PASS relay forwards the complete replacement suffix toward "
-                "pinned Haivision v1.5.5, whose group receive latches closed "
+                f"pinned Haivision v{format_srt_version(PINNED_SRT_VERSION)}, "
+                "whose group receive latches closed "
                 "before "
                 "application delivery "
                 f"(transport_ack={str(transport_acknowledged).lower()}, "
@@ -1660,7 +1667,8 @@ def run_peer_error_case(
             )
         elif expect_pinned_caller_failure:
             print(
-                "PASS pinned Haivision v1.5.5 caller keeps the PEERERROR "
+                f"PASS pinned Haivision v{format_srt_version(PINNED_SRT_VERSION)} "
+                "caller keeps the PEERERROR "
                 "member connected and cannot initiate replacement "
                 "(version-scoped defect diagnostic)"
             )

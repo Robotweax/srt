@@ -2,7 +2,10 @@
 
 #include "robotweax/srt/receive_buffer.hpp"
 
+#include <algorithm>
 #include <array>
+#include <limits>
+#include <utility>
 #include <cstddef>
 
 using namespace robotweax::srt;
@@ -523,4 +526,101 @@ TEST(receive_buffer_statistics_report_zero_for_an_empty_large_window)
     REQUIRE_EQ(buffer.occupied(), 0U);
     REQUIRE_EQ(buffer.buffered_payload_bytes(), 0U);
     REQUIRE_EQ(buffer.buffered_span_milliseconds(), 0U);
+}
+
+TEST(receive_buffer_payload_full_capacity_rotation_and_partial_copy)
+{
+    ReceiveBuffer buffer {SequenceNumber {SequenceNumber::mask - 3U}, 8};
+    std::array<std::byte, maximum_data_payload_size> payload {};
+    std::array<std::byte, maximum_data_payload_size> output {};
+    for (unsigned round = 0; round < 8; ++round) {
+        const auto first = buffer.first_stored_sequence();
+        for (unsigned reverse = 8; reverse > 0; --reverse) {
+            const auto index = reverse - 1;
+            payload.fill(static_cast<std::byte>(round * 8 + index));
+            REQUIRE(buffer.insert(data_packet(
+                first.advanced(index), index, MessageBoundary::solo, payload)));
+        }
+        REQUIRE_EQ(buffer.available(), 0U);
+        for (unsigned index = 0; index < 8; ++index) {
+            REQUIRE_EQ(buffer.pop_message(output).bytes_written, output.size());
+            REQUIRE(std::all_of(
+                output.begin(), output.end(), [round, index](std::byte b) {
+                    return b == static_cast<std::byte>(round * 8 + index);
+                }));
+        }
+    }
+    const auto first = buffer.first_stored_sequence();
+    payload.fill(std::byte {0x5a});
+    REQUIRE(
+        buffer.insert(data_packet(first, 1, MessageBoundary::solo, payload)));
+    REQUIRE_EQ(
+        buffer.pop_stream(std::span {output}.first(17)).bytes_written, 17U);
+    ReceiveBuffer copy = buffer;
+    ReceiveBuffer assigned {SequenceNumber {}, 1};
+    assigned = buffer;
+    ReceiveBuffer moved = std::move(copy);
+    REQUIRE_EQ(buffer.discard_before(first.advanced(8)), Error::none);
+    payload.fill(std::byte {0xee});
+    REQUIRE(buffer.insert(data_packet(
+        buffer.first_stored_sequence(), 2, MessageBoundary::solo, payload)));
+    for (auto* independent : {&assigned, &moved}) {
+        output.fill(std::byte {});
+        const auto result = independent->pop_stream(output);
+        REQUIRE_EQ(result.bytes_written, payload.size() - 17);
+        REQUIRE(std::all_of(output.begin(),
+            output.begin() + result.bytes_written, [](std::byte b) {
+                return b == std::byte {0x5a};
+            }));
+        REQUIRE_EQ(output[result.bytes_written], std::byte {});
+    }
+}
+
+TEST(receive_buffer_payload_releases_all_discard_and_drop_paths)
+{
+    ReceiveBuffer buffer {SequenceNumber {SequenceNumber::mask - 2U}, 4};
+    const std::array<std::byte, 3> payload {
+        std::byte {1}, std::byte {2}, std::byte {3}};
+    std::array<std::byte, 4> output {};
+    for (unsigned round = 0; round < 32; ++round) {
+        auto first = buffer.first_stored_sequence();
+        REQUIRE(buffer.insert(
+            data_packet(first, 1, MessageBoundary::solo, payload)));
+        REQUIRE(buffer.insert(
+            data_packet(first.next(), 2, MessageBoundary::first, payload)));
+        REQUIRE(buffer.insert(
+            data_packet(first.advanced(3), 2, MessageBoundary::last, payload)));
+        REQUIRE_EQ(buffer.drop_peer_requested_range({first, first.advanced(3)}),
+            Error::none);
+        REQUIRE_EQ(buffer.pop_message(output).bytes_written, payload.size());
+        REQUIRE_EQ(buffer.occupied(), 0U);
+        first = buffer.first_stored_sequence();
+        for (unsigned index = 0; index < 4; ++index) {
+            REQUIRE(buffer.insert(data_packet(
+                first.advanced(index), index, MessageBoundary::solo, payload)));
+        }
+        REQUIRE_EQ(buffer.discard_before(first.advanced(round % 2 ? 9 : 4)),
+            Error::none);
+        REQUIRE_EQ(buffer.occupied(), 0U);
+        first = buffer.first_stored_sequence();
+        REQUIRE(
+            buffer.insert(data_packet(first, 1, MessageBoundary::solo, {})));
+        REQUIRE_EQ(buffer.pop_message(output).bytes_written, 0U);
+        REQUIRE_EQ(buffer.occupied(), 0U);
+    }
+}
+
+TEST(receive_buffer_invalid_dimensions_fail_before_reserving_payload)
+{
+    for (const auto capacity :
+        {std::size_t {0}, std::size_t {SequenceNumber::half_range},
+            std::numeric_limits<std::size_t>::max()}) {
+        bool rejected = false;
+        try {
+            ReceiveBuffer buffer {SequenceNumber {}, capacity};
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        REQUIRE(rejected);
+    }
 }

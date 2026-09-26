@@ -12,6 +12,8 @@
 
 namespace robotweax::srt::compat {
 
+class SocketReadiness;
+
 class RuntimeScheduler {
 public:
     using TaskFunction = void (*)(void*) noexcept;
@@ -80,6 +82,8 @@ public:
         std::chrono::steady_clock::time_point deadline, Task task) noexcept;
     [[nodiscard]] bool cancel_timer(TimerToken token) noexcept;
     void stop() noexcept;
+    [[nodiscard]] std::shared_ptr<SocketReadiness>
+    acquire_socket_readiness() noexcept;
 
     [[nodiscard]] std::size_t shard_for(std::uint64_t affinity) const noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
@@ -125,6 +129,7 @@ private:
     Configuration configuration_;
     std::vector<std::unique_ptr<Shard>> shards_;
     std::mutex lifecycle_mutex_;
+    std::shared_ptr<SocketReadiness> socket_readiness_;
     std::atomic_bool accepting_ = false;
     bool start_attempted_ = false;
     std::atomic<std::uint64_t> accepted_ = 0;

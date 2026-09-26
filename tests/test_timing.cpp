@@ -210,3 +210,32 @@ TEST(tsbpd_clock_sustained_source_rate_is_preserved_while_phase_converges)
         absolute_span_error * 1'000'000U / source_span;
     REQUIRE(rate_error_parts_per_million <= 1'000U);
 }
+
+TEST(control_timer_next_deadline_tracks_ack_lite_nak_and_keepalive)
+{
+    ControlTimerScheduler timer {0};
+    REQUIRE_EQ(timer.next_deadline(0), 1'000'000U);
+    timer.on_data_received(100);
+    REQUIRE_EQ(timer.next_deadline(100), 10'000U);
+    REQUIRE_EQ(
+        timer.poll(10'000).values[0], TimerActionKind::full_acknowledgement);
+    REQUIRE_EQ(timer.next_deadline(10'000), 1'000'000U);
+    for (unsigned index = 0; index < 64; ++index) {
+        timer.on_data_received(11'000);
+    }
+    REQUIRE_EQ(timer.next_deadline(11'000), 11'000U);
+    REQUIRE_EQ(
+        timer.poll(11'000).values[0], TimerActionKind::lite_acknowledgement);
+    REQUIRE_EQ(timer.next_deadline(11'000), 20'000U);
+    (void)timer.poll(20'000);
+    timer.set_loss_state(true, 30'000, 100'000, true);
+    REQUIRE_EQ(timer.next_deadline(30'000), 130'000U);
+    REQUIRE_EQ(
+        timer.poll(130'000).values[0], TimerActionKind::periodic_loss_report);
+    REQUIRE_EQ(timer.next_deadline(130'000), 230'000U);
+    timer.set_loss_state(false, 131'000, 20'000);
+    timer.on_packet_sent(131'000);
+    REQUIRE_EQ(timer.next_deadline(131'000), 1'131'000U);
+    timer.on_receive_buffer_released(132'000);
+    REQUIRE(timer.next_deadline(132'000) <= 132'000U);
+}

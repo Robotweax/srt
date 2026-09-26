@@ -35,3 +35,26 @@ common ISN for all members.
 The forced value enters only the compatibility handshake configuration. It is
 not a mutable global, a socket option, or a test hook in the native protocol
 core.
+
+## Completion callback workers
+
+Outgoing asynchronous caller and rendezvous completion callbacks can reuse a
+process-wide idle worker. At most four idle workers are retained. If all workers
+are occupied, another callback gets a new worker; callbacks are not queued behind
+occupied workers. This preserves progress when a callback closes another socket
+and waits for that socket's completion callback. Slow application callbacks can
+therefore still increase the number of active threads; they must return promptly.
+
+Do not rely on a distinct thread identity for each invocation. The SRT
+thread-local last-error record is cleared before a reused worker invokes a
+callback. An external close still waits for its socket's callback to return;
+self-close and final cleanup from a callback remain supported. Final cleanup
+retires the worker cache, and a later startup obtains a fresh generation.
+The old runtime services are retired before cached workers are joined outside
+the lifecycle lock. Application thread-local destructors can therefore enter a
+new startup/cleanup scope without waiting on the thread that is joining them.
+
+Worker reuse does not change the existing resource-exhaustion fallback: if both
+cache submission and the ordinary callback-thread creation fail, the completion
+callback can still run inline. Applications must not depend on an exact thread
+identity or use indefinitely blocking callbacks.

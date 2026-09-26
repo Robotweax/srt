@@ -272,6 +272,93 @@ TEST(compat_runtime_scheduler_stop_cancels_future_timers_without_waiting)
     REQUIRE_EQ(snapshot.timers_canceled, 1U);
 }
 
+TEST(compat_runtime_scheduler_canceling_last_timer_preserves_new_work_and_stop)
+{
+    for (const bool use_timer : {false, true}) {
+        RuntimeScheduler scheduler({
+            .shard_count = 1,
+            .queue_capacity_per_shard = 1,
+            .timer_capacity_per_shard = 1,
+        });
+        REQUIRE(scheduler.start());
+        auto canceled = std::make_shared<Completion>();
+        std::weak_ptr<Completion> lifetime = canceled;
+        const auto old = scheduler.schedule_at(0,
+            std::chrono::steady_clock::now() + std::chrono::seconds {30},
+            {.function = record_completion, .context = canceled});
+        REQUIRE_EQ(old.status, RuntimeScheduler::SubmitStatus::accepted);
+        canceled.reset();
+        REQUIRE(scheduler.cancel_timer(old.token));
+        REQUIRE(lifetime.expired());
+
+        const auto completion = std::make_shared<Completion>();
+        if (use_timer) {
+            const auto deadline = std::chrono::steady_clock::now()
+                + std::chrono::milliseconds {20};
+            const auto next = scheduler.schedule_at(0, deadline,
+                {.function = record_completion, .context = completion});
+            REQUIRE_EQ(next.status, RuntimeScheduler::SubmitStatus::accepted);
+            REQUIRE_EQ(next.token.slot, old.token.slot);
+            REQUIRE(next.token.generation != old.token.generation);
+            REQUIRE(!scheduler.cancel_timer(old.token));
+            wait_until_complete(completion);
+            REQUIRE(std::chrono::steady_clock::now() >= deadline);
+        } else {
+            REQUIRE_EQ(
+                scheduler.submit(
+                    0, {.function = record_completion, .context = completion}),
+                RuntimeScheduler::SubmitStatus::accepted);
+            wait_until_complete(completion);
+        }
+
+        const auto last = scheduler.schedule_at(0,
+            std::chrono::steady_clock::now() + std::chrono::seconds {30},
+            {.function = record_completion, .context = completion});
+        REQUIRE_EQ(last.status, RuntimeScheduler::SubmitStatus::accepted);
+        REQUIRE(scheduler.cancel_timer(last.token));
+        const auto before_stop = std::chrono::steady_clock::now();
+        scheduler.stop();
+        REQUIRE(std::chrono::steady_clock::now() - before_stop
+            < std::chrono::seconds {1});
+        REQUIRE_EQ(scheduler.snapshot().completed, 1U);
+    }
+}
+
+TEST(compat_runtime_scheduler_canceling_head_preserves_successor_deadline)
+{
+    RuntimeScheduler scheduler({
+        .shard_count = 1,
+        .queue_capacity_per_shard = 1,
+        .timer_capacity_per_shard = 2,
+    });
+    REQUIRE(scheduler.start());
+    const auto gate = std::make_shared<Gate>();
+    REQUIRE_EQ(scheduler.submit(0, {.function = wait_at_gate, .context = gate}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    wait_until_started(gate);
+    const GateRelease release_on_exit {gate};
+    const auto now = std::chrono::steady_clock::now();
+    const auto canceled = std::make_shared<Completion>();
+    const auto first =
+        scheduler.schedule_at(0, now + std::chrono::milliseconds {40},
+            {.function = record_completion, .context = canceled});
+    REQUIRE_EQ(first.status, RuntimeScheduler::SubmitStatus::accepted);
+    const auto due = std::make_shared<Completion>();
+    const auto deadline = now + std::chrono::milliseconds {80};
+    REQUIRE_EQ(scheduler
+                   .schedule_at(0, deadline,
+                       {.function = record_completion, .context = due})
+                   .status,
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE(scheduler.cancel_timer(first.token));
+    release_gate(gate);
+    wait_until_complete(due);
+    REQUIRE(std::chrono::steady_clock::now() >= deadline);
+    scheduler.stop();
+    REQUIRE(!canceled->complete);
+    REQUIRE_EQ(scheduler.snapshot().completed, 2U);
+}
+
 TEST(compat_runtime_scheduler_preserves_equal_deadline_timer_order)
 {
     RuntimeScheduler scheduler({

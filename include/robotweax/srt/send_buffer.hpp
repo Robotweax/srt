@@ -3,9 +3,9 @@
 #include "robotweax/srt/crypto.hpp"
 #include "robotweax/srt/error.hpp"
 #include "robotweax/srt/packet.hpp"
+#include "robotweax/srt/payload_pool.hpp"
 #include "robotweax/srt/reliability.hpp"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -59,6 +59,10 @@ class SendBuffer {
 public:
     SendBuffer(SequenceNumber initial_sequence, std::size_t capacity_packets,
         std::size_t maximum_payload_size = maximum_data_payload_size);
+    SendBuffer(const SendBuffer&) = default;
+    SendBuffer(SendBuffer&&) noexcept = default;
+    SendBuffer& operator=(SendBuffer&&) noexcept = default;
+    SendBuffer& operator=(const SendBuffer& other);
 
     [[nodiscard]] std::size_t capacity() const noexcept { return slots_.size(); }
     [[nodiscard]] std::size_t size() const noexcept { return occupied_count_; }
@@ -97,6 +101,8 @@ public:
         std::uint64_t enqueue_microseconds = 0) noexcept;
 
     [[nodiscard]] std::optional<OutboundPacket> next_packet() noexcept;
+    // A prepared UDP retry must not revive an ACKed or expired packet.
+    [[nodiscard]] bool retains_packet(SequenceNumber sequence) const noexcept;
     // Converts a sent slot into its immutable encrypted wire form in place.
     // Repeating the call is valid only for the same selector and ciphertext.
     [[nodiscard]] Error preserve_encrypted_payload(
@@ -141,7 +147,7 @@ public:
 private:
     struct Slot {
         DataHeader header{};
-        std::array<std::byte, maximum_data_payload_size> payload{};
+        std::uint32_t payload_index = 0;
         std::uint16_t payload_size = 0;
         std::uint16_t plaintext_size = 0;
         CryptoMode protection_mode = CryptoMode::automatic;
@@ -165,6 +171,7 @@ private:
     [[nodiscard]] bool queue_drop_request(SequenceNumber sequence) noexcept;
     [[nodiscard]] bool queue_retransmission(SequenceNumber sequence) noexcept;
 
+    detail::PayloadPool payloads_;
     std::vector<Slot> slots_;
     std::vector<SequenceNumber> retransmission_queue_;
     std::vector<SequenceNumber> drop_request_queue_;
@@ -175,6 +182,10 @@ private:
     // The wire-sequence span includes retained drop tombstones, whereas
     // occupied_count_ counts packets that can still be sent or retransmitted.
     std::size_t sequence_span_ = 0;
+    // Offset from head_ to the first slot not yet examined for an original
+    // send. Earlier occupied slots have been sent; drops remain tombstones.
+    // Appending preserves this cursor, while removing a prefix rebases it.
+    std::size_t next_unsent_offset_ = 0;
     std::size_t occupied_count_ = 0;
     std::size_t buffered_plaintext_bytes_ = 0;
     std::size_t expiring_packet_count_ = 0;

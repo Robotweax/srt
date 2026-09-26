@@ -1,10 +1,11 @@
 // Single-process, many-socket benchmark peer using only the public SRT API.
 //
 // The same source is linked against Robotweax SRT and pinned Haivision SRT.
-// Application work remains on one thread and uses SRT epoll, so observed
-// runtime threads belong to the selected library rather than this driver.
+// Application work remains on one thread using SRT epoll. The opt-in
+// diagnostics mode adds one observer thread per process.
 
 #include "srt.h"
+#include "scalability_diagnostics.hpp"
 
 #include <algorithm>
 #include <array>
@@ -624,7 +625,10 @@ bool add_connections_to_poll(
 bool run_sender(const Configuration& configuration,
     const std::vector<SRTSOCKET>& sockets, Clock::duration establishment)
 {
+    PeerDiagnostics diagnostic("caller", sockets);
+    diagnostic.phase(PeerDiagnostics::epoll_create);
     PollHandle poll;
+    diagnostic.phase(PeerDiagnostics::epoll_add);
     if (!add_connections_to_poll(
             poll, sockets, SRT_EPOLL_OUT | SRT_EPOLL_ERR)) {
         return false;
@@ -662,10 +666,21 @@ bool run_sender(const Configuration& configuration,
         + std::chrono::milliseconds {configuration.timeout_milliseconds};
 
     while (sent_messages < expected_messages) {
+        diagnostic.sample_stats();
+        if (Clock::now() >= deadline) {
+            std::cerr << "caller transfer timed out: progress=" << sent_messages
+                      << "/" << expected_messages << "\n";
+            for (std::size_t i = 0; i < progress.size(); ++i) {
+                std::cerr << "socket_index=" << i << " messages=" << progress[i]
+                          << "\n";
+            }
+            return false;
+        }
         if (std::none_of(runnable.begin(), runnable.end(), [](bool value) {
                 return value;
             })) {
             int event_count = 0;
+            diagnostic.phase(PeerDiagnostics::epoll_wait);
             if (!wait_for_epoll(poll, events, event_count, deadline)) {
                 std::cerr << "sender progress=" << sent_messages << '/'
                           << expected_messages << '\n';
@@ -694,6 +709,7 @@ bool run_sender(const Configuration& configuration,
             }
             std::size_t pending_blocks = 0;
             std::size_t pending_bytes = 0;
+            diagnostic.phase(PeerDiagnostics::pending_query, index);
             if (srt_getsndbuffer(
                     sockets[index], &pending_blocks, &pending_bytes)
                 == SRT_ERROR) {
@@ -701,6 +717,7 @@ bool run_sender(const Configuration& configuration,
                           << ' ' << srt_getlasterror_str() << '\n';
                 return false;
             }
+            diagnostic.pending(index, pending_blocks, pending_bytes);
             if (pending_blocks >= configuration.pending_packets) {
                 application_window_blocked = true;
                 continue;
@@ -744,10 +761,12 @@ bool run_sender(const Configuration& configuration,
                         std::cerr << "offered-rate duration exceeds timeout\n";
                         return false;
                     }
+                    diagnostic.phase(PeerDiagnostics::pacing, index);
                     std::this_thread::sleep_until(due);
                 }
                 prepare_payload(payloads[index],
                     static_cast<std::uint32_t>(index), progress[index]);
+                diagnostic.phase(PeerDiagnostics::send_call, index);
                 const int sent = srt_sendmsg(sockets[index],
                     payloads[index].data(), configuration.message_size, -1, 1);
                 if (sent == SRT_ERROR) {
@@ -786,6 +805,8 @@ bool run_sender(const Configuration& configuration,
                         std::max(maximum_bucket_packets, ++bucket_packets);
                 }
                 ++progress[index];
+                diagnostic.progress(
+                    index, progress[index], static_cast<long long>(index));
                 ++sent_messages;
                 ++burst;
                 ++round_messages;
@@ -798,6 +819,7 @@ bool run_sender(const Configuration& configuration,
                         Clock::now() - started)
                         .count();
                 completed[index] = true;
+                diagnostic.phase(PeerDiagnostics::epoll_remove, index);
                 if (srt_epoll_remove_usock(poll.value(), sockets[index])
                     == SRT_ERROR) {
                     std::cerr << "sender epoll removal failed: "
@@ -819,6 +841,7 @@ bool run_sender(const Configuration& configuration,
             // signal shared by both libraries. A short sleep lets their
             // transport workers reduce the bounded application flight without
             // turning this application thread into a busy loop.
+            diagnostic.phase(PeerDiagnostics::application_window);
             std::this_thread::sleep_for(std::chrono::microseconds {100});
         }
     }
@@ -826,8 +849,11 @@ bool run_sender(const Configuration& configuration,
     std::vector<std::size_t> pending_blocks(sockets.size(), 0U);
     std::vector<std::size_t> pending_bytes(sockets.size(), 0U);
     for (;;) {
+        diagnostic.sample_stats();
+        diagnostic.phase(PeerDiagnostics::drain);
         bool drained = true;
         for (std::size_t index = 0; index < sockets.size(); ++index) {
+            diagnostic.phase(PeerDiagnostics::pending_query, index);
             if (srt_getsndbuffer(sockets[index], &pending_blocks[index],
                     &pending_bytes[index])
                 == SRT_ERROR) {
@@ -835,6 +861,8 @@ bool run_sender(const Configuration& configuration,
                           << ' ' << srt_getlasterror_str() << '\n';
                 return false;
             }
+            diagnostic.pending(
+                index, pending_blocks[index], pending_bytes[index]);
             drained = drained && pending_blocks[index] == 0U;
         }
         if (drained) {
@@ -876,7 +904,9 @@ bool run_sender(const Configuration& configuration,
                   << maximum_bucket_packets << "}\n"
                   << std::flush;
     }
+    diagnostic.phase(PeerDiagnostics::statistics);
     const AggregateStatistics statistics = capture_statistics(sockets);
+    diagnostic.phase(PeerDiagnostics::complete);
     print_complete("caller", configuration, Clock::now() - started,
         establishment, completion, statistics);
     // An empty sender buffer means that the peer acknowledged every packet;
@@ -894,7 +924,10 @@ bool run_sender(const Configuration& configuration,
 bool run_receiver(const Configuration& configuration,
     const std::vector<SRTSOCKET>& sockets, Clock::duration establishment)
 {
+    PeerDiagnostics diagnostic("listener", sockets);
+    diagnostic.phase(PeerDiagnostics::epoll_create);
     PollHandle poll;
+    diagnostic.phase(PeerDiagnostics::epoll_add);
     if (!add_connections_to_poll(poll, sockets, SRT_EPOLL_IN | SRT_EPOLL_ERR)) {
         return false;
     }
@@ -923,10 +956,21 @@ bool run_receiver(const Configuration& configuration,
         + std::chrono::milliseconds {configuration.timeout_milliseconds};
 
     while (received_messages < expected_messages) {
+        diagnostic.sample_stats();
+        if (Clock::now() >= deadline) {
+            std::cerr << "listener transfer timed out: progress="
+                      << received_messages << "/" << expected_messages << "\n";
+            for (std::size_t i = 0; i < progress.size(); ++i) {
+                std::cerr << "socket_index=" << i << " messages=" << progress[i]
+                          << "\n";
+            }
+            return false;
+        }
         if (std::none_of(runnable.begin(), runnable.end(), [](bool value) {
                 return value;
             })) {
             int event_count = 0;
+            diagnostic.phase(PeerDiagnostics::epoll_wait);
             if (!wait_for_epoll(poll, events, event_count, deadline)) {
                 std::cerr << "receiver progress=" << received_messages << '/'
                           << expected_messages << '\n';
@@ -956,6 +1000,7 @@ bool run_receiver(const Configuration& configuration,
             while (progress[index] < configuration.messages_per_connection
                 && burst < maximum_burst_messages
                 && round_messages < maximum_round_messages) {
+                diagnostic.phase(PeerDiagnostics::receive_call, index);
                 const int received = srt_recvmsg(
                     sockets[index], payload.data(), configuration.message_size);
                 if (received == SRT_ERROR) {
@@ -1004,6 +1049,7 @@ bool run_receiver(const Configuration& configuration,
                     return false;
                 }
                 ++progress[index];
+                diagnostic.progress(index, progress[index], logical_ids[index]);
                 ++received_messages;
                 ++burst;
                 ++round_messages;
@@ -1016,6 +1062,7 @@ bool run_receiver(const Configuration& configuration,
                         Clock::now() - started)
                         .count();
                 completed[index] = true;
+                diagnostic.phase(PeerDiagnostics::epoll_remove, index);
                 if (srt_epoll_remove_usock(poll.value(), sockets[index])
                     == SRT_ERROR) {
                     std::cerr << "receiver epoll removal failed: "
@@ -1035,7 +1082,9 @@ bool run_receiver(const Configuration& configuration,
         std::cerr << "not every logical connection was observed\n";
         return false;
     }
+    diagnostic.phase(PeerDiagnostics::statistics);
     const AggregateStatistics statistics = capture_statistics(sockets);
+    diagnostic.phase(PeerDiagnostics::complete);
     print_complete("listener", configuration, Clock::now() - started,
         establishment, completion, statistics);
     if (configuration.shutdown_grace_milliseconds > 0) {

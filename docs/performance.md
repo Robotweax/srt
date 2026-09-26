@@ -10,7 +10,52 @@ bandwidth settings, optimized symbolized builds and separate Linux CPU/scheduler
 captures, see [Throughput profiling](throughput-profiling.md). These diagnostics
 are opt-in and do not change the library's runtime defaults.
 
+For established-connection behavior under transient local UDP send pressure,
+see [UDP send backpressure](udp-backpressure.md), including queue bounds and
+deterministic regression coverage. Shared-listener connection polling is bounded
+by [per-channel work budgets and round-robin continuation](channel-fairness.md).
+Quiet channels use [shared UDP readiness and protocol deadlines](idle-readiness.md)
+to reduce periodic idle work.
+Application event polling uses [incremental epoll readiness](epoll-readiness.md)
+for targeted runtime notifications and cached subscription state.
+[Loss-list prefix compaction](loss-list-compaction.md) bounds bulk retirement of
+fragmented receive losses to one compaction pass.
+[Bounded payload storage](payload-storage.md) separates packet metadata from
+reusable payload slots while preserving configured capacity.
+
 ## Comparative scorecard
+
+### Send-buffer selection diagnostic
+
+`robotweax_srt_send_buffer_benchmark` isolates original-packet selection with
+64, 256, 1,024, 4,096, and 8,192 packets awaiting acknowledgement. It uses
+1,316-byte payloads, warms each window size, and reports the median and range
+of nine samples, each covering 16 windows. Buffer construction, message enqueue,
+and ACK processing are outside the timed intervals. A sequence checksum keeps
+the selected packets observable and must match between compared builds.
+
+```sh
+cmake --build build-performance --target robotweax_srt_send_buffer_benchmark
+build-performance/robotweax_srt_send_buffer_benchmark
+```
+
+This diagnostic exercises a larger outstanding window than the ordinary
+many-socket scorecard's 64-packet pending cap. Original selection maintains a
+cursor across sent slots; acknowledgements and sender prefix drops rebase that
+cursor, while retransmissions keep their separate priority queue. Interior TTL
+drop markers are skipped once as the cursor advances. Selection is amortized
+constant time per original packet rather than rescanning the unacknowledged
+prefix on every call.
+
+For an A/B comparison, compile this same benchmark source against each
+revision's matching private headers and static library, using the same compiler
+and optimization flags. Run variants serially on an otherwise idle host.
+Native C++ layouts may differ between revisions; never mix candidate headers
+with a baseline library. These timings measure selection only, not application
+goodput, pacing, encryption, recovery, or network capacity. Do not turn local
+nanosecond results into portable CI pass thresholds.
+
+### Public-API profiles
 
 `benchmarks/scalability_scorecard.py` runs public-API peer source linked
 unchanged against Robotweax SRT and the pinned Haivision library. It supports
