@@ -6,6 +6,8 @@
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/udp.hpp"
 #include "compat/runtime_scheduler.hpp"
+#include "compat/readiness.hpp"
+#include "compat/socket_readiness.hpp"
 #include "compat/statistics.hpp"
 
 #include <array>
@@ -150,7 +152,8 @@ struct RuntimeBufferPacketCounts {
 
 struct RuntimePollResult {
     bool immediate_work = false;
-    std::optional<std::chrono::microseconds> next_work_delay;
+    std::optional<std::chrono::microseconds> next_work_delay = std::nullopt;
+    bool receive_wait_safe = false;
 };
 
 struct MessageIoResult {
@@ -210,7 +213,20 @@ public:
     [[nodiscard]] bool start(std::shared_ptr<RuntimeScheduler> scheduler,
         std::uint64_t affinity) noexcept;
     void notify_send_work() noexcept;
+    void notify_receive_release() noexcept;
     void set_idle_wait_for_testing(std::chrono::milliseconds timeout) noexcept;
+    // Drive one complete receive/poll slice without starting the scheduler.
+    [[nodiscard]] RuntimePollResult run_once_for_testing() noexcept
+    {
+        return run_once();
+    }
+    // Drive the connection slice without socket I/O or a running scheduler.
+    [[nodiscard]] RuntimePollResult poll_connections_for_testing(
+        std::optional<std::chrono::steady_clock::time_point> now =
+            std::nullopt) noexcept
+    {
+        return poll_connections(now);
+    }
     [[nodiscard]] bool running() const noexcept
     {
         return running_.load(std::memory_order_acquire);
@@ -228,9 +244,16 @@ private:
         const std::shared_ptr<DatagramInbox>& inbox,
         const std::shared_ptr<ConnectionRuntime>& runtime,
         IpEndpoint peer) noexcept;
+    [[nodiscard]] bool start_with_affinity(
+        std::shared_ptr<RuntimeScheduler> scheduler,
+        std::optional<std::uint64_t> affinity) noexcept;
     static void run_scheduled(void* context) noexcept;
+    static void socket_readable(void* context) noexcept;
     void run_scheduled(const ScheduledWorkContext* context) noexcept;
     [[nodiscard]] RuntimePollResult run_once() noexcept;
+    [[nodiscard]] RuntimePollResult poll_connections(
+        std::optional<std::chrono::steady_clock::time_point> injected_now =
+            std::nullopt) noexcept;
     [[nodiscard]] bool schedule_next_locked(
         bool immediate, std::chrono::microseconds delay) noexcept;
     void dispatch(
@@ -239,6 +262,7 @@ private:
         IpEndpoint peer) noexcept;
     void mark_connections_broken(int system_error) noexcept;
     void stop() noexcept;
+    void notify_work(bool receive_release) noexcept;
 
     std::mutex send_mutex_;
     std::mutex lifecycle_mutex_;
@@ -246,8 +270,19 @@ private:
     SendHook send_hook_ = nullptr;
     void* send_hook_context_ = nullptr;
     std::mutex routes_mutex_;
-    std::unordered_map<std::uint32_t,
-        std::shared_ptr<ConnectionRuntime>> routes_;
+    struct ConnectionRoute {
+        std::shared_ptr<ConnectionRuntime> runtime;
+        ConnectionRoute* previous = nullptr;
+        ConnectionRoute* next = nullptr;
+    };
+    std::unordered_map<std::uint32_t, ConnectionRoute> routes_;
+    // unordered_map rehash preserves element addresses. Erasure unlinks the
+    // node and advances this cursor under routes_mutex_.
+    ConnectionRoute* next_poll_route_ = nullptr;
+    std::size_t poll_round_remaining_ = 0;
+    bool poll_round_immediate_ = false;
+    bool poll_round_receive_wait_safe_ = true;
+    std::optional<std::chrono::steady_clock::time_point> poll_round_deadline_;
     std::unordered_map<HandshakeRouteKey,
         std::shared_ptr<ConnectionRuntime>,
         HandshakeRouteKeyHash> handshake_routes_;
@@ -260,18 +295,30 @@ private:
         setup_routes_;
     std::weak_ptr<HandshakeInbox> listener_inbox_;
     std::shared_ptr<RuntimeScheduler> scheduler_;
+    std::shared_ptr<SocketReadiness> socket_readiness_;
+    SocketReadiness::Token socket_watch_ {};
+    bool readiness_parked_ = false;
+    std::atomic_bool readiness_available_ = false;
+    bool force_timer_polling_for_testing_ = false;
     std::shared_ptr<ScheduledWorkContext> scheduled_work_context_;
     RuntimeScheduler::TimerToken scheduled_timer_ {};
+    std::chrono::steady_clock::time_point scheduled_deadline_ {};
     std::uint64_t affinity_ = 0;
     std::chrono::milliseconds idle_wait_ {2};
     std::thread::id active_thread_ {};
     bool task_active_ = false;
     bool send_work_notification_pending_ = false;
+    bool receive_release_pending_ = false;
     std::atomic_bool running_ = false;
 };
 
 class ConnectionRuntime {
 public:
+    [[nodiscard]] const std::shared_ptr<ReadinessSource>&
+    readiness_source() const noexcept
+    {
+        return readiness_source_;
+    }
     using Clock = std::chrono::steady_clock;
     using NowFunction = std::uint64_t (*)(void*) noexcept;
     using ReceivePopHook = void (*)(void*) noexcept;
@@ -353,6 +400,8 @@ public:
         const HandshakeMessage& message,
         IpEndpoint peer) noexcept;
     [[nodiscard]] RuntimePollResult poll() noexcept;
+    [[nodiscard]] RuntimePollResult poll(
+        std::size_t& remaining_send_attempts) noexcept;
     void apply_options(const SocketOptions& options) noexcept;
     void mark_broken(int system_error) noexcept;
     [[nodiscard]] bool report_peer_error(
@@ -383,6 +432,10 @@ public:
         handshake_replay_key() const noexcept;
 
 private:
+    std::shared_ptr<ReadinessSource> readiness_source_ =
+        std::make_shared<ReadinessSource>();
+    bool shared_readiness_clock_ = false;
+    void notify_readiness() noexcept;
     struct FecReceiveBatch {
         Error error = Error::none;
         bool consume_control_packet = false;
@@ -397,6 +450,40 @@ private:
         }
     };
 
+    enum class DatagramKind : std::uint8_t {
+        other,
+        data,
+        filter,
+        control,
+        key_request,
+    };
+
+    struct DatagramCompletion {
+        DatagramKind kind = DatagramKind::other;
+        DataHeader data {};
+        ControlType control = ControlType::keepalive;
+        std::size_t payload_size = 0;
+    };
+
+    struct PendingDatagram {
+        std::array<std::byte, DatagramEnvelope::maximum_size> bytes {};
+        std::size_t size = 0;
+        DatagramCompletion completion {};
+        std::unique_ptr<PendingDatagram> next;
+    };
+
+    // DATA/FEC preparation stops on the first deferred send. Incoming control
+    // responses may still queue while it waits; overflow fails explicitly.
+    static constexpr std::size_t pending_datagram_capacity = 128;
+    [[nodiscard]] bool submit_datagram(std::span<const std::byte> bytes,
+        DatagramCompletion completion, std::uint64_t now) noexcept;
+    [[nodiscard]] bool complete_datagram(std::span<const std::byte> bytes,
+        const DatagramCompletion& completion, std::uint64_t now) noexcept;
+    [[nodiscard]] bool flush_pending_datagrams(std::uint64_t now) noexcept;
+    [[nodiscard]] RuntimePollResult pending_send_poll_result(
+        std::uint64_t now) const noexcept;
+
+    [[nodiscard]] RuntimePollResult poll_locked() noexcept;
     [[nodiscard]] std::uint64_t now_microseconds() const noexcept;
     [[nodiscard]] PacketTimestamp packet_timestamp(
         std::int64_t source_time_microseconds) const noexcept;
@@ -405,6 +492,7 @@ private:
     void sample_receiver_buffer_statistics(
         std::uint64_t now_microseconds) noexcept;
     void notify_channel_send_work() noexcept;
+    void notify_channel_receive_release() noexcept;
     [[nodiscard]] bool send_actions(
         const ReliabilityActions& actions,
         std::uint64_t now_microseconds) noexcept;
@@ -464,6 +552,13 @@ private:
     HandshakeAction handshake_replay_response_{};
     std::uint32_t handshake_replay_peer_cookie_ = 0;
     std::shared_ptr<CryptoSession> crypto_;
+    // Non-null only during poll(), while mutex_ is held. Counts actual UDP
+    // attempts; yielding for the channel budget is not UDP backpressure.
+    std::size_t* poll_send_budget_ = nullptr;
+    std::unique_ptr<PendingDatagram> pending_datagram_head_;
+    PendingDatagram* pending_datagram_tail_ = nullptr;
+    std::size_t pending_datagram_size_ = 0;
+    std::uint64_t next_datagram_retry_microseconds_ = 0;
     std::optional<RowFecEncoder> row_fec_encoder_;
     std::optional<RowFecDecoder> row_fec_decoder_;
     std::optional<ColumnFecEncoder> column_fec_encoder_;

@@ -7,6 +7,7 @@
 #include "compat/caller_handshake_events.hpp"
 #include "compat/caller_handshake_sources.hpp"
 #include "compat/connect_handshake_operation.hpp"
+#include "compat/connect_callback_executor.hpp"
 #include "compat/error_state.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/listener_connection_setup.hpp"
@@ -1964,6 +1965,20 @@ private:
 
     [[nodiscard]] bool start_callback_worker(int error_code) noexcept
     {
+        const auto executor = acquire_connect_callback_executor();
+        if (executor != nullptr
+            && executor->submit({
+                .function =
+                    [](void* context, int error) noexcept {
+                        static_cast<AsyncCallerHandshakeActor*>(context)
+                            ->run_callback(error);
+                    },
+                .context = shared_from_this(),
+                .error_code = error_code,
+            })) {
+            return true;
+        }
+        // Preserve the existing resource-failure path if cache submission fails.
         std::thread worker;
         {
             std::lock_guard lock(socket_->mutex);
@@ -2978,6 +2993,20 @@ private:
 
     [[nodiscard]] bool start_callback_worker(int error_code) noexcept
     {
+        const auto executor = acquire_connect_callback_executor();
+        if (executor != nullptr
+            && executor->submit({
+                .function =
+                    [](void* context, int error) noexcept {
+                        static_cast<AsyncRendezvousHandshakeActor*>(context)
+                            ->run_callback(error);
+                    },
+                .context = shared_from_this(),
+                .error_code = error_code,
+            })) {
+            return true;
+        }
+        // Preserve the existing resource-failure path if cache submission fails.
         std::thread worker;
         {
             std::lock_guard lock(socket_->mutex);

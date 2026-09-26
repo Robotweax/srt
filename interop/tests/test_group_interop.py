@@ -446,6 +446,7 @@ class GroupInteropUnitTests(unittest.TestCase):
             caller_returncode: int = 5,
             listener_returncode: int | None = None,
             retransmissions: int = 0,
+            listener_error: str = "",
         ) -> bool:
             return run_group_interop.has_expected_pinned_caller_replacement_failure(
                 candidate_observation,
@@ -453,13 +454,36 @@ class GroupInteropUnitTests(unittest.TestCase):
                 candidate_output,
                 candidate_error,
                 listener_output,
-                "",
+                listener_error,
                 caller_returncode,
                 listener_returncode,
                 retransmissions,
         )
 
         self.assertTrue(classified())
+        notice = (
+            "1790334995912776/0x1f1e5e180W:socket: UDP receive buffer: "
+            "requested=12288000 effective=8388608 kernel=8388608 bytes; "
+            "attempts=1 fallback=no"
+        )
+        timeout = run_group_interop.EXPECTED_REVERSE_LISTENER_TIMEOUT
+        self.assertTrue(classified(listener_error=notice))
+        self.assertTrue(classified(listener_returncode=6,
+                                   listener_error=notice + "\n" + notice + "\n" + timeout))
+        for invalid in (
+            notice + " extra text\n" + timeout,
+            (notice + "\n") * 3 + timeout,
+            notice.replace("effective=8388608", "effective=0") + "\n" + timeout,
+            notice.replace("attempts=1", "attempts=33") + "\n" + timeout,
+            "unknown warning\n" + timeout,
+            timeout + "\n" + notice,
+            timeout + "\n" + timeout,
+        ):
+            with self.subTest(listener_stderr=invalid):
+                self.assertFalse(classified(listener_returncode=6, listener_error=invalid))
+        self.assertFalse(classified(listener_returncode=6, listener_error=notice))
+        self.assertFalse(classified(caller_returncode=6, listener_error=notice))
+        self.assertFalse(classified(retransmissions=1, listener_error=notice))
         self.assertFalse(classified({"count": 1, "acknowledged": False}))
         self.assertFalse(classified({"count": 0, "acknowledged": True}))
         self.assertFalse(classified({"count": 0.0, "acknowledged": False}))
@@ -473,6 +497,7 @@ class GroupInteropUnitTests(unittest.TestCase):
             )
         )
         self.assertFalse(classified(caller_returncode=6))
+        self.assertFalse(classified(caller_returncode=None))
         self.assertFalse(classified(listener_returncode=6))
         self.assertFalse(classified(retransmissions=1))
         self.assertFalse(

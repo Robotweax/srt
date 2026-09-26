@@ -170,18 +170,31 @@ ReceiveLossRemoval ReceiveLossList::remove(
 void ReceiveLossList::remove_through(
     SequenceNumber last) noexcept
 {
-    std::size_t index = 0;
-    while (index < size_) {
-        auto& entry = entries_[index];
+    std::size_t removed = 0;
+    while (removed < size_) {
+        auto& entry = entries_[removed];
         if (last.distance_from(entry.range.first) < 0) {
-            return;
+            break;
         }
-        if (last.distance_from(entry.range.last) >= 0) {
-            erase(index);
-            continue;
+        if (last.distance_from(entry.range.last) < 0) {
+            entry.range.first = last.next();
+            break;
         }
-        entry.range.first = last.next();
+        ++removed;
+    }
+    if (removed == 0U) {
         return;
+    }
+
+    // Compact the surviving suffix once. Erasing each covered range in turn
+    // repeatedly moves the same survivors and is quadratic for fragmented loss.
+    const std::size_t previous_size = size_;
+    size_ -= removed;
+    for (std::size_t index = 0; index < size_; ++index) {
+        entries_[index] = entries_[index + removed];
+    }
+    for (std::size_t index = size_; index < previous_size; ++index) {
+        entries_[index] = {};
     }
 }
 

@@ -6,10 +6,32 @@
 #include <stdexcept>
 
 namespace robotweax::srt {
+namespace {
+std::size_t checked_send_capacity(
+    std::size_t capacity_packets, std::size_t maximum_payload_size)
+{
+    if (capacity_packets == 0U || capacity_packets >= SequenceNumber::half_range
+        || maximum_payload_size == 0U
+        || maximum_payload_size > maximum_data_payload_size) {
+        throw std::invalid_argument("invalid send-buffer dimensions");
+    }
+    return capacity_packets;
+}
+} // namespace
+
+SendBuffer& SendBuffer::operator=(const SendBuffer& other)
+{
+    if (this != &other) {
+        SendBuffer copy(other);
+        *this = std::move(copy);
+    }
+    return *this;
+}
 
 SendBuffer::SendBuffer(SequenceNumber initial_sequence,
     std::size_t capacity_packets, std::size_t maximum_payload_size)
-    : slots_(capacity_packets)
+    : payloads_(checked_send_capacity(capacity_packets, maximum_payload_size))
+    , slots_(capacity_packets)
     , retransmission_queue_(capacity_packets)
     , drop_request_queue_(capacity_packets)
     , range_drop_request_queue_(
@@ -17,11 +39,6 @@ SendBuffer::SendBuffer(SequenceNumber initial_sequence,
     , first_sequence_(initial_sequence)
     , maximum_payload_size_(maximum_payload_size)
 {
-    if (capacity_packets == 0U || capacity_packets >= SequenceNumber::half_range
-        || maximum_payload_size == 0U
-        || maximum_payload_size > maximum_data_payload_size) {
-        throw std::invalid_argument("invalid send-buffer dimensions");
-    }
 }
 
 bool SendBuffer::synchronize_empty(
@@ -32,6 +49,7 @@ bool SendBuffer::synchronize_empty(
     }
     first_sequence_ = next_sequence;
     head_ = 0U;
+    next_unsent_offset_ = 0U;
     buffered_plaintext_bytes_ = 0U;
     expiring_packet_count_ = 0U;
     first_buffered_enqueue_microseconds_ = 0U;
@@ -82,8 +100,8 @@ Error SendBuffer::enqueue_message(
             .timestamp = timestamp,
             .destination_socket_id = destination_socket_id,
         };
-        std::copy_n(message.begin() + static_cast<std::ptrdiff_t>(consumed),
-            payload_size, slot.payload.begin());
+        slot.payload_index =
+            payloads_.acquire(message.subspan(consumed, payload_size));
         slot.payload_size = static_cast<std::uint16_t>(payload_size);
         slot.plaintext_size = static_cast<std::uint16_t>(payload_size);
         slot.protection_mode = CryptoMode::automatic;
@@ -152,6 +170,7 @@ void SendBuffer::discard_slot(
     Slot& slot, bool retain_drop_marker) noexcept
 {
     if (slot.occupied) {
+        payloads_.release(slot.payload_index);
         if (slot.sent) {
             --packets_in_flight_;
         }
@@ -341,24 +360,33 @@ std::optional<OutboundPacket> SendBuffer::next_packet() noexcept
         slot->retransmission_queued = false;
         auto header = slot->header;
         header.retransmitted = true;
-        return OutboundPacket{
+        return OutboundPacket {
             .header = header,
-            .payload = std::span{slot->payload}.first(slot->payload_size),
+            .payload = payloads_.get(slot->payload_index),
         };
     }
 
-    for (std::size_t offset = 0; offset < sequence_span_; ++offset) {
-        auto& slot = slots_[(head_ + offset) % capacity()];
+    while (next_unsent_offset_ < sequence_span_) {
+        auto& slot = slots_[(head_ + next_unsent_offset_) % capacity()];
+        ++next_unsent_offset_;
         if (slot.occupied && !slot.sent) {
             slot.sent = true;
             ++packets_in_flight_;
-            return OutboundPacket{
+            return OutboundPacket {
                 .header = slot.header,
-                .payload = std::span{slot.payload}.first(slot.payload_size),
+                .payload = payloads_.get(slot.payload_index),
             };
         }
     }
     return std::nullopt;
+}
+
+bool SendBuffer::retains_packet(SequenceNumber sequence) const noexcept
+{
+    const auto offset = sequence.distance_from(first_sequence_);
+    return offset >= 0 && static_cast<std::size_t>(offset) < sequence_span_
+        && slots_[(head_ + static_cast<std::size_t>(offset)) % capacity()]
+               .occupied;
 }
 
 Error SendBuffer::preserve_encrypted_payload(
@@ -394,12 +422,12 @@ Error SendBuffer::preserve_protected_payload(SequenceNumber sequence,
                 && slot->protection_mode == mode
                 && slot->payload_size == protected_payload.size()
                 && std::equal(protected_payload.begin(),
-                    protected_payload.end(), slot->payload.begin())
+                    protected_payload.end(),
+                    payloads_.get(slot->payload_index).begin())
             ? Error::none
             : Error::invalid_state;
     }
-    std::copy(protected_payload.begin(), protected_payload.end(),
-        slot->payload.begin());
+    payloads_.store(slot->payload_index, protected_payload);
     slot->payload_size = static_cast<std::uint16_t>(protected_payload.size());
     slot->protection_mode = mode;
     slot->header.encryption_key = key;
@@ -435,6 +463,7 @@ Error SendBuffer::acknowledge_before(SequenceNumber sequence) noexcept
     }
     head_ = (head_ + count) % capacity();
     sequence_span_ -= count;
+    next_unsent_offset_ -= std::min(next_unsent_offset_, count);
     first_sequence_ = sequence;
     if (count != 0U) {
         refresh_first_buffered_enqueue_time();
@@ -703,6 +732,7 @@ SendDropResult SendBuffer::drop_messages_older_than(
         static_cast<std::uint32_t>(result.packets - 1U));
     head_ = (head_ + result.packets) % capacity();
     sequence_span_ -= result.packets;
+    next_unsent_offset_ -= std::min(next_unsent_offset_, result.packets);
     first_sequence_ = result.sequences.last.next();
     refresh_first_buffered_enqueue_time();
     return result;

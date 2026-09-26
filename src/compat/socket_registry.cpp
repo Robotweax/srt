@@ -1,4 +1,5 @@
 #include "compat/socket_registry.hpp"
+#include "compat/connect_callback_executor.hpp"
 
 #include "compat/connect_handshake_operation.hpp"
 #include "compat/connection.hpp"
@@ -371,6 +372,7 @@ SocketRegistry& SocketRegistry::instance() noexcept
     (void)deferred_close_manager();
     prepare_runtime_scheduler_service();
     prepare_runtime_work_executor_service();
+    prepare_connect_callback_executor();
     epoll_initialize();
     (void)default_crypto_provider();
     (void)GroupRegistry::instance();
@@ -573,7 +575,8 @@ int runtime_create_epoll() noexcept
 void runtime_cleanup() noexcept
 {
     auto& lifecycle = runtime_lifecycle();
-    std::lock_guard lifecycle_lock(lifecycle.mutex);
+    std::shared_ptr<ConnectCallbackExecutor> retired_callbacks;
+    std::unique_lock lifecycle_lock(lifecycle.mutex);
     if (lifecycle.startup_count == 0U) {
         return;
     }
@@ -582,8 +585,15 @@ void runtime_cleanup() noexcept
         GroupRegistry::instance().clear();
         SocketRegistry::instance().clear();
         stop_runtime_work_executor();
+        retired_callbacks = retire_connect_callback_executor();
         stop_runtime_scheduler();
     }
+    // The old runtime generation is fully retired before another may start.
+    // Joining cached workers can execute application TLS destructors that
+    // call startup/cleanup, so it must not hold the generation mutex.
+    lifecycle_lock.unlock();
+    if (retired_callbacks)
+        retired_callbacks->stop();
 }
 
 } // namespace robotweax::srt::compat

@@ -56,6 +56,8 @@ public:
         std::uint32_t nak_interval_microseconds,
         bool defer_initial_report = false) noexcept;
     [[nodiscard]] TimerActions poll(std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] std::uint64_t next_deadline(
+        std::uint64_t now_microseconds) const noexcept;
 
 private:
     Configuration configuration_;

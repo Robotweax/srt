@@ -3,6 +3,7 @@
 #include "robotweax/srt/packet.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/readiness.hpp"
+#include "compat/epoll.hpp"
 #include "compat/socket_registry.hpp"
 #include "srt/srt.h"
 
@@ -14,6 +15,9 @@
 #include <future>
 #include <memory>
 #include <span>
+#include <set>
+#include <thread>
+#include <vector>
 
 #if !defined(_WIN32)
 #  include <unistd.h>
@@ -923,3 +927,273 @@ TEST(compat_epoll_wait_integrates_system_socket_readiness)
     REQUIRE_EQ(srt_cleanup(), 0);
 }
 #endif
+
+namespace {
+struct SparseEpollFixture {
+    std::vector<SRTSOCKET> sockets;
+    std::vector<int> polls;
+    ~SparseEpollFixture()
+    {
+        for (auto poll : polls)
+            (void)srt_epoll_release(poll);
+        for (auto socket : sockets)
+            (void)srt_close(socket);
+        (void)srt_cleanup();
+    }
+    SRTSOCKET socket()
+    {
+        auto handle = srt_create_socket();
+        REQUIRE(handle != SRT_INVALID_SOCK);
+        sockets.push_back(handle);
+        auto record = SocketRegistry::instance().find(handle);
+        REQUIRE_EQ(
+            record->native_options.set(SocketOption::send_buffer_packets, 8),
+            Error::none);
+        REQUIRE_EQ(
+            record->native_options.set(SocketOption::receive_buffer_packets, 8),
+            Error::none);
+        return handle;
+    }
+    int poll()
+    {
+        auto id = srt_epoll_create();
+        REQUIRE(id >= 0);
+        polls.push_back(id);
+        return id;
+    }
+};
+}
+
+TEST(compat_epoll_sparse_queries_only_changed_runtime_and_caches_idle_state)
+{
+    SparseEpollFixture fixture;
+    const auto poll = fixture.poll();
+    const auto other = fixture.poll();
+    const int mask = SRT_EPOLL_IN;
+    for (unsigned index = 0; index < 128; ++index) {
+        const auto socket = fixture.socket();
+        REQUIRE_EQ(srt_epoll_add_usock(poll, socket, &mask), 0);
+        REQUIRE_EQ(srt_epoll_add_usock(other, socket, &mask), 0);
+    }
+    const auto active = fixture.socket();
+    const auto peer = Ipv4Endpoint::loopback(9000);
+    const auto runtime =
+        attach_test_runtime(active, peer, SequenceNumber {100});
+    REQUIRE_EQ(srt_epoll_add_usock(poll, active, &mask), 0);
+    SRT_EPOLL_EVENT event;
+    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+    REQUIRE_EQ(srt_epoll_uwait(other, &event, 1, 0), 0);
+    const auto before = epoll_readiness_queries_for_testing(poll);
+    const auto other_before = epoll_readiness_queries_for_testing(other);
+    for (unsigned index = 0; index < 8; ++index)
+        REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+    REQUIRE_EQ(epoll_readiness_queries_for_testing(poll), before);
+    const std::array payload {std::byte {7}};
+    runtime->process_packet(
+        single_packet(SequenceNumber {100}, 1, payload), peer);
+    // Repeated notifications for the same subscription coalesce into one query.
+    for (unsigned index = 0; index < 8; ++index)
+        ReadinessSignal::notify(*runtime->readiness_source());
+    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
+    REQUIRE_EQ(event.fd, active);
+    REQUIRE_EQ(epoll_readiness_queries_for_testing(poll), before + 1);
+    REQUIRE_EQ(srt_epoll_uwait(other, &event, 1, 0), 0);
+    REQUIRE_EQ(epoll_readiness_queries_for_testing(other), other_before);
+    std::array<std::byte, 1> received {};
+    REQUIRE_EQ(runtime->receive_message(received, false, -1).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+    REQUIRE_EQ(epoll_readiness_queries_for_testing(poll), before + 2);
+    // Local mask changes do not invalidate unrelated subscriptions or pollers.
+    const int output = SRT_EPOLL_OUT;
+    REQUIRE_EQ(srt_epoll_update_usock(poll, active, &output), 0);
+    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
+    REQUIRE_EQ(srt_epoll_uwait(other, &event, 1, 0), 0);
+    REQUIRE_EQ(epoll_readiness_queries_for_testing(other), other_before);
+}
+
+TEST(compat_epoll_observers_target_waiters_and_preserve_legacy_broadcast)
+{
+    ReadinessObserver first, second;
+    auto source = std::make_shared<ReadinessSource>();
+    auto other_source = std::make_shared<ReadinessSource>();
+    ReadinessWatch first_watch {first, 1, false},
+        second_watch {second, 2, false};
+    REQUIRE(first_watch.bind(source));
+    REQUIRE(second_watch.bind(other_source));
+    std::vector<SRTSOCKET> dirty;
+    dirty.reserve(2);
+    REQUIRE(first.take_changes(dirty));
+    REQUIRE(second.take_changes(dirty));
+    const auto observed_first = first.generation();
+    const auto observed_second = second.generation();
+    const auto legacy = ReadinessSignal::generation();
+    auto waiting = std::async(std::launch::async, [&] {
+        first.wait_until(observed_first,
+            std::chrono::steady_clock::now() + std::chrono::seconds {2});
+    });
+    ReadinessSignal::notify(*source);
+    REQUIRE_EQ(
+        waiting.wait_for(std::chrono::seconds {1}), std::future_status::ready);
+    waiting.get();
+    REQUIRE(first.generation() != observed_first);
+    REQUIRE_EQ(second.generation(), observed_second);
+    REQUIRE(ReadinessSignal::generation() != legacy);
+    REQUIRE(!first.take_changes(dirty));
+    REQUIRE_EQ(dirty, std::vector<SRTSOCKET> {1});
+    REQUIRE(!second.take_changes(dirty));
+    REQUIRE(dirty.empty());
+    ReadinessSignal::notify();
+    REQUIRE(first.take_changes(dirty));
+    REQUIRE(second.take_changes(dirty));
+}
+
+TEST(compat_epoll_small_outputs_rotate_levels_and_preserve_pending_edges)
+{
+    for (bool edge : {false, true}) {
+        for (bool legacy : {false, true}) {
+            SparseEpollFixture fixture;
+            auto poll = fixture.poll();
+            const int mask = SRT_EPOLL_ERR | (edge ? SRT_EPOLL_ET : 0);
+            std::set<SRTSOCKET> expected;
+            for (unsigned index = 0; index < 3; ++index) {
+                auto socket = fixture.socket();
+                expected.insert(socket);
+                REQUIRE_EQ(srt_epoll_add_usock(poll, socket, &mask), 0);
+                REQUIRE_EQ(srt_close(socket), 0);
+            }
+            // Legacy wait historically consumes every collected edge, even
+            // when its fd arrays truncate output. Preserve that behavior;
+            // uwait consumes only the events actually returned.
+            if (legacy && edge) {
+                SRTSOCKET socket = SRT_INVALID_SOCK;
+                int count = 1;
+                REQUIRE_EQ(srt_epoll_wait(poll, &socket, &count, nullptr,
+                               nullptr, 0, nullptr, nullptr, nullptr, nullptr),
+                    1);
+                SRT_EPOLL_EVENT event;
+                REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+                continue;
+            }
+            for (unsigned round = 0; round < (edge ? 1U : 2U); ++round) {
+                std::set<SRTSOCKET> seen;
+                for (unsigned index = 0; index < 3; ++index) {
+                    if (legacy) {
+                        SRTSOCKET socket = SRT_INVALID_SOCK;
+                        int count = 1;
+                        REQUIRE_EQ(
+                            srt_epoll_wait(poll, &socket, &count, nullptr,
+                                nullptr, 0, nullptr, nullptr, nullptr, nullptr),
+                            1);
+                        REQUIRE_EQ(count, 1);
+                        seen.insert(socket);
+                    } else {
+                        SRT_EPOLL_EVENT event;
+                        REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
+                        seen.insert(event.fd);
+                    }
+                }
+                REQUIRE_EQ(seen, expected);
+            }
+            if (edge) {
+                SRT_EPOLL_EVENT event;
+                REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+            }
+        }
+    }
+}
+
+TEST(compat_epoll_subscription_churn_unlinks_queued_notifications)
+{
+    SparseEpollFixture fixture;
+    const auto socket = fixture.socket();
+    const auto runtime = attach_test_runtime(
+        socket, Ipv4Endpoint::loopback(9000), SequenceNumber {100});
+    const auto poll = fixture.poll();
+    std::jthread notifier(
+        [source = runtime->readiness_source()](std::stop_token stop) {
+            while (!stop.stop_requested()) {
+                ReadinessSignal::notify(*source);
+                std::this_thread::yield();
+            }
+        });
+    for (unsigned index = 0; index < 100; ++index) {
+        const int mask = SRT_EPOLL_OUT | SRT_EPOLL_ET;
+        REQUIRE_EQ(srt_epoll_add_usock(poll, socket, &mask), 0);
+        SRT_EPOLL_EVENT event;
+        REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
+        REQUIRE_EQ(event.events, SRT_EPOLL_OUT);
+        REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+        REQUIRE_EQ(srt_epoll_remove_usock(poll, socket), 0);
+    }
+    notifier.request_stop();
+    notifier.join();
+}
+
+TEST(compat_epoll_deadline_heap_handles_multiple_deliveries_and_removal)
+{
+    SparseEpollFixture fixture;
+    const auto poll = fixture.poll();
+    const auto peer = Ipv4Endpoint::loopback(9000);
+    const int mask = SRT_EPOLL_IN | SRT_EPOLL_ET;
+    std::vector<std::shared_ptr<ConnectionRuntime>> runtimes;
+    std::set<SRTSOCKET> expected;
+    const std::array payload {std::byte {1}};
+    for (unsigned index = 0; index < 6; ++index) {
+        const auto socket = fixture.socket();
+        auto runtime = attach_test_runtime(socket, peer, SequenceNumber {100},
+            {.receive_tsbpd = true,
+                .receive_delay_milliseconds =
+                    static_cast<std::uint16_t>(100 + index * 15)});
+        runtime->process_packet(
+            single_packet(SequenceNumber {100}, 1, payload), peer);
+        REQUIRE_EQ(srt_epoll_add_usock(poll, socket, &mask), 0);
+        expected.insert(socket);
+        runtimes.push_back(std::move(runtime));
+    }
+    SRT_EPOLL_EVENT event;
+    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+    // Remove both the minimum deadline and an interior heap slot.
+    REQUIRE_EQ(srt_epoll_remove_usock(poll, fixture.sockets[0]), 0);
+    REQUIRE_EQ(srt_epoll_remove_usock(poll, fixture.sockets[3]), 0);
+    expected.erase(fixture.sockets[0]);
+    expected.erase(fixture.sockets[3]);
+    std::set<SRTSOCKET> seen;
+    for (unsigned index = 0; index < 4; ++index) {
+        REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 1000), 1);
+        seen.insert(event.fd);
+    }
+    REQUIRE_EQ(seen, expected);
+    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+}
+
+TEST(compat_epoll_consumed_peer_error_clears_cached_write_readiness)
+{
+    SparseEpollFixture fixture;
+    const auto socket = fixture.socket();
+    const auto peer = Ipv4Endpoint::loopback(9000);
+    const auto runtime =
+        attach_test_runtime(socket, peer, SequenceNumber {100});
+    const auto poll = fixture.poll();
+    const int mask = SRT_EPOLL_OUT;
+    REQUIRE_EQ(srt_epoll_add_usock(poll, socket, &mask), 0);
+    const std::array payload {std::byte {7}};
+    for (unsigned index = 0; index < 8; ++index) {
+        REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+    }
+    SRT_EPOLL_EVENT event;
+    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+    PacketView error;
+    error.kind = PacketKind::control;
+    error.control.type = ControlType::peer_error;
+    error.control.type_specific = SRT_EFILE;
+    const std::array<std::byte, 4> padding {};
+    error.payload = padding;
+    runtime->process_packet(error, peer);
+    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
+    REQUIRE_EQ(event.events, SRT_EPOLL_OUT);
+    REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::peer_error);
+    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+}

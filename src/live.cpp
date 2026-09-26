@@ -150,6 +150,12 @@ std::uint64_t LiveRateController::pacing_rate_bytes_per_second() const noexcept
     if (configuration_.maximum_bandwidth_bytes_per_second < 0) {
         return default_unlimited_rate;
     }
+    // Positive MAXBW selects an absolute rate. Input estimation and overhead
+    // apply only to the zero/relative mode, including retransmission pacing.
+    if (configuration_.maximum_bandwidth_bytes_per_second > 0) {
+        return static_cast<std::uint64_t>(
+            configuration_.maximum_bandwidth_bytes_per_second);
+    }
     std::uint64_t rate = configuration_.input_bandwidth_bytes_per_second;
     if (rate == 0U) {
         rate = std::max(estimated_input_bandwidth_,
@@ -162,12 +168,6 @@ std::uint64_t LiveRateController::pacing_rate_bytes_per_second() const noexcept
         } else {
             rate = rate * multiplier / 100U;
         }
-    }
-    if (configuration_.maximum_bandwidth_bytes_per_second > 0
-        && (rate == 0U || rate > static_cast<std::uint64_t>(
-                configuration_.maximum_bandwidth_bytes_per_second))) {
-        rate = static_cast<std::uint64_t>(
-            configuration_.maximum_bandwidth_bytes_per_second);
     }
     return rate == 0U ? default_unlimited_rate : rate;
 }

@@ -12,14 +12,14 @@ depending on implementation-specific C++ internals.
 
 ## Release status
 
-Version **0.2.5** is a pre-1.0 Ecosystem Support release candidate
+Version **0.2.6** is a pre-1.0 Performance Optimization release candidate
 (publication pending) with documented
-[qualification limits](docs/release-notes-0.2.5.md#qualification-limits-and-release-acceptance),
+[qualification limits](docs/release-notes-0.2.6.md#qualification-limits-and-release-acceptance),
 including outstanding independent cryptographic review.
 
-| Axis | Robotweax SRT 0.2.5 |
+| Axis | Robotweax SRT 0.2.6 |
 | --- | --- |
-| Project release | `0.2.5` |
+| Project release | `0.2.6` |
 | Shared-library ABI | `0.2` |
 | Default public API target | SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -33,7 +33,7 @@ handshake, and encryption profile are separate version axes. In particular,
 release number.
 
 Version 0.2 is a pre-1.0 release. Rebuild applications and dependencies when
-moving between ABI lines. See the [0.2.5 release notes](docs/release-notes-0.2.5.md)
+moving between ABI lines. See the [0.2.6 release notes](docs/release-notes-0.2.6.md)
 and [0.1-to-0.2 migration guide](docs/migration-0.2.md).
 
 See the [ecosystem support matrix](docs/compatibility.md#ecosystem-build-profiles)

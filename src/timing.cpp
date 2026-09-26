@@ -109,6 +109,25 @@ void ControlTimerScheduler::set_loss_state(bool has_loss,
     has_loss_ = has_loss;
 }
 
+std::uint64_t ControlTimerScheduler::next_deadline(
+    std::uint64_t now) const noexcept
+{
+    const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
+    auto deadline = last_send_microseconds_
+        + std::min(configuration_.keepalive_interval_microseconds,
+            maximum - last_send_microseconds_);
+    if (acknowledgement_dirty_) {
+        deadline = std::min(deadline, next_ack_microseconds_);
+        if (packets_since_full_ack_ >= next_lite_ack_threshold_) {
+            deadline = std::min(deadline, now);
+        }
+    }
+    if (has_loss_) {
+        deadline = std::min(deadline, next_nak_microseconds_);
+    }
+    return deadline;
+}
+
 TimerActions ControlTimerScheduler::poll(std::uint64_t now_microseconds) noexcept
 {
     TimerActions actions;

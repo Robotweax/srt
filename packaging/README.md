@@ -1,10 +1,11 @@
 # Package manager recipes
 
-These recipes package the immutable Robotweax SRT 0.2.5 source commit
-`492a7d61390cbec86e44e177ec034f0f5d9a5cc3`. The reviewed Homebrew formula
-is published in [Robotweax/homebrew-tap](https://github.com/Robotweax/homebrew-tap),
-with an Apple Silicon macOS 15 bottle. The vcpkg overlay is available below; no
-vcpkg registry, PPA or COPR is published yet.
+These recipes target the immutable Robotweax SRT 0.2.6 candidate source commit
+`30505346cc6bb935abf68cab806b69e73d428bc1`. Package qualification and publication for 0.2.6
+are pending; see [the candidate checklist](qualification-0.2.6.md).
+The separately published [Robotweax/homebrew-tap](https://github.com/Robotweax/homebrew-tap)
+still provides 0.2.5 until its reviewed update and bottle qualification are complete.
+No vcpkg registry, PPA or COPR is published yet.
 
 ## Package contract
 
@@ -14,7 +15,7 @@ vcpkg registry, PPA or COPR is published yet.
   `include/robotweax-srt`; consumers obtain include paths from package metadata.
 - Use OpenSSL from the package manager. BCrypt and AES-GCM preview are outside
   the initial recipes. Do not bundle third-party application binaries.
-- Preserve project version 0.2.5, ABI line 0.2 and compatible API 1.5.7 as separate
+- Preserve project version 0.2.6, ABI line 0.2 and compatible API 1.5.7 as separate
   version axes. Download only the exact source revision with verified hashes.
 - Installing this package does not redirect installed FFmpeg, GStreamer, VLC or
   OBS applications. Rebuild consumers explicitly with the selected provider;
@@ -26,7 +27,7 @@ vcpkg registry, PPA or COPR is published yet.
 ## Linux package prototypes
 
 The [Ubuntu and Fedora recipes](linux/README.md) build DEB and RPM packages
-from the pinned 0.2.5 source archive. Separate runtime and development
+from the pinned 0.2.6 source archive. Separate runtime and development
 packages retain Robotweax-specific filenames and metadata. The Linux
 packages workflow builds and installs them on Ubuntu 24.04 and Fedora 44,
 executes installed consumers, checks coexistence with Haivision, and tests
@@ -41,7 +42,7 @@ OpenSSL. Install the reviewed copy from the public tap:
 brew install robotweax/tap/robotweax-srt
 ```
 
-Homebrew may ask you to trust this external formula. The published bottle is
+Homebrew may ask you to trust this external formula. The published 0.2.5 bottle is
 qualified for Apple Silicon macOS 15. A source installation from the public tap
 also passed on Apple Silicon macOS 26. To evaluate a proposed recipe change in
 a development tap, copy the formula to its `Formula/` directory, then run:
@@ -54,7 +55,7 @@ brew audit --strict YOUR_USER/YOUR_TAP/robotweax-srt
 ```
 
 The formula includes a C consumer using Robotweax-specific symbols and checks
-that generic Haivision paths were not installed. The macOS 15 bottle passed Homebrew test-bot, including installation from the
+that generic Haivision paths were not installed. The 0.2.5 macOS 15 bottle passed Homebrew test-bot, including installation from the
 created bottle; its published SHA-256 matches the reviewed CI artifact. Other
 Homebrew bottle platforms require their own native checks.
 
@@ -111,7 +112,8 @@ pinned recipe version, or the recipe and fixtures must move together.
 
 Passing this workflow does not qualify an upgrade from an older package, binary
 bottles, all OS versions, or official distribution admission. See
-[qualification evidence](qualification-0.2.5.md) for observed results and gaps.
+[0.2.5 qualification evidence](qualification-0.2.5.md) for historical results;
+these results do not qualify the [0.2.6 candidate](qualification-0.2.6.md).
 
 The vcpkg qualification can also run locally using a bootstrapped checkout of
 the pinned vcpkg revision (a new work directory is required):

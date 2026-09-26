@@ -54,6 +54,11 @@ TRANSLATED_ROLLOVER_RTO_OCCURRENCE = 2
 DYNAMIC_MAXBW_FIRST_BYTES_PER_SECOND = 150_000
 DYNAMIC_MAXBW_SECOND_BYTES_PER_SECOND = 600_000
 DYNAMIC_MAXBW_PHASE_PACKETS = 256
+# An early Rendezvous NAK can leave FileCC recovering across the rate change.
+# MAXBW raises a ceiling; it must not reset the loss response. Measure sustained
+# rates over roughly ten seconds at the first limit, including startup/recovery,
+# instead of requiring a short, still-recovering transfer to reach the new cap.
+RENDEZVOUS_DYNAMIC_MAXBW_PHASE_PACKETS = 1_024
 RESILIENCE_TRANSFER_PACKETS = 1_024
 ACK_DELAY_MILLISECONDS = 200
 RESILIENCE_FLOW_WINDOW_PACKETS = 256
@@ -536,7 +541,7 @@ def rendezvous_resilience_scenario_matrix(
             sender_chunk_size=FILE_PAYLOAD_SIZE,
             receiver_size=FILE_PAYLOAD_SIZE,
             byte_count=(
-                2 * DYNAMIC_MAXBW_PHASE_PACKETS * FILE_PAYLOAD_SIZE
+                2 * RENDEZVOUS_DYNAMIC_MAXBW_PHASE_PACKETS * FILE_PAYLOAD_SIZE
             ),
             maximum_bandwidth_bytes_per_second=(
                 DYNAMIC_MAXBW_FIRST_BYTES_PER_SECOND

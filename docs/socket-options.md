@@ -242,6 +242,13 @@ discarding the negotiated TSBPD clock mapping; re-enabling it resumes
 sampling. This is payload-agnostic—the transport never parses MPEG-TS PCR or
 assumes 188/1316-byte framing.
 
+In Live mode, positive `SRTO_MAXBW` selects the absolute pacing limit in
+bytes per second, independently of the measured or configured input rate.
+Only `SRTO_MAXBW=0` uses `SRTO_INPUTBW` (or automatic estimation) plus
+`SRTO_OHEADBW`. Changing modes on an established connection takes effect
+without resetting the input estimator. This follows the
+[Haivision SRT 1.5.7 option contract](https://github.com/Haivision/srt/blob/899348d8318eb9a3c5a5b6ec43c4a1114288773a/docs/API/API-socket-options.md#srto_maxbw).
+
 `SRTO_MININPUTBW` is a nonnegative post-connection `int64_t` floor for the
 fixed-memory application-input estimator. It takes effect only in relative
 LiveCC mode when both `SRTO_MAXBW=0` and `SRTO_INPUTBW=0`; configured input

@@ -5,7 +5,6 @@
 #include "robotweax/srt/reliability.hpp"
 #include "robotweax/srt/send_buffer.hpp"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -52,6 +51,10 @@ struct BufferedMessageInfo {
 class ReceiveBuffer {
 public:
     ReceiveBuffer(SequenceNumber initial_sequence, std::size_t capacity_packets);
+    ReceiveBuffer(const ReceiveBuffer&) = default;
+    ReceiveBuffer(ReceiveBuffer&&) noexcept = default;
+    ReceiveBuffer& operator=(ReceiveBuffer&&) noexcept = default;
+    ReceiveBuffer& operator=(const ReceiveBuffer& other);
 
     [[nodiscard]] std::size_t capacity() const noexcept { return slots_.size(); }
     [[nodiscard]] std::size_t occupied() const noexcept { return occupied_; }
@@ -96,7 +99,7 @@ public:
 private:
     struct Slot {
         DataHeader header{};
-        std::array<std::byte, maximum_data_payload_size> payload{};
+        std::uint32_t payload_index = 0;
         std::uint16_t payload_size = 0;
         std::uint16_t payload_offset = 0;
         bool occupied = false;
@@ -115,6 +118,7 @@ private:
         std::uint32_t message_number, std::size_t* newly_dropped_packets,
         bool preserve_existing_complete) noexcept;
 
+    detail::PayloadPool payloads_;
     std::vector<Slot> slots_;
     SequenceNumber first_stored_sequence_;
     SequenceNumber next_ack_sequence_;

@@ -25,6 +25,7 @@ constexpr std::size_t maximum_receive_batch = 64;
 }
 
 constexpr std::size_t maximum_send_batch = 64;
+constexpr std::size_t maximum_connection_polls = 64;
 
 [[nodiscard]] constexpr std::array<std::byte, 4>
 crypto_state_payload(CryptoState state) noexcept
@@ -560,9 +561,14 @@ bool DatagramChannel::register_connection(
         return false;
     }
     try {
-        std::lock_guard lock(routes_mutex_);
-        return register_connection_locked(
-            protocol_socket_id, runtime);
+        std::unique_lock lock(routes_mutex_);
+        const bool registered =
+            register_connection_locked(protocol_socket_id, runtime);
+        lock.unlock();
+        if (registered) {
+            notify_send_work();
+        }
+        return registered;
     } catch (const std::bad_alloc&) {
         return false;
     } catch (...) {
@@ -576,7 +582,7 @@ bool DatagramChannel::register_connection_locked(
 {
     const auto replay_key = runtime->handshake_replay_key();
     const auto inserted = routes_.emplace(
-        protocol_socket_id, runtime);
+        protocol_socket_id, ConnectionRoute {.runtime = runtime});
     if (!inserted.second) {
         return false;
     }
@@ -591,6 +597,17 @@ bool DatagramChannel::register_connection_locked(
             routes_.erase(inserted.first);
             throw;
         }
+    }
+    auto& route = inserted.first->second;
+    if (next_poll_route_ == nullptr) {
+        route.previous = route.next = &route;
+        next_poll_route_ = &route;
+    } else {
+        // Append behind the routes already waiting for their turn.
+        route.previous = next_poll_route_->previous;
+        route.next = next_poll_route_;
+        route.previous->next = &route;
+        route.next->previous = &route;
     }
     return true;
 }
@@ -638,7 +655,7 @@ bool DatagramChannel::promote_setup_connection(
         return false;
     }
     try {
-        std::lock_guard lock(routes_mutex_);
+        std::unique_lock lock(routes_mutex_);
         const auto setup = setup_routes_.find(protocol_socket_id);
         if (setup == setup_routes_.end()
             || setup->second.inbox != inbox
@@ -652,6 +669,8 @@ bool DatagramChannel::promote_setup_connection(
         // This preserves wire arrival order: newer datagrams cannot enter the
         // runtime before packets received immediately behind the handshake.
         drain_setup_inbox_locked(inbox, runtime, peer);
+        lock.unlock();
+        notify_send_work();
         return true;
     } catch (const std::bad_alloc&) {
         return false;
@@ -668,9 +687,19 @@ void DatagramChannel::unregister_connection(
     if (route == routes_.end()) {
         return;
     }
-    const auto replay_key = route->second->handshake_replay_key();
+    const auto replay_key = route->second.runtime->handshake_replay_key();
     if (replay_key.has_value()) {
         handshake_routes_.erase(*replay_key);
+    }
+    auto& node = route->second;
+    if (node.next == &node) {
+        next_poll_route_ = nullptr;
+    } else {
+        node.previous->next = node.next;
+        node.next->previous = node.previous;
+        if (next_poll_route_ == &node) {
+            next_poll_route_ = node.next;
+        }
     }
     routes_.erase(route);
 }
@@ -753,11 +782,18 @@ void DatagramChannel::clear_listener_inbox(
 
 bool DatagramChannel::start() noexcept
 {
-    return start(acquire_runtime_scheduler(), next_channel_affinity());
+    return start_with_affinity(acquire_runtime_scheduler(), std::nullopt);
 }
 
 bool DatagramChannel::start(std::shared_ptr<RuntimeScheduler> scheduler,
     std::uint64_t affinity) noexcept
+{
+    return start_with_affinity(std::move(scheduler), affinity);
+}
+
+bool DatagramChannel::start_with_affinity(
+    std::shared_ptr<RuntimeScheduler> scheduler,
+    std::optional<std::uint64_t> affinity) noexcept
 {
     std::shared_ptr<ScheduledWorkContext> context;
     try {
@@ -767,6 +803,14 @@ bool DatagramChannel::start(std::shared_ptr<RuntimeScheduler> scheduler,
         return false;
     }
 
+    bool use_readiness = false;
+    {
+        std::lock_guard lock(lifecycle_mutex_);
+        use_readiness = !force_timer_polling_for_testing_;
+    }
+    auto readiness = use_readiness && scheduler != nullptr
+        ? scheduler->acquire_socket_readiness()
+        : nullptr;
     std::lock_guard lifecycle_lock(lifecycle_mutex_);
     if (running()) {
         return true;
@@ -776,22 +820,51 @@ bool DatagramChannel::start(std::shared_ptr<RuntimeScheduler> scheduler,
     }
     scheduler_ = std::move(scheduler);
     scheduled_work_context_ = std::move(context);
-    affinity_ = affinity;
+    socket_readiness_ = std::move(readiness);
+    if (socket_readiness_ != nullptr) {
+        socket_watch_ = socket_readiness_->watch(socket.native_handle(),
+            {.function = socket_readable, .context = scheduled_work_context_});
+    }
+    readiness_available_.store(
+        socket_watch_.valid(), std::memory_order_release);
+    readiness_parked_ = false;
+    // Setup and established-runtime installation can start the same channel.
+    // Allocate a default placement only after the running check, under this
+    // lifecycle lock. Consuming it for no-op starts collapses even-stride
+    // connection creation onto one of the two scheduler shards.
+    affinity_ = affinity.has_value() ? *affinity : next_channel_affinity();
     scheduled_timer_ = {};
     task_active_ = false;
     send_work_notification_pending_ = false;
+    receive_release_pending_ = false;
     active_thread_ = {};
     running_.store(true, std::memory_order_release);
     if (schedule_next_locked(true, std::chrono::microseconds {0})) {
         return true;
     }
     running_.store(false, std::memory_order_release);
+    readiness_available_.store(false, std::memory_order_release);
+    if (socket_readiness_ != nullptr) {
+        socket_readiness_->cancel(socket_watch_);
+    }
+    socket_watch_ = {};
+    socket_readiness_.reset();
     scheduler_.reset();
     scheduled_work_context_.reset();
     return false;
 }
 
 void DatagramChannel::notify_send_work() noexcept
+{
+    notify_work(false);
+}
+
+void DatagramChannel::notify_receive_release() noexcept
+{
+    notify_work(true);
+}
+
+void DatagramChannel::notify_work(bool receive_release) noexcept
 {
     bool scheduling_failed = false;
     {
@@ -800,20 +873,33 @@ void DatagramChannel::notify_send_work() noexcept
             || scheduler_ == nullptr) {
             return;
         }
-        if (!scheduled_timer_.valid()) {
-            if (task_active_) {
-                send_work_notification_pending_ = true;
-            }
+        bool& pending = receive_release ? receive_release_pending_
+                                        : send_work_notification_pending_;
+        // Application reads may share the existing short poll. Do not cancel
+        // and resubmit it per packet, or move its deadline on every read.
+        if (receive_release && scheduled_timer_.valid()
+            && scheduled_deadline_
+                <= std::chrono::steady_clock::now() + idle_wait_) {
             return;
         }
-        if (!scheduler_->cancel_timer(scheduled_timer_)) {
+        if (!scheduled_timer_.valid()) {
+            if (task_active_) {
+                pending = true;
+                return;
+            }
+            if (!readiness_parked_) {
+                return;
+            }
+            readiness_parked_ = false;
+        } else if (!scheduler_->cancel_timer(scheduled_timer_)) {
             // The worker already owns the continuation. Record a follow-up in
             // case it passed this connection before the enqueue completed.
-            send_work_notification_pending_ = true;
+            pending = true;
             return;
         }
         scheduled_timer_ = {};
         send_work_notification_pending_ = false;
+        receive_release_pending_ = false;
         if (!schedule_next_locked(true, std::chrono::microseconds {0})
             && !schedule_next_locked(false, std::chrono::microseconds {0})) {
             running_.store(false, std::memory_order_release);
@@ -830,6 +916,7 @@ void DatagramChannel::set_idle_wait_for_testing(
 {
     std::lock_guard lifecycle_lock(lifecycle_mutex_);
     if (!running_.load(std::memory_order_relaxed)) {
+        force_timer_polling_for_testing_ = true;
         idle_wait_ = std::clamp(timeout, std::chrono::milliseconds {1},
             std::chrono::milliseconds {std::numeric_limits<int>::max()});
     }
@@ -838,13 +925,23 @@ void DatagramChannel::set_idle_wait_for_testing(
 void DatagramChannel::stop() noexcept
 {
     std::shared_ptr<RuntimeScheduler> scheduler;
+    std::shared_ptr<SocketReadiness> readiness;
+    SocketReadiness::Token watch;
     RuntimeScheduler::TimerToken timer;
     {
         std::lock_guard lifecycle_lock(lifecycle_mutex_);
         running_.store(false, std::memory_order_release);
         scheduler = scheduler_;
+        readiness_available_.store(false, std::memory_order_release);
+        readiness_parked_ = false;
+        readiness = std::move(socket_readiness_);
+        watch = socket_watch_;
+        socket_watch_ = {};
         timer = scheduled_timer_;
         scheduled_timer_ = {};
+    }
+    if (readiness != nullptr) {
+        readiness->cancel(watch);
     }
     if (scheduler != nullptr && timer.valid()) {
         (void)scheduler->cancel_timer(timer);
@@ -881,13 +978,23 @@ bool DatagramChannel::schedule_next_locked(
         scheduled_timer_ = {};
         return true;
     }
-    const RuntimeScheduler::ScheduleResult scheduled = scheduler_->schedule_at(
-        affinity_, std::chrono::steady_clock::now() + delay, std::move(task));
+    const auto deadline = std::chrono::steady_clock::now() + delay;
+    const RuntimeScheduler::ScheduleResult scheduled =
+        scheduler_->schedule_at(affinity_, deadline, std::move(task));
     if (scheduled.status != RuntimeScheduler::SubmitStatus::accepted) {
         return false;
     }
     scheduled_timer_ = scheduled.token;
+    scheduled_deadline_ = deadline;
     return true;
+}
+
+void DatagramChannel::socket_readable(void* context) noexcept
+{
+    const auto& work = *static_cast<ScheduledWorkContext*>(context);
+    if (const auto owner = work.owner.lock()) {
+        owner->notify_send_work();
+    }
 }
 
 void DatagramChannel::run_scheduled(void* context) noexcept
@@ -924,13 +1031,37 @@ void DatagramChannel::run_scheduled(
             const bool send_work_notification_pending =
                 send_work_notification_pending_;
             send_work_notification_pending_ = false;
-            const std::chrono::microseconds delay =
-                result.next_work_delay.value_or(idle_wait_);
-            if (!schedule_next_locked(
-                    result.immediate_work || send_work_notification_pending,
-                    delay)) {
-                running_.store(false, std::memory_order_release);
-                scheduling_failed = true;
+            const bool receive_release_pending = receive_release_pending_;
+            receive_release_pending_ = false;
+            const bool immediate =
+                result.immediate_work || send_work_notification_pending;
+            bool armed = false;
+            if (!immediate && result.receive_wait_safe
+                && socket_readiness_ != nullptr && socket_watch_.valid()) {
+                armed = socket_readiness_->arm(socket_watch_);
+                if (!armed) {
+                    readiness_available_.store(
+                        false, std::memory_order_release);
+                }
+            }
+            if (armed && !result.next_work_delay.has_value()
+                && !receive_release_pending) {
+                readiness_parked_ = true;
+            } else {
+                auto delay = result.next_work_delay.value_or(idle_wait_);
+                // A read can follow this runtime's poll while the channel is
+                // still active. Keep a bounded follow-up instead of parking
+                // or waiting for a distant keepalive in that race.
+                if (receive_release_pending
+                    || (!armed && result.receive_wait_safe)) {
+                    delay = std::min(delay,
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            idle_wait_));
+                }
+                if (!schedule_next_locked(immediate, delay)) {
+                    running_.store(false, std::memory_order_release);
+                    scheduling_failed = true;
+                }
             }
         }
     }
@@ -1047,7 +1178,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
         const auto route = routes_.find(
             destination_socket_id);
         if (route != routes_.end()) {
-            runtime = route->second;
+            runtime = route->second.runtime;
         } else {
             const auto setup = setup_routes_.find(
                 destination_socket_id);
@@ -1068,28 +1199,26 @@ void DatagramChannel::mark_connections_broken(int system_error) noexcept
 {
     std::lock_guard lock(routes_mutex_);
     for (const auto& route : routes_) {
-        route.second->mark_broken(system_error);
+        route.second.runtime->mark_broken(system_error);
     }
 }
 
 RuntimePollResult DatagramChannel::run_once() noexcept
 {
     std::array<std::byte, 1500> datagram {};
-    bool received_any = false;
-    for (std::size_t index = 0; index < maximum_receive_batch; ++index) {
+    std::size_t received_count = 0;
+    for (; received_count < maximum_receive_batch; ++received_count) {
         const UdpIoResult received = socket.receive_from(datagram);
         if (received.error == Error::would_block) {
             break;
         }
         if (received.error == Error::buffer_too_small) {
-            received_any = true;
             continue;
         }
         if (!received) {
             mark_connections_broken(received.system_error);
             break;
         }
-        received_any = true;
         const auto decoded = decode_packet(
             std::span {datagram}.first(received.bytes_transferred));
         if (decoded) {
@@ -1099,46 +1228,92 @@ RuntimePollResult DatagramChannel::run_once() noexcept
         }
     }
 
-    bool send_work = false;
-    std::optional<std::chrono::microseconds> next_work_delay;
+    auto result = poll_connections();
+    // A full slice can leave UDP input unread. After would_block, however,
+    // the receive queue is drained: preserve the connection poll deadline
+    // instead of forcing another empty receive and complete route sweep.
+    if (received_count == maximum_receive_batch) {
+        result.immediate_work = true;
+        result.next_work_delay.reset();
+    }
+    return result;
+}
+
+RuntimePollResult DatagramChannel::poll_connections(
+    std::optional<std::chrono::steady_clock::time_point> injected_now) noexcept
+{
+    const auto current_time = [&] {
+        return injected_now.has_value() ? *injected_now
+                                        : std::chrono::steady_clock::now();
+    };
     {
         std::lock_guard lock(routes_mutex_);
-        for (const auto& route : routes_) {
-            const RuntimePollResult result = route.second->poll();
-            send_work = result.immediate_work || send_work;
-            if (result.next_work_delay.has_value()
-                && (!next_work_delay.has_value()
-                    || *result.next_work_delay < *next_work_delay)) {
-                next_work_delay = result.next_work_delay;
-            }
+        if (poll_round_remaining_ == 0U) {
+            poll_round_remaining_ = routes_.size();
+            poll_round_immediate_ = false;
+            poll_round_receive_wait_safe_ = true;
+            poll_round_deadline_.reset();
         }
     }
-    if (send_work || received_any) {
-        return {
-            .immediate_work = true,
-            .next_work_delay = std::nullopt,
-        };
+    std::size_t remaining_send_attempts = maximum_send_batch;
+    for (std::size_t visited = 0;
+        visited < maximum_connection_polls && remaining_send_attempts != 0U;
+        ++visited) {
+        std::shared_ptr<ConnectionRuntime> runtime;
+        {
+            std::lock_guard lock(routes_mutex_);
+            if (next_poll_route_ == nullptr) {
+                poll_round_remaining_ = 0U;
+            }
+            if (poll_round_remaining_ == 0U) {
+                break;
+            }
+            runtime = next_poll_route_->runtime;
+            next_poll_route_ = next_poll_route_->next;
+            --poll_round_remaining_;
+        }
+        // Keep the runtime alive through a concurrent unregister, without
+        // holding the route table across protocol work or nonblocking sends.
+        const auto polled_at = current_time();
+        const auto result = runtime->poll(remaining_send_attempts);
+        poll_round_immediate_ |= result.immediate_work;
+        const bool can_wait =
+            readiness_available_.load(std::memory_order_acquire)
+            && result.receive_wait_safe;
+        poll_round_receive_wait_safe_ &= can_wait;
+        if (can_wait && !result.next_work_delay.has_value()) {
+            continue;
+        }
+        const auto delay = can_wait
+            ? *result.next_work_delay
+            : std::min(result.next_work_delay.value_or(idle_wait_),
+                  std::chrono::duration_cast<std::chrono::microseconds>(
+                      idle_wait_));
+        // Store an absolute deadline: each continuation must not restart an
+        // earlier connection's pacing/backpressure/idle wait.
+        const auto deadline = polled_at + delay;
+        if (!poll_round_deadline_.has_value()
+            || deadline < *poll_round_deadline_) {
+            poll_round_deadline_ = deadline;
+        }
     }
-    if (next_work_delay.has_value()
-        && *next_work_delay < std::chrono::milliseconds {1}) {
-        // Queue the final sub-millisecond pacing slice behind other work on
-        // this affinity shard. This preserves the old yield semantics while
-        // preventing one hot channel from monopolizing the shard.
-        return {
-            .immediate_work = true,
-            .next_work_delay = std::nullopt,
-        };
+    if (poll_round_remaining_ != 0U || poll_round_immediate_) {
+        return {.immediate_work = true};
     }
-    const auto delay = next_work_delay.has_value()
-        ? std::min(idle_wait_,
-              std::max(std::chrono::milliseconds {1},
-                  std::chrono::duration_cast<std::chrono::milliseconds>(
-                      *next_work_delay)))
-        : idle_wait_;
-    return {
-        .next_work_delay =
-            std::chrono::duration_cast<std::chrono::microseconds>(delay),
-    };
+    const bool can_wait = poll_round_receive_wait_safe_
+        && readiness_available_.load(std::memory_order_acquire);
+    if (can_wait && !poll_round_deadline_.has_value()) {
+        return {.receive_wait_safe = true};
+    }
+    const auto delay = poll_round_deadline_.has_value()
+        ? std::chrono::duration_cast<std::chrono::microseconds>(
+              *poll_round_deadline_ - current_time())
+        : std::chrono::duration_cast<std::chrono::microseconds>(idle_wait_);
+    if (delay < std::chrono::milliseconds {1}) {
+        // Preserve the scheduler's existing cooperative pacing behavior.
+        return {.immediate_work = true};
+    }
+    return {.next_work_delay = delay, .receive_wait_safe = can_wait};
 }
 
 ConnectionRuntime::ConnectionRuntime(Configuration configuration)
@@ -1213,6 +1388,7 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
                 .live_rate_configuration());
         session_.set_message_api(configuration.options.message_api());
         if (configuration.group && session_.tsbpd_clock_) {
+            shared_readiness_clock_ = true;
             std::lock_guard lock(configuration.group->mutex);
             if (!configuration.group->closed) {
                 session_.tsbpd_clock_->share_group_clock(
@@ -1353,6 +1529,7 @@ MessageIoResult ConnectionRuntime::queue_message(
         }
         if (peer_error_pending_) {
             peer_error_pending_ = false;
+            notify_readiness();
             return {.status = MessageIoStatus::peer_error};
         }
 
@@ -1382,7 +1559,7 @@ MessageIoResult ConnectionRuntime::queue_message(
             };
             lock.unlock();
             notify_channel_send_work();
-            ReadinessSignal::notify();
+            notify_readiness();
             return result;
         }
         if (queued != Error::buffer_too_small) {
@@ -1426,6 +1603,7 @@ MessageIoResult ConnectionRuntime::queue_group_message(
     }
     if (peer_error_pending_) {
         peer_error_pending_ = false;
+        notify_readiness();
         return {.status = MessageIoStatus::peer_error};
     }
 
@@ -1456,7 +1634,7 @@ MessageIoResult ConnectionRuntime::queue_group_message(
     };
     lock.unlock();
     notify_channel_send_work();
-    ReadinessSignal::notify();
+    notify_readiness();
     return result;
 }
 
@@ -1523,8 +1701,7 @@ MessageIoResult ConnectionRuntime::receive_message(
                 source_time = origin_epoch_microseconds_
                     + static_cast<std::int64_t>(*delivery);
             }
-            ReadinessSignal::notify();
-            return {
+            const MessageIoResult result {
                 .status = MessageIoStatus::success,
                 .bytes = received.bytes_written,
                 .message_number = received.message_number,
@@ -1533,6 +1710,10 @@ MessageIoResult ConnectionRuntime::receive_message(
                     session_.receive_buffer().first_stored_sequence(),
                 .source_time_microseconds = source_time,
             };
+            lock.unlock();
+            notify_channel_receive_release();
+            notify_readiness();
+            return result;
         }
         if (received.error == Error::buffer_too_small) {
             return {.status = MessageIoStatus::buffer_too_small};
@@ -1608,7 +1789,7 @@ bool ConnectionRuntime::discard_received_before(
         return true;
     }
     sample_receiver_buffer_statistics(now_microseconds());
-    ReadinessSignal::notify();
+    notify_readiness();
     return true;
 }
 
@@ -1637,6 +1818,7 @@ MessageIoResult ConnectionRuntime::queue_stream(
         }
         if (peer_error_pending_) {
             peer_error_pending_ = false;
+            notify_readiness();
             return {.status = MessageIoStatus::peer_error};
         }
 
@@ -1657,7 +1839,7 @@ MessageIoResult ConnectionRuntime::queue_stream(
             };
             lock.unlock();
             notify_channel_send_work();
-            ReadinessSignal::notify();
+            notify_readiness();
             return result;
         }
         if (queued.error != Error::buffer_too_small) {
@@ -1694,13 +1876,16 @@ MessageIoResult ConnectionRuntime::receive_stream(
             const std::uint64_t now = now_microseconds();
             session_.note_receive_buffer_released(now);
             sample_receiver_buffer_statistics(now);
-            ReadinessSignal::notify();
-            return {
+            const MessageIoResult result {
                 .status = MessageIoStatus::success,
                 .bytes = received.bytes_written,
                 .message_number = received.message_number,
                 .first_sequence = received.first_sequence,
             };
+            lock.unlock();
+            notify_channel_receive_release();
+            notify_readiness();
+            return result;
         }
         if (locally_closed_) {
             return {.status = MessageIoStatus::local_closed};
@@ -1762,7 +1947,7 @@ bool ConnectionRuntime::service_receiver_tlpktdrop_locked(
         return false;
     }
     receive_ready_.notify_all();
-    ReadinessSignal::notify();
+    notify_readiness();
     return true;
 }
 
@@ -1785,6 +1970,186 @@ ConnectionRuntime::next_receive_wakeup_locked(
               origin_, *delivery)}
         : std::optional<Clock::time_point> {
               deadline_after_relative_microseconds(now, *delivery)};
+}
+
+bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
+    DatagramCompletion completion, std::uint64_t now) noexcept
+{
+    const auto channel = channel_.lock();
+    if (channel == nullptr || bytes.empty()
+        || bytes.size() > DatagramEnvelope::maximum_size) {
+        break_locked(0);
+        return false;
+    }
+    if (pending_datagram_size_ == 0U
+        && (poll_send_budget_ == nullptr || *poll_send_budget_ != 0U)) {
+        if (poll_send_budget_ != nullptr) {
+            --*poll_send_budget_;
+        }
+        const auto sent = channel->send_datagram(bytes, peer_);
+        if (sent) {
+            if (sent.bytes_transferred != bytes.size()) {
+                break_locked(0);
+                return false;
+            }
+            return complete_datagram(bytes, completion, now);
+        }
+        if (sent.error != Error::would_block) {
+            break_locked(sent.system_error);
+            return false;
+        }
+        next_datagram_retry_microseconds_ = now
+            + std::min<std::uint64_t>(
+                1'000U, std::numeric_limits<std::uint64_t>::max() - now);
+    }
+    if (pending_datagram_size_ == pending_datagram_capacity) {
+        break_locked(0);
+        return false;
+    }
+    auto pending = std::unique_ptr<PendingDatagram> {
+        new (std::nothrow) PendingDatagram {}};
+    if (pending == nullptr) {
+        break_locked(0);
+        return false;
+    }
+    std::copy(bytes.begin(), bytes.end(), pending->bytes.begin());
+    pending->size = bytes.size();
+    pending->completion = completion;
+    auto* tail = pending.get();
+    if (pending_datagram_tail_ != nullptr) {
+        pending_datagram_tail_->next = std::move(pending);
+    } else {
+        pending_datagram_head_ = std::move(pending);
+    }
+    pending_datagram_tail_ = tail;
+    ++pending_datagram_size_;
+    return true;
+}
+
+bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
+    const DatagramCompletion& completion, std::uint64_t now) noexcept
+{
+    if (completion.kind == DatagramKind::data) {
+        if (fec_encoder_active() && !completion.data.retransmitted) {
+            const PacketView wire_packet {
+                .kind = PacketKind::data,
+                .data = completion.data,
+                .payload = bytes.subspan(packet_header_size),
+            };
+            if (feed_fec_source(wire_packet) != Error::none) {
+                break_locked(0);
+                return false;
+            }
+        }
+        statistics_.note_data_sent(
+            completion.payload_size, completion.data.retransmitted);
+        diagnostics::trace_udp_submit(now, completion.data.sequence.value(),
+            completion.data.retransmitted, completion.payload_size,
+            session_.send_buffer().size(),
+            session_.send_buffer().packets_in_flight());
+        session_.note_data_packet_sent(now);
+        pacer_.on_packet_sent(bytes.size(), now);
+        if (crypto_ != nullptr && !completion.data.retransmitted
+            && crypto_->note_data_packet_sent() != Error::none) {
+            break_locked(0);
+            return false;
+        }
+    } else {
+        if (completion.kind == DatagramKind::filter) {
+            statistics_.note_sender_filter_extra(completion.payload_size);
+            consume_fec_control();
+            pacer_.on_packet_sent(bytes.size(), now);
+        } else if (completion.kind == DatagramKind::control) {
+            statistics_.note_control_sent(completion.control);
+        } else if (completion.kind == DatagramKind::key_request) {
+            last_key_material_send_microseconds_ = now;
+        }
+        session_.note_packet_sent(now);
+    }
+    return true;
+}
+
+bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
+{
+    if (pending_datagram_size_ == 0U
+        || now < next_datagram_retry_microseconds_) {
+        return true;
+    }
+    const auto channel = channel_.lock();
+    if (channel == nullptr) {
+        break_locked(0);
+        return false;
+    }
+    for (std::size_t count = 0;
+        count < maximum_send_batch && pending_datagram_size_ != 0U; ++count) {
+        auto& pending = *pending_datagram_head_;
+        const auto bytes = std::span {pending.bytes}.first(pending.size);
+        bool current = true;
+        if (pending.completion.kind == DatagramKind::data) {
+            // ACK/TTL/TLPKTDROP can retire a prepared packet during the wait.
+            current = session_.send_buffer().retains_packet(
+                pending.completion.data.sequence);
+        } else if (pending.completion.kind == DatagramKind::key_request) {
+            // An earlier copy may have been acknowledged while this retry
+            // waited. Never let its completion timestamp delay a new rotation.
+            const auto material = crypto_ != nullptr
+                ? crypto_->pending_key_material()
+                : std::span<const std::byte> {};
+            const auto queued_material = bytes.subspan(packet_header_size);
+            current = !material.empty()
+                && material.size() == queued_material.size()
+                && std::equal(
+                    material.begin(), material.end(), queued_material.begin());
+        }
+        if (current) {
+            if (poll_send_budget_ != nullptr) {
+                if (*poll_send_budget_ == 0U) {
+                    return true;
+                }
+                --*poll_send_budget_;
+            }
+            const auto sent = channel->send_datagram(bytes, peer_);
+            if (!sent) {
+                if (sent.error == Error::would_block) {
+                    next_datagram_retry_microseconds_ = now
+                        + std::min<std::uint64_t>(1'000U,
+                            std::numeric_limits<std::uint64_t>::max() - now);
+                    return true;
+                }
+                break_locked(sent.system_error);
+                return false;
+            }
+            if (sent.bytes_transferred != pending.size) {
+                break_locked(0);
+                return false;
+            }
+            if (!complete_datagram(bytes, pending.completion, now)) {
+                return false;
+            }
+        }
+        auto completed = std::move(pending_datagram_head_);
+        pending_datagram_head_ = std::move(completed->next);
+        if (pending_datagram_head_ == nullptr) {
+            pending_datagram_tail_ = nullptr;
+        }
+        --pending_datagram_size_;
+        next_datagram_retry_microseconds_ = 0;
+    }
+    if (pending_datagram_size_ == 0U) {
+        send_ready_.notify_all();
+    }
+    return true;
+}
+
+RuntimePollResult ConnectionRuntime::pending_send_poll_result(
+    std::uint64_t now) const noexcept
+{
+    if (now >= next_datagram_retry_microseconds_) {
+        return {.immediate_work = true};
+    }
+    // A receive-heavy channel may poll repeatedly before the retry deadline;
+    // do not issue another syscall or request sub-millisecond busy polling.
+    return {.next_work_delay = std::chrono::milliseconds {1}};
 }
 
 bool ConnectionRuntime::send_actions(
@@ -1812,11 +2177,6 @@ bool ConnectionRuntime::send_actions(
         }
     }
 
-    const auto channel = channel_.lock();
-    if (channel == nullptr) {
-        break_locked(0);
-        return false;
-    }
     for (std::size_t index = 0; index < actions.size; ++index) {
         std::array<std::byte, 1500> datagram{};
         const auto encoded = encode_reliability_action(
@@ -1829,18 +2189,15 @@ bool ConnectionRuntime::send_actions(
             break_locked(0);
             return false;
         }
-        const UdpIoResult sent = channel->send_datagram(
-            std::span{datagram}.first(encoded.bytes_written), peer_);
-        if (!sent) {
-            break_locked(sent.system_error);
+        const auto type = control_type(actions.values[index].kind);
+        if (!type.has_value()) {
+            break_locked(0);
             return false;
         }
-        const auto type =
-            control_type(actions.values[index].kind);
-        if (type.has_value()) {
-            statistics_.note_control_sent(*type);
+        if (!submit_datagram(std::span {datagram}.first(encoded.bytes_written),
+                {.kind = DatagramKind::control, .control = *type}, now)) {
+            return false;
         }
-        session_.note_packet_sent(now);
     }
     return true;
 }
@@ -1849,11 +2206,6 @@ bool ConnectionRuntime::send_data(
     const OutboundPacket& packet,
     std::uint64_t now) noexcept
 {
-    const auto channel = channel_.lock();
-    if (channel == nullptr) {
-        break_locked(0);
-        return false;
-    }
     MutablePacketView view;
     view.kind = PacketKind::data;
     view.data = packet.header;
@@ -1862,6 +2214,12 @@ bool ConnectionRuntime::send_data(
         && packet.header.encryption_key != EncryptionKey::none;
     const bool authenticated_data =
         crypto_ != nullptr && crypto_->authenticated_data_enabled();
+    if (fec_encoder_active() && !packet.header.retransmitted
+        && authenticated_data
+        && packet.header.boundary != MessageBoundary::solo) {
+        break_locked(0);
+        return false;
+    }
     if (crypto_ != nullptr && crypto_->enabled()
         && !encrypted_retransmission) {
         view.data.encryption_key =
@@ -1929,53 +2287,16 @@ bool ConnectionRuntime::send_data(
             }
         }
     }
-    if (fec_encoder_active()
-        && !packet.header.retransmitted) {
-        if (authenticated_data
-            && packet.header.boundary != MessageBoundary::solo) {
-            // The built-in FEC wire contract can reconstruct only Live/Solo
-            // headers. Never emit parity for an authenticated fragmented
-            // message whose AAD could not be recovered exactly.
-            break_locked(0);
-            return false;
-        }
-        const PacketView wire_packet {
-            .kind = PacketKind::data,
-            .data = view.data,
-            .payload = std::span {datagram}.subspan(
-                packet_header_size, datagram_size - packet_header_size),
-        };
-        if (feed_fec_source(wire_packet)
-            != Error::none) {
-            break_locked(0);
-            return false;
-        }
-    }
-    const UdpIoResult sent = channel->send_datagram(
-        std::span {datagram}.first(datagram_size), peer_);
-    if (!sent) {
-        break_locked(sent.system_error);
-        return false;
-    }
     const std::size_t application_payload_size = authenticated_data
             && encrypted_retransmission
             && packet.payload.size() >= srt_gcm_authentication_tag_size
         ? packet.payload.size() - srt_gcm_authentication_tag_size
         : packet.payload.size();
-    statistics_.note_data_sent(
-        application_payload_size, packet.header.retransmitted);
-    diagnostics::trace_udp_submit(now, packet.header.sequence.value(),
-        packet.header.retransmitted, application_payload_size,
-        session_.send_buffer().size(),
-        session_.send_buffer().packets_in_flight());
-    session_.note_data_packet_sent(now);
-    if (crypto_ != nullptr
-        && !packet.header.retransmitted
-        && crypto_->note_data_packet_sent() != Error::none) {
-        break_locked(0);
-        return false;
-    }
-    return true;
+    return submit_datagram(std::span {datagram}.first(datagram_size),
+        {.kind = DatagramKind::data,
+            .data = view.data,
+            .payload_size = application_payload_size},
+        now);
 }
 
 bool ConnectionRuntime::send_filter_control(
@@ -1988,12 +2309,6 @@ bool ConnectionRuntime::send_filter_control(
     if (!packet.has_value()) {
         return false;
     }
-    const auto channel = channel_.lock();
-    if (channel == nullptr) {
-        break_locked(0);
-        return false;
-    }
-
     MutablePacketView view;
     view.kind = PacketKind::data;
     view.data = packet->header;
@@ -2011,19 +2326,9 @@ bool ConnectionRuntime::send_filter_control(
         break_locked(0);
         return false;
     }
-    const UdpIoResult sent = channel->send_datagram(
-        std::span{datagram}.first(
-            encoded.bytes_written),
-        peer_);
-    if (!sent) {
-        break_locked(sent.system_error);
-        return false;
-    }
-    statistics_.note_sender_filter_extra(
-        packet->payload.size());
-    session_.note_packet_sent(now);
-    consume_fec_control();
-    return true;
+    return submit_datagram(std::span {datagram}.first(encoded.bytes_written),
+        {.kind = DatagramKind::filter, .payload_size = packet->payload.size()},
+        now);
 }
 
 bool ConnectionRuntime::fec_encoder_active() const noexcept
@@ -2168,14 +2473,11 @@ bool ConnectionRuntime::send_key_material(
         break_locked(0);
         return false;
     }
-    const UdpIoResult sent = channel->send_datagram(
-        std::span{datagram}.first(encoded.bytes_written), peer_);
-    if (!sent) {
-        break_locked(sent.system_error);
-        return false;
-    }
-    session_.note_packet_sent(now);
-    return true;
+    return submit_datagram(std::span {datagram}.first(encoded.bytes_written),
+        {.kind = subtype == key_material_request_subtype
+                ? DatagramKind::key_request
+                : DatagramKind::other},
+        now);
 }
 
 bool ConnectionRuntime::send_peer_error_locked(
@@ -2207,14 +2509,8 @@ bool ConnectionRuntime::send_peer_error_locked(
         break_locked(0);
         return false;
     }
-    const UdpIoResult sent = channel->send_datagram(
-        std::span{datagram}.first(encoded.bytes_written), peer_);
-    if (!sent) {
-        break_locked(sent.system_error);
-        return false;
-    }
-    session_.note_packet_sent(now);
-    return true;
+    return submit_datagram(std::span {datagram}.first(encoded.bytes_written),
+        {.kind = DatagramKind::other}, now);
 }
 
 bool ConnectionRuntime::service_key_rotation(
@@ -2253,7 +2549,6 @@ bool ConnectionRuntime::service_key_rotation(
             key_material_request_subtype, key_material, now)) {
         return false;
     }
-    last_key_material_send_microseconds_ = now;
     return true;
 }
 
@@ -2468,7 +2763,7 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         now, session_.send_buffer().size() != 0U);
     last_readable_state_ =
         session_.data_ready_at(now);
-    ReadinessSignal::notify();
+    notify_readiness();
     return true;
 }
 
@@ -2597,7 +2892,7 @@ void ConnectionRuntime::process_packet(
                     // responses cannot remove established keys.
                     crypto_.reset();
                     last_peer_activity_microseconds_ = now;
-                    ReadinessSignal::notify();
+                    notify_readiness();
                     return;
                 }
                 // Apply the same fail-closed rule to an unauthenticated or
@@ -2622,7 +2917,7 @@ void ConnectionRuntime::process_packet(
             last_key_material_send_microseconds_ = 0U;
         }
         last_peer_activity_microseconds_ = now;
-        ReadinessSignal::notify();
+        notify_readiness();
         return;
     }
 
@@ -2664,7 +2959,7 @@ void ConnectionRuntime::process_packet(
                     session_.send_buffer().size() != 0U);
                 last_readable_state_ =
                     session_.data_ready_at(now);
-                ReadinessSignal::notify();
+                notify_readiness();
             } else if (!process_reconstructed(
                            filtered
                                .reconstructed_packets)) {
@@ -2741,22 +3036,37 @@ bool ConnectionRuntime::process_handshake(
         break_locked(0);
         return true;
     }
-    const auto sent = channel->send_datagram(
-        std::span{datagram}.first(encoded.bytes_written), peer_);
-    if (!sent) {
-        break_locked(sent.system_error);
+    if (!submit_datagram(
+            std::span {datagram}.first(encoded.bytes_written), {}, now)) {
         return true;
     }
-    session_.note_packet_sent(now);
-    ReadinessSignal::notify();
+    notify_readiness();
     return true;
 }
 
 RuntimePollResult ConnectionRuntime::poll() noexcept
 {
+    std::size_t remaining_send_attempts = maximum_send_batch;
+    return poll(remaining_send_attempts);
+}
+
+RuntimePollResult ConnectionRuntime::poll(
+    std::size_t& remaining_send_attempts) noexcept
+{
     std::lock_guard lock(mutex_);
+    poll_send_budget_ = &remaining_send_attempts;
+    const auto result = poll_locked();
+    poll_send_budget_ = nullptr;
+    return result;
+}
+
+RuntimePollResult ConnectionRuntime::poll_locked() noexcept
+{
     if (locally_closed_ || peer_closed_ || broken_) {
-        return {};
+        return {.receive_wait_safe = true};
+    }
+    if (*poll_send_budget_ == 0U) {
+        return {.immediate_work = true};
     }
     const std::uint64_t now = now_microseconds();
     if (now > last_peer_activity_microseconds_
@@ -2765,27 +3075,38 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
         break_locked(0);
         return {};
     }
-    if (!service_key_rotation(now)) {
-        return {};
-    }
     if (!service_receiver_tlpktdrop_locked(now)) {
         return {};
     }
     const bool readable_now = session_.data_ready_at(now);
     if (readable_now != last_readable_state_) {
         last_readable_state_ = readable_now;
-        ReadinessSignal::notify();
+        notify_readiness();
     }
     const std::size_t send_size_before_drop =
         session_.send_buffer().size();
-    if (!send_actions(
-            session_.drop_expired_sender_message(now), now)
-        || !send_actions(session_.drop_too_late_sender(now), now)
+    if (!send_actions(session_.drop_expired_sender_message(now), now)
+        || !send_actions(session_.drop_too_late_sender(now), now)) {
+        return {};
+    }
+    if (session_.send_buffer().size() < send_size_before_drop) {
+        sample_sender_buffer_statistics(now);
+        send_ready_.notify_all();
+        notify_readiness();
+    }
+    if (!flush_pending_datagrams(now)) {
+        return {};
+    }
+    if (pending_datagram_size_ != 0U) {
+        return pending_send_poll_result(now);
+    }
+    if (!service_key_rotation(now)
         || !send_actions(session_.poll_timers(now), now)) {
         return {};
     }
     std::size_t pending_drop_requests_sent = 0;
-    while (pending_drop_requests_sent < maximum_send_batch
+    while (pending_datagram_size_ == 0U
+        && pending_drop_requests_sent < maximum_send_batch
         && session_.has_pending_drop_requests()) {
         const auto pending = session_.take_pending_drop_requests();
         if (pending.size == 0U) {
@@ -2796,22 +3117,24 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
         }
         pending_drop_requests_sent += pending.size;
     }
-    if (session_.send_buffer().size() < send_size_before_drop) {
-        sample_sender_buffer_statistics(now);
-        send_ready_.notify_all();
-        ReadinessSignal::notify();
+    if (pending_datagram_size_ != 0U) {
+        return pending_send_poll_result(now);
     }
     statistics_.update_send_duration(
         now, session_.send_buffer().size() != 0U);
     sample_receiver_buffer_statistics(now);
     (void)session_.poll_sender_retransmission_timeout(now);
 
-    for (std::size_t index = 0; index < maximum_send_batch; ++index) {
+    for (std::size_t index = 0;
+        index < maximum_send_batch && *poll_send_budget_ != 0U; ++index) {
         const std::uint64_t packet_time = now_microseconds();
         if (crypto_ != nullptr && crypto_->enabled()) {
             if (!service_key_rotation(packet_time)) {
                 return {};
             }
+        }
+        if (pending_datagram_size_ != 0U) {
+            break;
         }
         if (fec_control_ready()
             && !session_.has_pending_retransmission()) {
@@ -2838,14 +3161,12 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
                 break_locked(0);
                 return {};
             }
-            const std::size_t wire_size =
-                packet_header_size
-                + control->payload.size();
             if (!send_filter_control(packet_time)) {
                 return {};
             }
-            pacer_.on_packet_sent(
-                wire_size, packet_time);
+            if (pending_datagram_size_ != 0U) {
+                break;
+            }
             continue;
         }
         // New data needs the next key acknowledgement. A retransmission
@@ -2866,15 +3187,21 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
             ? srt_gcm_authentication_tag_size
             : 0U;
         const auto packet = session_.next_paced_data_packet(
-            pacer_, packet_time, new_packet_wire_overhead);
+            pacer_, packet_time, new_packet_wire_overhead, true);
         if (!packet.has_value()) {
             break;
         }
         if (!send_data(*packet, packet_time)) {
             return {};
         }
+        if (pending_datagram_size_ != 0U) {
+            break;
+        }
     }
 
+    if (pending_datagram_size_ != 0U) {
+        return pending_send_poll_result(now_microseconds());
+    }
     const bool retransmission =
         session_.has_pending_retransmission();
     const bool pending = session_.has_pending_send_work();
@@ -2900,7 +3227,26 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
     const bool paced_work =
         filter_pending || (pending && !flow_blocked && !crypto_blocked);
     if (!paced_work) {
-        return {};
+        // Start conservatively: buffered DATA, receive delivery/drop work and
+        // pending key exchanges retain the established short polling path.
+        if (!session_.idle_for_receive_wait()
+            || session_.next_receive_delivery_time().has_value()
+            || (crypto_ != nullptr
+                && !crypto_->pending_key_material().empty())) {
+            return {};
+        }
+        const auto current = now_microseconds();
+        const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
+        const auto timeout = last_peer_activity_microseconds_
+            + std::min(peer_idle_timeout_microseconds_ + 1U,
+                maximum - last_peer_activity_microseconds_);
+        const auto deadline =
+            std::min(timeout, session_.next_control_deadline(current));
+        const auto remaining = deadline > current ? deadline - current : 0U;
+        return {.next_work_delay =
+                    std::chrono::microseconds {
+                        std::min<std::uint64_t>(remaining, 1'000'000U)},
+            .receive_wait_safe = true};
     }
 
     const std::uint64_t current = now_microseconds();
@@ -2920,6 +3266,15 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
     };
 }
 
+void ConnectionRuntime::notify_readiness() noexcept
+{
+    // A shared group clock can move another member's delivery deadline.
+    if (shared_readiness_clock_)
+        ReadinessSignal::notify();
+    else
+        ReadinessSignal::notify(*readiness_source_);
+}
+
 void ConnectionRuntime::apply_options(
     const SocketOptions& options) noexcept
 {
@@ -2929,6 +3284,7 @@ void ConnectionRuntime::apply_options(
     statistics_.update_reorder_state(
         session_.reorder_distance_packets(),
         session_.reorder_tolerance_packets());
+    notify_readiness();
 }
 
 void ConnectionRuntime::break_locked(int system_error) noexcept
@@ -2938,16 +3294,27 @@ void ConnectionRuntime::break_locked(int system_error) noexcept
         now, session_.send_buffer().size() != 0U);
     statistics_.update_send_duration(now, false);
     broken_ = true;
+    pending_datagram_head_.reset();
+    pending_datagram_tail_ = nullptr;
+    pending_datagram_size_ = 0U;
+    next_datagram_retry_microseconds_ = 0U;
     system_error_ = system_error;
     receive_ready_.notify_all();
     send_ready_.notify_all();
-    ReadinessSignal::notify();
+    notify_readiness();
 }
 
 void ConnectionRuntime::notify_channel_send_work() noexcept
 {
     if (const auto channel = channel_.lock(); channel != nullptr) {
         channel->notify_send_work();
+    }
+}
+
+void ConnectionRuntime::notify_channel_receive_release() noexcept
+{
+    if (const auto channel = channel_.lock(); channel != nullptr) {
+        channel->notify_receive_release();
     }
 }
 
@@ -2960,12 +3327,18 @@ void ConnectionRuntime::mark_broken(int system_error) noexcept
 bool ConnectionRuntime::report_peer_error(
     std::int32_t error_code) noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
     if (locally_closed_ || peer_closed_ || broken_) {
         return false;
     }
-    return send_peer_error_locked(
-        error_code, now_microseconds());
+    const bool accepted =
+        send_peer_error_locked(error_code, now_microseconds());
+    const bool deferred = pending_datagram_size_ != 0U;
+    lock.unlock();
+    if (deferred) {
+        notify_channel_send_work();
+    }
+    return accepted;
 }
 
 void ConnectionRuntime::close() noexcept
@@ -2984,9 +3357,13 @@ void ConnectionRuntime::close() noexcept
         now, session_.send_buffer().size() != 0U);
     statistics_.update_send_duration(now, false);
     locally_closed_ = true;
+    pending_datagram_head_.reset();
+    pending_datagram_tail_ = nullptr;
+    pending_datagram_size_ = 0U;
+    next_datagram_retry_microseconds_ = 0U;
     receive_ready_.notify_all();
     send_ready_.notify_all();
-    ReadinessSignal::notify();
+    notify_readiness();
 }
 
 bool ConnectionRuntime::broken() const noexcept
@@ -3047,13 +3424,14 @@ bool ConnectionRuntime::wait_for_send_drain(
 {
     std::unique_lock lock(mutex_);
     const auto complete = [this] {
-        return session_.send_buffer().size() == 0U
+        return (session_.send_buffer().size() == 0U
+                   && pending_datagram_size_ == 0U)
             || locally_closed_ || peer_closed_ || broken_;
     };
     if (!complete() && timeout.count() > 0) {
         (void)send_ready_.wait_for(lock, timeout, complete);
     }
-    return session_.send_buffer().size() == 0U;
+    return session_.send_buffer().size() == 0U && pending_datagram_size_ == 0U;
 }
 
 CryptoState ConnectionRuntime::sender_crypto_state() const noexcept

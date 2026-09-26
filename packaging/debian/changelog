@@ -1,3 +1,9 @@
+robotweax-srt (0.2.6-1) noble; urgency=medium
+
+  * Package the immutable 0.2.6 performance optimization source.
+
+ -- Robotweax GmbH <srtpioneer@proton.me>  Sat, 26 Sep 2026 10:30:00 +0000
+
 robotweax-srt (0.2.5-1) noble; urgency=medium
 
   * Package the immutable Robotweax SRT 0.2.5 release with namespaced files.

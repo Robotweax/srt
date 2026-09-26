@@ -7,6 +7,8 @@
 namespace robotweax::srt::compat {
 
 void epoll_initialize() noexcept;
+[[nodiscard]] std::uint64_t epoll_readiness_queries_for_testing(
+    int eid) noexcept;
 [[nodiscard]] int epoll_create() noexcept;
 [[nodiscard]] int epoll_clear_usocks(int eid) noexcept;
 [[nodiscard]] int epoll_add_usock(

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import secrets
 import subprocess
 import sys
@@ -18,6 +17,7 @@ from interop_common import (
     free_udp_port,
     resolve_program_path,
     terminate,
+    valid_buffer_diagnostics,
     write_deterministic_payload,
 )
 from run_file_interop import (
@@ -297,38 +297,6 @@ def passphrase_mismatch_scenario_matrix(
             ),
         )
     ]
-
-
-# The ordinary socket logger can precede the peer's terminal rejection line.
-# Accept only its exact buffer diagnostic, at most once per direction. Keep
-# unknown output, duplicate/late rejection lines and all wire/exit checks fatal.
-UDP_BUFFER_DIAGNOSTIC = re.compile(
-    r"[0-9]+/(?:0x)?[0-9a-fA-F]+(?P<severity>[WD]):socket: "
-    r"UDP (?P<direction>send|receive) buffer: "
-    r"requested=(?P<requested>[0-9]+) effective=(?P<effective>[0-9]+) "
-    r"kernel=(?P<kernel>[0-9]+) bytes; attempts=(?P<attempts>[0-9]+) "
-    r"fallback=(?P<fallback>yes|no)"
-)
-
-
-def valid_buffer_diagnostics(lines: list[str]) -> bool:
-    directions: set[str] = set()
-    for line in lines:
-        match = UDP_BUFFER_DIAGNOSTIC.fullmatch(line)
-        if match is None or match['direction'] in directions:
-            return False
-        directions.add(match['direction'])
-        requested, effective, kernel = (int(match[key]) for key in
-                                        ('requested', 'effective', 'kernel'))
-        attempts = int(match['attempts'])
-        fallback = match['fallback'] == 'yes'
-        if (not all(0 < value <= 2**31 - 1 for value in (requested, effective, kernel))
-                or kernel not in (effective, 2 * effective)
-                or not 1 <= attempts <= 32
-                or (not fallback and attempts != 1)
-                or match['severity'] != ('W' if fallback or effective < requested else 'D')):
-            return False
-    return True
 
 
 def validate_passphrase_mismatch(

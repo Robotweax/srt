@@ -2,7 +2,10 @@
 
 #include "robotweax/srt/send_buffer.hpp"
 
+#include <algorithm>
 #include <array>
+#include <limits>
+#include <utility>
 #include <cstddef>
 
 using namespace robotweax::srt;
@@ -453,4 +456,311 @@ TEST(send_buffer_tail_probe_skips_expired_tail_across_sequence_wrap)
     REQUIRE(probe.has_value());
     REQUIRE_EQ(probe->header.sequence, SequenceNumber {SequenceNumber::mask});
     REQUIRE(probe->header.retransmitted);
+}
+
+TEST(send_buffer_original_order_survives_ack_retransmission_and_ring_wrap)
+{
+    const SequenceNumber initial {SequenceNumber::mask - 1U};
+    SendBuffer buffer {initial, 5, 1};
+    const std::array<std::byte, 3> first {
+        std::byte {1}, std::byte {2}, std::byte {3}};
+    REQUIRE_EQ(
+        buffer.enqueue_message(first, 1, PacketTimestamp {7}, 99), Error::none);
+    const auto first_packet = buffer.next_packet();
+    REQUIRE(first_packet.has_value());
+    REQUIRE_EQ(first_packet->header.sequence, initial);
+    const auto second_packet = buffer.next_packet();
+    REQUIRE(second_packet.has_value());
+    REQUIRE_EQ(second_packet->header.sequence, initial.next());
+    REQUIRE_EQ(buffer.acknowledge_before(initial.next()), Error::none);
+    REQUIRE_EQ(buffer.acknowledge_before(initial), Error::none);
+    REQUIRE_EQ(buffer.acknowledge_before(initial.advanced(9)),
+        Error::invalid_control_payload);
+
+    const std::array<std::byte, 3> second {
+        std::byte {4}, std::byte {5}, std::byte {6}};
+    REQUIRE_EQ(buffer.enqueue_message(second, 2, PacketTimestamp {8}, 99),
+        Error::none);
+    REQUIRE_EQ(buffer.request_retransmission(
+                   {.first = initial.next(), .last = initial.next()}),
+        Error::none);
+    const auto retry = buffer.next_packet();
+    REQUIRE(retry.has_value());
+    REQUIRE(retry->header.retransmitted);
+    REQUIRE_EQ(retry->payload.front(), std::byte {2});
+    for (std::uint32_t index = 2; index < 6; ++index) {
+        const auto packet = buffer.next_packet();
+        REQUIRE(packet.has_value());
+        REQUIRE_EQ(packet->header.sequence, initial.advanced(index));
+        REQUIRE(!packet->header.retransmitted);
+        REQUIRE_EQ(packet->payload.front(), static_cast<std::byte>(index + 1U));
+    }
+    REQUIRE_EQ(buffer.packets_in_flight(), 5U);
+    REQUIRE(!buffer.next_packet().has_value());
+    REQUIRE_EQ(buffer.acknowledge_before(initial.advanced(6)), Error::none);
+    REQUIRE_EQ(buffer.packets_in_flight(), 0U);
+    REQUIRE_EQ(buffer.available(), 5U);
+}
+
+TEST(send_buffer_late_drop_rebases_original_selection_before_and_after_cursor)
+{
+    // Exercise a removed prefix shorter than, equal to, and longer than the
+    // already selected prefix, including a completely unsent buffer.
+    for (std::size_t sent = 0; sent <= 3; ++sent) {
+        SendBuffer buffer {SequenceNumber {100}, 5, 1};
+        const std::array<std::byte, 2> old_message {};
+        const std::array<std::byte, 1> recent_message {std::byte {42}};
+        REQUIRE_EQ(buffer.enqueue_message(
+                       old_message, 1, PacketTimestamp {1}, 99, true, 10),
+            Error::none);
+        REQUIRE_EQ(buffer.enqueue_message(
+                       recent_message, 2, PacketTimestamp {2}, 99, true, 20),
+            Error::none);
+        for (std::size_t index = 0; index < sent; ++index) {
+            REQUIRE(buffer.next_packet().has_value());
+        }
+        REQUIRE_EQ(buffer.drop_messages_older_than(10).packets, 2U);
+        REQUIRE_EQ(buffer.first_sequence(), SequenceNumber {102});
+        if (sent < 3U) {
+            const auto packet = buffer.next_packet();
+            REQUIRE(packet.has_value());
+            REQUIRE_EQ(packet->header.sequence, SequenceNumber {102});
+            REQUIRE_EQ(packet->payload.front(), std::byte {42});
+        }
+        REQUIRE(!buffer.next_packet().has_value());
+        REQUIRE_EQ(buffer.packets_in_flight(), 1U);
+        REQUIRE_EQ(buffer.enqueue_message(
+                       recent_message, 3, PacketTimestamp {3}, 99, true, 30),
+            Error::none);
+        const auto appended = buffer.next_packet();
+        REQUIRE(appended.has_value());
+        REQUIRE_EQ(appended->header.sequence, SequenceNumber {103});
+        REQUIRE(!appended->header.retransmitted);
+    }
+}
+
+TEST(send_buffer_skips_expired_originals_without_losing_later_appends)
+{
+    const SequenceNumber initial {SequenceNumber::mask};
+    SendBuffer buffer {initial, 5, 1};
+    const std::array<std::byte, 1> payload {std::byte {7}};
+    const std::array<std::byte, 2> expires {};
+    REQUIRE_EQ(buffer.enqueue_message(payload, 1, PacketTimestamp {0}, 99),
+        Error::none);
+    REQUIRE(buffer.next_packet().has_value());
+    REQUIRE_EQ(buffer.enqueue_message(
+                   expires, 2, PacketTimestamp {0}, 99, true, 1, 10),
+        Error::none);
+    REQUIRE_EQ(buffer.drop_expired_message(11).packets, 2U);
+    REQUIRE(!buffer.next_packet().has_value());
+    REQUIRE(!buffer.next_packet().has_value());
+    REQUIRE_EQ(buffer.enqueue_message(payload, 3, PacketTimestamp {0}, 99),
+        Error::none);
+    REQUIRE_EQ(buffer.request_retransmission(
+                   {.first = initial, .last = initial.advanced(2)}),
+        Error::none);
+    const auto retry = buffer.next_packet();
+    REQUIRE(retry.has_value());
+    REQUIRE(retry->header.retransmitted);
+    REQUIRE_EQ(retry->header.sequence, initial);
+    REQUIRE(buffer.next_pending_drop_request().has_value());
+    const auto appended = buffer.next_packet();
+    REQUIRE(appended.has_value());
+    REQUIRE_EQ(appended->header.sequence, initial.advanced(3));
+    REQUIRE(!appended->header.retransmitted);
+    REQUIRE_EQ(buffer.packets_in_flight(), 2U);
+    REQUIRE(!buffer.next_packet().has_value());
+}
+
+TEST(send_buffer_resumes_after_unsent_ack_full_drop_and_group_resynchronization)
+{
+    SendBuffer buffer {SequenceNumber {10}, 4, 1};
+    const std::array<std::byte, 3> message {};
+    REQUIRE_EQ(buffer.enqueue_message(message, 1, PacketTimestamp {0}, 99),
+        Error::none);
+    REQUIRE(buffer.next_packet().has_value());
+    // The buffer-level ACK contract permits releasing queued originals;
+    // session-level wire validation is independent of packet selection.
+    REQUIRE_EQ(buffer.acknowledge_before(SequenceNumber {12}), Error::none);
+    const auto remaining = buffer.next_packet();
+    REQUIRE(remaining.has_value());
+    REQUIRE_EQ(remaining->header.sequence, SequenceNumber {12});
+    REQUIRE_EQ(buffer.drop_messages_older_than(0).packets, 1U);
+    REQUIRE(buffer.synchronize_empty(SequenceNumber {SequenceNumber::mask}));
+    REQUIRE_EQ(buffer.enqueue_message(message, 2, PacketTimestamp {0}, 99),
+        Error::none);
+    for (std::uint32_t index = 0; index < 3; ++index) {
+        const auto packet = buffer.next_packet();
+        REQUIRE(packet.has_value());
+        REQUIRE_EQ(packet->header.sequence,
+            SequenceNumber {SequenceNumber::mask}.advanced(index));
+    }
+    REQUIRE(!buffer.next_packet().has_value());
+    REQUIRE_EQ(buffer.acknowledge_before(SequenceNumber {2}), Error::none);
+    REQUIRE_EQ(buffer.enqueue_stream(message, 3, PacketTimestamp {0}, 99)
+                   .bytes_accepted,
+        message.size());
+    for (std::uint32_t index = 0; index < 3; ++index) {
+        const auto packet = buffer.next_packet();
+        REQUIRE(packet.has_value());
+        REQUIRE_EQ(packet->header.sequence, SequenceNumber {2}.advanced(index));
+    }
+    REQUIRE(!buffer.next_packet().has_value());
+}
+
+TEST(send_buffer_retains_packet_tracks_tombstones_ack_and_recycled_slots)
+{
+    const SequenceNumber initial {SequenceNumber::mask};
+    SendBuffer buffer {initial, 3, 1};
+    const std::array payload {std::byte {7}};
+    REQUIRE(!buffer.retains_packet(initial));
+    REQUIRE_EQ(buffer.enqueue_message(payload, 1, PacketTimestamp {0}, 99),
+        Error::none);
+    REQUIRE_EQ(buffer.enqueue_message(
+                   payload, 2, PacketTimestamp {0}, 99, true, 1, 10),
+        Error::none);
+    REQUIRE_EQ(buffer.enqueue_message(payload, 3, PacketTimestamp {0}, 99),
+        Error::none);
+    REQUIRE(buffer.retains_packet(initial));
+    REQUIRE(buffer.retains_packet(initial.next()));
+    REQUIRE_EQ(buffer.drop_expired_message(11).packets, 1U);
+    REQUIRE(!buffer.retains_packet(initial.next()));
+    REQUIRE(buffer.retains_packet(initial.advanced(2)));
+    REQUIRE(!buffer.retains_packet(initial.advanced(3)));
+    REQUIRE_EQ(buffer.acknowledge_before(initial.advanced(2)), Error::none);
+    REQUIRE(!buffer.retains_packet(initial));
+    REQUIRE_EQ(buffer.enqueue_message(payload, 4, PacketTimestamp {0}, 99),
+        Error::none);
+    REQUIRE(buffer.retains_packet(initial.advanced(3)));
+    REQUIRE(!buffer.retains_packet(initial));
+}
+
+TEST(send_buffer_payload_reuse_keeps_full_capacity_and_independent_copies)
+{
+    const SequenceNumber initial {SequenceNumber::mask - 3U};
+    SendBuffer buffer {initial, 8};
+    std::array<std::byte, maximum_data_payload_size> payload {};
+    const std::byte* reused = nullptr;
+    for (unsigned round = 0; round < 40; ++round) {
+        payload.fill(static_cast<std::byte>(round));
+        const auto bytes =
+            std::span {payload}.first(round % 2 ? 1 : payload.size());
+        REQUIRE_EQ(buffer.enqueue_message(bytes, round, PacketTimestamp {}, 1),
+            Error::none);
+        const auto packet = buffer.next_packet();
+        REQUIRE(packet);
+        if (reused)
+            REQUIRE_EQ(packet->payload.data(), reused);
+        reused = packet->payload.data();
+        REQUIRE_EQ(packet->payload.size(), bytes.size());
+        REQUIRE(
+            std::equal(bytes.begin(), bytes.end(), packet->payload.begin()));
+        REQUIRE_EQ(
+            buffer.acknowledge_before(buffer.next_sequence()), Error::none);
+    }
+    for (unsigned index = 0; index < 8; ++index) {
+        payload.fill(static_cast<std::byte>(index));
+        REQUIRE_EQ(
+            buffer.enqueue_message(payload, index, PacketTimestamp {}, 1),
+            Error::none);
+    }
+    REQUIRE_EQ(buffer.available(), 0U);
+    SendBuffer copy = buffer;
+    SendBuffer assigned {SequenceNumber {}, 1};
+    assigned = buffer;
+    SendBuffer moved = std::move(copy);
+    REQUIRE_EQ(buffer.acknowledge_before(buffer.next_sequence()), Error::none);
+    payload.fill(std::byte {0xee});
+    REQUIRE_EQ(buffer.enqueue_message(payload, 100, PacketTimestamp {}, 1),
+        Error::none);
+    for (auto* independent : {&assigned, &moved}) {
+        for (unsigned index = 0; index < 8; ++index) {
+            const auto packet = independent->next_packet();
+            REQUIRE(packet);
+            REQUIRE_EQ(packet->payload.size(), payload.size());
+            REQUIRE(std::all_of(packet->payload.begin(), packet->payload.end(),
+                [index](std::byte byte) {
+                    return byte == static_cast<std::byte>(index);
+                }));
+        }
+    }
+}
+
+TEST(send_buffer_payload_tombstones_do_not_own_reused_ciphertext)
+{
+    SendBuffer buffer {SequenceNumber {100}, 4, 4};
+    const std::array<std::byte, 4> clear {};
+    const std::array<std::byte, 4> cipher {
+        std::byte {1}, std::byte {2}, std::byte {3}, std::byte {4}};
+    REQUIRE_EQ(
+        buffer.enqueue_message(clear, 1, PacketTimestamp {}, 1, true, 1, 10),
+        Error::none);
+    const auto first = buffer.next_packet();
+    REQUIRE(first);
+    const auto* address = first->payload.data();
+    REQUIRE(buffer.drop_expired_message(11));
+    REQUIRE_EQ(
+        buffer.enqueue_message(clear, 2, PacketTimestamp {}, 1), Error::none);
+    const auto second = buffer.next_packet();
+    REQUIRE(second);
+    REQUIRE_EQ(second->payload.data(), address);
+    REQUIRE_EQ(buffer.preserve_encrypted_payload(
+                   second->header.sequence, EncryptionKey::even, cipher),
+        Error::none);
+    // Retiring the old sequence tombstone must not release the new owner.
+    REQUIRE_EQ(buffer.acknowledge_before(second->header.sequence), Error::none);
+    SendBuffer copy = buffer;
+    REQUIRE_EQ(buffer.acknowledge_before(buffer.next_sequence()), Error::none);
+    REQUIRE_EQ(copy.request_retransmission(
+                   {second->header.sequence, second->header.sequence}),
+        Error::none);
+    const auto retransmit = copy.next_packet();
+    REQUIRE(retransmit);
+    REQUIRE_EQ(retransmit->header.encryption_key, EncryptionKey::even);
+    REQUIRE(
+        std::equal(cipher.begin(), cipher.end(), retransmit->payload.begin()));
+}
+
+TEST(send_buffer_invalid_dimensions_fail_before_reserving_payload)
+{
+    for (const auto capacity :
+        {std::size_t {0}, std::size_t {SequenceNumber::half_range},
+            std::numeric_limits<std::size_t>::max()}) {
+        bool rejected = false;
+        try {
+            SendBuffer buffer {SequenceNumber {}, capacity};
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        REQUIRE(rejected);
+    }
+}
+
+TEST(send_buffer_payload_pool_preserves_maximum_gcm_tag_across_copy_and_reuse)
+{
+    SendBuffer buffer {SequenceNumber {SequenceNumber::mask}, 2,
+        maximum_data_payload_size - srt_gcm_authentication_tag_size};
+    std::array<std::byte, maximum_data_payload_size> wire {};
+    for (std::size_t i = 0; i < wire.size(); ++i)
+        wire[i] = static_cast<std::byte>(i);
+    for (unsigned iteration = 0; iteration < 6; ++iteration) {
+        const auto seq = buffer.next_sequence();
+        REQUIRE_EQ(
+            buffer.enqueue_message(std::span {wire}.first(wire.size()
+                                       - srt_gcm_authentication_tag_size),
+                1, PacketTimestamp {}, 1),
+            Error::none);
+        REQUIRE(buffer.next_packet());
+        REQUIRE_EQ(buffer.preserve_protected_payload(
+                       seq, EncryptionKey::odd, CryptoMode::aes_gcm, wire),
+            Error::none);
+        SendBuffer copy = buffer;
+        REQUIRE_EQ(buffer.acknowledge_before(seq.next()), Error::none);
+        REQUIRE_EQ(copy.request_retransmission({seq, seq}), Error::none);
+        const auto retransmit = copy.next_packet();
+        REQUIRE(retransmit);
+        REQUIRE_EQ(retransmit->payload.size(), wire.size());
+        REQUIRE(
+            std::equal(wire.begin(), wire.end(), retransmit->payload.begin()));
+    }
 }

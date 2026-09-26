@@ -38,6 +38,15 @@ struct Subscription {
     int edge_seen = 0;
     std::uint64_t update_seen = 0;
     std::uint64_t update_pending = 0;
+    SRTSOCKET handle = SRT_INVALID_SOCK;
+    SocketReadinessSnapshot cached;
+    std::unique_ptr<ReadinessWatch> watch;
+    Subscription* ready_previous = nullptr;
+    Subscription* ready_next = nullptr;
+    bool ready = false;
+    int report = 0;
+    std::optional<Clock::time_point> deadline;
+    std::size_t heap_index = 0;
 };
 
 using SubjectReadiness = SocketReadinessSnapshot;
@@ -55,6 +64,12 @@ using SystemPollDescriptor = pollfd;
 
 struct PollRecord {
     std::mutex mutex;
+    // Declared before subscriptions: watches unlink before their observer dies.
+    ReadinessObserver observer;
+    std::vector<SRTSOCKET> changed_scratch;
+    std::vector<Subscription*> deadlines;
+    Subscription* ready_head = nullptr;
+    std::uint64_t readiness_queries = 0;
     std::unordered_map<SRTSOCKET, Subscription> user_sockets;
     std::unordered_map<SYSSOCKET, int> system_sockets;
     std::vector<SRT_EPOLL_EVENT> user_ready_scratch;
@@ -118,9 +133,11 @@ public:
             std::lock_guard lock(record->mutex);
             record->released = true;
             record->user_sockets.clear();
+            record->ready_head = nullptr;
+            record->deadlines.clear();
             record->system_sockets.clear();
         }
-        ReadinessSignal::notify();
+        record->observer.wake();
         return true;
     }
 
@@ -135,9 +152,11 @@ public:
             std::lock_guard lock(entry.second->mutex);
             entry.second->released = true;
             entry.second->user_sockets.clear();
+            entry.second->ready_head = nullptr;
+            entry.second->deadlines.clear();
             entry.second->system_sockets.clear();
+            entry.second->observer.wake();
         }
-        ReadinessSignal::notify();
     }
 
 private:
@@ -279,80 +298,212 @@ private:
         : socket_readiness(handle);
 }
 
-void collect_user_events(PollRecord& record)
+void remove_ready(PollRecord& record, Subscription& subscription) noexcept
 {
+    if (!subscription.ready)
+        return;
+    if (subscription.ready_next == &subscription)
+        record.ready_head = nullptr;
+    else {
+        subscription.ready_previous->ready_next = subscription.ready_next;
+        subscription.ready_next->ready_previous = subscription.ready_previous;
+        if (record.ready_head == &subscription)
+            record.ready_head = subscription.ready_next;
+    }
+    subscription.ready = false;
+    subscription.ready_next = subscription.ready_previous = nullptr;
+}
+void append_ready(PollRecord& record, Subscription& subscription) noexcept
+{
+    if (subscription.ready)
+        return;
+    if (record.ready_head == nullptr) {
+        record.ready_head = &subscription;
+        subscription.ready_previous = subscription.ready_next = &subscription;
+    } else {
+        auto* tail = record.ready_head->ready_previous;
+        subscription.ready_previous = tail;
+        subscription.ready_next = record.ready_head;
+        tail->ready_next = &subscription;
+        record.ready_head->ready_previous = &subscription;
+    }
+    subscription.ready = true;
+}
+bool earlier(Subscription* left, Subscription* right) noexcept
+{
+    return *left->deadline < *right->deadline;
+}
+void heap_swap(PollRecord& record, std::size_t left, std::size_t right) noexcept
+{
+    std::swap(record.deadlines[left], record.deadlines[right]);
+    record.deadlines[left]->heap_index = left;
+    record.deadlines[right]->heap_index = right;
+}
+void repair_heap(PollRecord& record, std::size_t index) noexcept
+{
+    while (index != 0U
+        && earlier(
+            record.deadlines[index], record.deadlines[(index - 1) / 2])) {
+        const auto parent = (index - 1) / 2;
+        heap_swap(record, index, parent);
+        index = parent;
+    }
+    for (;;) {
+        const auto left = index * 2 + 1;
+        if (left >= record.deadlines.size())
+            break;
+        auto child = left;
+        if (left + 1 < record.deadlines.size()
+            && earlier(record.deadlines[left + 1], record.deadlines[left]))
+            child = left + 1;
+        if (!earlier(record.deadlines[child], record.deadlines[index]))
+            break;
+        heap_swap(record, index, child);
+        index = child;
+    }
+}
+void remove_deadline(PollRecord& record, Subscription& subscription) noexcept
+{
+    if (!subscription.deadline.has_value())
+        return;
+    const auto index = subscription.heap_index;
+    heap_swap(record, index, record.deadlines.size() - 1);
+    record.deadlines.pop_back();
+    subscription.deadline.reset();
+    if (index < record.deadlines.size())
+        repair_heap(record, index);
+}
+void update_report(PollRecord& record, Subscription& subscription) noexcept
+{
+    const auto& readiness = subscription.cached;
+    const int watched =
+        subscription.events & (SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR);
+    const int current =
+        (readiness.exists ? readiness.events : SRT_EPOLL_ERR) & watched;
+    const bool edge = (subscription.events & SRT_EPOLL_ET) != 0;
+    subscription.report = edge ? current & ~subscription.edge_seen : current;
+    if (edge)
+        subscription.edge_seen &= current;
+    if ((subscription.events & SRT_EPOLL_UPDATE) != 0
+        && readiness.update_version != subscription.update_seen) {
+        subscription.update_pending = readiness.update_version;
+        subscription.report |= SRT_EPOLL_UPDATE;
+    }
+    if (subscription.report != 0)
+        append_ready(record, subscription);
+    else
+        remove_ready(record, subscription);
+}
+void refresh_subscription(PollRecord& record, Subscription& subscription)
+{
+    ++record.readiness_queries;
+    auto readiness =
+        subject_readiness(subscription.handle, record.group_member_scratch);
+    if (subscription.watch->bind(readiness.source)) {
+        // Subscribe before the final query: a change between the initial query
+        // and attachment must not leave a cached state without a notification.
+        ++record.readiness_queries;
+        readiness =
+            subject_readiness(subscription.handle, record.group_member_scratch);
+    }
+    subscription.cached = std::move(readiness);
+    update_report(record, subscription);
+    remove_deadline(record, subscription);
+    if ((subscription.events & SRT_EPOLL_IN) != 0
+        && (subscription.cached.events & SRT_EPOLL_IN) == 0
+        && subscription.cached.read_wakeup.has_value()) {
+        subscription.deadline = subscription.cached.read_wakeup;
+        subscription.heap_index = record.deadlines.size();
+        record.deadlines.push_back(&subscription);
+        repair_heap(record, subscription.heap_index);
+    }
+}
+void erase_subscription(PollRecord& record, SRTSOCKET socket) noexcept
+{
+    const auto found = record.user_sockets.find(socket);
+    if (found == record.user_sockets.end())
+        return;
+    remove_ready(record, found->second);
+    remove_deadline(record, found->second);
+    record.user_sockets.erase(found);
+}
+void set_subscription(
+    PollRecord& record, SRTSOCKET socket, int events, std::uint64_t version)
+{
+    if (events == 0) {
+        erase_subscription(record, socket);
+        return;
+    }
+    const auto capacity = record.user_sockets.size() + 1;
+    const auto reserve = [](auto& values, std::size_t needed) {
+        if (values.capacity() < needed)
+            values.reserve(std::max(needed, values.capacity() * 2));
+    };
+    reserve(record.changed_scratch, capacity * 2);
+    reserve(record.user_ready_scratch, capacity);
+    reserve(record.deadlines, capacity);
+    Subscription replacement;
+    replacement.events = events;
+    replacement.update_seen = replacement.update_pending = version;
+    replacement.handle = socket;
+    replacement.watch = std::make_unique<ReadinessWatch>(
+        record.observer, socket, is_group_handle(socket));
+    auto [entry, inserted] = record.user_sockets.try_emplace(socket);
+    (void)inserted;
+    remove_ready(record, entry->second);
+    remove_deadline(record, entry->second);
+    entry->second = std::move(replacement);
+}
+void collect_user_events(PollRecord& record,
+    std::size_t maximum = std::numeric_limits<std::size_t>::max())
+{
+    const bool all = record.observer.take_changes(record.changed_scratch);
+    if (all) {
+        for (auto& entry : record.user_sockets)
+            refresh_subscription(record, entry.second);
+    } else {
+        const auto now = Clock::now();
+        // Capture due entries before refreshing: an overdue timestamp returned
+        // by a concurrent transition must not spin inside this collection.
+        while (!record.deadlines.empty()
+            && *record.deadlines.front()->deadline <= now) {
+            auto* subscription = record.deadlines.front();
+            record.changed_scratch.push_back(subscription->handle);
+            remove_deadline(record, *subscription);
+        }
+        for (auto handle : record.changed_scratch) {
+            const auto entry = record.user_sockets.find(handle);
+            if (entry != record.user_sockets.end())
+                refresh_subscription(record, entry->second);
+        }
+    }
+    record.next_user_wakeup = record.deadlines.empty()
+        ? std::nullopt
+        : record.deadlines.front()->deadline;
     auto& ready = record.user_ready_scratch;
     ready.clear();
-    record.next_user_wakeup.reset();
-    ready.reserve(record.user_sockets.size());
-    for (auto& entry : record.user_sockets) {
-        Subscription& subscription = entry.second;
-        const SubjectReadiness readiness =
-            subject_readiness(
-                entry.first, record.group_member_scratch);
-        const int watched = subscription.events
-            & (SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR);
-        // An already registered handle remains terminal even after its
-        // bounded CLOSED status history expires. Numeric IDs are not reused.
-        const int current =
-            (readiness.exists ? readiness.events : SRT_EPOLL_ERR) & watched;
-        if ((watched & SRT_EPOLL_IN) != 0
-            && (current & SRT_EPOLL_IN) == 0
-            && readiness.read_wakeup.has_value()
-            && (!record.next_user_wakeup.has_value()
-                || *readiness.read_wakeup
-                    < *record.next_user_wakeup)) {
-            record.next_user_wakeup =
-                readiness.read_wakeup;
-        }
-        const bool edge_triggered =
-            (subscription.events & SRT_EPOLL_ET) != 0;
-        int report = edge_triggered
-            ? current & ~subscription.edge_seen
-            : current;
-        if (edge_triggered) {
-            subscription.edge_seen &= current;
-        }
-        if ((subscription.events & SRT_EPOLL_UPDATE) != 0
-            && readiness.update_version
-                != subscription.update_seen) {
-            subscription.update_pending =
-                readiness.update_version;
-            report |= SRT_EPOLL_UPDATE;
-        }
-        if (report != 0) {
-            ready.emplace_back(entry.first, report);
-        }
+    if (auto* entry = record.ready_head; entry != nullptr && maximum != 0U) {
+        do {
+            ready.emplace_back(entry->handle, entry->report);
+            entry = entry->ready_next;
+        } while (entry != record.ready_head && ready.size() < maximum);
     }
-    std::sort(ready.begin(), ready.end(),
-        [](const SRT_EPOLL_EVENT& left,
-            const SRT_EPOLL_EVENT& right) {
-            return left.fd < right.fd;
-        });
 }
-
-void consume_edge_events(
-    PollRecord& record,
-    const std::vector<SRT_EPOLL_EVENT>& events,
-    std::size_t count, bool consume_updates) noexcept
+void consume_event(PollRecord& record, const SRT_EPOLL_EVENT& event,
+    int consumed, bool consume_updates) noexcept
 {
-    const std::size_t bounded = std::min(count, events.size());
-    for (std::size_t index = 0; index < bounded; ++index) {
-        const auto found =
-            record.user_sockets.find(events[index].fd);
-        if (found == record.user_sockets.end()) {
-            continue;
-        }
-        if ((found->second.events & SRT_EPOLL_ET) != 0) {
-            found->second.edge_seen |= events[index].events
-                & (SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR);
-        }
-        if (consume_updates
-            && (events[index].events & SRT_EPOLL_UPDATE) != 0) {
-            found->second.update_seen =
-                found->second.update_pending;
-        }
+    auto& subscription = record.user_sockets.find(event.fd)->second;
+    if ((subscription.events & SRT_EPOLL_ET) != 0) {
+        subscription.edge_seen |=
+            consumed & (SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR);
     }
+    if (consume_updates && (consumed & SRT_EPOLL_UPDATE) != 0) {
+        subscription.update_seen = subscription.update_pending;
+    }
+    // Delivered level readiness goes to the tail; output truncation cannot
+    // indefinitely favor one handle. Undelivered edges remain pending.
+    remove_ready(record, subscription);
+    update_report(record, subscription);
 }
 
 void collect_system_events(PollRecord& record)
@@ -475,8 +626,10 @@ int epoll_clear_usocks(int eid) noexcept
     {
         std::lock_guard lock(record->mutex);
         record->user_sockets.clear();
+        record->ready_head = nullptr;
+        record->deadlines.clear();
     }
-    ReadinessSignal::notify();
+    record->observer.wake();
     return 0;
 }
 
@@ -514,18 +667,11 @@ int epoll_add_usock(
         if (!current.exists) {
             return fail(SRT_EINVSOCK);
         }
-        if (requested == 0) {
-            record->user_sockets.erase(socket);
-        } else {
-            record->user_sockets[socket] = {
-                .events = requested,
-                .update_seen = current.update_version,
-                .update_pending = current.update_version};
-        }
+        set_subscription(*record, socket, requested, current.update_version);
     } catch (...) {
         return fail(SRT_ENOBUF);
     }
-    ReadinessSignal::notify();
+    record->observer.wake();
     return 0;
 }
 
@@ -553,7 +699,7 @@ int epoll_add_ssock(
     } catch (...) {
         return fail(SRT_ENOBUF);
     }
-    ReadinessSignal::notify();
+    record->observer.wake();
     return 0;
 }
 
@@ -568,9 +714,9 @@ int epoll_remove_usock(int eid, SRTSOCKET socket) noexcept
         if (record->released) {
             return fail(SRT_EINVPOLLID);
         }
-        record->user_sockets.erase(socket);
+        erase_subscription(*record, socket);
     }
-    ReadinessSignal::notify();
+    record->observer.wake();
     return 0;
 }
 
@@ -587,7 +733,7 @@ int epoll_remove_ssock(int eid, SYSSOCKET socket) noexcept
         }
         record->system_sockets.erase(socket);
     }
-    ReadinessSignal::notify();
+    record->observer.wake();
     return 0;
 }
 
@@ -614,20 +760,13 @@ int epoll_update_usock(
         if (!current.exists) {
             return fail(SRT_EINVSOCK);
         }
-        if (requested == 0) {
-            record->user_sockets.erase(socket);
-        } else {
-            record->user_sockets[socket] = {
-                .events = requested,
-                .update_seen = current.update_version,
-                .update_pending = current.update_version};
-        }
+        set_subscription(*record, socket, requested, current.update_version);
     } catch (const std::bad_alloc&) {
         return fail(SRT_ENOBUF);
     } catch (...) {
         return fail(SRT_ESYSOBJ);
     }
-    ReadinessSignal::notify();
+    record->observer.wake();
     return 0;
 }
 
@@ -661,7 +800,7 @@ int epoll_update_ssock(
             found->second = requested;
         }
     }
-    ReadinessSignal::notify();
+    record->observer.wake();
     return 0;
 }
 
@@ -711,8 +850,7 @@ int epoll_wait(
     const Clock::time_point deadline =
         deadline_from(timeout_milliseconds);
     for (;;) {
-        const std::uint64_t generation =
-            ReadinessSignal::generation();
+        const std::uint64_t generation = record->observer.generation();
         bool has_system_sockets = false;
         std::optional<Clock::time_point> user_wakeup;
         {
@@ -745,23 +883,32 @@ int epoll_wait(
                 collect_user_events(*record);
                 collect_system_events(*record);
             } catch (const std::bad_alloc&) {
+                record->observer.invalidate_all();
                 return fail(SRT_ENOBUF);
             } catch (...) {
+                record->observer.invalidate_all();
                 return fail(SRT_ESYSOBJ);
             }
             const auto& user_ready =
                 record->user_ready_scratch;
             const auto& system_ready =
                 record->system_ready_scratch;
-            consume_edge_events(
-                *record, user_ready, user_ready.size(), false);
             has_system_sockets = !record->system_sockets.empty();
             user_wakeup = record->next_user_wakeup;
             int total = 0;
             for (const auto& event : user_ready) {
+                if ((record->user_sockets.find(event.fd)->second.events
+                        & SRT_EPOLL_ET)
+                    != 0) {
+                    consume_event(*record, event, event.events, false);
+                }
+            }
+            for (const auto& event : user_ready) {
+                int consumed = 0;
                 if ((event.events & (SRT_EPOLL_IN | SRT_EPOLL_ERR)) != 0
                     && read_count != nullptr
                     && *read_count < read_capacity) {
+                    consumed |= event.events & (SRT_EPOLL_IN | SRT_EPOLL_ERR);
                     readfds[*read_count] = event.fd;
                     ++*read_count;
                     ++total;
@@ -769,10 +916,13 @@ int epoll_wait(
                 if ((event.events & (SRT_EPOLL_OUT | SRT_EPOLL_ERR)) != 0
                     && write_count != nullptr
                     && *write_count < write_capacity) {
+                    consumed |= event.events & (SRT_EPOLL_OUT | SRT_EPOLL_ERR);
                     writefds[*write_count] = event.fd;
                     ++*write_count;
                     ++total;
                 }
+                if (consumed != 0)
+                    consume_event(*record, event, consumed, false);
             }
             for (const auto& event : system_ready) {
                 if ((event.events & (SRT_EPOLL_IN | SRT_EPOLL_ERR)) != 0
@@ -807,7 +957,7 @@ int epoll_wait(
             wake_deadline = std::min(
                 wake_deadline, *user_wakeup);
         }
-        ReadinessSignal::wait_until(generation, wake_deadline);
+        record->observer.wait_until(generation, wake_deadline);
     }
 }
 
@@ -827,8 +977,7 @@ int epoll_uwait(
     const Clock::time_point deadline =
         deadline_from(timeout_milliseconds);
     for (;;) {
-        const std::uint64_t generation =
-            ReadinessSignal::generation();
+        const std::uint64_t generation = record->observer.generation();
         std::optional<Clock::time_point> user_wakeup;
         {
             std::lock_guard lock(record->mutex);
@@ -847,10 +996,13 @@ int epoll_uwait(
                 return fail(SRT_EINVPARAM);
             }
             try {
-                collect_user_events(*record);
+                collect_user_events(
+                    *record, static_cast<std::size_t>(event_count));
             } catch (const std::bad_alloc&) {
+                record->observer.invalidate_all();
                 return fail(SRT_ENOBUF);
             } catch (...) {
+                record->observer.invalidate_all();
                 return fail(SRT_ESYSOBJ);
             }
             const auto& ready = record->user_ready_scratch;
@@ -859,8 +1011,11 @@ int epoll_uwait(
                 const int written = std::min<int>(
                     event_count, static_cast<int>(ready.size()));
                 std::copy_n(ready.begin(), written, events);
-                consume_edge_events(*record, ready,
-                    static_cast<std::size_t>(written), true);
+                for (std::size_t index = 0;
+                    index < static_cast<std::size_t>(written); ++index) {
+                    consume_event(
+                        *record, ready[index], ready[index].events, true);
+                }
                 return written;
             }
         }
@@ -873,8 +1028,7 @@ int epoll_uwait(
             user_wakeup.has_value()
             ? std::min(deadline, *user_wakeup)
             : deadline;
-        ReadinessSignal::wait_until(
-            generation, wake_deadline);
+        record->observer.wait_until(generation, wake_deadline);
     }
 }
 
@@ -897,8 +1051,17 @@ std::int32_t epoll_set(int eid, std::int32_t flags) noexcept
     } else {
         record->flags |= flags;
     }
-    ReadinessSignal::notify();
+    record->observer.wake();
     return previous;
+}
+
+std::uint64_t epoll_readiness_queries_for_testing(int eid) noexcept
+{
+    const auto record = find_poll(eid);
+    if (record == nullptr)
+        return 0;
+    std::lock_guard lock(record->mutex);
+    return record->readiness_queries;
 }
 
 int epoll_release(int eid) noexcept

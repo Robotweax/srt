@@ -85,6 +85,32 @@ TEST(filecc_runtime_bandwidth_changes_preserve_unlimited_controller_state)
     REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 75'000U);
 }
 
+TEST(filecc_runtime_bandwidth_increase_preserves_loss_response)
+{
+    FileRateController controller {SequenceNumber {0},
+        {
+            .packet_size_bytes = 1'500,
+            .maximum_bandwidth_bytes_per_second = 150'000,
+        }};
+    controller.on_loss(
+        SequenceNumber {0}, SequenceNumber {10}, 1, 10, 100, 50'000);
+    REQUIRE(!controller.slow_start());
+    const double loss_period = controller.packet_sending_period_microseconds();
+    REQUIRE(loss_period > 10'000.0);
+
+    controller.set_maximum_bandwidth(600'000);
+    REQUIRE(!controller.slow_start());
+    REQUIRE_EQ(controller.packet_sending_period_microseconds(), loss_period);
+    controller.set_maximum_bandwidth(0);
+    REQUIRE_EQ(controller.packet_sending_period_microseconds(), loss_period);
+
+    // A lower cap still applies, and removing it restores the loss response.
+    controller.set_maximum_bandwidth(75'000);
+    REQUIRE_EQ(controller.packet_sending_period_microseconds(), 20'000.0);
+    controller.set_maximum_bandwidth(600'000);
+    REQUIRE_EQ(controller.packet_sending_period_microseconds(), loss_period);
+}
+
 TEST(filecc_delayed_ack_and_burst_loss_update_only_on_observed_feedback)
 {
     FileRateController controller{SequenceNumber{100}, {

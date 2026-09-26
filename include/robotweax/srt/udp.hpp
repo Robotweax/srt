@@ -196,6 +196,11 @@ public:
 
     [[nodiscard]] bool valid() const noexcept;
     [[nodiscard]] IpAddressFamily family() const noexcept { return family_; }
+    // Borrowed handle for readiness observation; ownership remains here.
+    [[nodiscard]] std::uintptr_t native_handle() const noexcept
+    {
+        return native_;
+    }
     /** Relinquishes ownership without closing; the returned handle is caller-owned. */
     [[nodiscard]] std::uintptr_t release_native() noexcept;
     [[nodiscard]] int open_system_error() const noexcept { return open_system_error_; }
