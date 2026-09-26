@@ -1,7 +1,7 @@
 vcpkg_download_distfile(ARCHIVE
-    URLS "https://github.com/Robotweax/srt/archive/daac593ffcb9bbddd25126a2bd97ddb607792fc2.tar.gz"
+    URLS "https://github.com/Robotweax/srt/archive/7ecb60ea8b4faca01ed86237b0cc9dc906350f6e.tar.gz"
     FILENAME "robotweax-srt-0.2.6.tar.gz"
-    SHA512 ac240dea537f328c2795bb6bfc2a29d56ea80d8e44d7c44c6f3857840234b7824d7590baa75c735d1cb7266b4e861062278131a11b7a5fcdaac8268db4993ca6
+    SHA512 73b91e3110a09b16f2903b6dbb4ab9068783044660312809d13e0406b62bb7df1eedbd9c8d671fdf64a58ca539e39a807020585ab4684fddbd55635c2140b35c
 )
 vcpkg_extract_source_archive(SOURCE_PATH ARCHIVE "${ARCHIVE}")
 string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "dynamic" ROBOTWEAX_SHARED)
