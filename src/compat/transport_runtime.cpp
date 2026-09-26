@@ -14,8 +14,6 @@
 namespace robotweax::srt::compat {
 namespace {
 
-constexpr std::size_t maximum_receive_batch = 64;
-
 [[nodiscard]] std::uint64_t next_channel_affinity() noexcept
 {
     // Aligned object addresses would collapse onto one shard under modulo
@@ -1205,38 +1203,9 @@ void DatagramChannel::mark_connections_broken(int system_error) noexcept
 
 RuntimePollResult DatagramChannel::run_once() noexcept
 {
-    std::array<std::byte, 1500> datagram {};
-    std::size_t received_count = 0;
-    for (; received_count < maximum_receive_batch; ++received_count) {
-        const UdpIoResult received = socket.receive_from(datagram);
-        if (received.error == Error::would_block) {
-            break;
-        }
-        if (received.error == Error::buffer_too_small) {
-            continue;
-        }
-        if (!received) {
-            mark_connections_broken(received.system_error);
-            break;
-        }
-        const auto decoded = decode_packet(
-            std::span {datagram}.first(received.bytes_transferred));
-        if (decoded) {
-            dispatch(decoded.packet,
-                std::span {datagram}.first(received.bytes_transferred),
-                received.peer);
-        }
-    }
-
-    auto result = poll_connections();
-    // A full slice can leave UDP input unread. After would_block, however,
-    // the receive queue is drained: preserve the connection poll deadline
-    // instead of forcing another empty receive and complete route sweep.
-    if (received_count == maximum_receive_batch) {
-        result.immediate_work = true;
-        result.next_work_delay.reset();
-    }
-    return result;
+    return run_receive_slice([this](std::span<std::byte> datagram) noexcept {
+        return socket.receive_from(datagram);
+    });
 }
 
 RuntimePollResult DatagramChannel::poll_connections(
