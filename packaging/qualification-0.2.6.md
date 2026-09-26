@@ -1,20 +1,28 @@
 # Package qualification: 0.2.6 candidate
 
-Status: **source package and Apple Silicon bottle qualification passed; publication pending**.
-Source: `daac593ffcb9bbddd25126a2bd97ddb607792fc2`.
-Archive SHA-256: `852a9d4ca9d9a73c7a87be78252c1d641a0c4ffba5b6062b253249d8595cded4`.
-Archive SHA-512: `ac240dea537f328c2795bb6bfc2a29d56ea80d8e44d7c44c6f3857840234b7824d7590baa75c735d1cb7266b4e861062278131a11b7a5fcdaac8268db4993ca6`.
+Status: **readiness lifecycle fix awaiting package and bottle requalification; publication blocked**.
+Source: `7ecb60ea8b4faca01ed86237b0cc9dc906350f6e`.
+Archive SHA-256: `b2920453b222879e1c7181a7c6b895c9440d104987d01cf9699eb4126b3b2476`.
+Archive SHA-512: `73b91e3110a09b16f2903b6dbb4ab9068783044660312809d13e0406b62bb7df1eedbd9c8d671fdf64a58ca539e39a807020585ab4684fddbd55635c2140b35c`.
 
-The source commit contains the complete 0.2.6 runtime/storage changes and the
-receive-slice CI corrections from PR #73. All 524 regular files in the downloaded
-archive were compared byte-for-byte with Git.
-[Main CI 36245587102](https://github.com/Robotweax/srt/actions/runs/36245587102)
-passed on this exact source revision. Earlier package results for `3050534`
-remain historical evidence; package and bottle acceptance must use this archive.
-Later
-recipe-only commits select that immutable archive; package workflows do not
-build the moving branch. If implementation code changes during qualification,
-update every recipe and hash to the new source commit and repeat affected gates.
+All 524 regular files in the downloaded archive were compared byte-for-byte
+with Git. This source adds [PR #77](https://github.com/Robotweax/srt/pull/77):
+retire the native readiness poll before closing its UDP socket, allowing an
+immediate listener restart. The preceding full tag CI on `2873c66` failed the
+GStreamer stop/start test; earlier green package checks and signed draft SDKs
+therefore cannot be accepted for publication. Original qualification is retained
+below as historical evidence, not relabeled as acceptance of this correction.
+
+[Fix CI](https://github.com/Robotweax/srt/actions/runs/36249699089) is pending.
+The focused Linux negative control fails with the old implementation; the fix
+passes five readiness cases on Linux and macOS, seven macOS idle-readiness and
+seven receive-slice cases, and 600 Linux GStreamer start/stop cycles. These are
+lifecycle checks, not package qualification or throughput claims.
+
+Recipes select the immutable archive, not the moving workflow checkout. If
+implementation code changes again, update every recipe/hash and repeat affected
+gates. Tag and Windows SDK acceptance, including replacement of affected draft
+assets, remain separate release steps.
 
 ## Required checks
 
@@ -32,7 +40,13 @@ not establish acceptance of this candidate. Upgrade paths, additional bottle
 platforms, PPA/COPR publication and distribution admission remain outside the
 existing clean-install package guarantees.
 
-## Final source qualification, 2026-09-26
+## Earlier source qualification, superseded by the runtime correction
+
+Source: `daac593ffcb9bbddd25126a2bd97ddb607792fc2`.
+Archive SHA-256: `852a9d4ca9d9a73c7a87be78252c1d641a0c4ffba5b6062b253249d8595cded4`.
+Archive SHA-512: `ac240dea537f328c2795bb6bfc2a29d56ea80d8e44d7c44c6f3857840234b7824d7590baa75c735d1cb7266b4e861062278131a11b7a5fcdaac8268db4993ca6`.
+The following successful checks qualify only that earlier source; they do not
+accept the corrected candidate above.
 
 Recipe commit: `fa009e3818a79852b27c87f947627613d5f795be`, merged by
 [PR #74](https://github.com/Robotweax/srt/pull/74) as `d1c63c9299a2d75e2259584c8a478da93d7c28ca`.

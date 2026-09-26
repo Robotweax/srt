@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-echo "852a9d4ca9d9a73c7a87be78252c1d641a0c4ffba5b6062b253249d8595cded4  /source.tar.gz" | sha256sum --check -
+echo "b2920453b222879e1c7181a7c6b895c9440d104987d01cf9699eb4126b3b2476  /source.tar.gz" | sha256sum --check -
 
 apt-get update
 apt-get install -y --no-install-recommends build-essential cmake debhelper dpkg-dev lintian libssl-dev pkgconf
@@ -9,7 +9,7 @@ mkdir -p /build /out
 cd /build
 cp /source.tar.gz robotweax-srt_0.2.6.orig.tar.gz
 tar -xf /source.tar.gz
-mv srt-daac593ffcb9bbddd25126a2bd97ddb607792fc2 robotweax-srt-0.2.6
+mv srt-7ecb60ea8b4faca01ed86237b0cc9dc906350f6e robotweax-srt-0.2.6
 cp -R /work/packaging/debian robotweax-srt-0.2.6/debian
 cd robotweax-srt-0.2.6
 dpkg-buildpackage -S -us -uc

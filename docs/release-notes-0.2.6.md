@@ -1,6 +1,6 @@
 # Robotweax SRT 0.2.6 — Performance Optimization
 
-Status: **runtime and package qualification passed; tag artifacts and publication pending**.
+Status: **readiness lifecycle correction under qualification; publication pending**.
 
 Project version: **0.2.6**. Shared-library C ABI line: **0.2**.
 Compatible SRT API and `srt_getversion()`: **1.5.7**. This is an implementation
@@ -54,12 +54,14 @@ implementation headers are not the installed public C API.
 
 ## Qualification limits and release acceptance
 
-The final implementation source is `daac593ffcb9bbddd25126a2bd97ddb607792fc2`.
-[Main CI](https://github.com/Robotweax/srt/actions/runs/36245587102) passed on
-that revision after correcting receive-budget test assumptions about UDP burst
-arrival and unbound Windows sockets. The receive budget and protocol behavior
-are unchanged. Final distribution evidence is tracked in the
-[package qualification record](https://github.com/Robotweax/srt/blob/c991c399ed9a9479f7a1b421cc43b0f25ffc2b40/packaging/qualification-0.2.6.md).
+The corrected implementation source is `7ecb60ea8b4faca01ed86237b0cc9dc906350f6e`.
+[PR #77](https://github.com/Robotweax/srt/pull/77) fixes a rapid listener restart
+failure found by the full tag CI: an in-progress native readiness poll could
+retain the UDP port after close. Cancellation now retires that poll before the
+socket is closed. SRT wire behavior and socket reuse policy remain unchanged.
+[Fix CI](https://github.com/Robotweax/srt/actions/runs/36249699089) and renewed
+package/bottle qualification are pending. Earlier successful qualification of
+`daac593` does not establish acceptance of this corrected implementation.
 
 A functional transfer at a fixed offered rate is not a maximum-capacity result.
 Performance depends on role, occupancy, pacing, encryption, loss, operating
@@ -76,9 +78,9 @@ Previously qualified source snapshots are supporting evidence, not acceptance
 of a different final release commit. Keep original failures and unresolved
 reference/environment findings visible when evaluating support claims.
 
-The distribution recipes under packaging/ target the immutable 0.2.6 source
-commit `daac593ffcb9bbddd25126a2bd97ddb607792fc2`. Package-manager and Linux
-package qualification passed on the recipe commit recorded in the
-[qualification report](https://github.com/Robotweax/srt/blob/c991c399ed9a9479f7a1b421cc43b0f25ffc2b40/packaging/qualification-0.2.6.md). The separately published Homebrew tap still
-provides 0.2.5 until its recipe and bottle update is reviewed and qualified;
-changing this project's version does not publish a distribution package.
+The distribution recipes under packaging/ target the immutable source commit
+`7ecb60ea8b4faca01ed86237b0cc9dc906350f6e`. Package-manager, Linux package and Homebrew
+bottle results must be recorded for this archive before publication. The
+separately published Homebrew tap still provides 0.2.5 until its recipe and bottle
+update is reviewed and qualified; changing this project's version does not
+publish a distribution package.
