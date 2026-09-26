@@ -1,5 +1,6 @@
 #pragma once
 
+#include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/fec.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 #include "robotweax/srt/session.hpp"
@@ -220,6 +221,14 @@ public:
     {
         return run_once();
     }
+    // Exercise the same slice with a deterministic datagram source. The native
+    // path is statically bound to UdpSocket; no receive hook is stored or polled.
+    template <typename Receive>
+    [[nodiscard]] RuntimePollResult run_once_for_testing(
+        Receive& receive) noexcept
+    {
+        return run_receive_slice(receive);
+    }
     // Drive the connection slice without socket I/O or a running scheduler.
     [[nodiscard]] RuntimePollResult poll_connections_for_testing(
         std::optional<std::chrono::steady_clock::time_point> now =
@@ -251,6 +260,44 @@ private:
     static void socket_readable(void* context) noexcept;
     void run_scheduled(const ScheduledWorkContext* context) noexcept;
     [[nodiscard]] RuntimePollResult run_once() noexcept;
+    template <typename Receive>
+    [[nodiscard]] RuntimePollResult run_receive_slice(
+        Receive&& receive) noexcept
+    {
+        constexpr std::size_t maximum_receive_batch = 64;
+        std::array<std::byte, 1500> datagram {};
+        std::size_t received_count = 0;
+        for (; received_count < maximum_receive_batch; ++received_count) {
+            const UdpIoResult received = receive(datagram);
+            if (received.error == Error::would_block) {
+                break;
+            }
+            if (received.error == Error::buffer_too_small) {
+                continue;
+            }
+            if (!received) {
+                mark_connections_broken(received.system_error);
+                break;
+            }
+            const auto decoded = decode_packet(
+                std::span {datagram}.first(received.bytes_transferred));
+            if (decoded) {
+                dispatch(decoded.packet,
+                    std::span {datagram}.first(received.bytes_transferred),
+                    received.peer);
+            }
+        }
+
+        auto result = poll_connections();
+        // A full slice can leave UDP input unread. After would_block, however,
+        // the receive queue is drained: preserve the connection poll deadline
+        // instead of forcing another empty receive and complete route sweep.
+        if (received_count == maximum_receive_batch) {
+            result.immediate_work = true;
+            result.next_work_delay.reset();
+        }
+        return result;
+    }
     [[nodiscard]] RuntimePollResult poll_connections(
         std::optional<std::chrono::steady_clock::time_point> injected_now =
             std::nullopt) noexcept;

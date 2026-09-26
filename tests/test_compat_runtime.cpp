@@ -6741,27 +6741,30 @@ TEST(compat_idle_readiness_application_read_reuses_scheduled_poll)
 
 namespace {
 
-IpEndpoint bind_receive_slice(DatagramChannel& channel)
-{
-    // Keep the 64-datagram budget test independent of small OS defaults.
-    REQUIRE_EQ(
-        channel.socket.set_receive_buffer_size(1'024 * 1'024), Error::none);
-    REQUIRE_EQ(channel.socket.bind(IpEndpoint::loopback()), Error::none);
-    const auto endpoint = channel.socket.local_endpoint();
-    REQUIRE(endpoint);
-    return endpoint.endpoint;
-}
+struct QueuedReceiveSlice {
+    std::size_t remaining = 0;
+    std::size_t bytes = 16;
+    std::size_t calls = 0;
+    std::size_t consumed = 0;
+    Error exhausted = Error::would_block;
 
-void queue_receive_slice(UdpSocket& sender, IpEndpoint destination,
-    std::size_t packets, std::size_t bytes = 16)
-{
-    // A canonical DATA header for an unknown route, or an invalid/truncated
-    // datagram. All are received from a real nonblocking loopback socket.
-    const std::array<std::byte, 1'501> datagram {};
-    for (std::size_t index = 0; index < packets; ++index) {
-        REQUIRE(sender.send_to(std::span {datagram}.first(bytes), destination));
+    UdpIoResult operator()(std::span<std::byte> destination) noexcept
+    {
+        ++calls;
+        if (remaining == 0) {
+            return {.error = exhausted};
+        }
+        --remaining;
+        ++consumed;
+        if (bytes > destination.size()) {
+            return {.error = Error::buffer_too_small,
+                .bytes_transferred = destination.size()};
+        }
+        // Canonical DATA for an unknown route, or an invalid short datagram.
+        std::fill_n(destination.begin(), bytes, std::byte {});
+        return {.bytes_transferred = bytes};
     }
-}
+};
 
 } // namespace
 
@@ -6769,16 +6772,13 @@ TEST(compat_channel_receive_slice_drained_burst_preserves_the_poll_wait)
 {
     for (const std::size_t packets : {0U, 1U, 63U}) {
         DatagramChannel channel;
-        UdpSocket sender;
-        const auto endpoint = bind_receive_slice(channel);
-        queue_receive_slice(sender, endpoint, packets);
-        const auto result = channel.run_once_for_testing();
+        QueuedReceiveSlice input {.remaining = packets};
+        const auto result = channel.run_once_for_testing(input);
         REQUIRE(!result.immediate_work);
         REQUIRE(result.next_work_delay.has_value());
         REQUIRE(*result.next_work_delay > std::chrono::microseconds::zero());
-        std::array<std::byte, 1'500> remainder {};
-        REQUIRE_EQ(
-            channel.socket.receive_from(remainder).error, Error::would_block);
+        REQUIRE_EQ(input.consumed, packets);
+        REQUIRE_EQ(input.calls, packets + 1U); // Includes the empty read.
     }
 }
 
@@ -6786,16 +6786,15 @@ TEST(compat_channel_receive_slice_full_budget_retains_immediate_continuation)
 {
     for (const std::size_t packets : {64U, 65U}) {
         DatagramChannel channel;
-        UdpSocket sender;
-        const auto endpoint = bind_receive_slice(channel);
-        queue_receive_slice(sender, endpoint, packets);
-        const auto first = channel.run_once_for_testing();
+        QueuedReceiveSlice input {.remaining = packets};
+        const auto first = channel.run_once_for_testing(input);
         REQUIRE(first.immediate_work);
         REQUIRE(!first.next_work_delay.has_value());
-        REQUIRE(!channel.run_once_for_testing().immediate_work);
-        std::array<std::byte, 1'500> remainder {};
-        REQUIRE_EQ(
-            channel.socket.receive_from(remainder).error, Error::would_block);
+        REQUIRE_EQ(input.calls, 64U); // No 65th read, including an empty probe.
+        REQUIRE_EQ(input.remaining, packets - 64U);
+        REQUIRE(!channel.run_once_for_testing(input).immediate_work);
+        REQUIRE_EQ(input.consumed, packets);
+        REQUIRE_EQ(input.calls, packets + 1U);
     }
 }
 
@@ -6803,36 +6802,99 @@ TEST(compat_channel_receive_slice_discarded_packets_follow_the_same_budget)
 {
     for (const std::size_t bytes : {0U, 1U, 1'501U}) {
         DatagramChannel channel;
-        UdpSocket sender;
-        const auto endpoint = bind_receive_slice(channel);
-        queue_receive_slice(sender, endpoint, 1, bytes);
-        REQUIRE(!channel.run_once_for_testing().immediate_work);
-        queue_receive_slice(sender, endpoint, 64, bytes);
-        REQUIRE(channel.run_once_for_testing().immediate_work);
-        REQUIRE(!channel.run_once_for_testing().immediate_work);
+        QueuedReceiveSlice input {.remaining = 1, .bytes = bytes};
+        REQUIRE(!channel.run_once_for_testing(input).immediate_work);
+        REQUIRE_EQ(input.consumed, 1U);
+        REQUIRE_EQ(input.calls, 2U);
+        input.remaining = 64;
+        const auto before = input.calls;
+        REQUIRE(channel.run_once_for_testing(input).immediate_work);
+        REQUIRE_EQ(input.calls - before, 64U);
+        REQUIRE_EQ(input.consumed, 65U);
+        REQUIRE(!channel.run_once_for_testing(input).immediate_work);
+        REQUIRE_EQ(input.calls - before, 65U);
     }
+}
+
+TEST(compat_channel_receive_slice_partial_arrival_can_drain_before_budget)
+{
+    DatagramChannel channel;
+    QueuedReceiveSlice input {.remaining = 31};
+    REQUIRE(!channel.run_once_for_testing(input).immediate_work);
+    REQUIRE_EQ(input.calls, 32U);
+    input.remaining = 34; // The rest of a 65-packet burst arrives later.
+    REQUIRE(!channel.run_once_for_testing(input).immediate_work);
+    REQUIRE_EQ(input.consumed, 65U);
+    REQUIRE_EQ(input.calls, 67U);
+}
+
+TEST(compat_channel_receive_slice_io_error_marks_connections_broken)
+{
+    FairnessFixture fixture;
+    auto runtime = fixture.add(1);
+    QueuedReceiveSlice input {.exhausted = Error::io_error};
+    (void)fixture.channel->run_once_for_testing(input);
+    REQUIRE_EQ(input.calls, 1U);
+    REQUIRE(runtime->broken());
+}
+
+TEST(compat_channel_receive_slice_native_socket_dispatches_after_readiness)
+{
+    DatagramChannel channel;
+    UdpSocket sender;
+    REQUIRE_EQ(channel.socket.bind(IpEndpoint::loopback()), Error::none);
+    REQUIRE_EQ(sender.bind(IpEndpoint::loopback()), Error::none);
+    const auto destination = channel.socket.local_endpoint();
+    const auto source = sender.local_endpoint();
+    REQUIRE(destination);
+    REQUIRE(source);
+    auto inbox = std::make_shared<DatagramInbox>(1);
+    REQUIRE(channel.register_setup_inbox(42, source.endpoint, inbox));
+    MutablePacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.destination_socket_id = 42;
+    const std::array payload {std::byte {7}};
+    packet.payload = payload;
+    std::array<std::byte, 64> bytes {};
+    const auto encoded = encode_packet(packet, bytes);
+    REQUIRE(encoded);
+    REQUIRE(sender.send_to(
+        std::span {bytes}.first(encoded.bytes_written), destination.endpoint));
+    const auto ready = channel.socket.wait_readable(2'000);
+    REQUIRE(ready);
+    REQUIRE(ready.ready);
+    REQUIRE(!channel.run_once_for_testing().immediate_work);
+    DatagramEnvelope received;
+    REQUIRE_EQ(inbox->pop_for(received, std::chrono::milliseconds {0}),
+        InboxPopStatus::received);
+    REQUIRE_EQ(received.size, encoded.bytes_written);
+    REQUIRE(std::equal(bytes.begin(), bytes.begin() + encoded.bytes_written,
+        received.bytes.begin()));
+    REQUIRE_EQ(received.peer, source.endpoint);
+    REQUIRE(!inbox->ready());
 }
 
 TEST(compat_channel_receive_slice_keeps_pending_send_and_round_continuations)
 {
     FairnessFixture fixture;
-    const auto endpoint = bind_receive_slice(*fixture.channel);
     fixture.add(1, 70);
-    UdpSocket sender;
-    queue_receive_slice(sender, endpoint, 1);
-    REQUIRE(fixture.channel->run_once_for_testing().immediate_work);
+    QueuedReceiveSlice input {.remaining = 1};
+    REQUIRE(fixture.channel->run_once_for_testing(input).immediate_work);
     REQUIRE_EQ(fixture.attempted_ids.size(), 64U);
-    (void)fixture.channel->run_once_for_testing();
+    (void)fixture.channel->run_once_for_testing(input);
     REQUIRE_EQ(fixture.attempted_ids.size(), 70U);
+    REQUIRE_EQ(input.consumed, 1U);
 
     FairnessFixture idle;
-    (void)bind_receive_slice(*idle.channel);
     for (std::uint32_t id = 1; id <= 65; ++id) {
         idle.add(id);
     }
-    REQUIRE(idle.channel->run_once_for_testing().immediate_work);
+    // No native receive on the fixture's unbound socket: Winsock reports an
+    // I/O error there instead of an empty queue, breaking every idle route.
+    QueuedReceiveSlice empty_input;
+    REQUIRE(idle.channel->run_once_for_testing(empty_input).immediate_work);
     REQUIRE_EQ(idle.clocks.back()->reads, 0U);
-    (void)idle.channel->run_once_for_testing();
+    (void)idle.channel->run_once_for_testing(empty_input);
     // A real scheduler delay can expire the earlier 2 ms deadline and
     // legitimately request immediate work again. Check the completed route
     // sweep here; deadline behavior uses the injected channel clock below.
@@ -6840,6 +6902,10 @@ TEST(compat_channel_receive_slice_keeps_pending_send_and_round_continuations)
     REQUIRE(reads_per_poll != 0U);
     for (const auto& clock : idle.clocks) {
         REQUIRE_EQ(clock->reads, reads_per_poll);
+    }
+    REQUIRE_EQ(empty_input.calls, 2U);
+    for (const auto& runtime : idle.runtimes) {
+        REQUIRE(!runtime->broken());
     }
     REQUIRE(idle.attempted_ids.empty());
 }
