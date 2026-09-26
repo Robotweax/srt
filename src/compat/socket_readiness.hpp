@@ -38,6 +38,8 @@ public:
     [[nodiscard]] Token watch(
         std::uintptr_t socket, Callback callback) noexcept;
     [[nodiscard]] bool arm(Token token) noexcept;
+    // Retire the watch and any poll snapshot containing it before the caller
+    // closes the native socket. Already dispatched callbacks may still run.
     void cancel(Token token) noexcept;
     void stop() noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;

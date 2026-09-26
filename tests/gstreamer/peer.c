@@ -168,6 +168,9 @@ int main(int argc, char** argv)
         for (int iteration = 0; iteration < 5; ++iteration) {
             if (gst_element_set_state(pipeline, GST_STATE_PLAYING)
                 == GST_STATE_CHANGE_FAILURE) {
+                g_printerr(
+                    "pipeline restart failed at cycle %d\n", iteration + 1);
+                bus_failed(bus);
                 goto cleanup;
             }
             gst_element_get_state(pipeline, NULL, NULL, 100 * GST_MSECOND);
