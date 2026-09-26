@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(package_manager_consumers LANGUAGES C CXX)
 enable_testing()
-find_package(RobotweaxSRT 0.2.5 EXACT CONFIG REQUIRED)
+find_package(RobotweaxSRT 0.2.6 EXACT CONFIG REQUIRED)
 add_executable(robotweax_native ../../tests/package_consumer/native_c_consumer.c)
 set_target_properties(robotweax_native PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(robotweax_native PRIVATE RobotweaxSRT::srt)

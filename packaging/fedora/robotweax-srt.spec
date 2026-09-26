@@ -1,10 +1,10 @@
 Name:           robotweax-srt
-Version:        0.2.5
+Version:        0.2.6
 Release:        1%{?dist}
 Summary:        Robotweax Secure Reliable Transport library
 License:        MIT
 URL:            https://github.com/Robotweax/srt
-Source0:        https://github.com/Robotweax/srt/archive/492a7d61390cbec86e44e177ec034f0f5d9a5cc3.tar.gz
+Source0:        https://github.com/Robotweax/srt/archive/30505346cc6bb935abf68cab806b69e73d428bc1.tar.gz
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
 BuildRequires:  openssl-devel >= 3.0
@@ -24,7 +24,7 @@ Headers, CMake target and pkg-config metadata for Robotweax SRT.
 Consumers explicitly select this provider at build time.
 
 %prep
-%autosetup -n srt-492a7d61390cbec86e44e177ec034f0f5d9a5cc3
+%autosetup -n srt-30505346cc6bb935abf68cab806b69e73d428bc1
 
 %build
 %cmake \
@@ -56,5 +56,8 @@ Consumers explicitly select this provider at build time.
 %{_datadir}/robotweax_srt/abi/
 
 %changelog
+* Sat Sep 26 2026 Robotweax GmbH <srtpioneer@proton.me> - 0.2.6-1
+- Package immutable 0.2.6 performance optimization source
+
 * Thu Sep 24 2026 Robotweax GmbH <srtpioneer@proton.me> - 0.2.5-1
 - Package immutable 0.2.5 source with namespaced install layout

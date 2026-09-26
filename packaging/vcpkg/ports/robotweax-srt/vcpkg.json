@@ -1,6 +1,6 @@
 {
   "name": "robotweax-srt",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Independent Secure Reliable Transport implementation",
   "homepage": "https://github.com/Robotweax/srt",
   "license": "MIT",

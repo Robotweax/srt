@@ -43,13 +43,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Download and verify immutable 0.2.5 source
+      - name: Download and verify immutable 0.2.6 source
         shell: bash
         run: |
           set -euo pipefail
           curl -fL --retry 3 --output "$RUNNER_TEMP/source.tar.gz" \
-            https://github.com/Robotweax/srt/archive/492a7d61390cbec86e44e177ec034f0f5d9a5cc3.tar.gz
-          echo "dc55b9e1c2583eec6ff5ab82db70de6bfb0cc9c6e18cfd1ed15376f61d8fca5f  $RUNNER_TEMP/source.tar.gz" |
+            https://github.com/Robotweax/srt/archive/30505346cc6bb935abf68cab806b69e73d428bc1.tar.gz
+          echo "feb7b2452b2b210417b3918d7ac13d4301f181fb2d465e54b8e87808712eb3b8  $RUNNER_TEMP/source.tar.gz" |
             sha256sum --check -
       - name: Build, install, test coexistence and removal
         shell: bash
