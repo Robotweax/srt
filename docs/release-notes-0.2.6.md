@@ -1,6 +1,6 @@
 # Robotweax SRT 0.2.6 — Performance Optimization
 
-Status: **readiness lifecycle correction under qualification; publication pending**.
+Status: **corrected runtime, source packages and bottle qualified; final tag/SDK acceptance and publication pending**.
 
 Project version: **0.2.6**. Shared-library C ABI line: **0.2**.
 Compatible SRT API and `srt_getversion()`: **1.5.7**. This is an implementation
@@ -59,9 +59,9 @@ The corrected implementation source is `7ecb60ea8b4faca01ed86237b0cc9dc906350f6e
 failure found by the full tag CI: an in-progress native readiness poll could
 retain the UDP port after close. Cancellation now retires that poll before the
 socket is closed. SRT wire behavior and socket reuse policy remain unchanged.
-[Fix CI](https://github.com/Robotweax/srt/actions/runs/36249699089) and renewed
-package/bottle qualification are pending. Earlier successful qualification of
-`daac593` does not establish acceptance of this corrected implementation.
+[Fix CI](https://github.com/Robotweax/srt/actions/runs/36249699089) passed.
+Earlier successful qualification of `daac593` does not establish acceptance of
+this corrected implementation; renewed package results are linked below.
 
 A functional transfer at a fixed offered rate is not a maximum-capacity result.
 Performance depends on role, occupancy, pacing, encryption, loss, operating
@@ -79,8 +79,11 @@ of a different final release commit. Keep original failures and unresolved
 reference/environment findings visible when evaluating support claims.
 
 The distribution recipes under packaging/ target the immutable source commit
-`7ecb60ea8b4faca01ed86237b0cc9dc906350f6e`. Package-manager, Linux package and Homebrew
-bottle results must be recorded for this archive before publication. The
-separately published Homebrew tap still provides 0.2.5 until its recipe and bottle
-update is reviewed and qualified; changing this project's version does not
-publish a distribution package.
+`7ecb60ea8b4faca01ed86237b0cc9dc906350f6e`.
+[Package-manager qualification](https://github.com/Robotweax/srt/actions/runs/36250172158),
+[Ubuntu/Fedora packages](https://github.com/Robotweax/srt/actions/runs/36250172274)
+and the [Homebrew bottle](https://github.com/Robotweax/homebrew-tap/actions/runs/36250101792)
+passed for this corrected source. Final tag/Windows SDK acceptance and
+publication remain separate. The separately published Homebrew tap still
+provides 0.2.5 until its reviewed update is published; changing this project's
+version does not publish a distribution package.
