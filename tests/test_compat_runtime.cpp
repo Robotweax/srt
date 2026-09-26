@@ -6889,9 +6889,12 @@ TEST(compat_channel_receive_slice_keeps_pending_send_and_round_continuations)
     for (std::uint32_t id = 1; id <= 65; ++id) {
         idle.add(id);
     }
-    REQUIRE(idle.channel->run_once_for_testing().immediate_work);
+    // No native receive on the fixture's unbound socket: Winsock reports an
+    // I/O error there instead of an empty queue, breaking every idle route.
+    QueuedReceiveSlice empty_input;
+    REQUIRE(idle.channel->run_once_for_testing(empty_input).immediate_work);
     REQUIRE_EQ(idle.clocks.back()->reads, 0U);
-    (void)idle.channel->run_once_for_testing();
+    (void)idle.channel->run_once_for_testing(empty_input);
     // A real scheduler delay can expire the earlier 2 ms deadline and
     // legitimately request immediate work again. Check the completed route
     // sweep here; deadline behavior uses the injected channel clock below.
@@ -6899,6 +6902,10 @@ TEST(compat_channel_receive_slice_keeps_pending_send_and_round_continuations)
     REQUIRE(reads_per_poll != 0U);
     for (const auto& clock : idle.clocks) {
         REQUIRE_EQ(clock->reads, reads_per_poll);
+    }
+    REQUIRE_EQ(empty_input.calls, 2U);
+    for (const auto& runtime : idle.runtimes) {
+        REQUIRE(!runtime->broken());
     }
     REQUIRE(idle.attempted_ids.empty());
 }
