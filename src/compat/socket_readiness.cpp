@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cerrno>
+#include <condition_variable>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -44,6 +45,7 @@ struct SocketReadiness::State {
         std::uint64_t generation = 0;
         bool active = false;
         bool armed = false;
+        bool retiring = false;
     };
     explicit State(std::size_t capacity)
         : entries(capacity)
@@ -75,6 +77,10 @@ struct SocketReadiness::State {
         }
     }
     std::mutex mutex;
+    std::condition_variable poll_finished;
+    std::uint64_t poll_epoch = 0;
+    std::uint64_t completed_poll_epoch = 0;
+    std::size_t cancellation_waiters = 0;
     std::mutex wake_mutex;
     UdpSocket wake_socket;
     IpEndpoint wake_endpoint {};
@@ -144,6 +150,7 @@ SocketReadiness::Token SocketReadiness::watch(
     entry.callback = std::move(callback);
     entry.active = true;
     entry.armed = false;
+    entry.retiring = false;
     ++state_->counters.registered;
     return {slot, entry.generation};
 }
@@ -172,22 +179,49 @@ bool SocketReadiness::arm(Token token) noexcept
 
 void SocketReadiness::cancel(Token token) noexcept
 {
+    Callback retired_callback;
+    std::uint64_t pending_epoch = 0;
     {
         std::lock_guard lock(state_->mutex);
         if (token.slot >= state_->entries.size()) {
             return;
         }
         auto& entry = state_->entries[token.slot];
-        if (!entry.active || entry.generation != token.generation) {
+        if (entry.generation != token.generation
+            || (!entry.active && !entry.retiring)) {
             return;
         }
-        state_->counters.armed -= entry.armed ? 1U : 0U;
-        --state_->counters.registered;
-        entry.active = entry.armed = false;
-        entry.callback = {};
-        state_->free_slots.push_back(token.slot);
+        if (entry.active) {
+            state_->counters.armed -= entry.armed ? 1U : 0U;
+            --state_->counters.registered;
+            entry.active = entry.armed = false;
+            entry.retiring = true;
+            retired_callback = std::move(entry.callback);
+        }
+        pending_epoch = state_->poll_epoch;
+        if (pending_epoch > state_->completed_poll_epoch) {
+            ++state_->cancellation_waiters;
+        } else {
+            pending_epoch = 0;
+        }
     }
     state_->wake();
+    {
+        std::unique_lock lock(state_->mutex);
+        if (pending_epoch != 0) {
+            // Removing a watch is not enough: a concurrent poll can retain
+            // the native socket after close and keep its UDP port bound.
+            state_->poll_finished.wait(lock, [&] {
+                return state_->completed_poll_epoch >= pending_epoch;
+            });
+            --state_->cancellation_waiters;
+        }
+        auto& entry = state_->entries[token.slot];
+        if (entry.generation == token.generation && entry.retiring) {
+            entry.retiring = false;
+            state_->free_slots.push_back(token.slot);
+        }
+    }
 }
 
 void SocketReadiness::stop() noexcept
@@ -229,6 +263,7 @@ void SocketReadiness::run(std::shared_ptr<State> state) noexcept
             }
             state->descriptors.push_back(
                 descriptor(state->wake_socket.native_handle()));
+            ++state->poll_epoch;
             for (std::size_t index = 0; index < state->entries.size();
                 ++index) {
                 const auto& entry = state->entries[index];
@@ -248,18 +283,24 @@ void SocketReadiness::run(std::shared_ptr<State> state) noexcept
             static_cast<nfds_t>(state->descriptors.size()), 100);
         const bool interrupted = result < 0 && errno == EINTR;
 #endif
-        if (interrupted || result == 0) {
-            continue;
-        }
-        if (state->descriptors.front().revents != 0) {
+        const bool idle = interrupted || result == 0;
+        if (!idle && state->descriptors.front().revents != 0) {
             state->drain_wake();
         }
-        const bool failed = result < 0
-            || (state->descriptors.front().revents
-                   & (POLLERR | POLLHUP | POLLNVAL))
-                != 0;
+        const bool failed = !idle
+            && (result < 0
+                || (state->descriptors.front().revents
+                       & (POLLERR | POLLHUP | POLLNVAL))
+                    != 0);
         {
             std::lock_guard lock(state->mutex);
+            state->completed_poll_epoch = state->poll_epoch;
+            if (state->cancellation_waiters != 0) {
+                state->poll_finished.notify_all();
+            }
+            if (idle) {
+                continue;
+            }
             if (failed) {
                 state->counters.running = false;
             }

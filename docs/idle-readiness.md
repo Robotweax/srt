@@ -42,6 +42,16 @@ registration before closing its borrowed UDP descriptor. Already claimed
 callbacks may finish; they cannot resurrect a destroyed channel. Callbacks run
 outside the watcher's registry lock.
 
+Cancellation also waits for an in-progress native poll snapshot to retire before
+the caller closes the socket. On Linux, a concurrent `poll` can retain the native
+socket after `close` returns and briefly keep its UDP port bound. Merely marking
+the registration inactive permits a rapid listener restart to fail with
+`EADDRINUSE`. Cancellation wakes the poll and waits for its recorded generation
+to complete; the registration slot is not reused until then. Callbacks run after
+that completion is recorded, so a callback can cancel its own registration.
+Concurrent cancellation reclaims the slot only once. This changes teardown
+synchronization, not packet processing, socket reuse policy or wire behavior.
+
 The watcher uses one additional loopback UDP socket to interrupt its native
 wait. A shared 100 ms watchdog bounds its stop response if a wake send fails.
 That is up to ten idle native waits per second for the watcher, rather than a
@@ -75,6 +85,11 @@ setup-route and active-cleanup cases cover ownership transitions. New cases
 exercise IPv4/IPv6 readiness, one-shot rearming, stale tokens, callback teardown,
 empty parking, incoming packets, new sends, registration, keepalive and timeout
 deadlines, reopened receive windows and capacity fallback.
+The native port-rebind regression covers immediate close/rebind after watch
+cancellation for IPv4 and IPv6. A separate concurrent-cancellation case covers
+slot reuse. GStreamer's repeated listener start/stop probe exercises the original
+failure through the public C API; these are lifecycle checks, not throughput
+benchmarks.
 
 A short local Release diagnostic compares the same binary with its existing
 2 ms test polling override versus readiness enabled, using 64 bound channels,
