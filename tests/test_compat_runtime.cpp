@@ -6831,5 +6831,41 @@ TEST(compat_channel_receive_slice_keeps_pending_send_and_round_continuations)
         idle.add(id);
     }
     REQUIRE(idle.channel->run_once_for_testing().immediate_work);
-    REQUIRE(!idle.channel->run_once_for_testing().immediate_work);
+    REQUIRE_EQ(idle.clocks.back()->reads, 0U);
+    (void)idle.channel->run_once_for_testing();
+    // A real scheduler delay can expire the earlier 2 ms deadline and
+    // legitimately request immediate work again. Check the completed route
+    // sweep here; deadline behavior uses the injected channel clock below.
+    const auto reads_per_poll = idle.clocks.front()->reads;
+    REQUIRE(reads_per_poll != 0U);
+    for (const auto& clock : idle.clocks) {
+        REQUIRE_EQ(clock->reads, reads_per_poll);
+    }
+    REQUIRE(idle.attempted_ids.empty());
+}
+
+TEST(compat_channel_fairness_idle_round_preserves_elapsed_deadline)
+{
+    for (const auto elapsed :
+        {std::chrono::microseconds {0}, std::chrono::microseconds {2'000}}) {
+        FairnessFixture fixture;
+        for (std::uint32_t id = 1; id <= 65; ++id) {
+            fixture.add(id);
+        }
+        REQUIRE(fixture.poll().immediate_work);
+        REQUIRE_EQ(fixture.clocks.back()->reads, 0U);
+        const auto result = fixture.poll(elapsed);
+        REQUIRE_EQ(result.immediate_work, elapsed.count() != 0);
+        if (elapsed.count() == 0) {
+            REQUIRE_EQ(result.next_work_delay, std::chrono::milliseconds {2});
+        } else {
+            REQUIRE(!result.next_work_delay.has_value());
+        }
+        const auto reads_per_poll = fixture.clocks.front()->reads;
+        REQUIRE(reads_per_poll != 0U);
+        for (const auto& clock : fixture.clocks) {
+            REQUIRE_EQ(clock->reads, reads_per_poll);
+        }
+        REQUIRE(fixture.attempted_ids.empty());
+    }
 }
