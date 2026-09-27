@@ -34,8 +34,8 @@ inline constexpr std::uint32_t maximum_key_refresh_rate = SequenceNumber::mask;
 // traffic key must never cover 2^31 consumed sequence numbers. Sequence
 // numbers can be consumed without a packet being sent (TLPKTDROP, message
 // TTL), so rotation counts consumed numbers rather than sent packets and is
-// capped at half the sequence space. The remaining headroom absorbs any gap
-// bounded by the send buffer before the successor key is acknowledged.
+// capped at half the sequence space. A monotonic send-buffer position lets
+// preflight reject larger skipped spans before encryption or UDP submission.
 inline constexpr std::uint32_t effective_key_refresh_cap = 1U << 30U;
 inline constexpr std::uint64_t maximum_sequences_per_key =
     static_cast<std::uint64_t>(SequenceNumber::mask);
@@ -384,11 +384,11 @@ public:
     }
 
     [[nodiscard]] Error prepare_rotation() noexcept;
-    // Records one new DATA packet sent under the active key. The overload with
-    // a sequence number also counts sequence numbers skipped since the last
-    // sent packet, which were consumed without being transmitted.
     [[nodiscard]] Error note_data_packet_sent() noexcept;
-    [[nodiscard]] Error note_data_packet_sent(SequenceNumber sequence) noexcept;
+    // Before selecting/encrypting new DATA, account for skipped positions in
+    // the monotonic send-buffer sequence space. Repeated peeks are idempotent.
+    [[nodiscard]] Error prepare_data_packet(
+        std::uint64_t sequence_position) noexcept;
     [[nodiscard]] bool ready_to_send_data() const noexcept;
 
     [[nodiscard]] Error encrypt(
@@ -579,8 +579,9 @@ private:
     // Sequence numbers consumed under the active key, including numbers that
     // were skipped without a DATA packet being sent.
     std::uint64_t packets_on_active_key_ = 0;
-    SequenceNumber last_sent_sequence_ {};
-    bool last_sent_sequence_known_ = false;
+    std::uint64_t prepared_sequence_position_ = 0;
+    bool prepared_sequence_position_known_ = false;
+    bool prepared_packet_sent_ = false;
     CryptoState sender_state_ = CryptoState::unsecured;
     CryptoState receiver_state_ = CryptoState::unsecured;
     Error configuration_error_ = Error::none;

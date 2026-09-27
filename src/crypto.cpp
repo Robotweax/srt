@@ -877,28 +877,32 @@ std::uint64_t CryptoSession::effective_preannouncement() const noexcept
 Error CryptoSession::note_data_packet_sent() noexcept
 {
     if (!enabled()) return Error::none;
-    if (last_sent_sequence_known_) {
-        last_sent_sequence_ = last_sent_sequence_.next();
-    }
+    prepared_packet_sent_ = true;
     return note_sequences_consumed(1U);
 }
 
-Error CryptoSession::note_data_packet_sent(SequenceNumber sequence) noexcept
+Error CryptoSession::prepare_data_packet(std::uint64_t position) noexcept
 {
-    if (!enabled()) {
+    if (!enabled())
         return Error::none;
-    }
-    std::uint64_t consumed = 1U;
-    if (last_sent_sequence_known_) {
-        const std::int32_t distance =
-            sequence.distance_from(last_sent_sequence_);
-        if (distance > 0) {
-            consumed = static_cast<std::uint64_t>(distance);
+    if (prepared_sequence_position_known_) {
+        if (position < prepared_sequence_position_)
+            return Error::cryptographic_failure;
+        if (position == prepared_sequence_position_)
+            return Error::none;
+        const auto skipped = position - prepared_sequence_position_
+            - (prepared_packet_sent_ ? 1U : 0U);
+        // Include the prospective packet before it can be encrypted or sent.
+        if (skipped >= maximum_sequences_per_key
+            || packets_on_active_key_ >= maximum_sequences_per_key - skipped) {
+            return Error::cryptographic_failure;
         }
+        packets_on_active_key_ += skipped;
     }
-    last_sent_sequence_ = sequence;
-    last_sent_sequence_known_ = true;
-    return note_sequences_consumed(consumed);
+    prepared_packet_sent_ = false;
+    prepared_sequence_position_ = position;
+    prepared_sequence_position_known_ = true;
+    return prepare_rotation();
 }
 
 Error CryptoSession::note_sequences_consumed(std::uint64_t count) noexcept

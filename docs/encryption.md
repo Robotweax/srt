@@ -54,7 +54,7 @@ inherit the Listener's policy and complete negotiation during HSv5 setup.
 | `SRTO_PBKEYLEN` | `int32_t` | `0`, `16`, `24`, or `32`; selects default/negotiated, AES-128, AES-192, or AES-256 key length |
 | `SRTO_ENFORCEDENCRYPTION` | Boolean | Defaults to true; rejects a peer that cannot satisfy the configured encryption policy |
 | `SRTO_KMREFRESHRATE` | nonnegative `int32_t` | Traffic-key refresh interval in consumed DATA sequence numbers, effectively capped at `2^30`; zero selects compatible default behavior |
-| `SRTO_KMPREANNOUNCE` | nonnegative `int32_t` | Number of DATA packets before refresh at which the next key is announced; zero selects compatible default behavior |
+| `SRTO_KMPREANNOUNCE` | nonnegative `int32_t` | Number of consumed sequence positions before refresh at which the next key is announced; zero selects compatible default behavior |
 | `SRTO_KMSTATE` | read-only | Combined key-material state |
 | `SRTO_SNDKMSTATE` | read-only | Transmit key-material state |
 | `SRTO_RCVKMSTATE` | read-only | Receive key-material state |
@@ -226,18 +226,24 @@ the refresh as well.
 
 `SRTO_KMREFRESHRATE` accepts values up to `2^31 - 1`, the maximum positive
 `int32_t`; the same bound applies to the internal native configuration paths.
-The effective refresh interval is capped at `2^30` sequence numbers, and the
-pre-announcement at half of that interval, so that a skipped range can never
-carry one key through a full sequence cycle. Larger configured values are
-accepted and reported unchanged, but rotate at the cap. Zero retains its public
-socket-option meaning of selecting the default, not an unlimited key lifetime.
+The effective refresh interval is capped at `2^30` sequence positions, and the
+pre-announcement at half of that interval. Larger configured values are
+accepted and reported unchanged, but rotate at the cap. Zero selects the
+default, not an unlimited key lifetime.
 
-If the next key has not been acknowledged at that boundary, new DATA pauses.
-A skipped range can move the count past the boundary before the next key is
-acknowledged; the active key then remains in use for that range and new DATA
-pauses until the acknowledgement arrives. The sender never uses an
-unacknowledged key, and it fails closed rather than let one key cover `2^31`
-sequence numbers. Already protected retransmissions remain eligible.
+The send buffer assigns a monotonic 64-bit position to each allocated packet.
+Positions survive TTL/TLPKTDROP discards and 31-bit wire-sequence wrap. Before
+selecting and encrypting new DATA, the runtime accounts for all skipped
+positions and validates the prospective packet against the key budget. It
+never derives this budget from a signed modular sequence distance or waits
+until UDP submission to detect an exhausted budget.
+
+If a gap reaches the refresh boundary before the successor key is acknowledged,
+new DATA waits for KMREQ/KMRSP completion. If a jump would exhaust the remaining
+31-bit IV space, the connection fails closed before encryption or submission.
+Already protected retransmissions retain their original ciphertext and do not
+consume another sequence position. Local UDP retries likewise reuse the
+prepared ciphertext without reserving the position again.
 
 Current receive keys and a bounded history of prior selector generations are
 retained for delayed packets. Known delayed KMREQ duplicates can be answered
