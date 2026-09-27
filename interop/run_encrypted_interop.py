@@ -88,8 +88,6 @@ def peer_command(
         str(options.chunk_size),
         "--passphrase-env",
         PASSPHRASE_ENVIRONMENT,
-        "--pbkeylen",
-        str(key_length),
         "--km-refresh-rate",
         str(options.key_refresh_rate),
         "--km-preannounce",
@@ -97,6 +95,11 @@ def peer_command(
         "--shutdown-grace-ms",
         str(options.shutdown_grace_milliseconds),
     ]
+    if key_length != 0:
+        # Zero leaves SRTO_PBKEYLEN at its default: the reference then
+        # advertises no key length in the handshake (encryption field 0) and
+        # the key material alone carries it.
+        command.extend(("--pbkeylen", str(key_length)))
     if role == "caller":
         # SRT applies INPUTBW only when MAXBW selects relative-rate mode.
         command.extend(
@@ -157,6 +160,26 @@ def no_rotation_baselines(
             listener=robotweax,
             key_length=16,
             seed=9_002,
+        ),
+        Scenario(
+            name=(
+                f"{name_prefix}"
+                "aes-default-robotweax-to-haivision-no-rotation"
+            ),
+            caller=robotweax,
+            listener=reference,
+            key_length=0,
+            seed=9_003,
+        ),
+        Scenario(
+            name=(
+                f"{name_prefix}"
+                "aes-default-haivision-to-robotweax-no-rotation"
+            ),
+            caller=reference,
+            listener=robotweax,
+            key_length=0,
+            seed=9_004,
         ),
     ]
     return (
@@ -540,7 +563,7 @@ def main() -> int:
     parser.add_argument(
         "--baseline-only",
         action="store_true",
-        help="run only the two no-rotation baseline directions",
+        help="run only the no-rotation baselines",
     )
     parser.add_argument(
         "--trace-baseline-handshake",
