@@ -4217,6 +4217,95 @@ TEST(
     REQUIRE_EQ(srt_cleanup(), 0);
 }
 
+TEST(srt_compat_listener_survives_an_induction_flood)
+{
+    // Integration smoke test: submit a complete INDUCTION burst and then
+    // accept a genuine caller. Kernel delivery and actor queue pressure are
+    // scheduling-dependent; the actor test forces overflow deterministically.
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    sockaddr_in bind_address {};
+    bind_address.sin_family = AF_INET;
+    bind_address.sin_port = 0;
+    bind_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    const SRTSOCKET listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    if (srt_bind(listener, reinterpret_cast<const sockaddr*>(&bind_address),
+            static_cast<int>(sizeof(bind_address)))
+        == SRT_ERROR) {
+        REQUIRE_EQ(srt_close(listener), 0);
+        REQUIRE(false);
+    }
+    REQUIRE_EQ(srt_listen(listener, 5), 0);
+    sockaddr_in listener_name {};
+    int listener_name_size = static_cast<int>(sizeof(listener_name));
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&listener_name),
+            &listener_name_size),
+        0);
+    // Check every native send; successful submission does not guarantee
+    // delivery through the receiver's UDP buffer.
+    const UDPSOCKET flooder = create_udp_socket();
+#if defined(_WIN32)
+    const bool flooder_valid = flooder != INVALID_SOCKET;
+#else
+    const bool flooder_valid = flooder >= 0;
+#endif
+    if (!flooder_valid) {
+        REQUIRE_EQ(srt_close(listener), 0);
+        REQUIRE(false);
+    }
+    robotweax::srt::HandshakeAction induction;
+    induction.kind = robotweax::srt::HandshakeActionKind::send;
+    induction.packet.version = robotweax::srt::handshake_version_4;
+    induction.packet.extension_field = 2U;
+    induction.packet.maximum_transmission_unit = 1'500U;
+    induction.packet.flow_window = 8'192U;
+    induction.packet.request = robotweax::srt::HandshakeRequest::induction;
+    std::array<std::byte, 1'500> datagram {};
+    bool burst_submitted = true;
+    for (std::uint32_t index = 0; index < 5'000U; ++index) {
+        induction.packet.initial_sequence =
+            robotweax::srt::SequenceNumber {1'000U + index};
+        induction.packet.socket_id = 0x10'0000U + index;
+        const auto encoded = robotweax::srt::encode_handshake_datagram(
+            induction, robotweax::srt::PacketTimestamp {index}, 0U, datagram);
+        REQUIRE(encoded);
+        const auto sent =
+            ::sendto(flooder, reinterpret_cast<const char*>(datagram.data()),
+                static_cast<int>(encoded.bytes_written), 0,
+                reinterpret_cast<const sockaddr*>(&listener_name),
+                static_cast<NativeSocketLength>(listener_name_size));
+        if (sent != static_cast<int>(encoded.bytes_written)) {
+            burst_submitted = false;
+            break;
+        }
+    }
+    close_udp_socket(flooder);
+    if (!burst_submitted) {
+        REQUIRE_EQ(srt_close(listener), 0);
+    }
+    REQUIRE(burst_submitted);
+
+    constexpr std::int32_t connection_timeout_milliseconds = 3'000;
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO,
+                   &connection_timeout_milliseconds,
+                   static_cast<int>(sizeof(connection_timeout_milliseconds))),
+        0);
+    const int connect_result = srt_connect(caller,
+        reinterpret_cast<const sockaddr*>(&listener_name), listener_name_size);
+    REQUIRE_EQ(connect_result, 0);
+    const SRTSOCKET accepted = srt_accept(listener, nullptr, nullptr);
+    REQUIRE(accepted != SRT_INVALID_SOCK);
+
+    REQUIRE_EQ(srt_close(accepted), 0);
+    REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_close(listener), 0);
+}
+
 TEST(srt_compat_listener_callback_rejects_before_accept)
 {
     constexpr std::int32_t timeout_milliseconds = 2'000;

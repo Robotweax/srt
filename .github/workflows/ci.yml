@@ -7,6 +7,12 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      integrations_only:
+        description: Run only the complete release integration suite
+        type: boolean
+        default: false
   schedule:
     - cron: "17 3 * * 1"
 
@@ -107,6 +113,7 @@ jobs:
         id: classify
         shell: bash
         env:
+          INTEGRATIONS_ONLY: ${{ inputs.integrations_only || false }}
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
           BASE_SHA: >-
@@ -120,7 +127,10 @@ jobs:
           changed_file="$RUNNER_TEMP/ci-changed-paths.txt"
           evidence_run_id="$EVIDENCE_RUN_ID"
           if [[ ! "$evidence_run_id" =~ ^[0-9]+$ ]]; then evidence_run_id=""; fi
-          if [[ "$EVENT_NAME" == "schedule" && "$evidence_run_id" =~ ^[0-9]+$ ]]; then
+          if [[ "${INTEGRATIONS_ONLY:-false}" == "true" ]]; then
+            python3 interop/ci_changes.py --integrations-only > "$output_file"
+            : > "$changed_file"
+          elif [[ "$EVENT_NAME" == "schedule" && "$evidence_run_id" =~ ^[0-9]+$ ]]; then
             python3 interop/ci_changes.py > "$output_file"
             : > "$changed_file"
           elif [[ "$EVENT_NAME" == "workflow_dispatch" \
@@ -146,6 +156,9 @@ jobs:
               echo '```text'
               cat "$changed_file"
               echo '```'
+            elif [[ "${INTEGRATIONS_ONLY:-false}" == "true" ]]; then
+              echo "Release integrations only: FFmpeg, GStreamer, VLC and all OBS profiles."
+              echo "Commit: $HEAD_SHA"
             elif [[ "$EVENT_NAME" == "schedule" && -n "$evidence_run_id" ]]; then
               echo "Scheduled duplicate omitted: same-commit full CI passed within 24 hours."
               echo "Evidence: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$evidence_run_id"

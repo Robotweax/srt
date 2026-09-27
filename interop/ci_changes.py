@@ -672,17 +672,22 @@ def main() -> int:
         nargs="*",
         help="changed paths, or a single '-' to read newline-delimited stdin",
     )
-    parser.add_argument("--full", action="store_true")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--full", action="store_true")
+    selection.add_argument("--integrations-only", action="store_true")
     arguments = parser.parse_args()
     paths = (
         [line.rstrip("\n") for line in sys.stdin]
         if arguments.paths == ["-"]
         else arguments.paths
     )
-    result = classify(
-        paths,
-        force_full=arguments.full,
-    )
+    if arguments.integrations_only:
+        result = ChangeSet(
+            docs_only=False, ffmpeg=True, gstreamer=True, vlc=True,
+            obs=True, obs_platforms=True,
+        )
+    else:
+        result = classify(paths, force_full=arguments.full)
     print("\n".join(result.output_lines()))
     return 0
 
