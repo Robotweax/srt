@@ -2047,9 +2047,13 @@ TEST(compat_runtime_file_mode_performs_partial_stream_io)
     (void)caller.poll();
     deliver(caller_output, listener, caller_endpoint);
     deliver(listener_output, caller, listener_endpoint);
-    caller_now += 10;
-    listener_now += 10;
+    // File mode acknowledges on the 10 ms cadence rather than per packet, so
+    // advance one interval and poll the listener for the cumulative ACK that
+    // frees the caller's send buffer.
+    caller_now += 11'000;
+    listener_now += 11'000;
     (void)caller.poll();
+    (void)listener.poll();
     deliver(caller_output, listener, caller_endpoint);
     deliver(listener_output, caller, listener_endpoint);
 
@@ -6979,5 +6983,80 @@ TEST(compat_channel_fairness_idle_round_preserves_elapsed_deadline)
             REQUIRE_EQ(clock->reads, reads_per_poll);
         }
         REQUIRE(fixture.attempted_ids.empty());
+    }
+}
+
+TEST(compat_runtime_file_close_flushes_ack_before_shutdown_with_bounded_retries)
+{
+    // Successful send, transient backpressure, permanent backpressure,
+    // hard I/O failure, and an ACK already queued by the cadence poll.
+    for (int scenario = 0; scenario < 5; ++scenario) {
+        auto channel = std::make_shared<DatagramChannel>();
+        BackpressureOutput output;
+        output.blocked = scenario != 0;
+        output.alternate = scenario == 1 || scenario == 4;
+        if (scenario == 3)
+            output.failure = Error::io_error;
+        channel->set_send_hook_for_testing(backpressure_datagram, &output);
+        std::uint64_t now = 100;
+        Ipv4Endpoint peer {.address = {192, 0, 2, 91}, .port = 15091};
+        SocketOptions options;
+        REQUIRE_EQ(
+            options.set(SocketOption::transmission_type, 1), Error::none);
+        ConnectionRuntime runtime {{.channel = channel,
+            .peer = peer,
+            .peer_socket_id = 910,
+            .initial_sequence = SequenceNumber {700},
+            .flow_window_packets = 64,
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+            .now_function = injected_now,
+            .now_context = &now}};
+        const std::array payload {std::byte {'x'}};
+        PacketView data {.kind = PacketKind::data,
+            .data = {.sequence = SequenceNumber {700},
+                .message_number = 1,
+                .boundary = MessageBoundary::solo},
+            .payload = payload};
+        runtime.process_packet(data, peer);
+        REQUIRE(output.attempts.empty());
+        if (scenario == 4) {
+            now = 11'000;
+            (void)runtime.poll();
+            REQUIRE_EQ(output.attempts.size(), 1U);
+        }
+        // Keep the injected clock frozen during close: retry termination must
+        // depend on real elapsed time, not on this test clock advancing.
+        runtime.close();
+        const auto sent = take_datagrams(output.accepted);
+        REQUIRE(!output.attempts.empty());
+        REQUIRE(output.attempts.size() <= 12U);
+        if (scenario == 2 || scenario == 3) {
+            REQUIRE(sent.empty());
+            for (const auto& attempt : output.attempts) {
+                const auto decoded = decode_packet(attempt);
+                REQUIRE(decoded);
+                REQUIRE_EQ(
+                    decoded.packet.control.type, ControlType::acknowledgement);
+            }
+            REQUIRE_EQ(runtime.broken(), scenario == 3);
+        } else {
+            REQUIRE_EQ(sent.size(), 2U);
+            const auto ack = decode_packet(sent[0]);
+            REQUIRE(ack);
+            REQUIRE_EQ(ack.packet.control.type, ControlType::acknowledgement);
+            const auto decoded_ack = decode_acknowledgement(ack.packet);
+            REQUIRE(decoded_ack);
+            REQUIRE_EQ(decoded_ack.acknowledgement.next_sequence,
+                SequenceNumber {701});
+            REQUIRE_EQ(decode_packet(sent[1]).packet.control.type,
+                ControlType::shutdown);
+        }
+        const auto attempts = output.attempts.size();
+        runtime.close();
+        output.blocked = false;
+        now += 20'000;
+        (void)runtime.poll();
+        REQUIRE_EQ(output.attempts.size(), attempts);
     }
 }

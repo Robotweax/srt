@@ -347,6 +347,7 @@ class FileInteropTests(unittest.TestCase):
                 run_file_interop.scenario_faults(item)[0]
                     .control_type
                     == 2
+                and run_file_interop.scenario_faults(item)[0].occurrence == 1
                 and item.flow_window_packets
                     == run_file_interop
                     .RESILIENCE_FLOW_WINDOW_PACKETS

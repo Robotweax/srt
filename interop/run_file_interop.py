@@ -353,7 +353,9 @@ def resilience_scenario_matrix(
     delayed_ack = RendezvousFault(
         action="delay",
         direction="receiver_to_sender",
-        occurrence=32,
+        # Start with the first ACK: a cadence-coalesced receiver may finish
+        # this transfer with fewer than 32 ACKs. The delay must actually run.
+        occurrence=1,
         packet_kind="control",
         control_type=2,
         delay_milliseconds=ACK_DELAY_MILLISECONDS,

@@ -10,6 +10,7 @@
 #include <atomic>
 #include <limits>
 #include <new>
+#include <thread>
 
 namespace robotweax::srt::compat {
 namespace {
@@ -3323,9 +3324,42 @@ void ConnectionRuntime::close() noexcept
     }
     const std::uint64_t now = now_microseconds();
     if (!peer_closed_ && !broken_) {
-        ReliabilityActions shutdown;
-        shutdown.push({.kind = ReliabilityActionKind::shutdown});
-        (void)send_actions(shutdown, now);
+        // A final cumulative ACK must reach UDP before shutdown. Retry local
+        // backpressure for at most one ACK interval, using the real clock so
+        // an injected/frozen protocol clock cannot stall close indefinitely.
+        const auto final_ack = session_.flush_acknowledgement(now);
+        bool pending_ack = final_ack.size != 0U;
+        for (auto* entry = pending_datagram_head_.get(); entry != nullptr;
+            entry = entry->next.get()) {
+            pending_ack |= entry->completion.kind == DatagramKind::control
+                && entry->completion.control == ControlType::acknowledgement;
+        }
+        const auto deadline = Clock::now() + std::chrono::milliseconds {10};
+        const auto drain = [&]() {
+            while (!broken_ && pending_datagram_size_ != 0U
+                && Clock::now() < deadline) {
+                // Try once before sleeping: a coarse OS timer can consume
+                // the whole budget in a nominal 1 ms sleep. Subsequent blocked
+                // attempts remain paced using real time, not the test clock.
+                next_datagram_retry_microseconds_ = 0U;
+                if (!flush_pending_datagrams(now_microseconds())) {
+                    return false;
+                }
+                if (pending_datagram_size_ != 0U) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds {1});
+                }
+            }
+            return !broken_ && pending_datagram_size_ == 0U;
+        };
+        const bool ack_submitted =
+            send_actions(final_ack, now) && (!pending_ack || drain());
+        if (ack_submitted && !broken_) {
+            ReliabilityActions shutdown;
+            shutdown.push({.kind = ReliabilityActionKind::shutdown});
+            if (send_actions(shutdown, now_microseconds()) && pending_ack) {
+                (void)drain();
+            }
+        }
     }
     statistics_.update_send_duration(
         now, session_.send_buffer().size() != 0U);
