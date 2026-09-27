@@ -1,0 +1,17 @@
+name: Release integrations
+run-name: Release integrations — ${{ github.ref_name }}
+
+# Explicit pre-release validation; no PR, push, schedule or release trigger.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  integrations:
+    name: Complete ecosystem suite
+    uses: ./.github/workflows/ci.yml
+    with:
+      integrations_only: true

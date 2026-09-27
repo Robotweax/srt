@@ -53,10 +53,23 @@ affect RTT, statistics, liveness, or connection state. See the
 
 ## Bounded-state and rollover limit
 
-Each connection stores 64 outstanding Full ACK departure records. The index is
-derived from the acknowledgement number, but every lookup also compares the
-complete 32-bit value. Reusing a slot therefore evicts the old record instead
-of allowing a stale ACKACK to alias the new entry.
+Each connection stores up to 512 outstanding Full ACK departure records.
+This increases the matching horizon but cannot guarantee that every returning
+ACKACK still has a record: higher ACK rates or longer RTTs can still cause
+eviction. At exactly one Full ACK per 10 ms the horizon is approximately
+5.12 seconds; expedited ACKs shorten it. File mode retains prompt per-packet
+Full ACKs, so its horizon depends on packet rate.
+The index is derived from the acknowledgement number, but every lookup also
+compares the complete 32-bit value. Reusing a slot therefore evicts the old
+record instead of allowing a stale ACKACK to alias the new entry.
+
+In Live mode, Full ACKs follow the Full ACK cadence (the 10 ms interval, with a
+packet-counted Light ACK between them). An application read expedites a Full ACK
+only when the advertised receive window had closed; a read while the window is
+open marks feedback pending for the next regular Full ACK deadline without
+pulling that deadline forward. Multiple reads coalesce into that update, even
+if no further DATA arrives. Lite ACKs carry no receive-window value and do not
+change the last advertised window.
 
 After an entire non-zero 32-bit cycle, the wire format contains no generation
 field. A packet delayed across that complete cycle is indistinguishable from a

@@ -61,6 +61,20 @@ public:
         SequenceRange range, std::uint32_t initial_ttl) noexcept;
     [[nodiscard]] bool add_all(std::span<const SequenceRange> ranges,
         std::uint32_t initial_ttl) noexcept;
+    // Insert one range at its sorted position, shifting later entries. Unlike
+    // add_all this accepts a range that precedes existing entries, which the
+    // FEC filter loss list needs because column groups close out of sequence
+    // order. A range already covered by an existing entry is skipped and
+    // reported as success. Partial overlaps, invalid ranges, and exhausted
+    // capacity fail without modifying the list.
+    [[nodiscard]] bool insert_sorted(
+        SequenceRange range, std::uint32_t initial_ttl) noexcept;
+    // Transactional feasibility check for a sorted insert of the whole batch:
+    // every range must be valid, fit the remaining capacity, and not overlap an
+    // existing entry or another range in the batch. Order within the batch does
+    // not matter.
+    [[nodiscard]] bool can_insert_all_sorted(
+        std::span<const SequenceRange> ranges) const noexcept;
     [[nodiscard]] ReceiveLossRemoval remove(
         SequenceNumber sequence) noexcept;
     void remove_through(SequenceNumber last) noexcept;

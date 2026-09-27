@@ -3166,6 +3166,106 @@ TEST(srt_compat_nonblocking_rendezvous_actor_closes_while_pending)
     close_udp_socket(sink);
 }
 
+TEST(srt_compat_early_source_time_does_not_stall_delivery)
+{
+    // A source time at or before the connection origin (a passthrough gateway
+    // forwarding a cached frame, for example) must not wrap to a large 32-bit
+    // timestamp and stall every later packet on the receiver.
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+
+    sockaddr_in bind_address {};
+    bind_address.sin_family = AF_INET;
+    bind_address.sin_port = 0;
+    bind_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    const SRTSOCKET listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    if (srt_bind(listener, reinterpret_cast<const sockaddr*>(&bind_address),
+            static_cast<int>(sizeof(bind_address)))
+        == SRT_ERROR) {
+        REQUIRE_EQ(srt_close(listener), 0);
+        REQUIRE(false);
+    }
+    REQUIRE_EQ(srt_listen(listener, 4), 0);
+    sockaddr_in listener_name {};
+    int listener_name_size = static_cast<int>(sizeof(listener_name));
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&listener_name),
+            &listener_name_size),
+        0);
+
+    constexpr std::int32_t connection_timeout_milliseconds = 3'000;
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO,
+                   &connection_timeout_milliseconds,
+                   static_cast<int>(sizeof(connection_timeout_milliseconds))),
+        0);
+    // Start the accept thread only after all fallible setup assertions.
+    std::atomic<SRTSOCKET> accepted {SRT_INVALID_SOCK};
+    std::thread accept_thread([&] {
+        accepted.store(srt_accept(listener, nullptr, nullptr));
+    });
+    const int connect_result = srt_connect(caller,
+        reinterpret_cast<const sockaddr*>(&listener_name), listener_name_size);
+    // Closing the listener wakes accept if connection setup failed. Do not
+    // assert or unwind while a joinable thread is still alive.
+    if (connect_result != 0) {
+        (void)srt_close(listener);
+    }
+    accept_thread.join();
+    if (connect_result != 0) {
+        (void)srt_close(caller);
+        if (accepted.load() != SRT_INVALID_SOCK) {
+            (void)srt_close(accepted.load());
+        }
+    }
+    REQUIRE_EQ(connect_result, 0);
+    REQUIRE(accepted.load() != SRT_INVALID_SOCK);
+
+    // Bound the receive so a stalled clock surfaces as a timeout, not a hang.
+    constexpr std::int32_t receive_timeout_milliseconds = 2'000;
+    REQUIRE_EQ(srt_setsockflag(accepted.load(), SRTO_RCVTIMEO,
+                   &receive_timeout_milliseconds,
+                   static_cast<int>(sizeof(receive_timeout_milliseconds))),
+        0);
+
+    const std::int64_t connection_time = srt_connection_time(caller);
+    REQUIRE(connection_time > 0);
+
+    // First message: source time 1 ms before the connection origin.
+    SRT_MSGCTRL early_control = srt_msgctrl_default;
+    early_control.srctime = connection_time - 1'000;
+    constexpr char first_payload[] = "cached-frame";
+    REQUIRE_EQ(srt_sendmsg2(caller, first_payload,
+                   static_cast<int>(sizeof(first_payload)), &early_control),
+        static_cast<int>(sizeof(first_payload)));
+
+    // Later messages use the default (current) source time.
+    constexpr char later_payload[] = "live-frame";
+    for (int index = 0; index < 3; ++index) {
+        REQUIRE_EQ(srt_sendmsg(caller, later_payload,
+                       static_cast<int>(sizeof(later_payload)), -1, true),
+            static_cast<int>(sizeof(later_payload)));
+    }
+
+    // Every message must be delivered; the poisoned-clock bug times these out.
+    std::array<char, SRT_LIVE_DEF_PLSIZE> received {};
+    REQUIRE_EQ(srt_recvmsg(accepted.load(), received.data(),
+                   static_cast<int>(received.size())),
+        static_cast<int>(sizeof(first_payload)));
+    for (int index = 0; index < 3; ++index) {
+        REQUIRE_EQ(srt_recvmsg(accepted.load(), received.data(),
+                       static_cast<int>(received.size())),
+            static_cast<int>(sizeof(later_payload)));
+    }
+
+    REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_close(accepted.load()), 0);
+    REQUIRE_EQ(srt_close(listener), 0);
+}
+
 TEST(srt_compat_encrypted_rendezvous_peers_exchange_a_message)
 {
     sockaddr_in bind_address{};
@@ -4126,6 +4226,95 @@ TEST(
             }));
     }
     REQUIRE_EQ(srt_cleanup(), 0);
+}
+
+TEST(srt_compat_listener_survives_an_induction_flood)
+{
+    // Integration smoke test: submit a complete INDUCTION burst and then
+    // accept a genuine caller. Kernel delivery and actor queue pressure are
+    // scheduling-dependent; the actor test forces overflow deterministically.
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    sockaddr_in bind_address {};
+    bind_address.sin_family = AF_INET;
+    bind_address.sin_port = 0;
+    bind_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    const SRTSOCKET listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    if (srt_bind(listener, reinterpret_cast<const sockaddr*>(&bind_address),
+            static_cast<int>(sizeof(bind_address)))
+        == SRT_ERROR) {
+        REQUIRE_EQ(srt_close(listener), 0);
+        REQUIRE(false);
+    }
+    REQUIRE_EQ(srt_listen(listener, 5), 0);
+    sockaddr_in listener_name {};
+    int listener_name_size = static_cast<int>(sizeof(listener_name));
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&listener_name),
+            &listener_name_size),
+        0);
+    // Check every native send; successful submission does not guarantee
+    // delivery through the receiver's UDP buffer.
+    const UDPSOCKET flooder = create_udp_socket();
+#if defined(_WIN32)
+    const bool flooder_valid = flooder != INVALID_SOCKET;
+#else
+    const bool flooder_valid = flooder >= 0;
+#endif
+    if (!flooder_valid) {
+        REQUIRE_EQ(srt_close(listener), 0);
+        REQUIRE(false);
+    }
+    robotweax::srt::HandshakeAction induction;
+    induction.kind = robotweax::srt::HandshakeActionKind::send;
+    induction.packet.version = robotweax::srt::handshake_version_4;
+    induction.packet.extension_field = 2U;
+    induction.packet.maximum_transmission_unit = 1'500U;
+    induction.packet.flow_window = 8'192U;
+    induction.packet.request = robotweax::srt::HandshakeRequest::induction;
+    std::array<std::byte, 1'500> datagram {};
+    bool burst_submitted = true;
+    for (std::uint32_t index = 0; index < 5'000U; ++index) {
+        induction.packet.initial_sequence =
+            robotweax::srt::SequenceNumber {1'000U + index};
+        induction.packet.socket_id = 0x10'0000U + index;
+        const auto encoded = robotweax::srt::encode_handshake_datagram(
+            induction, robotweax::srt::PacketTimestamp {index}, 0U, datagram);
+        REQUIRE(encoded);
+        const auto sent =
+            ::sendto(flooder, reinterpret_cast<const char*>(datagram.data()),
+                static_cast<int>(encoded.bytes_written), 0,
+                reinterpret_cast<const sockaddr*>(&listener_name),
+                static_cast<NativeSocketLength>(listener_name_size));
+        if (sent != static_cast<int>(encoded.bytes_written)) {
+            burst_submitted = false;
+            break;
+        }
+    }
+    close_udp_socket(flooder);
+    if (!burst_submitted) {
+        REQUIRE_EQ(srt_close(listener), 0);
+    }
+    REQUIRE(burst_submitted);
+
+    constexpr std::int32_t connection_timeout_milliseconds = 3'000;
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO,
+                   &connection_timeout_milliseconds,
+                   static_cast<int>(sizeof(connection_timeout_milliseconds))),
+        0);
+    const int connect_result = srt_connect(caller,
+        reinterpret_cast<const sockaddr*>(&listener_name), listener_name_size);
+    REQUIRE_EQ(connect_result, 0);
+    const SRTSOCKET accepted = srt_accept(listener, nullptr, nullptr);
+    REQUIRE(accepted != SRT_INVALID_SOCK);
+
+    REQUIRE_EQ(srt_close(accepted), 0);
+    REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_close(listener), 0);
 }
 
 TEST(srt_compat_listener_callback_rejects_before_accept)
