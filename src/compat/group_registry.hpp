@@ -4,6 +4,7 @@
 
 #include "compat/group_replay_buffer.hpp"
 #include "robotweax/srt/socket_options.hpp"
+#include "robotweax/srt/handshake_extensions.hpp"
 #include "srt/srt.h"
 
 #include <cstdint>
@@ -12,7 +13,6 @@
 #include <mutex>
 #include <optional>
 #include <unordered_map>
-#include <string>
 #include <vector>
 
 namespace robotweax::srt {
@@ -85,7 +85,7 @@ struct GroupRecord {
     std::int32_t member_receiver_latency_milliseconds = 120;
     std::int32_t member_peer_latency_milliseconds = 0;
     std::int64_t member_maximum_bandwidth_bytes_per_second = -1;
-    std::string member_stream_id;
+    StreamId member_stream_id;
     SRTSOCKET active_send_member = SRT_INVALID_SOCK;
     std::uint64_t active_send_generation = 0;
     std::uint64_t active_send_since_microseconds = 0;
@@ -116,7 +116,7 @@ public:
         std::int32_t member_receiver_latency_milliseconds = 120;
         std::int32_t member_peer_latency_milliseconds = 0;
         std::int64_t member_maximum_bandwidth_bytes_per_second = -1;
-        std::string member_stream_id;
+        StreamId member_stream_id;
     };
 
     struct MirrorDescription {

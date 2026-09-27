@@ -312,10 +312,7 @@ int srt_connect_group(
             description.member_peer_latency_milliseconds;
         record->public_options.maximum_bandwidth_bytes_per_second =
             description.member_maximum_bandwidth_bytes_per_second;
-        if (!description.member_stream_id.empty()) {
-            (void)record->public_options.stream_id.assign(
-                description.member_stream_id);
-        }
+        record->public_options.stream_id = description.member_stream_id;
         if (configured) {
             const bool drift_tracer = description.drift_tracer;
             const std::int64_t minimum_input =

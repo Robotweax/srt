@@ -310,6 +310,33 @@ int GroupRegistry::get_io_option(
         *value_size = static_cast<int>(sizeof(peer_version));
         return 0;
     }
+    if (option == SRTO_STREAMID || option == SRTO_MAXBW) {
+        std::lock_guard lock(record->mutex);
+        if (record->closed) {
+            set_last_error(SRT_EINVSOCK);
+            return SRT_ERROR;
+        }
+        if (option == SRTO_STREAMID) {
+            const auto text = record->member_stream_id.view();
+            if (*value_size < static_cast<int>(text.size() + 1U)) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            std::memcpy(value, text.data(), text.size());
+            static_cast<char*>(value)[text.size()] = '\0';
+            *value_size = static_cast<int>(text.size());
+        } else {
+            const auto bandwidth =
+                record->member_maximum_bandwidth_bytes_per_second;
+            if (*value_size < static_cast<int>(sizeof(bandwidth))) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            std::memcpy(value, &bandwidth, sizeof(bandwidth));
+            *value_size = static_cast<int>(sizeof(bandwidth));
+        }
+        return 0;
+    }
     if (option == SRTO_MININPUTBW) {
         std::int64_t minimum_input = 0;
         {
@@ -399,6 +426,13 @@ int GroupRegistry::get_io_option(
             return SRT_ERROR;
         }
         switch (option) {
+        case SRTO_LATENCY:
+        case SRTO_RCVLATENCY:
+            result = record->member_receiver_latency_milliseconds;
+            break;
+        case SRTO_PEERLATENCY:
+            result = record->member_peer_latency_milliseconds;
+            break;
         case SRTO_ROBOTWEAX_CRYPTO_BACKEND:
             result = static_cast<std::int32_t>(
                 ROBOTWEAX_SRT_COMPILED_CRYPTO_BACKEND);
@@ -636,7 +670,7 @@ int GroupRegistry::set_io_option(
     if (option == SRTO_STREAMID || option == SRTO_LATENCY
         || option == SRTO_RCVLATENCY || option == SRTO_PEERLATENCY
         || option == SRTO_MAXBW) {
-        std::string stream_id;
+        StreamId stream_id;
         std::int32_t latency = 0;
         std::int64_t maximum_bandwidth = 0;
         if (option == SRTO_STREAMID) {
@@ -645,11 +679,9 @@ int GroupRegistry::set_io_option(
                 set_last_error(SRT_EINVPARAM);
                 return SRT_ERROR;
             }
-            try {
-                stream_id.assign(static_cast<const char*>(value),
-                    static_cast<std::size_t>(value_size));
-            } catch (...) {
-                set_last_error(SRT_ENOBUF);
+            if (!stream_id.assign({static_cast<const char*>(value),
+                    static_cast<std::size_t>(value_size)})) {
+                set_last_error(SRT_EINVPARAM);
                 return SRT_ERROR;
             }
         } else if (option == SRTO_MAXBW) {

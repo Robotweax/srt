@@ -2059,7 +2059,7 @@ TEST(compat_group_passes_stream_id_latency_and_maxbw_to_members)
 
     GroupRegistry::ConnectDescription description;
     REQUIRE(GroupRegistry::instance().describe_connect(group, description));
-    REQUIRE_EQ(description.member_stream_id,
+    REQUIRE_EQ(description.member_stream_id.view(),
         (std::string {stream_id, sizeof(stream_id) - 1U}));
     REQUIRE_EQ(
         description.member_receiver_latency_milliseconds, receive_latency);
@@ -3054,4 +3054,178 @@ TEST(compat_prepare_endpoint_handles_ipv4_ipv6_and_rejects_unsafe_inputs)
         reinterpret_cast<const sockaddr*>(&destination6),
         static_cast<int>(sizeof(sockaddr_in)));
     REQUIRE_EQ(endpoint.errorcode, SRT_EINVPARAM);
+}
+
+TEST(compat_group_member_options_round_trip_and_reach_live_members)
+{
+    struct Cleanup {
+        SRTSOCKET listener = SRT_INVALID_SOCK;
+        SRTSOCKET group = SRT_INVALID_SOCK;
+        SRTSOCKET mirror = SRT_INVALID_SOCK;
+        ~Cleanup()
+        {
+            if (group != SRT_INVALID_SOCK)
+                (void)srt_close(group);
+            if (mirror != SRT_INVALID_SOCK)
+                (void)srt_close(mirror);
+            if (listener != SRT_INVALID_SOCK)
+                (void)srt_close(listener);
+        }
+    };
+    struct CallbackState {
+        std::mutex mutex;
+        int matched = 0;
+    } callback_state;
+    Cleanup cleanup;
+    constexpr char stream[] = "#!::r=group/options";
+    cleanup.listener = srt_create_socket();
+    cleanup.group = srt_create_group(SRT_GTYPE_BROADCAST);
+    REQUIRE(cleanup.listener != SRT_INVALID_SOCK);
+    REQUIRE(cleanup.group != SRT_INVALID_SOCK);
+    const int enabled = 1;
+    REQUIRE_EQ(srt_setsockflag(cleanup.listener, SRTO_GROUPCONNECT, &enabled,
+                   sizeof(enabled)),
+        0);
+    const int timeout = 2'000;
+    REQUIRE_EQ(srt_setsockflag(
+                   cleanup.listener, SRTO_RCVTIMEO, &timeout, sizeof(timeout)),
+        0);
+    REQUIRE_EQ(
+        srt_listen_callback(
+            cleanup.listener,
+            [](void* context, SRTSOCKET, int, const sockaddr*, const char* id) {
+                auto& state = *static_cast<CallbackState*>(context);
+                std::lock_guard lock(state.mutex);
+                if (id == nullptr
+                    || std::strcmp(id, "#!::r=group/options") != 0)
+                    return -1;
+                ++state.matched;
+                return 0;
+            },
+            &callback_state),
+        0);
+    auto address = ipv4_address(0);
+    REQUIRE_EQ(
+        srt_bind(cleanup.listener, reinterpret_cast<const sockaddr*>(&address),
+            sizeof(address)),
+        0);
+    REQUIRE_EQ(srt_listen(cleanup.listener, 4), 0);
+    int address_size = sizeof(address);
+    REQUIRE_EQ(srt_getsockname(cleanup.listener,
+                   reinterpret_cast<sockaddr*>(&address), &address_size),
+        0);
+    const std::int32_t symmetric = 300;
+    REQUIRE_EQ(srt_setsockflag(
+                   cleanup.group, SRTO_LATENCY, &symmetric, sizeof(symmetric)),
+        0);
+    const std::int32_t receive = 800;
+    const std::int32_t peer = 450;
+    const std::int64_t bandwidth = 12'500'000;
+    REQUIRE_EQ(srt_setsockflag(
+                   cleanup.group, SRTO_RCVLATENCY, &receive, sizeof(receive)),
+        0);
+    REQUIRE_EQ(
+        srt_setsockflag(cleanup.group, SRTO_PEERLATENCY, &peer, sizeof(peer)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(
+                   cleanup.group, SRTO_MAXBW, &bandwidth, sizeof(bandwidth)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(
+                   cleanup.group, SRTO_STREAMID, stream, sizeof(stream) - 1),
+        0);
+    const auto check = [&](SRTSOCKET socket) {
+        for (const auto option :
+            {SRTO_LATENCY, SRTO_RCVLATENCY, SRTO_PEERLATENCY}) {
+            std::int32_t actual = 0;
+            int size = sizeof(actual);
+            REQUIRE_EQ(srt_getsockflag(socket, option, &actual, &size), 0);
+            REQUIRE_EQ(actual, option == SRTO_PEERLATENCY ? peer : receive);
+            REQUIRE_EQ(size, sizeof(actual));
+        }
+        std::int64_t actual = 0;
+        int size = sizeof(actual);
+        REQUIRE_EQ(srt_getsockflag(socket, SRTO_MAXBW, &actual, &size), 0);
+        REQUIRE_EQ(actual, bandwidth);
+        REQUIRE_EQ(size, sizeof(actual));
+        std::array<char, sizeof(stream)> text {};
+        size = text.size();
+        REQUIRE_EQ(
+            srt_getsockflag(socket, SRTO_STREAMID, text.data(), &size), 0);
+        REQUIRE_EQ(size, sizeof(stream) - 1);
+        REQUIRE_EQ(std::memcmp(text.data(), stream, sizeof(stream)), 0);
+    };
+    check(cleanup.group);
+    for (int index = 0; index < 2; ++index) {
+        auto endpoint = srt_prepare_endpoint(nullptr,
+            reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+        REQUIRE(srt_connect_group(cleanup.group, &endpoint, 1) != SRT_ERROR);
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds {2};
+        while (srt_getsockstate(endpoint.id) == SRTS_CONNECTING
+            && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        REQUIRE_EQ(srt_getsockstate(endpoint.id), SRTS_CONNECTED);
+        check(endpoint.id);
+        const auto member = SocketRegistry::instance().find(endpoint.id);
+        REQUIRE(member != nullptr);
+        std::lock_guard lock(member->mutex);
+        using robotweax::srt::SocketOption;
+        REQUIRE_EQ(member->native_options
+                       .get(SocketOption::receiver_latency_milliseconds)
+                       .value,
+            receive);
+        REQUIRE_EQ(
+            member->native_options.get(SocketOption::peer_latency_milliseconds)
+                .value,
+            peer);
+        REQUIRE_EQ(member->native_options
+                       .get(SocketOption::maximum_bandwidth_bytes_per_second)
+                       .value,
+            bandwidth);
+    }
+    cleanup.mirror = srt_accept(cleanup.listener, nullptr, nullptr);
+    REQUIRE(cleanup.mirror != SRT_INVALID_SOCK);
+    check(cleanup.group);
+    std::lock_guard lock(callback_state.mutex);
+    REQUIRE_EQ(callback_state.matched, 2);
+}
+
+TEST(compat_group_member_option_getters_validate_buffer_sizes)
+{
+    const auto group = srt_create_group(SRT_GTYPE_BACKUP);
+    REQUIRE(group != SRT_INVALID_SOCK);
+    struct Cleanup {
+        SRTSOCKET group;
+        ~Cleanup()
+        {
+            (void)srt_close(group);
+        }
+    } cleanup {group};
+    std::array<char, 513> text {};
+    text.fill('x');
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_STREAMID, text.data(), 512), 0);
+    REQUIRE_EQ(
+        srt_setsockflag(group, SRTO_STREAMID, text.data(), 513), SRT_ERROR);
+    int size = 512;
+    REQUIRE_EQ(
+        srt_getsockflag(group, SRTO_STREAMID, text.data(), &size), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    size = 513;
+    REQUIRE_EQ(srt_getsockflag(group, SRTO_STREAMID, text.data(), &size), 0);
+    REQUIRE_EQ(size, 512);
+    REQUIRE_EQ(text[511], 'x');
+    REQUIRE_EQ(text[512], '\0');
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_STREAMID, "", 0), 0);
+    size = text.size();
+    REQUIRE_EQ(srt_getsockflag(group, SRTO_STREAMID, text.data(), &size), 0);
+    REQUIRE_EQ(size, 0);
+    REQUIRE_EQ(text[0], '\0');
+    for (const auto option :
+        {SRTO_LATENCY, SRTO_RCVLATENCY, SRTO_PEERLATENCY, SRTO_MAXBW}) {
+        std::int64_t value = 0;
+        size = 1;
+        REQUIRE_EQ(srt_getsockflag(group, option, &value, &size), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    }
 }
