@@ -64,6 +64,13 @@ Invalid passphrase lengths are rejected before copying or deriving key
 material. A value longer than 80 bytes is never truncated into a different
 shared secret.
 
+A peer that leaves `SRTO_PBKEYLEN` at its default advertises no key length:
+the handshake encryption field is `0` ("no encryption advertised"), and the
+key material alone carries the key length. This is the reference
+implementation's default, so callers and listeners accept a `0` field and take
+the key length from the key material. A nonzero advertisement must still match
+the key material.
+
 ### AES-CTR example
 
 ```c
