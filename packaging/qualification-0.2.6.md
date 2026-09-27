@@ -1,6 +1,6 @@
-# Package qualification: 0.2.6 candidate
+# Package qualification: 0.2.6
 
-Status: **corrected source package and bottle qualification passed; final tag/SDK acceptance and publication pending**.
+Status: **corrected source package and bottle qualification passed; published 2026-09-26 as [v0.2.6](https://github.com/Robotweax/srt/releases/tag/v0.2.6)**.
 Source: `7ecb60ea8b4faca01ed86237b0cc9dc906350f6e`.
 Archive SHA-256: `b2920453b222879e1c7181a7c6b895c9440d104987d01cf9699eb4126b3b2476`.
 Archive SHA-512: `73b91e3110a09b16f2903b6dbb4ab9068783044660312809d13e0406b62bb7df1eedbd9c8d671fdf64a58ca539e39a807020585ab4684fddbd55635c2140b35c`.
@@ -102,5 +102,5 @@ Earlier successful builds for source `3050534` and bottle head `cdb65e2` remain
 historical evidence. They were superseded because PR #73 structurally changed
 production source to make receive-slice tests deterministic. No previous tag,
 release asset or published bottle was overwritten. Tag/Windows SDK acceptance
-and the tap publication remain separate final steps. The clean-install checks
+and the tap publication were completed as separate final steps. The clean-install checks
 do not establish an upgrade or rollback guarantee.

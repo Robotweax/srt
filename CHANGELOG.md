@@ -4,10 +4,10 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
-## 0.2.6 — Performance Optimization (release candidate)
+## 0.2.6 — Performance Optimization — 2026-09-26
 
-Runtime and package qualification passed; final tag artifacts and publication
-remain pending. See the
+Published as [v0.2.6](https://github.com/Robotweax/srt/releases/tag/v0.2.6) from tag commit `50cba37`; the product
+code is identical to the qualified source `7ecb60e`. See the
 [release notes](docs/release-notes-0.2.6.md) for compatibility and evidence limits.
 
 - Avoid repeated send-buffer prefix scans and quadratic receive-loss retirement.
@@ -25,9 +25,10 @@ remain pending. See the
 - Keep the public C export inventory and ABI line 0.2; retain SRT API target 1.5.7.
   Rebuild direct source-tree C++ consumers with matching headers and library.
 
-## 0.2.5 — Ecosystem Support (release candidate)
+## 0.2.5 — Ecosystem Support — 2026-09-23
 
-Publication pending. See [release notes](docs/release-notes-0.2.5.md) and the
+Published as [v0.2.5](https://github.com/Robotweax/srt/releases/tag/v0.2.5).
+See [release notes](docs/release-notes-0.2.5.md) and the
 [qualified ecosystem matrix](docs/compatibility.md#ecosystem-build-profiles).
 
 - Add Windows x64 and Apple Silicon OBS Qt desktop qualification with encrypted

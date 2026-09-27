@@ -1,6 +1,6 @@
 # Robotweax SRT 0.2.6 — Performance Optimization
 
-Status: **corrected runtime, source packages and bottle qualified; final tag/SDK acceptance and publication pending**.
+Status: **published 2026-09-26 as [v0.2.6](https://github.com/Robotweax/srt/releases/tag/v0.2.6)**.
 
 Project version: **0.2.6**. Shared-library C ABI line: **0.2**.
 Compatible SRT API and `srt_getversion()`: **1.5.7**. This is an implementation
@@ -71,19 +71,33 @@ Shared-listener parallelism, receive syscall batching, callback failure fallback
 and reordering-tolerance changes are not part of this release's new guarantees.
 Independent cryptographic review remains outstanding.
 
-Before publication, record the exact final candidate commit, required full CI,
-reference interoperability and selected platform/integration outcomes. Validate
-installed consumers, C exports and release artifacts on supported targets.
+The release was accepted on tag commit `50cba37bc89f423ee7c0a292c3c3eae71b5fc7f9`,
+whose product code, tests and build definitions are identical to
+`7ecb60ea8b4faca01ed86237b0cc9dc906350f6e`; later commits change package pins,
+the Linux package workflow's source download and documentation only.
+The [final tag CI](https://github.com/Robotweax/srt/actions/runs/36251236629)
+and the [Windows SDK and signing run](https://github.com/Robotweax/srt/actions/runs/36251236647)
+passed on that commit. Published assets and SHA-256 digests:
+
+| Asset | SHA-256 |
+| --- | --- |
+| `robotweax-srt-0.2.6-windows-sdk-openssl.exe` | `5f3bec9aca5b300cd47f027e6673b93ed5c75e9b153742d9bb8fe5b74beee5bf` |
+| `robotweax-srt-0.2.6-windows-sdk-bcrypt.exe` | `c16767db3f56a5f9e3ae31351ee3c65d575cf80e8564cebe697ceb18b263dc3d` |
+| `SHA256SUMS` | `5fb22ab965fd47f7d7d2d9b14a590513f0b44b51b19010d0455016d422d0c282` |
+
 Previously qualified source snapshots are supporting evidence, not acceptance
-of a different final release commit. Keep original failures and unresolved
-reference/environment findings visible when evaluating support claims.
+of a different final release commit. Two earlier tag targets failed their tag
+CI (an installed-documentation link and the rapid listener restart above); the
+tag was moved before publication, and those failures remain recorded. Keep
+original failures and unresolved reference/environment findings visible when
+evaluating support claims.
 
 The distribution recipes under packaging/ target the immutable source commit
 `7ecb60ea8b4faca01ed86237b0cc9dc906350f6e`.
 [Package-manager qualification](https://github.com/Robotweax/srt/actions/runs/36250172158),
 [Ubuntu/Fedora packages](https://github.com/Robotweax/srt/actions/runs/36250172274)
 and the [Homebrew bottle](https://github.com/Robotweax/homebrew-tap/actions/runs/36250101792)
-passed for this corrected source. Final tag/Windows SDK acceptance and
-publication remain separate. The separately published Homebrew tap still
-provides 0.2.5 until its reviewed update is published; changing this project's
-version does not publish a distribution package.
+passed for this corrected source. The separately published
+[Homebrew tap](https://github.com/Robotweax/homebrew-tap) provides 0.2.6 with an
+Apple Silicon macOS 15 bottle. No vcpkg registry, PPA or COPR is published;
+changing this project's version does not publish a distribution package.
