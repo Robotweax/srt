@@ -487,11 +487,37 @@ TEST(listener_handshake_actor_drops_responses_when_results_are_full)
     const ListenerHandshakeActorResult response = actor->wait();
     REQUIRE_EQ(response.kind, ListenerHandshakeActorResultKind::step);
     REQUIRE_EQ(response.step.kind, ListenerHandshakeAdmissionStepKind::send);
+    // Refill the response limit before submitting the valid CONCLUSION.
+    // Do not consume that response until admission occupies the reserved slot.
+    REQUIRE(inbox->push({
+        .message = admission_induction(110U),
+        .peer = IpEndpoint::loopback(9'010U),
+    }));
+    const auto refill_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    while (actor->snapshot().queued_results != 1U
+        && std::chrono::steady_clock::now() < refill_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+    REQUIRE_EQ(actor->snapshot().queued_results, 1U);
     REQUIRE(inbox->push({
         .message = admission_conclusion(
             first_induction.message, response.step.response.packet.syn_cookie),
         .peer = first_peer,
     }));
+    const auto admission_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    while (!actor->snapshot().admission_pending
+        && std::chrono::steady_clock::now() < admission_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+    const auto full_snapshot = actor->snapshot();
+    REQUIRE(!full_snapshot.terminal);
+    REQUIRE(full_snapshot.admission_pending);
+    REQUIRE_EQ(full_snapshot.queued_results, 2U);
+    REQUIRE_EQ(full_snapshot.dropped_responses, 4U);
+    REQUIRE_EQ(
+        actor->wait().step.kind, ListenerHandshakeAdmissionStepKind::send);
     const ListenerHandshakeActorResult admitted = actor->wait();
     REQUIRE_EQ(admitted.kind, ListenerHandshakeActorResultKind::step);
     REQUIRE_EQ(admitted.step.kind, ListenerHandshakeAdmissionStepKind::admit);
