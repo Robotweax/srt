@@ -394,6 +394,10 @@ public:
         bool handshake_replay_enabled = false;
         std::uint32_t handshake_replay_peer_cookie = 0;
         std::shared_ptr<CryptoSession> crypto;
+        // Receive-direction key-material state recorded during setup when no
+        // local session exists, e.g. NOSECRET after answering the peer's KMREQ
+        // without a passphrase under optional encryption.
+        CryptoState receiver_key_state = CryptoState::unsecured;
         NowFunction now_function = nullptr;
         void* now_context = nullptr;
         // Internal deterministic-test seam, invoked after a successful pop
@@ -599,6 +603,7 @@ private:
     HandshakeAction handshake_replay_response_{};
     std::uint32_t handshake_replay_peer_cookie_ = 0;
     std::shared_ptr<CryptoSession> crypto_;
+    CryptoState receiver_key_state_ = CryptoState::unsecured;
     // Non-null only during poll(), while mutex_ is held. Counts actual UDP
     // attempts; yielding for the channel budget is not UDP backpressure.
     std::size_t* poll_send_budget_ = nullptr;

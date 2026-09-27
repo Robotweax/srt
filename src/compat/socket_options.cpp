@@ -420,7 +420,18 @@ int get_socket_option(
                       .configured_encryption_key_length());
         return write_value(value, value_size, key_length);
     }
-    case SRTO_KMSTATE:
+    case SRTO_KMSTATE: {
+        // Legacy option: the sending direction on a socket marked with
+        // SRTO_SENDER, otherwise the receiving direction.
+        CryptoState state = CryptoState::unsecured;
+        if (socket.runtime != nullptr) {
+            state = options.data_sender
+                ? socket.runtime->sender_crypto_state()
+                : socket.runtime->receiver_crypto_state();
+        }
+        const auto reported = static_cast<std::int32_t>(state);
+        return write_value(value, value_size, reported);
+    }
     case SRTO_SNDKMSTATE: {
         const auto state = socket.runtime != nullptr
             ? socket.runtime->sender_crypto_state()

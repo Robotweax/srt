@@ -55,7 +55,7 @@ inherit the Listener's policy and complete negotiation during HSv5 setup.
 | `SRTO_ENFORCEDENCRYPTION` | Boolean | Defaults to true; rejects a peer that cannot satisfy the configured encryption policy |
 | `SRTO_KMREFRESHRATE` | nonnegative `int32_t` | Traffic-key refresh interval in consumed DATA sequence numbers, effectively capped at `2^30`; zero selects compatible default behavior |
 | `SRTO_KMPREANNOUNCE` | nonnegative `int32_t` | Number of consumed sequence positions before refresh at which the next key is announced; zero selects compatible default behavior |
-| `SRTO_KMSTATE` | read-only | Combined key-material state |
+| `SRTO_KMSTATE` | read-only | Legacy: `SRTO_SNDKMSTATE` on a socket with `SRTO_SENDER` set, otherwise `SRTO_RCVKMSTATE` |
 | `SRTO_SNDKMSTATE` | read-only | Transmit key-material state |
 | `SRTO_RCVKMSTATE` | read-only | Receive key-material state |
 | `SRTO_CRYPTOMODE` | conditional `int32_t` | Extension build only: `0` AUTO, `1` CTR, `2` GCM; after connecting, the active suite or `0` without encryption |
@@ -204,6 +204,15 @@ preparing the independent direction rejects connection setup, even with
 `SRTO_ENFORCEDENCRYPTION=false`. It must not remove encryption and release
 plaintext DATA. Optional fallback remains available during the original
 negotiation, before encrypted key material has been accepted.
+
+Under optional encryption a listener that cannot use the caller's key
+material answers with a four-byte KMRSP carrying the failure state instead
+of dropping the extension: NOSECRET without a passphrase, BADSECRET with a
+different one. It then reports `SRTO_RCVKMSTATE` NOSECRET or BADSECRET and
+`SRTO_SNDKMSTATE` UNSECURED, as does a peer that answers a runtime KMREQ
+without a secret. The state occupies the first byte of the four-byte value
+(`03 00 00 00` for NOSECRET), the layout the reference implementation
+produces; both byte orders are accepted on input.
 
 ### Directional-key compatibility evidence
 

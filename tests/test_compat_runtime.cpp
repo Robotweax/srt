@@ -4532,8 +4532,12 @@ TEST(compat_runtime_answers_optional_key_request_without_a_secret)
     REQUIRE_EQ(response.packet.control.subtype,
         key_material_response_subtype);
     REQUIRE_EQ(response.packet.payload.size(), 4U);
-    REQUIRE_EQ(response.packet.payload[3],
+    // Reference byte layout: the state is carried in the first byte.
+    REQUIRE_EQ(response.packet.payload[0],
         static_cast<std::byte>(CryptoState::no_secret));
+    REQUIRE_EQ(response.packet.payload[3], std::byte {0});
+    REQUIRE_EQ(receiver.receiver_crypto_state(), CryptoState::no_secret);
+    REQUIRE_EQ(receiver.sender_crypto_state(), CryptoState::unsecured);
     REQUIRE_EQ(sender.acknowledge_key_material(
                    response.packet.payload, false),
         Error::cryptographic_failure);

@@ -1638,6 +1638,43 @@ TEST(crypto_session_rejects_ciphertext_older_than_bounded_key_history)
         Error::cryptographic_failure);
 }
 
+TEST(key_material_state_uses_the_reference_byte_layout)
+{
+    // The reference implementation sends NOSECRET as 03 00 00 00 on the wire.
+    const auto nosecret = encode_key_material_state(CryptoState::no_secret);
+    REQUIRE_EQ(nosecret[0], std::byte {3});
+    REQUIRE_EQ(nosecret[1], std::byte {0});
+    REQUIRE_EQ(nosecret[2], std::byte {0});
+    REQUIRE_EQ(nosecret[3], std::byte {0});
+
+    const std::array little {
+        std::byte {3}, std::byte {0}, std::byte {0}, std::byte {0}};
+    const std::array big {
+        std::byte {0}, std::byte {0}, std::byte {0}, std::byte {4}};
+    const std::array zero {
+        std::byte {0}, std::byte {0}, std::byte {0}, std::byte {0}};
+    const std::array unknown {
+        std::byte {6}, std::byte {0}, std::byte {0}, std::byte {0}};
+    const std::array mixed {
+        std::byte {3}, std::byte {0}, std::byte {0}, std::byte {4}};
+    REQUIRE(decode_key_material_state(little) == CryptoState::no_secret);
+    REQUIRE(decode_key_material_state(big) == CryptoState::bad_secret);
+    REQUIRE(decode_key_material_state(zero) == CryptoState::unsecured);
+    REQUIRE(!decode_key_material_state(unknown).has_value());
+    REQUIRE(!decode_key_material_state(mixed).has_value());
+    REQUIRE(
+        !decode_key_material_state(std::span {little}.first(3)).has_value());
+
+    // A reference NOSECRET response is recorded as NOSECRET, not BADSECRET.
+    CryptoSession sender {{
+        .passphrase = "reference state layout fixture",
+    }};
+    REQUIRE_EQ(sender.start_initiator(), Error::none);
+    REQUIRE_EQ(sender.acknowledge_key_material(little, false),
+        Error::cryptographic_failure);
+    REQUIRE_EQ(sender.sender_state(), CryptoState::no_secret);
+}
+
 TEST(crypto_session_reports_a_wrong_passphrase)
 {
     CryptoSession sender{{

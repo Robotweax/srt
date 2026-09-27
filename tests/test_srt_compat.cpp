@@ -3001,6 +3001,88 @@ TEST(srt_compat_encryption_works_without_an_advertised_key_length)
     REQUIRE_EQ(srt_close(listener), 0);
 }
 
+TEST(srt_compat_listener_reports_key_state_under_optional_encryption)
+{
+    // Reference behaviour with SRTO_ENFORCEDENCRYPTION=false: a listener that
+    // cannot use the caller's key material answers with a four-byte KMRSP and
+    // reports SRTO_RCVKMSTATE NOSECRET (no passphrase) or BADSECRET (a
+    // different passphrase). SRTO_KMSTATE follows the receiving direction on a
+    // socket that is not marked with SRTO_SENDER.
+    for (const bool listener_has_passphrase : {false, true}) {
+        REQUIRE_EQ(srt_startup(), 0);
+        constexpr bool optional = false;
+        constexpr std::int32_t timeout = 3'000;
+        const SRTSOCKET listener = srt_create_socket();
+        const SRTSOCKET caller = srt_create_socket();
+        REQUIRE(listener != SRT_INVALID_SOCK);
+        REQUIRE(caller != SRT_INVALID_SOCK);
+        for (const SRTSOCKET socket : {listener, caller}) {
+            REQUIRE_EQ(srt_setsockflag(socket, SRTO_ENFORCEDENCRYPTION,
+                           &optional, static_cast<int>(sizeof(optional))),
+                0);
+            REQUIRE_EQ(srt_setsockflag(socket, SRTO_CONNTIMEO, &timeout,
+                           static_cast<int>(sizeof(timeout))),
+                0);
+        }
+        constexpr char caller_secret[] = "robotweax-caller-secret";
+        REQUIRE_EQ(srt_setsockflag(caller, SRTO_PASSPHRASE, caller_secret,
+                       static_cast<int>(sizeof(caller_secret) - 1U)),
+            0);
+        if (listener_has_passphrase) {
+            constexpr char listener_secret[] = "robotweax-other-secret";
+            REQUIRE_EQ(
+                srt_setsockflag(listener, SRTO_PASSPHRASE, listener_secret,
+                    static_cast<int>(sizeof(listener_secret) - 1U)),
+                0);
+        }
+
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        REQUIRE_EQ(srt_bind(listener, reinterpret_cast<sockaddr*>(&address),
+                       static_cast<int>(sizeof(address))),
+            0);
+        int address_size = static_cast<int>(sizeof(address));
+        REQUIRE_EQ(srt_getsockname(listener,
+                       reinterpret_cast<sockaddr*>(&address), &address_size),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 1), 0);
+
+        std::atomic<SRTSOCKET> accepted {SRT_INVALID_SOCK};
+        std::thread accept_thread([&] {
+            accepted.store(srt_accept(listener, nullptr, nullptr));
+        });
+        const auto* target = reinterpret_cast<const sockaddr*>(&address);
+        const int connected =
+            srt_connect(caller, target, static_cast<int>(sizeof(address)));
+        if (connected == SRT_ERROR) {
+            (void)srt_close(listener);
+        }
+        accept_thread.join();
+        REQUIRE_EQ(connected, 0);
+        REQUIRE(accepted.load() != SRT_INVALID_SOCK);
+
+        const auto state_of = [](SRTSOCKET socket, SRT_SOCKOPT option) {
+            std::int32_t state = -1;
+            int size = static_cast<int>(sizeof(state));
+            REQUIRE_EQ(srt_getsockflag(socket, option, &state, &size), 0);
+            return state;
+        };
+        const std::int32_t expected = listener_has_passphrase
+            ? static_cast<std::int32_t>(SRT_KM_S_BADSECRET)
+            : static_cast<std::int32_t>(SRT_KM_S_NOSECRET);
+        REQUIRE_EQ(state_of(accepted.load(), SRTO_RCVKMSTATE), expected);
+        REQUIRE_EQ(state_of(accepted.load(), SRTO_SNDKMSTATE),
+            static_cast<std::int32_t>(SRT_KM_S_UNSECURED));
+        REQUIRE_EQ(state_of(accepted.load(), SRTO_KMSTATE), expected);
+
+        REQUIRE_EQ(srt_close(caller), 0);
+        REQUIRE_EQ(srt_close(accepted.load()), 0);
+        REQUIRE_EQ(srt_close(listener), 0);
+        REQUIRE_EQ(srt_cleanup(), 0);
+    }
+}
+
 TEST(srt_compat_file_type_exposes_the_implemented_reference_option_bundle)
 {
     const SRTSOCKET socket = srt_create_socket();

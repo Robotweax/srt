@@ -814,6 +814,18 @@ void invoke_connect_callback(
     }
 }
 
+// Replace an unusable KMREQ with the four-byte state the reference
+// implementation answers with; the handshake echoes it as the KMRSP.
+void set_key_material_state_response(
+    HandshakeMessage& message, CryptoState state) noexcept
+{
+    const auto encoded = encode_key_material_state(state);
+    std::copy(
+        encoded.begin(), encoded.end(), message.key_material.bytes.begin());
+    message.key_material.size = encoded.size();
+    message.has_key_material_extension = true;
+}
+
 [[nodiscard]] int attach_runtime(SocketRecord& socket,
     const std::shared_ptr<DatagramChannel>& channel, Clock::time_point origin,
     std::uint64_t handshake_arrival_microseconds,
@@ -863,6 +875,7 @@ void invoke_connect_callback(
                     handshake_replay_response != nullptr,
                 .handshake_replay_peer_cookie = handshake_replay_peer_cookie,
                 .crypto = socket.crypto,
+                .receiver_key_state = socket.receiver_key_state,
             });
     } catch (const std::bad_alloc&) {
         return fail(SRT_ENOBUF);
@@ -2506,15 +2519,16 @@ private:
     [[nodiscard]] int set_key_material_failure(CryptoState state) noexcept
     {
         KeyMaterialBuffer response;
-        response.size = 4U;
-        const std::uint32_t value = static_cast<std::uint32_t>(state);
-        response.bytes[0] = static_cast<std::byte>((value >> 24U) & 0xffU);
-        response.bytes[1] = static_cast<std::byte>((value >> 16U) & 0xffU);
-        response.bytes[2] = static_cast<std::byte>((value >> 8U) & 0xffU);
-        response.bytes[3] = static_cast<std::byte>(value & 0xffU);
+        const auto encoded = encode_key_material_state(state);
+        std::copy(encoded.begin(), encoded.end(), response.bytes.begin());
+        response.size = encoded.size();
         if (machine_.set_key_material_response(response) != Error::none) {
             return fail_connect(
                 *socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_BADSECRET);
+        }
+        {
+            std::lock_guard lock(socket_->mutex);
+            socket_->receiver_key_state = state;
         }
         return 0;
     }
@@ -3658,6 +3672,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     group_admission.enabled = public_options.group_connect;
 
     std::shared_ptr<CryptoSession> crypto;
+    CryptoState receiver_key_state = CryptoState::unsecured;
     if (!policy_rejected) {
         if (native_options.encryption_enabled()) {
             try {
@@ -3699,6 +3714,15 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
                 policy_rejection = crypto_rejection_reason(*crypto,
                     has_request ? SRT_REJ_BADSECRET : SRT_REJ_UNSECURE);
                 policy_error = SRT_ESECFAIL;
+            } else if (has_request) {
+                // Answer like the reference implementation: a four-byte KMRSP
+                // with the failure state instead of no response at all.
+                receiver_key_state = key_length_matches
+                    ? CryptoState::bad_secret
+                    : CryptoState::bad_crypto_mode;
+                crypto.reset();
+                set_key_material_state_response(
+                    admission.conclusion.message, receiver_key_state);
             } else {
                 crypto.reset();
                 admission.conclusion.message.has_key_material_extension = false;
@@ -3709,12 +3733,15 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
                 policy_rejection = SRT_REJ_UNSECURE;
                 policy_error = SRT_ESECFAIL;
             } else {
-                admission.conclusion.message.has_key_material_extension = false;
+                receiver_key_state = CryptoState::no_secret;
+                set_key_material_state_response(
+                    admission.conclusion.message, receiver_key_state);
             }
         }
         {
             std::lock_guard lock(accepted->mutex);
             accepted->crypto = crypto;
+            accepted->receiver_key_state = receiver_key_state;
         }
     }
 
