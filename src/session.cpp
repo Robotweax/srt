@@ -487,8 +487,10 @@ ReliabilityAction ReliabilitySession::make_acknowledgement(
     acknowledgement.round_trip_time_variance_microseconds = rtt_.variation_microseconds();
     acknowledgement.available_receive_buffer_packets =
         static_cast<std::uint32_t>(receive_buffer_.available());
-    last_advertised_receive_window_packets_ =
-        acknowledgement.available_receive_buffer_packets;
+    if (kind == AcknowledgementKind::full) {
+        last_advertised_receive_window_packets_ =
+            acknowledgement.available_receive_buffer_packets;
+    }
     const auto rates = arrival_rate_estimator_.rates();
     if (rates.valid) {
         acknowledgement.receive_rate_packets_per_second = rates.packets_per_second;
