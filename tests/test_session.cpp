@@ -845,6 +845,144 @@ TEST(session_reopens_a_full_receive_window_after_application_delivery)
     REQUIRE_EQ(receiver.receive_buffer().available(), 0U);
 }
 
+TEST(open_window_receive_release_does_not_expedite_an_acknowledgement)
+{
+    // An application read while the receive window is open must not pull a full
+    // ACK forward. Doing so on every read produced one full ACK per read and
+    // evicted in-flight ACKACKs; the regular cadence covers an open window.
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .peer_socket_id = 800,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+    }};
+    const std::array<std::byte, 1> payload {std::byte {'x'}};
+    PacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.data.sequence = SequenceNumber {10};
+    packet.data.message_number = 1;
+    packet.payload = payload;
+    REQUIRE(receiver.receive(packet, 100));
+
+    // Drain the acknowledgement the data receipt scheduled so the window is
+    // known open with nothing pending.
+    (void)receiver.poll_timers(10'000);
+
+    std::array<std::byte, 1> output {};
+    REQUIRE(receiver.pop_message(output));
+    receiver.note_receive_buffer_released(10'001);
+
+    // The window was open (available > 0), so no ACK is expedited; polling
+    // right after the read, before the next interval, yields nothing.
+    const auto released = receiver.poll_timers(10'002);
+    REQUIRE_EQ(released.size, 0U);
+}
+
+TEST(session_matches_ackack_beyond_sixty_four_outstanding)
+{
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+    }};
+    const auto first = receiver.make_staged_receive_acknowledgement(
+        SequenceNumber {10}, 8U, 1'000U);
+    for (std::uint32_t index = 1; index < 400U; ++index) {
+        (void)receiver.make_staged_receive_acknowledgement(
+            SequenceNumber {10}, 8U, 1'000U + index);
+    }
+    std::array<std::byte, 64> storage {};
+    ReliabilityAction ackack {
+        .kind = ReliabilityActionKind::acknowledgement_of_ack,
+        .acknowledgement_number = first.acknowledgement.acknowledgement_number,
+    };
+    REQUIRE(receiver.receive(encode_and_decode(ackack, storage), 1'500U));
+    REQUIRE_EQ(receiver.rtt().smoothed_microseconds(), 500U);
+    REQUIRE_EQ(receiver.rtt().variation_microseconds(), 250U);
+}
+
+TEST(session_coalesces_open_window_releases_without_more_data)
+{
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .send_capacity_packets = 3,
+        .receive_capacity_packets = 3,
+    }};
+    const std::array payload {std::byte {'x'}};
+    PacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.payload = payload;
+    for (std::uint32_t i = 0; i < 3; ++i) {
+        packet.data.sequence = SequenceNumber {10U + i};
+        packet.data.message_number = 1U + i;
+        REQUIRE(receiver.receive(packet, 100U + i));
+    }
+    (void)receiver.poll_timers(10'000);
+    std::array<std::byte, 1> output {};
+    REQUIRE(receiver.pop_message(output));
+    receiver.note_receive_buffer_released(10'001);
+    const auto first = receiver.poll_timers(10'001);
+    REQUIRE_EQ(first.size, 1U);
+    REQUIRE_EQ(
+        first.values[0].acknowledgement.available_receive_buffer_packets, 1U);
+    for (std::uint64_t time : {10'002U, 10'003U}) {
+        REQUIRE(receiver.pop_message(output));
+        receiver.note_receive_buffer_released(time);
+        REQUIRE_EQ(receiver.poll_timers(time).size, 0U);
+    }
+    REQUIRE_EQ(receiver.poll_timers(20'000).size, 0U);
+    const auto later = receiver.poll_timers(20'001);
+    REQUIRE_EQ(later.size, 1U);
+    REQUIRE_EQ(later.values[0].acknowledgement.kind, AcknowledgementKind::full);
+    REQUIRE_EQ(
+        later.values[0].acknowledgement.available_receive_buffer_packets, 3U);
+    REQUIRE_EQ(receiver.poll_timers(30'001).size, 0U);
+}
+
+TEST(session_lite_ack_does_not_replace_advertised_closed_window)
+{
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .send_capacity_packets = 128,
+        .receive_capacity_packets = 128,
+    }};
+    receiver.configure_live({.periodic_nak = true, .retransmit_flag = true}, 0,
+        PacketTimestamp {0});
+    // Staged reception can advertise a closed window independently of the
+    // session buffer. A following Lite ACK must not announce its free space.
+    (void)receiver.make_staged_receive_acknowledgement(
+        SequenceNumber {10}, 0U, 0U);
+    const std::array payload {std::byte {'x'}};
+    PacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.payload = payload;
+    for (std::uint32_t i = 0; i < 64; ++i) {
+        packet.data.sequence = SequenceNumber {10U + i};
+        packet.data.message_number = 1U + i;
+        REQUIRE(receiver.receive(packet, 100U + i));
+    }
+    const auto lite = receiver.poll_timers(1'000);
+    REQUIRE_EQ(lite.size, 1U);
+    REQUIRE_EQ(lite.values[0].acknowledgement.kind, AcknowledgementKind::lite);
+    std::array<std::byte, 1> output {};
+    REQUIRE(receiver.pop_message(output));
+    receiver.note_receive_buffer_released(1'001);
+    const auto reopened = receiver.poll_timers(1'001);
+    REQUIRE_EQ(reopened.size, 1U);
+    REQUIRE_EQ(
+        reopened.values[0].acknowledgement.kind, AcknowledgementKind::full);
+    REQUIRE_EQ(
+        reopened.values[0].acknowledgement.available_receive_buffer_packets,
+        65U);
+}
+
 TEST(session_default_buffer_holds_a_tsbpd_burst_beyond_1024_packets)
 {
     const SocketOptions options;

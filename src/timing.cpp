@@ -70,15 +70,17 @@ void ControlTimerScheduler::on_data_received(std::uint64_t) noexcept
 }
 
 void ControlTimerScheduler::on_receive_buffer_released(
-    std::uint64_t now_microseconds) noexcept
+    std::uint64_t now_microseconds, bool expedite) noexcept
 {
     // A peer that stopped at an advertised zero receive window needs a fresh
     // full ACK as soon as the application makes space available. This event
     // does not count as a newly received packet and therefore must not advance
     // the lite-ACK threshold.
     acknowledgement_dirty_ = true;
-    next_ack_microseconds_ =
-        std::min(next_ack_microseconds_, now_microseconds);
+    if (expedite) {
+        next_ack_microseconds_ =
+            std::min(next_ack_microseconds_, now_microseconds);
+    }
 }
 
 void ControlTimerScheduler::on_packet_sent(std::uint64_t now_microseconds) noexcept
