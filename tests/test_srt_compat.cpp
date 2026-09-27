@@ -3185,7 +3185,7 @@ TEST(srt_compat_early_source_time_does_not_stall_delivery)
             static_cast<int>(sizeof(bind_address)))
         == SRT_ERROR) {
         REQUIRE_EQ(srt_close(listener), 0);
-        return;
+        REQUIRE(false);
     }
     REQUIRE_EQ(srt_listen(listener, 4), 0);
     sockaddr_in listener_name {};
@@ -3195,11 +3195,6 @@ TEST(srt_compat_early_source_time_does_not_stall_delivery)
             &listener_name_size),
         0);
 
-    std::atomic<SRTSOCKET> accepted {SRT_INVALID_SOCK};
-    std::thread accept_thread([&] {
-        accepted.store(srt_accept(listener, nullptr, nullptr));
-    });
-
     constexpr std::int32_t connection_timeout_milliseconds = 3'000;
     const SRTSOCKET caller = srt_create_socket();
     REQUIRE(caller != SRT_INVALID_SOCK);
@@ -3207,9 +3202,25 @@ TEST(srt_compat_early_source_time_does_not_stall_delivery)
                    &connection_timeout_milliseconds,
                    static_cast<int>(sizeof(connection_timeout_milliseconds))),
         0);
+    // Start the accept thread only after all fallible setup assertions.
+    std::atomic<SRTSOCKET> accepted {SRT_INVALID_SOCK};
+    std::thread accept_thread([&] {
+        accepted.store(srt_accept(listener, nullptr, nullptr));
+    });
     const int connect_result = srt_connect(caller,
         reinterpret_cast<const sockaddr*>(&listener_name), listener_name_size);
+    // Closing the listener wakes accept if connection setup failed. Do not
+    // assert or unwind while a joinable thread is still alive.
+    if (connect_result != 0) {
+        (void)srt_close(listener);
+    }
     accept_thread.join();
+    if (connect_result != 0) {
+        (void)srt_close(caller);
+        if (accepted.load() != SRT_INVALID_SOCK) {
+            (void)srt_close(accepted.load());
+        }
+    }
     REQUIRE_EQ(connect_result, 0);
     REQUIRE(accepted.load() != SRT_INVALID_SOCK);
 
