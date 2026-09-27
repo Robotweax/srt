@@ -74,7 +74,8 @@ Independent cryptographic review remains outstanding.
 The release was accepted on tag commit `50cba37bc89f423ee7c0a292c3c3eae71b5fc7f9`,
 whose product code, tests and build definitions are identical to
 `7ecb60ea8b4faca01ed86237b0cc9dc906350f6e`; later commits change package pins,
-the Linux package workflow's source download and documentation only.(https://github.com/Robotweax/srt/actions/runs/36251236629)
+the Linux package workflow's source download and documentation only.
+The [final tag CI](https://github.com/Robotweax/srt/actions/runs/36251236629)
 and the [Windows SDK and signing run](https://github.com/Robotweax/srt/actions/runs/36251236647)
 passed on that commit. Published assets and SHA-256 digests:
 

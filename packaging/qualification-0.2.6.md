@@ -1,4 +1,4 @@
-# Package qualification: 0.2.6 candidate
+# Package qualification: 0.2.6
 
 Status: **corrected source package and bottle qualification passed; published 2026-09-26 as [v0.2.6](https://github.com/Robotweax/srt/releases/tag/v0.2.6)**.
 Source: `7ecb60ea8b4faca01ed86237b0cc9dc906350f6e`.
