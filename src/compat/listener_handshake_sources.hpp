@@ -154,6 +154,7 @@ struct ListenerHandshakeActorResult {
 
 struct ListenerHandshakeActorSnapshot {
     std::size_t queued_results = 0;
+    std::uint64_t dropped_responses = 0;
     ListenerHandshakeDispatchStatus failure =
         ListenerHandshakeDispatchStatus::completed;
     bool started = false;
@@ -167,6 +168,11 @@ struct ListenerHandshakeActorSnapshot {
 // nonblocking result-ready callback, so network I/O, callbacks, and accepted-
 // socket setup remain outside the scheduler shard. An admit result holds Inbox
 // rearming until its consumer completes the setup handoff explicitly.
+//
+// Send results answer unauthenticated peer handshakes that the peer
+// retransmits, so a full queue drops the new response and counts it instead
+// of ending the Listener. With a capacity of at least two, send results never
+// take the last slot, which stays reserved for the single pending admission.
 class ListenerHandshakeActor final
     : public std::enable_shared_from_this<ListenerHandshakeActor> {
 public:
@@ -225,6 +231,7 @@ private:
     std::shared_ptr<void> result_ready_context_;
     std::size_t head_ = 0;
     std::size_t size_ = 0;
+    std::uint64_t dropped_responses_ = 0;
     ListenerHandshakeDispatchStatus failure_ =
         ListenerHandshakeDispatchStatus::completed;
     std::thread::id active_thread_ {};
