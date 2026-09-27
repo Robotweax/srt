@@ -85,6 +85,89 @@ bool ReceiveLossList::add_all(
     return true;
 }
 
+bool ReceiveLossList::insert_sorted(
+    SequenceRange range, std::uint32_t initial_ttl) noexcept
+{
+    if (range.last.distance_from(range.first) < 0) {
+        return false;
+    }
+    std::size_t position = 0;
+    while (position < size_) {
+        const SequenceRange& entry = entries_[position].range;
+        if (entry.first.distance_from(range.first) >= 0) {
+            break;
+        }
+        ++position;
+    }
+    // Skip fully covered ranges, but reject partial overlaps without mutation.
+    if (position > 0U) {
+        const SequenceRange& previous = entries_[position - 1U].range;
+        if (range.first.distance_from(previous.last) <= 0) {
+            return range.last.distance_from(previous.last) <= 0;
+        }
+    }
+    if (position < size_) {
+        const SequenceRange& following = entries_[position].range;
+        if (following.first.distance_from(range.last) <= 0) {
+            return range.first == following.first
+                && range.last.distance_from(following.last) <= 0;
+        }
+    }
+    if (size_ == entries_.size()) {
+        return false;
+    }
+    for (std::size_t source = size_; source > position; --source) {
+        entries_[source] = entries_[source - 1U];
+    }
+    entries_[position] = {
+        .range = range,
+        .ttl = initial_ttl,
+        .fresh = initial_ttl != 0U,
+        .initial_report_pending = initial_ttl == 0U,
+    };
+    ++size_;
+    return true;
+}
+
+namespace {
+
+[[nodiscard]] bool ranges_overlap(
+    const SequenceRange& left, const SequenceRange& right) noexcept
+{
+    const bool left_starts_by_right_end =
+        left.first.distance_from(right.last) <= 0;
+    const bool right_starts_by_left_end =
+        right.first.distance_from(left.last) <= 0;
+    return left_starts_by_right_end && right_starts_by_left_end;
+}
+
+} // namespace
+
+bool ReceiveLossList::can_insert_all_sorted(
+    std::span<const SequenceRange> ranges) const noexcept
+{
+    if (ranges.size() > entries_.size() - size_) {
+        return false;
+    }
+    for (std::size_t index = 0; index < ranges.size(); ++index) {
+        const SequenceRange& range = ranges[index];
+        if (range.last.distance_from(range.first) < 0) {
+            return false;
+        }
+        for (std::size_t entry = 0; entry < size_; ++entry) {
+            if (ranges_overlap(range, entries_[entry].range)) {
+                return false;
+            }
+        }
+        for (std::size_t earlier = 0; earlier < index; ++earlier) {
+            if (ranges_overlap(range, ranges[earlier])) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool ReceiveLossList::can_append(
     std::span<const SequenceRange> ranges) const noexcept
 {

@@ -2965,6 +2965,62 @@ TEST(session_reports_only_filter_declared_losses_for_onreq_arq)
     REQUIRE(saw_remaining_loss);
 }
 
+TEST(session_accepts_filter_losses_reported_out_of_order)
+{
+    // FEC column groups close out of sequence order, so a later filter-loss
+    // report can precede one already tracked. Both must be retained and NAKed;
+    // previously the out-of-order report was rejected and never requested.
+    const auto filter =
+        parse_packet_filter_configuration("fec,cols:4,rows:4,arq:onreq");
+    REQUIRE(filter);
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {1},
+        .peer_initial_sequence = SequenceNumber {100},
+        .send_capacity_packets = 64,
+        .receive_capacity_packets = 64,
+    }};
+    const NegotiatedLiveOptions live_options {
+        .periodic_nak = true,
+        .retransmit_flag = true,
+    };
+    receiver.configure_live(live_options, 0, PacketTimestamp {0});
+    receiver.configure_packet_filter(filter.configuration, true);
+
+    // A later column declares its loss first (sequence 95), then an earlier
+    // column declares a lower one (sequence 88).
+    const std::array high {SequenceRange {
+        .first = SequenceNumber {95},
+        .last = SequenceNumber {95},
+    }};
+    const auto first = receiver.report_filter_losses(high, 100U);
+    REQUIRE(first);
+    REQUIRE_EQ(first.receiver_filter_loss_packets, 1U);
+
+    const std::array low {SequenceRange {
+        .first = SequenceNumber {88},
+        .last = SequenceNumber {88},
+    }};
+    const auto second = receiver.report_filter_losses(low, 101U);
+    REQUIRE(second);
+    REQUIRE_EQ(second.receiver_filter_loss_packets, 1U);
+
+    // Both losses are NAKed, in ascending order (88 before 95).
+    const auto periodic = receiver.poll_timers(1'000'000U);
+    std::vector<SequenceNumber> reported;
+    for (std::size_t index = 0; index < periodic.size; ++index) {
+        const auto& action = periodic.values[index];
+        if (action.kind != ReliabilityActionKind::loss_report) {
+            continue;
+        }
+        for (const auto& range : periodic.loss_ranges(action)) {
+            reported.push_back(range.first);
+        }
+    }
+    REQUIRE_EQ(reported.size(), 2U);
+    REQUIRE_EQ(reported[0], SequenceNumber {88});
+    REQUIRE_EQ(reported[1], SequenceNumber {95});
+}
+
 TEST(session_rejects_filter_loss_batches_transactionally)
 {
     const auto filter =

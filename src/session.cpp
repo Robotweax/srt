@@ -1268,8 +1268,16 @@ ReliabilitySession::report_filter_losses(
                     Error::invalid_control_payload};
         }
     }
-    if (!filter_loss_list_.add_all(losses, 0U)) {
+    // FEC column groups close out of sequence order, so a later batch can
+    // declare a loss that precedes one already tracked. Accept the batch when
+    // every range fits and is non-overlapping (transactional), then insert each
+    // at its sorted position, instead of requiring a strictly ascending append
+    // that previously rejected the report and left the loss unNAKed.
+    if (!filter_loss_list_.can_insert_all_sorted(losses)) {
         return {.error = Error::buffer_too_small};
+    }
+    for (const auto& loss : losses) {
+        (void)filter_loss_list_.insert_sorted(loss, 0U);
     }
     for (const auto& loss : losses) {
         const std::size_t packets =
