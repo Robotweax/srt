@@ -515,6 +515,7 @@ ListenerHandshakeActorSnapshot ListenerHandshakeActor::snapshot() const noexcept
     std::lock_guard lock(mutex_);
     return {
         .queued_results = size_,
+        .dropped_responses = dropped_responses_,
         .failure = failure_,
         .started = started_,
         .admission_pending = admission_pending_,
@@ -669,13 +670,22 @@ bool ListenerHandshakeActor::publish_step(
         if (terminal_) {
             return false;
         }
-        if (size_ == results_.size()) {
-            // The consumer is unable to keep up. Discard every unconsumed
-            // action and expose one terminal failure instead of silently
-            // losing a response or admitted connection.
+        const bool admission =
+            step.kind == ListenerHandshakeAdmissionStepKind::admit;
+        const std::size_t capacity = results_.size();
+        const std::size_t send_limit = capacity > 1U ? capacity - 1U : capacity;
+        if (!admission && size_ >= send_limit) {
+            // Responses answer unauthenticated, retransmitted peer handshakes.
+            // Dropping one lets the peer retry; ending the actor would let a
+            // spoofed INDUCTION burst close the Listener permanently.
+            ++dropped_responses_;
+            return true;
+        }
+        if (size_ == capacity) {
+            // Only an admission can reach this with a reserved slot, which
+            // requires a capacity of one. Keep the fail-closed contract there
+            // instead of losing an admitted connection silently.
         } else {
-            const bool admission =
-                step.kind == ListenerHandshakeAdmissionStepKind::admit;
             if (admission && admission_pending_) {
                 failure = ListenerHandshakeDispatchStatus::invalid;
             } else {

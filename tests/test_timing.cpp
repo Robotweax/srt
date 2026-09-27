@@ -121,6 +121,24 @@ TEST(tsbpd_clock_schedules_delivery_and_unwraps_timestamp_rollover)
         5'008'192U);
 }
 
+TEST(tsbpd_clock_backwards_timestamp_does_not_shift_later_deliveries)
+{
+    // A single timestamp before the connection origin (a source time that
+    // wrapped to a large 32-bit value) must not push the clock a full period
+    // ahead and delay every later packet by ~71.6 minutes.
+    TsbpdClock clock {1'000'000, PacketTimestamp {1'000'000}, 120'000};
+    REQUIRE_EQ(clock.delivery_time(PacketTimestamp {1'100'000}), 1'220'000U);
+
+    // Source time 500 ms before the origin wraps to a near-maximum uint32.
+    const std::uint32_t before_origin = static_cast<std::uint32_t>(-500'000);
+    const std::uint64_t poisoned =
+        clock.delivery_time(PacketTimestamp {before_origin});
+    REQUIRE(poisoned <= 1'220'000U);
+
+    // A later, normal timestamp is still scheduled around its true time.
+    REQUIRE_EQ(clock.delivery_time(PacketTimestamp {1'200'000}), 1'320'000U);
+}
+
 TEST(tsbpd_clock_slews_bounded_drift_without_a_deadline_step)
 {
     TsbpdClock clock{1'000'000, PacketTimestamp{100'000}, 120'000};

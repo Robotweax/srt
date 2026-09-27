@@ -178,6 +178,38 @@ class ScheduledWorkflowTests(unittest.TestCase):
         for path in ("interop/ci_schedule.py", "interop/tests/test_ci_schedule.py"):
             self.assertTrue(classify([path]).full)
 
+    def test_release_integrations_selects_only_all_ecosystem_jobs(self):
+        step = self.workflow.split("      - name: Classify changed paths\n", 1)[1]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1].split(
+            "\n  dco:", 1)[0])
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "output"
+            summary = Path(directory) / "summary"
+            result = subprocess.run(["bash", "-c", script], cwd=ROOT,
+                env={**os.environ, "INTEGRATIONS_ONLY": "true",
+                     "EVENT_NAME": "workflow_dispatch", "REF_TYPE": "branch",
+                     "EVIDENCE_RUN_ID": "", "HEAD_SHA": SHA,
+                     "RUNNER_TEMP": directory, "GITHUB_OUTPUT": str(out),
+                     "GITHUB_STEP_SUMMARY": str(summary)},
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            flags = dict(line.split("=", 1) for line in out.read_text().splitlines())
+            self.assertEqual({key for key, value in flags.items() if value == "true"},
+                             {"ffmpeg", "gstreamer", "vlc", "obs", "obs_platforms"})
+            self.assertIn(SHA, summary.read_text())
+            self.assertIn("Release integrations only", summary.read_text())
+            self.assertEqual(flags["full"], "false")
+
+    def test_release_workflow_is_manual_and_reuses_the_ci_jobs(self):
+        workflow = (ROOT / ".github/workflows/release-integrations.yml").read_text()
+        triggers = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertEqual(triggers.strip(), "workflow_dispatch:")
+        self.assertIn("uses: ./.github/workflows/ci.yml", workflow)
+        self.assertIn("integrations_only: true", workflow)
+        self.assertIn("  workflow_call:\n", self.workflow)
+        self.assertIn("INTEGRATIONS_ONLY: ${{ inputs.integrations_only || false }}",
+                      self.workflow)
+
     def test_actual_classification_shell_skips_only_schedule_with_evidence(self):
         step = self.workflow.split("      - name: Classify changed paths\n", 1)[1]
         script = textwrap.dedent(step.split("        run: |\n", 1)[1].split(

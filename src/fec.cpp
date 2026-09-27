@@ -1043,12 +1043,22 @@ Error ColumnFecEncoder::feed_source(
         || group.series != location->series) {
         if (group.active
             && group.series > location->series) {
-            return Error::invalid_state;
+            // A source from an older column series arrived after a newer one
+            // opened. This is a sequencing anomaly, not a fatal error: skip it
+            // and keep the current series intact.
+            return Error::none;
         }
         reset_group(group, location->series);
     }
+    if (group.abandoned) {
+        return Error::none;
+    }
     if (group.collected != location->position) {
-        return Error::invalid_state;
+        // A source in this column was dropped before transmission, so the
+        // series has a gap and cannot form valid parity. Abandon it until the
+        // next series resets the group; never break the connection over it.
+        group.abandoned = true;
+        return Error::none;
     }
     group.flags_recovery ^=
         encryption_flag(
