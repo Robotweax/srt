@@ -288,17 +288,25 @@ TsbpdClock::TsbpdClock(std::uint64_t handshake_arrival_microseconds,
 
 std::uint64_t TsbpdClock::unwrap(PacketTimestamp timestamp) noexcept
 {
-    constexpr std::uint64_t modulus = 0x1'0000'0000ULL;
-    constexpr std::uint64_t half = modulus / 2ULL;
-    const std::uint64_t epoch = latest_unwrapped_timestamp_ & ~(modulus - 1ULL);
-    std::uint64_t candidate = epoch + timestamp.value();
-    if (candidate + half < latest_unwrapped_timestamp_) {
-        candidate += modulus;
-    } else if (candidate > latest_unwrapped_timestamp_ + half
-        && candidate >= modulus) {
-        candidate -= modulus;
-    }
-    latest_unwrapped_timestamp_ = std::max(latest_unwrapped_timestamp_, candidate);
+    // Unwrap relative to the latest value using the signed 32-bit distance, so
+    // a timestamp that is slightly behind the latest one (a reordered packet,
+    // or a source time before the connection origin that wrapped to a large
+    // 32-bit value) resolves to a point just below the latest value instead of
+    // being mistaken for a nearly-full-period jump ahead. The base is never
+    // moved backwards through a wrap, and a distance that would place the
+    // packet before time zero is clamped there.
+    const std::uint32_t latest_low =
+        static_cast<std::uint32_t>(latest_unwrapped_timestamp_);
+    const std::int32_t distance =
+        static_cast<std::int32_t>(timestamp.value() - latest_low);
+    const std::int64_t candidate_signed =
+        static_cast<std::int64_t>(latest_unwrapped_timestamp_)
+        + static_cast<std::int64_t>(distance);
+    const std::uint64_t candidate = candidate_signed <= 0
+        ? 0ULL
+        : static_cast<std::uint64_t>(candidate_signed);
+    latest_unwrapped_timestamp_ =
+        std::max(latest_unwrapped_timestamp_, candidate);
     return candidate;
 }
 

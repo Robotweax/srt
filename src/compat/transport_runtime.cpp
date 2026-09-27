@@ -1447,7 +1447,12 @@ PacketTimestamp ConnectionRuntime::packet_timestamp(
     const std::int64_t relative = source_time_microseconds == 0
         ? static_cast<std::int64_t>(now_microseconds())
         : source_time_microseconds - origin_epoch_microseconds_;
-    return PacketTimestamp{static_cast<std::uint32_t>(relative)};
+    // A source time at or before the connection origin must not wrap to a large
+    // 32-bit timestamp: the peer would read it as a value almost a full period
+    // in the future and stall delivery of every later packet. Clamp it to the
+    // origin instead.
+    const std::int64_t bounded = relative < 0 ? 0 : relative;
+    return PacketTimestamp {static_cast<std::uint32_t>(bounded)};
 }
 
 void ConnectionRuntime::sample_sender_buffer_statistics(
