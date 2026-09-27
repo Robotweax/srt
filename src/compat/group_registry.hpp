@@ -12,6 +12,7 @@
 #include <mutex>
 #include <optional>
 #include <unordered_map>
+#include <string>
 #include <vector>
 
 namespace robotweax::srt {
@@ -77,6 +78,14 @@ struct GroupRecord {
     // Keep the bounded native representation so credentials never enter an
     // unbounded container and every future member inherits the same policy.
     SocketOptions member_native_options;
+    // Public member-option template that libsrt passes down to members. Set on
+    // the group before connect and copied to every member. Latency and MAXBW
+    // are also mirrored into member_native_options above so the member behaves
+    // accordingly; the Stream ID is public only.
+    std::int32_t member_receiver_latency_milliseconds = 120;
+    std::int32_t member_peer_latency_milliseconds = 0;
+    std::int64_t member_maximum_bandwidth_bytes_per_second = -1;
+    std::string member_stream_id;
     SRTSOCKET active_send_member = SRT_INVALID_SOCK;
     std::uint64_t active_send_generation = 0;
     std::uint64_t active_send_since_microseconds = 0;
@@ -104,6 +113,10 @@ public:
         std::int32_t minimum_peer_srt_version = 0x0001'0000;
         std::int32_t peer_idle_timeout_milliseconds = 5'000;
         SocketOptions member_native_options;
+        std::int32_t member_receiver_latency_milliseconds = 120;
+        std::int32_t member_peer_latency_milliseconds = 0;
+        std::int64_t member_maximum_bandwidth_bytes_per_second = -1;
+        std::string member_stream_id;
     };
 
     struct MirrorDescription {

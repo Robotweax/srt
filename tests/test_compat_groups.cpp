@@ -2025,6 +2025,78 @@ TEST(compat_broadcast_group_rebases_and_deduplicates_a_late_receiver_member)
     REQUIRE_EQ(srt_close(group), 0);
 }
 
+TEST(compat_group_passes_stream_id_latency_and_maxbw_to_members)
+{
+    // libsrt lets these options be set on a group and passes them to members.
+    // They were previously rejected with SRT_EINVPARAM, so a caller-side group
+    // could not carry a Stream ID, latency or a rate limit.
+    const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+    REQUIRE(group != SRT_INVALID_SOCK);
+
+    constexpr char stream_id[] = "#!::r=live/camera-3";
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_STREAMID, stream_id,
+                   static_cast<int>(sizeof(stream_id) - 1U)),
+        0);
+    const std::int32_t receive_latency = 800;
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_RCVLATENCY, &receive_latency,
+                   static_cast<int>(sizeof(receive_latency))),
+        0);
+    const std::int32_t peer_latency = 450;
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_PEERLATENCY, &peer_latency,
+                   static_cast<int>(sizeof(peer_latency))),
+        0);
+    const std::int64_t maximum_bandwidth = 12'500'000;
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_MAXBW, &maximum_bandwidth,
+                   static_cast<int>(sizeof(maximum_bandwidth))),
+        0);
+
+    // An out-of-range latency is still rejected.
+    const std::int32_t invalid_latency = -1;
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_RCVLATENCY, &invalid_latency,
+                   static_cast<int>(sizeof(invalid_latency))),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+
+    GroupRegistry::ConnectDescription description;
+    REQUIRE(GroupRegistry::instance().describe_connect(group, description));
+    REQUIRE_EQ(description.member_stream_id,
+        (std::string {stream_id, sizeof(stream_id) - 1U}));
+    REQUIRE_EQ(
+        description.member_receiver_latency_milliseconds, receive_latency);
+    REQUIRE_EQ(description.member_peer_latency_milliseconds, peer_latency);
+    REQUIRE_EQ(description.member_maximum_bandwidth_bytes_per_second,
+        maximum_bandwidth);
+    using robotweax::srt::SocketOption;
+    const auto& native = description.member_native_options;
+    REQUIRE_EQ(native.get(SocketOption::receiver_latency_milliseconds).value,
+        receive_latency);
+    REQUIRE_EQ(native.get(SocketOption::peer_latency_milliseconds).value,
+        peer_latency);
+    REQUIRE_EQ(
+        native.get(SocketOption::maximum_bandwidth_bytes_per_second).value,
+        maximum_bandwidth);
+
+    // SRTO_LATENCY sets both receiver and peer latency.
+    const std::int32_t symmetric_latency = 300;
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_LATENCY, &symmetric_latency,
+                   static_cast<int>(sizeof(symmetric_latency))),
+        0);
+    GroupRegistry::ConnectDescription after_latency;
+    REQUIRE(GroupRegistry::instance().describe_connect(group, after_latency));
+    REQUIRE_EQ(
+        after_latency.member_receiver_latency_milliseconds, symmetric_latency);
+    REQUIRE_EQ(
+        after_latency.member_peer_latency_milliseconds, symmetric_latency);
+
+    // The options are pre-connect: rejected once the group has opened.
+    GroupRegistry::instance().mark_opened(group, after_latency.generation);
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_STREAMID, stream_id,
+                   static_cast<int>(sizeof(stream_id) - 1U)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
+    REQUIRE_EQ(srt_close(group), 0);
+}
+
 TEST(compat_group_io_options_are_owned_by_the_group)
 {
     const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);

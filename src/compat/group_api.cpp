@@ -303,6 +303,19 @@ int srt_connect_group(
         record->public_options.peer_idle_timeout_milliseconds =
             description.peer_idle_timeout_milliseconds;
         record->native_options = description.member_native_options;
+        // Public member-option template that libsrt passes down to members:
+        // latency and MAXBW mirror the native options set above (so the getter
+        // and the transport agree), and the Stream ID is public only.
+        record->public_options.receiver_latency_milliseconds =
+            description.member_receiver_latency_milliseconds;
+        record->public_options.peer_latency_milliseconds =
+            description.member_peer_latency_milliseconds;
+        record->public_options.maximum_bandwidth_bytes_per_second =
+            description.member_maximum_bandwidth_bytes_per_second;
+        if (!description.member_stream_id.empty()) {
+            (void)record->public_options.stream_id.assign(
+                description.member_stream_id);
+        }
         if (configured) {
             const bool drift_tracer = description.drift_tracer;
             const std::int64_t minimum_input =
