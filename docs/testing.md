@@ -101,6 +101,30 @@ changes before merging, dispatch the `CI` workflow manually on that branch.
 Manual runs, `v*` release-tag pushes and the weekly full run select all four jobs.
 Release tags now trigger the core CI matrix as well as the separate SDK workflow.
 
+### Separate pre-release integration suite
+
+Run **Release integrations** (`release-integrations.yml`) manually before
+publishing a release. Select the candidate branch or tag in GitHub Actions:
+
+```sh
+gh workflow run release-integrations.yml --ref <candidate-branch-or-tag>
+```
+
+The workflow runs FFmpeg, GStreamer and VLC on Linux, plus Linux OBS integration
+and desktop coverage and the Windows/macOS OBS integration and desktop jobs.
+It reuses the pinned sources and test steps from `CI`; there is no second copy
+of the integration implementations. The classification summary records the exact
+candidate commit. Keep the successful run URL and commit in the release evidence;
+any subsequent code change requires a new qualifying run.
+
+This additional workflow has no automatic PR, push, tag, release or scheduled
+trigger. Existing selective PR checks and full CI selection remain unchanged.
+The required gate fails on a failed, cancelled or unexpectedly skipped integration.
+An integration-only run does not count as full core/sanitizer/protocol qualification
+or suppress scheduled full CI. Complete the normal release CI and SDK/signing
+acceptance separately. This workflow neither publishes artifacts as a release
+nor enforces publication approval automatically.
+
 ### Avoiding duplicate scheduled full runs
 
 The weekly run checks for a successful full `CI` run on `main` for the exact

@@ -282,6 +282,11 @@ private:
         std::uint16_t length_recovery = 0;
         std::uint32_t timestamp_recovery = 0;
         bool active = false;
+        // A source sequence dropped before transmission leaves a gap in the
+        // column. The series can no longer form valid parity, so it is
+        // abandoned (no control packet) until the next series resets it,
+        // rather than treated as a fatal encoder error.
+        bool abandoned = false;
     };
 
     [[nodiscard]] std::optional<std::uint64_t> unwrap(
