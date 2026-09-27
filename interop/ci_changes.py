@@ -675,6 +675,8 @@ def main() -> int:
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--full", action="store_true")
     selection.add_argument("--integrations-only", action="store_true")
+    parser.add_argument("--without-integrations", action="store_true",
+                        help="exclude ecosystem jobs from automatic CI")
     arguments = parser.parse_args()
     paths = (
         [line.rstrip("\n") for line in sys.stdin]
@@ -688,6 +690,12 @@ def main() -> int:
         )
     else:
         result = classify(paths, force_full=arguments.full)
+    if arguments.without_integrations:
+        result.ffmpeg = False
+        result.gstreamer = False
+        result.vlc = False
+        result.obs = False
+        result.obs_platforms = False
     print("\n".join(result.output_lines()))
     return 0
 

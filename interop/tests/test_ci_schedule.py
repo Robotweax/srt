@@ -235,7 +235,7 @@ class ScheduledWorkflowTests(unittest.TestCase):
                     capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 flags = dict(line.split("=", 1) for line in out.read_text().splitlines())
-                self.assertEqual(flags["obs_platforms"], str(full and (event in {"schedule", "workflow_dispatch"} or ref_type == "tag")).lower())
+                self.assertEqual(flags["obs_platforms"], str(full and (event == "workflow_dispatch" or ref_type == "tag")).lower())
                 self.assertEqual(flags["full"], str(full).lower())
                 self.assertEqual(flags["interop"], str(full).lower())
                 if not full:
