@@ -142,6 +142,11 @@ struct ReliabilityReceiveContext {
     // A source packet and its FEC reconstruction are applied as one logical
     // receive batch. Feedback is emitted by the final packet in that batch.
     bool defer_feedback = false;
+    // The payload could not be decrypted (optional encryption without the
+    // peer's key). The sequence counts as received for loss detection and
+    // acknowledgement, but the payload is discarded and never delivered, so
+    // the sender neither retransmits it nor stalls on flow control.
+    bool discard_payload = false;
 };
 
 /**

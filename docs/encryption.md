@@ -196,6 +196,16 @@ preparing the independent direction rejects connection setup, even with
 plaintext DATA. Optional fallback remains available during the original
 negotiation, before encrypted key material has been accepted.
 
+With `SRTO_ENFORCEDENCRYPTION=false`, a receiver that cannot decrypt a DATA
+packet, because it has no passphrase (NOSECRET) or could not unwrap the peer's
+key (BADSECRET), counts the packet as undecryptable, acknowledges its sequence
+number and discards the payload. Such data is never delivered, but the
+connection stays up and the sender neither retransmits it nor stalls on flow
+control, matching the reference implementation. With enforced encryption the
+same DATA still breaks the connection. AES-GCM packets that fail
+authentication are never acknowledged, so a forged packet cannot suppress
+genuine data.
+
 ### Directional-key compatibility evidence
 
 The interoperability mechanism is the existing runtime key exchange, not a

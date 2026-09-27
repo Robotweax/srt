@@ -4536,6 +4536,111 @@ TEST(compat_runtime_answers_optional_key_request_without_a_secret)
     REQUIRE_EQ(sender.sender_state(), CryptoState::no_secret);
 }
 
+TEST(compat_runtime_acknowledges_undecryptable_data_under_optional_encryption)
+{
+    // With SRTO_ENFORCEDENCRYPTION=false a peer that has a passphrase keeps
+    // encrypting even though this side has none (NOSECRET). The reference
+    // implementation acknowledges such DATA and discards it; breaking the
+    // connection, or leaving the sequences unacknowledged so the sender
+    // retransmits them forever, would both diverge from it.
+    struct Case {
+        bool enforced;
+        bool local_secret;
+    };
+    // NOSECRET (no local session), BADSECRET (a local session that never
+    // obtained the peer's key), and enforced encryption as the control.
+    const std::array scenarios {
+        Case {false, false},
+        Case {false, true},
+        Case {true, false},
+    };
+    for (const Case scenario : scenarios) {
+        const bool enforced = scenario.enforced;
+        std::shared_ptr<CryptoSession> crypto;
+        if (scenario.local_secret) {
+            crypto = std::make_shared<CryptoSession>(CryptoConfiguration {
+                .passphrase = "a different local secret",
+                .key_length = 16,
+            });
+        }
+        const auto channel = std::make_shared<DatagramChannel>();
+        CapturedDatagrams output;
+        channel->set_send_hook_for_testing(capture_datagram, &output);
+        const Ipv4Endpoint peer {
+            .address = {192, 0, 2, 44},
+            .port = 14'204,
+        };
+        SocketOptions options;
+        REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                       static_cast<std::int64_t>(TransmissionType::file)),
+            Error::none);
+        REQUIRE_EQ(
+            options.set(SocketOption::enforced_encryption, enforced ? 1 : 0),
+            Error::none);
+        std::uint64_t now = 1'000'000;
+        ConnectionRuntime receiver {{
+            .channel = channel,
+            .peer = peer,
+            .peer_socket_id = 440,
+            .initial_sequence = SequenceNumber {900},
+            .flow_window_packets = 256,
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+            .crypto = crypto,
+            .now_function = injected_now,
+            .now_context = &now,
+        }};
+
+        const std::array payload {std::byte {0x5a}, std::byte {0xa5}};
+        for (std::uint32_t index = 0; index < 2U; ++index) {
+            PacketView data {
+                .kind = PacketKind::data,
+                .payload = payload,
+            };
+            data.data.sequence = SequenceNumber {900}.advanced(index);
+            data.data.message_number = index + 1U;
+            data.data.boundary = MessageBoundary::solo;
+            data.data.in_order = true;
+            data.data.encryption_key = EncryptionKey::even;
+            data.data.destination_socket_id = 440;
+            receiver.process_packet(data, peer);
+        }
+        if (enforced) {
+            // Enforced encryption stays fail-closed.
+            REQUIRE(receiver.broken());
+            continue;
+        }
+        REQUIRE(!receiver.broken());
+        const auto statistics = receiver.statistics(false, true);
+        REQUIRE_EQ(statistics.total.receiver_undecryptable.packets, 2U);
+        std::array<std::byte, 16> received {};
+        REQUIRE_EQ(receiver.receive_message(received, false, -1).status,
+            MessageIoStatus::would_block);
+
+        now += 20'000;
+        (void)receiver.poll();
+        bool acknowledged_both = false;
+        for (const auto& datagram : take_datagrams(output)) {
+            const auto decoded = decode_packet(datagram);
+            REQUIRE(decoded);
+            if (decoded.packet.kind != PacketKind::control) {
+                continue;
+            }
+            REQUIRE(decoded.packet.control.type
+                != ControlType::negative_acknowledgement);
+            if (decoded.packet.control.type == ControlType::acknowledgement) {
+                const auto acknowledgement =
+                    decode_acknowledgement(decoded.packet);
+                REQUIRE(acknowledgement);
+                acknowledged_both = acknowledged_both
+                    || acknowledgement.acknowledgement.next_sequence
+                        == SequenceNumber {902};
+            }
+        }
+        REQUIRE(acknowledged_both);
+    }
+}
+
 TEST(compat_runtime_optional_sender_resumes_clear_after_no_secret)
 {
     const auto channel = std::make_shared<DatagramChannel>();

@@ -2596,16 +2596,28 @@ bool ConnectionRuntime::process_reliability_packet_locked(
                     // the normal receive path and peer-idle timeout.
                     return false;
                 }
+                if (packet.data.encryption_key == EncryptionKey::none
+                    || options_.enforced_encryption()) {
+                    break_locked(0);
+                    return false;
+                }
+                // Optional encryption with a key this side could not unwrap
+                // (BADSECRET): acknowledge the sequence, discard the payload.
+                context.discard_payload = true;
+            } else {
+                clear_packet.data.encryption_key = EncryptionKey::none;
+                clear_packet.payload = destination;
+            }
+        } else if (packet.data.encryption_key
+            != EncryptionKey::none) {
+            if (options_.enforced_encryption()) {
                 break_locked(0);
                 return false;
             }
-            clear_packet.data.encryption_key =
-                EncryptionKey::none;
-            clear_packet.payload = destination;
-        } else if (packet.data.encryption_key
-            != EncryptionKey::none) {
-            break_locked(0);
-            return false;
+            // Optional encryption without a local secret (NOSECRET): the peer
+            // keeps encrypting. Acknowledge the sequence, discard the payload.
+            statistics_.note_receiver_undecryptable(packet.payload.size());
+            context.discard_payload = true;
         }
     }
 
