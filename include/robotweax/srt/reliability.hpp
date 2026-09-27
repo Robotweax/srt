@@ -65,7 +65,8 @@ public:
     // add_all this accepts a range that precedes existing entries, which the
     // FEC filter loss list needs because column groups close out of sequence
     // order. A range already covered by an existing entry is skipped and
-    // reported as success; only an invalid range or exhausted capacity fails.
+    // reported as success. Partial overlaps, invalid ranges, and exhausted
+    // capacity fail without modifying the list.
     [[nodiscard]] bool insert_sorted(
         SequenceRange range, std::uint32_t initial_ttl) noexcept;
     // Transactional feasibility check for a sorted insert of the whole batch:

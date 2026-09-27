@@ -99,17 +99,18 @@ bool ReceiveLossList::insert_sorted(
         }
         ++position;
     }
-    // Already covered by the preceding or following entry: nothing to add.
+    // Skip fully covered ranges, but reject partial overlaps without mutation.
     if (position > 0U) {
         const SequenceRange& previous = entries_[position - 1U].range;
         if (range.first.distance_from(previous.last) <= 0) {
-            return true;
+            return range.last.distance_from(previous.last) <= 0;
         }
     }
     if (position < size_) {
         const SequenceRange& following = entries_[position].range;
         if (following.first.distance_from(range.last) <= 0) {
-            return true;
+            return range.first == following.first
+                && range.last.distance_from(following.last) <= 0;
         }
     }
     if (size_ == entries_.size()) {

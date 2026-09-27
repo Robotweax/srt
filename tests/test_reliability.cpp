@@ -321,3 +321,111 @@ TEST(
     REQUIRE_EQ(reports.front().first, first.advanced(512));
     REQUIRE_EQ(reports.back().last, first.advanced(512 + (count - 1) * 2));
 }
+
+TEST(receive_loss_list_sorted_insert_rejects_partial_overlaps)
+{
+    const std::array overlapping {
+        SequenceRange {SequenceNumber {105}, SequenceNumber {120}},
+        SequenceRange {SequenceNumber {90}, SequenceNumber {105}},
+        SequenceRange {SequenceNumber {90}, SequenceNumber {120}},
+        SequenceRange {SequenceNumber {100}, SequenceNumber {120}},
+    };
+    for (const auto& range : overlapping) {
+        ReceiveLossList losses {4};
+        REQUIRE(losses.insert_sorted(
+            {SequenceNumber {100}, SequenceNumber {110}}, 2));
+        REQUIRE(!losses.insert_sorted(range, 0));
+        REQUIRE_EQ(losses.size(), 1U);
+        REQUIRE(!losses.has_pending_report());
+        losses.age_fresh();
+        losses.age_fresh();
+        REQUIRE(!losses.has_pending_report());
+        losses.age_fresh();
+        const auto report = losses.take_pending_report();
+        REQUIRE(report.has_value());
+        REQUIRE_EQ(report->first, SequenceNumber {100});
+        REQUIRE_EQ(report->last, SequenceNumber {110});
+        REQUIRE(!losses.take_pending_report().has_value());
+    }
+}
+
+TEST(receive_loss_list_sorted_insert_accepts_covered_ranges_at_capacity)
+{
+    ReceiveLossList losses {1};
+    REQUIRE(
+        losses.insert_sorted({SequenceNumber {100}, SequenceNumber {110}}, 0));
+    REQUIRE(
+        losses.insert_sorted({SequenceNumber {100}, SequenceNumber {110}}, 5));
+    REQUIRE(
+        losses.insert_sorted({SequenceNumber {103}, SequenceNumber {107}}, 5));
+    REQUIRE(
+        losses.insert_sorted({SequenceNumber {100}, SequenceNumber {105}}, 5));
+    REQUIRE_EQ(losses.size(), 1U);
+    const auto report = losses.take_pending_report();
+    REQUIRE(report.has_value());
+    REQUIRE_EQ(report->first, SequenceNumber {100});
+    REQUIRE_EQ(report->last, SequenceNumber {110});
+    REQUIRE(
+        !losses.insert_sorted({SequenceNumber {120}, SequenceNumber {120}}, 0));
+}
+
+TEST(receive_loss_list_sorted_batch_orders_ranges_across_rollover)
+{
+    ReceiveLossList losses {4};
+    const auto mask = SequenceNumber::mask;
+    REQUIRE(losses.insert_sorted(
+        {SequenceNumber {mask - 3U}, SequenceNumber {mask - 2U}}, 0));
+    const std::array batch {
+        SequenceRange {SequenceNumber {3}, SequenceNumber {4}},
+        SequenceRange {SequenceNumber {mask - 6U}, SequenceNumber {mask - 5U}},
+        SequenceRange {SequenceNumber {mask}, SequenceNumber {1}},
+    };
+    REQUIRE(losses.can_insert_all_sorted(batch));
+    REQUIRE_EQ(losses.size(), 1U);
+    for (const auto& range : batch) {
+        REQUIRE(losses.insert_sorted(range, 0));
+    }
+    REQUIRE_EQ(losses.size(), 4U);
+    const std::array expected {
+        batch[1],
+        SequenceRange {SequenceNumber {mask - 3U}, SequenceNumber {mask - 2U}},
+        batch[2],
+        batch[0],
+    };
+    for (const auto& range : expected) {
+        const auto report = losses.take_pending_report();
+        REQUIRE(report.has_value());
+        REQUIRE_EQ(report->first, range.first);
+        REQUIRE_EQ(report->last, range.last);
+    }
+    REQUIRE(!losses.take_pending_report().has_value());
+    REQUIRE(!losses.insert_sorted({SequenceNumber {0}, SequenceNumber {2}}, 0));
+    const std::array overflow {
+        SequenceRange {SequenceNumber {6}, SequenceNumber {6}},
+    };
+    REQUIRE(!losses.can_insert_all_sorted(overflow));
+    REQUIRE_EQ(losses.size(), 4U);
+}
+
+TEST(receive_loss_list_sorted_batch_rejects_overlap_without_mutation)
+{
+    ReceiveLossList losses {4};
+    REQUIRE(
+        losses.insert_sorted({SequenceNumber {100}, SequenceNumber {110}}, 0));
+    const std::array existing_overlap {
+        SequenceRange {SequenceNumber {130}, SequenceNumber {140}},
+        SequenceRange {SequenceNumber {105}, SequenceNumber {115}},
+    };
+    REQUIRE(!losses.can_insert_all_sorted(existing_overlap));
+    const std::array batch_overlap {
+        SequenceRange {SequenceNumber {130}, SequenceNumber {140}},
+        SequenceRange {SequenceNumber {125}, SequenceNumber {135}},
+    };
+    REQUIRE(!losses.can_insert_all_sorted(batch_overlap));
+    REQUIRE_EQ(losses.size(), 1U);
+    const auto report = losses.take_pending_report();
+    REQUIRE(report.has_value());
+    REQUIRE_EQ(report->first, SequenceNumber {100});
+    REQUIRE_EQ(report->last, SequenceNumber {110});
+    REQUIRE(!losses.take_pending_report().has_value());
+}
