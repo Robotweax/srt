@@ -572,6 +572,54 @@ TEST(column_fec_encoder_emits_exact_even_column_recovery)
     REQUIRE_EQ(datagram, expected);
 }
 
+TEST(column_fec_encoder_abandons_a_series_with_a_dropped_source)
+{
+    // A source dropped before transmission leaves a gap in its column. The
+    // encoder must skip that series (no parity) instead of returning a fatal
+    // error that would tear the connection down, and must recover on the next
+    // series. Even layout, columns 3 x rows 2: column c holds indices c and
+    // c + 3. Dropping sequence 100 (column 0, position 0) leaves column 0 of
+    // the first series with a gap at its second source, sequence 103.
+    const auto configuration = column_configuration(3U, 2U);
+    ColumnFecEncoder encoder {configuration, SequenceNumber {100}, 1U};
+    const std::array payload {std::byte {'x'}};
+    std::vector<std::int8_t> first_series_columns;
+
+    // First series: sequence 100 is never fed (dropped before transmission).
+    for (std::uint32_t sequence = 101U; sequence <= 105U; ++sequence) {
+        REQUIRE_EQ(encoder.feed_source(source_packet(
+                       sequence, sequence, EncryptionKey::none, payload)),
+            Error::none);
+        const auto packet = encoder.control_packet();
+        if (packet.has_value()) {
+            const auto control = decode_fec_control_payload(packet->payload);
+            REQUIRE(control);
+            first_series_columns.push_back(control.header.group_index);
+            encoder.consume_control_packet();
+        }
+    }
+    // Columns 1 and 2 completed; column 0 was abandoned, so it emits nothing.
+    const std::vector<std::int8_t> expected_first {1, 2};
+    REQUIRE_EQ(first_series_columns, expected_first);
+
+    // Second series (sequences 106..111) is complete; every column recovers.
+    std::vector<std::int8_t> second_series_columns;
+    for (std::uint32_t sequence = 106U; sequence <= 111U; ++sequence) {
+        REQUIRE_EQ(encoder.feed_source(source_packet(
+                       sequence, sequence, EncryptionKey::none, payload)),
+            Error::none);
+        const auto packet = encoder.control_packet();
+        if (packet.has_value()) {
+            const auto control = decode_fec_control_payload(packet->payload);
+            REQUIRE(control);
+            second_series_columns.push_back(control.header.group_index);
+            encoder.consume_control_packet();
+        }
+    }
+    const std::vector<std::int8_t> expected_second {0, 1, 2};
+    REQUIRE_EQ(second_series_columns, expected_second);
+}
+
 TEST(column_fec_encoder_uses_staircase_control_order)
 {
     const auto configuration =
@@ -784,6 +832,33 @@ TEST(column_fec_decoder_coalesces_expired_matrix_across_rollover)
     REQUIRE_EQ(
         expired.irrecoverable_losses[0].last,
         SequenceNumber{1});
+}
+
+TEST(matrix_fec_encoder_tolerates_a_dropped_source)
+{
+    // The matrix encoder feeds the row then the column encoder. A source
+    // dropped before transmission must not make either return a fatal error.
+    const auto configuration = matrix_configuration(2U, 2U);
+    MatrixFecEncoder encoder {configuration, SequenceNumber {200}, 1U};
+    const std::array payload {std::byte {'x'}};
+    // Sequence 200 (row 0 / column 0) is dropped; 201, 202, 203 still flow.
+    for (std::uint32_t sequence = 201U; sequence <= 203U; ++sequence) {
+        REQUIRE_EQ(encoder.feed_source(source_packet(
+                       sequence, sequence, EncryptionKey::none, payload)),
+            Error::none);
+        while (encoder.control_packet_ready()) {
+            encoder.consume_control_packet();
+        }
+    }
+    // A complete later matrix recovers normally.
+    for (std::uint32_t sequence = 204U; sequence <= 207U; ++sequence) {
+        REQUIRE_EQ(encoder.feed_source(source_packet(
+                       sequence, sequence, EncryptionKey::none, payload)),
+            Error::none);
+        while (encoder.control_packet_ready()) {
+            encoder.consume_control_packet();
+        }
+    }
 }
 
 TEST(matrix_fec_encoder_sends_columns_before_a_ready_row)
