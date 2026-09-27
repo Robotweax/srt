@@ -24,6 +24,7 @@ inline constexpr std::size_t maximum_loss_words_per_packet =
 struct OutboundPacket {
     DataHeader header{};
     std::span<const std::byte> payload{};
+    std::uint64_t sequence_position = 0;
 };
 
 struct SendDropResult {
@@ -101,6 +102,8 @@ public:
         std::uint64_t enqueue_microseconds = 0) noexcept;
 
     [[nodiscard]] std::optional<OutboundPacket> next_packet() noexcept;
+    [[nodiscard]] std::optional<OutboundPacket>
+    peek_new_packet() const noexcept;
     // A prepared UDP retry must not revive an ACKed or expired packet.
     [[nodiscard]] bool retains_packet(SequenceNumber sequence) const noexcept;
     // Converts a sent slot into its immutable encrypted wire form in place.
@@ -147,6 +150,7 @@ public:
 private:
     struct Slot {
         DataHeader header{};
+        std::uint64_t sequence_position = 0;
         std::uint32_t payload_index = 0;
         std::uint16_t payload_size = 0;
         std::uint16_t plaintext_size = 0;
@@ -177,6 +181,7 @@ private:
     std::vector<SequenceNumber> drop_request_queue_;
     std::vector<SequenceRange> range_drop_request_queue_;
     SequenceNumber first_sequence_;
+    std::uint64_t next_sequence_position_ = 0;
     std::size_t maximum_payload_size_ = maximum_data_payload_size;
     std::size_t head_ = 0;
     // The wire-sequence span includes retained drop tombstones, whereas

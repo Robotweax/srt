@@ -111,6 +111,22 @@ NAK ranges select missing packets for retransmission and provide loss feedback
 to FileCC. Retransmissions retain priority over new DATA and remain eligible
 while new sends are stopped by peer flow control.
 
+## Acknowledgement cadence and close
+
+File mode coalesces Full ACKs on the 10 ms control cadence and emits Lite ACKs
+at 64-packet thresholds between Full ACKs. Reopening an advertised zero receive
+window expedites a Full ACK; ordinary application reads do not bypass the
+cadence.
+
+On close, the runtime submits a pending cumulative ACK before SHUTDOWN. If
+local UDP submission would block, it retries at 1 ms intervals within a shared
+10 ms close-drain budget, including an ACK already queued by a timer poll.
+The budget uses the steady clock, independently of the protocol clock. A
+permanent send error or exhausted budget ends the attempt; SHUTDOWN is not
+submitted ahead of an unsent final ACK. This is a bounded local-send attempt,
+not a guarantee of delivery over UDP or a replacement for application-level
+transfer completion and sender linger.
+
 ## Retransmission timeout and recovery
 
 The sender uses the SRT retransmission timeout equation:

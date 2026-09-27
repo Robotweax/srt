@@ -685,11 +685,11 @@ ReliabilityProcessResult ReliabilitySession::receive(
             note_ordered_packet();
         }
         update_loss_timer(now_microseconds);
-        // Live mode uses the control scheduler's 10 ms full-ACK and
-        // packet-counted lite-ACK cadence. File and unconfigured sessions
-        // retain immediate acknowledgements for their synchronous flow.
-        if (!context.defer_feedback
-            && !live_rate_controller_.has_value()) {
+        // Live and file mode use the control scheduler's 10 ms full-ACK
+        // and packet-counted lite-ACK cadence. Unconfigured sessions retain
+        // immediate acknowledgements for their synchronous flow.
+        if (!context.defer_feedback && !live_rate_controller_.has_value()
+            && !file_rate_controller_.has_value()) {
             result.actions.push(
                 make_acknowledgement(now_microseconds));
         }
@@ -1348,6 +1348,17 @@ ReliabilityActions ReliabilitySession::poll_timers(
             actions.push({.kind = ReliabilityActionKind::keepalive});
             break;
         }
+    }
+    return actions;
+}
+
+ReliabilityActions ReliabilitySession::flush_acknowledgement(
+    std::uint64_t now_microseconds) noexcept
+{
+    ReliabilityActions actions;
+    if (has_received_data_
+        && timer_scheduler_.flush_full_acknowledgement(now_microseconds)) {
+        actions.push(make_acknowledgement(now_microseconds));
     }
     return actions;
 }

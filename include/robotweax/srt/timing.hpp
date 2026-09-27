@@ -51,6 +51,14 @@ public:
     void on_data_received(std::uint64_t now_microseconds) noexcept;
     void on_receive_buffer_released(
         std::uint64_t now_microseconds, bool expedite = true) noexcept;
+    // Force the pending full acknowledgement out of cadence, e.g. on close, so
+    // a peer waiting to drain its send buffer still receives the final
+    // cumulative ACK when the 10 ms deadline has not yet elapsed. Returns true
+    // when a full acknowledgement is due and resets the cadence bookkeeping the
+    // same way a scheduled full ACK does.
+    [[nodiscard]] bool flush_full_acknowledgement(
+        std::uint64_t now_microseconds) noexcept;
+
     void on_packet_sent(std::uint64_t now_microseconds) noexcept;
     void set_loss_state(bool has_loss, std::uint64_t now_microseconds,
         std::uint32_t nak_interval_microseconds,

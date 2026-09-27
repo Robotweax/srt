@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -798,6 +799,109 @@ TEST(crypto_session_plaintext_fallback_stops_after_key_confirmation)
     REQUIRE_EQ(sender.prepare_rotation(), Error::none);
     REQUIRE_EQ(sender.sender_state(), CryptoState::securing);
     REQUIRE(!sender.allows_plaintext_fallback());
+}
+
+namespace {
+
+void secure_sender(CryptoSession& sender, CryptoSession& receiver)
+{
+    REQUIRE_EQ(sender.start_initiator(), Error::none);
+    REQUIRE_EQ(
+        receiver.accept_key_material(sender.pending_key_material(), false),
+        Error::none);
+    REQUIRE_EQ(sender.acknowledge_key_material(
+                   receiver.key_material_response(), false),
+        Error::none);
+    REQUIRE_EQ(sender.sender_state(), CryptoState::secured);
+}
+
+} // namespace
+
+TEST(crypto_key_rotation_accounts_for_gaps_before_sending)
+{
+    const CryptoConfiguration configuration {
+        .passphrase = "sequence gap fixture",
+        .refresh_rate_packets = 8,
+        .preannouncement_packets = 2};
+    CryptoSession sender {configuration}, receiver {configuration};
+    secure_sender(sender, receiver);
+    REQUIRE_EQ(sender.prepare_data_packet(0), Error::none);
+    REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+    REQUIRE_EQ(sender.prepare_data_packet(6), Error::none);
+    REQUIRE_EQ(sender.packets_on_active_key(), 6U);
+    REQUIRE_EQ(sender.sender_state(), CryptoState::securing);
+    REQUIRE_EQ(sender.prepare_data_packet(6), Error::none);
+    REQUIRE_EQ(sender.packets_on_active_key(), 6U);
+    // The selected candidate expires before transmission: its position still
+    // counts when the following packet becomes the new candidate.
+    REQUIRE_EQ(sender.prepare_data_packet(10), Error::none);
+    REQUIRE_EQ(sender.packets_on_active_key(), 10U);
+    REQUIRE(!sender.ready_to_send_data());
+    REQUIRE_EQ(
+        receiver.accept_key_material(sender.pending_key_material(), false),
+        Error::none);
+    REQUIRE_EQ(sender.acknowledge_key_material(
+                   receiver.key_material_response(), false),
+        Error::none);
+    REQUIRE(sender.ready_to_send_data());
+    const auto old_key = sender.active_sender_key();
+    REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+    REQUIRE(sender.active_sender_key() != old_key);
+    REQUIRE_EQ(sender.packets_on_active_key(), 0U);
+}
+
+TEST(crypto_key_rotation_counts_large_gaps_without_signed_wrap)
+{
+    for (const auto gap : {std::uint64_t {SequenceNumber::half_range},
+             std::uint64_t {SequenceNumber::half_range} + 123U}) {
+        const CryptoConfiguration configuration {
+            .passphrase = "large gap fixture",
+            .refresh_rate_packets = maximum_key_refresh_rate};
+        CryptoSession sender {configuration}, receiver {configuration};
+        secure_sender(sender, receiver);
+        REQUIRE_EQ(sender.prepare_data_packet(0), Error::none);
+        REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+        REQUIRE_EQ(sender.prepare_data_packet(gap), Error::none);
+        REQUIRE_EQ(sender.packets_on_active_key(), gap);
+        REQUIRE(!sender.ready_to_send_data());
+        REQUIRE_EQ(sender.sender_state(), CryptoState::securing);
+    }
+}
+
+TEST(crypto_key_budget_rejects_complete_cycles_before_encryption)
+{
+    const CryptoConfiguration configuration {
+        .passphrase = "wrap prevention fixture",
+        .refresh_rate_packets = maximum_key_refresh_rate};
+    for (const auto position : {std::uint64_t {SequenceNumber::mask},
+             std::uint64_t {SequenceNumber::modulus},
+             2U * std::uint64_t {SequenceNumber::modulus},
+             std::numeric_limits<std::uint64_t>::max()}) {
+        CryptoSession sender {configuration}, receiver {configuration};
+        secure_sender(sender, receiver);
+        REQUIRE_EQ(sender.prepare_data_packet(0), Error::none);
+        REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+        REQUIRE_EQ(
+            sender.prepare_data_packet(position), Error::cryptographic_failure);
+        REQUIRE_EQ(sender.packets_on_active_key(), 1U);
+    }
+}
+
+TEST(crypto_key_rotation_cap_announces_before_boundary)
+{
+    const CryptoConfiguration configuration {
+        .passphrase = "refresh cap fixture",
+        .refresh_rate_packets = maximum_key_refresh_rate};
+    CryptoSession sender {configuration}, receiver {configuration};
+    secure_sender(sender, receiver);
+    REQUIRE_EQ(sender.prepare_data_packet(0), Error::none);
+    REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+    const auto threshold =
+        effective_key_refresh_cap - default_key_preannouncement;
+    REQUIRE_EQ(sender.prepare_data_packet(threshold - 1U), Error::none);
+    REQUIRE_EQ(sender.sender_state(), CryptoState::secured);
+    REQUIRE_EQ(sender.prepare_data_packet(threshold), Error::none);
+    REQUIRE_EQ(sender.sender_state(), CryptoState::securing);
 }
 
 TEST(crypto_session_directional_key_generation_failure_blocks_data)
