@@ -240,6 +240,13 @@ bool GroupRegistry::describe_connect(
     output.peer_idle_timeout_milliseconds =
         record->peer_idle_timeout_milliseconds;
     output.member_native_options = record->member_native_options;
+    output.member_receiver_latency_milliseconds =
+        record->member_receiver_latency_milliseconds;
+    output.member_peer_latency_milliseconds =
+        record->member_peer_latency_milliseconds;
+    output.member_maximum_bandwidth_bytes_per_second =
+        record->member_maximum_bandwidth_bytes_per_second;
+    output.member_stream_id = record->member_stream_id;
     return true;
 }
 
@@ -301,6 +308,33 @@ int GroupRegistry::get_io_option(
         }
         std::memcpy(value, &peer_version, sizeof(peer_version));
         *value_size = static_cast<int>(sizeof(peer_version));
+        return 0;
+    }
+    if (option == SRTO_STREAMID || option == SRTO_MAXBW) {
+        std::lock_guard lock(record->mutex);
+        if (record->closed) {
+            set_last_error(SRT_EINVSOCK);
+            return SRT_ERROR;
+        }
+        if (option == SRTO_STREAMID) {
+            const auto text = record->member_stream_id.view();
+            if (*value_size < static_cast<int>(text.size() + 1U)) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            std::memcpy(value, text.data(), text.size());
+            static_cast<char*>(value)[text.size()] = '\0';
+            *value_size = static_cast<int>(text.size());
+        } else {
+            const auto bandwidth =
+                record->member_maximum_bandwidth_bytes_per_second;
+            if (*value_size < static_cast<int>(sizeof(bandwidth))) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            std::memcpy(value, &bandwidth, sizeof(bandwidth));
+            *value_size = static_cast<int>(sizeof(bandwidth));
+        }
         return 0;
     }
     if (option == SRTO_MININPUTBW) {
@@ -392,6 +426,13 @@ int GroupRegistry::get_io_option(
             return SRT_ERROR;
         }
         switch (option) {
+        case SRTO_LATENCY:
+        case SRTO_RCVLATENCY:
+            result = record->member_receiver_latency_milliseconds;
+            break;
+        case SRTO_PEERLATENCY:
+            result = record->member_peer_latency_milliseconds;
+            break;
         case SRTO_ROBOTWEAX_CRYPTO_BACKEND:
             result = static_cast<std::int32_t>(
                 ROBOTWEAX_SRT_COMPILED_CRYPTO_BACKEND);
@@ -619,6 +660,93 @@ int GroupRegistry::set_io_option(
                     }
                 }
             }
+        }
+        return 0;
+    }
+    // Member-option template: options libsrt passes down to group members.
+    // Set before connect and inherited by every member. The Stream ID is a
+    // public-only value; latency and MAXBW are mirrored into the native member
+    // options so the member's transport behaves accordingly.
+    if (option == SRTO_STREAMID || option == SRTO_LATENCY
+        || option == SRTO_RCVLATENCY || option == SRTO_PEERLATENCY
+        || option == SRTO_MAXBW) {
+        StreamId stream_id;
+        std::int32_t latency = 0;
+        std::int64_t maximum_bandwidth = 0;
+        if (option == SRTO_STREAMID) {
+            if (value_size < 0
+                || value_size > static_cast<int>(maximum_stream_id_size)) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            if (!stream_id.assign({static_cast<const char*>(value),
+                    static_cast<std::size_t>(value_size)})) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+        } else if (option == SRTO_MAXBW) {
+            if (value_size != static_cast<int>(sizeof(maximum_bandwidth))) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            std::memcpy(&maximum_bandwidth, value, sizeof(maximum_bandwidth));
+            if (maximum_bandwidth < -1) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+        } else {
+            if (value_size != static_cast<int>(sizeof(latency))) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            std::memcpy(&latency, value, sizeof(latency));
+            if (latency < 0
+                || latency > std::numeric_limits<std::uint16_t>::max()) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+        }
+        const auto record = find(group);
+        if (record == nullptr) {
+            set_last_error(SRT_EINVSOCK);
+            return SRT_ERROR;
+        }
+        std::lock_guard lock(record->mutex);
+        if (record->closed) {
+            set_last_error(SRT_EINVSOCK);
+            return SRT_ERROR;
+        }
+        if (record->opened) {
+            set_last_error(SRT_ECONNSOCK);
+            return SRT_ERROR;
+        }
+        Error native = Error::none;
+        if (option == SRTO_STREAMID) {
+            record->member_stream_id = std::move(stream_id);
+        } else if (option == SRTO_MAXBW) {
+            native = record->member_native_options.set(
+                SocketOption::maximum_bandwidth_bytes_per_second,
+                maximum_bandwidth);
+            record->member_maximum_bandwidth_bytes_per_second =
+                maximum_bandwidth;
+        } else {
+            // SRTO_LATENCY sets both directions; SRTO_RCVLATENCY only the
+            // receiver's; SRTO_PEERLATENCY only the peer's.
+            if (option == SRTO_LATENCY || option == SRTO_RCVLATENCY) {
+                native = record->member_native_options.set(
+                    SocketOption::receiver_latency_milliseconds, latency);
+                record->member_receiver_latency_milliseconds = latency;
+            }
+            if (native == Error::none
+                && (option == SRTO_LATENCY || option == SRTO_PEERLATENCY)) {
+                native = record->member_native_options.set(
+                    SocketOption::peer_latency_milliseconds, latency);
+                record->member_peer_latency_milliseconds = latency;
+            }
+        }
+        if (native != Error::none) {
+            set_last_error(SRT_EINVPARAM);
+            return SRT_ERROR;
         }
         return 0;
     }

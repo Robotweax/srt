@@ -1529,6 +1529,52 @@ TEST(compat_runtime_stamps_an_explicit_application_source_time)
         PacketTimestamp{source_offset_microseconds});
 }
 
+TEST(compat_runtime_bounds_source_time_in_the_wire_timestamp)
+{
+    const auto origin = ConnectionRuntime::Clock::now();
+    const auto origin_microseconds =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            origin.time_since_epoch())
+            .count();
+    const std::array<std::pair<std::int64_t, std::uint32_t>, 5> cases {{
+        {origin_microseconds - 1'000, 0U},
+        {origin_microseconds, 0U},
+        {origin_microseconds + 123'456, 123'456U},
+        {origin_microseconds + 0x1'0000'0000LL + 123'456, 123'456U},
+        {0, 200'000U},
+    }};
+    for (const auto& [source_time, expected_timestamp] : cases) {
+        const auto channel = std::make_shared<DatagramChannel>();
+        CapturedDatagrams output;
+        channel->set_send_hook_for_testing(capture_datagram, &output);
+        std::uint64_t now = 200'000;
+        ConnectionRuntime runtime {{
+            .channel = channel,
+            .peer = {.address = {192, 0, 2, 21}, .port = 12'021},
+            .peer_socket_id = 201,
+            .initial_sequence = SequenceNumber {710},
+            .flow_window_packets = 256,
+            .origin = origin,
+            .now_function = injected_now,
+            .now_context = &now,
+        }};
+        const std::array payload {std::byte {'s'}};
+        REQUIRE_EQ(
+            runtime.queue_message(payload, source_time, true, false, -1).status,
+            MessageIoStatus::success);
+        (void)runtime.poll();
+        // Inspect the encoded datagram without a receiving TSBPD clock:
+        // receiver-side unwrapping must not mask a sender regression.
+        const auto datagrams = take_datagrams(output);
+        REQUIRE_EQ(datagrams.size(), 1U);
+        const auto decoded = decode_packet(datagrams.front());
+        REQUIRE(decoded);
+        REQUIRE_EQ(decoded.packet.kind, PacketKind::data);
+        REQUIRE_EQ(decoded.packet.data.timestamp,
+            PacketTimestamp {expected_timestamp});
+    }
+}
+
 TEST(compat_runtime_tlpktdrop_has_a_distinct_internal_counter)
 {
     const auto channel = std::make_shared<DatagramChannel>();

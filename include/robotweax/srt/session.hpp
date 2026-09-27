@@ -369,8 +369,10 @@ public:
     void note_receive_buffer_released(
         std::uint64_t now_microseconds) noexcept
     {
+        // Always advertise released capacity at the next full-ACK deadline.
+        // Only a previously closed window needs that deadline pulled forward.
         timer_scheduler_.on_receive_buffer_released(
-            now_microseconds);
+            now_microseconds, last_advertised_receive_window_packets_ == 0U);
     }
     void note_packet_sent(std::uint64_t now_microseconds) noexcept
     {
@@ -447,7 +449,10 @@ private:
     std::vector<PendingPeerDrop> pending_peer_drops_;
     ReceiveLossList receive_loss_list_;
     ReceiveLossList filter_loss_list_;
-    AcknowledgementTracker acknowledgement_tracker_{64};
+    // Bounded Full-ACK history. Sustained high ACK rates or long RTTs can
+    // still evict records; File mode retains prompt per-packet Full ACKs.
+    AcknowledgementTracker acknowledgement_tracker_ {512};
+    std::uint32_t last_advertised_receive_window_packets_ = 0;
     RttEstimator rtt_;
     ControlTimerScheduler timer_scheduler_;
     SenderRetransmissionTimer sender_retransmission_timer_;
