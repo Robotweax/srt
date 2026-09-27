@@ -834,30 +834,93 @@ TEST(column_fec_decoder_coalesces_expired_matrix_across_rollover)
         SequenceNumber{1});
 }
 
-TEST(matrix_fec_encoder_tolerates_a_dropped_source)
+TEST(fec_encoders_resume_exact_parity_after_a_gap_inside_a_column)
 {
-    // The matrix encoder feeds the row then the column encoder. A source
-    // dropped before transmission must not make either return a fatal error.
-    const auto configuration = matrix_configuration(2U, 2U);
-    MatrixFecEncoder encoder {configuration, SequenceNumber {200}, 1U};
-    const std::array payload {std::byte {'x'}};
-    // Sequence 200 (row 0 / column 0) is dropped; 201, 202, 203 still flow.
-    for (std::uint32_t sequence = 201U; sequence <= 203U; ++sequence) {
-        REQUIRE_EQ(encoder.feed_source(source_packet(
-                       sequence, sequence, EncryptionKey::none, payload)),
-            Error::none);
-        while (encoder.control_packet_ready()) {
-            encoder.consume_control_packet();
-        }
-    }
-    // A complete later matrix recovers normally.
-    for (std::uint32_t sequence = 204U; sequence <= 207U; ++sequence) {
-        REQUIRE_EQ(encoder.feed_source(source_packet(
-                       sequence, sequence, EncryptionKey::none, payload)),
-            Error::none);
-        while (encoder.control_packet_ready()) {
-            encoder.consume_control_packet();
-        }
+    // 3 x 3 groups: column zero starts with index 0, then index 3 is
+    // dropped. Index 6 must abandon that partial XOR. The next series
+    // (9, 12, 15) must emit fresh parity, without any bytes from index 0.
+    for (const std::string_view layout : {"even", "staircase"}) {
+        const bool staircase = layout == "staircase";
+        const auto verify = [staircase](auto& encoder, bool matrix) {
+            using Group = std::pair<std::int8_t, std::vector<std::uint32_t>>;
+            std::vector<Group> expected = staircase
+                ? std::vector<Group> {{1, {4, 7, 10}}, {2, {8, 11, 14}},
+                      {0, {9, 12, 15}}, {1, {13, 16, 19}}, {2, {17, 20, 23}}}
+                : std::vector<Group> {{1, {1, 4, 7}}, {2, {2, 5, 8}},
+                      {0, {9, 12, 15}}, {1, {10, 13, 16}}, {2, {11, 14, 17}}};
+            const std::uint32_t count = staircase ? 24U : 18U;
+            if (matrix) {
+                for (std::uint32_t first = 0; first < count; first += 3U) {
+                    if (first != 3U) {
+                        expected.push_back(
+                            {-1, {first, first + 1U, first + 2U}});
+                    }
+                }
+            }
+            const auto payload_for = [](std::uint32_t index) {
+                return std::array {static_cast<std::byte>(index + 1U),
+                    static_cast<std::byte>(index * 7U + 3U)};
+            };
+            for (std::uint32_t index = 0; index < count; ++index) {
+                if (index == 3U) {
+                    continue;
+                }
+                const auto payload = payload_for(index);
+                const auto length = 1U + index % 2U;
+                REQUIRE_EQ(encoder.feed_source(source_packet(200U + index,
+                               1000U + index * 13U, EncryptionKey::even,
+                               std::span {payload}.first(length))),
+                    Error::none);
+                while (encoder.control_packet_ready()) {
+                    const auto packet = encoder.control_packet();
+                    REQUIRE(packet.has_value());
+                    const auto control =
+                        decode_fec_control_payload(packet->payload);
+                    REQUIRE(control);
+                    const auto found = std::find_if(expected.begin(),
+                        expected.end(), [&](const Group& group) {
+                            return group.first == control.header.group_index
+                                && packet->header.sequence
+                                == SequenceNumber {200U + group.second.back()};
+                        });
+                    // Reject parity for the incomplete group, extra packets,
+                    // and duplicates as well as missing parity after recovery.
+                    REQUIRE(found != expected.end());
+                    std::array<std::byte, 2> expected_payload {};
+                    std::uint16_t expected_length = 0;
+                    std::uint32_t expected_timestamp = 0;
+                    for (const auto source : found->second) {
+                        const auto bytes = payload_for(source);
+                        const auto source_length = 1U + source % 2U;
+                        expected_length ^=
+                            static_cast<std::uint16_t>(source_length);
+                        expected_timestamp ^= 1000U + source * 13U;
+                        for (std::size_t byte = 0; byte < source_length;
+                            ++byte) {
+                            expected_payload[byte] ^= bytes[byte];
+                        }
+                    }
+                    REQUIRE_EQ(control.header.flags_recovery, 1U);
+                    REQUIRE_EQ(control.header.length_recovery, expected_length);
+                    REQUIRE_EQ(packet->header.timestamp,
+                        PacketTimestamp {expected_timestamp});
+                    REQUIRE_EQ(control.payload_recovery.size(),
+                        expected_payload.size());
+                    REQUIRE(std::equal(control.payload_recovery.begin(),
+                        control.payload_recovery.end(),
+                        expected_payload.begin()));
+                    expected.erase(found);
+                    encoder.consume_control_packet();
+                }
+            }
+            REQUIRE(expected.empty());
+        };
+        ColumnFecEncoder column {
+            column_configuration(3U, 3U, layout), SequenceNumber {200}, 2U};
+        verify(column, false);
+        MatrixFecEncoder matrix {
+            matrix_configuration(3U, 3U, layout), SequenceNumber {200}, 2U};
+        verify(matrix, true);
     }
 }
 
