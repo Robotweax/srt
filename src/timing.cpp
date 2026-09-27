@@ -81,6 +81,21 @@ void ControlTimerScheduler::on_receive_buffer_released(
         std::min(next_ack_microseconds_, now_microseconds);
 }
 
+bool ControlTimerScheduler::flush_full_acknowledgement(
+    std::uint64_t now_microseconds) noexcept
+{
+    if (!acknowledgement_dirty_) {
+        return false;
+    }
+    acknowledgement_dirty_ = false;
+    packets_since_full_ack_ = 0;
+    next_lite_ack_threshold_ =
+        configuration_.lite_acknowledgement_packet_interval;
+    next_ack_microseconds_ =
+        now_microseconds + configuration_.acknowledgement_interval_microseconds;
+    return true;
+}
+
 void ControlTimerScheduler::on_packet_sent(std::uint64_t now_microseconds) noexcept
 {
     last_send_microseconds_ = now_microseconds;

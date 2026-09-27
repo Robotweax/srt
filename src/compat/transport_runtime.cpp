@@ -3318,6 +3318,11 @@ void ConnectionRuntime::close() noexcept
     }
     const std::uint64_t now = now_microseconds();
     if (!peer_closed_ && !broken_) {
+        // Flush any acknowledgement the 10 ms cadence has not yet emitted, so
+        // a peer that just sent its final file-mode packets receives the
+        // cumulative ACK and drains its send buffer instead of waiting on a
+        // cadence tick this side will never reach.
+        (void)send_actions(session_.flush_acknowledgement(now), now);
         ReliabilityActions shutdown;
         shutdown.push({.kind = ReliabilityActionKind::shutdown});
         (void)send_actions(shutdown, now);

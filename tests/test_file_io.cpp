@@ -220,11 +220,17 @@ TEST(compat_file_api_transfers_a_fragment_and_updates_offsets)
     REQUIRE(!sender->wait_for_send_drain(
         std::chrono::milliseconds{0}));
 
+    // File mode acknowledges on the 10 ms control cadence rather than once per
+    // received packet, so the receiver must be polled across at least one
+    // acknowledgement interval for the sender to see the cumulative ACK and
+    // drain. Advancing 2 ms per iteration crosses the interval well before any
+    // retransmission timeout.
     for (std::size_t iteration = 0; iteration < 8; ++iteration) {
-        sender_now += 10;
-        receiver_now += 10;
+        sender_now += 2'000;
+        receiver_now += 2'000;
         (void)sender->poll();
         deliver(sender_output, *receiver, sender_endpoint);
+        (void)receiver->poll();
         deliver(receiver_output, *sender, receiver_endpoint);
     }
     REQUIRE(sender->wait_for_send_drain(
@@ -535,24 +541,30 @@ TEST(compat_async_linger_closes_after_drain_or_deadline)
         capture_datagram, &sender_output);
     receiver_channel->set_send_hook_for_testing(
         capture_datagram, &receiver_output);
-    const auto sender = std::make_shared<ConnectionRuntime>(
-        ConnectionRuntime::Configuration{
+    std::uint64_t sender_now = 100'000;
+    std::uint64_t receiver_now = 100'000;
+    const auto sender =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
             .channel = sender_channel,
             .peer = receiver_endpoint,
             .peer_socket_id = 820,
-            .initial_sequence = SequenceNumber{2'000},
+            .initial_sequence = SequenceNumber {2'000},
             .flow_window_packets = 256,
             .options = options,
             .origin = origin,
+            .now_function = injected_now,
+            .now_context = &sender_now,
         });
-    ConnectionRuntime receiver{{
+    ConnectionRuntime receiver {{
         .channel = receiver_channel,
         .peer = sender_endpoint,
         .peer_socket_id = 810,
-        .initial_sequence = SequenceNumber{2'000},
+        .initial_sequence = SequenceNumber {2'000},
         .flow_window_packets = 256,
         .options = options,
         .origin = origin,
+        .now_function = injected_now,
+        .now_context = &receiver_now,
     }};
 
     const SRTSOCKET drained_handle = registry.create();
@@ -584,6 +596,11 @@ TEST(compat_async_linger_closes_after_drain_or_deadline)
         MessageIoStatus::success);
     (void)sender->poll();
     deliver(sender_output, receiver, sender_endpoint);
+    // File mode acknowledges on the 10 ms cadence, so advance one interval and
+    // poll the receiver to produce the cumulative ACK that lets the lingering
+    // sender drain and close.
+    receiver_now += 11'000;
+    (void)receiver.poll();
 
     registry.close(drained_handle);
     REQUIRE_EQ(registry.state(drained_handle), SRTS_CLOSING);

@@ -2001,9 +2001,13 @@ TEST(compat_runtime_file_mode_performs_partial_stream_io)
     (void)caller.poll();
     deliver(caller_output, listener, caller_endpoint);
     deliver(listener_output, caller, listener_endpoint);
-    caller_now += 10;
-    listener_now += 10;
+    // File mode acknowledges on the 10 ms cadence rather than per packet, so
+    // advance one interval and poll the listener for the cumulative ACK that
+    // frees the caller's send buffer.
+    caller_now += 11'000;
+    listener_now += 11'000;
     (void)caller.poll();
+    (void)listener.poll();
     deliver(caller_output, listener, caller_endpoint);
     deliver(listener_output, caller, listener_endpoint);
 

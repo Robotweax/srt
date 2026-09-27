@@ -576,6 +576,69 @@ TEST(session_ignores_unknown_and_duplicate_ackack_for_rtt)
     REQUIRE_EQ(receiver.rtt().variation_microseconds(), 500U);
 }
 
+TEST(session_file_mode_coalesces_acknowledgements_and_flushes_on_close)
+{
+    // File mode previously emitted a full acknowledgement for every received
+    // packet. It now follows the same 10 ms control cadence as live mode, so a
+    // burst produces no per-packet ACK. The pending cumulative acknowledgement
+    // is instead flushed explicitly on close, so a peer that just sent its
+    // final packets still receives it and can drain its send buffer.
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .peer_socket_id = 800,
+        .send_capacity_packets = 16,
+        .receive_capacity_packets = 16,
+    }};
+    receiver.configure_file(false);
+
+    const auto acknowledgement_count = [](const ReliabilityActions& actions) {
+        std::size_t total = 0;
+        for (std::size_t index = 0; index < actions.size; ++index) {
+            if (actions.values[index].kind
+                == ReliabilityActionKind::acknowledgement) {
+                ++total;
+            }
+        }
+        return total;
+    };
+
+    const std::array payload {std::byte {'a'}};
+    // Three in-order packets arrive inside a single 10 ms cadence interval.
+    for (std::uint32_t index = 0; index < 3U; ++index) {
+        const PacketView data {
+            .kind = PacketKind::data,
+            .data =
+                {
+                    .sequence = SequenceNumber {10}.advanced(index),
+                    .message_number = index + 1U,
+                    .boundary = MessageBoundary::solo,
+                },
+            .payload = payload,
+        };
+        const auto result = receiver.receive(data, 100U + index);
+        REQUIRE(result);
+        REQUIRE_EQ(acknowledgement_count(result.actions), 0U);
+    }
+
+    // Nothing is due before the cadence deadline.
+    REQUIRE_EQ(receiver.poll_timers(5'000U).size, 0U);
+
+    // Closing flushes the pending cumulative ACK covering all three packets.
+    const auto flushed = receiver.flush_acknowledgement(6'000U);
+    REQUIRE_EQ(flushed.size, 1U);
+    REQUIRE_EQ(flushed.values[0].kind, ReliabilityActionKind::acknowledgement);
+    REQUIRE_EQ(
+        flushed.values[0].acknowledgement.kind, AcknowledgementKind::full);
+    REQUIRE_EQ(
+        flushed.values[0].acknowledgement.next_sequence, SequenceNumber {13});
+
+    // The flush clears the pending state: neither a second flush nor a later
+    // cadence poll produces a duplicate acknowledgement.
+    REQUIRE_EQ(receiver.flush_acknowledgement(6'500U).size, 0U);
+    REQUIRE_EQ(receiver.poll_timers(20'000U).size, 0U);
+}
+
 TEST(session_rejects_reserved_zero_ackack_number)
 {
     ReliabilitySession receiver {{
