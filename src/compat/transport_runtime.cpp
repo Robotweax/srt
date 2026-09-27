@@ -3338,12 +3338,15 @@ void ConnectionRuntime::close() noexcept
         const auto drain = [&]() {
             while (!broken_ && pending_datagram_size_ != 0U
                 && Clock::now() < deadline) {
-                std::this_thread::sleep_for(std::chrono::milliseconds {1});
-                // The real-time wait above supplies retry pacing even when
-                // now_microseconds() is a frozen test clock.
+                // Try once before sleeping: a coarse OS timer can consume
+                // the whole budget in a nominal 1 ms sleep. Subsequent blocked
+                // attempts remain paced using real time, not the test clock.
                 next_datagram_retry_microseconds_ = 0U;
                 if (!flush_pending_datagrams(now_microseconds())) {
                     return false;
+                }
+                if (pending_datagram_size_ != 0U) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds {1});
                 }
             }
             return !broken_ && pending_datagram_size_ == 0U;
