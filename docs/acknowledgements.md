@@ -63,7 +63,7 @@ The index is derived from the acknowledgement number, but every lookup also
 compares the complete 32-bit value. Reusing a slot therefore evicts the old
 record instead of allowing a stale ACKACK to alias the new entry.
 
-In Live mode, Full ACKs follow the Full ACK cadence (the 10 ms interval, with a
+In Live and File mode, Full ACKs follow the Full ACK cadence (the 10 ms interval, with a
 packet-counted Light ACK between them). An application read expedites a Full ACK
 only when the advertised receive window had closed; a read while the window is
 open marks feedback pending for the next regular Full ACK deadline without
