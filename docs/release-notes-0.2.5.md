@@ -1,6 +1,6 @@
 # Robotweax SRT 0.2.5 — Ecosystem Support
 
-Status: **release candidate; publication and final artifact acceptance pending**.
+Status: **published 2026-09-23 as [v0.2.5](https://github.com/Robotweax/srt/releases/tag/v0.2.5)**.
 
 Project version: **0.2.5**. Shared-library ABI line: **0.2**.
 Compatible SRT API and `srt_getversion()`: **1.5.7**.
@@ -81,3 +81,5 @@ installed-consumer checks and final asset hashes. Review the resulting draft
 release before publishing; signing requires the release environment's human
 approval. The version tag must exactly match CMake. Never overwrite old tags or
 assets. Third-party application binaries are not part of this release.
+The release page records publication; the checklist above remains the
+acceptance procedure, not a later re-certification of the published assets.

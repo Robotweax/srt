@@ -1,11 +1,11 @@
 # Package manager recipes
 
-These recipes target the immutable Robotweax SRT 0.2.6 candidate source commit
+These recipes target the immutable Robotweax SRT 0.2.6 source commit
 `7ecb60ea8b4faca01ed86237b0cc9dc906350f6e`. This includes the rapid listener restart correction from PR #77.
-Source package and bottle requalification passed; final tag/SDK acceptance and
-publication remain pending. Older artifacts do not qualify this corrected source. See [the qualification record](qualification-0.2.6.md).
+Source package and bottle requalification passed, and 0.2.6 was
+[published on 2026-09-26](https://github.com/Robotweax/srt/releases/tag/v0.2.6). Older artifacts do not qualify this corrected source. See [the qualification record](qualification-0.2.6.md).
 The separately published [Robotweax/homebrew-tap](https://github.com/Robotweax/homebrew-tap)
-still provides 0.2.5 until its reviewed update and bottle qualification are complete.
+provides 0.2.6 with an Apple Silicon macOS 15 bottle.
 No vcpkg registry, PPA or COPR is published yet.
 
 ## Package contract

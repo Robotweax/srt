@@ -12,8 +12,8 @@ depending on implementation-specific C++ internals.
 
 ## Release status
 
-Version **0.2.6** is a pre-1.0 Performance Optimization release candidate
-(publication pending) with documented
+Version **0.2.6** is a pre-1.0 Performance Optimization release,
+[published 2026-09-26](https://github.com/Robotweax/srt/releases/tag/v0.2.6), with documented
 [qualification limits](docs/release-notes-0.2.6.md#qualification-limits-and-release-acceptance),
 including outstanding independent cryptographic review.
 
