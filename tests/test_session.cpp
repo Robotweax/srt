@@ -845,6 +845,56 @@ TEST(session_reopens_a_full_receive_window_after_application_delivery)
     REQUIRE_EQ(receiver.receive_buffer().available(), 0U);
 }
 
+TEST(open_window_receive_release_does_not_expedite_an_acknowledgement)
+{
+    // An application read while the receive window is open must not pull a full
+    // ACK forward. Doing so on every read produced one full ACK per read and
+    // evicted in-flight ACKACKs; the regular cadence covers an open window.
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .peer_socket_id = 800,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+    }};
+    const std::array<std::byte, 1> payload {std::byte {'x'}};
+    PacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.data.sequence = SequenceNumber {10};
+    packet.data.message_number = 1;
+    packet.payload = payload;
+    REQUIRE(receiver.receive(packet, 100));
+
+    // Drain the acknowledgement the data receipt scheduled so the window is
+    // known open with nothing pending.
+    (void)receiver.poll_timers(10'000);
+
+    std::array<std::byte, 1> output {};
+    REQUIRE(receiver.pop_message(output));
+    receiver.note_receive_buffer_released(10'001);
+
+    // The window was open (available > 0), so no ACK is expedited; polling
+    // right after the read, before the next interval, yields nothing.
+    const auto released = receiver.poll_timers(10'002);
+    REQUIRE_EQ(released.size, 0U);
+}
+
+TEST(acknowledgement_tracker_matches_ackack_beyond_sixty_four_outstanding)
+{
+    // The tracker must retain far more than 64 outstanding Full ACK records so a
+    // returning ACKACK is still matched for its RTT sample under a high ACK
+    // rate; a 64-entry window evicted them and froze the RTT estimate.
+    AcknowledgementTracker tracker {512};
+    tracker.record(1U, 1'000U);
+    for (std::uint32_t number = 2U; number <= 400U; ++number) {
+        tracker.record(number, 1'000U + number);
+    }
+    // The first record is still present after 399 later ones and yields its RTT.
+    REQUIRE_EQ(
+        tracker.acknowledge(1U, 1'500U), std::optional<std::uint32_t> {500U});
+}
+
 TEST(session_default_buffer_holds_a_tsbpd_burst_beyond_1024_packets)
 {
     const SocketOptions options;

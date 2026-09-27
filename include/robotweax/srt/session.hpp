@@ -363,8 +363,15 @@ public:
     void note_receive_buffer_released(
         std::uint64_t now_microseconds) noexcept
     {
-        timer_scheduler_.on_receive_buffer_released(
-            now_microseconds);
+        // Only expedite a full ACK when the receiver last advertised a closed
+        // window. Doing it on every application read produced one full ACK per
+        // read, roughly doubling control traffic and evicting in-flight ACKACKs
+        // so the RTT estimate froze. The regular 10 ms full / 64-packet lite
+        // cadence covers an open window.
+        if (last_advertised_receive_window_packets_ != 0U) {
+            return;
+        }
+        timer_scheduler_.on_receive_buffer_released(now_microseconds);
     }
     void note_packet_sent(std::uint64_t now_microseconds) noexcept
     {
@@ -441,7 +448,10 @@ private:
     std::vector<PendingPeerDrop> pending_peer_drops_;
     ReceiveLossList receive_loss_list_;
     ReceiveLossList filter_loss_list_;
-    AcknowledgementTracker acknowledgement_tracker_{64};
+    // Sized well above the full/lite ACK rate of a single RTT so a returning
+    // ACKACK is never evicted before it can be matched for an RTT sample.
+    AcknowledgementTracker acknowledgement_tracker_ {512};
+    std::uint32_t last_advertised_receive_window_packets_ = 0;
     RttEstimator rtt_;
     ControlTimerScheduler timer_scheduler_;
     SenderRetransmissionTimer sender_retransmission_timer_;
