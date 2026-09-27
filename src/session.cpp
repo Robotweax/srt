@@ -487,6 +487,10 @@ ReliabilityAction ReliabilitySession::make_acknowledgement(
     acknowledgement.round_trip_time_variance_microseconds = rtt_.variation_microseconds();
     acknowledgement.available_receive_buffer_packets =
         static_cast<std::uint32_t>(receive_buffer_.available());
+    if (kind == AcknowledgementKind::full) {
+        last_advertised_receive_window_packets_ =
+            acknowledgement.available_receive_buffer_packets;
+    }
     const auto rates = arrival_rate_estimator_.rates();
     if (rates.valid) {
         acknowledgement.receive_rate_packets_per_second = rates.packets_per_second;
@@ -519,6 +523,8 @@ ReliabilitySession::make_staged_receive_acknowledgement(
         static_cast<std::uint32_t>(std::min<std::size_t>(
             available_receive_buffer_packets,
             std::numeric_limits<std::uint32_t>::max()));
+    last_advertised_receive_window_packets_ =
+        action.acknowledgement.available_receive_buffer_packets;
     return action;
 }
 
@@ -679,11 +685,11 @@ ReliabilityProcessResult ReliabilitySession::receive(
             note_ordered_packet();
         }
         update_loss_timer(now_microseconds);
-        // Live mode uses the control scheduler's 10 ms full-ACK and
-        // packet-counted lite-ACK cadence. File and unconfigured sessions
-        // retain immediate acknowledgements for their synchronous flow.
-        if (!context.defer_feedback
-            && !live_rate_controller_.has_value()) {
+        // Live and file mode use the control scheduler's 10 ms full-ACK
+        // and packet-counted lite-ACK cadence. Unconfigured sessions retain
+        // immediate acknowledgements for their synchronous flow.
+        if (!context.defer_feedback && !live_rate_controller_.has_value()
+            && !file_rate_controller_.has_value()) {
             result.actions.push(
                 make_acknowledgement(now_microseconds));
         }
@@ -1262,8 +1268,16 @@ ReliabilitySession::report_filter_losses(
                     Error::invalid_control_payload};
         }
     }
-    if (!filter_loss_list_.add_all(losses, 0U)) {
+    // FEC column groups close out of sequence order, so a later batch can
+    // declare a loss that precedes one already tracked. Accept the batch when
+    // every range fits and is non-overlapping (transactional), then insert each
+    // at its sorted position, instead of requiring a strictly ascending append
+    // that previously rejected the report and left the loss unNAKed.
+    if (!filter_loss_list_.can_insert_all_sorted(losses)) {
         return {.error = Error::buffer_too_small};
+    }
+    for (const auto& loss : losses) {
+        (void)filter_loss_list_.insert_sorted(loss, 0U);
     }
     for (const auto& loss : losses) {
         const std::size_t packets =
@@ -1334,6 +1348,17 @@ ReliabilityActions ReliabilitySession::poll_timers(
             actions.push({.kind = ReliabilityActionKind::keepalive});
             break;
         }
+    }
+    return actions;
+}
+
+ReliabilityActions ReliabilitySession::flush_acknowledgement(
+    std::uint64_t now_microseconds) noexcept
+{
+    ReliabilityActions actions;
+    if (has_received_data_
+        && timer_scheduler_.flush_full_acknowledgement(now_microseconds)) {
+        actions.push(make_acknowledgement(now_microseconds));
     }
     return actions;
 }

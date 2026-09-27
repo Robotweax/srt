@@ -68,6 +68,21 @@ A zero source port requests operating-system selection.
 member starts connecting. Each member receives its application token and
 weight. All members of one group use one logical 31-bit initial sequence.
 
+Caller groups accept `SRTO_STREAMID`, `SRTO_LATENCY`, `SRTO_RCVLATENCY`,
+`SRTO_PEERLATENCY`, and `SRTO_MAXBW` before their first connection. These
+values form a template inherited by every new member, including members
+added later. Endpoint-specific options are applied afterwards and can override
+the template. Group getters return the configured template; query a member
+socket for its effective options.
+
+`SRTO_LATENCY` sets both latency directions and its getter returns the receive
+latency. The directional options change only their respective direction.
+Stream IDs are limited to 512 bytes; their getter needs space for an additional
+terminating NUL and returns the length excluding that terminator. Once the
+group has opened, attempts to change these template options fail with
+`SRT_ECONNSOCK`. `SRTO_MAXBW` is inherited as a per-member limit, not an
+aggregate bandwidth cap across the group.
+
 The first connect on a new group waits for the first usable member when the
 public synchronization option requires blocking behavior. Later members may
 complete in the background. Passing a group handle to ordinary `srt_connect`
