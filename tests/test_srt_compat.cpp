@@ -2783,6 +2783,80 @@ TEST(srt_compat_crypto_mode_preview_matches_upstream_option_contract)
     REQUIRE_EQ(srt_close(socket), 0);
     REQUIRE_EQ(srt_cleanup(), 0);
 }
+
+TEST(srt_compat_crypto_mode_reports_auto_on_unencrypted_connections)
+{
+    // Applications confirm authenticated encryption by requiring
+    // SRTO_CRYPTOMODE == 2 after connecting. A connection that ends up without
+    // encryption must therefore not echo the configured GCM request.
+    for (const bool caller_has_passphrase : {false, true}) {
+        REQUIRE_EQ(srt_startup(), 0);
+        constexpr std::int32_t gcm = 2;
+        constexpr bool optional = false;
+        constexpr std::int32_t timeout_milliseconds = 3'000;
+        const SRTSOCKET listener = srt_create_socket();
+        const SRTSOCKET caller = srt_create_socket();
+        REQUIRE(listener != SRT_INVALID_SOCK);
+        REQUIRE(caller != SRT_INVALID_SOCK);
+        for (const SRTSOCKET socket : {listener, caller}) {
+            REQUIRE_EQ(srt_setsockflag(socket, SRTO_CRYPTOMODE, &gcm,
+                           static_cast<int>(sizeof(gcm))),
+                0);
+            REQUIRE_EQ(srt_setsockflag(socket, SRTO_ENFORCEDENCRYPTION,
+                           &optional, static_cast<int>(sizeof(optional))),
+                0);
+            REQUIRE_EQ(
+                srt_setsockflag(socket, SRTO_CONNTIMEO, &timeout_milliseconds,
+                    static_cast<int>(sizeof(timeout_milliseconds))),
+                0);
+        }
+        if (caller_has_passphrase) {
+            // The listener has no secret: optional encryption falls back.
+            constexpr char passphrase[] = "robotweax-optional-gcm-fallback";
+            REQUIRE_EQ(srt_setsockflag(caller, SRTO_PASSPHRASE, passphrase,
+                           static_cast<int>(sizeof(passphrase) - 1U)),
+                0);
+        }
+
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        REQUIRE_EQ(srt_bind(listener, reinterpret_cast<sockaddr*>(&address),
+                       static_cast<int>(sizeof(address))),
+            0);
+        int address_size = static_cast<int>(sizeof(address));
+        REQUIRE_EQ(srt_getsockname(listener,
+                       reinterpret_cast<sockaddr*>(&address), &address_size),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 1), 0);
+
+        std::atomic<SRTSOCKET> accepted {SRT_INVALID_SOCK};
+        std::thread accept_thread([&] {
+            accepted.store(srt_accept(listener, nullptr, nullptr));
+        });
+        const int connected =
+            srt_connect(caller, reinterpret_cast<const sockaddr*>(&address),
+                static_cast<int>(sizeof(address)));
+        if (connected == SRT_ERROR) {
+            (void)srt_close(listener);
+        }
+        accept_thread.join();
+        REQUIRE_EQ(connected, 0);
+        REQUIRE(accepted.load() != SRT_INVALID_SOCK);
+
+        for (const SRTSOCKET socket : {caller, accepted.load()}) {
+            std::int32_t mode = -1;
+            int mode_size = static_cast<int>(sizeof(mode));
+            REQUIRE_EQ(
+                srt_getsockflag(socket, SRTO_CRYPTOMODE, &mode, &mode_size), 0);
+            REQUIRE_EQ(mode, 0);
+        }
+        REQUIRE_EQ(srt_close(caller), 0);
+        REQUIRE_EQ(srt_close(accepted.load()), 0);
+        REQUIRE_EQ(srt_close(listener), 0);
+        REQUIRE_EQ(srt_cleanup(), 0);
+    }
+}
 #endif
 
 TEST(srt_compat_file_type_exposes_the_implemented_reference_option_bundle)
