@@ -429,8 +429,11 @@ TEST(listener_handshake_actor_holds_following_input_until_admission_completes)
     scheduler->stop();
 }
 
-TEST(listener_handshake_actor_bounds_results_and_fails_closed)
+TEST(listener_handshake_actor_drops_responses_when_results_are_full)
 {
+    // A burst of unauthenticated INDUCTION packets must not end the Listener.
+    // Responses beyond the send limit are dropped and counted; the reserved
+    // slot still lets a retransmitted CONCLUSION complete an admission.
     auto scheduler =
         std::make_shared<RuntimeScheduler>(RuntimeScheduler::Configuration {
             .shard_count = 1,
@@ -448,25 +451,107 @@ TEST(listener_handshake_actor_bounds_results_and_fails_closed)
         RuntimeScheduler::SubmitStatus::accepted);
     wait_until_started(gate);
 
-    const auto inbox = std::make_shared<HandshakeInbox>(2);
+    const auto inbox = std::make_shared<HandshakeInbox>(8);
+    const auto time_window = std::make_shared<std::uint64_t>(5U);
+    const auto actor = std::make_shared<ListenerHandshakeActor>(scheduler, 0U,
+        inbox, admission_configuration(), 2U, fixed_listener_time_window,
+        time_window);
+    REQUIRE_EQ(actor->start(), ListenerHandshakeDispatchStatus::completed);
+    const IpEndpoint first_peer = IpEndpoint::loopback(9'003U);
+    const HandshakeEnvelope first_induction {
+        .message = admission_induction(103U),
+        .peer = first_peer,
+    };
+    REQUIRE(inbox->push(first_induction));
+    for (std::uint32_t index = 0; index < 4U; ++index) {
+        REQUIRE(inbox->push({
+            .message = admission_induction(104U + index),
+            .peer = IpEndpoint::loopback(
+                static_cast<std::uint16_t>(9'004U + index)),
+        }));
+    }
+    release_gate(gate);
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    while (actor->snapshot().dropped_responses < 4U
+        && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+    const ListenerHandshakeActorSnapshot snapshot = actor->snapshot();
+    REQUIRE(!snapshot.terminal);
+    REQUIRE_EQ(snapshot.failure, ListenerHandshakeDispatchStatus::completed);
+    REQUIRE_EQ(snapshot.queued_results, 1U);
+    REQUIRE_EQ(snapshot.dropped_responses, 4U);
+
+    const ListenerHandshakeActorResult response = actor->wait();
+    REQUIRE_EQ(response.kind, ListenerHandshakeActorResultKind::step);
+    REQUIRE_EQ(response.step.kind, ListenerHandshakeAdmissionStepKind::send);
+    REQUIRE(inbox->push({
+        .message = admission_conclusion(
+            first_induction.message, response.step.response.packet.syn_cookie),
+        .peer = first_peer,
+    }));
+    const ListenerHandshakeActorResult admitted = actor->wait();
+    REQUIRE_EQ(admitted.kind, ListenerHandshakeActorResultKind::step);
+    REQUIRE_EQ(admitted.step.kind, ListenerHandshakeAdmissionStepKind::admit);
+    REQUIRE(actor->complete_admission());
+
+    actor->close();
+    REQUIRE_EQ(actor->wait().kind, ListenerHandshakeActorResultKind::closed);
+    actor->stop();
+    scheduler->stop();
+}
+
+TEST(listener_handshake_actor_single_result_slot_fails_closed_for_admission)
+{
+    // With a capacity of one no slot can be reserved. An admission that finds
+    // the only slot occupied must still fail closed, never be lost silently.
+    auto scheduler =
+        std::make_shared<RuntimeScheduler>(RuntimeScheduler::Configuration {
+            .shard_count = 1,
+            .queue_capacity_per_shard = 4,
+            .timer_capacity_per_shard = 1,
+        });
+    REQUIRE(scheduler->start());
+    const auto inbox = std::make_shared<HandshakeInbox>(4);
     const auto time_window = std::make_shared<std::uint64_t>(5U);
     const auto actor = std::make_shared<ListenerHandshakeActor>(scheduler, 0U,
         inbox, admission_configuration(), 1U, fixed_listener_time_window,
         time_window);
     REQUIRE_EQ(actor->start(), ListenerHandshakeDispatchStatus::completed);
+
+    const IpEndpoint first_peer = IpEndpoint::loopback(9'020U);
+    const HandshakeEnvelope first_induction {
+        .message = admission_induction(120U),
+        .peer = first_peer,
+    };
+    REQUIRE(inbox->push(first_induction));
+    const ListenerHandshakeActorResult response = actor->wait();
+    REQUIRE_EQ(response.step.kind, ListenerHandshakeAdmissionStepKind::send);
+
+    const auto gate = std::make_shared<Gate>();
+    GateRelease release {gate};
+    REQUIRE_EQ(scheduler->submit(0U,
+                   {
+                       .function = wait_at_gate,
+                       .context = gate,
+                   }),
+        RuntimeScheduler::SubmitStatus::accepted);
+    wait_until_started(gate);
     REQUIRE(inbox->push({
-        .message = admission_induction(103U),
-        .peer = IpEndpoint::loopback(9'003U),
+        .message = admission_induction(121U),
+        .peer = IpEndpoint::loopback(9'021U),
     }));
     REQUIRE(inbox->push({
-        .message = admission_induction(104U),
-        .peer = IpEndpoint::loopback(9'004U),
+        .message = admission_conclusion(
+            first_induction.message, response.step.response.packet.syn_cookie),
+        .peer = first_peer,
     }));
     release_gate(gate);
 
     wait_until_terminal(actor);
     const ListenerHandshakeActorSnapshot snapshot = actor->snapshot();
-    REQUIRE_EQ(snapshot.queued_results, 1U);
     REQUIRE_EQ(snapshot.failure, ListenerHandshakeDispatchStatus::full);
     const ListenerHandshakeActorResult failure = actor->wait();
     REQUIRE_EQ(failure.kind, ListenerHandshakeActorResultKind::failure);
