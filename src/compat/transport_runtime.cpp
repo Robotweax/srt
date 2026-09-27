@@ -3483,9 +3483,12 @@ std::size_t ConnectionRuntime::crypto_key_length() const noexcept
 CryptoMode ConnectionRuntime::crypto_mode() const noexcept
 {
     std::lock_guard lock(mutex_);
+    // An established connection reports the suite actually protecting DATA.
+    // Without encryption (no passphrase, or the optional plaintext fallback)
+    // it reports AUTO (0), never the configured 1 or 2: applications check for
+    // 2 after connecting to confirm authenticated encryption.
     if (crypto_ == nullptr || !crypto_->enabled()) {
-        return static_cast<CryptoMode>(
-            options_.get(SocketOption::crypto_mode).value);
+        return CryptoMode::automatic;
     }
     return crypto_->effective_mode();
 }

@@ -58,7 +58,7 @@ inherit the Listener's policy and complete negotiation during HSv5 setup.
 | `SRTO_KMSTATE` | read-only | Combined key-material state |
 | `SRTO_SNDKMSTATE` | read-only | Transmit key-material state |
 | `SRTO_RCVKMSTATE` | read-only | Receive key-material state |
-| `SRTO_CRYPTOMODE` | conditional `int32_t` | Extension build only: `0` AUTO, `1` CTR, `2` GCM |
+| `SRTO_CRYPTOMODE` | conditional `int32_t` | Extension build only: `0` AUTO, `1` CTR, `2` GCM; after connecting, the active suite or `0` without encryption |
 
 Invalid passphrase lengths are rejected before copying or deriving key
 material. A value longer than 80 bytes is never truncated into a different
@@ -98,6 +98,8 @@ srt_setsockopt(sock, 0, SRTO_CRYPTOMODE,
 
 After connection, query `SRTO_CRYPTOMODE` and require effective value `2`.
 This prevents an application from treating a CTR session as authenticated.
+An unencrypted connection reports `0`, so the check also rejects a connection
+that fell back to plaintext.
 
 ## Roles and transport modes
 
