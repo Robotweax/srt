@@ -7060,3 +7060,90 @@ TEST(compat_runtime_file_close_flushes_ack_before_shutdown_with_bounded_retries)
         REQUIRE_EQ(output.attempts.size(), attempts);
     }
 }
+
+TEST(
+    compat_runtime_checks_sequence_budget_before_udp_and_counts_expired_packets)
+{
+    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        for (const bool invalid_position : {false, true}) {
+            const CryptoConfiguration configuration {
+                .passphrase = "runtime budget fixture",
+                .mode = mode,
+                .enable_aes_gcm = true,
+                .refresh_rate_packets = 64,
+                .preannouncement_packets = 8};
+            auto crypto = std::make_shared<CryptoSession>(configuration);
+            CryptoSession receiver {configuration};
+            REQUIRE_EQ(crypto->start_initiator(), Error::none);
+            REQUIRE_EQ(receiver.accept_key_material(
+                           crypto->pending_key_material(), true),
+                Error::none);
+            REQUIRE_EQ(crypto->acknowledge_key_material(
+                           receiver.key_material_response(), true),
+                Error::none);
+            confirm_directional_test_keys(*crypto, receiver);
+            if (invalid_position) {
+                // A transport must never restart the monotonic stream beneath
+                // an existing key. The first runtime packet must not escape.
+                REQUIRE_EQ(crypto->prepare_data_packet(3), Error::none);
+                REQUIRE_EQ(crypto->note_data_packet_sent(), Error::none);
+            }
+            auto channel = std::make_shared<DatagramChannel>();
+            CapturedDatagrams output;
+            channel->set_send_hook_for_testing(capture_datagram, &output);
+            SocketOptions options;
+            REQUIRE_EQ(options.set(SocketOption::maximum_payload_size, 1),
+                Error::none);
+            std::uint64_t now = 100;
+            ConnectionRuntime runtime {{.channel = channel,
+                .peer =
+                    Ipv4Endpoint {.address = {192, 0, 2, 91}, .port = 15091},
+                .peer_socket_id = 910,
+                .initial_sequence = SequenceNumber {SequenceNumber::mask},
+                .flow_window_packets = 64,
+                .options = options,
+                .origin = ConnectionRuntime::Clock::now(),
+                .crypto = crypto,
+                .now_function = injected_now,
+                .now_context = &now}};
+            const std::array one {std::byte {1}};
+            REQUIRE_EQ(
+                runtime.queue_message(one, 0, true, false, -1, -1).status,
+                MessageIoStatus::success);
+            (void)runtime.poll();
+            auto sent = take_datagrams(output);
+            if (invalid_position) {
+                REQUIRE(runtime.broken());
+                REQUIRE(std::none_of(
+                    sent.begin(), sent.end(), [](const auto& bytes) {
+                        const auto packet = decode_packet(bytes);
+                        return packet && packet.packet.kind == PacketKind::data;
+                    }));
+                continue;
+            }
+            REQUIRE_EQ(crypto->packets_on_active_key(), 1U);
+            const std::array three {
+                std::byte {2}, std::byte {3}, std::byte {4}};
+            REQUIRE_EQ(
+                runtime.queue_message(three, 0, true, false, -1, 1).status,
+                MessageIoStatus::success);
+            REQUIRE_EQ(
+                runtime.queue_message(one, 0, true, false, -1, -1).status,
+                MessageIoStatus::success);
+            now += 2'000;
+            (void)runtime.poll();
+            REQUIRE(!runtime.broken());
+            REQUIRE_EQ(crypto->packets_on_active_key(), 5U);
+            sent = take_datagrams(output);
+            std::size_t data_count = 0;
+            for (const auto& bytes : sent) {
+                const auto packet = decode_packet(bytes);
+                if (packet && packet.packet.kind == PacketKind::data) {
+                    REQUIRE_EQ(packet.packet.data.sequence, SequenceNumber {3});
+                    ++data_count;
+                }
+            }
+            REQUIRE_EQ(data_count, 1U);
+        }
+    }
+}

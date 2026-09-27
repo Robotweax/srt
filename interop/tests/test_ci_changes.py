@@ -1273,5 +1273,24 @@ class CiChangeClassifierTests(unittest.TestCase):
         self.assertNotIn("lookup-only: true", shard_job)
 
 
+class AutomaticIntegrationPolicyTests(unittest.TestCase):
+    def test_automatic_ci_excludes_ecosystem_even_for_broad_changes(self):
+        for args in (["src/crypto.cpp"], [".github/workflows/ci.yml"], ["--full"]):
+            output = subprocess.check_output(
+                [sys.executable, str(INTEROP_DIRECTORY / "ci_changes.py"),
+                 "--without-integrations", *args], text=True)
+            values = dict(line.split("=", 1) for line in output.splitlines())
+            for name in ("ffmpeg", "gstreamer", "vlc", "obs", "obs_platforms"):
+                self.assertEqual(values[name], "false")
+
+    def test_explicit_runs_keep_complete_ecosystem(self):
+        for mode in ("--full", "--integrations-only"):
+            output = subprocess.check_output(
+                [sys.executable, str(INTEROP_DIRECTORY / "ci_changes.py"), mode], text=True)
+            values = dict(line.split("=", 1) for line in output.splitlines())
+            for name in ("ffmpeg", "gstreamer", "vlc", "obs", "obs_platforms"):
+                self.assertEqual(values[name], "true")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3144,6 +3144,18 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             }
             continue;
         }
+        if (crypto_ != nullptr && crypto_->enabled()
+            && !session_.has_pending_retransmission()) {
+            const auto candidate = session_.send_buffer().peek_new_packet();
+            if (candidate.has_value()) {
+                if (crypto_->prepare_data_packet(candidate->sequence_position)
+                        != Error::none
+                    || !service_key_rotation(packet_time)) {
+                    break_locked(0);
+                    return {};
+                }
+            }
+        }
         // New data needs the next key acknowledgement. A retransmission
         // already owns its original ciphertext and does not depend on it.
         if (crypto_ != nullptr && crypto_->enabled()

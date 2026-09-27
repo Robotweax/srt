@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <limits>
 
 namespace robotweax::srt {
 namespace {
@@ -47,6 +48,13 @@ bool SendBuffer::synchronize_empty(
     if (sequence_span_ != 0U || occupied_count_ != 0U) {
         return this->next_sequence() == next_sequence;
     }
+    const auto skipped = (next_sequence.value() - first_sequence_.value())
+        & SequenceNumber::mask;
+    if (skipped
+        > std::numeric_limits<std::uint64_t>::max() - next_sequence_position_) {
+        return false;
+    }
+    next_sequence_position_ += skipped;
     first_sequence_ = next_sequence;
     head_ = 0U;
     next_unsent_offset_ = 0U;
@@ -75,6 +83,10 @@ Error SendBuffer::enqueue_message(
         return Error::buffer_too_small;
     }
 
+    if (packet_count
+        > std::numeric_limits<std::uint64_t>::max() - next_sequence_position_) {
+        return Error::invalid_state;
+    }
     std::size_t consumed = 0;
     for (std::size_t packet_index = 0; packet_index < packet_count; ++packet_index) {
         const std::size_t slot_index =
@@ -89,6 +101,7 @@ Error SendBuffer::enqueue_message(
             : (first ? MessageBoundary::first
                      : (last ? MessageBoundary::last : MessageBoundary::subsequent));
 
+        slot.sequence_position = next_sequence_position_++;
         slot.header = {
             .sequence = first_sequence_.advanced(
                 static_cast<std::uint32_t>(sequence_span_)),
@@ -347,6 +360,19 @@ bool SendBuffer::queue_retransmission(SequenceNumber sequence) noexcept
     return true;
 }
 
+std::optional<OutboundPacket> SendBuffer::peek_new_packet() const noexcept
+{
+    for (auto offset = next_unsent_offset_; offset < sequence_span_; ++offset) {
+        const auto& slot = slots_[(head_ + offset) % capacity()];
+        if (slot.occupied && !slot.sent) {
+            return OutboundPacket {.header = slot.header,
+                .payload = payloads_.get(slot.payload_index),
+                .sequence_position = slot.sequence_position};
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<OutboundPacket> SendBuffer::next_packet() noexcept
 {
     while (retransmission_size_ > 0U) {
@@ -363,6 +389,7 @@ std::optional<OutboundPacket> SendBuffer::next_packet() noexcept
         return OutboundPacket {
             .header = header,
             .payload = payloads_.get(slot->payload_index),
+            .sequence_position = slot->sequence_position,
         };
     }
 
@@ -375,6 +402,7 @@ std::optional<OutboundPacket> SendBuffer::next_packet() noexcept
             return OutboundPacket {
                 .header = slot.header,
                 .payload = payloads_.get(slot.payload_index),
+                .sequence_position = slot.sequence_position,
             };
         }
     }
