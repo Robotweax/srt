@@ -842,8 +842,7 @@ Error CryptoSession::prepare_rotation() noexcept
         return Error::invalid_state;
     }
     const std::uint64_t announcement_at =
-        static_cast<std::uint64_t>(refresh_rate_packets_)
-        - preannouncement_packets_;
+        effective_refresh_rate() - effective_preannouncement();
     if (rotation_prepared_
         || packets_on_active_key_ < announcement_at) {
         return Error::none;
@@ -862,19 +861,63 @@ Error CryptoSession::prepare_rotation() noexcept
     return Error::none;
 }
 
+std::uint64_t CryptoSession::effective_refresh_rate() const noexcept
+{
+    return std::min<std::uint64_t>(
+        refresh_rate_packets_, effective_key_refresh_cap);
+}
+
+std::uint64_t CryptoSession::effective_preannouncement() const noexcept
+{
+    const std::uint64_t refresh = effective_refresh_rate();
+    return std::min<std::uint64_t>(
+        preannouncement_packets_, (refresh - 1U) / 2U);
+}
+
 Error CryptoSession::note_data_packet_sent() noexcept
 {
     if (!enabled()) return Error::none;
-    if (packets_on_active_key_
-        == std::numeric_limits<std::uint64_t>::max()) {
+    if (last_sent_sequence_known_) {
+        last_sent_sequence_ = last_sent_sequence_.next();
+    }
+    return note_sequences_consumed(1U);
+}
+
+Error CryptoSession::note_data_packet_sent(SequenceNumber sequence) noexcept
+{
+    if (!enabled()) {
+        return Error::none;
+    }
+    std::uint64_t consumed = 1U;
+    if (last_sent_sequence_known_) {
+        const std::int32_t distance =
+            sequence.distance_from(last_sent_sequence_);
+        if (distance > 0) {
+            consumed = static_cast<std::uint64_t>(distance);
+        }
+    }
+    last_sent_sequence_ = sequence;
+    last_sent_sequence_known_ = true;
+    return note_sequences_consumed(consumed);
+}
+
+Error CryptoSession::note_sequences_consumed(std::uint64_t count) noexcept
+{
+    // Fail closed before one key could cover a sequence number twice: the IV
+    // would repeat and CTR/GCM confidentiality or integrity would be lost.
+    if (packets_on_active_key_ > maximum_sequences_per_key - count) {
         return Error::cryptographic_failure;
     }
-    ++packets_on_active_key_;
-    if (packets_on_active_key_ < refresh_rate_packets_) {
+    packets_on_active_key_ += count;
+    if (packets_on_active_key_ < effective_refresh_rate()) {
         return Error::none;
     }
     if (!rotation_prepared_ || !pending_acknowledged_) {
-        return Error::cryptographic_failure;
+        // A sequence gap can carry the count past the refresh point before
+        // the successor key is acknowledged. The active key still has ample
+        // IV space, so keep it; ready_to_send_data() now holds new DATA until
+        // the successor is acknowledged and the switch happens.
+        return Error::none;
     }
     active_sender_key_ = other_key(active_sender_key_);
     packets_on_active_key_ = 0;
@@ -908,7 +951,7 @@ bool CryptoSession::ready_to_send_data() const noexcept
     }
     const std::uint64_t next_packet_count =
         packets_on_active_key_ + 1U;
-    return next_packet_count < refresh_rate_packets_
+    return next_packet_count < effective_refresh_rate()
         || (rotation_prepared_ && pending_acknowledged_);
 }
 

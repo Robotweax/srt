@@ -800,6 +800,136 @@ TEST(crypto_session_plaintext_fallback_stops_after_key_confirmation)
     REQUIRE(!sender.allows_plaintext_fallback());
 }
 
+namespace {
+
+void secure_sender(CryptoSession& sender, CryptoSession& receiver)
+{
+    REQUIRE_EQ(sender.start_initiator(), Error::none);
+    REQUIRE_EQ(
+        receiver.accept_key_material(sender.pending_key_material(), false),
+        Error::none);
+    REQUIRE_EQ(sender.acknowledge_key_material(
+                   receiver.key_material_response(), false),
+        Error::none);
+    REQUIRE_EQ(sender.sender_state(), CryptoState::secured);
+}
+
+} // namespace
+
+TEST(crypto_key_rotation_counts_sequence_numbers_skipped_without_sending)
+{
+    // The DATA IV is salt + sequence number. Numbers consumed without a packet
+    // being sent (TLPKTDROP, message TTL) still belong to the active key, so
+    // they must bring the refresh closer rather than being ignored.
+    const CryptoConfiguration configuration {
+        .passphrase = "sequence gap rotation fixture",
+        .refresh_rate_packets = 8,
+        .preannouncement_packets = 2,
+    };
+    CryptoSession sender {configuration};
+    CryptoSession receiver {configuration};
+    secure_sender(sender, receiver);
+
+    REQUIRE_EQ(sender.note_data_packet_sent(SequenceNumber {100}), Error::none);
+    REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+    REQUIRE_EQ(sender.sender_state(), CryptoState::secured);
+
+    // Only two packets were sent, but six sequence numbers were consumed:
+    // the pre-announcement point (8 - 2) is reached.
+    REQUIRE_EQ(sender.note_data_packet_sent(SequenceNumber {105}), Error::none);
+    REQUIRE_EQ(sender.packets_on_active_key(), 6U);
+    REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+    REQUIRE_EQ(sender.sender_state(), CryptoState::securing);
+}
+
+TEST(crypto_key_rotation_waits_for_successor_after_sequence_gap)
+{
+    const CryptoConfiguration configuration {
+        .passphrase = "sequence gap successor fixture",
+        .refresh_rate_packets = 8,
+        .preannouncement_packets = 2,
+    };
+    CryptoSession sender {configuration};
+    CryptoSession receiver {configuration};
+    secure_sender(sender, receiver);
+    const EncryptionKey first_key = sender.active_sender_key();
+
+    // A gap carries the count past the refresh point before any successor
+    // was announced. The connection must not break; new DATA waits instead.
+    REQUIRE_EQ(sender.note_data_packet_sent(SequenceNumber {100}), Error::none);
+    REQUIRE_EQ(sender.note_data_packet_sent(SequenceNumber {110}), Error::none);
+    REQUIRE_EQ(sender.active_sender_key(), first_key);
+    REQUIRE(!sender.ready_to_send_data());
+
+    REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+    REQUIRE_EQ(
+        receiver.accept_key_material(sender.pending_key_material(), false),
+        Error::none);
+    REQUIRE_EQ(sender.acknowledge_key_material(
+                   receiver.key_material_response(), false),
+        Error::none);
+    REQUIRE(sender.ready_to_send_data());
+
+    REQUIRE_EQ(sender.note_data_packet_sent(SequenceNumber {111}), Error::none);
+    REQUIRE(sender.active_sender_key() != first_key);
+    REQUIRE_EQ(sender.packets_on_active_key(), 0U);
+}
+
+TEST(crypto_key_rotation_is_capped_below_half_the_sequence_space)
+{
+    // SRTO_KMREFRESHRATE accepts values up to 2^31 - 1, which leaves no room
+    // for skipped sequence numbers. Rotation is announced by 2^30 regardless.
+    const CryptoConfiguration configuration {
+        .passphrase = "refresh cap fixture",
+        .refresh_rate_packets = maximum_key_refresh_rate,
+    };
+    CryptoSession sender {configuration};
+    CryptoSession receiver {configuration};
+    secure_sender(sender, receiver);
+
+    const SequenceNumber first {0};
+    REQUIRE_EQ(sender.note_data_packet_sent(first), Error::none);
+    const auto before_announcement =
+        effective_key_refresh_cap - default_key_preannouncement - 2U;
+    REQUIRE_EQ(
+        sender.note_data_packet_sent(first.advanced(before_announcement)),
+        Error::none);
+    REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+    REQUIRE_EQ(sender.sender_state(), CryptoState::secured);
+
+    REQUIRE_EQ(
+        sender.note_data_packet_sent(first.advanced(before_announcement + 1U)),
+        Error::none);
+    REQUIRE_EQ(sender.packets_on_active_key(),
+        effective_key_refresh_cap - default_key_preannouncement);
+    REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+    REQUIRE_EQ(sender.sender_state(), CryptoState::securing);
+}
+
+TEST(crypto_key_never_covers_one_sequence_number_twice)
+{
+    // Without an acknowledged successor the active key is kept across the
+    // refresh point, but never long enough for its IV sequence to wrap.
+    const CryptoConfiguration configuration {
+        .passphrase = "sequence wrap fixture",
+        .refresh_rate_packets = maximum_key_refresh_rate,
+    };
+    CryptoSession sender {configuration};
+    CryptoSession receiver {configuration};
+    secure_sender(sender, receiver);
+
+    constexpr std::uint32_t largest_gap = SequenceNumber::half_range - 1U;
+    SequenceNumber sequence {0};
+    REQUIRE_EQ(sender.note_data_packet_sent(sequence), Error::none);
+    sequence = sequence.advanced(largest_gap);
+    REQUIRE_EQ(sender.note_data_packet_sent(sequence), Error::none);
+    sequence = sequence.advanced(largest_gap);
+    REQUIRE_EQ(sender.note_data_packet_sent(sequence), Error::none);
+    REQUIRE_EQ(sender.packets_on_active_key(), maximum_sequences_per_key);
+    REQUIRE_EQ(sender.note_data_packet_sent(sequence.next()),
+        Error::cryptographic_failure);
+}
+
 TEST(crypto_session_directional_key_generation_failure_blocks_data)
 {
     const CryptoConfiguration configuration {

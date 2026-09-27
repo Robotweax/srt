@@ -30,6 +30,15 @@ inline constexpr std::uint32_t default_key_refresh_rate = 16'777'216;
 // Rotate before a full 31-bit DATA sequence/nonce cycle under one traffic key.
 // This also matches the maximum positive public SRTO_KMREFRESHRATE value.
 inline constexpr std::uint32_t maximum_key_refresh_rate = SequenceNumber::mask;
+// The DATA IV is derived from the salt and the 31-bit sequence number, so one
+// traffic key must never cover 2^31 consumed sequence numbers. Sequence
+// numbers can be consumed without a packet being sent (TLPKTDROP, message
+// TTL), so rotation counts consumed numbers rather than sent packets and is
+// capped at half the sequence space. The remaining headroom absorbs any gap
+// bounded by the send buffer before the successor key is acknowledged.
+inline constexpr std::uint32_t effective_key_refresh_cap = 1U << 30U;
+inline constexpr std::uint64_t maximum_sequences_per_key =
+    static_cast<std::uint64_t>(SequenceNumber::mask);
 inline constexpr std::uint32_t default_key_preannouncement = 4'096;
 inline constexpr std::uint16_t key_material_request_subtype = 3;
 inline constexpr std::uint16_t key_material_response_subtype = 4;
@@ -375,7 +384,11 @@ public:
     }
 
     [[nodiscard]] Error prepare_rotation() noexcept;
+    // Records one new DATA packet sent under the active key. The overload with
+    // a sequence number also counts sequence numbers skipped since the last
+    // sent packet, which were consumed without being transmitted.
     [[nodiscard]] Error note_data_packet_sent() noexcept;
+    [[nodiscard]] Error note_data_packet_sent(SequenceNumber sequence) noexcept;
     [[nodiscard]] bool ready_to_send_data() const noexcept;
 
     [[nodiscard]] Error encrypt(
@@ -558,8 +571,16 @@ private:
     std::size_t received_key_material_history_size_ = 0;
     KeyMaterialHistory acknowledged_key_material_history_{};
     std::size_t acknowledged_key_material_history_size_ = 0;
+    [[nodiscard]] std::uint64_t effective_refresh_rate() const noexcept;
+    [[nodiscard]] std::uint64_t effective_preannouncement() const noexcept;
+    [[nodiscard]] Error note_sequences_consumed(std::uint64_t count) noexcept;
+
     EncryptionKey active_sender_key_ = EncryptionKey::even;
+    // Sequence numbers consumed under the active key, including numbers that
+    // were skipped without a DATA packet being sent.
     std::uint64_t packets_on_active_key_ = 0;
+    SequenceNumber last_sent_sequence_ {};
+    bool last_sent_sequence_known_ = false;
     CryptoState sender_state_ = CryptoState::unsecured;
     CryptoState receiver_state_ = CryptoState::unsecured;
     Error configuration_error_ = Error::none;

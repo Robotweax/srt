@@ -2019,7 +2019,8 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
         session_.note_data_packet_sent(now);
         pacer_.on_packet_sent(bytes.size(), now);
         if (crypto_ != nullptr && !completion.data.retransmitted
-            && crypto_->note_data_packet_sent() != Error::none) {
+            && crypto_->note_data_packet_sent(completion.data.sequence)
+                != Error::none) {
             break_locked(0);
             return false;
         }
