@@ -1060,6 +1060,16 @@ TEST(compat_group_handshakes_keep_one_origin_without_reusing_timeout_budget)
     REQUIRE_EQ(
         srt_recvmsg(mirror, received.data(), received.size()), sizeof(payload));
     REQUIRE_EQ(std::memcmp(received.data(), payload, sizeof(payload)), 0);
+    // Group handles report the message once, not once per member (2 here).
+    SRT_TRACEBSTATS sender_statistics {};
+    REQUIRE_EQ(srt_bstats(group, &sender_statistics, 0), 0);
+    REQUIRE_EQ(sender_statistics.pktSentUniqueTotal, 1);
+    REQUIRE_EQ(sender_statistics.byteSentUniqueTotal, sizeof(payload) + 44U);
+    REQUIRE_EQ(sender_statistics.pktRecvUniqueTotal, 0);
+    SRT_TRACEBSTATS receiver_statistics {};
+    REQUIRE_EQ(srt_bstats(mirror, &receiver_statistics, 0), 0);
+    REQUIRE_EQ(receiver_statistics.pktRecvUniqueTotal, 1);
+    REQUIRE_EQ(receiver_statistics.pktSentUniqueTotal, 0);
     REQUIRE_EQ(srt_close(group), 0);
     cleanup.group = SRT_INVALID_SOCK;
     REQUIRE_EQ(srt_close(mirror), 0);
@@ -1364,7 +1374,25 @@ TEST(compat_group_receive_skips_a_gap_every_member_has_dropped)
         REQUIRE_EQ(srt_recvmsg2(group, buffer.data(), buffer.size(), &control),
             SRT_ERROR);
         REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+
+        // The group handle reports its own receive and drop counters.
+        SRT_TRACEBSTATS statistics {};
+        REQUIRE_EQ(srt_bstats(group, &statistics, 1), 0);
+        REQUIRE_EQ(statistics.pktRecvUniqueTotal, 2);
+        REQUIRE_EQ(statistics.pktRecvUnique, 2);
+        REQUIRE_EQ(statistics.byteRecvUniqueTotal, 2U * (1U + 44U));
+        REQUIRE_EQ(statistics.pktRcvDropTotal, 1);
+        REQUIRE_EQ(statistics.pktRcvDrop, 1);
+        REQUIRE_EQ(statistics.pktSentUniqueTotal, 0);
+        REQUIRE_EQ(statistics.pktSentTotal, 0);
+        // The interval counters were cleared by the previous call.
+        REQUIRE_EQ(srt_bstats(group, &statistics, 0), 0);
+        REQUIRE_EQ(statistics.pktRecvUniqueTotal, 2);
+        REQUIRE_EQ(statistics.pktRecvUnique, 0);
+        REQUIRE_EQ(statistics.pktRcvDrop, 0);
         REQUIRE_EQ(srt_close(group), 0);
+        REQUIRE_EQ(srt_bstats(group, &statistics, 0), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
     }
 }
 

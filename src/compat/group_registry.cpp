@@ -169,6 +169,74 @@ SRTSOCKET GroupRegistry::create(SRT_GROUP_TYPE type) noexcept
     }
 }
 
+std::uint64_t group_statistics_now_microseconds() noexcept
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+// Callers hold group.mutex.
+void GroupRegistry::note_group_sent(
+    GroupRecord& group, std::uint64_t payload_bytes) noexcept
+{
+    group.statistics.total.sent_unique.add(1U, payload_bytes);
+    group.statistics.interval.sent_unique.add(1U, payload_bytes);
+}
+
+void GroupRegistry::note_group_received(GroupRecord& group,
+    std::uint64_t packets, std::uint64_t payload_bytes) noexcept
+{
+    group.statistics.total.received_unique.add(packets, payload_bytes);
+    group.statistics.interval.received_unique.add(packets, payload_bytes);
+    group.statistics.received_packets += packets;
+    group.statistics.received_payload_bytes += payload_bytes;
+}
+
+void GroupRegistry::note_group_dropped(
+    GroupRecord& group, std::uint64_t packets) noexcept
+{
+    const std::uint64_t average = group.statistics.received_packets == 0U
+        ? 0U
+        : group.statistics.received_payload_bytes
+            / group.statistics.received_packets;
+    group.statistics.total.receiver_dropped.add(packets, packets * average);
+    group.statistics.interval.receiver_dropped.add(packets, packets * average);
+}
+
+int GroupRegistry::trace_statistics(
+    SRTSOCKET group, SRT_TRACEBSTATS& output, bool clear_interval) noexcept
+{
+    const auto record = find(group);
+    if (record == nullptr) {
+        set_last_error(SRT_EINVSOCK);
+        return SRT_ERROR;
+    }
+    RuntimeStatisticsSnapshot snapshot;
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->closed) {
+            set_last_error(SRT_EINVSOCK);
+            return SRT_ERROR;
+        }
+        const auto now = group_statistics_now_microseconds();
+        auto& statistics = record->statistics;
+        snapshot.timestamp_milliseconds =
+            (now - statistics.start_microseconds) / 1'000U;
+        snapshot.interval_microseconds =
+            now - statistics.interval_start_microseconds;
+        snapshot.total = statistics.total;
+        snapshot.interval = statistics.interval;
+        if (clear_interval) {
+            statistics.interval = {};
+            statistics.interval_start_microseconds = now;
+        }
+    }
+    populate_trace_statistics(snapshot, output);
+    return 0;
+}
+
 std::shared_ptr<GroupRecord> GroupRegistry::find(SRTSOCKET group) noexcept
 {
     if (!is_group_handle(group)) {
