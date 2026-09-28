@@ -1046,6 +1046,25 @@ TEST(compat_epoll_observers_target_waiters_and_preserve_legacy_broadcast)
     ReadinessSignal::notify();
     REQUIRE(first.take_changes(dirty));
     REQUIRE(second.take_changes(dirty));
+
+    // A member notifies its own source and its group's source in one call:
+    // both bound watches become dirty, no observer is invalidated wholesale.
+    ReadinessSignal::notify(*source, other_source.get());
+    REQUIRE(!first.take_changes(dirty));
+    REQUIRE_EQ(dirty, std::vector<SRTSOCKET> {1});
+    REQUIRE(!second.take_changes(dirty));
+    REQUIRE_EQ(dirty, std::vector<SRTSOCKET> {2});
+
+    // Waking legacy waiters alone leaves every observer untouched.
+    const auto quiet_first = first.generation();
+    const auto quiet_second = second.generation();
+    const auto before_waiters = ReadinessSignal::generation();
+    ReadinessSignal::notify_waiters();
+    REQUIRE(ReadinessSignal::generation() != before_waiters);
+    REQUIRE_EQ(first.generation(), quiet_first);
+    REQUIRE_EQ(second.generation(), quiet_second);
+    REQUIRE(!first.take_changes(dirty));
+    REQUIRE(dirty.empty());
 }
 
 TEST(compat_epoll_small_outputs_rotate_levels_and_preserve_pending_edges)

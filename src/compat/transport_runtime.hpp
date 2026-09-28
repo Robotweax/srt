@@ -496,9 +496,11 @@ public:
         handshake_replay_key() const noexcept;
 
 private:
+    // The group this member belongs to, if any: notified alongside the
+    // member's own source so group watches need no process-wide rescans.
+    std::shared_ptr<ReadinessSource> group_readiness_source_;
     std::shared_ptr<ReadinessSource> readiness_source_ =
         std::make_shared<ReadinessSource>();
-    bool shared_readiness_clock_ = false;
     void notify_readiness() noexcept;
     struct FecReceiveBatch {
         Error error = Error::none;
