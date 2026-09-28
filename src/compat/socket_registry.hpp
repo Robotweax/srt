@@ -135,6 +135,8 @@ public:
     [[nodiscard]] SRTSOCKET create() noexcept;
     [[nodiscard]] std::shared_ptr<SocketRecord> find(SRTSOCKET socket) noexcept;
     [[nodiscard]] SRT_SOCKSTATUS state(SRTSOCKET socket) noexcept;
+    // Number of registered sockets, for leak and allocation checks.
+    [[nodiscard]] std::size_t size() noexcept;
     void close(SRTSOCKET socket) noexcept;
     // Preserve the unexpected-failure cause while tearing down a member so
     // its group can publish a partial-path UPDATE. Public/application close
@@ -152,7 +154,9 @@ private:
     std::mutex mutex_;
     std::unordered_map<SRTSOCKET, std::shared_ptr<SocketRecord>> sockets_;
     ClosedHandleHistory closed_handles_;
-    SRTSOCKET next_socket_ = 1;
+    // Allocation position in the handle permutation; never reset, so no
+    // handle is issued twice during the loaded runtime's lifetime.
+    std::uint32_t next_socket_index_ = 0;
     bool clearing_ = false;
 };
 

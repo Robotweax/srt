@@ -155,6 +155,11 @@ error event. Applications must remove unused subscriptions themselves.
 Numeric socket/group IDs are never recycled during the loaded runtime's
 lifetime, including across cleanup/startup cycles. Exhausting the positive
 30-bit ID space makes creation fail rather than alias a stale handle.
+IDs are not sequential: each registry walks a keyed pseudo-random permutation
+of that space, with keys drawn once per loaded runtime from the cryptographic
+provider. Because socket IDs appear on the wire, one ID reveals nothing about
+the IDs of other sockets. If the random source fails, creation fails rather
+than fall back to a predictable ID.
 This bounded status history is not a promise to retain closed socket options
 or statistics, nor a claim of identical reclamation timing to Haivision.
 

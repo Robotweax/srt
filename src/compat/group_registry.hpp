@@ -187,7 +187,8 @@ private:
     std::mutex mutex_;
     std::unordered_map<SRTSOCKET, std::shared_ptr<GroupRecord>> groups_;
     ClosedHandleHistory closed_handles_;
-    SRTSOCKET next_group_ = 1;
+    // Allocation position in the group handle permutation; never reset.
+    std::uint32_t next_group_index_ = 0;
     std::uint64_t next_generation_ = 1;
     bool clearing_ = false;
 };

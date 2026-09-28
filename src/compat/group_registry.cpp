@@ -1,4 +1,5 @@
 #include "compat/group_registry.hpp"
+#include "compat/random_identity.hpp"
 
 #include "compat/error_state.hpp"
 #include "compat/readiness.hpp"
@@ -105,6 +106,28 @@ GroupRegistry& GroupRegistry::instance() noexcept
     return registry;
 }
 
+namespace {
+
+// Group handles carry SRTGROUP_MASK on top of a permuted base. The permutation
+// never repeats a base; the lookup only guards the registry invariant.
+[[nodiscard]] SRTSOCKET next_group_handle(
+    const std::unordered_map<SRTSOCKET, std::shared_ptr<GroupRecord>>& groups,
+    std::uint32_t& index) noexcept
+{
+    for (;;) {
+        const SRTSOCKET base = next_registry_handle(HandleSpace::group, index);
+        if (base == SRT_INVALID_SOCK) {
+            return SRT_INVALID_SOCK;
+        }
+        const SRTSOCKET candidate = base | SRTGROUP_MASK;
+        if (groups.find(candidate) == groups.end()) {
+            return candidate;
+        }
+    }
+}
+
+} // namespace
+
 SRTSOCKET GroupRegistry::create(SRT_GROUP_TYPE type) noexcept
 {
     if (type != SRT_GTYPE_BROADCAST && type != SRT_GTYPE_BACKUP) {
@@ -114,34 +137,31 @@ SRTSOCKET GroupRegistry::create(SRT_GROUP_TYPE type) noexcept
     try {
         auto record = std::make_shared<GroupRecord>();
         std::lock_guard lock(mutex_);
-        if (clearing_ || next_group_ == SRT_INVALID_SOCK) {
+        if (clearing_) {
             return SRT_INVALID_SOCK;
         }
 
-        const SRTSOCKET first_candidate = next_group_;
-        do {
-            const SRTSOCKET base = next_group_;
-            next_group_ = next_registry_handle(next_group_);
-            const SRTSOCKET candidate = base | SRTGROUP_MASK;
-            if (groups_.find(candidate) == groups_.end()) {
-                record->handle = candidate;
-                record->type = type;
-                record->generation = next_generation_++;
-                record->initial_sequence =
-                    (static_cast<std::uint32_t>(candidate)
-                        * 2'654'435'761U)
-                    & SequenceNumber::mask;
-                record->next_send_sequence = record->initial_sequence;
-                record->replay_acknowledged_sequence = record->initial_sequence;
-                record->next_receive_sequence = record->initial_sequence;
-                if (next_generation_ == 0) {
-                    next_generation_ = 1;
-                }
-                groups_.emplace(candidate, std::move(record));
-                return candidate;
-            }
-        } while (
-            next_group_ != first_candidate && next_group_ != SRT_INVALID_SOCK);
+        const auto initial_sequence = random_initial_sequence();
+        if (!initial_sequence) {
+            return SRT_INVALID_SOCK;
+        }
+        const SRTSOCKET candidate =
+            next_group_handle(groups_, next_group_index_);
+        if (candidate == SRT_INVALID_SOCK) {
+            return SRT_INVALID_SOCK;
+        }
+        record->handle = candidate;
+        record->type = type;
+        record->generation = next_generation_++;
+        record->initial_sequence = *initial_sequence;
+        record->next_send_sequence = record->initial_sequence;
+        record->replay_acknowledged_sequence = record->initial_sequence;
+        record->next_receive_sequence = record->initial_sequence;
+        if (next_generation_ == 0) {
+            next_generation_ = 1;
+        }
+        groups_.emplace(candidate, std::move(record));
+        return candidate;
     } catch (const std::bad_alloc&) {
         return SRT_INVALID_SOCK;
     } catch (...) {
@@ -952,54 +972,44 @@ bool GroupRegistry::prepare_mirror(
             }
         }
 
-        if (next_group_ == SRT_INVALID_SOCK) {
+        const SRTSOCKET candidate =
+            next_group_handle(groups_, next_group_index_);
+        if (candidate == SRT_INVALID_SOCK) {
             return false;
         }
         auto prepared = std::make_shared<GroupRecord>();
-        const SRTSOCKET first_candidate = next_group_;
-        do {
-            const SRTSOCKET base = next_group_;
-            next_group_ = next_registry_handle(next_group_);
-            const SRTSOCKET candidate = base | SRTGROUP_MASK;
-            if (groups_.find(candidate) != groups_.end()) {
-                continue;
-            }
-            prepared->handle = candidate;
-            prepared->type = type;
-            prepared->generation = next_generation_++;
-            prepared->initial_sequence = initial_sequence;
-            prepared->next_send_sequence = initial_sequence;
-            prepared->replay_acknowledged_sequence = initial_sequence;
-            prepared->next_receive_sequence = initial_sequence;
-            prepared->peer_group = peer_group;
-            prepared->mirror_listener = listener;
-            prepared->mirror_bond_scope = bond_scope;
-            prepared->send_synchronous = listener_send_synchronous;
-            prepared->receive_synchronous = listener_receive_synchronous;
-            prepared->send_timeout_milliseconds =
-                listener_send_timeout_milliseconds;
-            prepared->receive_timeout_milliseconds =
-                listener_receive_timeout_milliseconds;
-            prepared->drift_tracer = listener_drift_tracer;
-            prepared->minimum_input_bandwidth_bytes_per_second =
-                listener_minimum_input_bandwidth;
-            prepared->minimum_peer_srt_version =
-                listener_minimum_peer_version;
-            if (next_generation_ == 0U) {
-                next_generation_ = 1U;
-            }
-            output.group = candidate;
-            output.generation = prepared->generation;
-            output.created = true;
-            output.drift_tracer = prepared->drift_tracer;
-            output.minimum_input_bandwidth_bytes_per_second =
-                prepared->minimum_input_bandwidth_bytes_per_second;
-            output.minimum_peer_srt_version =
-                prepared->minimum_peer_srt_version;
-            groups_.emplace(candidate, std::move(prepared));
-            return true;
-        } while (
-            next_group_ != first_candidate && next_group_ != SRT_INVALID_SOCK);
+        prepared->handle = candidate;
+        prepared->type = type;
+        prepared->generation = next_generation_++;
+        prepared->initial_sequence = initial_sequence;
+        prepared->next_send_sequence = initial_sequence;
+        prepared->replay_acknowledged_sequence = initial_sequence;
+        prepared->next_receive_sequence = initial_sequence;
+        prepared->peer_group = peer_group;
+        prepared->mirror_listener = listener;
+        prepared->mirror_bond_scope = bond_scope;
+        prepared->send_synchronous = listener_send_synchronous;
+        prepared->receive_synchronous = listener_receive_synchronous;
+        prepared->send_timeout_milliseconds =
+            listener_send_timeout_milliseconds;
+        prepared->receive_timeout_milliseconds =
+            listener_receive_timeout_milliseconds;
+        prepared->drift_tracer = listener_drift_tracer;
+        prepared->minimum_input_bandwidth_bytes_per_second =
+            listener_minimum_input_bandwidth;
+        prepared->minimum_peer_srt_version = listener_minimum_peer_version;
+        if (next_generation_ == 0U) {
+            next_generation_ = 1U;
+        }
+        output.group = candidate;
+        output.generation = prepared->generation;
+        output.created = true;
+        output.drift_tracer = prepared->drift_tracer;
+        output.minimum_input_bandwidth_bytes_per_second =
+            prepared->minimum_input_bandwidth_bytes_per_second;
+        output.minimum_peer_srt_version = prepared->minimum_peer_srt_version;
+        groups_.emplace(candidate, std::move(prepared));
+        return true;
     } catch (...) {
         return false;
     }

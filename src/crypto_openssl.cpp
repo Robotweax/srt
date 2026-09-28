@@ -340,6 +340,15 @@ private:
 
 class OpenSslCryptoProvider final : public CryptoProvider {
 public:
+    OpenSslCryptoProvider() noexcept
+    {
+        // Initialise libcrypto together with the provider. Its exit-time
+        // cleanup is then registered before, and runs after, the destructors
+        // of objects built on the provider later, which still release
+        // libcrypto objects (sessions, the socket identity generator).
+        (void)OPENSSL_init_crypto(0, nullptr);
+    }
+
     Error random_bytes(
         std::span<std::byte> destination) noexcept override
     {

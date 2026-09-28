@@ -4498,6 +4498,8 @@ TEST(
         return;
     }
     REQUIRE_EQ(srt_listen(listener, 1), 0);
+    const std::size_t registered_sockets =
+        robotweax::srt::compat::SocketRegistry::instance().size();
 
     sockaddr_in listener_name{};
     int listener_name_size = static_cast<int>(sizeof(listener_name));
@@ -4629,9 +4631,8 @@ TEST(
             }));
     }
 
-    const SRTSOCKET next_socket = srt_create_socket();
-    REQUIRE_EQ(next_socket, listener + 1);
-    REQUIRE_EQ(srt_close(next_socket), 0);
+    REQUIRE_EQ(robotweax::srt::compat::SocketRegistry::instance().size(),
+        registered_sockets);
     REQUIRE_EQ(srt_epoll_release(poll), 0);
     REQUIRE_EQ(srt_close(listener), 0);
     {

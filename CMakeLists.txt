@@ -108,6 +108,7 @@ add_library(robotweax_srt
     src/compat/runtime_work_executor_service.cpp
     src/compat/socket_io.cpp
     src/compat/socket_options.cpp
+    src/compat/random_identity.cpp
     src/compat/socket_registry.cpp
     src/compat/statistics.cpp
     src/compat/srt_api.cpp
@@ -511,6 +512,17 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             COMMAND robotweax_srt_crypto_setup_failure_tests 0 99 0)
         set_tests_properties(robotweax_srt_crypto_setup_optional_fallback
             PROPERTIES TIMEOUT 15 LABELS "encryption")
+
+        add_executable(robotweax_srt_random_identity_failure_tests
+            tests/random_identity_failure_probe.cpp)
+        target_link_libraries(robotweax_srt_random_identity_failure_tests
+            PRIVATE RobotweaxSRT::srt ${CMAKE_DL_LIBS})
+        target_compile_features(robotweax_srt_random_identity_failure_tests
+            PRIVATE cxx_std_20)
+        add_test(NAME robotweax_srt_random_identity_failure_tests
+            COMMAND robotweax_srt_random_identity_failure_tests)
+        set_tests_properties(robotweax_srt_random_identity_failure_tests
+            PROPERTIES TIMEOUT 15)
     endif()
 
     if(UNIX AND NOT BUILD_SHARED_LIBS)

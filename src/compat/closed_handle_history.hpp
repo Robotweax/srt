@@ -40,13 +40,4 @@ private:
     std::size_t next_ = 0;
 };
 
-// Fail closed at exhaustion rather than aliasing stale handles (including
-// epoll subscriptions and in-flight operations) after numeric wraparound.
-[[nodiscard]] constexpr SRTSOCKET next_registry_handle(
-    SRTSOCKET current) noexcept
-{
-    return current <= 0 || current >= SRTGROUP_MASK - 1 ? SRT_INVALID_SOCK
-                                                        : current + 1;
-}
-
 } // namespace robotweax::srt::compat

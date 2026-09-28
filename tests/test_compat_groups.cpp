@@ -2308,9 +2308,12 @@ TEST(compat_backup_group_sends_only_over_the_highest_weight_member)
 TEST(compat_backup_group_breaks_equal_weight_ties_by_socket_id)
 {
     const SRTSOCKET group = srt_create_group(SRT_GTYPE_BACKUP);
-    const SRTSOCKET lower_id = srt_create_socket();
-    const SRTSOCKET higher_id = srt_create_socket();
-    REQUIRE(lower_id < higher_id);
+    const SRTSOCKET first_id = srt_create_socket();
+    const SRTSOCKET second_id = srt_create_socket();
+    REQUIRE(first_id != second_id);
+    // Handles are random; order them so the tie break is observable.
+    const SRTSOCKET lower_id = std::min(first_id, second_id);
+    const SRTSOCKET higher_id = std::max(first_id, second_id);
     const auto group_record = GroupRegistry::instance().find(group);
     REQUIRE(group_record != nullptr);
     std::uint32_t initial_sequence = 0;
