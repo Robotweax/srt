@@ -2534,6 +2534,12 @@ bool ConnectionRuntime::process_reliability_packet_locked(
 {
     const std::size_t send_size_before =
         session_.send_buffer().size();
+    // Readiness edges observed by blocked receivers and epoll: the next
+    // delivery deadline, data readiness and send capacity. A packet that
+    // changes none of them (the common in-order DATA arrival behind an
+    // earlier pending message) must not wake every waiter.
+    const bool readable_before = session_.data_ready_at(now);
+    const auto delivery_before = session_.next_receive_delivery_time();
     PacketView clear_packet = packet;
     std::array<std::byte, maximum_data_payload_size>
         clear_payload{};
@@ -2596,8 +2602,21 @@ bool ConnectionRuntime::process_reliability_packet_locked(
                     // the normal receive path and peer-idle timeout.
                     return false;
                 }
-                if (packet.data.encryption_key == EncryptionKey::none
-                    || options_.enforced_encryption()) {
+                if (packet.data.encryption_key == EncryptionKey::none) {
+                    // Plaintext DATA on an encrypting session violates the
+                    // negotiated policy.
+                    break_locked(0);
+                    return false;
+                }
+                if (crypto_->receiver_state() == CryptoState::secured) {
+                    // The peer's key material may arrive after DATA on a new
+                    // selector. Leave the sequence unacknowledged so a later
+                    // retransmission can be decrypted and delivered.
+                    return false;
+                }
+                if (options_.enforced_encryption()) {
+                    // Enforced encryption without a usable peer key (bad or
+                    // missing secret) stays fail-closed.
                     break_locked(0);
                     return false;
                 }
@@ -2736,30 +2755,39 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     if (!send_actions(processed.actions, now)) {
         return false;
     }
-    if ((packet.kind == PacketKind::data
-            && !processed.receiver_filter_control_packet)
-        || (packet.kind == PacketKind::control
-            && packet.control.type == ControlType::drop_request)) {
-        // A deferred DROPREQ gives blocked receivers a new wake-up deadline.
-        receive_ready_.notify_all();
-    } else if (packet.control.type == ControlType::shutdown) {
+    const bool readable_now = session_.data_ready_at(now);
+    const auto delivery_now = session_.next_receive_delivery_time();
+    const bool receive_edge = readable_now != readable_before
+        || delivery_now != delivery_before
+        || processed.receiver_drop_packets != 0U;
+    const bool send_edge = session_.send_buffer().size() < send_size_before;
+    bool terminal_edge = false;
+    if (packet.kind == PacketKind::control
+        && packet.control.type == ControlType::shutdown) {
         peer_closed_ = true;
         broken_ = true;
+        terminal_edge = true;
         receive_ready_.notify_all();
         send_ready_.notify_all();
-    } else if (packet.control.type == ControlType::peer_error) {
+    } else if (packet.kind == PacketKind::control
+        && packet.control.type == ControlType::peer_error) {
         peer_error_pending_ = true;
+        terminal_edge = true;
         send_ready_.notify_all();
+    } else if (receive_edge) {
+        // A new or earlier delivery deadline, newly readable data, or a
+        // deferred DROPREQ gives blocked receivers a new wake-up point.
+        receive_ready_.notify_all();
     }
-    if (session_.send_buffer().size()
-        < send_size_before) {
+    if (send_edge) {
         send_ready_.notify_all();
     }
     statistics_.update_send_duration(
         now, session_.send_buffer().size() != 0U);
-    last_readable_state_ =
-        session_.data_ready_at(now);
-    notify_readiness();
+    last_readable_state_ = readable_now;
+    if (receive_edge || send_edge || terminal_edge) {
+        notify_readiness();
+    }
     return true;
 }
 

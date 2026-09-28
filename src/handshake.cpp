@@ -15,6 +15,7 @@ constexpr int congestion_rejection_reason = 13;
 constexpr int group_rejection_reason = 15;
 constexpr int version_rejection_reason = 8;
 constexpr int rogue_rejection_reason = 4;
+constexpr std::uint16_t induction_datagram_socket_type = 2;
 
 [[nodiscard]] std::uint32_t read_u32(const std::byte* bytes) noexcept
 {
@@ -167,7 +168,12 @@ Handshake HandshakeMachine::base_packet(HandshakeRequest request) const noexcept
     packet.flow_window = configuration_.flow_window;
     packet.request = request;
     packet.socket_id = configuration_.local_socket_id;
-    if (request != HandshakeRequest::induction) {
+    if (request == HandshakeRequest::induction) {
+        // The caller's INDUCTION announces the datagram socket type (2)
+        // in the Extension Field, as the HSv5 handshake specification
+        // requires and the reference implementation sends.
+        packet.extension_field = induction_datagram_socket_type;
+    } else {
         packet.encryption_field =
             configuration_.encryption_field;
     }

@@ -19,6 +19,7 @@ inline constexpr std::size_t srt_gcm_additional_data_size = packet_header_size;
 inline constexpr std::size_t srt_gcm_authentication_tag_size = 16;
 inline constexpr std::size_t minimum_aes_key_size = 16;
 inline constexpr std::size_t maximum_aes_key_size = 32;
+inline constexpr std::size_t pbkdf2_salt_size = 8;
 inline constexpr std::size_t maximum_wrapped_key_size =
     maximum_aes_key_size * 2U + 8U;
 inline constexpr std::size_t key_material_header_size = 16;
@@ -599,6 +600,21 @@ private:
     CryptoProvider& provider_;
     std::array<std::byte, maximum_passphrase_size> passphrase_{};
     std::size_t passphrase_size_ = 0;
+    // One-entry cache of the key-encrypting key. The salt is constant
+    // across rotations, so every KM after the first would otherwise repeat
+    // the 2048-iteration PBKDF2 on the receive thread under the connection
+    // lock, including for forged KMREQs.
+    struct KeyEncryptionKeyCache {
+        std::array<std::byte, pbkdf2_salt_size> salt {};
+        std::array<std::byte, maximum_aes_key_size> key {};
+        std::size_t length = 0;
+    };
+    enum class KeyEncryptionKeyUse : std::uint8_t { transmit, receive };
+    // Own and peer direction carry different salts; cache one KEK each.
+    std::array<KeyEncryptionKeyCache, 2> kek_cache_ {};
+    [[nodiscard]] Error derive_key_encryption_key(KeyEncryptionKeyUse use,
+        std::span<const std::byte, pbkdf2_salt_size> salt,
+        std::span<std::byte> destination) noexcept;
     CryptoMode configured_mode_ = CryptoMode::automatic;
     CryptoNegotiationContext negotiation_context_ =
         CryptoNegotiationContext::caller_listener;
