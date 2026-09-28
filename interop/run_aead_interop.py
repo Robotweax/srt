@@ -44,6 +44,7 @@ def aead_baselines(
         reference,
         options,
         name_prefix=f"{name_prefix}gcm-",
+        include_default_key_length=False,
     )
 
 

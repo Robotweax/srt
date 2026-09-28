@@ -2859,6 +2859,148 @@ TEST(srt_compat_crypto_mode_reports_auto_on_unencrypted_connections)
 }
 #endif
 
+namespace {
+
+// The reference implementation leaves the handshake encryption field at 0
+// ("no encryption advertised") unless SRTO_PBKEYLEN is set; the key material
+// alone carries the key length. Clearing the field on every handshake
+// reproduces that default between two Robotweax peers.
+void clear_advertised_key_length(std::span<std::byte> datagram) noexcept
+{
+    constexpr std::size_t encryption_field_offset = 16U + 4U;
+    if (datagram.size() < encryption_field_offset + 2U
+        || (std::to_integer<unsigned>(datagram[0]) & 0x80U) == 0U
+        || (std::to_integer<unsigned>(datagram[0]) & 0x7fU) != 0U
+        || datagram[1] != std::byte {0}) {
+        return;
+    }
+    datagram[encryption_field_offset] = std::byte {0};
+    datagram[encryption_field_offset + 1U] = std::byte {0};
+}
+
+} // namespace
+
+TEST(srt_compat_encryption_works_without_an_advertised_key_length)
+{
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    robotweax::srt::UdpSocket front;
+    robotweax::srt::UdpSocket back;
+    if (!front.valid() || !back.valid()
+        || front.bind(robotweax::srt::IpEndpoint::loopback())
+            != robotweax::srt::Error::none
+        || back.bind(robotweax::srt::IpEndpoint::loopback())
+            != robotweax::srt::Error::none) {
+        return;
+    }
+    const auto front_endpoint = front.local_endpoint();
+    REQUIRE(front_endpoint);
+
+    constexpr char passphrase[] = "robotweax-unadvertised-key-length";
+    constexpr std::int32_t timeout = 3'000;
+    const SRTSOCKET listener = srt_create_socket();
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    for (const SRTSOCKET socket : {listener, caller}) {
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_PASSPHRASE, passphrase,
+                       static_cast<int>(sizeof(passphrase) - 1U)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_CONNTIMEO, &timeout,
+                       static_cast<int>(sizeof(timeout))),
+            0);
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_RCVTIMEO, &timeout,
+                       static_cast<int>(sizeof(timeout))),
+            0);
+    }
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(srt_bind(listener, reinterpret_cast<sockaddr*>(&address),
+                   static_cast<int>(sizeof(address))),
+        0);
+    int address_size = static_cast<int>(sizeof(address));
+    REQUIRE_EQ(srt_getsockname(listener, reinterpret_cast<sockaddr*>(&address),
+                   &address_size),
+        0);
+    REQUIRE_EQ(srt_listen(listener, 1), 0);
+    const auto listener_endpoint =
+        robotweax::srt::IpEndpoint::loopback(ntohs(address.sin_port));
+
+    std::atomic<bool> stop {false};
+    std::thread relay([&] {
+        std::array<std::byte, 1'600> datagram {};
+        robotweax::srt::IpEndpoint caller_endpoint {};
+        bool caller_known = false;
+        while (!stop.load()) {
+            for (auto* socket : {&front, &back}) {
+                const auto ready = socket->wait_readable(5);
+                if (!ready || !ready.ready) {
+                    continue;
+                }
+                const auto received = socket->receive_from(datagram);
+                if (!received) {
+                    continue;
+                }
+                auto bytes =
+                    std::span {datagram}.first(received.bytes_transferred);
+                clear_advertised_key_length(bytes);
+                if (socket == &front) {
+                    caller_endpoint = received.peer;
+                    caller_known = true;
+                    (void)back.send_to(bytes, listener_endpoint);
+                } else if (caller_known) {
+                    (void)front.send_to(bytes, caller_endpoint);
+                }
+            }
+        }
+    });
+
+    std::atomic<SRTSOCKET> accepted {SRT_INVALID_SOCK};
+    std::thread accept_thread([&] {
+        accepted.store(srt_accept(listener, nullptr, nullptr));
+    });
+    sockaddr_in relay_address {};
+    relay_address.sin_family = AF_INET;
+    relay_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    relay_address.sin_port = htons(front_endpoint.endpoint.port);
+    const auto* target = reinterpret_cast<const sockaddr*>(&relay_address);
+    const int connected =
+        srt_connect(caller, target, static_cast<int>(sizeof(relay_address)));
+    if (connected == SRT_ERROR) {
+        (void)srt_close(listener);
+    }
+    accept_thread.join();
+
+    bool delivered = false;
+    std::int32_t receive_state = -1;
+    if (connected == 0 && accepted.load() != SRT_INVALID_SOCK) {
+        constexpr std::string_view message {"encrypted, not advertised"};
+        const int message_size = static_cast<int>(message.size());
+        const int sent = srt_send(caller, message.data(), message_size);
+        std::array<char, 1'500> received {};
+        const int length = srt_recvmsg(accepted.load(), received.data(),
+            static_cast<int>(received.size()));
+        const auto received_size =
+            length > 0 ? static_cast<std::size_t>(length) : 0U;
+        const std::string_view text {received.data(), received_size};
+        delivered = sent == message_size && text == message;
+        int size = static_cast<int>(sizeof(receive_state));
+        (void)srt_getsockflag(
+            accepted.load(), SRTO_RCVKMSTATE, &receive_state, &size);
+    }
+    stop.store(true);
+    relay.join();
+
+    REQUIRE_EQ(connected, 0);
+    REQUIRE(accepted.load() != SRT_INVALID_SOCK);
+    REQUIRE(delivered);
+    REQUIRE_EQ(receive_state, static_cast<std::int32_t>(SRT_KM_S_SECURED));
+    REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_close(accepted.load()), 0);
+    REQUIRE_EQ(srt_close(listener), 0);
+}
+
 TEST(srt_compat_file_type_exposes_the_implemented_reference_option_bundle)
 {
     const SRTSOCKET socket = srt_create_socket();

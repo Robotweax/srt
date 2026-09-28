@@ -1384,8 +1384,13 @@ public:
             return 0;
         }
         if (setup_.crypto != nullptr) {
-            if (key_length_for_encryption_field(message.packet.encryption_field)
-                    != setup_.crypto_key_length
+            // Encryption field 0 means "no encryption advertised" (the
+            // reference implementation's default without SRTO_PBKEYLEN); the
+            // echoed key material then defines the key length on its own.
+            const std::uint16_t advertised = message.packet.encryption_field;
+            if ((advertised != 0U
+                    && key_length_for_encryption_field(advertised)
+                        != setup_.crypto_key_length)
                 || !message.has_key_material_extension
                 || message.key_material_extension_type
                     != HandshakeExtensionType::key_material_response
@@ -3674,10 +3679,14 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
               };
         const std::size_t handshake_key_length =
             key_length_for_encryption_field(conclusion.packet.encryption_field);
+        // Encryption field 0 means the caller advertised no key length (the
+        // reference default without SRTO_PBKEYLEN); the key material carries
+        // it. A nonzero advertisement must match the key material.
         const bool key_length_matches = has_request
             && static_cast<bool>(decoded_key_material)
-            && handshake_key_length
-                == decoded_key_material.key_material.key_length;
+            && (conclusion.packet.encryption_field == 0U
+                || handshake_key_length
+                    == decoded_key_material.key_material.key_length);
         const Error accepted_key_material =
             crypto != nullptr && key_length_matches
             ? crypto->accept_key_material(conclusion.key_material.view(), true)
