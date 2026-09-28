@@ -289,8 +289,43 @@ void PacketPacer::on_packet_sent(std::size_t bytes,
     const std::uint64_t interval = std::max<std::uint64_t>(1U,
         (static_cast<std::uint64_t>(bytes) * 1'000'000ULL
             + bytes_per_second_ - 1U) / bytes_per_second_);
-    next_send_microseconds_ = std::max(next_send_microseconds_, now_microseconds)
-        + interval;
+    // Keep the ideal schedule while this send is no later than the credit
+    // after its slot; otherwise start a fresh schedule at the send time.
+    const bool keeps_schedule = has_schedule_
+        && now_microseconds
+            <= next_send_microseconds_ + schedule_credit_microseconds_;
+    const std::uint64_t base =
+        keeps_schedule ? next_send_microseconds_ : now_microseconds;
+    next_send_microseconds_ = base + interval;
+    has_schedule_ = true;
+}
+
+void PacketPacer::set_schedule_credit(std::uint64_t microseconds) noexcept
+{
+    schedule_credit_microseconds_ = microseconds;
+}
+
+void TimerWakeMonitor::observe(std::uint64_t lateness_microseconds) noexcept
+{
+    if (lateness_microseconds > late_threshold_microseconds) {
+        punctual_streak_ = 0;
+        if (late_streak_ < late_streak_to_enter) {
+            ++late_streak_;
+        }
+        if (late_streak_ >= late_streak_to_enter) {
+            coarse_ = true;
+        }
+        return;
+    }
+    late_streak_ = 0;
+    if (lateness_microseconds <= punctual_threshold_microseconds) {
+        if (punctual_streak_ < punctual_streak_to_leave) {
+            ++punctual_streak_;
+        }
+        if (punctual_streak_ >= punctual_streak_to_leave) {
+            coarse_ = false;
+        }
+    }
 }
 
 void PacketPacer::set_rate(std::uint64_t bytes_per_second) noexcept

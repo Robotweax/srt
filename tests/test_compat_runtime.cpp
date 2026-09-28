@@ -7189,11 +7189,92 @@ TEST(compat_channel_fairness_preserves_deadlines_across_continuations)
     REQUIRE(fixture.poll().immediate_work);
     REQUIRE_EQ(fixture.attempted_ids.size(), 1U);
     // Only the last idle connection remains. The earlier 1 ms retry deadline
-    // must not restart when this continuation runs half a millisecond later.
+    // must not restart when this continuation runs half a millisecond later:
+    // the residual 500 us is waited for with a timer, not resubmitted.
     fixture.now = 1'500;
-    REQUIRE(fixture.poll(std::chrono::microseconds {500}).immediate_work);
+    const auto continued = fixture.poll(std::chrono::microseconds {500});
+    REQUIRE(!continued.immediate_work);
+    REQUIRE(continued.next_work_delay.has_value());
+    REQUIRE(*continued.next_work_delay > std::chrono::microseconds {0});
+    REQUIRE(*continued.next_work_delay <= std::chrono::microseconds {500});
     REQUIRE_EQ(fixture.attempted_ids.size(), 1U);
     REQUIRE(!fixture.runtimes.front()->broken());
+
+    // A host whose timer wake-ups are repeatedly later than the pacer's
+    // credit makes the channel resubmit sub-millisecond deadlines as before,
+    // and it returns to timer waits once wake-ups are punctual again.
+    for (unsigned late = 0; late < TimerWakeMonitor::late_streak_to_enter;
+        ++late) {
+        fixture.channel->observe_timer_wake_for_testing(2'500);
+    }
+    REQUIRE(fixture.channel->coarse_timer_mode_for_testing());
+    fixture.now = 1'600;
+    REQUIRE(fixture.poll(std::chrono::microseconds {600}).immediate_work);
+    for (unsigned punctual = 0;
+        punctual < TimerWakeMonitor::punctual_streak_to_leave; ++punctual) {
+        fixture.channel->observe_timer_wake_for_testing(50);
+    }
+    REQUIRE(!fixture.channel->coarse_timer_mode_for_testing());
+    fixture.now = 1'700;
+    REQUIRE(!fixture.poll(std::chrono::microseconds {700}).immediate_work);
+}
+
+TEST(compat_channel_waits_for_sub_millisecond_pacing_slots_with_a_timer)
+{
+    // A paced backlog whose next slot is under a millisecond away is a timer
+    // wait like any other deadline. Resubmitting until the slot arrived kept
+    // a shard busy with an empty socket read and a route sweep per pass.
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    std::uint64_t now = 1'000;
+    FairnessClock clock {.now = &now};
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_payload_size, 16), Error::none);
+    // 32-byte datagrams at 64 kB/s: one slot every 500 us.
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_bandwidth_bytes_per_second, 64'000),
+        Error::none);
+    constexpr std::uint32_t id = 0x3600U;
+    auto runtime =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
+            .channel = channel,
+            .peer = {.address = {192, 0, 2, 96}, .port = 15'096},
+            .peer_socket_id = id,
+            .initial_sequence = SequenceNumber {800},
+            .flow_window_packets = 128,
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+            .now_function = fairness_now,
+            .now_context = &clock,
+        });
+    REQUIRE(channel->register_connection(id, runtime));
+    const std::array<std::byte, 16> payload {};
+    for (int index = 0; index < 4; ++index) {
+        REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+    }
+    const auto first = channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    // The first packet starts the schedule; the backlog waits for its slot.
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
+    REQUIRE(!first.immediate_work);
+    REQUIRE(first.next_work_delay.has_value());
+    REQUIRE(*first.next_work_delay > std::chrono::microseconds {0});
+    REQUIRE(*first.next_work_delay <= std::chrono::microseconds {500});
+
+    // The timer wakes 300 us late: the pacer's credit lets the missed slot
+    // go out at once and the next slot stays on the ideal schedule.
+    now = 1'000 + 500 + 300;
+    const auto late = channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {}
+        + std::chrono::microseconds {800});
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
+    REQUIRE(!late.immediate_work);
+    REQUIRE(late.next_work_delay.has_value());
+    REQUIRE_EQ(*late.next_work_delay, std::chrono::microseconds {200});
+    channel->unregister_connection(id);
 }
 
 TEST(compat_channel_fairness_survives_cursor_erasure_rehash_and_empty_restart)
