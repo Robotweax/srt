@@ -82,6 +82,36 @@ TEST(handshake_extension_parameters_have_exact_wire_layout)
     REQUIRE_EQ(decoded.parameters.sender_tsbpd_delay_milliseconds, 240U);
 }
 
+TEST(handshake_parameters_tolerate_a_longer_block_and_reject_a_shorter_one)
+{
+    // Header: type HSREQ (1), length in words. A four-word block from a
+    // newer peer decodes its three defined words; a two-word block is
+    // rejected.
+    std::array<std::byte, 20> longer {std::byte {0}, std::byte {1},
+        std::byte {0}, std::byte {4}, std::byte {0}, std::byte {1},
+        std::byte {0}, std::byte {5}, std::byte {0}, std::byte {0},
+        std::byte {0}, std::byte {0x3f}, std::byte {0}, std::byte {120},
+        std::byte {0}, std::byte {240}, std::byte {0xde}, std::byte {0xad},
+        std::byte {0xbe}, std::byte {0xef}};
+    const auto extension = decode_extension(longer);
+    REQUIRE(extension);
+    const auto decoded = decode_handshake_parameters(extension.extension);
+    REQUIRE(decoded);
+    REQUIRE_EQ(decoded.parameters.srt_version, 0x0001'0005U);
+    REQUIRE_EQ(decoded.parameters.flags, 0x3fU);
+    REQUIRE_EQ(decoded.parameters.receiver_tsbpd_delay_milliseconds, 120U);
+    REQUIRE_EQ(decoded.parameters.sender_tsbpd_delay_milliseconds, 240U);
+
+    std::array<std::byte, 12> shorter {std::byte {0}, std::byte {1},
+        std::byte {0}, std::byte {2}, std::byte {0}, std::byte {1},
+        std::byte {0}, std::byte {5}, std::byte {0}, std::byte {0},
+        std::byte {0}, std::byte {0x3f}};
+    const auto short_extension = decode_extension(shorter);
+    REQUIRE(short_extension);
+    REQUIRE_EQ(decode_handshake_parameters(short_extension.extension).error,
+        Error::invalid_extension);
+}
+
 TEST(extension_decoder_walks_chained_records_without_allocation)
 {
     std::array<std::byte, 32> bytes{};

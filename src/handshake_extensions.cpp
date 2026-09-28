@@ -142,9 +142,12 @@ ExtensionEncodeResult encode_extension(
 HandshakeParametersResult decode_handshake_parameters(
     const HandshakeExtensionView& extension) noexcept
 {
+    // A future SRT version may append words to the HSREQ/HSRSP block. The
+    // reference implementation rejects only blocks shorter than the three
+    // defined words; read those and ignore any trailing words.
     if ((extension.type != HandshakeExtensionType::handshake_request
             && extension.type != HandshakeExtensionType::handshake_response)
-        || extension.content.size() != handshake_extension_content_size) {
+        || extension.content.size() < handshake_extension_content_size) {
         return {.error = Error::invalid_extension};
     }
     HandshakeExtensionParameters parameters;
