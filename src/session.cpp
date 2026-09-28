@@ -909,6 +909,7 @@ ReliabilityProcessResult ReliabilitySession::receive(
             acknowledgement_number, now_microseconds);
         if (sample.has_value()) {
             rtt_.observe(*sample);
+            update_loss_timer(now_microseconds);
         }
         return result;
     }

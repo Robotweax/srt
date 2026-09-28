@@ -3366,3 +3366,50 @@ TEST(session_discarded_stream_packet_preserves_other_payload)
     REQUIRE_EQ(
         receiver.receive_buffer().next_ack_sequence(), SequenceNumber {103});
 }
+
+TEST(session_ackack_shorter_rtt_repeats_filter_nak_before_live_deadline)
+{
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {1},
+        .peer_initial_sequence = SequenceNumber {100},
+        .send_capacity_packets = 16,
+        .receive_capacity_packets = 16,
+    }};
+    receiver.configure_live({.periodic_nak = true, .retransmit_flag = true}, 0,
+        PacketTimestamp {0});
+    const auto filter =
+        parse_packet_filter_configuration("fec,cols:4,rows:1,arq:onreq");
+    REQUIRE(filter);
+    receiver.configure_packet_filter(filter.configuration, true);
+    const std::array payload {std::byte {'x'}};
+    PacketView packet {
+        .kind = PacketKind::data,
+        .data = {.sequence = SequenceNumber {102},
+            .message_number = 3,
+            .boundary = MessageBoundary::solo},
+        .payload = payload,
+    };
+    REQUIRE(receiver.receive(packet, 100));
+    const std::array losses {
+        SequenceRange {SequenceNumber {100}, SequenceNumber {101}}};
+    REQUIRE_EQ(receiver.report_filter_losses(losses, 200).actions.size, 1U);
+    const auto ack = receiver.poll_timers(10'000);
+    REQUIRE_EQ(ack.size, 1U);
+    REQUIRE_EQ(ack.values[0].kind, ReliabilityActionKind::acknowledgement);
+    std::array<std::byte, 64> storage {};
+    ReliabilityAction ackack {
+        .kind = ReliabilityActionKind::acknowledgement_of_ack,
+        .acknowledgement_number =
+            ack.values[0].acknowledgement.acknowledgement_number,
+    };
+    REQUIRE(receiver.receive(encode_and_decode(ackack, storage), 11'000));
+    // The first NAK was lost. No further DATA arrives to refresh the timer.
+    // A 1 ms RTT must replace the initial 150 ms repeat deadline.
+    const auto repeat = receiver.poll_timers(71'000);
+    REQUIRE_EQ(repeat.size, 1U);
+    REQUIRE_EQ(repeat.values[0].kind, ReliabilityActionKind::loss_report);
+    const auto ranges = repeat.loss_ranges(repeat.values[0]);
+    REQUIRE_EQ(ranges.size(), 1U);
+    REQUIRE_EQ(ranges[0].first, SequenceNumber {100});
+    REQUIRE_EQ(ranges[0].last, SequenceNumber {101});
+}
