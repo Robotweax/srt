@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <vector>
 #include <limits>
 #include <utility>
 #include <cstddef>
@@ -272,6 +273,46 @@ TEST(timeout_retransmission_queues_every_sent_packet_once_across_rollover)
     REQUIRE(original.has_value());
     REQUIRE_EQ(original->header.sequence, SequenceNumber{1});
     REQUIRE(!original->header.retransmitted);
+}
+
+TEST(retransmission_ring_compaction_keeps_entries_behind_a_moved_head)
+{
+    // Ring layout after the steps below: head at physical index 2, logical
+    // order [2 (stale), 3, 0, 1]. Compaction must keep 3, 0 and 1 without
+    // overwriting entries it has not read yet.
+    SendBuffer buffer {SequenceNumber {0}, 4, 1};
+    const std::array<std::byte, 1> payload {std::byte {'x'}};
+    for (std::uint32_t message = 0; message < 4; ++message) {
+        REQUIRE_EQ(buffer.enqueue_message(payload, message + 1U,
+                       PacketTimestamp {0}, 99, true, 10,
+                       message == 2U ? 100U : 0U),
+            Error::none);
+    }
+    while (buffer.next_packet().has_value()) {
+    }
+    REQUIRE_EQ(buffer.request_retransmission({SequenceNumber {0}, SequenceNumber {3}}),
+        Error::none);
+    // Dequeue two retransmissions: the head moves to index 2.
+    for (std::uint32_t expected = 0; expected < 2; ++expected) {
+        const auto packet = buffer.next_packet();
+        REQUIRE(packet.has_value());
+        REQUIRE_EQ(packet->header.sequence, SequenceNumber {expected});
+    }
+    // Re-request them: they are appended behind the head.
+    REQUIRE_EQ(buffer.request_retransmission({SequenceNumber {0}, SequenceNumber {1}}),
+        Error::none);
+    // Message 2 expires: its ring entry becomes stale.
+    REQUIRE(buffer.drop_expired_message(101));
+
+    buffer.compact_retransmission_queue_for_testing();
+    std::vector<std::uint32_t> retransmitted;
+    while (const auto packet = buffer.next_packet()) {
+        if (packet->header.retransmitted) {
+            retransmitted.push_back(packet->header.sequence.value());
+        }
+    }
+    REQUIRE_EQ(retransmitted, (std::vector<std::uint32_t> {3, 0, 1}));
+    REQUIRE(!buffer.has_pending_retransmission());
 }
 
 TEST(acknowledgement_releases_ring_capacity_across_wrap)

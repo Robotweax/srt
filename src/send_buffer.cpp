@@ -312,16 +312,21 @@ bool SendBuffer::queue_drop_request(SequenceNumber sequence) noexcept
 
 void SendBuffer::compact_retransmission_queue() noexcept
 {
+    // Reads and writes both walk the ring from the head. Writing from
+    // physical index 0 instead would overwrite entries not yet read when
+    // the head is not at 0, losing queued sequences whose slots keep
+    // retransmission_queued set and can then never be re-queued.
     std::size_t kept = 0;
     for (std::size_t index = 0; index < retransmission_size_; ++index) {
         const auto sequence = retransmission_queue_[
             (retransmission_head_ + index) % capacity()];
         const auto* slot = find(sequence);
         if (slot != nullptr && slot->retransmission_queued) {
-            retransmission_queue_[kept++] = sequence;
+            retransmission_queue_[(retransmission_head_ + kept) % capacity()]
+                = sequence;
+            ++kept;
         }
     }
-    retransmission_head_ = 0;
     retransmission_size_ = kept;
 }
 
