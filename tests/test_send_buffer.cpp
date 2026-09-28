@@ -283,14 +283,15 @@ TEST(retransmission_ring_compaction_keeps_entries_behind_a_moved_head)
     SendBuffer buffer {SequenceNumber {0}, 4, 1};
     const std::array<std::byte, 1> payload {std::byte {'x'}};
     for (std::uint32_t message = 0; message < 4; ++message) {
-        REQUIRE_EQ(buffer.enqueue_message(payload, message + 1U,
-                       PacketTimestamp {0}, 99, true, 10,
-                       message == 2U ? 100U : 0U),
+        REQUIRE_EQ(
+            buffer.enqueue_message(payload, message + 1U, PacketTimestamp {0},
+                99, true, 10, message == 2U ? 100U : 0U),
             Error::none);
     }
     while (buffer.next_packet().has_value()) {
     }
-    REQUIRE_EQ(buffer.request_retransmission({SequenceNumber {0}, SequenceNumber {3}}),
+    REQUIRE_EQ(
+        buffer.request_retransmission({SequenceNumber {0}, SequenceNumber {3}}),
         Error::none);
     // Dequeue two retransmissions: the head moves to index 2.
     for (std::uint32_t expected = 0; expected < 2; ++expected) {
@@ -299,7 +300,8 @@ TEST(retransmission_ring_compaction_keeps_entries_behind_a_moved_head)
         REQUIRE_EQ(packet->header.sequence, SequenceNumber {expected});
     }
     // Re-request them: they are appended behind the head.
-    REQUIRE_EQ(buffer.request_retransmission({SequenceNumber {0}, SequenceNumber {1}}),
+    REQUIRE_EQ(
+        buffer.request_retransmission({SequenceNumber {0}, SequenceNumber {1}}),
         Error::none);
     // Message 2 expires: its ring entry becomes stale.
     REQUIRE(buffer.drop_expired_message(101));

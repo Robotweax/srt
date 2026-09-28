@@ -633,9 +633,9 @@ Error CryptoSession::build_sender_key_material(
     }
 
     std::array<std::byte, maximum_aes_key_size> kek{};
-    const auto pbkdf_salt = std::span{primary->salt}.last<pbkdf2_salt_size>();
+    const auto pbkdf_salt = std::span {primary->salt}.last<pbkdf2_salt_size>();
     Error result = derive_key_encryption_key(KeyEncryptionKeyUse::transmit,
-        pbkdf_salt, std::span{kek}.first(primary->key_length));
+        pbkdf_salt, std::span {kek}.first(primary->key_length));
     std::array<std::byte, maximum_wrapped_key_size> wrapped{};
     std::size_t wrapped_size = 0;
     if (result == Error::none) {
@@ -717,7 +717,7 @@ Error CryptoSession::accept_key_material(
     std::array<std::byte, maximum_aes_key_size> kek{};
     const auto pbkdf_salt = material.salt.last<pbkdf2_salt_size>();
     Error result = derive_key_encryption_key(KeyEncryptionKeyUse::receive,
-        pbkdf_salt, std::span{kek}.first(material.key_length));
+        pbkdf_salt, std::span {kek}.first(material.key_length));
     std::array<std::byte, maximum_aes_key_size * 2U> plaintext{};
     std::size_t plaintext_size = 0;
     if (result == Error::none) {

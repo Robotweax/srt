@@ -1,4 +1,5 @@
 #include "test.hpp"
+#include "ipv6_probe.hpp"
 
 #include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/handshake.hpp"
@@ -277,6 +278,9 @@ TEST(udp_buffer_search_requires_valid_final_readback)
 TEST(udp_buffer_native_readbacks_match_send_and_receive_diagnostics)
 {
     for (auto family : {IpAddressFamily::ipv4, IpAddressFamily::ipv6}) {
+        if (family == IpAddressFamily::ipv6 && !ipv6_loopback_available()) {
+            continue;
+        }
         UdpSocket original {family};
         REQUIRE(original.valid());
         REQUIRE_EQ(original.bind(family == IpAddressFamily::ipv4
@@ -350,6 +354,7 @@ TEST(udp_readiness_wait_is_bounded_and_validated)
 
 TEST(udp_socket_accepts_native_buffer_configuration)
 {
+    SKIP_WITHOUT_IPV6_LOOPBACK();
     UdpSocket socket;
     UdpSocket ipv6_socket{IpAddressFamily::ipv6};
     REQUIRE(socket.valid());
@@ -373,6 +378,7 @@ TEST(udp_socket_accepts_native_buffer_configuration)
 
 TEST(udp_socket_maps_ipv4_and_ipv6_traffic_class_options)
 {
+    SKIP_WITHOUT_IPV6_LOOPBACK();
     UdpSocket ipv4;
     UdpSocket ipv6{IpAddressFamily::ipv6};
     REQUIRE(ipv4.valid());
@@ -466,6 +472,7 @@ TEST(nonblocking_udp_reports_would_block)
 
 TEST(ipv6_udp_round_trips_peer_and_scope_aware_endpoints)
 {
+    SKIP_WITHOUT_IPV6_LOOPBACK();
     UdpSocket sender{IpAddressFamily::ipv6};
     UdpSocket receiver{IpAddressFamily::ipv6};
     REQUIRE(sender.valid());
@@ -630,5 +637,6 @@ TEST(udp_reports_and_discards_oversized_ipv4_datagrams)
 
 TEST(udp_reports_and_discards_oversized_ipv6_datagrams)
 {
+    SKIP_WITHOUT_IPV6_LOOPBACK();
     require_oversized_datagram_is_discarded(IpAddressFamily::ipv6);
 }

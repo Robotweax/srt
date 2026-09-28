@@ -1663,8 +1663,8 @@ TEST(crypto_session_derives_each_directional_kek_once_across_rotations)
     REQUIRE_EQ(
         receiver.accept_key_material(sender.pending_key_material(), false),
         Error::none);
-    REQUIRE_EQ(
-        sender.acknowledge_key_material(receiver.key_material_response(), false),
+    REQUIRE_EQ(sender.acknowledge_key_material(
+                   receiver.key_material_response(), false),
         Error::none);
     const std::size_t after_handshake = provider.pbkdf2_calls();
     REQUIRE(after_handshake >= 2U);
@@ -1680,14 +1680,14 @@ TEST(crypto_session_derives_each_directional_kek_once_across_rotations)
         const auto request = sender.pending_key_material();
         if (!request.empty()) {
             ++exchanged;
-            REQUIRE_EQ(receiver.accept_key_material(request, false),
-                Error::none);
+            REQUIRE_EQ(
+                receiver.accept_key_material(request, false), Error::none);
             REQUIRE_EQ(sender.acknowledge_key_material(
                            receiver.key_material_response(), false),
                 Error::none);
         }
-        REQUIRE_EQ(sender.encrypt(sequence, clear, ciphertext, key),
-            Error::none);
+        REQUIRE_EQ(
+            sender.encrypt(sequence, clear, ciphertext, key), Error::none);
         REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
         REQUIRE_EQ(receiver.decrypt(key, sequence, ciphertext, plaintext),
             Error::none);

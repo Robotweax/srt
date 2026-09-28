@@ -322,8 +322,8 @@ void SendBuffer::compact_retransmission_queue() noexcept
             (retransmission_head_ + index) % capacity()];
         const auto* slot = find(sequence);
         if (slot != nullptr && slot->retransmission_queued) {
-            retransmission_queue_[(retransmission_head_ + kept) % capacity()]
-                = sequence;
+            retransmission_queue_[(retransmission_head_ + kept) % capacity()] =
+                sequence;
             ++kept;
         }
     }
