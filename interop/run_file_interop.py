@@ -806,7 +806,7 @@ def peer_command(
                 "--minimum-isn",
                 str(scenario.minimum_initial_sequence),
                 "--isn-search-limit",
-                "100000",
+                "1",
             )
         )
     if (

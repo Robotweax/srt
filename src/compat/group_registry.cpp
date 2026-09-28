@@ -167,7 +167,6 @@ SRTSOCKET GroupRegistry::create(SRT_GROUP_TYPE type) noexcept
     } catch (...) {
         return SRT_INVALID_SOCK;
     }
-    return SRT_INVALID_SOCK;
 }
 
 std::shared_ptr<GroupRecord> GroupRegistry::find(SRTSOCKET group) noexcept
@@ -1013,7 +1012,6 @@ bool GroupRegistry::prepare_mirror(
     } catch (...) {
         return false;
     }
-    return false;
 }
 
 void GroupRegistry::release_empty_mirror(

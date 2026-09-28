@@ -422,7 +422,6 @@ SRTSOCKET SocketRegistry::create() noexcept
     } catch (...) {
         return SRT_INVALID_SOCK;
     }
-    return SRT_INVALID_SOCK;
 }
 
 std::shared_ptr<SocketRecord> SocketRegistry::find(SRTSOCKET socket) noexcept

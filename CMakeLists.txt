@@ -783,6 +783,18 @@ if(ROBOTWEAX_SRT_BUILD_TOOLS)
     target_link_libraries(
         robotweax_srt_interop_peer PRIVATE RobotweaxSRT::srt)
     target_compile_features(robotweax_srt_interop_peer PRIVATE cxx_std_17)
+    target_compile_definitions(robotweax_srt_interop_peer
+        PRIVATE ROBOTWEAX_SRT_INTEROP_PEER=1)
+    # This fixture belongs to the test executable, never to the library or
+    # its exported API. Shared builds cannot access private registry state.
+    if(ROBOTWEAX_SRT_BUILD_TESTS AND NOT BUILD_SHARED_LIBS)
+        target_sources(robotweax_srt_interop_peer
+            PRIVATE interop/initial_sequence_fixture.cpp)
+        target_include_directories(robotweax_srt_interop_peer PRIVATE src)
+        target_compile_features(robotweax_srt_interop_peer PRIVATE cxx_std_20)
+        target_compile_definitions(robotweax_srt_interop_peer
+            PRIVATE ROBOTWEAX_SRT_TEST_ISN_FIXTURE=1)
+    endif()
 
     add_executable(robotweax_srt_timing_peer interop/timing_peer.cpp)
     target_link_libraries(
