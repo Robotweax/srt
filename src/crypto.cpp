@@ -12,7 +12,6 @@ namespace {
 
 inline constexpr std::byte key_material_first_byte{0x12};
 inline constexpr std::uint16_t key_material_signature = 0x2029;
-inline constexpr std::size_t pbkdf2_salt_size = 8;
 
 [[nodiscard]] bool valid_aes_key_size(std::size_t size) noexcept
 {
@@ -234,6 +233,11 @@ CryptoSession::~CryptoSession()
     erase_receive_history(receive_even_history_);
     erase_receive_history(receive_odd_history_);
     provider_.secure_erase(passphrase_);
+    for (auto& cache : kek_cache_) {
+        provider_.secure_erase(cache.key);
+        provider_.secure_erase(cache.salt);
+        cache.length = 0;
+    }
     provider_.secure_erase(pending_key_material_.bytes);
     provider_.secure_erase(key_material_response_.bytes);
     for (auto& material : received_key_material_history_) {
@@ -403,6 +407,29 @@ void CryptoSession::remember_receive_key(
     }
     history.size =
         std::min(history.size + 1U, history.generations.size());
+}
+
+Error CryptoSession::derive_key_encryption_key(KeyEncryptionKeyUse use,
+    std::span<const std::byte, pbkdf2_salt_size> salt,
+    std::span<std::byte> destination) noexcept
+{
+    auto& cache = kek_cache_[static_cast<std::size_t>(use)];
+    if (cache.length == destination.size()
+        && std::equal(salt.begin(), salt.end(), cache.salt.begin())) {
+        std::copy_n(cache.key.begin(), destination.size(), destination.begin());
+        return Error::none;
+    }
+    const Error result = provider_.pbkdf2_hmac_sha1(
+        std::span {passphrase_}.first(passphrase_size_), salt,
+        srt_pbkdf2_iterations, destination);
+    if (result != Error::none) {
+        return result;
+    }
+    provider_.secure_erase(cache.key);
+    std::copy_n(destination.begin(), destination.size(), cache.key.begin());
+    std::copy(salt.begin(), salt.end(), cache.salt.begin());
+    cache.length = destination.size();
+    return Error::none;
 }
 
 Error CryptoSession::install_key(KeySlot& slot, std::span<const std::byte> key,
@@ -606,13 +633,9 @@ Error CryptoSession::build_sender_key_material(
     }
 
     std::array<std::byte, maximum_aes_key_size> kek{};
-    const auto passphrase =
-        std::span{passphrase_}.first(passphrase_size_);
-    const auto pbkdf_salt = std::span{primary->salt}.last(
-        pbkdf2_salt_size);
-    Error result = provider_.pbkdf2_hmac_sha1(
-        passphrase, pbkdf_salt, srt_pbkdf2_iterations,
-        std::span{kek}.first(primary->key_length));
+    const auto pbkdf_salt = std::span{primary->salt}.last<pbkdf2_salt_size>();
+    Error result = derive_key_encryption_key(KeyEncryptionKeyUse::transmit,
+        pbkdf_salt, std::span{kek}.first(primary->key_length));
     std::array<std::byte, maximum_wrapped_key_size> wrapped{};
     std::size_t wrapped_size = 0;
     if (result == Error::none) {
@@ -692,11 +715,9 @@ Error CryptoSession::accept_key_material(
         return reject(Error::unsupported, CryptoState::bad_crypto_mode);
     }
     std::array<std::byte, maximum_aes_key_size> kek{};
-    const auto pbkdf_salt = material.salt.last(pbkdf2_salt_size);
-    Error result = provider_.pbkdf2_hmac_sha1(
-        std::span{passphrase_}.first(passphrase_size_),
-        pbkdf_salt, srt_pbkdf2_iterations,
-        std::span{kek}.first(material.key_length));
+    const auto pbkdf_salt = material.salt.last<pbkdf2_salt_size>();
+    Error result = derive_key_encryption_key(KeyEncryptionKeyUse::receive,
+        pbkdf_salt, std::span{kek}.first(material.key_length));
     std::array<std::byte, maximum_aes_key_size * 2U> plaintext{};
     std::size_t plaintext_size = 0;
     if (result == Error::none) {
