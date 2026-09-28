@@ -242,10 +242,13 @@ ExtensionTextResult decode_extension_text(
             std::to_integer<unsigned char>(
                 extension.content[wire_index]));
     }
-    result.size = extension.content.size();
-    while (result.size != 0U
-        && result.text[result.size - 1U] == '\0') {
-        --result.size;
+    // The text ends at the first NUL, as a C-string consumer reads it; the
+    // reference implementation applies strlen() to the zero-padded block,
+    // so an embedded NUL truncates rather than being kept.
+    result.size = 0;
+    while (result.size < extension.content.size()
+        && result.text[result.size] != '\0') {
+        ++result.size;
     }
     return result;
 }

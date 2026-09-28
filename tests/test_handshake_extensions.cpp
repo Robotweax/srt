@@ -4,6 +4,7 @@
 
 #include "hsv5_version_policy.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <string_view>
@@ -144,6 +145,22 @@ TEST(stream_id_is_padded_to_complete_words)
     REQUIRE_EQ(bytes[7], std::byte{'a'});
     REQUIRE_EQ(bytes[8], std::byte{0});
     REQUIRE_EQ(bytes[11], std::byte{'e'});
+
+    // Decoding stops at the first NUL like a C-string reader: trailing
+    // padding is dropped and an embedded NUL truncates the text.
+    const auto padded = decode_extension(std::span {bytes}.first(12U));
+    REQUIRE(padded);
+    const auto text = decode_extension_text(padded.extension);
+    REQUIRE(text);
+    REQUIRE_EQ(std::string_view(text.text.data(), text.size), "abcde");
+    std::array<std::byte, 12> embedded {};
+    std::copy_n(bytes.begin(), 12U, embedded.begin());
+    embedded[6] = std::byte {0}; // wire position of the second character
+    const auto cut = decode_extension(embedded);
+    REQUIRE(cut);
+    const auto truncated = decode_extension_text(cut.extension);
+    REQUIRE(truncated);
+    REQUIRE_EQ(std::string_view(truncated.text.data(), truncated.size), "a");
 }
 
 TEST(packet_filter_text_uses_the_hsv5_word_swapped_layout)
