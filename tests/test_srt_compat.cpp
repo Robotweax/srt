@@ -3072,15 +3072,112 @@ TEST(srt_compat_listener_reports_key_state_under_optional_encryption)
             ? static_cast<std::int32_t>(SRT_KM_S_BADSECRET)
             : static_cast<std::int32_t>(SRT_KM_S_NOSECRET);
         REQUIRE_EQ(state_of(accepted.load(), SRTO_RCVKMSTATE), expected);
-        REQUIRE_EQ(state_of(accepted.load(), SRTO_SNDKMSTATE),
-            static_cast<std::int32_t>(SRT_KM_S_UNSECURED));
+        // A listener with its own (different) passphrase keeps encrypting its
+        // direction and reports BADSECRET; one without a secret sends clear.
+        const std::int32_t listener_sends = listener_has_passphrase
+            ? static_cast<std::int32_t>(SRT_KM_S_BADSECRET)
+            : static_cast<std::int32_t>(SRT_KM_S_UNSECURED);
+        REQUIRE_EQ(state_of(accepted.load(), SRTO_SNDKMSTATE), listener_sends);
         REQUIRE_EQ(state_of(accepted.load(), SRTO_KMSTATE), expected);
+        // The caller keeps encrypting and reports what the listener answered.
+        REQUIRE_EQ(state_of(caller, SRTO_SNDKMSTATE), expected);
 
         REQUIRE_EQ(srt_close(caller), 0);
         REQUIRE_EQ(srt_close(accepted.load()), 0);
         REQUIRE_EQ(srt_close(listener), 0);
         REQUIRE_EQ(srt_cleanup(), 0);
     }
+}
+
+TEST(srt_compat_optional_encryption_never_sends_the_secret_side_in_clear)
+{
+    // Reference behaviour with SRTO_ENFORCEDENCRYPTION=false and a passphrase
+    // on one side only: that side keeps encrypting, so the peer cannot read
+    // (and never receives in clear) what it sends; the other direction flows
+    // in clear; the connection stays up.
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    constexpr bool optional = false;
+    constexpr std::int32_t timeout = 1'000;
+    const SRTSOCKET listener = srt_create_socket();
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    for (const SRTSOCKET socket : {listener, caller}) {
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_ENFORCEDENCRYPTION, &optional,
+                       static_cast<int>(sizeof(optional))),
+            0);
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_CONNTIMEO, &timeout,
+                       static_cast<int>(sizeof(timeout))),
+            0);
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_RCVTIMEO, &timeout,
+                       static_cast<int>(sizeof(timeout))),
+            0);
+    }
+    constexpr char secret[] = "robotweax-one-sided-secret";
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_PASSPHRASE, secret,
+                   static_cast<int>(sizeof(secret) - 1U)),
+        0);
+
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(srt_bind(listener, reinterpret_cast<sockaddr*>(&address),
+                   static_cast<int>(sizeof(address))),
+        0);
+    int address_size = static_cast<int>(sizeof(address));
+    REQUIRE_EQ(srt_getsockname(listener, reinterpret_cast<sockaddr*>(&address),
+                   &address_size),
+        0);
+    REQUIRE_EQ(srt_listen(listener, 1), 0);
+    std::atomic<SRTSOCKET> accepted {SRT_INVALID_SOCK};
+    std::thread accept_thread([&] {
+        accepted.store(srt_accept(listener, nullptr, nullptr));
+    });
+    const auto* target = reinterpret_cast<const sockaddr*>(&address);
+    const int connected =
+        srt_connect(caller, target, static_cast<int>(sizeof(address)));
+    if (connected == SRT_ERROR) {
+        (void)srt_close(listener);
+    }
+    accept_thread.join();
+    REQUIRE_EQ(connected, 0);
+    const SRTSOCKET peer = accepted.load();
+    REQUIRE(peer != SRT_INVALID_SOCK);
+
+    std::int32_t caller_sends = -1;
+    int state_size = static_cast<int>(sizeof(caller_sends));
+    REQUIRE_EQ(
+        srt_getsockflag(caller, SRTO_SNDKMSTATE, &caller_sends, &state_size),
+        0);
+    REQUIRE_EQ(caller_sends, static_cast<std::int32_t>(SRT_KM_S_NOSECRET));
+
+    constexpr std::string_view secret_text {"must never arrive in clear"};
+    const int secret_size = static_cast<int>(secret_text.size());
+    REQUIRE_EQ(srt_send(caller, secret_text.data(), secret_size), secret_size);
+    std::array<char, 1'500> received {};
+    const int buffer_size = static_cast<int>(received.size());
+    REQUIRE_EQ(srt_recvmsg(peer, received.data(), buffer_size), SRT_ERROR);
+    const int timed_out = srt_getlasterror(nullptr);
+    REQUIRE(timed_out == SRT_ETIMEOUT || timed_out == SRT_EASYNCRCV);
+    SRT_TRACEBSTATS statistics {};
+    REQUIRE_EQ(srt_bstats(peer, &statistics, 0), 0);
+    REQUIRE(statistics.pktRcvUndecryptTotal >= 1);
+
+    constexpr std::string_view reply {"clear from the side without a secret"};
+    const int reply_size = static_cast<int>(reply.size());
+    REQUIRE_EQ(srt_send(peer, reply.data(), reply_size), reply_size);
+    const int length = srt_recvmsg(caller, received.data(), buffer_size);
+    REQUIRE_EQ(length, reply_size);
+    const std::string_view text {
+        received.data(), static_cast<std::size_t>(length)};
+    REQUIRE(text == reply);
+    REQUIRE_EQ(srt_getsockstate(caller), SRTS_CONNECTED);
+    REQUIRE_EQ(srt_getsockstate(peer), SRTS_CONNECTED);
+
+    REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_close(peer), 0);
+    REQUIRE_EQ(srt_close(listener), 0);
 }
 
 TEST(srt_compat_file_type_exposes_the_implemented_reference_option_bundle)

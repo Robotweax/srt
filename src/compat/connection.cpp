@@ -1416,9 +1416,16 @@ public:
                         crypto_rejection_reason(
                             *setup_.crypto, SRT_REJ_BADSECRET));
                 }
-                setup_.crypto.reset();
-                std::lock_guard lock(socket_.mutex);
-                socket_.crypto.reset();
+                // Optional encryption: keep encrypting with the local key
+                // instead of releasing plaintext, as the reference does. The
+                // reported NOSECRET/BADSECRET becomes SRTO_SNDKMSTATE; no
+                // response at all counts as NOSECRET.
+                const CryptoState reported = setup_.crypto->sender_state();
+                if (setup_.crypto->continue_without_peer_key(reported)
+                    != Error::none) {
+                    return fail_connect(socket_, SRT_ESECFAIL, 0, asynchronous_,
+                        SRT_REJ_BADSECRET);
+                }
             }
         } else if (message.has_key_material_extension
             && setup_.enforced_encryption) {
@@ -2380,7 +2387,7 @@ public:
                     return fail_connect(*socket_, SRT_ESECFAIL, 0,
                         asynchronous_, SRT_REJ_BADSECRET);
                 }
-                if (clear_crypto() == SRT_ERROR) {
+                if (keep_encrypting(CryptoState::no_secret) == SRT_ERROR) {
                     return SRT_ERROR;
                 }
             } else {
@@ -2396,11 +2403,11 @@ public:
                 if (accepted != Error::none) {
                     if (!setup_.enforced_encryption
                         && setup_.crypto->allows_plaintext_fallback()) {
-                        if (set_key_material_failure(invalid_material
-                                    ? CryptoState::bad_crypto_mode
-                                    : CryptoState::bad_secret)
-                                == SRT_ERROR
-                            || clear_crypto() == SRT_ERROR) {
+                        const CryptoState reported = invalid_material
+                            ? CryptoState::bad_crypto_mode
+                            : CryptoState::bad_secret;
+                        if (set_key_material_failure(reported) == SRT_ERROR
+                            || keep_encrypting(reported) == SRT_ERROR) {
                             return SRT_ERROR;
                         }
                     } else {
@@ -2430,7 +2437,8 @@ public:
                             crypto_rejection_reason(
                                 *setup_.crypto, SRT_REJ_BADSECRET));
                     }
-                    if (clear_crypto() == SRT_ERROR) {
+                    if (keep_encrypting(setup_.crypto->sender_state())
+                        == SRT_ERROR) {
                         return SRT_ERROR;
                     }
                 }
@@ -2496,22 +2504,17 @@ private:
         return 0;
     }
 
-    [[nodiscard]] int clear_crypto() noexcept
+    // Optional encryption never falls back to plaintext: stop offering key
+    // material in further handshake packets, but keep the local session and
+    // encrypt with its key, as the reference implementation does.
+    [[nodiscard]] int keep_encrypting(CryptoState reported) noexcept
     {
         const KeyMaterialBuffer empty_request;
-        if (machine_.set_key_material_request(empty_request, 0U)
-            != Error::none) {
+        if (machine_.set_key_material_request(empty_request, 0U) != Error::none
+            || setup_.crypto->continue_without_peer_key(reported)
+                != Error::none) {
             return fail_connect(
                 *socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_BADSECRET);
-        }
-        setup_.crypto.reset();
-        setup_.crypto_key_length = 0U;
-        (void)setup_.options.set(SocketOption::encryption_key_length, 0);
-        {
-            std::lock_guard lock(socket_->mutex);
-            socket_->crypto.reset();
-            (void)socket_->native_options.set(
-                SocketOption::encryption_key_length, 0);
         }
         return 0;
     }
@@ -3714,18 +3717,29 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
                 policy_rejection = crypto_rejection_reason(*crypto,
                     has_request ? SRT_REJ_BADSECRET : SRT_REJ_UNSECURE);
                 policy_error = SRT_ESECFAIL;
-            } else if (has_request) {
-                // Answer like the reference implementation: a four-byte KMRSP
-                // with the failure state instead of no response at all.
-                receiver_key_state = key_length_matches
-                    ? CryptoState::bad_secret
-                    : CryptoState::bad_crypto_mode;
-                crypto.reset();
-                set_key_material_state_response(
-                    admission.conclusion.message, receiver_key_state);
             } else {
-                crypto.reset();
-                admission.conclusion.message.has_key_material_extension = false;
+                // Optional encryption: answer like the reference
+                // implementation (a four-byte KMRSP with the failure state)
+                // and keep encrypting with a local key instead of falling
+                // back to plaintext. Without a KMREQ the caller has no secret.
+                const CryptoState reported = !has_request
+                    ? CryptoState::no_secret
+                    : key_length_matches ? CryptoState::bad_secret
+                                         : CryptoState::bad_crypto_mode;
+                if (has_request) {
+                    receiver_key_state = reported;
+                    set_key_material_state_response(
+                        admission.conclusion.message, reported);
+                } else {
+                    admission.conclusion.message.has_key_material_extension =
+                        false;
+                }
+                if (crypto->continue_without_peer_key(reported)
+                    != Error::none) {
+                    policy_rejected = true;
+                    policy_rejection = SRT_REJ_BADSECRET;
+                    policy_error = SRT_ESECFAIL;
+                }
             }
         } else if (crypto == nullptr && has_request) {
             if (native_options.enforced_encryption()) {

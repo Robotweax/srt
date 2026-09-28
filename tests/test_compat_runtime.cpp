@@ -4649,8 +4649,12 @@ TEST(compat_runtime_acknowledges_undecryptable_data_under_optional_encryption)
     }
 }
 
-TEST(compat_runtime_optional_sender_resumes_clear_after_no_secret)
+TEST(compat_runtime_optional_sender_keeps_encrypting_after_no_secret)
 {
+    // Reference behaviour under optional encryption: after the peer reports
+    // NOSECRET the sender keeps encrypting with its own key (the peer cannot
+    // read it) instead of releasing plaintext, reports SRTO_SNDKMSTATE
+    // NOSECRET, and stops re-sending the key material.
     const auto channel = std::make_shared<DatagramChannel>();
     CapturedDatagrams output;
     channel->set_send_hook_for_testing(capture_datagram, &output);
@@ -4695,10 +4699,7 @@ TEST(compat_runtime_optional_sender_resumes_clear_after_no_secret)
     REQUIRE_EQ(decoded_request.packet.control.subtype,
         key_material_request_subtype);
 
-    const std::array<std::byte, 4> no_secret{
-        std::byte{0}, std::byte{0}, std::byte{0},
-        static_cast<std::byte>(CryptoState::no_secret),
-    };
+    const auto no_secret = encode_key_material_state(CryptoState::no_secret);
     const PacketView response{
         .kind = PacketKind::control,
         .control = {
@@ -4711,7 +4712,8 @@ TEST(compat_runtime_optional_sender_resumes_clear_after_no_secret)
     sender.process_packet(response, peer);
     REQUIRE(!sender.broken());
     REQUIRE_EQ(crypto->sender_state(), CryptoState::no_secret);
-    REQUIRE_EQ(sender.sender_crypto_state(), CryptoState::unsecured);
+    REQUIRE(crypto->sending_without_peer_key());
+    REQUIRE_EQ(sender.sender_crypto_state(), CryptoState::no_secret);
 
     now += 1'000;
     (void)sender.poll();
@@ -4720,11 +4722,21 @@ TEST(compat_runtime_optional_sender_resumes_clear_after_no_secret)
     const auto decoded_data = decode_packet(data.front());
     REQUIRE(decoded_data);
     REQUIRE_EQ(decoded_data.packet.kind, PacketKind::data);
-    REQUIRE_EQ(decoded_data.packet.data.encryption_key,
-        EncryptionKey::none);
-    REQUIRE(std::equal(
-        decoded_data.packet.payload.begin(),
+    REQUIRE(decoded_data.packet.data.encryption_key != EncryptionKey::none);
+    REQUIRE_EQ(decoded_data.packet.payload.size(), clear.size());
+    REQUIRE(!std::equal(decoded_data.packet.payload.begin(),
         decoded_data.packet.payload.end(), clear.begin()));
+
+    // No further key-material requests once the peer reported NOSECRET.
+    now += 500'000;
+    (void)sender.poll();
+    for (const auto& datagram : take_datagrams(output)) {
+        const auto decoded = decode_packet(datagram);
+        REQUIRE(decoded);
+        REQUIRE(decoded.packet.kind != PacketKind::control
+            || decoded.packet.control.type != ControlType::user_defined
+            || decoded.packet.control.subtype != key_material_request_subtype);
+    }
 }
 
 TEST(compat_runtime_retransmits_original_ciphertext_across_key_rotation)

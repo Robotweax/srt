@@ -411,12 +411,24 @@ public:
     // that decision at the public handshake boundary.
     [[nodiscard]] bool allows_plaintext_fallback() const noexcept
     {
-        return !directional_key_pending_ && !rotation_prepared_
-            && sender_state_ != CryptoState::secured
+        return !unacknowledged_sending_ && !directional_key_pending_
+            && !rotation_prepared_ && sender_state_ != CryptoState::secured
             && receiver_state_ != CryptoState::secured
             && receiver_state_ != CryptoState::securing;
     }
 
+    // Optional encryption with a peer that cannot decrypt: it reported
+    // NOSECRET or BADSECRET, or never answered the key material. Instead of
+    // falling back to plaintext, keep encrypting with a local key, as the
+    // reference implementation does. That key is never acknowledged; the
+    // peer cannot read anything it protects, so using it discloses nothing.
+    // Rotation then happens locally at the refresh point, without KMREQ.
+    [[nodiscard]] Error continue_without_peer_key(
+        CryptoState reported) noexcept;
+    [[nodiscard]] bool sending_without_peer_key() const noexcept
+    {
+        return unacknowledged_sending_;
+    }
     [[nodiscard]] Error prepare_rotation() noexcept;
     [[nodiscard]] Error note_data_packet_sent() noexcept;
     // Before selecting/encrypting new DATA, account for skipped positions in
@@ -623,6 +635,7 @@ private:
     bool key_material_pending_ = false;
     bool pending_acknowledged_ = false;
     bool directional_key_pending_ = false;
+    bool unacknowledged_sending_ = false;
 };
 
 } // namespace robotweax::srt

@@ -2859,10 +2859,17 @@ void ConnectionRuntime::process_packet(
                     && crypto_->sender_state() != previous_state
                     && !options_.enforced_encryption()) {
                     // Only the initial, explicitly optional exchange may
-                    // downgrade. During rotation acknowledge_key_material()
+                    // react. During rotation acknowledge_key_material()
                     // preserves SECURING, so unauthenticated stale/failure
-                    // responses cannot remove established keys.
-                    crypto_.reset();
+                    // responses cannot remove established keys. Even then
+                    // the sender keeps encrypting with its own key instead
+                    // of releasing plaintext, as the reference does.
+                    if (crypto_->continue_without_peer_key(
+                            crypto_->sender_state())
+                        != Error::none) {
+                        break_locked(0);
+                        return;
+                    }
                     last_peer_activity_microseconds_ = now;
                     notify_readiness();
                     return;
@@ -3462,7 +3469,14 @@ CryptoState ConnectionRuntime::sender_crypto_state() const noexcept
 CryptoState ConnectionRuntime::receiver_crypto_state() const noexcept
 {
     std::lock_guard lock(mutex_);
-    return crypto_ == nullptr ? receiver_key_state_ : crypto_->receiver_state();
+    if (crypto_ == nullptr) {
+        return receiver_key_state_;
+    }
+    // A session kept for optional encryption may never have attempted the
+    // peer's key material (e.g. a key-length mismatch); report the state
+    // recorded during setup then.
+    const CryptoState state = crypto_->receiver_state();
+    return state == CryptoState::unsecured ? receiver_key_state_ : state;
 }
 
 std::size_t ConnectionRuntime::crypto_key_length() const noexcept
@@ -3479,10 +3493,12 @@ CryptoMode ConnectionRuntime::crypto_mode() const noexcept
 {
     std::lock_guard lock(mutex_);
     // An established connection reports the suite actually protecting DATA.
-    // Without encryption (no passphrase, or the optional plaintext fallback)
-    // it reports AUTO (0), never the configured 1 or 2: applications check for
-    // 2 after connecting to confirm authenticated encryption.
-    if (crypto_ == nullptr || !crypto_->enabled()) {
+    // Without encryption in both directions (no passphrase, or a peer that
+    // cannot decrypt under optional encryption) it reports AUTO (0), never the
+    // configured 1 or 2: applications check for 2 after connecting to confirm
+    // authenticated encryption.
+    if (crypto_ == nullptr || !crypto_->enabled()
+        || crypto_->sending_without_peer_key()) {
         return CryptoMode::automatic;
     }
     return crypto_->effective_mode();
