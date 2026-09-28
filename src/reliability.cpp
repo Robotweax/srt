@@ -281,6 +281,56 @@ void ReceiveLossList::remove_through(
     }
 }
 
+void ReceiveLossList::remove_range(SequenceRange range) noexcept
+{
+    if (range.last.distance_from(range.first) < 0) {
+        return;
+    }
+    std::size_t index = 0;
+    while (index < size_) {
+        auto& entry = entries_[index];
+        if (range.last.distance_from(entry.range.first) < 0) {
+            // Entries are sorted; nothing later can overlap.
+            return;
+        }
+        if (range.first.distance_from(entry.range.last) > 0) {
+            ++index;
+            continue;
+        }
+        const bool covers_head =
+            range.first.distance_from(entry.range.first) <= 0;
+        const bool covers_tail =
+            range.last.distance_from(entry.range.last) >= 0;
+        if (covers_head && covers_tail) {
+            erase(index);
+            continue;
+        }
+        if (covers_head) {
+            entry.range.first = range.last.next();
+            ++index;
+            continue;
+        }
+        if (covers_tail) {
+            entry.range.last = range.first.advanced(SequenceNumber::mask);
+            ++index;
+            continue;
+        }
+        // The range lies strictly inside this entry: split it.
+        if (size_ == entries_.size()) {
+            return;
+        }
+        const Entry upper = entry;
+        for (std::size_t source = size_; source > index + 1U; --source) {
+            entries_[source] = entries_[source - 1U];
+        }
+        entry.range.last = range.first.advanced(SequenceNumber::mask);
+        entries_[index + 1U] = upper;
+        entries_[index + 1U].range.first = range.last.next();
+        ++size_;
+        return;
+    }
+}
+
 void ReceiveLossList::age_fresh() noexcept
 {
     for (std::size_t index = 0; index < size_; ++index) {

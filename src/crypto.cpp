@@ -1115,6 +1115,12 @@ CryptoSession::KeySlot* CryptoSession::receive_slot_for_packet(
     return selected;
 }
 
+void CryptoSession::note_accepted_receive_sequence(
+    SequenceNumber sequence) noexcept
+{
+    note_authenticated_receive_sequence(sequence);
+}
+
 void CryptoSession::note_authenticated_receive_sequence(
     SequenceNumber sequence) noexcept
 {
@@ -1146,7 +1152,7 @@ Error CryptoSession::decrypt(
         provider_.secure_erase(plaintext);
         return Error::unsupported;
     }
-    KeySlot* slot = receive_slot_for_packet(key, sequence);
+    KeySlot* slot = receive_slot_for_packet(key, sequence, false);
     if (slot == nullptr || !slot->ready()) {
         return Error::cryptographic_failure;
     }

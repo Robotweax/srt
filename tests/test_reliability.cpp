@@ -112,6 +112,51 @@ TEST(receive_loss_list_periodic_reports_and_drop_removal_cover_all_ranges)
     REQUIRE_EQ(remaining->last, SequenceNumber{15});
 }
 
+TEST(receive_loss_list_remove_range_keeps_losses_outside_the_range)
+{
+    ReceiveLossList losses {8};
+    REQUIRE(losses.add({SequenceNumber {10}, SequenceNumber {12}}, 1));
+    REQUIRE(losses.add({SequenceNumber {20}, SequenceNumber {25}}, 1));
+    REQUIRE(losses.add({SequenceNumber {30}, SequenceNumber {30}}, 1));
+
+    // A range covering only the middle entry leaves the others intact.
+    losses.remove_range({SequenceNumber {20}, SequenceNumber {25}});
+    REQUIRE_EQ(losses.size(), 2U);
+
+    // Trim the head and tail of entries the range partially overlaps.
+    REQUIRE(losses.add({SequenceNumber {40}, SequenceNumber {45}}, 1));
+    losses.remove_range({SequenceNumber {12}, SequenceNumber {30}});
+    losses.mark_periodic_reports();
+    std::array<SequenceRange, 8> reports {};
+    REQUIRE_EQ(losses.take_pending_reports(reports), 2U);
+    REQUIRE_EQ(reports[0].first, SequenceNumber {10});
+    REQUIRE_EQ(reports[0].last, SequenceNumber {11});
+    REQUIRE_EQ(reports[1].first, SequenceNumber {40});
+    REQUIRE_EQ(reports[1].last, SequenceNumber {45});
+
+    // A range strictly inside an entry splits it.
+    losses.remove_range({SequenceNumber {42}, SequenceNumber {43}});
+    losses.mark_periodic_reports();
+    REQUIRE_EQ(losses.take_pending_reports(reports), 3U);
+    REQUIRE_EQ(reports[1].first, SequenceNumber {40});
+    REQUIRE_EQ(reports[1].last, SequenceNumber {41});
+    REQUIRE_EQ(reports[2].first, SequenceNumber {44});
+    REQUIRE_EQ(reports[2].last, SequenceNumber {45});
+
+    // A range across the sequence rollover is handled like any other.
+    ReceiveLossList wrapped {4};
+    REQUIRE(wrapped.add(
+        {SequenceNumber {SequenceNumber::mask - 1U}, SequenceNumber {1}}, 1));
+    wrapped.remove_range(
+        {SequenceNumber {SequenceNumber::mask}, SequenceNumber {0}});
+    wrapped.mark_periodic_reports();
+    REQUIRE_EQ(wrapped.take_pending_reports(reports), 2U);
+    REQUIRE_EQ(reports[0].first, SequenceNumber {SequenceNumber::mask - 1U});
+    REQUIRE_EQ(reports[0].last, SequenceNumber {SequenceNumber::mask - 1U});
+    REQUIRE_EQ(reports[1].first, SequenceNumber {1});
+    REQUIRE_EQ(reports[1].last, SequenceNumber {1});
+}
+
 TEST(receive_loss_list_batches_pending_ranges_without_losing_overflow)
 {
     constexpr std::size_t batch_capacity = 8;

@@ -104,6 +104,42 @@ TEST(caller_and_listener_complete_foundation_handshake)
     REQUIRE_EQ(listener.state(), HandshakeState::connected);
     REQUIRE_EQ(caller.peer_flow_window(), 222U);
     REQUIRE_EQ(listener.peer_flow_window(), 111U);
+    // The listener echoes the caller's ISN, so both sides agree on it.
+    REQUIRE_EQ(listener.peer_initial_sequence(), SequenceNumber {10});
+    REQUIRE_EQ(caller.peer_initial_sequence(), SequenceNumber {10});
+}
+
+TEST(caller_takes_the_peer_initial_sequence_from_the_conclusion_response)
+{
+    // The handshake does not oblige a listener to echo the caller's ISN.
+    // The caller must start its receiver at whatever sequence the
+    // listener's CONCLUSION response advertises.
+    std::uint32_t cookie_salt = 0x9e37'79b9U;
+    HandshakeMachine caller {{
+        .role = ConnectionRole::caller,
+        .local_socket_id = 100,
+        .initial_sequence = SequenceNumber {10},
+    }};
+    HandshakeMachine listener {{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 200,
+        .initial_sequence = SequenceNumber {20},
+        .cookie_generator = test_cookie,
+        .cookie_context = &cookie_salt,
+    }};
+
+    const auto induction = caller.start();
+    const auto induction_response =
+        listener.receive(message_from(induction.values[0]));
+    const auto conclusion =
+        caller.receive(message_from(induction_response.values[0]));
+    const auto listener_done =
+        listener.receive(message_from(conclusion.values[0]));
+    auto response = message_from(listener_done.values[0]);
+    response.packet.initial_sequence = SequenceNumber {777'777};
+    const auto caller_done = caller.receive(response);
+    REQUIRE_EQ(caller_done.values[0].kind, HandshakeActionKind::connected);
+    REQUIRE_EQ(caller.peer_initial_sequence(), SequenceNumber {777'777});
 }
 
 TEST(caller_ignores_stale_induction_without_extending_deadline)

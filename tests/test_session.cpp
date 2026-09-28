@@ -1603,6 +1603,69 @@ TEST(session_acknowledges_the_numbered_reference_small_ack_variant)
     REQUIRE_EQ(result.actions.values[0].acknowledgement_number, 7U);
 }
 
+TEST(session_peer_drop_request_removes_only_the_dropped_loss_range)
+{
+    // A DROPREQ for one range must not silence the periodic NAK for an
+    // earlier, unrelated loss the peer did not drop.
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 32,
+        .receive_capacity_packets = 32,
+    }};
+    receiver.configure_live(
+        {
+            .periodic_nak = true,
+            .retransmit_flag = true,
+        },
+        0, PacketTimestamp {0});
+
+    const std::array<std::byte, 1> payload {std::byte {'l'}};
+    PacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.payload = payload;
+    packet.data.sequence = SequenceNumber {10};
+    packet.data.message_number = 1;
+    REQUIRE(receiver.receive(packet, 100));
+    // Loss 11..12, then loss 14..19 behind a message at 13 and 20.
+    packet.data.sequence = SequenceNumber {13};
+    packet.data.message_number = 4;
+    REQUIRE(receiver.receive(packet, 200));
+    packet.data.sequence = SequenceNumber {20};
+    packet.data.message_number = 11;
+    REQUIRE(receiver.receive(packet, 300));
+
+    std::array<std::byte, 64> storage {};
+    auto drop = encode_and_decode(
+        {
+            .kind = ReliabilityActionKind::drop_request,
+            .drop = {5, {SequenceNumber {14}, SequenceNumber {19}}},
+        },
+        storage);
+    drop.control.timestamp = PacketTimestamp {60};
+    REQUIRE(receiver.receive(drop, 400));
+
+    const auto periodic = receiver.poll_timers(150'400);
+    bool saw_first_gap = false;
+    bool saw_dropped_gap = false;
+    for (std::size_t index = 0; index < periodic.size; ++index) {
+        if (periodic.values[index].kind != ReliabilityActionKind::loss_report) {
+            continue;
+        }
+        for (const auto& range : periodic.loss_ranges(periodic.values[index])) {
+            saw_first_gap = saw_first_gap
+                || (range.first == SequenceNumber {11}
+                    && range.last == SequenceNumber {12});
+            saw_dropped_gap = saw_dropped_gap
+                || range.first.distance_from(SequenceNumber {14}) >= 0;
+        }
+    }
+    REQUIRE(saw_first_gap);
+    REQUIRE(!saw_dropped_gap);
+}
+
 TEST(session_preserves_disjoint_loss_ranges_for_periodic_reports)
 {
     ReliabilitySession receiver{{

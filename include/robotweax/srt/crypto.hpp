@@ -443,11 +443,16 @@ public:
         std::span<std::byte> ciphertext,
         EncryptionKey& key) noexcept;
 
+    // AES-CTR carries no integrity. decrypt() therefore never records the
+    // packet sequence for key-generation routing; the caller reports it
+    // through note_accepted_receive_sequence() once the reliability layer
+    // has accepted the packet inside its receive window.
     [[nodiscard]] Error decrypt(
         EncryptionKey key,
         SequenceNumber sequence,
         std::span<const std::byte> ciphertext,
         std::span<std::byte> plaintext) noexcept;
+    void note_accepted_receive_sequence(SequenceNumber sequence) noexcept;
 
     // Authenticated DATA binds the complete canonical SRT data header to the
     // ciphertext. The caller must stamp the active selector into header before

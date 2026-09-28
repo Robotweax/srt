@@ -78,6 +78,10 @@ public:
     [[nodiscard]] ReceiveLossRemoval remove(
         SequenceNumber sequence) noexcept;
     void remove_through(SequenceNumber last) noexcept;
+    // Remove exactly the sequences inside `range`, trimming or splitting the
+    // entries that overlap it. Entries outside the range are untouched. A
+    // split that would exceed capacity leaves that entry unchanged.
+    void remove_range(SequenceRange range) noexcept;
     void age_fresh() noexcept;
     void mark_periodic_reports() noexcept;
     [[nodiscard]] std::size_t take_pending_reports(
