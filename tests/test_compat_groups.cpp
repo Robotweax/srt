@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -2561,6 +2562,63 @@ TEST(compat_backup_group_fails_closed_when_required_history_was_evicted)
     REQUIRE_EQ(backup_runtime->sender_buffer_status().packets, 0U);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESCLOSED);
     REQUIRE_EQ(srt_close(group), 0);
+}
+
+TEST(compat_group_close_unblocks_a_send_waiting_for_member_capacity)
+{
+    // A blocking group send parks in its readiness wait while every member
+    // reports would_block. srt_close(group) from another thread must
+    // return promptly and wake that sender with an error instead of
+    // waiting behind the send coordinator lock forever.
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        TestClock clock;
+        clock.channel =
+            std::make_shared<robotweax::srt::compat::DatagramChannel>();
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        const SRTSOCKET group = srt_create_group(type);
+        const SRTSOCKET member = srt_create_socket();
+        const auto group_record = GroupRegistry::instance().find(group);
+        REQUIRE(group_record != nullptr);
+        std::uint32_t initial_sequence = 0;
+        {
+            std::lock_guard lock(group_record->mutex);
+            initial_sequence = group_record->initial_sequence;
+        }
+        const auto runtime = attach_group_runtime(
+            group, member, initial_sequence, 10, &clock, 1U);
+
+        constexpr char first[] = "fills the only slot";
+        REQUIRE_EQ(srt_send(group, first, static_cast<int>(sizeof(first))),
+            static_cast<int>(sizeof(first)));
+
+        std::atomic<int> send_result {0};
+        std::atomic<int> send_error {SRT_SUCCESS};
+        std::atomic<bool> send_started {false};
+        std::thread sender([&] {
+            constexpr char second[] = "waits for capacity";
+            send_started.store(true);
+            send_result.store(
+                srt_send(group, second, static_cast<int>(sizeof(second))));
+            send_error.store(srt_getlasterror(nullptr));
+        });
+        while (!send_started.load()) {
+            std::this_thread::yield();
+        }
+        // Give the sender time to reach its wait; the send buffer holds one
+        // packet and no ACK ever arrives.
+        std::this_thread::sleep_for(std::chrono::milliseconds {50});
+        REQUIRE_EQ(runtime->sender_buffer_status().packets, 1U);
+
+        const auto close_started = std::chrono::steady_clock::now();
+        REQUIRE_EQ(srt_close(group), 0);
+        const auto close_elapsed =
+            std::chrono::steady_clock::now() - close_started;
+        REQUIRE(close_elapsed < std::chrono::seconds {5});
+        sender.join();
+        REQUIRE_EQ(send_result.load(), SRT_ERROR);
+        REQUIRE(send_error.load() == SRT_ESCLOSED
+            || send_error.load() == SRT_ENOCONN);
+    }
 }
 
 TEST(compat_backup_group_resumes_replay_at_member_buffer_capacity)
