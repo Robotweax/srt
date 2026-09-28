@@ -89,6 +89,11 @@ TEST(caller_and_listener_complete_foundation_handshake)
 
     const auto start = caller.start();
     REQUIRE_EQ(start.values[0].kind, HandshakeActionKind::send);
+    // Caller INDUCTION: version 4, encryption field 0, extension field 2
+    // (the datagram socket type).
+    REQUIRE_EQ(start.values[0].packet.version, 4U);
+    REQUIRE_EQ(start.values[0].packet.encryption_field, 0U);
+    REQUIRE_EQ(start.values[0].packet.extension_field, 2U);
     const auto induction_response = listener.receive(start.values[0].packet);
     REQUIRE_EQ(induction_response.values[0].packet.request, HandshakeRequest::induction);
     REQUIRE_EQ(induction_response.values[0].packet.initial_sequence, SequenceNumber{10});
