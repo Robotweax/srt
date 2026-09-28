@@ -1276,6 +1276,32 @@ TEST(srt_compat_exposes_reference_defaults_and_validated_live_options)
                    static_cast<int>(sizeof(integer_value))),
         SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
+    // Options negotiated in the handshake are pre-connection: a connected
+    // socket rejects them instead of echoing a value that never applies.
+    for (const SRT_SOCKOPT negotiated : {SRTO_LATENCY, SRTO_RCVLATENCY,
+             SRTO_PEERLATENCY, SRTO_PAYLOADSIZE, SRTO_RETRANSMITALGO}) {
+        int before = -1;
+        size = static_cast<int>(sizeof(before));
+        REQUIRE_EQ(srt_getsockflag(socket, negotiated, &before, &size), 0);
+        integer_value = before + 1;
+        REQUIRE_EQ(srt_setsockflag(socket, negotiated, &integer_value,
+                       static_cast<int>(sizeof(integer_value))),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
+        integer_value = -1;
+        size = static_cast<int>(sizeof(integer_value));
+        REQUIRE_EQ(
+            srt_getsockflag(socket, negotiated, &integer_value, &size), 0);
+        REQUIRE_EQ(integer_value, before);
+    }
+    for (const SRT_SOCKOPT negotiated :
+        {SRTO_TSBPDMODE, SRTO_TLPKTDROP, SRTO_NAKREPORT}) {
+        boolean_value = false;
+        REQUIRE_EQ(srt_setsockflag(socket, negotiated, &boolean_value,
+                       static_cast<int>(sizeof(boolean_value))),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
+    }
     boolean_value = true;
     REQUIRE_EQ(srt_setsockflag(socket, SRTO_DRIFTTRACER,
                    &boolean_value,

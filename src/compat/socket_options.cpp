@@ -124,7 +124,15 @@ template <typename Value>
         || option == SRTO_ENFORCEDENCRYPTION || option == SRTO_CONGESTION
         || option == SRTO_MESSAGEAPI || option == SRTO_SENDER
         || option == SRTO_MINVERSION || option == SRTO_STREAMID
-        || option == SRTO_GROUPCONNECT || option == SRTO_PACKETFILTER;
+        || option == SRTO_GROUPCONNECT
+        || option == SRTO_PACKETFILTER
+        // Negotiated in the handshake or fixed at connection setup: a
+        // later set would be echoed by the getter without taking effect.
+        || option == SRTO_TSBPDMODE || option == SRTO_LATENCY
+        || option == SRTO_RCVLATENCY || option == SRTO_PEERLATENCY
+        || option == SRTO_TLPKTDROP || option == SRTO_NAKREPORT
+        || option == SRTO_PAYLOADSIZE || option == SRTO_RETRANSMITALGO
+        || option == SRTO_GROUPMINSTABLETIMEO;
 }
 
 [[nodiscard]] constexpr bool is_connection_state(
