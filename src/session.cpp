@@ -902,9 +902,8 @@ ReliabilityProcessResult ReliabilitySession::receive(
         }
         const std::uint32_t acknowledgement_number =
             decode_ackack_number(packet);
-        if (acknowledgement_number == 0U) {
-            return {.error = Error::invalid_control_payload};
-        }
+        // Number 0 is never emitted here, so the tracker yields no sample;
+        // a peer echoing it is still a well-formed ACKACK.
         const auto sample = acknowledgement_tracker_.acknowledge(
             acknowledgement_number, now_microseconds);
         if (sample.has_value()) {
@@ -1467,9 +1466,7 @@ ControlEncodeResult encode_reliability_action(
         break;
     }
     case ReliabilityActionKind::acknowledgement_of_ack:
-        if (action.acknowledgement_number == 0U) {
-            return {.error = Error::invalid_control_payload};
-        }
+        // Echoes the peer's number verbatim, including a wrapped 0.
         packet.control.type = ControlType::acknowledgement_of_ack;
         packet.control.type_specific = action.acknowledgement_number;
         break;

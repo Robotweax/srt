@@ -8,7 +8,8 @@
 
 namespace robotweax::srt {
 
-inline constexpr std::uint32_t minimum_nak_interval_microseconds = 60'000;
+// libsrt clamps the periodic NAK interval to 20 ms (m_tdMinNakInterval).
+inline constexpr std::uint32_t minimum_nak_interval_microseconds = 20'000;
 
 class AcknowledgementNumberGenerator {
 public:

@@ -502,8 +502,12 @@ int set_socket_option(
                 : SRT_EBOUNDSOCK);
         return SRT_ERROR;
     }
+    // A listening socket is still configurable: its pre-connection options
+    // are inherited by every connection accepted afterwards (a passphrase
+    // rotation for future callers, say), as in libsrt. Only a connecting or
+    // connected socket has them fixed.
     if (is_pre_connection(option)
-        && is_connection_state(socket.state)
+        && (socket.state == SRTS_CONNECTING || socket.state == SRTS_CONNECTED)
         && !socket.listen_callback_active) {
         set_last_error(SRT_ECONNSOCK);
         return SRT_ERROR;

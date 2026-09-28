@@ -688,11 +688,21 @@ TEST(compat_group_listener_option_is_boolean_and_pre_connection)
         0);
     const auto record = SocketRegistry::instance().find(listener);
     REQUIRE(record != nullptr);
+    // Still settable while listening (applies to later accepts, as in
+    // libsrt), fixed once the socket itself is a connection.
     {
         std::lock_guard lock(record->mutex);
         record->state = SRTS_LISTENING;
     }
     enabled = false;
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_GROUPCONNECT, &enabled,
+                   static_cast<int>(sizeof(enabled))),
+        0);
+    {
+        std::lock_guard lock(record->mutex);
+        record->state = SRTS_CONNECTED;
+    }
+    enabled = true;
     REQUIRE_EQ(srt_setsockflag(
                    listener, SRTO_GROUPCONNECT,
                    &enabled, static_cast<int>(sizeof(enabled))),

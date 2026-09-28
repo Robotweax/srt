@@ -4127,7 +4127,21 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
 
     REQUIRE_EQ(srt_listen(listener, 4), 0);
     REQUIRE_EQ(srt_getsockstate(listener), SRTS_LISTENING);
-    REQUIRE_EQ(srt_listen_callback(listener, nullptr, nullptr),
+    // A listening socket stays configurable (libsrt parity): the hook can
+    // be replaced and pre-connection options apply to later connections.
+    REQUIRE_EQ(srt_listen_callback(listener, nullptr, nullptr), 0);
+    REQUIRE_EQ(srt_listen_callback(listener, observe_listener_connection,
+                   &callback_observation),
+        0);
+    int listening_peer_idle_milliseconds = 7'000;
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_PEERIDLETIMEO,
+                   &listening_peer_idle_milliseconds,
+                   static_cast<int>(sizeof(listening_peer_idle_milliseconds))),
+        0);
+    // Pre-bind options remain fixed once bound.
+    int listening_udp_buffer = 1 << 20;
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_UDP_RCVBUF, &listening_udp_buffer,
+                   static_cast<int>(sizeof(listening_udp_buffer))),
         SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
 
@@ -4201,6 +4215,15 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
                    &connected_flow_window_size),
         0);
     REQUIRE_EQ(connected_flow_window, listener_flow_window);
+    // The option set while listening reached the accepted connection.
+    int accepted_peer_idle_milliseconds = 0;
+    int accepted_peer_idle_size =
+        static_cast<int>(sizeof(accepted_peer_idle_milliseconds));
+    REQUIRE_EQ(srt_getsockflag(accepted.load(), SRTO_PEERIDLETIMEO,
+                   &accepted_peer_idle_milliseconds, &accepted_peer_idle_size),
+        0);
+    REQUIRE_EQ(
+        accepted_peer_idle_milliseconds, listening_peer_idle_milliseconds);
     SRT_TRACEBSTATS caller_statistics {};
     SRT_TRACEBSTATS listener_statistics {};
     REQUIRE_EQ(srt_bstats(caller, &caller_statistics, 0), 0);
