@@ -31,7 +31,7 @@ def main():
     out.mkdir(parents=True, exist_ok=False)
     sources = {v: getattr(args, v).resolve() for v in ("baseline", "candidate")}
     report = {"platform": platform.platform(), "sources": {}, "cases": [],
-              "limits": "Shared hosted runner; CPU is both peers combined where available. Not a dedicated-lab capacity result."}
+              "limits": "Shared hosted runner; offered rate is aggregate across connections. Resource deltas combine peers; peer_process_resources separates them where available. Not a dedicated-lab capacity result."}
     def save():
         (out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     def invoke(command, log, timeout=900):
