@@ -819,6 +819,8 @@ bool DatagramChannel::start_with_affinity(
     // connection creation onto one of the two scheduler shards.
     affinity_ = affinity.has_value() ? *affinity : next_channel_affinity();
     scheduled_timer_ = {};
+    scheduled_coarse_timer_probe_ = false;
+    coarse_timer_probe_wakes_.store(0, std::memory_order_relaxed);
     task_active_ = false;
     send_work_notification_pending_ = false;
     receive_release_pending_ = false;
@@ -867,6 +869,12 @@ void DatagramChannel::notify_work(bool receive_release) noexcept
                 <= std::chrono::steady_clock::now() + idle_wait_) {
             return;
         }
+        // A probe is a bounded sub-millisecond wait. Preserve it even when
+        // the producer keeps enqueueing packets, or recovery can starve.
+        if (scheduled_timer_.valid() && scheduled_coarse_timer_probe_) {
+            pending = true;
+            return;
+        }
         if (!scheduled_timer_.valid()) {
             if (task_active_) {
                 pending = true;
@@ -883,6 +891,7 @@ void DatagramChannel::notify_work(bool receive_release) noexcept
             return;
         }
         scheduled_timer_ = {};
+        scheduled_coarse_timer_probe_ = false;
         send_work_notification_pending_ = false;
         receive_release_pending_ = false;
         if (!schedule_next_locked(true, std::chrono::microseconds {0})
@@ -924,6 +933,7 @@ void DatagramChannel::stop() noexcept
         socket_watch_ = {};
         timer = scheduled_timer_;
         scheduled_timer_ = {};
+        scheduled_coarse_timer_probe_ = false;
     }
     if (readiness != nullptr) {
         readiness->cancel(watch);
@@ -943,8 +953,8 @@ void DatagramChannel::stop() noexcept
     }
 }
 
-bool DatagramChannel::schedule_next_locked(
-    bool immediate, std::chrono::microseconds delay) noexcept
+bool DatagramChannel::schedule_next_locked(bool immediate,
+    std::chrono::microseconds delay, bool coarse_timer_probe) noexcept
 {
     if (!running_.load(std::memory_order_relaxed) || scheduler_ == nullptr
         || scheduled_work_context_ == nullptr) {
@@ -961,6 +971,7 @@ bool DatagramChannel::schedule_next_locked(
             return false;
         }
         scheduled_timer_ = {};
+        scheduled_coarse_timer_probe_ = false;
         return true;
     }
     const auto deadline = std::chrono::steady_clock::now() + delay;
@@ -971,7 +982,31 @@ bool DatagramChannel::schedule_next_locked(
     }
     scheduled_timer_ = scheduled.token;
     scheduled_deadline_ = deadline;
+    scheduled_coarse_timer_probe_ = coarse_timer_probe;
     return true;
+}
+
+void DatagramChannel::observe_timer_wake_locked(
+    std::uint64_t lateness_microseconds,
+    std::chrono::steady_clock::time_point now) noexcept
+{
+    const bool was_coarse = timer_wake_monitor_.coarse();
+    timer_wake_monitor_.observe(lateness_microseconds);
+    const bool is_coarse = timer_wake_monitor_.coarse();
+    if (was_coarse != is_coarse) {
+        next_coarse_timer_probe_ = is_coarse
+            ? now + coarse_timer_probe_interval_
+            : std::chrono::steady_clock::time_point {};
+    }
+    coarse_timer_mode_.store(is_coarse, std::memory_order_relaxed);
+}
+
+void DatagramChannel::observe_timer_wake_for_testing(
+    std::uint64_t lateness_microseconds) noexcept
+{
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    observe_timer_wake_locked(
+        lateness_microseconds, std::chrono::steady_clock::now());
 }
 
 void DatagramChannel::socket_readable(void* context) noexcept
@@ -1009,12 +1044,15 @@ void DatagramChannel::run_scheduled(
                 ? std::chrono::duration_cast<std::chrono::microseconds>(
                       now - scheduled_deadline_)
                 : std::chrono::microseconds::zero();
-            timer_wake_monitor_.observe(
-                static_cast<std::uint64_t>(lateness.count()));
-            coarse_timer_mode_.store(
-                timer_wake_monitor_.coarse(), std::memory_order_relaxed);
+            observe_timer_wake_locked(
+                static_cast<std::uint64_t>(lateness.count()), now);
+            if (scheduled_coarse_timer_probe_) {
+                coarse_timer_probe_wakes_.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
         }
         scheduled_timer_ = {};
+        scheduled_coarse_timer_probe_ = false;
         task_active_ = true;
         active_thread_ = std::this_thread::get_id();
     }
@@ -1032,8 +1070,9 @@ void DatagramChannel::run_scheduled(
             send_work_notification_pending_ = false;
             const bool receive_release_pending = receive_release_pending_;
             receive_release_pending_ = false;
-            const bool immediate =
-                result.immediate_work || send_work_notification_pending;
+            const bool immediate = result.immediate_work
+                || (send_work_notification_pending
+                    && !result.coarse_timer_probe);
             bool armed = false;
             if (!immediate && result.receive_wait_safe
                 && socket_readiness_ != nullptr && socket_watch_.valid()) {
@@ -1057,7 +1096,8 @@ void DatagramChannel::run_scheduled(
                         std::chrono::duration_cast<std::chrono::microseconds>(
                             idle_wait_));
                 }
-                if (!schedule_next_locked(immediate, delay)) {
+                if (!schedule_next_locked(immediate, delay,
+                        result.coarse_timer_probe && !immediate)) {
                     running_.store(false, std::memory_order_release);
                     scheduling_failed = true;
                 }
@@ -1291,7 +1331,15 @@ RuntimePollResult DatagramChannel::poll_connections(
     // coarse timer never lowers the send rate.
     if (coarse_timer_mode_.load(std::memory_order_relaxed)
         && delay < std::chrono::milliseconds {1}) {
-        return {.immediate_work = true};
+        const auto now = std::chrono::steady_clock::now();
+        std::lock_guard lifecycle_lock(lifecycle_mutex_);
+        if (now < next_coarse_timer_probe_) {
+            return {.immediate_work = true};
+        }
+        next_coarse_timer_probe_ = now + coarse_timer_probe_interval_;
+        return {.next_work_delay = delay,
+            .receive_wait_safe = can_wait,
+            .coarse_timer_probe = true};
     }
     return {.next_work_delay = delay, .receive_wait_safe = can_wait};
 }

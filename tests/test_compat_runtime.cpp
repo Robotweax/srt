@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cerrno>
 #include <condition_variable>
@@ -7217,6 +7218,77 @@ TEST(compat_channel_fairness_preserves_deadlines_across_continuations)
     REQUIRE(!fixture.channel->coarse_timer_mode_for_testing());
     fixture.now = 1'700;
     REQUIRE(!fixture.poll(std::chrono::microseconds {700}).immediate_work);
+}
+
+TEST(compat_channel_coarse_timer_probes_under_sustained_paced_send)
+{
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {1, 8, 8});
+    REQUIRE(scheduler->start());
+    auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+    channel->set_idle_wait_for_testing(std::chrono::milliseconds {2});
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_payload_size, 16), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::send_buffer_packets, 4'096), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_bandwidth_bytes_per_second, 64'000),
+        Error::none);
+    constexpr std::uint32_t id = 0x3601U;
+    auto runtime =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
+            .channel = channel,
+            .peer = {.address = {192, 0, 2, 97}, .port = 15'097},
+            .peer_socket_id = id,
+            .initial_sequence = SequenceNumber {900},
+            .flow_window_packets = 4'096,
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+        });
+    REQUIRE(channel->register_connection(id, runtime));
+    const std::array<std::byte, 16> payload {};
+    for (int index = 0; index < 4'096; ++index) {
+        REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+    }
+    for (unsigned late = 0; late < TimerWakeMonitor::late_streak_to_enter;
+        ++late) {
+        channel->observe_timer_wake_for_testing(2'500);
+    }
+    REQUIRE(channel->coarse_timer_mode_for_testing());
+    REQUIRE(channel->start(scheduler, 0));
+    std::atomic<bool> notify_more {true};
+    std::thread notifier([&] {
+        while (notify_more.load(std::memory_order_relaxed)) {
+            channel->notify_send_work();
+            std::this_thread::sleep_for(std::chrono::microseconds {50});
+        }
+    });
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {3};
+    while (channel->coarse_timer_probe_wakes_for_testing()
+            < TimerWakeMonitor::punctual_streak_to_leave
+        && channel->coarse_timer_mode_for_testing()
+        && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+    const auto probes = channel->coarse_timer_probe_wakes_for_testing();
+    const bool recovered = !channel->coarse_timer_mode_for_testing();
+    const bool healthy = !runtime->broken();
+    notify_more.store(false, std::memory_order_relaxed);
+    notifier.join();
+    channel->unregister_connection(id);
+    runtime.reset();
+    channel.reset();
+    scheduler->stop();
+    // Precise hosts leave coarse mode after punctual probes. A genuinely
+    // coarse host must keep sampling instead of getting stuck indefinitely.
+    REQUIRE(probes >= TimerWakeMonitor::punctual_streak_to_leave || recovered);
+    REQUIRE(healthy);
 }
 
 TEST(compat_channel_waits_for_sub_millisecond_pacing_slots_with_a_timer)

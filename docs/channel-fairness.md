@@ -75,8 +75,14 @@ missed slots back to back, so timer latency does not lower the configured
 rate. After a longer pause the schedule restarts at the send time, and the
 first packet of a connection starts a fresh schedule, so a pause is not
 followed by a burst. If a host's timer wake-ups repeatedly arrive later than
-the credit, the channel falls back to resubmitting sub-millisecond deadlines
-until wake-ups are punctual again. Protocol timer rules are unchanged. The
+the credit, the channel falls back to resubmitting sub-millisecond deadlines.
+While that fallback is active, it permits one real sub-millisecond timer wait
+about every 100 ms. These probes measure current wake-up accuracy even if the
+sender remains continuously busy; 16 punctual wakes return the channel to
+normal timer waits. An active probe is preserved across new send notifications.
+Each probe can delay one pacing continuation on a coarse host; the pacer catches
+up within its 1 ms credit and restarts its schedule after a longer delay.
+Protocol timer rules are unchanged. The
 fairness change adds no
 worker thread, wire format, public C-ABI field, negotiated feature or buffer
 setting. The subsequent [idle-readiness optimization](idle-readiness.md) adds one
