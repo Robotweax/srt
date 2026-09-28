@@ -32,6 +32,8 @@ staggered 10 ms timers on one shared socket do not wake it for each of them.
 Pacing deadlines stay exact. A readable channel does not wake for the delivery
 time of every further message; blocking readers, epoll waiters and group
 receives time those deliveries themselves.
+The channel's own timer poll can therefore occur up to one 2 ms cadence after
+a computed TSBPD or drop deadline, in addition to scheduler delay.
 
 Connection registration and setup promotion wake parked channels. New send work
 cancels a later timer or records a continuation while a task is active.

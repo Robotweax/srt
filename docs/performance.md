@@ -55,6 +55,23 @@ with a baseline library. These timings measure selection only, not application
 goodput, pacing, encryption, recovery, or network capacity. Do not turn local
 nanosecond results into portable CI pass thresholds.
 
+### Send-buffer deadline diagnostic
+
+`robotweax_srt_send_buffer_deadline_benchmark` isolates the TTL deadline
+query used when a sender parks on receive readiness. It times a buffer with no
+TTL and one with an expiring packet at the tail for 64, 256 and 8,192 buffered
+packets. Enqueue is outside the timed interval. Run it on the same Release
+build and host used for the many-socket scorecard:
+
+```sh
+cmake --build build-performance --target robotweax_srt_send_buffer_deadline_benchmark
+build-performance/robotweax_srt_send_buffer_deadline_benchmark
+```
+
+The tail-TTL case shows the cost of scanning the occupied span. The no-TTL
+case exercises its constant-time fast path. This is a local cost diagnostic,
+not an end-to-end throughput or latency claim.
+
 ### Public-API profiles
 
 `benchmarks/scalability_scorecard.py` runs public-API peer source linked

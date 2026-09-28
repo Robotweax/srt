@@ -733,6 +733,13 @@ if(ROBOTWEAX_SRT_BUILD_BENCHMARKS)
     target_compile_features(robotweax_srt_send_buffer_benchmark
         PRIVATE cxx_std_20)
 
+    add_executable(robotweax_srt_send_buffer_deadline_benchmark
+        benchmarks/send_buffer_deadline_benchmark.cpp)
+    target_link_libraries(robotweax_srt_send_buffer_deadline_benchmark
+        PRIVATE RobotweaxSRT::srt)
+    target_compile_features(robotweax_srt_send_buffer_deadline_benchmark
+        PRIVATE cxx_std_20)
+
     add_executable(robotweax_srt_codec_benchmark benchmarks/codec_benchmark.cpp)
     target_link_libraries(robotweax_srt_codec_benchmark PRIVATE RobotweaxSRT::srt)
     target_compile_features(robotweax_srt_codec_benchmark PRIVATE cxx_std_20)
