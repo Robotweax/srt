@@ -1732,6 +1732,12 @@ ConnectionRuntime::next_readable_message_sequence() noexcept
     return session_.receive_buffer().first_stored_sequence();
 }
 
+SequenceNumber ConnectionRuntime::receive_floor_sequence() noexcept
+{
+    std::lock_guard lock(mutex_);
+    return session_.receive_buffer().first_stored_sequence();
+}
+
 bool ConnectionRuntime::discard_received_before(
     SequenceNumber next_sequence) noexcept
 {

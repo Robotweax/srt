@@ -440,6 +440,10 @@ public:
     next_readable_message_sequence() noexcept;
     [[nodiscard]] bool discard_received_before(
         SequenceNumber next_sequence) noexcept;
+    // Oldest sequence the receive buffer can still hold or deliver. Any
+    // earlier sequence has been consumed, discarded, or dropped and can no
+    // longer arrive through this connection.
+    [[nodiscard]] SequenceNumber receive_floor_sequence() noexcept;
     [[nodiscard]] MessageIoResult receive_stream(
         std::span<std::byte> destination,
         bool blocking,

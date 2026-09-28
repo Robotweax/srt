@@ -1109,6 +1109,18 @@ int receive_group_message_implementation(
 
         const GroupIoMember* selected = nullptr;
         std::optional<ReadinessSignal::Clock::time_point> next_delivery;
+        // A member whose receive floor is already past `expected` can never
+        // deliver it: its buffer dropped the gap (receiver TLPKTDROP) or it
+        // joined later. Track whether any member may still supply the
+        // expected message and the lowest floor of those that cannot.
+        bool member_may_supply_expected = false;
+        std::optional<SequenceNumber> lowest_unreachable_floor;
+        const auto note_unreachable_floor = [&](SequenceNumber floor) {
+            if (!lowest_unreachable_floor.has_value()
+                || floor.distance_from(*lowest_unreachable_floor) < 0) {
+                lowest_unreachable_floor = floor;
+            }
+        };
         for (const auto& member : members) {
             if (!member.message_api) {
                 continue;
@@ -1129,6 +1141,13 @@ int receive_group_message_implementation(
                         || *member_delivery < *next_delivery)) {
                     next_delivery = member_delivery;
                 }
+                const SequenceNumber floor =
+                    member.runtime->receive_floor_sequence();
+                if (floor.distance_from(SequenceNumber {expected}) > 0) {
+                    note_unreachable_floor(floor);
+                } else if (!member.terminal) {
+                    member_may_supply_expected = true;
+                }
                 continue;
             }
             const std::int32_t distance =
@@ -1141,12 +1160,30 @@ int receive_group_message_implementation(
             // A complete message beyond the logical group prefix is not
             // deliverable yet. Releasing it would expose a gap whenever a
             // replacement path starts at a later sequence than the failed
-            // member. Keep it buffered until another member supplies the
-            // expected message or the receive operation reaches its terminal
-            // error/timeout boundary.
-            if (distance == 0 && selected == nullptr) {
-                selected = &member;
+            // member. Keep it buffered while another member can still supply
+            // the expected message.
+            if (distance == 0) {
+                if (selected == nullptr) {
+                    selected = &member;
+                }
+            } else {
+                note_unreachable_floor(*candidate);
             }
+        }
+        if (selected == nullptr && !member_may_supply_expected
+            && lowest_unreachable_floor.has_value()) {
+            // No member can deliver `expected` any more: every live member
+            // already dropped past it. Skip the gap to the lowest member
+            // floor instead of waiting for a message that cannot arrive.
+            std::lock_guard lock(group->mutex);
+            if (group->closed || group->generation != generation) {
+                return fail(SRT_ESCLOSED);
+            }
+            if (group->next_receive_sequence == expected) {
+                group->next_receive_sequence =
+                    lowest_unreachable_floor->value();
+            }
+            continue;
         }
         if (selected != nullptr) {
             const auto result =
