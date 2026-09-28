@@ -84,6 +84,8 @@ public:
     [[nodiscard]] Error drop_range(SequenceRange range,
         std::uint32_t message_number = 0,
         std::size_t* newly_dropped_packets = nullptr) noexcept;
+    // Reject an entire message, including fragments arriving later.
+    void discard_message_payload(SequenceNumber sequence) noexcept;
     // A peer DROPREQ must not erase a complete message that arrived before
     // the control packet. Missing packets and incomplete messages are dropped.
     [[nodiscard]] Error drop_peer_requested_range(SequenceRange range,
@@ -102,6 +104,7 @@ private:
         std::uint32_t payload_index = 0;
         std::uint16_t payload_size = 0;
         std::uint16_t payload_offset = 0;
+        bool rejected_payload = false;
         bool occupied = false;
         bool dropped = false;
     };
@@ -118,6 +121,8 @@ private:
         std::uint32_t message_number, std::size_t* newly_dropped_packets,
         bool preserve_existing_complete) noexcept;
 
+    bool has_rejected_payload_ = false;
+    std::optional<std::uint32_t> discarding_message_;
     detail::PayloadPool payloads_;
     std::vector<Slot> slots_;
     SequenceNumber first_stored_sequence_;

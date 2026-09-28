@@ -208,6 +208,12 @@ same DATA still breaks the connection. AES-GCM packets that fail
 authentication are never acknowledged, so a forged packet cannot suppress
 genuine data.
 
+In message mode, discarding one fragment rejects the entire message, including
+fragments received later. Following complete messages remain readable. Missing
+sequences still require normal loss recovery; rejection does not acknowledge
+packets that have not arrived. In stream mode only the undecipherable packet
+is discarded.
+
 ### Directional-key compatibility evidence
 
 The interoperability mechanism is the existing runtime key exchange, not a
