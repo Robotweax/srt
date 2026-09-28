@@ -134,6 +134,12 @@ public:
     [[nodiscard]] std::optional<SendDropResult>
     next_pending_drop_request() noexcept;
     [[nodiscard]] bool has_pending_drop_request() noexcept;
+    // Exposes the stale-entry compaction of the retransmission ring, which
+    // the public queueing paths reach only when the ring is full.
+    void compact_retransmission_queue_for_testing() noexcept
+    {
+        compact_retransmission_queue();
+    }
     // Queues sequence-only DROPREQ replies for NAK ranges that predate the
     // sender buffer. Capacity validation is transactional.
     [[nodiscard]] bool queue_range_drop_requests(

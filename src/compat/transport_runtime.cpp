@@ -2602,8 +2602,21 @@ bool ConnectionRuntime::process_reliability_packet_locked(
                     // the normal receive path and peer-idle timeout.
                     return false;
                 }
-                if (packet.data.encryption_key == EncryptionKey::none
-                    || options_.enforced_encryption()) {
+                if (packet.data.encryption_key == EncryptionKey::none) {
+                    // Plaintext DATA on an encrypting session violates the
+                    // negotiated policy.
+                    break_locked(0);
+                    return false;
+                }
+                if (crypto_->receiver_state() == CryptoState::secured) {
+                    // The peer's key material may arrive after DATA on a new
+                    // selector. Leave the sequence unacknowledged so a later
+                    // retransmission can be decrypted and delivered.
+                    return false;
+                }
+                if (options_.enforced_encryption()) {
+                    // Enforced encryption without a usable peer key (bad or
+                    // missing secret) stays fail-closed.
                     break_locked(0);
                     return false;
                 }

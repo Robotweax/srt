@@ -1,4 +1,5 @@
 #include "test.hpp"
+#include "ipv6_probe.hpp"
 
 #include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
@@ -1707,6 +1708,7 @@ TEST(srt_compat_bind_and_local_name_follow_socket_state)
 
 TEST(srt_compat_validates_ipv6only_and_dual_stack_bindings)
 {
+    SKIP_WITHOUT_IPV6_LOOPBACK();
     REQUIRE_EQ(srt_startup(), 0);
 
     const SRTSOCKET unspecified = srt_create_socket();
@@ -3971,6 +3973,7 @@ TEST(srt_compat_encrypted_rendezvous_peers_exchange_a_message)
 
 TEST(srt_compat_ipv6_rendezvous_peers_exchange_a_message)
 {
+    SKIP_WITHOUT_IPV6_LOOPBACK();
     sockaddr_in6 bind_address{};
     bind_address.sin6_family = AF_INET6;
     bind_address.sin6_port = 0;
@@ -4982,6 +4985,7 @@ TEST(srt_compat_listener_callback_rejects_before_accept)
 
 TEST(srt_compat_ipv6_caller_listener_names_and_payload_are_end_to_end)
 {
+    SKIP_WITHOUT_IPV6_LOOPBACK();
     constexpr std::int32_t timeout_milliseconds = 2'000;
     constexpr std::int32_t listener_mss = 1'280;
     constexpr std::int32_t caller_mss = 1'400;
@@ -5242,6 +5246,7 @@ TEST(srt_compat_ipv6_caller_listener_names_and_payload_are_end_to_end)
 
 TEST(srt_compat_dual_stack_ipv6_caller_connects_to_ipv4_listener)
 {
+    SKIP_WITHOUT_IPV6_LOOPBACK();
     constexpr std::int32_t timeout_milliseconds = 2'000;
 
     sockaddr_in listener_bind{};

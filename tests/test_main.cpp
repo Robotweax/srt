@@ -9,6 +9,7 @@ int main(int argc, char** argv)
     const std::string_view filter =
         argc > 1 ? std::string_view{argv[1]} : std::string_view{};
     std::size_t failures = 0;
+    std::size_t skipped = 0;
     std::size_t selected = 0;
     for (const auto& test : robotweax::srt::test::cases()) {
         if (!filter.empty()
@@ -20,6 +21,10 @@ int main(int argc, char** argv)
         try {
             test.function();
             std::cout << "[PASS] " << test.name << '\n';
+        } catch (const robotweax::srt::test::Skipped& reason) {
+            ++skipped;
+            std::cout << "[SKIP] " << test.name << ": " << reason.what()
+                      << '\n';
         } catch (const std::exception& error) {
             ++failures;
             std::cerr << "[FAIL] " << test.name << ": " << error.what() << '\n';
@@ -28,6 +33,11 @@ int main(int argc, char** argv)
             std::cerr << "[FAIL] " << test.name << ": unknown exception\n";
         }
     }
-    std::cout << selected - failures << '/' << selected << " tests passed\n";
+    std::cout << selected - failures - skipped << '/' << selected
+              << " tests passed";
+    if (skipped != 0U) {
+        std::cout << " (" << skipped << " skipped)";
+    }
+    std::cout << '\n';
     return failures == 0 ? 0 : 1;
 }
