@@ -2581,12 +2581,25 @@ bool ConnectionRuntime::process_reliability_packet_locked(
                     // the normal receive path and peer-idle timeout.
                     return false;
                 }
-                if (packet.data.encryption_key == EncryptionKey::none
-                    || options_.enforced_encryption()) {
+                if (packet.data.encryption_key == EncryptionKey::none) {
+                    // Plaintext DATA on an encrypting session violates the
+                    // negotiated policy.
                     break_locked(0);
                     return false;
                 }
-                // Optional encryption with a key this side could not unwrap
+                if (options_.enforced_encryption()
+                    && crypto_->receiver_state() != CryptoState::secured) {
+                    // Enforced encryption without a usable peer key (bad or
+                    // missing secret) stays fail-closed.
+                    break_locked(0);
+                    return false;
+                }
+                // A secured session met a packet its current keys cannot
+                // open: a selector announced before its key material arrived
+                // (the peer switches by packet count and bounds its KMREQ
+                // retries), or a stray packet. The reference implementation
+                // counts it as undecryptable and drops it. Likewise optional
+                // encryption with a key this side could not unwrap
                 // (BADSECRET): acknowledge the sequence, discard the payload.
                 context.discard_payload = true;
             } else {
