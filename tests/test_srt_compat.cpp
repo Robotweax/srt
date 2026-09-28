@@ -71,7 +71,8 @@ robotweax::srt::UdpIoResult send_distinct_peer_initial_sequence(
     }
     std::copy(bytes.begin(), bytes.end(), response.begin());
     // The handshake ISN occupies bytes 24..27 after the SRT control header.
-    const auto sequence = decoded.message.packet.initial_sequence.next().value();
+    const auto sequence =
+        decoded.message.packet.initial_sequence.next().value();
     for (std::size_t index = 0; index < 4; ++index) {
         response[24 + index] = std::byte {
             static_cast<unsigned char>(sequence >> (24U - 8U * index))};
@@ -4371,18 +4372,21 @@ TEST(srt_compat_caller_receives_from_the_conclusion_peer_initial_sequence)
     const SRTSOCKET listener = srt_create_socket();
     REQUIRE(listener != SRT_INVALID_SOCK);
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_TSBPDMODE, &tsbpd,
-                   static_cast<int>(sizeof(tsbpd))), 0);
+                   static_cast<int>(sizeof(tsbpd))),
+        0);
     if (srt_bind(listener, reinterpret_cast<const sockaddr*>(&bind_address),
-            static_cast<int>(sizeof(bind_address))) == SRT_ERROR) {
+            static_cast<int>(sizeof(bind_address)))
+        == SRT_ERROR) {
         REQUIRE_EQ(srt_close(listener), 0);
         return;
     }
     REQUIRE_EQ(srt_listen(listener, 1), 0);
     sockaddr_in listener_name {};
     int listener_name_size = static_cast<int>(sizeof(listener_name));
-    REQUIRE_EQ(srt_getsockname(listener,
-                   reinterpret_cast<sockaddr*>(&listener_name),
-                   &listener_name_size), 0);
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&listener_name),
+            &listener_name_size),
+        0);
 
     const auto listener_record =
         robotweax::srt::compat::SocketRegistry::instance().find(listener);
@@ -4403,16 +4407,17 @@ TEST(srt_compat_caller_receives_from_the_conclusion_peer_initial_sequence)
     const SRTSOCKET caller = srt_create_socket();
     REQUIRE(caller != SRT_INVALID_SOCK);
     REQUIRE_EQ(srt_setsockflag(caller, SRTO_TSBPDMODE, &tsbpd,
-                   static_cast<int>(sizeof(tsbpd))), 0);
-    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO,
-                   &timeout_milliseconds,
-                   static_cast<int>(sizeof(timeout_milliseconds))), 0);
-    REQUIRE_EQ(srt_setsockflag(caller, SRTO_RCVTIMEO,
-                   &timeout_milliseconds,
-                   static_cast<int>(sizeof(timeout_milliseconds))), 0);
-    const int connect_result = srt_connect(caller,
-        reinterpret_cast<const sockaddr*>(&listener_name),
-        static_cast<int>(sizeof(listener_name)));
+                   static_cast<int>(sizeof(tsbpd))),
+        0);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_RCVTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    const int connect_result =
+        srt_connect(caller, reinterpret_cast<const sockaddr*>(&listener_name),
+            static_cast<int>(sizeof(listener_name)));
     if (connect_result == SRT_ERROR) {
         (void)srt_close(listener);
     }
@@ -4439,17 +4444,17 @@ TEST(srt_compat_caller_receives_from_the_conclusion_peer_initial_sequence)
         std::byte {'d'}, std::byte {'a'}, std::byte {'t'}, std::byte {'a'}};
     robotweax::srt::PacketView packet;
     packet.kind = robotweax::srt::PacketKind::data;
-    packet.data.sequence = robotweax::srt::SequenceNumber {peer_initial_sequence};
+    packet.data.sequence =
+        robotweax::srt::SequenceNumber {peer_initial_sequence};
     packet.data.message_number = 1;
     packet.data.boundary = robotweax::srt::MessageBoundary::solo;
     packet.data.in_order = true;
     packet.payload = payload;
     caller_runtime->process_packet(packet,
-        robotweax::srt::IpEndpoint::loopback(
-            ntohs(listener_name.sin_port)));
+        robotweax::srt::IpEndpoint::loopback(ntohs(listener_name.sin_port)));
     std::array<char, payload.size()> received {};
-    REQUIRE_EQ(srt_recv(caller, received.data(),
-                   static_cast<int>(received.size())),
+    REQUIRE_EQ(
+        srt_recv(caller, received.data(), static_cast<int>(received.size())),
         static_cast<int>(payload.size()));
     REQUIRE(std::memcmp(received.data(), payload.data(), payload.size()) == 0);
 
