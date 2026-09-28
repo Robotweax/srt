@@ -2587,19 +2587,19 @@ bool ConnectionRuntime::process_reliability_packet_locked(
                     break_locked(0);
                     return false;
                 }
-                if (options_.enforced_encryption()
-                    && crypto_->receiver_state() != CryptoState::secured) {
+                if (crypto_->receiver_state() == CryptoState::secured) {
+                    // The peer's key material may arrive after DATA on a new
+                    // selector. Leave the sequence unacknowledged so a later
+                    // retransmission can be decrypted and delivered.
+                    return false;
+                }
+                if (options_.enforced_encryption()) {
                     // Enforced encryption without a usable peer key (bad or
                     // missing secret) stays fail-closed.
                     break_locked(0);
                     return false;
                 }
-                // A secured session met a packet its current keys cannot
-                // open: a selector announced before its key material arrived
-                // (the peer switches by packet count and bounds its KMREQ
-                // retries), or a stray packet. The reference implementation
-                // counts it as undecryptable and drops it. Likewise optional
-                // encryption with a key this side could not unwrap
+                // Optional encryption with a key this side could not unwrap
                 // (BADSECRET): acknowledge the sequence, discard the payload.
                 context.discard_payload = true;
             } else {

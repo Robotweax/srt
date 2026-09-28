@@ -4564,9 +4564,9 @@ TEST(compat_runtime_drops_undecryptable_data_on_a_secured_enforced_session)
 {
     // A secured CTR session receives a DATA packet on the odd selector before
     // any odd key exists (the peer switches by packet count and bounds its
-    // KMREQ retries), or a stray packet. Enforced encryption must count and
-    // drop it like the reference implementation, not end the connection;
-    // later traffic on the active selector still arrives.
+    // KMREQ retries), or a stray packet. Count and drop it without ending
+    // the connection or acknowledging its sequence: a valid retransmission
+    // of that sequence must still be deliverable.
     const CryptoConfiguration crypto_configuration {
         .passphrase = "secured enforced drop fixture",
         .key_length = 16,
@@ -4626,26 +4626,49 @@ TEST(compat_runtime_drops_undecryptable_data_on_a_secured_enforced_session)
     REQUIRE_EQ(
         receiver.statistics(false, true).total.receiver_undecryptable.packets,
         1U);
+    std::array<std::byte, 16> received {};
+    REQUIRE_EQ(receiver.receive_message(received, false, -1).status,
+        MessageIoStatus::would_block);
 
     EncryptionKey key = EncryptionKey::none;
     const auto ciphertext =
-        encrypt_fixture(*sender_crypto, SequenceNumber {901}, payload, key);
+        encrypt_fixture(*sender_crypto, SequenceNumber {900}, payload, key);
     PacketView genuine {
         .kind = PacketKind::data,
         .payload = ciphertext,
     };
-    genuine.data.sequence = SequenceNumber {901};
-    genuine.data.message_number = 2;
+    genuine.data.sequence = SequenceNumber {900};
+    genuine.data.message_number = 1;
     genuine.data.boundary = MessageBoundary::solo;
     genuine.data.in_order = true;
+    genuine.data.retransmitted = true;
     genuine.data.encryption_key = key;
     genuine.data.destination_socket_id = 450;
     receiver.process_packet(genuine, peer);
     REQUIRE(!receiver.broken());
-    std::array<std::byte, 16> received {};
     const auto result = receiver.receive_message(received, false, -1);
     REQUIRE_EQ(result.status, MessageIoStatus::success);
+    REQUIRE_EQ(result.first_sequence, SequenceNumber {900});
     REQUIRE_EQ(result.bytes, payload.size());
+    REQUIRE(std::equal(payload.begin(), payload.end(), received.begin()));
+
+    // New traffic on the active selector also remains readable.
+    EncryptionKey next_key = EncryptionKey::none;
+    const auto next_ciphertext =
+        encrypt_fixture(*sender_crypto, SequenceNumber {901}, payload,
+            next_key);
+    PacketView next = genuine;
+    next.payload = next_ciphertext;
+    next.data.sequence = SequenceNumber {901};
+    next.data.message_number = 2;
+    next.data.encryption_key = next_key;
+    next.data.retransmitted = false;
+    receiver.process_packet(next, peer);
+    REQUIRE(!receiver.broken());
+    const auto next_result = receiver.receive_message(received, false, -1);
+    REQUIRE_EQ(next_result.status, MessageIoStatus::success);
+    REQUIRE_EQ(next_result.first_sequence, SequenceNumber {901});
+    REQUIRE_EQ(next_result.bytes, payload.size());
     REQUIRE(std::equal(payload.begin(), payload.end(), received.begin()));
 
     // Plaintext on the secured session remains a policy violation.
