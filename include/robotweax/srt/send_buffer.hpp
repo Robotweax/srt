@@ -146,6 +146,15 @@ public:
     [[nodiscard]] std::size_t buffered_payload_bytes() const noexcept;
     [[nodiscard]] std::uint64_t
     buffered_span_milliseconds() const noexcept;
+    // Enqueue time of the oldest packet still buffered, 0 when empty.
+    [[nodiscard]] std::uint64_t
+    first_buffered_enqueue_microseconds() const noexcept
+    {
+        return first_buffered_enqueue_microseconds_;
+    }
+    // Earliest TTL expiration among buffered packets, if any carries one.
+    [[nodiscard]] std::optional<std::uint64_t>
+    next_expiration_microseconds() const noexcept;
 
 private:
     struct Slot {

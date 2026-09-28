@@ -295,6 +295,10 @@ private:
             }
         }
 
+        // Input that outpaces the polling cadence is cheaper to collect in
+        // timed batches than to be woken for datagram by datagram; a socket
+        // that yields at most one datagram per slice parks on readiness.
+        input_busy_ = received_count >= busy_receive_threshold;
         auto result = poll_connections();
         // A full slice can leave UDP input unread. After would_block, however,
         // the receive queue is drained: preserve the connection poll deadline
@@ -305,6 +309,7 @@ private:
         }
         return result;
     }
+    static constexpr std::size_t busy_receive_threshold = 2;
     [[nodiscard]] RuntimePollResult poll_connections(
         std::optional<std::chrono::steady_clock::time_point> injected_now =
             std::nullopt) noexcept;
@@ -352,6 +357,8 @@ private:
     std::shared_ptr<SocketReadiness> socket_readiness_;
     SocketReadiness::Token socket_watch_ {};
     bool readiness_parked_ = false;
+    // Set by the receive slice that precedes each connection poll.
+    bool input_busy_ = false;
     std::atomic_bool readiness_available_ = false;
     bool force_timer_polling_for_testing_ = false;
     std::shared_ptr<ScheduledWorkContext> scheduled_work_context_;

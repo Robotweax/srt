@@ -3485,3 +3485,76 @@ TEST(session_ackack_shorter_rtt_repeats_filter_nak_before_live_deadline)
     REQUIRE_EQ(
         receiver.drop_too_late_receiver(71'000).receiver_drop_packets, 0U);
 }
+
+TEST(session_next_sender_deadline_reports_rto_too_late_drop_and_ttl)
+{
+    ReliabilitySession sender {{
+        .local_initial_sequence = SequenceNumber {10},
+        .peer_initial_sequence = SequenceNumber {100},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+        .maximum_payload_size = 4,
+    }};
+    REQUIRE(!sender.next_sender_deadline().has_value());
+
+    // Live sender with a 200 ms peer latency: too-late threshold is the
+    // larger of latency + 20 ms and 1.02 s.
+    sender.configure_live(
+        {
+            .send_tsbpd = true,
+            .too_late_packet_drop = true,
+            .peer_receive_delay_milliseconds = 200,
+        },
+        0, PacketTimestamp {0});
+    REQUIRE(!sender.next_sender_deadline().has_value());
+
+    const std::array<std::byte, 4> message {
+        std::byte {'l'}, std::byte {'a'}, std::byte {'t'}, std::byte {'e'}};
+    REQUIRE_EQ(sender.queue_message(message, PacketTimestamp {1}, true, 1'000),
+        Error::none);
+    // Nothing in flight: only the too-late drop of the oldest message.
+    REQUIRE_EQ(sender.next_sender_deadline(),
+        std::optional<std::uint64_t> {1'000 + 1'020'000});
+
+    // A message with a TTL brings its expiration forward, plus the
+    // microsecond at which drop_expired_sender_message acts.
+    REQUIRE_EQ(sender.queue_message(
+                   message, PacketTimestamp {2}, true, 1'500, 400'000),
+        Error::none);
+    REQUIRE_EQ(
+        sender.next_sender_deadline(), std::optional<std::uint64_t> {400'001});
+
+    // Once packets are in flight the retransmission timeout competes:
+    // (RTT 100 ms + 4 × 50 ms variation + 2 × 10 ms) + 10 ms = 330 ms after
+    // the send.
+    REQUIRE(sender.next_data_packet().has_value());
+    sender.note_data_packet_sent(2'000);
+    REQUIRE_EQ(sender.next_sender_deadline(),
+        std::optional<std::uint64_t> {2'000 + 330'000});
+
+    // Expiring the TTL message leaves the RTO and the too-late deadline.
+    REQUIRE_EQ(sender.drop_expired_sender_message(400'001).size, 1U);
+    REQUIRE_EQ(
+        sender.next_sender_deadline(), std::optional<std::uint64_t> {332'000});
+    Acknowledgement acknowledgement {
+        .kind = AcknowledgementKind::small,
+        .acknowledgement_number = 1,
+        .next_sequence = SequenceNumber {12},
+    };
+    std::array<std::byte, 16> payload {};
+    REQUIRE(encode_acknowledgement_payload(acknowledgement, payload));
+    MutablePacketView packet;
+    packet.kind = PacketKind::control;
+    packet.control.type = ControlType::acknowledgement;
+    packet.control.type_specific = acknowledgement.acknowledgement_number;
+    packet.control.destination_socket_id = 900;
+    packet.payload = payload;
+    std::array<std::byte, packet_header_size + 16U> datagram {};
+    REQUIRE(encode_packet(packet, datagram));
+    const auto decoded_packet = decode_packet(datagram);
+    REQUIRE(decoded_packet);
+    REQUIRE(sender.receive(decoded_packet.packet, 340'000));
+    REQUIRE_EQ(sender.send_buffer().size(), 0U);
+    REQUIRE(!sender.next_sender_deadline().has_value());
+}

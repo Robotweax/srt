@@ -1197,6 +1197,29 @@ ReliabilitySession::next_receive_delivery_time() noexcept
     return std::min(message_delivery, next_delivery.value_or(message_delivery));
 }
 
+std::optional<std::uint64_t>
+ReliabilitySession::next_receive_drop_deadline() noexcept
+{
+    if (!tsbpd_clock_.has_value() || !live_options_.receive_tsbpd
+        || !live_options_.too_late_packet_drop) {
+        return std::nullopt;
+    }
+    std::optional<std::uint64_t> deadline;
+    for (const auto& pending : pending_peer_drops_) {
+        if (!deadline.has_value()
+            || pending.deadline_microseconds < *deadline) {
+            deadline = pending.deadline_microseconds;
+        }
+    }
+    const auto message = receive_buffer_.first_complete_message();
+    if (!message.has_value()
+        || message->first_sequence == receive_buffer_.first_stored_sequence()) {
+        return deadline;
+    }
+    const auto delivery = tsbpd_clock_->delivery_time(message->timestamp);
+    return std::min(delivery, deadline.value_or(delivery));
+}
+
 ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
     std::uint64_t now_microseconds) noexcept
 {
@@ -1385,6 +1408,36 @@ void ReliabilitySession::note_data_packet_sent(
 {
     timer_scheduler_.on_packet_sent(now_microseconds);
     sender_retransmission_timer_.on_data_packet_sent(now_microseconds);
+}
+
+std::optional<std::uint64_t>
+ReliabilitySession::next_sender_deadline() const noexcept
+{
+    std::optional<std::uint64_t> deadline;
+    const auto consider = [&](std::optional<std::uint64_t> candidate) {
+        if (candidate.has_value()
+            && (!deadline.has_value() || *candidate < *deadline)) {
+            deadline = candidate;
+        }
+    };
+    if (send_buffer_.packets_in_flight() != 0U) {
+        consider(sender_retransmission_timer_.next_deadline(
+            rtt_.smoothed_microseconds(), rtt_.variation_microseconds()));
+    }
+    if (send_buffer_.size() == 0U) {
+        return deadline;
+    }
+    const auto oldest = send_buffer_.first_buffered_enqueue_microseconds();
+    if (sender_drop_threshold_microseconds_ != 0U && oldest != 0U) {
+        // drop_too_late_sender drops once now - threshold >= enqueue time.
+        consider(oldest + sender_drop_threshold_microseconds_);
+    }
+    const auto expiration = send_buffer_.next_expiration_microseconds();
+    if (expiration.has_value()) {
+        // drop_expired_sender_message drops once now exceeds the expiration.
+        consider(*expiration + 1U);
+    }
+    return deadline;
 }
 
 bool ReliabilitySession::poll_sender_retransmission_timeout(

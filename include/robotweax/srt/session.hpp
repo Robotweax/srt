@@ -320,6 +320,13 @@ public:
         std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] std::optional<std::uint64_t>
     next_receive_delivery_time() noexcept;
+    // Earliest time at which drop_too_late_receiver has something to do: a
+    // peer drop request's deadline, or the delivery time of the first complete
+    // message behind a gap when too-late packet drop is negotiated. Unlike
+    // next_receive_delivery_time() this ignores messages that merely become
+    // deliverable, so an already readable channel need not wake per packet.
+    [[nodiscard]] std::optional<std::uint64_t>
+    next_receive_drop_deadline() noexcept;
     [[nodiscard]] ReliabilityProcessResult
     drop_too_late_receiver(
         std::uint64_t now_microseconds) noexcept;
@@ -359,6 +366,11 @@ public:
     }
     [[nodiscard]] bool poll_sender_retransmission_timeout(
         std::uint64_t now_microseconds) noexcept;
+    // Earliest time at which timer-driven sender work becomes due: the
+    // retransmission timeout, the too-late drop of the oldest buffered
+    // message or a message TTL. Empty when nothing is buffered or in flight.
+    [[nodiscard]] std::optional<std::uint64_t>
+    next_sender_deadline() const noexcept;
     [[nodiscard]] ReliabilityActions drop_too_late_sender(
         std::uint64_t now_microseconds,
         std::uint32_t threshold_microseconds) noexcept;

@@ -6,15 +6,32 @@ and setup channels need no protocol timer. Established quiescent connections
 retain full/lite ACK, keepalive and peer-idle deadlines. DATA, ACK and handshake
 wire formats, negotiated capabilities and the public SRT C ABI are unchanged.
 
-## Conservative eligibility
+## Eligibility
 
 Long waits apply only after a complete bounded channel-poll round confirms that
-every connection is safe to wait. Send buffers, occupied receive buffers,
-receive losses, pending peer drops, delivery deadlines and outstanding key
-material retain the existing short polling path. Pacing, retransmission, FEC,
-UDP-backpressure retries and the 64-item fairness budgets keep their existing
-behavior. This change primarily benefits quiet channels; a busy connection on a
-shared listener still keeps that channel on the active scheduling path.
+every connection is safe to wait. A connection is safe to wait whenever it has
+nothing to send right now: every remaining duty is then either driven by an
+inbound datagram, which the readiness watcher reports, or by a deadline the
+connection states exactly — the ACK/NAK/keepalive cadence, the TSBPD delivery
+time while the channel is not yet readable, receiver too-late and peer drop
+deadlines, the retransmission timeout, the sender too-late drop and message
+TTL, the KMREQ retry and the peer-idle timeout. Buffered but undeliverable
+data, unacknowledged packets in flight and outstanding key material therefore
+no longer keep a channel on the short polling path. Pacing, retransmission,
+FEC, UDP-backpressure retries and the 64-item fairness budgets keep their
+existing behavior.
+
+Two rules keep this from costing more than the fixed cadence did. A socket
+whose receive slice collects more than one datagram is busy: input arrives
+faster than the polling cadence, and collecting it in timed batches is cheaper
+than a wake-up per datagram, so such a channel keeps polling until a slice
+finds at most one datagram. And timer duties keep the polling cadence as their
+granularity: a parked channel wakes for the earliest deadline among its
+connections, but never sooner than the cadence, so many connections with
+staggered 10 ms timers on one shared socket do not wake it for each of them.
+Pacing deadlines stay exact. A readable channel does not wake for the delivery
+time of every further message; blocking readers, epoll waiters and group
+receives time those deliveries themselves.
 
 Connection registration and setup promotion wake parked channels. New send work
 cancels a later timer or records a continuation while a task is active.

@@ -784,7 +784,11 @@ TEST(compat_runtime_reports_the_next_paced_send_deadline)
     ++now;
     const RuntimePollResult ready = runtime.poll();
     REQUIRE(!ready.immediate_work);
-    REQUIRE(!ready.next_work_delay.has_value());
+    // Everything is in flight: the next duty is the retransmission timeout
+    // or a control timer, and inbound ACKs arrive through socket readiness.
+    REQUIRE(ready.receive_wait_safe);
+    REQUIRE(ready.next_work_delay.has_value());
+    REQUIRE(*ready.next_work_delay > std::chrono::milliseconds {1});
     REQUIRE_EQ(take_datagrams(output).size(), 1U);
 }
 
@@ -820,7 +824,11 @@ TEST(compat_runtime_waits_for_key_response_without_runnable_send_work)
 
     const RuntimePollResult waiting = runtime.poll();
     REQUIRE(!waiting.immediate_work);
-    REQUIRE(!waiting.next_work_delay.has_value());
+    // The KMRSP arrives through socket readiness; the only timed duty is
+    // the 100 ms KMREQ retry.
+    REQUIRE(waiting.receive_wait_safe);
+    REQUIRE(waiting.next_work_delay.has_value());
+    REQUIRE_EQ(*waiting.next_work_delay, std::chrono::milliseconds {100});
     const auto datagrams = take_datagrams(output);
     REQUIRE_EQ(datagrams.size(), 1U);
     const auto decoded = decode_packet(datagrams.front());
@@ -5313,6 +5321,71 @@ TEST(compat_runtime_drains_tsbpd_message_after_peer_shutdown)
     REQUIRE_EQ(runtime.receive_message(
                    received, false, -1).status,
         MessageIoStatus::peer_closed);
+}
+
+TEST(compat_runtime_waits_for_the_tsbpd_delivery_deadline_with_buffered_data)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {
+        .address = {192, 0, 2, 14},
+        .port = 11'004,
+    };
+    std::uint64_t now = 2'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 301,
+        .initial_sequence = SequenceNumber {3'100},
+        .negotiated_options =
+            {
+                .receive_tsbpd = true,
+                .receive_delay_milliseconds = 120,
+            },
+        .origin = ConnectionRuntime::Clock::now(),
+        .handshake_arrival_microseconds = 1'000,
+        .peer_handshake_timestamp = PacketTimestamp {0},
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+
+    const std::array<std::byte, 3> payload {
+        std::byte {'s'}, std::byte {'r'}, std::byte {'t'}};
+    PacketView data;
+    data.kind = PacketKind::data;
+    data.data.sequence = SequenceNumber {3'100};
+    data.data.message_number = 1;
+    data.data.boundary = MessageBoundary::solo;
+    data.data.timestamp = PacketTimestamp {50};
+    data.payload = payload;
+    runtime.process_packet(data, peer);
+
+    // Data is buffered until 121'050. Instead of polling every 2 ms the
+    // channel may wait on socket readiness up to its next timer, here the
+    // 10 ms acknowledgement cadence.
+    const RuntimePollResult buffered = runtime.poll();
+    REQUIRE(!buffered.immediate_work);
+    REQUIRE(buffered.receive_wait_safe);
+    REQUIRE(buffered.next_work_delay.has_value());
+    REQUIRE(*buffered.next_work_delay > std::chrono::microseconds {0});
+    REQUIRE(*buffered.next_work_delay <= std::chrono::milliseconds {10});
+
+    // Just before delivery the delivery deadline itself bounds the wait.
+    now = 121'049;
+    REQUIRE(!runtime.readable());
+    const RuntimePollResult almost = runtime.poll();
+    REQUIRE(almost.receive_wait_safe);
+    REQUIRE_EQ(almost.next_work_delay,
+        std::optional<std::chrono::microseconds> {
+            std::chrono::microseconds {1}});
+
+    now = 121'050;
+    (void)runtime.poll();
+    REQUIRE(runtime.readable());
+    std::array<std::byte, 3> received {};
+    REQUIRE_EQ(runtime.receive_message(received, false, -1).status,
+        MessageIoStatus::success);
 }
 
 TEST(compat_runtime_finishes_a_deferred_peer_drop_before_end_of_stream)

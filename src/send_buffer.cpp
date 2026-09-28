@@ -811,6 +811,28 @@ std::size_t SendBuffer::buffered_payload_bytes() const noexcept
     return buffered_plaintext_bytes_;
 }
 
+std::optional<std::uint64_t>
+SendBuffer::next_expiration_microseconds() const noexcept
+{
+    if (expiring_packet_count_ == 0U) {
+        return std::nullopt;
+    }
+    std::optional<std::uint64_t> earliest;
+    std::size_t remaining = expiring_packet_count_;
+    for (std::size_t offset = 0; offset < sequence_span_ && remaining != 0U;
+        ++offset) {
+        const auto& slot = slots_[(head_ + offset) % capacity()];
+        if (!slot.occupied || slot.expiration_microseconds == 0U) {
+            continue;
+        }
+        --remaining;
+        if (!earliest.has_value() || slot.expiration_microseconds < *earliest) {
+            earliest = slot.expiration_microseconds;
+        }
+    }
+    return earliest;
+}
+
 std::uint64_t SendBuffer::buffered_span_milliseconds() const noexcept
 {
     if (occupied_count_ == 0U) {

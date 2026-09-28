@@ -25,6 +25,8 @@ namespace {
 
 constexpr std::size_t maximum_send_batch = 64;
 constexpr std::size_t maximum_connection_polls = 64;
+// An unanswered KMREQ is repeated at this interval.
+constexpr std::uint64_t key_material_retry_interval_microseconds = 100'000;
 
 [[nodiscard]] bool has_valid_runtime_key_material_payload(
     std::uint16_t subtype, std::span<const std::byte> payload) noexcept
@@ -1232,16 +1234,28 @@ RuntimePollResult DatagramChannel::poll_connections(
         poll_round_immediate_ |= result.immediate_work;
         const bool can_wait =
             readiness_available_.load(std::memory_order_acquire)
-            && result.receive_wait_safe;
+            && result.receive_wait_safe && !input_busy_;
         poll_round_receive_wait_safe_ &= can_wait;
         if (can_wait && !result.next_work_delay.has_value()) {
             continue;
         }
-        const auto delay = can_wait
-            ? *result.next_work_delay
-            : std::min(result.next_work_delay.value_or(idle_wait_),
-                  std::chrono::duration_cast<std::chrono::microseconds>(
-                      idle_wait_));
+        const auto idle_wait =
+            std::chrono::duration_cast<std::chrono::microseconds>(idle_wait_);
+        // Timer duties (ACK/NAK cadence, delivery, drops, retransmission
+        // timeouts) keep the polling cadence as their granularity: a parked
+        // channel wakes for the earliest of them, but never more often than
+        // idle_wait_, and a channel that keeps polling for busy input stays
+        // on the cadence. Otherwise many connections with staggered 10 ms
+        // timers would wake one shared socket for each of them, far more
+        // often than the fixed cadence ever did. Pacing deadlines are not
+        // receive-wait-safe and stay exact.
+        std::chrono::microseconds delay = idle_wait;
+        if (!result.receive_wait_safe) {
+            delay = std::min(
+                result.next_work_delay.value_or(idle_wait_), idle_wait);
+        } else if (can_wait) {
+            delay = std::max(*result.next_work_delay, idle_wait);
+        }
         // Store an absolute deadline: each continuation must not restart an
         // earlier connection's pacing/backpressure/idle wait.
         const auto deadline = polled_at + delay;
@@ -2508,14 +2522,12 @@ bool ConnectionRuntime::service_key_rotation(
     if (key_material.empty()) {
         return true;
     }
-    constexpr std::uint64_t retry_interval_microseconds = 100'000;
     const bool clock_moved_backwards =
         now < last_key_material_send_microseconds_;
-    const bool retry_due =
-        last_key_material_send_microseconds_ == 0U
+    const bool retry_due = last_key_material_send_microseconds_ == 0U
         || clock_moved_backwards
         || now - last_key_material_send_microseconds_
-            >= retry_interval_microseconds;
+            >= key_material_retry_interval_microseconds;
     if (!retry_due) {
         return true;
     }
@@ -3273,21 +3285,39 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     const bool paced_work =
         filter_pending || (pending && !flow_blocked && !crypto_blocked);
     if (!paced_work) {
-        // Start conservatively: buffered DATA, receive delivery/drop work and
-        // pending key exchanges retain the established short polling path.
-        if (!session_.idle_for_receive_wait()
-            || session_.next_receive_delivery_time().has_value()
-            || (crypto_ != nullptr
-                && !crypto_->pending_key_material().empty())) {
-            return {};
-        }
+        // Nothing to send right now. Every remaining duty of this poll is
+        // either driven by an inbound datagram, which the readiness watcher
+        // reports, or by one of the deadlines below, so the channel can wait
+        // for exactly the earliest of them instead of polling every 2 ms
+        // while data sits in a buffer.
         const auto current = now_microseconds();
         const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
-        const auto timeout = last_peer_activity_microseconds_
+        std::uint64_t deadline = last_peer_activity_microseconds_
             + std::min(peer_idle_timeout_microseconds_ + 1U,
                 maximum - last_peer_activity_microseconds_);
-        const auto deadline =
-            std::min(timeout, session_.next_control_deadline(current));
+        const auto consider = [&](std::optional<std::uint64_t> candidate) {
+            if (candidate.has_value() && *candidate < deadline) {
+                deadline = *candidate;
+            }
+        };
+        // ACK, NAK, keepalive and the loss timer.
+        consider(session_.next_control_deadline(current));
+        // A TSBPD delivery time matters to this poll only while it can flip
+        // the channel readable or drop a stale gap. Once readable, blocking
+        // readers, epoll waiters and group receives time the delivery of
+        // further messages themselves, so a busy receiver must not wake for
+        // every packet's individual deadline.
+        if (!last_readable_state_) {
+            consider(session_.next_receive_delivery_time());
+        } else {
+            consider(session_.next_receive_drop_deadline());
+        }
+        // Retransmission timeout, sender too-late drop and message TTL.
+        consider(session_.next_sender_deadline());
+        if (crypto_ != nullptr && !crypto_->pending_key_material().empty()) {
+            consider(last_key_material_send_microseconds_
+                + key_material_retry_interval_microseconds);
+        }
         const auto remaining = deadline > current ? deadline - current : 0U;
         return {.next_work_delay =
                     std::chrono::microseconds {
