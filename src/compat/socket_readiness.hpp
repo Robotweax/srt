@@ -8,7 +8,8 @@
 
 namespace robotweax::srt::compat {
 
-// One bounded, level-triggered poll/WSAPoll watcher per scheduler. Each arm
+// One bounded, level-triggered readiness watcher per scheduler, backed by
+// epoll (Linux), kqueue (Apple/BSD) or poll/WSAPoll elsewhere. Each arm
 // produces at most one notification; protocol work stays on scheduler shards.
 class SocketReadiness {
 public:
@@ -43,6 +44,9 @@ public:
     void cancel(Token token) noexcept;
     void stop() noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
+    // True when arming registers the interest with the kernel directly, so
+    // arm() neither wakes the watcher nor rebuilds a descriptor set.
+    [[nodiscard]] static bool arms_without_wake() noexcept;
 
 private:
     struct State;

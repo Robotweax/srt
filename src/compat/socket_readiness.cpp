@@ -1,7 +1,9 @@
 #include "compat/socket_readiness.hpp"
 #include "robotweax/srt/udp.hpp"
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <cerrno>
 #include <condition_variable>
 #include <limits>
@@ -16,12 +18,38 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <winsock2.h>
+#define ROBOTWEAX_READINESS_POLL 1
+#elif defined(__linux__)
+#include <sys/epoll.h>
+#include <unistd.h>
+#define ROBOTWEAX_READINESS_EPOLL 1
+#elif (defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__)       \
+    || defined(__OpenBSD__) || defined(__DragonFly__))                         \
+    && UINTPTR_MAX >= UINT64_MAX
+#include <sys/event.h>
+#include <sys/time.h>
+#include <unistd.h>
+#define ROBOTWEAX_READINESS_KQUEUE 1
 #else
 #include <poll.h>
+#define ROBOTWEAX_READINESS_POLL 1
 #endif
+
+// Three backends share one contract: a watch is armed at most once per
+// notification, protocol work never runs on the watcher thread, and a
+// cancelled watch is never reported again.
+//
+// epoll/kqueue: the kernel keeps the interest set, so arming and cancelling
+// are O(1) control calls from any thread and need no wake-up of the watcher.
+// A one-shot interest delivers a single readiness event and disables itself
+// until the next arm. poll/WSAPoll: the watcher rebuilds its descriptor array
+// from the armed entries per wait, so every arm and cancel wakes it through
+// a loopback datagram (Windows, and hosts without the other two).
 
 namespace robotweax::srt::compat {
 namespace {
+
+#if defined(ROBOTWEAX_READINESS_POLL)
 #if defined(_WIN32)
 using Descriptor = WSAPOLLFD;
 constexpr short read_events = POLLRDNORM;
@@ -36,7 +64,38 @@ Descriptor descriptor(std::uintptr_t socket) noexcept
     result.events = read_events;
     return result;
 }
+#endif
+
+constexpr int wait_timeout_milliseconds = 100;
+constexpr std::size_t maximum_events_per_wait = 64;
+// Kernel events carry a 64-bit value (a pointer-sized value for kqueue). Use
+// only as many low bits as the configured capacity needs for the slot and
+// leave the top bit clear to distinguish the wake marker. The remaining bits
+// preserve far more than 32 bits of generation on normal-sized watchers.
+constexpr std::uint64_t wake_marker =
+    (std::numeric_limits<std::uint64_t>::max)();
+
+[[nodiscard]] constexpr unsigned slot_bits_for_capacity(
+    std::size_t capacity) noexcept
+{
+    return (std::max)(1U,
+        static_cast<unsigned>(
+            std::bit_width(capacity > 1U ? capacity - 1U : 0U)));
 }
+[[nodiscard]] constexpr std::uint64_t pack_token(std::size_t slot,
+    std::uint64_t generation, unsigned slot_bits,
+    std::uint64_t generation_mask) noexcept
+{
+    return ((generation & generation_mask) << slot_bits)
+        | static_cast<std::uint64_t>(slot);
+}
+static_assert(slot_bits_for_capacity(8'192) == 13U);
+static_assert((pack_token(7, 1ULL << 32U, 13U, wake_marker >> 14U) >> 13U)
+    == (1ULL << 32U));
+static_assert((pack_token(8'191, 1ULL << 32U, 13U, wake_marker >> 14U)
+                  & ((1ULL << 13U) - 1U))
+    == 8'191U);
+} // namespace
 
 struct SocketReadiness::State {
     struct Entry {
@@ -46,17 +105,39 @@ struct SocketReadiness::State {
         bool active = false;
         bool armed = false;
         bool retiring = false;
+        // epoll/kqueue: the socket is known to the kernel queue.
+        bool registered = false;
     };
     explicit State(std::size_t capacity)
         : entries(capacity)
+#if !defined(ROBOTWEAX_READINESS_POLL)
+        , slot_bits(slot_bits_for_capacity(capacity))
+        , slot_mask(
+              slot_bits < 64U ? wake_marker >> (64U - slot_bits) : wake_marker)
+        , generation_mask(
+              slot_bits < 63U ? wake_marker >> (slot_bits + 1U) : 0U)
+#endif
     {
         free_slots.reserve(capacity);
-        descriptors.reserve(capacity + 1U);
         tokens.reserve(capacity);
         callbacks.reserve(capacity);
+#if defined(ROBOTWEAX_READINESS_POLL)
+        descriptors.reserve(capacity + 1U);
+#else
+        // queue_wait() is noexcept and receives at most this many events.
+        ready.reserve(maximum_events_per_wait);
+#endif
         for (std::size_t index = capacity; index != 0U; --index) {
             free_slots.push_back(index - 1U);
         }
+    }
+    ~State()
+    {
+#if defined(ROBOTWEAX_READINESS_EPOLL) || defined(ROBOTWEAX_READINESS_KQUEUE)
+        if (queue >= 0) {
+            (void)::close(queue);
+        }
+#endif
     }
     void wake() noexcept
     {
@@ -76,6 +157,130 @@ struct SocketReadiness::State {
             }
         }
     }
+
+#if defined(ROBOTWEAX_READINESS_EPOLL)
+    [[nodiscard]] bool open_queue() noexcept
+    {
+        queue = ::epoll_create1(EPOLL_CLOEXEC);
+        if (queue < 0) {
+            return false;
+        }
+        epoll_event event {};
+        event.events = EPOLLIN;
+        event.data.u64 = wake_marker;
+        return ::epoll_ctl(queue, EPOLL_CTL_ADD,
+                   static_cast<int>(wake_socket.native_handle()), &event)
+            == 0;
+    }
+    // Arms one readiness delivery; the interest disables itself afterwards.
+    [[nodiscard]] bool queue_arm(Entry& entry, std::size_t slot) noexcept
+    {
+        epoll_event event {};
+        event.events = EPOLLIN | EPOLLONESHOT;
+        event.data.u64 =
+            pack_token(slot, entry.generation, slot_bits, generation_mask);
+        const int operation = entry.registered ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
+        if (::epoll_ctl(
+                queue, operation, static_cast<int>(entry.socket), &event)
+            != 0) {
+            return false;
+        }
+        entry.registered = true;
+        return true;
+    }
+    void queue_remove(Entry& entry) noexcept
+    {
+        if (entry.registered) {
+            (void)::epoll_ctl(
+                queue, EPOLL_CTL_DEL, static_cast<int>(entry.socket), nullptr);
+            entry.registered = false;
+        }
+    }
+    // Returns the number of events, 0 on timeout/interrupt, -1 on failure.
+    // Wake events are drained and reported as `woken`.
+    int queue_wait(std::vector<std::uint64_t>& payloads, bool& woken) noexcept
+    {
+        std::array<epoll_event, maximum_events_per_wait> events {};
+        const int result = ::epoll_wait(queue, events.data(),
+            static_cast<int>(events.size()), wait_timeout_milliseconds);
+        if (result < 0) {
+            return errno == EINTR ? 0 : -1;
+        }
+        for (int index = 0; index < result; ++index) {
+            if (events[static_cast<std::size_t>(index)].data.u64
+                == wake_marker) {
+                woken = true;
+                continue;
+            }
+            payloads.push_back(
+                events[static_cast<std::size_t>(index)].data.u64);
+        }
+        return result;
+    }
+    int queue = -1;
+#elif defined(ROBOTWEAX_READINESS_KQUEUE)
+    [[nodiscard]] bool open_queue() noexcept
+    {
+        queue = ::kqueue();
+        if (queue < 0) {
+            return false;
+        }
+        struct kevent change;
+        EV_SET(&change, wake_socket.native_handle(), EVFILT_READ, EV_ADD, 0, 0,
+            reinterpret_cast<void*>(wake_marker));
+        return ::kevent(queue, &change, 1, nullptr, 0, nullptr) == 0;
+    }
+    [[nodiscard]] bool queue_arm(Entry& entry, std::size_t slot) noexcept
+    {
+        struct kevent change;
+        // EV_DISPATCH disables the filter after one delivery; EV_ADD on an
+        // existing filter re-enables it with the new payload.
+        EV_SET(&change, entry.socket, EVFILT_READ,
+            EV_ADD | EV_ENABLE | EV_DISPATCH, 0, 0,
+            reinterpret_cast<void*>(pack_token(
+                slot, entry.generation, slot_bits, generation_mask)));
+        if (::kevent(queue, &change, 1, nullptr, 0, nullptr) != 0) {
+            return false;
+        }
+        entry.registered = true;
+        return true;
+    }
+    void queue_remove(Entry& entry) noexcept
+    {
+        if (entry.registered) {
+            struct kevent change;
+            EV_SET(
+                &change, entry.socket, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
+            (void)::kevent(queue, &change, 1, nullptr, 0, nullptr);
+            entry.registered = false;
+        }
+    }
+    int queue_wait(std::vector<std::uint64_t>& payloads, bool& woken) noexcept
+    {
+        std::array<struct kevent, maximum_events_per_wait> events {};
+        const timespec timeout {
+            .tv_sec = 0,
+            .tv_nsec = wait_timeout_milliseconds * 1'000'000L,
+        };
+        const int result = ::kevent(queue, nullptr, 0, events.data(),
+            static_cast<int>(events.size()), &timeout);
+        if (result < 0) {
+            return errno == EINTR ? 0 : -1;
+        }
+        for (int index = 0; index < result; ++index) {
+            const auto payload = reinterpret_cast<std::uintptr_t>(
+                events[static_cast<std::size_t>(index)].udata);
+            if (static_cast<std::uint64_t>(payload) == wake_marker) {
+                woken = true;
+                continue;
+            }
+            payloads.push_back(static_cast<std::uint64_t>(payload));
+        }
+        return result;
+    }
+    int queue = -1;
+#endif
+
     std::mutex mutex;
     std::condition_variable poll_finished;
     std::uint64_t poll_epoch = 0;
@@ -85,9 +290,18 @@ struct SocketReadiness::State {
     UdpSocket wake_socket;
     IpEndpoint wake_endpoint {};
     std::vector<Entry> entries;
+#if !defined(ROBOTWEAX_READINESS_POLL)
+    unsigned slot_bits;
+    std::uint64_t slot_mask;
+    std::uint64_t generation_mask;
+#endif
     std::vector<std::size_t> free_slots;
     // The following scratch arrays have one owner: the watcher thread.
+#if defined(ROBOTWEAX_READINESS_POLL)
     std::vector<Descriptor> descriptors;
+#else
+    std::vector<std::uint64_t> ready;
+#endif
     std::vector<Token> tokens;
     std::vector<Callback> callbacks;
     Snapshot counters;
@@ -104,6 +318,15 @@ SocketReadiness::~SocketReadiness()
     stop();
 }
 
+bool SocketReadiness::arms_without_wake() noexcept
+{
+#if defined(ROBOTWEAX_READINESS_POLL)
+    return false;
+#else
+    return true;
+#endif
+}
+
 bool SocketReadiness::start() noexcept
 {
     std::lock_guard lifecycle_lock(lifecycle_mutex_);
@@ -113,6 +336,9 @@ bool SocketReadiness::start() noexcept
     }
     state_->started = true;
     if (state_->stopping || state_->entries.empty()
+#if !defined(ROBOTWEAX_READINESS_POLL)
+        || state_->generation_mask == 0U
+#endif
         || state_->wake_socket.bind(IpEndpoint::loopback()) != Error::none) {
         return false;
     }
@@ -121,6 +347,11 @@ bool SocketReadiness::start() noexcept
         return false;
     }
     state_->wake_endpoint = endpoint.endpoint;
+#if !defined(ROBOTWEAX_READINESS_POLL)
+    if (!state_->open_queue()) {
+        return false;
+    }
+#endif
     state_->counters.running = true;
     try {
         worker_ = std::thread(run, state_);
@@ -151,6 +382,7 @@ SocketReadiness::Token SocketReadiness::watch(
     entry.active = true;
     entry.armed = false;
     entry.retiring = false;
+    entry.registered = false;
     ++state_->counters.registered;
     return {slot, entry.generation};
 }
@@ -170,8 +402,19 @@ bool SocketReadiness::arm(Token token) noexcept
         if (entry.armed) {
             return true;
         }
+#if !defined(ROBOTWEAX_READINESS_POLL)
+        // The kernel queue takes the interest directly; a concurrent wait
+        // observes it without being woken.
+        if (!state_->queue_arm(entry, token.slot)) {
+            return false;
+        }
         entry.armed = true;
         ++state_->counters.armed;
+        return true;
+#else
+        entry.armed = true;
+        ++state_->counters.armed;
+#endif
     }
     state_->wake();
     return true;
@@ -197,20 +440,31 @@ void SocketReadiness::cancel(Token token) noexcept
             entry.active = entry.armed = false;
             entry.retiring = true;
             retired_callback = std::move(entry.callback);
+#if !defined(ROBOTWEAX_READINESS_POLL)
+            // Removing the interest under the lock means no later wait can
+            // report this socket; an event already returned is discarded by
+            // its generation. The caller may close the socket at once.
+            state_->queue_remove(entry);
+#endif
         }
+#if defined(ROBOTWEAX_READINESS_POLL)
         pending_epoch = state_->poll_epoch;
         if (pending_epoch > state_->completed_poll_epoch) {
             ++state_->cancellation_waiters;
         } else {
             pending_epoch = 0;
         }
+#endif
     }
+#if defined(ROBOTWEAX_READINESS_POLL)
     state_->wake();
+#endif
     {
         std::unique_lock lock(state_->mutex);
         if (pending_epoch != 0) {
-            // Removing a watch is not enough: a concurrent poll can retain
-            // the native socket after close and keep its UDP port bound.
+            // Removing a watch is not enough for poll: a concurrent poll can
+            // retain the native socket after close and keep its UDP port
+            // bound.
             state_->poll_finished.wait(lock, [&] {
                 return state_->completed_poll_epoch >= pending_epoch;
             });
@@ -249,6 +503,7 @@ SocketReadiness::Snapshot SocketReadiness::snapshot() const noexcept
     return state_->counters;
 }
 
+#if defined(ROBOTWEAX_READINESS_POLL)
 void SocketReadiness::run(std::shared_ptr<State> state) noexcept
 {
     for (;;) {
@@ -276,11 +531,13 @@ void SocketReadiness::run(std::shared_ptr<State> state) noexcept
         }
 #if defined(_WIN32)
         const int result = WSAPoll(state->descriptors.data(),
-            static_cast<ULONG>(state->descriptors.size()), 100);
+            static_cast<ULONG>(state->descriptors.size()),
+            wait_timeout_milliseconds);
         const bool interrupted = result < 0 && WSAGetLastError() == WSAEINTR;
 #else
         const int result = ::poll(state->descriptors.data(),
-            static_cast<nfds_t>(state->descriptors.size()), 100);
+            static_cast<nfds_t>(state->descriptors.size()),
+            wait_timeout_milliseconds);
         const bool interrupted = result < 0 && errno == EINTR;
 #endif
         const bool idle = interrupted || result == 0;
@@ -332,5 +589,76 @@ void SocketReadiness::run(std::shared_ptr<State> state) noexcept
         }
     }
 }
+#else
+void SocketReadiness::run(std::shared_ptr<State> state) noexcept
+{
+    for (;;) {
+        state->ready.clear();
+        state->callbacks.clear();
+        {
+            std::lock_guard lock(state->mutex);
+            if (state->stopping) {
+                state->counters.running = false;
+                return;
+            }
+            ++state->poll_epoch;
+            ++state->counters.waits;
+        }
+        bool woken = false;
+        const int result = state->queue_wait(state->ready, woken);
+        if (woken) {
+            state->drain_wake();
+        }
+        const bool failed = result < 0;
+        {
+            std::lock_guard lock(state->mutex);
+            state->completed_poll_epoch = state->poll_epoch;
+            if (state->cancellation_waiters != 0) {
+                state->poll_finished.notify_all();
+            }
+            if (failed) {
+                // The queue is unusable: report every armed watch once so
+                // its owner falls back to timer polling, then retire.
+                state->counters.running = false;
+                for (auto& entry : state->entries) {
+                    if (entry.active && entry.armed) {
+                        entry.armed = false;
+                        --state->counters.armed;
+                        ++state->counters.notifications;
+                        state->callbacks.push_back(entry.callback);
+                    }
+                }
+            } else {
+                for (const auto payload : state->ready) {
+                    const auto slot =
+                        static_cast<std::size_t>(payload & state->slot_mask);
+                    const auto generation = payload >> state->slot_bits;
+                    if (slot >= state->entries.size()) {
+                        continue;
+                    }
+                    auto& entry = state->entries[slot];
+                    if (!entry.active || !entry.armed
+                        || (entry.generation & state->generation_mask)
+                            != generation) {
+                        continue;
+                    }
+                    // The one-shot interest is disabled in the kernel until
+                    // the next arm.
+                    entry.armed = false;
+                    --state->counters.armed;
+                    ++state->counters.notifications;
+                    state->callbacks.push_back(entry.callback);
+                }
+            }
+        }
+        for (const auto& callback : state->callbacks) {
+            callback.function(callback.context.get());
+        }
+        if (failed) {
+            return;
+        }
+    }
+}
+#endif
 
 } // namespace robotweax::srt::compat

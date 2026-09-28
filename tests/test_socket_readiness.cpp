@@ -11,6 +11,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <vector>
 
 using namespace robotweax::srt;
 using namespace robotweax::srt::compat;
@@ -164,19 +165,82 @@ TEST(socket_readiness_cancel_allows_immediate_native_port_rebind)
             REQUIRE(token.valid());
             const auto previous_waits = watcher.snapshot().waits;
             REQUIRE(watcher.arm(token));
-            const auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds {2};
-            while (watcher.snapshot().waits == previous_waits
-                && std::chrono::steady_clock::now() < deadline) {
-                std::this_thread::yield();
+            if (!SocketReadiness::arms_without_wake()) {
+                // poll backend: make sure a wait holding this descriptor is
+                // in flight before the cancel, which must outlast it.
+                const auto deadline =
+                    std::chrono::steady_clock::now() + std::chrono::seconds {2};
+                while (watcher.snapshot().waits == previous_waits
+                    && std::chrono::steady_clock::now() < deadline) {
+                    std::this_thread::yield();
+                }
+                REQUIRE(watcher.snapshot().waits > previous_waits);
             }
-            REQUIRE(watcher.snapshot().waits > previous_waits);
             watcher.cancel(token);
             target.reset();
             UdpSocket replacement {family};
             REQUIRE_EQ(replacement.bind(address.endpoint), Error::none);
         }
     }
+}
+
+TEST(socket_readiness_kernel_queue_arms_without_waking_the_watcher)
+{
+    if (!SocketReadiness::arms_without_wake()) {
+        return; // poll backend: every arm wakes the watcher by design.
+    }
+    constexpr std::size_t sockets = 64;
+    SocketReadiness watcher {sockets};
+    REQUIRE(watcher.start());
+    const auto count = std::make_shared<ReadyCount>();
+    std::vector<UdpSocket> targets;
+    std::vector<IpEndpoint> addresses;
+    std::vector<SocketReadiness::Token> tokens;
+    for (std::size_t index = 0; index < sockets; ++index) {
+        auto& target = targets.emplace_back();
+        REQUIRE_EQ(target.bind(IpEndpoint::loopback()), Error::none);
+        const auto address = target.local_endpoint();
+        REQUIRE(address);
+        addresses.push_back(address.endpoint);
+        tokens.push_back(
+            watcher.watch(target.native_handle(), {note_ready, count}));
+        REQUIRE(tokens.back().valid());
+    }
+    // Let the watcher settle into a wait, then arm everything: the interest
+    // set changes in the kernel and no wait is interrupted for it.
+    std::this_thread::sleep_for(std::chrono::milliseconds {20});
+    const auto before = watcher.snapshot();
+    for (const auto token : tokens) {
+        REQUIRE(watcher.arm(token));
+    }
+    const auto after = watcher.snapshot();
+    REQUIRE_EQ(after.armed, sockets);
+    REQUIRE(after.waits <= before.waits + 1U);
+    UdpSocket source;
+    const std::array payload {std::byte {3}};
+    for (const auto& address : addresses) {
+        REQUIRE(source.send_to(payload, address));
+    }
+    wait_count(count, sockets);
+    REQUIRE_EQ(watcher.snapshot().armed, 0U);
+    REQUIRE_EQ(watcher.snapshot().notifications, sockets);
+    // A watch cancelled while its socket stays readable is never reported
+    // again, and a fresh watch on the same socket starts one-shot again.
+    watcher.cancel(tokens.front());
+    const auto reused =
+        watcher.watch(targets.front().native_handle(), {note_ready, count});
+    REQUIRE(reused.valid());
+    REQUIRE_EQ(reused.slot, tokens.front().slot);
+    std::this_thread::sleep_for(std::chrono::milliseconds {20});
+    REQUIRE_EQ(watcher.snapshot().notifications, sockets);
+    REQUIRE(watcher.arm(reused));
+    wait_count(count, sockets + 1U);
+    for (std::size_t index = 1; index < sockets; ++index) {
+        watcher.cancel(tokens[index]);
+    }
+    watcher.cancel(reused);
+    REQUIRE_EQ(watcher.snapshot().registered, 0U);
+    watcher.stop();
 }
 
 TEST(socket_readiness_concurrent_cancel_reclaims_a_slot_once)
