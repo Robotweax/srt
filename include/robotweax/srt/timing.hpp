@@ -125,6 +125,11 @@ private:
     bool armed_ = false;
 };
 
+// Lateness a paced sender may make up without lowering its average rate.
+// The runtime waits for pacing deadlines with a timer; a late wake-up within
+// this credit therefore never costs throughput. It also bounds the catch-up.
+inline constexpr std::uint64_t pacer_schedule_credit_microseconds = 1'000U;
+
 struct PaceDecision {
     bool ready = false;
     std::uint64_t next_ready_microseconds = 0;
@@ -146,6 +151,7 @@ private:
     std::uint64_t bytes_per_second_ = 1;
     std::size_t flow_window_packets_ = 1;
     std::uint64_t next_send_microseconds_ = 0;
+    bool scheduled_ = false;
 };
 
 class TsbpdClock {

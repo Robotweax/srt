@@ -6428,6 +6428,55 @@ struct FairnessFixture {
 
 } // namespace
 
+TEST(compat_channel_waits_for_a_sub_millisecond_pacing_deadline)
+{
+    // A paced backlog whose next slot is under a millisecond away must be
+    // waited for with a timer. Reporting immediate work instead made the
+    // runtime resubmit the channel until the slot arrived, keeping a thread
+    // busy with an empty socket read on every pass.
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    std::uint64_t now = 1'000;
+    FairnessClock clock {.now = &now};
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_payload_size, 16), Error::none);
+    // A 32-byte datagram at 80 kB/s: one packet every 400 us.
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_bandwidth_bytes_per_second, 80'000),
+        Error::none);
+    constexpr std::uint32_t id = 0x3500U;
+    auto runtime =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
+            .channel = channel,
+            .peer = {.address = {192, 0, 2, 95}, .port = 15'095},
+            .peer_socket_id = id,
+            .initial_sequence = SequenceNumber {800},
+            .flow_window_packets = 128,
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+            .now_function = fairness_now,
+            .now_context = &clock,
+        });
+    REQUIRE(channel->register_connection(id, runtime));
+    const std::array<std::byte, 16> payload {};
+    for (int index = 0; index < 4; ++index) {
+        REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+    }
+
+    const auto result = channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    // The pacer starts its schedule with the first packet: no start-up burst.
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
+    REQUIRE(!result.immediate_work);
+    REQUIRE(result.next_work_delay.has_value());
+    REQUIRE(*result.next_work_delay > std::chrono::microseconds {0});
+    REQUIRE(*result.next_work_delay < std::chrono::milliseconds {1});
+    channel->unregister_connection(id);
+}
+
 TEST(compat_channel_fairness_shares_send_budget_and_rotates_busy_routes)
 {
     FairnessFixture fixture;
@@ -6494,9 +6543,13 @@ TEST(compat_channel_fairness_preserves_deadlines_across_continuations)
     REQUIRE(fixture.poll().immediate_work);
     REQUIRE_EQ(fixture.attempted_ids.size(), 1U);
     // Only the last idle connection remains. The earlier 1 ms retry deadline
-    // must not restart when this continuation runs half a millisecond later.
+    // must not restart when this continuation runs half a millisecond later:
+    // the channel waits for the remaining half millisecond, not a full one.
     fixture.now = 1'500;
-    REQUIRE(fixture.poll(std::chrono::microseconds {500}).immediate_work);
+    const auto continued = fixture.poll(std::chrono::microseconds {500});
+    REQUIRE(!continued.immediate_work);
+    REQUIRE(continued.next_work_delay.has_value());
+    REQUIRE_EQ(*continued.next_work_delay, std::chrono::microseconds {500});
     REQUIRE_EQ(fixture.attempted_ids.size(), 1U);
     REQUIRE(!fixture.runtimes.front()->broken());
 }

@@ -1262,10 +1262,14 @@ RuntimePollResult DatagramChannel::poll_connections(
         ? std::chrono::duration_cast<std::chrono::microseconds>(
               *poll_round_deadline_ - current_time())
         : std::chrono::duration_cast<std::chrono::microseconds>(idle_wait_);
-    if (delay < std::chrono::milliseconds {1}) {
-        // Preserve the scheduler's existing cooperative pacing behavior.
+    if (delay <= std::chrono::microseconds::zero()) {
         return {.immediate_work = true};
     }
+    // Wait for every future deadline with a scheduler timer, including a
+    // sub-millisecond pacing deadline. Resubmitting until it arrived kept a
+    // runtime thread busy whenever a sender had a backlog, with an empty
+    // socket read on every pass. The pacer's schedule credit absorbs the
+    // timer's wake-up latency, so the send rate is unchanged.
     return {.next_work_delay = delay, .receive_wait_safe = can_wait};
 }
 

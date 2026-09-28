@@ -109,6 +109,61 @@ TEST(packet_pacer_enforces_rate_and_flow_window)
     REQUIRE(!pacer.query(100'000, 4).ready);
 }
 
+TEST(packet_pacer_keeps_its_rate_when_sends_are_late_within_credit)
+{
+    // 100 bytes at 1 MB/s: one packet every 100 us. Every send happens 60 us
+    // after its slot, as when the runtime wakes up late from a timer. The
+    // schedule keeps the ideal slots, so ten packets still take ten slots.
+    PacketPacer pacer {1'000'000, 64};
+    pacer.on_packet_sent(100, 0);
+    std::uint64_t slot = 100;
+    for (int index = 0; index < 10; ++index) {
+        const std::uint64_t late = slot + 60;
+        const auto decision = pacer.query(late, 0);
+        REQUIRE(decision.ready);
+        REQUIRE_EQ(decision.next_ready_microseconds, slot);
+        pacer.on_packet_sent(100, late);
+        slot += 100;
+    }
+    REQUIRE_EQ(pacer.query(slot - 1, 0).next_ready_microseconds, slot);
+    REQUIRE(!pacer.query(slot - 1, 0).ready);
+}
+
+TEST(packet_pacer_starts_its_schedule_with_the_first_packet)
+{
+    // Protocol time starts near zero, within the credit of the initial slot.
+    // The first packet must still start a fresh schedule instead of letting
+    // the backlog follow at once.
+    PacketPacer pacer {1'000'000, 64};
+    pacer.on_packet_sent(100, 500);
+    REQUIRE(!pacer.query(599, 0).ready);
+    REQUIRE(pacer.query(600, 0).ready);
+}
+
+TEST(packet_pacer_restarts_after_a_pause_longer_than_the_credit)
+{
+    PacketPacer pacer {1'000'000, 64};
+    pacer.on_packet_sent(100, 0);
+    // Idle far beyond the credit: the next send starts a fresh schedule, so
+    // the following packet waits a full interval instead of bursting.
+    const std::uint64_t resume = 100 + pacer_schedule_credit_microseconds + 1;
+    pacer.on_packet_sent(100, resume);
+    REQUIRE(!pacer.query(resume + 99, 0).ready);
+    REQUIRE(pacer.query(resume + 100, 0).ready);
+}
+
+TEST(packet_pacer_bounds_catch_up_by_the_credit)
+{
+    PacketPacer pacer {1'000'000, 64};
+    pacer.on_packet_sent(100, 0);
+    // Late by exactly the credit: the ideal slot is kept and the backlog may
+    // follow at once, up to the credit's worth of packets.
+    const std::uint64_t late = 100 + pacer_schedule_credit_microseconds;
+    pacer.on_packet_sent(100, late);
+    REQUIRE_EQ(pacer.query(late, 0).next_ready_microseconds, 200U);
+    REQUIRE(pacer.query(late, 0).ready);
+}
+
 TEST(tsbpd_clock_schedules_delivery_and_unwraps_timestamp_rollover)
 {
     TsbpdClock clock{1'000'000, PacketTimestamp{100'000}, 120'000};

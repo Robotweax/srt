@@ -277,8 +277,20 @@ void PacketPacer::on_packet_sent(std::size_t bytes,
     const std::uint64_t interval = std::max<std::uint64_t>(1U,
         (static_cast<std::uint64_t>(bytes) * 1'000'000ULL
             + bytes_per_second_ - 1U) / bytes_per_second_);
-    next_send_microseconds_ = std::max(next_send_microseconds_, now_microseconds)
-        + interval;
+    // While the sender keeps up, advance the ideal schedule instead of the
+    // actual send time: a send that is late by at most the credit, for
+    // example because the runtime woke up late, does not lower the average
+    // rate. The catch-up is therefore bounded by the credit. After a gap
+    // longer than the credit (an idle source, a closed flow window) the
+    // schedule restarts at the send time, so such a pause is not followed by
+    // a burst.
+    // The first send has no schedule to keep.
+    const bool on_schedule = scheduled_
+        && now_microseconds
+            <= next_send_microseconds_ + pacer_schedule_credit_microseconds;
+    next_send_microseconds_ =
+        (on_schedule ? next_send_microseconds_ : now_microseconds) + interval;
+    scheduled_ = true;
 }
 
 void PacketPacer::set_rate(std::uint64_t bytes_per_second) noexcept

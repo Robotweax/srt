@@ -66,8 +66,14 @@ idle wait rather than continuously scheduling full sweeps.
 
 Pacing, UDP-retry and idle waits are accumulated as absolute scheduler-clock
 deadlines across slices. Completion subtracts the time already spent, so a later
-slice does not restart an earlier wait. Existing sub-millisecond cooperative
-pacing and protocol timer rules remain in effect. The fairness change adds no
+slice does not restart an earlier wait. Every future deadline, including a
+sub-millisecond pacing slot, is waited for with a scheduler timer; only a
+deadline that has already passed resumes the channel immediately. The live and
+file pacer keeps its ideal send schedule when a send is late by at most 1 ms,
+so the timer's wake-up latency does not lower the configured rate; after a
+longer gap the schedule restarts at the actual send time, and the first packet
+of a connection always starts a fresh schedule. Protocol timer rules are
+unchanged. The fairness change adds no
 worker thread, wire format, public C-ABI field, negotiated feature or buffer
 setting. The subsequent [idle-readiness optimization](idle-readiness.md) adds one
 shared readiness watcher and lets eligible quiet channels wait for events.
