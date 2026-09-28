@@ -29,10 +29,12 @@ keeps its strict greater-than comparison, including the final microsecond.
 
 ## Shared readiness watcher
 
-Each runtime scheduler lazily owns one bounded readiness watcher thread using
-`poll` on POSIX or `WSAPoll` on Windows. The normal process-wide scheduler shares
-that thread across its channels. There is no per-connection thread. Protocol
-processing remains on the existing scheduler shards.
+Each runtime scheduler lazily owns one bounded readiness watcher thread. On
+Linux it waits on an `epoll` queue, on Apple and BSD hosts on a `kqueue`, and
+elsewhere (Windows in particular) on `poll` or `WSAPoll`. The normal
+process-wide scheduler shares that thread across its channels. There is no
+per-connection thread. Protocol processing remains on the existing scheduler
+shards.
 
 Each registration has a generation token and produces one callback per arm.
 Level-triggered rearming also sees packets that arrived between the final
@@ -42,10 +44,19 @@ registration before closing its borrowed UDP descriptor. Already claimed
 callbacks may finish; they cannot resurrect a destroyed channel. Callbacks run
 outside the watcher's registry lock.
 
-Cancellation also waits for an in-progress native poll snapshot to retire before
-the caller closes the socket. On Linux, a concurrent `poll` can retain the native
-socket after `close` returns and briefly keep its UDP port bound. Merely marking
-the registration inactive permits a rapid listener restart to fail with
+With `epoll` and `kqueue` the kernel holds the interest set. Arming is one
+one-shot control call (`EPOLLONESHOT`, `EV_DISPATCH`) from the arming thread;
+it neither wakes the watcher nor rebuilds a descriptor set, and a wait already
+in progress observes the new interest. Delivery disables the interest until the
+next arm, so each arm still yields at most one callback. Cancellation removes
+the interest under the registry lock before returning, so the caller may close
+the native socket at once; an event already fetched for a reused slot is
+discarded by its generation.
+
+With `poll`, cancellation also waits for an in-progress native poll snapshot to
+retire before the caller closes the socket. A concurrent `poll` can retain the
+native socket after `close` returns and briefly keep its UDP port bound. Merely
+marking the registration inactive permits a rapid listener restart to fail with
 `EADDRINUSE`. Cancellation wakes the poll and waits for its recorded generation
 to complete; the registration slot is not reused until then. Callbacks run after
 that completion is recorded, so a callback can cancel its own registration.
@@ -53,10 +64,11 @@ Concurrent cancellation reclaims the slot only once. This changes teardown
 synchronization, not packet processing, socket reuse policy or wire behavior.
 
 The watcher uses one additional loopback UDP socket to interrupt its native
-wait. A shared 100 ms watchdog bounds its stop response if a wake send fails.
-That is up to ten idle native waits per second for the watcher, rather than a
-2 ms task per channel. Descriptor collection still scans bounded registration
-storage; this portable implementation is not an O(1) kernel event queue.
+wait (on every arm and cancel with `poll`, only for stop with the kernel
+queues). A shared 100 ms watchdog bounds its stop response if a wake send
+fails. That is up to ten idle native waits per second for the watcher, rather
+than a 2 ms task per channel. The `poll` fallback still scans bounded
+registration storage per wait; it is not an O(1) kernel event queue.
 
 Registration storage is preallocated to the scheduler's aggregate task-queue
 capacity (8,192 entries with the current production defaults). If watcher
