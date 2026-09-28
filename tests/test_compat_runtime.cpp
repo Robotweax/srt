@@ -7245,6 +7245,74 @@ struct QueuedReceiveSlice {
 
 } // namespace
 
+TEST(compat_channel_receive_slice_busy_input_keeps_the_poll_cadence)
+{
+    auto channel = std::make_shared<DatagramChannel>();
+    channel->set_readiness_available_for_testing(true);
+    std::uint64_t now = 0;
+    auto runtime =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
+            .channel = channel,
+            .peer = Ipv4Endpoint::loopback(10'000),
+            .peer_socket_id = 43,
+            .initial_sequence = SequenceNumber {100},
+            .origin = ConnectionRuntime::Clock::now(),
+            .peer_idle_timeout_milliseconds = 1'500,
+            .now_function = injected_now,
+            .now_context = &now,
+        });
+    REQUIRE(channel->register_connection(42, runtime));
+
+    QueuedReceiveSlice input {.remaining = 1};
+    const auto sparse = channel->run_once_for_testing(input);
+    REQUIRE(sparse.receive_wait_safe);
+    REQUIRE(sparse.next_work_delay.has_value());
+    REQUIRE(*sparse.next_work_delay > std::chrono::milliseconds {900});
+
+    input.remaining = 2;
+    const auto busy = channel->run_once_for_testing(input);
+    REQUIRE(!busy.receive_wait_safe);
+    REQUIRE(busy.next_work_delay.has_value());
+    REQUIRE(*busy.next_work_delay > std::chrono::microseconds::zero());
+    REQUIRE(*busy.next_work_delay <= std::chrono::milliseconds {2});
+
+    const auto quiet_again = channel->run_once_for_testing(input);
+    REQUIRE(quiet_again.receive_wait_safe);
+    REQUIRE(quiet_again.next_work_delay.has_value());
+    REQUIRE(*quiet_again.next_work_delay > std::chrono::milliseconds {900});
+}
+
+TEST(compat_channel_receive_wait_coalesces_staggered_timer_deadlines)
+{
+    auto channel = std::make_shared<DatagramChannel>();
+    channel->set_readiness_available_for_testing(true);
+    std::uint64_t now = 0;
+    for (const std::uint32_t timeout : {1U, 2U}) {
+        auto runtime = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {
+                .channel = channel,
+                .peer = Ipv4Endpoint::loopback(10'000),
+                .peer_socket_id = 43 + timeout,
+                .initial_sequence = SequenceNumber {100},
+                .origin = ConnectionRuntime::Clock::now(),
+                .peer_idle_timeout_milliseconds = timeout,
+                .now_function = injected_now,
+                .now_context = &now,
+            });
+        REQUIRE(channel->register_connection(42 + timeout, runtime));
+    }
+
+    // The first connection's peer-idle deadline is 1001 us away, but the
+    // shared channel retains its 2 ms cadence as the minimum timer wait.
+    const auto result = channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(!result.immediate_work);
+    REQUIRE(result.receive_wait_safe);
+    REQUIRE_EQ(result.next_work_delay,
+        std::optional<std::chrono::microseconds> {
+            std::chrono::milliseconds {2}});
+}
+
 TEST(compat_channel_receive_slice_drained_burst_preserves_the_poll_wait)
 {
     for (const std::size_t packets : {0U, 1U, 63U}) {

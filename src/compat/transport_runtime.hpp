@@ -216,6 +216,12 @@ public:
     void notify_send_work() noexcept;
     void notify_receive_release() noexcept;
     void set_idle_wait_for_testing(std::chrono::milliseconds timeout) noexcept;
+    void set_readiness_available_for_testing(bool available) noexcept
+    {
+        if (!running()) {
+            readiness_available_.store(available, std::memory_order_release);
+        }
+    }
     // Drive one complete receive/poll slice without starting the scheduler.
     [[nodiscard]] RuntimePollResult run_once_for_testing() noexcept
     {
