@@ -75,7 +75,8 @@ class CiBuildScopeTests(unittest.TestCase):
                     status, calls = self.run_preparation(handshake, benchmark)
                     self.assertEqual(status, 0)
                     self.assertEqual(len(calls), 2)
-                    self.assertIn("-DROBOTWEAX_SRT_BUILD_TESTS=OFF", calls[0])
+                    self.assertIn("-DROBOTWEAX_SRT_BUILD_TESTS=ON", calls[0])
+                    self.assertIn("-DBUILD_SHARED_LIBS=OFF", calls[0])
                     self.assertIn("-DROBOTWEAX_SRT_BUILD_TOOLS=ON", calls[0])
                     self.assertIn(
                         "-DROBOTWEAX_SRT_BUILD_BENCHMARKS=" + str(benchmark).lower(),

@@ -1207,10 +1207,12 @@ jobs:
           set -euo pipefail
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DROBOTWEAX_SRT_BUILD_TESTS=OFF \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DROBOTWEAX_SRT_BUILD_TESTS=ON \
             -DROBOTWEAX_SRT_BUILD_TOOLS=ON \
             -DROBOTWEAX_SRT_BUILD_BENCHMARKS="$BENCHMARK"
-          # This job packages peers; test binaries run in the test jobs.
+          # Enable the static peer's rollover fixture, but build only the
+          # selected peer targets; unit-test binaries run in the test jobs.
           targets=(robotweax_srt_interop_peer)
           if [[ "$HANDSHAKE" == "true" ]]; then
             targets+=(robotweax_srt_handshake_probe robotweax_srt_group_peer)
