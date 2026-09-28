@@ -212,7 +212,11 @@ different one. It then reports `SRTO_RCVKMSTATE` NOSECRET or BADSECRET and
 `SRTO_SNDKMSTATE` UNSECURED, as does a peer that answers a runtime KMREQ
 without a secret. The state occupies the first byte of the four-byte value
 (`03 00 00 00` for NOSECRET), the layout the reference implementation
-produces; both byte orders are accepted on input.
+produces; both byte orders are accepted on input. An incompatible cipher or
+invalid key-material format reports BADCRYPTOMODE, not BADSECRET. If setup
+removed an unusable crypto session, subsequent runtime KMREQs retain that
+recorded failure state; they do not relabel a configured but unusable secret
+as missing. This does not enable renegotiation of a rejected crypto session.
 
 With `SRTO_ENFORCEDENCRYPTION=false`, a receiver that cannot decrypt a DATA
 packet, because it has no passphrase (NOSECRET) or could not unwrap the peer's

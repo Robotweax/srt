@@ -3718,7 +3718,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
                 // Answer like the reference implementation: a four-byte KMRSP
                 // with the failure state instead of no response at all.
                 receiver_key_state = key_length_matches
-                    ? CryptoState::bad_secret
+                    ? crypto->receiver_state()
                     : CryptoState::bad_crypto_mode;
                 crypto.reset();
                 set_key_material_state_response(
