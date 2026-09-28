@@ -216,6 +216,18 @@ public:
     void notify_send_work() noexcept;
     void notify_receive_release() noexcept;
     void set_idle_wait_for_testing(std::chrono::milliseconds timeout) noexcept;
+    [[nodiscard]] bool coarse_timer_mode_for_testing() const noexcept
+    {
+        return coarse_timer_mode_.load(std::memory_order_relaxed);
+    }
+    void observe_timer_wake_for_testing(
+        std::uint64_t lateness_microseconds) noexcept
+    {
+        std::lock_guard lifecycle_lock(lifecycle_mutex_);
+        timer_wake_monitor_.observe(lateness_microseconds);
+        coarse_timer_mode_.store(
+            timer_wake_monitor_.coarse(), std::memory_order_relaxed);
+    }
     // Drive one complete receive/poll slice without starting the scheduler.
     [[nodiscard]] RuntimePollResult run_once_for_testing() noexcept
     {
@@ -357,6 +369,10 @@ private:
     std::shared_ptr<ScheduledWorkContext> scheduled_work_context_;
     RuntimeScheduler::TimerToken scheduled_timer_ {};
     std::chrono::steady_clock::time_point scheduled_deadline_ {};
+    // Sub-millisecond deadlines are timer waits unless the host's timer
+    // wake-ups have proven too coarse for the pacer's schedule credit.
+    TimerWakeMonitor timer_wake_monitor_ {};
+    std::atomic_bool coarse_timer_mode_ {false};
     std::uint64_t affinity_ = 0;
     std::chrono::milliseconds idle_wait_ {2};
     std::thread::id active_thread_ {};

@@ -997,6 +997,20 @@ void DatagramChannel::run_scheduled(
             || !running_.load(std::memory_order_relaxed)) {
             return;
         }
+        if (scheduled_timer_.valid()) {
+            // A timer-driven continuation: record how late the host woke
+            // us so sub-millisecond waits can fall back to resubmitting
+            // when the timer is too coarse for the pacer's credit.
+            const auto now = std::chrono::steady_clock::now();
+            const auto lateness = now > scheduled_deadline_
+                ? std::chrono::duration_cast<std::chrono::microseconds>(
+                      now - scheduled_deadline_)
+                : std::chrono::microseconds::zero();
+            timer_wake_monitor_.observe(
+                static_cast<std::uint64_t>(lateness.count()));
+            coarse_timer_mode_.store(
+                timer_wake_monitor_.coarse(), std::memory_order_relaxed);
+        }
         scheduled_timer_ = {};
         task_active_ = true;
         active_thread_ = std::this_thread::get_id();
@@ -1262,8 +1276,18 @@ RuntimePollResult DatagramChannel::poll_connections(
         ? std::chrono::duration_cast<std::chrono::microseconds>(
               *poll_round_deadline_ - current_time())
         : std::chrono::duration_cast<std::chrono::microseconds>(idle_wait_);
-    if (delay < std::chrono::milliseconds {1}) {
-        // Preserve the scheduler's existing cooperative pacing behavior.
+    if (delay <= std::chrono::microseconds::zero()) {
+        return {.immediate_work = true};
+    }
+    // A sub-millisecond deadline (a pacing slot above ~11 Mbit/s at
+    // 1316-byte payloads) is normally a timer wait: resubmitting until the
+    // slot arrived kept a shard busy with an empty recvmsg and a route
+    // sweep per pass. The pacer's schedule credit absorbs the timer's
+    // wake-up latency. Only when the host's timer wake-ups have proven
+    // coarser than that credit does the channel resubmit as before, so a
+    // coarse timer never lowers the send rate.
+    if (coarse_timer_mode_.load(std::memory_order_relaxed)
+        && delay < std::chrono::milliseconds {1}) {
         return {.immediate_work = true};
     }
     return {.next_work_delay = delay, .receive_wait_safe = can_wait};
