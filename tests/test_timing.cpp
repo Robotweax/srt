@@ -159,9 +159,21 @@ TEST(packet_pacer_bounds_catch_up_by_the_credit)
     // Late by exactly the credit: the ideal slot is kept and the backlog may
     // follow at once, up to the credit's worth of packets.
     const std::uint64_t late = 100 + pacer_schedule_credit_microseconds;
-    pacer.on_packet_sent(100, late);
-    REQUIRE_EQ(pacer.query(late, 0).next_ready_microseconds, 200U);
-    REQUIRE(pacer.query(late, 0).ready);
+    // Include the currently due packet plus the ten missed 100 us slots.
+    // A broken pacer which never advances would hit the explicit bound.
+    std::size_t sent = 0;
+    while (pacer.query(late, 0).ready && sent < 12U) {
+        pacer.on_packet_sent(100, late);
+        ++sent;
+    }
+    REQUIRE_EQ(sent, 11U);
+    REQUIRE(!pacer.query(late, 0).ready);
+    REQUIRE_EQ(pacer.query(late, 0).next_ready_microseconds, 1'200U);
+    REQUIRE(!pacer.query(1'199, 0).ready);
+    REQUIRE(pacer.query(1'200, 0).ready);
+    pacer.on_packet_sent(100, 1'200);
+    REQUIRE(!pacer.query(1'200, 0).ready);
+    REQUIRE_EQ(pacer.query(1'200, 0).next_ready_microseconds, 1'300U);
 }
 
 TEST(tsbpd_clock_schedules_delivery_and_unwraps_timestamp_rollover)

@@ -8,6 +8,7 @@ on:
         type: choice
         options:
           - timing
+          - pacer-ab
           - fec-nak
           - group-receive-contract
           - group-backup-baseline
@@ -360,4 +361,37 @@ jobs:
         with:
           name: fec-nak-evidence-${{ github.run_id }}
           path: fec-nak-evidence/
+          retention-days: 14
+
+  pacer_comparison:
+    if: github.event_name == 'workflow_dispatch' && inputs.investigation == 'pacer-ab'
+    name: Pacer ABBA (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 4cc827956ac719a83ec98b5ad3e07f8f04616ddf
+          path: baseline
+          persist-credentials: false
+      - name: Compare on the same runner without retries
+        run: python candidate/interop/run_pacer_comparison.py --baseline baseline --candidate candidate --output pacer-results
+      - name: Preserve measurements including failures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pacer-abba-${{ matrix.os }}-${{ github.run_id }}
+          path: |
+            pacer-results/**/*.json
+            pacer-results/**/*.log
+            pacer-results/**/*.stdout
+            pacer-results/**/*.stderr
           retention-days: 14
