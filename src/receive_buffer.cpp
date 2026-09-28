@@ -33,7 +33,10 @@ ReceiveBuffer::Slot* ReceiveBuffer::find(SequenceNumber sequence) noexcept
         return nullptr;
     }
     auto& slot = slots_[(head_ + static_cast<std::size_t>(signed_offset)) % capacity()];
-    return slot.occupied && slot.header.sequence == sequence ? &slot : nullptr;
+    return slot.occupied && !slot.rejected_payload
+            && slot.header.sequence == sequence
+        ? &slot
+        : nullptr;
 }
 
 const ReceiveBuffer::Slot* ReceiveBuffer::find(SequenceNumber sequence) const noexcept
@@ -43,7 +46,10 @@ const ReceiveBuffer::Slot* ReceiveBuffer::find(SequenceNumber sequence) const no
         return nullptr;
     }
     const auto& slot = slots_[(head_ + static_cast<std::size_t>(signed_offset)) % capacity()];
-    return slot.occupied && slot.header.sequence == sequence ? &slot : nullptr;
+    return slot.occupied && !slot.rejected_payload
+            && slot.header.sequence == sequence
+        ? &slot
+        : nullptr;
 }
 
 void ReceiveBuffer::refresh_first_buffered_timestamp() noexcept
@@ -105,13 +111,63 @@ void ReceiveBuffer::advance_acknowledgement() noexcept
 
 void ReceiveBuffer::trim_dropped_prefix() noexcept
 {
-    while (slots_[head_].dropped) {
+    // Keep rejection state across gaps and fragments arriving later. Only
+    // actually received slots are removed, so ACK/NAK state still describes
+    // packet reception rather than message delivery. Storage stays bounded
+    // by the receive window; no unbounded message-number tombstone list.
+    for (;;) {
         auto& slot = slots_[head_];
-        slot.dropped = false;
+        if (slot.dropped) {
+            slot.dropped = false;
+        } else {
+            if (!slot.occupied) {
+                return;
+            }
+            if (discarding_message_.has_value()
+                && slot.header.message_number != *discarding_message_) {
+                discarding_message_.reset();
+            }
+            if (!discarding_message_.has_value() && has_rejected_payload_) {
+                bool any_rejected = false;
+                for (const auto& candidate : slots_) {
+                    if (candidate.occupied && candidate.rejected_payload) {
+                        any_rejected = true;
+                        if (candidate.header.message_number
+                            == slot.header.message_number) {
+                            discarding_message_ = slot.header.message_number;
+                            break;
+                        }
+                    }
+                }
+                has_rejected_payload_ = any_rejected;
+            }
+            if (!discarding_message_.has_value()) {
+                return;
+            }
+            buffered_payload_bytes_ -= slot.payload_size - slot.payload_offset;
+            payloads_.release(slot.payload_index);
+            slot.occupied = false;
+            --occupied_;
+            if (slot.header.boundary == MessageBoundary::last
+                || slot.header.boundary == MessageBoundary::solo) {
+                discarding_message_.reset();
+            }
+        }
+        slot.rejected_payload = false;
         slot.payload_size = 0;
         slot.payload_offset = 0;
         head_ = (head_ + 1U) % capacity();
         first_stored_sequence_ = first_stored_sequence_.next();
+    }
+}
+
+void ReceiveBuffer::discard_message_payload(SequenceNumber sequence) noexcept
+{
+    if (auto* slot = find(sequence)) {
+        slot->rejected_payload = true;
+        has_rejected_payload_ = true;
+        trim_dropped_prefix();
+        refresh_buffered_timestamp_bounds();
     }
 }
 
@@ -139,6 +195,7 @@ ReceiveInsertResult ReceiveBuffer::insert(const PacketView& packet) noexcept
     slot.payload_index = payloads_.acquire(packet.payload);
     slot.payload_size = static_cast<std::uint16_t>(packet.payload.size());
     slot.payload_offset = 0;
+    slot.rejected_payload = false;
     slot.occupied = true;
     slot.dropped = false;
     if (occupied_ == 0U) {
@@ -177,6 +234,10 @@ ReceiveInsertResult ReceiveBuffer::insert(const PacketView& packet) noexcept
         next_ack_sequence_.distance_from(previous_ack);
     result.contiguous_advance = ack_advance > 0
         ? static_cast<std::uint32_t>(ack_advance) : 0U;
+    if (has_rejected_payload_ || discarding_message_.has_value()) {
+        trim_dropped_prefix();
+        refresh_buffered_timestamp_bounds();
+    }
     return result;
 }
 

@@ -3,6 +3,7 @@
 #include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/session.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <limits>
@@ -3222,4 +3223,146 @@ TEST(live_session_periodic_nak_rto_probes_only_tail_of_unacknowledged_flight)
         encode_and_decode(acknowledgement, control_storage), 2'000'001));
     REQUIRE(!sender.poll_sender_retransmission_timeout(4'000'000));
     REQUIRE(!sender.next_data_packet().has_value());
+}
+
+TEST(
+    session_discarded_fragment_preserves_following_messages_in_any_arrival_order)
+{
+    for (const auto initial : {100U, SequenceNumber::mask - 2U}) {
+        for (const bool preceding_message : {false, true}) {
+            for (std::uint32_t rejected = 1; rejected <= 3; ++rejected) {
+                std::array<std::uint32_t, 5> order {0, 1, 2, 3, 4};
+                do {
+                    const auto first = SequenceNumber {initial};
+                    ReliabilitySession receiver {
+                        {.local_initial_sequence = SequenceNumber {1},
+                            .peer_initial_sequence =
+                                preceding_message ? first : first.next(),
+                            .send_capacity_packets = 8,
+                            .receive_capacity_packets = 8}};
+                    const std::array payload {std::byte {'x'}};
+                    for (const auto index : order) {
+                        if (index == 0 && !preceding_message) {
+                            continue;
+                        }
+                        PacketView data {.kind = PacketKind::data,
+                            .data = {.sequence = first.advanced(index),
+                                .message_number = index == 0 ? 1U
+                                    : index == 4             ? 3U
+                                                             : 2U,
+                                .boundary = index == 1 ? MessageBoundary::first
+                                    : index == 2 ? MessageBoundary::subsequent
+                                    : index == 3 ? MessageBoundary::last
+                                                 : MessageBoundary::solo},
+                            .payload = payload};
+                        REQUIRE(receiver.receive(data, 100 + index,
+                            {.discard_payload = index == rejected}));
+                    }
+                    REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(),
+                        first.advanced(5));
+                    std::array<std::byte, 8> output {};
+                    if (preceding_message) {
+                        const auto previous = receiver.pop_message(output);
+                        REQUIRE(previous);
+                        REQUIRE_EQ(previous.message_number, 1U);
+                    }
+                    const auto received = receiver.pop_message(output);
+                    REQUIRE(received);
+                    REQUIRE_EQ(received.message_number, 3U);
+                    REQUIRE_EQ(received.bytes_written, 1U);
+                    REQUIRE_EQ(receiver.receive_buffer().occupied(), 0U);
+                } while (std::next_permutation(order.begin(), order.end()));
+            }
+        }
+    }
+}
+
+TEST(session_discarded_message_does_not_acknowledge_missing_fragments)
+{
+    ReliabilitySession receiver {{.local_initial_sequence = SequenceNumber {1},
+        .peer_initial_sequence = SequenceNumber {100},
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8}};
+    const std::array payload {std::byte {'x'}};
+    const auto receive = [&](std::uint32_t index, bool discard) {
+        PacketView data {.kind = PacketKind::data,
+            .data = {.sequence = SequenceNumber {100 + index},
+                .message_number = index == 3 ? 2U : 1U,
+                .boundary = index == 0 ? MessageBoundary::first
+                    : index == 1       ? MessageBoundary::subsequent
+                    : index == 2       ? MessageBoundary::last
+                                       : MessageBoundary::solo},
+            .payload = payload};
+        REQUIRE(
+            receiver.receive(data, 100 + index, {.discard_payload = discard}));
+    };
+    receive(0, false);
+    receive(2, true);
+    receive(3, false);
+    REQUIRE_EQ(
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {101});
+    std::array<std::byte, 8> output {};
+    REQUIRE(!receiver.pop_message(output));
+    receive(1, false);
+    REQUIRE_EQ(
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {104});
+    const auto received = receiver.pop_message(output);
+    REQUIRE(received);
+    REQUIRE_EQ(received.message_number, 2U);
+}
+
+TEST(session_discarded_message_can_exceed_receive_window)
+{
+    ReliabilitySession receiver {{.local_initial_sequence = SequenceNumber {1},
+        .peer_initial_sequence = SequenceNumber {100},
+        .send_capacity_packets = 4,
+        .receive_capacity_packets = 4}};
+    const std::array payload {std::byte {'x'}};
+    for (std::uint32_t index = 0; index <= 20; ++index) {
+        PacketView data {.kind = PacketKind::data,
+            .data = {.sequence = SequenceNumber {100 + index},
+                .message_number = index == 20 ? 2U : 1U,
+                .boundary = index == 0 ? MessageBoundary::first
+                    : index == 19      ? MessageBoundary::last
+                    : index == 20      ? MessageBoundary::solo
+                                       : MessageBoundary::subsequent},
+            .payload = payload};
+        REQUIRE(receiver.receive(
+            data, 100 + index, {.discard_payload = index == 0}));
+        REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(),
+            SequenceNumber {101 + index});
+    }
+    std::array<std::byte, 8> output {};
+    const auto received = receiver.pop_message(output);
+    REQUIRE(received);
+    REQUIRE_EQ(received.message_number, 2U);
+}
+
+TEST(session_discarded_stream_packet_preserves_other_payload)
+{
+    ReliabilitySession receiver {{.local_initial_sequence = SequenceNumber {1},
+        .peer_initial_sequence = SequenceNumber {100},
+        .send_capacity_packets = 4,
+        .receive_capacity_packets = 4}};
+    receiver.set_message_api(false);
+    const std::array payload {std::byte {'x'}};
+    for (std::uint32_t index = 0; index < 3; ++index) {
+        PacketView data {.kind = PacketKind::data,
+            .data = {.sequence = SequenceNumber {100 + index},
+                .message_number = 1,
+                .boundary = index == 0 ? MessageBoundary::first
+                    : index == 2       ? MessageBoundary::last
+                                       : MessageBoundary::subsequent},
+            .payload = payload};
+        REQUIRE(receiver.receive(
+            data, 100 + index, {.discard_payload = index == 1}));
+    }
+    std::array<std::byte, 8> output {};
+    std::size_t delivered = 0;
+    while (const auto received = receiver.pop_stream(output)) {
+        delivered += received.bytes_written;
+    }
+    REQUIRE_EQ(delivered, 2U);
+    REQUIRE_EQ(
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {103});
 }
