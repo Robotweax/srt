@@ -766,12 +766,9 @@ Error CryptoSession::acknowledge_key_material(
         || (sender_state_ == CryptoState::securing
             && (rotation_prepared_ || directional_key_pending_));
     if (response.size() == 4U) {
-        const std::uint32_t state = read_u32(response.data());
+        const auto state = decode_key_material_state(response);
         if (!preserve_secured_state) {
-            sender_state_ = state <= static_cast<std::uint32_t>(
-                    CryptoState::bad_crypto_mode)
-                ? static_cast<CryptoState>(state)
-                : CryptoState::bad_secret;
+            sender_state_ = state.value_or(CryptoState::bad_secret);
         }
         return Error::cryptographic_failure;
     }

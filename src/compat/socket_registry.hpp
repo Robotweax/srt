@@ -77,6 +77,9 @@ struct SocketRecord {
     std::shared_ptr<DatagramChannel> channel;
     std::shared_ptr<ConnectionRuntime> runtime;
     std::shared_ptr<CryptoSession> crypto;
+    // Receive-direction key-material state from connection setup when no
+    // local session exists (optional encryption without a usable secret).
+    CryptoState receiver_key_state = CryptoState::unsecured;
     std::shared_ptr<HandshakeInbox> listener_inbox;
     std::shared_ptr<ListenerRuntime> listener_runtime;
     std::shared_ptr<ConnectHandshakeOperation> connect_handshake_operation;

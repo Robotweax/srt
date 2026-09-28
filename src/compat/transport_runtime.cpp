@@ -26,18 +26,6 @@ namespace {
 constexpr std::size_t maximum_send_batch = 64;
 constexpr std::size_t maximum_connection_polls = 64;
 
-[[nodiscard]] constexpr std::array<std::byte, 4>
-crypto_state_payload(CryptoState state) noexcept
-{
-    const std::uint32_t value = static_cast<std::uint32_t>(state);
-    return {
-        static_cast<std::byte>((value >> 24U) & 0xffU),
-        static_cast<std::byte>((value >> 16U) & 0xffU),
-        static_cast<std::byte>((value >> 8U) & 0xffU),
-        static_cast<std::byte>(value & 0xffU),
-    };
-}
-
 [[nodiscard]] bool has_valid_runtime_key_material_payload(
     std::uint16_t subtype, std::span<const std::byte> payload) noexcept
 {
@@ -50,12 +38,7 @@ crypto_state_payload(CryptoState state) noexcept
     if (payload.size() != sizeof(std::uint32_t)) {
         return static_cast<bool>(decode_key_material(payload));
     }
-    const std::uint32_t state =
-        (std::to_integer<std::uint32_t>(payload[0]) << 24U)
-        | (std::to_integer<std::uint32_t>(payload[1]) << 16U)
-        | (std::to_integer<std::uint32_t>(payload[2]) << 8U)
-        | std::to_integer<std::uint32_t>(payload[3]);
-    return state <= static_cast<std::uint32_t>(CryptoState::bad_crypto_mode);
+    return decode_key_material_state(payload).has_value();
 }
 
 [[nodiscard]] std::size_t effective_receive_capacity(
@@ -1321,6 +1304,7 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
               : HandshakeAction {})
     , handshake_replay_peer_cookie_(configuration.handshake_replay_peer_cookie)
     , crypto_(std::move(configuration.crypto))
+    , receiver_key_state_(configuration.receiver_key_state)
     , now_function_(configuration.now_function)
     , now_context_(configuration.now_context)
     , receive_pop_hook_for_testing_(configuration.receive_pop_hook_for_testing)
@@ -2822,8 +2806,16 @@ void ConnectionRuntime::process_packet(
             if (packet.control.subtype
                     == key_material_request_subtype
                 && !options_.enforced_encryption()) {
-                const auto response = crypto_state_payload(
-                    CryptoState::no_secret);
+                // Setup may have discarded an unusable crypto session even
+                // though a secret was configured. Keep its failure reason
+                // when the peer retries KMREQ; absence of a session alone
+                // does not mean absence of a passphrase.
+                if (receiver_key_state_ != CryptoState::bad_secret
+                    && receiver_key_state_ != CryptoState::bad_crypto_mode) {
+                    receiver_key_state_ = CryptoState::no_secret;
+                }
+                const auto response =
+                    encode_key_material_state(receiver_key_state_);
                 if (!send_key_material(
                         key_material_response_subtype,
                         response, now)) {
@@ -3477,9 +3469,7 @@ CryptoState ConnectionRuntime::sender_crypto_state() const noexcept
 CryptoState ConnectionRuntime::receiver_crypto_state() const noexcept
 {
     std::lock_guard lock(mutex_);
-    return crypto_ == nullptr
-        ? CryptoState::unsecured
-        : crypto_->receiver_state();
+    return crypto_ == nullptr ? receiver_key_state_ : crypto_->receiver_state();
 }
 
 std::size_t ConnectionRuntime::crypto_key_length() const noexcept

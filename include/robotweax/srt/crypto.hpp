@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -243,6 +244,39 @@ enum class CryptoState : std::uint8_t {
     bad_secret = 4,
     bad_crypto_mode = 5,
 };
+
+// A four-byte KMRSP carries a key-material state instead of key material. The
+// reference implementation writes it as a host-order 32-bit value, which on
+// the little-endian hosts it is deployed on puts the state into the first
+// byte (03 00 00 00 for NOSECRET). Emit that layout and accept either byte
+// order on input.
+[[nodiscard]] constexpr std::array<std::byte, 4> encode_key_material_state(
+    CryptoState state) noexcept
+{
+    return {static_cast<std::byte>(state), std::byte {0}, std::byte {0},
+        std::byte {0}};
+}
+
+[[nodiscard]] constexpr std::optional<CryptoState> decode_key_material_state(
+    std::span<const std::byte> payload) noexcept
+{
+    if (payload.size() != 4U || payload[1] != std::byte {0}
+        || payload[2] != std::byte {0}) {
+        return std::nullopt;
+    }
+    std::uint8_t value = 0;
+    if (payload[3] == std::byte {0}) {
+        value = std::to_integer<std::uint8_t>(payload[0]);
+    } else if (payload[0] == std::byte {0}) {
+        value = std::to_integer<std::uint8_t>(payload[3]);
+    } else {
+        return std::nullopt;
+    }
+    if (value > static_cast<std::uint8_t>(CryptoState::bad_crypto_mode)) {
+        return std::nullopt;
+    }
+    return static_cast<CryptoState>(value);
+}
 
 /**
  * Non-owning key-material descriptor. `salt` and `wrapped_keys` borrow the
