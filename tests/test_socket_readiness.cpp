@@ -1,4 +1,5 @@
 #include "test.hpp"
+#include "ipv6_probe.hpp"
 #include "compat/socket_readiness.hpp"
 #include "robotweax/srt/udp.hpp"
 
@@ -40,6 +41,9 @@ void wait_count(const std::shared_ptr<ReadyCount>& count, unsigned expected)
 TEST(socket_readiness_is_one_shot_and_rearms_level_readability)
 {
     for (const auto family : {IpAddressFamily::ipv4, IpAddressFamily::ipv6}) {
+        if (family == IpAddressFamily::ipv6 && !ipv6_loopback_available()) {
+            continue;
+        }
         SocketReadiness watcher {2};
         REQUIRE(watcher.start());
         UdpSocket target {family};
@@ -142,6 +146,9 @@ TEST(socket_readiness_can_release_its_last_owner_in_a_callback)
 TEST(socket_readiness_cancel_allows_immediate_native_port_rebind)
 {
     for (const auto family : {IpAddressFamily::ipv4, IpAddressFamily::ipv6}) {
+        if (family == IpAddressFamily::ipv6 && !ipv6_loopback_available()) {
+            continue;
+        }
         SocketReadiness watcher {1};
         REQUIRE(watcher.start());
         const auto count = std::make_shared<ReadyCount>();

@@ -4568,6 +4568,130 @@ TEST(compat_runtime_preserves_optional_key_request_failure_state)
     }
 }
 
+TEST(compat_runtime_drops_undecryptable_data_on_a_secured_enforced_session)
+{
+    // A secured CTR session receives a DATA packet on the odd selector before
+    // any odd key exists (the peer switches by packet count and bounds its
+    // KMREQ retries), or a stray packet. Count and drop it without ending
+    // the connection or acknowledging its sequence: a valid retransmission
+    // of that sequence must still be deliverable.
+    const CryptoConfiguration crypto_configuration {
+        .passphrase = "secured enforced drop fixture",
+        .key_length = 16,
+    };
+    auto sender_crypto = std::make_shared<CryptoSession>(crypto_configuration);
+    auto receiver_crypto =
+        std::make_shared<CryptoSession>(crypto_configuration);
+    REQUIRE_EQ(sender_crypto->start_initiator(), Error::none);
+    REQUIRE_EQ(receiver_crypto->accept_key_material(
+                   sender_crypto->pending_key_material(), true),
+        Error::none);
+    REQUIRE_EQ(sender_crypto->acknowledge_key_material(
+                   receiver_crypto->key_material_response(), true),
+        Error::none);
+    confirm_directional_test_keys(*sender_crypto, *receiver_crypto);
+    REQUIRE_EQ(receiver_crypto->receiver_state(), CryptoState::secured);
+
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {
+        .address = {192, 0, 2, 45},
+        .port = 14'205,
+    };
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::file)),
+        Error::none);
+    REQUIRE_EQ(options.set(SocketOption::enforced_encryption, 1), Error::none);
+    std::uint64_t now = 1'000'000;
+    ConnectionRuntime receiver {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 450,
+        .initial_sequence = SequenceNumber {900},
+        .flow_window_packets = 256,
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now(),
+        .crypto = receiver_crypto,
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+
+    const std::array payload {std::byte {0x5a}, std::byte {0xa5}};
+    PacketView stray {
+        .kind = PacketKind::data,
+        .payload = payload,
+    };
+    stray.data.sequence = SequenceNumber {900};
+    stray.data.message_number = 1;
+    stray.data.boundary = MessageBoundary::solo;
+    stray.data.in_order = true;
+    stray.data.encryption_key = EncryptionKey::odd;
+    stray.data.destination_socket_id = 450;
+    receiver.process_packet(stray, peer);
+    REQUIRE(!receiver.broken());
+    REQUIRE_EQ(
+        receiver.statistics(false, true).total.receiver_undecryptable.packets,
+        1U);
+    std::array<std::byte, 16> received {};
+    REQUIRE_EQ(receiver.receive_message(received, false, -1).status,
+        MessageIoStatus::would_block);
+
+    EncryptionKey key = EncryptionKey::none;
+    const auto ciphertext =
+        encrypt_fixture(*sender_crypto, SequenceNumber {900}, payload, key);
+    PacketView genuine {
+        .kind = PacketKind::data,
+        .payload = ciphertext,
+    };
+    genuine.data.sequence = SequenceNumber {900};
+    genuine.data.message_number = 1;
+    genuine.data.boundary = MessageBoundary::solo;
+    genuine.data.in_order = true;
+    genuine.data.retransmitted = true;
+    genuine.data.encryption_key = key;
+    genuine.data.destination_socket_id = 450;
+    receiver.process_packet(genuine, peer);
+    REQUIRE(!receiver.broken());
+    const auto result = receiver.receive_message(received, false, -1);
+    REQUIRE_EQ(result.status, MessageIoStatus::success);
+    REQUIRE_EQ(result.first_sequence, SequenceNumber {900});
+    REQUIRE_EQ(result.bytes, payload.size());
+    REQUIRE(std::equal(payload.begin(), payload.end(), received.begin()));
+
+    // New traffic on the active selector also remains readable.
+    EncryptionKey next_key = EncryptionKey::none;
+    const auto next_ciphertext = encrypt_fixture(
+        *sender_crypto, SequenceNumber {901}, payload, next_key);
+    PacketView next = genuine;
+    next.payload = next_ciphertext;
+    next.data.sequence = SequenceNumber {901};
+    next.data.message_number = 2;
+    next.data.encryption_key = next_key;
+    next.data.retransmitted = false;
+    receiver.process_packet(next, peer);
+    REQUIRE(!receiver.broken());
+    const auto next_result = receiver.receive_message(received, false, -1);
+    REQUIRE_EQ(next_result.status, MessageIoStatus::success);
+    REQUIRE_EQ(next_result.first_sequence, SequenceNumber {901});
+    REQUIRE_EQ(next_result.bytes, payload.size());
+    REQUIRE(std::equal(payload.begin(), payload.end(), received.begin()));
+
+    // Plaintext on the secured session remains a policy violation.
+    PacketView plaintext {
+        .kind = PacketKind::data,
+        .payload = payload,
+    };
+    plaintext.data.sequence = SequenceNumber {902};
+    plaintext.data.message_number = 3;
+    plaintext.data.boundary = MessageBoundary::solo;
+    plaintext.data.in_order = true;
+    plaintext.data.destination_socket_id = 450;
+    receiver.process_packet(plaintext, peer);
+    REQUIRE(receiver.broken());
+}
+
 TEST(compat_runtime_acknowledges_undecryptable_data_under_optional_encryption)
 {
     // With SRTO_ENFORCEDENCRYPTION=false a peer that has a passphrase keeps
@@ -5524,6 +5648,72 @@ TEST(compat_runtime_only_signals_an_effective_receive_discard)
 
     REQUIRE(runtime.discard_received_before(initial_sequence.next()));
     REQUIRE(ReadinessSignal::generation() != initial_generation);
+}
+
+TEST(compat_runtime_signals_readiness_only_on_receive_edges)
+{
+    // With TSBPD pending, an in-order DATA packet behind an earlier pending
+    // message changes neither the next delivery deadline nor readability.
+    // It must not wake epoll observers or blocked receivers; the first
+    // packet, a gap-filling packet and the delivery edge must.
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {
+        .address = {192, 0, 2, 16},
+        .port = 11'006,
+    };
+    constexpr SequenceNumber initial_sequence {5'000};
+    std::uint64_t now = 1'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 303,
+        .initial_sequence = initial_sequence,
+        .peer_initial_sequence = initial_sequence,
+        .has_distinct_peer_initial_sequence = true,
+        .negotiated_options =
+            {
+                .receive_tsbpd = true,
+                .receive_delay_milliseconds = 100,
+            },
+        .origin = ConnectionRuntime::Clock::now(),
+        .handshake_arrival_microseconds = 1'000,
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+    const std::array<std::byte, 1> payload {std::byte {'r'}};
+    const auto inject = [&](std::uint32_t offset, std::uint32_t timestamp) {
+        PacketView packet;
+        packet.kind = PacketKind::data;
+        packet.data.sequence = initial_sequence.advanced(offset);
+        packet.data.message_number = offset + 1U;
+        packet.data.boundary = MessageBoundary::solo;
+        packet.data.in_order = true;
+        packet.data.timestamp = PacketTimestamp {timestamp};
+        packet.payload = payload;
+        runtime.process_packet(packet, peer);
+    };
+
+    std::uint64_t generation = ReadinessSignal::generation();
+    inject(0, 1'000);
+    REQUIRE(ReadinessSignal::generation() != generation);
+
+    // Second and third packets in order: same delivery deadline, still not
+    // readable.
+    generation = ReadinessSignal::generation();
+    now = 2'000;
+    inject(1, 2'000);
+    inject(2, 3'000);
+    REQUIRE_EQ(ReadinessSignal::generation(), generation);
+
+    // The delivery deadline of the first packet makes data readable.
+    now = 1'000 + 100'000 + 1'000;
+    generation = ReadinessSignal::generation();
+    REQUIRE(runtime.next_readable_deadline().has_value());
+    (void)runtime.poll();
+    REQUIRE(runtime.readable());
+    REQUIRE(ReadinessSignal::generation() != generation);
 }
 
 TEST(compat_runtime_receiver_tlpktdrop_sends_a_cumulative_ack)

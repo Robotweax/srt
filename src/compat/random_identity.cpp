@@ -202,7 +202,9 @@ std::optional<std::uint32_t> random_initial_sequence() noexcept
     if (!word) {
         return std::nullopt;
     }
-    return *word & SequenceNumber::mask;
+    // The reference implementation treats an ISN of 0x7FFFFFFF as invalid
+    // and rejects the handshake as rogue; never generate it.
+    return *word % SequenceNumber::mask;
 }
 
 } // namespace robotweax::srt::compat

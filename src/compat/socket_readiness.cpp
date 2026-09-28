@@ -1,7 +1,9 @@
 #include "compat/socket_readiness.hpp"
 #include "robotweax/srt/udp.hpp"
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <cerrno>
 #include <condition_variable>
 #include <limits>
@@ -21,8 +23,9 @@
 #include <sys/epoll.h>
 #include <unistd.h>
 #define ROBOTWEAX_READINESS_EPOLL 1
-#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__)        \
-    || defined(__OpenBSD__) || defined(__DragonFly__)
+#elif (defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__)       \
+    || defined(__OpenBSD__) || defined(__DragonFly__))                         \
+    && UINTPTR_MAX >= UINT64_MAX
 #include <sys/event.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -65,17 +68,33 @@ Descriptor descriptor(std::uintptr_t socket) noexcept
 
 constexpr int wait_timeout_milliseconds = 100;
 constexpr std::size_t maximum_events_per_wait = 64;
-// Event payload: the watch slot in the low 32 bits and its generation in the
-// high 32 bits, so a stale event for a reused slot is recognised.
+// Kernel events carry a 64-bit value (a pointer-sized value for kqueue). Use
+// only as many low bits as the configured capacity needs for the slot and
+// leave the top bit clear to distinguish the wake marker. The remaining bits
+// preserve far more than 32 bits of generation on normal-sized watchers.
 constexpr std::uint64_t wake_marker =
     (std::numeric_limits<std::uint64_t>::max)();
 
-[[nodiscard]] constexpr std::uint64_t pack_token(
-    std::size_t slot, std::uint64_t generation) noexcept
+[[nodiscard]] constexpr unsigned slot_bits_for_capacity(
+    std::size_t capacity) noexcept
 {
-    return (generation << 32U)
-        | static_cast<std::uint64_t>(slot & 0xffff'ffffU);
+    return (std::max)(1U,
+        static_cast<unsigned>(
+            std::bit_width(capacity > 1U ? capacity - 1U : 0U)));
 }
+[[nodiscard]] constexpr std::uint64_t pack_token(std::size_t slot,
+    std::uint64_t generation, unsigned slot_bits,
+    std::uint64_t generation_mask) noexcept
+{
+    return ((generation & generation_mask) << slot_bits)
+        | static_cast<std::uint64_t>(slot);
+}
+static_assert(slot_bits_for_capacity(8'192) == 13U);
+static_assert((pack_token(7, 1ULL << 32U, 13U, wake_marker >> 14U) >> 13U)
+    == (1ULL << 32U));
+static_assert((pack_token(8'191, 1ULL << 32U, 13U, wake_marker >> 14U)
+                  & ((1ULL << 13U) - 1U))
+    == 8'191U);
 } // namespace
 
 struct SocketReadiness::State {
@@ -91,12 +110,22 @@ struct SocketReadiness::State {
     };
     explicit State(std::size_t capacity)
         : entries(capacity)
+#if !defined(ROBOTWEAX_READINESS_POLL)
+        , slot_bits(slot_bits_for_capacity(capacity))
+        , slot_mask(
+              slot_bits < 64U ? wake_marker >> (64U - slot_bits) : wake_marker)
+        , generation_mask(
+              slot_bits < 63U ? wake_marker >> (slot_bits + 1U) : 0U)
+#endif
     {
         free_slots.reserve(capacity);
         tokens.reserve(capacity);
         callbacks.reserve(capacity);
 #if defined(ROBOTWEAX_READINESS_POLL)
         descriptors.reserve(capacity + 1U);
+#else
+        // queue_wait() is noexcept and receives at most this many events.
+        ready.reserve(maximum_events_per_wait);
 #endif
         for (std::size_t index = capacity; index != 0U; --index) {
             free_slots.push_back(index - 1U);
@@ -148,7 +177,8 @@ struct SocketReadiness::State {
     {
         epoll_event event {};
         event.events = EPOLLIN | EPOLLONESHOT;
-        event.data.u64 = pack_token(slot, entry.generation);
+        event.data.u64 =
+            pack_token(slot, entry.generation, slot_bits, generation_mask);
         const int operation = entry.registered ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
         if (::epoll_ctl(
                 queue, operation, static_cast<int>(entry.socket), &event)
@@ -207,7 +237,8 @@ struct SocketReadiness::State {
         // existing filter re-enables it with the new payload.
         EV_SET(&change, entry.socket, EVFILT_READ,
             EV_ADD | EV_ENABLE | EV_DISPATCH, 0, 0,
-            reinterpret_cast<void*>(pack_token(slot, entry.generation)));
+            reinterpret_cast<void*>(pack_token(
+                slot, entry.generation, slot_bits, generation_mask)));
         if (::kevent(queue, &change, 1, nullptr, 0, nullptr) != 0) {
             return false;
         }
@@ -259,6 +290,11 @@ struct SocketReadiness::State {
     UdpSocket wake_socket;
     IpEndpoint wake_endpoint {};
     std::vector<Entry> entries;
+#if !defined(ROBOTWEAX_READINESS_POLL)
+    unsigned slot_bits;
+    std::uint64_t slot_mask;
+    std::uint64_t generation_mask;
+#endif
     std::vector<std::size_t> free_slots;
     // The following scratch arrays have one owner: the watcher thread.
 #if defined(ROBOTWEAX_READINESS_POLL)
@@ -300,6 +336,9 @@ bool SocketReadiness::start() noexcept
     }
     state_->started = true;
     if (state_->stopping || state_->entries.empty()
+#if !defined(ROBOTWEAX_READINESS_POLL)
+        || state_->generation_mask == 0U
+#endif
         || state_->wake_socket.bind(IpEndpoint::loopback()) != Error::none) {
         return false;
     }
@@ -592,14 +631,15 @@ void SocketReadiness::run(std::shared_ptr<State> state) noexcept
             } else {
                 for (const auto payload : state->ready) {
                     const auto slot =
-                        static_cast<std::size_t>(payload & 0xffff'ffffU);
-                    const auto generation = payload >> 32U;
+                        static_cast<std::size_t>(payload & state->slot_mask);
+                    const auto generation = payload >> state->slot_bits;
                     if (slot >= state->entries.size()) {
                         continue;
                     }
                     auto& entry = state->entries[slot];
                     if (!entry.active || !entry.armed
-                        || entry.generation != generation) {
+                        || (entry.generation & state->generation_mask)
+                            != generation) {
                         continue;
                     }
                     // The one-shot interest is disabled in the kernel until

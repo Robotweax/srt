@@ -142,9 +142,12 @@ ExtensionEncodeResult encode_extension(
 HandshakeParametersResult decode_handshake_parameters(
     const HandshakeExtensionView& extension) noexcept
 {
+    // A future SRT version may append words to the HSREQ/HSRSP block. The
+    // reference implementation rejects only blocks shorter than the three
+    // defined words; read those and ignore any trailing words.
     if ((extension.type != HandshakeExtensionType::handshake_request
             && extension.type != HandshakeExtensionType::handshake_response)
-        || extension.content.size() != handshake_extension_content_size) {
+        || extension.content.size() < handshake_extension_content_size) {
         return {.error = Error::invalid_extension};
     }
     HandshakeExtensionParameters parameters;
@@ -239,10 +242,13 @@ ExtensionTextResult decode_extension_text(
             std::to_integer<unsigned char>(
                 extension.content[wire_index]));
     }
-    result.size = extension.content.size();
-    while (result.size != 0U
-        && result.text[result.size - 1U] == '\0') {
-        --result.size;
+    // The text ends at the first NUL, as a C-string consumer reads it; the
+    // reference implementation applies strlen() to the zero-padded block,
+    // so an embedded NUL truncates rather than being kept.
+    result.size = 0;
+    while (result.size < extension.content.size()
+        && result.text[result.size] != '\0') {
+        ++result.size;
     }
     return result;
 }

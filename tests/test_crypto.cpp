@@ -134,6 +134,11 @@ public:
         fail_random_ = true;
     }
 
+    [[nodiscard]] std::size_t pbkdf2_calls() const noexcept
+    {
+        return pbkdf2_calls_;
+    }
+
     [[nodiscard]] Error random_bytes(
         std::span<std::byte> destination) noexcept override
     {
@@ -145,6 +150,7 @@ public:
         std::span<const std::byte> salt, std::uint32_t iterations,
         std::span<std::byte> derived_key) noexcept override
     {
+        ++pbkdf2_calls_;
         return delegate_.pbkdf2_hmac_sha1(
             passphrase, salt, iterations, derived_key);
     }
@@ -193,6 +199,7 @@ public:
 
 private:
     bool fail_random_ = false;
+    std::size_t pbkdf2_calls_ = 0;
     CryptoProvider& delegate_ = default_crypto_provider();
 };
 
@@ -1641,6 +1648,60 @@ TEST(crypto_session_rejects_ciphertext_older_than_bounded_key_history)
                    old_key, SequenceNumber{100},
                    old_ciphertext, decrypted),
         Error::cryptographic_failure);
+}
+
+TEST(crypto_session_derives_each_directional_kek_once_across_rotations)
+{
+    // The salt is constant per direction for the life of a session, so the
+    // 2048-iteration PBKDF2 must run once per direction, not once per key
+    // material message. Forged KMREQs with a different salt still derive.
+    CtrOnlyCryptoProvider provider;
+    const CryptoConfiguration configuration {
+        .passphrase = "one derivation per direction",
+        .key_length = 16,
+        .refresh_rate_packets = 5,
+        .preannouncement_packets = 2,
+    };
+    CryptoSession sender {configuration, provider};
+    CryptoSession receiver {configuration, provider};
+    REQUIRE_EQ(sender.start_initiator(), Error::none);
+    REQUIRE_EQ(
+        receiver.accept_key_material(sender.pending_key_material(), false),
+        Error::none);
+    REQUIRE_EQ(sender.acknowledge_key_material(
+                   receiver.key_material_response(), false),
+        Error::none);
+    const std::size_t after_handshake = provider.pbkdf2_calls();
+    REQUIRE(after_handshake >= 2U);
+
+    const auto clear = bytes_from_hex<16>("000102030405060708090a0b0c0d0e0f");
+    std::array<std::byte, 16> ciphertext {};
+    std::array<std::byte, 16> plaintext {};
+    SequenceNumber sequence {100};
+    std::size_t exchanged = 0;
+    for (std::size_t packet = 0; packet < 40U; ++packet) {
+        EncryptionKey key = EncryptionKey::none;
+        REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+        const auto request = sender.pending_key_material();
+        if (!request.empty()) {
+            ++exchanged;
+            REQUIRE_EQ(
+                receiver.accept_key_material(request, false), Error::none);
+            REQUIRE_EQ(sender.acknowledge_key_material(
+                           receiver.key_material_response(), false),
+                Error::none);
+        }
+        REQUIRE_EQ(
+            sender.encrypt(sequence, clear, ciphertext, key), Error::none);
+        REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+        REQUIRE_EQ(receiver.decrypt(key, sequence, ciphertext, plaintext),
+            Error::none);
+        REQUIRE_EQ(plaintext, clear);
+        receiver.note_accepted_receive_sequence(sequence);
+        sequence = sequence.next();
+    }
+    REQUIRE(exchanged >= 5U);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_handshake);
 }
 
 TEST(crypto_session_routes_ctr_keys_from_transport_accepted_sequences)

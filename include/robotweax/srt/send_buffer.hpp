@@ -134,6 +134,12 @@ public:
     [[nodiscard]] std::optional<SendDropResult>
     next_pending_drop_request() noexcept;
     [[nodiscard]] bool has_pending_drop_request() noexcept;
+    // Exposes the stale-entry compaction of the retransmission ring, which
+    // the public queueing paths reach only when the ring is full.
+    void compact_retransmission_queue_for_testing() noexcept
+    {
+        compact_retransmission_queue();
+    }
     // Queues sequence-only DROPREQ replies for NAK ranges that predate the
     // sender buffer. Capacity validation is transactional.
     [[nodiscard]] bool queue_range_drop_requests(
@@ -203,6 +209,9 @@ private:
     std::size_t occupied_count_ = 0;
     std::size_t buffered_plaintext_bytes_ = 0;
     std::size_t expiring_packet_count_ = 0;
+    // Lower bound of every buffered expiration. Lets the per-poll expiry
+    // check return without a scan until the earliest TTL can have elapsed.
+    std::uint64_t earliest_expiration_microseconds_ = 0;
     std::uint64_t first_buffered_enqueue_microseconds_ = 0;
     std::uint64_t last_buffered_enqueue_microseconds_ = 0;
     std::size_t retransmission_head_ = 0;

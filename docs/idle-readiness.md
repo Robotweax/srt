@@ -47,8 +47,9 @@ keeps its strict greater-than comparison, including the final microsecond.
 ## Shared readiness watcher
 
 Each runtime scheduler lazily owns one bounded readiness watcher thread. On
-Linux it waits on an `epoll` queue, on Apple and BSD hosts on a `kqueue`, and
-elsewhere (Windows in particular) on `poll` or `WSAPoll`. The normal
+Linux it waits on an `epoll` queue, on 64-bit Apple and BSD hosts on a
+`kqueue`, and elsewhere (including 32-bit BSD and Windows) on `poll` or
+`WSAPoll`. The normal
 process-wide scheduler shares that thread across its channels. There is no
 per-connection thread. Protocol processing remains on the existing scheduler
 shards.

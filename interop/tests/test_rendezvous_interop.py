@@ -1676,8 +1676,11 @@ class RendezvousInteropUnitTests(unittest.TestCase):
         self.assertEqual(observation["receiver_role"], "responder")
 
     def test_ipv6_trace_proxy_forwards_and_observes_roles(self) -> None:
-        sender = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-        receiver = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        try:
+            sender = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            receiver = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        except OSError as error:
+            self.skipTest(f"IPv6 sockets are unavailable: {error}")
         self.addCleanup(sender.close)
         self.addCleanup(receiver.close)
         try:

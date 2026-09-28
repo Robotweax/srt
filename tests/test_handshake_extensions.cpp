@@ -4,6 +4,7 @@
 
 #include "hsv5_version_policy.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <string_view>
@@ -82,6 +83,36 @@ TEST(handshake_extension_parameters_have_exact_wire_layout)
     REQUIRE_EQ(decoded.parameters.sender_tsbpd_delay_milliseconds, 240U);
 }
 
+TEST(handshake_parameters_tolerate_a_longer_block_and_reject_a_shorter_one)
+{
+    // Header: type HSREQ (1), length in words. A four-word block from a
+    // newer peer decodes its three defined words; a two-word block is
+    // rejected.
+    std::array<std::byte, 20> longer {std::byte {0}, std::byte {1},
+        std::byte {0}, std::byte {4}, std::byte {0}, std::byte {1},
+        std::byte {0}, std::byte {5}, std::byte {0}, std::byte {0},
+        std::byte {0}, std::byte {0x3f}, std::byte {0}, std::byte {120},
+        std::byte {0}, std::byte {240}, std::byte {0xde}, std::byte {0xad},
+        std::byte {0xbe}, std::byte {0xef}};
+    const auto extension = decode_extension(longer);
+    REQUIRE(extension);
+    const auto decoded = decode_handshake_parameters(extension.extension);
+    REQUIRE(decoded);
+    REQUIRE_EQ(decoded.parameters.srt_version, 0x0001'0005U);
+    REQUIRE_EQ(decoded.parameters.flags, 0x3fU);
+    REQUIRE_EQ(decoded.parameters.receiver_tsbpd_delay_milliseconds, 120U);
+    REQUIRE_EQ(decoded.parameters.sender_tsbpd_delay_milliseconds, 240U);
+
+    std::array<std::byte, 12> shorter {std::byte {0}, std::byte {1},
+        std::byte {0}, std::byte {2}, std::byte {0}, std::byte {1},
+        std::byte {0}, std::byte {5}, std::byte {0}, std::byte {0},
+        std::byte {0}, std::byte {0x3f}};
+    const auto short_extension = decode_extension(shorter);
+    REQUIRE(short_extension);
+    REQUIRE_EQ(decode_handshake_parameters(short_extension.extension).error,
+        Error::invalid_extension);
+}
+
 TEST(extension_decoder_walks_chained_records_without_allocation)
 {
     std::array<std::byte, 32> bytes{};
@@ -114,6 +145,22 @@ TEST(stream_id_is_padded_to_complete_words)
     REQUIRE_EQ(bytes[7], std::byte{'a'});
     REQUIRE_EQ(bytes[8], std::byte{0});
     REQUIRE_EQ(bytes[11], std::byte{'e'});
+
+    // Decoding stops at the first NUL like a C-string reader: trailing
+    // padding is dropped and an embedded NUL truncates the text.
+    const auto padded = decode_extension(std::span {bytes}.first(12U));
+    REQUIRE(padded);
+    const auto text = decode_extension_text(padded.extension);
+    REQUIRE(text);
+    REQUIRE_EQ(std::string_view(text.text.data(), text.size), "abcde");
+    std::array<std::byte, 12> embedded {};
+    std::copy_n(bytes.begin(), 12U, embedded.begin());
+    embedded[6] = std::byte {0}; // wire position of the second character
+    const auto cut = decode_extension(embedded);
+    REQUIRE(cut);
+    const auto truncated = decode_extension_text(cut.extension);
+    REQUIRE(truncated);
+    REQUIRE_EQ(std::string_view(truncated.text.data(), truncated.size), "a");
 }
 
 TEST(packet_filter_text_uses_the_hsv5_word_swapped_layout)

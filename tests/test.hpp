@@ -35,6 +35,21 @@ void equal(const Left& left, const Right& right, const char* left_text,
     }
 }
 
+// A test that cannot run in this environment (for example no IPv6 loopback
+// in a container) reports itself as skipped instead of failing. Skips are
+// printed and counted separately so a CI runner that lacks the capability
+// is visible rather than silently green.
+struct Skipped : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+inline void skip_unless(bool available, const char* reason)
+{
+    if (!available) {
+        throw Skipped(reason);
+    }
+}
+
 inline void require(bool value, const char* text, const char* file, int line)
 {
     if (!value) {
@@ -52,5 +67,7 @@ inline void require(bool value, const char* text, const char* file, int line)
     static void name(); \
     static ::robotweax::srt::test::Register ROBOTWEAX_TEST_CONCAT(register_, name){#name, &name}; \
     static void name()
+#define SKIP_UNLESS(expression, reason)                                        \
+    ::robotweax::srt::test::skip_unless(!!(expression), reason)
 #define REQUIRE(expression) ::robotweax::srt::test::require(!!(expression), #expression, __FILE__, __LINE__)
 #define REQUIRE_EQ(left, right) ::robotweax::srt::test::equal((left), (right), #left, #right, __FILE__, __LINE__)
