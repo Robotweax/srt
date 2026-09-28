@@ -136,6 +136,7 @@ def no_rotation_baselines(
     options: RunOptions,
     *,
     name_prefix: str = "",
+    include_default_key_length: bool = True,
 ) -> tuple[list[Scenario], RunOptions, int]:
     packet_count = (
         options.key_refresh_rate - options.key_preannouncement - 1
@@ -161,27 +162,34 @@ def no_rotation_baselines(
             key_length=16,
             seed=9_002,
         ),
-        Scenario(
-            name=(
-                f"{name_prefix}"
-                "aes-default-robotweax-to-haivision-no-rotation"
-            ),
-            caller=robotweax,
-            listener=reference,
-            key_length=0,
-            seed=9_003,
-        ),
-        Scenario(
-            name=(
-                f"{name_prefix}"
-                "aes-default-haivision-to-robotweax-no-rotation"
-            ),
-            caller=reference,
-            listener=robotweax,
-            key_length=0,
-            seed=9_004,
-        ),
     ]
+    if include_default_key_length:
+        # Neither side sets SRTO_PBKEYLEN: libsrt advertises no key
+        # length in the handshake and the key material decides it.
+        baselines.extend(
+            (
+                Scenario(
+                    name=(
+                        f"{name_prefix}"
+                        "aes-default-robotweax-to-haivision-no-rotation"
+                    ),
+                    caller=robotweax,
+                    listener=reference,
+                    key_length=0,
+                    seed=9_003,
+                ),
+                Scenario(
+                    name=(
+                        f"{name_prefix}"
+                        "aes-default-haivision-to-robotweax-no-rotation"
+                    ),
+                    caller=reference,
+                    listener=robotweax,
+                    key_length=0,
+                    seed=9_004,
+                ),
+            )
+        )
     return (
         baselines,
         replace(

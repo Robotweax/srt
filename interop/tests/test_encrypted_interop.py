@@ -37,6 +37,36 @@ class EncryptedInteropUnitTests(unittest.TestCase):
             self.assertEqual(first.read_bytes(), second.read_bytes())
             self.assertNotEqual(first_digest, third_digest)
 
+    def test_default_key_length_leaves_pbkeylen_unset(self) -> None:
+        options = run_encrypted_interop.RunOptions(
+            byte_count=4_194_304,
+            timeout_seconds=30,
+            key_refresh_rate=1_000,
+            key_preannouncement=400,
+        )
+
+        explicit = run_encrypted_interop.peer_command(
+            Path("/tmp/peer"),
+            "caller",
+            9_999,
+            Path("/tmp/payload"),
+            options,
+            16,
+        )
+        default = run_encrypted_interop.peer_command(
+            Path("/tmp/peer"),
+            "caller",
+            9_999,
+            Path("/tmp/payload"),
+            options,
+            0,
+        )
+
+        self.assertEqual(
+            explicit[explicit.index("--pbkeylen") + 1], "16"
+        )
+        self.assertNotIn("--pbkeylen", default)
+
     def test_peer_command_passes_only_the_secret_environment_name(self) -> None:
         options = run_encrypted_interop.RunOptions(
             byte_count=4_194_304,
@@ -152,15 +182,42 @@ class EncryptedInteropUnitTests(unittest.TestCase):
             baseline.byte_count,
             packet_count * options.chunk_size,
         )
-        self.assertEqual(len(scenarios), 2)
+        self.assertEqual(len(scenarios), 4)
         self.assertEqual(
             [scenario.key_length for scenario in scenarios],
-            [16, 16],
+            [16, 16, 0, 0],
         )
+        for explicit, default in ((0, 2), (1, 3)):
+            self.assertEqual(
+                scenarios[default].caller, scenarios[explicit].caller
+            )
+            self.assertEqual(
+                scenarios[default].listener, scenarios[explicit].listener
+            )
         self.assertEqual(scenarios[0].caller, Path("/robotweax"))
         self.assertEqual(scenarios[0].listener, Path("/haivision"))
         self.assertEqual(scenarios[1].caller, Path("/haivision"))
         self.assertEqual(scenarios[1].listener, Path("/robotweax"))
+
+    def test_default_key_length_baselines_can_be_left_out(self) -> None:
+        options = run_encrypted_interop.RunOptions(
+            byte_count=4_194_304,
+            timeout_seconds=30,
+            key_refresh_rate=1_000,
+            key_preannouncement=400,
+        )
+
+        scenarios, _, _ = run_encrypted_interop.no_rotation_baselines(
+            Path("/robotweax"),
+            Path("/haivision"),
+            options,
+            include_default_key_length=False,
+        )
+
+        self.assertEqual(
+            [scenario.key_length for scenario in scenarios],
+            [16, 16],
+        )
 
     def test_ipv6_baseline_names_expose_address_family(self) -> None:
         options = run_encrypted_interop.RunOptions(
@@ -182,6 +239,8 @@ class EncryptedInteropUnitTests(unittest.TestCase):
             [
                 "ipv6-aes128-robotweax-to-haivision-no-rotation",
                 "ipv6-aes128-haivision-to-robotweax-no-rotation",
+                "ipv6-aes-default-robotweax-to-haivision-no-rotation",
+                "ipv6-aes-default-haivision-to-robotweax-no-rotation",
             ],
         )
 
@@ -204,6 +263,8 @@ class EncryptedInteropUnitTests(unittest.TestCase):
             side_effect=(
                 RuntimeError("robotweax caller failed"),
                 RuntimeError("haivision caller failed"),
+                None,
+                None,
             ),
         ) as run_scenario:
             with self.assertRaises(RuntimeError) as raised:
@@ -215,7 +276,7 @@ class EncryptedInteropUnitTests(unittest.TestCase):
                     packet_count,
                 )
 
-        self.assertEqual(run_scenario.call_count, 2)
+        self.assertEqual(run_scenario.call_count, 4)
         self.assertIn("robotweax caller failed", str(raised.exception))
         self.assertIn("haivision caller failed", str(raised.exception))
         self.assertTrue(
@@ -253,7 +314,7 @@ class EncryptedInteropUnitTests(unittest.TestCase):
                 trace_handshake=True,
             )
 
-        self.assertEqual(run_scenario.call_count, 2)
+        self.assertEqual(run_scenario.call_count, 4)
         self.assertTrue(
             all(
                 call.kwargs["trace_handshake"] is True
