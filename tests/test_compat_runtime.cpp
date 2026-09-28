@@ -4654,9 +4654,8 @@ TEST(compat_runtime_drops_undecryptable_data_on_a_secured_enforced_session)
 
     // New traffic on the active selector also remains readable.
     EncryptionKey next_key = EncryptionKey::none;
-    const auto next_ciphertext =
-        encrypt_fixture(*sender_crypto, SequenceNumber {901}, payload,
-            next_key);
+    const auto next_ciphertext = encrypt_fixture(
+        *sender_crypto, SequenceNumber {901}, payload, next_key);
     PacketView next = genuine;
     next.payload = next_ciphertext;
     next.data.sequence = SequenceNumber {901};
