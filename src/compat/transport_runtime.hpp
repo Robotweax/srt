@@ -275,6 +275,13 @@ private:
             if (received.error == Error::buffer_too_small) {
                 continue;
             }
+            if (received.error == Error::io_error
+                && UdpSocket::is_transient_receive_error(
+                    received.system_error)) {
+                // A queued ICMP report or interrupted call for one peer
+                // is not a fault of the shared socket.
+                continue;
+            }
             if (!received) {
                 mark_connections_broken(received.system_error);
                 break;
