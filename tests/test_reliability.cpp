@@ -3,6 +3,8 @@
 #include "robotweax/srt/reliability.hpp"
 
 #include <array>
+#include <iterator>
+#include <set>
 
 using namespace robotweax::srt;
 
@@ -110,6 +112,145 @@ TEST(receive_loss_list_periodic_reports_and_drop_removal_cover_all_ranges)
     REQUIRE(remaining.has_value());
     REQUIRE_EQ(remaining->first, SequenceNumber{15});
     REQUIRE_EQ(remaining->last, SequenceNumber{15});
+}
+
+TEST(receive_loss_list_remove_range_keeps_losses_outside_the_range)
+{
+    ReceiveLossList losses {8};
+    REQUIRE(losses.add({SequenceNumber {10}, SequenceNumber {12}}, 1));
+    REQUIRE(losses.add({SequenceNumber {20}, SequenceNumber {25}}, 1));
+    REQUIRE(losses.add({SequenceNumber {30}, SequenceNumber {30}}, 1));
+
+    // A range covering only the middle entry leaves the others intact.
+    losses.remove_range({SequenceNumber {20}, SequenceNumber {25}});
+    REQUIRE_EQ(losses.size(), 2U);
+
+    // Trim the head and tail of entries the range partially overlaps.
+    REQUIRE(losses.add({SequenceNumber {40}, SequenceNumber {45}}, 1));
+    losses.remove_range({SequenceNumber {12}, SequenceNumber {30}});
+    losses.mark_periodic_reports();
+    std::array<SequenceRange, 8> reports {};
+    REQUIRE_EQ(losses.take_pending_reports(reports), 2U);
+    REQUIRE_EQ(reports[0].first, SequenceNumber {10});
+    REQUIRE_EQ(reports[0].last, SequenceNumber {11});
+    REQUIRE_EQ(reports[1].first, SequenceNumber {40});
+    REQUIRE_EQ(reports[1].last, SequenceNumber {45});
+
+    // A range strictly inside an entry splits it.
+    losses.remove_range({SequenceNumber {42}, SequenceNumber {43}});
+    losses.mark_periodic_reports();
+    REQUIRE_EQ(losses.take_pending_reports(reports), 3U);
+    REQUIRE_EQ(reports[1].first, SequenceNumber {40});
+    REQUIRE_EQ(reports[1].last, SequenceNumber {41});
+    REQUIRE_EQ(reports[2].first, SequenceNumber {44});
+    REQUIRE_EQ(reports[2].last, SequenceNumber {45});
+
+    // A range across the sequence rollover is handled like any other.
+    ReceiveLossList wrapped {4};
+    REQUIRE(wrapped.add(
+        {SequenceNumber {SequenceNumber::mask - 1U}, SequenceNumber {1}}, 1));
+    wrapped.remove_range(
+        {SequenceNumber {SequenceNumber::mask}, SequenceNumber {0}});
+    wrapped.mark_periodic_reports();
+    REQUIRE_EQ(wrapped.take_pending_reports(reports), 2U);
+    REQUIRE_EQ(reports[0].first, SequenceNumber {SequenceNumber::mask - 1U});
+    REQUIRE_EQ(reports[0].last, SequenceNumber {SequenceNumber::mask - 1U});
+    REQUIRE_EQ(reports[1].first, SequenceNumber {1});
+    REQUIRE_EQ(reports[1].last, SequenceNumber {1});
+}
+
+TEST(receive_loss_list_pending_and_membership_stay_consistent_under_churn)
+{
+    // The list keeps counters so per-packet paths skip full walks. A random
+    // walk over every mutating operation checks that has_pending_report()
+    // always agrees with what take_pending_reports() yields and that
+    // remove() agrees with a plain set of lost sequences.
+    std::uint32_t state = 0x1234'5678U;
+    const auto next_random = [&state]() {
+        state ^= state << 13U;
+        state ^= state >> 17U;
+        state ^= state << 5U;
+        return state;
+    };
+    ReceiveLossList losses {64};
+    std::set<std::uint32_t> model;
+    std::uint32_t highest = 100;
+    std::array<SequenceRange, 64> reports {};
+    for (unsigned step = 0; step < 4'000; ++step) {
+        switch (next_random() % 8U) {
+        case 0:
+        case 1: {
+            // A new gap behind the highest sequence, fresh or not.
+            const std::uint32_t gap = 1U + next_random() % 4U;
+            const SequenceRange range {
+                SequenceNumber {highest + 1U}, SequenceNumber {highest + gap}};
+            const std::uint32_t ttl = next_random() % 3U;
+            if (losses.add(range, ttl)) {
+                for (std::uint32_t seq = highest + 1U; seq <= highest + gap;
+                    ++seq) {
+                    model.insert(seq);
+                }
+            }
+            highest += gap + 1U;
+            break;
+        }
+        case 2:
+        case 3: {
+            if (model.empty()) {
+                break;
+            }
+            // Remove a lost sequence (hit) or a random one (mostly a miss).
+            std::uint32_t target = 0;
+            if (next_random() % 2U == 0U) {
+                auto it = model.begin();
+                std::advance(it, next_random() % model.size());
+                target = *it;
+            } else {
+                target = highest - next_random() % 40U;
+            }
+            const auto removal = losses.remove(SequenceNumber {target});
+            REQUIRE_EQ(removal.removed, model.erase(target) == 1U);
+            break;
+        }
+        case 4:
+            losses.age_fresh();
+            break;
+        case 5:
+            losses.mark_periodic_reports();
+            REQUIRE_EQ(losses.has_pending_report(), !model.empty());
+            break;
+        case 6: {
+            const std::uint32_t through = highest - next_random() % 40U;
+            losses.remove_through(SequenceNumber {through});
+            for (auto it = model.begin(); it != model.end();) {
+                it = *it <= through ? model.erase(it) : std::next(it);
+            }
+            break;
+        }
+        case 7: {
+            const std::uint32_t first = highest - next_random() % 40U;
+            const std::uint32_t last = first + next_random() % 6U;
+            losses.remove_range(
+                {SequenceNumber {first}, SequenceNumber {last}});
+            for (auto it = model.begin(); it != model.end();) {
+                it = (*it >= first && *it <= last) ? model.erase(it)
+                                                   : std::next(it);
+            }
+            break;
+        }
+        }
+        REQUIRE_EQ(losses.empty(), model.empty());
+        const bool pending = losses.has_pending_report();
+        const std::size_t taken = losses.take_pending_reports(reports);
+        REQUIRE_EQ(pending, taken != 0U);
+        REQUIRE(!losses.has_pending_report());
+        for (std::size_t index = 0; index < taken; ++index) {
+            for (std::uint32_t seq = reports[index].first.value();
+                seq <= reports[index].last.value(); ++seq) {
+                REQUIRE(model.contains(seq));
+            }
+        }
+    }
 }
 
 TEST(receive_loss_list_batches_pending_ranges_without_losing_overflow)

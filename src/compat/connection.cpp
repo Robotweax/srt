@@ -1456,6 +1456,14 @@ public:
                     socket_, SRT_ECONNREJ, 0, asynchronous_, SRT_REJ_GROUP);
             }
         }
+        {
+            // The listener's CONCLUSION carries the sequence its DATA starts
+            // at. A reference listener echoes our ISN; another listener may
+            // pick its own.
+            std::lock_guard lock(socket_.mutex);
+            socket_.peer_connection_initial_sequence =
+                protocol.peer_initial_sequence().value();
+        }
         finish_connect(socket_, SRTS_CONNECTED, peer_, driver_.peer_socket_id(),
             message.packet.maximum_transmission_unit, protocol);
         if (socket_was_closed(socket_)) {

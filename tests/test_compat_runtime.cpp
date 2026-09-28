@@ -5578,6 +5578,72 @@ TEST(compat_runtime_only_signals_an_effective_receive_discard)
     REQUIRE(ReadinessSignal::generation() != initial_generation);
 }
 
+TEST(compat_runtime_signals_readiness_only_on_receive_edges)
+{
+    // With TSBPD pending, an in-order DATA packet behind an earlier pending
+    // message changes neither the next delivery deadline nor readability.
+    // It must not wake epoll observers or blocked receivers; the first
+    // packet, a gap-filling packet and the delivery edge must.
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {
+        .address = {192, 0, 2, 16},
+        .port = 11'006,
+    };
+    constexpr SequenceNumber initial_sequence {5'000};
+    std::uint64_t now = 1'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 303,
+        .initial_sequence = initial_sequence,
+        .peer_initial_sequence = initial_sequence,
+        .has_distinct_peer_initial_sequence = true,
+        .negotiated_options =
+            {
+                .receive_tsbpd = true,
+                .receive_delay_milliseconds = 100,
+            },
+        .origin = ConnectionRuntime::Clock::now(),
+        .handshake_arrival_microseconds = 1'000,
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+    const std::array<std::byte, 1> payload {std::byte {'r'}};
+    const auto inject = [&](std::uint32_t offset, std::uint32_t timestamp) {
+        PacketView packet;
+        packet.kind = PacketKind::data;
+        packet.data.sequence = initial_sequence.advanced(offset);
+        packet.data.message_number = offset + 1U;
+        packet.data.boundary = MessageBoundary::solo;
+        packet.data.in_order = true;
+        packet.data.timestamp = PacketTimestamp {timestamp};
+        packet.payload = payload;
+        runtime.process_packet(packet, peer);
+    };
+
+    std::uint64_t generation = ReadinessSignal::generation();
+    inject(0, 1'000);
+    REQUIRE(ReadinessSignal::generation() != generation);
+
+    // Second and third packets in order: same delivery deadline, still not
+    // readable.
+    generation = ReadinessSignal::generation();
+    now = 2'000;
+    inject(1, 2'000);
+    inject(2, 3'000);
+    REQUIRE_EQ(ReadinessSignal::generation(), generation);
+
+    // The delivery deadline of the first packet makes data readable.
+    now = 1'000 + 100'000 + 1'000;
+    generation = ReadinessSignal::generation();
+    REQUIRE(runtime.next_readable_deadline().has_value());
+    (void)runtime.poll();
+    REQUIRE(runtime.readable());
+    REQUIRE(ReadinessSignal::generation() != generation);
+}
+
 TEST(compat_runtime_receiver_tlpktdrop_sends_a_cumulative_ack)
 {
     const auto channel =
@@ -7085,12 +7151,13 @@ struct QueuedReceiveSlice {
     std::size_t calls = 0;
     std::size_t consumed = 0;
     Error exhausted = Error::would_block;
+    int exhausted_system_error = 0;
 
     UdpIoResult operator()(std::span<std::byte> destination) noexcept
     {
         ++calls;
         if (remaining == 0) {
-            return {.error = exhausted};
+            return {.error = exhausted, .system_error = exhausted_system_error};
         }
         --remaining;
         ++consumed;
@@ -7173,6 +7240,38 @@ TEST(compat_channel_receive_slice_io_error_marks_connections_broken)
     QueuedReceiveSlice input {.exhausted = Error::io_error};
     (void)fixture.channel->run_once_for_testing(input);
     REQUIRE_EQ(input.calls, 1U);
+    REQUIRE(runtime->broken());
+}
+
+TEST(compat_channel_receive_slice_transient_report_keeps_connections)
+{
+    // A queued ICMP error for one peer (Winsock WSAECONNRESET, POSIX
+    // ECONNREFUSED) or an interrupted call is not a fault of the shared
+    // UDP socket: the other routes must stay connected.
+#if defined(_WIN32)
+    constexpr int transient_error = WSAECONNRESET;
+    constexpr int fatal_error = WSAENOTSOCK;
+#else
+    constexpr int transient_error = ECONNREFUSED;
+    constexpr int fatal_error = EBADF;
+#endif
+    REQUIRE(UdpSocket::is_transient_receive_error(transient_error));
+    REQUIRE(!UdpSocket::is_transient_receive_error(fatal_error));
+    FairnessFixture fixture;
+    auto runtime = fixture.add(1);
+    QueuedReceiveSlice input {.remaining = 1,
+        .exhausted = Error::io_error,
+        .exhausted_system_error = transient_error};
+    (void)fixture.channel->run_once_for_testing(input);
+    // Every attempt after the datagram reports the transient condition;
+    // the slice skips each one until its receive budget is spent.
+    REQUIRE_EQ(input.calls, 64U);
+    REQUIRE_EQ(input.consumed, 1U);
+    REQUIRE(!runtime->broken());
+
+    QueuedReceiveSlice fatal {
+        .exhausted = Error::io_error, .exhausted_system_error = fatal_error};
+    (void)fixture.channel->run_once_for_testing(fatal);
     REQUIRE(runtime->broken());
 }
 

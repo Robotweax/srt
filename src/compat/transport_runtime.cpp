@@ -1732,6 +1732,21 @@ ConnectionRuntime::next_readable_message_sequence() noexcept
     return session_.receive_buffer().first_stored_sequence();
 }
 
+SequenceNumber ConnectionRuntime::receive_floor_sequence() noexcept
+{
+    std::lock_guard lock(mutex_);
+    return session_.receive_buffer().first_stored_sequence();
+}
+
+bool ConnectionRuntime::has_complete_buffered_message_at(
+    SequenceNumber sequence) noexcept
+{
+    std::lock_guard lock(mutex_);
+    const auto& buffer = session_.receive_buffer();
+    return buffer.first_stored_sequence() == sequence
+        && buffer.has_complete_message();
+}
+
 bool ConnectionRuntime::discard_received_before(
     SequenceNumber next_sequence) noexcept
 {
@@ -2519,6 +2534,12 @@ bool ConnectionRuntime::process_reliability_packet_locked(
 {
     const std::size_t send_size_before =
         session_.send_buffer().size();
+    // Readiness edges observed by blocked receivers and epoll: the next
+    // delivery deadline, data readiness and send capacity. A packet that
+    // changes none of them (the common in-order DATA arrival behind an
+    // earlier pending message) must not wake every waiter.
+    const bool readable_before = session_.data_ready_at(now);
+    const auto delivery_before = session_.next_receive_delivery_time();
     PacketView clear_packet = packet;
     std::array<std::byte, maximum_data_payload_size>
         clear_payload{};
@@ -2626,6 +2647,16 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     if (!processed) {
         return false;
     }
+    if (packet.kind == PacketKind::data && crypto_ != nullptr
+        && crypto_->enabled() && !crypto_->authenticated_data_enabled()
+        && !consume_filter_control && processed.receiver_packet_accepted_unique
+        && packet.data.encryption_key != EncryptionKey::none) {
+        // AES-CTR cannot authenticate a packet. Only a sequence the receive
+        // window accepted may advance the key-generation ceilings; a spoofed
+        // far-ahead sequence would otherwise misroute later packets to a
+        // retired key after the next rotation.
+        crypto_->note_accepted_receive_sequence(packet.data.sequence);
+    }
     if (processed.peer_available_receive_buffer_packets.has_value()) {
         const std::size_t previous_flow_window = flow_window_packets_;
         flow_window_packets_ = *processed.peer_available_receive_buffer_packets;
@@ -2724,30 +2755,39 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     if (!send_actions(processed.actions, now)) {
         return false;
     }
-    if ((packet.kind == PacketKind::data
-            && !processed.receiver_filter_control_packet)
-        || (packet.kind == PacketKind::control
-            && packet.control.type == ControlType::drop_request)) {
-        // A deferred DROPREQ gives blocked receivers a new wake-up deadline.
-        receive_ready_.notify_all();
-    } else if (packet.control.type == ControlType::shutdown) {
+    const bool readable_now = session_.data_ready_at(now);
+    const auto delivery_now = session_.next_receive_delivery_time();
+    const bool receive_edge = readable_now != readable_before
+        || delivery_now != delivery_before
+        || processed.receiver_drop_packets != 0U;
+    const bool send_edge = session_.send_buffer().size() < send_size_before;
+    bool terminal_edge = false;
+    if (packet.kind == PacketKind::control
+        && packet.control.type == ControlType::shutdown) {
         peer_closed_ = true;
         broken_ = true;
+        terminal_edge = true;
         receive_ready_.notify_all();
         send_ready_.notify_all();
-    } else if (packet.control.type == ControlType::peer_error) {
+    } else if (packet.kind == PacketKind::control
+        && packet.control.type == ControlType::peer_error) {
         peer_error_pending_ = true;
+        terminal_edge = true;
         send_ready_.notify_all();
+    } else if (receive_edge) {
+        // A new or earlier delivery deadline, newly readable data, or a
+        // deferred DROPREQ gives blocked receivers a new wake-up point.
+        receive_ready_.notify_all();
     }
-    if (session_.send_buffer().size()
-        < send_size_before) {
+    if (send_edge) {
         send_ready_.notify_all();
     }
     statistics_.update_send_duration(
         now, session_.send_buffer().size() != 0U);
-    last_readable_state_ =
-        session_.data_ready_at(now);
-    notify_readiness();
+    last_readable_state_ = readable_now;
+    if (receive_edge || send_edge || terminal_edge) {
+        notify_readiness();
+    }
     return true;
 }
 

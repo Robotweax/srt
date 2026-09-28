@@ -46,6 +46,43 @@ struct FinalHandshakeGate {
     std::atomic_bool release_response = false;
 };
 
+struct DistinctPeerInitialSequence {
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+    std::atomic<std::uint32_t> sequence {0};
+};
+
+robotweax::srt::UdpIoResult send_distinct_peer_initial_sequence(
+    std::span<const std::byte> bytes, robotweax::srt::IpEndpoint peer,
+    void* context) noexcept
+{
+    auto& test = *static_cast<DistinctPeerInitialSequence*>(context);
+    const auto decoded = robotweax::srt::decode_handshake_datagram(bytes);
+    if (!decoded
+        || decoded.message.packet.request
+            != robotweax::srt::HandshakeRequest::conclusion
+        || !decoded.message.has_handshake_extension
+        || decoded.message.extension_type
+            != robotweax::srt::HandshakeExtensionType::handshake_response) {
+        return test.channel->socket.send_to(bytes, peer);
+    }
+
+    std::array<std::byte, 1'500> response {};
+    if (bytes.size() > response.size()) {
+        return {.error = robotweax::srt::Error::buffer_too_small};
+    }
+    std::copy(bytes.begin(), bytes.end(), response.begin());
+    // The handshake ISN occupies bytes 24..27 after the SRT control header.
+    const auto sequence =
+        decoded.message.packet.initial_sequence.next().value();
+    for (std::size_t index = 0; index < 4; ++index) {
+        response[24 + index] = std::byte {
+            static_cast<unsigned char>(sequence >> (24U - 8U * index))};
+    }
+    test.sequence.store(sequence);
+    return test.channel->socket.send_to(
+        std::span {response}.first(bytes.size()), peer);
+}
+
 struct InductionReplay {
     ~InductionReplay()
     {
@@ -1277,6 +1314,32 @@ TEST(srt_compat_exposes_reference_defaults_and_validated_live_options)
                    static_cast<int>(sizeof(integer_value))),
         SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
+    // Options negotiated in the handshake are pre-connection: a connected
+    // socket rejects them instead of echoing a value that never applies.
+    for (const SRT_SOCKOPT negotiated : {SRTO_LATENCY, SRTO_RCVLATENCY,
+             SRTO_PEERLATENCY, SRTO_PAYLOADSIZE, SRTO_RETRANSMITALGO}) {
+        int before = -1;
+        size = static_cast<int>(sizeof(before));
+        REQUIRE_EQ(srt_getsockflag(socket, negotiated, &before, &size), 0);
+        integer_value = before + 1;
+        REQUIRE_EQ(srt_setsockflag(socket, negotiated, &integer_value,
+                       static_cast<int>(sizeof(integer_value))),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
+        integer_value = -1;
+        size = static_cast<int>(sizeof(integer_value));
+        REQUIRE_EQ(
+            srt_getsockflag(socket, negotiated, &integer_value, &size), 0);
+        REQUIRE_EQ(integer_value, before);
+    }
+    for (const SRT_SOCKOPT negotiated :
+        {SRTO_TSBPDMODE, SRTO_TLPKTDROP, SRTO_NAKREPORT}) {
+        boolean_value = false;
+        REQUIRE_EQ(srt_setsockflag(socket, negotiated, &boolean_value,
+                       static_cast<int>(sizeof(boolean_value))),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
+    }
     boolean_value = true;
     REQUIRE_EQ(srt_setsockflag(socket, SRTO_DRIFTTRACER,
                    &boolean_value,
@@ -4296,6 +4359,111 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
     REQUIRE_EQ(srt_close(accepted.load()), 0);
     REQUIRE_EQ(srt_close(listener), 0);
     REQUIRE_EQ(srt_cleanup(), 0);
+}
+
+TEST(srt_compat_caller_receives_from_the_conclusion_peer_initial_sequence)
+{
+    ScopedSrtRuntime startup;
+    REQUIRE_EQ(startup.startup_result, 0);
+    constexpr std::int32_t timeout_milliseconds = 2'000;
+    constexpr bool tsbpd = false;
+    sockaddr_in bind_address {};
+    bind_address.sin_family = AF_INET;
+    bind_address.sin_port = 0;
+    bind_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    const SRTSOCKET listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_TSBPDMODE, &tsbpd,
+                   static_cast<int>(sizeof(tsbpd))),
+        0);
+    if (srt_bind(listener, reinterpret_cast<const sockaddr*>(&bind_address),
+            static_cast<int>(sizeof(bind_address)))
+        == SRT_ERROR) {
+        REQUIRE_EQ(srt_close(listener), 0);
+        return;
+    }
+    REQUIRE_EQ(srt_listen(listener, 1), 0);
+    sockaddr_in listener_name {};
+    int listener_name_size = static_cast<int>(sizeof(listener_name));
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&listener_name),
+            &listener_name_size),
+        0);
+
+    const auto listener_record =
+        robotweax::srt::compat::SocketRegistry::instance().find(listener);
+    REQUIRE(listener_record != nullptr);
+    DistinctPeerInitialSequence altered;
+    {
+        std::lock_guard lock(listener_record->mutex);
+        altered.channel = listener_record->channel;
+    }
+    REQUIRE(altered.channel != nullptr);
+    altered.channel->set_send_hook_for_testing(
+        send_distinct_peer_initial_sequence, &altered);
+
+    std::atomic<SRTSOCKET> accepted {SRT_INVALID_SOCK};
+    std::thread accept_thread([&] {
+        accepted.store(srt_accept(listener, nullptr, nullptr));
+    });
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_TSBPDMODE, &tsbpd,
+                   static_cast<int>(sizeof(tsbpd))),
+        0);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_RCVTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    const int connect_result =
+        srt_connect(caller, reinterpret_cast<const sockaddr*>(&listener_name),
+            static_cast<int>(sizeof(listener_name)));
+    if (connect_result == SRT_ERROR) {
+        (void)srt_close(listener);
+    }
+    accept_thread.join();
+    altered.channel->set_send_hook_for_testing(nullptr, nullptr);
+
+    REQUIRE_EQ(connect_result, 0);
+    REQUIRE(accepted.load() != SRT_INVALID_SOCK);
+    const auto peer_initial_sequence = altered.sequence.load();
+    REQUIRE(peer_initial_sequence != 0U);
+    const auto caller_record =
+        robotweax::srt::compat::SocketRegistry::instance().find(caller);
+    REQUIRE(caller_record != nullptr);
+    std::shared_ptr<robotweax::srt::compat::ConnectionRuntime> caller_runtime;
+    {
+        std::lock_guard lock(caller_record->mutex);
+        REQUIRE_EQ(caller_record->peer_connection_initial_sequence,
+            peer_initial_sequence);
+        caller_runtime = caller_record->runtime;
+    }
+    REQUIRE(caller_runtime != nullptr);
+
+    constexpr std::array<std::byte, 4> payload {
+        std::byte {'d'}, std::byte {'a'}, std::byte {'t'}, std::byte {'a'}};
+    robotweax::srt::PacketView packet;
+    packet.kind = robotweax::srt::PacketKind::data;
+    packet.data.sequence =
+        robotweax::srt::SequenceNumber {peer_initial_sequence};
+    packet.data.message_number = 1;
+    packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+    packet.data.in_order = true;
+    packet.payload = payload;
+    caller_runtime->process_packet(packet,
+        robotweax::srt::IpEndpoint::loopback(ntohs(listener_name.sin_port)));
+    std::array<char, payload.size()> received {};
+    REQUIRE_EQ(
+        srt_recv(caller, received.data(), static_cast<int>(received.size())),
+        static_cast<int>(payload.size()));
+    REQUIRE(std::memcmp(received.data(), payload.data(), payload.size()) == 0);
+
+    REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_close(accepted.load()), 0);
+    REQUIRE_EQ(srt_close(listener), 0);
 }
 
 TEST(srt_compat_listener_discards_oversized_udp_before_valid_handshake)

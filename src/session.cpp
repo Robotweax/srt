@@ -969,8 +969,10 @@ ReliabilityProcessResult ReliabilitySession::receive(
                 return {.error = error};
             }
         }
-        receive_loss_list_.remove_through(decoded.request.sequences.last);
-        filter_loss_list_.remove_through(decoded.request.sequences.last);
+        // Only the dropped range stops being requested. Earlier losses the
+        // peer did not drop must keep their periodic NAK.
+        receive_loss_list_.remove_range(decoded.request.sequences);
+        filter_loss_list_.remove_range(decoded.request.sequences);
         if (decoded.request.sequences.first.distance_from(
                 highest_received_sequence_.next())
                 <= 0

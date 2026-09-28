@@ -78,6 +78,10 @@ public:
     [[nodiscard]] ReceiveLossRemoval remove(
         SequenceNumber sequence) noexcept;
     void remove_through(SequenceNumber last) noexcept;
+    // Remove exactly the sequences inside `range`, trimming or splitting the
+    // entries that overlap it. Entries outside the range are untouched. A
+    // split that would exceed capacity leaves that entry unchanged.
+    void remove_range(SequenceRange range) noexcept;
     void age_fresh() noexcept;
     void mark_periodic_reports() noexcept;
     [[nodiscard]] std::size_t take_pending_reports(
@@ -98,9 +102,19 @@ private:
     void erase(std::size_t index) noexcept;
     [[nodiscard]] bool can_append(
         std::span<const SequenceRange> ranges) const noexcept;
+    // Index of the first entry whose range ends at or after `sequence`
+    // (entries are sorted and disjoint), or size_ when none does.
+    [[nodiscard]] std::size_t lower_bound(
+        SequenceNumber sequence) const noexcept;
+    void note_added(const Entry& entry) noexcept;
+    void note_removed(const Entry& entry) noexcept;
 
     std::vector<Entry> entries_;
     std::size_t size_ = 0;
+    // Entries still counting down their reorder TTL, and entries with a
+    // report pending. Both let the per-packet paths skip a full walk.
+    std::size_t fresh_count_ = 0;
+    std::size_t pending_count_ = 0;
 };
 
 } // namespace robotweax::srt

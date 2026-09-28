@@ -275,6 +275,13 @@ private:
             if (received.error == Error::buffer_too_small) {
                 continue;
             }
+            if (received.error == Error::io_error
+                && UdpSocket::is_transient_receive_error(
+                    received.system_error)) {
+                // A queued ICMP report or interrupted call for one peer
+                // is not a fault of the shared socket.
+                continue;
+            }
             if (!received) {
                 mark_connections_broken(received.system_error);
                 break;
@@ -440,6 +447,12 @@ public:
     next_readable_message_sequence() noexcept;
     [[nodiscard]] bool discard_received_before(
         SequenceNumber next_sequence) noexcept;
+    // Oldest sequence the receive buffer can still hold or deliver. Any
+    // earlier sequence has been consumed, discarded, or dropped and can no
+    // longer arrive through this connection.
+    [[nodiscard]] SequenceNumber receive_floor_sequence() noexcept;
+    [[nodiscard]] bool has_complete_buffered_message_at(
+        SequenceNumber sequence) noexcept;
     [[nodiscard]] MessageIoResult receive_stream(
         std::span<std::byte> destination,
         bool blocking,
