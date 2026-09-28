@@ -455,9 +455,11 @@ option is intentionally documented as unsuitable for deterministic Rendezvous
 routing.
 
 `SRTO_ISN` is a read-only `int32_t` containing the socket's 31-bit initial
-data sequence number. It is stable throughout the socket lifetime. In a
-classic caller/listener connection, the accepted socket exposes the negotiated
-caller ISN; in rendezvous mode, each socket exposes its local directional ISN.
+data sequence number. A socket's generated ISN is unpredictable: it comes from
+a keystream keyed by the cryptographic provider, not from the socket ID. It is
+stable throughout the socket lifetime. In a classic caller/listener
+connection, the accepted socket exposes the negotiated caller ISN; in
+rendezvous mode, each socket exposes its local directional ISN.
 Attempts to set the option fail with `SRT_EINVOP`.
 
 `SRTO_EVENT`, `SRTO_SNDDATA`, and `SRTO_RCVDATA` are read-only `int32_t`

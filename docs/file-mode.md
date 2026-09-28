@@ -243,3 +243,17 @@ wire format, rotation, and configuration details.
   the configured deadline.
 - AES-GCM requires explicit build and peer negotiation and cannot be combined
   with FEC in File mode.
+
+## Rollover interoperability tests
+
+The File and encrypted File rollover scenarios use a static, test-enabled
+`robotweax_srt_interop_peer` (`BUILD_SHARED_LIBS=OFF` and
+`ROBOTWEAX_SRT_BUILD_TESTS=ON`). Its private executable-only fixture sets the
+fresh socket's initial sequence number near the 31-bit wrap boundary when
+`--minimum-isn` is requested. Each scenario uses one creation attempt, so
+coverage does not depend on randomly drawing a suitable sequence number.
+
+The fixture is not linked into the library and adds no public API. Normal
+socket creation continues to use random initial sequence numbers. Shared or
+test-disabled Robotweax peers reject `--minimum-isn` explicitly; their other
+interop operations remain available.

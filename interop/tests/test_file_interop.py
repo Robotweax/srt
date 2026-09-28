@@ -546,7 +546,7 @@ class FileInteropTests(unittest.TestCase):
         )
         self.assertEqual(
             command[command.index("--isn-search-limit") + 1],
-            "100000",
+            "1",
         )
 
     def test_rollover_listener_does_not_receive_caller_isn_options(

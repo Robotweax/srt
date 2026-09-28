@@ -160,8 +160,7 @@ struct SrtApi {
     }
 };
 
-[[nodiscard]] int exercise_cycle(
-    const SrtApi& api, int cycle) noexcept
+[[nodiscard]] int exercise_cycle(const SrtApi& api) noexcept
 {
     if (api.startup() != 0 || api.startup() != 0) {
         return 10;
@@ -174,19 +173,15 @@ struct SrtApi {
         return 11;
     }
 
-    // Linux and Windows unload the image immediately, so module-local static
-    // state must be reconstructed. dyld can keep C++ images in a delayed
-    // unload cache; on macOS the state-isolation assertions below are the
-    // portable contract and handles may continue monotonically.
-#if !defined(__APPLE__)
-    if (closed_socket != 1 || cleanup_socket != 2) {
-        std::fprintf(stderr,
-            "cycle %d retained socket handles %d and %d\n",
-            cycle, static_cast<int>(closed_socket),
-            static_cast<int>(cleanup_socket));
+    // Random handles must remain distinct and in the socket namespace. The
+    // state/epoll checks below verify lifecycle isolation without assuming
+    // that a freshly loaded runtime starts at a particular numeric handle.
+    if (closed_socket <= 0 || cleanup_socket <= 0
+        || closed_socket == cleanup_socket
+        || (closed_socket & SRTGROUP_MASK) != 0
+        || (cleanup_socket & SRTGROUP_MASK) != 0) {
         return 12;
     }
-#endif
 
     const int poll = api.epoll_create();
     const int events = SRT_EPOLL_IN | SRT_EPOLL_ERR;
@@ -247,7 +242,7 @@ int main(int argc, char** argv)
             return 3;
         }
 
-        const int exercise_result = exercise_cycle(api, cycle);
+        const int exercise_result = exercise_cycle(api);
         if (exercise_result != 0) {
             std::fprintf(stderr,
                 "shared-library cycle %d failed at step %d\n",

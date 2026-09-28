@@ -27,6 +27,10 @@
 #  include <arpa/inet.h>
 #endif
 
+#ifdef ROBOTWEAX_SRT_TEST_ISN_FIXTURE
+SRTSOCKET create_socket_with_test_isn(std::int32_t sequence);
+#endif
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -1095,6 +1099,20 @@ SRTSOCKET create_socket_with_minimum_isn(
         return srt_create_socket();
     }
 
+#ifdef ROBOTWEAX_SRT_TEST_ISN_FIXTURE
+    const auto socket =
+        create_socket_with_test_isn(configuration.minimum_initial_sequence);
+    if (socket != SRT_INVALID_SOCK) {
+        std::cout << "{\"event\":\"socket_selected\",\"isn\":"
+                  << configuration.minimum_initial_sequence
+                  << ",\"attempts\":1}\n"
+                  << std::flush;
+    }
+    return socket;
+#elif defined(ROBOTWEAX_SRT_INTEROP_PEER)
+    std::cerr << "--minimum-isn requires a static test-enabled interop peer\n";
+    return SRT_INVALID_SOCK;
+#else
     constexpr int cleanup_interval = 1'024;
     for (int attempt = 1;
          attempt <= configuration.initial_sequence_search_limit;
@@ -1142,6 +1160,7 @@ SRTSOCKET create_socket_with_minimum_isn(
               << configuration.initial_sequence_search_limit
               << " attempts\n";
     return SRT_INVALID_SOCK;
+#endif
 }
 
 struct EndpointAddress {

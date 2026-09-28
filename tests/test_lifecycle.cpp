@@ -9,9 +9,11 @@
 #include "compat/runtime_work_executor_service.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/group_registry.hpp"
+#include "compat/random_identity.hpp"
 #include "compat/transport_runtime.hpp"
 #include "srt/srt.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <barrier>
@@ -277,13 +279,101 @@ TEST(lifecycle_concurrent_close_and_lookup_preserve_inflight_ownership)
     REQUIRE_EQ(srt_cleanup(), 0);
 }
 
-TEST(lifecycle_handle_allocator_exhaustion_does_not_recycle_ids)
+TEST(lifecycle_handle_permutation_never_recycles_ids)
 {
+    using robotweax::srt::compat::HandleSpace;
     using robotweax::srt::compat::next_registry_handle;
-    REQUIRE_EQ(next_registry_handle(1), 2);
-    REQUIRE_EQ(next_registry_handle(SRTGROUP_MASK - 2), SRTGROUP_MASK - 1);
-    REQUIRE_EQ(next_registry_handle(SRTGROUP_MASK - 1), SRT_INVALID_SOCK);
-    REQUIRE_EQ(next_registry_handle(SRT_INVALID_SOCK), SRT_INVALID_SOCK);
+    using robotweax::srt::compat::registry_handle_space;
+    // A permutation cannot repeat; this checks the construction on a prefix
+    // and that both handle spaces are keyed independently.
+    constexpr std::uint32_t prefix = 1U << 17;
+    std::vector<SRTSOCKET> sockets;
+    std::vector<SRTSOCKET> groups;
+    std::uint32_t socket_index = 0;
+    std::uint32_t group_index = 0;
+    while (sockets.size() < prefix) {
+        const SRTSOCKET handle =
+            next_registry_handle(HandleSpace::socket, socket_index);
+        REQUIRE(handle > 0 && handle < SRTGROUP_MASK);
+        sockets.push_back(handle);
+    }
+    while (groups.size() < 64U) {
+        groups.push_back(next_registry_handle(HandleSpace::group, group_index));
+    }
+    REQUIRE(!std::equal(groups.begin(), groups.end(), sockets.begin()));
+    std::sort(sockets.begin(), sockets.end());
+    REQUIRE(
+        std::adjacent_find(sockets.begin(), sockets.end()) == sockets.end());
+
+    // The last position may be the one that maps to zero; after it the space
+    // is exhausted and allocation fails instead of wrapping around.
+    std::uint32_t last = registry_handle_space - 1U;
+    (void)next_registry_handle(HandleSpace::socket, last);
+    REQUIRE_EQ(last, registry_handle_space);
+    REQUIRE_EQ(
+        next_registry_handle(HandleSpace::socket, last), SRT_INVALID_SOCK);
+    REQUIRE_EQ(last, registry_handle_space);
+}
+
+TEST(lifecycle_socket_and_group_identities_are_unpredictable)
+{
+    // Handles are wire socket IDs and SRTO_ISN seeds the DATA window. Neither
+    // may follow from a previously observed value: no consecutive handles and
+    // no fixed ISN function of the handle. A random source makes each check
+    // fail with a probability below 1e-7.
+    constexpr std::size_t count = 64;
+    REQUIRE_EQ(srt_startup(), 0);
+    std::vector<SRTSOCKET> sockets;
+    std::vector<std::int32_t> sequences;
+    for (std::size_t index = 0; index < count; ++index) {
+        const SRTSOCKET socket = srt_create_socket();
+        REQUIRE(socket != SRT_INVALID_SOCK);
+        REQUIRE(socket > 0);
+        REQUIRE((socket & SRTGROUP_MASK) == 0);
+        std::int32_t sequence = -1;
+        int size = sizeof(sequence);
+        REQUIRE_EQ(srt_getsockflag(socket, SRTO_ISN, &sequence, &size), 0);
+        REQUIRE(sequence >= 0);
+        sockets.push_back(socket);
+        sequences.push_back(sequence);
+    }
+    std::size_t adjacent_handles = 0;
+    std::size_t derived_sequences = 0;
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto handle = static_cast<std::uint32_t>(sockets[index]);
+        if (index > 0) {
+            const auto previous =
+                static_cast<std::uint32_t>(sockets[index - 1]);
+            adjacent_handles +=
+                handle - previous == 1U || previous - handle == 1U;
+        }
+        derived_sequences += static_cast<std::uint32_t>(sequences[index])
+            == ((handle * 2'654'435'761U) & SequenceNumber::mask);
+    }
+    REQUIRE_EQ(adjacent_handles, std::size_t {0});
+    REQUIRE_EQ(derived_sequences, std::size_t {0});
+    auto sorted = sequences;
+    std::sort(sorted.begin(), sorted.end());
+    REQUIRE(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end());
+    for (const SRTSOCKET socket : sockets) {
+        REQUIRE_EQ(srt_close(socket), 0);
+    }
+
+    std::vector<SRTSOCKET> groups;
+    for (std::size_t index = 0; index < 8; ++index) {
+        const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+        REQUIRE(group != SRT_INVALID_SOCK);
+        REQUIRE((group & SRTGROUP_MASK) != 0);
+        if (!groups.empty()) {
+            const SRTSOCKET step = group - groups.back();
+            REQUIRE(step != 1 && step != -1);
+        }
+        groups.push_back(group);
+    }
+    for (const SRTSOCKET group : groups) {
+        REQUIRE_EQ(srt_close(group), 0);
+    }
+    REQUIRE_EQ(srt_cleanup(), 0);
 }
 
 TEST(lifecycle_group_clock_serializes_parallel_drift_and_readiness)

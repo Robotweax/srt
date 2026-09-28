@@ -5,6 +5,7 @@
 #include "compat/connection.hpp"
 #include "compat/epoll.hpp"
 #include "compat/group_registry.hpp"
+#include "compat/random_identity.hpp"
 #include "compat/readiness.hpp"
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/runtime_work_executor_service.hpp"
@@ -369,12 +370,15 @@ SocketRegistry& SocketRegistry::instance() noexcept
     // statics are destroyed in reverse construction order, so the registry
     // can close workers, encrypted sessions, and poll records safely during
     // normal process exit even when the application omits srt_cleanup().
+    // The crypto provider comes first so that it outlives everything that
+    // holds provider objects, including the socket identity generator.
+    (void)default_crypto_provider();
+    (void)prepare_random_identity();
     (void)deferred_close_manager();
     prepare_runtime_scheduler_service();
     prepare_runtime_work_executor_service();
     prepare_connect_callback_executor();
     epoll_initialize();
-    (void)default_crypto_provider();
     (void)GroupRegistry::instance();
     static SocketRegistry registry;
     return registry;
@@ -390,33 +394,34 @@ SRTSOCKET SocketRegistry::create() noexcept
     try {
         auto record = std::make_shared<SocketRecord>();
         std::lock_guard lock(mutex_);
-        if (clearing_ || next_socket_ == SRT_INVALID_SOCK) {
+        if (clearing_) {
             return SRT_INVALID_SOCK;
         }
 
-        const SRTSOCKET first_candidate = next_socket_;
+        const auto initial_sequence = random_initial_sequence();
+        if (!initial_sequence) {
+            return SRT_INVALID_SOCK;
+        }
+        // The permutation never repeats a handle; the lookup only guards
+        // the registry invariant.
+        SRTSOCKET candidate = SRT_INVALID_SOCK;
         do {
-            const SRTSOCKET candidate = next_socket_;
-            next_socket_ = next_registry_handle(next_socket_);
-            if (sockets_.find(candidate) == sockets_.end()) {
-                record->protocol_socket_id =
-                    static_cast<std::uint32_t>(candidate);
-                record->connection_initial_sequence =
-                    (static_cast<std::uint32_t>(candidate) * 2'654'435'761U)
-                    & SequenceNumber::mask;
-                record->peer_connection_initial_sequence =
-                    record->connection_initial_sequence;
-                sockets_.emplace(candidate, std::move(record));
-                return candidate;
+            candidate =
+                next_registry_handle(HandleSpace::socket, next_socket_index_);
+            if (candidate == SRT_INVALID_SOCK) {
+                return SRT_INVALID_SOCK;
             }
-        } while (next_socket_ != first_candidate
-            && next_socket_ != SRT_INVALID_SOCK);
+        } while (sockets_.find(candidate) != sockets_.end());
+        record->protocol_socket_id = static_cast<std::uint32_t>(candidate);
+        record->connection_initial_sequence = *initial_sequence;
+        record->peer_connection_initial_sequence = *initial_sequence;
+        sockets_.emplace(candidate, std::move(record));
+        return candidate;
     } catch (const std::bad_alloc&) {
         return SRT_INVALID_SOCK;
     } catch (...) {
         return SRT_INVALID_SOCK;
     }
-    return SRT_INVALID_SOCK;
 }
 
 std::shared_ptr<SocketRecord> SocketRegistry::find(SRTSOCKET socket) noexcept
@@ -424,6 +429,12 @@ std::shared_ptr<SocketRecord> SocketRegistry::find(SRTSOCKET socket) noexcept
     std::lock_guard lock(mutex_);
     const auto entry = sockets_.find(socket);
     return entry == sockets_.end() ? nullptr : entry->second;
+}
+
+std::size_t SocketRegistry::size() noexcept
+{
+    std::lock_guard lock(mutex_);
+    return sockets_.size();
 }
 
 SRT_SOCKSTATUS SocketRegistry::state(SRTSOCKET socket) noexcept
