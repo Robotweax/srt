@@ -234,6 +234,13 @@ public:
     // prefix is never returned as valid data: error is buffer_too_small and
     // bytes_transferred is destination.size().
     [[nodiscard]] UdpIoResult receive_from(std::span<std::byte> destination) noexcept;
+    /**
+     * True when a receive failure reports a per-datagram network condition
+     * (an ICMP error for an earlier send, an interrupted call) rather than
+     * a fault of the socket itself. Such reports must not end a session.
+     */
+    [[nodiscard]] static bool is_transient_receive_error(
+        int system_error) noexcept;
 
 private:
     struct UnopenedTag {
