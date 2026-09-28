@@ -622,7 +622,7 @@ jobs:
           "$RUNNER_TEMP/gstreamer-qualification"
       - name: Preserve qualification diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gstreamer-evidence
           path: |
