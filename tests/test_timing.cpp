@@ -267,6 +267,9 @@ TEST(control_timer_shorter_rtt_advances_pending_nak_without_postponing_it)
     REQUIRE_EQ(timer.next_deadline(11'000), 71'000U);
     timer.set_loss_state(true, 20'000, 60'000, true);
     REQUIRE_EQ(timer.next_deadline(20'000), 71'000U);
+    timer.set_loss_state(true, 25'000, 100'000, true);
+    timer.set_loss_state(true, 30'000, 60'000, true);
+    REQUIRE_EQ(timer.next_deadline(30'000), 71'000U);
     REQUIRE_EQ(timer.poll(70'999).size, 0U);
     const auto due = timer.poll(71'000);
     REQUIRE_EQ(due.size, 1U);

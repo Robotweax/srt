@@ -3375,8 +3375,15 @@ TEST(session_ackack_shorter_rtt_repeats_filter_nak_before_live_deadline)
         .send_capacity_packets = 16,
         .receive_capacity_packets = 16,
     }};
-    receiver.configure_live({.periodic_nak = true, .retransmit_flag = true}, 0,
-        PacketTimestamp {0});
+    receiver.configure_live(
+        {
+            .receive_tsbpd = true,
+            .too_late_packet_drop = true,
+            .periodic_nak = true,
+            .retransmit_flag = true,
+            .receive_delay_milliseconds = 120,
+        },
+        0, PacketTimestamp {0});
     const auto filter =
         parse_packet_filter_configuration("fec,cols:4,rows:1,arq:onreq");
     REQUIRE(filter);
@@ -3412,4 +3419,6 @@ TEST(session_ackack_shorter_rtt_repeats_filter_nak_before_live_deadline)
     REQUIRE_EQ(ranges.size(), 1U);
     REQUIRE_EQ(ranges[0].first, SequenceNumber {100});
     REQUIRE_EQ(ranges[0].last, SequenceNumber {101});
+    REQUIRE_EQ(
+        receiver.drop_too_late_receiver(71'000).receiver_drop_packets, 0U);
 }

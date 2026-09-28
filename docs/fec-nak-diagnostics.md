@@ -48,11 +48,49 @@ forwarded handshake in each direction. `forwarded: false` distinguishes
 observation from successful submission to UDP. Times are monotonic values
 from the relay process and should only be compared within that run.
 
-## Remaining investigation
+## Linux reproduction and receiver correction
 
-Capture the same repeated scenario on the Linux runner and correlate the
-relay's NAK submission with UDP reception at the reference endpoint. Check
-handshake handoff and reference control-packet processing before assigning
-blame to either implementation. Also verify why no second useful NAK is
-observed before the 120 ms live delivery deadline. Add a deterministic
-protocol regression test once the faulty transition is identified.
+The isolated Linux baseline run
+[36409639937](https://github.com/Robotweax/srt/actions/runs/36409639937)
+failed 35 of 60 uninstrumented attempts. A separate 20-attempt run under
+`strace` passed completely and showed NAK reception via `recvmsg`. Instrumentation
+therefore masks the failing timing; those successful syscall traces do not
+prove reception of the NAKs from the failed baseline attempts.
+
+A concrete receiver-side defect was reproduced independently of the reference:
+the initial RTT estimate schedules the first repeated NAK approximately 150 ms
+after the loss report. A subsequent ACKACK can establish a 1 ms RTT, but the
+pending NAK deadline was not advanced. With 120 ms live latency, the next useful
+request could therefore arrive after the missing packets' delivery deadline.
+
+The correction refreshes the loss timer on a valid ACKACK RTT sample and brings
+an outstanding NAK deadline forward when its interval shrinks. It retains the
+60 ms minimum interval and never postpones an already earlier deadline. There
+is no artificial delay, retry-to-pass logic, or change to FEC recovery criteria.
+Two deterministic native regression tests fail before this change and pass
+after it, covering the timer directly and FEC `arq:onreq` with no subsequent DATA.
+
+Validation of the correction: 739/739 native tests, the full local FEC matrix,
+and 60/60 uninstrumented local attempts of the originally failing scenario
+passed. The matching Linux run
+[36410079875](https://github.com/Robotweax/srt/actions/runs/36410079875)
+passed 60/60 uninstrumented and 20/20 separately traced attempts, compared with
+35/60 failures in the earlier Linux baseline.
+
+A temporary local control deliberately discarded the first NAK: 10/10 transfers
+still passed. Three further instrumented controls explicitly observed the
+replacement NAK about 71–77 ms after the discarded one and complete successful
+recovery. The printed `arq_naks=1` is the reference sender's received-NAK statistic,
+not the total number emitted by Robotweax or observed by the relay. These
+controls are supplemental evidence; the committed deterministic session test
+covers the lost-first-NAK and valid-ACKACK transition without wall-clock races.
+
+The exact reason the reference sometimes does not process the first NAK remains
+unproven. The correction addresses Robotweax's demonstrated failure to reschedule
+recovery after learning the RTT; it does not claim to fix a Haivision internal
+handoff race.
+
+The Linux comparison can be dispatched independently of normal CI or release
+integrations with `timing-diagnostics.yml`, investigation `fec-nak`. It preserves
+60 baseline attempts and 20 separately instrumented attempts as an artifact,
+including failures. No upstream source inspection is needed.
