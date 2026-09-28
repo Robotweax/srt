@@ -60,6 +60,41 @@ ReceiveLossList::ReceiveLossList(std::size_t capacity)
     }
 }
 
+void ReceiveLossList::note_added(const Entry& entry) noexcept
+{
+    if (entry.fresh) {
+        ++fresh_count_;
+    }
+    if (entry.initial_report_pending || entry.periodic_report_pending) {
+        ++pending_count_;
+    }
+}
+
+void ReceiveLossList::note_removed(const Entry& entry) noexcept
+{
+    if (entry.fresh) {
+        --fresh_count_;
+    }
+    if (entry.initial_report_pending || entry.periodic_report_pending) {
+        --pending_count_;
+    }
+}
+
+std::size_t ReceiveLossList::lower_bound(SequenceNumber sequence) const noexcept
+{
+    std::size_t low = 0;
+    std::size_t high = size_;
+    while (low < high) {
+        const std::size_t middle = low + (high - low) / 2U;
+        if (sequence.distance_from(entries_[middle].range.last) > 0) {
+            low = middle + 1U;
+        } else {
+            high = middle;
+        }
+    }
+    return low;
+}
+
 bool ReceiveLossList::add(
     SequenceRange range, std::uint32_t initial_ttl) noexcept
 {
@@ -80,6 +115,7 @@ bool ReceiveLossList::add_all(
             .fresh = initial_ttl != 0U,
             .initial_report_pending = initial_ttl == 0U,
         };
+        note_added(entries_[size_]);
         ++size_;
     }
     return true;
@@ -125,6 +161,7 @@ bool ReceiveLossList::insert_sorted(
         .fresh = initial_ttl != 0U,
         .initial_report_pending = initial_ttl == 0U,
     };
+    note_added(entries_[position]);
     ++size_;
     return true;
 }
@@ -195,6 +232,7 @@ bool ReceiveLossList::can_append(
 
 void ReceiveLossList::erase(std::size_t index) noexcept
 {
+    note_removed(entries_[index]);
     for (std::size_t source = index + 1U; source < size_; ++source) {
         entries_[source - 1U] = entries_[source];
     }
@@ -205,14 +243,17 @@ void ReceiveLossList::erase(std::size_t index) noexcept
 ReceiveLossRemoval ReceiveLossList::remove(
     SequenceNumber sequence) noexcept
 {
-    for (std::size_t index = 0; index < size_; ++index) {
+    // Sorted, disjoint entries: only the first entry ending at or after the
+    // sequence can contain it.
+    const std::size_t index = lower_bound(sequence);
+    if (index < size_) {
         auto& entry = entries_[index];
         const std::int32_t from_first =
             sequence.distance_from(entry.range.first);
         const std::int32_t from_last =
             sequence.distance_from(entry.range.last);
         if (from_first < 0 || from_last > 0) {
-            continue;
+            return {};
         }
 
         const ReceiveLossRemoval result{
@@ -244,6 +285,7 @@ ReceiveLossRemoval ReceiveLossList::remove(
             sequence.advanced(SequenceNumber::mask);
         entries_[index + 1U] = upper;
         entries_[index + 1U].range.first = sequence.next();
+        note_added(entries_[index + 1U]);
         ++size_;
         return result;
     }
@@ -267,6 +309,9 @@ void ReceiveLossList::remove_through(
     }
     if (removed == 0U) {
         return;
+    }
+    for (std::size_t index = 0; index < removed; ++index) {
+        note_removed(entries_[index]);
     }
 
     // Compact the surviving suffix once. Erasing each covered range in turn
@@ -326,6 +371,7 @@ void ReceiveLossList::remove_range(SequenceRange range) noexcept
         entry.range.last = range.first.advanced(SequenceNumber::mask);
         entries_[index + 1U] = upper;
         entries_[index + 1U].range.first = range.last.next();
+        note_added(entries_[index + 1U]);
         ++size_;
         return;
     }
@@ -333,16 +379,23 @@ void ReceiveLossList::remove_range(SequenceRange range) noexcept
 
 void ReceiveLossList::age_fresh() noexcept
 {
-    for (std::size_t index = 0; index < size_; ++index) {
-        auto& entry = entries_[index];
-        if (entry.fresh && entry.ttl == 0U) {
-            entry.fresh = false;
-            entry.initial_report_pending = true;
-        }
+    if (fresh_count_ == 0U) {
+        return;
     }
     for (std::size_t index = 0; index < size_; ++index) {
         auto& entry = entries_[index];
-        if (entry.fresh && entry.ttl != 0U) {
+        if (!entry.fresh) {
+            continue;
+        }
+        if (entry.ttl == 0U) {
+            entry.fresh = false;
+            --fresh_count_;
+            if (!entry.initial_report_pending
+                && !entry.periodic_report_pending) {
+                ++pending_count_;
+            }
+            entry.initial_report_pending = true;
+        } else {
             --entry.ttl;
         }
     }
@@ -353,6 +406,7 @@ void ReceiveLossList::mark_periodic_reports() noexcept
     for (std::size_t index = 0; index < size_; ++index) {
         entries_[index].periodic_report_pending = true;
     }
+    pending_count_ = size_;
 }
 
 std::optional<SequenceRange>
@@ -369,8 +423,8 @@ std::size_t ReceiveLossList::take_pending_reports(
 {
     std::size_t written = 0;
     for (std::size_t index = 0;
-         index < size_ && written < destination.size();
-         ++index) {
+        index < size_ && pending_count_ != 0U && written < destination.size();
+        ++index) {
         auto& entry = entries_[index];
         if (!entry.initial_report_pending
             && !entry.periodic_report_pending) {
@@ -379,19 +433,14 @@ std::size_t ReceiveLossList::take_pending_reports(
         destination[written++] = entry.range;
         entry.initial_report_pending = false;
         entry.periodic_report_pending = false;
+        --pending_count_;
     }
     return written;
 }
 
 bool ReceiveLossList::has_pending_report() const noexcept
 {
-    return std::any_of(
-        entries_.begin(),
-        entries_.begin() + static_cast<std::ptrdiff_t>(size_),
-        [](const Entry& entry) {
-            return entry.initial_report_pending
-                || entry.periodic_report_pending;
-        });
+    return pending_count_ != 0U;
 }
 
 } // namespace robotweax::srt
