@@ -123,6 +123,12 @@ jobs:
           EVIDENCE_RUN_ID: ${{ steps.recent_full.outputs.evidence_run_id }}
         run: |
           set -euo pipefail
+          # Ecosystem builds run only on explicit full/release requests.
+          integration_policy=()
+          if [[ "$EVENT_NAME" != "workflow_dispatch" && "$REF_TYPE" != "tag" \
+                && "${INTEGRATIONS_ONLY:-false}" != "true" ]]; then
+            integration_policy=(--without-integrations)
+          fi
           output_file="$RUNNER_TEMP/ci-classification.txt"
           changed_file="$RUNNER_TEMP/ci-changed-paths.txt"
           evidence_run_id="$EVIDENCE_RUN_ID"
@@ -131,12 +137,12 @@ jobs:
             python3 interop/ci_changes.py --integrations-only > "$output_file"
             : > "$changed_file"
           elif [[ "$EVENT_NAME" == "schedule" && "$evidence_run_id" =~ ^[0-9]+$ ]]; then
-            python3 interop/ci_changes.py > "$output_file"
+            python3 interop/ci_changes.py "${integration_policy[@]-}" > "$output_file"
             : > "$changed_file"
           elif [[ "$EVENT_NAME" == "workflow_dispatch" \
                 || "$EVENT_NAME" == "schedule" \
                 || "$REF_TYPE" == "tag" ]]; then
-            python3 interop/ci_changes.py --full > "$output_file"
+            python3 interop/ci_changes.py --full "${integration_policy[@]-}" > "$output_file"
             : > "$changed_file"
           else
             if git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
@@ -145,7 +151,7 @@ jobs:
             else
               git ls-tree -r --name-only "$HEAD_SHA" > "$changed_file"
             fi
-            python3 interop/ci_changes.py - \
+            python3 interop/ci_changes.py "${integration_policy[@]-}" - \
               < "$changed_file" > "$output_file"
           fi
           cat "$output_file" >> "$GITHUB_OUTPUT"

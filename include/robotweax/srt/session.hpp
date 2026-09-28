@@ -340,6 +340,12 @@ public:
     }
     [[nodiscard]] ReliabilityActions poll_timers(
         std::uint64_t now_microseconds) noexcept;
+    // Emit the pending full acknowledgement immediately, out of the 10 ms
+    // cadence. Used on graceful close so a peer that just sent its final
+    // packets still receives the cumulative ACK and can drain its send buffer,
+    // which the cadence alone would delay until after this side has torn down.
+    [[nodiscard]] ReliabilityActions flush_acknowledgement(
+        std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] bool idle_for_receive_wait() const noexcept
     {
         return send_buffer_.size() == 0U && receive_buffer_.occupied() == 0U

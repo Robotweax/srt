@@ -110,6 +110,12 @@ publishing a release. Select the candidate branch or tag in GitHub Actions:
 gh workflow run release-integrations.yml --ref <candidate-branch-or-tag>
 ```
 
+Automatic pull-request, branch-push and scheduled CI runs exclude the FFmpeg,
+GStreamer, VLC and OBS ecosystem builds, even when protocol changes select a
+broad test profile. They run only through the explicit Release integrations
+workflow, a manually requested full CI run, or a release tag. Required CI uses
+the same selection flags, so excluded integration jobs are expected skips.
+
 The workflow runs FFmpeg, GStreamer and VLC on Linux, plus Linux OBS integration
 and desktop coverage and the Windows/macOS OBS integration and desktop jobs.
 It reuses the pinned sources and test steps from `CI`; there is no second copy

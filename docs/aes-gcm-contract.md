@@ -81,8 +81,11 @@ extension-enabled binary interface, or vice versa.
 | `1` | `AES-CTR` | Require the compatible CTR suite |
 | `2` | `AES-GCM` | Require the authenticated GCM suite |
 
-After establishment, the getter reports the concrete effective value `1` or
-`2`, never `AUTO`.
+After establishment, the getter reports the suite that actually protects
+DATA: `1` or `2` while encryption is active, and `0` when the connection
+carries plaintext, for example without a passphrase or after the optional
+fallback permitted by `SRTO_ENFORCEDENCRYPTION=false`. It never echoes a
+configured `1` or `2` for an unencrypted connection.
 
 A Listener callback sees the mode inherited by the provisional accepted
 socket and may override it before establishment completes. It cannot inspect

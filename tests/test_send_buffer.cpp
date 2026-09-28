@@ -764,3 +764,38 @@ TEST(send_buffer_payload_pool_preserves_maximum_gcm_tag_across_copy_and_reuse)
             std::equal(wire.begin(), wire.end(), retransmit->payload.begin()));
     }
 }
+
+TEST(send_buffer_positions_survive_expiration_and_wire_wrap)
+{
+    SendBuffer buffer {SequenceNumber {SequenceNumber::mask}, 8, 1};
+    const std::array one {std::byte {1}};
+    const std::array three {std::byte {2}, std::byte {3}, std::byte {4}};
+    REQUIRE_EQ(
+        buffer.enqueue_message(one, 1, PacketTimestamp {0}, 99), Error::none);
+    REQUIRE_EQ(
+        buffer.enqueue_message(three, 2, PacketTimestamp {0}, 99, true, 0, 10),
+        Error::none);
+    REQUIRE_EQ(
+        buffer.enqueue_message(one, 3, PacketTimestamp {0}, 99), Error::none);
+    REQUIRE_EQ(buffer.next_packet()->sequence_position, 0U);
+    REQUIRE_EQ(buffer.drop_expired_message(11).packets, 3U);
+    const auto peek = buffer.peek_new_packet();
+    REQUIRE(peek.has_value());
+    REQUIRE_EQ(peek->sequence_position, 4U);
+    REQUIRE_EQ(peek->header.sequence, SequenceNumber {3});
+    REQUIRE_EQ(buffer.peek_new_packet()->sequence_position, 4U);
+    REQUIRE_EQ(buffer.next_packet()->sequence_position, 4U);
+}
+
+TEST(send_buffer_positions_keep_complete_cycles_during_empty_resynchronization)
+{
+    SendBuffer buffer {SequenceNumber {0}, 8, 1};
+    REQUIRE(
+        buffer.synchronize_empty(SequenceNumber {SequenceNumber::half_range}));
+    REQUIRE(buffer.synchronize_empty(SequenceNumber {0}));
+    const std::array one {std::byte {1}};
+    REQUIRE_EQ(
+        buffer.enqueue_message(one, 1, PacketTimestamp {0}, 99), Error::none);
+    REQUIRE_EQ(buffer.peek_new_packet()->sequence_position,
+        std::uint64_t {SequenceNumber::modulus});
+}
