@@ -8,6 +8,7 @@ on:
         type: choice
         options:
           - timing
+          - fec-nak
           - group-receive-contract
           - group-backup-baseline
           - group-matrix-context
@@ -295,3 +296,68 @@ jobs:
             group-diagnostic-metadata/*.txt
           retention-days: 14
           if-no-files-found: warn
+
+  fec_nak:
+    if: github.event_name == 'workflow_dispatch' && inputs.investigation == 'fec-nak'
+    name: Linux early FEC NAK diagnosis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: Haivision/srt
+          ref: 899348d8318eb9a3c5a5b6ec43c4a1114288773a
+          path: diagnostic-reference-source
+          persist-credentials: false
+      - name: Build pinned peers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libssl-dev pkg-config strace
+          cmake -S . -B build-fec -DCMAKE_BUILD_TYPE=Release \
+            -DROBOTWEAX_SRT_BUILD_TESTS=OFF -DROBOTWEAX_SRT_BUILD_TOOLS=ON \
+            -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          cmake --build build-fec --parallel 2 --target robotweax_srt_interop_peer
+          cmake -S diagnostic-reference-source -B diagnostic-reference-build \
+            -DCMAKE_BUILD_TYPE=Release -DENABLE_ENCRYPTION=ON \
+            -DENABLE_APPS=OFF -DENABLE_TESTING=OFF -DENABLE_SHARED=OFF -DENABLE_STATIC=ON
+          cmake --build diagnostic-reference-build --parallel 2
+          c++ -std=c++17 -O2 interop/api_peer.cpp \
+            -Idiagnostic-reference-source/srtcore -Idiagnostic-reference-build \
+            diagnostic-reference-build/libsrt.a -lcrypto -lpthread -ldl -o reference-api-peer
+      - name: Baseline and separately traced repetitions
+        run: |
+          mkdir -p fec-nak-evidence
+          git rev-parse HEAD > fec-nak-evidence/revision.txt
+          uname -a > fec-nak-evidence/kernel.txt
+          set +e
+          python3 interop/run_fec_interop.py \
+            --robotweax-peer build-fec/robotweax_srt_interop_peer \
+            --reference-peer ./reference-api-peer \
+            --rendezvous-scenario aes256-row-fec-rendezvous-haivision-to-robotweax-burst \
+            --repeat 60 > fec-nak-evidence/baseline.log 2>&1
+          baseline=$?
+          cat > reference-traced-peer <<'SCRIPT'
+          #!/bin/bash
+          root="$(cd "$(dirname "$0")" && pwd)"
+          exec strace -f -ttt -xx -s 96 -e trace=network \
+            -o "$root/fec-nak-evidence/reference-$$.strace" "$root/reference-api-peer" "$@"
+          SCRIPT
+          chmod +x reference-traced-peer
+          python3 interop/run_fec_interop.py \
+            --robotweax-peer build-fec/robotweax_srt_interop_peer \
+            --reference-peer ./reference-traced-peer \
+            --rendezvous-scenario aes256-row-fec-rendezvous-haivision-to-robotweax-burst \
+            --repeat 20 > fec-nak-evidence/traced.log 2>&1
+          traced=$?
+          printf 'baseline=%s traced=%s\n' "$baseline" "$traced" | tee fec-nak-evidence/status.txt
+          test "$baseline" = 0 && test "$traced" = 0
+      - name: Preserve diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fec-nak-evidence-${{ github.run_id }}
+          path: fec-nak-evidence/
+          retention-days: 14

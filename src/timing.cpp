@@ -108,6 +108,7 @@ void ControlTimerScheduler::set_loss_state(bool has_loss,
     std::uint32_t nak_interval_microseconds,
     bool defer_initial_report) noexcept
 {
+    const auto previous_interval = nak_interval_microseconds_;
     nak_interval_microseconds_ =
         std::max(
             nak_interval_microseconds,
@@ -122,6 +123,17 @@ void ControlTimerScheduler::set_loss_state(bool has_loss,
                 ? std::numeric_limits<std::uint64_t>::max()
                 : now_microseconds + nak_interval_microseconds_;
         }
+    }
+    if (has_loss && has_loss_
+        && nak_interval_microseconds_ < previous_interval) {
+        // A newly measured RTT can replace the conservative startup estimate.
+        // Do not leave the first repeat past a short live delivery deadline,
+        // and never postpone a report which is already scheduled sooner.
+        const auto maximum = std::numeric_limits<std::uint64_t>::max();
+        const auto revised = now_microseconds
+            + std::min<std::uint64_t>(
+                nak_interval_microseconds_, maximum - now_microseconds);
+        next_nak_microseconds_ = std::min(next_nak_microseconds_, revised);
     }
     has_loss_ = has_loss;
 }

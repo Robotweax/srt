@@ -37,6 +37,8 @@ developers and transport integrators using the installed public API.
 - [OBS Windows portable preview](obs-windows-preview.md) — isolated ZIP assembly,
   integrity checks, physical-Windows acceptance and distribution boundary.
 - [Testing](testing.md) — local verification and focused test selection.
+- [Early FEC NAK diagnostics](fec-nak-diagnostics.md) — reproduction and
+  evidence for intermittent encrypted Rendezvous recovery failures.
 - [Live UDP/SRT bridge](udp-srt-bridge.md) — continuous MPEG-TS UDP → SRT → UDP
   forwarding with the public API.
 - [Public API examples](../examples/README.md) — runnable Caller, Listener,

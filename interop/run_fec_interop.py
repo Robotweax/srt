@@ -2462,6 +2462,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--robotweax-peer", type=Path, required=True)
     parser.add_argument("--reference-peer", type=Path, required=True)
     parser.add_argument(
+        "--rendezvous-scenario",
+        help="Run only this exact Rendezvous scenario name for diagnosis",
+    )
+    parser.add_argument("--repeat", type=int, default=1,
+                        help="Repeat the selected Rendezvous scenario; failures remain failures")
+    parser.add_argument(
         "--bytes", type=int, default=SOURCE_PACKET_SIZE * 50
     )
     parser.add_argument("--timeout-seconds", type=int, default=30)
@@ -2486,7 +2492,9 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> int:
     arguments = parse_arguments()
     if (
-        arguments.bytes <= 0
+        arguments.repeat <= 0
+        or (arguments.repeat != 1 and not arguments.rendezvous_scenario)
+        or arguments.bytes <= 0
         or arguments.timeout_seconds <= 0
         or arguments.rendezvous_role_probe_attempts < 0
         or arguments.km_refresh_rate <= 0
@@ -2512,6 +2520,25 @@ def main() -> int:
         prefix="robotweax-srt-fec-interop-"
     ) as temporary_directory:
         directory = Path(temporary_directory)
+        if arguments.rendezvous_scenario:
+            candidates = [
+                *rendezvous_scenarios(robotweax, reference),
+                *encrypted_rendezvous_scenarios(robotweax, reference),
+            ]
+            selected = [scenario for scenario in candidates
+                        if scenario.profile.name == arguments.rendezvous_scenario]
+            if len(selected) != 1:
+                raise SystemExit("unknown or ambiguous Rendezvous scenario name")
+            for attempt in range(1, arguments.repeat + 1):
+                print(f"DIAGNOSTIC iteration={attempt}/{arguments.repeat}", flush=True)
+                try:
+                    run_rendezvous_scenario(selected[0], options, directory, environment)
+                except (OSError, RuntimeError) as error:
+                    failures.append(f"iteration {attempt}: {error}")
+            if failures:
+                print("\n\n".join(failures), file=sys.stderr, flush=True)
+                return 1
+            return 0
         scenarios = [
             *scenario_matrix(robotweax, reference),
             *encrypted_matrix_scenarios(robotweax, reference),

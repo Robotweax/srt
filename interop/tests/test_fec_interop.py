@@ -20,6 +20,19 @@ from srt_handshake_trace import (  # noqa: E402
 
 
 class FecInteropUnitTests(unittest.TestCase):
+    def test_diagnostic_repeats_preserve_any_failure(self):
+        scenario = "aes256-row-fec-rendezvous-haivision-to-robotweax-burst"
+        argv = ["fec", "--robotweax-peer", "/robotweax", "--reference-peer",
+                "/haivision", "--rendezvous-scenario", scenario, "--repeat", "3"]
+        with patch.object(sys, "argv", argv), \
+                patch.object(run_fec_interop, "resolve_program_path", side_effect=lambda p: p), \
+                patch.object(run_fec_interop, "run_rendezvous_scenario",
+                             side_effect=["initiator", RuntimeError("lost NAK"), "responder"]) as run, \
+                patch("builtins.print"):
+            self.assertEqual(run_fec_interop.main(), 1)
+        self.assertEqual(run.call_count, 3)
+        self.assertTrue(all(call.args[0].profile.name == scenario for call in run.call_args_list))
+
     def test_matrix_covers_all_geometries_and_sender_directions(
         self,
     ) -> None:

@@ -20,6 +20,36 @@ import srt_handshake_trace  # noqa: E402
 
 
 class RendezvousInteropUnitTests(unittest.TestCase):
+    def test_nak_trace_distinguishes_observation_from_forwarding(self):
+        packet = struct.pack("!6I", 0x80030000, 0, 123, 456,
+                             0x80000064, 101)
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                proxy, sender, _ = self.make_fake_fault_proxy(())
+                proxy._forward(self.handshake_packet(-2, 32, 456),
+                               "sender_to_receiver")
+                if fails:
+                    sender.sendto = Mock(side_effect=OSError(errno.EIO, "send failed"))
+                    with self.assertRaises(OSError):
+                        proxy._forward(packet, "receiver_to_sender")
+                else:
+                    proxy._forward(packet, "receiver_to_sender")
+                    self.assertEqual(sender.sent[-1][0], packet)
+                event, = proxy.loss_report_observations()
+                self.assertEqual(event["ranges"], ((100, 101),))
+                self.assertEqual(event["destination_socket_id"], 456)
+                self.assertEqual(event["timestamp"], 123)
+                self.assertEqual(event["datagram_bytes"], len(packet))
+                self.assertEqual(event["forwarded"], not fails)
+                self.assertEqual(event["preceding_forwarded_handshakes"]
+                                 ["sender_to_receiver"]["request_name"], "AGREEMENT")
+                if fails:
+                    self.assertNotIn("forward_target", event)
+                else:
+                    self.assertEqual(event["forward_target"], ["127.0.0.1", 10001])
+                    self.assertGreaterEqual(event["forwarded_monotonic_ns"],
+                                            event["relay_monotonic_ns"])
+
     def test_udp_port_unreachable_is_narrowly_classified(self):
         windows_error = OSError(errno.ECONNRESET, "UDP ICMP")
         windows_error.winerror = 10054

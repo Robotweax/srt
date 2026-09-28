@@ -1106,6 +1106,7 @@ class RendezvousTraceProxy(_HandshakeTraceRecorder):
             },
         }
         self._loss_report_events: list[dict[str, object]] = []
+        self._last_forwarded_handshakes: dict[str, dict[str, object]] = {}
         self._loss_report_events_omitted = 0
         self._latest_cumulative_acknowledgements: dict[
             str, dict[str, object]
@@ -1409,6 +1410,9 @@ class RendezvousTraceProxy(_HandshakeTraceRecorder):
             result: dict[str, object] = {
                 "packet_kind": "control",
                 "control_type": control_type,
+                "destination_socket_id": _u32(payload, 12),
+                "timestamp": _u32(payload, 8),
+                "datagram_bytes": len(payload),
             }
             if control_type == SHUTDOWN_CONTROL_TYPE:
                 shutdown = describe_shutdown_datagram(
@@ -1445,6 +1449,8 @@ class RendezvousTraceProxy(_HandshakeTraceRecorder):
             "packet_kind": "handshake",
             "request": handshake.get("request"),
             "request_name": handshake.get("request_name"),
+            "socket_id": handshake.get("socket_id"),
+            "destination_socket_id": handshake.get("destination_socket_id"),
         }
 
     def _route(
@@ -1930,6 +1936,15 @@ class RendezvousTraceProxy(_HandshakeTraceRecorder):
                 "direction": direction,
                 "ranges": ranges,
                 "relay_ordinal": metadata.get("relay_ordinal"),
+                "relay_monotonic_ns": metadata.get("relay_monotonic_ns"),
+                "destination_socket_id": _u32(payload, 12),
+                "timestamp": _u32(payload, 8),
+                "datagram_bytes": len(payload),
+                "forwarded": False,
+                "preceding_forwarded_handshakes": {
+                    key: dict(value)
+                    for key, value in self._last_forwarded_handshakes.items()
+                },
             }
             if len(self._loss_report_events) < MAX_ARQ_TRACE_EVENTS:
                 self._loss_report_events.append(event)
@@ -2171,9 +2186,25 @@ class RendezvousTraceProxy(_HandshakeTraceRecorder):
         direction: str,
         metadata: dict[str, object],
     ) -> None:
+        forwarded_at_ns = time.monotonic_ns()
+        if metadata.get("packet_kind") == "handshake":
+            with self._lock:
+                self._last_forwarded_handshakes[direction] = {
+                    **metadata, "forwarded_monotonic_ns": forwarded_at_ns,
+                }
+        if metadata.get("control_type") == LOSS_REPORT_CONTROL_TYPE:
+            with self._lock:
+                for event in reversed(self._loss_report_events):
+                    if (event["direction"] == direction
+                            and event["relay_ordinal"] == metadata.get("relay_ordinal")):
+                        event.update({
+                            "forwarded": True,
+                            "forwarded_monotonic_ns": forwarded_at_ns,
+                            "forward_target": list(self._route(direction)[1]),
+                        })
+                        break
         if metadata.get("packet_kind") != "data":
             return
-        forwarded_at_ns = time.monotonic_ns()
         with self._lock:
             observation = self._forwarded_data_observations[direction]
             count = int(observation["count"]) + 1
