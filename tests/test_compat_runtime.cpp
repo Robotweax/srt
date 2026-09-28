@@ -5453,6 +5453,72 @@ TEST(compat_runtime_only_signals_an_effective_receive_discard)
     REQUIRE(ReadinessSignal::generation() != initial_generation);
 }
 
+TEST(compat_runtime_signals_readiness_only_on_receive_edges)
+{
+    // With TSBPD pending, an in-order DATA packet behind an earlier pending
+    // message changes neither the next delivery deadline nor readability.
+    // It must not wake epoll observers or blocked receivers; the first
+    // packet, a gap-filling packet and the delivery edge must.
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {
+        .address = {192, 0, 2, 16},
+        .port = 11'006,
+    };
+    constexpr SequenceNumber initial_sequence {5'000};
+    std::uint64_t now = 1'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 303,
+        .initial_sequence = initial_sequence,
+        .peer_initial_sequence = initial_sequence,
+        .has_distinct_peer_initial_sequence = true,
+        .negotiated_options =
+            {
+                .receive_tsbpd = true,
+                .receive_delay_milliseconds = 100,
+            },
+        .origin = ConnectionRuntime::Clock::now(),
+        .handshake_arrival_microseconds = 1'000,
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+    const std::array<std::byte, 1> payload {std::byte {'r'}};
+    const auto inject = [&](std::uint32_t offset, std::uint32_t timestamp) {
+        PacketView packet;
+        packet.kind = PacketKind::data;
+        packet.data.sequence = initial_sequence.advanced(offset);
+        packet.data.message_number = offset + 1U;
+        packet.data.boundary = MessageBoundary::solo;
+        packet.data.in_order = true;
+        packet.data.timestamp = PacketTimestamp {timestamp};
+        packet.payload = payload;
+        runtime.process_packet(packet, peer);
+    };
+
+    std::uint64_t generation = ReadinessSignal::generation();
+    inject(0, 1'000);
+    REQUIRE(ReadinessSignal::generation() != generation);
+
+    // Second and third packets in order: same delivery deadline, still not
+    // readable.
+    generation = ReadinessSignal::generation();
+    now = 2'000;
+    inject(1, 2'000);
+    inject(2, 3'000);
+    REQUIRE_EQ(ReadinessSignal::generation(), generation);
+
+    // The delivery deadline of the first packet makes data readable.
+    now = 1'000 + 100'000 + 1'000;
+    generation = ReadinessSignal::generation();
+    REQUIRE(runtime.next_readable_deadline().has_value());
+    (void)runtime.poll();
+    REQUIRE(runtime.readable());
+    REQUIRE(ReadinessSignal::generation() != generation);
+}
+
 TEST(compat_runtime_receiver_tlpktdrop_sends_a_cumulative_ack)
 {
     const auto channel =

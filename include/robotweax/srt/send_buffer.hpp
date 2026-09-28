@@ -194,6 +194,9 @@ private:
     std::size_t occupied_count_ = 0;
     std::size_t buffered_plaintext_bytes_ = 0;
     std::size_t expiring_packet_count_ = 0;
+    // Lower bound of every buffered expiration. Lets the per-poll expiry
+    // check return without a scan until the earliest TTL can have elapsed.
+    std::uint64_t earliest_expiration_microseconds_ = 0;
     std::uint64_t first_buffered_enqueue_microseconds_ = 0;
     std::uint64_t last_buffered_enqueue_microseconds_ = 0;
     std::size_t retransmission_head_ = 0;

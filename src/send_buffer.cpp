@@ -133,6 +133,11 @@ Error SendBuffer::enqueue_message(
         ++occupied_count_;
         buffered_plaintext_bytes_ += payload_size;
         if (expiration_microseconds != 0U) {
+            if (expiring_packet_count_ == 0U
+                || expiration_microseconds
+                    < earliest_expiration_microseconds_) {
+                earliest_expiration_microseconds_ = expiration_microseconds;
+            }
             ++expiring_packet_count_;
         }
     }
@@ -770,14 +775,19 @@ SendDropResult SendBuffer::drop_expired_message(
     std::uint64_t now_microseconds) noexcept
 {
     SendDropResult result;
-    if (expiring_packet_count_ == 0U) {
+    if (expiring_packet_count_ == 0U
+        || now_microseconds <= earliest_expiration_microseconds_) {
         return result;
     }
+    std::uint64_t next_earliest = (std::numeric_limits<std::uint64_t>::max)();
     for (std::size_t offset = 0; offset < sequence_span_; ++offset) {
         auto& first = slots_[(head_ + offset) % capacity()];
-        if (!first.occupied
-            || first.expiration_microseconds == 0U
-            || now_microseconds <= first.expiration_microseconds) {
+        if (!first.occupied || first.expiration_microseconds == 0U) {
+            continue;
+        }
+        if (now_microseconds <= first.expiration_microseconds) {
+            next_earliest =
+                std::min(next_earliest, first.expiration_microseconds);
             continue;
         }
 
@@ -803,6 +813,8 @@ SendDropResult SendBuffer::drop_expired_message(
         refresh_buffered_enqueue_time_bounds();
         return result;
     }
+    // Nothing expired: the scan established the exact earliest expiration.
+    earliest_expiration_microseconds_ = next_earliest;
     return result;
 }
 

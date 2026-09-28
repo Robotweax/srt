@@ -390,6 +390,14 @@ ReceivedMessageResult ReceiveBuffer::pop_stream(
 
 bool ReceiveBuffer::has_complete_message() const noexcept
 {
+    // Only a message starting at the head qualifies. A missing head packet
+    // decides the answer without scanning the buffer behind the gap.
+    const auto* head = find(first_stored_sequence_);
+    if (head == nullptr
+        || (head->header.boundary != MessageBoundary::solo
+            && head->header.boundary != MessageBoundary::first)) {
+        return false;
+    }
     const auto message = first_complete_message();
     return message.has_value()
         && message->first_sequence == first_stored_sequence_;
@@ -404,8 +412,16 @@ ReceiveBuffer::first_complete_message() const noexcept
         return std::nullopt;
     }
     SequenceNumber candidate = first_stored_sequence_;
-    for (std::size_t offset = 0; offset < capacity(); ++offset) {
+    // Every occupied packet lies at or before the highest stored sequence.
+    // Stop once all of them have been passed instead of walking the whole
+    // capacity behind a head gap.
+    std::size_t occupied_seen = 0;
+    for (std::size_t offset = 0;
+        offset < capacity() && occupied_seen < occupied_; ++offset) {
         const auto* first = find(candidate);
+        if (first != nullptr) {
+            ++occupied_seen;
+        }
         if (first == nullptr
             || (first->header.boundary != MessageBoundary::solo
                 && first->header.boundary != MessageBoundary::first)) {
