@@ -2846,6 +2846,21 @@ void ConnectionRuntime::process_packet(
                         == previous_state) {
                     return;
                 }
+                if (!options_.enforced_encryption()
+                    && crypto_->sending_without_peer_key()) {
+                    // A peer may retry the rejected handshake key or offer a
+                    // successor. Reply with the current receive failure, but
+                    // keep the independent local sender and its key budget.
+                    const auto response =
+                        encode_key_material_state(crypto_->receiver_state());
+                    if (!send_key_material(
+                            key_material_response_subtype, response, now)) {
+                        break_locked(0);
+                        return;
+                    }
+                    last_peer_activity_microseconds_ = now;
+                    return;
+                }
                 break_locked(0);
                 return;
             }
@@ -2856,6 +2871,14 @@ void ConnectionRuntime::process_packet(
                 return;
             }
         } else {
+            // Once optional setup selected local-only encryption, delayed
+            // KMRSPs cannot confirm a key or change that decision. In
+            // particular, duplicate failure replies must be idempotent and
+            // must not restart the sender's key/sequence accounting.
+            if (!options_.enforced_encryption()
+                && crypto_->sending_without_peer_key()) {
+                return;
+            }
             const CryptoState previous_state =
                 crypto_->sender_state();
             const Error acknowledged =

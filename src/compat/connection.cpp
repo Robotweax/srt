@@ -2405,7 +2405,7 @@ public:
                         && setup_.crypto->allows_plaintext_fallback()) {
                         const CryptoState reported = invalid_material
                             ? CryptoState::bad_crypto_mode
-                            : CryptoState::bad_secret;
+                            : setup_.crypto->receiver_state();
                         if (set_key_material_failure(reported) == SRT_ERROR
                             || keep_encrypting(reported) == SRT_ERROR) {
                             return SRT_ERROR;

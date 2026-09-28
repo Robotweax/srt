@@ -3095,10 +3095,10 @@ TEST(srt_compat_listener_reports_key_state_under_optional_encryption)
             ? static_cast<std::int32_t>(SRT_KM_S_BADSECRET)
             : static_cast<std::int32_t>(SRT_KM_S_NOSECRET);
         REQUIRE_EQ(state_of(accepted.load(), SRTO_RCVKMSTATE), expected);
-        // A listener with its own (different) passphrase keeps encrypting its
-        // direction and reports BADSECRET; one without a secret sends clear.
+        // A listener with a passphrase keeps encrypting and preserves the
+        // precise failure (wrong secret or incompatible cipher).
         const std::int32_t listener_sends = listener_has_passphrase
-            ? static_cast<std::int32_t>(SRT_KM_S_BADSECRET)
+            ? expected
             : static_cast<std::int32_t>(SRT_KM_S_UNSECURED);
         REQUIRE_EQ(state_of(accepted.load(), SRTO_SNDKMSTATE), listener_sends);
         REQUIRE_EQ(state_of(accepted.load(), SRTO_KMSTATE), expected);
