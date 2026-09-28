@@ -1145,7 +1145,12 @@ int receive_group_message_implementation(
                     member.runtime->receive_floor_sequence();
                 if (floor.distance_from(SequenceNumber {expected}) > 0) {
                     note_unreachable_floor(floor);
-                } else if (!member.terminal) {
+                } else if (!member.terminal
+                    || member.runtime->has_complete_buffered_message_at(
+                        SequenceNumber {expected})) {
+                    // A terminal member can still hold a complete message
+                    // waiting for its TSBPD deadline. Do not skip it merely
+                    // because another member has advanced farther.
                     member_may_supply_expected = true;
                 }
                 continue;

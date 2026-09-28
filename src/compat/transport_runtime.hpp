@@ -451,6 +451,8 @@ public:
     // earlier sequence has been consumed, discarded, or dropped and can no
     // longer arrive through this connection.
     [[nodiscard]] SequenceNumber receive_floor_sequence() noexcept;
+    [[nodiscard]] bool has_complete_buffered_message_at(
+        SequenceNumber sequence) noexcept;
     [[nodiscard]] MessageIoResult receive_stream(
         std::span<std::byte> destination,
         bool blocking,

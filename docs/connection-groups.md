@@ -164,8 +164,11 @@ Replay is limited to:
 - 8,192 packets; and
 - 11,927,552 payload bytes.
 
-If a required gap has left retained history, failover fails explicitly. The
-group never skips the gap or publishes a discontinuous logical stream.
+If a required gap has left retained history, sender-side failover fails
+explicitly instead of replaying a discontinuous logical stream. On receive,
+negotiated TLPKTDROP may retire an unrecoverable gap. The group advances past
+it only after no member can deliver the expected sequence, including complete
+messages buffered on a terminal member until their TSBPD deadline.
 
 Closing or breaking one member does not terminate a group while another usable
 member exists. Applications may add a distinct replacement member. A broken

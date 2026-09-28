@@ -1738,6 +1738,15 @@ SequenceNumber ConnectionRuntime::receive_floor_sequence() noexcept
     return session_.receive_buffer().first_stored_sequence();
 }
 
+bool ConnectionRuntime::has_complete_buffered_message_at(
+    SequenceNumber sequence) noexcept
+{
+    std::lock_guard lock(mutex_);
+    const auto& buffer = session_.receive_buffer();
+    return buffer.first_stored_sequence() == sequence
+        && buffer.has_complete_message();
+}
+
 bool ConnectionRuntime::discard_received_before(
     SequenceNumber next_sequence) noexcept
 {

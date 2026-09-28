@@ -1368,6 +1368,87 @@ TEST(compat_group_receive_skips_a_gap_every_member_has_dropped)
     }
 }
 
+TEST(compat_group_receive_preserves_terminal_member_pending_message)
+{
+    // SHUTDOWN does not discard a complete message waiting for TSBPD. A
+    // replacement member that starts at the next sequence must not cause the
+    // group to skip that still-buffered message.
+    for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
+        const SRTSOCKET group = srt_create_group(type);
+        const SRTSOCKET first_socket = srt_create_socket();
+        const SRTSOCKET later_socket = srt_create_socket();
+        REQUIRE(group != SRT_INVALID_SOCK);
+        REQUIRE(first_socket != SRT_INVALID_SOCK);
+        REQUIRE(later_socket != SRT_INVALID_SOCK);
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        const SequenceNumber first_sequence {record->initial_sequence};
+        const auto origin = ConnectionRuntime::Clock::now();
+        TestClock clock {.now_microseconds = 0,
+            .channel =
+                std::make_shared<robotweax::srt::compat::DatagramChannel>()};
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        constexpr std::uint16_t latency_milliseconds = 100;
+        const auto first =
+            attach_group_runtime(group, first_socket, first_sequence.value(), 1,
+                &clock, 0, true, latency_milliseconds, origin, record);
+        const auto inject =
+            [&](const std::shared_ptr<ConnectionRuntime>& runtime,
+                SequenceNumber sequence, std::uint32_t message_number,
+                std::uint32_t timestamp, std::byte value) {
+                const std::array<std::byte, 1> payload {value};
+                robotweax::srt::PacketView packet;
+                packet.kind = robotweax::srt::PacketKind::data;
+                packet.data.sequence = sequence;
+                packet.data.message_number = message_number;
+                packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+                packet.data.in_order = true;
+                packet.data.timestamp =
+                    robotweax::srt::PacketTimestamp {timestamp};
+                packet.payload = payload;
+                runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+            };
+        inject(first, first_sequence, 1, 0, std::byte {'a'});
+        robotweax::srt::PacketView shutdown;
+        shutdown.kind = robotweax::srt::PacketKind::control;
+        shutdown.control.type = robotweax::srt::ControlType::shutdown;
+        shutdown.control.destination_socket_id = 77;
+        const std::array<std::byte, 4> shutdown_padding {};
+        shutdown.payload = shutdown_padding;
+        first->process_packet(shutdown, IpEndpoint::loopback(9'000));
+        REQUIRE_EQ(srt_getsockstate(first_socket), SRTS_BROKEN);
+
+        const SequenceNumber second_sequence = first_sequence.next();
+        const auto later =
+            attach_group_runtime(group, later_socket, second_sequence.value(),
+                1, &clock, 0, true, latency_milliseconds, origin, record);
+        inject(later, second_sequence, 2, 1'000, std::byte {'b'});
+        const bool asynchronous = false;
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_RCVSYN, &asynchronous,
+                       static_cast<int>(sizeof(asynchronous))),
+            0);
+        std::array<char, 8> buffer {};
+        SRT_MSGCTRL control = srt_msgctrl_default;
+        REQUIRE_EQ(srt_recvmsg2(group, buffer.data(), buffer.size(), &control),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+
+        clock.now_microseconds = 100'000;
+        REQUIRE_EQ(
+            srt_recvmsg2(group, buffer.data(), buffer.size(), &control), 1);
+        REQUIRE_EQ(buffer[0], 'a');
+        REQUIRE_EQ(
+            control.pktseq, static_cast<std::int32_t>(first_sequence.value()));
+        clock.now_microseconds = 101'000;
+        REQUIRE_EQ(
+            srt_recvmsg2(group, buffer.data(), buffer.size(), &control), 1);
+        REQUIRE_EQ(buffer[0], 'b');
+        REQUIRE_EQ(
+            control.pktseq, static_cast<std::int32_t>(second_sequence.value()));
+        REQUIRE_EQ(srt_close(group), 0);
+    }
+}
+
 TEST(compat_group_shared_tsbpd_clock_gates_member_switch_and_late_replay)
 {
     for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
