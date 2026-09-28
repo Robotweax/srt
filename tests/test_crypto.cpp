@@ -1423,6 +1423,9 @@ TEST(crypto_session_decrypts_old_retransmission_after_key_reuse)
                        ciphertext, decrypted),
             Error::none);
         REQUIRE_EQ(decrypted, clear);
+        // The transport reports accepted CTR sequences after the receive
+        // window validated them; the crypto session no longer infers them.
+        receiver.note_accepted_receive_sequence(sequence);
         REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
         sequence = sequence.next();
     }
@@ -1505,6 +1508,7 @@ TEST(crypto_session_preserves_payloads_across_sustained_rotation_faults)
                        packet.ciphertext, decrypted),
             Error::none);
         REQUIRE_EQ(decrypted, packet.plaintext);
+        receiver.note_accepted_receive_sequence(packet.sequence);
     };
 
     SequenceNumber sequence{100};
@@ -1628,6 +1632,7 @@ TEST(crypto_session_rejects_ciphertext_older_than_bounded_key_history)
                        key, sequence, ciphertext, plaintext),
             Error::none);
         REQUIRE_EQ(plaintext, clear);
+        receiver.note_accepted_receive_sequence(sequence);
         sequence = sequence.next();
     }
 
@@ -1636,6 +1641,69 @@ TEST(crypto_session_rejects_ciphertext_older_than_bounded_key_history)
                    old_key, SequenceNumber{100},
                    old_ciphertext, decrypted),
         Error::cryptographic_failure);
+}
+
+TEST(crypto_session_routes_ctr_keys_from_transport_accepted_sequences)
+{
+    // AES-CTR cannot authenticate a packet, so decrypt() itself records no
+    // sequence for key-generation routing. The transport reports sequences
+    // the receive window accepted through note_accepted_receive_sequence();
+    // an unreported decrypt attempt must leave routing unchanged and genuine
+    // traffic must keep decrypting across rotations.
+    const CryptoConfiguration configuration {
+        .passphrase = "accepted sequences route keys",
+        .key_length = 16,
+        .refresh_rate_packets = 5,
+        .preannouncement_packets = 2,
+    };
+    CryptoSession sender {configuration};
+    CryptoSession receiver {configuration};
+    REQUIRE_EQ(sender.start_initiator(), Error::none);
+    REQUIRE_EQ(
+        receiver.accept_key_material(sender.pending_key_material(), false),
+        Error::none);
+    REQUIRE_EQ(sender.acknowledge_key_material(
+                   receiver.key_material_response(), false),
+        Error::none);
+
+    const auto clear = bytes_from_hex<16>("000102030405060708090a0b0c0d0e0f");
+    std::array<std::byte, 16> ciphertext {};
+    std::array<std::byte, 16> plaintext {};
+    SequenceNumber sequence {100};
+    const auto exchange_keys = [&] {
+        const auto request = sender.pending_key_material();
+        if (!request.empty()) {
+            REQUIRE_EQ(
+                receiver.accept_key_material(request, false), Error::none);
+            REQUIRE_EQ(sender.acknowledge_key_material(
+                           receiver.key_material_response(), false),
+                Error::none);
+        }
+    };
+    const auto send_one = [&] {
+        EncryptionKey key = EncryptionKey::none;
+        REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+        exchange_keys();
+        REQUIRE_EQ(
+            sender.encrypt(sequence, clear, ciphertext, key), Error::none);
+        REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+        REQUIRE_EQ(receiver.decrypt(key, sequence, ciphertext, plaintext),
+            Error::none);
+        REQUIRE_EQ(plaintext, clear);
+        receiver.note_accepted_receive_sequence(sequence);
+        sequence = sequence.next();
+    };
+    send_one();
+
+    // A decrypt attempt the transport never accepts (out of window) is not
+    // reported and must not influence later key selection.
+    std::array<std::byte, 16> unaccepted {};
+    (void)receiver.decrypt(EncryptionKey::even,
+        sequence.advanced((1U << 30) - 1U), ciphertext, unaccepted);
+
+    for (std::size_t packet = 0; packet < 40U; ++packet) {
+        send_one();
+    }
 }
 
 TEST(key_material_state_uses_the_reference_byte_layout)

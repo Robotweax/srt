@@ -2613,6 +2613,16 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     if (!processed) {
         return false;
     }
+    if (packet.kind == PacketKind::data && crypto_ != nullptr
+        && crypto_->enabled() && !crypto_->authenticated_data_enabled()
+        && !consume_filter_control && processed.receiver_packet_accepted_unique
+        && packet.data.encryption_key != EncryptionKey::none) {
+        // AES-CTR cannot authenticate a packet. Only a sequence the receive
+        // window accepted may advance the key-generation ceilings; a spoofed
+        // far-ahead sequence would otherwise misroute later packets to a
+        // retired key after the next rotation.
+        crypto_->note_accepted_receive_sequence(packet.data.sequence);
+    }
     if (processed.peer_available_receive_buffer_packets.has_value()) {
         const std::size_t previous_flow_window = flow_window_packets_;
         flow_window_packets_ = *processed.peer_available_receive_buffer_packets;
