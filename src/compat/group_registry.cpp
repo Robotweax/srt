@@ -1231,25 +1231,35 @@ void GroupRegistry::close(SRTSOCKET group) noexcept
     }
     std::vector<GroupMemberSnapshot> members;
     {
-        // Match the data-path lock order: send coordinator before group
-        // metadata. In-flight shared owners may outlive registry retirement;
-        // release replay storage and secrets before handing off closure.
-        std::lock_guard send_lock(record->send_mutex);
+        // Mark closure under the metadata lock only. A group send blocked in
+        // its readiness wait holds `send_mutex`; taking it here would wait
+        // for that send to finish on its own, which never happens while the
+        // peer keeps the member buffers full.
         std::lock_guard lock(record->mutex);
         if (record->closed) {
             return;
         }
         record->closed = true;
         record->receive_clock.reset();
-        record->replay_history.release_storage();
         (void)record->member_native_options.set_passphrase({});
         record->member_native_options = {};
         members.swap(record->members);
         ++record->snapshot_version;
     }
+    // Wake blocked group I/O so it observes the closure and returns before
+    // the members go away underneath it.
+    ReadinessSignal::notify();
     for (const auto& member : members) {
         SocketRegistry::instance().close(
             member.public_data.id);
+    }
+    {
+        // Replay history is owned by the send coordinator. In-flight shared
+        // owners may outlive registry retirement; release its storage once
+        // the coordinator has left.
+        std::lock_guard send_lock(record->send_mutex);
+        std::lock_guard lock(record->mutex);
+        record->replay_history.release_storage();
     }
     {
         std::lock_guard lock(mutex_);
@@ -1273,15 +1283,22 @@ void GroupRegistry::clear() noexcept
     }
     for (const auto& entry : records) {
         auto& record = *entry.second;
-        std::lock_guard send_lock(record.send_mutex);
         std::lock_guard lock(record.mutex);
         record.closed = true;
         record.receive_clock.reset();
-        record.replay_history.release_storage();
         (void)record.member_native_options.set_passphrase({});
         record.member_native_options = {};
         record.members.clear();
         ++record.snapshot_version;
+    }
+    // Blocked group I/O must observe the closure before the send coordinator
+    // lock can be taken to release replay storage.
+    ReadinessSignal::notify();
+    for (const auto& entry : records) {
+        auto& record = *entry.second;
+        std::lock_guard send_lock(record.send_mutex);
+        std::lock_guard lock(record.mutex);
+        record.replay_history.release_storage();
     }
     {
         std::lock_guard lock(mutex_);
