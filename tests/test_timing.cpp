@@ -257,3 +257,21 @@ TEST(control_timer_next_deadline_tracks_ack_lite_nak_and_keepalive)
     timer.on_receive_buffer_released(132'000);
     REQUIRE(timer.next_deadline(132'000) <= 132'000U);
 }
+
+TEST(control_timer_shorter_rtt_advances_pending_nak_without_postponing_it)
+{
+    ControlTimerScheduler timer {0};
+    timer.set_loss_state(true, 200, 150'000, true);
+    REQUIRE_EQ(timer.next_deadline(200), 150'200U);
+    timer.set_loss_state(true, 11'000, 60'000, true);
+    REQUIRE_EQ(timer.next_deadline(11'000), 71'000U);
+    timer.set_loss_state(true, 20'000, 60'000, true);
+    REQUIRE_EQ(timer.next_deadline(20'000), 71'000U);
+    timer.set_loss_state(true, 25'000, 100'000, true);
+    timer.set_loss_state(true, 30'000, 60'000, true);
+    REQUIRE_EQ(timer.next_deadline(30'000), 71'000U);
+    REQUIRE_EQ(timer.poll(70'999).size, 0U);
+    const auto due = timer.poll(71'000);
+    REQUIRE_EQ(due.size, 1U);
+    REQUIRE_EQ(due.values[0], TimerActionKind::periodic_loss_report);
+}
