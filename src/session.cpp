@@ -597,7 +597,11 @@ ReliabilityProcessResult ReliabilitySession::receive(
             inserted.status == ReceiveStatus::accepted_in_order
             || inserted.status
                 == ReceiveStatus::accepted_out_of_order;
-        if (context.discard_payload && result.receiver_packet_accepted_unique) {
+        if (context.discard_payload && result.receiver_packet_accepted_unique
+            && message_api_) {
+            receive_buffer_.discard_message_payload(packet.data.sequence);
+        } else if (context.discard_payload
+            && result.receiver_packet_accepted_unique) {
             const SequenceRange discarded {
                 .first = packet.data.sequence,
                 .last = packet.data.sequence,

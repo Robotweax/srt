@@ -3008,7 +3008,14 @@ TEST(srt_compat_listener_reports_key_state_under_optional_encryption)
     // reports SRTO_RCVKMSTATE NOSECRET (no passphrase) or BADSECRET (a
     // different passphrase). SRTO_KMSTATE follows the receiving direction on a
     // socket that is not marked with SRTO_SENDER.
-    for (const bool listener_has_passphrase : {false, true}) {
+#ifdef ENABLE_AEAD_API_PREVIEW
+    constexpr int scenario_count = 4;
+#else
+    constexpr int scenario_count = 2;
+#endif
+    for (int scenario = 0; scenario < scenario_count; ++scenario) {
+        const bool listener_has_passphrase = scenario != 0;
+        const bool mode_mismatch = scenario >= 2;
         REQUIRE_EQ(srt_startup(), 0);
         constexpr bool optional = false;
         constexpr std::int32_t timeout = 3'000;
@@ -3029,13 +3036,27 @@ TEST(srt_compat_listener_reports_key_state_under_optional_encryption)
                        static_cast<int>(sizeof(caller_secret) - 1U)),
             0);
         if (listener_has_passphrase) {
-            constexpr char listener_secret[] = "robotweax-other-secret";
-            REQUIRE_EQ(
-                srt_setsockflag(listener, SRTO_PASSPHRASE, listener_secret,
-                    static_cast<int>(sizeof(listener_secret) - 1U)),
+            const std::string_view listener_secret =
+                mode_mismatch ? caller_secret : "robotweax-other-secret";
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_PASSPHRASE,
+                           listener_secret.data(),
+                           static_cast<int>(listener_secret.size())),
                 0);
         }
 
+#ifdef ENABLE_AEAD_API_PREVIEW
+        if (mode_mismatch) {
+            const std::int32_t caller_mode = scenario == 2 ? 2 : 1;
+            const std::int32_t listener_mode = scenario == 2 ? 1 : 2;
+            REQUIRE_EQ(srt_setsockflag(caller, SRTO_CRYPTOMODE, &caller_mode,
+                           static_cast<int>(sizeof(caller_mode))),
+                0);
+            REQUIRE_EQ(
+                srt_setsockflag(listener, SRTO_CRYPTOMODE, &listener_mode,
+                    static_cast<int>(sizeof(listener_mode))),
+                0);
+        }
+#endif
         sockaddr_in address {};
         address.sin_family = AF_INET;
         address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -3068,7 +3089,9 @@ TEST(srt_compat_listener_reports_key_state_under_optional_encryption)
             REQUIRE_EQ(srt_getsockflag(socket, option, &state, &size), 0);
             return state;
         };
-        const std::int32_t expected = listener_has_passphrase
+        const std::int32_t expected = mode_mismatch
+            ? static_cast<std::int32_t>(SRT_KM_S_BADCRYPTOMODE)
+            : listener_has_passphrase
             ? static_cast<std::int32_t>(SRT_KM_S_BADSECRET)
             : static_cast<std::int32_t>(SRT_KM_S_NOSECRET);
         REQUIRE_EQ(state_of(accepted.load(), SRTO_RCVKMSTATE), expected);

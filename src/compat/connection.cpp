@@ -3724,7 +3724,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
                 // back to plaintext. Without a KMREQ the caller has no secret.
                 const CryptoState reported = !has_request
                     ? CryptoState::no_secret
-                    : key_length_matches ? CryptoState::bad_secret
+                    : key_length_matches ? crypto->receiver_state()
                                          : CryptoState::bad_crypto_mode;
                 if (has_request) {
                     receiver_key_state = reported;

@@ -2806,9 +2806,16 @@ void ConnectionRuntime::process_packet(
             if (packet.control.subtype
                     == key_material_request_subtype
                 && !options_.enforced_encryption()) {
+                // Setup may have discarded an unusable crypto session even
+                // though a secret was configured. Keep its failure reason
+                // when the peer retries KMREQ; absence of a session alone
+                // does not mean absence of a passphrase.
+                if (receiver_key_state_ != CryptoState::bad_secret
+                    && receiver_key_state_ != CryptoState::bad_crypto_mode) {
+                    receiver_key_state_ = CryptoState::no_secret;
+                }
                 const auto response =
-                    encode_key_material_state(CryptoState::no_secret);
-                receiver_key_state_ = CryptoState::no_secret;
+                    encode_key_material_state(receiver_key_state_);
                 if (!send_key_material(
                         key_material_response_subtype,
                         response, now)) {

@@ -211,7 +211,27 @@ different one. It then reports `SRTO_RCVKMSTATE` NOSECRET or BADSECRET and
 `SRTO_SNDKMSTATE` UNSECURED, as does a peer that answers a runtime KMREQ
 without a secret. The state occupies the first byte of the four-byte value
 (`03 00 00 00` for NOSECRET), the layout the reference implementation
-produces; both byte orders are accepted on input.
+produces; both byte orders are accepted on input. An incompatible cipher or
+invalid key-material format reports BADCRYPTOMODE, not BADSECRET. If setup
+removed an unusable crypto session, subsequent runtime KMREQs retain that
+recorded failure state; they do not relabel a configured but unusable secret
+as missing. This does not enable renegotiation of a rejected crypto session.
+
+With `SRTO_ENFORCEDENCRYPTION=false`, a receiver that cannot decrypt a DATA
+packet, because it has no passphrase (NOSECRET) or could not unwrap the peer's
+key (BADSECRET), counts the packet as undecryptable, acknowledges its sequence
+number and discards the payload. Such data is never delivered, but the
+connection stays up and the sender neither retransmits it nor stalls on flow
+control, matching the reference implementation. With enforced encryption the
+same DATA still breaks the connection. AES-GCM packets that fail
+authentication are never acknowledged, so a forged packet cannot suppress
+genuine data.
+
+In message mode, discarding one fragment rejects the entire message, including
+fragments received later. Following complete messages remain readable. Missing
+sequences still require normal loss recovery; rejection does not acknowledge
+packets that have not arrived. In stream mode only the undecipherable packet
+is discarded.
 
 A side with a passphrase never falls back to plaintext, not even with
 `SRTO_ENFORCEDENCRYPTION=false`. When the peer has no passphrase, a different
