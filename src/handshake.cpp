@@ -152,6 +152,7 @@ Error encode_handshake(const Handshake& packet, std::span<std::byte> destination
 HandshakeMachine::HandshakeMachine(Configuration configuration) noexcept
     : configuration_(configuration)
     , negotiated_initial_sequence_(configuration.initial_sequence)
+    , peer_initial_sequence_(configuration.initial_sequence)
 {
 }
 
@@ -316,6 +317,7 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             peer_socket_id_ = incoming.socket_id;
             retry_count_ = 0;
             negotiated_initial_sequence_ = incoming.initial_sequence;
+            peer_initial_sequence_ = incoming.initial_sequence;
             cookie_ = configuration_.cookie_generator(incoming, configuration_.cookie_context);
             if (cookie_ == 0U) {
                 state_ = HandshakeState::failed;
@@ -709,6 +711,7 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             }
             peer_socket_id_ = incoming.socket_id;
             peer_flow_window_ = incoming.flow_window;
+            peer_initial_sequence_ = incoming.initial_sequence;
             retry_count_ = 0;
             state_ = HandshakeState::connected;
             actions.push({.kind = HandshakeActionKind::connected});

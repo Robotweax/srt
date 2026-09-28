@@ -234,6 +234,13 @@ public:
     {
         return peer_flow_window_;
     }
+    // Sequence number of the peer's first DATA packet. A listener echoes the
+    // caller's ISN; a caller takes the value the listener's CONCLUSION
+    // response carries instead of assuming an echo.
+    [[nodiscard]] SequenceNumber peer_initial_sequence() const noexcept
+    {
+        return peer_initial_sequence_;
+    }
     [[nodiscard]] int rejection_reason() const noexcept
     {
         return rejection_reason_;
@@ -279,6 +286,7 @@ private:
     std::uint32_t cookie_ = 0;
     std::uint32_t retry_count_ = 0;
     SequenceNumber negotiated_initial_sequence_{};
+    SequenceNumber peer_initial_sequence_ {};
     HandshakeExtensionParameters peer_extension_parameters_{};
     bool has_peer_extension_parameters_ = false;
     StreamId peer_stream_id_{};
