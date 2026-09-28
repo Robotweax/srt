@@ -1845,9 +1845,17 @@ MessageIoResult ConnectionRuntime::receive_stream(
         ? Clock::now() + std::chrono::milliseconds{timeout_milliseconds}
         : Clock::time_point{};
     for (;;) {
-        const auto received = session_.pop_stream(destination);
+        const std::uint64_t now = now_microseconds();
+        // A gap ahead of due bytes is dropped here as well, so a stream
+        // reader is not held behind a loss whose deadline has passed.
+        if (!service_receiver_tlpktdrop_locked(now)) {
+            return {
+                .status = MessageIoStatus::broken,
+                .system_error = system_error_,
+            };
+        }
+        const auto received = session_.pop_stream_at(destination, now);
         if (received) {
-            const std::uint64_t now = now_microseconds();
             session_.note_receive_buffer_released(now);
             sample_receiver_buffer_statistics(now);
             const MessageIoResult result {
@@ -1885,7 +1893,13 @@ MessageIoResult ConnectionRuntime::receive_stream(
         if (has_deadline && Clock::now() >= deadline) {
             return {.status = MessageIoStatus::timeout};
         }
-        if (has_deadline) {
+        const auto delivery_wakeup = next_receive_wakeup_locked(now);
+        if (delivery_wakeup.has_value()) {
+            const auto next_check = has_deadline
+                ? std::min(deadline, *delivery_wakeup)
+                : *delivery_wakeup;
+            (void)receive_ready_.wait_until(lock, next_check);
+        } else if (has_deadline) {
             (void)receive_ready_.wait_until(lock, deadline);
         } else {
             receive_ready_.wait(lock);

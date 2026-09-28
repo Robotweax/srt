@@ -307,6 +307,11 @@ public:
     {
         return receive_buffer_.pop_stream(destination);
     }
+    // Stream read that honours TSBPD: bytes of a packet are handed out only
+    // once its delivery time has come, as libsrt's readBuffer does.
+    [[nodiscard]] ReceivedMessageResult pop_stream_at(
+        std::span<std::byte> destination,
+        std::uint64_t now_microseconds) noexcept;
     void enable_tsbpd(std::uint64_t handshake_arrival_microseconds,
         PacketTimestamp handshake_timestamp,
         std::uint32_t delay_microseconds) noexcept;
@@ -320,16 +325,20 @@ public:
         std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] std::optional<std::uint64_t>
     next_receive_delivery_time() noexcept;
+    // First complete message (message API) or first buffered packet (stream
+    // API): the unit receiver delivery and too-late drops operate on.
+    [[nodiscard]] std::optional<BufferedMessageInfo>
+    first_deliverable_unit() const noexcept;
     [[nodiscard]] ReliabilityProcessResult
     drop_too_late_receiver(
         std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] bool data_ready_at(
         std::uint64_t now_microseconds) noexcept
     {
-        return message_api_
-            ? message_ready_at(now_microseconds)
-            : receive_buffer_.has_stream_data();
+        return message_api_ ? message_ready_at(now_microseconds)
+                            : stream_ready_at(now_microseconds);
     }
+    [[nodiscard]] bool stream_ready_at(std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] std::optional<std::uint64_t> message_delivery_time(
         PacketTimestamp timestamp) noexcept
     {

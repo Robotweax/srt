@@ -3485,3 +3485,112 @@ TEST(session_ackack_shorter_rtt_repeats_filter_nak_before_live_deadline)
     REQUIRE_EQ(
         receiver.drop_too_late_receiver(71'000).receiver_drop_packets, 0U);
 }
+
+TEST(session_stream_receiver_drops_a_lost_packet_inside_a_chunk_per_packet)
+{
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+    }};
+    receiver.configure_live(
+        {
+            .receive_tsbpd = true,
+            .too_late_packet_drop = true,
+            .periodic_nak = true,
+            .retransmit_flag = true,
+            .receive_delay_milliseconds = 100,
+        },
+        1'000, PacketTimestamp {0});
+    receiver.set_message_api(false);
+
+    // One stream chunk of three packets; its first packet (10) is lost.
+    const std::array<std::byte, 1> second {std::byte {'b'}};
+    const std::array<std::byte, 1> third {std::byte {'c'}};
+    PacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.message_number = 1;
+    packet.data.timestamp = PacketTimestamp {50};
+    packet.data.sequence = SequenceNumber {11};
+    packet.data.boundary = MessageBoundary::subsequent;
+    packet.payload = second;
+    REQUIRE(receiver.receive(packet, 1'010));
+    packet.data.sequence = SequenceNumber {12};
+    packet.data.boundary = MessageBoundary::last;
+    packet.payload = third;
+    REQUIRE(receiver.receive(packet, 1'011));
+
+    // Without a message head there is no complete message, but the stream
+    // API delivers by packet: the drop is due at packet 11's delivery time.
+    REQUIRE_EQ(receiver.next_receive_delivery_time(),
+        std::optional<std::uint64_t> {101'050});
+    REQUIRE(!receiver.stream_ready_at(101'049));
+    REQUIRE_EQ(
+        receiver.drop_too_late_receiver(101'049).receiver_drop_packets, 0U);
+    const auto dropped = receiver.drop_too_late_receiver(101'050);
+    REQUIRE(dropped);
+    // Only the lost packet is dropped; the chunk's later bytes survive.
+    REQUIRE_EQ(dropped.receiver_drop_packets, 1U);
+    REQUIRE_EQ(dropped.actions.values[0].acknowledgement.next_sequence,
+        SequenceNumber {13});
+    REQUIRE(receiver.stream_ready_at(101'050));
+    std::array<std::byte, 4> output {};
+    const auto popped = receiver.pop_stream_at(output, 101'050);
+    REQUIRE(popped);
+    REQUIRE_EQ(popped.bytes_written, 2U);
+    REQUIRE_EQ(output[0], std::byte {'b'});
+    REQUIRE_EQ(output[1], std::byte {'c'});
+    REQUIRE(!receiver.stream_ready_at(101'050));
+}
+
+TEST(session_stream_pop_stops_in_front_of_a_packet_not_yet_due)
+{
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+    }};
+    receiver.configure_live(
+        {
+            .receive_tsbpd = true,
+            .receive_delay_milliseconds = 100,
+        },
+        1'000, PacketTimestamp {0});
+    receiver.set_message_api(false);
+
+    const std::array<std::byte, 1> first {std::byte {'a'}};
+    const std::array<std::byte, 1> second {std::byte {'b'}};
+    PacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.message_number = 1;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.data.sequence = SequenceNumber {10};
+    packet.data.timestamp = PacketTimestamp {50};
+    packet.payload = first;
+    REQUIRE(receiver.receive(packet, 1'010));
+    packet.data.sequence = SequenceNumber {11};
+    packet.data.timestamp = PacketTimestamp {5'050};
+    packet.payload = second;
+    REQUIRE(receiver.receive(packet, 1'011));
+
+    std::array<std::byte, 4> output {};
+    REQUIRE_EQ(
+        receiver.pop_stream_at(output, 101'049).error, Error::would_block);
+    // Packet 10 is due at 101'050, packet 11 only at 106'050: one byte.
+    const auto popped = receiver.pop_stream_at(output, 101'050);
+    REQUIRE(popped);
+    REQUIRE_EQ(popped.bytes_written, 1U);
+    REQUIRE_EQ(output[0], std::byte {'a'});
+    REQUIRE_EQ(popped.delivery_time_microseconds,
+        std::optional<std::uint64_t> {101'050});
+    REQUIRE(!receiver.stream_ready_at(106'049));
+    REQUIRE(receiver.stream_ready_at(106'050));
+    const auto rest = receiver.pop_stream_at(output, 106'050);
+    REQUIRE(rest);
+    REQUIRE_EQ(rest.bytes_written, 1U);
+    REQUIRE_EQ(output[0], std::byte {'b'});
+}

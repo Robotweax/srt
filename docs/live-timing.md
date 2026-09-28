@@ -174,6 +174,14 @@ Applications that need full observability should retain four separate values:
 These values describe different stages and must not be collapsed into one
 timestamp.
 
+Without the message API (`SRTO_MESSAGEAPI` off) the unit of delivery is the
+packet, as in libsrt: a stream read hands out the bytes of each packet only
+once that packet's TSBPD deadline has come and stops in front of the first
+packet that is not yet due, and receiver too-late packet drop skips a lost
+packet as soon as the next stored packet is due, whether or not that packet
+starts a chunk. A loss inside a chunk therefore neither holds the chunk's
+later bytes back nor drops them with the gap.
+
 ## Receiver scheduling
 
 The receive path enforces these invariants:
