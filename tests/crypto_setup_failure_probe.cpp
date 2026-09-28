@@ -174,11 +174,18 @@ int main(int argc, char** argv)
         require(result == 0 && (!rendezvous || second_result == 0),
             "baseline connect");
         if (optional_fallback) {
+            // Optional encryption with a peer that has no secret: like the
+            // reference, the passphrase side keeps encrypting and reports
+            // NOSECRET; it never falls back to plaintext DATA.
             int state = -1;
             int size = sizeof(state);
             require(srt_getsockflag(first, SRTO_SNDKMSTATE, &state, &size) == 0
-                    && state == 0,
-                "original optional fallback remains available");
+                    && state == SRT_KM_S_NOSECRET,
+                "optional encryption keeps the passphrase side encrypted");
+            (void)srt_sendmsg(first, "probe", 5, -1, 1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            require(first_capture.plaintext_packets == 0,
+                "the passphrase side must not emit plaintext DATA");
         } else {
             require(key_random_calls == 6,
                 "initial plus two directional key pairs");

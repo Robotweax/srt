@@ -4665,8 +4665,12 @@ TEST(compat_runtime_acknowledges_undecryptable_data_under_optional_encryption)
     }
 }
 
-TEST(compat_runtime_optional_sender_resumes_clear_after_no_secret)
+TEST(compat_runtime_optional_sender_keeps_encrypting_after_no_secret)
 {
+    // Reference behaviour under optional encryption: after the peer reports
+    // NOSECRET the sender keeps encrypting with its own key (the peer cannot
+    // read it) instead of releasing plaintext, reports SRTO_SNDKMSTATE
+    // NOSECRET, and stops re-sending the key material.
     const auto channel = std::make_shared<DatagramChannel>();
     CapturedDatagrams output;
     channel->set_send_hook_for_testing(capture_datagram, &output);
@@ -4711,10 +4715,7 @@ TEST(compat_runtime_optional_sender_resumes_clear_after_no_secret)
     REQUIRE_EQ(decoded_request.packet.control.subtype,
         key_material_request_subtype);
 
-    const std::array<std::byte, 4> no_secret{
-        std::byte{0}, std::byte{0}, std::byte{0},
-        static_cast<std::byte>(CryptoState::no_secret),
-    };
+    const auto no_secret = encode_key_material_state(CryptoState::no_secret);
     const PacketView response{
         .kind = PacketKind::control,
         .control = {
@@ -4727,7 +4728,8 @@ TEST(compat_runtime_optional_sender_resumes_clear_after_no_secret)
     sender.process_packet(response, peer);
     REQUIRE(!sender.broken());
     REQUIRE_EQ(crypto->sender_state(), CryptoState::no_secret);
-    REQUIRE_EQ(sender.sender_crypto_state(), CryptoState::unsecured);
+    REQUIRE(crypto->sending_without_peer_key());
+    REQUIRE_EQ(sender.sender_crypto_state(), CryptoState::no_secret);
 
     now += 1'000;
     (void)sender.poll();
@@ -4736,11 +4738,47 @@ TEST(compat_runtime_optional_sender_resumes_clear_after_no_secret)
     const auto decoded_data = decode_packet(data.front());
     REQUIRE(decoded_data);
     REQUIRE_EQ(decoded_data.packet.kind, PacketKind::data);
-    REQUIRE_EQ(decoded_data.packet.data.encryption_key,
-        EncryptionKey::none);
-    REQUIRE(std::equal(
-        decoded_data.packet.payload.begin(),
+    REQUIRE(decoded_data.packet.data.encryption_key != EncryptionKey::none);
+    REQUIRE_EQ(decoded_data.packet.payload.size(), clear.size());
+    REQUIRE(!std::equal(decoded_data.packet.payload.begin(),
         decoded_data.packet.payload.end(), clear.begin()));
+
+    // Delayed duplicate failures and even a late echo of the original KMREQ
+    // must not break or reconfigure the already selected local-only sender.
+    for (int retry = 0; retry < 3; ++retry) {
+        sender.process_packet(response, peer);
+        REQUIRE(!sender.broken());
+        REQUIRE_EQ(sender.sender_crypto_state(), CryptoState::no_secret);
+    }
+    auto late_confirmation = response;
+    late_confirmation.payload = decoded_request.packet.payload;
+    sender.process_packet(late_confirmation, peer);
+    REQUIRE(!sender.broken());
+    REQUIRE(crypto->sending_without_peer_key());
+    REQUIRE_EQ(sender.sender_crypto_state(), CryptoState::no_secret);
+    REQUIRE(crypto->pending_key_material().empty());
+
+    // DATA remains encrypted after those duplicates, with no new KMREQ.
+    REQUIRE_EQ(sender.queue_message(clear, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    bool encrypted_after_duplicates = false;
+    now += 500'000;
+    (void)sender.poll();
+    for (const auto& datagram : take_datagrams(output)) {
+        const auto decoded = decode_packet(datagram);
+        REQUIRE(decoded);
+        if (decoded.packet.kind == PacketKind::data) {
+            REQUIRE(decoded.packet.data.encryption_key != EncryptionKey::none);
+            REQUIRE_EQ(decoded.packet.payload.size(), clear.size());
+            REQUIRE(!std::equal(decoded.packet.payload.begin(),
+                decoded.packet.payload.end(), clear.begin()));
+            encrypted_after_duplicates = true;
+        }
+        REQUIRE(decoded.packet.kind != PacketKind::control
+            || decoded.packet.control.type != ControlType::user_defined
+            || decoded.packet.control.subtype != key_material_request_subtype);
+    }
+    REQUIRE(encrypted_after_duplicates);
 }
 
 TEST(compat_runtime_retransmits_original_ciphertext_across_key_rotation)
@@ -7270,5 +7308,57 @@ TEST(
             }
             REQUIRE_EQ(data_count, 1U);
         }
+    }
+}
+
+TEST(compat_runtime_optional_receiver_answers_repeated_bad_key_requests)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {.address = {192, 0, 2, 43}, .port = 14203};
+    SocketOptions options;
+    REQUIRE_EQ(options.set_passphrase("receiver wrong secret"), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::enforced_encryption, 0), Error::none);
+    CryptoSession initiator {
+        {.passphrase = "sender other secret", .key_length = 16}};
+    REQUIRE_EQ(initiator.start_initiator(), Error::none);
+    auto crypto = std::make_shared<CryptoSession>(CryptoConfiguration {
+        .passphrase = "receiver wrong secret", .key_length = 16});
+    REQUIRE_EQ(
+        crypto->accept_key_material(initiator.pending_key_material(), true),
+        Error::cryptographic_failure);
+    REQUIRE_EQ(crypto->continue_without_peer_key(CryptoState::bad_secret),
+        Error::none);
+    std::uint64_t now = 1'000'000;
+    ConnectionRuntime receiver {{.channel = channel,
+        .peer = peer,
+        .peer_socket_id = 430,
+        .initial_sequence = SequenceNumber {900},
+        .flow_window_packets = 256,
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now(),
+        .crypto = crypto,
+        .now_function = injected_now,
+        .now_context = &now}};
+    const PacketView request {.kind = PacketKind::control,
+        .control = {.type = ControlType::user_defined,
+            .subtype = key_material_request_subtype,
+            .destination_socket_id = 430},
+        .payload = initiator.pending_key_material()};
+    for (int retry = 0; retry < 3; ++retry) {
+        receiver.process_packet(request, peer);
+        REQUIRE(!receiver.broken());
+        REQUIRE_EQ(receiver.receiver_crypto_state(), CryptoState::bad_secret);
+        REQUIRE_EQ(receiver.sender_crypto_state(), CryptoState::bad_secret);
+        REQUIRE(crypto->sending_without_peer_key());
+        const auto responses = take_datagrams(output);
+        REQUIRE_EQ(responses.size(), 1U);
+        const auto decoded = decode_packet(responses.front());
+        REQUIRE(decoded);
+        REQUIRE_EQ(
+            decoded.packet.control.subtype, key_material_response_subtype);
+        REQUIRE(decode_key_material_state(decoded.packet.payload)
+            == CryptoState::bad_secret);
     }
 }

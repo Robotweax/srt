@@ -105,8 +105,8 @@ srt_setsockopt(sock, 0, SRTO_CRYPTOMODE,
 
 After connection, query `SRTO_CRYPTOMODE` and require effective value `2`.
 This prevents an application from treating a CTR session as authenticated.
-An unencrypted connection reports `0`, so the check also rejects a connection
-that fell back to plaintext.
+An unencrypted connection reports `0`, as does a connection whose peer holds no
+usable key (see below), so the check also rejects both.
 
 ## Roles and transport modes
 
@@ -202,21 +202,19 @@ tree, not in previously released 0.2.2 binaries. See the
 After initial encrypted key material has been confirmed, a local failure while
 preparing the independent direction rejects connection setup, even with
 `SRTO_ENFORCEDENCRYPTION=false`. It must not remove encryption and release
-plaintext DATA. Optional fallback remains available during the original
-negotiation, before encrypted key material has been accepted.
+plaintext DATA.
 
 Under optional encryption a listener that cannot use the caller's key
 material answers with a four-byte KMRSP carrying the failure state instead
 of dropping the extension: NOSECRET without a passphrase, BADSECRET with a
 different one. It then reports `SRTO_RCVKMSTATE` NOSECRET or BADSECRET and
-`SRTO_SNDKMSTATE` UNSECURED, as does a peer that answers a runtime KMREQ
-without a secret. The state occupies the first byte of the four-byte value
+`SRTO_SNDKMSTATE` UNSECURED when no local passphrase exists. With a local
+passphrase, its sender retains encryption and reports the failure state as
+described below. The state occupies the first byte of the four-byte value
 (`03 00 00 00` for NOSECRET), the layout the reference implementation
 produces; both byte orders are accepted on input. An incompatible cipher or
-invalid key-material format reports BADCRYPTOMODE, not BADSECRET. If setup
-removed an unusable crypto session, subsequent runtime KMREQs retain that
-recorded failure state; they do not relabel a configured but unusable secret
-as missing. This does not enable renegotiation of a rejected crypto session.
+invalid key-material format reports BADCRYPTOMODE, not BADSECRET. Repeated unusable runtime KMREQs retain the appropriate failure status;
+a configured but unusable secret is not relabeled as missing.
 
 With `SRTO_ENFORCEDENCRYPTION=false`, a receiver that cannot decrypt a DATA
 packet, because it has no passphrase (NOSECRET) or could not unwrap the peer's
@@ -233,6 +231,31 @@ fragments received later. Following complete messages remain readable. Missing
 sequences still require normal loss recovery; rejection does not acknowledge
 packets that have not arrived. In stream mode only the undecipherable packet
 is discarded.
+
+A side with a passphrase never falls back to plaintext, not even with
+`SRTO_ENFORCEDENCRYPTION=false`. When the peer has no passphrase, a different
+one, or answers the key material with a failure state, the connection is
+still established, but this side keeps encrypting its DATA with its own key,
+as the reference implementation does. The peer cannot decrypt these packets
+and discards them; the application data is not exposed. This applies to
+caller, listener and rendezvous alike. The side then reports
+`SRTO_SNDKMSTATE` NOSECRET (BADSECRET for a different passphrase) and
+`SRTO_RCVKMSTATE` UNSECURED if no peer key was offered, or the receive
+failure state if its key material was rejected. `SRTO_KMSTATE` shows the send state on a socket
+with `SRTO_SENDER` set and the receive state otherwise. `SRTO_CRYPTOMODE`
+reports `0`. Such a sender does not send further KMREQs; key refresh still
+switches to a freshly generated key on its own schedule, without
+announcement. With AES-CTR it still delivers plaintext DATA from a peer
+without a passphrase. With AES-GCM such unauthenticated DATA is counted as
+undecryptable and never delivered.
+
+Repeated runtime KMREQs after an optional key failure receive the current
+failure status without disconnecting the peer or resetting the local sending
+key. Once local-only encryption has been selected, delayed KMRSPs (including
+failure duplicates and late confirmations) do not restart negotiation or
+reset the key's sequence budget. Already secured sessions retain their
+existing protection against unauthenticated key-control packets.
+
 
 ### Directional-key compatibility evidence
 

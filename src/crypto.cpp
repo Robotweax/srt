@@ -831,9 +831,51 @@ Error CryptoSession::generate_next_sender_key() noexcept
     return result;
 }
 
+Error CryptoSession::continue_without_peer_key(CryptoState reported) noexcept
+{
+    if (!enabled()) {
+        return Error::invalid_state;
+    }
+    if (configuration_error_ != Error::none) {
+        return configuration_error_;
+    }
+    if (effective_mode_ == CryptoMode::automatic) {
+        effective_mode_ = configured_mode_ == CryptoMode::automatic
+            ? CryptoMode::aes_ctr
+            : configured_mode_;
+    }
+    const KeySlot* active = transmit_slot(active_sender_key_);
+    if (active == nullptr || !active->ready()) {
+        erase_slot(transmit_even_);
+        erase_slot(transmit_odd_);
+        active_sender_key_ = EncryptionKey::even;
+        packets_on_active_key_ = 0;
+        const Error generated =
+            generate_initial_sender_key(configured_key_length_);
+        if (generated != Error::none) {
+            return generated;
+        }
+    }
+    sender_state_ = reported == CryptoState::bad_secret
+            || reported == CryptoState::bad_crypto_mode
+        ? reported
+        : CryptoState::no_secret;
+    unacknowledged_sending_ = true;
+    directional_key_pending_ = false;
+    rotation_prepared_ = false;
+    pending_acknowledged_ = false;
+    key_material_pending_ = false;
+    pending_key_material_ = {};
+    return Error::none;
+}
+
 Error CryptoSession::prepare_rotation() noexcept
 {
     if (!enabled()) return Error::none;
+    if (unacknowledged_sending_) {
+        // No peer can acknowledge a successor; rotation happens locally.
+        return Error::none;
+    }
     if (sender_state_ != CryptoState::secured
         && sender_state_ != CryptoState::securing) {
         return Error::invalid_state;
@@ -913,6 +955,17 @@ Error CryptoSession::note_sequences_consumed(std::uint64_t count) noexcept
     if (packets_on_active_key_ < effective_refresh_rate()) {
         return Error::none;
     }
+    if (unacknowledged_sending_) {
+        // The peer cannot decrypt either key, so there is nothing to
+        // announce; switch to a fresh local key within the same IV budget.
+        const Error generated = generate_next_sender_key();
+        if (generated != Error::none) {
+            return generated;
+        }
+        active_sender_key_ = other_key(active_sender_key_);
+        packets_on_active_key_ = 0;
+        return Error::none;
+    }
     if (!rotation_prepared_ || !pending_acknowledged_) {
         // A sequence gap can carry the count past the refresh point before
         // the successor key is acknowledged. The active key still has ample
@@ -937,6 +990,11 @@ bool CryptoSession::ready_to_send_data() const noexcept
         if (!authenticated_data_enabled()) {
             return false;
         }
+    }
+    if (unacknowledged_sending_) {
+        // Rotation is local (note_sequences_consumed), so nothing waits on
+        // the peer.
+        return true;
     }
     if (sender_state_ != CryptoState::secured
         && sender_state_ != CryptoState::securing) {
@@ -986,7 +1044,7 @@ Error CryptoSession::encrypt(
         key = EncryptionKey::none;
         return Error::none;
     }
-    if (sender_state_ != CryptoState::secured
+    if (!unacknowledged_sending_ && sender_state_ != CryptoState::secured
         && sender_state_ != CryptoState::securing) {
         return Error::cryptographic_failure;
     }
