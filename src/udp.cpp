@@ -19,6 +19,11 @@
 #  endif
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
+#include <mstcpip.h>
+#if !defined(SIO_UDP_CONNRESET)
+// Documented Winsock control code; some SDK header sets do not expose it.
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
 #else
 #  include <arpa/inet.h>
 #  include <fcntl.h>
@@ -58,6 +63,22 @@ void close_socket(NativeSocket socket) noexcept { (void)closesocket(socket); }
     return ioctlsocket(socket, FIONBIO, &enabled) == 0;
 }
 
+// Winsock reports an ICMP Port Unreachable drawn by an earlier sendto() as
+// WSAECONNRESET on the next recvfrom() of an unconnected UDP socket. One
+// vanished peer must not surface as a failure of the shared socket.
+void suppress_connection_reset_reports(NativeSocket socket) noexcept
+{
+    BOOL enabled = FALSE;
+    DWORD returned = 0;
+    (void)WSAIoctl(socket, SIO_UDP_CONNRESET, &enabled, sizeof(enabled),
+        nullptr, 0, &returned, nullptr, nullptr);
+}
+
+[[nodiscard]] bool is_transient_receive_system_error(int error) noexcept
+{
+    return error == WSAECONNRESET || error == WSAENETRESET || error == WSAEINTR;
+}
+
 [[nodiscard]] bool is_not_connected_error(int error) noexcept
 {
     return error == WSAENOTCONN;
@@ -81,6 +102,16 @@ void close_socket(NativeSocket socket) noexcept { (void)::close(socket); }
 {
     const int flags = fcntl(socket, F_GETFL, 0);
     return flags >= 0 && fcntl(socket, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+
+void suppress_connection_reset_reports(NativeSocket) noexcept { }
+
+[[nodiscard]] bool is_transient_receive_system_error(int error) noexcept
+{
+    // ICMP errors are queued against the socket only for connected UDP
+    // sockets, but a caller may hand in one through acquire_native().
+    return error == EINTR || error == ECONNREFUSED || error == EHOSTUNREACH
+        || error == ENETUNREACH;
 }
 
 [[nodiscard]] bool is_not_connected_error(int error) noexcept
@@ -190,6 +221,7 @@ UdpSocket::UdpSocket(IpAddressFamily family) noexcept
         close_socket(socket);
         return;
     }
+    suppress_connection_reset_reports(socket);
     native_ = static_cast<std::uintptr_t>(socket);
 }
 
@@ -279,6 +311,7 @@ UdpSocket UdpSocket::acquire_native(
         acquired.open_system_error_ = last_socket_error();
         return acquired;
     }
+    suppress_connection_reset_reports(socket);
     acquired.native_ = native_socket;
     acquired.family_ = ipv4
         ? IpAddressFamily::ipv4
@@ -747,55 +780,81 @@ UdpIoResult UdpSocket::receive_from(std::span<std::byte> destination) noexcept
     if (!valid() || destination.size() > static_cast<std::size_t>(INT_MAX)) {
         return {.error = Error::io_error, .system_error = open_system_error_};
     }
-    sockaddr_storage peer{};
-    SocketLength peer_size = static_cast<SocketLength>(sizeof(peer));
+    // A transient report (queued ICMP error, interrupted call) consumes one
+    // receive attempt without delivering a datagram. Retry a bounded number
+    // of times so the caller only ever sees datagrams, would_block, or a
+    // genuine socket fault.
+    constexpr int maximum_transient_reports = 8;
+    for (int attempt = 0;; ++attempt) {
+        sockaddr_storage peer {};
+        SocketLength peer_size = static_cast<SocketLength>(sizeof(peer));
 #if defined(_WIN32)
-    const int result = ::recvfrom(to_native(native_),
-        reinterpret_cast<char*>(destination.data()), static_cast<int>(destination.size()), 0,
-        reinterpret_cast<sockaddr*>(&peer), &peer_size);
-    if (result < 0) {
-        const int error = last_socket_error();
-        if (error == WSAEMSGSIZE) {
+        const int result = ::recvfrom(to_native(native_),
+            reinterpret_cast<char*>(destination.data()),
+            static_cast<int>(destination.size()), 0,
+            reinterpret_cast<sockaddr*>(&peer), &peer_size);
+        if (result < 0) {
+            const int error = last_socket_error();
+            if (error == WSAEMSGSIZE) {
+                return {
+                    .error = Error::buffer_too_small,
+                    .bytes_transferred = destination.size(),
+                    .peer = from_sockaddr(peer),
+                    .system_error = error,
+                };
+            }
+            if (is_transient_receive_system_error(error)) {
+                if (attempt < maximum_transient_reports) {
+                    continue;
+                }
+                return {.error = Error::would_block, .system_error = error};
+            }
+            return {.error = is_would_block(error) ? Error::would_block
+                                                   : Error::io_error,
+                .system_error = error};
+        }
+#else
+        iovec buffer {
+            .iov_base = destination.data(),
+            .iov_len = destination.size(),
+        };
+        msghdr message {};
+        message.msg_name = &peer;
+        message.msg_namelen = peer_size;
+        message.msg_iov = &buffer;
+        message.msg_iovlen = 1;
+        const auto result = ::recvmsg(to_native(native_), &message, 0);
+        if (result < 0) {
+            const int error = last_socket_error();
+            if (is_transient_receive_system_error(error)) {
+                if (attempt < maximum_transient_reports) {
+                    continue;
+                }
+                return {.error = Error::would_block, .system_error = error};
+            }
+            return {.error = is_would_block(error) ? Error::would_block
+                                                   : Error::io_error,
+                .system_error = error};
+        }
+        if ((message.msg_flags & MSG_TRUNC) != 0) {
             return {
                 .error = Error::buffer_too_small,
                 .bytes_transferred = destination.size(),
                 .peer = from_sockaddr(peer),
-                .system_error = error,
+                .system_error = EMSGSIZE,
             };
         }
-        return {.error = is_would_block(error) ? Error::would_block
-                                               : Error::io_error,
-            .system_error = error};
-    }
-#else
-    iovec buffer {
-        .iov_base = destination.data(),
-        .iov_len = destination.size(),
-    };
-    msghdr message {};
-    message.msg_name = &peer;
-    message.msg_namelen = peer_size;
-    message.msg_iov = &buffer;
-    message.msg_iovlen = 1;
-    const auto result = ::recvmsg(to_native(native_), &message, 0);
-    if (result < 0) {
-        const int error = last_socket_error();
-        return {.error = is_would_block(error) ? Error::would_block : Error::io_error,
-            .system_error = error};
-    }
-    if ((message.msg_flags & MSG_TRUNC) != 0) {
+#endif
         return {
-            .error = Error::buffer_too_small,
-            .bytes_transferred = destination.size(),
+            .bytes_transferred = static_cast<std::size_t>(result),
             .peer = from_sockaddr(peer),
-            .system_error = EMSGSIZE,
         };
     }
-#endif
-    return {
-        .bytes_transferred = static_cast<std::size_t>(result),
-        .peer = from_sockaddr(peer),
-    };
+}
+
+bool UdpSocket::is_transient_receive_error(int system_error) noexcept
+{
+    return is_transient_receive_system_error(system_error);
 }
 
 } // namespace robotweax::srt

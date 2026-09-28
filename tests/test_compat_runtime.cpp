@@ -7026,12 +7026,13 @@ struct QueuedReceiveSlice {
     std::size_t calls = 0;
     std::size_t consumed = 0;
     Error exhausted = Error::would_block;
+    int exhausted_system_error = 0;
 
     UdpIoResult operator()(std::span<std::byte> destination) noexcept
     {
         ++calls;
         if (remaining == 0) {
-            return {.error = exhausted};
+            return {.error = exhausted, .system_error = exhausted_system_error};
         }
         --remaining;
         ++consumed;
@@ -7114,6 +7115,38 @@ TEST(compat_channel_receive_slice_io_error_marks_connections_broken)
     QueuedReceiveSlice input {.exhausted = Error::io_error};
     (void)fixture.channel->run_once_for_testing(input);
     REQUIRE_EQ(input.calls, 1U);
+    REQUIRE(runtime->broken());
+}
+
+TEST(compat_channel_receive_slice_transient_report_keeps_connections)
+{
+    // A queued ICMP error for one peer (Winsock WSAECONNRESET, POSIX
+    // ECONNREFUSED) or an interrupted call is not a fault of the shared
+    // UDP socket: the other routes must stay connected.
+#if defined(_WIN32)
+    constexpr int transient_error = WSAECONNRESET;
+    constexpr int fatal_error = WSAENOTSOCK;
+#else
+    constexpr int transient_error = ECONNREFUSED;
+    constexpr int fatal_error = EBADF;
+#endif
+    REQUIRE(UdpSocket::is_transient_receive_error(transient_error));
+    REQUIRE(!UdpSocket::is_transient_receive_error(fatal_error));
+    FairnessFixture fixture;
+    auto runtime = fixture.add(1);
+    QueuedReceiveSlice input {.remaining = 1,
+        .exhausted = Error::io_error,
+        .exhausted_system_error = transient_error};
+    (void)fixture.channel->run_once_for_testing(input);
+    // Every attempt after the datagram reports the transient condition;
+    // the slice skips each one until its receive budget is spent.
+    REQUIRE_EQ(input.calls, 64U);
+    REQUIRE_EQ(input.consumed, 1U);
+    REQUIRE(!runtime->broken());
+
+    QueuedReceiveSlice fatal {
+        .exhausted = Error::io_error, .exhausted_system_error = fatal_error};
+    (void)fixture.channel->run_once_for_testing(fatal);
     REQUIRE(runtime->broken());
 }
 
