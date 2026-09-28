@@ -370,6 +370,51 @@ TEST(per_message_expiry_drops_an_interior_message_across_sequence_rollover)
     REQUIRE_EQ(buffer.available(), buffer.capacity());
 }
 
+TEST(per_message_expiry_stays_exact_around_the_earliest_expiration_bound)
+{
+    // The expiry check keeps a lower bound of the earliest TTL so idle polls
+    // skip the scan. Acknowledging or dropping the earliest message, or
+    // enqueueing a message that expires sooner than the current bound, must
+    // not hide an expiration.
+    SendBuffer buffer {SequenceNumber {0}, 8, 1};
+    const std::array<std::byte, 1> payload {std::byte {'x'}};
+    REQUIRE_EQ(buffer.enqueue_message(
+                   payload, 1, PacketTimestamp {0}, 99, true, 10, 300),
+        Error::none);
+    REQUIRE_EQ(buffer.enqueue_message(
+                   payload, 2, PacketTimestamp {0}, 99, true, 20, 500),
+        Error::none);
+    REQUIRE_EQ(buffer.enqueue_message(
+                   payload, 3, PacketTimestamp {0}, 99, true, 30, 900),
+        Error::none);
+    while (buffer.next_packet().has_value()) {
+    }
+    // Nothing expires before 300; the earliest bound is refined by the scan.
+    REQUIRE(!buffer.drop_expired_message(299));
+    REQUIRE(!buffer.drop_expired_message(300));
+    // The earliest message is acknowledged before it expires: the stale
+    // bound must not suppress the next expiration at 500.
+    REQUIRE_EQ(buffer.acknowledge_before(SequenceNumber {1}), Error::none);
+    REQUIRE(!buffer.drop_expired_message(500));
+    const auto first = buffer.drop_expired_message(501);
+    REQUIRE(first);
+    REQUIRE_EQ(first.first_message_number, 2U);
+    // A later enqueue with a sooner TTL than the remaining bound (900).
+    REQUIRE_EQ(buffer.enqueue_message(
+                   payload, 4, PacketTimestamp {0}, 99, true, 600, 700),
+        Error::none);
+    while (buffer.next_packet().has_value()) {
+    }
+    REQUIRE(!buffer.drop_expired_message(700));
+    const auto second = buffer.drop_expired_message(701);
+    REQUIRE(second);
+    REQUIRE_EQ(second.first_message_number, 4U);
+    const auto third = buffer.drop_expired_message(901);
+    REQUIRE(third);
+    REQUIRE_EQ(third.first_message_number, 3U);
+    REQUIRE(!buffer.drop_expired_message(100'000));
+}
+
 TEST(send_buffer_statistics_exclude_drop_tombstones_and_measure_span)
 {
     SendBuffer buffer{SequenceNumber{50}, 4, 2};
