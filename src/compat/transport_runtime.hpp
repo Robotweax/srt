@@ -155,6 +155,7 @@ struct RuntimePollResult {
     bool immediate_work = false;
     std::optional<std::chrono::microseconds> next_work_delay = std::nullopt;
     bool receive_wait_safe = false;
+    bool coarse_timer_probe = false;
 };
 
 struct MessageIoResult {
@@ -221,12 +222,11 @@ public:
         return coarse_timer_mode_.load(std::memory_order_relaxed);
     }
     void observe_timer_wake_for_testing(
-        std::uint64_t lateness_microseconds) noexcept
+        std::uint64_t lateness_microseconds) noexcept;
+    [[nodiscard]] std::uint64_t
+    coarse_timer_probe_wakes_for_testing() const noexcept
     {
-        std::lock_guard lifecycle_lock(lifecycle_mutex_);
-        timer_wake_monitor_.observe(lateness_microseconds);
-        coarse_timer_mode_.store(
-            timer_wake_monitor_.coarse(), std::memory_order_relaxed);
+        return coarse_timer_probe_wakes_.load(std::memory_order_relaxed);
     }
     // Drive one complete receive/poll slice without starting the scheduler.
     [[nodiscard]] RuntimePollResult run_once_for_testing() noexcept
@@ -320,8 +320,11 @@ private:
     [[nodiscard]] RuntimePollResult poll_connections(
         std::optional<std::chrono::steady_clock::time_point> injected_now =
             std::nullopt) noexcept;
-    [[nodiscard]] bool schedule_next_locked(
-        bool immediate, std::chrono::microseconds delay) noexcept;
+    [[nodiscard]] bool schedule_next_locked(bool immediate,
+        std::chrono::microseconds delay,
+        bool coarse_timer_probe = false) noexcept;
+    void observe_timer_wake_locked(std::uint64_t lateness_microseconds,
+        std::chrono::steady_clock::time_point now) noexcept;
     void dispatch(
         const PacketView& packet,
         std::span<const std::byte> datagram,
@@ -369,6 +372,11 @@ private:
     std::shared_ptr<ScheduledWorkContext> scheduled_work_context_;
     RuntimeScheduler::TimerToken scheduled_timer_ {};
     std::chrono::steady_clock::time_point scheduled_deadline_ {};
+    bool scheduled_coarse_timer_probe_ = false;
+    std::chrono::steady_clock::time_point next_coarse_timer_probe_ {};
+    static constexpr auto coarse_timer_probe_interval_ =
+        std::chrono::milliseconds {100};
+    std::atomic<std::uint64_t> coarse_timer_probe_wakes_ {0};
     // Sub-millisecond deadlines are timer waits unless the host's timer
     // wake-ups have proven too coarse for the pacer's schedule credit.
     TimerWakeMonitor timer_wake_monitor_ {};
