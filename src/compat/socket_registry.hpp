@@ -164,7 +164,25 @@ private:
     bool clearing_ = false;
 };
 
-void runtime_start() noexcept;
+// Marks application callbacks that may be awaited by final cleanup. If they
+// reenter startup/creation during that cleanup, fail promptly instead of
+// waiting on themselves through the cleanup barrier.
+class RuntimeCallbackScope {
+public:
+    RuntimeCallbackScope() noexcept;
+    ~RuntimeCallbackScope();
+    RuntimeCallbackScope(const RuntimeCallbackScope&) = delete;
+    RuntimeCallbackScope& operator=(const RuntimeCallbackScope&) = delete;
+};
+
+// Mark a worker that final cleanup can join. The marker lasts through thread
+// local destruction after its run function returns.
+void mark_runtime_cleanup_worker_thread() noexcept;
+
+[[nodiscard]] bool runtime_start() noexcept;
+// Consumes the calling thread's last creation rejection, so the public API
+// can report EINVOP even if cleanup finishes before it maps the error.
+[[nodiscard]] bool runtime_creation_blocked_by_cleanup() noexcept;
 [[nodiscard]] SRTSOCKET runtime_create_socket() noexcept;
 [[nodiscard]] SRTSOCKET runtime_create_group(
     SRT_GROUP_TYPE type) noexcept;

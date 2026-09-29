@@ -121,7 +121,10 @@ SRTSOCKET srt_create_group(SRT_GROUP_TYPE type)
     const SRTSOCKET group =
         robotweax::srt::compat::runtime_create_group(type);
     if (group == SRT_INVALID_SOCK) {
-        robotweax::srt::compat::set_last_error(SRT_ENOBUF);
+        robotweax::srt::compat::set_last_error(
+            robotweax::srt::compat::runtime_creation_blocked_by_cleanup()
+                ? SRT_EINVOP
+                : SRT_ENOBUF);
     }
     return group;
 }
