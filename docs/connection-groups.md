@@ -56,11 +56,12 @@ own counters, as libsrt does: messages sent through the group are counted
 once (`pktSentUnique*`, `byteSentUnique*`), not once per member; messages
 delivered by the group receiver (`pktRecvUnique*`, `byteRecvUnique*`); and
 gaps the group receiver skipped because every member had dropped them
-(`pktRcvDrop*`, `byteRcvDrop*`, sized with the average received payload).
-`msTimeStamp` counts from the group's creation and `clear` resets the
-interval counters. Link-level values (RTT, bandwidth, buffers, per-member
-loss and retransmission) remain per member socket. A closed group reports
-`SRT_EINVSOCK`.
+(`pktRcvDrop*`, `byteRcvDrop*`, sized with the smoothed received payload or
+the 1316-byte Live default before the first delivery). `msTimeStamp` counts
+from the first connection's start; `clear` resets the interval counters.
+Link-level values (RTT, bandwidth, buffers, per-member loss and
+retransmission) remain per member socket. A group that has not connected yet
+reports `SRT_ENOCONN`; a closed group reports `SRT_EINVSOCK`.
 
 For a complete public-header-only example, see
 [`robotweax_srt_group_demo`](../examples/README.md#connection-group-api-demo).

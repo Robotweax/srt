@@ -236,7 +236,37 @@ TEST(compat_group_registry_allocates_distinct_masked_tombstoned_handles)
     REQUIRE_EQ(srt_close(replacement), 0);
 }
 
-TEST(compat_group_peer_version_uses_the_first_member_and_group_type_is_socket_only)
+TEST(compat_group_bstats_requires_connection_and_uses_its_start_time)
+{
+    const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+    REQUIRE(group != SRT_INVALID_SOCK);
+    SRT_TRACEBSTATS statistics {};
+    REQUIRE_EQ(srt_bstats(group, &statistics, 0), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ENOCONN);
+    REQUIRE_EQ(srt_bistats(group, &statistics, 0, 1), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ENOCONN);
+
+    const auto record = GroupRegistry::instance().find(group);
+    REQUIRE(record != nullptr);
+    std::uint32_t initial_sequence = 0;
+    {
+        std::lock_guard lock(record->mutex);
+        record->timestamp_origin =
+            std::chrono::steady_clock::now() - std::chrono::seconds {5};
+        initial_sequence = record->initial_sequence;
+    }
+    const SRTSOCKET member = srt_create_socket();
+    REQUIRE(member != SRT_INVALID_SOCK);
+    (void)attach_group_runtime(group, member, initial_sequence);
+    REQUIRE_EQ(srt_bstats(group, &statistics, 0), 0);
+    REQUIRE(statistics.msTimeStamp >= 5'000);
+    REQUIRE_EQ(srt_close(group), 0);
+    REQUIRE_EQ(srt_bstats(group, &statistics, 0), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
+}
+
+TEST(
+    compat_group_peer_version_uses_the_first_member_and_group_type_is_socket_only)
 {
     const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
     const SRTSOCKET socket = srt_create_socket();
@@ -245,15 +275,13 @@ TEST(compat_group_peer_version_uses_the_first_member_and_group_type_is_socket_on
 
     std::int32_t value = -1;
     int value_size = static_cast<int>(sizeof(value));
-    REQUIRE_EQ(srt_getsockflag(
-                   group, SRTO_PEERVERSION, &value, &value_size),
-        0);
+    REQUIRE_EQ(
+        srt_getsockflag(group, SRTO_PEERVERSION, &value, &value_size), 0);
     REQUIRE_EQ(value, 0);
 
     value_size = static_cast<int>(sizeof(value));
-    REQUIRE_EQ(srt_getsockflag(
-                   group, SRTO_GROUPTYPE, &value, &value_size),
-        SRT_ERROR);
+    REQUIRE_EQ(
+        srt_getsockflag(group, SRTO_GROUPTYPE, &value, &value_size), SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
     REQUIRE_EQ(srt_setsockflag(group, SRTO_PEERVERSION,
                    &value, static_cast<int>(sizeof(value))),
@@ -1383,6 +1411,8 @@ TEST(compat_group_receive_skips_a_gap_every_member_has_dropped)
         REQUIRE_EQ(statistics.byteRecvUniqueTotal, 2U * (1U + 44U));
         REQUIRE_EQ(statistics.pktRcvDropTotal, 1);
         REQUIRE_EQ(statistics.pktRcvDrop, 1);
+        REQUIRE_EQ(statistics.byteRcvDropTotal,
+            static_cast<std::uint64_t>(SRT_LIVE_DEF_PLSIZE + 44));
         REQUIRE_EQ(statistics.pktSentUniqueTotal, 0);
         REQUIRE_EQ(statistics.pktSentTotal, 0);
         // The interval counters were cleared by the previous call.

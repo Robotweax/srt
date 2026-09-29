@@ -190,17 +190,25 @@ void GroupRegistry::note_group_received(GroupRecord& group,
 {
     group.statistics.total.received_unique.add(packets, payload_bytes);
     group.statistics.interval.received_unique.add(packets, payload_bytes);
-    group.statistics.received_packets += packets;
-    group.statistics.received_payload_bytes += payload_bytes;
+    if (packets != 0U) {
+        const auto sample = payload_bytes / packets;
+        if (!group.statistics.received_payload_sample) {
+            group.statistics.average_received_payload_bytes = sample;
+            group.statistics.received_payload_sample = true;
+        } else {
+            group.statistics.average_received_payload_bytes =
+                (3U * group.statistics.average_received_payload_bytes + sample)
+                / 4U;
+        }
+    }
 }
 
 void GroupRegistry::note_group_dropped(
     GroupRecord& group, std::uint64_t packets) noexcept
 {
-    const std::uint64_t average = group.statistics.received_packets == 0U
-        ? 0U
-        : group.statistics.received_payload_bytes
-            / group.statistics.received_packets;
+    const std::uint64_t average = group.statistics.received_payload_sample
+        ? group.statistics.average_received_payload_bytes
+        : static_cast<std::uint64_t>(SRT_LIVE_DEF_PLSIZE);
     group.statistics.total.receiver_dropped.add(packets, packets * average);
     group.statistics.interval.receiver_dropped.add(packets, packets * average);
 }
@@ -218,6 +226,10 @@ int GroupRegistry::trace_statistics(
         std::lock_guard lock(record->mutex);
         if (record->closed) {
             set_last_error(SRT_EINVSOCK);
+            return SRT_ERROR;
+        }
+        if (!record->statistics.activated) {
+            set_last_error(SRT_ENOCONN);
             return SRT_ERROR;
         }
         const auto now = group_statistics_now_microseconds();
@@ -1174,30 +1186,38 @@ void GroupRegistry::update_member(
     bool changed = false;
     {
         std::lock_guard lock(record->mutex);
-        if (record->closed
-            || record->generation != group_generation) {
+        if (record->closed || record->generation != group_generation) {
             return;
         }
-        const auto member = std::find_if(
-            record->members.begin(), record->members.end(),
-            [socket, member_generation](const auto& candidate) {
-                return candidate.public_data.id == socket
-                    && candidate.generation == member_generation;
-            });
+        const auto member =
+            std::find_if(record->members.begin(), record->members.end(),
+                [socket, member_generation](const auto& candidate) {
+                    return candidate.public_data.id == socket
+                        && candidate.generation == member_generation;
+                });
         if (member == record->members.end()) {
             return;
         }
-        const SRT_SOCKSTATUS previous_state =
-            member->public_data.sockstate;
-        if (previous_state != state
-            || member->public_data.result != result) {
+        const SRT_SOCKSTATUS previous_state = member->public_data.sockstate;
+        if (state == SRTS_CONNECTED && !record->statistics.activated) {
+            const auto start = record->timestamp_origin.value_or(
+                std::chrono::steady_clock::now());
+            const auto start_microseconds =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    start.time_since_epoch())
+                    .count();
+            record->statistics.start_microseconds =
+                static_cast<std::uint64_t>(start_microseconds);
+            record->statistics.interval_start_microseconds =
+                record->statistics.start_microseconds;
+            record->statistics.activated = true;
+        }
+        if (previous_state != state || member->public_data.result != result) {
             member->public_data.sockstate = state;
-            member->public_data.memberstate =
-                group_member_status(state);
+            member->public_data.memberstate = group_member_status(state);
             member->public_data.result = result;
             advance_version(record->snapshot_version);
-            if (broken_connection
-                && previous_state == SRTS_CONNECTED
+            if (broken_connection && previous_state == SRTS_CONNECTED
                 && terminal_member_state(state)) {
                 const bool still_usable = std::any_of(
                     record->members.begin(), record->members.end(),

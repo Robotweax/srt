@@ -37,13 +37,14 @@ struct GroupMemberSnapshot {
 // GroupRecord::mutex. Bytes are payload sizes; the trace conversion adds
 // the IPv4 wire header like the socket-level statistics do.
 struct GroupStatistics {
-    std::uint64_t start_microseconds = group_statistics_now_microseconds();
-    std::uint64_t interval_start_microseconds = start_microseconds;
+    bool activated = false;
+    std::uint64_t start_microseconds = 0;
+    std::uint64_t interval_start_microseconds = 0;
     StatisticsCounters total;
     StatisticsCounters interval;
-    // Running average of received payloads, used to size skipped gaps.
-    std::uint64_t received_payload_bytes = 0;
-    std::uint64_t received_packets = 0;
+    // Smoothed received payload size, used to size skipped gaps.
+    std::uint64_t average_received_payload_bytes = 0;
+    bool received_payload_sample = false;
 };
 
 struct GroupRecord {
