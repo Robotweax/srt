@@ -1082,6 +1082,73 @@ TEST(listener_rejects_conflicting_packet_filter_parameters)
         HandshakeActionKind::rejected);
 }
 
+TEST(listener_rejects_fec_geometry_larger_than_its_receive_window)
+{
+    const auto filter = parse_packet_filter_configuration(
+        "fec,cols:5,rows:4");
+    REQUIRE(filter);
+    std::uint32_t cookie_salt = 0x7a52'19c1U;
+    HandshakeMachine caller{{
+        .role = ConnectionRole::caller,
+        .local_socket_id = 100,
+        .packet_filter_configuration = filter.configuration,
+        .receive_capacity_packets = 32U,
+    }};
+    HandshakeMachine listener{{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 200,
+        .packet_filter_configuration = filter.configuration,
+        .receive_capacity_packets = 16U,
+        .cookie_generator = test_cookie,
+        .cookie_context = &cookie_salt,
+    }};
+    const auto induction = caller.start();
+    const auto induction_response = listener.receive(
+        message_from(induction.values[0]));
+    const auto conclusion = caller.receive(
+        message_from(induction_response.values[0]));
+    const auto rejected = listener.receive(
+        message_from(conclusion.values[0]));
+    REQUIRE_EQ(listener.state(), HandshakeState::rejected);
+    REQUIRE_EQ(listener.rejection_reason(), 14);
+    REQUIRE_EQ(static_cast<std::int32_t>(
+            rejected.values[0].packet.request), 1'014);
+}
+
+TEST(caller_rejects_fec_response_larger_than_its_receive_window)
+{
+    const auto filter = parse_packet_filter_configuration(
+        "fec,cols:5,rows:-4");
+    REQUIRE(filter);
+    std::uint32_t cookie_salt = 0x7a52'19c1U;
+    HandshakeMachine caller{{
+        .role = ConnectionRole::caller,
+        .local_socket_id = 100,
+        .packet_filter_configuration = filter.configuration,
+        .receive_capacity_packets = 16U,
+    }};
+    HandshakeMachine listener{{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 200,
+        .packet_filter_configuration = filter.configuration,
+        .receive_capacity_packets = 32U,
+        .cookie_generator = test_cookie,
+        .cookie_context = &cookie_salt,
+    }};
+    const auto induction = caller.start();
+    const auto induction_response = listener.receive(
+        message_from(induction.values[0]));
+    const auto conclusion = caller.receive(
+        message_from(induction_response.values[0]));
+    const auto response = listener.receive(
+        message_from(conclusion.values[0]));
+    REQUIRE_EQ(listener.state(), HandshakeState::connected);
+    const auto rejected = caller.receive(message_from(response.values[0]));
+    REQUIRE_EQ(caller.state(), HandshakeState::rejected);
+    REQUIRE_EQ(caller.rejection_reason(), 14);
+    REQUIRE_EQ(rejected.values[0].kind, HandshakeActionKind::rejected);
+}
+
 TEST(configured_listener_does_not_force_an_unrequested_packet_filter)
 {
     const auto listener_filter =

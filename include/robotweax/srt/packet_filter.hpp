@@ -108,6 +108,11 @@ apply_packet_filter_response(
     const PacketFilterConfiguration& local,
     const PacketFilterConfiguration& response) noexcept;
 
+// The receive decoder needs one complete FEC group inside the local window.
+[[nodiscard]] bool fec_geometry_fits_receive_capacity(
+    const PacketFilterConfiguration& configuration,
+    std::size_t receive_capacity_packets) noexcept;
+
 enum class PacketFilterReceiveDisposition : std::uint8_t {
     pass_through,
     consume_filter_control,

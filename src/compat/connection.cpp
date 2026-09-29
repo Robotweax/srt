@@ -3239,6 +3239,10 @@ int connect_socket(
                 .packet_filter_configuration =
                     socket->native_options
                         .packet_filter_configuration(),
+                .receive_capacity_packets = std::min<std::size_t>(
+                    socket->native_options.receive_buffer_packets(),
+                    static_cast<std::size_t>(
+                        socket->public_options.flow_window_packets)),
             };
             setup.options = socket->native_options;
             setup.enforced_encryption =
@@ -3366,6 +3370,10 @@ int connect_socket(
             .packet_filter_configuration =
                 socket->native_options
                     .packet_filter_configuration(),
+            .receive_capacity_packets = std::min<std::size_t>(
+                socket->native_options.receive_buffer_packets(),
+                static_cast<std::size_t>(
+                    socket->public_options.flow_window_packets)),
             .has_group_membership =
                 socket->group_id != SRT_INVALID_SOCK,
             .group_membership = {
@@ -3686,6 +3694,23 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     }
     group_admission.enabled = public_options.group_connect;
 
+    // The callback may change accepted-socket options. Check its final
+    // receive window before constructing crypto state for this admission.
+    if (!policy_rejected && conclusion.has_packet_filter_extension) {
+        const auto filter = negotiate_packet_filter_configuration(
+            native_options.packet_filter_configuration(),
+            conclusion.packet_filter_configuration);
+        const std::size_t receive_capacity = std::min<std::size_t>(
+            native_options.receive_buffer_packets(),
+            static_cast<std::size_t>(public_options.flow_window_packets));
+        if (!filter || !fec_geometry_fits_receive_capacity(
+                filter.configuration, receive_capacity)) {
+            policy_rejected = true;
+            policy_rejection = SRT_REJ_FILTER;
+            policy_error = SRT_ECONNREJ;
+        }
+    }
+
     std::shared_ptr<CryptoSession> crypto;
     CryptoState receiver_key_state = CryptoState::unsecured;
     if (!policy_rejected) {
@@ -3796,6 +3821,9 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         .congestion_controller = native_options.congestion_controller(),
         .packet_filter_configuration =
             native_options.packet_filter_configuration(),
+        .receive_capacity_packets = std::min<std::size_t>(
+            native_options.receive_buffer_packets(),
+            static_cast<std::size_t>(public_options.flow_window_packets)),
         .group_membership_negotiator =
             public_options.group_connect ? negotiate_listener_group : nullptr,
         .group_membership_context = &group_admission,

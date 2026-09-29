@@ -4,6 +4,7 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 
 using namespace robotweax::srt;
 
@@ -100,6 +101,23 @@ TEST(packet_filter_parser_is_strict_and_bounded)
             maximum_packet_filter_configuration_size
                 + 1U,
             'x')));
+}
+
+TEST(fec_geometry_requires_a_complete_group_in_the_receive_window)
+{
+    for (const auto [text, required] : {
+             std::pair{"fec,cols:17,rows:1", 17U},
+             std::pair{"fec,cols:4,rows:5", 20U},
+             std::pair{"fec,cols:4,rows:-5", 20U},
+         }) {
+        const auto filter = parse_packet_filter_configuration(text);
+        REQUIRE(filter);
+        REQUIRE(!fec_geometry_fits_receive_capacity(
+            filter.configuration, required - 1U));
+        REQUIRE(fec_geometry_fits_receive_capacity(
+            filter.configuration, required));
+    }
+    REQUIRE(fec_geometry_fits_receive_capacity({}, 0U));
 }
 
 TEST(packet_filter_negotiation_merges_parameters_and_defaults)

@@ -199,6 +199,8 @@ public:
             CongestionController::live;
         PacketFilterConfiguration
             packet_filter_configuration{};
+        // Zero leaves capacity policy to the embedding transport.
+        std::size_t receive_capacity_packets = 0;
         bool has_group_membership = false;
         GroupMembership group_membership{};
         GroupMembershipNegotiator group_membership_negotiator = nullptr;
