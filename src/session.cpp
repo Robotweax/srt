@@ -1353,7 +1353,8 @@ ReliabilitySession::report_filter_losses(
     }
     const SequenceNumber floor = receive_buffer_.first_stored_sequence();
     const auto capacity = receive_buffer_.capacity();
-    std::fill(filter_loss_bitmap_.begin(), filter_loss_bitmap_.end(), 0U);
+    std::fill(filter_loss_bitmap_.begin(), filter_loss_bitmap_.end(),
+        std::uint8_t {0});
     for (const auto& loss : losses) {
         const auto first = loss.first.distance_from(floor);
         const auto last = loss.last.distance_from(floor);
