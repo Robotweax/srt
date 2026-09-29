@@ -3,6 +3,8 @@
 #include "compat/closed_handle_history.hpp"
 
 #include "compat/group_replay_buffer.hpp"
+#include "compat/readiness.hpp"
+#include "compat/statistics.hpp"
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
 #include "srt/srt.h"
@@ -28,8 +30,31 @@ struct GroupMemberSnapshot {
     std::uint64_t generation = 0;
 };
 
+[[nodiscard]] std::uint64_t group_statistics_now_microseconds() noexcept;
+
+// Group-level counters for srt_bstats on a group handle, mirroring what
+// libsrt reports there: messages sent and received through the group once
+// (not once per member) and gaps the group receiver skipped. Protected by
+// GroupRecord::mutex. Bytes are payload sizes; the trace conversion adds
+// the IPv4 wire header like the socket-level statistics do.
+struct GroupStatistics {
+    bool activated = false;
+    std::uint64_t start_microseconds = 0;
+    std::uint64_t interval_start_microseconds = 0;
+    StatisticsCounters total;
+    StatisticsCounters interval;
+    // Smoothed received payload size, used to size skipped gaps.
+    std::uint64_t average_received_payload_bytes = 0;
+    bool received_payload_sample = false;
+};
+
 struct GroupRecord {
     mutable std::mutex mutex;
+    GroupStatistics statistics;
+    // Bound by epoll watches on the group handle; members notify it with
+    // their own readiness, membership changes notify it from the registry.
+    std::shared_ptr<ReadinessSource> readiness_source =
+        std::make_shared<ReadinessSource>();
     // Protected by mutex during connection setup; the shared receive clock
     // serializes its own short timestamp/drift operations, never socket I/O.
     std::optional<std::chrono::steady_clock::time_point> timestamp_origin;
@@ -137,6 +162,16 @@ public:
     [[nodiscard]] int data(
         SRTSOCKET group, SRT_SOCKGROUPDATA* output,
         std::size_t* inout_size) noexcept;
+    // srt_bistats for a group handle: SRT_EINVSOCK when the group does not
+    // exist or is closed. Only the group-level counters are non-zero.
+    [[nodiscard]] int trace_statistics(
+        SRTSOCKET group, SRT_TRACEBSTATS& output, bool clear_interval) noexcept;
+    static void note_group_sent(
+        GroupRecord& group, std::uint64_t payload_bytes) noexcept;
+    static void note_group_received(GroupRecord& group, std::uint64_t packets,
+        std::uint64_t payload_bytes) noexcept;
+    static void note_group_dropped(
+        GroupRecord& group, std::uint64_t packets) noexcept;
     [[nodiscard]] bool describe_connect(
         SRTSOCKET group, ConnectDescription& output) noexcept;
     [[nodiscard]] int set_connect_callback(

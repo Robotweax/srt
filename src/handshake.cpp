@@ -354,11 +354,17 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             if (incoming.version != handshake_version_5) {
                 return reject(version_rejection_reason);
             }
+            // An HSv5 CONCLUSION must carry HSREQ: without it there is no
+            // peer version, no latency and no flags to negotiate from, and
+            // libsrt rejects the caller as rogue rather than assume defaults.
+            if (!message.has_handshake_extension
+                || message.extension_type
+                    != HandshakeExtensionType::handshake_request) {
+                return reject(rogue_rejection_reason);
+            }
             const HandshakeExtensionParameters peer_parameters =
-                message.has_handshake_extension
-                ? message.extension_parameters
-                : HandshakeExtensionParameters{};
-            if (message.has_handshake_extension) {
+                message.extension_parameters;
+            {
                 const auto version_status = detail::classify_hsv5_peer_version(
                     peer_parameters.srt_version,
                     configuration_.minimum_peer_srt_version);
@@ -613,7 +619,12 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                     != HandshakeExtensionType::handshake_response) {
                 return actions;
             }
-            if (message.has_handshake_extension) {
+            // The listener's CONCLUSION must answer with HSRSP; libsrt treats
+            // an HSv5 conclusion without it as rogue.
+            if (!message.has_handshake_extension) {
+                return reject_locally(rogue_rejection_reason);
+            }
+            {
                 const auto version_status = detail::classify_hsv5_peer_version(
                     message.extension_parameters.srt_version,
                     configuration_.minimum_peer_srt_version);

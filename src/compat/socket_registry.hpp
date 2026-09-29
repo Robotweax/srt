@@ -108,6 +108,10 @@ struct SocketRecord {
     void* connect_callback_opaque = nullptr;
     int connect_callback_token = -1;
     std::atomic_size_t pending_accepts = 0;
+    // Bound by epoll watches on a listening socket: accept-queue changes
+    // notify it instead of every observer in the process.
+    std::shared_ptr<ReadinessSource> readiness_source =
+        std::make_shared<ReadinessSource>();
     std::uint64_t group_update_version = 0;
     // Zero keeps mirror identity local to this listener. A nonzero value is
     // assigned by srt_accept_bond and shared by its explicit listener set.

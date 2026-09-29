@@ -255,7 +255,9 @@ bool HandshakeInbox::push(const HandshakeEnvelope& envelope) noexcept
         }
     }
     ready_.notify_one();
-    ReadinessSignal::notify();
+    // Queued handshake input changes no handle's readiness; only blocked
+    // accept/connect loops re-check their state.
+    ReadinessSignal::notify_waiters();
     if (handler != nullptr) {
         handler(handler_context.get());
     }
@@ -279,7 +281,7 @@ InboxPopStatus HandshakeInbox::pop_for(
     head_ = (head_ + 1U) % entries_.size();
     --size_;
     lock.unlock();
-    ReadinessSignal::notify();
+    ReadinessSignal::notify_waiters();
     return InboxPopStatus::received;
 }
 
@@ -303,7 +305,7 @@ InboxPopStatus HandshakeInbox::pop_matching(HandshakeEnvelope& envelope,
         }
         --size_;
         lock.unlock();
-        ReadinessSignal::notify();
+        ReadinessSignal::notify_waiters();
         return InboxPopStatus::received;
     }
     return closed_ ? InboxPopStatus::closed : InboxPopStatus::timeout;
@@ -408,7 +410,7 @@ bool DatagramInbox::push(
         }
     }
     ready_.notify_one();
-    ReadinessSignal::notify();
+    ReadinessSignal::notify_waiters();
     if (handler != nullptr) {
         handler(handler_context.get());
     }
@@ -432,7 +434,7 @@ InboxPopStatus DatagramInbox::pop_for(
     head_ = (head_ + 1U) % entries_.size();
     --size_;
     lock.unlock();
-    ReadinessSignal::notify();
+    ReadinessSignal::notify_waiters();
     return InboxPopStatus::received;
 }
 
@@ -1341,8 +1343,10 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
             configuration.options
                 .live_rate_configuration());
         session_.set_message_api(configuration.options.message_api());
+        if (configuration.group) {
+            group_readiness_source_ = configuration.group->readiness_source;
+        }
         if (configuration.group && session_.tsbpd_clock_) {
-            shared_readiness_clock_ = true;
             std::lock_guard lock(configuration.group->mutex);
             if (!configuration.group->closed) {
                 session_.tsbpd_clock_->share_group_clock(
@@ -1845,9 +1849,17 @@ MessageIoResult ConnectionRuntime::receive_stream(
         ? Clock::now() + std::chrono::milliseconds{timeout_milliseconds}
         : Clock::time_point{};
     for (;;) {
-        const auto received = session_.pop_stream(destination);
+        const std::uint64_t now = now_microseconds();
+        // A gap ahead of due bytes is dropped here as well, so a stream
+        // reader is not held behind a loss whose deadline has passed.
+        if (!service_receiver_tlpktdrop_locked(now)) {
+            return {
+                .status = MessageIoStatus::broken,
+                .system_error = system_error_,
+            };
+        }
+        const auto received = session_.pop_stream_at(destination, now);
         if (received) {
-            const std::uint64_t now = now_microseconds();
             session_.note_receive_buffer_released(now);
             sample_receiver_buffer_statistics(now);
             const MessageIoResult result {
@@ -1864,13 +1876,18 @@ MessageIoResult ConnectionRuntime::receive_stream(
         if (locally_closed_) {
             return {.status = MessageIoStatus::local_closed};
         }
-        if (peer_closed_) {
+        // SHUTDOWN ends the peer's send side, but buffered stream packets
+        // still have to pass through the TSBPD gate before end-of-stream.
+        const bool delivery_pending =
+            session_.receive_buffer().has_stream_data()
+            || session_.next_receive_delivery_time().has_value();
+        if (peer_closed_ && !delivery_pending) {
             return {
                 .status = MessageIoStatus::success,
                 .bytes = 0,
             };
         }
-        if (broken_) {
+        if (broken_ && !peer_closed_) {
             return {
                 .status = MessageIoStatus::broken,
                 .system_error = system_error_,
@@ -1885,7 +1902,13 @@ MessageIoResult ConnectionRuntime::receive_stream(
         if (has_deadline && Clock::now() >= deadline) {
             return {.status = MessageIoStatus::timeout};
         }
-        if (has_deadline) {
+        const auto delivery_wakeup = next_receive_wakeup_locked(now);
+        if (delivery_wakeup.has_value()) {
+            const auto next_check = has_deadline
+                ? std::min(deadline, *delivery_wakeup)
+                : *delivery_wakeup;
+            (void)receive_ready_.wait_until(lock, next_check);
+        } else if (has_deadline) {
             (void)receive_ready_.wait_until(lock, deadline);
         } else {
             receive_ready_.wait(lock);
@@ -3342,11 +3365,11 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
 
 void ConnectionRuntime::notify_readiness() noexcept
 {
-    // A shared group clock can move another member's delivery deadline.
-    if (shared_readiness_clock_)
-        ReadinessSignal::notify();
-    else
-        ReadinessSignal::notify(*readiness_source_);
+    // A member's readiness is the group's readiness; a shared group clock
+    // can also move another member's delivery deadline, which group watches
+    // re-evaluate through the group source. Watches on the other member
+    // sockets themselves are refreshed by those members' own events.
+    ReadinessSignal::notify(*readiness_source_, group_readiness_source_.get());
 }
 
 void ConnectionRuntime::apply_options(
@@ -3498,9 +3521,12 @@ bool ConnectionRuntime::readable() noexcept
     if (session_.data_ready_at(now)) {
         return true;
     }
-    // Report end-of-stream only after no complete TSBPD-delayed message
-    // remains ahead of it.
-    return peer_closed_ && !session_.receive_buffer().has_complete_message()
+    // Report end-of-stream only after buffered data has passed its TSBPD
+    // gate, using the delivery unit of the selected API.
+    const bool buffered_head = options_.message_api()
+        ? session_.receive_buffer().has_complete_message()
+        : session_.receive_buffer().has_stream_data();
+    return peer_closed_ && !buffered_head
         && !session_.next_receive_delivery_time().has_value();
 }
 

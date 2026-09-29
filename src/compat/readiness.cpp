@@ -242,6 +242,7 @@ SocketReadinessSnapshot socket_readiness(SRTSOCKET handle) noexcept
 
     if (state == SRTS_LISTENING) {
         readiness.events = pending_accepts != 0U ? SRT_EPOLL_IN : 0;
+        readiness.source = socket->readiness_source;
         return readiness;
     }
     if (state == SRTS_CONNECTING) {
@@ -351,7 +352,7 @@ void ReadinessSignal::notify() noexcept
     ReadinessHub::instance().notify(true);
     notify_legacy_waiters();
 }
-void ReadinessSignal::notify(ReadinessSource& source) noexcept
+void ReadinessSignal::invalidate_watches(ReadinessSource& source) noexcept
 {
     if (source.observed_.load(std::memory_order_acquire)) {
         std::lock_guard lock(source.mutex_);
@@ -360,9 +361,23 @@ void ReadinessSignal::notify(ReadinessSource& source) noexcept
             watch->observer_.invalidate(*watch);
         }
     }
-    // Group membership can change independently of an attached member runtime.
-    // Keep group observers conservative until membership subscriptions exist.
+}
+
+void ReadinessSignal::notify(
+    ReadinessSource& source, ReadinessSource* secondary) noexcept
+{
+    invalidate_watches(source);
+    if (secondary != nullptr) {
+        invalidate_watches(*secondary);
+    }
+    // Watches that could not be bound to a source (a group subscribed before
+    // its record existed) stay wildcards and are refreshed on any change.
     ReadinessHub::instance().notify(false);
+    notify_legacy_waiters();
+}
+
+void ReadinessSignal::notify_waiters() noexcept
+{
     notify_legacy_waiters();
 }
 

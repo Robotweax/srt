@@ -59,7 +59,7 @@ TEST(lite_acknowledgement_is_exactly_one_word)
     REQUIRE_EQ(payload[3], std::byte{0x78});
 }
 
-TEST(acknowledgement_decoder_rejects_numbered_lite_and_zero_numbered_full_ack)
+TEST(acknowledgement_decoder_rejects_numbered_lite_and_accepts_wrapped_zero)
 {
     std::array<std::byte, 28> payload {};
     PacketView packet;
@@ -71,10 +71,14 @@ TEST(acknowledgement_decoder_rejects_numbered_lite_and_zero_numbered_full_ack)
     REQUIRE_EQ(
         decode_acknowledgement(packet).error, Error::invalid_control_payload);
 
+    // libsrt's full-ACK counter wraps to 0 (CAckNo::incack); the packet is a
+    // regular full ACK and must not be dropped.
     packet.control.type_specific = 0U;
     packet.payload = payload;
-    REQUIRE_EQ(
-        decode_acknowledgement(packet).error, Error::invalid_control_payload);
+    const auto wrapped = decode_acknowledgement(packet);
+    REQUIRE(wrapped);
+    REQUIRE_EQ(wrapped.acknowledgement.kind, AcknowledgementKind::full);
+    REQUIRE_EQ(wrapped.acknowledgement.acknowledgement_number, 0U);
 }
 
 TEST(full_acknowledgement_preserves_the_complete_32_bit_number)

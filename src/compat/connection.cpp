@@ -4048,7 +4048,12 @@ ListenerAcceptPublishStatus ListenerRuntime::publish(
     const ListenerAcceptPublishStatus status = accepts_.publish(
         connection, listener != nullptr ? &listener->pending_accepts : nullptr);
     if (status == ListenerAcceptPublishStatus::published) {
-        ReadinessSignal::notify();
+        // Only the listener's own readiness changed.
+        if (listener != nullptr) {
+            ReadinessSignal::notify(*listener->readiness_source);
+        } else {
+            ReadinessSignal::notify();
+        }
     }
     return status;
 }
@@ -4062,7 +4067,11 @@ SRTSOCKET ListenerRuntime::pop(bool blocking, IpEndpoint& peer) noexcept
         return SRT_INVALID_SOCK;
     }
     peer = connection.peer;
-    ReadinessSignal::notify();
+    if (listener != nullptr) {
+        ReadinessSignal::notify(*listener->readiness_source);
+    } else {
+        ReadinessSignal::notify();
+    }
     return connection.handle;
 }
 

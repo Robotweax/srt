@@ -2,6 +2,7 @@
 
 #include "compat/group_config.hpp"
 #include "compat/group_replay_buffer.hpp"
+#include "compat/epoll.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/transport_runtime.hpp"
@@ -236,7 +237,37 @@ TEST(compat_group_registry_allocates_distinct_masked_tombstoned_handles)
     REQUIRE_EQ(srt_close(replacement), 0);
 }
 
-TEST(compat_group_peer_version_uses_the_first_member_and_group_type_is_socket_only)
+TEST(compat_group_bstats_requires_connection_and_uses_its_start_time)
+{
+    const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+    REQUIRE(group != SRT_INVALID_SOCK);
+    SRT_TRACEBSTATS statistics {};
+    REQUIRE_EQ(srt_bstats(group, &statistics, 0), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ENOCONN);
+    REQUIRE_EQ(srt_bistats(group, &statistics, 0, 1), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ENOCONN);
+
+    const auto record = GroupRegistry::instance().find(group);
+    REQUIRE(record != nullptr);
+    std::uint32_t initial_sequence = 0;
+    {
+        std::lock_guard lock(record->mutex);
+        record->timestamp_origin =
+            std::chrono::steady_clock::now() - std::chrono::seconds {5};
+        initial_sequence = record->initial_sequence;
+    }
+    const SRTSOCKET member = srt_create_socket();
+    REQUIRE(member != SRT_INVALID_SOCK);
+    (void)attach_group_runtime(group, member, initial_sequence);
+    REQUIRE_EQ(srt_bstats(group, &statistics, 0), 0);
+    REQUIRE(statistics.msTimeStamp >= 5'000);
+    REQUIRE_EQ(srt_close(group), 0);
+    REQUIRE_EQ(srt_bstats(group, &statistics, 0), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
+}
+
+TEST(
+    compat_group_peer_version_uses_the_first_member_and_group_type_is_socket_only)
 {
     const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
     const SRTSOCKET socket = srt_create_socket();
@@ -245,15 +276,13 @@ TEST(compat_group_peer_version_uses_the_first_member_and_group_type_is_socket_on
 
     std::int32_t value = -1;
     int value_size = static_cast<int>(sizeof(value));
-    REQUIRE_EQ(srt_getsockflag(
-                   group, SRTO_PEERVERSION, &value, &value_size),
-        0);
+    REQUIRE_EQ(
+        srt_getsockflag(group, SRTO_PEERVERSION, &value, &value_size), 0);
     REQUIRE_EQ(value, 0);
 
     value_size = static_cast<int>(sizeof(value));
-    REQUIRE_EQ(srt_getsockflag(
-                   group, SRTO_GROUPTYPE, &value, &value_size),
-        SRT_ERROR);
+    REQUIRE_EQ(
+        srt_getsockflag(group, SRTO_GROUPTYPE, &value, &value_size), SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
     REQUIRE_EQ(srt_setsockflag(group, SRTO_PEERVERSION,
                    &value, static_cast<int>(sizeof(value))),
@@ -1060,6 +1089,16 @@ TEST(compat_group_handshakes_keep_one_origin_without_reusing_timeout_budget)
     REQUIRE_EQ(
         srt_recvmsg(mirror, received.data(), received.size()), sizeof(payload));
     REQUIRE_EQ(std::memcmp(received.data(), payload, sizeof(payload)), 0);
+    // Group handles report the message once, not once per member (2 here).
+    SRT_TRACEBSTATS sender_statistics {};
+    REQUIRE_EQ(srt_bstats(group, &sender_statistics, 0), 0);
+    REQUIRE_EQ(sender_statistics.pktSentUniqueTotal, 1);
+    REQUIRE_EQ(sender_statistics.byteSentUniqueTotal, sizeof(payload) + 44U);
+    REQUIRE_EQ(sender_statistics.pktRecvUniqueTotal, 0);
+    SRT_TRACEBSTATS receiver_statistics {};
+    REQUIRE_EQ(srt_bstats(mirror, &receiver_statistics, 0), 0);
+    REQUIRE_EQ(receiver_statistics.pktRecvUniqueTotal, 1);
+    REQUIRE_EQ(receiver_statistics.pktSentUniqueTotal, 0);
     REQUIRE_EQ(srt_close(group), 0);
     cleanup.group = SRT_INVALID_SOCK;
     REQUIRE_EQ(srt_close(mirror), 0);
@@ -1294,6 +1333,73 @@ TEST(compat_group_receive_withholds_a_message_beyond_the_logical_prefix)
     }
 }
 
+TEST(compat_group_epoll_wakes_on_member_data_without_process_wide_rescans)
+{
+    const auto group = srt_create_group(SRT_GTYPE_BROADCAST);
+    const auto member = srt_create_socket();
+    REQUIRE(group != SRT_INVALID_SOCK);
+    REQUIRE(member != SRT_INVALID_SOCK);
+    const auto record = GroupRegistry::instance().find(group);
+    REQUIRE(record != nullptr);
+    const auto sequence = record->initial_sequence;
+    TestClock clock {.now_microseconds = 0,
+        .channel = std::make_shared<robotweax::srt::compat::DatagramChannel>()};
+    clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+    const auto runtime = attach_group_runtime(group, member, sequence, 1,
+        &clock, 0, true, 20, ConnectionRuntime::Clock::now(), record);
+
+    // One poller watches the group, another watches unrelated sockets only.
+    const int poll = srt_epoll_create();
+    const int other = srt_epoll_create();
+    REQUIRE(poll >= 0);
+    REQUIRE(other >= 0);
+    const int input = SRT_EPOLL_IN;
+    REQUIRE_EQ(srt_epoll_add_usock(poll, group, &input), 0);
+    std::vector<SRTSOCKET> unrelated;
+    for (unsigned index = 0; index < 16; ++index) {
+        const auto socket = srt_create_socket();
+        REQUIRE(socket != SRT_INVALID_SOCK);
+        unrelated.push_back(socket);
+        REQUIRE_EQ(srt_epoll_add_usock(other, socket, &input), 0);
+    }
+    SRT_EPOLL_EVENT event {};
+    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+    REQUIRE_EQ(srt_epoll_uwait(other, &event, 1, 0), 0);
+    const auto other_before =
+        robotweax::srt::compat::epoll_readiness_queries_for_testing(other);
+
+    const std::array<std::byte, 1> payload {std::byte {'g'}};
+    robotweax::srt::PacketView packet;
+    packet.kind = robotweax::srt::PacketKind::data;
+    packet.data.sequence = SequenceNumber {sequence};
+    packet.data.message_number = 1;
+    packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+    packet.data.in_order = true;
+    packet.data.timestamp = robotweax::srt::PacketTimestamp {0};
+    packet.payload = payload;
+    clock.now_microseconds = 10'000;
+    runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+    clock.now_microseconds = 40'000;
+    (void)runtime->poll();
+
+    // The group poller sees the member's data through the group source ...
+    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
+    REQUIRE_EQ(event.fd, group);
+    REQUIRE((event.events & SRT_EPOLL_IN) != 0);
+    // ... while the unrelated poller was not asked to re-query anything.
+    REQUIRE_EQ(srt_epoll_uwait(other, &event, 1, 0), 0);
+    REQUIRE_EQ(
+        robotweax::srt::compat::epoll_readiness_queries_for_testing(other),
+        other_before);
+
+    for (const auto socket : unrelated) {
+        REQUIRE_EQ(srt_close(socket), 0);
+    }
+    REQUIRE_EQ(srt_epoll_release(poll), 0);
+    REQUIRE_EQ(srt_epoll_release(other), 0);
+    REQUIRE_EQ(srt_close(group), 0);
+}
+
 TEST(compat_group_receive_skips_a_gap_every_member_has_dropped)
 {
     // Receiver TLPKTDROP on the only carrying member moves its receive
@@ -1364,7 +1470,27 @@ TEST(compat_group_receive_skips_a_gap_every_member_has_dropped)
         REQUIRE_EQ(srt_recvmsg2(group, buffer.data(), buffer.size(), &control),
             SRT_ERROR);
         REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+
+        // The group handle reports its own receive and drop counters.
+        SRT_TRACEBSTATS statistics {};
+        REQUIRE_EQ(srt_bstats(group, &statistics, 1), 0);
+        REQUIRE_EQ(statistics.pktRecvUniqueTotal, 2);
+        REQUIRE_EQ(statistics.pktRecvUnique, 2);
+        REQUIRE_EQ(statistics.byteRecvUniqueTotal, 2U * (1U + 44U));
+        REQUIRE_EQ(statistics.pktRcvDropTotal, 1);
+        REQUIRE_EQ(statistics.pktRcvDrop, 1);
+        REQUIRE_EQ(statistics.byteRcvDropTotal,
+            static_cast<std::uint64_t>(SRT_LIVE_DEF_PLSIZE + 44));
+        REQUIRE_EQ(statistics.pktSentUniqueTotal, 0);
+        REQUIRE_EQ(statistics.pktSentTotal, 0);
+        // The interval counters were cleared by the previous call.
+        REQUIRE_EQ(srt_bstats(group, &statistics, 0), 0);
+        REQUIRE_EQ(statistics.pktRecvUniqueTotal, 2);
+        REQUIRE_EQ(statistics.pktRecvUnique, 0);
+        REQUIRE_EQ(statistics.pktRcvDrop, 0);
         REQUIRE_EQ(srt_close(group), 0);
+        REQUIRE_EQ(srt_bstats(group, &statistics, 0), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
     }
 }
 
