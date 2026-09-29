@@ -554,13 +554,22 @@ std::uint64_t ReceiveBuffer::buffered_span_milliseconds() const noexcept
 Error ReceiveBuffer::drop_range(SequenceRange range,
     std::uint32_t message_number, std::size_t* newly_dropped_packets) noexcept
 {
-    return drop_range_impl(range, message_number, newly_dropped_packets, false);
+    return drop_range_impl(
+        range, message_number, newly_dropped_packets, DropPreservation::none);
 }
 
 Error ReceiveBuffer::drop_peer_requested_range(SequenceRange range,
     std::uint32_t message_number, std::size_t* newly_dropped_packets) noexcept
 {
-    return drop_range_impl(range, message_number, newly_dropped_packets, true);
+    return drop_range_impl(range, message_number, newly_dropped_packets,
+        DropPreservation::complete_messages);
+}
+
+Error ReceiveBuffer::drop_peer_requested_stream_range(SequenceRange range,
+    std::uint32_t message_number, std::size_t* newly_dropped_packets) noexcept
+{
+    return drop_range_impl(range, message_number, newly_dropped_packets,
+        DropPreservation::received_packets);
 }
 
 bool ReceiveBuffer::acknowledge_peer_drop_range(SequenceRange range) noexcept
@@ -640,7 +649,7 @@ std::optional<std::size_t> ReceiveBuffer::complete_message_last_offset(
 
 Error ReceiveBuffer::drop_range_impl(SequenceRange range,
     std::uint32_t message_number, std::size_t* newly_dropped_packets,
-    bool preserve_existing_complete) noexcept
+    DropPreservation preservation) noexcept
 {
     // The sequence range is authoritative. The message number is advisory
     // metadata used by the wire protocol and may refer to packets that have
@@ -663,19 +672,29 @@ Error ReceiveBuffer::drop_range_impl(SequenceRange range,
         start_offset > 0 ? static_cast<std::size_t>(start_offset) : 0U;
     const std::size_t final_offset = std::min<std::size_t>(
         static_cast<std::size_t>(end_offset), capacity() - 1U);
-    std::optional<SequenceNumber> first_preserved_message;
+    std::optional<SequenceNumber> first_preserved_sequence;
     std::optional<std::size_t> preserve_through_offset;
     for (std::size_t offset = first_offset; offset <= final_offset; ++offset) {
         auto& slot = slots_[(head_ + offset) % capacity()];
-        if (preserve_existing_complete) {
+        if (preservation == DropPreservation::received_packets && slot.occupied
+            && !slot.rejected_payload
+            && slot.header.sequence
+                == first_stored_sequence_.advanced(
+                    static_cast<std::uint32_t>(offset))) {
+            if (!first_preserved_sequence.has_value()) {
+                first_preserved_sequence = slot.header.sequence;
+            }
+            continue;
+        }
+        if (preservation == DropPreservation::complete_messages) {
             if (preserve_through_offset.has_value()
                 && offset <= *preserve_through_offset) {
                 continue;
             }
             if (const auto last = complete_message_last_offset(offset);
                 last.has_value()) {
-                if (!first_preserved_message.has_value()) {
-                    first_preserved_message = slot.header.sequence;
+                if (!first_preserved_sequence.has_value()) {
+                    first_preserved_sequence = slot.header.sequence;
                 }
                 preserve_through_offset = *last;
                 continue;
@@ -702,11 +721,11 @@ Error ReceiveBuffer::drop_range_impl(SequenceRange range,
     if (start_offset <= 0
         && range.last.distance_from(first_stored_sequence_) >= 0) {
         SequenceNumber target = range.last.next();
-        if (first_preserved_message.has_value()
-            && first_preserved_message->distance_from(first_stored_sequence_)
+        if (first_preserved_sequence.has_value()
+            && first_preserved_sequence->distance_from(first_stored_sequence_)
                 >= 0
-            && target.distance_from(*first_preserved_message) > 0) {
-            target = *first_preserved_message;
+            && target.distance_from(*first_preserved_sequence) > 0) {
+            target = *first_preserved_sequence;
         }
         const auto additional_advance = static_cast<std::size_t>(
             target.distance_from(first_stored_sequence_));

@@ -961,9 +961,13 @@ ReliabilityProcessResult ReliabilitySession::receive(
                 result.actions.push(make_acknowledgement(now_microseconds));
             }
         } else {
-            const auto error = receive_buffer_.drop_peer_requested_range(
-                decoded.request.sequences, decoded.request.message_number,
-                &result.receiver_drop_packets);
+            const auto error = message_api_
+                ? receive_buffer_.drop_peer_requested_range(
+                      decoded.request.sequences, decoded.request.message_number,
+                      &result.receiver_drop_packets)
+                : receive_buffer_.drop_peer_requested_stream_range(
+                      decoded.request.sequences, decoded.request.message_number,
+                      &result.receiver_drop_packets);
             if (error != Error::none) {
                 return {.error = error};
             }
@@ -1272,8 +1276,11 @@ ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
             continue;
         }
         std::size_t newly_dropped = 0U;
-        const Error error = receive_buffer_.drop_peer_requested_range(
-            pending.sequences, 0U, &newly_dropped);
+        const Error error = message_api_
+            ? receive_buffer_.drop_peer_requested_range(
+                  pending.sequences, 0U, &newly_dropped)
+            : receive_buffer_.drop_peer_requested_stream_range(
+                  pending.sequences, 0U, &newly_dropped);
         if (error != Error::none) {
             result.error = error;
             return result;

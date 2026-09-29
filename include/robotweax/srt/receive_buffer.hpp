@@ -101,6 +101,11 @@ public:
     [[nodiscard]] Error drop_peer_requested_range(SequenceRange range,
         std::uint32_t message_number = 0,
         std::size_t* newly_dropped_packets = nullptr) noexcept;
+    // In stream mode every received packet is deliverable independently of
+    // its message boundary, including an unread suffix of the head packet.
+    [[nodiscard]] Error drop_peer_requested_stream_range(SequenceRange range,
+        std::uint32_t message_number = 0,
+        std::size_t* newly_dropped_packets = nullptr) noexcept;
     // The sender no longer retransmits a DROPREQ range. Advance cumulative
     // feedback without closing the receive slots to late original packets.
     [[nodiscard]] bool acknowledge_peer_drop_range(
@@ -109,6 +114,12 @@ public:
         SequenceNumber next_sequence) noexcept;
 
 private:
+    enum class DropPreservation {
+        none,
+        complete_messages,
+        received_packets,
+    };
+
     struct Slot {
         DataHeader header{};
         std::uint32_t payload_index = 0;
@@ -129,7 +140,7 @@ private:
         std::size_t offset) const noexcept;
     [[nodiscard]] Error drop_range_impl(SequenceRange range,
         std::uint32_t message_number, std::size_t* newly_dropped_packets,
-        bool preserve_existing_complete) noexcept;
+        DropPreservation preservation) noexcept;
 
     bool has_rejected_payload_ = false;
     std::optional<std::uint32_t> discarding_message_;
