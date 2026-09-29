@@ -92,6 +92,7 @@ ReliabilitySession::ReliabilitySession(Configuration configuration)
           configuration.receive_capacity_packets)
     , receive_loss_list_(configuration.receive_capacity_packets)
     , filter_loss_list_(configuration.receive_capacity_packets)
+    , filter_loss_bitmap_(configuration.receive_capacity_packets)
     , timer_scheduler_(configuration.start_microseconds)
     , sender_retransmission_timer_(configuration.start_microseconds)
     , highest_received_sequence_(
@@ -99,6 +100,7 @@ ReliabilitySession::ReliabilitySession(Configuration configuration)
     , peer_socket_id_(configuration.peer_socket_id)
 {
     pending_peer_drops_.reserve(configuration.receive_capacity_packets);
+    filter_loss_ranges_.reserve(configuration.receive_capacity_packets);
 }
 
 Error ReliabilitySession::queue_message(std::span<const std::byte> message,
@@ -639,8 +641,11 @@ ReliabilityProcessResult ReliabilitySession::receive(
 
         ReceiveLossRemoval recovered_loss;
         if (result.receiver_packet_accepted_unique) {
-            (void)filter_loss_list_.remove(
-                packet.data.sequence);
+            const auto removed_filter =
+                filter_loss_list_.remove(packet.data.sequence);
+            if (removed_filter.capacity_exhausted) {
+                return {.error = Error::buffer_too_small};
+            }
             if (context.filter_supplied) {
                 recovered_loss = receive_loss_list_.remove(
                     packet.data.sequence);
@@ -655,14 +660,18 @@ ReliabilityProcessResult ReliabilitySession::receive(
                         .last = packet.data.sequence.advanced(
                             SequenceNumber::mask),
                     };
-                    (void)receive_loss_list_.add(
-                        gap, initial_loss_ttl);
+                    if (!receive_loss_list_.add(gap, initial_loss_ttl)) {
+                        return {.error = Error::buffer_too_small};
+                    }
                 }
                 highest_received_sequence_ =
                     packet.data.sequence;
             } else {
                 recovered_loss = receive_loss_list_.remove(
                     packet.data.sequence);
+            }
+            if (recovered_loss.capacity_exhausted) {
+                return {.error = Error::buffer_too_small};
             }
         }
         const bool reordered =
@@ -683,8 +692,7 @@ ReliabilityProcessResult ReliabilitySession::receive(
         has_received_data_ = true;
         timer_scheduler_.on_data_received(now_microseconds);
         if (!context.filter_supplied
-            && result.receiver_packet_accepted_unique
-            && initial_loss_ttl != 0U) {
+            && result.receiver_packet_accepted_unique) {
             receive_loss_list_.age_fresh();
         }
         if (!context.defer_feedback) {
@@ -974,8 +982,10 @@ ReliabilityProcessResult ReliabilitySession::receive(
         }
         // Only the dropped range stops being requested. Earlier losses the
         // peer did not drop must keep their periodic NAK.
-        receive_loss_list_.remove_range(decoded.request.sequences);
-        filter_loss_list_.remove_range(decoded.request.sequences);
+        if (!receive_loss_list_.remove_range(decoded.request.sequences)
+            || !filter_loss_list_.remove_range(decoded.request.sequences)) {
+            return {.error = Error::buffer_too_small};
+        }
         if (decoded.request.sequences.first.distance_from(
                 highest_received_sequence_.next())
                 <= 0
@@ -1334,39 +1344,53 @@ ReliabilitySession::report_filter_losses(
         return result;
     }
 
+    // Validate the complete batch before changing any loss state. The bitmap
+    // clips stale/future sequences and merges overlaps without allocating.
     for (const auto& loss : losses) {
-        const std::int32_t distance =
-            loss.last.distance_from(loss.first);
-        if (distance < 0) {
-            return {
-                .error =
-                    Error::invalid_control_payload};
+        if (loss.last.distance_from(loss.first) < 0) {
+            return {.error = Error::invalid_control_payload};
         }
     }
-    // FEC column groups close out of sequence order, so a later batch can
-    // declare a loss that precedes one already tracked. Accept the batch when
-    // every range fits and is non-overlapping (transactional), then insert each
-    // at its sorted position, instead of requiring a strictly ascending append
-    // that previously rejected the report and left the loss unNAKed.
-    if (!filter_loss_list_.can_insert_all_sorted(losses)) {
+    const SequenceNumber floor = receive_buffer_.first_stored_sequence();
+    const auto capacity = receive_buffer_.capacity();
+    std::fill(filter_loss_bitmap_.begin(), filter_loss_bitmap_.end(), 0U);
+    for (const auto& loss : losses) {
+        const auto first = loss.first.distance_from(floor);
+        const auto last = loss.last.distance_from(floor);
+        if (last < 0 || first >= static_cast<std::int32_t>(capacity)) {
+            continue;
+        }
+        const auto begin = static_cast<std::size_t>(std::max(first, 0));
+        const auto end = static_cast<std::size_t>(
+            std::min(last, static_cast<std::int32_t>(capacity - 1U)));
+        for (std::size_t offset = begin; offset <= end; ++offset) {
+            filter_loss_bitmap_[offset] = 1U;
+        }
+    }
+    filter_loss_list_.remove_through(floor.advanced(SequenceNumber::mask));
+    filter_loss_ranges_.clear();
+    bool in_range = false;
+    for (std::size_t offset = 0; offset < capacity; ++offset) {
+        const auto sequence =
+            floor.advanced(static_cast<std::uint32_t>(offset));
+        const bool missing = filter_loss_bitmap_[offset] != 0U
+            && !receive_buffer_.contains_data(sequence)
+            && !filter_loss_list_.contains(sequence);
+        if (missing && !in_range) {
+            filter_loss_ranges_.push_back({sequence, sequence});
+        } else if (missing) {
+            filter_loss_ranges_.back().last = sequence;
+        }
+        in_range = missing;
+        if (missing) {
+            ++result.receiver_filter_loss_packets;
+        }
+    }
+    if (!filter_loss_list_.can_insert_all_sorted(filter_loss_ranges_)) {
         return {.error = Error::buffer_too_small};
     }
-    for (const auto& loss : losses) {
+    for (const auto& loss : filter_loss_ranges_) {
         (void)filter_loss_list_.insert_sorted(loss, 0U);
-    }
-    for (const auto& loss : losses) {
-        const std::size_t packets =
-            static_cast<std::size_t>(
-                loss.last.distance_from(loss.first))
-            + 1U;
-        if (result.receiver_filter_loss_packets
-            > std::numeric_limits<std::size_t>::max()
-                - packets) {
-            result.receiver_filter_loss_packets =
-                std::numeric_limits<std::size_t>::max();
-        } else {
-            result.receiver_filter_loss_packets += packets;
-        }
     }
     append_pending_loss_report(result.actions, true);
     update_loss_timer(now_microseconds);

@@ -3283,25 +3283,25 @@ TEST(session_accepts_filter_losses_reported_out_of_order)
     receiver.configure_live(live_options, 0, PacketTimestamp {0});
     receiver.configure_packet_filter(filter.configuration, true);
 
-    // A later column declares its loss first (sequence 95), then an earlier
-    // column declares a lower one (sequence 88).
+    // A later column declares its loss first (sequence 115), then an earlier
+    // column declares a lower one (sequence 108).
     const std::array high {SequenceRange {
-        .first = SequenceNumber {95},
-        .last = SequenceNumber {95},
+        .first = SequenceNumber {115},
+        .last = SequenceNumber {115},
     }};
     const auto first = receiver.report_filter_losses(high, 100U);
     REQUIRE(first);
     REQUIRE_EQ(first.receiver_filter_loss_packets, 1U);
 
     const std::array low {SequenceRange {
-        .first = SequenceNumber {88},
-        .last = SequenceNumber {88},
+        .first = SequenceNumber {108},
+        .last = SequenceNumber {108},
     }};
     const auto second = receiver.report_filter_losses(low, 101U);
     REQUIRE(second);
     REQUIRE_EQ(second.receiver_filter_loss_packets, 1U);
 
-    // Both losses are NAKed, in ascending order (88 before 95).
+    // Both losses are NAKed, in ascending order (108 before 115).
     const auto periodic = receiver.poll_timers(1'000'000U);
     std::vector<SequenceNumber> reported;
     for (std::size_t index = 0; index < periodic.size; ++index) {
@@ -3314,8 +3314,8 @@ TEST(session_accepts_filter_losses_reported_out_of_order)
         }
     }
     REQUIRE_EQ(reported.size(), 2U);
-    REQUIRE_EQ(reported[0], SequenceNumber {88});
-    REQUIRE_EQ(reported[1], SequenceNumber {95});
+    REQUIRE_EQ(reported[0], SequenceNumber {108});
+    REQUIRE_EQ(reported[1], SequenceNumber {115});
 }
 
 TEST(session_rejects_filter_loss_batches_transactionally)
@@ -3333,7 +3333,7 @@ TEST(session_rejects_filter_loss_batches_transactionally)
 
     const std::array invalid_losses {
         SequenceRange {
-            .first = SequenceNumber {100},
+            .first = SequenceNumber {101},
             .last = SequenceNumber {100},
         },
         SequenceRange {
@@ -3343,7 +3343,7 @@ TEST(session_rejects_filter_loss_batches_transactionally)
     };
     const auto rejected = receiver.report_filter_losses(invalid_losses, 100U);
     REQUIRE(!rejected);
-    REQUIRE_EQ(rejected.error, Error::buffer_too_small);
+    REQUIRE_EQ(rejected.error, Error::invalid_control_payload);
 
     const std::array valid_losses {SequenceRange {
         .first = SequenceNumber {100},
@@ -3355,6 +3355,129 @@ TEST(session_rejects_filter_loss_batches_transactionally)
     REQUIRE_EQ(accepted.actions.size, 1U);
     REQUIRE_EQ(
         accepted.actions.values[0].kind, ReliabilityActionKind::loss_report);
+}
+
+TEST(session_clips_and_merges_filter_losses_within_receive_window)
+{
+    const auto filter =
+        parse_packet_filter_configuration("fec,cols:4,rows:1,arq:onreq");
+    REQUIRE(filter);
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {1},
+        .peer_initial_sequence = SequenceNumber {100},
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+    }};
+    receiver.configure_live({.periodic_nak = true, .retransmit_flag = true}, 0,
+        PacketTimestamp {0});
+    receiver.configure_packet_filter(filter.configuration, true);
+    const std::array payload {std::byte {'x'}};
+    PacketView packet {
+        .kind = PacketKind::data,
+        .data =
+            {
+                .sequence = SequenceNumber {102},
+                .message_number = 3,
+                .boundary = MessageBoundary::solo,
+            },
+        .payload = payload,
+    };
+    REQUIRE(receiver.receive(packet, 50U));
+
+    const std::array first {SequenceRange {
+        .first = SequenceNumber {103},
+        .last = SequenceNumber {104},
+    }};
+    REQUIRE_EQ(
+        receiver.report_filter_losses(first, 100U).receiver_filter_loss_packets,
+        2U);
+
+    const std::array overlap {
+        SequenceRange {SequenceNumber {101}, SequenceNumber {103}},
+        SequenceRange {SequenceNumber {98}, SequenceNumber {101}},
+        SequenceRange {SequenceNumber {106}, SequenceNumber {110}},
+    };
+    const auto merged = receiver.report_filter_losses(overlap, 200U);
+    REQUIRE(merged);
+    REQUIRE_EQ(merged.receiver_filter_loss_packets, 4U);
+    const auto periodic = receiver.poll_timers(1'000'000U);
+    std::vector<SequenceNumber> reported;
+    for (std::size_t index = 0; index < periodic.size; ++index) {
+        if (periodic.values[index].kind != ReliabilityActionKind::loss_report) {
+            continue;
+        }
+        for (const auto& range : periodic.loss_ranges(periodic.values[index])) {
+            for (auto sequence = range.first;; sequence = sequence.next()) {
+                reported.push_back(sequence);
+                if (sequence == range.last) {
+                    break;
+                }
+            }
+        }
+    }
+    const std::vector expected {
+        SequenceNumber {100},
+        SequenceNumber {101},
+        SequenceNumber {103},
+        SequenceNumber {104},
+        SequenceNumber {106},
+        SequenceNumber {107},
+    };
+    REQUIRE_EQ(reported, expected);
+    REQUIRE_EQ(receiver.report_filter_losses(overlap, 300U)
+                   .receiver_filter_loss_packets,
+        0U);
+}
+
+TEST(session_ages_existing_fresh_loss_after_lossmaxttl_is_disabled)
+{
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {1},
+        .peer_initial_sequence = SequenceNumber {100},
+        .send_capacity_packets = 16,
+        .receive_capacity_packets = 16,
+    }};
+    receiver.configure_live({.retransmit_flag = true}, 0, PacketTimestamp {0});
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::maximum_reorder_tolerance_packets, 3),
+        Error::none);
+    REQUIRE_EQ(receiver.apply_dynamic_options(options), Error::none);
+    const std::array payload {std::byte {'x'}};
+    PacketView packet {
+        .kind = PacketKind::data,
+        .data = {.boundary = MessageBoundary::solo},
+        .payload = payload,
+    };
+    const auto receive = [&](std::uint32_t sequence) {
+        packet.data.sequence = SequenceNumber {sequence};
+        packet.data.message_number = sequence;
+        return receiver.receive(packet, sequence);
+    };
+    REQUIRE(receive(102));
+    REQUIRE(receive(100));
+    REQUIRE_EQ(receiver.reorder_tolerance_packets(), 2U);
+    const auto gap = receive(104);
+    REQUIRE(gap);
+    REQUIRE_EQ(gap.receiver_loss_packets, 1U);
+    REQUIRE_EQ(options.set(SocketOption::maximum_reorder_tolerance_packets, 0),
+        Error::none);
+    REQUIRE_EQ(receiver.apply_dynamic_options(options), Error::none);
+    REQUIRE_EQ(receiver.reorder_tolerance_packets(), 0U);
+    REQUIRE(receive(105));
+    const auto aged = receive(106);
+    REQUIRE(aged);
+    bool reported = false;
+    for (std::size_t index = 0; index < aged.actions.size; ++index) {
+        if (aged.actions.values[index].kind
+            == ReliabilityActionKind::loss_report) {
+            for (const auto& range :
+                aged.actions.loss_ranges(aged.actions.values[index])) {
+                reported |= range.first == SequenceNumber {103}
+                    && range.last == SequenceNumber {103};
+            }
+        }
+    }
+    REQUIRE(reported);
 }
 
 TEST(sender_rto_keeps_full_fallback_outside_periodic_live_arq)

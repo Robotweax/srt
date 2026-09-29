@@ -59,6 +59,10 @@ public:
     [[nodiscard]] std::size_t capacity() const noexcept { return slots_.size(); }
     [[nodiscard]] std::size_t occupied() const noexcept { return occupied_; }
     [[nodiscard]] std::size_t available() const noexcept { return capacity() - occupied_; }
+    [[nodiscard]] bool contains_data(SequenceNumber sequence) const noexcept
+    {
+        return find(sequence) != nullptr;
+    }
     [[nodiscard]] std::size_t buffered_payload_bytes() const noexcept;
     [[nodiscard]] std::uint64_t
     buffered_span_milliseconds() const noexcept;
