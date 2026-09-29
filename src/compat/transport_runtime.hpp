@@ -453,6 +453,7 @@ public:
     [[nodiscard]] SequenceNumber receive_floor_sequence() noexcept;
     [[nodiscard]] bool has_complete_buffered_message_at(
         SequenceNumber sequence) noexcept;
+    [[nodiscard]] bool has_buffered_receive_data() noexcept;
     [[nodiscard]] MessageIoResult receive_stream(
         std::span<std::byte> destination,
         bool blocking,

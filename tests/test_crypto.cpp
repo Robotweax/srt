@@ -2252,3 +2252,95 @@ TEST(crypto_session_ignores_a_replayed_request_for_a_retired_key)
         REQUIRE_EQ(plaintext, clear);
     }
 }
+
+TEST(crypto_session_recovers_rotation_after_foreign_key_material)
+{
+    for (const CryptoMode mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        for (int prior_rotations = 0; prior_rotations != 2; ++prior_rotations) {
+            const CryptoConfiguration configuration {
+                .passphrase = "review rotation fixture",
+                .mode = mode,
+                .enable_aes_gcm = true,
+                .refresh_rate_packets = 5,
+                .preannouncement_packets = 1,
+            };
+            CryptoSession sender {configuration};
+            CryptoSession receiver {configuration};
+            CryptoSession foreign {configuration};
+            REQUIRE_EQ(sender.start_initiator(), Error::none);
+            REQUIRE_EQ(receiver.accept_key_material(
+                           sender.pending_key_material(), false),
+                Error::none);
+            REQUIRE_EQ(sender.acknowledge_key_material(
+                           receiver.key_material_response(), false),
+                Error::none);
+            std::uint32_t next_sequence = 0;
+            const auto send_packet = [&] {
+                const SequenceNumber sequence {next_sequence};
+                const std::array<std::byte, 1> clear {std::byte {42}};
+                std::array<std::byte, 1> encrypted {}, decrypted {};
+                EncryptionKey key = EncryptionKey::none;
+                const DataHeader header {
+                    .sequence = sequence,
+                    .message_number = next_sequence + 1U,
+                    .boundary = MessageBoundary::solo,
+                    .in_order = true,
+                    .encryption_key = sender.active_sender_key(),
+                    .timestamp = PacketTimestamp {next_sequence},
+                    .destination_socket_id = 0x1234'5678U,
+                };
+                if (mode == CryptoMode::aes_gcm) {
+                    std::array<std::byte, srt_gcm_authentication_tag_size>
+                        tag {};
+                    REQUIRE_EQ(sender.seal(header, clear, encrypted, tag, key),
+                        Error::none);
+                    REQUIRE_EQ(receiver.open(header, encrypted, tag, decrypted),
+                        Error::none);
+                } else {
+                    REQUIRE_EQ(sender.encrypt(sequence, clear, encrypted, key),
+                        Error::none);
+                    REQUIRE_EQ(
+                        receiver.decrypt(key, sequence, encrypted, decrypted),
+                        Error::none);
+                }
+                REQUIRE_EQ(decrypted, clear);
+                receiver.note_accepted_receive_sequence(sequence);
+                REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+                ++next_sequence;
+            };
+            for (int rotation = 0; rotation < prior_rotations; ++rotation) {
+                for (int packet = 0; packet < 4; ++packet) {
+                    send_packet();
+                }
+                REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+                REQUIRE_EQ(receiver.accept_key_material(
+                               sender.pending_key_material(), false),
+                    Error::none);
+                REQUIRE_EQ(sender.acknowledge_key_material(
+                               receiver.key_material_response(), false),
+                    Error::none);
+                send_packet();
+            }
+            for (int packet = 0; packet < 4; ++packet) {
+                send_packet();
+            }
+            REQUIRE_EQ(foreign.start_initiator(), Error::none);
+            REQUIRE_EQ(receiver.accept_key_material(
+                           foreign.pending_key_material(), false),
+                Error::none);
+            REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+            const auto legitimate_request = sender.pending_key_material();
+            REQUIRE(!legitimate_request.empty());
+            REQUIRE_EQ(receiver.accept_key_material(legitimate_request, false),
+                Error::none);
+            REQUIRE_EQ(sender.acknowledge_key_material(
+                           receiver.key_material_response(), false),
+                Error::none);
+            // The final old-key packet may be unrecoverable after the foreign
+            // announcement, but the sender then switches to the fresh key.
+            REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+            ++next_sequence;
+            send_packet();
+        }
+    }
+}
