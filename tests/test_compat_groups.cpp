@@ -1236,6 +1236,53 @@ TEST(compat_group_connect_joins_with_unread_messages_across_rollover)
         const auto mirror_record =
             GroupRegistry::instance().find(cleanup.mirror);
         REQUIRE(mirror_record != nullptr);
+        // The socket and group can publish CONNECTED before the transport
+        // runtime is attached; group sends require all three to be ready.
+        const auto wait_for_connected_member = [&](SRTSOCKET member) {
+            const auto deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds {3};
+            for (;;) {
+                const auto state = srt_getsockstate(member);
+                bool published = false;
+                std::uint64_t group_generation = 0;
+                std::uint64_t member_generation = 0;
+                {
+                    std::lock_guard lock(sender_record->mutex);
+                    group_generation = sender_record->generation;
+                    const auto entry =
+                        std::find_if(sender_record->members.begin(),
+                            sender_record->members.end(),
+                            [member](const auto& entry) {
+                                return entry.public_data.id == member
+                                    && entry.public_data.sockstate
+                                    == SRTS_CONNECTED;
+                            });
+                    published = entry != sender_record->members.end();
+                    if (published)
+                        member_generation = entry->generation;
+                }
+                bool transport_ready = false;
+                if (published) {
+                    const auto socket = SocketRegistry::instance().find(member);
+                    if (socket != nullptr) {
+                        std::lock_guard lock(socket->mutex);
+                        transport_ready = socket->state == SRTS_CONNECTED
+                            && socket->runtime != nullptr
+                            && socket->group_id == cleanup.sender
+                            && socket->group_generation == group_generation
+                            && socket->member_generation == member_generation;
+                    }
+                }
+                if (state == SRTS_CONNECTED && transport_ready)
+                    return true;
+                if (std::chrono::steady_clock::now() >= deadline
+                    || (state != SRTS_CONNECTING && state != SRTS_CONNECTED)) {
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds {1});
+            }
+        };
+        REQUIRE(wait_for_connected_member(first_endpoint.id));
 
         const std::array<std::array<char, 2>, 2> before_join {
             {{'a', '0'}, {'b', '1'}}};
@@ -1255,13 +1302,7 @@ TEST(compat_group_connect_joins_with_unread_messages_across_rollover)
             reinterpret_cast<const sockaddr*>(&address), sizeof(address));
         REQUIRE(srt_connect_group(cleanup.sender, &second_endpoint, 1)
             != SRT_ERROR);
-        const auto join_deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds {3};
-        while (srt_getsockstate(second_endpoint.id) == SRTS_CONNECTING
-            && std::chrono::steady_clock::now() < join_deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds {1});
-        }
-        REQUIRE_EQ(srt_getsockstate(second_endpoint.id), SRTS_CONNECTED);
+        REQUIRE(wait_for_connected_member(second_endpoint.id));
         std::vector<robotweax::srt::compat::GroupMemberSnapshot> members;
         {
             std::lock_guard lock(mirror_record->mutex);
@@ -1342,13 +1383,7 @@ TEST(compat_group_connect_joins_with_unread_messages_across_rollover)
         REQUIRE(std::equal(during_handshake.begin(), during_handshake.end(),
             received.begin()));
         REQUIRE(join_result != SRT_ERROR);
-        const auto delayed_deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds {3};
-        while (srt_getsockstate(third_socket) == SRTS_CONNECTING
-            && std::chrono::steady_clock::now() < delayed_deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds {1});
-        }
-        REQUIRE_EQ(srt_getsockstate(third_socket), SRTS_CONNECTED);
+        REQUIRE(wait_for_connected_member(third_socket));
         const auto third_record = SocketRegistry::instance().find(third_socket);
         REQUIRE(third_record != nullptr);
         {
