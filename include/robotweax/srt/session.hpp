@@ -463,6 +463,10 @@ private:
     std::vector<PendingPeerDrop> pending_peer_drops_;
     ReceiveLossList receive_loss_list_;
     ReceiveLossList filter_loss_list_;
+    // Scratch space for receive-window clipping and deduplication of filter
+    // reports. Both are allocated at construction, never on the packet path.
+    std::vector<std::uint8_t> filter_loss_bitmap_;
+    std::vector<SequenceRange> filter_loss_ranges_;
     // Bounded Full-ACK history. Sustained high ACK rates or long RTTs can
     // still evict records; File mode retains prompt per-packet Full ACKs.
     AcknowledgementTracker acknowledgement_tracker_ {512};

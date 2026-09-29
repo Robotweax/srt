@@ -52,12 +52,20 @@ ReceiveDecision ReceiveWindow::observe(SequenceNumber sequence) noexcept
 }
 
 ReceiveLossList::ReceiveLossList(std::size_t capacity)
-    : entries_(capacity)
+    : entries_(capacity * 2U)
+    , admission_capacity_(capacity)
 {
     if (capacity == 0U || capacity >= SequenceNumber::half_range) {
         throw std::invalid_argument(
             "receive-loss capacity is outside sequence space");
     }
+}
+
+bool ReceiveLossList::contains(SequenceNumber sequence) const noexcept
+{
+    const std::size_t index = lower_bound(sequence);
+    return index < size_
+        && sequence.distance_from(entries_[index].range.first) >= 0;
 }
 
 void ReceiveLossList::note_added(const Entry& entry) noexcept
@@ -149,7 +157,7 @@ bool ReceiveLossList::insert_sorted(
                 && range.last.distance_from(following.last) <= 0;
         }
     }
-    if (size_ == entries_.size()) {
+    if (size_ >= admission_capacity_) {
         return false;
     }
     for (std::size_t source = size_; source > position; --source) {
@@ -183,7 +191,11 @@ namespace {
 bool ReceiveLossList::can_insert_all_sorted(
     std::span<const SequenceRange> ranges) const noexcept
 {
-    if (ranges.size() > entries_.size() - size_) {
+    if (ranges.empty()) {
+        return true;
+    }
+    if (size_ > admission_capacity_
+        || ranges.size() > admission_capacity_ - size_) {
         return false;
     }
     for (std::size_t index = 0; index < ranges.size(); ++index) {
@@ -208,7 +220,8 @@ bool ReceiveLossList::can_insert_all_sorted(
 bool ReceiveLossList::can_append(
     std::span<const SequenceRange> ranges) const noexcept
 {
-    if (ranges.size() > entries_.size() - size_) {
+    if (size_ > admission_capacity_
+        || ranges.size() > admission_capacity_ - size_) {
         return false;
     }
 
@@ -275,7 +288,7 @@ ReceiveLossRemoval ReceiveLossList::remove(
         }
 
         if (size_ == entries_.size()) {
-            return {};
+            return {.capacity_exhausted = true};
         }
         const Entry upper = entry;
         for (std::size_t source = size_; source > index + 1U; --source) {
@@ -326,17 +339,17 @@ void ReceiveLossList::remove_through(
     }
 }
 
-void ReceiveLossList::remove_range(SequenceRange range) noexcept
+bool ReceiveLossList::remove_range(SequenceRange range) noexcept
 {
     if (range.last.distance_from(range.first) < 0) {
-        return;
+        return false;
     }
     std::size_t index = 0;
     while (index < size_) {
         auto& entry = entries_[index];
         if (range.last.distance_from(entry.range.first) < 0) {
             // Entries are sorted; nothing later can overlap.
-            return;
+            return true;
         }
         if (range.first.distance_from(entry.range.last) > 0) {
             ++index;
@@ -362,7 +375,7 @@ void ReceiveLossList::remove_range(SequenceRange range) noexcept
         }
         // The range lies strictly inside this entry: split it.
         if (size_ == entries_.size()) {
-            return;
+            return false;
         }
         const Entry upper = entry;
         for (std::size_t source = size_; source > index + 1U; --source) {
@@ -373,8 +386,9 @@ void ReceiveLossList::remove_range(SequenceRange range) noexcept
         entries_[index + 1U].range.first = range.last.next();
         note_added(entries_[index + 1U]);
         ++size_;
-        return;
+        return true;
     }
+    return true;
 }
 
 void ReceiveLossList::age_fresh() noexcept

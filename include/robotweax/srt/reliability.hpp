@@ -46,17 +46,21 @@ private:
 struct ReceiveLossRemoval {
     bool removed = false;
     std::uint32_t remaining_ttl = 0;
+    bool capacity_exhausted = false;
 };
 
-// Tracks disjoint missing sequence ranges in preallocated storage. A fresh
-// range delays its first loss report by a packet-count TTL; periodic reports
-// continue to cover every outstanding range after that initial delay.
+// Tracks disjoint missing sequence ranges in preallocated storage. New ranges
+// are limited to `capacity`; another `capacity` slots are reserved for splits
+// when a received or dropped sequence bisects an existing range. A fresh range
+// delays its first loss report by a packet-count TTL; periodic reports continue
+// to cover every outstanding range after that initial delay.
 class ReceiveLossList {
 public:
     explicit ReceiveLossList(std::size_t capacity);
 
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
     [[nodiscard]] bool empty() const noexcept { return size_ == 0U; }
+    [[nodiscard]] bool contains(SequenceNumber sequence) const noexcept;
     [[nodiscard]] bool add(
         SequenceRange range, std::uint32_t initial_ttl) noexcept;
     [[nodiscard]] bool add_all(std::span<const SequenceRange> ranges,
@@ -80,8 +84,9 @@ public:
     void remove_through(SequenceNumber last) noexcept;
     // Remove exactly the sequences inside `range`, trimming or splitting the
     // entries that overlap it. Entries outside the range are untouched. A
-    // split that would exceed capacity leaves that entry unchanged.
-    void remove_range(SequenceRange range) noexcept;
+    // split that would exhaust the reserved slots returns false and leaves
+    // that entry unchanged; callers must handle the failed removal.
+    [[nodiscard]] bool remove_range(SequenceRange range) noexcept;
     void age_fresh() noexcept;
     void mark_periodic_reports() noexcept;
     [[nodiscard]] std::size_t take_pending_reports(
@@ -110,6 +115,7 @@ private:
     void note_removed(const Entry& entry) noexcept;
 
     std::vector<Entry> entries_;
+    std::size_t admission_capacity_ = 0;
     std::size_t size_ = 0;
     // Entries still counting down their reorder TTL, and entries with a
     // report pending. Both let the per-packet paths skip a full walk.

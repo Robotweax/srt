@@ -122,12 +122,12 @@ TEST(receive_loss_list_remove_range_keeps_losses_outside_the_range)
     REQUIRE(losses.add({SequenceNumber {30}, SequenceNumber {30}}, 1));
 
     // A range covering only the middle entry leaves the others intact.
-    losses.remove_range({SequenceNumber {20}, SequenceNumber {25}});
+    REQUIRE(losses.remove_range({SequenceNumber {20}, SequenceNumber {25}}));
     REQUIRE_EQ(losses.size(), 2U);
 
     // Trim the head and tail of entries the range partially overlaps.
     REQUIRE(losses.add({SequenceNumber {40}, SequenceNumber {45}}, 1));
-    losses.remove_range({SequenceNumber {12}, SequenceNumber {30}});
+    REQUIRE(losses.remove_range({SequenceNumber {12}, SequenceNumber {30}}));
     losses.mark_periodic_reports();
     std::array<SequenceRange, 8> reports {};
     REQUIRE_EQ(losses.take_pending_reports(reports), 2U);
@@ -137,7 +137,7 @@ TEST(receive_loss_list_remove_range_keeps_losses_outside_the_range)
     REQUIRE_EQ(reports[1].last, SequenceNumber {45});
 
     // A range strictly inside an entry splits it.
-    losses.remove_range({SequenceNumber {42}, SequenceNumber {43}});
+    REQUIRE(losses.remove_range({SequenceNumber {42}, SequenceNumber {43}}));
     losses.mark_periodic_reports();
     REQUIRE_EQ(losses.take_pending_reports(reports), 3U);
     REQUIRE_EQ(reports[1].first, SequenceNumber {40});
@@ -149,8 +149,8 @@ TEST(receive_loss_list_remove_range_keeps_losses_outside_the_range)
     ReceiveLossList wrapped {4};
     REQUIRE(wrapped.add(
         {SequenceNumber {SequenceNumber::mask - 1U}, SequenceNumber {1}}, 1));
-    wrapped.remove_range(
-        {SequenceNumber {SequenceNumber::mask}, SequenceNumber {0}});
+    REQUIRE(wrapped.remove_range(
+        {SequenceNumber {SequenceNumber::mask}, SequenceNumber {0}}));
     wrapped.mark_periodic_reports();
     REQUIRE_EQ(wrapped.take_pending_reports(reports), 2U);
     REQUIRE_EQ(reports[0].first, SequenceNumber {SequenceNumber::mask - 1U});
@@ -230,8 +230,8 @@ TEST(receive_loss_list_pending_and_membership_stay_consistent_under_churn)
         case 7: {
             const std::uint32_t first = highest - next_random() % 40U;
             const std::uint32_t last = first + next_random() % 6U;
-            losses.remove_range(
-                {SequenceNumber {first}, SequenceNumber {last}});
+            REQUIRE(losses.remove_range(
+                {SequenceNumber {first}, SequenceNumber {last}}));
             for (auto it = model.begin(); it != model.end();) {
                 it = (*it >= first && *it <= last) ? model.erase(it)
                                                    : std::next(it);
@@ -408,14 +408,13 @@ TEST(receive_loss_list_prefix_preserves_report_flags_ttl_and_split_capacity)
     REQUIRE(split.removed);
     REQUIRE_EQ(split.remaining_ttl, 3U);
     REQUIRE_EQ(losses.size(), 4U);
-    REQUIRE(!losses.remove(SequenceNumber {31})
-            .removed); // Full: split is transactional.
-    REQUIRE_EQ(losses.size(), 4U);
+    REQUIRE(losses.remove(SequenceNumber {31}).removed);
+    REQUIRE_EQ(losses.size(), 5U);
     losses.remove_through(SequenceNumber {24});
-    const auto recovered = losses.remove(SequenceNumber {31});
+    const auto recovered = losses.remove(SequenceNumber {30});
     REQUIRE(recovered.removed);
     REQUIRE_EQ(recovered.remaining_ttl, 0U);
-    REQUIRE_EQ(losses.size(), 3U);
+    REQUIRE_EQ(losses.size(), 2U);
     losses.remove_through(SequenceNumber {32});
     REQUIRE_EQ(losses.size(), 1U);
     losses.age_fresh();
@@ -429,6 +428,24 @@ TEST(receive_loss_list_prefix_preserves_report_flags_ttl_and_split_capacity)
     REQUIRE_EQ(reports[0].first, SequenceNumber {41});
     REQUIRE_EQ(reports[0].last, SequenceNumber {44});
     REQUIRE(!losses.has_pending_report());
+}
+
+TEST(receive_loss_list_split_reserve_reports_overflow_without_losing_losses)
+{
+    ReceiveLossList losses {1};
+    REQUIRE(losses.add({SequenceNumber {10}, SequenceNumber {20}}, 0));
+    REQUIRE(losses.remove(SequenceNumber {12}).removed);
+    REQUIRE_EQ(losses.size(), 2U);
+    REQUIRE(!losses.contains(SequenceNumber {12}));
+    REQUIRE(losses.contains(SequenceNumber {15}));
+
+    const auto exhausted = losses.remove(SequenceNumber {15});
+    REQUIRE(!exhausted.removed);
+    REQUIRE(exhausted.capacity_exhausted);
+    REQUIRE(losses.contains(SequenceNumber {15}));
+    REQUIRE(!losses.remove_range({SequenceNumber {16}, SequenceNumber {17}}));
+    REQUIRE(losses.contains(SequenceNumber {16}));
+    REQUIRE(losses.contains(SequenceNumber {17}));
 }
 
 TEST(
