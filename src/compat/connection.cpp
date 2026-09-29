@@ -1084,14 +1084,11 @@ int set_listen_callback(
     switch (socket->state) {
     case SRTS_INIT:
     case SRTS_OPENED:
-    case SRTS_LISTENING:
-        // libsrt installs the hook in any state; a listening socket
-        // applies it to the next incoming connection. The hook is read
-        // under the listener mutex at accept time.
         socket->listen_callback = callback;
         socket->listen_callback_opaque =
             callback == nullptr ? nullptr : opaque;
         return 0;
+    case SRTS_LISTENING:
     case SRTS_CONNECTING:
     case SRTS_CONNECTED:
         return fail(SRT_ECONNSOCK);
