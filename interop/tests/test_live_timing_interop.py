@@ -166,6 +166,10 @@ class LiveTimingInteropTests(unittest.TestCase):
             [("delay", 1_024), ("drop", 2_048), ("reorder", 3_072)],
         )
         self.assertEqual(plan[0].delay_milliseconds, 30)
+        short_delay = timing_interop.fault_plan("loss-delay-reorder", 160, 1)
+        self.assertEqual(short_delay[0].delay_milliseconds, 1)
+        with self.assertRaisesRegex(ValueError, "fault delay must be positive"):
+            timing_interop.fault_plan("loss-delay-reorder", 160, 0)
         self.assertEqual(timing_interop.fault_plan("none", 1), ())
         burst = timing_interop.fault_plan("fec-burst-drop", 8)
         self.assertEqual(

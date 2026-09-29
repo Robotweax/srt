@@ -859,8 +859,12 @@ def generated_messages(
 
 
 def fault_plan(
-    profile: str, message_count: int
+    profile: str,
+    message_count: int,
+    delay_milliseconds: int = FAULT_DELAY_MILLISECONDS,
 ) -> tuple[RendezvousFault, ...]:
+    if delay_milliseconds <= 0:
+        raise ValueError("fault delay must be positive")
     if profile == "none":
         return ()
     if profile == "fec-source-drop":
@@ -903,7 +907,7 @@ def fault_plan(
                 action="delay",
                 direction="sender_to_receiver",
                 occurrence=message_count // 3,
-                delay_milliseconds=FAULT_DELAY_MILLISECONDS,
+                delay_milliseconds=delay_milliseconds,
             ),
             RendezvousFault(
                 action="reorder",
@@ -922,7 +926,7 @@ def fault_plan(
             action="delay",
             direction="sender_to_receiver",
             occurrence=message_count // 4,
-            delay_milliseconds=FAULT_DELAY_MILLISECONDS,
+            delay_milliseconds=delay_milliseconds,
         ),
         RendezvousFault(
             action="drop",
@@ -3310,6 +3314,7 @@ def run_measurement(
     group_path_outage: bool = False,
     group_maximum_failover_delay_milliseconds: int = 0,
     fault_profile: str = "none",
+    fault_delay_milliseconds: int = FAULT_DELAY_MILLISECONDS,
     security: SecurityProfile = SecurityProfile(),
     fec: FecProfile = FecProfile(),
     udp_timestamp_source: str = "userspace",
@@ -3323,7 +3328,7 @@ def run_measurement(
         )
     if bitrate_bits_per_second % 8 != 0:
         raise ValueError("bitrate must be exactly representable in bytes/second")
-    faults = fault_plan(fault_profile, message_count)
+    faults = fault_plan(fault_profile, message_count, fault_delay_milliseconds)
     fec_fault = fault_profile in {
         "fec-source-drop",
         "fec-burst-drop",
@@ -3841,6 +3846,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--fault-profile", choices=FAULT_PROFILES, default="none"
     )
+    parser.add_argument(
+        "--fault-delay-ms", type=int, default=FAULT_DELAY_MILLISECONDS
+    )
     parser.add_argument("--fec-profile", choices=FEC_PROFILES, default="none")
     parser.add_argument("--pbkeylen", type=int, default=0)
     parser.add_argument("--km-refresh-rate", type=int, default=0)
@@ -3868,6 +3876,7 @@ def main() -> int:
         or arguments.bitrate_bps <= 0
         or arguments.latency_ms < 0
         or arguments.timeout_seconds <= 0
+        or arguments.fault_delay_ms <= 0
         or arguments.group_maximum_failover_delay_ms < 0
         or (
             arguments.maximum_egress_p99_9_us is not None
@@ -3925,6 +3934,7 @@ def main() -> int:
                 arguments.group_maximum_failover_delay_ms
             ),
             fault_profile=arguments.fault_profile,
+            fault_delay_milliseconds=arguments.fault_delay_ms,
             security=security,
             fec=fec,
             udp_timestamp_source=arguments.udp_timestamp_source,
