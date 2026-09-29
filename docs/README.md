@@ -87,6 +87,8 @@ combining features.
 - [Incremental SRT epoll readiness](epoll-readiness.md)
 - [Loss-list prefix compaction](loss-list-compaction.md)
 - [Throughput profiling and empty-receive-buffer experiment](throughput-profiling.md)
+- [CR-12 sub-millisecond pacing qualification](cr12-pacer-qualification.md) —
+  native timer measurements, throughput, CPU, latency, and recovery evidence.
 
 These pages document stable protocol behavior, resource contracts, and
 reproducible measurement methods. Internal implementation details that are not
