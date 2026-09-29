@@ -3615,6 +3615,8 @@ TEST(compat_group_config_uses_the_complete_v1_5_5_member_option_matrix)
         SRTO_KMPREANNOUNCE,
         SRTO_LOSSMAXTTL,
         SRTO_NAKREPORT,
+        SRTO_PACKETFILTER,
+        SRTO_PAYLOADSIZE,
         SRTO_PEERIDLETIMEO,
         SRTO_RCVBUF,
         SRTO_SNDBUF,
@@ -3798,8 +3800,11 @@ TEST(compat_group_member_options_round_trip_and_reach_live_members)
         SRTSOCKET listener = SRT_INVALID_SOCK;
         SRTSOCKET group = SRT_INVALID_SOCK;
         SRTSOCKET mirror = SRT_INVALID_SOCK;
+        SRT_SOCKOPT_CONFIG* config = nullptr;
         ~Cleanup()
         {
+            if (config != nullptr)
+                srt_delete_config(config);
             if (group != SRT_INVALID_SOCK)
                 (void)srt_close(group);
             if (mirror != SRT_INVALID_SOCK)
@@ -3825,6 +3830,10 @@ TEST(compat_group_member_options_round_trip_and_reach_live_members)
     const int timeout = 2'000;
     REQUIRE_EQ(srt_setsockflag(
                    cleanup.listener, SRTO_RCVTIMEO, &timeout, sizeof(timeout)),
+        0);
+    constexpr char listener_filter[] = "fec";
+    REQUIRE_EQ(srt_setsockflag(cleanup.listener, SRTO_PACKETFILTER,
+                   listener_filter, sizeof(listener_filter) - 1),
         0);
     REQUIRE_EQ(
         srt_listen_callback(
@@ -3869,7 +3878,24 @@ TEST(compat_group_member_options_round_trip_and_reach_live_members)
     REQUIRE_EQ(srt_setsockflag(
                    cleanup.group, SRTO_STREAMID, stream, sizeof(stream) - 1),
         0);
-    const auto check = [&](SRTSOCKET socket) {
+    constexpr char group_filter[] = "fec,cols:3,rows:1";
+    constexpr char override_filter[] = "fec,cols:4,rows:1";
+    const std::int32_t group_payload = 1'000;
+    const std::int32_t override_payload = 900;
+    const std::int32_t group_connect_timeout = 2'500;
+    const std::int32_t override_connect_timeout = 4'000;
+    REQUIRE_EQ(srt_setsockflag(cleanup.group, SRTO_PACKETFILTER, group_filter,
+                   sizeof(group_filter) - 1),
+        0);
+    REQUIRE_EQ(srt_setsockflag(cleanup.group, SRTO_PAYLOADSIZE, &group_payload,
+                   sizeof(group_payload)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(cleanup.group, SRTO_CONNTIMEO,
+                   &group_connect_timeout, sizeof(group_connect_timeout)),
+        0);
+    const auto check = [&](SRTSOCKET socket, std::int32_t expected_payload,
+                           std::int32_t expected_timeout,
+                           int expected_columns) {
         for (const auto option :
             {SRTO_LATENCY, SRTO_RCVLATENCY, SRTO_PEERLATENCY}) {
             std::int32_t actual = 0;
@@ -3889,11 +3915,43 @@ TEST(compat_group_member_options_round_trip_and_reach_live_members)
             srt_getsockflag(socket, SRTO_STREAMID, text.data(), &size), 0);
         REQUIRE_EQ(size, sizeof(stream) - 1);
         REQUIRE_EQ(std::memcmp(text.data(), stream, sizeof(stream)), 0);
+        for (const auto [option, expected] :
+            {std::pair {SRTO_PAYLOADSIZE, expected_payload},
+                std::pair {SRTO_CONNTIMEO, expected_timeout}}) {
+            std::int32_t integer = -1;
+            size = sizeof(integer);
+            REQUIRE_EQ(srt_getsockflag(socket, option, &integer, &size), 0);
+            REQUIRE_EQ(integer, expected);
+            REQUIRE_EQ(size, sizeof(integer));
+        }
+        std::array<char, 513> filter {};
+        size = filter.size();
+        REQUIRE_EQ(
+            srt_getsockflag(socket, SRTO_PACKETFILTER, filter.data(), &size),
+            0);
+        REQUIRE_EQ(size, static_cast<int>(std::strlen(filter.data())));
+        REQUIRE(std::strstr(
+                    filter.data(), expected_columns == 3 ? "cols:3" : "cols:4")
+            != nullptr);
     };
-    check(cleanup.group);
+    check(cleanup.group, group_payload, group_connect_timeout, 3);
+    cleanup.config = srt_create_config();
+    REQUIRE(cleanup.config != nullptr);
+    REQUIRE_EQ(srt_config_add(cleanup.config, SRTO_PACKETFILTER,
+                   override_filter, sizeof(override_filter) - 1),
+        0);
+    REQUIRE_EQ(srt_config_add(cleanup.config, SRTO_PAYLOADSIZE,
+                   &override_payload, sizeof(override_payload)),
+        0);
+    REQUIRE_EQ(srt_config_add(cleanup.config, SRTO_CONNTIMEO,
+                   &override_connect_timeout, sizeof(override_connect_timeout)),
+        0);
     for (int index = 0; index < 2; ++index) {
         auto endpoint = srt_prepare_endpoint(nullptr,
             reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+        if (index == 1) {
+            endpoint.config = cleanup.config;
+        }
         REQUIRE(srt_connect_group(cleanup.group, &endpoint, 1) != SRT_ERROR);
         const auto deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds {2};
@@ -3902,7 +3960,9 @@ TEST(compat_group_member_options_round_trip_and_reach_live_members)
             std::this_thread::sleep_for(std::chrono::milliseconds {1});
         }
         REQUIRE_EQ(srt_getsockstate(endpoint.id), SRTS_CONNECTED);
-        check(endpoint.id);
+        check(endpoint.id, index == 0 ? group_payload : override_payload,
+            index == 0 ? group_connect_timeout : override_connect_timeout,
+            index == 0 ? 3 : 4);
         const auto member = SocketRegistry::instance().find(endpoint.id);
         REQUIRE(member != nullptr);
         std::lock_guard lock(member->mutex);
@@ -3919,12 +3979,97 @@ TEST(compat_group_member_options_round_trip_and_reach_live_members)
                        .get(SocketOption::maximum_bandwidth_bytes_per_second)
                        .value,
             bandwidth);
+        REQUIRE_EQ(member->native_options.packet_filter_configuration().columns,
+            index == 0 ? 3U : 4U);
     }
     cleanup.mirror = srt_accept(cleanup.listener, nullptr, nullptr);
     REQUIRE(cleanup.mirror != SRT_INVALID_SOCK);
-    check(cleanup.group);
+    check(cleanup.group, group_payload, group_connect_timeout, 3);
     std::lock_guard lock(callback_state.mutex);
     REQUIRE_EQ(callback_state.matched, 2);
+}
+
+TEST(compat_group_filter_payload_and_timeout_validate_values_and_stage)
+{
+    const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+    REQUIRE(group != SRT_INVALID_SOCK);
+    const auto integer_option = [group](SRT_SOCKOPT option) {
+        std::int32_t value = -1;
+        int size = sizeof(value);
+        REQUIRE_EQ(srt_getsockflag(group, option, &value, &size), 0);
+        REQUIRE_EQ(size, sizeof(value));
+        return value;
+    };
+    REQUIRE_EQ(integer_option(SRTO_CONNTIMEO), 3'000);
+    REQUIRE_EQ(integer_option(SRTO_PAYLOADSIZE), SRT_LIVE_DEF_PLSIZE);
+    char filter[64] {};
+    int filter_size = sizeof(filter);
+    REQUIRE_EQ(
+        srt_getsockflag(group, SRTO_PACKETFILTER, filter, &filter_size), 0);
+    REQUIRE_EQ(filter_size, 0);
+    REQUIRE_EQ(filter[0], '\0');
+
+    constexpr char valid_filter[] = "fec,cols:3,rows:1";
+    constexpr char invalid_filter[] = "unknown";
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_PACKETFILTER, invalid_filter,
+                   sizeof(invalid_filter) - 1),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_PACKETFILTER, valid_filter,
+                   sizeof(valid_filter) - 1),
+        0);
+    const std::int32_t too_large = SRT_LIVE_MAX_PLSIZE;
+    REQUIRE_EQ(
+        srt_setsockflag(group, SRTO_PAYLOADSIZE, &too_large, sizeof(too_large)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    REQUIRE_EQ(integer_option(SRTO_PAYLOADSIZE), SRT_LIVE_DEF_PLSIZE);
+    const std::int32_t payload = 1'000;
+    REQUIRE_EQ(
+        srt_setsockflag(group, SRTO_PAYLOADSIZE, &payload, sizeof(payload)), 0);
+    const std::int32_t default_payload = 0;
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_PAYLOADSIZE, &default_payload,
+                   sizeof(default_payload)),
+        0);
+    REQUIRE_EQ(integer_option(SRTO_PAYLOADSIZE), SRT_LIVE_DEF_PLSIZE);
+    REQUIRE_EQ(
+        srt_setsockflag(group, SRTO_PAYLOADSIZE, &payload, sizeof(payload)), 0);
+    const std::int32_t invalid_timeout = -1;
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_CONNTIMEO, &invalid_timeout,
+                   sizeof(invalid_timeout)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    const std::int32_t timeout = 4'000;
+    REQUIRE_EQ(
+        srt_setsockflag(group, SRTO_CONNTIMEO, &timeout, sizeof(timeout)), 0);
+    REQUIRE_EQ(integer_option(SRTO_PAYLOADSIZE), payload);
+    REQUIRE_EQ(integer_option(SRTO_CONNTIMEO), timeout);
+    filter_size = sizeof(valid_filter) - 1;
+    REQUIRE_EQ(srt_getsockflag(group, SRTO_PACKETFILTER, filter, &filter_size),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    filter_size = sizeof(filter);
+    REQUIRE_EQ(
+        srt_getsockflag(group, SRTO_PACKETFILTER, filter, &filter_size), 0);
+    REQUIRE_EQ(filter_size, sizeof(valid_filter) - 1);
+    REQUIRE_EQ(std::strcmp(filter, valid_filter), 0);
+
+    GroupRegistry::ConnectDescription description;
+    REQUIRE(GroupRegistry::instance().describe_connect(group, description));
+    GroupRegistry::instance().mark_opened(group, description.generation);
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_PACKETFILTER, valid_filter,
+                   sizeof(valid_filter) - 1),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
+    REQUIRE_EQ(
+        srt_setsockflag(group, SRTO_PAYLOADSIZE, &payload, sizeof(payload)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
+    REQUIRE_EQ(
+        srt_setsockflag(group, SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
+    REQUIRE_EQ(srt_close(group), 0);
 }
 
 TEST(compat_group_member_option_getters_validate_buffer_sizes)

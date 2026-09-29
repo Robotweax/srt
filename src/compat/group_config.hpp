@@ -10,7 +10,7 @@
 namespace robotweax::srt::compat {
 
 inline constexpr std::size_t maximum_group_config_options = 32;
-inline constexpr std::size_t maximum_group_option_bytes = 256;
+inline constexpr std::size_t maximum_group_option_bytes = 512;
 
 struct GroupOptionValue {
     SRT_SOCKOPT option = SRTO_MSS;

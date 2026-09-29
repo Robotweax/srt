@@ -136,6 +136,8 @@ SRTSOCKET GroupRegistry::create(SRT_GROUP_TYPE type) noexcept
 
     try {
         auto record = std::make_shared<GroupRecord>();
+        (void)record->member_native_options.set(
+            SocketOption::maximum_payload_size, SRT_LIVE_DEF_PLSIZE);
         std::lock_guard lock(mutex_);
         if (clearing_) {
             return SRT_INVALID_SOCK;
@@ -343,6 +345,8 @@ bool GroupRegistry::describe_connect(
         record->member_receiver_latency_milliseconds;
     output.member_peer_latency_milliseconds =
         record->member_peer_latency_milliseconds;
+    output.member_connection_timeout_milliseconds =
+        record->member_connection_timeout_milliseconds;
     output.member_maximum_bandwidth_bytes_per_second =
         record->member_maximum_bandwidth_bytes_per_second;
     output.member_stream_id = record->member_stream_id;
@@ -409,14 +413,17 @@ int GroupRegistry::get_io_option(
         *value_size = static_cast<int>(sizeof(peer_version));
         return 0;
     }
-    if (option == SRTO_STREAMID || option == SRTO_MAXBW) {
+    if (option == SRTO_STREAMID || option == SRTO_PACKETFILTER
+        || option == SRTO_MAXBW) {
         std::lock_guard lock(record->mutex);
         if (record->closed) {
             set_last_error(SRT_EINVSOCK);
             return SRT_ERROR;
         }
-        if (option == SRTO_STREAMID) {
-            const auto text = record->member_stream_id.view();
+        if (option == SRTO_STREAMID || option == SRTO_PACKETFILTER) {
+            const auto text = option == SRTO_STREAMID
+                ? record->member_stream_id.view()
+                : record->member_native_options.packet_filter();
             if (*value_size < static_cast<int>(text.size() + 1U)) {
                 set_last_error(SRT_EINVPARAM);
                 return SRT_ERROR;
@@ -531,6 +538,13 @@ int GroupRegistry::get_io_option(
             break;
         case SRTO_PEERLATENCY:
             result = record->member_peer_latency_milliseconds;
+            break;
+        case SRTO_CONNTIMEO:
+            result = record->member_connection_timeout_milliseconds;
+            break;
+        case SRTO_PAYLOADSIZE:
+            result = static_cast<std::int32_t>(
+                record->member_native_options.maximum_payload_size());
             break;
         case SRTO_ROBOTWEAX_CRYPTO_BACKEND:
             result = static_cast<std::int32_t>(
@@ -762,16 +776,16 @@ int GroupRegistry::set_io_option(
         }
         return 0;
     }
-    // Member-option template: options libsrt passes down to group members.
-    // Set before connect and inherited by every member. The Stream ID is a
-    // public-only value; latency and MAXBW are mirrored into the native member
-    // options so the member's transport behaves accordingly.
+    // Member-option template: set before connect and inherited by every
+    // member, including members added after the group opens.
     if (option == SRTO_STREAMID || option == SRTO_LATENCY
         || option == SRTO_RCVLATENCY || option == SRTO_PEERLATENCY
-        || option == SRTO_MAXBW) {
+        || option == SRTO_MAXBW || option == SRTO_PACKETFILTER
+        || option == SRTO_PAYLOADSIZE || option == SRTO_CONNTIMEO) {
         StreamId stream_id;
         std::int32_t latency = 0;
         std::int64_t maximum_bandwidth = 0;
+        std::int32_t integer_value = 0;
         if (option == SRTO_STREAMID) {
             if (value_size < 0
                 || value_size > static_cast<int>(maximum_stream_id_size)) {
@@ -783,6 +797,13 @@ int GroupRegistry::set_io_option(
                 set_last_error(SRT_EINVPARAM);
                 return SRT_ERROR;
             }
+        } else if (option == SRTO_PACKETFILTER) {
+            if (value_size <= 0
+                || value_size > static_cast<int>(
+                       maximum_packet_filter_configuration_size)) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
         } else if (option == SRTO_MAXBW) {
             if (value_size != static_cast<int>(sizeof(maximum_bandwidth))) {
                 set_last_error(SRT_EINVPARAM);
@@ -790,6 +811,18 @@ int GroupRegistry::set_io_option(
             }
             std::memcpy(&maximum_bandwidth, value, sizeof(maximum_bandwidth));
             if (maximum_bandwidth < -1) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+        } else if (option == SRTO_PAYLOADSIZE || option == SRTO_CONNTIMEO) {
+            if (value_size != static_cast<int>(sizeof(integer_value))) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            std::memcpy(&integer_value, value, sizeof(integer_value));
+            if (integer_value < 0
+                || (option == SRTO_PAYLOADSIZE
+                    && integer_value > SRT_LIVE_MAX_PLSIZE)) {
                 set_last_error(SRT_EINVPARAM);
                 return SRT_ERROR;
             }
@@ -822,6 +855,20 @@ int GroupRegistry::set_io_option(
         Error native = Error::none;
         if (option == SRTO_STREAMID) {
             record->member_stream_id = std::move(stream_id);
+        } else if (option == SRTO_PACKETFILTER) {
+            native = record->member_native_options.set_packet_filter(
+                {static_cast<const char*>(value),
+                    static_cast<std::size_t>(value_size)});
+        } else if (option == SRTO_PAYLOADSIZE) {
+            const std::int32_t effective = integer_value == 0
+                ? std::min<std::int32_t>(SRT_LIVE_DEF_PLSIZE,
+                      static_cast<std::int32_t>(record->member_native_options
+                              .maximum_payload_size_limit()))
+                : integer_value;
+            native = record->member_native_options.set(
+                SocketOption::maximum_payload_size, effective);
+        } else if (option == SRTO_CONNTIMEO) {
+            record->member_connection_timeout_milliseconds = integer_value;
         } else if (option == SRTO_MAXBW) {
             native = record->member_native_options.set(
                 SocketOption::maximum_bandwidth_bytes_per_second,
