@@ -103,12 +103,12 @@ struct GroupRecord {
     // Keep the bounded native representation so credentials never enter an
     // unbounded container and every future member inherits the same policy.
     SocketOptions member_native_options;
-    // Public member-option template that libsrt passes down to members. Set on
-    // the group before connect and copied to every member. Latency and MAXBW
-    // are also mirrored into member_native_options above so the member behaves
-    // accordingly; the Stream ID is public only.
+    // Public member-option values copied to every new member. Native options
+    // above hold the matching transport settings, including the packet filter
+    // and payload size; Stream ID and connection timeout are public only.
     std::int32_t member_receiver_latency_milliseconds = 120;
     std::int32_t member_peer_latency_milliseconds = 0;
+    std::int32_t member_connection_timeout_milliseconds = 3'000;
     std::int64_t member_maximum_bandwidth_bytes_per_second = -1;
     StreamId member_stream_id;
     SRTSOCKET active_send_member = SRT_INVALID_SOCK;
@@ -140,6 +140,7 @@ public:
         SocketOptions member_native_options;
         std::int32_t member_receiver_latency_milliseconds = 120;
         std::int32_t member_peer_latency_milliseconds = 0;
+        std::int32_t member_connection_timeout_milliseconds = 3'000;
         std::int64_t member_maximum_bandwidth_bytes_per_second = -1;
         StreamId member_stream_id;
     };

@@ -48,6 +48,8 @@ bool is_group_member_option(SRT_SOCKOPT option) noexcept
 #endif
     case SRTO_LOSSMAXTTL:
     case SRTO_NAKREPORT:
+    case SRTO_PACKETFILTER:
+    case SRTO_PAYLOADSIZE:
     case SRTO_PEERIDLETIMEO:
     case SRTO_RCVBUF:
     case SRTO_SNDBUF:
