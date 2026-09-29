@@ -308,9 +308,15 @@ prepared ciphertext without reserving the position again.
 
 Current receive keys and a bounded history of prior selector generations are
 retained for delayed packets. Known delayed KMREQ duplicates can be answered
-again without reinstalling old keys. Stale KMRSP messages cannot acknowledge a
-newer request or roll the session back. Input outside the bounded history fails
-closed.
+again without reinstalling old keys. A KMREQ that unwraps to a key this side
+has already retired for the same selector is a replay of an older announcement
+and is ignored without touching the secured session, for as long as that
+generation is in the bounded key history (four per selector). Stale KMRSP
+messages cannot acknowledge a newer request or roll the session back.
+Ciphertext outside the bounded history fails closed. Like libsrt, this side
+cannot tell a replayed announcement older than the whole history from a fresh
+key: runtime KM messages are not authenticated, so such a replay installs the
+old key until the peer's next rotation.
 
 ## Retransmission and reliability
 

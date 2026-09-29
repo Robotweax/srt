@@ -594,6 +594,12 @@ private:
         std::span<const std::byte> material) noexcept;
     void remember_receive_key(
         ReceiveKeyHistory& history, KeySlot& slot) noexcept;
+    // True when this exact key already served the selector and was retired
+    // by a later announcement: a replayed old KMREQ, never a fresh key.
+    [[nodiscard]] bool is_retired_receive_key(EncryptionKey key_selection,
+        std::span<const std::byte> key,
+        std::span<const std::byte, srt_salt_size> salt,
+        CryptoMode mode) const noexcept;
     void erase_receive_history(ReceiveKeyHistory& history) noexcept;
     void erase_slot(KeySlot& slot) noexcept;
 

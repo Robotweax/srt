@@ -466,6 +466,30 @@ Error CryptoSession::install_key(KeySlot& slot, std::span<const std::byte> key,
     return Error::none;
 }
 
+bool CryptoSession::is_retired_receive_key(EncryptionKey key_selection,
+    std::span<const std::byte> key,
+    std::span<const std::byte, srt_salt_size> salt,
+    CryptoMode mode) const noexcept
+{
+    const ReceiveKeyHistory* history = key_selection == EncryptionKey::even
+        ? &receive_even_history_
+        : key_selection == EncryptionKey::odd ? &receive_odd_history_
+                                              : nullptr;
+    if (history == nullptr) {
+        return false;
+    }
+    for (std::size_t index = 0; index < history->size; ++index) {
+        const KeySlot& retired = history->generations[index].slot;
+        if (retired.ready() && retired.mode == mode
+            && retired.key_length == key.size()
+            && std::equal(key.begin(), key.end(), retired.key.begin())
+            && std::equal(salt.begin(), salt.end(), retired.salt.begin())) {
+            return true;
+        }
+    }
+    return false;
+}
+
 Error CryptoSession::install_receive_key(EncryptionKey key_selection,
     std::span<const std::byte> key,
     std::span<const std::byte, srt_salt_size> salt, CryptoMode mode) noexcept
@@ -736,6 +760,29 @@ Error CryptoSession::accept_key_material(
     std::array<std::byte, srt_salt_size> salt{};
     std::copy(material.salt.begin(), material.salt.end(),
         salt.begin());
+    // A genuine peer never re-announces a key it has already replaced. A
+    // request carrying a retired generation is a replay of an old KMREQ that
+    // has aged out of the message history; installing it would route the
+    // peer's current traffic to a stale key. Leave the session untouched.
+    const bool replays_even = (material.keys == EncryptionKey::even
+                                  || material.keys == EncryptionKey::reserved)
+        && is_retired_receive_key(EncryptionKey::even,
+            std::span {plaintext}.first(material.key_length), salt,
+            selection.effective_mode);
+    const bool replays_odd = (material.keys == EncryptionKey::odd
+                                 || material.keys == EncryptionKey::reserved)
+        && is_retired_receive_key(EncryptionKey::odd,
+            std::span {plaintext}.subspan(
+                material.keys == EncryptionKey::reserved ? material.key_length
+                                                         : 0U,
+                material.key_length),
+            salt, selection.effective_mode);
+    if (replays_even || replays_odd) {
+        provider_.secure_erase(kek);
+        provider_.secure_erase(plaintext);
+        provider_.secure_erase(salt);
+        return reject(Error::invalid_key_material, CryptoState::bad_secret);
+    }
     if (material.keys == EncryptionKey::even
         || material.keys == EncryptionKey::reserved) {
         result = install_receive_key(EncryptionKey::even,

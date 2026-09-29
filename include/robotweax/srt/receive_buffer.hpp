@@ -74,13 +74,23 @@ public:
     {
         return find(first_stored_sequence_) != nullptr;
     }
+    // The first buffered packet regardless of message boundaries: the unit
+    // the stream API delivers and drops by, as libsrt does without the
+    // message API.
+    [[nodiscard]] std::optional<BufferedMessageInfo>
+    first_buffered_packet() const noexcept;
     [[nodiscard]] std::optional<PacketTimestamp> next_message_timestamp() const noexcept;
 
     [[nodiscard]] ReceiveInsertResult insert(const PacketView& packet) noexcept;
     [[nodiscard]] ReceivedMessageResult pop_message(
         std::span<std::byte> destination) noexcept;
+    // Reads bytes from the head packets in order. With `due` set, stops in
+    // front of the first packet for which due(timestamp, context) is false,
+    // so a TSBPD stream never hands out bytes ahead of their delivery time.
+    using PacketDuePredicate = bool (*)(PacketTimestamp, void*);
     [[nodiscard]] ReceivedMessageResult pop_stream(
-        std::span<std::byte> destination) noexcept;
+        std::span<std::byte> destination, PacketDuePredicate due = nullptr,
+        void* due_context = nullptr) noexcept;
     [[nodiscard]] Error drop_range(SequenceRange range,
         std::uint32_t message_number = 0,
         std::size_t* newly_dropped_packets = nullptr) noexcept;

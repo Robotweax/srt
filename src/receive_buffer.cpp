@@ -328,13 +328,15 @@ ReceivedMessageResult ReceiveBuffer::pop_message(
 }
 
 ReceivedMessageResult ReceiveBuffer::pop_stream(
-    std::span<std::byte> destination) noexcept
+    std::span<std::byte> destination, PacketDuePredicate due,
+    void* due_context) noexcept
 {
     if (destination.empty()) {
         return {.error = Error::invalid_state};
     }
     const auto* first = find(first_stored_sequence_);
-    if (first == nullptr) {
+    if (first == nullptr
+        || (due != nullptr && !due(first->header.timestamp, due_context))) {
         return {.error = Error::would_block};
     }
 
@@ -346,7 +348,8 @@ ReceivedMessageResult ReceiveBuffer::pop_stream(
     bool removed_packet = false;
     while (written < destination.size()) {
         auto* slot = find(first_stored_sequence_);
-        if (slot == nullptr) {
+        if (slot == nullptr
+            || (due != nullptr && !due(slot->header.timestamp, due_context))) {
             break;
         }
         const std::size_t remaining =
@@ -401,6 +404,27 @@ bool ReceiveBuffer::has_complete_message() const noexcept
     const auto message = first_complete_message();
     return message.has_value()
         && message->first_sequence == first_stored_sequence_;
+}
+
+std::optional<BufferedMessageInfo>
+ReceiveBuffer::first_buffered_packet() const noexcept
+{
+    if (occupied_ == 0U) {
+        return std::nullopt;
+    }
+    SequenceNumber candidate = first_stored_sequence_;
+    for (std::size_t offset = 0; offset < capacity(); ++offset) {
+        const auto* slot = find(candidate);
+        if (slot != nullptr) {
+            return BufferedMessageInfo {
+                .first_sequence = candidate,
+                .last_sequence = candidate,
+                .timestamp = slot->header.timestamp,
+            };
+        }
+        candidate = candidate.next();
+    }
+    return std::nullopt;
 }
 
 std::optional<BufferedMessageInfo>
