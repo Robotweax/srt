@@ -3737,11 +3737,17 @@ TEST(compat_group_receive_observes_terminal_without_state_getter)
                        static_cast<int>(short_buffer.size())),
             SRT_ERROR);
         REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ELARGEMSG);
-        REQUIRE_EQ(srt_recvmsg(group, received.data(),
-                       static_cast<int>(received.size())),
+        std::array<SRT_SOCKGROUPDATA, 1> group_data {};
+        SRT_MSGCTRL control = srt_msgctrl_default;
+        control.grpdata = group_data.data();
+        control.grpdata_size = group_data.size();
+        REQUIRE_EQ(srt_recvmsg2(group, received.data(),
+                       static_cast<int>(received.size()), &control),
             static_cast<int>(payload.size()));
         REQUIRE(std::equal(payload.begin(), payload.end(),
             reinterpret_cast<const std::byte*>(received.data())));
+        REQUIRE_EQ(control.grpdata_size, 1U);
+        REQUIRE_EQ(group_data[0].memberstate, SRT_GST_RUNNING);
         REQUIRE_EQ(srt_recvmsg(group, received.data(),
                        static_cast<int>(received.size())),
             SRT_ERROR);

@@ -125,16 +125,30 @@ struct FailedGroupIoMember {
     bool include_terminal_receivers = false)
 {
     std::vector<GroupMemberSnapshot> snapshots;
+    std::uint32_t expected_receive_sequence = 0;
     {
         std::lock_guard lock(group->mutex);
         snapshots = group->members;
+        expected_receive_sequence = group->next_receive_sequence;
     }
     if (include_terminal_receivers) {
-        // Runtime shutdown is published to the socket and group registries
-        // by state(). Do this without holding the group lock: publishing a
-        // changed member takes that lock. Keep send admission's existing
-        // failure handling in the send path.
+        // Publish a terminal runtime after its complete buffered message has
+        // been delivered. A sender may close before the receiver's TSBPD
+        // deadline; publishing the close now would report the member as
+        // broken in the group data for a successful receive.
         for (const auto& snapshot : snapshots) {
+            const auto socket = SocketRegistry::instance().find(
+                snapshot.public_data.id);
+            std::shared_ptr<ConnectionRuntime> runtime;
+            if (socket != nullptr) {
+                std::lock_guard lock(socket->mutex);
+                runtime = socket->runtime;
+            }
+            if (runtime != nullptr
+                && runtime->has_complete_buffered_message_at(
+                    SequenceNumber {expected_receive_sequence})) {
+                continue;
+            }
             (void)SocketRegistry::instance().state(snapshot.public_data.id);
         }
         {
