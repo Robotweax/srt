@@ -104,11 +104,23 @@ public:
     using Clock = std::chrono::steady_clock;
 
     [[nodiscard]] static std::uint64_t generation() noexcept;
+    // Invalidates every observer: for state transitions that can change the
+    // readiness of handles no source describes (connect, accept, group
+    // membership). Costs a rescan on every epoll set in the process.
     static void notify() noexcept;
-    static void notify(ReadinessSource& source) noexcept;
+    // Invalidates only the watches bound to `source` (and, if given, to
+    // `secondary`, e.g. the group a member belongs to).
+    static void notify(
+        ReadinessSource& source, ReadinessSource* secondary = nullptr) noexcept;
+    // Wakes blocked legacy waiters (accept/connect loops) without touching
+    // any observer: for events that change no handle's readiness.
+    static void notify_waiters() noexcept;
     static void wait_until(
         std::uint64_t observed_generation,
         Clock::time_point deadline) noexcept;
+
+private:
+    static void invalidate_watches(ReadinessSource& source) noexcept;
 };
 
 } // namespace robotweax::srt::compat

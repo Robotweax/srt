@@ -50,12 +50,27 @@ are re-evaluated after the relevant runtime notification.
 
 ## Conservative paths and remaining limits
 
-Global connection/setup/close and group-lifecycle notifications invalidate all
-poll caches. Pollers watching groups also invalidate on runtime changes until
-membership-specific subscriptions are implemented. Runtimes sharing a group
-TSBPD clock preserve global invalidation because drift can move another member's
-deadline. These paths keep their complete readiness evaluation. Local epoll
-add/update/remove/flags/release operations wake their own observer.
+Connection state transitions (connect completion or failure, break, close,
+group open and close) still invalidate all poll caches and keep their complete
+readiness evaluation. Everything that happens per packet or per connection on
+a steady-state runtime is scoped to a readiness source instead:
+
+- a connected socket's runtime notifies its own source and, when the socket
+  is a group member, the group's source, so a poller watching the group is
+  refreshed by member data without any other poller being touched. Drift on
+  a shared group TSBPD clock reaches the group through the same path; a
+  poller watching another member socket directly is refreshed by that
+  member's own next event;
+- a listening socket has a source of its own; publishing or taking an
+  accepted connection notifies only pollers watching that listener;
+- group membership additions, member state updates and removals notify the
+  group's source;
+- handshake and setup datagrams queued into or taken from an inbox change no
+  handle's readiness and only wake blocked accept/connect loops.
+
+Group watches bind to the group's source once the group record exists; a group
+subscribed before that stays a wildcard watch that any notification refreshes.
+Local epoll add/update/remove/flags/release operations wake their own observer.
 
 System/native descriptors retain their existing native polling and 10 ms idle
 check interval. This change does not replace that backend or the phase-4 UDP
@@ -65,9 +80,9 @@ No new thread or independent event-queue capacity limit is introduced.
 For ordinary sockets, an unchanged empty query is constant work after initial
 collection. A sparse update costs work for changed subscriptions, due deadlines
 and returned events; heap maintenance is logarithmic in pending deadlines.
-Initial/global invalidation still costs a full subscription scan, group queries
-can traverse members, and runtime notification costs scale with the number of
-pollers watching that source. Storage scales with registered subscriptions and
+Initial invalidation and connection state transitions still cost a full
+subscription scan, group queries can traverse members, and runtime notification
+costs scale with the number of pollers watching that source. Storage scales with registered subscriptions and
 scratch high-water capacity.
 
 ## Focused evidence

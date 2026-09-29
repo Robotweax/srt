@@ -226,6 +226,7 @@ private:
 
     SubjectReadiness readiness{};
     readiness.exists = true;
+    readiness.source = group->readiness_source;
     bool opened = false;
     bool closed = false;
     members.clear();
@@ -446,8 +447,13 @@ void set_subscription(
     replacement.events = events;
     replacement.update_seen = replacement.update_pending = version;
     replacement.handle = socket;
-    replacement.watch = std::make_unique<ReadinessWatch>(
-        record.observer, socket, is_group_handle(socket));
+    // A group watch binds to the group's readiness source once the group
+    // record is known; only a group subscribed before its record exists
+    // stays a wildcard that any change refreshes.
+    replacement.watch =
+        std::make_unique<ReadinessWatch>(record.observer, socket,
+            is_group_handle(socket)
+                && GroupRegistry::instance().find(socket) == nullptr);
     auto [entry, inserted] = record.user_sockets.try_emplace(socket);
     (void)inserted;
     remove_ready(record, entry->second);

@@ -1155,7 +1155,8 @@ bool GroupRegistry::add_member(
     } catch (...) {
         return false;
     }
-    ReadinessSignal::notify();
+    // Membership is the group handle's own readiness input.
+    ReadinessSignal::notify(*record->readiness_source);
     return true;
 }
 
@@ -1236,7 +1237,7 @@ void GroupRegistry::update_member(
         }
     }
     if (changed) {
-        ReadinessSignal::notify();
+        ReadinessSignal::notify(*record->readiness_source);
     }
 }
 
@@ -1283,7 +1284,7 @@ void GroupRegistry::remove_member(
         }
     }
     if (changed) {
-        ReadinessSignal::notify();
+        ReadinessSignal::notify(*record->readiness_source);
     }
 }
 

@@ -3,6 +3,7 @@
 #include "compat/closed_handle_history.hpp"
 
 #include "compat/group_replay_buffer.hpp"
+#include "compat/readiness.hpp"
 #include "compat/statistics.hpp"
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
@@ -50,6 +51,10 @@ struct GroupStatistics {
 struct GroupRecord {
     mutable std::mutex mutex;
     GroupStatistics statistics;
+    // Bound by epoll watches on the group handle; members notify it with
+    // their own readiness, membership changes notify it from the registry.
+    std::shared_ptr<ReadinessSource> readiness_source =
+        std::make_shared<ReadinessSource>();
     // Protected by mutex during connection setup; the shared receive clock
     // serializes its own short timestamp/drift operations, never socket I/O.
     std::optional<std::chrono::steady_clock::time_point> timestamp_origin;

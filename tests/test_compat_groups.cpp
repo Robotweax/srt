@@ -2,6 +2,7 @@
 
 #include "compat/group_config.hpp"
 #include "compat/group_replay_buffer.hpp"
+#include "compat/epoll.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/transport_runtime.hpp"
@@ -1330,6 +1331,73 @@ TEST(compat_group_receive_withholds_a_message_beyond_the_logical_prefix)
             reinterpret_cast<const std::byte*>(received.data())));
         REQUIRE_EQ(srt_close(group), 0);
     }
+}
+
+TEST(compat_group_epoll_wakes_on_member_data_without_process_wide_rescans)
+{
+    const auto group = srt_create_group(SRT_GTYPE_BROADCAST);
+    const auto member = srt_create_socket();
+    REQUIRE(group != SRT_INVALID_SOCK);
+    REQUIRE(member != SRT_INVALID_SOCK);
+    const auto record = GroupRegistry::instance().find(group);
+    REQUIRE(record != nullptr);
+    const auto sequence = record->initial_sequence;
+    TestClock clock {.now_microseconds = 0,
+        .channel = std::make_shared<robotweax::srt::compat::DatagramChannel>()};
+    clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+    const auto runtime = attach_group_runtime(group, member, sequence, 1,
+        &clock, 0, true, 20, ConnectionRuntime::Clock::now(), record);
+
+    // One poller watches the group, another watches unrelated sockets only.
+    const int poll = srt_epoll_create();
+    const int other = srt_epoll_create();
+    REQUIRE(poll >= 0);
+    REQUIRE(other >= 0);
+    const int input = SRT_EPOLL_IN;
+    REQUIRE_EQ(srt_epoll_add_usock(poll, group, &input), 0);
+    std::vector<SRTSOCKET> unrelated;
+    for (unsigned index = 0; index < 16; ++index) {
+        const auto socket = srt_create_socket();
+        REQUIRE(socket != SRT_INVALID_SOCK);
+        unrelated.push_back(socket);
+        REQUIRE_EQ(srt_epoll_add_usock(other, socket, &input), 0);
+    }
+    SRT_EPOLL_EVENT event {};
+    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+    REQUIRE_EQ(srt_epoll_uwait(other, &event, 1, 0), 0);
+    const auto other_before =
+        robotweax::srt::compat::epoll_readiness_queries_for_testing(other);
+
+    const std::array<std::byte, 1> payload {std::byte {'g'}};
+    robotweax::srt::PacketView packet;
+    packet.kind = robotweax::srt::PacketKind::data;
+    packet.data.sequence = SequenceNumber {sequence};
+    packet.data.message_number = 1;
+    packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+    packet.data.in_order = true;
+    packet.data.timestamp = robotweax::srt::PacketTimestamp {0};
+    packet.payload = payload;
+    clock.now_microseconds = 10'000;
+    runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+    clock.now_microseconds = 40'000;
+    (void)runtime->poll();
+
+    // The group poller sees the member's data through the group source ...
+    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
+    REQUIRE_EQ(event.fd, group);
+    REQUIRE((event.events & SRT_EPOLL_IN) != 0);
+    // ... while the unrelated poller was not asked to re-query anything.
+    REQUIRE_EQ(srt_epoll_uwait(other, &event, 1, 0), 0);
+    REQUIRE_EQ(
+        robotweax::srt::compat::epoll_readiness_queries_for_testing(other),
+        other_before);
+
+    for (const auto socket : unrelated) {
+        REQUIRE_EQ(srt_close(socket), 0);
+    }
+    REQUIRE_EQ(srt_epoll_release(poll), 0);
+    REQUIRE_EQ(srt_epoll_release(other), 0);
+    REQUIRE_EQ(srt_close(group), 0);
 }
 
 TEST(compat_group_receive_skips_a_gap_every_member_has_dropped)
