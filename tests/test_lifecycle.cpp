@@ -104,6 +104,23 @@ struct EpollWaitResult {
     std::chrono::steady_clock::duration elapsed{};
 };
 
+struct ListenerCleanupReentry {
+    std::promise<void> entered;
+    std::shared_future<void> release;
+    std::promise<std::pair<SRTSOCKET, int>> finished;
+};
+
+int reenter_creation_from_listener(
+    void* opaque, SRTSOCKET, int, const sockaddr*, const char*)
+{
+    auto& probe = *static_cast<ListenerCleanupReentry*>(opaque);
+    probe.entered.set_value();
+    probe.release.wait();
+    const SRTSOCKET socket = srt_create_socket();
+    probe.finished.set_value({socket, srt_getlasterror(nullptr)});
+    return SRT_ERROR;
+}
+
 } // namespace
 
 TEST(closed_handle_history_answers_membership_across_eviction_and_rebuild)
@@ -901,6 +918,182 @@ TEST(lifecycle_new_generation_waits_for_the_final_cleanup)
     REQUIRE_EQ(srt_close(replacement), 0);
     REQUIRE_EQ(srt_cleanup(), 0);
     REQUIRE_EQ(srt_getsockstate(replacement), SRTS_NONEXIST);
+}
+
+TEST(lifecycle_final_cleanup_allows_awaited_callback_reentry)
+{
+    struct ReentryResults {
+        int startup = 0;
+        int startup_error = 0;
+        SRTSOCKET socket = SRT_INVALID_SOCK;
+        int socket_error = 0;
+        SRTSOCKET group = SRT_INVALID_SOCK;
+        int group_error = 0;
+        int poll = SRT_ERROR;
+        int poll_error = 0;
+        int cleanup = SRT_ERROR;
+    };
+
+    for (int generation = 0; generation < 3; ++generation) {
+        REQUIRE_EQ(srt_startup(), 0);
+        const SRTSOCKET inherited = srt_create_socket();
+        REQUIRE(inherited != SRT_INVALID_SOCK);
+        const auto record = SocketRegistry::instance().find(inherited);
+        REQUIRE(record != nullptr);
+
+        std::promise<void> callback_started;
+        auto started = callback_started.get_future();
+        std::promise<void> allow_reentry;
+        const auto released = allow_reentry.get_future().share();
+        std::promise<ReentryResults> callback_finished;
+        auto results = callback_finished.get_future();
+        {
+            std::lock_guard lock(record->mutex);
+            record->connect_worker = std::thread([&callback_started, released,
+                                                     &callback_finished] {
+                robotweax::srt::compat::mark_runtime_cleanup_worker_thread();
+                callback_started.set_value();
+                released.wait();
+                ReentryResults observed;
+                observed.startup = srt_startup();
+                observed.startup_error = srt_getlasterror(nullptr);
+                observed.socket = srt_create_socket();
+                observed.socket_error = srt_getlasterror(nullptr);
+                observed.group = srt_create_group(SRT_GTYPE_BROADCAST);
+                observed.group_error = srt_getlasterror(nullptr);
+                observed.poll = srt_epoll_create();
+                observed.poll_error = srt_getlasterror(nullptr);
+                observed.cleanup = srt_cleanup();
+                callback_finished.set_value(observed);
+            });
+        }
+        started.wait();
+        std::promise<void> cleanup_finished;
+        auto cleaned = cleanup_finished.get_future();
+        std::thread cleaner([&] {
+            (void)srt_cleanup();
+            cleanup_finished.set_value();
+        });
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        bool closing = false;
+        while (std::chrono::steady_clock::now() < deadline) {
+            {
+                std::lock_guard lock(record->mutex);
+                closing = record->state == SRTS_CLOSING;
+            }
+            if (closing) {
+                break;
+            }
+            std::this_thread::yield();
+        }
+        allow_reentry.set_value();
+        const bool callback_returned =
+            results.wait_for(2s) == std::future_status::ready;
+        const bool cleanup_returned =
+            cleaned.wait_for(2s) == std::future_status::ready;
+        cleaner.join();
+        REQUIRE(closing);
+        REQUIRE(callback_returned);
+        REQUIRE(cleanup_returned);
+        const auto observed = results.get();
+        REQUIRE_EQ(observed.startup, SRT_ERROR);
+        REQUIRE_EQ(observed.startup_error, SRT_EINVOP);
+        REQUIRE_EQ(observed.socket, SRT_INVALID_SOCK);
+        REQUIRE_EQ(observed.socket_error, SRT_EINVOP);
+        REQUIRE_EQ(observed.group, SRT_INVALID_SOCK);
+        REQUIRE_EQ(observed.group_error, SRT_EINVOP);
+        REQUIRE_EQ(observed.poll, SRT_ERROR);
+        REQUIRE_EQ(observed.poll_error, SRT_EINVOP);
+        REQUIRE_EQ(observed.cleanup, 0);
+
+        const SRTSOCKET replacement = srt_create_socket();
+        REQUIRE(replacement != SRT_INVALID_SOCK);
+        REQUIRE(replacement != inherited);
+        REQUIRE_EQ(srt_close(replacement), 0);
+        REQUIRE_EQ(srt_cleanup(), 0);
+    }
+}
+
+TEST(lifecycle_listener_callback_reentry_does_not_block_cleanup)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    const SRTSOCKET listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    ListenerCleanupReentry probe;
+    std::promise<void> release;
+    probe.release = release.get_future().share();
+    auto entered = probe.entered.get_future();
+    auto finished = probe.finished.get_future();
+    REQUIRE_EQ(
+        srt_listen_callback(listener, reenter_creation_from_listener, &probe),
+        0);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_port = 0;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (srt_bind(listener, reinterpret_cast<const sockaddr*>(&address),
+            static_cast<int>(sizeof(address)))
+        == SRT_ERROR) {
+        REQUIRE_EQ(srt_cleanup(), 0);
+        return;
+    }
+    REQUIRE_EQ(srt_listen(listener, 1), 0);
+    int address_size = static_cast<int>(sizeof(address));
+    REQUIRE_EQ(srt_getsockname(listener, reinterpret_cast<sockaddr*>(&address),
+                   &address_size),
+        0);
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    const bool asynchronous = false;
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_RCVSYN, &asynchronous,
+                   static_cast<int>(sizeof(asynchronous))),
+        0);
+    REQUIRE_EQ(srt_connect(caller, reinterpret_cast<const sockaddr*>(&address),
+                   address_size),
+        0);
+    const bool callback_entered =
+        entered.wait_for(5s) == std::future_status::ready;
+    if (!callback_entered) {
+        release.set_value();
+        REQUIRE_EQ(srt_cleanup(), 0);
+        REQUIRE(callback_entered);
+        return;
+    }
+
+    const auto listener_record = SocketRegistry::instance().find(listener);
+    REQUIRE(listener_record != nullptr);
+    std::promise<void> cleanup_finished;
+    auto cleaned = cleanup_finished.get_future();
+    std::thread cleaner([&] {
+        (void)srt_cleanup();
+        cleanup_finished.set_value();
+    });
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    bool closing = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        {
+            std::lock_guard lock(listener_record->mutex);
+            closing = listener_record->state == SRTS_CLOSING;
+        }
+        if (closing) {
+            break;
+        }
+        std::this_thread::yield();
+    }
+    release.set_value();
+    const bool callback_returned =
+        finished.wait_for(2s) == std::future_status::ready;
+    const bool cleanup_returned =
+        cleaned.wait_for(2s) == std::future_status::ready;
+    cleaner.join();
+    REQUIRE(closing);
+    REQUIRE(callback_returned);
+    REQUIRE(cleanup_returned);
+    const auto [created, error] = finished.get();
+    REQUIRE_EQ(created, SRT_INVALID_SOCK);
+    REQUIRE_EQ(error, SRT_EINVOP);
+    REQUIRE_EQ(srt_getsockstate(listener), SRTS_NONEXIST);
+    REQUIRE_EQ(srt_getsockstate(caller), SRTS_NONEXIST);
 }
 
 TEST(lifecycle_cleanup_releases_multiple_epoll_waiters)

@@ -27,8 +27,14 @@ constexpr auto deferred_close_poll_interval =
 
 struct RuntimeLifecycle {
     std::mutex mutex;
+    std::condition_variable changed;
     std::uint32_t startup_count = 0;
+    bool cleaning = false;
 };
+
+thread_local std::uint32_t callback_depth = 0;
+thread_local bool cleanup_worker_thread = false;
+thread_local bool creation_blocked_by_cleanup = false;
 
 [[nodiscard]] RuntimeLifecycle& runtime_lifecycle()
 {
@@ -536,7 +542,29 @@ std::size_t service_deferred_closes(
     return deferred_close_manager().service(now);
 }
 
-void runtime_start() noexcept
+RuntimeCallbackScope::RuntimeCallbackScope() noexcept
+{
+    ++callback_depth;
+}
+
+RuntimeCallbackScope::~RuntimeCallbackScope()
+{
+    --callback_depth;
+}
+
+void mark_runtime_cleanup_worker_thread() noexcept
+{
+    cleanup_worker_thread = true;
+}
+
+bool runtime_creation_blocked_by_cleanup() noexcept
+{
+    const bool blocked = creation_blocked_by_cleanup;
+    creation_blocked_by_cleanup = false;
+    return blocked;
+}
+
+bool runtime_start() noexcept
 {
     auto& lifecycle = runtime_lifecycle();
     // Finish constructing cleanup dependencies before an application RAII
@@ -544,17 +572,32 @@ void runtime_start() noexcept
     // not register those destructors after the owner's cleanup destructor.
     // These owners are dormant: no socket or worker is started here.
     (void)SocketRegistry::instance();
-    std::lock_guard lifecycle_lock(lifecycle.mutex);
+    std::unique_lock lifecycle_lock(lifecycle.mutex);
+    if (lifecycle.cleaning && (callback_depth != 0U || cleanup_worker_thread)) {
+        return false;
+    }
+    lifecycle.changed.wait(lifecycle_lock, [&] {
+        return !lifecycle.cleaning;
+    });
     if (lifecycle.startup_count
         != std::numeric_limits<std::uint32_t>::max()) {
         ++lifecycle.startup_count;
     }
+    return true;
 }
 
 SRTSOCKET runtime_create_socket() noexcept
 {
+    creation_blocked_by_cleanup = false;
     auto& lifecycle = runtime_lifecycle();
-    std::lock_guard lifecycle_lock(lifecycle.mutex);
+    std::unique_lock lifecycle_lock(lifecycle.mutex);
+    if (lifecycle.cleaning && (callback_depth != 0U || cleanup_worker_thread)) {
+        creation_blocked_by_cleanup = true;
+        return SRT_INVALID_SOCK;
+    }
+    lifecycle.changed.wait(lifecycle_lock, [&] {
+        return !lifecycle.cleaning;
+    });
     if (lifecycle.startup_count == 0U) {
         lifecycle.startup_count = 1U;
     }
@@ -563,9 +606,17 @@ SRTSOCKET runtime_create_socket() noexcept
 
 SRTSOCKET runtime_create_group(SRT_GROUP_TYPE type) noexcept
 {
+    creation_blocked_by_cleanup = false;
     auto& lifecycle = runtime_lifecycle();
     (void)SocketRegistry::instance();
-    std::lock_guard lifecycle_lock(lifecycle.mutex);
+    std::unique_lock lifecycle_lock(lifecycle.mutex);
+    if (lifecycle.cleaning && (callback_depth != 0U || cleanup_worker_thread)) {
+        creation_blocked_by_cleanup = true;
+        return SRT_INVALID_SOCK;
+    }
+    lifecycle.changed.wait(lifecycle_lock, [&] {
+        return !lifecycle.cleaning;
+    });
     if (lifecycle.startup_count == 0U) {
         lifecycle.startup_count = 1U;
     }
@@ -574,9 +625,17 @@ SRTSOCKET runtime_create_group(SRT_GROUP_TYPE type) noexcept
 
 int runtime_create_epoll() noexcept
 {
+    creation_blocked_by_cleanup = false;
     auto& lifecycle = runtime_lifecycle();
     (void)SocketRegistry::instance();
-    std::lock_guard lifecycle_lock(lifecycle.mutex);
+    std::unique_lock lifecycle_lock(lifecycle.mutex);
+    if (lifecycle.cleaning && (callback_depth != 0U || cleanup_worker_thread)) {
+        creation_blocked_by_cleanup = true;
+        return SRT_ERROR;
+    }
+    lifecycle.changed.wait(lifecycle_lock, [&] {
+        return !lifecycle.cleaning;
+    });
     if (lifecycle.startup_count == 0U) {
         lifecycle.startup_count = 1U;
     }
@@ -588,23 +647,34 @@ void runtime_cleanup() noexcept
     auto& lifecycle = runtime_lifecycle();
     std::shared_ptr<ConnectCallbackExecutor> retired_callbacks;
     std::unique_lock lifecycle_lock(lifecycle.mutex);
+    if (lifecycle.cleaning) {
+        // A callback or worker retiring under final cleanup may call cleanup
+        // again. There is no generation reference left for it to release.
+        return;
+    }
     if (lifecycle.startup_count == 0U) {
         return;
     }
     --lifecycle.startup_count;
     if (lifecycle.startup_count == 0U) {
+        lifecycle.cleaning = true;
+        lifecycle_lock.unlock();
         GroupRegistry::instance().clear();
         SocketRegistry::instance().clear();
         stop_runtime_work_executor();
         retired_callbacks = retire_connect_callback_executor();
         stop_runtime_scheduler();
+        // The callback executor has been detached from the service. Its
+        // workers may run application TLS destructors that start a new
+        // generation, so finish their joins after reopening admission.
+        lifecycle_lock.lock();
+        lifecycle.cleaning = false;
+        lifecycle_lock.unlock();
+        lifecycle.changed.notify_all();
+        if (retired_callbacks) {
+            retired_callbacks->stop();
+        }
     }
-    // The old runtime generation is fully retired before another may start.
-    // Joining cached workers can execute application TLS destructors that
-    // call startup/cleanup, so it must not hold the generation mutex.
-    lifecycle_lock.unlock();
-    if (retired_callbacks)
-        retired_callbacks->stop();
 }
 
 } // namespace robotweax::srt::compat

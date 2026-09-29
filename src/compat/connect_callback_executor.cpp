@@ -1,6 +1,7 @@
 #include "compat/connect_callback_executor.hpp"
 
 #include "compat/error_state.hpp"
+#include "compat/socket_registry.hpp"
 
 #include <condition_variable>
 #include <list>
@@ -83,6 +84,7 @@ bool ConnectCallbackExecutor::submit(Task task) noexcept
 void ConnectCallbackExecutor::run(
     std::shared_ptr<State> state, std::shared_ptr<Worker> worker) noexcept
 {
+    mark_runtime_cleanup_worker_thread();
     std::unique_lock lock(state->mutex);
     for (;;) {
         Task task = std::move(worker->task);

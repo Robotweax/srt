@@ -85,7 +85,10 @@ struct UdpBufferLogScope {
     }
     const SRTSOCKET socket = robotweax::srt::compat::runtime_create_socket();
     if (socket == SRT_INVALID_SOCK) {
-        robotweax::srt::compat::set_last_error(SRT_ENOBUF);
+        robotweax::srt::compat::set_last_error(
+            robotweax::srt::compat::runtime_creation_blocked_by_cleanup()
+                ? SRT_EINVOP
+                : SRT_ENOBUF);
     }
     return socket;
 }
@@ -140,7 +143,10 @@ int srt_startup(void)
         robotweax::srt::compat::set_last_error(SRT_ECONNSETUP, system_error);
         return SRT_ERROR;
     }
-    robotweax::srt::compat::runtime_start();
+    if (!robotweax::srt::compat::runtime_start()) {
+        robotweax::srt::compat::set_last_error(SRT_EINVOP);
+        return SRT_ERROR;
+    }
     ROBOTWEAX_SRT_COMPAT_LOG(LOG_NOTICE, SRT_LOGFA_API_CTRL,
         ".N", "SRT.ac", "startup completed");
     return 0;
@@ -427,7 +433,12 @@ int srt_epoll_create(void)
     if (!stateful_api_available()) {
         return SRT_ERROR;
     }
-    return robotweax::srt::compat::runtime_create_epoll();
+    const int poll = robotweax::srt::compat::runtime_create_epoll();
+    if (poll == SRT_ERROR
+        && robotweax::srt::compat::runtime_creation_blocked_by_cleanup()) {
+        robotweax::srt::compat::set_last_error(SRT_EINVOP);
+    }
+    return poll;
 }
 
 int srt_epoll_clear_usocks(int eid)

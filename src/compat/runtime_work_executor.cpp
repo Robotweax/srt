@@ -1,4 +1,5 @@
 #include "compat/runtime_work_executor.hpp"
+#include "compat/socket_registry.hpp"
 
 #include <condition_variable>
 #include <mutex>
@@ -67,6 +68,7 @@ bool RuntimeWorkExecutor::start() noexcept
         for (std::size_t index = 0; index < state->configuration.worker_count;
             ++index) {
             state->workers.emplace_back([state] {
+                mark_runtime_cleanup_worker_thread();
                 run(state);
             });
         }

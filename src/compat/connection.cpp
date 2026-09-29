@@ -807,6 +807,7 @@ void invoke_connect_callback(
     }
 
     try {
+        RuntimeCallbackScope callback_scope;
         callback(opaque, handle, error_code, callback_peer, token);
     } catch (...) {
         // A user callback must never terminate the connection worker or
@@ -2017,6 +2018,7 @@ private:
             std::lock_guard lock(socket_->mutex);
             try {
                 worker = std::thread([owner = shared_from_this(), error_code] {
+                    mark_runtime_cleanup_worker_thread();
                     owner->run_callback(error_code);
                 });
             } catch (...) {
@@ -3042,6 +3044,7 @@ private:
             std::lock_guard lock(socket_->mutex);
             try {
                 worker = std::thread([owner = shared_from_this(), error_code] {
+                    mark_runtime_cleanup_worker_thread();
                     owner->run_callback(error_code);
                 });
             } catch (...) {
@@ -3647,6 +3650,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         }
         int callback_result = SRT_ERROR;
         try {
+            RuntimeCallbackScope callback_scope;
             callback_result = listen_callback(listen_callback_opaque,
                 accepted_handle, static_cast<int>(conclusion.packet.version),
                 reinterpret_cast<const sockaddr*>(&peer_address),
