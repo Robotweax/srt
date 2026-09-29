@@ -27,6 +27,65 @@ class FileInteropTests(unittest.TestCase):
             shutdown_grace_milliseconds=250,
         )
 
+    def test_file_wire_requires_capability_and_retransmission_flag(
+        self,
+    ) -> None:
+        class Relay:
+            entries = [
+                {
+                    "direction": direction,
+                    "request": -1,
+                    "extensions": [
+                        {
+                            "type": extension_type,
+                            "handshake": {"flags": "0x00000020"},
+                        }
+                    ],
+                }
+                for direction, extension_type in (
+                    ("sender_to_receiver", 1),
+                    ("receiver_to_sender", 2),
+                )
+            ]
+
+            def handshake_observations(self) -> list[dict[str, object]]:
+                return self.entries
+
+        relay = Relay()
+        observations = [
+            {
+                "action": "drop",
+                "packet_kind": "data",
+                "message_number": 42,
+                "retransmission_flag": True,
+                "retransmission_message_number": 42,
+            }
+        ]
+        run_file_interop.validate_file_retransmit_wire(
+            "file-wire", relay, observations
+        )
+        relay.entries[1]["extensions"][0]["handshake"]["flags"] = (
+            "0x00000000"
+        )
+        with self.assertRaisesRegex(RuntimeError, "does not advertise"):
+            run_file_interop.validate_file_retransmit_wire(
+                "file-wire", relay, observations
+            )
+        relay.entries[1]["extensions"][0]["handshake"]["flags"] = (
+            "0x00000020"
+        )
+        observations[0]["retransmission_flag"] = False
+        with self.assertRaisesRegex(RuntimeError, "lacks its wire flag"):
+            run_file_interop.validate_file_retransmit_wire(
+                "file-wire", relay, observations
+            )
+        observations[0]["retransmission_flag"] = True
+        observations[0]["retransmission_message_number"] = 43
+        with self.assertRaisesRegex(RuntimeError, "message-number identity"):
+            run_file_interop.validate_file_retransmit_wire(
+                "file-wire", relay, observations
+            )
+
     def test_matrix_covers_both_implementation_directions(self) -> None:
         scenarios = run_file_interop.scenario_matrix(
             self.robotweax, self.reference

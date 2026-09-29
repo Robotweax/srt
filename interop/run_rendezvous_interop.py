@@ -330,6 +330,8 @@ def ipv6_scenario_matrix(
             key_length=32,
             seed=35_005,
             trace_roles=True,
+            # Keep incidental loopback loss from masking the injected drop.
+            source_pacing=True,
             robotweax_peer=robotweax,
             faults=(
                 RendezvousFault(

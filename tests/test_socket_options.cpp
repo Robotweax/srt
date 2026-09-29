@@ -326,7 +326,11 @@ TEST(file_transmission_type_applies_stream_and_filecc_defaults)
             SocketOption::too_late_packet_drop).value,
         0);
     REQUIRE_EQ(options.get(SocketOption::periodic_nak).value, 0);
-    REQUIRE_EQ(options.get(SocketOption::retransmit_flag).value, 0);
+    REQUIRE_EQ(options.get(SocketOption::retransmit_flag).value, 1);
+    REQUIRE((options.handshake_parameters().flags
+                & static_cast<std::uint32_t>(
+                    HandshakeExtensionFlag::retransmit_flag))
+        != 0U);
     REQUIRE_EQ(options.maximum_payload_size(),
         maximum_data_payload_size);
     REQUIRE((options.handshake_parameters().flags

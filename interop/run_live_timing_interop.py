@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 from interop_common import (
-    free_udp_port,
     nonnegative_statistic,
     parse_complete,
     reserved_udp_ports,
@@ -3400,40 +3399,41 @@ def run_measurement(
                 faults,
                 host=host,
             )
-    else:
-        srt_port = free_udp_port(host)
-    if connection_mode == "rendezvous":
         relay_context = closing(rendezvous_relay)
-    elif connection_mode == "backup-group" and group_path_outage:
-        relay_context = closing(
-            GroupPathOutageTraceProxy(
-                srt_port,
-                group_failover_after,
-                host=host,
-            )
-        )
-    elif connection_mode == "backup-group" and security.encrypted:
-        relay_context = closing(
-            GroupTimingTraceProxy(
-                srt_port,
-                host=host,
-                suppress_primary_acknowledgements=(
-                    group_unacknowledged_replay
-                ),
-            )
-        )
-    elif security.encrypted:
-        relay_context = closing(
-            TimingFaultTraceProxy(srt_port, faults, host=host)
-            if faults
-            else TimingTraceProxy(srt_port, host=host)
-        )
-    elif faults:
-        relay_context = closing(
-            CallerListenerFaultProxy(srt_port, faults, host=host)
-        )
     else:
-        relay_context = nullcontext(None)
+        # Keep the listener port occupied while constructing a relay so the
+        # relay's ephemeral bind cannot claim its own forwarding target.
+        with reserved_udp_ports(1, host) as (srt_port,):
+            if connection_mode == "backup-group" and group_path_outage:
+                relay_context = closing(
+                    GroupPathOutageTraceProxy(
+                        srt_port,
+                        group_failover_after,
+                        host=host,
+                    )
+                )
+            elif connection_mode == "backup-group" and security.encrypted:
+                relay_context = closing(
+                    GroupTimingTraceProxy(
+                        srt_port,
+                        host=host,
+                        suppress_primary_acknowledgements=(
+                            group_unacknowledged_replay
+                        ),
+                    )
+                )
+            elif security.encrypted:
+                relay_context = closing(
+                    TimingFaultTraceProxy(srt_port, faults, host=host)
+                    if faults
+                    else TimingTraceProxy(srt_port, host=host)
+                )
+            elif faults:
+                relay_context = closing(
+                    CallerListenerFaultProxy(srt_port, faults, host=host)
+                )
+            else:
+                relay_context = nullcontext(None)
     environment = os.environ.copy()
     if security.encrypted:
         environment[PASSPHRASE_ENVIRONMENT] = secrets.token_hex(24)

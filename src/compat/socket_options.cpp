@@ -1054,11 +1054,8 @@ int set_socket_option(
             || (parsed != 0 && parsed != 1)) {
             return invalid_parameter();
         }
-        if (set_native(socket.native_options,
-                SocketOption::retransmit_flag, parsed)
-            == SRT_ERROR) {
-            return SRT_ERROR;
-        }
+        // Keep the local algorithm setting independent of the negotiated
+        // DATA-header retransmission-bit capability.
         options.retransmission_algorithm = parsed;
         return 0;
     }

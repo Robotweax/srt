@@ -3317,6 +3317,31 @@ TEST(srt_compat_file_type_exposes_the_implemented_reference_option_bundle)
                    &value, &size),
         0);
     REQUIRE_EQ(value, 0);
+    const auto record =
+        robotweax::srt::compat::SocketRegistry::instance().find(socket);
+    REQUIRE(record != nullptr);
+    const auto advertises_retransmit = [&] {
+        std::lock_guard lock(record->mutex);
+        return (record->native_options.handshake_parameters().flags
+                   & static_cast<std::uint32_t>(
+                       robotweax::srt::HandshakeExtensionFlag::retransmit_flag))
+            != 0U;
+    };
+    REQUIRE(advertises_retransmit());
+    value = 1;
+    REQUIRE_EQ(
+        srt_setsockflag(socket, SRTO_RETRANSMITALGO, &value, sizeof(value)), 0);
+    REQUIRE(advertises_retransmit());
+    size = sizeof(value);
+    REQUIRE_EQ(srt_getsockflag(socket, SRTO_RETRANSMITALGO, &value, &size), 0);
+    REQUIRE_EQ(value, 1);
+    value = 0;
+    REQUIRE_EQ(
+        srt_setsockflag(socket, SRTO_RETRANSMITALGO, &value, sizeof(value)), 0);
+    REQUIRE(advertises_retransmit());
+    size = sizeof(value);
+    REQUIRE_EQ(srt_getsockflag(socket, SRTO_RETRANSMITALGO, &value, &size), 0);
+    REQUIRE_EQ(value, 0);
     size = static_cast<int>(sizeof(value));
     REQUIRE_EQ(srt_getsockflag(socket, SRTO_SNDDROPDELAY,
                    &value, &size),

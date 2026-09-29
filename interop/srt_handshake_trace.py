@@ -658,6 +658,10 @@ class _HandshakeTraceRecorder:
         with self._lock:
             return self._error
 
+    def handshake_observations(self) -> list[dict[str, object]]:
+        with self._lock:
+            return [dict(entry) for entry in self._entries.values()]
+
     def conclusion_socket_id(self, direction: str) -> int | None:
         """Return the single positive socket ID in an endpoint's conclusion."""
         if direction not in TRACE_ENDPOINT_DIRECTIONS:
@@ -1848,6 +1852,9 @@ class RendezvousTraceProxy(_HandshakeTraceRecorder):
                         "retransmission_flag": metadata.get(
                             "retransmitted"
                         ),
+                        "retransmission_message_number": metadata.get(
+                            "message_number"
+                        ),
                         "retransmission_relay_ordinal": metadata.get(
                             "relay_ordinal"
                         ),
@@ -2827,17 +2834,16 @@ class CallerListenerPeerErrorProxy(CallerListenerFaultProxy):
 
 
 class FileRendezvousTraceProxy(RendezvousTraceProxy):
-    """Observe FileCC retransmissions whose wire retransmit flag stays clear."""
+    """Observe FileCC retransmissions, including legacy clear-flag retries."""
 
     def _record_retransmission(
         self,
         direction: str,
         metadata: dict[str, object],
     ) -> None:
-        # SRTT_FILE deliberately clears the wire retransmission flag. Infer a
-        # retry only from an already-observed (direction, sequence, message)
-        # identity, then let the common recorder compare its immutable wire
-        # bytes and key selector with the original DATA datagram.
+        # Older FileCC peers can retry with the wire flag clear. Infer those
+        # retries from an already-observed (direction, sequence, message)
+        # identity; retain an explicit wire flag when the peer sets it.
         identity = (
             direction,
             metadata.get("sequence"),
@@ -2849,7 +2855,9 @@ class FileRendezvousTraceProxy(RendezvousTraceProxy):
             direction,
             {
                 **metadata,
-                "retransmitted": repeated,
+                "retransmitted": (
+                    metadata.get("retransmitted") is True or repeated
+                ),
             },
         )
         # Fault matching also supports legacy/clear FileCC probes whose

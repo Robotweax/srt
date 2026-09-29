@@ -248,7 +248,9 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
             sender_drop_delay_milliseconds_ = -1;
             message_api_ = false;
             periodic_nak_ = false;
-            retransmit_flag_ = false;
+            // FileCC selects the classic retransmission algorithm, but it
+            // still advertises the DATA-header retransmission-bit capability.
+            retransmit_flag_ = true;
             requested_maximum_payload_size_ =
                 maximum_data_payload_size;
             maximum_payload_size_ = std::min(
