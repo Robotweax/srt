@@ -751,6 +751,15 @@ if(ROBOTWEAX_SRT_BUILD_BENCHMARKS)
     target_compile_features(robotweax_srt_scalability_peer
         PRIVATE cxx_std_17)
 
+    add_executable(robotweax_srt_timer_wake_probe
+        benchmarks/timer_wake_probe.cpp)
+    target_link_libraries(robotweax_srt_timer_wake_probe
+        PRIVATE RobotweaxSRT::srt)
+    target_compile_features(robotweax_srt_timer_wake_probe
+        PRIVATE cxx_std_20)
+    target_include_directories(robotweax_srt_timer_wake_probe
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
     if(ROBOTWEAX_SRT_BUILD_TESTS AND Python3_Interpreter_FOUND)
         add_test(
             NAME robotweax_srt_many_socket_scalability_smoke

@@ -66,8 +66,27 @@ idle wait rather than continuously scheduling full sweeps.
 
 Pacing, UDP-retry and idle waits are accumulated as absolute scheduler-clock
 deadlines across slices. Completion subtracts the time already spent, so a later
-slice does not restart an earlier wait. Existing sub-millisecond cooperative
-pacing and protocol timer rules remain in effect. The fairness change adds no
+slice does not restart an earlier wait. On Linux and macOS, every future
+deadline, including a sub-millisecond pacing slot, is a scheduler timer wait;
+only a deadline that has already passed resumes the channel at once. On those
+platforms the pacer keeps a bounded schedule credit (1 ms): a send that is late
+by at most the credit, for example
+after a late timer wake-up, keeps the ideal schedule and may catch up the
+missed slots back to back, so timer latency does not lower the configured
+rate. After a longer pause the schedule restarts at the send time, and the
+first packet of a connection starts a fresh schedule, so a pause is not
+followed by a burst. If a host's timer wake-ups repeatedly arrive later than
+the credit, the channel falls back to resubmitting sub-millisecond deadlines.
+While that fallback is active, it permits one real sub-millisecond timer wait
+about every 100 ms. These probes measure current wake-up accuracy even if the
+sender remains continuously busy; 16 punctual wakes return the channel to
+normal timer waits. An active probe is preserved across new send notifications.
+Each probe can delay one pacing continuation on a coarse host; the pacer catches
+up within its 1 ms credit and restarts its schedule after a longer delay.
+Windows and other platforms retain immediate continuations for deadlines under
+1 ms and start the next pacing interval at the actual send time. Protocol timer
+rules are unchanged. The
+fairness change adds no
 worker thread, wire format, public C-ABI field, negotiated feature or buffer
 setting. The subsequent [idle-readiness optimization](idle-readiness.md) adds one
 shared readiness watcher and lets eligible quiet channels wait for events.

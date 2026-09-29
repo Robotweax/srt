@@ -130,8 +130,18 @@ struct PaceDecision {
     std::uint64_t next_ready_microseconds = 0;
 };
 
+// On Linux and macOS, rate pacer with a bounded schedule credit. The next
+// send slot advances along the ideal schedule when a send is no later than
+// the credit after its slot. A late timer wake can then send missed packets
+// back to back without lowering the average rate.
+// A send later than the credit (an idle source, a closed flow window) starts
+// a fresh schedule at the send time, so a pause is never followed by a burst
+// larger than the credit's worth of packets. Windows and other platforms
+// retain the previous schedule based on the actual send time.
 class PacketPacer {
 public:
+    static constexpr std::uint64_t default_schedule_credit_microseconds = 1'000;
+
     PacketPacer(std::uint64_t bytes_per_second,
         std::size_t flow_window_packets) noexcept;
 
@@ -141,11 +151,44 @@ public:
         std::uint64_t now_microseconds) noexcept;
     void set_rate(std::uint64_t bytes_per_second) noexcept;
     void set_flow_window(std::size_t packets) noexcept;
+    void set_schedule_credit(std::uint64_t microseconds) noexcept;
+    [[nodiscard]] std::uint64_t schedule_credit_microseconds() const noexcept
+    {
+        return schedule_credit_microseconds_;
+    }
 
 private:
     std::uint64_t bytes_per_second_ = 1;
     std::size_t flow_window_packets_ = 1;
     std::uint64_t next_send_microseconds_ = 0;
+    std::uint64_t schedule_credit_microseconds_ =
+        default_schedule_credit_microseconds;
+    bool has_schedule_ = false;
+};
+
+// Watches how late timer-driven wake-ups arrive. When wake-ups are
+// repeatedly later than a pacer can absorb (coarse OS timers), it reports
+// that sub-millisecond deadlines should be served by resubmitting instead
+// of by a timer, and it returns to timer waits once wake-ups are punctual
+// again.
+class TimerWakeMonitor {
+public:
+    static constexpr std::uint64_t late_threshold_microseconds = 1'000;
+    static constexpr std::uint64_t punctual_threshold_microseconds = 250;
+    static constexpr unsigned late_streak_to_enter = 3;
+    static constexpr unsigned punctual_streak_to_leave = 16;
+
+    // Records one timer wake-up that arrived `lateness` after its deadline.
+    void observe(std::uint64_t lateness_microseconds) noexcept;
+    [[nodiscard]] bool coarse() const noexcept
+    {
+        return coarse_;
+    }
+
+private:
+    unsigned late_streak_ = 0;
+    unsigned punctual_streak_ = 0;
+    bool coarse_ = false;
 };
 
 class TsbpdClock {

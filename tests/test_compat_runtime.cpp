@@ -5,10 +5,12 @@
 #include "robotweax/srt/control.hpp"
 #include "compat/readiness.hpp"
 #include "compat/transport_runtime.hpp"
+#include "compat/submillisecond_pacing_platform.hpp"
 #include "srt/srt.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cerrno>
 #include <condition_variable>
@@ -7191,9 +7193,183 @@ TEST(compat_channel_fairness_preserves_deadlines_across_continuations)
     // Only the last idle connection remains. The earlier 1 ms retry deadline
     // must not restart when this continuation runs half a millisecond later.
     fixture.now = 1'500;
-    REQUIRE(fixture.poll(std::chrono::microseconds {500}).immediate_work);
+    const auto continued = fixture.poll(std::chrono::microseconds {500});
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
+    REQUIRE(!continued.immediate_work);
+    REQUIRE(continued.next_work_delay.has_value());
+    REQUIRE(*continued.next_work_delay > std::chrono::microseconds {0});
+    REQUIRE(*continued.next_work_delay <= std::chrono::microseconds {500});
+#else
+    REQUIRE(continued.immediate_work);
+    REQUIRE(!continued.next_work_delay.has_value());
+#endif
     REQUIRE_EQ(fixture.attempted_ids.size(), 1U);
     REQUIRE(!fixture.runtimes.front()->broken());
+
+    // Repeated late timer wakes enable coarse mode. Linux and macOS use it
+    // for fallback; Windows continues to resubmit short deadlines regardless.
+    for (unsigned late = 0; late < TimerWakeMonitor::late_streak_to_enter;
+        ++late) {
+        fixture.channel->observe_timer_wake_for_testing(2'500);
+    }
+    REQUIRE(fixture.channel->coarse_timer_mode_for_testing());
+    fixture.now = 1'600;
+    REQUIRE(fixture.poll(std::chrono::microseconds {600}).immediate_work);
+    for (unsigned punctual = 0;
+        punctual < TimerWakeMonitor::punctual_streak_to_leave; ++punctual) {
+        fixture.channel->observe_timer_wake_for_testing(50);
+    }
+    REQUIRE(!fixture.channel->coarse_timer_mode_for_testing());
+    fixture.now = 1'700;
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
+    REQUIRE(!fixture.poll(std::chrono::microseconds {700}).immediate_work);
+#else
+    REQUIRE(fixture.poll(std::chrono::microseconds {700}).immediate_work);
+#endif
+}
+
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
+TEST(compat_channel_coarse_timer_probes_under_sustained_paced_send)
+{
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {1, 8, 8});
+    REQUIRE(scheduler->start());
+    auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+    channel->set_idle_wait_for_testing(std::chrono::milliseconds {2});
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_payload_size, 16), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::send_buffer_packets, 4'096), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_bandwidth_bytes_per_second, 64'000),
+        Error::none);
+    constexpr std::uint32_t id = 0x3601U;
+    auto runtime =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
+            .channel = channel,
+            .peer = {.address = {192, 0, 2, 97}, .port = 15'097},
+            .peer_socket_id = id,
+            .initial_sequence = SequenceNumber {900},
+            .flow_window_packets = 4'096,
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+        });
+    REQUIRE(channel->register_connection(id, runtime));
+    const std::array<std::byte, 16> payload {};
+    for (int index = 0; index < 4'096; ++index) {
+        REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+    }
+    for (unsigned late = 0; late < TimerWakeMonitor::late_streak_to_enter;
+        ++late) {
+        channel->observe_timer_wake_for_testing(2'500);
+    }
+    REQUIRE(channel->coarse_timer_mode_for_testing());
+    REQUIRE(channel->start(scheduler, 0));
+    std::atomic<bool> notify_more {true};
+    std::thread notifier([&] {
+        while (notify_more.load(std::memory_order_relaxed)) {
+            channel->notify_send_work();
+            std::this_thread::sleep_for(std::chrono::microseconds {50});
+        }
+    });
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {3};
+    while (channel->coarse_timer_probe_wakes_for_testing()
+            < TimerWakeMonitor::punctual_streak_to_leave
+        && channel->coarse_timer_mode_for_testing()
+        && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+    const auto probes = channel->coarse_timer_probe_wakes_for_testing();
+    const bool recovered = !channel->coarse_timer_mode_for_testing();
+    const bool healthy = !runtime->broken();
+    notify_more.store(false, std::memory_order_relaxed);
+    notifier.join();
+    channel->unregister_connection(id);
+    runtime.reset();
+    channel.reset();
+    scheduler->stop();
+    // Precise hosts leave coarse mode after punctual probes. A genuinely
+    // coarse host must keep sampling instead of getting stuck indefinitely.
+    REQUIRE(probes >= TimerWakeMonitor::punctual_streak_to_leave || recovered);
+    REQUIRE(healthy);
+}
+#endif
+
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
+TEST(compat_channel_waits_for_sub_millisecond_pacing_slots_with_a_timer)
+#else
+TEST(compat_channel_resubmits_sub_millisecond_pacing_slots)
+#endif
+{
+    // A paced backlog has a next slot under a millisecond away. Linux and
+    // macOS wait for a timer; Windows and other platforms resubmit at once.
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    std::uint64_t now = 1'000;
+    FairnessClock clock {.now = &now};
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_payload_size, 16), Error::none);
+    // 32-byte datagrams at 64 kB/s: one slot every 500 us.
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_bandwidth_bytes_per_second, 64'000),
+        Error::none);
+    constexpr std::uint32_t id = 0x3600U;
+    auto runtime =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
+            .channel = channel,
+            .peer = {.address = {192, 0, 2, 96}, .port = 15'096},
+            .peer_socket_id = id,
+            .initial_sequence = SequenceNumber {800},
+            .flow_window_packets = 128,
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+            .now_function = fairness_now,
+            .now_context = &clock,
+        });
+    REQUIRE(channel->register_connection(id, runtime));
+    const std::array<std::byte, 16> payload {};
+    for (int index = 0; index < 4; ++index) {
+        REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+    }
+    const auto first = channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    // The first packet starts the schedule.
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
+    REQUIRE(!first.immediate_work);
+    REQUIRE(first.next_work_delay.has_value());
+    REQUIRE(*first.next_work_delay > std::chrono::microseconds {0});
+    REQUIRE(*first.next_work_delay <= std::chrono::microseconds {500});
+#else
+    REQUIRE(first.immediate_work);
+    REQUIRE(!first.next_work_delay.has_value());
+#endif
+
+    // Poll 300 us after the missed slot. Linux/macOS retain the ideal pacer
+    // schedule; Windows and other platforms resume immediately as before.
+    now = 1'000 + 500 + 300;
+    const auto late = channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {}
+        + std::chrono::microseconds {800});
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
+    REQUIRE(!late.immediate_work);
+    REQUIRE(late.next_work_delay.has_value());
+    REQUIRE_EQ(*late.next_work_delay, std::chrono::microseconds {200});
+#else
+    REQUIRE(late.immediate_work);
+    REQUIRE(!late.next_work_delay.has_value());
+#endif
+    channel->unregister_connection(id);
 }
 
 TEST(compat_channel_fairness_survives_cursor_erasure_rehash_and_empty_restart)

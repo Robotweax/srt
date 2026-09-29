@@ -1,6 +1,7 @@
 #include "test.hpp"
 
 #include "robotweax/srt/timing.hpp"
+#include "compat/submillisecond_pacing_platform.hpp"
 
 using namespace robotweax::srt;
 
@@ -106,6 +107,103 @@ TEST(packet_pacer_enforces_rate_and_flow_window)
     REQUIRE(!pacer.query(99'999, 1).ready);
     REQUIRE(pacer.query(100'000, 1).ready);
     REQUIRE(!pacer.query(100'000, 4).ready);
+}
+
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
+TEST(packet_pacer_credit_keeps_the_average_rate_across_late_wake_ups)
+{
+    // 200 bytes at 2 MB/s: one slot every 100 us. Every send is 70 us late
+    // (a late timer wake-up). The ideal schedule is kept, so the slots stay
+    // 100 us apart and the tenth packet is still due at 1,000 us.
+    PacketPacer pacer {2'000'000, 64};
+    pacer.on_packet_sent(200, 0);
+    std::uint64_t slot = 100;
+    for (int index = 0; index < 10; ++index) {
+        REQUIRE(!pacer.query(slot - 1, 0).ready);
+        const auto decision = pacer.query(slot + 70, 0);
+        REQUIRE(decision.ready);
+        REQUIRE_EQ(decision.next_ready_microseconds, slot);
+        pacer.on_packet_sent(200, slot + 70);
+        slot += 100;
+    }
+    REQUIRE_EQ(pacer.query(slot, 0).next_ready_microseconds, slot);
+}
+
+TEST(packet_pacer_catch_up_is_bounded_by_the_credit_and_restarts_after_a_pause)
+{
+    PacketPacer pacer {2'000'000, 64};
+    pacer.set_schedule_credit(300);
+    // The first send starts the schedule at the send time: no burst from a
+    // schedule that begins at protocol time zero.
+    pacer.on_packet_sent(200, 5'000);
+    REQUIRE(!pacer.query(5'099, 0).ready);
+    REQUIRE(pacer.query(5'100, 0).ready);
+
+    // Late by exactly the credit: the missed slots may be caught up back to
+    // back, but no more than the credit's worth (three 100 us slots plus the
+    // one that is due).
+    const std::uint64_t late = 5'100 + 300;
+    std::size_t sent = 0;
+    while (pacer.query(late, 0).ready && sent < 10U) {
+        pacer.on_packet_sent(200, late);
+        ++sent;
+    }
+    REQUIRE_EQ(sent, 4U);
+    REQUIRE_EQ(pacer.query(late, 0).next_ready_microseconds, 5'500U);
+
+    // Later than the credit: a fresh schedule starts at the send time, so
+    // the pause is not followed by a burst.
+    const std::uint64_t resumed = 5'500 + 301;
+    pacer.on_packet_sent(200, resumed);
+    REQUIRE(!pacer.query(resumed + 99, 0).ready);
+    REQUIRE(pacer.query(resumed + 100, 0).ready);
+    REQUIRE_EQ(pacer.schedule_credit_microseconds(), 300U);
+}
+
+#else
+TEST(packet_pacer_preserves_previous_schedule_on_windows_and_other_platforms)
+{
+    PacketPacer pacer {2'000'000, 64};
+    pacer.set_schedule_credit(300);
+    pacer.on_packet_sent(200, 5'000);
+    REQUIRE_EQ(pacer.query(5'100, 0).next_ready_microseconds, 5'100U);
+
+    // Even with credit configured, a late send starts the next slot at its
+    // actual send time instead of catching up missed slots.
+    pacer.on_packet_sent(200, 5'400);
+    REQUIRE(!pacer.query(5'499, 0).ready);
+    REQUIRE_EQ(pacer.query(5'500, 0).next_ready_microseconds, 5'500U);
+    REQUIRE(pacer.query(5'500, 0).ready);
+}
+#endif
+
+TEST(timer_wake_monitor_enters_coarse_mode_on_late_streaks_and_recovers)
+{
+    TimerWakeMonitor monitor;
+    REQUIRE(!monitor.coarse());
+    // Isolated late wake-ups do not flip the mode.
+    monitor.observe(1'500);
+    monitor.observe(1'500);
+    monitor.observe(100);
+    REQUIRE(!monitor.coarse());
+    for (unsigned index = 0; index < TimerWakeMonitor::late_streak_to_enter;
+        ++index) {
+        monitor.observe(TimerWakeMonitor::late_threshold_microseconds + 1);
+    }
+    REQUIRE(monitor.coarse());
+    // Wake-ups between the thresholds neither confirm nor clear the mode.
+    monitor.observe(600);
+    REQUIRE(monitor.coarse());
+    for (unsigned index = 0;
+        index + 1 < TimerWakeMonitor::punctual_streak_to_leave; ++index) {
+        monitor.observe(0);
+    }
+    REQUIRE(monitor.coarse());
+    monitor.observe(TimerWakeMonitor::punctual_threshold_microseconds);
+    REQUIRE(!monitor.coarse());
+    // One late wake-up resets the punctual streak but not the mode.
+    monitor.observe(5'000);
+    REQUIRE(!monitor.coarse());
 }
 
 TEST(tsbpd_clock_schedules_delivery_and_unwraps_timestamp_rollover)
