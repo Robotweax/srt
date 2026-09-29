@@ -34,6 +34,7 @@ from srt_handshake_trace import (
 
 
 FILE_PAYLOAD_SIZE = 1_456
+RETRANSMIT_CAPABILITY_FLAG = 0x20
 MINIMUM_RTO_RECOVERY_DELAY_MICROSECONDS = 10_000
 MAX_NATIVE_ROLLOVER_INCIDENTAL_RETRANSMISSIONS = 8
 MAX_NATIVE_ROLLOVER_STARTUP_DATA_PACKETS = 32
@@ -1319,6 +1320,57 @@ def matching_loss_report_precedes_retransmission(
         and isinstance(retransmission_ordinal, int)
         and loss_report_ordinal < retransmission_ordinal
     )
+
+
+def validate_file_retransmit_wire(
+    scenario_name: str,
+    relay: CallerListenerFaultProxy | FileRendezvousTraceProxy,
+    fault_observations: list[dict[str, object]],
+) -> None:
+    """Check FileCC capability and retransmitted DATA on the actual wire."""
+    advertised: set[str] = set()
+    for entry in relay.handshake_observations():
+        if entry.get("request") != -1:
+            continue
+        direction = entry.get("direction")
+        if direction not in ("sender_to_receiver", "receiver_to_sender"):
+            continue
+        for extension in entry.get("extensions", []):
+            if extension.get("type") not in (1, 2):
+                continue
+            handshake = extension.get("handshake")
+            flags = (
+                handshake.get("flags")
+                if isinstance(handshake, dict)
+                else None
+            )
+            if not isinstance(flags, str) or not (
+                int(flags, 16) & RETRANSMIT_CAPABILITY_FLAG
+            ):
+                raise RuntimeError(
+                    f"{scenario_name}: {direction} FileCC handshake "
+                    "does not advertise retransmitted DATA capability"
+                )
+            advertised.add(direction)
+    if advertised != {"sender_to_receiver", "receiver_to_sender"}:
+        raise RuntimeError(
+            f"{scenario_name}: FileCC retransmit capability was not "
+            "observed in both handshake directions"
+        )
+    for observation in fault_observations:
+        if (
+            observation.get("action") == "drop"
+            and observation.get("packet_kind") == "data"
+            and (
+                observation.get("retransmission_flag") is not True
+                or observation.get("retransmission_message_number")
+                    != observation.get("message_number")
+            )
+        ):
+            raise RuntimeError(
+                f"{scenario_name}: retransmitted DATA lacks its wire flag "
+                "or changed its message-number identity"
+            )
 
 
 def validate_fault_plan(
@@ -2617,6 +2669,10 @@ def run_scenario(
                     if relay is not None and scenario.fault is not None
                     else []
                 )
+                if relay is not None:
+                    validate_file_retransmit_wire(
+                        scenario.name, relay, observations
+                    )
                 packets_sent, packets_received = validate_statistics(
                     scenario,
                     caller_complete,
@@ -3080,6 +3136,9 @@ def run_rendezvous_scenario(
             )
             if scenario.fault is not None
             else []
+        )
+        validate_file_retransmit_wire(
+            scenario.name, trace_proxy, fault_observations
         )
         packets_sent, packets_received = validate_statistics(
             scenario,
