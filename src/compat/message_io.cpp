@@ -129,6 +129,19 @@ struct FailedGroupIoMember {
         std::lock_guard lock(group->mutex);
         snapshots = group->members;
     }
+    if (include_terminal_receivers) {
+        // Runtime shutdown is published to the socket and group registries
+        // by state(). Do this without holding the group lock: publishing a
+        // changed member takes that lock. Keep send admission's existing
+        // failure handling in the send path.
+        for (const auto& snapshot : snapshots) {
+            (void)SocketRegistry::instance().state(snapshot.public_data.id);
+        }
+        {
+            std::lock_guard lock(group->mutex);
+            snapshots = group->members;
+        }
+    }
     std::vector<GroupIoMember> result;
     result.reserve(snapshots.size());
     for (const auto& snapshot : snapshots) {
@@ -1119,6 +1132,9 @@ int receive_group_message_implementation(
         // joined later. Track whether any member may still supply the
         // expected message and the lowest floor of those that cannot.
         bool member_may_supply_expected = false;
+        bool buffered_expected_path = false;
+        bool later_message_due = false;
+        bool all_tsbpd = true;
         std::optional<SequenceNumber> lowest_unreachable_floor;
         const auto note_unreachable_floor = [&](SequenceNumber floor) {
             if (!lowest_unreachable_floor.has_value()
@@ -1130,6 +1146,7 @@ int receive_group_message_implementation(
             if (!member.message_api) {
                 continue;
             }
+            all_tsbpd &= member.tsbpd_mode;
             // Late members may have completed their handshake with an older
             // receive-buffer base. Advance them before looking for the next
             // logical group message so missing historical traffic cannot
@@ -1150,13 +1167,18 @@ int receive_group_message_implementation(
                     member.runtime->receive_floor_sequence();
                 if (floor.distance_from(SequenceNumber {expected}) > 0) {
                     note_unreachable_floor(floor);
-                } else if (!member.terminal
-                    || member.runtime->has_complete_buffered_message_at(
-                        SequenceNumber {expected})) {
+                } else {
+                    const bool complete_expected =
+                        member.runtime->has_complete_buffered_message_at(
+                            SequenceNumber {expected});
                     // A terminal member can still hold a complete message
-                    // waiting for its TSBPD deadline. Do not skip it merely
-                    // because another member has advanced farther.
-                    member_may_supply_expected = true;
+                    // waiting for its TSBPD deadline. A live member with
+                    // partial data may still recover the missing packets.
+                    if (!member.terminal || complete_expected) {
+                        member_may_supply_expected = true;
+                        buffered_expected_path |=
+                            member.runtime->has_buffered_receive_data();
+                    }
                 }
                 continue;
             }
@@ -1178,13 +1200,21 @@ int receive_group_message_implementation(
                 }
             } else {
                 note_unreachable_floor(*candidate);
+                later_message_due = true;
             }
         }
-        if (selected == nullptr && !member_may_supply_expected
+        // A live but unused standby still has its initial receive floor at
+        // `expected`, even after the carrying path has dropped that packet.
+        // Once a later message is due under the shared TSBPD clock, an
+        // empty standby cannot keep the group blocked. Retain any path that
+        // has buffered data, including an incomplete expected message.
+        const bool expected_expired =
+            all_tsbpd && later_message_due && !buffered_expected_path;
+        if (selected == nullptr
+            && (!member_may_supply_expected || expected_expired)
             && lowest_unreachable_floor.has_value()) {
-            // No member can deliver `expected` any more: every live member
-            // already dropped past it. Skip the gap to the lowest member
-            // floor instead of waiting for a message that cannot arrive.
+            // Every path has either advanced past `expected` or missed the
+            // group delivery deadline. Skip to the lowest reachable floor.
             std::lock_guard lock(group->mutex);
             if (group->closed || group->generation != generation) {
                 return fail(SRT_ESCLOSED);
