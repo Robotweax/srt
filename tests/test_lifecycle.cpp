@@ -106,6 +106,56 @@ struct EpollWaitResult {
 
 } // namespace
 
+TEST(closed_handle_history_answers_membership_across_eviction_and_rebuild)
+{
+    using robotweax::srt::compat::ClosedHandleHistory;
+    ClosedHandleHistory history;
+    REQUIRE(!history.contains(1));
+    REQUIRE(!history.contains(0));
+    REQUIRE(!history.contains(-5));
+
+    // Fill exactly to capacity: every remembered handle is found.
+    constexpr auto capacity = ClosedHandleHistory::capacity;
+    for (SRTSOCKET handle = 1; handle <= static_cast<SRTSOCKET>(capacity);
+        ++handle) {
+        history.remember(handle);
+    }
+    for (SRTSOCKET handle = 1; handle <= static_cast<SRTSOCKET>(capacity);
+        ++handle) {
+        REQUIRE(history.contains(handle));
+    }
+    REQUIRE(!history.contains(static_cast<SRTSOCKET>(capacity) + 1));
+
+    // Churn through three more capacities: this evicts more than `capacity`
+    // entries, which forces a rebuild of the lookup table from the ring.
+    // Only the newest `capacity` handles remain visible afterwards, and
+    // handles with the group mask bit set share the table without clashes.
+    constexpr SRTSOCKET group_bit = 1 << 30;
+    const SRTSOCKET last = static_cast<SRTSOCKET>(capacity) * 4;
+    for (SRTSOCKET handle = static_cast<SRTSOCKET>(capacity) + 1;
+        handle <= last; ++handle) {
+        history.remember((handle % 3 == 0) ? (handle | group_bit) : handle);
+    }
+    for (SRTSOCKET handle = last - static_cast<SRTSOCKET>(capacity) + 1;
+        handle <= last; ++handle) {
+        const SRTSOCKET remembered =
+            (handle % 3 == 0) ? (handle | group_bit) : handle;
+        REQUIRE(history.contains(remembered));
+        REQUIRE(!history.contains(
+            (handle % 3 == 0) ? handle : (handle | group_bit)));
+    }
+    for (SRTSOCKET handle = 1;
+        handle <= last - static_cast<SRTSOCKET>(capacity); ++handle) {
+        REQUIRE(!history.contains(handle));
+        REQUIRE(!history.contains(handle | group_bit));
+    }
+
+    history.clear();
+    REQUIRE(!history.contains(last));
+    history.remember(7);
+    REQUIRE(history.contains(7));
+}
+
 TEST(lifecycle_closed_socket_records_release_without_global_cleanup)
 {
     REQUIRE_EQ(srt_startup(), 0);
