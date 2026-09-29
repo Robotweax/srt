@@ -427,6 +427,66 @@ TEST(peer_drop_request_preserves_a_complete_fragmented_message)
     REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {103});
 }
 
+TEST(peer_drop_request_preserves_received_stream_bytes_across_a_gap_and_wrap)
+{
+    const SequenceNumber first {SequenceNumber::mask - 1U};
+    ReceiveBuffer buffer {first, 8};
+    const std::array first_payload {
+        std::byte {'a'}, std::byte {'b'}, std::byte {'c'}};
+    const std::array last_payload {std::byte {'d'}, std::byte {'e'}};
+    REQUIRE(buffer.insert(
+        data_packet(first, 7, MessageBoundary::first, first_payload)));
+    REQUIRE(buffer.insert(data_packet(
+        SequenceNumber {0}, 7, MessageBoundary::last, last_payload)));
+
+    std::array<std::byte, 2> prefix {};
+    REQUIRE_EQ(buffer.pop_stream(prefix).bytes_written, 2U);
+    REQUIRE_EQ(prefix[0], std::byte {'a'});
+    REQUIRE_EQ(prefix[1], std::byte {'b'});
+    REQUIRE_EQ(buffer.buffered_payload_bytes(), 3U);
+
+    std::size_t dropped = 0U;
+    REQUIRE_EQ(buffer.drop_peer_requested_stream_range(
+                   {first, SequenceNumber {0}}, 7, &dropped),
+        Error::none);
+    REQUIRE_EQ(dropped, 1U);
+    REQUIRE_EQ(buffer.occupied(), 2U);
+    REQUIRE_EQ(buffer.buffered_payload_bytes(), 3U);
+    REQUIRE_EQ(buffer.first_stored_sequence(), first);
+    REQUIRE_EQ(buffer.next_ack_sequence(), SequenceNumber {1});
+
+    std::array<std::byte, 3> suffix {};
+    REQUIRE_EQ(buffer.pop_stream(suffix).bytes_written, 3U);
+    REQUIRE_EQ(suffix[0], std::byte {'c'});
+    REQUIRE_EQ(suffix[1], std::byte {'d'});
+    REQUIRE_EQ(suffix[2], std::byte {'e'});
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {1});
+    REQUIRE_EQ(buffer.buffered_payload_bytes(), 0U);
+}
+
+TEST(peer_drop_request_keeps_stream_tail_when_chunk_head_is_missing)
+{
+    ReceiveBuffer buffer {SequenceNumber {10}, 8};
+    const std::array second_payload {std::byte {'b'}};
+    const std::array last_payload {std::byte {'c'}};
+    REQUIRE(buffer.insert(data_packet(
+        SequenceNumber {11}, 5, MessageBoundary::subsequent, second_payload)));
+    REQUIRE(buffer.insert(data_packet(
+        SequenceNumber {12}, 5, MessageBoundary::last, last_payload)));
+
+    std::size_t dropped = 0U;
+    REQUIRE_EQ(buffer.drop_peer_requested_stream_range(
+                   {SequenceNumber {10}, SequenceNumber {12}}, 5, &dropped),
+        Error::none);
+    REQUIRE_EQ(dropped, 1U);
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {11});
+    REQUIRE_EQ(buffer.occupied(), 2U);
+    std::array<std::byte, 2> output {};
+    REQUIRE_EQ(buffer.pop_stream(output).bytes_written, 2U);
+    REQUIRE_EQ(output[0], std::byte {'b'});
+    REQUIRE_EQ(output[1], std::byte {'c'});
+}
+
 TEST(peer_drop_acknowledges_sender_without_closing_late_receive_slots)
 {
     ReceiveBuffer buffer {SequenceNumber {100}, 8};
