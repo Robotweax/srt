@@ -137,8 +137,8 @@ struct FailedGroupIoMember {
         // deadline; publishing the close now would report the member as
         // broken in the group data for a successful receive.
         for (const auto& snapshot : snapshots) {
-            const auto socket = SocketRegistry::instance().find(
-                snapshot.public_data.id);
+            const auto socket =
+                SocketRegistry::instance().find(snapshot.public_data.id);
             std::shared_ptr<ConnectionRuntime> runtime;
             if (socket != nullptr) {
                 std::lock_guard lock(socket->mutex);
