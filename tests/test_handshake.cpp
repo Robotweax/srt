@@ -94,16 +94,20 @@ TEST(caller_and_listener_complete_foundation_handshake)
     REQUIRE_EQ(start.values[0].packet.version, 4U);
     REQUIRE_EQ(start.values[0].packet.encryption_field, 0U);
     REQUIRE_EQ(start.values[0].packet.extension_field, 2U);
-    const auto induction_response = listener.receive(start.values[0].packet);
+    const auto induction_response =
+        listener.receive(message_from(start.values[0]));
     REQUIRE_EQ(induction_response.values[0].packet.request, HandshakeRequest::induction);
     REQUIRE_EQ(induction_response.values[0].packet.initial_sequence, SequenceNumber{10});
     REQUIRE(induction_response.values[0].packet.syn_cookie != 0U);
 
-    const auto conclusion = caller.receive(induction_response.values[0].packet);
+    const auto conclusion =
+        caller.receive(message_from(induction_response.values[0]));
     REQUIRE_EQ(conclusion.values[0].packet.request, HandshakeRequest::conclusion);
-    const auto listener_done = listener.receive(conclusion.values[0].packet);
+    const auto listener_done =
+        listener.receive(message_from(conclusion.values[0]));
     REQUIRE_EQ(listener_done.values[1].kind, HandshakeActionKind::connected);
-    const auto caller_done = caller.receive(listener_done.values[0].packet);
+    const auto caller_done =
+        caller.receive(message_from(listener_done.values[0]));
     REQUIRE_EQ(caller_done.values[0].kind, HandshakeActionKind::connected);
     REQUIRE_EQ(caller.state(), HandshakeState::connected);
     REQUIRE_EQ(listener.state(), HandshakeState::connected);
@@ -775,7 +779,7 @@ TEST(caller_accepts_file_controller_without_a_response_config_echo)
     REQUIRE_EQ(caller.state(), HandshakeState::connected);
 }
 
-TEST(caller_accepts_file_mode_without_a_response_handshake_echo)
+TEST(caller_rejects_a_conclusion_without_a_response_handshake_echo)
 {
     std::uint32_t cookie_salt = 0x9e37'79b9U;
     HandshakeExtensionParameters file_parameters;
@@ -810,10 +814,42 @@ TEST(caller_accepts_file_mode_without_a_response_handshake_echo)
     response.has_handshake_extension = false;
     response.has_congestion_extension = false;
 
+    // An HSv5 CONCLUSION without HSRSP leaves nothing to negotiate from;
+    // libsrt rejects it as rogue instead of assuming defaults.
     const auto caller_done = caller.receive(response);
-    REQUIRE_EQ(caller_done.values[0].kind,
-        HandshakeActionKind::connected);
-    REQUIRE_EQ(caller.state(), HandshakeState::connected);
+    REQUIRE_EQ(caller_done.values[0].kind, HandshakeActionKind::rejected);
+    REQUIRE_EQ(caller_done.values[0].rejection_reason, 4);
+    REQUIRE_EQ(caller.state(), HandshakeState::rejected);
+}
+
+TEST(listener_rejects_a_conclusion_without_a_request_handshake_extension)
+{
+    std::uint32_t cookie_salt = 0x9e37'79b9U;
+    HandshakeMachine caller {{
+        .role = ConnectionRole::caller,
+        .local_socket_id = 100,
+    }};
+    HandshakeMachine listener {{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 200,
+        .cookie_generator = test_cookie,
+        .cookie_context = &cookie_salt,
+    }};
+
+    const auto induction = caller.start();
+    const auto induction_response =
+        listener.receive(message_from(induction.values[0]));
+    const auto conclusion =
+        caller.receive(message_from(induction_response.values[0]));
+    auto request = message_from(conclusion.values[0]);
+    request.packet.extension_field &= ~1U;
+    request.has_handshake_extension = false;
+
+    const auto rejected = listener.receive(request);
+    REQUIRE_EQ(listener.state(), HandshakeState::rejected);
+    REQUIRE_EQ(listener.rejection_reason(), 4);
+    REQUIRE_EQ(
+        static_cast<std::int32_t>(rejected.values[0].packet.request), 1'004);
 }
 
 TEST(caller_accepts_an_explicit_response_mode_after_listener_acceptance)

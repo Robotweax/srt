@@ -1009,6 +1009,11 @@ int send_group_message_implementation(
                     }
                 }
             }
+            {
+                std::lock_guard lock(group->mutex);
+                GroupRegistry::note_group_sent(
+                    *group, static_cast<std::uint64_t>(length));
+            }
             if (control != nullptr) {
                 control->srctime = local_control.srctime;
                 control->pktseq = static_cast<std::int32_t>(first_sequence);
@@ -1187,6 +1192,12 @@ int receive_group_message_implementation(
             if (group->next_receive_sequence == expected) {
                 group->next_receive_sequence =
                     lowest_unreachable_floor->value();
+                const auto skipped = lowest_unreachable_floor->distance_from(
+                    SequenceNumber {expected});
+                if (skipped > 0) {
+                    GroupRegistry::note_group_dropped(
+                        *group, static_cast<std::uint64_t>(skipped));
+                }
             }
             continue;
         }
@@ -1201,6 +1212,11 @@ int receive_group_message_implementation(
                         group->next_receive_sequence =
                             result.next_sequence.value();
                     }
+                    const auto packets = result.next_sequence.distance_from(
+                        result.first_sequence);
+                    GroupRegistry::note_group_received(*group,
+                        packets > 0 ? static_cast<std::uint64_t>(packets) : 1U,
+                        result.bytes);
                 }
                 for (const auto& member : members) {
                     if (member.id != selected->id) {
