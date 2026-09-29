@@ -6073,8 +6073,8 @@ TEST(compat_runtime_ignores_a_replayed_retired_key_request)
     CryptoSession sender {configuration};
     auto receiver = std::make_shared<CryptoSession>(configuration);
     REQUIRE_EQ(sender.start_initiator(), Error::none);
-    REQUIRE_EQ(receiver->accept_key_material(
-                   sender.pending_key_material(), false),
+    REQUIRE_EQ(
+        receiver->accept_key_material(sender.pending_key_material(), false),
         Error::none);
     REQUIRE_EQ(sender.acknowledge_key_material(
                    receiver->key_material_response(), false),
@@ -6091,8 +6091,8 @@ TEST(compat_runtime_ignores_a_replayed_retired_key_request)
             if (replayed_request.empty()) {
                 replayed_request.assign(request.begin(), request.end());
             }
-            REQUIRE_EQ(receiver->accept_key_material(request, false),
-                Error::none);
+            REQUIRE_EQ(
+                receiver->accept_key_material(request, false), Error::none);
             REQUIRE_EQ(sender.acknowledge_key_material(
                            receiver->key_material_response(), false),
                 Error::none);
