@@ -757,13 +757,13 @@ Error CryptoSession::accept_key_material(
         return reject(Error::cryptographic_failure,
             CryptoState::bad_secret);
     }
-    std::array<std::byte, srt_salt_size> salt{};
-    std::copy(material.salt.begin(), material.salt.end(),
-        salt.begin());
-    // A genuine peer never re-announces a key it has already replaced. A
-    // request carrying a retired generation is a replay of an old KMREQ that
-    // has aged out of the message history; installing it would route the
-    // peer's current traffic to a stale key. Leave the session untouched.
+    std::array<std::byte, srt_salt_size> salt {};
+    std::copy(material.salt.begin(), material.salt.end(), salt.begin());
+    // A retired selector must never replace the current receive key. A
+    // legitimate rotation can nevertheless contain one retired selector
+    // after foreign key material displaced both current selectors. Accept
+    // that request only when its other selector is genuinely new, and install
+    // only the non-retired key. A stale one- or two-key request still fails.
     const bool replays_even = (material.keys == EncryptionKey::even
                                   || material.keys == EncryptionKey::reserved)
         && is_retired_receive_key(EncryptionKey::even,
@@ -777,27 +777,40 @@ Error CryptoSession::accept_key_material(
                                                          : 0U,
                 material.key_length),
             salt, selection.effective_mode);
-    if (replays_even || replays_odd) {
+    const auto matches_current = [&](EncryptionKey selector,
+                                     std::span<const std::byte> key) {
+        const KeySlot* current = receive_slot(selector);
+        return current != nullptr && current->ready()
+            && current->mode == selection.effective_mode
+            && current->key_length == key.size()
+            && std::equal(key.begin(), key.end(), current->key.begin())
+            && std::equal(salt.begin(), salt.end(), current->salt.begin());
+    };
+    const bool has_even = material.keys == EncryptionKey::even
+        || material.keys == EncryptionKey::reserved;
+    const bool has_odd = material.keys == EncryptionKey::odd
+        || material.keys == EncryptionKey::reserved;
+    const auto even_key = std::span {plaintext}.first(material.key_length);
+    const auto odd_key = std::span {plaintext}.subspan(
+        material.keys == EncryptionKey::reserved ? material.key_length : 0U,
+        material.key_length);
+    const bool fresh_even = has_even && !replays_even
+        && !matches_current(EncryptionKey::even, even_key);
+    const bool fresh_odd = has_odd && !replays_odd
+        && !matches_current(EncryptionKey::odd, odd_key);
+    if ((replays_even || replays_odd) && !fresh_even && !fresh_odd) {
         provider_.secure_erase(kek);
         provider_.secure_erase(plaintext);
         provider_.secure_erase(salt);
         return reject(Error::invalid_key_material, CryptoState::bad_secret);
     }
-    if (material.keys == EncryptionKey::even
-        || material.keys == EncryptionKey::reserved) {
-        result = install_receive_key(EncryptionKey::even,
-            std::span {plaintext}.first(material.key_length), salt,
-            selection.effective_mode);
+    if (has_even && !replays_even) {
+        result = install_receive_key(
+            EncryptionKey::even, even_key, salt, selection.effective_mode);
     }
-    if (result == Error::none
-        && (material.keys == EncryptionKey::odd
-            || material.keys == EncryptionKey::reserved)) {
-        const std::size_t offset =
-            material.keys == EncryptionKey::reserved
-            ? material.key_length : 0U;
-        result = install_receive_key(EncryptionKey::odd,
-            std::span {plaintext}.subspan(offset, material.key_length), salt,
-            selection.effective_mode);
+    if (result == Error::none && has_odd && !replays_odd) {
+        result = install_receive_key(
+            EncryptionKey::odd, odd_key, salt, selection.effective_mode);
     }
     provider_.secure_erase(kek);
     provider_.secure_erase(plaintext);
