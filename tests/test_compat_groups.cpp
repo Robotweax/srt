@@ -3748,6 +3748,8 @@ TEST(compat_group_receive_observes_terminal_without_state_getter)
             reinterpret_cast<const std::byte*>(received.data())));
         REQUIRE_EQ(control.grpdata_size, 1U);
         REQUIRE_EQ(group_data[0].memberstate, SRT_GST_RUNNING);
+        SRT_TRACEBSTATS member_statistics {};
+        REQUIRE_EQ(srt_bstats(member, &member_statistics, 0), 0);
         REQUIRE_EQ(srt_recvmsg(group, received.data(),
                        static_cast<int>(received.size())),
             SRT_ERROR);

@@ -112,6 +112,7 @@ struct GroupIoMember {
     bool message_api = true;
     bool tsbpd_mode = true;
     bool terminal = false;
+    bool published_terminal = false;
     RuntimeResponseHealth response_health {};
 };
 
@@ -125,36 +126,9 @@ struct FailedGroupIoMember {
     bool include_terminal_receivers = false)
 {
     std::vector<GroupMemberSnapshot> snapshots;
-    std::uint32_t expected_receive_sequence = 0;
     {
         std::lock_guard lock(group->mutex);
         snapshots = group->members;
-        expected_receive_sequence = group->next_receive_sequence;
-    }
-    if (include_terminal_receivers) {
-        // Publish a terminal runtime after its complete buffered message has
-        // been delivered. A sender may close before the receiver's TSBPD
-        // deadline; publishing the close now would report the member as
-        // broken in the group data for a successful receive.
-        for (const auto& snapshot : snapshots) {
-            const auto socket =
-                SocketRegistry::instance().find(snapshot.public_data.id);
-            std::shared_ptr<ConnectionRuntime> runtime;
-            if (socket != nullptr) {
-                std::lock_guard lock(socket->mutex);
-                runtime = socket->runtime;
-            }
-            if (runtime != nullptr
-                && runtime->has_complete_buffered_message_at(
-                    SequenceNumber {expected_receive_sequence})) {
-                continue;
-            }
-            (void)SocketRegistry::instance().state(snapshot.public_data.id);
-        }
-        {
-            std::lock_guard lock(group->mutex);
-            snapshots = group->members;
-        }
     }
     std::vector<GroupIoMember> result;
     result.reserve(snapshots.size());
@@ -189,8 +163,15 @@ struct FailedGroupIoMember {
                 socket->public_options.maximum_payload_size;
             member.message_api = socket->public_options.message_api;
             member.tsbpd_mode = socket->public_options.tsbpd_mode;
-            member.terminal = socket->state == SRTS_BROKEN;
+            member.published_terminal = socket->state == SRTS_BROKEN;
         }
+        // Observe runtime shutdown for receive admission without publishing
+        // it to the socket registry. Buffered messages and statistics remain
+        // available until the caller queries the member's socket state.
+        member.terminal = member.published_terminal
+            || (include_terminal_receivers
+                && (member.runtime->broken()
+                    || member.runtime->peer_closed()));
         result.push_back(std::move(member));
     }
     return result;
@@ -1270,17 +1251,20 @@ int receive_group_message_implementation(
                 }
                 GroupRegistry::instance().note_io_result(group->handle,
                     generation, selected->id, selected->generation,
-                    selected->terminal ? SRT_GST_BROKEN : SRT_GST_RUNNING,
+                    selected->published_terminal ? SRT_GST_BROKEN
+                                                 : SRT_GST_RUNNING,
                     static_cast<int>(result.bytes));
                 if (group_type == SRT_GTYPE_BACKUP) {
                     for (const auto& member : members) {
-                        if (!member.terminal
-                            && (member.id != selected->id
-                                || member.generation != selected->generation)) {
-                            GroupRegistry::instance().note_io_result(
-                                group->handle, generation, member.id,
-                                member.generation, SRT_GST_IDLE, SRT_SUCCESS);
+                        if (member.id == selected->id
+                            && member.generation == selected->generation) {
+                            continue;
                         }
+                        GroupRegistry::instance().note_io_result(
+                            group->handle, generation, member.id,
+                            member.generation,
+                            member.terminal ? SRT_GST_BROKEN : SRT_GST_IDLE,
+                            member.terminal ? SRT_ECONNLOST : SRT_SUCCESS);
                     }
                 }
                 if (control != nullptr) {
