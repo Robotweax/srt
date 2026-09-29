@@ -6062,6 +6062,83 @@ TEST(compat_runtime_rejects_malformed_controls_without_refreshing_liveness)
     REQUIRE(runtime.broken());
 }
 
+TEST(compat_runtime_ignores_a_replayed_retired_key_request)
+{
+    const CryptoConfiguration configuration {
+        .passphrase = "runtime retired key replay",
+        .key_length = 16,
+        .refresh_rate_packets = 3,
+        .preannouncement_packets = 1,
+    };
+    CryptoSession sender {configuration};
+    auto receiver = std::make_shared<CryptoSession>(configuration);
+    REQUIRE_EQ(sender.start_initiator(), Error::none);
+    REQUIRE_EQ(
+        receiver->accept_key_material(sender.pending_key_material(), false),
+        Error::none);
+    REQUIRE_EQ(sender.acknowledge_key_material(
+                   receiver->key_material_response(), false),
+        Error::none);
+
+    std::vector<std::byte> replayed_request;
+    std::size_t rotations = 0;
+    SequenceNumber sequence {100};
+    const std::array<std::byte, 16> clear {std::byte {0x5a}};
+    while (rotations < 7) {
+        REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+        const auto request = sender.pending_key_material();
+        if (!request.empty()) {
+            if (replayed_request.empty()) {
+                replayed_request.assign(request.begin(), request.end());
+            }
+            REQUIRE_EQ(
+                receiver->accept_key_material(request, false), Error::none);
+            REQUIRE_EQ(sender.acknowledge_key_material(
+                           receiver->key_material_response(), false),
+                Error::none);
+            ++rotations;
+        }
+        std::array<std::byte, 16> encrypted {};
+        std::array<std::byte, 16> opened {};
+        EncryptionKey key = EncryptionKey::none;
+        REQUIRE_EQ(
+            sender.encrypt(sequence, clear, encrypted, key), Error::none);
+        REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+        REQUIRE_EQ(
+            receiver->decrypt(key, sequence, encrypted, opened), Error::none);
+        receiver->note_accepted_receive_sequence(sequence);
+        sequence = sequence.next();
+    }
+    REQUIRE(!replayed_request.empty());
+    REQUIRE_EQ(receiver->receiver_state(), CryptoState::secured);
+
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {
+        .address = {198, 51, 100, 44},
+        .port = 12'004,
+    };
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 904,
+        .initial_sequence = SequenceNumber {3'400},
+        .origin = ConnectionRuntime::Clock::now(),
+        .crypto = receiver,
+    }};
+    PacketView replay;
+    replay.kind = PacketKind::control;
+    replay.control.type = ControlType::user_defined;
+    replay.control.subtype = key_material_request_subtype;
+    replay.payload = replayed_request;
+    runtime.process_packet(replay, peer);
+
+    REQUIRE(take_datagrams(output).empty());
+    REQUIRE(!runtime.broken());
+    REQUIRE_EQ(receiver->receiver_state(), CryptoState::secured);
+}
+
 TEST(compat_runtime_rejects_malformed_key_controls_without_state_or_liveness)
 {
     const auto channel = std::make_shared<DatagramChannel>();
