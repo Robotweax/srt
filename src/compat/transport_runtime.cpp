@@ -1872,13 +1872,18 @@ MessageIoResult ConnectionRuntime::receive_stream(
         if (locally_closed_) {
             return {.status = MessageIoStatus::local_closed};
         }
-        if (peer_closed_) {
+        // SHUTDOWN ends the peer's send side, but buffered stream packets
+        // still have to pass through the TSBPD gate before end-of-stream.
+        const bool delivery_pending =
+            session_.receive_buffer().has_stream_data()
+            || session_.next_receive_delivery_time().has_value();
+        if (peer_closed_ && !delivery_pending) {
             return {
                 .status = MessageIoStatus::success,
                 .bytes = 0,
             };
         }
-        if (broken_) {
+        if (broken_ && !peer_closed_) {
             return {
                 .status = MessageIoStatus::broken,
                 .system_error = system_error_,
@@ -3512,9 +3517,12 @@ bool ConnectionRuntime::readable() noexcept
     if (session_.data_ready_at(now)) {
         return true;
     }
-    // Report end-of-stream only after no complete TSBPD-delayed message
-    // remains ahead of it.
-    return peer_closed_ && !session_.receive_buffer().has_complete_message()
+    // Report end-of-stream only after buffered data has passed its TSBPD
+    // gate, using the delivery unit of the selected API.
+    const bool buffered_head = options_.message_api()
+        ? session_.receive_buffer().has_complete_message()
+        : session_.receive_buffer().has_stream_data();
+    return peer_closed_ && !buffered_head
         && !session_.next_receive_delivery_time().has_value();
 }
 
