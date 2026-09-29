@@ -176,9 +176,92 @@ struct FailedGroupIoMember {
     return result;
 }
 
+struct GroupReceiveDecision {
+    const GroupIoMember* selected = nullptr;
+    std::optional<SequenceNumber> skip_to;
+    std::optional<ReadinessSignal::Clock::time_point> next_delivery;
+    bool live_member = false;
+};
+
+[[nodiscard]] GroupReceiveDecision inspect_group_receive(
+    std::span<const GroupIoMember> members, SequenceNumber expected,
+    bool retire_consumed_prefix = true)
+{
+    GroupReceiveDecision decision;
+    bool member_may_supply_expected = false;
+    bool buffered_expected_path = false;
+    bool later_message_due = false;
+    bool all_tsbpd = true;
+    std::optional<SequenceNumber> lowest_unreachable_floor;
+    const auto note_unreachable_floor = [&](SequenceNumber floor) {
+        if (!lowest_unreachable_floor.has_value()
+            || floor.distance_from(*lowest_unreachable_floor) < 0) {
+            lowest_unreachable_floor = floor;
+        }
+    };
+    for (const auto& member : members) {
+        decision.live_member |= !member.terminal;
+        if (!member.message_api) {
+            continue;
+        }
+        all_tsbpd &= member.tsbpd_mode;
+        // A member may still hold a prefix already consumed through another
+        // path. Retire that prefix before judging group deliverability.
+        if (retire_consumed_prefix) {
+            (void)member.runtime->discard_received_before(expected);
+        }
+        const auto candidate = member.runtime->next_readable_message_sequence();
+        if (!candidate.has_value()) {
+            const auto member_delivery =
+                member.runtime->next_readable_deadline();
+            if (member_delivery.has_value()
+                && (!decision.next_delivery.has_value()
+                    || *member_delivery < *decision.next_delivery)) {
+                decision.next_delivery = member_delivery;
+            }
+            const SequenceNumber floor =
+                member.runtime->receive_floor_sequence();
+            if (floor.distance_from(expected) > 0) {
+                note_unreachable_floor(floor);
+            } else {
+                const bool complete_expected =
+                    member.runtime->has_complete_buffered_message_at(expected);
+                if (!member.terminal || complete_expected) {
+                    member_may_supply_expected = true;
+                    buffered_expected_path |=
+                        member.runtime->has_buffered_receive_data();
+                }
+            }
+            continue;
+        }
+        const std::int32_t distance = candidate->distance_from(expected);
+        if (distance < 0) {
+            // A concurrent receiver may have moved the cursor after this
+            // inspection began. A readiness query never discards data at a
+            // cursor it only simulated.
+            if (retire_consumed_prefix) {
+                (void)member.runtime->discard_received_before(expected);
+            }
+        } else if (distance == 0) {
+            if (decision.selected == nullptr) {
+                decision.selected = &member;
+            }
+        } else {
+            note_unreachable_floor(*candidate);
+            later_message_due = true;
+        }
+    }
+    const bool expected_expired =
+        all_tsbpd && later_message_due && !buffered_expected_path;
+    if (decision.selected == nullptr
+        && (!member_may_supply_expected || expected_expired)) {
+        decision.skip_to = lowest_unreachable_floor;
+    }
+    return decision;
+}
+
 [[nodiscard]] std::uint64_t backup_stability_timeout(
-    const GroupIoMember& member,
-    std::int32_t minimum_milliseconds) noexcept
+    const GroupIoMember& member, std::int32_t minimum_milliseconds) noexcept
 {
     const std::uint64_t minimum =
         static_cast<std::uint64_t>(minimum_milliseconds) * 1'000U;
@@ -1104,12 +1187,9 @@ int receive_group_message_implementation(
         const std::uint64_t observed = ReadinessSignal::generation();
         const auto members = group_members(group, true);
         if (members.empty()) {
-            return fail(SRT_ENOCONN);
+            std::lock_guard lock(group->mutex);
+            return fail(group->closed ? SRT_ESCLOSED : SRT_ENOCONN);
         }
-        const bool live_member = std::any_of(
-            members.begin(), members.end(), [](const GroupIoMember& member) {
-                return !member.terminal;
-            });
         std::uint32_t expected = 0;
         {
             std::lock_guard lock(group->mutex);
@@ -1119,105 +1199,19 @@ int receive_group_message_implementation(
             expected = group->next_receive_sequence;
         }
 
-        const GroupIoMember* selected = nullptr;
-        std::optional<ReadinessSignal::Clock::time_point> next_delivery;
-        // A member whose receive floor is already past `expected` can never
-        // deliver it: its buffer dropped the gap (receiver TLPKTDROP) or it
-        // joined later. Track whether any member may still supply the
-        // expected message and the lowest floor of those that cannot.
-        bool member_may_supply_expected = false;
-        bool buffered_expected_path = false;
-        bool later_message_due = false;
-        bool all_tsbpd = true;
-        std::optional<SequenceNumber> lowest_unreachable_floor;
-        const auto note_unreachable_floor = [&](SequenceNumber floor) {
-            if (!lowest_unreachable_floor.has_value()
-                || floor.distance_from(*lowest_unreachable_floor) < 0) {
-                lowest_unreachable_floor = floor;
-            }
-        };
-        for (const auto& member : members) {
-            if (!member.message_api) {
-                continue;
-            }
-            all_tsbpd &= member.tsbpd_mode;
-            // Late members may have completed their handshake with an older
-            // receive-buffer base. Advance them before looking for the next
-            // logical group message so missing historical traffic cannot
-            // block a newly joined redundant path.
-            (void)member.runtime->discard_received_before(
-                SequenceNumber {expected});
-            const auto candidate =
-                member.runtime->next_readable_message_sequence();
-            if (!candidate.has_value()) {
-                const auto member_delivery =
-                    member.runtime->next_readable_deadline();
-                if (member_delivery.has_value()
-                    && (!next_delivery.has_value()
-                        || *member_delivery < *next_delivery)) {
-                    next_delivery = member_delivery;
-                }
-                const SequenceNumber floor =
-                    member.runtime->receive_floor_sequence();
-                if (floor.distance_from(SequenceNumber {expected}) > 0) {
-                    note_unreachable_floor(floor);
-                } else {
-                    const bool complete_expected =
-                        member.runtime->has_complete_buffered_message_at(
-                            SequenceNumber {expected});
-                    // A terminal member can still hold a complete message
-                    // waiting for its TSBPD deadline. A live member with
-                    // partial data may still recover the missing packets.
-                    if (!member.terminal || complete_expected) {
-                        member_may_supply_expected = true;
-                        buffered_expected_path |=
-                            member.runtime->has_buffered_receive_data();
-                    }
-                }
-                continue;
-            }
-            const std::int32_t distance =
-                candidate->distance_from(SequenceNumber {expected});
-            if (distance < 0) {
-                (void)member.runtime->discard_received_before(
-                    SequenceNumber {expected});
-                continue;
-            }
-            // A complete message beyond the logical group prefix is not
-            // deliverable yet. Releasing it would expose a gap whenever a
-            // replacement path starts at a later sequence than the failed
-            // member. Keep it buffered while another member can still supply
-            // the expected message.
-            if (distance == 0) {
-                if (selected == nullptr) {
-                    selected = &member;
-                }
-            } else {
-                note_unreachable_floor(*candidate);
-                later_message_due = true;
-            }
-        }
-        // A live but unused standby still has its initial receive floor at
-        // `expected`, even after the carrying path has dropped that packet.
-        // Once a later message is due under the shared TSBPD clock, an
-        // empty standby cannot keep the group blocked. Retain any path that
-        // has buffered data, including an incomplete expected message.
-        const bool expected_expired =
-            all_tsbpd && later_message_due && !buffered_expected_path;
-        if (selected == nullptr
-            && (!member_may_supply_expected || expected_expired)
-            && lowest_unreachable_floor.has_value()) {
-            // Every path has either advanced past `expected` or missed the
-            // group delivery deadline. Skip to the lowest reachable floor.
+        const GroupReceiveDecision decision =
+            inspect_group_receive(members, SequenceNumber {expected});
+        if (decision.skip_to.has_value()) {
+            // No path can supply this prefix; advance to the lowest reachable
+            // sequence, then inspect again before attempting a pop.
             std::lock_guard lock(group->mutex);
             if (group->closed || group->generation != generation) {
                 return fail(SRT_ESCLOSED);
             }
             if (group->next_receive_sequence == expected) {
-                group->next_receive_sequence =
-                    lowest_unreachable_floor->value();
-                const auto skipped = lowest_unreachable_floor->distance_from(
-                    SequenceNumber {expected});
+                group->next_receive_sequence = decision.skip_to->value();
+                const auto skipped =
+                    decision.skip_to->distance_from(SequenceNumber {expected});
                 if (skipped > 0) {
                     GroupRegistry::note_group_dropped(
                         *group, static_cast<std::uint64_t>(skipped));
@@ -1225,6 +1219,7 @@ int receive_group_message_implementation(
             }
             continue;
         }
+        const GroupIoMember* const selected = decision.selected;
         if (selected != nullptr) {
             const auto result =
                 selected->runtime->receive_message(bytes, false, -1);
@@ -1253,13 +1248,7 @@ int receive_group_message_implementation(
                 // for edge-triggered observers even if a refill wins the
                 // race before their next wait.
                 if (group->readiness_source->has_observers()) {
-                    const bool any_member_ready = std::any_of(members.begin(),
-                        members.end(), [](const GroupIoMember& member) {
-                            return member.runtime
-                                ->next_readable_message_sequence()
-                                .has_value();
-                        });
-                    if (!any_member_ready) {
+                    if (!group_receive_readiness(group).message_ready) {
                         group->readiness_source->note_not_ready(SRT_EPOLL_IN);
                         ReadinessSignal::notify(*group->readiness_source);
                     }
@@ -1296,7 +1285,7 @@ int receive_group_message_implementation(
                 return fail(SRT_ELARGEMSG);
             }
         }
-        if (!live_member && !next_delivery.has_value()) {
+        if (!decision.live_member && !decision.next_delivery.has_value()) {
             return fail(SRT_ECONNLOST);
         }
         if (!blocking) {
@@ -1305,18 +1294,59 @@ int receive_group_message_implementation(
         if (ReadinessSignal::Clock::now() >= deadline) {
             return fail(SRT_ETIMEOUT);
         }
-        const auto wake_deadline = next_delivery.has_value()
-            ? std::min(deadline, *next_delivery)
+        const auto wake_deadline = decision.next_delivery.has_value()
+            ? std::min(deadline, *decision.next_delivery)
             : deadline;
-        ReadinessSignal::wait_until(
-            observed, wake_deadline);
+        ReadinessSignal::wait_until(observed, wake_deadline);
     }
 }
 
-int send_group_message(
-    const std::shared_ptr<GroupRecord>& group,
-    const char* buffer, int length,
-    SRT_MSGCTRL* control) noexcept
+GroupReceiveReadiness group_receive_readiness(
+    const std::shared_ptr<GroupRecord>& group)
+{
+    GroupReceiveReadiness readiness;
+    if (group == nullptr) {
+        return readiness;
+    }
+    const auto members = group_members(group, true);
+    if (members.empty()) {
+        readiness.terminal_error = true;
+        return readiness;
+    }
+    SequenceNumber expected;
+    {
+        std::lock_guard lock(group->mutex);
+        if (group->closed) {
+            return readiness;
+        }
+        expected = SequenceNumber {group->next_receive_sequence};
+    }
+    // Mirror the receiver's gap skips without changing its logical cursor.
+    // Retire only the prefix already consumed by the real group cursor.
+    bool retire_consumed_prefix = true;
+    for (;;) {
+        const GroupReceiveDecision decision =
+            inspect_group_receive(members, expected, retire_consumed_prefix);
+        retire_consumed_prefix = false;
+        if (decision.selected != nullptr) {
+            readiness.message_ready = true;
+            return readiness;
+        }
+        if (!decision.skip_to.has_value()) {
+            readiness.next_delivery = decision.next_delivery;
+            readiness.terminal_error =
+                !decision.live_member && !decision.next_delivery.has_value();
+            return readiness;
+        }
+        if (decision.skip_to->distance_from(expected) <= 0) {
+            return readiness;
+        }
+        expected = *decision.skip_to;
+    }
+}
+
+int send_group_message(const std::shared_ptr<GroupRecord>& group,
+    const char* buffer, int length, SRT_MSGCTRL* control) noexcept
 {
     try {
         return send_group_message_implementation(

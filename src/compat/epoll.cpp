@@ -2,6 +2,7 @@
 
 #include "compat/error_state.hpp"
 #include "compat/group_registry.hpp"
+#include "compat/message_io.hpp"
 #include "compat/readiness.hpp"
 #include "compat/socket_registry.hpp"
 
@@ -268,15 +269,8 @@ private:
             connected = true;
             const auto member_readiness =
                 socket_readiness(member.first);
-            readiness.events |= member_readiness.events
-                & (SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR);
-            if (member_readiness.read_wakeup.has_value()
-                && (!readiness.read_wakeup.has_value()
-                    || *member_readiness.read_wakeup
-                        < *readiness.read_wakeup)) {
-                readiness.read_wakeup =
-                    member_readiness.read_wakeup;
-            }
+            readiness.events |=
+                member_readiness.events & (SRT_EPOLL_OUT | SRT_EPOLL_ERR);
         } else if (member.second != SRTS_BROKEN
             && member.second != SRTS_CLOSING
             && member.second != SRTS_CLOSED
@@ -284,9 +278,16 @@ private:
             pending = true;
         }
     }
+    const GroupReceiveReadiness receive = group_receive_readiness(group);
+    if (receive.message_ready) {
+        readiness.events |= SRT_EPOLL_IN;
+    } else {
+        readiness.read_wakeup = receive.next_delivery;
+    }
     if (opened && !connected && !pending) {
-        readiness.events =
-            SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+        if (receive.terminal_error) {
+            readiness.events |= SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+        }
     }
     return readiness;
 }
