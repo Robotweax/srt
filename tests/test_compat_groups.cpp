@@ -20,6 +20,7 @@
 #include <future>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -761,9 +762,12 @@ TEST(compat_group_registry_scopes_mirrors_to_the_listener)
     REQUIRE(!GroupRegistry::instance().prepare_mirror(
         first_listener, peer_group, SRT_GTYPE_BACKUP,
         91U, rejected));
+    REQUIRE(GroupRegistry::instance().prepare_mirror(
+        first_listener, peer_group, SRT_GTYPE_BROADCAST, 92U, rejected));
+    REQUIRE_EQ(rejected.group, first.group);
+    REQUIRE(!rejected.created);
     REQUIRE(!GroupRegistry::instance().prepare_mirror(
-        first_listener, peer_group, SRT_GTYPE_BROADCAST,
-        92U, rejected));
+        first_listener, SRT_INVALID_SOCK, SRT_GTYPE_BROADCAST, 92U, rejected));
 
     GroupRegistry::MirrorDescription independent;
     REQUIRE(GroupRegistry::instance().prepare_mirror(
@@ -778,6 +782,49 @@ TEST(compat_group_registry_scopes_mirrors_to_the_listener)
     REQUIRE_EQ(srt_close(first.group), 0);
     REQUIRE_EQ(srt_close(first_listener), 0);
     REQUIRE_EQ(srt_close(second_listener), 0);
+}
+
+TEST(compat_group_registry_accepts_late_member_sequences_across_rollover)
+{
+    for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
+        const SRTSOCKET listener = srt_create_socket();
+        REQUIRE(listener != SRT_INVALID_SOCK);
+        const SRTSOCKET peer_group = SRTGROUP_MASK | 88;
+        const SequenceNumber initial {SequenceNumber::mask - 1U};
+        GroupRegistry::MirrorDescription mirror;
+        REQUIRE(GroupRegistry::instance().prepare_mirror(
+            listener, peer_group, type, initial.value(), mirror));
+        REQUIRE(mirror.created);
+        const auto record = GroupRegistry::instance().find(mirror.group);
+        REQUIRE(record != nullptr);
+
+        // The sender has wrapped while the application still has unread
+        // messages from the old sequence range.
+        GroupRegistry::MirrorDescription joined;
+        REQUIRE(GroupRegistry::instance().prepare_mirror(
+            listener, peer_group, type, initial.advanced(3).value(), joined));
+        REQUIRE_EQ(joined.group, mirror.group);
+        REQUIRE(!joined.created);
+
+        // A handshake captured before the application advanced may arrive
+        // after the mirror has consumed beyond that member's initial packet.
+        {
+            std::lock_guard lock(record->mutex);
+            record->next_receive_sequence = 2U;
+        }
+        REQUIRE(GroupRegistry::instance().prepare_mirror(
+            listener, peer_group, type, SequenceNumber::mask, joined));
+        REQUIRE_EQ(joined.group, mirror.group);
+        constexpr std::uint32_t excessive_lag = SequenceNumber::half_range / 2U;
+        const SequenceNumber stale {2U - excessive_lag};
+        REQUIRE(!GroupRegistry::instance().prepare_mirror(
+            listener, peer_group, type, stale.value(), joined));
+        REQUIRE(!GroupRegistry::instance().prepare_mirror(
+            listener, peer_group, type, SequenceNumber::mask + 1U, joined));
+
+        REQUIRE_EQ(srt_close(mirror.group), 0);
+        REQUIRE_EQ(srt_close(listener), 0);
+    }
 }
 
 TEST(compat_group_registry_mirror_inherits_listener_io_policy)
@@ -1105,6 +1152,235 @@ TEST(compat_group_handshakes_keep_one_origin_without_reusing_timeout_budget)
     cleanup.mirror = SRT_INVALID_SOCK;
     REQUIRE_EQ(srt_close(listener), 0);
     cleanup.listener = SRT_INVALID_SOCK;
+}
+
+TEST(compat_group_connect_joins_with_unread_messages_across_rollover)
+{
+    for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
+        struct Cleanup {
+            SRTSOCKET listener = SRT_INVALID_SOCK;
+            SRTSOCKET sender = SRT_INVALID_SOCK;
+            SRTSOCKET mirror = SRT_INVALID_SOCK;
+            ~Cleanup()
+            {
+                if (sender != SRT_INVALID_SOCK)
+                    (void)srt_close(sender);
+                if (mirror != SRT_INVALID_SOCK)
+                    (void)srt_close(mirror);
+                if (listener != SRT_INVALID_SOCK)
+                    (void)srt_close(listener);
+            }
+        } cleanup;
+        struct HandshakeGate {
+            std::atomic<int> calls {0};
+            std::atomic<bool> delayed {false};
+            std::promise<void> entered;
+            std::promise<void> release;
+            std::shared_future<void> proceed = release.get_future().share();
+        } gate;
+        cleanup.listener = srt_create_socket();
+        cleanup.sender = srt_create_group(type);
+        REQUIRE(cleanup.listener != SRT_INVALID_SOCK);
+        REQUIRE(cleanup.sender != SRT_INVALID_SOCK);
+        const auto sender_record =
+            GroupRegistry::instance().find(cleanup.sender);
+        REQUIRE(sender_record != nullptr);
+        const SequenceNumber initial {SequenceNumber::mask - 1U};
+        {
+            std::lock_guard lock(sender_record->mutex);
+            sender_record->initial_sequence = initial.value();
+            sender_record->next_send_sequence = initial.value();
+            sender_record->replay_acknowledged_sequence = initial.value();
+            sender_record->next_receive_sequence = initial.value();
+        }
+        const int enabled = 1;
+        REQUIRE_EQ(srt_setsockflag(cleanup.listener, SRTO_GROUPCONNECT,
+                       &enabled, sizeof(enabled)),
+            0);
+        REQUIRE_EQ(
+            srt_listen_callback(
+                cleanup.listener,
+                [](void* opaque, SRTSOCKET, int, const sockaddr*, const char*) {
+                    auto& gate = *static_cast<HandshakeGate*>(opaque);
+                    if (++gate.calls >= 3 && !gate.delayed.exchange(true)) {
+                        gate.entered.set_value();
+                        return gate.proceed.wait_for(std::chrono::seconds {5})
+                                == std::future_status::ready
+                            ? 0
+                            : -1;
+                    }
+                    return 0;
+                },
+                &gate),
+            0);
+        const std::int32_t receive_timeout = 2'000;
+        REQUIRE_EQ(srt_setsockflag(cleanup.listener, SRTO_RCVTIMEO,
+                       &receive_timeout, sizeof(receive_timeout)),
+            0);
+        auto address = ipv4_address(0);
+        REQUIRE_EQ(
+            srt_bind(cleanup.listener,
+                reinterpret_cast<const sockaddr*>(&address), sizeof(address)),
+            0);
+        REQUIRE_EQ(srt_listen(cleanup.listener, 4), 0);
+        int address_size = sizeof(address);
+        REQUIRE_EQ(srt_getsockname(cleanup.listener,
+                       reinterpret_cast<sockaddr*>(&address), &address_size),
+            0);
+        auto first_endpoint = srt_prepare_endpoint(nullptr,
+            reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+        REQUIRE(
+            srt_connect_group(cleanup.sender, &first_endpoint, 1) != SRT_ERROR);
+        cleanup.mirror = srt_accept(cleanup.listener, nullptr, nullptr);
+        REQUIRE(cleanup.mirror != SRT_INVALID_SOCK);
+        const auto mirror_record =
+            GroupRegistry::instance().find(cleanup.mirror);
+        REQUIRE(mirror_record != nullptr);
+
+        const std::array<std::array<char, 2>, 2> before_join {
+            {{'a', '0'}, {'b', '1'}}};
+        for (const auto& payload : before_join) {
+            REQUIRE_EQ(srt_sendmsg(cleanup.sender, payload.data(),
+                           payload.size(), -1, 1),
+                static_cast<int>(payload.size()));
+        }
+        {
+            std::lock_guard sender_lock(sender_record->mutex);
+            std::lock_guard mirror_lock(mirror_record->mutex);
+            REQUIRE_EQ(sender_record->next_send_sequence, 0U);
+            REQUIRE_EQ(mirror_record->next_receive_sequence, initial.value());
+        }
+
+        auto second_endpoint = srt_prepare_endpoint(nullptr,
+            reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+        REQUIRE(srt_connect_group(cleanup.sender, &second_endpoint, 1)
+            != SRT_ERROR);
+        const auto join_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds {3};
+        while (srt_getsockstate(second_endpoint.id) == SRTS_CONNECTING
+            && std::chrono::steady_clock::now() < join_deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        REQUIRE_EQ(srt_getsockstate(second_endpoint.id), SRTS_CONNECTED);
+        std::vector<robotweax::srt::compat::GroupMemberSnapshot> members;
+        {
+            std::lock_guard lock(mirror_record->mutex);
+            members = mirror_record->members;
+        }
+        REQUIRE_EQ(members.size(), 2U);
+        std::int64_t receiver_origin = 0;
+        for (const auto& entry : members) {
+            const auto socket =
+                SocketRegistry::instance().find(entry.public_data.id);
+            REQUIRE(socket != nullptr);
+            std::lock_guard lock(socket->mutex);
+            REQUIRE(socket->runtime != nullptr);
+            const auto origin =
+                socket->runtime->timestamp_origin_microseconds();
+            if (receiver_origin == 0) {
+                receiver_origin = origin;
+            }
+            REQUIRE_EQ(origin, receiver_origin);
+        }
+
+        std::array<char, 8> received {};
+        SRT_MSGCTRL control = srt_msgctrl_default;
+        for (std::size_t index = 0; index < before_join.size(); ++index) {
+            REQUIRE_EQ(srt_recvmsg2(cleanup.mirror, received.data(),
+                           received.size(), &control),
+                2);
+            REQUIRE_EQ(control.pktseq,
+                static_cast<std::int32_t>(
+                    initial.advanced(static_cast<std::uint32_t>(index))
+                        .value()));
+            REQUIRE(std::equal(before_join[index].begin(),
+                before_join[index].end(), received.begin()));
+        }
+        const std::array<char, 2> after_join {'c', '2'};
+        REQUIRE_EQ(srt_sendmsg(cleanup.sender, after_join.data(),
+                       after_join.size(), -1, 1),
+            2);
+        REQUIRE_EQ(srt_recvmsg2(cleanup.mirror, received.data(),
+                       received.size(), &control),
+            2);
+        REQUIRE_EQ(control.pktseq, 0);
+        REQUIRE(
+            std::equal(after_join.begin(), after_join.end(), received.begin()));
+
+        // Hold a third handshake after it captures the sender's sequence.
+        // While it waits, the earlier paths advance the receive cursor.
+        auto entered = gate.entered.get_future();
+        auto delayed_join =
+            std::async(std::launch::async, [sender = cleanup.sender, address] {
+                auto endpoint = srt_prepare_endpoint(nullptr,
+                    reinterpret_cast<const sockaddr*>(&address),
+                    sizeof(address));
+                const int result = srt_connect_group(sender, &endpoint, 1);
+                return std::pair {result, endpoint.id};
+            });
+        const bool reached_callback = entered.wait_for(std::chrono::seconds {3})
+            == std::future_status::ready;
+        const std::array<char, 2> during_handshake {'d', '3'};
+        int send_result = SRT_ERROR;
+        int receive_result = SRT_ERROR;
+        int received_sequence = SRT_SEQNO_NONE;
+        if (reached_callback) {
+            send_result = srt_sendmsg(cleanup.sender, during_handshake.data(),
+                during_handshake.size(), -1, 1);
+            if (send_result == 2) {
+                receive_result = srt_recvmsg2(
+                    cleanup.mirror, received.data(), received.size(), &control);
+                received_sequence = control.pktseq;
+            }
+        }
+        gate.release.set_value();
+        const auto [join_result, third_socket] = delayed_join.get();
+        REQUIRE(reached_callback);
+        REQUIRE_EQ(send_result, 2);
+        REQUIRE_EQ(receive_result, 2);
+        REQUIRE_EQ(received_sequence, 1);
+        REQUIRE(std::equal(during_handshake.begin(), during_handshake.end(),
+            received.begin()));
+        REQUIRE(join_result != SRT_ERROR);
+        const auto delayed_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds {3};
+        while (srt_getsockstate(third_socket) == SRTS_CONNECTING
+            && std::chrono::steady_clock::now() < delayed_deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        REQUIRE_EQ(srt_getsockstate(third_socket), SRTS_CONNECTED);
+        const auto third_record = SocketRegistry::instance().find(third_socket);
+        REQUIRE(third_record != nullptr);
+        {
+            std::lock_guard lock(third_record->mutex);
+            REQUIRE_EQ(third_record->connection_initial_sequence, 1U);
+        }
+        {
+            std::lock_guard lock(mirror_record->mutex);
+            members = mirror_record->members;
+            REQUIRE_EQ(mirror_record->next_receive_sequence, 2U);
+        }
+        REQUIRE_EQ(members.size(), 3U);
+        const auto joined_socket =
+            SocketRegistry::instance().find(members.back().public_data.id);
+        REQUIRE(joined_socket != nullptr);
+        {
+            std::lock_guard lock(joined_socket->mutex);
+            REQUIRE(joined_socket->runtime != nullptr);
+            REQUIRE_EQ(joined_socket->runtime->timestamp_origin_microseconds(),
+                receiver_origin);
+        }
+        const std::array<char, 2> after_delayed_join {'e', '4'};
+        REQUIRE_EQ(srt_sendmsg(cleanup.sender, after_delayed_join.data(),
+                       after_delayed_join.size(), -1, 1),
+            2);
+        REQUIRE_EQ(srt_recvmsg2(cleanup.mirror, received.data(),
+                       received.size(), &control),
+            2);
+        REQUIRE_EQ(control.pktseq, 2);
+        REQUIRE(std::equal(after_delayed_join.begin(), after_delayed_join.end(),
+            received.begin()));
+    }
 }
 
 TEST(compat_group_registry_serializes_parallel_handle_allocation)

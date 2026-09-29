@@ -983,8 +983,8 @@ bool GroupRegistry::prepare_mirror(
     output = {};
     if (listener < 0 || is_group_handle(listener)
         || !is_group_handle(peer_group)
-        || (type != SRT_GTYPE_BROADCAST
-            && type != SRT_GTYPE_BACKUP)) {
+        || initial_sequence > SequenceNumber::mask
+        || (type != SRT_GTYPE_BROADCAST && type != SRT_GTYPE_BACKUP)) {
         return false;
     }
 
@@ -1035,9 +1035,18 @@ bool GroupRegistry::prepare_mirror(
                         && record->mirror_bond_scope == 0U
                         && record->mirror_listener == listener))
                 && record->peer_group == peer_group) {
-                if (record->type != type
-                    || record->next_receive_sequence
-                        != initial_sequence) {
+                // The handshake carries the sender's next packet sequence.
+                // The mirror cursor advances when the application receives,
+                // so unread packets put it behind that handshake sequence.
+                // A delayed handshake can also arrive after the mirror has
+                // consumed packets beyond its starting sequence. Keep both
+                // directions within an unambiguous wrap-aware window.
+                constexpr std::int32_t maximum_join_lag =
+                    static_cast<std::int32_t>(SequenceNumber::half_range / 2U);
+                const auto offset =
+                    SequenceNumber {initial_sequence}.distance_from(
+                        SequenceNumber {record->next_receive_sequence});
+                if (record->type != type || offset <= -maximum_join_lag) {
                     return false;
                 }
                 output.group = record->handle;
