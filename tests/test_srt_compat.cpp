@@ -4076,6 +4076,7 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
     constexpr std::int32_t udp_receive_buffer_bytes = 1'048'576;
     constexpr std::int32_t listener_flow_window = 222;
     constexpr std::int32_t caller_flow_window = 111;
+    constexpr std::int32_t listener_peer_idle_milliseconds = 6'000;
 
     sockaddr_in bind_address{};
     bind_address.sin_family = AF_INET;
@@ -4110,6 +4111,10 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_FC, &listener_flow_window,
                    static_cast<int>(sizeof(listener_flow_window))),
         0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_PEERIDLETIMEO,
+                   &listener_peer_idle_milliseconds,
+                   static_cast<int>(sizeof(listener_peer_idle_milliseconds))),
+        0);
     REQUIRE_EQ(srt_listen_callback(listener,
                    observe_listener_connection,
                    &callback_observation),
@@ -4128,6 +4133,12 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
     REQUIRE_EQ(srt_listen(listener, 4), 0);
     REQUIRE_EQ(srt_getsockstate(listener), SRTS_LISTENING);
     REQUIRE_EQ(srt_listen_callback(listener, nullptr, nullptr),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
+    constexpr std::int32_t changed_peer_idle_milliseconds = 7'000;
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_PEERIDLETIMEO,
+                   &changed_peer_idle_milliseconds,
+                   static_cast<int>(sizeof(changed_peer_idle_milliseconds))),
         SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
 
@@ -4201,6 +4212,14 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
                    &connected_flow_window_size),
         0);
     REQUIRE_EQ(connected_flow_window, listener_flow_window);
+    std::int32_t accepted_peer_idle_milliseconds = 0;
+    int accepted_peer_idle_size =
+        static_cast<int>(sizeof(accepted_peer_idle_milliseconds));
+    REQUIRE_EQ(srt_getsockflag(accepted.load(), SRTO_PEERIDLETIMEO,
+                   &accepted_peer_idle_milliseconds, &accepted_peer_idle_size),
+        0);
+    REQUIRE_EQ(
+        accepted_peer_idle_milliseconds, listener_peer_idle_milliseconds);
     SRT_TRACEBSTATS caller_statistics {};
     SRT_TRACEBSTATS listener_statistics {};
     REQUIRE_EQ(srt_bstats(caller, &caller_statistics, 0), 0);
