@@ -174,13 +174,19 @@ Applications that need full observability should retain four separate values:
 These values describe different stages and must not be collapsed into one
 timestamp.
 
-Without the message API (`SRTO_MESSAGEAPI` off) the unit of delivery is the
-packet, as in libsrt: a stream read hands out the bytes of each packet only
-once that packet's TSBPD deadline has come and stops in front of the first
-packet that is not yet due, and receiver too-late packet drop skips a lost
-packet as soon as the next stored packet is due, whether or not that packet
-starts a chunk. A loss inside a chunk therefore neither holds the chunk's
-later bytes back nor drops them with the gap.
+When Robotweax SRT uses Live timing with the message API disabled
+(`SRTO_MESSAGEAPI` off), the unit of stream delivery is the packet. A stream
+read hands out each packet's bytes only after its TSBPD deadline, stops before
+the first packet that is not yet due, and receiver too-late packet drop skips
+a lost packet when the next stored packet is due. A loss inside a chunk
+therefore neither holds its later bytes back nor drops them with the gap.
+
+This combination is a Robotweax SRT behavior, not a Haivision libsrt Live
+Stream API compatibility claim. The pinned libsrt v1.5.7 reference rejects
+`srt_recv` in Live mode with TSBPD and requires `sendmsg`/`recvmsg` with its
+Live congestion controller. Direct Live Stream API interoperability with
+that reference cannot be tested; File/Stream interoperability remains covered
+separately.
 
 ## Receiver scheduling
 

@@ -308,7 +308,7 @@ public:
         return receive_buffer_.pop_stream(destination);
     }
     // Stream read that honours TSBPD: bytes of a packet are handed out only
-    // once its delivery time has come, as libsrt's readBuffer does.
+    // once its delivery time has come.
     [[nodiscard]] ReceivedMessageResult pop_stream_at(
         std::span<std::byte> destination,
         std::uint64_t now_microseconds) noexcept;
