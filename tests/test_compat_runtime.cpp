@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cerrno>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -6330,6 +6331,7 @@ struct BackpressureOutput {
     bool blocked = true;
     bool alternate = false;
     Error failure = Error::would_block;
+    int system_error = 0;
     std::vector<std::vector<std::byte>> attempts;
     CapturedDatagrams accepted;
 };
@@ -6345,7 +6347,8 @@ UdpIoResult backpressure_datagram(
             output.blocked = !output.blocked;
         }
         if (blocked) {
-            return {.error = output.failure};
+            return {
+                .error = output.failure, .system_error = output.system_error};
         }
         return capture_datagram(bytes, peer, &output.accepted);
     } catch (...) {
@@ -6361,7 +6364,8 @@ struct BackpressureFixture {
     Ipv4Endpoint peer {.address = {192, 0, 2, 91}, .port = 15'091};
     std::unique_ptr<ConnectionRuntime> runtime;
 
-    explicit BackpressureFixture(bool too_late_drop = false)
+    explicit BackpressureFixture(bool too_late_drop = false,
+        std::uint32_t peer_idle_timeout_milliseconds = 5'000)
     {
         channel->set_send_hook_for_testing(backpressure_datagram, &output);
         SocketOptions options;
@@ -6383,6 +6387,8 @@ struct BackpressureFixture {
                 .negotiated_options = {.too_late_packet_drop = too_late_drop,
                     .retransmit_flag = true},
                 .origin = ConnectionRuntime::Clock::now(),
+                .peer_idle_timeout_milliseconds =
+                    peer_idle_timeout_milliseconds,
                 .now_function = injected_now,
                 .now_context = &now,
             });
@@ -6397,7 +6403,161 @@ struct BackpressureFixture {
     }
 };
 
+#if defined(_WIN32)
+constexpr int temporary_buffer_error = WSAENOBUFS;
+constexpr int interrupted_send_error = WSAEINTR;
+constexpr int temporary_route_error = WSAEHOSTUNREACH;
+constexpr int permanent_send_error = WSAENOTSOCK;
+#else
+constexpr int temporary_buffer_error = ENOBUFS;
+constexpr int interrupted_send_error = EINTR;
+constexpr int temporary_route_error = EHOSTUNREACH;
+constexpr int permanent_send_error = EBADF;
+#endif
+
 } // namespace
+
+TEST(compat_runtime_send_error_classifier_matches_native_platform_codes)
+{
+#if defined(_WIN32)
+    for (const int error :
+        {WSAEWOULDBLOCK, WSAEINTR, WSAENOBUFS, WSAEHOSTUNREACH, WSAENETUNREACH,
+            WSAENETDOWN, WSAECONNRESET, WSAENETRESET}) {
+#else
+    for (const int error : {EAGAIN, EINTR, ENOBUFS, EHOSTUNREACH, ENETUNREACH,
+             ENETDOWN, ECONNREFUSED}) {
+#endif
+        REQUIRE(UdpSocket::is_transient_send_error(error));
+    }
+    REQUIRE(!UdpSocket::is_transient_send_error(permanent_send_error));
+    REQUIRE(!UdpSocket::is_transient_send_error(0));
+}
+
+TEST(compat_runtime_transient_send_errors_retry_original_data_once)
+{
+    for (const int first_error : {temporary_buffer_error,
+             interrupted_send_error, temporary_route_error}) {
+        BackpressureFixture fixture;
+        fixture.output.failure = Error::io_error;
+        fixture.output.system_error = first_error;
+        fixture.enqueue();
+        const auto first = fixture.runtime->poll();
+        REQUIRE(!fixture.runtime->broken());
+        REQUIRE(first.next_work_delay.has_value());
+        REQUIRE_EQ(fixture.output.attempts.size(), 1U);
+        REQUIRE_EQ(
+            fixture.runtime->statistics(false, true).total.sent.packets, 0U);
+        fixture.now += 1'000;
+        fixture.output.system_error = first_error == interrupted_send_error
+            ? temporary_buffer_error
+            : interrupted_send_error;
+        (void)fixture.runtime->poll();
+        REQUIRE(!fixture.runtime->broken());
+        REQUIRE_EQ(fixture.output.attempts.size(), 2U);
+        REQUIRE_EQ(
+            fixture.runtime->statistics(false, true).total.sent.packets, 0U);
+        fixture.now += 1'000;
+        fixture.output.blocked = false;
+        (void)fixture.runtime->poll();
+        REQUIRE_EQ(fixture.output.attempts.size(), 3U);
+        REQUIRE_EQ(fixture.output.attempts[0], fixture.output.attempts[1]);
+        REQUIRE_EQ(fixture.output.attempts[0], fixture.output.attempts[2]);
+        REQUIRE_EQ(
+            fixture.runtime->statistics(false, true).total.sent_unique.packets,
+            1U);
+        REQUIRE(!fixture.runtime->broken());
+    }
+}
+
+TEST(compat_runtime_transient_route_error_preserves_retransmission)
+{
+    BackpressureFixture fixture;
+    fixture.output.blocked = false;
+    fixture.enqueue();
+    (void)fixture.runtime->poll();
+    std::array<std::byte, 8> loss_bytes {};
+    const std::array losses {
+        SequenceRange {SequenceNumber {700}, SequenceNumber {700}}};
+    const auto encoded_loss = encode_loss_ranges(losses, loss_bytes);
+    REQUIRE(encoded_loss);
+    fixture.runtime->process_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::negative_acknowledgement},
+            .payload =
+                std::span {loss_bytes}.first(encoded_loss.bytes_written)},
+        fixture.peer);
+    fixture.output.blocked = true;
+    fixture.output.failure = Error::io_error;
+    fixture.output.system_error = temporary_route_error;
+    fixture.now += 1'000;
+    (void)fixture.runtime->poll();
+    REQUIRE(!fixture.runtime->broken());
+    REQUIRE_EQ(fixture.output.attempts.size(), 2U);
+    REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                   .total.sent_retransmitted.packets,
+        0U);
+    fixture.now += 1'000;
+    fixture.output.blocked = false;
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(fixture.output.attempts.size(), 3U);
+    REQUIRE_EQ(fixture.output.attempts[1], fixture.output.attempts[2]);
+    const auto retransmission = decode_packet(fixture.output.attempts[2]);
+    REQUIRE(retransmission);
+    REQUIRE(retransmission.packet.data.retransmitted);
+    REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                   .total.sent_retransmitted.packets,
+        1U);
+    REQUIRE(!fixture.runtime->broken());
+}
+
+TEST(compat_runtime_transient_send_errors_preserve_control_fifo)
+{
+    BackpressureFixture fixture;
+    fixture.output.failure = Error::io_error;
+    fixture.output.system_error = temporary_buffer_error;
+    REQUIRE(fixture.runtime->report_peer_error(41));
+    REQUIRE(fixture.runtime->report_peer_error(42));
+    REQUIRE_EQ(fixture.output.attempts.size(), 1U);
+    fixture.now += 1'000;
+    fixture.output.system_error = temporary_route_error;
+    (void)fixture.runtime->poll();
+    REQUIRE(!fixture.runtime->broken());
+    REQUIRE_EQ(fixture.output.attempts.size(), 2U);
+    fixture.now += 1'000;
+    fixture.output.blocked = false;
+    (void)fixture.runtime->poll();
+    const auto sent = take_datagrams(fixture.output.accepted);
+    REQUIRE_EQ(sent.size(), 2U);
+    REQUIRE_EQ(fixture.output.attempts[0], fixture.output.attempts[1]);
+    REQUIRE_EQ(fixture.output.attempts[0], fixture.output.attempts[2]);
+    REQUIRE_EQ(decode_packet(sent[0]).packet.control.type_specific, 41U);
+    REQUIRE_EQ(decode_packet(sent[1]).packet.control.type_specific, 42U);
+    REQUIRE(!fixture.runtime->broken());
+}
+
+TEST(compat_runtime_persistent_transient_send_error_expires_retry_window)
+{
+    BackpressureFixture fixture {false, 30'000};
+    fixture.output.failure = Error::io_error;
+    fixture.output.system_error = temporary_buffer_error;
+    fixture.enqueue();
+    (void)fixture.runtime->poll();
+    REQUIRE(!fixture.runtime->broken());
+    fixture.now += 4'999'999;
+    (void)fixture.runtime->poll();
+    REQUIRE(!fixture.runtime->broken());
+    fixture.now += 1'001;
+    fixture.output.failure = Error::would_block;
+    fixture.output.system_error = 0;
+    (void)fixture.runtime->poll();
+    REQUIRE(fixture.runtime->broken());
+    REQUIRE_EQ(fixture.runtime->statistics(false, true).total.sent.packets, 0U);
+    const std::array payload {std::byte {'x'}};
+    const auto after_failure =
+        fixture.runtime->queue_message(payload, 0, true, false, -1, -1);
+    REQUIRE_EQ(after_failure.status, MessageIoStatus::broken);
+    REQUIRE_EQ(after_failure.system_error, temporary_buffer_error);
+}
 
 TEST(compat_runtime_backpressure_retries_identical_data_without_busy_polling)
 {
@@ -6510,9 +6670,15 @@ TEST(compat_runtime_backpressure_close_cancels_and_permanent_errors_still_break)
 
     BackpressureFixture permanent;
     permanent.output.failure = Error::io_error;
+    permanent.output.system_error = permanent_send_error;
     permanent.enqueue();
     (void)permanent.runtime->poll();
     REQUIRE(permanent.runtime->broken());
+    const std::array payload {std::byte {'x'}};
+    const auto after_failure =
+        permanent.runtime->queue_message(payload, 0, true, false, -1, -1);
+    REQUIRE_EQ(after_failure.status, MessageIoStatus::broken);
+    REQUIRE_EQ(after_failure.system_error, permanent_send_error);
 }
 
 TEST(compat_runtime_backpressure_control_queue_has_a_bounded_failure)

@@ -547,6 +547,8 @@ private:
     [[nodiscard]] bool complete_datagram(std::span<const std::byte> bytes,
         const DatagramCompletion& completion, std::uint64_t now) noexcept;
     [[nodiscard]] bool flush_pending_datagrams(std::uint64_t now) noexcept;
+    [[nodiscard]] bool defer_send_error(
+        const UdpIoResult& failure, std::uint64_t now) noexcept;
     [[nodiscard]] RuntimePollResult pending_send_poll_result(
         std::uint64_t now) const noexcept;
 
@@ -627,6 +629,8 @@ private:
     PendingDatagram* pending_datagram_tail_ = nullptr;
     std::size_t pending_datagram_size_ = 0;
     std::uint64_t next_datagram_retry_microseconds_ = 0;
+    std::optional<std::uint64_t> transient_send_failure_since_;
+    int transient_send_system_error_ = 0;
     std::optional<RowFecEncoder> row_fec_encoder_;
     std::optional<RowFecDecoder> row_fec_decoder_;
     std::optional<ColumnFecEncoder> column_fec_encoder_;
