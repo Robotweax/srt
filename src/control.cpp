@@ -60,10 +60,8 @@ AcknowledgementResult decode_acknowledgement(const PacketView& packet) noexcept
     }
     acknowledgement.kind = payload.size() == 16U ? AcknowledgementKind::small
                                                  : AcknowledgementKind::full;
-    if (acknowledgement.kind == AcknowledgementKind::full
-        && packet.control.type_specific == 0U) {
-        return {.error = Error::invalid_control_payload};
-    }
+    // libsrt's ACK counter wraps to 0 after 2^31 full ACKs, so 0 is a valid
+    // number on the wire even though this implementation never emits it.
     acknowledgement.acknowledgement_number = packet.control.type_specific;
     acknowledgement.next_sequence = SequenceNumber {next_sequence};
     acknowledgement.round_trip_time_microseconds = read_u32(payload.data() + 4);

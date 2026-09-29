@@ -65,7 +65,7 @@ request could therefore arrive after the missing packets' delivery deadline.
 
 The correction refreshes the loss timer on a valid ACKACK RTT sample and brings
 an outstanding NAK deadline forward when its interval shrinks. It retains the
-60 ms minimum interval and never postpones an already earlier deadline. There
+20 ms minimum interval (libsrt parity) and never postpones an already earlier deadline. There
 is no artificial delay, retry-to-pass logic, or change to FEC recovery criteria.
 Two deterministic native regression tests fail before this change and pass
 after it, covering the timer directly and FEC `arq:onreq` with no subsequent DATA.

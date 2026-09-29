@@ -5439,6 +5439,158 @@ TEST(compat_runtime_drains_tsbpd_message_after_peer_shutdown)
         MessageIoStatus::peer_closed);
 }
 
+TEST(compat_runtime_stream_receive_honours_tsbpd_and_drops_per_packet)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {
+        .address = {192, 0, 2, 15},
+        .port = 11'005,
+    };
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::message_api, 0), Error::none);
+    std::uint64_t now = 2'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 302,
+        .initial_sequence = SequenceNumber {3'200},
+        .options = options,
+        .negotiated_options =
+            {
+                .receive_tsbpd = true,
+                .too_late_packet_drop = true,
+                .receive_delay_milliseconds = 120,
+            },
+        .origin = ConnectionRuntime::Clock::now(),
+        .handshake_arrival_microseconds = 1'000,
+        .peer_handshake_timestamp = PacketTimestamp {0},
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+
+    // A three-packet chunk whose first packet is lost.
+    const std::array<std::byte, 1> second {std::byte {'b'}};
+    const std::array<std::byte, 1> third {std::byte {'c'}};
+    PacketView data;
+    data.kind = PacketKind::data;
+    data.data.message_number = 1;
+    data.data.timestamp = PacketTimestamp {50};
+    data.data.sequence = SequenceNumber {3'201};
+    data.data.boundary = MessageBoundary::subsequent;
+    data.payload = second;
+    runtime.process_packet(data, peer);
+    data.data.sequence = SequenceNumber {3'202};
+    data.data.boundary = MessageBoundary::last;
+    data.payload = third;
+    runtime.process_packet(data, peer);
+
+    std::array<std::byte, 4> received {};
+    // Not readable: the gap is not yet too late and nothing is due.
+    REQUIRE(!runtime.readable());
+    REQUIRE_EQ(runtime.receive_stream(received, false, -1).status,
+        MessageIoStatus::would_block);
+    now = 121'049;
+    REQUIRE(!runtime.readable());
+    REQUIRE_EQ(runtime.receive_stream(received, false, -1).status,
+        MessageIoStatus::would_block);
+
+    // At the delivery time of packet 3'201 the lost packet is dropped and
+    // the chunk's remaining bytes are delivered.
+    now = 121'050;
+    const auto read = runtime.receive_stream(received, false, -1);
+    REQUIRE_EQ(read.status, MessageIoStatus::success);
+    REQUIRE_EQ(read.bytes, 2U);
+    REQUIRE_EQ(received[0], std::byte {'b'});
+    REQUIRE_EQ(received[1], std::byte {'c'});
+    REQUIRE(!runtime.readable());
+}
+
+TEST(compat_runtime_drains_tsbpd_stream_after_peer_shutdown)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {
+        .address = {192, 0, 2, 16},
+        .port = 11'006,
+    };
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::message_api, 0), Error::none);
+    std::uint64_t now = 2'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 303,
+        .initial_sequence = SequenceNumber {3'300},
+        .options = options,
+        .negotiated_options =
+            {
+                .receive_tsbpd = true,
+                .receive_delay_milliseconds = 120,
+            },
+        .origin = ConnectionRuntime::Clock::now(),
+        .handshake_arrival_microseconds = 1'000,
+        .peer_handshake_timestamp = PacketTimestamp {0},
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+
+    const std::array<std::byte, 1> first {std::byte {'a'}};
+    const std::array<std::byte, 1> second {std::byte {'b'}};
+    PacketView data;
+    data.kind = PacketKind::data;
+    data.data.sequence = SequenceNumber {3'300};
+    data.data.message_number = 1;
+    data.data.boundary = MessageBoundary::solo;
+    data.data.timestamp = PacketTimestamp {50};
+    data.payload = first;
+    runtime.process_packet(data, peer);
+    data.data.sequence = SequenceNumber {3'301};
+    data.data.message_number = 2;
+    data.data.timestamp = PacketTimestamp {5'050};
+    data.payload = second;
+    runtime.process_packet(data, peer);
+
+    PacketView shutdown;
+    shutdown.kind = PacketKind::control;
+    shutdown.control.type = ControlType::shutdown;
+    shutdown.control.destination_socket_id = 303;
+    const std::array<std::byte, 4> shutdown_padding {};
+    shutdown.payload = shutdown_padding;
+    runtime.process_packet(shutdown, peer);
+
+    std::array<std::byte, 2> received {};
+    REQUIRE(runtime.peer_closed());
+    REQUIRE(!runtime.readable());
+    REQUIRE(runtime.next_readable_deadline().has_value());
+    REQUIRE_EQ(runtime.receive_stream(received, false, -1).status,
+        MessageIoStatus::would_block);
+
+    now = 121'050;
+    REQUIRE(runtime.readable());
+    const auto first_read = runtime.receive_stream(received, false, -1);
+    REQUIRE_EQ(first_read.status, MessageIoStatus::success);
+    REQUIRE_EQ(first_read.bytes, 1U);
+    REQUIRE_EQ(received[0], first[0]);
+
+    REQUIRE(!runtime.readable());
+    REQUIRE_EQ(runtime.receive_stream(received, false, -1).status,
+        MessageIoStatus::would_block);
+    now = 126'050;
+    REQUIRE(runtime.readable());
+    const auto second_read = runtime.receive_stream(received, false, -1);
+    REQUIRE_EQ(second_read.status, MessageIoStatus::success);
+    REQUIRE_EQ(second_read.bytes, 1U);
+    REQUIRE_EQ(received[0], second[0]);
+
+    REQUIRE(runtime.readable());
+    const auto end = runtime.receive_stream(received, false, -1);
+    REQUIRE_EQ(end.status, MessageIoStatus::success);
+    REQUIRE_EQ(end.bytes, 0U);
+}
+
 TEST(compat_runtime_finishes_a_deferred_peer_drop_before_end_of_stream)
 {
     const auto channel = std::make_shared<DatagramChannel>();
