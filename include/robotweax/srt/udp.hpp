@@ -241,6 +241,9 @@ public:
      */
     [[nodiscard]] static bool is_transient_receive_error(
         int system_error) noexcept;
+    /** True when a failed send can be retried without replacing the socket. */
+    [[nodiscard]] static bool is_transient_send_error(
+        int system_error) noexcept;
 
 private:
     struct UnopenedTag {

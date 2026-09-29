@@ -79,6 +79,14 @@ void suppress_connection_reset_reports(NativeSocket socket) noexcept
     return error == WSAECONNRESET || error == WSAENETRESET || error == WSAEINTR;
 }
 
+[[nodiscard]] bool is_transient_send_system_error(int error) noexcept
+{
+    return error == WSAEWOULDBLOCK || error == WSAEINTR || error == WSAENOBUFS
+        || error == WSAEHOSTUNREACH || error == WSAENETUNREACH
+        || error == WSAENETDOWN || error == WSAECONNRESET
+        || error == WSAENETRESET;
+}
+
 [[nodiscard]] bool is_not_connected_error(int error) noexcept
 {
     return error == WSAENOTCONN;
@@ -112,6 +120,17 @@ void suppress_connection_reset_reports(NativeSocket) noexcept { }
     // sockets, but a caller may hand in one through acquire_native().
     return error == EINTR || error == ECONNREFUSED || error == EHOSTUNREACH
         || error == ENETUNREACH;
+}
+
+[[nodiscard]] bool is_transient_send_system_error(int error) noexcept
+{
+    return is_would_block(error) || error == EINTR || error == ENOBUFS
+        || error == EHOSTUNREACH || error == ENETUNREACH || error == ENETDOWN
+        || error == ECONNREFUSED
+#if defined(EHOSTDOWN)
+        || error == EHOSTDOWN
+#endif
+        ;
 }
 
 [[nodiscard]] bool is_not_connected_error(int error) noexcept
@@ -855,6 +874,11 @@ UdpIoResult UdpSocket::receive_from(std::span<std::byte> destination) noexcept
 bool UdpSocket::is_transient_receive_error(int system_error) noexcept
 {
     return is_transient_receive_system_error(system_error);
+}
+
+bool UdpSocket::is_transient_send_error(int system_error) noexcept
+{
+    return is_transient_send_system_error(system_error);
 }
 
 } // namespace robotweax::srt

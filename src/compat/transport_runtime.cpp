@@ -25,6 +25,7 @@ namespace {
 
 constexpr std::size_t maximum_send_batch = 64;
 constexpr std::size_t maximum_connection_polls = 64;
+constexpr std::uint64_t maximum_transient_send_retry_microseconds = 5'000'000U;
 
 [[nodiscard]] bool has_valid_runtime_key_material_payload(
     std::uint16_t subtype, std::span<const std::byte> payload) noexcept
@@ -2027,13 +2028,9 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
             }
             return complete_datagram(bytes, completion, now);
         }
-        if (sent.error != Error::would_block) {
-            break_locked(sent.system_error);
+        if (!defer_send_error(sent, now)) {
             return false;
         }
-        next_datagram_retry_microseconds_ = now
-            + std::min<std::uint64_t>(
-                1'000U, std::numeric_limits<std::uint64_t>::max() - now);
     }
     if (pending_datagram_size_ == pending_datagram_capacity) {
         break_locked(0);
@@ -2062,6 +2059,8 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
 bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
     const DatagramCompletion& completion, std::uint64_t now) noexcept
 {
+    transient_send_failure_since_.reset();
+    transient_send_system_error_ = 0;
     if (completion.kind == DatagramKind::data) {
         if (fec_encoder_active() && !completion.data.retransmitted) {
             const PacketView wire_packet {
@@ -2099,6 +2098,39 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
         }
         session_.note_packet_sent(now);
     }
+    return true;
+}
+
+bool ConnectionRuntime::defer_send_error(
+    const UdpIoResult& failure, std::uint64_t now) noexcept
+{
+    const bool transient_system_error = failure.error == Error::io_error
+        && UdpSocket::is_transient_send_error(failure.system_error);
+    if (failure.error != Error::would_block && !transient_system_error) {
+        break_locked(failure.system_error);
+        return false;
+    }
+    if (transient_system_error) {
+        if (!transient_send_failure_since_.has_value()) {
+            transient_send_failure_since_ = now;
+        }
+        transient_send_system_error_ = failure.system_error;
+    }
+    if (transient_send_failure_since_.has_value()) {
+        // A route can recover without replacing the UDP socket. Keep its
+        // datagram in the FIFO, but do not retry a persistent failure forever
+        // while inbound traffic continues to refresh the peer idle timer.
+        const auto retry_window = std::min(peer_idle_timeout_microseconds_,
+            maximum_transient_send_retry_microseconds);
+        if (now >= *transient_send_failure_since_
+            && now - *transient_send_failure_since_ >= retry_window) {
+            break_locked(transient_send_system_error_);
+            return false;
+        }
+    }
+    next_datagram_retry_microseconds_ = now
+        + std::min<std::uint64_t>(
+            1'000U, std::numeric_limits<std::uint64_t>::max() - now);
     return true;
 }
 
@@ -2143,14 +2175,7 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
             }
             const auto sent = channel->send_datagram(bytes, peer_);
             if (!sent) {
-                if (sent.error == Error::would_block) {
-                    next_datagram_retry_microseconds_ = now
-                        + std::min<std::uint64_t>(1'000U,
-                            std::numeric_limits<std::uint64_t>::max() - now);
-                    return true;
-                }
-                break_locked(sent.system_error);
-                return false;
+                return defer_send_error(sent, now);
             }
             if (sent.bytes_transferred != pending.size) {
                 break_locked(0);
@@ -2169,6 +2194,8 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
         next_datagram_retry_microseconds_ = 0;
     }
     if (pending_datagram_size_ == 0U) {
+        transient_send_failure_since_.reset();
+        transient_send_system_error_ = 0;
         send_ready_.notify_all();
     }
     return true;
@@ -3437,6 +3464,8 @@ void ConnectionRuntime::break_locked(int system_error) noexcept
     pending_datagram_tail_ = nullptr;
     pending_datagram_size_ = 0U;
     next_datagram_retry_microseconds_ = 0U;
+    transient_send_failure_since_.reset();
+    transient_send_system_error_ = 0;
     system_error_ = system_error;
     receive_ready_.notify_all();
     send_ready_.notify_all();
@@ -3533,6 +3562,8 @@ void ConnectionRuntime::close() noexcept
     pending_datagram_tail_ = nullptr;
     pending_datagram_size_ = 0U;
     next_datagram_retry_microseconds_ = 0U;
+    transient_send_failure_since_.reset();
+    transient_send_system_error_ = 0;
     receive_ready_.notify_all();
     send_ready_.notify_all();
     notify_readiness();
