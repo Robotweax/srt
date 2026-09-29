@@ -341,8 +341,11 @@ int get_socket_option(
 #endif
     case SRTO_LATENCY:
     case SRTO_RCVLATENCY:
-        return write_value(
-            value, value_size, options.receiver_latency_milliseconds);
+        return write_value(value, value_size,
+            socket.state == SRTS_CONNECTED
+                ? static_cast<std::int32_t>(
+                      socket.negotiated_live_options.receive_delay_milliseconds)
+                : options.receiver_latency_milliseconds);
     case SRTO_INPUTBW:
         return write_value(
             value, value_size, options.input_bandwidth_bytes_per_second);
@@ -353,7 +356,10 @@ int get_socket_option(
         return write_value(
             value, value_size, options.overhead_bandwidth_percent);
     case SRTO_TLPKTDROP:
-        return write_value(value, value_size, options.too_late_packet_drop);
+        return write_value(value, value_size,
+            socket.state == SRTS_CONNECTED
+                ? socket.negotiated_live_options.too_late_packet_drop
+                : options.too_late_packet_drop);
     case SRTO_DRIFTTRACER:
         return write_value(value, value_size, options.drift_tracer);
     case SRTO_SNDDROPDELAY:
@@ -392,8 +398,11 @@ int get_socket_option(
         return write_value(
             value, value_size, options.peer_idle_timeout_milliseconds);
     case SRTO_PEERLATENCY:
-        return write_value(
-            value, value_size, options.peer_latency_milliseconds);
+        return write_value(value, value_size,
+            socket.state == SRTS_CONNECTED
+                ? static_cast<std::int32_t>(socket.negotiated_live_options
+                          .peer_receive_delay_milliseconds)
+                : options.peer_latency_milliseconds);
     case SRTO_PAYLOADSIZE:
         return write_value(value, value_size, options.maximum_payload_size);
     case SRTO_MESSAGEAPI:
