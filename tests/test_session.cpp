@@ -640,7 +640,7 @@ TEST(session_file_mode_coalesces_acknowledgements_and_flushes_on_close)
     REQUIRE_EQ(receiver.poll_timers(20'000U).size, 0U);
 }
 
-TEST(session_rejects_reserved_zero_ackack_number)
+TEST(session_ignores_a_zero_ackack_number_without_an_error)
 {
     ReliabilitySession receiver {{
         .local_initial_sequence = SequenceNumber {100},
@@ -653,8 +653,64 @@ TEST(session_rejects_reserved_zero_ackack_number)
     ackack.kind = PacketKind::control;
     ackack.control.type = ControlType::acknowledgement_of_ack;
     ackack.control.type_specific = 0U;
-    REQUIRE_EQ(
-        receiver.receive(ackack, 1'000U).error, Error::invalid_control_payload);
+    const std::array<std::byte, 4> padding {};
+    ackack.payload = padding;
+    // This side never numbers an ACK 0, so no RTT sample matches; the packet
+    // itself is well formed (libsrt wraps its counter to 0).
+    const auto processed = receiver.receive(ackack, 1'000U);
+    REQUIRE(processed);
+    REQUIRE_EQ(processed.actions.size, 0U);
+}
+
+TEST(session_answers_a_wrapped_zero_numbered_full_ack)
+{
+    ReliabilitySession sender {{
+        .local_initial_sequence = SequenceNumber {100},
+        .peer_initial_sequence = SequenceNumber {10},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 4,
+        .receive_capacity_packets = 4,
+        .maximum_payload_size = 1,
+    }};
+    const std::array<std::byte, 1> message {std::byte {'a'}};
+    REQUIRE_EQ(sender.queue_message(message, PacketTimestamp {1}), Error::none);
+    REQUIRE(sender.next_data_packet().has_value());
+
+    Acknowledgement acknowledgement {
+        .kind = AcknowledgementKind::full,
+        .acknowledgement_number = 0,
+        .next_sequence = SequenceNumber {101},
+        .round_trip_time_microseconds = 20'000,
+        .round_trip_time_variance_microseconds = 4'000,
+        .available_receive_buffer_packets = 3,
+        .receive_rate_packets_per_second = 10,
+        .estimated_link_capacity_packets_per_second = 20,
+        .has_rate_metrics = true,
+    };
+    std::array<std::byte, 28> payload {};
+    REQUIRE(encode_acknowledgement_payload(acknowledgement, payload));
+    MutablePacketView packet;
+    packet.kind = PacketKind::control;
+    packet.control.type = ControlType::acknowledgement;
+    packet.control.type_specific = 0U;
+    packet.control.destination_socket_id = 900;
+    packet.payload = payload;
+    std::array<std::byte, packet_header_size + 28U> datagram {};
+    REQUIRE(encode_packet(packet, datagram));
+    const auto decoded_packet = decode_packet(datagram);
+    REQUIRE(decoded_packet);
+
+    const auto result = sender.receive(decoded_packet.packet, 1'000);
+    REQUIRE(result);
+    REQUIRE_EQ(sender.send_buffer().size(), 0U);
+    REQUIRE_EQ(result.actions.size, 1U);
+    REQUIRE_EQ(result.actions.values[0].kind,
+        ReliabilityActionKind::acknowledgement_of_ack);
+    REQUIRE_EQ(result.actions.values[0].acknowledgement_number, 0U);
+    std::array<std::byte, 64> storage {};
+    const auto echoed = encode_and_decode(result.actions.values[0], storage);
+    REQUIRE_EQ(echoed.control.type, ControlType::acknowledgement_of_ack);
+    REQUIRE_EQ(echoed.control.type_specific, 0U);
 }
 
 TEST(session_tsbpd_gate_holds_complete_message_until_delivery_time)

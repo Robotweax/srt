@@ -48,8 +48,9 @@ TEST(control_timer_emits_self_clocked_lite_ack_and_periodic_nak)
     loss_scheduler.set_loss_state(true, 2'000, 5'000);
     const auto immediate_nak = loss_scheduler.poll(2'000);
     REQUIRE_EQ(immediate_nak.values[0], TimerActionKind::periodic_loss_report);
-    REQUIRE_EQ(loss_scheduler.poll(61'999).size, 0U);
-    const auto repeated_nak = loss_scheduler.poll(62'000);
+    // A 5 ms interval is clamped to libsrt's 20 ms minimum.
+    REQUIRE_EQ(loss_scheduler.poll(21'999).size, 0U);
+    const auto repeated_nak = loss_scheduler.poll(22'000);
     REQUIRE_EQ(repeated_nak.values[0], TimerActionKind::periodic_loss_report);
 
     ControlTimerScheduler deferred_loss_scheduler{2'000};
@@ -57,10 +58,8 @@ TEST(control_timer_emits_self_clocked_lite_ack_and_periodic_nak)
         true, 2'000, 5'000, true);
     REQUIRE_EQ(
         deferred_loss_scheduler.poll(2'000).size, 0U);
-    REQUIRE_EQ(
-        deferred_loss_scheduler.poll(61'999).size, 0U);
-    const auto deferred_nak =
-        deferred_loss_scheduler.poll(62'000);
+    REQUIRE_EQ(deferred_loss_scheduler.poll(21'999).size, 0U);
+    const auto deferred_nak = deferred_loss_scheduler.poll(22'000);
     REQUIRE_EQ(deferred_nak.values[0],
         TimerActionKind::periodic_loss_report);
 }
