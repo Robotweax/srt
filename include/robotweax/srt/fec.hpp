@@ -158,8 +158,8 @@ public:
         std::size_t maximum_payload_size,
         bool expire_rows = true);
 
-    [[nodiscard]] RowFecReceiveResult receive(
-        const PacketView& wire_packet) noexcept;
+    [[nodiscard]] RowFecReceiveResult receive(const PacketView& wire_packet,
+        std::optional<SequenceNumber> receive_floor = std::nullopt) noexcept;
     [[nodiscard]] static FecResourceEstimate estimate_resources(
         const PacketFilterConfiguration& configuration,
         std::size_t receive_capacity_packets,
@@ -184,8 +184,9 @@ private:
         bool in_order = false;
     };
 
-    [[nodiscard]] std::optional<std::uint64_t> unwrap(
-        SequenceNumber sequence) noexcept;
+    [[nodiscard]] std::optional<std::uint64_t> unwrap(SequenceNumber sequence,
+        bool source_packet,
+        std::optional<SequenceNumber> receive_floor) noexcept;
     [[nodiscard]] Group* group_for(
         std::uint64_t row) noexcept;
     [[nodiscard]] Group* find_group(
@@ -234,6 +235,7 @@ private:
     std::array<std::byte, maximum_data_payload_size>
         reconstructed_payload_{};
     std::uint64_t minimum_retained_row_ = 0;
+    std::uint64_t minimum_recoverable_index_ = 0;
     std::size_t irrecoverable_loss_count_ = 0;
     PacketFilterArqLevel arq_ =
         PacketFilterArqLevel::always;
@@ -335,8 +337,8 @@ public:
         std::size_t receive_capacity_packets,
         std::size_t maximum_payload_size);
 
-    [[nodiscard]] ColumnFecReceiveResult receive(
-        const PacketView& wire_packet) noexcept;
+    [[nodiscard]] ColumnFecReceiveResult receive(const PacketView& wire_packet,
+        std::optional<SequenceNumber> receive_floor = std::nullopt) noexcept;
     [[nodiscard]] static FecResourceEstimate estimate_resources(
         const PacketFilterConfiguration& configuration,
         std::size_t receive_capacity_packets,
@@ -371,8 +373,9 @@ private:
         bool in_order = false;
     };
 
-    [[nodiscard]] std::optional<std::uint64_t> unwrap(
-        SequenceNumber sequence) noexcept;
+    [[nodiscard]] std::optional<std::uint64_t> unwrap(SequenceNumber sequence,
+        bool source_packet,
+        std::optional<SequenceNumber> receive_floor) noexcept;
     [[nodiscard]] std::uint64_t first_base(
         std::uint32_t column) const noexcept;
     [[nodiscard]] std::optional<Location> locate_source(
@@ -427,6 +430,7 @@ private:
     std::uint64_t latest_index_ = 0;
     std::uint64_t matrix_size_ = 0;
     std::uint64_t minimum_retained_series_ = 0;
+    std::uint64_t minimum_recoverable_index_ = 0;
     std::uint32_t columns_ = 0;
     std::uint32_t rows_ = 0;
     std::size_t receive_capacity_packets_ = 0;
@@ -501,8 +505,8 @@ public:
         std::size_t receive_capacity_packets,
         std::size_t maximum_payload_size);
 
-    [[nodiscard]] MatrixFecReceiveResult receive(
-        const PacketView& wire_packet) noexcept;
+    [[nodiscard]] MatrixFecReceiveResult receive(const PacketView& wire_packet,
+        std::optional<SequenceNumber> receive_floor = std::nullopt) noexcept;
     [[nodiscard]] static FecResourceEstimate estimate_resources(
         const PacketFilterConfiguration& configuration,
         std::size_t receive_capacity_packets,

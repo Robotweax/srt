@@ -446,16 +446,24 @@ FecResourceUsage RowFecDecoder::resource_usage() const noexcept
         irrecoverable_losses_.capacity() * sizeof(SequenceRange), 0U);
 }
 
-std::optional<std::uint64_t> RowFecDecoder::unwrap(
-    SequenceNumber sequence) noexcept
+std::optional<std::uint64_t> RowFecDecoder::unwrap(SequenceNumber sequence,
+    bool source_packet, std::optional<SequenceNumber> receive_floor) noexcept
 {
+    if (receive_floor.has_value()) {
+        const auto offset = sequence.distance_from(*receive_floor);
+        if (offset < 0
+            || static_cast<std::size_t>(offset) >= receive_capacity_packets_) {
+            return std::nullopt;
+        }
+    }
+    bool resynchronize = false;
     if (!has_latest_) {
         const std::uint32_t forward =
             (sequence.value()
                 - initial_sequence_.value())
             & SequenceNumber::mask;
         if (forward >= receive_capacity_packets_) {
-            return std::nullopt;
+            resynchronize = true;
         }
     } else {
         const std::int32_t distance =
@@ -463,12 +471,33 @@ std::optional<std::uint64_t> RowFecDecoder::unwrap(
         if (distance > 0
             && static_cast<std::uint32_t>(distance)
                 >= receive_capacity_packets_) {
-            return std::nullopt;
+            resynchronize = true;
         }
     }
-    return unwrap_sequence(
-        initial_sequence_, sequence, latest_sequence_,
-        latest_index_, has_latest_);
+    if (resynchronize && !source_packet) {
+        return std::nullopt;
+    }
+    const auto index = unwrap_sequence(initial_sequence_, sequence,
+        latest_sequence_, latest_index_, has_latest_);
+    std::optional<std::uint64_t> floor_index;
+    if (index.has_value() && receive_floor.has_value()) {
+        const auto offset =
+            static_cast<std::uint32_t>(sequence.distance_from(*receive_floor));
+        if (*index >= offset) {
+            floor_index = *index - offset;
+            minimum_recoverable_index_ =
+                std::max(minimum_recoverable_index_, *floor_index);
+        }
+    }
+    if (resynchronize && index.has_value()) {
+        // The old ring cannot contribute to this receive window. Skip it
+        // without iterating over an unbounded number of expired rows.
+        for (auto& group : groups_) {
+            group.active = false;
+        }
+        minimum_retained_row_ = floor_index.value_or(*index) / columns_;
+    }
+    return index;
 }
 
 RowFecDecoder::Group* RowFecDecoder::group_for(
@@ -680,15 +709,16 @@ void RowFecDecoder::append_irrecoverable_range(
         return;
     }
     const std::uint64_t base = row * columns_;
-    const SequenceRange range{
+    if (base + last_position < minimum_recoverable_index_) {
+        return;
+    }
+    const std::uint64_t first_index =
+        std::max(base + first_position, minimum_recoverable_index_);
+    const SequenceRange range {
         .first = initial_sequence_.advanced(
-            static_cast<std::uint32_t>(
-                (base + first_position)
-                & SequenceNumber::mask)),
-        .last = initial_sequence_.advanced(
-            static_cast<std::uint32_t>(
-                (base + last_position)
-                & SequenceNumber::mask)),
+            static_cast<std::uint32_t>(first_index & SequenceNumber::mask)),
+        .last = initial_sequence_.advanced(static_cast<std::uint32_t>(
+            (base + last_position) & SequenceNumber::mask)),
     };
     if (irrecoverable_loss_count_ != 0U) {
         auto& previous = irrecoverable_losses_[
@@ -781,8 +811,8 @@ RowFecReceiveResult RowFecDecoder::finish_result(
     return result;
 }
 
-RowFecReceiveResult RowFecDecoder::receive(
-    const PacketView& wire_packet) noexcept
+RowFecReceiveResult RowFecDecoder::receive(const PacketView& wire_packet,
+    std::optional<SequenceNumber> receive_floor) noexcept
 {
     irrecoverable_loss_count_ = 0;
     irrecoverable_loss_overflow_ = false;
@@ -803,8 +833,12 @@ RowFecReceiveResult RowFecDecoder::receive(
                 .consume_control_packet = true,
             };
         }
-        const auto index = unwrap(
-            wire_packet.data.sequence);
+        if (receive_floor.has_value()
+            && wire_packet.data.sequence.distance_from(*receive_floor) < 0) {
+            return finish_result({.consume_control_packet = true});
+        }
+        const auto index =
+            unwrap(wire_packet.data.sequence, false, receive_floor);
         if (!index.has_value()
             || *index % columns_ != columns_ - 1U) {
             return {
@@ -839,8 +873,7 @@ RowFecReceiveResult RowFecDecoder::receive(
         > maximum_payload_size_) {
         return {.error = Error::invalid_packet_type};
     }
-    const auto index = unwrap(
-        wire_packet.data.sequence);
+    const auto index = unwrap(wire_packet.data.sequence, true, receive_floor);
     if (!index.has_value()) {
         return {};
     }
@@ -1204,17 +1237,24 @@ FecResourceUsage ColumnFecDecoder::resource_usage() const noexcept
         0U);
 }
 
-std::optional<std::uint64_t>
-ColumnFecDecoder::unwrap(
-    SequenceNumber sequence) noexcept
+std::optional<std::uint64_t> ColumnFecDecoder::unwrap(SequenceNumber sequence,
+    bool source_packet, std::optional<SequenceNumber> receive_floor) noexcept
 {
+    if (receive_floor.has_value()) {
+        const auto offset = sequence.distance_from(*receive_floor);
+        if (offset < 0
+            || static_cast<std::size_t>(offset) >= receive_capacity_packets_) {
+            return std::nullopt;
+        }
+    }
+    bool resynchronize = false;
     if (!has_latest_) {
         const std::uint32_t forward =
             (sequence.value()
                 - initial_sequence_.value())
             & SequenceNumber::mask;
         if (forward >= receive_capacity_packets_) {
-            return std::nullopt;
+            resynchronize = true;
         }
     } else {
         const std::int32_t distance =
@@ -1222,12 +1262,39 @@ ColumnFecDecoder::unwrap(
         if (distance > 0
             && static_cast<std::uint32_t>(distance)
                 >= receive_capacity_packets_) {
-            return std::nullopt;
+            resynchronize = true;
         }
     }
-    return unwrap_sequence(
-        initial_sequence_, sequence, latest_sequence_,
-        latest_index_, has_latest_);
+    if (resynchronize && !source_packet) {
+        return std::nullopt;
+    }
+    const auto index = unwrap_sequence(initial_sequence_, sequence,
+        latest_sequence_, latest_index_, has_latest_);
+    std::optional<std::uint64_t> floor_index;
+    if (index.has_value() && receive_floor.has_value()) {
+        const auto offset =
+            static_cast<std::uint32_t>(sequence.distance_from(*receive_floor));
+        if (*index >= offset) {
+            floor_index = *index - offset;
+            minimum_recoverable_index_ =
+                std::max(minimum_recoverable_index_, *floor_index);
+        }
+    }
+    if (resynchronize && index.has_value()) {
+        for (auto& group : groups_) {
+            group.active = false;
+        }
+        if (floor_index.has_value()) {
+            const auto first_series = *floor_index / matrix_size_;
+            minimum_retained_series_ =
+                first_series == 0U ? 0U : first_series - 1U;
+        } else {
+            const auto location = locate_source(*index);
+            minimum_retained_series_ =
+                location.has_value() ? location->series : *index / matrix_size_;
+        }
+    }
+    return index;
 }
 
 std::uint64_t ColumnFecDecoder::first_base(
@@ -1532,6 +1599,9 @@ ColumnFecDecoder::try_reconstruct(
 void ColumnFecDecoder::append_loss_index(
     std::uint64_t index) noexcept
 {
+    if (index < minimum_recoverable_index_) {
+        return;
+    }
     if (loss_index_count_
         == loss_indices_.size()) {
         loss_overflow_ = true;
@@ -1717,8 +1787,8 @@ ColumnFecDecoder::finish_result(
     return result;
 }
 
-ColumnFecReceiveResult ColumnFecDecoder::receive(
-    const PacketView& wire_packet) noexcept
+ColumnFecReceiveResult ColumnFecDecoder::receive(const PacketView& wire_packet,
+    std::optional<SequenceNumber> receive_floor) noexcept
 {
     loss_index_count_ = 0;
     irrecoverable_loss_count_ = 0;
@@ -1745,8 +1815,12 @@ ColumnFecReceiveResult ColumnFecDecoder::receive(
                 .consume_control_packet = true,
             };
         }
-        const auto index = unwrap(
-            wire_packet.data.sequence);
+        if (receive_floor.has_value()
+            && wire_packet.data.sequence.distance_from(*receive_floor) < 0) {
+            return finish_result({.consume_control_packet = true});
+        }
+        const auto index =
+            unwrap(wire_packet.data.sequence, false, receive_floor);
         if (!index.has_value()) {
             return {
                 .error =
@@ -1798,8 +1872,7 @@ ColumnFecReceiveResult ColumnFecDecoder::receive(
         return {
             .error = Error::invalid_packet_type};
     }
-    const auto index = unwrap(
-        wire_packet.data.sequence);
+    const auto index = unwrap(wire_packet.data.sequence, true, receive_floor);
     if (!index.has_value()) {
         return finish_result();
     }
@@ -2137,8 +2210,8 @@ MatrixFecReceiveResult MatrixFecDecoder::finish_result(
     };
 }
 
-MatrixFecReceiveResult MatrixFecDecoder::receive(
-    const PacketView& wire_packet) noexcept
+MatrixFecReceiveResult MatrixFecDecoder::receive(const PacketView& wire_packet,
+    std::optional<SequenceNumber> receive_floor) noexcept
 {
     reconstructed_packet_count_ = 0;
     irrecoverable_loss_count_ = 0;
@@ -2160,12 +2233,10 @@ MatrixFecReceiveResult MatrixFecDecoder::receive(
         }
         if (control.header.group_index == -1) {
             error_ = drain_reconstruction_chain(
-                row_.receive(wire_packet),
-                Dimension::row);
+                row_.receive(wire_packet, receive_floor), Dimension::row);
         } else if (control.header.group_index >= 0) {
             error_ = drain_reconstruction_chain(
-                column_.receive(wire_packet),
-                Dimension::column);
+                column_.receive(wire_packet, receive_floor), Dimension::column);
         } else {
             error_ =
                 Error::invalid_control_payload;
@@ -2176,14 +2247,12 @@ MatrixFecReceiveResult MatrixFecDecoder::receive(
     current_source_sequence_ =
         wire_packet.data.sequence;
     error_ = drain_reconstruction_chain(
-        row_.receive(wire_packet),
-        Dimension::row);
+        row_.receive(wire_packet, receive_floor), Dimension::row);
     if (error_ != Error::none) {
         return finish_result(false);
     }
     error_ = drain_reconstruction_chain(
-        column_.receive(wire_packet),
-        Dimension::column);
+        column_.receive(wire_packet, receive_floor), Dimension::column);
     return finish_result(false);
 }
 

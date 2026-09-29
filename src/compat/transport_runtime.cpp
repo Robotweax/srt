@@ -2469,10 +2469,11 @@ ConnectionRuntime::FecReceiveBatch
 ConnectionRuntime::receive_fec_packet(
     const PacketView& wire_packet) noexcept
 {
+    const SequenceNumber receive_floor =
+        session_.receive_buffer().first_stored_sequence();
     if (matrix_fec_decoder_.has_value()) {
         const auto result =
-            matrix_fec_decoder_->receive(
-                wire_packet);
+            matrix_fec_decoder_->receive(wire_packet, receive_floor);
         return {
             .error = result.error,
             .consume_control_packet =
@@ -2486,11 +2487,9 @@ ConnectionRuntime::receive_fec_packet(
     RowFecReceiveResult result{
         .error = Error::invalid_state};
     if (row_fec_decoder_.has_value()) {
-        result = row_fec_decoder_->receive(
-            wire_packet);
+        result = row_fec_decoder_->receive(wire_packet, receive_floor);
     } else if (column_fec_decoder_.has_value()) {
-        result = column_fec_decoder_->receive(
-            wire_packet);
+        result = column_fec_decoder_->receive(wire_packet, receive_floor);
     }
     std::span<const PacketView> reconstructed;
     if (result.has_reconstructed_packet) {
@@ -3077,6 +3076,12 @@ void ConnectionRuntime::process_packet(
         const auto filtered =
             receive_fec_packet(packet);
         if (!filtered) {
+            // A malformed FEC source must not hide otherwise acceptable
+            // original DATA from the reliability receive window.
+            if (packet.data.message_number != 0U
+                && process_reliability_packet_locked(packet, now)) {
+                last_peer_activity_microseconds_ = now;
+            }
             return;
         }
         last_peer_activity_microseconds_ = now;

@@ -1216,3 +1216,190 @@ TEST(fec_decoder_owned_storage_is_stable_under_wire_input)
         REQUIRE_EQ(before, decoder.resource_usage());
     }
 }
+
+TEST(fec_row_resynchronizes_after_receive_window_gap)
+{
+    const std::array modes {"always", "onreq", "never"};
+    const std::array<std::byte, 1> payload {std::byte {1}};
+    for (const auto* mode : modes) {
+        for (const std::uint32_t initial : {0U, SequenceNumber::mask - 8U}) {
+            const auto config = row_configuration(3U, mode);
+            const SequenceNumber start {initial};
+            const auto sequence = [&](std::uint32_t offset) {
+                return start.advanced(offset);
+            };
+            RowFecDecoder decoder {config, start, 16U, 4U};
+            RowFecEncoder encoder {config, sequence(18U), 4U};
+            REQUIRE(decoder.receive(
+                source_packet(initial, 0U, EncryptionKey::none, payload),
+                start));
+
+            for (std::uint32_t index = 18U; index < 21U; ++index) {
+                const auto source = source_packet(sequence(index).value(),
+                    index, EncryptionKey::none, payload);
+                REQUIRE_EQ(encoder.feed_source(source), Error::none);
+            }
+            const auto parity = encoder.control_packet();
+            REQUIRE(parity.has_value());
+            const PacketView control {
+                .kind = PacketKind::data,
+                .data = parity->header,
+                .payload = parity->payload,
+            };
+            REQUIRE(!decoder.receive(control, sequence(18U)));
+            REQUIRE(decoder.receive(source_packet(sequence(18U).value(), 18U,
+                                        EncryptionKey::none, payload),
+                sequence(18U)));
+            REQUIRE(decoder.receive(source_packet(sequence(20U).value(), 20U,
+                                        EncryptionKey::none, payload),
+                sequence(18U)));
+            const auto rebuilt = decoder.receive(control, sequence(18U));
+            REQUIRE(rebuilt);
+            REQUIRE(rebuilt.has_reconstructed_packet);
+            REQUIRE_EQ(
+                rebuilt.reconstructed_packet.data.sequence, sequence(19U));
+        }
+    }
+}
+
+TEST(fec_column_and_matrix_resynchronize_after_receive_window_gap)
+{
+    const std::array modes {"always", "onreq", "never"};
+    const std::array<std::byte, 1> payload {std::byte {1}};
+    for (const auto* mode : modes) {
+        for (const auto* layout : {"even", "staircase"}) {
+            const SequenceNumber initial {SequenceNumber::mask - 8U};
+            const auto sequence = [&](std::uint32_t offset) {
+                return initial.advanced(offset);
+            };
+            const auto config = column_configuration(2U, 2U, layout, mode);
+            ColumnFecDecoder decoder {config, initial, 16U, 4U};
+            ColumnFecEncoder encoder {config, sequence(16U), 4U};
+            REQUIRE(decoder.receive(source_packet(initial.value(), 0U,
+                                        EncryptionKey::none, payload),
+                initial));
+            for (std::uint32_t index = 16U; index < 20U; ++index) {
+                const auto source = source_packet(sequence(index).value(),
+                    index, EncryptionKey::none, payload);
+                REQUIRE_EQ(encoder.feed_source(source), Error::none);
+                if (index != 18U) {
+                    REQUIRE(decoder.receive(source, sequence(16U)));
+                }
+                if (encoder.control_packet_ready()) {
+                    const auto parity = encoder.control_packet();
+                    REQUIRE(parity.has_value());
+                    const PacketView control {
+                        .kind = PacketKind::data,
+                        .data = parity->header,
+                        .payload = parity->payload,
+                    };
+                    const auto rebuilt =
+                        decoder.receive(control, sequence(16U));
+                    REQUIRE(rebuilt);
+                    if (parity->header.sequence == sequence(18U)) {
+                        REQUIRE(rebuilt.has_reconstructed_packet);
+                        REQUIRE_EQ(rebuilt.reconstructed_packet.data.sequence,
+                            sequence(18U));
+                    }
+                    encoder.consume_control_packet();
+                }
+            }
+
+            const auto matrix_config =
+                matrix_configuration(3U, 2U, layout, mode);
+            MatrixFecDecoder matrix {matrix_config, initial, 16U, 4U};
+            MatrixFecEncoder matrix_encoder {matrix_config, sequence(18U), 4U};
+            REQUIRE(matrix.receive(source_packet(initial.value(), 0U,
+                                       EncryptionKey::none, payload),
+                initial));
+            for (std::uint32_t index = 18U; index < 21U; ++index) {
+                const auto source = source_packet(sequence(index).value(),
+                    index, EncryptionKey::none, payload);
+                REQUIRE_EQ(matrix_encoder.feed_source(source), Error::none);
+                if (index != 19U) {
+                    REQUIRE(matrix.receive(source, sequence(18U)));
+                }
+            }
+            const auto parity = matrix_encoder.control_packet();
+            REQUIRE(parity.has_value());
+            const PacketView control {
+                .kind = PacketKind::data,
+                .data = parity->header,
+                .payload = parity->payload,
+            };
+            const auto rebuilt = matrix.receive(control, sequence(18U));
+            REQUIRE(rebuilt);
+            REQUIRE_EQ(rebuilt.reconstructed_packets.size(), 1U);
+            REQUIRE_EQ(
+                rebuilt.reconstructed_packets[0].data.sequence, sequence(19U));
+        }
+    }
+}
+
+TEST(fec_control_and_out_of_window_source_cannot_resynchronize)
+{
+    const auto config = row_configuration(3U);
+    const std::array<std::byte, 1> payload {std::byte {1}};
+    RowFecDecoder decoder {config, SequenceNumber {0}, 16U, 4U};
+    RowFecEncoder old_encoder {config, SequenceNumber {0}, 4U};
+    RowFecEncoder new_encoder {config, SequenceNumber {18}, 4U};
+    for (std::uint32_t index = 0; index < 3U; ++index) {
+        const auto source =
+            source_packet(index, index, EncryptionKey::none, payload);
+        REQUIRE_EQ(old_encoder.feed_source(source), Error::none);
+        if (index != 1U) {
+            REQUIRE(decoder.receive(source, SequenceNumber {0}));
+        }
+    }
+    for (std::uint32_t index = 18U; index < 21U; ++index) {
+        REQUIRE_EQ(new_encoder.feed_source(source_packet(
+                       index, index, EncryptionKey::none, payload)),
+            Error::none);
+    }
+    const auto new_parity = new_encoder.control_packet();
+    REQUIRE(new_parity.has_value());
+    const PacketView far_control {
+        .kind = PacketKind::data,
+        .data = new_parity->header,
+        .payload = new_parity->payload,
+    };
+    REQUIRE(!decoder.receive(far_control, SequenceNumber {0}));
+    REQUIRE(
+        decoder.receive(source_packet(18U, 18U, EncryptionKey::none, payload),
+            SequenceNumber {0}));
+
+    const auto old_parity = old_encoder.control_packet();
+    REQUIRE(old_parity.has_value());
+    const PacketView old_control {
+        .kind = PacketKind::data,
+        .data = old_parity->header,
+        .payload = old_parity->payload,
+    };
+    const auto rebuilt = decoder.receive(old_control, SequenceNumber {0});
+    REQUIRE(rebuilt);
+    REQUIRE(rebuilt.has_reconstructed_packet);
+    REQUIRE_EQ(rebuilt.reconstructed_packet.data.sequence, SequenceNumber {1});
+    const auto late_control = decoder.receive(old_control, SequenceNumber {3});
+    REQUIRE(late_control);
+    REQUIRE(late_control.consume_control_packet);
+    REQUIRE(!late_control.has_reconstructed_packet);
+}
+
+TEST(fec_resynchronization_reports_only_losses_at_receive_floor)
+{
+    const auto config = row_configuration(3U, "onreq");
+    const std::array<std::byte, 1> payload {std::byte {1}};
+    RowFecDecoder decoder {config, SequenceNumber {0}, 16U, 4U};
+    REQUIRE(decoder.receive(source_packet(0U, 0U, EncryptionKey::none, payload),
+        SequenceNumber {0}));
+    REQUIRE(
+        decoder.receive(source_packet(18U, 18U, EncryptionKey::none, payload),
+            SequenceNumber {17}));
+    const auto advanced =
+        decoder.receive(source_packet(20U, 20U, EncryptionKey::none, payload),
+            SequenceNumber {17});
+    REQUIRE(advanced);
+    REQUIRE_EQ(advanced.irrecoverable_losses.size(), 1U);
+    REQUIRE_EQ(advanced.irrecoverable_losses[0].first, SequenceNumber {17});
+    REQUIRE_EQ(advanced.irrecoverable_losses[0].last, SequenceNumber {17});
+}
