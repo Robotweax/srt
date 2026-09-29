@@ -34,6 +34,28 @@ struct ReadinessHub {
     }
 };
 
+void ReadinessSource::note_not_ready(int events) noexcept
+{
+    if ((events & SRT_EPOLL_IN) != 0) {
+        low_in_.fetch_add(1, std::memory_order_release);
+    }
+    if ((events & SRT_EPOLL_OUT) != 0) {
+        low_out_.fetch_add(1, std::memory_order_release);
+    }
+    if ((events & SRT_EPOLL_ERR) != 0) {
+        low_err_.fetch_add(1, std::memory_order_release);
+    }
+}
+
+ReadinessSource::LowEpochs ReadinessSource::low_epochs() const noexcept
+{
+    return {
+        .in = low_in_.load(std::memory_order_acquire),
+        .out = low_out_.load(std::memory_order_acquire),
+        .err = low_err_.load(std::memory_order_acquire),
+    };
+}
+
 ReadinessObserver::ReadinessObserver()
 {
     auto& hub = ReadinessHub::instance();

@@ -36,6 +36,7 @@ constexpr std::int64_t system_poll_interval_milliseconds = 10;
 struct Subscription {
     int events = default_events;
     int edge_seen = 0;
+    ReadinessSource::LowEpochs low_seen;
     std::uint64_t update_seen = 0;
     std::uint64_t update_pending = 0;
     SRTSOCKET handle = SRT_INVALID_SOCK;
@@ -406,6 +407,19 @@ void refresh_subscription(PollRecord& record, Subscription& subscription)
         ++record.readiness_queries;
         readiness =
             subject_readiness(subscription.handle, record.group_member_scratch);
+        subscription.edge_seen = 0;
+        subscription.low_seen = readiness.source == nullptr
+            ? ReadinessSource::LowEpochs {}
+            : readiness.source->low_epochs();
+    } else if (readiness.source != nullptr) {
+        const auto low = readiness.source->low_epochs();
+        if (low.in != subscription.low_seen.in)
+            subscription.edge_seen &= ~SRT_EPOLL_IN;
+        if (low.out != subscription.low_seen.out)
+            subscription.edge_seen &= ~SRT_EPOLL_OUT;
+        if (low.err != subscription.low_seen.err)
+            subscription.edge_seen &= ~SRT_EPOLL_ERR;
+        subscription.low_seen = low;
     }
     subscription.cached = std::move(readiness);
     update_report(record, subscription);
