@@ -1,4 +1,5 @@
 #include "robotweax/srt/timing.hpp"
+#include "compat/submillisecond_pacing_platform.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -289,6 +290,7 @@ void PacketPacer::on_packet_sent(std::size_t bytes,
     const std::uint64_t interval = std::max<std::uint64_t>(1U,
         (static_cast<std::uint64_t>(bytes) * 1'000'000ULL
             + bytes_per_second_ - 1U) / bytes_per_second_);
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
     // Keep the ideal schedule while this send is no later than the credit
     // after its slot; otherwise start a fresh schedule at the send time.
     const bool keeps_schedule = has_schedule_
@@ -298,6 +300,12 @@ void PacketPacer::on_packet_sent(std::size_t bytes,
         keeps_schedule ? next_send_microseconds_ : now_microseconds;
     next_send_microseconds_ = base + interval;
     has_schedule_ = true;
+#else
+    // Preserve the previous schedule on Windows and other platforms: a late
+    // send starts the next interval at its actual send time.
+    next_send_microseconds_ = std::max(next_send_microseconds_, now_microseconds)
+        + interval;
+#endif
 }
 
 void PacketPacer::set_schedule_credit(std::uint64_t microseconds) noexcept

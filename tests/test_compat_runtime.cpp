@@ -5,6 +5,7 @@
 #include "robotweax/srt/control.hpp"
 #include "compat/readiness.hpp"
 #include "compat/transport_runtime.hpp"
+#include "compat/submillisecond_pacing_platform.hpp"
 #include "srt/srt.h"
 
 #include <algorithm>
@@ -7190,20 +7191,23 @@ TEST(compat_channel_fairness_preserves_deadlines_across_continuations)
     REQUIRE(fixture.poll().immediate_work);
     REQUIRE_EQ(fixture.attempted_ids.size(), 1U);
     // Only the last idle connection remains. The earlier 1 ms retry deadline
-    // must not restart when this continuation runs half a millisecond later:
-    // the residual 500 us is waited for with a timer, not resubmitted.
+    // must not restart when this continuation runs half a millisecond later.
     fixture.now = 1'500;
     const auto continued = fixture.poll(std::chrono::microseconds {500});
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
     REQUIRE(!continued.immediate_work);
     REQUIRE(continued.next_work_delay.has_value());
     REQUIRE(*continued.next_work_delay > std::chrono::microseconds {0});
     REQUIRE(*continued.next_work_delay <= std::chrono::microseconds {500});
+#else
+    REQUIRE(continued.immediate_work);
+    REQUIRE(!continued.next_work_delay.has_value());
+#endif
     REQUIRE_EQ(fixture.attempted_ids.size(), 1U);
     REQUIRE(!fixture.runtimes.front()->broken());
 
-    // A host whose timer wake-ups are repeatedly later than the pacer's
-    // credit makes the channel resubmit sub-millisecond deadlines as before,
-    // and it returns to timer waits once wake-ups are punctual again.
+    // Repeated late timer wakes enable coarse mode. Linux and macOS use it
+    // for fallback; Windows continues to resubmit short deadlines regardless.
     for (unsigned late = 0; late < TimerWakeMonitor::late_streak_to_enter;
         ++late) {
         fixture.channel->observe_timer_wake_for_testing(2'500);
@@ -7217,9 +7221,14 @@ TEST(compat_channel_fairness_preserves_deadlines_across_continuations)
     }
     REQUIRE(!fixture.channel->coarse_timer_mode_for_testing());
     fixture.now = 1'700;
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
     REQUIRE(!fixture.poll(std::chrono::microseconds {700}).immediate_work);
+#else
+    REQUIRE(fixture.poll(std::chrono::microseconds {700}).immediate_work);
+#endif
 }
 
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
 TEST(compat_channel_coarse_timer_probes_under_sustained_paced_send)
 {
     auto scheduler = std::make_shared<RuntimeScheduler>(
@@ -7290,12 +7299,16 @@ TEST(compat_channel_coarse_timer_probes_under_sustained_paced_send)
     REQUIRE(probes >= TimerWakeMonitor::punctual_streak_to_leave || recovered);
     REQUIRE(healthy);
 }
+#endif
 
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
 TEST(compat_channel_waits_for_sub_millisecond_pacing_slots_with_a_timer)
+#else
+TEST(compat_channel_resubmits_sub_millisecond_pacing_slots)
+#endif
 {
-    // A paced backlog whose next slot is under a millisecond away is a timer
-    // wait like any other deadline. Resubmitting until the slot arrived kept
-    // a shard busy with an empty socket read and a route sweep per pass.
+    // A paced backlog has a next slot under a millisecond away. Linux and
+    // macOS wait for a timer; Windows and other platforms resubmit at once.
     const auto channel = std::make_shared<DatagramChannel>();
     CapturedDatagrams output;
     channel->set_send_hook_for_testing(capture_datagram, &output);
@@ -7329,23 +7342,33 @@ TEST(compat_channel_waits_for_sub_millisecond_pacing_slots_with_a_timer)
     }
     const auto first = channel->poll_connections_for_testing(
         ConnectionRuntime::Clock::time_point {});
-    // The first packet starts the schedule; the backlog waits for its slot.
+    // The first packet starts the schedule.
     REQUIRE_EQ(take_datagrams(output).size(), 1U);
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
     REQUIRE(!first.immediate_work);
     REQUIRE(first.next_work_delay.has_value());
     REQUIRE(*first.next_work_delay > std::chrono::microseconds {0});
     REQUIRE(*first.next_work_delay <= std::chrono::microseconds {500});
+#else
+    REQUIRE(first.immediate_work);
+    REQUIRE(!first.next_work_delay.has_value());
+#endif
 
-    // The timer wakes 300 us late: the pacer's credit lets the missed slot
-    // go out at once and the next slot stays on the ideal schedule.
+    // Poll 300 us after the missed slot. Linux/macOS retain the ideal pacer
+    // schedule; Windows and other platforms resume immediately as before.
     now = 1'000 + 500 + 300;
     const auto late = channel->poll_connections_for_testing(
         ConnectionRuntime::Clock::time_point {}
         + std::chrono::microseconds {800});
     REQUIRE_EQ(take_datagrams(output).size(), 1U);
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
     REQUIRE(!late.immediate_work);
     REQUIRE(late.next_work_delay.has_value());
     REQUIRE_EQ(*late.next_work_delay, std::chrono::microseconds {200});
+#else
+    REQUIRE(late.immediate_work);
+    REQUIRE(!late.next_work_delay.has_value());
+#endif
     channel->unregister_connection(id);
 }
 

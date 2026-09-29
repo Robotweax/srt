@@ -130,13 +130,14 @@ struct PaceDecision {
     std::uint64_t next_ready_microseconds = 0;
 };
 
-// Rate pacer with a bounded schedule credit. The next send slot advances
-// along the ideal schedule as long as each send happens no later than the
-// credit after its slot, so a runtime that wakes up late from a timer can
-// send the packets it missed back to back without lowering the average rate.
+// On Linux and macOS, rate pacer with a bounded schedule credit. The next
+// send slot advances along the ideal schedule when a send is no later than
+// the credit after its slot. A late timer wake can then send missed packets
+// back to back without lowering the average rate.
 // A send later than the credit (an idle source, a closed flow window) starts
 // a fresh schedule at the send time, so a pause is never followed by a burst
-// larger than the credit's worth of packets.
+// larger than the credit's worth of packets. Windows and other platforms
+// retain the previous schedule based on the actual send time.
 class PacketPacer {
 public:
     static constexpr std::uint64_t default_schedule_credit_microseconds = 1'000;

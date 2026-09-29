@@ -1,4 +1,5 @@
 #include "compat/transport_runtime.hpp"
+#include "compat/submillisecond_pacing_platform.hpp"
 
 #include "robotweax/srt/codec.hpp"
 #include "compat/readiness.hpp"
@@ -1319,6 +1320,7 @@ RuntimePollResult DatagramChannel::poll_connections(
         ? std::chrono::duration_cast<std::chrono::microseconds>(
               *poll_round_deadline_ - current_time())
         : std::chrono::duration_cast<std::chrono::microseconds>(idle_wait_);
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
     if (delay <= std::chrono::microseconds::zero()) {
         return {.immediate_work = true};
     }
@@ -1342,6 +1344,14 @@ RuntimePollResult DatagramChannel::poll_connections(
             .coarse_timer_probe = true};
     }
     return {.next_work_delay = delay, .receive_wait_safe = can_wait};
+#else
+    // Keep the pre-CR-12 cooperative pacing behavior on Windows and other
+    // platforms, including the immediate continuation for due deadlines.
+    if (delay < std::chrono::milliseconds {1}) {
+        return {.immediate_work = true};
+    }
+    return {.next_work_delay = delay, .receive_wait_safe = can_wait};
+#endif
 }
 
 ConnectionRuntime::ConnectionRuntime(Configuration configuration)

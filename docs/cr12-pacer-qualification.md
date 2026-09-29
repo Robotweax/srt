@@ -1,10 +1,13 @@
 # CR-12: sub-millisecond pacing qualification
 
 This branch reapplies the two signed commits from #103 to `origin/main` at
-`f83165b` and adds `robotweax_srt_timer_wake_probe` so timer behavior can be
-measured through the actual runtime scheduler on each target OS. The probe
-reports 1,000 serial timer wakes after 20 warmups at 200, 500, and 1,000 us.
-Its lateness is measured from the requested deadline to callback entry.
+`f83165b`. The timer-wait and pacing-credit changes are enabled on Linux and
+macOS. Windows and other platforms retain the previous immediate continuation
+for sub-millisecond deadlines and the previous pacing schedule. The branch adds
+`robotweax_srt_timer_wake_probe` so timer behavior can be measured through the
+actual runtime scheduler on each target OS. The probe reports 1,000 serial
+timer wakes after 20 warmups at 200, 500, and 1,000 us. Its lateness is
+measured from the requested deadline to callback entry.
 
 ## macOS local evidence
 
@@ -75,12 +78,14 @@ and `--fault-delay-ms 1` for the 100 Mbit/s recovery test.
 ## Remaining qualification before merge
 
 - Repeat the native timer probe and same-host CPU/throughput comparisons on
-  Linux and Windows, especially at 20, 50, and 100 Mbit/s. Hosted runners with
-  different CPU models do not form a valid A/B comparison.
+  Linux, especially at 20, 50, and 100 Mbit/s. Hosted runners with different
+  CPU models do not form a valid A/B comparison.
+- Confirm the legacy sub-millisecond scheduling and pacing tests on native
+  Windows CI; no Windows performance gain is claimed by this branch.
 - Repeat macOS runs under controlled background load to resolve the small
   188-byte CPU change and measure burst depth distribution.
 - Repeat high-rate loss and retransmission with non-overlapping fault
-  injections, then compare latency and pacing distributions on all three OSes.
+  injections, then compare latency and pacing distributions on Linux and macOS.
 
 PF1/#105 covers a separate scheduler/readiness change and needs its own quiet,
 busy, shared-port, 64-socket, and 256-socket evidence.

@@ -1,6 +1,7 @@
 #include "test.hpp"
 
 #include "robotweax/srt/timing.hpp"
+#include "compat/submillisecond_pacing_platform.hpp"
 
 using namespace robotweax::srt;
 
@@ -108,6 +109,7 @@ TEST(packet_pacer_enforces_rate_and_flow_window)
     REQUIRE(!pacer.query(100'000, 4).ready);
 }
 
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
 TEST(packet_pacer_credit_keeps_the_average_rate_across_late_wake_ups)
 {
     // 200 bytes at 2 MB/s: one slot every 100 us. Every send is 70 us late
@@ -157,6 +159,23 @@ TEST(packet_pacer_catch_up_is_bounded_by_the_credit_and_restarts_after_a_pause)
     REQUIRE(pacer.query(resumed + 100, 0).ready);
     REQUIRE_EQ(pacer.schedule_credit_microseconds(), 300U);
 }
+
+#else
+TEST(packet_pacer_preserves_previous_schedule_on_windows_and_other_platforms)
+{
+    PacketPacer pacer {2'000'000, 64};
+    pacer.set_schedule_credit(300);
+    pacer.on_packet_sent(200, 5'000);
+    REQUIRE_EQ(pacer.query(5'100, 0).next_ready_microseconds, 5'100U);
+
+    // Even with credit configured, a late send starts the next slot at its
+    // actual send time instead of catching up missed slots.
+    pacer.on_packet_sent(200, 5'400);
+    REQUIRE(!pacer.query(5'499, 0).ready);
+    REQUIRE_EQ(pacer.query(5'500, 0).next_ready_microseconds, 5'500U);
+    REQUIRE(pacer.query(5'500, 0).ready);
+}
+#endif
 
 TEST(timer_wake_monitor_enters_coarse_mode_on_late_streaks_and_recovers)
 {
