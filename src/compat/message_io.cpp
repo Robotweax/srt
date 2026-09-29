@@ -1224,6 +1224,22 @@ int receive_group_message_implementation(
                             result.next_sequence);
                     }
                 }
+                // The member's pop notification may run before the group
+                // consumption cursor advances. Record a drained group level
+                // for edge-triggered observers even if a refill wins the
+                // race before their next wait.
+                if (group->readiness_source->has_observers()) {
+                    const bool any_member_ready = std::any_of(members.begin(),
+                        members.end(), [](const GroupIoMember& member) {
+                            return member.runtime
+                                ->next_readable_message_sequence()
+                                .has_value();
+                        });
+                    if (!any_member_ready) {
+                        group->readiness_source->note_not_ready(SRT_EPOLL_IN);
+                        ReadinessSignal::notify(*group->readiness_source);
+                    }
+                }
                 GroupRegistry::instance().note_io_result(group->handle,
                     generation, selected->id, selected->generation,
                     selected->terminal ? SRT_GST_BROKEN : SRT_GST_RUNNING,

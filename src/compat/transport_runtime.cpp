@@ -1492,6 +1492,9 @@ MessageIoResult ConnectionRuntime::queue_message(
         }
         if (peer_error_pending_) {
             peer_error_pending_ = false;
+            if (session_.send_buffer().available() == 0U) {
+                readiness_source_->note_not_ready(SRT_EPOLL_OUT);
+            }
             notify_readiness();
             return {.status = MessageIoStatus::peer_error};
         }
@@ -1513,6 +1516,9 @@ MessageIoResult ConnectionRuntime::queue_message(
         if (queued == Error::none) {
             statistics_.update_send_duration(now, true);
             sample_sender_buffer_statistics(now);
+            if (session_.send_buffer().available() == 0U) {
+                readiness_source_->note_not_ready(SRT_EPOLL_OUT);
+            }
             const MessageIoResult result {
                 .status = MessageIoStatus::success,
                 .bytes = message.size(),
@@ -1566,6 +1572,9 @@ MessageIoResult ConnectionRuntime::queue_group_message(
     }
     if (peer_error_pending_) {
         peer_error_pending_ = false;
+        if (session_.send_buffer().available() == 0U) {
+            readiness_source_->note_not_ready(SRT_EPOLL_OUT);
+        }
         notify_readiness();
         return {.status = MessageIoStatus::peer_error};
     }
@@ -1588,6 +1597,9 @@ MessageIoResult ConnectionRuntime::queue_group_message(
     }
     statistics_.update_send_duration(now, true);
     sample_sender_buffer_statistics(now);
+    if (session_.send_buffer().available() == 0U) {
+        readiness_source_->note_not_ready(SRT_EPOLL_OUT);
+    }
     const MessageIoResult result {
         .status = MessageIoStatus::success,
         .bytes = message.size(),
@@ -1656,6 +1668,9 @@ MessageIoResult ConnectionRuntime::receive_message(
             }
             session_.note_receive_buffer_released(now);
             sample_receiver_buffer_statistics(now);
+            if (!session_.data_ready_at(now)) {
+                readiness_source_->note_not_ready(SRT_EPOLL_IN);
+            }
             std::int64_t source_time = 0;
             const auto delivery = received.delivery_time_microseconds;
             if (delivery.has_value()
@@ -1767,6 +1782,9 @@ bool ConnectionRuntime::discard_received_before(
         return true;
     }
     sample_receiver_buffer_statistics(now_microseconds());
+    if (!session_.data_ready_at(now_microseconds())) {
+        readiness_source_->note_not_ready(SRT_EPOLL_IN);
+    }
     notify_readiness();
     return true;
 }
@@ -1796,6 +1814,9 @@ MessageIoResult ConnectionRuntime::queue_stream(
         }
         if (peer_error_pending_) {
             peer_error_pending_ = false;
+            if (session_.send_buffer().available() == 0U) {
+                readiness_source_->note_not_ready(SRT_EPOLL_OUT);
+            }
             notify_readiness();
             return {.status = MessageIoStatus::peer_error};
         }
@@ -1810,6 +1831,9 @@ MessageIoResult ConnectionRuntime::queue_stream(
         if (queued) {
             statistics_.update_send_duration(now, true);
             sample_sender_buffer_statistics(now);
+            if (session_.send_buffer().available() == 0U) {
+                readiness_source_->note_not_ready(SRT_EPOLL_OUT);
+            }
             const MessageIoResult result {
                 .status = MessageIoStatus::success,
                 .bytes = queued.bytes_accepted,
@@ -1862,6 +1886,9 @@ MessageIoResult ConnectionRuntime::receive_stream(
         if (received) {
             session_.note_receive_buffer_released(now);
             sample_receiver_buffer_statistics(now);
+            if (!session_.data_ready_at(now)) {
+                readiness_source_->note_not_ready(SRT_EPOLL_IN);
+            }
             const MessageIoResult result {
                 .status = MessageIoStatus::success,
                 .bytes = received.bytes_written,
@@ -1940,6 +1967,9 @@ bool ConnectionRuntime::service_receiver_tlpktdrop_locked(
             dropped.receiver_drop_packets,
             average_payload));
     sample_receiver_buffer_statistics(now);
+    if (!session_.data_ready_at(now)) {
+        readiness_source_->note_not_ready(SRT_EPOLL_IN);
+    }
     if (!send_actions(dropped.actions, now)) {
         return false;
     }
@@ -2779,6 +2809,9 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         return false;
     }
     const bool readable_now = session_.data_ready_at(now);
+    if (readable_before && !readable_now) {
+        readiness_source_->note_not_ready(SRT_EPOLL_IN);
+    }
     const auto delivery_now = session_.next_receive_delivery_time();
     const bool receive_edge = readable_now != readable_before
         || delivery_now != delivery_before
@@ -3166,6 +3199,9 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     const bool readable_now = session_.data_ready_at(now);
     if (readable_now != last_readable_state_) {
         last_readable_state_ = readable_now;
+        if (!readable_now) {
+            readiness_source_->note_not_ready(SRT_EPOLL_IN);
+        }
         notify_readiness();
     }
     const std::size_t send_size_before_drop =

@@ -22,9 +22,30 @@ class ReadinessObserver;
 class ReadinessSource {
     friend class ReadinessWatch;
     friend class ReadinessSignal;
+
+public:
+    struct LowEpochs {
+        std::uint64_t in = 0;
+        std::uint64_t out = 0;
+        std::uint64_t err = 0;
+    };
+
+    // Producers record a low level before publishing the next change. Each
+    // epoll subscription compares these epochs independently after a rescan.
+    void note_not_ready(int events) noexcept;
+    [[nodiscard]] LowEpochs low_epochs() const noexcept;
+    [[nodiscard]] bool has_observers() const noexcept
+    {
+        return observed_.load(std::memory_order_acquire);
+    }
+
+private:
     std::mutex mutex_;
     ReadinessWatch* first_ = nullptr;
     std::atomic_bool observed_ = false;
+    std::atomic<std::uint64_t> low_in_ {0};
+    std::atomic<std::uint64_t> low_out_ {0};
+    std::atomic<std::uint64_t> low_err_ {0};
 };
 
 class ReadinessObserver {

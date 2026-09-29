@@ -1,6 +1,7 @@
 #include "test.hpp"
 
 #include "robotweax/srt/packet.hpp"
+#include "robotweax/srt/control.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/readiness.hpp"
 #include "compat/epoll.hpp"
@@ -176,58 +177,114 @@ TEST(compat_epoll_reports_level_and_edge_triggered_message_readiness)
     int watched = SRT_EPOLL_OUT;
     REQUIRE_EQ(srt_epoll_add_usock(eid, socket, &watched), 0);
 
-    std::array<SRT_EPOLL_EVENT, 2> events{};
-    REQUIRE_EQ(srt_epoll_uwait(
-                   eid, events.data(),
-                   static_cast<int>(events.size()), 0),
+    std::array<SRT_EPOLL_EVENT, 2> events {};
+    REQUIRE_EQ(
+        srt_epoll_uwait(eid, events.data(), static_cast<int>(events.size()), 0),
         1);
     REQUIRE_EQ(events[0].events, SRT_EPOLL_OUT);
-    REQUIRE_EQ(srt_epoll_uwait(
-                   eid, events.data(),
-                   static_cast<int>(events.size()), 0),
+    REQUIRE_EQ(
+        srt_epoll_uwait(eid, events.data(), static_cast<int>(events.size()), 0),
         1);
 
     watched = SRT_EPOLL_IN | SRT_EPOLL_ET;
     REQUIRE_EQ(srt_epoll_update_usock(eid, socket, &watched), 0);
-    REQUIRE_EQ(srt_epoll_uwait(
-                   eid, events.data(),
+    const int second_eid = srt_epoll_create();
+    REQUIRE(second_eid >= 0);
+    REQUIRE_EQ(srt_epoll_add_usock(second_eid, socket, &watched), 0);
+    REQUIRE_EQ(
+        srt_epoll_uwait(eid, events.data(), static_cast<int>(events.size()), 0),
+        0);
+    REQUIRE_EQ(srt_epoll_uwait(second_eid, events.data(),
                    static_cast<int>(events.size()), 0),
         0);
 
-    const std::array<std::byte, 4> first_payload{
-        std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}};
-    const PacketView first =
-        single_packet(initial, 1, first_payload);
+    const std::array<std::byte, 4> first_payload {
+        std::byte {1}, std::byte {2}, std::byte {3}, std::byte {4}};
+    const PacketView first = single_packet(initial, 1, first_payload);
     runtime->process_packet(first, peer);
-    REQUIRE_EQ(srt_epoll_uwait(
-                   eid, events.data(),
+    REQUIRE_EQ(
+        srt_epoll_uwait(eid, events.data(), static_cast<int>(events.size()), 0),
+        1);
+    REQUIRE_EQ(events[0].events, SRT_EPOLL_IN);
+    REQUIRE_EQ(srt_epoll_uwait(second_eid, events.data(),
                    static_cast<int>(events.size()), 0),
         1);
     REQUIRE_EQ(events[0].events, SRT_EPOLL_IN);
-    REQUIRE_EQ(srt_epoll_uwait(
-                   eid, events.data(),
-                   static_cast<int>(events.size()), 0),
+    REQUIRE_EQ(
+        srt_epoll_uwait(eid, events.data(), static_cast<int>(events.size()), 0),
         0);
 
-    std::array<std::byte, 32> received{};
-    REQUIRE_EQ(runtime->receive_message(
-                   received, false, -1).status,
+    std::array<std::byte, 32> received {};
+    REQUIRE_EQ(runtime->receive_message(received, false, -1).status,
         MessageIoStatus::success);
-    REQUIRE_EQ(srt_epoll_uwait(
-                   eid, events.data(),
-                   static_cast<int>(events.size()), 0),
-        0);
 
-    const std::array<std::byte, 2> second_payload{
-        std::byte{5}, std::byte{6}};
-    const PacketView second =
-        single_packet(initial.next(), 2, second_payload);
+    const std::array<std::byte, 2> second_payload {
+        std::byte {5}, std::byte {6}};
+    const PacketView second = single_packet(initial.next(), 2, second_payload);
     runtime->process_packet(second, peer);
-    REQUIRE_EQ(srt_epoll_uwait(
-                   eid, events.data(),
+    REQUIRE_EQ(
+        srt_epoll_uwait(eid, events.data(), static_cast<int>(events.size()), 0),
+        1);
+    REQUIRE_EQ(events[0].events, SRT_EPOLL_IN);
+    REQUIRE_EQ(srt_epoll_uwait(second_eid, events.data(),
                    static_cast<int>(events.size()), 0),
         1);
     REQUIRE_EQ(events[0].events, SRT_EPOLL_IN);
+
+    REQUIRE_EQ(srt_epoll_release(second_eid), 0);
+    REQUIRE_EQ(srt_epoll_release(eid), 0);
+    REQUIRE_EQ(srt_close(socket), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
+
+TEST(compat_epoll_rearms_out_after_full_buffer_drains_before_wait)
+{
+    const SRTSOCKET socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    const auto record = SocketRegistry::instance().find(socket);
+    REQUIRE(record != nullptr);
+    REQUIRE_EQ(record->native_options.set(SocketOption::send_buffer_packets, 1),
+        Error::none);
+    const Ipv4Endpoint peer = Ipv4Endpoint::loopback(9'002);
+    const SequenceNumber initial {5'000};
+    const auto runtime = attach_test_runtime(socket, peer, initial);
+    const int eid = srt_epoll_create();
+    REQUIRE(eid >= 0);
+    const int watched = SRT_EPOLL_OUT | SRT_EPOLL_ET;
+    REQUIRE_EQ(srt_epoll_add_usock(eid, socket, &watched), 0);
+    SRT_EPOLL_EVENT event {};
+    REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 1);
+    REQUIRE_EQ(event.events, SRT_EPOLL_OUT);
+    REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 0);
+
+    const std::array<std::byte, 1> payload {std::byte {'x'}};
+    REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    REQUIRE(!runtime->writable());
+    (void)runtime->poll();
+    std::array<std::byte, 32> bytes {};
+    const Acknowledgement acknowledgement {
+        .kind = AcknowledgementKind::full,
+        .acknowledgement_number = 1,
+        .next_sequence = initial.next(),
+        .available_receive_buffer_packets = 256,
+    };
+    const auto encoded = encode_acknowledgement_payload(acknowledgement, bytes);
+    REQUIRE(encoded);
+    const PacketView packet {
+        .kind = PacketKind::control,
+        .control =
+            {
+                .type = ControlType::acknowledgement,
+                .type_specific = 1,
+                .destination_socket_id = 1,
+            },
+        .payload = std::span {bytes}.first(encoded.bytes_written),
+    };
+    runtime->process_packet(packet, peer);
+    REQUIRE(runtime->writable());
+    REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 1);
+    REQUIRE_EQ(event.events, SRT_EPOLL_OUT);
 
     REQUIRE_EQ(srt_epoll_release(eid), 0);
     REQUIRE_EQ(srt_close(socket), 0);

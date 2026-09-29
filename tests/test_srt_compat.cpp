@@ -5670,51 +5670,43 @@ TEST(srt_compat_epoll_drives_nonblocking_connect_and_accept)
     REQUIRE_EQ(srt_listen(listener, 4), 0);
 
     const bool asynchronous = false;
-    REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVSYN,
-                   &asynchronous,
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVSYN, &asynchronous,
                    static_cast<int>(sizeof(asynchronous))),
         0);
     const int listener_poll = srt_epoll_create();
     REQUIRE(listener_poll >= 0);
-    const int accept_events = SRT_EPOLL_IN | SRT_EPOLL_ERR;
-    REQUIRE_EQ(srt_epoll_add_usock(
-                   listener_poll, listener, &accept_events),
-        0);
+    const int accept_events = SRT_EPOLL_IN | SRT_EPOLL_ERR | SRT_EPOLL_ET;
+    REQUIRE_EQ(srt_epoll_add_usock(listener_poll, listener, &accept_events), 0);
 
-    sockaddr_in listener_name{};
+    sockaddr_in listener_name {};
     int listener_name_size = static_cast<int>(sizeof(listener_name));
-    REQUIRE_EQ(srt_getsockname(listener,
-                   reinterpret_cast<sockaddr*>(&listener_name),
-                   &listener_name_size),
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&listener_name),
+            &listener_name_size),
         0);
 
     const SRTSOCKET caller = srt_create_socket();
     REQUIRE(caller != SRT_INVALID_SOCK);
-    REQUIRE_EQ(srt_setsockflag(caller, SRTO_RCVSYN,
-                   &asynchronous,
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_RCVSYN, &asynchronous,
                    static_cast<int>(sizeof(asynchronous))),
         0);
-    REQUIRE_EQ(srt_setsockflag(caller, SRTO_SNDSYN,
-                   &asynchronous,
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_SNDSYN, &asynchronous,
                    static_cast<int>(sizeof(asynchronous))),
         0);
     const int caller_poll = srt_epoll_create();
     REQUIRE(caller_poll >= 0);
     const int connect_events = SRT_EPOLL_OUT | SRT_EPOLL_ERR;
-    REQUIRE_EQ(srt_epoll_add_usock(
-                   caller_poll, caller, &connect_events),
-        0);
+    REQUIRE_EQ(srt_epoll_add_usock(caller_poll, caller, &connect_events), 0);
 
-    REQUIRE_EQ(srt_connect(caller,
-                   reinterpret_cast<const sockaddr*>(&listener_name),
-                   static_cast<int>(sizeof(listener_name))),
+    REQUIRE_EQ(
+        srt_connect(caller, reinterpret_cast<const sockaddr*>(&listener_name),
+            static_cast<int>(sizeof(listener_name))),
         0);
-    const SRT_SOCKSTATUS initial_caller_state =
-        srt_getsockstate(caller);
+    const SRT_SOCKSTATUS initial_caller_state = srt_getsockstate(caller);
     REQUIRE(initial_caller_state == SRTS_CONNECTING
         || initial_caller_state == SRTS_CONNECTED);
 
-    std::array<SRT_EPOLL_EVENT, 2> ready{};
+    std::array<SRT_EPOLL_EVENT, 2> ready {};
     REQUIRE_EQ(srt_epoll_uwait(caller_poll, ready.data(),
                    static_cast<int>(ready.size()), 5'000),
         1);
@@ -5728,18 +5720,40 @@ TEST(srt_compat_epoll_drives_nonblocking_connect_and_accept)
     REQUIRE_EQ(ready[0].fd, listener);
     REQUIRE_EQ(ready[0].events, SRT_EPOLL_IN);
 
-    const SRTSOCKET accepted =
-        srt_accept(listener, nullptr, nullptr);
+    const SRTSOCKET accepted = srt_accept(listener, nullptr, nullptr);
     REQUIRE(accepted != SRT_INVALID_SOCK);
     REQUIRE_EQ(srt_getsockstate(accepted), SRTS_CONNECTED);
-    REQUIRE_EQ(srt_accept(listener, nullptr, nullptr),
-        SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_accept(listener, nullptr, nullptr), SRT_INVALID_SOCK);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+
+    // Accept drained the queue, then another connection arrived before the
+    // next poll. The second IN edge belongs to this listener subscription.
+    const SRTSOCKET second_caller = srt_create_socket();
+    REQUIRE(second_caller != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(second_caller, SRTO_RCVSYN, &asynchronous,
+                   static_cast<int>(sizeof(asynchronous))),
+        0);
+    REQUIRE_EQ(srt_setsockflag(second_caller, SRTO_SNDSYN, &asynchronous,
+                   static_cast<int>(sizeof(asynchronous))),
+        0);
+    REQUIRE_EQ(srt_connect(second_caller,
+                   reinterpret_cast<const sockaddr*>(&listener_name),
+                   static_cast<int>(sizeof(listener_name))),
+        0);
+    REQUIRE_EQ(srt_epoll_uwait(listener_poll, ready.data(),
+                   static_cast<int>(ready.size()), 5'000),
+        1);
+    REQUIRE_EQ(ready[0].fd, listener);
+    REQUIRE_EQ(ready[0].events, SRT_EPOLL_IN);
+    const SRTSOCKET second_accepted = srt_accept(listener, nullptr, nullptr);
+    REQUIRE(second_accepted != SRT_INVALID_SOCK);
 
     REQUIRE_EQ(srt_epoll_release(caller_poll), 0);
     REQUIRE_EQ(srt_epoll_release(listener_poll), 0);
     REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_close(second_caller), 0);
     REQUIRE_EQ(srt_close(accepted), 0);
+    REQUIRE_EQ(srt_close(second_accepted), 0);
     REQUIRE_EQ(srt_close(listener), 0);
     REQUIRE_EQ(srt_cleanup(), 0);
 }

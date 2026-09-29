@@ -3573,3 +3573,57 @@ TEST(compat_group_member_option_getters_validate_buffer_sizes)
         REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
     }
 }
+
+TEST(compat_group_epoll_rearms_in_after_drain_and_refill)
+{
+    for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
+        const SRTSOCKET group = srt_create_group(type);
+        const SRTSOCKET member = srt_create_socket();
+        REQUIRE(group != SRT_INVALID_SOCK);
+        REQUIRE(member != SRT_INVALID_SOCK);
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        const SequenceNumber initial {record->initial_sequence};
+        TestClock clock {
+            .channel =
+                std::make_shared<robotweax::srt::compat::DatagramChannel>()};
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        const auto runtime =
+            attach_group_runtime(group, member, initial.value(), 1, &clock, 0,
+                true, 0, ConnectionRuntime::Clock::now(), record);
+        const bool asynchronous = false;
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_RCVSYN, &asynchronous,
+                       static_cast<int>(sizeof(asynchronous))),
+            0);
+
+        const int eid = srt_epoll_create();
+        REQUIRE(eid >= 0);
+        const int watched = SRT_EPOLL_IN | SRT_EPOLL_ET;
+        REQUIRE_EQ(srt_epoll_add_usock(eid, group, &watched), 0);
+        SRT_EPOLL_EVENT event {};
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 0);
+        const auto inject = [&](SequenceNumber sequence,
+                                std::uint32_t message_number) {
+            const std::array<std::byte, 1> payload {std::byte {'x'}};
+            robotweax::srt::PacketView packet;
+            packet.kind = robotweax::srt::PacketKind::data;
+            packet.data.sequence = sequence;
+            packet.data.message_number = message_number;
+            packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+            packet.data.in_order = true;
+            packet.data.timestamp = robotweax::srt::PacketTimestamp {0};
+            packet.payload = payload;
+            runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+        };
+        inject(initial, 1);
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 1);
+        REQUIRE_EQ(event.events, SRT_EPOLL_IN);
+        std::array<char, 8> buffer {};
+        REQUIRE_EQ(srt_recvmsg(group, buffer.data(), buffer.size()), 1);
+        inject(initial.next(), 2);
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 1);
+        REQUIRE_EQ(event.events, SRT_EPOLL_IN);
+        REQUIRE_EQ(srt_epoll_release(eid), 0);
+        REQUIRE_EQ(srt_close(group), 0);
+    }
+}

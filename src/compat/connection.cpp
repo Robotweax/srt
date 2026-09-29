@@ -4068,6 +4068,9 @@ SRTSOCKET ListenerRuntime::pop(bool blocking, IpEndpoint& peer) noexcept
     }
     peer = connection.peer;
     if (listener != nullptr) {
+        if (listener->pending_accepts.load(std::memory_order_acquire) == 0U) {
+            listener->readiness_source->note_not_ready(SRT_EPOLL_IN);
+        }
         ReadinessSignal::notify(*listener->readiness_source);
     } else {
         ReadinessSignal::notify();
