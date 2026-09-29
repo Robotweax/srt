@@ -3453,6 +3453,116 @@ TEST(compat_runtime_consumes_encrypted_fec_control_before_decryption)
         statistics.total.receiver_filter_extra, 1U);
 }
 
+TEST(compat_runtime_keeps_original_data_when_fec_decoder_rejects_it)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    const Ipv4Endpoint peer {
+        .address = {192, 0, 2, 39},
+        .port = 14'109,
+    };
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::maximum_payload_size, 4), Error::none);
+    REQUIRE_EQ(
+        options.set_packet_filter("fec,cols:2,rows:1,arq:always"), Error::none);
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 390,
+        .initial_sequence = SequenceNumber {500},
+        .flow_window_packets = 256,
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now(),
+    }};
+    const std::array<std::byte, 5> payload {
+        std::byte {1},
+        std::byte {2},
+        std::byte {3},
+        std::byte {4},
+        std::byte {5},
+    };
+    const PacketView packet {
+        .kind = PacketKind::data,
+        .data =
+            {
+                .sequence = SequenceNumber {500},
+                .message_number = 1U,
+                .boundary = MessageBoundary::solo,
+                .destination_socket_id = 390,
+            },
+        .payload = payload,
+    };
+    runtime.process_packet(packet, peer);
+    REQUIRE(!runtime.broken());
+    std::array<std::byte, 8> received {};
+    const auto result = runtime.receive_message(received, false, -1);
+    REQUIRE_EQ(result.status, MessageIoStatus::success);
+    REQUIRE(std::equal(payload.begin(), payload.end(), received.begin()));
+}
+
+TEST(compat_runtime_fec_resynchronizes_with_advanced_receive_floor)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    const Ipv4Endpoint peer {
+        .address = {192, 0, 2, 40},
+        .port = 14'110,
+    };
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::maximum_payload_size, 4), Error::none);
+    REQUIRE_EQ(
+        options.set_packet_filter("fec,cols:3,rows:1,arq:onreq"), Error::none);
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 400,
+        .initial_sequence = SequenceNumber {0},
+        .flow_window_packets = 16,
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now(),
+    }};
+    const std::array<std::byte, 1> payload {std::byte {1}};
+    const auto source = [&](std::uint32_t sequence) {
+        return PacketView {
+            .kind = PacketKind::data,
+            .data =
+                {
+                    .sequence = SequenceNumber {sequence},
+                    .message_number = sequence + 1U,
+                    .boundary = MessageBoundary::solo,
+                    .destination_socket_id = 400,
+                },
+            .payload = payload,
+        };
+    };
+    runtime.process_packet(source(0U), peer);
+    REQUIRE(runtime.discard_received_before(SequenceNumber {18}));
+    RowFecEncoder encoder {
+        parse_packet_filter_configuration("fec,cols:3,rows:1,arq:onreq")
+            .configuration,
+        SequenceNumber {18}, 4U};
+    for (std::uint32_t sequence = 18U; sequence < 21U; ++sequence) {
+        const auto packet = source(sequence);
+        REQUIRE_EQ(encoder.feed_source(packet), Error::none);
+        if (sequence != 19U) {
+            runtime.process_packet(packet, peer);
+        }
+    }
+    const auto parity = encoder.control_packet();
+    REQUIRE(parity.has_value());
+    runtime.process_packet(
+        {
+            .kind = PacketKind::data,
+            .data = parity->header,
+            .payload = parity->payload,
+        },
+        peer);
+    std::array<std::byte, 4> received {};
+    for (std::uint32_t sequence = 18U; sequence < 21U; ++sequence) {
+        const auto result = runtime.receive_message(received, false, -1);
+        REQUIRE_EQ(result.status, MessageIoStatus::success);
+        REQUIRE_EQ(received[0], payload[0]);
+    }
+}
+
 TEST(compat_runtime_encrypts_payloads_and_exchanges_rotation_keys)
 {
     const auto caller_channel = std::make_shared<DatagramChannel>();
