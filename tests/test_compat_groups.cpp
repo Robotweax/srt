@@ -3573,3 +3573,188 @@ TEST(compat_group_member_option_getters_validate_buffer_sizes)
         REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
     }
 }
+
+TEST(compat_group_receive_skips_expired_gap_with_unused_standby)
+{
+    // Receiver TLPKTDROP on the only carrying member moves its receive
+    // floor past the expected group sequence. The group must skip the gap
+    // instead of waiting for a message that can no longer arrive.
+    for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
+        const auto group = srt_create_group(type);
+        const auto member = srt_create_socket();
+        REQUIRE(group != SRT_INVALID_SOCK);
+        REQUIRE(member != SRT_INVALID_SOCK);
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        const auto sequence = record->initial_sequence;
+        const auto origin = ConnectionRuntime::Clock::now();
+        TestClock clock {.now_microseconds = 0,
+            .channel =
+                std::make_shared<robotweax::srt::compat::DatagramChannel>()};
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        constexpr std::uint16_t latency_milliseconds = 300;
+        const auto runtime = attach_group_runtime(group, member, sequence, 1,
+            &clock, 0, true, latency_milliseconds, origin, record, {}, nullptr,
+            nullptr, true);
+        const auto standby = srt_create_socket();
+        REQUIRE(standby != SRT_INVALID_SOCK);
+        (void)attach_group_runtime(group, standby, sequence, 2, &clock, 0, true,
+            latency_milliseconds, origin, record, {}, nullptr, nullptr, true);
+        const auto inject = [&](std::uint32_t seq, std::uint32_t timestamp,
+                                std::byte value) {
+            const std::array<std::byte, 1> payload {value};
+            robotweax::srt::PacketView packet;
+            packet.kind = robotweax::srt::PacketKind::data;
+            packet.data.sequence = SequenceNumber {seq};
+            packet.data.message_number = seq - sequence + 1U;
+            packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+            packet.data.in_order = true;
+            packet.data.timestamp = robotweax::srt::PacketTimestamp {timestamp};
+            packet.payload = payload;
+            runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+        };
+        const bool synchronous = false;
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_RCVSYN, &synchronous,
+                       static_cast<int>(sizeof(synchronous))),
+            0);
+
+        // The first group message is lost; the two following ones arrive.
+        const SequenceNumber second = SequenceNumber {sequence}.next();
+        const SequenceNumber third = second.next();
+        clock.now_microseconds = 10'000;
+        inject(second.value(), 10'000U, std::byte {'b'});
+        inject(third.value(), 11'000U, std::byte {'c'});
+
+        std::array<char, 8> buffer {};
+        SRT_MSGCTRL control = srt_msgctrl_default;
+        // Before the delivery deadline the gap can still be recovered.
+        REQUIRE_EQ(srt_recvmsg2(group, buffer.data(), buffer.size(), &control),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+
+        // Past the deadline the member drops the gap. The group must deliver
+        // the surviving messages in order rather than block forever.
+        clock.now_microseconds = 10'000U
+            + static_cast<std::uint64_t>(latency_milliseconds) * 1'000U
+            + 50'000U;
+        REQUIRE_EQ(
+            srt_recvmsg2(group, buffer.data(), buffer.size(), &control), 1);
+        REQUIRE_EQ(buffer[0], 'b');
+        REQUIRE_EQ(control.pktseq, static_cast<std::int32_t>(second.value()));
+        REQUIRE_EQ(
+            srt_recvmsg2(group, buffer.data(), buffer.size(), &control), 1);
+        REQUIRE_EQ(buffer[0], 'c');
+        REQUIRE_EQ(control.pktseq, static_cast<std::int32_t>(third.value()));
+        REQUIRE_EQ(srt_recvmsg2(group, buffer.data(), buffer.size(), &control),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+
+        // The group handle reports its own receive and drop counters.
+        SRT_TRACEBSTATS statistics {};
+        REQUIRE_EQ(srt_bstats(group, &statistics, 1), 0);
+        REQUIRE_EQ(statistics.pktRecvUniqueTotal, 2);
+        REQUIRE_EQ(statistics.pktRecvUnique, 2);
+        REQUIRE_EQ(statistics.byteRecvUniqueTotal, 2U * (1U + 44U));
+        REQUIRE_EQ(statistics.pktRcvDropTotal, 1);
+        REQUIRE_EQ(statistics.pktRcvDrop, 1);
+        REQUIRE_EQ(statistics.byteRcvDropTotal,
+            static_cast<std::uint64_t>(SRT_LIVE_DEF_PLSIZE + 44));
+        REQUIRE_EQ(statistics.pktSentUniqueTotal, 0);
+        REQUIRE_EQ(statistics.pktSentTotal, 0);
+        // The interval counters were cleared by the previous call.
+        REQUIRE_EQ(srt_bstats(group, &statistics, 0), 0);
+        REQUIRE_EQ(statistics.pktRecvUniqueTotal, 2);
+        REQUIRE_EQ(statistics.pktRecvUnique, 0);
+        REQUIRE_EQ(statistics.pktRcvDrop, 0);
+        REQUIRE_EQ(srt_close(group), 0);
+        REQUIRE_EQ(srt_bstats(group, &statistics, 0), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
+    }
+}
+
+TEST(compat_group_receive_observes_terminal_without_state_getter)
+{
+    constexpr std::uint16_t receive_delay_milliseconds = 100;
+    constexpr std::array<std::byte, 7> payload {std::byte {'g'},
+        std::byte {'r'}, std::byte {'o'}, std::byte {'u'}, std::byte {'p'},
+        std::byte {'!'}, std::byte {'!'}};
+    constexpr std::array<SRT_GROUP_TYPE, 2> group_types {
+        SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP};
+    for (const SRT_GROUP_TYPE group_type : group_types) {
+        const SRTSOCKET group = srt_create_group(group_type);
+        const SRTSOCKET member = srt_create_socket();
+        REQUIRE(group != SRT_INVALID_SOCK);
+        REQUIRE(member != SRT_INVALID_SOCK);
+        const auto group_record = GroupRegistry::instance().find(group);
+        REQUIRE(group_record != nullptr);
+        std::uint32_t initial_sequence = 0;
+        {
+            std::lock_guard lock(group_record->mutex);
+            initial_sequence = group_record->initial_sequence;
+        }
+
+        TestClock clock {
+            .now_microseconds = 0,
+            .channel =
+                std::make_shared<robotweax::srt::compat::DatagramChannel>(),
+        };
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        const auto runtime = attach_group_runtime(group, member,
+            initial_sequence, 1, &clock, 0U, true, receive_delay_milliseconds);
+
+        const bool nonblocking = false;
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_RCVSYN, &nonblocking,
+                       static_cast<int>(sizeof(nonblocking))),
+            0);
+        robotweax::srt::PacketView data;
+        data.kind = robotweax::srt::PacketKind::data;
+        data.data.sequence = SequenceNumber {initial_sequence};
+        data.data.message_number = 1;
+        data.data.boundary = robotweax::srt::MessageBoundary::solo;
+        data.data.in_order = true;
+        data.data.timestamp = robotweax::srt::PacketTimestamp {0};
+        data.payload = payload;
+        runtime->process_packet(data, IpEndpoint::loopback(9'000));
+
+        robotweax::srt::PacketView shutdown;
+        shutdown.kind = robotweax::srt::PacketKind::control;
+        shutdown.control.type = robotweax::srt::ControlType::shutdown;
+        shutdown.control.destination_socket_id = 77;
+        const std::array<std::byte, 4> shutdown_padding {};
+        shutdown.payload = shutdown_padding;
+        runtime->process_packet(shutdown, IpEndpoint::loopback(9'000));
+
+        std::array<char, payload.size()> received {};
+        REQUIRE_EQ(srt_recvmsg(group, received.data(),
+                       static_cast<int>(received.size())),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+
+        clock.now_microseconds =
+            static_cast<std::uint64_t>(receive_delay_milliseconds) * 1'000U;
+        std::array<char, 3> short_buffer {};
+        REQUIRE_EQ(srt_recvmsg(group, short_buffer.data(),
+                       static_cast<int>(short_buffer.size())),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ELARGEMSG);
+        std::array<SRT_SOCKGROUPDATA, 1> group_data {};
+        SRT_MSGCTRL control = srt_msgctrl_default;
+        control.grpdata = group_data.data();
+        control.grpdata_size = group_data.size();
+        REQUIRE_EQ(srt_recvmsg2(group, received.data(),
+                       static_cast<int>(received.size()), &control),
+            static_cast<int>(payload.size()));
+        REQUIRE(std::equal(payload.begin(), payload.end(),
+            reinterpret_cast<const std::byte*>(received.data())));
+        REQUIRE_EQ(control.grpdata_size, 1U);
+        REQUIRE_EQ(group_data[0].memberstate, SRT_GST_RUNNING);
+        SRT_TRACEBSTATS member_statistics {};
+        REQUIRE_EQ(srt_bstats(member, &member_statistics, 0), 0);
+        REQUIRE_EQ(srt_recvmsg(group, received.data(),
+                       static_cast<int>(received.size())),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNLOST);
+
+        REQUIRE_EQ(srt_close(group), 0);
+    }
+}

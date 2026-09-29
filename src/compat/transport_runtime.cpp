@@ -1751,6 +1751,12 @@ bool ConnectionRuntime::has_complete_buffered_message_at(
         && buffer.has_complete_message();
 }
 
+bool ConnectionRuntime::has_buffered_receive_data() noexcept
+{
+    std::lock_guard lock(mutex_);
+    return session_.receive_buffer().occupied() != 0U;
+}
+
 bool ConnectionRuntime::discard_received_before(
     SequenceNumber next_sequence) noexcept
 {
