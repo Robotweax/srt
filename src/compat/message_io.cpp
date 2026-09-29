@@ -170,8 +170,7 @@ struct FailedGroupIoMember {
         // available until the caller queries the member's socket state.
         member.terminal = member.published_terminal
             || (include_terminal_receivers
-                && (member.runtime->broken()
-                    || member.runtime->peer_closed()));
+                && (member.runtime->broken() || member.runtime->peer_closed()));
         result.push_back(std::move(member));
     }
     return result;
@@ -1260,9 +1259,8 @@ int receive_group_message_implementation(
                             && member.generation == selected->generation) {
                             continue;
                         }
-                        GroupRegistry::instance().note_io_result(
-                            group->handle, generation, member.id,
-                            member.generation,
+                        GroupRegistry::instance().note_io_result(group->handle,
+                            generation, member.id, member.generation,
                             member.terminal ? SRT_GST_BROKEN : SRT_GST_IDLE,
                             member.terminal ? SRT_ECONNLOST : SRT_SUCCESS);
                     }
