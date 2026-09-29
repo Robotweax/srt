@@ -169,6 +169,86 @@ SRTSOCKET GroupRegistry::create(SRT_GROUP_TYPE type) noexcept
     }
 }
 
+std::uint64_t group_statistics_now_microseconds() noexcept
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+// Callers hold group.mutex.
+void GroupRegistry::note_group_sent(
+    GroupRecord& group, std::uint64_t payload_bytes) noexcept
+{
+    group.statistics.total.sent_unique.add(1U, payload_bytes);
+    group.statistics.interval.sent_unique.add(1U, payload_bytes);
+}
+
+void GroupRegistry::note_group_received(GroupRecord& group,
+    std::uint64_t packets, std::uint64_t payload_bytes) noexcept
+{
+    group.statistics.total.received_unique.add(packets, payload_bytes);
+    group.statistics.interval.received_unique.add(packets, payload_bytes);
+    if (packets != 0U) {
+        const auto sample = payload_bytes / packets;
+        if (!group.statistics.received_payload_sample) {
+            group.statistics.average_received_payload_bytes = sample;
+            group.statistics.received_payload_sample = true;
+        } else {
+            group.statistics.average_received_payload_bytes =
+                (3U * group.statistics.average_received_payload_bytes + sample)
+                / 4U;
+        }
+    }
+}
+
+void GroupRegistry::note_group_dropped(
+    GroupRecord& group, std::uint64_t packets) noexcept
+{
+    const std::uint64_t average = group.statistics.received_payload_sample
+        ? group.statistics.average_received_payload_bytes
+        : static_cast<std::uint64_t>(SRT_LIVE_DEF_PLSIZE);
+    group.statistics.total.receiver_dropped.add(packets, packets * average);
+    group.statistics.interval.receiver_dropped.add(packets, packets * average);
+}
+
+int GroupRegistry::trace_statistics(
+    SRTSOCKET group, SRT_TRACEBSTATS& output, bool clear_interval) noexcept
+{
+    const auto record = find(group);
+    if (record == nullptr) {
+        set_last_error(SRT_EINVSOCK);
+        return SRT_ERROR;
+    }
+    RuntimeStatisticsSnapshot snapshot;
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->closed) {
+            set_last_error(SRT_EINVSOCK);
+            return SRT_ERROR;
+        }
+        if (!record->statistics.activated) {
+            set_last_error(SRT_ENOCONN);
+            return SRT_ERROR;
+        }
+        const auto now = group_statistics_now_microseconds();
+        auto& statistics = record->statistics;
+        snapshot.timestamp_milliseconds =
+            (now - statistics.start_microseconds) / 1'000U;
+        snapshot.interval_microseconds =
+            now - statistics.interval_start_microseconds;
+        snapshot.total = statistics.total;
+        snapshot.interval = statistics.interval;
+        if (clear_interval) {
+            statistics.interval = {};
+            statistics.interval_start_microseconds = now;
+        }
+    }
+    populate_trace_statistics(snapshot, output);
+    return 0;
+}
+
 std::shared_ptr<GroupRecord> GroupRegistry::find(SRTSOCKET group) noexcept
 {
     if (!is_group_handle(group)) {
@@ -1106,30 +1186,38 @@ void GroupRegistry::update_member(
     bool changed = false;
     {
         std::lock_guard lock(record->mutex);
-        if (record->closed
-            || record->generation != group_generation) {
+        if (record->closed || record->generation != group_generation) {
             return;
         }
-        const auto member = std::find_if(
-            record->members.begin(), record->members.end(),
-            [socket, member_generation](const auto& candidate) {
-                return candidate.public_data.id == socket
-                    && candidate.generation == member_generation;
-            });
+        const auto member =
+            std::find_if(record->members.begin(), record->members.end(),
+                [socket, member_generation](const auto& candidate) {
+                    return candidate.public_data.id == socket
+                        && candidate.generation == member_generation;
+                });
         if (member == record->members.end()) {
             return;
         }
-        const SRT_SOCKSTATUS previous_state =
-            member->public_data.sockstate;
-        if (previous_state != state
-            || member->public_data.result != result) {
+        const SRT_SOCKSTATUS previous_state = member->public_data.sockstate;
+        if (state == SRTS_CONNECTED && !record->statistics.activated) {
+            const auto start = record->timestamp_origin.value_or(
+                std::chrono::steady_clock::now());
+            const auto start_microseconds =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    start.time_since_epoch())
+                    .count();
+            record->statistics.start_microseconds =
+                static_cast<std::uint64_t>(start_microseconds);
+            record->statistics.interval_start_microseconds =
+                record->statistics.start_microseconds;
+            record->statistics.activated = true;
+        }
+        if (previous_state != state || member->public_data.result != result) {
             member->public_data.sockstate = state;
-            member->public_data.memberstate =
-                group_member_status(state);
+            member->public_data.memberstate = group_member_status(state);
             member->public_data.result = result;
             advance_version(record->snapshot_version);
-            if (broken_connection
-                && previous_state == SRTS_CONNECTED
+            if (broken_connection && previous_state == SRTS_CONNECTED
                 && terminal_member_state(state)) {
                 const bool still_usable = std::any_of(
                     record->members.begin(), record->members.end(),

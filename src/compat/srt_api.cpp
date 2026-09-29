@@ -678,6 +678,12 @@ int srt_bistats(
         robotweax::srt::compat::set_last_error(SRT_EINVPARAM);
         return SRT_ERROR;
     }
+    if (robotweax::srt::compat::is_group_handle(socket)) {
+        // Instantaneous link values have no group-level meaning; libsrt
+        // reports the group's own send/receive/drop counters only.
+        return robotweax::srt::compat::GroupRegistry::instance()
+            .trace_statistics(socket, *statistics, clear != 0);
+    }
     const auto record =
         robotweax::srt::compat::SocketRegistry::instance().find(socket);
     if (record == nullptr) {
