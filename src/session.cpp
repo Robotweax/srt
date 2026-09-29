@@ -1102,6 +1102,48 @@ void ReliabilitySession::enable_tsbpd(
         handshake_timestamp, delay_microseconds);
 }
 
+namespace {
+struct StreamDueContext {
+    TsbpdClock* clock;
+    std::uint64_t now_microseconds;
+};
+bool stream_packet_due(PacketTimestamp timestamp, void* context) noexcept
+{
+    auto& due = *static_cast<StreamDueContext*>(context);
+    return due.clock->ready(timestamp, due.now_microseconds);
+}
+} // namespace
+
+bool ReliabilitySession::stream_ready_at(
+    std::uint64_t now_microseconds) noexcept
+{
+    const auto timestamp = receive_buffer_.next_message_timestamp();
+    if (!timestamp.has_value()) {
+        return false;
+    }
+    return !tsbpd_clock_.has_value()
+        || tsbpd_clock_->ready(*timestamp, now_microseconds);
+}
+
+ReceivedMessageResult ReliabilitySession::pop_stream_at(
+    std::span<std::byte> destination, std::uint64_t now_microseconds) noexcept
+{
+    if (!tsbpd_clock_.has_value()) {
+        return receive_buffer_.pop_stream(destination);
+    }
+    StreamDueContext context {
+        .clock = &*tsbpd_clock_,
+        .now_microseconds = now_microseconds,
+    };
+    auto result =
+        receive_buffer_.pop_stream(destination, stream_packet_due, &context);
+    if (result) {
+        result.delivery_time_microseconds =
+            tsbpd_clock_->delivery_time(result.timestamp);
+    }
+    return result;
+}
+
 ReceivedMessageResult ReliabilitySession::pop_message_at(
     std::span<std::byte> destination,
     std::uint64_t now_microseconds) noexcept
@@ -1183,7 +1225,7 @@ ReliabilitySession::next_receive_delivery_time() noexcept
             next_delivery = pending.deadline_microseconds;
         }
     }
-    const auto message = receive_buffer_.first_complete_message();
+    const auto message = first_deliverable_unit();
     if (!message.has_value()) {
         return next_delivery;
     }
@@ -1194,6 +1236,16 @@ ReliabilitySession::next_receive_delivery_time() noexcept
     const auto message_delivery =
         tsbpd_clock_->delivery_time(message->timestamp);
     return std::min(message_delivery, next_delivery.value_or(message_delivery));
+}
+
+std::optional<BufferedMessageInfo>
+ReliabilitySession::first_deliverable_unit() const noexcept
+{
+    // The message API delivers and drops whole messages; the stream API
+    // delivers bytes packet by packet, so a loss inside a chunk must not hold
+    // the chunk's later packets back or drop them along with the gap.
+    return message_api_ ? receive_buffer_.first_complete_message()
+                        : receive_buffer_.first_buffered_packet();
 }
 
 ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
@@ -1232,7 +1284,7 @@ ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
             pending_peer_drops_.begin() + static_cast<std::ptrdiff_t>(index));
     }
 
-    const auto message = receive_buffer_.first_complete_message();
+    const auto message = first_deliverable_unit();
     if (!message.has_value()
         || message->first_sequence == receive_buffer_.first_stored_sequence()
         || !tsbpd_clock_->ready(message->timestamp, now_microseconds)) {
