@@ -4089,9 +4089,20 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
 
     const SRTSOCKET listener = srt_create_socket();
     REQUIRE(listener != SRT_INVALID_SOCK);
+    constexpr std::int32_t listener_receive_latency = 300;
+    constexpr std::int32_t listener_peer_latency = 400;
+    const bool listener_too_late_drop = false;
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVLATENCY,
+                   &listener_receive_latency, sizeof(listener_receive_latency)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_PEERLATENCY,
+                   &listener_peer_latency, sizeof(listener_peer_latency)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_TLPKTDROP,
+                   &listener_too_late_drop, sizeof(listener_too_late_drop)),
+        0);
     constexpr char listener_stream_id[] = "must-not-be-inherited";
-    REQUIRE_EQ(srt_setsockflag(listener, SRTO_STREAMID,
-                   listener_stream_id,
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_STREAMID, listener_stream_id,
                    static_cast<int>(sizeof(listener_stream_id) - 1U)),
         0);
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_CONNTIMEO,
@@ -4155,15 +4166,42 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
     std::thread accept_thread([&] {
         int accepted_peer_size = static_cast<int>(sizeof(accepted_peer));
         accepted.store(srt_accept(listener,
-            reinterpret_cast<sockaddr*>(&accepted_peer),
-            &accepted_peer_size));
+            reinterpret_cast<sockaddr*>(&accepted_peer), &accepted_peer_size));
         accept_error.store(srt_getlasterror(nullptr));
     });
 
     const SRTSOCKET caller = srt_create_socket();
     REQUIRE(caller != SRT_INVALID_SOCK);
-    REQUIRE_EQ(srt_setsockflag(caller, SRTO_STREAMID,
-                   caller_stream_id,
+    constexpr std::int32_t caller_receive_latency = 100;
+    constexpr std::int32_t caller_peer_latency = 80;
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_RCVLATENCY, &caller_receive_latency,
+                   sizeof(caller_receive_latency)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_PEERLATENCY, &caller_peer_latency,
+                   sizeof(caller_peer_latency)),
+        0);
+    const auto latency = [](SRTSOCKET socket, SRT_SOCKOPT option) {
+        std::int32_t actual = -1;
+        int size = sizeof(actual);
+        REQUIRE_EQ(srt_getsockflag(socket, option, &actual, &size), 0);
+        REQUIRE_EQ(size, static_cast<int>(sizeof(actual)));
+        return actual;
+    };
+    const auto too_late_drop = [](SRTSOCKET socket) {
+        bool actual = false;
+        int size = sizeof(actual);
+        REQUIRE_EQ(srt_getsockflag(socket, SRTO_TLPKTDROP, &actual, &size), 0);
+        REQUIRE_EQ(size, static_cast<int>(sizeof(actual)));
+        return actual;
+    };
+    REQUIRE_EQ(latency(caller, SRTO_LATENCY), caller_receive_latency);
+    REQUIRE_EQ(latency(caller, SRTO_RCVLATENCY), caller_receive_latency);
+    REQUIRE_EQ(latency(caller, SRTO_PEERLATENCY), caller_peer_latency);
+    REQUIRE(too_late_drop(caller));
+    REQUIRE_EQ(latency(listener, SRTO_LATENCY), listener_receive_latency);
+    REQUIRE_EQ(latency(listener, SRTO_PEERLATENCY), listener_peer_latency);
+    REQUIRE(!too_late_drop(listener));
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_STREAMID, caller_stream_id,
                    static_cast<int>(sizeof(caller_stream_id) - 1U)),
         0);
     std::int32_t caller_initial_sequence = -1;
@@ -4199,6 +4237,17 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
     REQUIRE_EQ(accept_error.load(), SRT_SUCCESS);
     REQUIRE_EQ(srt_getsockstate(caller), SRTS_CONNECTED);
     REQUIRE_EQ(srt_getsockstate(accepted.load()), SRTS_CONNECTED);
+    REQUIRE_EQ(latency(caller, SRTO_LATENCY), listener_peer_latency);
+    REQUIRE_EQ(latency(caller, SRTO_RCVLATENCY), listener_peer_latency);
+    REQUIRE_EQ(latency(caller, SRTO_PEERLATENCY), listener_receive_latency);
+    REQUIRE(!too_late_drop(caller));
+    REQUIRE_EQ(
+        latency(accepted.load(), SRTO_LATENCY), listener_receive_latency);
+    REQUIRE_EQ(
+        latency(accepted.load(), SRTO_RCVLATENCY), listener_receive_latency);
+    REQUIRE_EQ(
+        latency(accepted.load(), SRTO_PEERLATENCY), listener_peer_latency);
+    REQUIRE(!too_late_drop(accepted.load()));
     std::int32_t connected_flow_window = 0;
     int connected_flow_window_size =
         static_cast<int>(sizeof(connected_flow_window));
