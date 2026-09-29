@@ -2355,6 +2355,75 @@ TEST(compat_broadcast_group_keeps_sending_after_one_member_path_fails)
     REQUIRE_EQ(srt_close(group), 0);
 }
 
+TEST(compat_broadcast_group_recovers_a_backpressured_member)
+{
+    TestClock clock;
+    clock.channel = std::make_shared<robotweax::srt::compat::DatagramChannel>();
+    clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+    const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+    const SRTSOCKET healthy = srt_create_socket();
+    const SRTSOCKET slow = srt_create_socket();
+    REQUIRE(group != SRT_INVALID_SOCK);
+    REQUIRE(healthy != SRT_INVALID_SOCK);
+    REQUIRE(slow != SRT_INVALID_SOCK);
+    const auto group_record = GroupRegistry::instance().find(group);
+    REQUIRE(group_record != nullptr);
+    std::uint32_t initial_sequence = 0;
+    {
+        std::lock_guard lock(group_record->mutex);
+        initial_sequence = group_record->initial_sequence;
+    }
+    const auto healthy_runtime =
+        attach_group_runtime(group, healthy, initial_sequence);
+    const auto slow_runtime =
+        attach_group_runtime(group, slow, initial_sequence, 1, &clock, 1U);
+
+    constexpr char first[] = "first";
+    constexpr char second[] = "second";
+    constexpr char third[] = "third";
+    constexpr char recovered[] = "recovered";
+    REQUIRE_EQ(srt_send(group, first, static_cast<int>(sizeof(first))),
+        static_cast<int>(sizeof(first)));
+    REQUIRE_EQ(slow_runtime->sender_buffer_status().packets, 1U);
+
+    const auto send_with_members = [&](const char* payload, int size) {
+        std::array<SRT_SOCKGROUPDATA, 2> data {};
+        SRT_MSGCTRL control = srt_msgctrl_default;
+        control.grpdata = data.data();
+        control.grpdata_size = data.size();
+        REQUIRE_EQ(srt_sendmsg2(group, payload, size, &control), size);
+        REQUIRE_EQ(control.grpdata_size, data.size());
+        const auto slow_data =
+            std::find_if(data.begin(), data.end(), [slow](const auto& member) {
+                return member.id == slow;
+            });
+        REQUIRE(slow_data != data.end());
+        return *slow_data;
+    };
+    const auto blocked = send_with_members(second, sizeof(second));
+    REQUIRE_EQ(blocked.memberstate, SRT_GST_IDLE);
+    REQUIRE_EQ(blocked.result, SRT_EASYNCSND);
+    REQUIRE_EQ(blocked.sockstate, SRTS_CONNECTED);
+    REQUIRE_EQ(srt_getsockstate(slow), SRTS_CONNECTED);
+    REQUIRE_EQ(healthy_runtime->sender_buffer_status().packets, 2U);
+
+    const auto still_blocked = send_with_members(third, sizeof(third));
+    REQUIRE_EQ(still_blocked.memberstate, SRT_GST_IDLE);
+    REQUIRE_EQ(still_blocked.result, SRT_EASYNCSND);
+    REQUIRE_EQ(srt_getsockstate(slow), SRTS_CONNECTED);
+
+    (void)slow_runtime->poll();
+    deliver_lite_ack(slow_runtime, SequenceNumber {initial_sequence}.next());
+    REQUIRE_EQ(slow_runtime->sender_buffer_status().packets, 0U);
+    const auto resumed = send_with_members(recovered, sizeof(recovered));
+    REQUIRE_EQ(resumed.memberstate, SRT_GST_RUNNING);
+    REQUIRE_EQ(resumed.result, static_cast<int>(sizeof(recovered)));
+    REQUIRE_EQ(srt_getsockstate(slow), SRTS_CONNECTED);
+    REQUIRE_EQ(slow_runtime->response_health().next_send_sequence,
+        SequenceNumber {initial_sequence}.advanced(4U));
+    REQUIRE_EQ(srt_close(group), 0);
+}
+
 TEST(compat_broadcast_group_replaces_a_peer_error_member_with_a_new_socket)
 {
     const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);

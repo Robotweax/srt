@@ -424,6 +424,29 @@ void acknowledge_backup_replay(
     };
 }
 
+[[nodiscard]] MessageIoResult prepare_broadcast_member(
+    const GroupIoMember& member, SequenceNumber target_sequence) noexcept
+{
+    const auto health = member.runtime->response_health();
+    const SequenceNumber cursor = health.next_send_sequence;
+    if (cursor == target_sequence) {
+        return {
+            .status = MessageIoStatus::success,
+            .next_sequence = target_sequence,
+        };
+    }
+    if (target_sequence.distance_from(cursor) <= 0) {
+        return {.status = MessageIoStatus::invalid_state};
+    }
+    // Broadcast has no replay history for a member that missed a send. Keep
+    // its buffered earlier data intact while it is congested. Once drained,
+    // issue a DROPREQ for the skipped prefix before this path rejoins.
+    if (!health.send_buffer_empty) {
+        return {.status = MessageIoStatus::would_block};
+    }
+    return member.runtime->skip_group_sequences(target_sequence);
+}
+
 void clear_backup_probe(GroupRecord& group) noexcept
 {
     group.probe_send_member = SRT_INVALID_SOCK;
@@ -911,9 +934,11 @@ int send_group_message_implementation(
             if (group_type == SRT_GTYPE_BACKUP) {
                 result = prepare_backup_member(
                     member, group, SequenceNumber{first_sequence});
+            } else {
+                result = prepare_broadcast_member(
+                    member, SequenceNumber {first_sequence});
             }
-            if (group_type != SRT_GTYPE_BACKUP
-                || result.status == MessageIoStatus::success) {
+            if (result.status == MessageIoStatus::success) {
                 result = member.runtime->queue_group_message(bytes,
                     SequenceNumber {first_sequence}, message_number,
                     local_control.srctime, local_control.inorder != 0,
@@ -1004,9 +1029,7 @@ int send_group_message_implementation(
                     && failure.member.id == backup_plan.probe_member
                     && failure.member.generation
                         == backup_plan.probe_generation;
-                if (group_type == SRT_GTYPE_BACKUP
-                    && failure.result.status
-                        == MessageIoStatus::would_block) {
+                if (failure.result.status == MessageIoStatus::would_block) {
                     GroupRegistry::instance().note_io_result(
                         group->handle, generation, failure.member.id,
                         failure.member.generation, SRT_GST_IDLE,
