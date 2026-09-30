@@ -1591,6 +1591,7 @@ TEST(compat_runtime_tlpktdrop_has_a_distinct_internal_counter)
     std::uint64_t now = 1'000;
     NegotiatedLiveOptions negotiated;
     negotiated.too_late_packet_drop = true;
+    negotiated.sender_too_late_packet_drop = true;
     ConnectionRuntime runtime{{
         .channel = channel,
         .peer = peer,
@@ -5737,6 +5738,7 @@ TEST(compat_runtime_stream_receive_honours_tsbpd_and_drops_per_packet)
             {
                 .receive_tsbpd = true,
                 .too_late_packet_drop = true,
+                .sender_too_late_packet_drop = true,
                 .receive_delay_milliseconds = 120,
             },
         .origin = ConnectionRuntime::Clock::now(),
@@ -5886,6 +5888,7 @@ TEST(compat_runtime_finishes_a_deferred_peer_drop_before_end_of_stream)
             {
                 .receive_tsbpd = true,
                 .too_late_packet_drop = true,
+                .sender_too_late_packet_drop = true,
                 .receive_delay_milliseconds = 120,
             },
         .origin = ConnectionRuntime::Clock::now(),
@@ -6083,21 +6086,23 @@ TEST(compat_runtime_receiver_tlpktdrop_sends_a_cumulative_ack)
         .port = 11'005,
     };
     std::uint64_t now = 1'010;
-    ConnectionRuntime runtime{{
+    ConnectionRuntime runtime {{
         .channel = channel,
         .peer = peer,
         .peer_socket_id = 302,
-        .initial_sequence = SequenceNumber{3'200},
-        .negotiated_options = {
-            .receive_tsbpd = true,
-            .too_late_packet_drop = true,
-            .periodic_nak = true,
-            .retransmit_flag = true,
-            .receive_delay_milliseconds = 120,
-        },
+        .initial_sequence = SequenceNumber {3'200},
+        .negotiated_options =
+            {
+                .receive_tsbpd = true,
+                .too_late_packet_drop = true,
+                .sender_too_late_packet_drop = true,
+                .periodic_nak = true,
+                .retransmit_flag = true,
+                .receive_delay_milliseconds = 120,
+            },
         .origin = ConnectionRuntime::Clock::now(),
         .handshake_arrival_microseconds = 1'000,
-        .peer_handshake_timestamp = PacketTimestamp{0},
+        .peer_handshake_timestamp = PacketTimestamp {0},
         .now_function = injected_now,
         .now_context = &now,
     }};
@@ -6660,6 +6665,7 @@ struct BackpressureFixture {
                 .flow_window_packets = 64,
                 .options = options,
                 .negotiated_options = {.too_late_packet_drop = too_late_drop,
+                    .sender_too_late_packet_drop = too_late_drop,
                     .retransmit_flag = true},
                 .origin = ConnectionRuntime::Clock::now(),
                 .peer_idle_timeout_milliseconds =

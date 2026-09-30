@@ -217,6 +217,7 @@ TEST(session_live_drop_request_retains_received_and_in_flight_solo_packets)
         {
             .receive_tsbpd = true,
             .too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
             .receive_delay_milliseconds = 100,
         },
         1'000, PacketTimestamp {0});
@@ -277,6 +278,7 @@ TEST(session_live_drop_request_leaves_true_gap_to_local_deadline_drop)
         {
             .receive_tsbpd = true,
             .too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
             .receive_delay_milliseconds = 100,
         },
         1'000, PacketTimestamp {0});
@@ -322,6 +324,7 @@ TEST(session_live_peer_drop_deadline_advances_without_a_later_message)
         {
             .receive_tsbpd = true,
             .too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
             .receive_delay_milliseconds = 100,
         },
         1'000, PacketTimestamp {0});
@@ -380,6 +383,7 @@ TEST(session_live_peer_drop_deadline_preserves_late_originals)
         {
             .receive_tsbpd = true,
             .too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
             .receive_delay_milliseconds = 100,
         },
         1'000, PacketTimestamp {0});
@@ -482,6 +486,7 @@ TEST(session_stream_peer_drop_preserves_partial_chunk_at_deadline)
         {
             .receive_tsbpd = true,
             .too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
             .receive_delay_milliseconds = 100,
         },
         1'000, PacketTimestamp {0});
@@ -910,13 +915,16 @@ TEST(session_receiver_tlpktdrop_releases_a_due_message_and_fakes_ack)
         .send_capacity_packets = 8,
         .receive_capacity_packets = 8,
     }};
-    receiver.configure_live({
-        .receive_tsbpd = true,
-        .too_late_packet_drop = true,
-        .periodic_nak = true,
-        .retransmit_flag = true,
-        .receive_delay_milliseconds = 100,
-    }, 1'000, PacketTimestamp{0});
+    receiver.configure_live(
+        {
+            .receive_tsbpd = true,
+            .too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
+            .periodic_nak = true,
+            .retransmit_flag = true,
+            .receive_delay_milliseconds = 100,
+        },
+        1'000, PacketTimestamp {0});
 
     const std::array<std::byte, 1> payload{
         std::byte{'p'}};
@@ -960,11 +968,14 @@ TEST(session_receiver_keeps_a_gap_when_tlpktdrop_is_disabled)
         .send_capacity_packets = 4,
         .receive_capacity_packets = 4,
     }};
-    receiver.configure_live({
-        .receive_tsbpd = true,
-        .too_late_packet_drop = false,
-        .receive_delay_milliseconds = 100,
-    }, 1'000, PacketTimestamp{0});
+    receiver.configure_live(
+        {
+            .receive_tsbpd = true,
+            .too_late_packet_drop = false,
+            .sender_too_late_packet_drop = false,
+            .receive_delay_milliseconds = 100,
+        },
+        1'000, PacketTimestamp {0});
 
     const std::array<std::byte, 1> payload{
         std::byte{'p'}};
@@ -994,11 +1005,14 @@ TEST(session_receiver_tlpktdrop_is_sequence_and_timestamp_wrap_safe)
         .send_capacity_packets = 4,
         .receive_capacity_packets = 4,
     }};
-    receiver.configure_live({
-        .receive_tsbpd = true,
-        .too_late_packet_drop = true,
-        .receive_delay_milliseconds = 0,
-    }, 1'000'000, PacketTimestamp{0xffff'f000U});
+    receiver.configure_live(
+        {
+            .receive_tsbpd = true,
+            .too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
+            .receive_delay_milliseconds = 0,
+        },
+        1'000'000, PacketTimestamp {0xffff'f000U});
 
     const std::array<std::byte, 1> payload{
         std::byte{'w'}};
@@ -2468,10 +2482,11 @@ TEST(negotiated_live_configuration_controls_tsbpd_and_sender_drop_threshold)
         .send_capacity_packets = 4,
         .receive_capacity_packets = 4,
     }};
-    const NegotiatedLiveOptions options{
+    const NegotiatedLiveOptions options {
         .send_tsbpd = true,
         .receive_tsbpd = true,
         .too_late_packet_drop = true,
+        .sender_too_late_packet_drop = true,
         .periodic_nak = true,
         .retransmit_flag = true,
         .receive_delay_milliseconds = 300,
@@ -3735,6 +3750,7 @@ TEST(session_ackack_shorter_rtt_repeats_filter_nak_before_live_deadline)
         {
             .receive_tsbpd = true,
             .too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
             .periodic_nak = true,
             .retransmit_flag = true,
             .receive_delay_milliseconds = 120,
@@ -3792,6 +3808,7 @@ TEST(session_stream_receiver_drops_a_lost_packet_inside_a_chunk_per_packet)
         {
             .receive_tsbpd = true,
             .too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
             .periodic_nak = true,
             .retransmit_flag = true,
             .receive_delay_milliseconds = 100,
@@ -3972,6 +3989,82 @@ TEST(session_loss_reports_wait_for_rtt_per_range_without_delaying_new_gaps)
         }
         REQUIRE_EQ(count_reports(receiver.poll_timers(75'100)), 0U);
         REQUIRE_EQ(count_reports(receiver.poll_timers(100'100)), 2U);
+    }
+}
+
+TEST(session_negotiates_sender_drop_from_peer_receiver_policy)
+{
+    for (const bool local_drop : {false, true}) {
+        for (const bool peer_drop : {false, true}) {
+            HandshakeExtensionParameters local;
+            HandshakeExtensionParameters peer;
+            if (!local_drop) {
+                local.flags &= ~static_cast<std::uint32_t>(
+                    HandshakeExtensionFlag::too_late_packet_drop);
+            }
+            if (!peer_drop) {
+                peer.flags &= ~static_cast<std::uint32_t>(
+                    HandshakeExtensionFlag::too_late_packet_drop);
+            }
+            ReliabilitySession session {{
+                .local_initial_sequence = SequenceNumber {10},
+                .peer_initial_sequence = SequenceNumber {20},
+                .send_capacity_packets = 4,
+                .receive_capacity_packets = 4,
+            }};
+            session.configure_live(
+                negotiate_live_options(local, peer), 0, PacketTimestamp {0});
+            const std::array<std::byte, 1> payload {std::byte {'s'}};
+            REQUIRE_EQ(
+                session.queue_message(payload, PacketTimestamp {0}, true, 1),
+                Error::none);
+            REQUIRE_EQ(session.drop_too_late_sender(1'020'001).size,
+                peer_drop ? 1U : 0U);
+        }
+    }
+}
+
+TEST(session_negotiates_receiver_drop_from_local_policy)
+{
+    for (const bool local_drop : {false, true}) {
+        for (const bool peer_drop : {false, true}) {
+            HandshakeExtensionParameters local;
+            HandshakeExtensionParameters peer;
+            local.receiver_tsbpd_delay_milliseconds = 100;
+            peer.sender_tsbpd_delay_milliseconds = 100;
+            if (!local_drop) {
+                local.flags &= ~static_cast<std::uint32_t>(
+                    HandshakeExtensionFlag::too_late_packet_drop);
+            }
+            if (!peer_drop) {
+                peer.flags &= ~static_cast<std::uint32_t>(
+                    HandshakeExtensionFlag::too_late_packet_drop);
+            }
+            // Reception must also work when the peer does not receive TSBPD.
+            peer.flags &= ~static_cast<std::uint32_t>(
+                HandshakeExtensionFlag::tsbpd_receive);
+            ReliabilitySession session {{
+                .local_initial_sequence = SequenceNumber {100},
+                .peer_initial_sequence = SequenceNumber {10},
+                .send_capacity_packets = 4,
+                .receive_capacity_packets = 4,
+            }};
+            session.configure_live(negotiate_live_options(local, peer), 1'000,
+                PacketTimestamp {0});
+            const std::array<std::byte, 1> payload {std::byte {'r'}};
+            PacketView packet;
+            packet.kind = PacketKind::data;
+            packet.data.sequence = SequenceNumber {11};
+            packet.data.message_number = 2;
+            packet.data.boundary = MessageBoundary::solo;
+            packet.data.timestamp = PacketTimestamp {50};
+            packet.payload = payload;
+            REQUIRE(session.receive(packet, 1'010));
+            REQUIRE_EQ(
+                session.drop_too_late_receiver(101'050).receiver_drop_packets,
+                local_drop ? 1U : 0U);
+            REQUIRE_EQ(session.message_ready_at(101'050), local_drop);
+        }
     }
 }
 

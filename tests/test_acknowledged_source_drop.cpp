@@ -155,6 +155,7 @@ void verify_tsbpd_delivery(SequenceNumber initial, bool delayed_nak)
             .receive_capacity_packets = 8}};
     receiver.configure_live({.receive_tsbpd = true,
                                 .too_late_packet_drop = true,
+                                .sender_too_late_packet_drop = true,
                                 .receive_delay_milliseconds = 200},
         0, PacketTimestamp {0});
     std::array<std::byte, 1> payload {std::byte {'x'}}, output {};

@@ -258,7 +258,7 @@ void ReliabilitySession::configure_live(const NegotiatedLiveOptions& options,
         tsbpd_clock_.reset();
     }
     live_rate_controller_.emplace(rate_configuration);
-    if (options.too_late_packet_drop) {
+    if (options.sender_too_late_packet_drop) {
         constexpr std::uint32_t minimum_drop_threshold_microseconds = 1'020'000;
         const auto negotiated = static_cast<std::uint32_t>(
             options.peer_receive_delay_milliseconds) * 1'000U + 20'000U;
@@ -333,7 +333,7 @@ Error ReliabilitySession::apply_dynamic_options(const SocketOptions& options) no
         SocketOption::drift_tracer);
     drift_tracer_enabled_ = drift_tracer.value != 0;
 
-    if (!live_options_.too_late_packet_drop || drop_delay.value < 0) {
+    if (!live_options_.sender_too_late_packet_drop || drop_delay.value < 0) {
         sender_drop_threshold_microseconds_ = 0;
     } else {
         constexpr std::uint32_t minimum_drop_threshold_microseconds = 1'020'000;

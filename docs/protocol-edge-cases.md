@@ -193,3 +193,18 @@ are never silently approximated.
 
 See [Compatibility status](compatibility.md) and
 [Known limitations](limitations.md) for the release-wide boundary.
+
+## Directional too-late packet drop
+
+TLPKTDROP is independent in the two directions. The local receiver drops late
+missing packets when local TLPKTDROP and receive TSBPD are enabled, even if the
+peer disables its own receiver's TLPKTDROP or TSBPD. Sender dropping uses the
+peer's advertised receive TLPKTDROP and negotiated send TSBPD; disabling local
+receiver dropping does not disable this sender policy. `SRTO_SNDDROPDELAY=-1`
+continues to disable sender dropping independently.
+
+`SRTO_TLPKTDROP` getters return the configured local receive policy before and
+after connection. The core `NegotiatedLiveOptions::too_late_packet_drop` field
+represents receive dropping; `sender_too_late_packet_drop` represents send
+dropping. Direct core configurations must set the latter explicitly when needed.
+This follows the public [SRT socket-option contract](https://github.com/Haivision/srt/blob/master/docs/API/API-socket-options.md#SRTO_TLPKTDROP).

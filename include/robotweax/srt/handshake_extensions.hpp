@@ -98,7 +98,10 @@ struct HandshakeExtensionParameters {
 struct NegotiatedLiveOptions {
     bool send_tsbpd = false;
     bool receive_tsbpd = false;
+    // Local receiver policy; independent of the peer's receive direction.
     bool too_late_packet_drop = false;
+    // Sender dropping is enabled by the peer's TSBPD receiver policy.
+    bool sender_too_late_packet_drop = false;
     bool periodic_nak = false;
     bool retransmit_flag = false;
     std::uint16_t receive_delay_milliseconds = 0;

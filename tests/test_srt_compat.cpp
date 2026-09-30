@@ -4265,7 +4265,7 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
     REQUIRE_EQ(latency(caller, SRTO_LATENCY), listener_peer_latency);
     REQUIRE_EQ(latency(caller, SRTO_RCVLATENCY), listener_peer_latency);
     REQUIRE_EQ(latency(caller, SRTO_PEERLATENCY), listener_receive_latency);
-    REQUIRE(!too_late_drop(caller));
+    REQUIRE(too_late_drop(caller));
     REQUIRE_EQ(
         latency(accepted.load(), SRTO_LATENCY), listener_receive_latency);
     REQUIRE_EQ(

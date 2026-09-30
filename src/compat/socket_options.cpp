@@ -356,10 +356,7 @@ int get_socket_option(
         return write_value(
             value, value_size, options.overhead_bandwidth_percent);
     case SRTO_TLPKTDROP:
-        return write_value(value, value_size,
-            socket.state == SRTS_CONNECTED
-                ? socket.negotiated_live_options.too_late_packet_drop
-                : options.too_late_packet_drop);
+        return write_value(value, value_size, options.too_late_packet_drop);
     case SRTO_DRIFTTRACER:
         return write_value(value, value_size, options.drift_tracer);
     case SRTO_SNDDROPDELAY:
