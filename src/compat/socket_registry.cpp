@@ -1,4 +1,5 @@
 #include "compat/socket_registry.hpp"
+#include "compat/process_owned.hpp"
 #include "compat/connect_callback_executor.hpp"
 
 #include "compat/connect_handshake_operation.hpp"
@@ -38,8 +39,8 @@ thread_local bool creation_blocked_by_cleanup = false;
 
 [[nodiscard]] RuntimeLifecycle& runtime_lifecycle()
 {
-    static RuntimeLifecycle lifecycle;
-    return lifecycle;
+    static ProcessOwned<RuntimeLifecycle> lifecycle;
+    return lifecycle.get();
 }
 
 struct DeferredClose {
@@ -245,8 +246,8 @@ private:
 
 DeferredCloseManager& deferred_close_manager()
 {
-    static DeferredCloseManager manager;
-    return manager;
+    static ProcessOwned<DeferredCloseManager> manager;
+    return manager.get();
 }
 
 void shutdown_record(
@@ -404,8 +405,8 @@ SocketRegistry& SocketRegistry::instance() noexcept
     prepare_connect_callback_executor();
     epoll_initialize();
     (void)GroupRegistry::instance();
-    static SocketRegistry registry;
-    return registry;
+    static ProcessOwned<SocketRegistry> registry;
+    return registry.get();
 }
 
 SocketRegistry::~SocketRegistry()

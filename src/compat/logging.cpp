@@ -1,4 +1,5 @@
 #include "compat/logging.hpp"
+#include "compat/process_owned.hpp"
 
 #include <algorithm>
 #include <array>
@@ -75,8 +76,8 @@ struct LoggingState {
 
 [[nodiscard]] LoggingState& logging_state() noexcept
 {
-    static LoggingState state;
-    return state;
+    static ProcessOwned<LoggingState> state;
+    return state.get();
 }
 
 thread_local bool inside_log_handler = false;

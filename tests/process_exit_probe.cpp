@@ -5,11 +5,37 @@
 #include "srt/srt.h"
 
 #include <chrono>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <thread>
 
+namespace {
+std::weak_ptr<robotweax::srt::compat::SocketRecord> exit_record;
+std::weak_ptr<robotweax::srt::compat::RuntimeScheduler> exit_scheduler;
+std::weak_ptr<robotweax::srt::compat::RuntimeWorkExecutor> exit_executor;
+std::atomic_bool worker_finished = false;
+
+void verify_owner_teardown()
+{
+    if (!worker_finished.load(std::memory_order_acquire)
+        || !exit_record.expired() || !exit_scheduler.expired()
+        || !exit_executor.expired()) {
+        std::fputs(
+            "owner static teardown did not release runtime state\n", stderr);
+        std::_Exit(18);
+    }
+}
+} // namespace
+
 int main()
 {
+    // Registered before runtime construction: the callback runs after its
+    // static destructors and verifies that owner teardown was not skipped.
+    if (std::atexit(verify_owner_teardown) != 0) {
+        return 19;
+    }
     if (srt_startup() != 0) {
         return 10;
     }
@@ -32,6 +58,9 @@ int main()
     if (work_executor == nullptr || !work_executor->snapshot().accepting) {
         return 17;
     }
+    exit_record = record;
+    exit_scheduler = scheduler;
+    exit_executor = work_executor;
 
     auto crypto = std::make_shared<robotweax::srt::CryptoSession>(
         robotweax::srt::CryptoConfiguration{
@@ -50,6 +79,7 @@ int main()
         record->connect_worker = std::thread([] {
             std::this_thread::sleep_for(
                 std::chrono::milliseconds{50});
+            worker_finished.store(true, std::memory_order_release);
         });
     }
 

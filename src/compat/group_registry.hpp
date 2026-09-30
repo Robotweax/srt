@@ -23,6 +23,8 @@ struct TsbpdClockState;
 }
 namespace robotweax::srt::compat {
 
+template <typename T> class ProcessOwned;
+
 // Numeric identities plus generations deliberately replace reciprocal owning
 // pointers between sockets and groups.  The coordinator introduced by the
 // data-plane slice will be the only writer of these snapshots.
@@ -211,6 +213,8 @@ public:
     void clear() noexcept;
 
 private:
+    friend class ProcessOwned<GroupRegistry>;
+
     GroupRegistry() = default;
     ~GroupRegistry() = default;
 

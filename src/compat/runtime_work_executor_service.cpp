@@ -1,4 +1,5 @@
 #include "compat/runtime_work_executor_service.hpp"
+#include "compat/process_owned.hpp"
 
 #include <mutex>
 #include <utility>
@@ -57,8 +58,8 @@ private:
 
 [[nodiscard]] RuntimeWorkExecutorService& work_executor_service() noexcept
 {
-    static RuntimeWorkExecutorService service;
-    return service;
+    static ProcessOwned<RuntimeWorkExecutorService> service;
+    return service.get();
 }
 
 } // namespace

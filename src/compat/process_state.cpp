@@ -12,14 +12,18 @@ namespace {
 #if !defined(_WIN32)
 static_assert(std::atomic_uint32_t::is_always_lock_free);
 std::atomic_uint32_t owner_process_id = 0;
-
-[[nodiscard]] std::uint32_t current_process_id() noexcept
-{
-    return static_cast<std::uint32_t>(getpid());
-}
 #endif
 
 } // namespace
+
+std::uint32_t current_process_id() noexcept
+{
+#if !defined(_WIN32)
+    return static_cast<std::uint32_t>(getpid());
+#else
+    return 0;
+#endif
+}
 
 bool stateful_process_available() noexcept
 {

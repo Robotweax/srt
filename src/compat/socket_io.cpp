@@ -1,4 +1,5 @@
 #include "compat/socket_io.hpp"
+#include "compat/process_owned.hpp"
 
 #include "compat/error_state.hpp"
 
@@ -394,8 +395,8 @@ private:
 
 [[nodiscard]] BindingRegistry& binding_registry()
 {
-    static BindingRegistry registry;
-    return registry;
+    static ProcessOwned<BindingRegistry> registry;
+    return registry.get();
 }
 
 [[nodiscard]] int bind_endpoint(

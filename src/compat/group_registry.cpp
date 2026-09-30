@@ -1,4 +1,5 @@
 #include "compat/group_registry.hpp"
+#include "compat/process_owned.hpp"
 #include "compat/random_identity.hpp"
 
 #include "compat/error_state.hpp"
@@ -98,8 +99,8 @@ bool is_group_handle(SRTSOCKET handle) noexcept
 
 GroupRegistry& GroupRegistry::instance() noexcept
 {
-    static GroupRegistry registry;
-    return registry;
+    static ProcessOwned<GroupRegistry> registry;
+    return registry.get();
 }
 
 namespace {

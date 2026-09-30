@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Robotweax GmbH and contributors
 #include "compat/random_identity.hpp"
+#include "compat/process_owned.hpp"
 
 #include "robotweax/srt/crypto_provider.hpp"
 #include "robotweax/srt/sequence.hpp"
@@ -33,8 +34,8 @@ public:
     {
         // The provider is constructed first so that it outlives the ciphers.
         (void)default_crypto_provider();
-        static IdentityGenerator generator;
-        return generator;
+        static ProcessOwned<IdentityGenerator> generator;
+        return generator.get();
     }
 
     [[nodiscard]] bool prepare() noexcept
@@ -86,6 +87,8 @@ public:
     }
 
 private:
+    friend class ProcessOwned<IdentityGenerator>;
+
     static constexpr std::size_t keystream_blocks = 4;
 
     IdentityGenerator() = default;

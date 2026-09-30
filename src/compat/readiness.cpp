@@ -1,4 +1,5 @@
 #include "compat/readiness.hpp"
+#include "compat/process_owned.hpp"
 
 #include "compat/socket_registry.hpp"
 
@@ -19,8 +20,8 @@ struct ReadinessHub {
     std::atomic_bool has_wildcards = false;
     static ReadinessHub& instance()
     {
-        static ReadinessHub hub;
-        return hub;
+        static ProcessOwned<ReadinessHub> hub;
+        return hub.get();
     }
     void notify(bool all) noexcept
     {
@@ -225,8 +226,8 @@ struct SignalState {
 
 [[nodiscard]] SignalState& signal_state()
 {
-    static SignalState state;
-    return state;
+    static ProcessOwned<SignalState> state;
+    return state.get();
 }
 
 } // namespace

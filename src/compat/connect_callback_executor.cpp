@@ -1,4 +1,5 @@
 #include "compat/connect_callback_executor.hpp"
+#include "compat/process_owned.hpp"
 
 #include "compat/error_state.hpp"
 #include "compat/socket_registry.hpp"
@@ -194,8 +195,8 @@ private:
 };
 Service& service() noexcept
 {
-    static Service instance;
-    return instance;
+    static ProcessOwned<Service> instance;
+    return instance.get();
 }
 } // namespace
 
