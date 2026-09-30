@@ -851,9 +851,9 @@ TEST(compat_runtime_receive_snapshot_preserves_tsbpd_and_retirement)
     const std::array payload {std::byte {'a'}};
     runtime.process_packet({.kind = PacketKind::data,
                                .data = {.sequence = SequenceNumber {900},
+                                   .message_number = 1,
                                    .boundary = MessageBoundary::solo,
                                    .in_order = true,
-                                   .message_number = 1,
                                    .timestamp = PacketTimestamp {1'000}},
                                .payload = payload},
         peer);
