@@ -2340,6 +2340,79 @@ TEST(compat_runtime_file_mode_retransmits_after_injected_sender_rto)
     REQUIRE(retransmission.packet.data.retransmitted);
 }
 
+TEST(compat_runtime_efficient_retransmission_waits_one_rtt)
+{
+    for (const auto mode : std::array {std::array {true, true, true, false},
+             std::array {false, true, true, false},
+             std::array {true, false, false, false},
+             std::array {true, true, false, false},
+             std::array {true, true, false, true},
+             std::array {false, true, false, true}}) {
+        for (const auto initial :
+            {SequenceNumber {700}, SequenceNumber {SequenceNumber::mask}}) {
+            const auto channel = std::make_shared<DatagramChannel>();
+            CapturedDatagrams output;
+            channel->set_send_hook_for_testing(capture_datagram, &output);
+            const Ipv4Endpoint peer {{192, 0, 2, 43}, 16'003};
+            std::uint64_t now = 100'000;
+            SocketOptions options;
+            if (mode[3]) {
+                REQUIRE_EQ(
+                    options.set(SocketOption::transmission_type,
+                        static_cast<std::int64_t>(TransmissionType::file)),
+                    Error::none);
+            }
+            ConnectionRuntime runtime {{
+                .channel = channel,
+                .peer = peer,
+                .peer_socket_id = 430,
+                .initial_sequence = initial,
+                .options = options,
+                .negotiated_options = {.periodic_nak = mode[2],
+                    .peer_periodic_nak = mode[1]},
+                .efficient_retransmission = mode[0],
+                .origin = ConnectionRuntime::Clock::now(),
+                .now_function = injected_now,
+                .now_context = &now,
+            }};
+            const std::array payload {std::byte {'r'}};
+            REQUIRE_EQ(
+                runtime.queue_message(payload, 0, true, false, -1).status,
+                MessageIoStatus::success);
+            (void)runtime.poll();
+            REQUIRE_EQ(take_datagrams(output).size(), 1U);
+            std::array<std::byte, 64> storage {};
+            const auto encoded = encode_reliability_action(
+                {.kind = ReliabilityActionKind::loss_report,
+                    .loss = {initial, initial}},
+                PacketTimestamp {0}, 430, storage);
+            REQUIRE(encoded);
+            const auto nak =
+                decode_packet(std::span {storage}.first(encoded.bytes_written));
+            REQUIRE(nak);
+            now += 1'000;
+            runtime.process_packet(nak.packet, peer);
+            (void)runtime.poll();
+            REQUIRE_EQ(take_datagrams(output).size(), 1U);
+            now += 99'999;
+            runtime.process_packet(nak.packet, peer);
+            (void)runtime.poll();
+            REQUIRE_EQ(
+                take_datagrams(output).size(), mode[0] && mode[1] ? 0U : 1U);
+            // FileCC paces the aggressive third copy after the prior send.
+            now += mode[3] && !mode[0] ? 1'000U : 1U;
+            runtime.process_packet(nak.packet, peer);
+            (void)runtime.poll();
+            const auto repeated = take_datagrams(output);
+            REQUIRE_EQ(repeated.size(), 1U);
+            const auto data = decode_packet(repeated[0]);
+            REQUIRE(data);
+            REQUIRE(data.packet.data.retransmitted);
+            REQUIRE_EQ(data.packet.data.sequence, initial);
+        }
+    }
+}
+
 TEST(compat_runtime_live_periodic_nak_falls_back_to_sender_tail_rto)
 {
     const auto channel = std::make_shared<DatagramChannel>();
@@ -6659,7 +6732,8 @@ struct BackpressureFixture {
     std::unique_ptr<ConnectionRuntime> runtime;
 
     explicit BackpressureFixture(bool too_late_drop = false,
-        std::uint32_t peer_idle_timeout_milliseconds = 5'000)
+        std::uint32_t peer_idle_timeout_milliseconds = 5'000,
+        bool peer_periodic_nak = false)
     {
         channel->set_send_hook_for_testing(backpressure_datagram, &output);
         SocketOptions options;
@@ -6680,7 +6754,8 @@ struct BackpressureFixture {
                 .options = options,
                 .negotiated_options = {.too_late_packet_drop = too_late_drop,
                     .sender_too_late_packet_drop = too_late_drop,
-                    .retransmit_flag = true},
+                    .retransmit_flag = true,
+                    .peer_periodic_nak = peer_periodic_nak},
                 .origin = ConnectionRuntime::Clock::now(),
                 .peer_idle_timeout_milliseconds =
                     peer_idle_timeout_milliseconds,
@@ -7047,6 +7122,48 @@ TEST(compat_runtime_backpressure_control_queue_has_a_bounded_failure)
     REQUIRE(!fixture.runtime->report_peer_error(128));
     REQUIRE(fixture.runtime->broken());
     REQUIRE_EQ(fixture.output.attempts.size(), 1U);
+}
+
+TEST(compat_runtime_efficient_retransmission_clock_uses_successful_udp_send)
+{
+    BackpressureFixture fixture {false, 5'000, true};
+    fixture.output.blocked = false;
+    fixture.enqueue();
+    (void)fixture.runtime->poll();
+    std::array<std::byte, 8> storage {};
+    const std::array losses {
+        SequenceRange {SequenceNumber {700}, SequenceNumber {700}}};
+    const auto encoded = encode_loss_ranges(losses, storage);
+    REQUIRE(encoded);
+    const PacketView nak {.kind = PacketKind::control,
+        .control = {.type = ControlType::negative_acknowledgement},
+        .payload = std::span {storage}.first(encoded.bytes_written)};
+    fixture.now += 1'000;
+    fixture.runtime->process_packet(nak, fixture.peer);
+    fixture.output.blocked = true;
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                   .total.sent_retransmitted.packets,
+        0U);
+    fixture.now += 80'000;
+    fixture.runtime->process_packet(nak, fixture.peer);
+    fixture.output.blocked = false;
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                   .total.sent_retransmitted.packets,
+        1U);
+    fixture.now += 99'999;
+    fixture.runtime->process_packet(nak, fixture.peer);
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                   .total.sent_retransmitted.packets,
+        1U);
+    ++fixture.now;
+    fixture.runtime->process_packet(nak, fixture.peer);
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                   .total.sent_retransmitted.packets,
+        2U);
 }
 
 TEST(compat_runtime_backpressure_ack_cancels_a_deferred_retransmission)

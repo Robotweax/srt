@@ -61,6 +61,21 @@ from the local `SRTO_FC` receive-window configuration.
   acknowledged DATA but carry no absolute available-buffer value.
 - Requested retransmissions remain eligible while the new-DATA window is
   closed.
+- `SRTO_RETRANSMITALGO=1` sends the first requested retransmission immediately.
+  When the peer advertises periodic NAK support, a repeated request for that
+  sequence waits one current smoothed RTT after the last successful UDP
+  retransmission submission. Selecting a packet or deferring a blocked UDP
+  send does not start that clock. A prepared retransmission remains outstanding
+  until submission, so another NAK cannot queue a second copy behind it.
+  `SRTO_RETRANSMITALGO=0`, or a peer without periodic NAK support, schedules
+  every valid request as soon as no copy is already outstanding. The default
+  is 1 for Live and 0 for File; an explicit File setting of 1 also uses the
+  peer's periodic-report capability. The DATA retransmission bit is independent
+  of this local algorithm choice. This follows the public
+  [sender option contract](https://github.com/Haivision/srt/blob/master/docs/API/API-socket-options.md#srto_retransmitalgo);
+  Robotweax's repeat interval is SRTT, without claiming an identical internal
+  heuristic to another implementation. Direct core users enable the policy
+  through `ReliabilitySession::configure_efficient_retransmission`.
 - New loss ranges retain their existing initial-report/reorder policy. Each
   reported range waits at least `SRTT + 4 * RTTVar` before another
   periodic NAK can include it. This prevents a half-RTT periodic timer from

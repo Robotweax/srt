@@ -231,7 +231,7 @@ std::optional<OutboundPacket> ReliabilitySession::next_paced_data_packet(
     if (!pacer.query(now_microseconds, flow_count).ready) {
         return std::nullopt;
     }
-    auto packet = send_buffer_.next_packet();
+    auto packet = send_buffer_.next_packet(defer_pacing_commit);
     if (packet.has_value()) {
         if (live_rate_controller_.has_value()) {
             live_rate_controller_->observe_payload(packet->payload.size());
@@ -239,6 +239,10 @@ std::optional<OutboundPacket> ReliabilitySession::next_paced_data_packet(
         const std::size_t wire_overhead =
             retransmission ? 0U : new_packet_wire_overhead;
         if (!defer_pacing_commit) {
+            if (packet->header.retransmitted) {
+                note_retransmission_sent(
+                    packet->header.sequence, now_microseconds);
+            }
             pacer.on_packet_sent(
                 packet_header_size + packet->payload.size() + wire_overhead,
                 now_microseconds);
@@ -874,9 +878,15 @@ ReliabilityProcessResult ReliabilitySession::receive(
             std::size_t newly_queued_packets = 0;
             std::size_t newly_queued_bytes = 0;
             if (slices.current.has_value()) {
-                const Error error =
-                    send_buffer_.request_retransmission(*slices.current,
-                        &newly_queued_packets, &newly_queued_bytes);
+                const Error error = send_buffer_.request_retransmission(
+                    *slices.current, &newly_queued_packets, &newly_queued_bytes,
+                    now_microseconds,
+                    efficient_retransmission_
+                            && (peer_periodic_nak_
+                                || live_options_.peer_periodic_nak
+                                || live_options_.periodic_nak)
+                        ? rtt_.smoothed_microseconds()
+                        : 0U);
                 if (error != Error::none) {
                     return {.error = error};
                 }
