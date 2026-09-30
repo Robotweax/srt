@@ -1,6 +1,7 @@
 #pragma once
 
 #include "compat/closed_handle_history.hpp"
+#include "compat/public_socket_options.hpp"
 
 #include "compat/group_replay_buffer.hpp"
 #include "compat/readiness.hpp"
@@ -61,6 +62,8 @@ struct GroupRecord {
     std::shared_ptr<TsbpdClockState> receive_clock;
     // Group I/O is serialized independently from membership mutation. No
     // potentially blocking member operation may hold `mutex`.
+    // Serialize option updates without holding metadata across member I/O.
+    mutable std::mutex option_mutex;
     mutable std::mutex send_mutex;
     mutable std::mutex receive_mutex;
     SRTSOCKET handle = SRT_INVALID_SOCK;
@@ -102,19 +105,10 @@ struct GroupRecord {
     std::int64_t minimum_input_bandwidth_bytes_per_second = 0;
     std::int32_t minimum_peer_srt_version = 0x0001'0000;
     std::int32_t peer_idle_timeout_milliseconds = 5'000;
-    // Haivision applies connection-wide security defaults on the group and
-    // reserves endpoint configuration objects for link-specific overrides.
-    // Keep the bounded native representation so credentials never enter an
-    // unbounded container and every future member inherits the same policy.
+    // Fixed-schema socket configuration: every supported option shares the
+    // normal socket validation and normalization, without an unbounded map.
     SocketOptions member_native_options;
-    // Public member-option values copied to every new member. Native options
-    // above hold the matching transport settings, including the packet filter
-    // and payload size; Stream ID and connection timeout are public only.
-    std::int32_t member_receiver_latency_milliseconds = 120;
-    std::int32_t member_peer_latency_milliseconds = 0;
-    std::int32_t member_connection_timeout_milliseconds = 3'000;
-    std::int64_t member_maximum_bandwidth_bytes_per_second = -1;
-    StreamId member_stream_id;
+    PublicSocketOptions member_public_options;
     SRTSOCKET active_send_member = SRT_INVALID_SOCK;
     std::uint64_t active_send_generation = 0;
     std::uint64_t active_send_since_microseconds = 0;
@@ -142,11 +136,7 @@ public:
         std::int32_t minimum_peer_srt_version = 0x0001'0000;
         std::int32_t peer_idle_timeout_milliseconds = 5'000;
         SocketOptions member_native_options;
-        std::int32_t member_receiver_latency_milliseconds = 120;
-        std::int32_t member_peer_latency_milliseconds = 0;
-        std::int32_t member_connection_timeout_milliseconds = 3'000;
-        std::int64_t member_maximum_bandwidth_bytes_per_second = -1;
-        StreamId member_stream_id;
+        PublicSocketOptions member_public_options;
     };
 
     struct MirrorDescription {
