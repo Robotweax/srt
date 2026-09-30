@@ -2,6 +2,7 @@
 #include "crypto_test_helpers.hpp"
 
 #include "robotweax/srt/crypto.hpp"
+#include "compat/transport_runtime.hpp"
 #include "srt/srt.h"
 
 #include <algorithm>
@@ -1839,6 +1840,162 @@ TEST(crypto_session_derives_each_directional_kek_once_across_rotations)
     }
     REQUIRE(exchanged >= 5U);
     REQUIRE_EQ(provider.pbkdf2_calls(), after_handshake);
+}
+
+TEST(crypto_session_does_not_cache_unwrappable_fresh_salt)
+{
+    CtrOnlyCryptoProvider provider;
+    const CryptoConfiguration configuration {
+        .passphrase = "cache only validated receive kek",
+        .key_length = 16,
+        .refresh_rate_packets = 5,
+        .preannouncement_packets = 2,
+    };
+    CryptoSession sender {configuration};
+    CryptoSession receiver {configuration, provider};
+    REQUIRE_EQ(sender.start_initiator(), Error::none);
+    const std::vector<std::byte> initial_request {
+        sender.pending_key_material().begin(),
+        sender.pending_key_material().end()};
+    REQUIRE_EQ(
+        receiver.accept_key_material(initial_request, false), Error::none);
+    REQUIRE_EQ(sender.acknowledge_key_material(
+                   receiver.key_material_response(), false),
+        Error::none);
+    const std::size_t after_initial = provider.pbkdf2_calls();
+
+    auto forged = initial_request;
+    const auto decoded = decode_key_material(forged);
+    REQUIRE(decoded);
+    const std::size_t salt_offset = static_cast<std::size_t>(
+        decoded.key_material.salt.data() - forged.data());
+    forged[salt_offset + srt_salt_size - 1U] ^= std::byte {0x01};
+    REQUIRE_EQ(receiver.accept_key_material(forged, false),
+        Error::cryptographic_failure);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial + 1U);
+    REQUIRE_EQ(receiver.receiver_state(), CryptoState::secured);
+
+    std::vector<std::byte> rotation_request;
+    for (int sent = 0; sent < 8 && rotation_request.empty(); ++sent) {
+        REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+        REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+        const auto pending = sender.pending_key_material();
+        rotation_request.assign(pending.begin(), pending.end());
+    }
+    REQUIRE(!rotation_request.empty());
+    REQUIRE_EQ(
+        receiver.accept_key_material(rotation_request, false), Error::none);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial + 1U);
+}
+
+TEST(crypto_runtime_budgets_uncached_key_derivations)
+{
+    using namespace robotweax::srt::compat;
+    CtrOnlyCryptoProvider provider;
+    const CryptoConfiguration configuration {
+        .passphrase = "budget runtime key derivations",
+        .key_length = 16,
+        .refresh_rate_packets = 5,
+        .preannouncement_packets = 2,
+    };
+    CryptoSession sender {configuration};
+    auto receiver_crypto =
+        std::make_shared<CryptoSession>(configuration, provider);
+    REQUIRE_EQ(sender.start_initiator(), Error::none);
+    const std::vector<std::byte> initial_request {
+        sender.pending_key_material().begin(),
+        sender.pending_key_material().end()};
+    REQUIRE_EQ(receiver_crypto->accept_key_material(initial_request, false),
+        Error::none);
+    REQUIRE_EQ(sender.acknowledge_key_material(
+                   receiver_crypto->key_material_response(), false),
+        Error::none);
+    const std::size_t after_initial = provider.pbkdf2_calls();
+
+    const auto channel = std::make_shared<DatagramChannel>();
+    channel->set_send_hook_for_testing(
+        [](std::span<const std::byte> bytes, Ipv4Endpoint,
+            void*) noexcept -> UdpIoResult {
+            return {.bytes_transferred = bytes.size()};
+        },
+        nullptr);
+    const Ipv4Endpoint peer {.address = {192, 0, 2, 49}, .port = 14'209};
+    std::uint64_t now = 1'000'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 490,
+        .initial_sequence = SequenceNumber {900},
+        .origin = ConnectionRuntime::Clock::now(),
+        .crypto = receiver_crypto,
+        .now_function = [](void* context) noexcept -> std::uint64_t {
+            return *static_cast<std::uint64_t*>(context);
+        },
+        .now_context = &now,
+    }};
+    PacketView request {
+        .kind = PacketKind::control,
+        .control = {.type = ControlType::user_defined,
+            .subtype = key_material_request_subtype,
+            .destination_socket_id = 490},
+    };
+    auto forged = initial_request;
+    const auto decoded = decode_key_material(forged);
+    REQUIRE(decoded);
+    const std::size_t salt_offset = static_cast<std::size_t>(
+        decoded.key_material.salt.data() - forged.data());
+    const std::byte original_salt_byte =
+        forged[salt_offset + srt_salt_size - 1U];
+    forged[salt_offset + srt_salt_size - 1U] =
+        original_salt_byte ^ std::byte {0x01};
+    request.payload = forged;
+    const Ipv4Endpoint foreign_peer {
+        .address = {192, 0, 2, 50}, .port = peer.port};
+    runtime.process_packet(request, foreign_peer);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial);
+    for (std::uint8_t index = 1; index <= 5; ++index) {
+        forged[salt_offset + srt_salt_size - 1U] =
+            original_salt_byte ^ static_cast<std::byte>(index);
+        request.payload = forged;
+        runtime.process_packet(request, peer);
+        REQUIRE(!runtime.broken());
+    }
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial + 1U);
+
+    std::vector<std::byte> rotation_request;
+    for (int sent = 0; sent < 8 && rotation_request.empty(); ++sent) {
+        REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+        REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+        const auto pending = sender.pending_key_material();
+        rotation_request.assign(pending.begin(), pending.end());
+    }
+    REQUIRE(!rotation_request.empty());
+    request.payload = rotation_request;
+    runtime.process_packet(request, peer);
+    REQUIRE(!runtime.broken());
+    REQUIRE_EQ(receiver_crypto->key_material_response().size(),
+        rotation_request.size());
+    REQUIRE(std::equal(rotation_request.begin(), rotation_request.end(),
+        receiver_crypto->key_material_response().begin()));
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial + 1U);
+
+    now += 100'000;
+    forged[salt_offset + srt_salt_size - 1U] =
+        original_salt_byte ^ std::byte {0x06};
+    request.payload = forged;
+    runtime.process_packet(request, peer);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial + 2U);
+
+    CryptoSession fresh_sender {configuration};
+    REQUIRE_EQ(fresh_sender.start_initiator(), Error::none);
+    const auto fresh_request = fresh_sender.pending_key_material();
+    now += 100'000;
+    request.payload = fresh_request;
+    runtime.process_packet(request, peer);
+    REQUIRE(!runtime.broken());
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial + 3U);
+    REQUIRE(std::equal(fresh_request.begin(), fresh_request.end(),
+        receiver_crypto->key_material_response().begin()));
 }
 
 TEST(crypto_session_routes_ctr_keys_from_transport_accepted_sequences)
