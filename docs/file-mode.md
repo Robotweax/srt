@@ -258,6 +258,11 @@ fresh socket's initial sequence number near the 31-bit wrap boundary when
 `--minimum-isn` is requested. Each scenario uses one creation attempt, so
 coverage does not depend on randomly drawing a suitable sequence number.
 
+The two long native rollover fault profiles cap bandwidth at 2,000,000 bytes/s
+to leave processing headroom for the userspace relay on shared CI hosts. Their
+17,500-packet flights, post-wrap loss targets, byte-identical payload checks,
+and causal NAK/RTO recovery requirements remain unchanged.
+
 The fixture is not linked into the library and adds no public API. Normal
 socket creation continues to use random initial sequence numbers. Shared or
 test-disabled Robotweax peers reject `--minimum-isn` explicitly; their other

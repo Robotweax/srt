@@ -690,6 +690,48 @@ class FileInteropTests(unittest.TestCase):
             run_file_interop.ROLLOVER_PACKET_COUNT,
         )
 
+    def test_native_rollover_commands_bound_relay_load_with_deadline_headroom(
+        self,
+    ) -> None:
+        scenarios = run_file_interop.rollover_scenario_matrix(
+            self.robotweax, self.reference
+        )[:2]
+        for scenario in scenarios:
+            for role, program in (
+                ("caller", self.robotweax),
+                ("listener", self.reference),
+            ):
+                with self.subTest(scenario=scenario.name, role=role):
+                    command = run_file_interop.peer_command(
+                        program,
+                        role,
+                        10_001,
+                        Path("payload.bin"),
+                        scenario,
+                        self.options,
+                    )
+                    bandwidth = int(command[command.index("--max-bw") + 1])
+                    # These long fault probes need substantially more relay
+                    # headroom than the generic high-throughput baseline.
+                    self.assertLess(
+                        bandwidth,
+                        self.options.maximum_bandwidth_bytes_per_second // 4,
+                    )
+                    byte_count = run_file_interop.scenario_byte_count(
+                        scenario, self.options
+                    )
+                    packet_count = (
+                        byte_count + run_file_interop.FILE_PAYLOAD_SIZE - 1
+                    ) // run_file_interop.FILE_PAYLOAD_SIZE
+                    wire_bytes = byte_count + packet_count * 44
+                    # Leave half the deadline for setup, recovery and host
+                    # scheduling without shortening the rollover flight.
+                    self.assertLess(
+                        2 * wire_bytes / bandwidth
+                        + self.options.shutdown_grace_milliseconds / 1_000,
+                        self.options.timeout_seconds,
+                    )
+
     def test_dynamic_and_flow_options_are_role_aware(self) -> None:
         dynamic = run_file_interop.resilience_scenario_matrix(
             self.robotweax, self.reference
