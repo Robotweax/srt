@@ -13,8 +13,13 @@ and FEC preparation pauses until that FIFO drains; incoming control responses
 can still be queued. Each queued datagram is allocated only when needed and
 released on completion or cancellation. The FIFO accepts at most 128 datagrams,
 with at most 1,500 wire bytes per entry plus bookkeeping and allocator overhead.
-Allocation failure or overflow fails the connection explicitly rather than
-silently discarding required protocol messages or growing memory without bound.
+During a transient system-error retry episode, queued ACK, NAK, and ACKACK
+controls are replaced by the newest control of the same type; additional
+keepalives are omitted. This keeps inbound traffic from filling the FIFO with
+stale periodic controls during the retry window. DATA bytes and nonperiodic
+controls retain FIFO order. The next periodic NAK can recover losses omitted
+from a replaced report. Allocation failure or overflow remains terminal;
+overflow preserves the last transient system error when one is available.
 
 Retries use the existing channel scheduler, at most once per millisecond while
 UDP continues to return `would_block`. Repeated receive-driven polls before the
