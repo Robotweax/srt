@@ -549,8 +549,7 @@ HandshakeActions RendezvousHandshakeMachine::receive(
                     true);
             if (!filter
                 || (configuration_.receive_capacity_packets != 0U
-                    && !fec_geometry_fits_receive_capacity(
-                        filter.configuration,
+                    && !fec_geometry_fits_receive_capacity(filter.configuration,
                         configuration_.receive_capacity_packets))) {
                 return reject_packet_filter();
             }
@@ -569,8 +568,7 @@ HandshakeActions RendezvousHandshakeMachine::receive(
                     true);
             if (!filter
                 || (configuration_.receive_capacity_packets != 0U
-                    && !fec_geometry_fits_receive_capacity(
-                        filter.configuration,
+                    && !fec_geometry_fits_receive_capacity(filter.configuration,
                         configuration_.receive_capacity_packets))) {
                 return reject_packet_filter();
             }

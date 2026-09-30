@@ -3204,41 +3204,26 @@ int connect_socket(
                         std::numeric_limits<
                             std::int32_t>::max()));
             setup.configuration = {
-                .local_socket_id =
-                    socket->protocol_socket_id,
+                .local_socket_id = socket->protocol_socket_id,
                 .local_cookie = make_rendezvous_cookie(
-                    socket->protocol_socket_id,
-                    socket->local_endpoint, peer),
-                .initial_sequence = SequenceNumber{
-                    socket->connection_initial_sequence},
-                .maximum_transmission_unit =
-                    static_cast<std::uint32_t>(
-                        socket->public_options
-                            .maximum_segment_size),
-                .flow_window =
-                    static_cast<std::uint32_t>(
-                        socket->public_options
-                            .flow_window_packets),
-                .timeout_milliseconds =
-                    retry_interval_milliseconds,
-                .maximum_retries =
-                    retry_budget(
-                        setup.timeout_milliseconds),
+                    socket->protocol_socket_id, socket->local_endpoint, peer),
+                .initial_sequence =
+                    SequenceNumber {socket->connection_initial_sequence},
+                .maximum_transmission_unit = static_cast<std::uint32_t>(
+                    socket->public_options.maximum_segment_size),
+                .flow_window = static_cast<std::uint32_t>(
+                    socket->public_options.flow_window_packets),
+                .timeout_milliseconds = retry_interval_milliseconds,
+                .maximum_retries = retry_budget(setup.timeout_milliseconds),
                 .extension_parameters =
-                    socket->native_options
-                        .handshake_parameters(),
-                .minimum_peer_srt_version =
-                    static_cast<std::uint32_t>(
-                        socket->public_options
-                            .minimum_peer_srt_version),
-                .stream_id =
-                    socket->public_options.stream_id,
+                    socket->native_options.handshake_parameters(),
+                .minimum_peer_srt_version = static_cast<std::uint32_t>(
+                    socket->public_options.minimum_peer_srt_version),
+                .stream_id = socket->public_options.stream_id,
                 .congestion_controller =
-                    socket->native_options
-                        .congestion_controller(),
+                    socket->native_options.congestion_controller(),
                 .packet_filter_configuration =
-                    socket->native_options
-                        .packet_filter_configuration(),
+                    socket->native_options.packet_filter_configuration(),
                 .receive_capacity_packets = std::min<std::size_t>(
                     socket->native_options.receive_buffer_packets(),
                     static_cast<std::size_t>(
@@ -3348,42 +3333,34 @@ int connect_socket(
             .role = ConnectionRole::caller,
             .local_socket_id = socket->protocol_socket_id,
             .initial_sequence =
-                SequenceNumber{socket->connection_initial_sequence},
-            .maximum_transmission_unit =
-                static_cast<std::uint32_t>(
-                    socket->public_options.maximum_segment_size),
+                SequenceNumber {socket->connection_initial_sequence},
+            .maximum_transmission_unit = static_cast<std::uint32_t>(
+                socket->public_options.maximum_segment_size),
             .flow_window = static_cast<std::uint32_t>(
                 socket->public_options.flow_window_packets),
             .timeout_milliseconds = retry_interval_milliseconds,
-            .maximum_retries =
-                retry_budget(setup.timeout_milliseconds),
+            .maximum_retries = retry_budget(setup.timeout_milliseconds),
             .extension_parameters =
                 socket->native_options.handshake_parameters(),
-            .minimum_peer_srt_version =
-                static_cast<std::uint32_t>(
-                    socket->public_options
-                        .minimum_peer_srt_version),
+            .minimum_peer_srt_version = static_cast<std::uint32_t>(
+                socket->public_options.minimum_peer_srt_version),
             .stream_id = socket->public_options.stream_id,
             .congestion_controller =
-                socket->native_options
-                    .congestion_controller(),
+                socket->native_options.congestion_controller(),
             .packet_filter_configuration =
-                socket->native_options
-                    .packet_filter_configuration(),
+                socket->native_options.packet_filter_configuration(),
             .receive_capacity_packets = std::min<std::size_t>(
                 socket->native_options.receive_buffer_packets(),
                 static_cast<std::size_t>(
                     socket->public_options.flow_window_packets)),
-            .has_group_membership =
-                socket->group_id != SRT_INVALID_SOCK,
-            .group_membership = {
-                .group_id = static_cast<std::uint32_t>(
-                    socket->group_id),
-                .type = static_cast<GroupType>(
-                    socket->group_type),
-                .flags = 0U,
-                .weight = socket->group_weight,
-            },
+            .has_group_membership = socket->group_id != SRT_INVALID_SOCK,
+            .group_membership =
+                {
+                    .group_id = static_cast<std::uint32_t>(socket->group_id),
+                    .type = static_cast<GroupType>(socket->group_type),
+                    .flags = 0U,
+                    .weight = socket->group_weight,
+                },
         };
         setup.options = socket->native_options;
         setup.enforced_encryption =
@@ -3700,10 +3677,11 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         const auto filter = negotiate_packet_filter_configuration(
             native_options.packet_filter_configuration(),
             conclusion.packet_filter_configuration);
-        const std::size_t receive_capacity = std::min<std::size_t>(
-            native_options.receive_buffer_packets(),
-            static_cast<std::size_t>(public_options.flow_window_packets));
-        if (!filter || !fec_geometry_fits_receive_capacity(
+        const std::size_t receive_capacity =
+            std::min<std::size_t>(native_options.receive_buffer_packets(),
+                static_cast<std::size_t>(public_options.flow_window_packets));
+        if (!filter
+            || !fec_geometry_fits_receive_capacity(
                 filter.configuration, receive_capacity)) {
             policy_rejected = true;
             policy_rejection = SRT_REJ_FILTER;
@@ -3821,9 +3799,9 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         .congestion_controller = native_options.congestion_controller(),
         .packet_filter_configuration =
             native_options.packet_filter_configuration(),
-        .receive_capacity_packets = std::min<std::size_t>(
-            native_options.receive_buffer_packets(),
-            static_cast<std::size_t>(public_options.flow_window_packets)),
+        .receive_capacity_packets =
+            std::min<std::size_t>(native_options.receive_buffer_packets(),
+                static_cast<std::size_t>(public_options.flow_window_packets)),
         .group_membership_negotiator =
             public_options.group_connect ? negotiate_listener_group : nullptr,
         .group_membership_context = &group_admission,

@@ -105,9 +105,11 @@ TEST(connect_rejects_fec_group_larger_than_listener_receive_window)
     const SRTSOCKET listener = srt_create_socket();
     REQUIRE(listener != SRT_INVALID_SOCK);
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_FC, &receive_window,
-                   static_cast<int>(sizeof(receive_window))), 0);
+                   static_cast<int>(sizeof(receive_window))),
+        0);
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_PACKETFILTER, filter,
-                   static_cast<int>(sizeof(filter) - 1U)), 0);
+                   static_cast<int>(sizeof(filter) - 1U)),
+        0);
     sockaddr_in listener_name {};
     if (!bind_listener(listener, listener_name)) {
         REQUIRE_EQ(srt_close(listener), 0);
@@ -117,13 +119,15 @@ TEST(connect_rejects_fec_group_larger_than_listener_receive_window)
     const SRTSOCKET caller = srt_create_socket();
     REQUIRE(caller != SRT_INVALID_SOCK);
     REQUIRE_EQ(srt_setsockflag(caller, SRTO_PACKETFILTER, filter,
-                   static_cast<int>(sizeof(filter) - 1U)), 0);
-    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO,
-                   &timeout_milliseconds,
-                   static_cast<int>(sizeof(timeout_milliseconds))), 0);
-    REQUIRE_EQ(srt_connect(caller,
-                   reinterpret_cast<const sockaddr*>(&listener_name),
-                   static_cast<int>(sizeof(listener_name))), SRT_ERROR);
+                   static_cast<int>(sizeof(filter) - 1U)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    REQUIRE_EQ(
+        srt_connect(caller, reinterpret_cast<const sockaddr*>(&listener_name),
+            static_cast<int>(sizeof(listener_name))),
+        SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNREJ);
     REQUIRE_EQ(srt_getrejectreason(caller), SRT_REJ_FILTER);
     REQUIRE_EQ(srt_close(caller), 0);
