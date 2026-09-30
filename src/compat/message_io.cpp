@@ -13,6 +13,7 @@
 #include <new>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace robotweax::srt::compat {
@@ -120,31 +121,107 @@ struct FailedGroupIoMember {
     MessageIoResult result;
 };
 
-[[nodiscard]] std::vector<GroupIoMember> group_members(
+// Typical groups fit in a bounded local snapshot. Larger groups retain the
+// existing heap-backed behavior without a new membership limit or cache.
+template <class Value> class GroupIoSnapshotBuffer {
+public:
+    static constexpr std::size_t inline_capacity = 16;
+
+    void reserve(std::size_t capacity)
+    {
+        if (capacity > inline_capacity) {
+            overflow_.reserve(capacity);
+        }
+    }
+
+    void push_back(Value value)
+    {
+        // Both snapshots reserve their complete upper bound before copying
+        // under the membership lock or filtering the resulting identities.
+        if (overflow_.capacity() != 0U) {
+            overflow_.push_back(std::move(value));
+        } else {
+            inline_[size_] = std::move(value);
+        }
+        ++size_;
+    }
+
+    [[nodiscard]] std::span<Value> view() noexcept
+    {
+        return {overflow_.capacity() != 0U ? overflow_.data() : inline_.data(),
+            size_};
+    }
+
+    [[nodiscard]] std::span<const Value> view() const noexcept
+    {
+        return {overflow_.capacity() != 0U ? overflow_.data() : inline_.data(),
+            size_};
+    }
+
+    [[nodiscard]] auto begin() noexcept
+    {
+        return view().begin();
+    }
+    [[nodiscard]] auto end() noexcept
+    {
+        return view().end();
+    }
+    [[nodiscard]] auto begin() const noexcept
+    {
+        return view().begin();
+    }
+    [[nodiscard]] auto end() const noexcept
+    {
+        return view().end();
+    }
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return size_;
+    }
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return size_ == 0U;
+    }
+
+private:
+    std::array<Value, inline_capacity> inline_ {};
+    std::vector<Value> overflow_;
+    std::size_t size_ = 0;
+};
+
+struct GroupIoIdentity {
+    SRTSOCKET id = SRT_INVALID_SOCK;
+    std::uint64_t generation = 0;
+    std::uint16_t weight = 0;
+};
+
+[[nodiscard]] GroupIoSnapshotBuffer<GroupIoMember> group_members(
     const std::shared_ptr<GroupRecord>& group)
 {
-    std::vector<GroupMemberSnapshot> snapshots;
+    GroupIoSnapshotBuffer<GroupIoIdentity> snapshots;
     {
         std::lock_guard lock(group->mutex);
-        snapshots = group->members;
+        snapshots.reserve(group->members.size());
+        for (const auto& member : group->members) {
+            snapshots.push_back({member.public_data.id, member.generation,
+                member.public_data.weight});
+        }
     }
-    std::vector<GroupIoMember> result;
+    GroupIoSnapshotBuffer<GroupIoMember> result;
     result.reserve(snapshots.size());
     for (const auto& snapshot : snapshots) {
-        const auto state =
-            SocketRegistry::instance().state(snapshot.public_data.id);
+        const auto state = SocketRegistry::instance().state(snapshot.id);
         if (state != SRTS_CONNECTED && state != SRTS_BROKEN) {
             continue;
         }
-        const auto socket =
-            SocketRegistry::instance().find(snapshot.public_data.id);
+        const auto socket = SocketRegistry::instance().find(snapshot.id);
         if (socket == nullptr) {
             continue;
         }
         GroupIoMember member;
-        member.id = snapshot.public_data.id;
+        member.id = snapshot.id;
         member.generation = snapshot.generation;
-        member.weight = snapshot.public_data.weight;
+        member.weight = snapshot.weight;
         {
             std::lock_guard lock(socket->mutex);
             if ((socket->state != SRTS_CONNECTED
@@ -276,8 +353,7 @@ struct BackupSendPlan {
     std::uint64_t probe_generation = 0;
 };
 
-void acknowledge_backup_replay(
-    const std::vector<GroupIoMember>& members,
+void acknowledge_backup_replay(std::span<const GroupIoMember> members,
     const std::shared_ptr<GroupRecord>& group) noexcept
 {
     SRTSOCKET active_id = SRT_INVALID_SOCK;
@@ -446,8 +522,7 @@ void clear_backup_probe(GroupRecord& group) noexcept
 }
 
 [[nodiscard]] BackupSendPlan order_backup_members(
-    std::vector<GroupIoMember>& members,
-    const std::shared_ptr<GroupRecord>& group,
+    std::span<GroupIoMember> members, const std::shared_ptr<GroupRecord>& group,
     SequenceNumber first_sequence) noexcept
 {
     const auto preferred = [](const GroupIoMember& left,
@@ -878,7 +953,7 @@ int send_group_message_implementation(
             return fail(SRT_ENOCONN);
         }
         if (group_type == SRT_GTYPE_BACKUP) {
-            acknowledge_backup_replay(members, group);
+            acknowledge_backup_replay(members.view(), group);
         }
         std::uint32_t first_sequence = 0;
         std::uint32_t message_number = 0;
@@ -898,7 +973,7 @@ int send_group_message_implementation(
             // exceeded its RTT-derived response timeout is moved behind the
             // weight-ordered alternatives.
             backup_plan = order_backup_members(
-                members, group, SequenceNumber{first_sequence});
+                members.view(), group, SequenceNumber {first_sequence});
         }
         if (std::any_of(members.begin(), members.end(),
                 [length](const GroupIoMember& member) {
@@ -1245,7 +1320,7 @@ int receive_group_message_implementation(
         }
 
         const GroupReceiveDecision decision =
-            inspect_group_receive(members, SequenceNumber {expected});
+            inspect_group_receive(members.view(), SequenceNumber {expected});
         if (decision.skip_to.has_value()) {
             // No path can supply this prefix; advance to the lowest reachable
             // sequence, then inspect again before attempting a pop.
@@ -1369,8 +1444,8 @@ GroupReceiveReadiness group_receive_readiness(
     // Retire only the prefix already consumed by the real group cursor.
     bool retire_consumed_prefix = true;
     for (;;) {
-        const GroupReceiveDecision decision =
-            inspect_group_receive(members, expected, retire_consumed_prefix);
+        const GroupReceiveDecision decision = inspect_group_receive(
+            members.view(), expected, retire_consumed_prefix);
         retire_consumed_prefix = false;
         if (decision.selected != nullptr) {
             readiness.message_ready = true;
