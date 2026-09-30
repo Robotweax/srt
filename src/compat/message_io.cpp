@@ -217,10 +217,14 @@ struct GroupReceiveDecision {
             } else {
                 const bool complete_expected =
                     member.runtime->has_complete_buffered_message_at(expected);
-                if (!member.terminal || complete_expected) {
+                const bool buffered =
+                    member.runtime->has_buffered_receive_data();
+                const bool pending_terminal_delivery =
+                    member.terminal && buffered && member_delivery.has_value();
+                if (!member.terminal || complete_expected
+                    || pending_terminal_delivery) {
                     member_may_supply_expected = true;
-                    buffered_expected_path |=
-                        member.runtime->has_buffered_receive_data();
+                    buffered_expected_path |= buffered;
                 }
             }
             continue;

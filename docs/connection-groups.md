@@ -188,7 +188,10 @@ If a required gap has left retained history, sender-side failover fails
 explicitly instead of replaying a discontinuous logical stream. On receive,
 negotiated TLPKTDROP may retire an unrecoverable gap. The group advances past
 it only after no member can deliver the expected sequence, including complete
-messages buffered on a terminal member until their TSBPD deadline.
+messages buffered on a terminal member until their TSBPD deadline. This also
+preserves complete messages behind a terminal member's pending head gap while
+its receiver-drop deadline has not arrived, even if a replacement starts at a
+later sequence.
 
 Closing or breaking one member does not terminate a group while another usable
 member exists. Applications may add a distinct replacement member. A broken
