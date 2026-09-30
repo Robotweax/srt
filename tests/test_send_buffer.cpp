@@ -73,6 +73,53 @@ TEST(retransmissions_are_scheduled_before_new_packets)
     REQUIRE(!new_packet->header.retransmitted);
 }
 
+TEST(
+    send_buffer_retransmission_repeat_clock_starts_at_submission_and_resets_on_reuse)
+{
+    SendBuffer buffer {SequenceNumber {SequenceNumber::mask}, 1, 1};
+    const std::array payload {std::byte {'r'}};
+    const auto initial = buffer.first_sequence();
+    REQUIRE_EQ(buffer.enqueue_message(payload, 1, PacketTimestamp {0}, 7),
+        Error::none);
+    REQUIRE(buffer.next_packet());
+    std::size_t packets = 0, bytes = 0;
+    REQUIRE_EQ(buffer.request_retransmission(
+                   {initial, initial}, &packets, &bytes, 0, 100),
+        Error::none);
+    REQUIRE_EQ(packets, 1U);
+    REQUIRE_EQ(bytes, 1U);
+    REQUIRE(buffer.next_packet());
+    // Zero is a valid send timestamp. Selecting a packet alone did not start
+    // the clock; the transport commits its actual successful submission.
+    buffer.note_retransmission_sent(initial, 0);
+    REQUIRE_EQ(buffer.request_retransmission(
+                   {initial, initial}, &packets, &bytes, 99, 100),
+        Error::none);
+    REQUIRE_EQ(packets, 0U);
+    REQUIRE_EQ(bytes, 0U);
+    REQUIRE(!buffer.next_packet());
+    REQUIRE_EQ(buffer.request_retransmission(
+                   {initial, initial}, &packets, &bytes, 100, 100),
+        Error::none);
+    REQUIRE_EQ(packets, 1U);
+    REQUIRE(buffer.next_packet());
+    buffer.note_retransmission_sent(
+        initial, std::numeric_limits<std::uint64_t>::max());
+    REQUIRE_EQ(buffer.request_retransmission(
+                   {initial, initial}, &packets, &bytes, 1, 100),
+        Error::none);
+    REQUIRE_EQ(packets, 0U);
+    REQUIRE_EQ(buffer.acknowledge_before(initial.next()), Error::none);
+    REQUIRE_EQ(buffer.enqueue_message(payload, 2, PacketTimestamp {0}, 7),
+        Error::none);
+    REQUIRE(buffer.next_packet());
+    REQUIRE_EQ(buffer.request_retransmission(
+                   {initial.next(), initial.next()}, &packets, &bytes, 1, 100),
+        Error::none);
+    REQUIRE_EQ(packets, 1U);
+    REQUIRE(buffer.next_packet());
+}
+
 TEST(send_buffer_preserves_encrypted_wire_payload_for_retransmission)
 {
     SendBuffer buffer{SequenceNumber{20}, 4, 4};

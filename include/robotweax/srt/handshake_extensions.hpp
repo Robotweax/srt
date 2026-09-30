@@ -106,6 +106,9 @@ struct NegotiatedLiveOptions {
     bool retransmit_flag = false;
     std::uint16_t receive_delay_milliseconds = 0;
     std::uint16_t peer_receive_delay_milliseconds = 0;
+    // Sender recovery depends on the peer's receive direction, even when
+    // the local receiver has disabled periodic reports.
+    bool peer_periodic_nak = false;
 };
 
 [[nodiscard]] NegotiatedLiveOptions negotiate_live_options(
