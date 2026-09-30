@@ -477,10 +477,8 @@ SRT_SOCKSTATUS SocketRegistry::state(SRTSOCKET socket) noexcept
     bool changed = false;
     {
         std::lock_guard lock(record->mutex);
-        if (record->state == SRTS_CONNECTED
-            && record->runtime != nullptr
-            && (record->runtime->broken()
-                || record->runtime->peer_closed())) {
+        if (record->state == SRTS_CONNECTED && record->runtime != nullptr
+            && record->runtime->terminal()) {
             record->state = SRTS_BROKEN;
             changed = true;
         }

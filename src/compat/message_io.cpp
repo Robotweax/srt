@@ -198,27 +198,22 @@ struct GroupReceiveDecision {
         all_tsbpd &= member.tsbpd_mode;
         // A member may still hold a prefix already consumed through another
         // path. Retire that prefix before judging group deliverability.
-        if (retire_consumed_prefix) {
-            (void)member.runtime->discard_received_before(expected);
-        }
-        const auto candidate = member.runtime->next_readable_message_sequence();
+        const auto receive =
+            member.runtime->receive_snapshot(expected, retire_consumed_prefix);
+        const auto candidate = receive.readable_sequence;
         if (!candidate.has_value()) {
-            const auto member_delivery =
-                member.runtime->next_readable_deadline();
+            const auto member_delivery = receive.next_delivery;
             if (member_delivery.has_value()
                 && (!decision.next_delivery.has_value()
                     || *member_delivery < *decision.next_delivery)) {
                 decision.next_delivery = member_delivery;
             }
-            const SequenceNumber floor =
-                member.runtime->receive_floor_sequence();
+            const SequenceNumber floor = receive.floor_sequence;
             if (floor.distance_from(expected) > 0) {
                 note_unreachable_floor(floor);
             } else {
-                const bool complete_expected =
-                    member.runtime->has_complete_buffered_message_at(expected);
-                const bool buffered =
-                    member.runtime->has_buffered_receive_data();
+                const bool complete_expected = receive.complete_expected;
+                const bool buffered = receive.buffered;
                 const bool pending_terminal_delivery =
                     member.terminal && buffered && member_delivery.has_value();
                 if (!member.terminal || complete_expected

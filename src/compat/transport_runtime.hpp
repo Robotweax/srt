@@ -151,11 +151,22 @@ struct RuntimeBufferPacketCounts {
     std::size_t available_receive = 0;
 };
 
+struct RuntimeReceiveSnapshot {
+    std::optional<SequenceNumber> readable_sequence = std::nullopt;
+    std::optional<std::chrono::steady_clock::time_point> next_delivery =
+        std::nullopt;
+    SequenceNumber floor_sequence {};
+    bool complete_expected = false;
+    bool buffered = false;
+};
+
 struct RuntimePollResult {
     bool immediate_work = false;
     std::optional<std::chrono::microseconds> next_work_delay = std::nullopt;
     bool receive_wait_safe = false;
     bool coarse_timer_probe = false;
+    std::optional<std::chrono::steady_clock::time_point> next_work_deadline =
+        std::nullopt;
 };
 
 struct MessageIoResult {
@@ -243,10 +254,12 @@ public:
     }
     // Drive the connection slice without socket I/O or a running scheduler.
     [[nodiscard]] RuntimePollResult poll_connections_for_testing(
-        std::optional<std::chrono::steady_clock::time_point> now =
-            std::nullopt) noexcept
+        std::optional<std::chrono::steady_clock::time_point> now = std::nullopt,
+        std::chrono::steady_clock::time_point (*clock)(
+            void*) noexcept = nullptr,
+        void* clock_context = nullptr) noexcept
     {
-        return poll_connections(now);
+        return poll_connections(now, clock, clock_context);
     }
     [[nodiscard]] bool running() const noexcept
     {
@@ -319,10 +332,14 @@ private:
     }
     [[nodiscard]] RuntimePollResult poll_connections(
         std::optional<std::chrono::steady_clock::time_point> injected_now =
-            std::nullopt) noexcept;
+            std::nullopt,
+        std::chrono::steady_clock::time_point (*clock)(
+            void*) noexcept = nullptr,
+        void* clock_context = nullptr) noexcept;
     [[nodiscard]] bool schedule_next_locked(bool immediate,
-        std::chrono::microseconds delay,
-        bool coarse_timer_probe = false) noexcept;
+        std::chrono::microseconds delay, bool coarse_timer_probe = false,
+        std::optional<std::chrono::steady_clock::time_point> deadline =
+            std::nullopt) noexcept;
     void observe_timer_wake_locked(std::uint64_t lateness_microseconds,
         std::chrono::steady_clock::time_point now) noexcept;
     void dispatch(
@@ -479,6 +496,8 @@ public:
     [[nodiscard]] bool has_complete_buffered_message_at(
         SequenceNumber sequence) noexcept;
     [[nodiscard]] bool has_buffered_receive_data() noexcept;
+    [[nodiscard]] RuntimeReceiveSnapshot receive_snapshot(
+        SequenceNumber expected, bool retire_consumed_prefix) noexcept;
     [[nodiscard]] MessageIoResult receive_stream(
         std::span<std::byte> destination,
         bool blocking,
@@ -500,6 +519,7 @@ public:
 
     [[nodiscard]] bool broken() const noexcept;
     [[nodiscard]] bool peer_closed() const noexcept;
+    [[nodiscard]] bool terminal() const noexcept;
     [[nodiscard]] bool readable() noexcept;
     [[nodiscard]] std::optional<Clock::time_point>
     next_readable_deadline() noexcept;
@@ -620,6 +640,8 @@ private:
         std::uint64_t now_microseconds) noexcept;
     void send_key_material_error_locked(
         CryptoState state, std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] bool discard_received_before_locked(
+        SequenceNumber next_sequence) noexcept;
     [[nodiscard]] bool service_key_rotation(
         std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] bool service_receiver_tlpktdrop_locked(
