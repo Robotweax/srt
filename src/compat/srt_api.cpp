@@ -709,12 +709,11 @@ int srt_bistats(
             robotweax::srt::compat::set_last_error(SRT_EINVSOCK);
             return SRT_ERROR;
         }
-        if (record->state == SRTS_BROKEN
-            || record->state == SRTS_CLOSING) {
+        if (record->state == SRTS_CLOSING) {
             robotweax::srt::compat::set_last_error(SRT_ECONNLOST);
             return SRT_ERROR;
         }
-        if (record->state != SRTS_CONNECTED
+        if ((record->state != SRTS_CONNECTED && record->state != SRTS_BROKEN)
             || record->runtime == nullptr) {
             robotweax::srt::compat::set_last_error(SRT_ENOCONN);
             return SRT_ERROR;

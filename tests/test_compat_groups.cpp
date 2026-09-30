@@ -4458,14 +4458,16 @@ TEST(compat_group_receive_observes_terminal_without_state_getter)
         REQUIRE_EQ(group_data[0].memberstate, SRT_GST_BROKEN);
         REQUIRE_EQ(group_data[0].sockstate, SRTS_BROKEN);
         SRT_TRACEBSTATS member_statistics {};
-        REQUIRE_EQ(srt_bstats(member, &member_statistics, 0), SRT_ERROR);
-        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNLOST);
+        REQUIRE_EQ(srt_bstats(member, &member_statistics, 0), 0);
+        REQUIRE_EQ(member_statistics.pktRecvUniqueTotal, 1);
         REQUIRE_EQ(srt_recvmsg(group, received.data(),
                        static_cast<int>(received.size())),
             SRT_ERROR);
         REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNLOST);
 
         REQUIRE_EQ(srt_close(group), 0);
+        REQUIRE_EQ(srt_bstats(member, &member_statistics, 0), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
     }
 }
 
