@@ -60,6 +60,11 @@ public:
         std::uint32_t variation_microseconds,
         bool bidirectional_traffic) noexcept;
 
+    [[nodiscard]] bool has_sample() const noexcept
+    {
+        return has_sample_;
+    }
+
     [[nodiscard]] std::uint32_t smoothed_microseconds() const noexcept
     {
         return smoothed_microseconds_;

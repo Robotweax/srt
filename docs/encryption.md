@@ -292,7 +292,13 @@ regressions are independently authored; no upstream code or tests are copied.
 
 At `refresh_rate - preannouncement`, the sender creates the inactive key and
 sends a wrapped KMREQ. It retries the same request until the matching KMRSP is
-received, then changes the DATA selector at the refresh boundary.
+received, then changes the DATA selector at the refresh boundary. Runtime
+retries wait `max(1.5 * SRTT, 10 ms)` after successful UDP submission once
+an RTT observation is available; before that, the interval is 100 ms. A matching
+KMRSP clears this retry clock so the next rotation can be announced immediately.
+The configured preannouncement counts sequence positions; at high packet rates
+or after repeated control loss it can still be shorter than the exchange time,
+so new DATA waits at the refresh boundary as described below.
 
 The DATA IV is derived from the salt and the 31-bit sequence number, so the
 key lifetime is measured in consumed sequence numbers, not in transmitted

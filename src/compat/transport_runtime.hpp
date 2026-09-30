@@ -689,7 +689,7 @@ private:
     std::optional<MatrixFecDecoder> matrix_fec_decoder_;
     std::array<PacketView, 1>
         single_fec_reconstructed_packet_{};
-    std::uint64_t last_key_material_send_microseconds_ = 0;
+    std::optional<std::uint64_t> last_key_material_send_microseconds_;
     std::optional<std::uint64_t> last_key_material_error_microseconds_;
     std::optional<std::uint64_t> last_uncached_kmreq_microseconds_;
     NowFunction now_function_ = nullptr;
