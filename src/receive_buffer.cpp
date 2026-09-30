@@ -52,6 +52,19 @@ const ReceiveBuffer::Slot* ReceiveBuffer::find(SequenceNumber sequence) const no
         : nullptr;
 }
 
+bool ReceiveBuffer::is_settled(SequenceNumber sequence) const noexcept
+{
+    const auto offset = sequence.distance_from(first_stored_sequence_);
+    if (offset < 0 || static_cast<std::size_t>(offset) >= capacity()) {
+        return false;
+    }
+    const auto& slot =
+        slots_[(head_ + static_cast<std::size_t>(offset)) % capacity()];
+    // A dropped empty slot may have no DATA header; its logical sequence is
+    // already fixed by the receive-window position.
+    return slot.dropped || (slot.occupied && slot.header.sequence == sequence);
+}
+
 void ReceiveBuffer::refresh_first_buffered_timestamp() noexcept
 {
     if (occupied_ == 0U) {
