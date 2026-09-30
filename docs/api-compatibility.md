@@ -174,6 +174,21 @@ hold a lock needed by a callback while waiting for a socket operation to
 complete. The callback-specific contracts are described in
 [Integration guide](integration.md).
 
+Internal cleanup reached from an affinity worker hands its final connection
+drain to the existing process work executor. The runtime becomes locally
+closed before submission, and accepted cleanup owns the runtime and UDP channel
+until completion. The executor retains its four-worker, 1,024-entry bound;
+it is prepared by asynchronous connect callers and listener startup. Cleanup
+does not create a new executor generation. A full queue, unavailable/stopped
+executor, or allocation failure keeps the bounded synchronous fallback, which
+can occupy the calling shard for its retry budget. This is a resource-failure
+exception, not an unconditional nonblocking-close guarantee.
+
+The final cumulative ACK still precedes SHUTDOWN, with at most one ACK interval
+(10 ms of real retry time once the drain runs) under UDP backpressure. Queue
+wait time is separate from that retry budget. Public close/linger calls from
+application threads retain their existing synchronous/asynchronous contracts.
+
 ## POSIX fork policy
 
 Forking before any stateful Robotweax API initializes the runtime is supported;

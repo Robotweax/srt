@@ -5,6 +5,7 @@
 #include "compat/readiness.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/runtime_scheduler_service.hpp"
+#include "compat/runtime_work_executor_service.hpp"
 #include "sender_drop_trace.hpp"
 
 #include <algorithm>
@@ -3754,14 +3755,68 @@ bool ConnectionRuntime::report_peer_error(
 
 void ConnectionRuntime::close() noexcept
 {
-    std::unique_lock lock(mutex_);
+    if (begin_close()) {
+        finish_close();
+    }
+}
+
+bool ConnectionRuntime::begin_close() noexcept
+{
+    std::lock_guard lock(mutex_);
     if (locally_closed_) {
+        return false;
+    }
+    locally_closed_ = true;
+    receive_ready_.notify_all();
+    send_ready_.notify_all();
+    notify_readiness();
+    return true;
+}
+
+void close_connection_runtime(const std::shared_ptr<ConnectionRuntime>& runtime,
+    std::shared_ptr<RuntimeWorkExecutor> executor) noexcept
+{
+    if (runtime == nullptr || !runtime->begin_close()) {
         return;
     }
+    if (RuntimeScheduler::on_worker_thread()) {
+        struct CloseTask {
+            std::shared_ptr<ConnectionRuntime> runtime;
+            std::shared_ptr<DatagramChannel> channel;
+        };
+        try {
+            auto task = std::make_shared<CloseTask>(CloseTask {
+                .runtime = runtime,
+                .channel = runtime->channel_.lock(),
+            });
+            if (executor == nullptr) {
+                executor = existing_runtime_work_executor();
+            }
+            if (executor != nullptr
+                && executor->submit({
+                       .function =
+                           [](void* context) noexcept {
+                               static_cast<CloseTask*>(context)
+                                   ->runtime->finish_close();
+                           },
+                       .context = std::move(task),
+                   })
+                    == RuntimeWorkExecutor::SubmitStatus::accepted) {
+                return;
+            }
+        } catch (...) {
+            // Allocation/thread/queue failure cannot strand a closed runtime.
+        }
+    }
+    runtime->finish_close();
+}
+
+void ConnectionRuntime::finish_close() noexcept
+{
+    std::unique_lock lock(mutex_);
     // This caller owns the final FIFO drain. Polls, queued receives, new
     // sends and duplicate close calls must stay quiescent while its retry
     // pauses let other runtimes on the channel's shard make progress.
-    locally_closed_ = true;
     const std::uint64_t now = now_microseconds();
     if (!peer_closed_ && !broken_) {
         // A final cumulative ACK must reach UDP before shutdown. Retry local

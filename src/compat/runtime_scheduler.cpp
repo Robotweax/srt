@@ -13,6 +13,21 @@ namespace {
 constexpr std::size_t invalid_timer_position =
     std::numeric_limits<std::size_t>::max();
 
+thread_local bool scheduler_worker_thread = false;
+
+struct SchedulerWorkerScope {
+    bool previous = scheduler_worker_thread;
+
+    SchedulerWorkerScope() noexcept
+    {
+        scheduler_worker_thread = true;
+    }
+    ~SchedulerWorkerScope()
+    {
+        scheduler_worker_thread = previous;
+    }
+};
+
 } // namespace
 
 RuntimeScheduler::Shard::Shard(
@@ -379,8 +394,14 @@ RuntimeScheduler::Snapshot RuntimeScheduler::snapshot() const noexcept
     return result;
 }
 
+bool RuntimeScheduler::on_worker_thread() noexcept
+{
+    return scheduler_worker_thread;
+}
+
 void RuntimeScheduler::run(std::size_t shard_index) noexcept
 {
+    const SchedulerWorkerScope worker_scope;
     Shard& shard = *shards_[shard_index];
     std::optional<std::chrono::steady_clock::time_point> idle_timer_wake;
     std::uint64_t idle_timer_order_limit = 0;

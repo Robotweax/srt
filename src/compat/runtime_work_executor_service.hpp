@@ -14,6 +14,10 @@ void prepare_runtime_work_executor_service() noexcept;
 [[nodiscard]] std::shared_ptr<RuntimeWorkExecutor>
 acquire_runtime_work_executor() noexcept;
 
+// Cleanup must not restart a worker generation while final cleanup stops it.
+[[nodiscard]] std::shared_ptr<RuntimeWorkExecutor>
+existing_runtime_work_executor() noexcept;
+
 // Stops the active generation after socket teardown has closed every producer.
 void stop_runtime_work_executor() noexcept;
 

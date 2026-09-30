@@ -39,6 +39,12 @@ public:
         }
     }
 
+    [[nodiscard]] std::shared_ptr<RuntimeWorkExecutor> existing() noexcept
+    {
+        std::lock_guard lock(mutex_);
+        return executor_;
+    }
+
     void stop() noexcept
     {
         std::shared_ptr<RuntimeWorkExecutor> executor;
@@ -77,6 +83,11 @@ std::shared_ptr<RuntimeWorkExecutor> acquire_runtime_work_executor() noexcept
 void stop_runtime_work_executor() noexcept
 {
     work_executor_service().stop();
+}
+
+std::shared_ptr<RuntimeWorkExecutor> existing_runtime_work_executor() noexcept
+{
+    return work_executor_service().existing();
 }
 
 } // namespace robotweax::srt::compat

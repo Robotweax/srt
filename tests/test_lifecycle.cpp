@@ -517,6 +517,8 @@ TEST(lifecycle_final_cleanup_restarts_runtime_service_generations)
         robotweax::srt::compat::acquire_runtime_work_executor();
     REQUIRE(first != nullptr);
     REQUIRE(first_work != nullptr);
+    REQUIRE_EQ(robotweax::srt::compat::existing_runtime_work_executor().get(),
+        first_work.get());
     REQUIRE(first->snapshot().accepting);
     REQUIRE(first_work->snapshot().accepting);
     REQUIRE_EQ(first->snapshot().queue_capacity, 8'192U);
@@ -527,8 +529,12 @@ TEST(lifecycle_final_cleanup_restarts_runtime_service_generations)
     REQUIRE_EQ(srt_cleanup(), 0);
     REQUIRE(!first->snapshot().accepting);
     REQUIRE(!first_work->snapshot().accepting);
+    REQUIRE(
+        robotweax::srt::compat::existing_runtime_work_executor() == nullptr);
 
     REQUIRE_EQ(srt_startup(), 0);
+    REQUIRE(
+        robotweax::srt::compat::existing_runtime_work_executor() == nullptr);
     const auto second = robotweax::srt::compat::acquire_runtime_scheduler();
     const auto second_work =
         robotweax::srt::compat::acquire_runtime_work_executor();
@@ -542,6 +548,8 @@ TEST(lifecycle_final_cleanup_restarts_runtime_service_generations)
     REQUIRE_EQ(srt_cleanup(), 0);
     REQUIRE(!second->snapshot().accepting);
     REQUIRE(!second_work->snapshot().accepting);
+    REQUIRE(
+        robotweax::srt::compat::existing_runtime_work_executor() == nullptr);
 }
 
 TEST(lifecycle_nested_startup_cleanup_releases_only_the_final_reference)
