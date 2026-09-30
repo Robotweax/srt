@@ -2621,6 +2621,24 @@ bool ConnectionRuntime::send_key_material(
         now);
 }
 
+void ConnectionRuntime::send_key_material_error_locked(
+    CryptoState state, std::uint64_t now) noexcept
+{
+    // Error replies are unauthenticated and can be provoked by a peer packet.
+    // Permit one per normal KM retry interval, including a reply after a
+    // backwards clock correction, without treating the request as liveness.
+    constexpr std::uint64_t retry_interval_microseconds = 100'000;
+    if (last_key_material_error_microseconds_.has_value()
+        && now >= *last_key_material_error_microseconds_
+        && now - *last_key_material_error_microseconds_
+            < retry_interval_microseconds) {
+        return;
+    }
+    last_key_material_error_microseconds_ = now;
+    const auto response = encode_key_material_state(state);
+    (void)send_key_material(key_material_response_subtype, response, now);
+}
+
 bool ConnectionRuntime::send_peer_error_locked(
     std::int32_t error_code,
     std::uint64_t now) noexcept
@@ -2726,11 +2744,22 @@ bool ConnectionRuntime::process_reliability_packet_locked(
             break_locked(0);
             return false;
         }
+        if (options_.enforced_encryption()
+            && packet.data.encryption_key != EncryptionKey::none
+            && (crypto_ == nullptr || !crypto_->enabled())) {
+            statistics_.note_receiver_undecryptable(packet.payload.size());
+            return false;
+        }
         if (consume_filter_control) {
             // FEC control payloads contain recovery bytes for ciphertext;
             // the outer KK selector is descriptive and does not request a
             // second decryption pass.
         } else if (crypto_ != nullptr && crypto_->enabled()) {
+            if (options_.enforced_encryption()
+                && packet.data.encryption_key == EncryptionKey::none) {
+                statistics_.note_receiver_undecryptable(packet.payload.size());
+                return false;
+            }
             std::span<std::byte> destination;
             Error decrypted = Error::none;
             if (crypto_->authenticated_data_enabled()) {
@@ -2770,9 +2799,8 @@ bool ConnectionRuntime::process_reliability_packet_locked(
                     return false;
                 }
                 if (packet.data.encryption_key == EncryptionKey::none) {
-                    // Plaintext DATA on an encrypting session violates the
-                    // negotiated policy.
-                    break_locked(0);
+                    // A plaintext packet cannot change the negotiated
+                    // policy or consume a sequence on an encrypted session.
                     return false;
                 }
                 if (crypto_->receiver_state() == CryptoState::secured) {
@@ -2782,9 +2810,8 @@ bool ConnectionRuntime::process_reliability_packet_locked(
                     return false;
                 }
                 if (options_.enforced_encryption()) {
-                    // Enforced encryption without a usable peer key (bad or
-                    // missing secret) stays fail-closed.
-                    break_locked(0);
+                    // Missing peer key material does not authenticate this
+                    // DATA packet. Preserve the session for a later retry.
                     return false;
                 }
                 // Optional encryption with a key this side could not unwrap
@@ -2796,10 +2823,6 @@ bool ConnectionRuntime::process_reliability_packet_locked(
             }
         } else if (packet.data.encryption_key
             != EncryptionKey::none) {
-            if (options_.enforced_encryption()) {
-                break_locked(0);
-                return false;
-            }
             // Optional encryption without a local secret (NOSECRET): the peer
             // keeps encrypting. Acknowledge the sequence, discard the payload.
             statistics_.note_receiver_undecryptable(packet.payload.size());
@@ -3026,9 +3049,7 @@ void ConnectionRuntime::process_packet(
             || packet.control.subtype
                 == key_material_response_subtype)) {
         if (crypto_ == nullptr || !crypto_->enabled()) {
-            if (packet.control.subtype
-                    == key_material_request_subtype
-                && !options_.enforced_encryption()) {
+            if (packet.control.subtype == key_material_request_subtype) {
                 // Setup may have discarded an unusable crypto session even
                 // though a secret was configured. Keep its failure reason
                 // when the peer retries KMREQ; absence of a session alone
@@ -3037,18 +3058,8 @@ void ConnectionRuntime::process_packet(
                     && receiver_key_state_ != CryptoState::bad_crypto_mode) {
                     receiver_key_state_ = CryptoState::no_secret;
                 }
-                const auto response =
-                    encode_key_material_state(receiver_key_state_);
-                if (!send_key_material(
-                        key_material_response_subtype,
-                        response, now)) {
-                    break_locked(0);
-                    return;
-                }
-                last_peer_activity_microseconds_ = now;
-                return;
+                send_key_material_error_locked(receiver_key_state_, now);
             }
-            break_locked(0);
             return;
         }
         if (packet.control.subtype
@@ -3074,17 +3085,16 @@ void ConnectionRuntime::process_packet(
                     // A peer may retry the rejected handshake key or offer a
                     // successor. Reply with the current receive failure, but
                     // keep the independent local sender and its key budget.
-                    const auto response =
-                        encode_key_material_state(crypto_->receiver_state());
-                    if (!send_key_material(
-                            key_material_response_subtype, response, now)) {
-                        break_locked(0);
-                        return;
-                    }
-                    last_peer_activity_microseconds_ = now;
+                    send_key_material_error_locked(
+                        crypto_->receiver_state(), now);
                     return;
                 }
-                break_locked(0);
+                if (crypto_->receiver_state() == CryptoState::bad_secret
+                    || crypto_->receiver_state()
+                        == CryptoState::bad_crypto_mode) {
+                    send_key_material_error_locked(
+                        crypto_->receiver_state(), now);
+                }
                 return;
             }
             if (!send_key_material(

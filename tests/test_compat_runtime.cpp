@@ -4006,12 +4006,18 @@ TEST(compat_runtime_gcm_caller_listener_authenticates_live_data_and_faults)
     listener.process_packet(forged_packet.packet, caller_endpoint);
     REQUIRE(!listener.broken());
 
+    PacketView plaintext = first_packet.packet;
+    plaintext.data.encryption_key = EncryptionKey::none;
+    plaintext.payload = first_bytes;
+    listener.process_packet(plaintext, caller_endpoint);
+    REQUIRE(!listener.broken());
+
     std::array<std::byte, 128> received {};
     REQUIRE_EQ(listener.receive_message(received, false, -1).status,
         MessageIoStatus::would_block);
     const auto failed_statistics = listener.statistics(false, true);
-    REQUIRE_EQ(failed_statistics.total.receiver_undecryptable.packets, 2U);
-    REQUIRE_EQ(failed_statistics.total.receiver_dropped.packets, 2U);
+    REQUIRE_EQ(failed_statistics.total.receiver_undecryptable.packets, 3U);
+    REQUIRE_EQ(failed_statistics.total.receiver_dropped.packets, 3U);
 
     listener.process_packet(first_packet.packet, caller_endpoint);
     listener.process_packet(first_packet.packet, caller_endpoint);
@@ -4649,6 +4655,7 @@ TEST(compat_runtime_preserves_optional_key_request_failure_state)
             .payload = sender.pending_key_material(),
         };
         for (int retry = 0; retry < 3; ++retry) {
+            now += 100'000;
             receiver.process_packet(request, peer);
             REQUIRE(!receiver.broken());
 
@@ -4671,6 +4678,67 @@ TEST(compat_runtime_preserves_optional_key_request_failure_state)
             REQUIRE_EQ(sender.sender_state(), expected);
         }
     }
+}
+
+TEST(compat_runtime_bounds_key_errors_without_crypto_or_peer_liveness)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {.address = {192, 0, 2, 46}, .port = 14'206};
+    const Ipv4Endpoint foreign {.address = {192, 0, 2, 47}, .port = 14'206};
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::enforced_encryption, 1), Error::none);
+    std::uint64_t now = 0;
+    ConnectionRuntime receiver {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 460,
+        .initial_sequence = SequenceNumber {900},
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now(),
+        .peer_idle_timeout_milliseconds = 5,
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+    CryptoSession sender {{.passphrase = "policy key request fixture"}};
+    REQUIRE_EQ(sender.start_initiator(), Error::none);
+    PacketView request {
+        .kind = PacketKind::control,
+        .control = {.type = ControlType::user_defined,
+            .subtype = key_material_request_subtype,
+            .destination_socket_id = 460},
+        .payload = sender.pending_key_material(),
+    };
+    now = 4'000;
+    receiver.process_packet(request, foreign);
+    REQUIRE(!receiver.broken());
+    REQUIRE(take_datagrams(output).empty());
+
+    for (int retry = 0; retry < 5; ++retry) {
+        receiver.process_packet(request, peer);
+        REQUIRE(!receiver.broken());
+    }
+    const auto responses = take_datagrams(output);
+    REQUIRE_EQ(responses.size(), 1U);
+    const auto decoded = decode_packet(responses.front());
+    REQUIRE(decoded);
+    REQUIRE_EQ(decoded.packet.control.subtype, key_material_response_subtype);
+    REQUIRE_EQ(decode_key_material_state(decoded.packet.payload),
+        CryptoState::no_secret);
+
+    PacketView response = request;
+    response.control.subtype = key_material_response_subtype;
+    const auto response_state =
+        encode_key_material_state(CryptoState::no_secret);
+    response.payload = response_state;
+    receiver.process_packet(response, peer);
+    REQUIRE(!receiver.broken());
+    REQUIRE(take_datagrams(output).empty());
+
+    now = 5'001;
+    (void)receiver.poll();
+    REQUIRE(receiver.broken());
 }
 
 TEST(compat_runtime_drops_undecryptable_data_on_a_secured_enforced_session)
@@ -4704,6 +4772,10 @@ TEST(compat_runtime_drops_undecryptable_data_on_a_secured_enforced_session)
         .address = {192, 0, 2, 45},
         .port = 14'205,
     };
+    const Ipv4Endpoint foreign {
+        .address = {192, 0, 2, 48},
+        .port = 14'205,
+    };
     SocketOptions options;
     REQUIRE_EQ(options.set(SocketOption::transmission_type,
                    static_cast<std::int64_t>(TransmissionType::file)),
@@ -4718,6 +4790,7 @@ TEST(compat_runtime_drops_undecryptable_data_on_a_secured_enforced_session)
         .flow_window_packets = 256,
         .options = options,
         .origin = ConnectionRuntime::Clock::now(),
+        .peer_idle_timeout_milliseconds = 5,
         .crypto = receiver_crypto,
         .now_function = injected_now,
         .now_context = &now,
@@ -4734,6 +4807,11 @@ TEST(compat_runtime_drops_undecryptable_data_on_a_secured_enforced_session)
     stray.data.in_order = true;
     stray.data.encryption_key = EncryptionKey::odd;
     stray.data.destination_socket_id = 450;
+    receiver.process_packet(stray, foreign);
+    REQUIRE(!receiver.broken());
+    REQUIRE_EQ(
+        receiver.statistics(false, true).total.receiver_undecryptable.packets,
+        0U);
     receiver.process_packet(stray, peer);
     REQUIRE(!receiver.broken());
     REQUIRE_EQ(
@@ -4783,7 +4861,8 @@ TEST(compat_runtime_drops_undecryptable_data_on_a_secured_enforced_session)
     REQUIRE_EQ(next_result.bytes, payload.size());
     REQUIRE(std::equal(payload.begin(), payload.end(), received.begin()));
 
-    // Plaintext on the secured session remains a policy violation.
+    // A stray plaintext packet must not terminate the encrypted session or
+    // consume the sequence needed by a valid retransmission.
     PacketView plaintext {
         .kind = PacketKind::data,
         .payload = payload,
@@ -4794,6 +4873,35 @@ TEST(compat_runtime_drops_undecryptable_data_on_a_secured_enforced_session)
     plaintext.data.in_order = true;
     plaintext.data.destination_socket_id = 450;
     receiver.process_packet(plaintext, peer);
+    REQUIRE(!receiver.broken());
+    REQUIRE_EQ(
+        receiver.statistics(false, true).total.receiver_undecryptable.packets,
+        2U);
+    EncryptionKey recovery_key = EncryptionKey::none;
+    const auto recovery_ciphertext = encrypt_fixture(
+        *sender_crypto, SequenceNumber {902}, payload, recovery_key);
+    PacketView recovery = genuine;
+    recovery.payload = recovery_ciphertext;
+    recovery.data.sequence = SequenceNumber {902};
+    recovery.data.message_number = 3;
+    recovery.data.encryption_key = recovery_key;
+    receiver.process_packet(recovery, peer);
+    REQUIRE(!receiver.broken());
+    const auto recovered = receiver.receive_message(received, false, -1);
+    REQUIRE_EQ(recovered.status, MessageIoStatus::success);
+    REQUIRE_EQ(recovered.first_sequence, SequenceNumber {902});
+    REQUIRE_EQ(recovered.bytes, payload.size());
+    REQUIRE(std::equal(payload.begin(), payload.end(), received.begin()));
+
+    // Invalid DATA must not extend peer liveness even when it comes from the
+    // expected endpoint. The last valid packet was observed at now=1,000,000.
+    now += 4'000;
+    plaintext.data.sequence = SequenceNumber {903};
+    plaintext.data.message_number = 4;
+    receiver.process_packet(plaintext, peer);
+    REQUIRE(!receiver.broken());
+    now += 1'001;
+    (void)receiver.poll();
     REQUIRE(receiver.broken());
 }
 
@@ -4809,11 +4917,12 @@ TEST(compat_runtime_acknowledges_undecryptable_data_under_optional_encryption)
         bool local_secret;
     };
     // NOSECRET (no local session), BADSECRET (a local session that never
-    // obtained the peer's key), and enforced encryption as the control.
+    // obtained the peer's key), and both enforced-encryption variants.
     const std::array scenarios {
         Case {false, false},
         Case {false, true},
         Case {true, false},
+        Case {true, true},
     };
     for (const Case scenario : scenarios) {
         const bool enforced = scenario.enforced;
@@ -4867,8 +4976,54 @@ TEST(compat_runtime_acknowledges_undecryptable_data_under_optional_encryption)
             receiver.process_packet(data, peer);
         }
         if (enforced) {
-            // Enforced encryption stays fail-closed.
-            REQUIRE(receiver.broken());
+            // Unknown encrypted DATA cannot change the established policy or
+            // acknowledge a sequence in an unencrypted local session.
+            REQUIRE(!receiver.broken());
+            REQUIRE_EQ(receiver.statistics(false, true)
+                           .total.receiver_undecryptable.packets,
+                2U);
+            std::array<std::byte, 16> received {};
+            REQUIRE_EQ(receiver.receive_message(received, false, -1).status,
+                MessageIoStatus::would_block);
+            now += 20'000;
+            (void)receiver.poll();
+            for (const auto& datagram : take_datagrams(output)) {
+                const auto decoded = decode_packet(datagram);
+                REQUIRE(decoded);
+                if (decoded.packet.kind == PacketKind::control
+                    && decoded.packet.control.type
+                        == ControlType::acknowledgement) {
+                    const auto acknowledgement =
+                        decode_acknowledgement(decoded.packet);
+                    REQUIRE(acknowledgement);
+                    REQUIRE(acknowledgement.acknowledgement.next_sequence
+                        != SequenceNumber {902});
+                }
+            }
+            // With no configured crypto, cleartext remains valid. With a
+            // configured but unready session, enforced encryption rejects it.
+            PacketView plaintext {.kind = PacketKind::data, .payload = payload};
+            plaintext.data.sequence = SequenceNumber {900};
+            plaintext.data.message_number = 1;
+            plaintext.data.boundary = MessageBoundary::solo;
+            plaintext.data.in_order = true;
+            plaintext.data.destination_socket_id = 440;
+            receiver.process_packet(plaintext, peer);
+            REQUIRE(!receiver.broken());
+            if (scenario.local_secret) {
+                REQUIRE_EQ(receiver.statistics(false, true)
+                               .total.receiver_undecryptable.packets,
+                    3U);
+                REQUIRE_EQ(receiver.receive_message(received, false, -1).status,
+                    MessageIoStatus::would_block);
+            } else {
+                const auto result =
+                    receiver.receive_message(received, false, -1);
+                REQUIRE_EQ(result.status, MessageIoStatus::success);
+                REQUIRE_EQ(result.bytes, payload.size());
+                REQUIRE(std::equal(
+                    payload.begin(), payload.end(), received.begin()));
+            }
             continue;
         }
         REQUIRE(!receiver.broken());
@@ -8251,6 +8406,7 @@ TEST(compat_runtime_optional_receiver_answers_repeated_bad_key_requests)
             .destination_socket_id = 430},
         .payload = initiator.pending_key_material()};
     for (int retry = 0; retry < 3; ++retry) {
+        now += 100'000;
         receiver.process_packet(request, peer);
         REQUIRE(!receiver.broken());
         REQUIRE_EQ(receiver.receiver_crypto_state(), CryptoState::bad_secret);
