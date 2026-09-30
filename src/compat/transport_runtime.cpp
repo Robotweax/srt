@@ -1434,6 +1434,9 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
     , receive_pop_hook_for_testing_(configuration.receive_pop_hook_for_testing)
     , receive_pop_context_for_testing_(
           configuration.receive_pop_context_for_testing)
+    , close_retry_hook_for_testing_(configuration.close_retry_hook_for_testing)
+    , close_retry_context_for_testing_(
+          configuration.close_retry_context_for_testing)
     , flow_window_packets_(effective_peer_flow_window(configuration))
 {
     const std::size_t receive_capacity =
@@ -2138,7 +2141,9 @@ bool ConnectionRuntime::service_receiver_tlpktdrop_locked(
     if (!session_.data_ready_at(now)) {
         readiness_source_->note_not_ready(SRT_EPOLL_IN);
     }
-    if (!send_actions(dropped.actions, now)) {
+    // Buffered receive data may still be inspected after local close, but
+    // cannot append controls to the FIFO owned by the close drain.
+    if (!locally_closed_ && !send_actions(dropped.actions, now)) {
         return false;
     }
     receive_ready_.notify_all();
@@ -3749,10 +3754,14 @@ bool ConnectionRuntime::report_peer_error(
 
 void ConnectionRuntime::close() noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
     if (locally_closed_) {
         return;
     }
+    // This caller owns the final FIFO drain. Polls, queued receives, new
+    // sends and duplicate close calls must stay quiescent while its retry
+    // pauses let other runtimes on the channel's shard make progress.
+    locally_closed_ = true;
     const std::uint64_t now = now_microseconds();
     if (!peer_closed_ && !broken_) {
         // A final cumulative ACK must reach UDP before shutdown. Retry local
@@ -3777,7 +3786,13 @@ void ConnectionRuntime::close() noexcept
                     return false;
                 }
                 if (pending_datagram_size_ != 0U) {
+                    lock.unlock();
+                    if (close_retry_hook_for_testing_ != nullptr) {
+                        close_retry_hook_for_testing_(
+                            close_retry_context_for_testing_);
+                    }
                     std::this_thread::sleep_for(std::chrono::milliseconds {1});
+                    lock.lock();
                 }
             }
             return !broken_ && pending_datagram_size_ == 0U;
@@ -3795,7 +3810,6 @@ void ConnectionRuntime::close() noexcept
     statistics_.update_send_duration(
         now, session_.send_buffer().size() != 0U);
     statistics_.update_send_duration(now, false);
-    locally_closed_ = true;
     pending_datagram_head_.reset();
     pending_datagram_tail_ = nullptr;
     pending_datagram_size_ = 0U;

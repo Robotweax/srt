@@ -46,6 +46,10 @@ SEQUENCE_MASK = SEQUENCE_MODULUS - 1
 ROLLOVER_MINIMUM_ISN = SEQUENCE_MODULUS - 16_384
 ROLLOVER_PACKET_COUNT = 17_500
 ROLLOVER_NAK_OCCURRENCE = 17_000
+# Leave processing headroom for the userspace relay on shared CI hosts.
+# Unplanned UDP loss can make an original first appear as a retransmission,
+# which must not count toward a deterministic original-DATA fault occurrence.
+NATIVE_ROLLOVER_MAXIMUM_BANDWIDTH_BYTES_PER_SECOND = 2_000_000
 TRANSLATED_ROLLOVER_ISN = SEQUENCE_MODULUS - 64
 TRANSLATED_ROLLOVER_PACKET_COUNT = 256
 TRANSLATED_ROLLOVER_NAK_OCCURRENCE = 128
@@ -284,6 +288,9 @@ def rollover_scenario_matrix(
             byte_count=robotweax_byte_count,
             recovery="NAK",
             minimum_initial_sequence=ROLLOVER_MINIMUM_ISN,
+            maximum_bandwidth_bytes_per_second=(
+                NATIVE_ROLLOVER_MAXIMUM_BANDWIDTH_BYTES_PER_SECOND
+            ),
             rollover=True,
         ),
         Scenario(
@@ -301,6 +308,9 @@ def rollover_scenario_matrix(
             byte_count=robotweax_byte_count,
             recovery="RTO/LATEREXMIT",
             minimum_initial_sequence=ROLLOVER_MINIMUM_ISN,
+            maximum_bandwidth_bytes_per_second=(
+                NATIVE_ROLLOVER_MAXIMUM_BANDWIDTH_BYTES_PER_SECOND
+            ),
             rollover=True,
         ),
         Scenario(

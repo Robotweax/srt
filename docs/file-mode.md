@@ -121,6 +121,11 @@ cadence.
 On close, the runtime submits a pending cumulative ACK before SHUTDOWN. If
 local UDP submission would block, it retries at 1 ms intervals within a shared
 10 ms close-drain budget, including an ACK already queued by a timer poll.
+The runtime becomes locally closed before this drain and releases its mutex
+during retry pauses, allowing the channel's scheduler shard to continue serving
+other connections. New sends, queued packet processing, and duplicate close
+calls cannot extend the closing FIFO. The calling thread still performs the
+bounded synchronous drain.
 The budget uses the steady clock, independently of the protocol clock. A
 permanent send error or exhausted budget ends the attempt; SHUTDOWN is not
 submitted ahead of an unsent final ACK. This is a bounded local-send attempt,
@@ -252,6 +257,11 @@ The File and encrypted File rollover scenarios use a static, test-enabled
 fresh socket's initial sequence number near the 31-bit wrap boundary when
 `--minimum-isn` is requested. Each scenario uses one creation attempt, so
 coverage does not depend on randomly drawing a suitable sequence number.
+
+The two long native rollover fault profiles cap bandwidth at 2,000,000 bytes/s
+to leave processing headroom for the userspace relay on shared CI hosts. Their
+17,500-packet flights, post-wrap loss targets, byte-identical payload checks,
+and causal NAK/RTO recovery requirements remain unchanged.
 
 The fixture is not linked into the library and adds no public API. Normal
 socket creation continues to use random initial sequence numbers. Shared or
