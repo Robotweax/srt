@@ -35,7 +35,6 @@ bool is_group_member_option(SRT_SOCKOPT option) noexcept
     case SRTO_BINDTODEVICE:
     case SRTO_CONNTIMEO:
     case SRTO_DRIFTTRACER:
-    case SRTO_GROUPMINSTABLETIMEO:
     case SRTO_IPTOS:
     case SRTO_IPTTL:
     case SRTO_PASSPHRASE:

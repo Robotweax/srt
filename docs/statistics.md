@@ -64,6 +64,16 @@ Sender loss is recorded when a NAK newly queues a packet for retransmission.
 Flight-tail loss recovered solely by sender RTO need not create a receiver NAK
 or receiver loss observation.
 
+## Bandwidth and congestion-window scope
+
+`mbpsBandwidth` currently reports measured local DATA arrival throughput in
+Mbit/s, or zero without an arrival-rate sample. It does not estimate the link
+capacity carried by peer ACKs and may be zero on a send-only socket.
+`pktCongestionWindow` reports the FileCC window when available and otherwise
+the configured flow window; Live mode does not report a fixed 1,000-packet
+reference window. These fields remain partial compatibility metrics and
+should not be used as a link-capacity estimate.
+
 ## Reorder tolerance
 
 An original DATA packet that arrives below the highest physical sequence and

@@ -1,6 +1,6 @@
 # Public SRT API compatibility
 
-Robotweax SRT 0.2.5 provides a compatible public C boundary for the selected
+Robotweax SRT 0.2.6 provides a compatible public C boundary for the selected
 Haivision SRT v1.5.7 API profile. It is an independent implementation, not a
 source fork and not a claim of complete compatibility with every historical or
 future `libsrt` behavior.
@@ -18,9 +18,9 @@ differ, the manifest is authoritative.
 
 These values are intentionally independent:
 
-| Axis | Robotweax SRT 0.2.5 |
+| Axis | Robotweax SRT 0.2.6 |
 | --- | --- |
-| Project release | `0.2.5` |
+| Project release | `0.2.6` |
 | Shared-library ABI line | `0.2` |
 | Default compatible public API | Haivision SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -65,7 +65,7 @@ and the compatibility forwarding header:
 
 The CMake target is `RobotweaxSRT::srt`; POSIX installations also provide
 `robotweax-srt.pc`. Static and shared artifacts use the conventional `srt`
-library name. The 0.2.5 package exports an exact, versioned 80-symbol C ABI.
+library name. The 0.2.6 package exports an exact, versioned 80-symbol C ABI.
 The installed `<robotweax_srt.h>` header contributes the six native packet and
 option symbols in that ABI. Source-tree headers below `include/robotweax/srt/`
 are private C++ implementation interfaces and are not installed.
@@ -126,6 +126,9 @@ v1.5.7 default profile. `SRTO_CRYPTOMODE` is present only in an extension build.
 `srt_startup`, implicit startup through socket or epoll creation, and the final
 `srt_cleanup` transition form one serialized process-wide runtime generation.
 Balanced callers may use independent startup/use/cleanup scopes concurrently.
+A startup from a callback or cleanup worker during final cleanup fails with
+`SRT_EINVOP` to avoid waiting on its own teardown. Other threads wait for that
+cleanup to finish before starting a new generation.
 
 The final cleanup:
 
@@ -136,6 +139,9 @@ The final cleanup:
 - stops encryption rotation;
 - cancels pending linger work; and
 - performs ordered teardown before global dependencies disappear.
+
+Unlike the reference's `SRT_EINVSOCK` for an unknown handle, this implementation
+also treats closing an unknown handle as a successful no-op.
 
 `srt_close` is idempotent at the public boundary and continues to honor the
 configured linger contract during normal operation. The terminal process
@@ -219,7 +225,7 @@ the manifest as the contract.
 
 ## Compatibility limits
 
-Robotweax SRT 0.2.5 is not yet a link-compatible replacement for arbitrary
+Robotweax SRT 0.2.6 is not yet a link-compatible replacement for arbitrary
 `libsrt` applications. In particular:
 
 - HSv4 positive connection establishment is not supported in 0.2;

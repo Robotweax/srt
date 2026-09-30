@@ -1,6 +1,6 @@
 # Connection Groups
 
-Robotweax SRT 0.2.5 implements the Haivision SRT v1.5.7 Connection Group ABI
+Robotweax SRT 0.2.6 implements the Haivision SRT v1.5.7 Connection Group ABI
 for Live-mode Caller/Listener Broadcast and weighted Main/Backup operation.
 Groups provide one public handle over several SRT connections. Members retain
 independent crypto, transport-sequence, and congestion state.
@@ -187,6 +187,15 @@ health. The same rule controls failover and failback.
 
 `SRTO_GROUPMINSTABLETIMEO` is group-only. Its compatible default and minimum
 are 60 ms; the effective interval also respects RTT and peer-idle constraints.
+Set it on the Backup group before its first connection. Ordinary socket
+getters/setters return `SRT_EINVOP`. A per-endpoint override through
+`srt_config_add` is not supported and returns `SRT_EINVPARAM` immediately;
+the coordinator currently uses one group-wide minimum for all links.
+
+The [v1.5.7 option contract](https://github.com/Haivision/srt/blob/v1.5.7/docs/API/API-socket-options.md#SRTO_GROUPMINSTABLETIMEO)
+identifies it as a group option. The reference also exposes individual link
+configuration through `srt_config_add`; that override remains outside the
+implemented profile here.
 
 ## Replay and failover
 
