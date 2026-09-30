@@ -411,7 +411,7 @@ void CryptoSession::remember_receive_key(
 
 Error CryptoSession::derive_key_encryption_key(KeyEncryptionKeyUse use,
     std::span<const std::byte, pbkdf2_salt_size> salt,
-    std::span<std::byte> destination) noexcept
+    std::span<std::byte> destination, bool cache_result) noexcept
 {
     auto& cache = kek_cache_[static_cast<std::size_t>(use)];
     if (cache.length == destination.size()
@@ -425,11 +425,21 @@ Error CryptoSession::derive_key_encryption_key(KeyEncryptionKeyUse use,
     if (result != Error::none) {
         return result;
     }
-    provider_.secure_erase(cache.key);
-    std::copy_n(destination.begin(), destination.size(), cache.key.begin());
-    std::copy(salt.begin(), salt.end(), cache.salt.begin());
-    cache.length = destination.size();
+    if (cache_result) {
+        cache_key_encryption_key(use, salt, destination);
+    }
     return Error::none;
+}
+
+void CryptoSession::cache_key_encryption_key(KeyEncryptionKeyUse use,
+    std::span<const std::byte, pbkdf2_salt_size> salt,
+    std::span<const std::byte> key) noexcept
+{
+    auto& cache = kek_cache_[static_cast<std::size_t>(use)];
+    provider_.secure_erase(cache.key);
+    std::copy_n(key.begin(), key.size(), cache.key.begin());
+    std::copy(salt.begin(), salt.end(), cache.salt.begin());
+    cache.length = key.size();
 }
 
 Error CryptoSession::install_key(KeySlot& slot, std::span<const std::byte> key,
@@ -691,6 +701,24 @@ Error CryptoSession::build_sender_key_material(
     return result;
 }
 
+bool CryptoSession::needs_receive_key_derivation(
+    std::span<const std::byte> request) const noexcept
+{
+    if (history_contains(received_key_material_history_,
+            received_key_material_history_size_, request)) {
+        return false;
+    }
+    const auto decoded = decode_key_material(request);
+    if (!decoded) {
+        return false;
+    }
+    const auto& cache =
+        kek_cache_[static_cast<std::size_t>(KeyEncryptionKeyUse::receive)];
+    const auto salt = decoded.key_material.salt.last<pbkdf2_salt_size>();
+    return cache.length != decoded.key_material.key_length
+        || !std::equal(salt.begin(), salt.end(), cache.salt.begin());
+}
+
 Error CryptoSession::accept_key_material(
     std::span<const std::byte> request,
     bool clone_for_bidirectional_sender) noexcept
@@ -742,7 +770,7 @@ Error CryptoSession::accept_key_material(
     std::array<std::byte, maximum_aes_key_size> kek{};
     const auto pbkdf_salt = material.salt.last<pbkdf2_salt_size>();
     Error result = derive_key_encryption_key(KeyEncryptionKeyUse::receive,
-        pbkdf_salt, std::span {kek}.first(material.key_length));
+        pbkdf_salt, std::span {kek}.first(material.key_length), false);
     std::array<std::byte, maximum_aes_key_size * 2U> plaintext{};
     std::size_t plaintext_size = 0;
     if (result == Error::none) {
@@ -813,10 +841,10 @@ Error CryptoSession::accept_key_material(
         result = install_receive_key(
             EncryptionKey::odd, odd_key, salt, selection.effective_mode);
     }
-    provider_.secure_erase(kek);
-    provider_.secure_erase(plaintext);
-    provider_.secure_erase(salt);
     if (result != Error::none) {
+        provider_.secure_erase(kek);
+        provider_.secure_erase(plaintext);
+        provider_.secure_erase(salt);
         return reject(result,
             result == Error::unsupported ? CryptoState::bad_crypto_mode
                                          : CryptoState::no_secret);
@@ -828,9 +856,17 @@ Error CryptoSession::accept_key_material(
         && !transmit_odd_.ready()) {
         result = prepare_bidirectional_sender(key_length());
         if (result != Error::none) {
+            provider_.secure_erase(kek);
+            provider_.secure_erase(plaintext);
+            provider_.secure_erase(salt);
             return result;
         }
     }
+    cache_key_encryption_key(KeyEncryptionKeyUse::receive, pbkdf_salt,
+        std::span {kek}.first(material.key_length));
+    provider_.secure_erase(kek);
+    provider_.secure_erase(plaintext);
+    provider_.secure_erase(salt);
     remember_key_material(received_key_material_history_,
         received_key_material_history_size_, request);
     copy_key_material(key_material_response_, request);

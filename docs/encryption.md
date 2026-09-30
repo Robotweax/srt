@@ -263,6 +263,14 @@ failure duplicates and late confirmations) do not restart negotiation or
 reset the key's sequence budget. Already secured sessions retain their
 existing protection against unauthenticated key-control packets.
 
+The receiver caches a key-encryption key only after the corresponding KMREQ
+has been unwrapped and accepted. Invalid fresh-salt requests therefore cannot
+evict the key used by normal rotations. In an established runtime, uncached
+KMREQs are allowed one PBKDF2 attempt per 100 ms per connection; rotations
+using the validated cached salt bypass that budget. A peer-endpoint-matching
+sender can delay a legitimate fresh-salt request until a retry, because KMREQ
+has no independent authentication before its wrapped keys are checked.
+
 
 ### Directional-key compatibility evidence
 

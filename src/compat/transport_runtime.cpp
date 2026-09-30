@@ -3064,6 +3064,19 @@ void ConnectionRuntime::process_packet(
         }
         if (packet.control.subtype
             == key_material_request_subtype) {
+            // A fresh salt requires PBKDF2 under this runtime lock. Limit
+            // such work to one attempt per KM retry interval; rotations on
+            // the validated cached salt remain available during a flood.
+            constexpr std::uint64_t derivation_interval_microseconds = 100'000;
+            if (crypto_->needs_receive_key_derivation(packet.payload)) {
+                if (last_uncached_kmreq_microseconds_.has_value()
+                    && now >= *last_uncached_kmreq_microseconds_
+                    && now - *last_uncached_kmreq_microseconds_
+                        < derivation_interval_microseconds) {
+                    return;
+                }
+                last_uncached_kmreq_microseconds_ = now;
+            }
             const CryptoState previous_state =
                 crypto_->receiver_state();
             const Error accepted = crypto_->accept_key_material(

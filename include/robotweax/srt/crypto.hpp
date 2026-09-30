@@ -399,6 +399,9 @@ public:
     [[nodiscard]] Error accept_key_material(
         std::span<const std::byte> request,
         bool clone_for_bidirectional_sender) noexcept;
+    // Cheap preflight for the runtime's fresh-salt PBKDF2 work budget.
+    [[nodiscard]] bool needs_receive_key_derivation(
+        std::span<const std::byte> request) const noexcept;
 
     // During initial bidirectional establishment, preserve the handshake key
     // for legacy reverse reception, then announce fresh local transmit
@@ -606,10 +609,9 @@ private:
     CryptoProvider& provider_;
     std::array<std::byte, maximum_passphrase_size> passphrase_{};
     std::size_t passphrase_size_ = 0;
-    // One-entry cache of the key-encrypting key. The salt is constant
-    // across rotations, so every KM after the first would otherwise repeat
-    // the 2048-iteration PBKDF2 on the receive thread under the connection
-    // lock, including for forged KMREQs.
+    // One-entry cache of the key-encrypting key. The salt is constant across
+    // rotations. A received fresh-salt key replaces this cache only after
+    // its KMREQ has been unwrapped and accepted.
     struct KeyEncryptionKeyCache {
         std::array<std::byte, pbkdf2_salt_size> salt {};
         std::array<std::byte, maximum_aes_key_size> key {};
@@ -620,7 +622,10 @@ private:
     std::array<KeyEncryptionKeyCache, 2> kek_cache_ {};
     [[nodiscard]] Error derive_key_encryption_key(KeyEncryptionKeyUse use,
         std::span<const std::byte, pbkdf2_salt_size> salt,
-        std::span<std::byte> destination) noexcept;
+        std::span<std::byte> destination, bool cache_result = true) noexcept;
+    void cache_key_encryption_key(KeyEncryptionKeyUse use,
+        std::span<const std::byte, pbkdf2_salt_size> salt,
+        std::span<const std::byte> key) noexcept;
     CryptoMode configured_mode_ = CryptoMode::automatic;
     CryptoNegotiationContext negotiation_context_ =
         CryptoNegotiationContext::caller_listener;
