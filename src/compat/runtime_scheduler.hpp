@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -27,6 +28,12 @@ public:
     struct Task {
         TaskFunction function = nullptr;
         std::shared_ptr<void> context;
+        // Timers can distinguish an idle clock wake from a deadline reached
+        // while the shard was executing other work. Immediate jobs retain
+        // the ordinary function contract.
+        void (*timer_function)(void*,
+            std::optional<std::chrono::steady_clock::time_point>) noexcept =
+            nullptr;
     };
 
     enum class SubmitStatus : std::uint8_t {

@@ -233,7 +233,7 @@ public:
         return coarse_timer_mode_.load(std::memory_order_relaxed);
     }
     void observe_timer_wake_for_testing(
-        std::uint64_t lateness_microseconds) noexcept;
+        std::optional<std::uint64_t> lateness_microseconds) noexcept;
     [[nodiscard]] std::uint64_t
     coarse_timer_probe_wakes_for_testing() const noexcept
     {
@@ -282,8 +282,13 @@ private:
         std::shared_ptr<RuntimeScheduler> scheduler,
         std::optional<std::uint64_t> affinity) noexcept;
     static void run_scheduled(void* context) noexcept;
+    static void run_scheduled_timer(void* context,
+        std::optional<std::chrono::steady_clock::time_point>
+            idle_wake) noexcept;
     static void socket_readable(void* context) noexcept;
-    void run_scheduled(const ScheduledWorkContext* context) noexcept;
+    void run_scheduled(const ScheduledWorkContext* context,
+        std::optional<std::chrono::steady_clock::time_point> idle_wake =
+            std::nullopt) noexcept;
     [[nodiscard]] RuntimePollResult run_once() noexcept;
     template <typename Receive>
     [[nodiscard]] RuntimePollResult run_receive_slice(
@@ -340,7 +345,8 @@ private:
         std::chrono::microseconds delay, bool coarse_timer_probe = false,
         std::optional<std::chrono::steady_clock::time_point> deadline =
             std::nullopt) noexcept;
-    void observe_timer_wake_locked(std::uint64_t lateness_microseconds,
+    void observe_timer_wake_locked(
+        std::optional<std::uint64_t> lateness_microseconds,
         std::chrono::steady_clock::time_point now) noexcept;
     void dispatch(
         const PacketView& packet,

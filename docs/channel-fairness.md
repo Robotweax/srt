@@ -81,6 +81,13 @@ While that fallback is active, it permits one real sub-millisecond timer wait
 about every 100 ms. These probes measure current wake-up accuracy even if the
 sender remains continuously busy; 16 punctual wakes return the channel to
 normal timer waits. An active probe is preserved across new send notifications.
+The measurement uses the time the idle scheduler wait returned, rather than
+the later channel callback entry. Timers already due at the same wake share
+that observation; intervening callbacks and channel locks do not inflate it.
+If a deadline becomes due while the shard executes other work, the channel
+clears the fallback and uses timer waits again. Immediate resubmissions would
+add work to that busy shard. An idle-wait observation still includes operating
+system scheduling delay and is not a hardware timer-resolution measurement.
 Each probe can delay one pacing continuation on a coarse host; the pacer catches
 up within its 1 ms credit and restarts its schedule after a longer delay.
 Windows and other platforms retain immediate continuations for deadlines under

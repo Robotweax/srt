@@ -382,8 +382,12 @@ RuntimeScheduler::Snapshot RuntimeScheduler::snapshot() const noexcept
 void RuntimeScheduler::run(std::size_t shard_index) noexcept
 {
     Shard& shard = *shards_[shard_index];
+    std::optional<std::chrono::steady_clock::time_point> idle_timer_wake;
+    std::uint64_t idle_timer_order_limit = 0;
     for (;;) {
         Task task;
+        bool timer_dispatch = false;
+        std::optional<std::chrono::steady_clock::time_point> timer_wake;
         {
             std::unique_lock lock(shard.mutex);
             for (;;) {
@@ -392,11 +396,26 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
                     const auto deadline =
                         shard.timer_slots[timer_slot].deadline;
                     if (std::chrono::steady_clock::now() >= deadline) {
+                        // Reuse the same idle wake for the timers already due
+                        // at that wake. Time spent in preceding callbacks is
+                        // not a measurement of the host timer resolution.
+                        if (idle_timer_wake.has_value()
+                            && deadline <= *idle_timer_wake
+                            && shard.timer_slots[timer_slot].order
+                                < idle_timer_order_limit
+                            && shard.next_timer_order
+                                >= idle_timer_order_limit) {
+                            timer_wake = idle_timer_wake;
+                        } else {
+                            idle_timer_wake.reset();
+                        }
                         task = shard.remove_timer(0U);
+                        timer_dispatch = true;
                         break;
                     }
                 }
                 if (shard.size != 0U) {
+                    idle_timer_wake.reset();
                     task = std::move(shard.entries[shard.head]);
                     shard.entries[shard.head] = {};
                     shard.head = (shard.head + 1U) % shard.entries.size();
@@ -407,17 +426,29 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
                     return;
                 }
                 if (shard.timer_heap.empty()) {
+                    idle_timer_wake.reset();
                     shard.ready.wait(lock);
                     continue;
                 }
                 const std::size_t timer_slot = shard.timer_heap.front();
                 const auto deadline = shard.timer_slots[timer_slot].deadline;
                 shard.ready.wait_until(lock, deadline);
+                const auto woke_at = std::chrono::steady_clock::now();
+                idle_timer_wake = woke_at >= deadline ? std::optional {woke_at}
+                                                      : std::nullopt;
+                // A callback can install an already overdue timer. That new
+                // timer was not present at this wake and must not inherit it.
+                // Counter wrap conservatively invalidates the observation.
+                idle_timer_order_limit = shard.next_timer_order;
             }
             shard.executing = true;
         }
 
-        task.function(task.context.get());
+        if (timer_dispatch && task.timer_function != nullptr) {
+            task.timer_function(task.context.get(), timer_wake);
+        } else {
+            task.function(task.context.get());
+        }
         {
             std::lock_guard lock(shard.mutex);
             shard.executing = false;
