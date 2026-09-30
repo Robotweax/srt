@@ -3517,6 +3517,142 @@ TEST(session_reports_only_filter_declared_losses_for_onreq_arq)
     REQUIRE(saw_remaining_loss);
 }
 
+TEST(session_filter_losses_exclude_peer_drops_and_discarded_payloads)
+{
+    const auto filter =
+        parse_packet_filter_configuration("fec,cols:4,rows:1,arq:onreq");
+    REQUIRE(filter);
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 2U}}) {
+        for (const bool discard : {false, true}) {
+            ReliabilitySession receiver {{
+                .peer_initial_sequence = initial,
+                .send_capacity_packets = 16,
+                .receive_capacity_packets = 16,
+            }};
+            receiver.configure_live(
+                {.periodic_nak = true}, 0, PacketTimestamp {0});
+            receiver.configure_packet_filter(filter.configuration, true);
+            const std::array payload {std::byte {'p'}};
+            PacketView packet;
+            packet.kind = PacketKind::data;
+            packet.data.boundary = MessageBoundary::solo;
+            packet.payload = payload;
+            for (const auto offset : {0U, 5U}) {
+                packet.data.sequence = initial.advanced(offset);
+                packet.data.message_number = offset + 1U;
+                REQUIRE(receiver.receive(packet, offset + 1U));
+            }
+            if (discard) {
+                for (const auto offset : {2U, 3U}) {
+                    packet.data.sequence = initial.advanced(offset);
+                    packet.data.message_number = offset + 1U;
+                    REQUIRE(receiver.receive(
+                        packet, offset + 10U, {.discard_payload = true}));
+                }
+            } else {
+                std::array<std::byte, 64> storage {};
+                const auto drop = encode_and_decode(
+                    {
+                        .kind = ReliabilityActionKind::drop_request,
+                        .drop = {0,
+                            {initial.advanced(2U), initial.advanced(3U)}},
+                    },
+                    storage);
+                REQUIRE(receiver.receive(drop, 10U));
+            }
+            const std::array losses {
+                SequenceRange {initial.next(), initial.advanced(4U)}};
+            const auto result = receiver.report_filter_losses(losses, 20U);
+            REQUIRE(result);
+            REQUIRE_EQ(result.receiver_filter_loss_packets, 2U);
+            REQUIRE_EQ(result.actions.size, 1U);
+            const auto& action = result.actions.values[0];
+            REQUIRE_EQ(action.kind, ReliabilityActionKind::loss_report);
+            const auto reported_losses = result.actions.loss_ranges(action);
+            REQUIRE_EQ(reported_losses.size(), 2U);
+            REQUIRE_EQ(reported_losses[0].first, initial.next());
+            REQUIRE_EQ(reported_losses[0].last, initial.next());
+            REQUIRE_EQ(reported_losses[1].first, initial.advanced(4U));
+            REQUIRE_EQ(reported_losses[1].last, initial.advanced(4U));
+            REQUIRE_EQ(receiver.report_filter_losses(losses, 21U)
+                           .receiver_filter_loss_packets,
+                0U);
+        }
+    }
+}
+
+TEST(session_filter_losses_for_peer_grace_are_removed_when_drop_settles)
+{
+    const SequenceNumber initial {100};
+    ReliabilitySession receiver {{
+        .peer_initial_sequence = initial,
+        .send_capacity_packets = 16,
+        .receive_capacity_packets = 16,
+    }};
+    const auto filter =
+        parse_packet_filter_configuration("fec,cols:4,rows:1,arq:onreq");
+    REQUIRE(filter);
+    receiver.configure_live(
+        {
+            .receive_tsbpd = true,
+            .too_late_packet_drop = true,
+            .periodic_nak = true,
+            .receive_delay_milliseconds = 100,
+        },
+        0, PacketTimestamp {0});
+    receiver.configure_packet_filter(filter.configuration, true);
+    const std::array payload {std::byte {'p'}};
+    PacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.payload = payload;
+    for (const auto offset : {0U, 5U}) {
+        packet.data.sequence = initial.advanced(offset);
+        packet.data.message_number = offset + 1U;
+        REQUIRE(receiver.receive(packet, offset + 1U));
+    }
+    std::array<std::byte, 64> storage {};
+    const auto drop = encode_and_decode(
+        {
+            .kind = ReliabilityActionKind::drop_request,
+            .drop = {0, {initial.advanced(2U), initial.advanced(3U)}},
+        },
+        storage);
+    REQUIRE(receiver.receive(drop, 10U));
+    const std::array losses {
+        SequenceRange {initial.next(), initial.advanced(4U)}};
+    REQUIRE_EQ(
+        receiver.report_filter_losses(losses, 20U).receiver_filter_loss_packets,
+        4U);
+    const auto expired = receiver.drop_too_late_receiver(100'000U);
+    REQUIRE(expired);
+    REQUIRE_EQ(expired.receiver_drop_packets, 2U);
+    const auto actions = receiver.poll_timers(1'000'000U);
+    bool reported = false;
+    for (std::size_t index = 0; index < actions.size; ++index) {
+        const auto& action = actions.values[index];
+        if (action.kind != ReliabilityActionKind::loss_report)
+            continue;
+        reported = true;
+        const auto reported_losses = actions.loss_ranges(action);
+        REQUIRE_EQ(reported_losses.size(), 2U);
+        REQUIRE_EQ(reported_losses[0].first, initial.next());
+        REQUIRE_EQ(reported_losses[0].last, initial.next());
+        REQUIRE_EQ(reported_losses[1].first, initial.advanced(4U));
+        REQUIRE_EQ(reported_losses[1].last, initial.advanced(4U));
+    }
+    REQUIRE(reported);
+    packet.data.sequence = initial.advanced(2U);
+    packet.data.message_number = 3U;
+    const auto duplicate = receiver.receive(packet, 1'000'001U);
+    REQUIRE(duplicate);
+    REQUIRE(!duplicate.receiver_packet_accepted_unique);
+    REQUIRE_EQ(receiver.report_filter_losses(losses, 1'000'002U)
+                   .receiver_filter_loss_packets,
+        0U);
+}
+
 TEST(session_accepts_filter_losses_reported_out_of_order)
 {
     // FEC column groups close out of sequence order, so a later filter-loss

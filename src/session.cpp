@@ -642,12 +642,15 @@ ReliabilityProcessResult ReliabilitySession::receive(
         }
 
         ReceiveLossRemoval recovered_loss;
-        if (result.receiver_packet_accepted_unique) {
+        if (result.receiver_packet_accepted_unique
+            || inserted.status == ReceiveStatus::duplicate) {
             const auto removed_filter =
                 filter_loss_list_.remove(packet.data.sequence);
             if (removed_filter.capacity_exhausted) {
                 return {.error = Error::buffer_too_small};
             }
+        }
+        if (result.receiver_packet_accepted_unique) {
             if (context.filter_supplied) {
                 recovered_loss = receive_loss_list_.remove(
                     packet.data.sequence);
@@ -1322,6 +1325,11 @@ ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
             result.error = error;
             return result;
         }
+        if (!receive_loss_list_.remove_range(pending.sequences)
+            || !filter_loss_list_.remove_range(pending.sequences)) {
+            result.error = Error::buffer_too_small;
+            return result;
+        }
         result.receiver_drop_packets += newly_dropped;
         peer_released |= newly_dropped != 0U;
         pending_peer_drops_.erase(
@@ -1371,17 +1379,35 @@ ReliabilitySession::report_filter_losses(
         return result;
     }
 
-    // Validate the complete batch before changing any loss state. The bitmap
-    // clips stale/future sequences and merges overlaps without allocating.
+    // Validate the complete batch before changing any loss state. Bound the
+    // scratch clear/scan to reported receive-window offsets. Stale bitmap
+    // values outside these bounds are never read on this call.
+    const SequenceNumber floor = receive_buffer_.first_stored_sequence();
+    const auto capacity = receive_buffer_.capacity();
+    std::size_t scan_begin = capacity;
+    std::size_t scan_end = 0U;
     for (const auto& loss : losses) {
         if (loss.last.distance_from(loss.first) < 0) {
             return {.error = Error::invalid_control_payload};
         }
+        const auto first = loss.first.distance_from(floor);
+        const auto last = loss.last.distance_from(floor);
+        if (last < 0 || first >= static_cast<std::int32_t>(capacity)) {
+            continue;
+        }
+        scan_begin =
+            std::min(scan_begin, static_cast<std::size_t>(std::max(first, 0)));
+        scan_end = std::max(scan_end,
+            static_cast<std::size_t>(
+                std::min(last, static_cast<std::int32_t>(capacity - 1U)))
+                + 1U);
     }
-    const SequenceNumber floor = receive_buffer_.first_stored_sequence();
-    const auto capacity = receive_buffer_.capacity();
-    std::fill(filter_loss_bitmap_.begin(), filter_loss_bitmap_.end(),
-        std::uint8_t {0});
+    if (scan_begin < scan_end) {
+        std::fill(filter_loss_bitmap_.begin()
+                + static_cast<std::ptrdiff_t>(scan_begin),
+            filter_loss_bitmap_.begin() + static_cast<std::ptrdiff_t>(scan_end),
+            std::uint8_t {0});
+    }
     for (const auto& loss : losses) {
         const auto first = loss.first.distance_from(floor);
         const auto last = loss.last.distance_from(floor);
@@ -1398,11 +1424,11 @@ ReliabilitySession::report_filter_losses(
     filter_loss_list_.remove_through(floor.advanced(SequenceNumber::mask));
     filter_loss_ranges_.clear();
     bool in_range = false;
-    for (std::size_t offset = 0; offset < capacity; ++offset) {
+    for (std::size_t offset = scan_begin; offset < scan_end; ++offset) {
         const auto sequence =
             floor.advanced(static_cast<std::uint32_t>(offset));
         const bool missing = filter_loss_bitmap_[offset] != 0U
-            && !receive_buffer_.contains_data(sequence)
+            && !receive_buffer_.is_settled(sequence)
             && !filter_loss_list_.contains(sequence);
         if (missing && !in_range) {
             filter_loss_ranges_.push_back({sequence, sequence});

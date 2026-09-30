@@ -63,6 +63,9 @@ public:
     {
         return find(sequence) != nullptr;
     }
+    // Received or locally discarded sequences need no FEC retransmission,
+    // even when their payload is unavailable to application reads.
+    [[nodiscard]] bool is_settled(SequenceNumber sequence) const noexcept;
     [[nodiscard]] std::size_t buffered_payload_bytes() const noexcept;
     [[nodiscard]] std::uint64_t
     buffered_span_milliseconds() const noexcept;

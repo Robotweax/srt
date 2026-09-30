@@ -161,6 +161,18 @@ plaintext from bypassing the negotiated cipher or authentication contract.
 A recovered packet is still subject to normal sequence, duplicate, replay,
 payload-size, and authentication validation.
 
+For filter-requested ARQ, a stored DATA header, a discarded payload and a
+settled peer-requested drop are all complete sequence decisions. They must not
+be reintroduced as missing sequences by a later FEC loss report. When a peer
+DROPREQ grace period expires, both loss lists release the now-dropped range;
+true neighboring gaps remain eligible for NAK. While grace is still open,
+missing original DATA can continue to be requested.
+
+FEC loss-report scratch work scans the bounding span of clipped reported
+ranges rather than every receive slot. Far-apart ranges can still span the
+whole window, and transactional capacity/overlap validation remains in place.
+No per-report allocation is added.
+
 ## PEERERROR
 
 PEERERROR is an advisory control event, not a wire-level reconnect request.
