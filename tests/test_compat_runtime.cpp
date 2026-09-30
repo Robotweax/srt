@@ -1934,6 +1934,14 @@ TEST(compat_runtime_sends_disjoint_losses_in_one_nak_datagram)
 
     now = 151'100;
     (void)runtime.poll();
+    for (const auto& datagram : take_datagrams(output)) {
+        const auto decoded = decode_packet(datagram);
+        REQUIRE(decoded);
+        REQUIRE(decoded.packet.control.type
+            != ControlType::negative_acknowledgement);
+    }
+    now = 301'100;
+    (void)runtime.poll();
     std::size_t nak_datagrams = 0;
     std::array<SequenceRange, 2> decoded_ranges{};
     std::size_t decoded_range_count = 0;
@@ -6695,10 +6703,10 @@ TEST(compat_runtime_send_error_classifier_matches_native_platform_codes)
 #if defined(_WIN32)
     for (const int error :
         {WSAEWOULDBLOCK, WSAEINTR, WSAENOBUFS, WSAEHOSTUNREACH, WSAENETUNREACH,
-            WSAENETDOWN, WSAECONNRESET, WSAENETRESET}) {
+            WSAENETDOWN, WSAECONNRESET, WSAENETRESET, WSAECONNREFUSED}) {
 #else
     for (const int error : {EAGAIN, EINTR, ENOBUFS, EHOSTUNREACH, ENETUNREACH,
-             ENETDOWN, ECONNREFUSED}) {
+             ENETDOWN, ECONNREFUSED, EPERM, ENOMEM}) {
 #endif
         REQUIRE(UdpSocket::is_transient_send_error(error));
     }
@@ -6806,6 +6814,67 @@ TEST(compat_runtime_transient_send_errors_preserve_control_fifo)
     REQUIRE_EQ(decode_packet(sent[0]).packet.control.type_specific, 41U);
     REQUIRE_EQ(decode_packet(sent[1]).packet.control.type_specific, 42U);
     REQUIRE(!fixture.runtime->broken());
+}
+
+TEST(compat_runtime_transient_send_retry_survives_steady_inbound_control)
+{
+    for (const bool recover : {false, true}) {
+        BackpressureFixture fixture {false, 30'000};
+        fixture.output.failure = Error::io_error;
+        fixture.output.system_error = temporary_route_error;
+        fixture.enqueue();
+        (void)fixture.runtime->poll();
+        const auto original_data = fixture.output.attempts.front();
+        std::array<std::byte, 64> ack_bytes {};
+        const auto encoded = encode_acknowledgement_payload(
+            {
+                .next_sequence = SequenceNumber {700},
+                .round_trip_time_microseconds = 10'000,
+                .round_trip_time_variance_microseconds = 1'000,
+                .available_receive_buffer_packets = 64,
+            },
+            ack_bytes);
+        REQUIRE(encoded);
+        for (std::uint32_t number = 1; number <= 400U; ++number) {
+            fixture.now += 10'000;
+            fixture.runtime->process_packet(
+                {
+                    .kind = PacketKind::control,
+                    .control = {.type = ControlType::acknowledgement,
+                        .type_specific = number},
+                    .payload =
+                        std::span {ack_bytes}.first(encoded.bytes_written),
+                },
+                fixture.peer);
+            (void)fixture.runtime->poll();
+            REQUIRE(!fixture.runtime->broken());
+        }
+        if (recover) {
+            fixture.output.blocked = false;
+            fixture.now += 1'000;
+            (void)fixture.runtime->poll();
+            REQUIRE(!fixture.runtime->broken());
+            const auto sent = take_datagrams(fixture.output.accepted);
+            REQUIRE(sent.size() <= 4U);
+            REQUIRE_EQ(sent.front(), original_data);
+            const auto ackack =
+                std::find_if(sent.begin(), sent.end(), [](const auto& bytes) {
+                    return decode_packet(bytes).packet.control.type
+                        == ControlType::acknowledgement_of_ack;
+                });
+            REQUIRE(ackack != sent.end());
+            REQUIRE_EQ(
+                decode_packet(*ackack).packet.control.type_specific, 400U);
+        } else {
+            fixture.now += 1'000'000;
+            (void)fixture.runtime->poll();
+            REQUIRE(fixture.runtime->broken());
+            const std::array payload {std::byte {'x'}};
+            const auto result =
+                fixture.runtime->queue_message(payload, 0, true, false, -1, -1);
+            REQUIRE_EQ(result.system_error, temporary_route_error);
+        }
+    }
 }
 
 TEST(compat_runtime_persistent_transient_send_error_expires_retry_window)

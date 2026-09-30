@@ -415,12 +415,22 @@ void ReceiveLossList::age_fresh() noexcept
     }
 }
 
-void ReceiveLossList::mark_periodic_reports() noexcept
+void ReceiveLossList::mark_periodic_reports(std::uint64_t now_microseconds,
+    std::uint64_t retry_interval_microseconds) noexcept
 {
     for (std::size_t index = 0; index < size_; ++index) {
-        entries_[index].periodic_report_pending = true;
+        auto& entry = entries_[index];
+        if (entry.reported
+            && (now_microseconds < entry.last_report_microseconds
+                || now_microseconds - entry.last_report_microseconds
+                    < retry_interval_microseconds)) {
+            continue;
+        }
+        if (!entry.initial_report_pending && !entry.periodic_report_pending) {
+            ++pending_count_;
+        }
+        entry.periodic_report_pending = true;
     }
-    pending_count_ = size_;
 }
 
 std::optional<SequenceRange>
@@ -433,7 +443,8 @@ ReceiveLossList::take_pending_report() noexcept
 }
 
 std::size_t ReceiveLossList::take_pending_reports(
-    std::span<SequenceRange> destination) noexcept
+    std::span<SequenceRange> destination,
+    std::uint64_t now_microseconds) noexcept
 {
     std::size_t written = 0;
     for (std::size_t index = 0;
@@ -445,6 +456,8 @@ std::size_t ReceiveLossList::take_pending_reports(
             continue;
         }
         destination[written++] = entry.range;
+        entry.reported = true;
+        entry.last_report_microseconds = now_microseconds;
         entry.initial_report_pending = false;
         entry.periodic_report_pending = false;
         --pending_count_;

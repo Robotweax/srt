@@ -78,6 +78,10 @@ struct GroupRecord {
     std::uint32_t replay_acknowledged_sequence = 0;
     GroupReplayBuffer replay_history;
     std::uint32_t next_receive_sequence = 0;
+    // The first completed caller handshake establishes the reverse sequence
+    // space. Later members use the group's receive cursor independently of
+    // the caller-to-listener wire ISN.
+    bool receive_sequence_initialized = false;
     SRTSOCKET peer_group = SRT_INVALID_SOCK;
     SRTSOCKET mirror_listener = SRT_INVALID_SOCK;
     // Snapshot of the listener bond that owned this mirror at admission.

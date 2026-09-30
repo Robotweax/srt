@@ -416,7 +416,11 @@ int get_socket_option(
     case SRTO_RENDEZVOUS:
         return write_value(value, value_size, options.rendezvous);
     case SRTO_GROUPCONNECT:
-        return write_value(value, value_size, options.group_connect);
+        if (*value_size == static_cast<int>(sizeof(bool))) {
+            return write_value(value, value_size, options.group_connect);
+        }
+        return write_value(value, value_size,
+            static_cast<std::int32_t>(options.group_connect));
     case SRTO_STREAMID:
         return write_string(
             value, value_size, options.stream_id.view());

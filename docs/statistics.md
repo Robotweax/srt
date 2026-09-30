@@ -183,3 +183,8 @@ of internal classes or scheduler decisions. Applications should:
 See [Public API compatibility](api-compatibility.md),
 [Packet filters and FEC](packet-filter.md), and
 [Known limitations](limitations.md).
+
+Statistics remain readable on a BROKEN socket while it retains its connection
+runtime, including while the application drains buffered receive messages.
+Closing the socket ends that statistics lifetime; this does not retain full
+statistics in the bounded closed-handle history.

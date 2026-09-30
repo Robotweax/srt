@@ -1831,7 +1831,7 @@ TEST(session_peer_drop_request_removes_only_the_dropped_loss_range)
     drop.control.timestamp = PacketTimestamp {60};
     REQUIRE(receiver.receive(drop, 400));
 
-    const auto periodic = receiver.poll_timers(150'400);
+    const auto periodic = receiver.poll_timers(300'400);
     bool saw_first_gap = false;
     bool saw_dropped_gap = false;
     for (std::size_t index = 0; index < periodic.size; ++index) {
@@ -1892,7 +1892,7 @@ TEST(session_preserves_disjoint_loss_ranges_for_periodic_reports)
     packet.data.message_number = 2;
     REQUIRE(receiver.receive(packet, 300));
 
-    const auto periodic = receiver.poll_timers(150'100);
+    const auto periodic = receiver.poll_timers(300'300);
     bool saw_ten = false;
     bool saw_thirteen = false;
     std::size_t loss_report_count = 0;
@@ -3905,6 +3905,93 @@ TEST(session_stream_pop_stops_in_front_of_a_packet_not_yet_due)
     REQUIRE_EQ(output[0], std::byte {'b'});
 }
 
+TEST(session_loss_reports_wait_for_rtt_per_range_without_delaying_new_gaps)
+{
+    for (const bool filtered : {false, true}) {
+        ReliabilitySession receiver {{
+            .local_initial_sequence = SequenceNumber {100},
+            .peer_initial_sequence = SequenceNumber {10},
+            .send_capacity_packets = 32,
+            .receive_capacity_packets = 32,
+        }};
+        receiver.configure_live({.periodic_nak = true, .retransmit_flag = true},
+            0, PacketTimestamp {0});
+        if (filtered) {
+            const auto filter = parse_packet_filter_configuration(
+                "fec,cols:4,rows:1,arq:onreq");
+            REQUIRE(filter);
+            receiver.configure_packet_filter(filter.configuration, true);
+        }
+        std::array<std::byte, 64> ack_storage {};
+        const auto acknowledgement = encode_and_decode(
+            {
+                .kind = ReliabilityActionKind::acknowledgement,
+                .acknowledgement =
+                    {
+                        .acknowledgement_number = 1,
+                        .next_sequence = SequenceNumber {100},
+                        .round_trip_time_microseconds = 50'000,
+                        .round_trip_time_variance_microseconds = 0,
+                        .available_receive_buffer_packets = 32,
+                    },
+            },
+            ack_storage);
+        REQUIRE(receiver.receive(acknowledgement, 1));
+        REQUIRE_EQ(receiver.rtt().nak_interval_microseconds(), 25'000U);
+        const std::array payload {std::byte {'n'}};
+        PacketView data {
+            .kind = PacketKind::data,
+            .data = {.sequence = SequenceNumber {12},
+                .message_number = 3,
+                .boundary = MessageBoundary::solo},
+            .payload = payload,
+        };
+        const auto count_reports = [](const ReliabilityActions& actions) {
+            std::size_t count = 0;
+            for (std::size_t index = 0; index < actions.size; ++index) {
+                if (actions.values[index].kind
+                    == ReliabilityActionKind::loss_report) {
+                    count += actions.loss_ranges(actions.values[index]).size();
+                }
+            }
+            return count;
+        };
+        auto first = receiver.receive(data, 100);
+        REQUIRE(first);
+        if (filtered) {
+            const std::array losses {
+                SequenceRange {SequenceNumber {10}, SequenceNumber {11}}};
+            first = receiver.report_filter_losses(losses, 100);
+            REQUIRE(first);
+        }
+        REQUIRE_EQ(count_reports(first.actions), 1U);
+        REQUIRE_EQ(count_reports(receiver.poll_timers(25'100)), 0U);
+        data.data.sequence = SequenceNumber {14};
+        data.data.message_number = 5;
+        auto new_gap = receiver.receive(data, 30'100);
+        REQUIRE(new_gap);
+        if (filtered) {
+            const std::array losses {
+                SequenceRange {SequenceNumber {13}, SequenceNumber {13}}};
+            new_gap = receiver.report_filter_losses(losses, 30'100);
+            REQUIRE(new_gap);
+        }
+        REQUIRE_EQ(count_reports(new_gap.actions), 1U);
+        REQUIRE_EQ(new_gap.actions.values[0].loss.first, SequenceNumber {13});
+        const auto retried = receiver.poll_timers(50'100);
+        REQUIRE_EQ(count_reports(retried), 1U);
+        for (std::size_t index = 0; index < retried.size; ++index) {
+            if (retried.values[index].kind
+                == ReliabilityActionKind::loss_report) {
+                REQUIRE_EQ(
+                    retried.values[index].loss.first, SequenceNumber {10});
+            }
+        }
+        REQUIRE_EQ(count_reports(receiver.poll_timers(75'100)), 0U);
+        REQUIRE_EQ(count_reports(receiver.poll_timers(100'100)), 2U);
+    }
+}
+
 TEST(session_negotiates_sender_drop_from_peer_receiver_policy)
 {
     for (const bool local_drop : {false, true}) {
@@ -3978,5 +4065,72 @@ TEST(session_negotiates_receiver_drop_from_local_policy)
                 local_drop ? 1U : 0U);
             REQUIRE_EQ(session.message_ready_at(101'050), local_drop);
         }
+    }
+}
+
+TEST(session_low_rtt_loss_reports_do_not_apply_a_second_timer_floor)
+{
+    for (const bool filtered : {false, true}) {
+        ReliabilitySession receiver {{
+            .local_initial_sequence = SequenceNumber {100},
+            .peer_initial_sequence = SequenceNumber {10},
+            .send_capacity_packets = 32,
+            .receive_capacity_packets = 32,
+        }};
+        receiver.configure_live({.periodic_nak = true, .retransmit_flag = true},
+            0, PacketTimestamp {0});
+        if (filtered) {
+            const auto filter = parse_packet_filter_configuration(
+                "fec,cols:4,rows:1,arq:onreq");
+            REQUIRE(filter);
+            receiver.configure_packet_filter(filter.configuration, true);
+        }
+        std::array<std::byte, 64> ack_storage {};
+        const auto ack = encode_and_decode(
+            {
+                .kind = ReliabilityActionKind::acknowledgement,
+                .acknowledgement =
+                    {
+                        .acknowledgement_number = 1,
+                        .next_sequence = SequenceNumber {100},
+                        .round_trip_time_microseconds = 1'000,
+                        .round_trip_time_variance_microseconds = 0,
+                        .available_receive_buffer_packets = 32,
+                    },
+            },
+            ack_storage);
+        REQUIRE(receiver.receive(ack, 1));
+        REQUIRE_EQ(receiver.rtt().nak_interval_microseconds(), 20'000U);
+        const std::array payload {std::byte {'n'}};
+        PacketView data {
+            .kind = PacketKind::data,
+            .data = {.sequence = SequenceNumber {12},
+                .message_number = 3,
+                .boundary = MessageBoundary::solo},
+            .payload = payload,
+        };
+        REQUIRE(receiver.receive(data, 100));
+        if (filtered) {
+            const std::array losses {
+                SequenceRange {SequenceNumber {10}, SequenceNumber {11}}};
+            REQUIRE(receiver.report_filter_losses(losses, 100));
+        }
+        data.data.sequence = SequenceNumber {14};
+        data.data.message_number = 5;
+        REQUIRE(receiver.receive(data, 19'100));
+        if (filtered) {
+            const std::array losses {
+                SequenceRange {SequenceNumber {13}, SequenceNumber {13}}};
+            REQUIRE(receiver.report_filter_losses(losses, 19'100));
+        }
+        const auto reports = receiver.poll_timers(20'100);
+        std::size_t reported_ranges = 0;
+        for (const auto& action :
+            std::span {reports.values}.first(reports.size)) {
+            if (action.kind == ReliabilityActionKind::loss_report) {
+                reported_ranges += reports.loss_ranges(action).size();
+            }
+        }
+        REQUIRE_EQ(reported_ranges, 2U);
     }
 }
