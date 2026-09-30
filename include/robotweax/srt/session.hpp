@@ -444,9 +444,8 @@ private:
         std::size_t distance_packets,
         std::uint32_t remaining_ttl) noexcept;
     void note_ordered_packet() noexcept;
-    void append_pending_loss_report(
-        ReliabilityActions& actions,
-        bool action_slot_available) noexcept;
+    void append_pending_loss_report(ReliabilityActions& actions,
+        bool action_slot_available, std::uint64_t now_microseconds) noexcept;
     void append_pending_drop_requests(ReliabilityActions& actions) noexcept;
     void update_loss_timer(
         std::uint64_t now_microseconds) noexcept;

@@ -412,9 +412,8 @@ void ReliabilitySession::note_ordered_packet() noexcept
     }
 }
 
-void ReliabilitySession::append_pending_loss_report(
-    ReliabilityActions& actions,
-    bool action_slot_available) noexcept
+void ReliabilitySession::append_pending_loss_report(ReliabilityActions& actions,
+    bool action_slot_available, std::uint64_t now_microseconds) noexcept
 {
     if (!action_slot_available
         || actions.size == actions.values.size()) {
@@ -431,9 +430,8 @@ void ReliabilitySession::append_pending_loss_report(
     case PacketFilterArqLevel::never:
         return;
     }
-    const std::size_t range_count =
-        losses->take_pending_reports(
-            actions.available_loss_range_storage());
+    const std::size_t range_count = losses->take_pending_reports(
+        actions.available_loss_range_storage(), now_microseconds);
     if (range_count != 0U) {
         actions.commit_loss_report(range_count);
     }
@@ -696,10 +694,9 @@ ReliabilityProcessResult ReliabilitySession::receive(
             receive_loss_list_.age_fresh();
         }
         if (!context.defer_feedback) {
-            append_pending_loss_report(
-                result.actions,
-                result.actions.size + 1U
-                    < result.actions.values.size());
+            append_pending_loss_report(result.actions,
+                result.actions.size + 1U < result.actions.values.size(),
+                now_microseconds);
         }
         if (result.receiver_packet_accepted_unique
             && live_options_.retransmit_flag
@@ -1393,7 +1390,7 @@ ReliabilitySession::report_filter_losses(
     for (const auto& loss : filter_loss_ranges_) {
         (void)filter_loss_list_.insert_sorted(loss, 0U);
     }
-    append_pending_loss_report(result.actions, true);
+    append_pending_loss_report(result.actions, true, now_microseconds);
     update_loss_timer(now_microseconds);
     return result;
 }
@@ -1405,10 +1402,9 @@ ReliabilityActions ReliabilitySession::poll_timers(
     const auto due = timer_scheduler_.poll(now_microseconds);
     const std::size_t reserved_for_timers =
         std::min(due.size, actions.values.size());
-    append_pending_loss_report(
-        actions,
-        actions.size + reserved_for_timers
-            < actions.values.size());
+    append_pending_loss_report(actions,
+        actions.size + reserved_for_timers < actions.values.size(),
+        now_microseconds);
     for (std::size_t index = 0; index < due.size; ++index) {
         if (actions.size == actions.values.size()) {
             break;
@@ -1422,16 +1418,20 @@ ReliabilityActions ReliabilitySession::poll_timers(
                 now_microseconds, AcknowledgementKind::lite));
             break;
         case TimerActionKind::periodic_loss_report: {
+            const std::uint64_t retry_interval =
+                std::max<std::uint64_t>(minimum_nak_interval_microseconds,
+                    static_cast<std::uint64_t>(rtt_.smoothed_microseconds())
+                        + 4ULL * rtt_.variation_microseconds());
             switch (
                 packet_filter_policy_
                     .effective_arq_level()) {
             case PacketFilterArqLevel::always:
-                receive_loss_list_
-                    .mark_periodic_reports();
+                receive_loss_list_.mark_periodic_reports(
+                    now_microseconds, retry_interval);
                 break;
             case PacketFilterArqLevel::on_request:
-                filter_loss_list_
-                    .mark_periodic_reports();
+                filter_loss_list_.mark_periodic_reports(
+                    now_microseconds, retry_interval);
                 break;
             case PacketFilterArqLevel::never:
                 break;
@@ -1441,7 +1441,7 @@ ReliabilityActions ReliabilitySession::poll_timers(
             const std::size_t available =
                 actions.values.size() - actions.size;
             append_pending_loss_report(
-                actions, available > later_timers);
+                actions, available > later_timers, now_microseconds);
             break;
         }
         case TimerActionKind::keepalive:
