@@ -61,6 +61,13 @@ from the local `SRTO_FC` receive-window configuration.
   acknowledged DATA but carry no absolute available-buffer value.
 - Requested retransmissions remain eligible while the new-DATA window is
   closed.
+- New loss ranges retain their existing initial-report/reorder policy. Each
+  reported range waits at least `SRTT + 4 * RTTVar` before another
+  periodic NAK can include it. This prevents a half-RTT periodic timer from
+  requesting the same retransmission while its first copy is still in flight.
+  Independently discovered ranges remain immediately eligible for feedback.
+  The periodic timer retains its 20 ms floor; it is not applied a second time
+  as a per-range delay on low-RTT connections.
 - A multi-range NAK is validated completely before it changes retransmission
   or congestion state.
 - A NAK may request only DATA that has reached the wire. Future or queued but

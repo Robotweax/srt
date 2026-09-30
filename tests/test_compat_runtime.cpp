@@ -1933,6 +1933,14 @@ TEST(compat_runtime_sends_disjoint_losses_in_one_nak_datagram)
 
     now = 151'100;
     (void)runtime.poll();
+    for (const auto& datagram : take_datagrams(output)) {
+        const auto decoded = decode_packet(datagram);
+        REQUIRE(decoded);
+        REQUIRE(decoded.packet.control.type
+            != ControlType::negative_acknowledgement);
+    }
+    now = 301'100;
+    (void)runtime.poll();
     std::size_t nak_datagrams = 0;
     std::array<SequenceRange, 2> decoded_ranges{};
     std::size_t decoded_range_count = 0;

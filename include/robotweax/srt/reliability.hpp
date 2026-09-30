@@ -88,9 +88,13 @@ public:
     // that entry unchanged; callers must handle the failed removal.
     [[nodiscard]] bool remove_range(SequenceRange range) noexcept;
     void age_fresh() noexcept;
-    void mark_periodic_reports() noexcept;
+    // Each emitted range waits its own retry interval. Newly discovered
+    // ranges remain eligible for their first report independently.
+    void mark_periodic_reports(std::uint64_t now_microseconds = 0,
+        std::uint64_t retry_interval_microseconds = 0) noexcept;
     [[nodiscard]] std::size_t take_pending_reports(
-        std::span<SequenceRange> destination) noexcept;
+        std::span<SequenceRange> destination,
+        std::uint64_t now_microseconds = 0) noexcept;
     [[nodiscard]] std::optional<SequenceRange>
     take_pending_report() noexcept;
     [[nodiscard]] bool has_pending_report() const noexcept;
@@ -102,6 +106,8 @@ private:
         bool fresh = false;
         bool initial_report_pending = false;
         bool periodic_report_pending = false;
+        bool reported = false;
+        std::uint64_t last_report_microseconds = 0;
     };
 
     void erase(std::size_t index) noexcept;

@@ -587,3 +587,32 @@ TEST(receive_loss_list_sorted_batch_rejects_overlap_without_mutation)
     REQUIRE_EQ(report->last, SequenceNumber {110});
     REQUIRE(!losses.take_pending_report().has_value());
 }
+
+TEST(
+    receive_loss_list_keeps_retry_times_when_ranges_split_and_reports_are_bounded)
+{
+    ReceiveLossList losses {8};
+    REQUIRE(losses.add(
+        {SequenceNumber {SequenceNumber::mask - 1U}, SequenceNumber {2}}, 0));
+    std::array<SequenceRange, 1> report {};
+    REQUIRE_EQ(losses.take_pending_reports(report, 0), 1U);
+    REQUIRE(losses.remove(SequenceNumber {0}).removed);
+    losses.mark_periodic_reports(49'999, 50'000);
+    REQUIRE(!losses.has_pending_report());
+    losses.mark_periodic_reports(50'000, 50'000);
+    REQUIRE_EQ(losses.take_pending_reports(report, 50'000), 1U);
+    REQUIRE_EQ(report[0].last, SequenceNumber {SequenceNumber::mask});
+    // Marking again must neither inflate the pending count nor delay the
+    // second range that did not fit in the previous report's output storage.
+    losses.mark_periodic_reports(60'000, 50'000);
+    REQUIRE_EQ(losses.take_pending_reports(report, 60'000), 1U);
+    REQUIRE_EQ(report[0].first, SequenceNumber {1});
+    REQUIRE(!losses.has_pending_report());
+    losses.mark_periodic_reports(100'000, 50'000);
+    REQUIRE_EQ(losses.take_pending_reports(report, 100'000), 1U);
+    REQUIRE_EQ(report[0].last, SequenceNumber {SequenceNumber::mask});
+    REQUIRE(!losses.has_pending_report());
+    REQUIRE(losses.add({SequenceNumber {5}, SequenceNumber {5}}, 0));
+    REQUIRE_EQ(losses.take_pending_reports(report, 100'001), 1U);
+    REQUIRE_EQ(report[0].first, SequenceNumber {5});
+}
