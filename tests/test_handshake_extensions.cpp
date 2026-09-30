@@ -39,6 +39,7 @@ TEST(live_options_are_negotiated_per_direction_and_latency_uses_maximum)
     REQUIRE(negotiated.send_tsbpd);
     REQUIRE(negotiated.receive_tsbpd);
     REQUIRE(negotiated.too_late_packet_drop);
+    REQUIRE(negotiated.sender_too_late_packet_drop);
     REQUIRE(negotiated.periodic_nak);
     REQUIRE_EQ(negotiated.receive_delay_milliseconds, 300U);
     REQUIRE_EQ(negotiated.peer_receive_delay_milliseconds, 200U);
@@ -47,7 +48,8 @@ TEST(live_options_are_negotiated_per_direction_and_latency_uses_maximum)
     const auto one_way = negotiate_live_options(local, peer);
     REQUIRE(!one_way.send_tsbpd);
     REQUIRE(one_way.receive_tsbpd);
-    REQUIRE(!one_way.too_late_packet_drop);
+    REQUIRE(one_way.too_late_packet_drop);
+    REQUIRE(!one_way.sender_too_late_packet_drop);
 }
 
 TEST(handshake_extension_parameters_have_exact_wire_layout)

@@ -73,16 +73,20 @@ NegotiatedLiveOptions negotiate_live_options(
         && has_flag(peer.flags, HandshakeExtensionFlag::tsbpd_receive);
     const bool receive_tsbpd = has_flag(local.flags, HandshakeExtensionFlag::tsbpd_receive)
         && has_flag(peer.flags, HandshakeExtensionFlag::tsbpd_send);
-    const bool both_too_late = has_flag(local.flags,
-        HandshakeExtensionFlag::too_late_packet_drop)
-        && has_flag(peer.flags, HandshakeExtensionFlag::too_late_packet_drop);
     return {
         .send_tsbpd = send_tsbpd,
         .receive_tsbpd = receive_tsbpd,
-        .too_late_packet_drop = send_tsbpd && both_too_late,
-        .periodic_nak = has_flag(local.flags, HandshakeExtensionFlag::periodic_nak)
+        .too_late_packet_drop = receive_tsbpd
+            && has_flag(
+                local.flags, HandshakeExtensionFlag::too_late_packet_drop),
+        .sender_too_late_packet_drop = send_tsbpd
+            && has_flag(
+                peer.flags, HandshakeExtensionFlag::too_late_packet_drop),
+        .periodic_nak =
+            has_flag(local.flags, HandshakeExtensionFlag::periodic_nak)
             && has_flag(peer.flags, HandshakeExtensionFlag::periodic_nak),
-        .retransmit_flag = has_flag(local.flags, HandshakeExtensionFlag::retransmit_flag)
+        .retransmit_flag =
+            has_flag(local.flags, HandshakeExtensionFlag::retransmit_flag)
             && has_flag(peer.flags, HandshakeExtensionFlag::retransmit_flag),
         .receive_delay_milliseconds = static_cast<std::uint16_t>(receive_tsbpd
                 ? std::max(local.receiver_tsbpd_delay_milliseconds,
