@@ -3055,12 +3055,15 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         return false;
     }
     const bool readable_now = session_.data_ready_at(now);
-    if (readable_before && !readable_now) {
+    if ((readable_before || last_readable_state_) && !readable_now) {
         readiness_source_->note_not_ready(SRT_EPOLL_IN);
     }
     const auto delivery_now = session_.next_receive_delivery_time();
-    const bool receive_edge = readable_now != readable_before
-        || delivery_now != delivery_before
+    // Time can make the head readable between the last poll and this packet.
+    // Also retain packet-local transitions after an application read drained
+    // the queue before the cached state was refreshed by a poll.
+    const bool receive_edge = readable_now != last_readable_state_
+        || readable_now != readable_before || delivery_now != delivery_before
         || processed.receiver_drop_packets != 0U;
     const bool send_edge = session_.send_buffer().size() < send_size_before;
     bool terminal_edge = false;

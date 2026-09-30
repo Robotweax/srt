@@ -234,6 +234,38 @@ class FileInteropTests(unittest.TestCase):
             )
         )
 
+    def test_rendezvous_single_loss_has_later_data_in_the_same_write(
+        self,
+    ) -> None:
+        scenarios = (
+            run_file_interop.ipv6_rendezvous_scenario_matrix(
+                self.robotweax, self.reference
+            )
+            + run_file_interop.rendezvous_resilience_scenario_matrix(
+                self.robotweax, self.reference
+            )
+        )
+        for scenario in scenarios:
+            faults = run_file_interop.scenario_faults(scenario)
+            if (
+                scenario.recovery not in ("NAK", "CAUSAL")
+                or len(faults) != 1
+            ):
+                continue
+            # File-mode writes are packetized separately. Cover both IPv4
+            # and IPv6 payload budgets, including the short final packet.
+            for payload_size in (1_456, 1_436):
+                with self.subTest(
+                    scenario=scenario.name, payload_size=payload_size
+                ):
+                    packets_per_write = (
+                        scenario.sender_chunk_size + payload_size - 1
+                    ) // payload_size
+                    position = (
+                        (faults[0].occurrence - 1) % packets_per_write
+                    ) + 1
+                    self.assertLess(position, packets_per_write)
+
     def test_rendezvous_resilience_matrix_covers_fault_rate_and_eof(
         self,
     ) -> None:
