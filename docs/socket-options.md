@@ -416,8 +416,10 @@ directional uses.
 
 `SRTO_GROUPCONNECT` is a pre-connection boolean on listener sockets and
 defaults to `false`. Robotweax accepts both the one-byte C++ `bool` form and
-the compatible four-byte 0/1 integer form; other values are rejected. When
-enabled before `srt_listen`, compatible Broadcast and Backup membership
+the compatible four-byte 0/1 integer form; other values are rejected. A getter
+with at least four bytes of storage returns the complete `int32_t` value and
+sets the output length to four. A one-byte getter retains the compact `bool`
+representation. When enabled before `srt_listen`, compatible Broadcast and Backup membership
 requests create listener-scoped mirror groups. As in libsrt 1.5.7,
 pre-connection listener options and `srt_listen_callback` must be set before
 `srt_listen`; attempts to change them while listening fail with

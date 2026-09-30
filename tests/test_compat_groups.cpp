@@ -4638,6 +4638,33 @@ TEST(compat_group_connect_description_honors_receive_synchronous_before_open)
     }
 }
 
+TEST(
+    compat_group_connect_getter_initializes_the_complete_integer_representation)
+{
+    const SRTSOCKET listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    for (const bool enabled : {false, true}) {
+        REQUIRE_EQ(srt_setsockflag(
+                       listener, SRTO_GROUPCONNECT, &enabled, sizeof(enabled)),
+            0);
+        std::array<std::int32_t, 2> result {-1, 0x12345678};
+        int size = sizeof(result);
+        REQUIRE_EQ(
+            srt_getsockflag(listener, SRTO_GROUPCONNECT, result.data(), &size),
+            0);
+        REQUIRE_EQ(size, static_cast<int>(sizeof(std::int32_t)));
+        REQUIRE_EQ(result[0], enabled ? 1 : 0);
+        REQUIRE_EQ(result[1], 0x12345678);
+        bool compact = !enabled;
+        size = sizeof(compact);
+        REQUIRE_EQ(
+            srt_getsockflag(listener, SRTO_GROUPCONNECT, &compact, &size), 0);
+        REQUIRE_EQ(compact, enabled);
+        REQUIRE_EQ(size, static_cast<int>(sizeof(bool)));
+    }
+    REQUIRE_EQ(srt_close(listener), 0);
+}
+
 TEST(compat_group_state_and_data_refresh_terminal_members)
 {
     for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
