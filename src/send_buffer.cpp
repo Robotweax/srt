@@ -121,6 +121,8 @@ Error SendBuffer::enqueue_message(
         slot.occupied = true;
         slot.dropped = false;
         slot.sent = false;
+        slot.has_retransmission_send_time = false;
+        slot.last_retransmission_send_microseconds = 0;
         slot.retransmission_queued = false;
         slot.enqueue_microseconds = enqueue_microseconds;
         slot.expiration_microseconds = expiration_microseconds;
@@ -207,6 +209,8 @@ void SendBuffer::discard_slot(
     slot.drop_request_queued = false;
     slot.sent = false;
     slot.retransmission_queued = false;
+    slot.has_retransmission_send_time = false;
+    slot.last_retransmission_send_microseconds = 0;
     if (!retain_drop_marker) {
         slot.payload_size = 0;
         slot.plaintext_size = 0;
@@ -383,7 +387,8 @@ std::optional<OutboundPacket> SendBuffer::peek_new_packet() const noexcept
     return std::nullopt;
 }
 
-std::optional<OutboundPacket> SendBuffer::next_packet() noexcept
+std::optional<OutboundPacket> SendBuffer::next_packet(
+    bool defer_retransmission_commit) noexcept
 {
     while (retransmission_size_ > 0U) {
         const auto sequence = retransmission_queue_[retransmission_head_];
@@ -393,7 +398,9 @@ std::optional<OutboundPacket> SendBuffer::next_packet() noexcept
         if (slot == nullptr || !slot->retransmission_queued) {
             continue;
         }
-        slot->retransmission_queued = false;
+        // A prepared UDP retry is still outstanding until successful wire
+        // submission. Repeated NAKs must not queue another copy behind it.
+        slot->retransmission_queued = defer_retransmission_commit;
         auto header = slot->header;
         header.retransmitted = true;
         return OutboundPacket {
@@ -531,10 +538,10 @@ Error SendBuffer::validate_retransmission_range(
     return Error::none;
 }
 
-Error SendBuffer::request_retransmission(
-    SequenceRange range,
-    std::size_t* newly_queued_packets,
-    std::size_t* newly_queued_bytes) noexcept
+Error SendBuffer::request_retransmission(SequenceRange range,
+    std::size_t* newly_queued_packets, std::size_t* newly_queued_bytes,
+    std::uint64_t now_microseconds,
+    std::uint64_t minimum_repeat_microseconds) noexcept
 {
     if (newly_queued_packets != nullptr) {
         *newly_queued_packets = 0U;
@@ -552,6 +559,15 @@ Error SendBuffer::request_retransmission(
         const SequenceNumber sequence =
             range.first.advanced(index);
         const auto* slot = find(sequence);
+        if (slot != nullptr && !slot->dropped
+            && minimum_repeat_microseconds != 0U
+            && slot->has_retransmission_send_time
+            && (now_microseconds < slot->last_retransmission_send_microseconds
+                || now_microseconds
+                        - slot->last_retransmission_send_microseconds
+                    < minimum_repeat_microseconds)) {
+            continue;
+        }
         const bool newly_queued =
             slot != nullptr && slot->sent
             && !slot->retransmission_queued;
@@ -570,6 +586,17 @@ Error SendBuffer::request_retransmission(
         }
     }
     return Error::none;
+}
+
+void SendBuffer::note_retransmission_sent(
+    SequenceNumber sequence, std::uint64_t now_microseconds) noexcept
+{
+    auto* slot = find(sequence);
+    if (slot != nullptr && slot->occupied && slot->sent) {
+        slot->retransmission_queued = false;
+        slot->has_retransmission_send_time = true;
+        slot->last_retransmission_send_microseconds = now_microseconds;
+    }
 }
 
 bool SendBuffer::request_retransmission_of_last_sent() noexcept

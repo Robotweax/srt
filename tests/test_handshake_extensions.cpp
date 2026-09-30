@@ -52,6 +52,20 @@ TEST(live_options_are_negotiated_per_direction_and_latency_uses_maximum)
     REQUIRE(!one_way.sender_too_late_packet_drop);
 }
 
+TEST(peer_periodic_nak_capability_is_independent_of_local_reporting)
+{
+    HandshakeExtensionParameters local;
+    HandshakeExtensionParameters peer;
+    local.flags &=
+        ~static_cast<std::uint32_t>(HandshakeExtensionFlag::periodic_nak);
+    const auto enabled = negotiate_live_options(local, peer);
+    REQUIRE(!enabled.periodic_nak);
+    REQUIRE(enabled.peer_periodic_nak);
+    peer.flags &=
+        ~static_cast<std::uint32_t>(HandshakeExtensionFlag::periodic_nak);
+    REQUIRE(!negotiate_live_options(local, peer).peer_periodic_nak);
+}
+
 TEST(handshake_extension_parameters_have_exact_wire_layout)
 {
     HandshakeExtensionParameters parameters;

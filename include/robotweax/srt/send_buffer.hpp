@@ -101,7 +101,8 @@ public:
         std::uint32_t destination_socket_id,
         std::uint64_t enqueue_microseconds = 0) noexcept;
 
-    [[nodiscard]] std::optional<OutboundPacket> next_packet() noexcept;
+    [[nodiscard]] std::optional<OutboundPacket> next_packet(
+        bool defer_retransmission_commit = false) noexcept;
     [[nodiscard]] std::optional<OutboundPacket>
     peek_new_packet() const noexcept;
     // A prepared UDP retry must not revive an ACKed or expired packet.
@@ -125,10 +126,14 @@ public:
     // message.
     [[nodiscard]] Error validate_retransmission_range(
         SequenceRange range) const noexcept;
-    [[nodiscard]] Error request_retransmission(
-        SequenceRange range,
+    [[nodiscard]] Error request_retransmission(SequenceRange range,
         std::size_t* newly_queued_packets = nullptr,
-        std::size_t* newly_queued_bytes = nullptr) noexcept;
+        std::size_t* newly_queued_bytes = nullptr,
+        std::uint64_t now_microseconds = 0,
+        std::uint64_t minimum_repeat_microseconds = 0) noexcept;
+    // Commit the repeat clock only after the retransmission reached the wire.
+    void note_retransmission_sent(
+        SequenceNumber sequence, std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] bool request_retransmission_of_last_sent() noexcept;
     [[nodiscard]] std::size_t request_retransmission_of_all_sent() noexcept;
     [[nodiscard]] std::optional<SendDropResult>
@@ -168,6 +173,8 @@ private:
         bool drop_request_queued = false;
         bool sent = false;
         bool retransmission_queued = false;
+        bool has_retransmission_send_time = false;
+        std::uint64_t last_retransmission_send_microseconds = 0;
         std::uint64_t enqueue_microseconds = 0;
         std::uint64_t expiration_microseconds = 0;
     };

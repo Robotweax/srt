@@ -1399,6 +1399,10 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
 {
     const std::size_t receive_capacity =
         effective_receive_capacity(configuration);
+    session_.configure_efficient_retransmission(
+        configuration.efficient_retransmission,
+        configuration.negotiated_options.peer_periodic_nak
+            || configuration.negotiated_options.periodic_nak);
     if (configuration.options.congestion_controller()
         == CongestionController::file) {
         const auto maximum_bandwidth = configuration.options.get(
@@ -2189,6 +2193,9 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
             session_.send_buffer().size(),
             session_.send_buffer().packets_in_flight());
         session_.note_data_packet_sent(now);
+        if (completion.data.retransmitted) {
+            session_.note_retransmission_sent(completion.data.sequence, now);
+        }
         pacer_.on_packet_sent(bytes.size(), now);
         if (crypto_ != nullptr && !completion.data.retransmitted
             && crypto_->note_data_packet_sent() != Error::none) {

@@ -882,6 +882,8 @@ void set_key_material_state_response(
                 .peer_flow_window_packets = socket.peer_flow_window_packets,
                 .options = runtime_options,
                 .negotiated_options = socket.negotiated_live_options,
+                .efficient_retransmission =
+                    socket.public_options.retransmission_algorithm == 1,
                 .origin = origin,
                 .handshake_arrival_microseconds =
                     handshake_arrival_microseconds,

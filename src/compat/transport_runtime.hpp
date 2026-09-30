@@ -417,6 +417,7 @@ public:
         std::uint32_t peer_flow_window_packets = 0;
         SocketOptions options{};
         NegotiatedLiveOptions negotiated_options{};
+        bool efficient_retransmission = true;
         Clock::time_point origin{};
         std::uint64_t handshake_arrival_microseconds = 0;
         PacketTimestamp peer_handshake_timestamp{};

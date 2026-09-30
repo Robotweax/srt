@@ -96,6 +96,8 @@ NegotiatedLiveOptions negotiate_live_options(
                 ? std::max(local.sender_tsbpd_delay_milliseconds,
                       peer.receiver_tsbpd_delay_milliseconds)
                 : 0),
+        .peer_periodic_nak =
+            has_flag(peer.flags, HandshakeExtensionFlag::periodic_nak),
     };
 }
 
