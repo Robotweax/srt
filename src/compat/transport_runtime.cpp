@@ -2114,8 +2114,32 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
             return false;
         }
     }
+    if (transient_send_failure_since_.has_value()
+        && completion.kind == DatagramKind::control) {
+        // Periodic controls are refreshed by inbound traffic even while the
+        // route is unavailable. Retain only the latest cumulative state for
+        // each type, so they cannot exhaust the retry FIFO before its window.
+        if (completion.control == ControlType::keepalive) {
+            return true;
+        }
+        if (completion.control == ControlType::acknowledgement
+            || completion.control == ControlType::negative_acknowledgement
+            || completion.control == ControlType::acknowledgement_of_ack) {
+            for (auto* pending = pending_datagram_head_.get();
+                pending != nullptr; pending = pending->next.get()) {
+                if (pending->completion.kind == DatagramKind::control
+                    && pending->completion.control == completion.control) {
+                    std::copy(
+                        bytes.begin(), bytes.end(), pending->bytes.begin());
+                    pending->size = bytes.size();
+                    pending->completion = completion;
+                    return true;
+                }
+            }
+        }
+    }
     if (pending_datagram_size_ == pending_datagram_capacity) {
-        break_locked(0);
+        break_locked(transient_send_system_error_);
         return false;
     }
     auto pending = std::unique_ptr<PendingDatagram> {

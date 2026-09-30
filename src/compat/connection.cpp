@@ -842,12 +842,32 @@ void set_key_material_state_response(
         SocketOptions runtime_options = socket.native_options;
         runtime_options.constrain_to_address_family(
             socket.peer_endpoint.wire_family());
+        const auto group = admitted_group
+            ? admitted_group
+            : GroupRegistry::instance().find(socket.group_id);
+        if (group != nullptr) {
+            std::lock_guard group_lock(group->mutex);
+            if (!group->closed) {
+                if (admitted_group != nullptr) {
+                    // The caller wire ISN describes the inbound direction.
+                    // A mirror's outbound direction has its own group cursor.
+                    socket.connection_initial_sequence =
+                        group->next_send_sequence;
+                } else {
+                    if (!group->receive_sequence_initialized) {
+                        group->next_receive_sequence =
+                            socket.peer_connection_initial_sequence;
+                        group->receive_sequence_initialized = true;
+                    }
+                    socket.peer_connection_initial_sequence =
+                        group->next_receive_sequence;
+                }
+            }
+        }
         runtime = std::make_shared<ConnectionRuntime>(
             ConnectionRuntime::Configuration {
                 .channel = channel,
-                .group = admitted_group
-                    ? admitted_group
-                    : GroupRegistry::instance().find(socket.group_id),
+                .group = group,
                 .peer = socket.peer_endpoint,
                 .peer_socket_id = socket.peer_protocol_socket_id,
                 .initial_sequence =

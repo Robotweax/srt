@@ -26,7 +26,10 @@ namespace {
             return SRTS_CONNECTED;
         }
         if (pending == SRTS_NONEXIST
-            && member.public_data.sockstate != SRTS_BROKEN) {
+            && member.public_data.sockstate != SRTS_BROKEN
+            && member.public_data.sockstate != SRTS_CLOSING
+            && member.public_data.sockstate != SRTS_CLOSED
+            && member.public_data.sockstate != SRTS_NONEXIST) {
             pending = member.public_data.sockstate;
         }
     }
@@ -55,6 +58,27 @@ namespace {
 {
     return state == SRTS_BROKEN || state == SRTS_CLOSING
         || state == SRTS_CLOSED || state == SRTS_NONEXIST;
+}
+
+// Refresh outside the group lock: state publication takes the socket lock
+// first, then updates the generation-checked group snapshot.
+void refresh_member_states(const std::shared_ptr<GroupRecord>& record) noexcept
+{
+    std::vector<SRTSOCKET> sockets;
+    try {
+        {
+            std::lock_guard lock(record->mutex);
+            sockets.reserve(record->members.size());
+            for (const auto& member : record->members) {
+                sockets.push_back(member.public_data.id);
+            }
+        }
+        for (const auto socket : sockets) {
+            (void)SocketRegistry::instance().state(socket);
+        }
+    } catch (const std::bad_alloc&) {
+        // Keep the last published snapshot if allocation is unavailable.
+    }
 }
 
 [[nodiscard]] bool read_boolean_option(
@@ -273,6 +297,7 @@ SRT_SOCKSTATUS GroupRegistry::state(SRTSOCKET group) noexcept
         }
         record = entry->second;
     }
+    refresh_member_states(record);
     std::lock_guard lock(record->mutex);
     return aggregate_state(*record);
 }
@@ -291,6 +316,7 @@ int GroupRegistry::data(
         return SRT_ERROR;
     }
 
+    refresh_member_states(record);
     std::lock_guard lock(record->mutex);
     if (record->closed) {
         set_last_error(SRT_EINVPARAM);
@@ -330,7 +356,8 @@ bool GroupRegistry::describe_connect(
     output.initial_sequence = record->next_send_sequence;
     output.connect_callback = record->connect_callback;
     output.connect_callback_opaque = record->connect_callback_opaque;
-    output.block_until_connected = !record->opened;
+    output.block_until_connected =
+        !record->opened && record->receive_synchronous;
     output.ip_time_to_live = record->ip_time_to_live;
     output.ip_type_of_service = record->ip_type_of_service;
     output.ip_type_of_service_explicit = record->ip_type_of_service_explicit;
