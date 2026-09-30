@@ -852,6 +852,32 @@ TEST(rendezvous_rejects_nonidentical_packet_filter_text)
         1'014);
 }
 
+TEST(rendezvous_rejects_fec_geometry_larger_than_receive_window)
+{
+    const auto filter = parse_packet_filter_configuration("fec,cols:5,rows:4");
+    REQUIRE(filter);
+    RendezvousHandshakeMachine initiator {{
+        .local_socket_id = 10U,
+        .local_cookie = 200U,
+        .packet_filter_configuration = filter.configuration,
+        .receive_capacity_packets = 32U,
+    }};
+    RendezvousHandshakeMachine responder {{
+        .local_socket_id = 20U,
+        .local_cookie = 100U,
+        .packet_filter_configuration = filter.configuration,
+        .receive_capacity_packets = 16U,
+    }};
+    const auto initiator_wave = initiator.start();
+    const auto responder_wave = responder.start();
+    const auto request = initiator.receive(message_from(sent(responder_wave)));
+    (void)responder.receive(message_from(sent(initiator_wave)));
+    const auto rejected = responder.receive(message_from(sent(request)));
+    REQUIRE_EQ(responder.state(), RendezvousState::rejected);
+    REQUIRE_EQ(responder.rejection_reason(), 14);
+    REQUIRE_EQ(static_cast<std::int32_t>(sent(rejected).packet.request), 1'014);
+}
+
 TEST(rendezvous_responder_adopts_the_initiators_packet_filter)
 {
     const auto filter =

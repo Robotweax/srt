@@ -50,6 +50,8 @@ public:
             CongestionController::live;
         PacketFilterConfiguration
             packet_filter_configuration{};
+        // Zero leaves capacity policy to the embedding transport.
+        std::size_t receive_capacity_packets = 0;
     };
 
     explicit RendezvousHandshakeMachine(

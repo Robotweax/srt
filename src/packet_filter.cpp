@@ -214,6 +214,25 @@ resolve_effective_configuration(
 
 } // namespace
 
+bool fec_geometry_fits_receive_capacity(
+    const PacketFilterConfiguration& configuration,
+    std::size_t receive_capacity_packets) noexcept
+{
+    if (!configuration.enabled) {
+        return true;
+    }
+    if (receive_capacity_packets == 0U || configuration.columns < 2U
+        || configuration.rows == 0 || configuration.rows == -1) {
+        return false;
+    }
+    const auto columns = static_cast<std::size_t>(configuration.columns);
+    const auto rows = configuration.rows < 0
+        ? static_cast<std::uint64_t>(
+              -static_cast<std::int64_t>(configuration.rows))
+        : static_cast<std::uint64_t>(configuration.rows);
+    return columns <= receive_capacity_packets / rows;
+}
+
 Error encode_fec_control_header(
     const FecControlHeader& header,
     std::span<std::byte> destination) noexcept

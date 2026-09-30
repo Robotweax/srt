@@ -401,7 +401,11 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                             .packet_filter_configuration,
                         message
                             .packet_filter_configuration);
-                if (!filter) {
+                if (!filter
+                    || (configuration_.receive_capacity_packets != 0U
+                        && !fec_geometry_fits_receive_capacity(
+                            filter.configuration,
+                            configuration_.receive_capacity_packets))) {
                     return reject(
                         packet_filter_rejection_reason);
                 }
@@ -665,7 +669,11 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                             .packet_filter_configuration,
                         message
                             .packet_filter_configuration);
-                if (!filter) {
+                if (!filter
+                    || (configuration_.receive_capacity_packets != 0U
+                        && !fec_geometry_fits_receive_capacity(
+                            filter.configuration,
+                            configuration_.receive_capacity_packets))) {
                     rejection_reason_ =
                         packet_filter_rejection_reason;
                     state_ = HandshakeState::rejected;
