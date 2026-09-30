@@ -96,13 +96,18 @@ group has opened, attempts to change these template options fail with
 aggregate bandwidth cap across the group.
 
 The first connect on a new group waits for the first usable member when the
-public synchronization option requires blocking behavior. Later members may
+`SRTO_RCVSYN` option requires blocking behavior. Later members may
 complete in the background. Passing a group handle to ordinary `srt_connect`
 uses the same path and returns the created member socket ID, not zero.
 
 Connection callbacks are snapshotted per new member. Replacing the group
 callback affects future members and does not rewrite callback state already
 owned by an in-progress member.
+
+When Broadcast sends encounter both a failed member and congested surviving
+members, the failed member is closed once. Nonblocking sends report
+`SRT_EASYNCSND`; blocking sends wait for surviving capacity up to `SRTO_SNDTIMEO`.
+A send-buffer shortage does not close a surviving member.
 
 ## Listener admission
 
@@ -111,8 +116,11 @@ listener before `srt_listen` to accept a valid Broadcast or Backup request.
 Otherwise the request is rejected with `SRT_REJ_GROUP`.
 
 The first connected member publishes one mirror-group handle through
-`srt_accept`. Later members with the same peer group identity, type, and ISN
-join that mirror and do not create another accept result.
+`srt_accept`. Later members with the same peer group identity and type join that mirror
+without another accept result. The wire ISN can advance as traffic continues.
+Each direction uses its own group sequence cursor: a late mirror member starts
+sending at the mirror's current send cursor, while a late caller member starts
+receiving at the caller group's current receive cursor.
 
 `srt_accept_bond` forms an explicit domain from multiple listeners. Members of
 one peer group may then arrive through different listeners in that same domain.

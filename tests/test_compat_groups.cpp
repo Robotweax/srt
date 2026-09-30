@@ -1217,6 +1217,9 @@ TEST(compat_group_connect_joins_with_unread_messages_across_rollover)
         REQUIRE_EQ(srt_setsockflag(cleanup.listener, SRTO_RCVTIMEO,
                        &receive_timeout, sizeof(receive_timeout)),
             0);
+        REQUIRE_EQ(srt_setsockflag(cleanup.sender, SRTO_RCVTIMEO,
+                       &receive_timeout, sizeof(receive_timeout)),
+            0);
         auto address = ipv4_address(0);
         REQUIRE_EQ(
             srt_bind(cleanup.listener,
@@ -1348,6 +1351,34 @@ TEST(compat_group_connect_joins_with_unread_messages_across_rollover)
         REQUIRE(
             std::equal(after_join.begin(), after_join.end(), received.begin()));
 
+        // The reverse send cursor initially precedes the later member's
+        // wire ISN. Sending must preserve both paths, then advance the reverse
+        // direction beyond the forward cursor before the next admission.
+        const auto reverse_send = [&](char suffix) {
+            const std::array<char, 2> payload {'r', suffix};
+            REQUIRE_EQ(srt_sendmsg(cleanup.mirror, payload.data(),
+                           payload.size(), -1, 1),
+                2);
+            REQUIRE_EQ(srt_recvmsg2(cleanup.sender, received.data(),
+                           received.size(), &control),
+                2);
+            REQUIRE(
+                std::equal(payload.begin(), payload.end(), received.begin()));
+            std::vector<robotweax::srt::compat::GroupMemberSnapshot>
+                reverse_members;
+            {
+                std::lock_guard lock(mirror_record->mutex);
+                reverse_members = mirror_record->members;
+            }
+            for (const auto& member : reverse_members) {
+                REQUIRE_EQ(
+                    srt_getsockstate(member.public_data.id), SRTS_CONNECTED);
+            }
+        };
+        for (char suffix = '0'; suffix != '6'; ++suffix) {
+            reverse_send(suffix);
+        }
+
         // Hold a third handshake after it captures the sender's sequence.
         // While it waits, the earlier paths advance the receive cursor.
         auto entered = gate.entered.get_future();
@@ -1405,6 +1436,7 @@ TEST(compat_group_connect_joins_with_unread_messages_across_rollover)
             REQUIRE_EQ(joined_socket->runtime->timestamp_origin_microseconds(),
                 receiver_origin);
         }
+        reverse_send('6');
         const std::array<char, 2> after_delayed_join {'e', '4'};
         REQUIRE_EQ(srt_sendmsg(cleanup.sender, after_delayed_join.data(),
                        after_delayed_join.size(), -1, 1),
@@ -4536,5 +4568,67 @@ TEST(compat_group_epoll_and_receive_wake_when_group_closes)
         REQUIRE_EQ(events, 1);
         REQUIRE((event_mask & SRT_EPOLL_ERR) != 0);
         REQUIRE_EQ(srt_epoll_release(poll), 0);
+    }
+}
+
+TEST(
+    compat_broadcast_group_retires_hard_failures_while_other_members_are_congested)
+{
+    for (const bool blocking : {false, true}) {
+        TestClock clock;
+        clock.channel =
+            std::make_shared<robotweax::srt::compat::DatagramChannel>();
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+        const SRTSOCKET failed = srt_create_socket();
+        const SRTSOCKET slow = srt_create_socket();
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        std::uint32_t initial = 0;
+        {
+            std::lock_guard lock(record->mutex);
+            initial = record->initial_sequence;
+        }
+        const auto failed_runtime =
+            attach_group_runtime(group, failed, initial);
+        const auto slow_runtime =
+            attach_group_runtime(group, slow, initial, 1, &clock, 1U);
+        const bool synchronous = blocking;
+        const std::int32_t timeout = 20;
+        REQUIRE_EQ(srt_setsockflag(
+                       group, SRTO_SNDSYN, &synchronous, sizeof(synchronous)),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(group, SRTO_SNDTIMEO, &timeout, sizeof(timeout)),
+            0);
+        constexpr char payload[] = "capacity";
+        REQUIRE_EQ(srt_send(group, payload, sizeof(payload)),
+            static_cast<int>(sizeof(payload)));
+        failed_runtime->mark_broken(0);
+        REQUIRE_EQ(srt_send(group, payload, sizeof(payload)), SRT_ERROR);
+        REQUIRE_EQ(
+            srt_getlasterror(nullptr), blocking ? SRT_ETIMEOUT : SRT_EASYNCSND);
+        const auto state = srt_getsockstate(failed);
+        REQUIRE(state == SRTS_CLOSING || state == SRTS_CLOSED);
+        REQUIRE_EQ(srt_getsockstate(slow), SRTS_CONNECTED);
+        (void)slow_runtime->poll();
+        deliver_lite_ack(slow_runtime, SequenceNumber {initial}.next());
+        REQUIRE_EQ(srt_send(group, payload, sizeof(payload)),
+            static_cast<int>(sizeof(payload)));
+        REQUIRE_EQ(srt_close(group), 0);
+    }
+}
+
+TEST(compat_group_connect_description_honors_receive_synchronous_before_open)
+{
+    for (const bool synchronous : {false, true}) {
+        const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+        REQUIRE_EQ(srt_setsockflag(
+                       group, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+            0);
+        GroupRegistry::ConnectDescription description;
+        REQUIRE(GroupRegistry::instance().describe_connect(group, description));
+        REQUIRE_EQ(description.block_until_connected, synchronous);
+        REQUIRE_EQ(srt_close(group), 0);
     }
 }

@@ -1136,6 +1136,33 @@ int send_group_message_implementation(
                 requested_data, requested_capacity, true);
             return length;
         }
+        if (group_type == SRT_GTYPE_BROADCAST) {
+            for (const auto& failure : failed_members) {
+                if (failure.result.status == MessageIoStatus::would_block) {
+                    GroupRegistry::instance().note_io_result(group->handle,
+                        generation, failure.member.id,
+                        failure.member.generation, SRT_GST_IDLE, SRT_EASYNCSND);
+                    continue;
+                }
+                GroupRegistry::instance().note_io_result(group->handle,
+                    generation, failure.member.id, failure.member.generation,
+                    SRT_GST_BROKEN, result_error(failure.result, true));
+                SocketRegistry::instance().close_failed(failure.member.id);
+            }
+            // A failed path does not turn congestion on the surviving paths
+            // into a terminal group error. Retire it once, then wait for those
+            // members or expose their ordinary nonblocking send result.
+            if (would_block) {
+                if (!blocking) {
+                    return fail(SRT_EASYNCSND);
+                }
+                if (ReadinessSignal::Clock::now() >= deadline) {
+                    return fail(SRT_ETIMEOUT);
+                }
+                ReadinessSignal::wait_until(observed, deadline);
+                continue;
+            }
+        }
         if (group_type == SRT_GTYPE_BACKUP && would_block) {
             // A replacement may have accepted only part of the bounded replay
             // range before its ordinary member send buffer filled. Let its

@@ -330,7 +330,8 @@ bool GroupRegistry::describe_connect(
     output.initial_sequence = record->next_send_sequence;
     output.connect_callback = record->connect_callback;
     output.connect_callback_opaque = record->connect_callback_opaque;
-    output.block_until_connected = !record->opened;
+    output.block_until_connected =
+        !record->opened && record->receive_synchronous;
     output.ip_time_to_live = record->ip_time_to_live;
     output.ip_type_of_service = record->ip_type_of_service;
     output.ip_type_of_service_explicit = record->ip_type_of_service_explicit;
