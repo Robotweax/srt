@@ -3027,6 +3027,17 @@ TEST(compat_backup_group_owns_the_minimum_stability_timeout)
         SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
 
+    const SRTSOCKET socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    size = static_cast<int>(sizeof(value));
+    REQUIRE_EQ(srt_getsockflag(socket, SRTO_GROUPMINSTABLETIMEO, &value, &size),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_GROUPMINSTABLETIMEO, &value,
+                   static_cast<int>(sizeof(value))),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    REQUIRE_EQ(srt_close(socket), 0);
     REQUIRE_EQ(srt_close(group), 0);
     REQUIRE_EQ(srt_close(broadcast), 0);
 }
@@ -3703,13 +3714,12 @@ TEST(compat_backup_group_receives_from_the_running_path)
     REQUIRE_EQ(srt_close(group), 0);
 }
 
-TEST(compat_group_config_uses_the_complete_v1_5_5_member_option_matrix)
+TEST(compat_group_config_accepts_supported_member_options)
 {
     std::vector<SRT_SOCKOPT> allowed = {
         SRTO_BINDTODEVICE,
         SRTO_CONNTIMEO,
         SRTO_DRIFTTRACER,
-        SRTO_GROUPMINSTABLETIMEO,
         SRTO_IPTOS,
         SRTO_IPTTL,
         SRTO_KMREFRESHRATE,
@@ -3736,6 +3746,13 @@ TEST(compat_group_config_uses_the_complete_v1_5_5_member_option_matrix)
                        static_cast<int>(sizeof(value))),
             0);
     }
+    // Stability currently belongs to the Backup coordinator. Reject an
+    // unsupported link override here, before it can fail a later connect.
+    const std::int32_t stability = 175;
+    REQUIRE_EQ(srt_config_add(config, SRTO_GROUPMINSTABLETIMEO, &stability,
+                   static_cast<int>(sizeof(stability))),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
     std::int32_t rejected = 1;
     REQUIRE_EQ(srt_config_add(config, SRTO_RENDEZVOUS, &rejected,
                    static_cast<int>(sizeof(rejected))),

@@ -373,8 +373,9 @@ int srt_close(SRTSOCKET socket)
         return SRT_ERROR;
     }
     /*
-     * v1.5.7 treats close as idempotent, including unknown handles.  Closed
-     * status is retained in bounded tombstone histories. Numeric handles
+     * This boundary also accepts unknown handles as an idempotent no-op;
+     * the reference instead reports EINVSOCK. Closed status is retained in
+     * bounded tombstone histories. Numeric handles
      * are not recycled, so stale IDs cannot alias a newly created socket.
      */
     if (robotweax::srt::compat::is_group_handle(socket)) {

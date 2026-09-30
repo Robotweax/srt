@@ -735,6 +735,9 @@ int run_rendezvous(const Configuration& configuration)
         throw std::runtime_error(
             "peer did not complete the Rendezvous demo protocol");
     }
+    // Receiving the peer's completion does not flush our queued reply.
+    // Keep the socket alive until that reply is acknowledged before closing.
+    wait_for_send_drain(socket.get(), configuration.timeout_milliseconds);
     std::cout << "COMPLETE role=rendezvous\n";
     return 0;
 }

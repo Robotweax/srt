@@ -131,8 +131,7 @@ template <typename Value>
         || option == SRTO_TSBPDMODE || option == SRTO_LATENCY
         || option == SRTO_RCVLATENCY || option == SRTO_PEERLATENCY
         || option == SRTO_TLPKTDROP || option == SRTO_NAKREPORT
-        || option == SRTO_PAYLOADSIZE || option == SRTO_RETRANSMITALGO
-        || option == SRTO_GROUPMINSTABLETIMEO;
+        || option == SRTO_PAYLOADSIZE || option == SRTO_RETRANSMITALGO;
 }
 
 [[nodiscard]] constexpr bool is_connection_state(
