@@ -833,6 +833,70 @@ TEST(compat_runtime_waits_for_key_response_without_runnable_send_work)
     REQUIRE_EQ(decoded.packet.control.subtype, key_material_request_subtype);
 }
 
+TEST(compat_runtime_key_material_retry_tracks_rtt_and_timestamp_zero)
+{
+    for (const auto rtt : {0U, 4'000U, 40'000U, 200'000U}) {
+        const auto channel = std::make_shared<DatagramChannel>();
+        CapturedDatagrams output;
+        channel->set_send_hook_for_testing(capture_datagram, &output);
+        auto crypto = std::make_shared<CryptoSession>(CryptoConfiguration {
+            .passphrase = "RTT based retry fixture", .key_length = 16});
+        REQUIRE_EQ(crypto->start_initiator(), Error::none);
+        const Ipv4Endpoint peer {{192, 0, 2, 21}, 10'021};
+        std::uint64_t now = 0;
+        ConnectionRuntime runtime {{
+            .channel = channel,
+            .peer = peer,
+            .peer_socket_id = 77,
+            .initial_sequence = SequenceNumber {901},
+            .origin = ConnectionRuntime::Clock::now(),
+            .crypto = crypto,
+            .now_function = injected_now,
+            .now_context = &now,
+        }};
+        std::array<std::byte, 64> storage {};
+        const auto encoded = encode_acknowledgement_payload(
+            {.kind = AcknowledgementKind::small,
+                .next_sequence = SequenceNumber {901},
+                .round_trip_time_microseconds = rtt,
+                .round_trip_time_variance_microseconds = 1,
+                .available_receive_buffer_packets = 32},
+            storage);
+        REQUIRE(encoded);
+        runtime.process_packet(
+            {.kind = PacketKind::control,
+                .control = {.type = ControlType::acknowledgement},
+                .payload = std::span {storage}.first(encoded.bytes_written)},
+            peer);
+        (void)runtime.poll();
+        REQUIRE_EQ(take_datagrams(output).size(), 1U);
+        (void)runtime.poll();
+        REQUIRE(take_datagrams(output).empty());
+        const auto interval = rtt == 0U
+            ? 100'000U
+            : std::max<std::uint64_t>(10'000U, rtt * 3ULL / 2ULL);
+        now = interval - 1;
+        (void)runtime.poll();
+        REQUIRE(take_datagrams(output).empty());
+        ++now;
+        (void)runtime.poll();
+        const auto retry = take_datagrams(output);
+        REQUIRE_EQ(retry.size(), 1U);
+        const auto decoded = decode_packet(retry[0]);
+        REQUIRE(decoded);
+        REQUIRE_EQ(
+            decoded.packet.control.subtype, key_material_request_subtype);
+        // Rewinding the injected clock permits one new attempt, then retains
+        // its valid timestamp rather than continuously resending.
+        now = 0;
+        (void)runtime.poll();
+        REQUIRE_EQ(take_datagrams(output).size(), 1U);
+        (void)runtime.poll();
+        REQUIRE(take_datagrams(output).empty());
+        REQUIRE(!runtime.broken());
+    }
+}
+
 TEST(
     compat_dispatcher_discards_oversized_datagrams_without_breaking_connections)
 {
@@ -6711,6 +6775,37 @@ constexpr int permanent_send_error = EBADF;
 #endif
 
 } // namespace
+
+TEST(compat_runtime_key_material_retry_starts_after_udp_acceptance)
+{
+    BackpressureFixture fixture;
+    auto crypto = std::make_shared<CryptoSession>(CryptoConfiguration {
+        .passphrase = "pending KM retry fixture", .key_length = 16});
+    REQUIRE_EQ(crypto->start_initiator(), Error::none);
+    fixture.runtime = std::make_unique<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.channel = fixture.channel,
+            .peer = fixture.peer,
+            .peer_socket_id = 910,
+            .initial_sequence = SequenceNumber {700},
+            .origin = ConnectionRuntime::Clock::now(),
+            .crypto = crypto,
+            .now_function = injected_now,
+            .now_context = &fixture.now});
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(fixture.output.attempts.size(), 1U);
+    REQUIRE(take_datagrams(fixture.output.accepted).empty());
+    fixture.now = 80'000;
+    fixture.output.blocked = false;
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(take_datagrams(fixture.output.accepted).size(), 1U);
+    fixture.now = 179'999;
+    (void)fixture.runtime->poll();
+    REQUIRE(take_datagrams(fixture.output.accepted).empty());
+    fixture.now = 180'000;
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(take_datagrams(fixture.output.accepted).size(), 1U);
+    REQUIRE(!fixture.runtime->broken());
+}
 
 TEST(compat_runtime_send_error_classifier_matches_native_platform_codes)
 {

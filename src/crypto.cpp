@@ -1047,6 +1047,7 @@ Error CryptoSession::continue_without_peer_key(CryptoState reported) noexcept
     rotation_prepared_ = false;
     pending_acknowledged_ = false;
     key_material_pending_ = false;
+    provider_.secure_erase(pending_key_material_.bytes);
     pending_key_material_ = {};
     return Error::none;
 }

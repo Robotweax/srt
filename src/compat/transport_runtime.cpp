@@ -2720,13 +2720,16 @@ bool ConnectionRuntime::service_key_rotation(
     if (key_material.empty()) {
         return true;
     }
-    constexpr std::uint64_t retry_interval_microseconds = 100'000;
-    const bool clock_moved_backwards =
-        now < last_key_material_send_microseconds_;
-    const bool retry_due =
-        last_key_material_send_microseconds_ == 0U
-        || clock_moved_backwards
-        || now - last_key_material_send_microseconds_
+    // Keep the initial cadence until an RTT observation is available. Once
+    // measured, allow a round trip plus half an RTT before repeating KMREQ.
+    const auto& rtt = session_.rtt();
+    const std::uint64_t retry_interval_microseconds = rtt.has_sample()
+        ? std::max<std::uint64_t>(
+              10'000U, 3ULL * rtt.smoothed_microseconds() / 2ULL)
+        : 100'000U;
+    const bool retry_due = !last_key_material_send_microseconds_.has_value()
+        || now < *last_key_material_send_microseconds_
+        || now - *last_key_material_send_microseconds_
             >= retry_interval_microseconds;
     if (!retry_due) {
         return true;
@@ -3192,11 +3195,11 @@ void ConnectionRuntime::process_packet(
             }
             // The retry timestamp belongs to the request that was just
             // acknowledged, not to the next rotation. Keeping it would
-            // delay a new KMREQ until the 100 ms retransmission interval
+            // delay a new KMREQ until the current retransmission interval
             // elapsed, even though no request for that rotation had been
             // sent. Aggressive but valid refresh rates would then stall
             // Live source pacing and eventually miss TSBPD deadlines.
-            last_key_material_send_microseconds_ = 0U;
+            last_key_material_send_microseconds_.reset();
         }
         last_peer_activity_microseconds_ = now;
         notify_readiness();

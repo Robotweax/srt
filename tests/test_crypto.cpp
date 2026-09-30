@@ -131,6 +131,17 @@ void require_gcm_fixture(const std::array<std::byte, KeySize>& key,
 
 class CtrOnlyCryptoProvider final : public CryptoProvider {
 public:
+    void watch_erasure(const std::byte* address) noexcept
+    {
+        watched_address_ = address;
+        observed_erasure_ = false;
+    }
+
+    [[nodiscard]] bool observed_erasure() const noexcept
+    {
+        return observed_erasure_;
+    }
+
     void fail_random_bytes() noexcept
     {
         fail_random_ = true;
@@ -196,10 +207,15 @@ public:
 
     void secure_erase(std::span<std::byte> bytes) noexcept override
     {
+        if (bytes.data() == watched_address_) {
+            observed_erasure_ = true;
+        }
         delegate_.secure_erase(bytes);
     }
 
 private:
+    const std::byte* watched_address_ = nullptr;
+    bool observed_erasure_ = false;
     bool fail_random_ = false;
     std::size_t pbkdf2_calls_ = 0;
     CryptoProvider& delegate_ = default_crypto_provider();
@@ -2096,6 +2112,21 @@ TEST(key_material_state_uses_the_reference_byte_layout)
     REQUIRE_EQ(sender.acknowledge_key_material(little, false),
         Error::cryptographic_failure);
     REQUIRE_EQ(sender.sender_state(), CryptoState::no_secret);
+}
+
+TEST(crypto_session_erases_pending_announcement_before_optional_fallback)
+{
+    CtrOnlyCryptoProvider provider;
+    CryptoSession sender {
+        {.passphrase = "optional erasure fixture", .key_length = 16}, provider};
+    REQUIRE_EQ(sender.start_initiator(), Error::none);
+    REQUIRE(!sender.pending_key_material().empty());
+    provider.watch_erasure(sender.pending_key_material().data());
+    REQUIRE_EQ(
+        sender.continue_without_peer_key(CryptoState::no_secret), Error::none);
+    REQUIRE(provider.observed_erasure());
+    REQUIRE(sender.pending_key_material().empty());
+    REQUIRE(sender.sending_without_peer_key());
 }
 
 TEST(crypto_session_reports_a_wrong_passphrase)
