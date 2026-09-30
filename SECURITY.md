@@ -81,6 +81,16 @@ unwrappable KMREQ/KMRSP input without downgrading an established encrypted
 state or enabling clear payload. Authentication failures never publish
 provisional plaintext.
 
+Established-session packets must also match the connection's source endpoint.
+That check limits off-path injection, but it does not authenticate a packet:
+an on-path sender or someone able to spoof the peer endpoint can still submit
+runtime controls and AES-CTR DATA. A single packet that violates the negotiated
+encryption policy is counted and dropped without acknowledging it or refreshing
+peer liveness; it does not terminate the established session. Failure KMRSPs
+for rejected KMREQs are limited to one per 100 ms per connection. AES-CTR
+still has no payload integrity guarantee; use the opt-in AES-GCM extension
+when authenticated DATA is required.
+
 ## Secure integration guidance
 
 - Use unique, high-entropy passphrases delivered through a secure secret

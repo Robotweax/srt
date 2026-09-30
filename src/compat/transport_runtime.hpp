@@ -616,6 +616,8 @@ private:
         std::uint16_t subtype,
         std::span<const std::byte> key_material,
         std::uint64_t now_microseconds) noexcept;
+    void send_key_material_error_locked(
+        CryptoState state, std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] bool service_key_rotation(
         std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] bool service_receiver_tlpktdrop_locked(
@@ -664,6 +666,7 @@ private:
     std::array<PacketView, 1>
         single_fec_reconstructed_packet_{};
     std::uint64_t last_key_material_send_microseconds_ = 0;
+    std::optional<std::uint64_t> last_key_material_error_microseconds_;
     NowFunction now_function_ = nullptr;
     void* now_context_ = nullptr;
     ReceivePopHook receive_pop_hook_for_testing_ = nullptr;

@@ -222,7 +222,13 @@ key (BADSECRET), counts the packet as undecryptable, acknowledges its sequence
 number and discards the payload. Such data is never delivered, but the
 connection stays up and the sender neither retransmits it nor stalls on flow
 control, matching the reference implementation. With enforced encryption the
-same DATA still breaks the connection. AES-GCM packets that fail
+same undecipherable DATA is counted and dropped without acknowledging its
+sequence or ending the established session. A later valid retransmission can
+still fill the gap. Plaintext DATA on a secured CTR or GCM session follows the
+same nonterminal drop policy. Under enforced encryption, encrypted DATA without
+a usable local crypto session is also dropped without acknowledgement. An
+unencrypted session without a local passphrase continues to accept plaintext.
+AES-GCM packets that fail
 authentication are never acknowledged, so a forged packet cannot suppress
 genuine data.
 
@@ -249,9 +255,10 @@ announcement. With AES-CTR it still delivers plaintext DATA from a peer
 without a passphrase. With AES-GCM such unauthenticated DATA is counted as
 undecryptable and never delivered.
 
-Repeated runtime KMREQs after an optional key failure receive the current
-failure status without disconnecting the peer or resetting the local sending
-key. Once local-only encryption has been selected, delayed KMRSPs (including
+Repeated runtime KMREQs after an optional key failure can receive the current
+failure status at most once per 100 ms without disconnecting the peer or
+resetting the local sending key. Such failures do not refresh peer liveness.
+Once local-only encryption has been selected, delayed KMRSPs (including
 failure duplicates and late confirmations) do not restart negotiation or
 reset the key's sequence budget. Already secured sessions retain their
 existing protection against unauthenticated key-control packets.
