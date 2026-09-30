@@ -966,6 +966,7 @@ bool DatagramChannel::schedule_next_locked(bool immediate,
     RuntimeScheduler::Task task {
         .function = run_scheduled,
         .context = scheduled_work_context_,
+        .timer_function = run_scheduled_timer,
     };
     if (immediate) {
         const RuntimeScheduler::SubmitStatus status =
@@ -991,11 +992,18 @@ bool DatagramChannel::schedule_next_locked(bool immediate,
 }
 
 void DatagramChannel::observe_timer_wake_locked(
-    std::uint64_t lateness_microseconds,
+    std::optional<std::uint64_t> lateness_microseconds,
     std::chrono::steady_clock::time_point now) noexcept
 {
     const bool was_coarse = timer_wake_monitor_.coarse();
-    timer_wake_monitor_.observe(lateness_microseconds);
+    if (lateness_microseconds.has_value()) {
+        timer_wake_monitor_.observe(*lateness_microseconds);
+    } else {
+        // A busy shard benefits from yielding to its deadlines, even if the
+        // host clock was previously coarse. Do not feed callback/queue delay
+        // back into a mode that adds more immediate work to that same shard.
+        timer_wake_monitor_ = {};
+    }
     const bool is_coarse = timer_wake_monitor_.coarse();
     if (was_coarse != is_coarse) {
         next_coarse_timer_probe_ = is_coarse
@@ -1006,7 +1014,7 @@ void DatagramChannel::observe_timer_wake_locked(
 }
 
 void DatagramChannel::observe_timer_wake_for_testing(
-    std::uint64_t lateness_microseconds) noexcept
+    std::optional<std::uint64_t> lateness_microseconds) noexcept
 {
     std::lock_guard lifecycle_lock(lifecycle_mutex_);
     observe_timer_wake_locked(
@@ -1030,8 +1038,17 @@ void DatagramChannel::run_scheduled(void* context) noexcept
     }
 }
 
-void DatagramChannel::run_scheduled(
-    const ScheduledWorkContext* context) noexcept
+void DatagramChannel::run_scheduled_timer(void* context,
+    std::optional<std::chrono::steady_clock::time_point> idle_wake) noexcept
+{
+    const auto& work = *static_cast<ScheduledWorkContext*>(context);
+    if (const auto owner = work.owner.lock()) {
+        owner->run_scheduled(&work, idle_wake);
+    }
+}
+
+void DatagramChannel::run_scheduled(const ScheduledWorkContext* context,
+    std::optional<std::chrono::steady_clock::time_point> idle_wake) noexcept
 {
     {
         std::lock_guard lifecycle_lock(lifecycle_mutex_);
@@ -1040,16 +1057,18 @@ void DatagramChannel::run_scheduled(
             return;
         }
         if (scheduled_timer_.valid()) {
-            // A timer-driven continuation: record how late the host woke
-            // us so sub-millisecond waits can fall back to resubmitting
-            // when the timer is too coarse for the pacer's credit.
+            // Measure the scheduler's actual idle wake, before other timer
+            // callbacks or this channel's lifecycle lock delayed dispatch.
             const auto now = std::chrono::steady_clock::now();
-            const auto lateness = now > scheduled_deadline_
-                ? std::chrono::duration_cast<std::chrono::microseconds>(
-                      now - scheduled_deadline_)
-                : std::chrono::microseconds::zero();
-            observe_timer_wake_locked(
-                static_cast<std::uint64_t>(lateness.count()), now);
+            std::optional<std::uint64_t> lateness;
+            if (idle_wake.has_value()) {
+                const auto delay = *idle_wake > scheduled_deadline_
+                    ? std::chrono::duration_cast<std::chrono::microseconds>(
+                          *idle_wake - scheduled_deadline_)
+                    : std::chrono::microseconds::zero();
+                lateness = static_cast<std::uint64_t>(delay.count());
+            }
+            observe_timer_wake_locked(lateness, now);
             if (scheduled_coarse_timer_probe_) {
                 coarse_timer_probe_wakes_.fetch_add(
                     1, std::memory_order_relaxed);

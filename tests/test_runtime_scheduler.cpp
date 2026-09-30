@@ -112,6 +112,36 @@ void wait_until_complete(const std::shared_ptr<Completion>& completion)
         }));
 }
 
+struct TimerCompletion : Completion {
+    bool timer_callback = false;
+    bool idle_wake = false;
+};
+
+void record_regular_timer_completion(void* context) noexcept
+{
+    auto& completion = *static_cast<TimerCompletion*>(context);
+    record_completion(static_cast<Completion*>(&completion));
+}
+
+void record_timer_completion(void* context,
+    std::optional<std::chrono::steady_clock::time_point> wake) noexcept
+{
+    auto& completion = *static_cast<TimerCompletion*>(context);
+    {
+        std::lock_guard lock(completion.mutex);
+        completion.timer_callback = true;
+        completion.idle_wake = wake.has_value();
+        completion.complete = true;
+    }
+    completion.changed.notify_all();
+}
+
+void wait_at_timer_gate(void* context,
+    std::optional<std::chrono::steady_clock::time_point>) noexcept
+{
+    wait_at_gate(context);
+}
+
 void wait_until_completed(
     const RuntimeScheduler& scheduler, std::uint64_t expected)
 {
@@ -125,6 +155,68 @@ void wait_until_completed(
 }
 
 } // namespace
+
+TEST(compat_runtime_scheduler_does_not_report_busy_dispatch_as_idle_timer_wake)
+{
+    RuntimeScheduler scheduler({1, 4, 4});
+    REQUIRE(scheduler.start());
+    const auto gate = std::make_shared<Gate>();
+    GateRelease release {gate};
+    REQUIRE_EQ(scheduler.submit(0, {wait_at_gate, gate}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    wait_until_started(gate);
+    const auto timer = std::make_shared<TimerCompletion>();
+    // The deadline is already due while the shard is inside another job.
+    // Releasing the gate needs no sleep or assumption about host timing.
+    REQUIRE_EQ(scheduler
+                   .schedule_at(0, std::chrono::steady_clock::now(),
+                       {record_regular_timer_completion, timer,
+                           record_timer_completion})
+                   .status,
+        RuntimeScheduler::SubmitStatus::accepted);
+    const auto immediate = std::make_shared<TimerCompletion>();
+    REQUIRE_EQ(scheduler.submit(0,
+                   {record_regular_timer_completion, immediate,
+                       record_timer_completion}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    release_gate(gate);
+    wait_until_complete(timer);
+    wait_until_complete(immediate);
+    REQUIRE(timer->timer_callback);
+    REQUIRE(!timer->idle_wake);
+    REQUIRE(!immediate->timer_callback);
+    scheduler.stop();
+}
+
+TEST(compat_runtime_scheduler_new_overdue_timer_cannot_inherit_an_old_idle_wake)
+{
+    RuntimeScheduler scheduler({1, 4, 4});
+    REQUIRE(scheduler.start());
+    const auto gate = std::make_shared<Gate>();
+    GateRelease release {gate};
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds {5};
+    REQUIRE_EQ(
+        scheduler
+            .schedule_at(0, deadline, {wait_at_gate, gate, wait_at_timer_gate})
+            .status,
+        RuntimeScheduler::SubmitStatus::accepted);
+    wait_until_started(gate);
+    const auto timer = std::make_shared<TimerCompletion>();
+    // Regardless of whether the host waited for the first timer, this timer
+    // was inserted during its callback, after any recorded idle wake.
+    REQUIRE_EQ(scheduler
+                   .schedule_at(0, deadline,
+                       {record_regular_timer_completion, timer,
+                           record_timer_completion})
+                   .status,
+        RuntimeScheduler::SubmitStatus::accepted);
+    release_gate(gate);
+    wait_until_complete(timer);
+    REQUIRE(timer->timer_callback);
+    REQUIRE(!timer->idle_wake);
+    scheduler.stop();
+}
 
 TEST(compat_runtime_scheduler_rejects_invalid_configuration_and_tasks)
 {
