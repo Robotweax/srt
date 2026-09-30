@@ -188,12 +188,29 @@ public:
         std::span<const std::byte> bytes,
         PacketTimestamp timestamp,
         std::uint64_t enqueue_microseconds = 0) noexcept;
-    [[nodiscard]] std::optional<OutboundPacket> next_data_packet() noexcept
+    [[nodiscard]] std::optional<OutboundPacket> next_data_packet(
+        std::uint64_t now_microseconds = 0) noexcept
     {
-        return send_buffer_.next_packet();
+        auto packet = send_buffer_.next_packet();
+        if (packet.has_value() && packet->header.retransmitted) {
+            note_retransmission_sent(packet->header.sequence, now_microseconds);
+        }
+        return packet;
     }
-    // A transport that defers the pacing commit must call pacer.on_packet_sent
-    // only after successful submission, before selecting the next packet.
+    void configure_efficient_retransmission(
+        bool enabled, bool peer_periodic_nak = false) noexcept
+    {
+        efficient_retransmission_ = enabled;
+        peer_periodic_nak_ = peer_periodic_nak;
+    }
+    void note_retransmission_sent(
+        SequenceNumber sequence, std::uint64_t now_microseconds) noexcept
+    {
+        send_buffer_.note_retransmission_sent(sequence, now_microseconds);
+    }
+    // A transport that defers the pacing commit calls pacer.on_packet_sent
+    // after successful submission and note_retransmission_sent for repeated
+    // DATA. A selected retransmission stays outstanding until that commit.
     [[nodiscard]] std::optional<OutboundPacket> next_paced_data_packet(
         PacketPacer& pacer, std::uint64_t now_microseconds,
         std::size_t new_packet_wire_overhead = 0U,
@@ -489,6 +506,8 @@ private:
     std::uint32_t consecutive_early_reorders_ = 0;
     std::uint32_t consecutive_ordered_packets_ = 0;
     bool periodic_nak_enabled_ = true;
+    bool efficient_retransmission_ = false;
+    bool peer_periodic_nak_ = false;
     bool drift_tracer_enabled_ = true;
     PacketFilterPolicy packet_filter_policy_{};
     std::uint64_t drift_correction_count_ = 0;
