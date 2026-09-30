@@ -98,6 +98,7 @@ static_assert((pack_token(8'191, 1ULL << 32U, 13U, wake_marker >> 14U)
 } // namespace
 
 struct SocketReadiness::State {
+    std::size_t arm_failures_for_testing = 0;
     struct Entry {
         std::uintptr_t socket = 0;
         Callback callback;
@@ -402,6 +403,10 @@ bool SocketReadiness::arm(Token token) noexcept
         if (entry.armed) {
             return true;
         }
+        if (state_->arm_failures_for_testing != 0U) {
+            --state_->arm_failures_for_testing;
+            return false;
+        }
 #if !defined(ROBOTWEAX_READINESS_POLL)
         // The kernel queue takes the interest directly; a concurrent wait
         // observes it without being woken.
@@ -418,6 +423,12 @@ bool SocketReadiness::arm(Token token) noexcept
     }
     state_->wake();
     return true;
+}
+
+void SocketReadiness::fail_arms_for_testing(std::size_t count) noexcept
+{
+    std::lock_guard lock(state_->mutex);
+    state_->arm_failures_for_testing = count;
 }
 
 void SocketReadiness::cancel(Token token) noexcept
