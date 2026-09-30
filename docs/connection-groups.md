@@ -80,20 +80,36 @@ A zero source port requests operating-system selection.
 member starts connecting. Each member receives its application token and
 weight. All members of one group use one logical 31-bit initial sequence.
 
-Caller groups accept `SRTO_STREAMID`, `SRTO_LATENCY`, `SRTO_RCVLATENCY`,
-`SRTO_PEERLATENCY`, and `SRTO_MAXBW` before their first connection. These
-values form a template inherited by every new member, including members
-added later. Endpoint-specific options are applied afterwards and can override
-the template. Group getters return the configured template; query a member
-socket for its effective options.
+Group member defaults use the same fixed-schema configuration, value validation,
+normalization and PRE/POST stages as ordinary sockets. Before the first
+connection, a group can configure the supported bandwidth, latency, packet
+filter, payload, transport, buffer, network and security options. New members
+inherit the complete configuration, including members added later. Endpoint
+options apply afterwards and can override those defaults. `SRTO_CONGESTION`,
+`SRTO_RENDEZVOUS`, `SRTO_GROUPCONNECT` and `SRTO_BINDTODEVICE` setters remain
+unsupported on group handles. Accepting an option does not expand the Live-mode
+group data-plane profile described below.
 
-`SRTO_LATENCY` sets both latency directions and its getter returns the receive
-latency. The directional options change only their respective direction.
-Stream IDs are limited to 512 bytes; their getter needs space for an additional
-terminating NUL and returns the length excluding that terminator. Once the
-group has opened, attempts to change these template options fail with
-`SRT_ECONNSOCK`. `SRTO_MAXBW` is inherited as a per-member limit, not an
-aggregate bandwidth cap across the group.
+After a group opens, PRE options fail with `SRT_ECONNSOCK`. POST options, such
+as `SRTO_MAXBW`, `SRTO_INPUTBW`, `SRTO_MININPUTBW`, `SRTO_OHEADBW`,
+`SRTO_LOSSMAXTTL`, `SRTO_SNDDROPDELAY` and `SRTO_DRIFTTRACER`, update current
+members and the defaults for future members. Existing members are validated
+before an update is applied. A member closing concurrently can cause the call
+to fail after another member accepted the update; callers should check errors
+and member values when changing options during teardown. `SRTO_MAXBW` is a
+per-member limit, not an aggregate bandwidth cap.
+
+Group I/O synchronization, send/receive timeouts and Backup stability timeout
+remain owned by the group. `SRTO_STATE` returns the aggregate group state.
+Other supported getters use the first member, including negotiated latency,
+key state and an accepted Stream ID. An empty group returns its configured
+defaults. Mirror groups seed those defaults from the listener, then use their
+accepted member's effective values. Group getters are representative values;
+they do not assert that endpoint overrides are identical on every member.
+
+`SRTO_LATENCY` sets both latency directions and its getter returns receive
+latency. Stream IDs are limited to 512 bytes; their getter needs space for an
+additional terminating NUL and returns the length excluding that terminator.
 
 The first connect on a new group waits for the first usable member when the
 `SRTO_RCVSYN` option requires blocking behavior. Later members may

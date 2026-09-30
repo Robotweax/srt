@@ -247,6 +247,15 @@ int srt_connect_group(
         return SRT_ERROR;
     }
 
+    const auto group_record = GroupRegistry::instance().find(group);
+    if (group_record == nullptr) {
+        set_last_error(SRT_EINVSOCK);
+        return SRT_ERROR;
+    }
+    // Serialize the complete configuration snapshot and member enrollment
+    // with POST updates. Members connect asynchronously; release this lock
+    // before the group-level wait for a usable path.
+    std::unique_lock option_lock(group_record->option_mutex);
     GroupRegistry::ConnectDescription description;
     if (!GroupRegistry::instance().describe_connect(
             group, description)) {
@@ -286,58 +295,10 @@ int srt_connect_group(
         }
 
         bool configured = true;
-        const std::array group_network_options{
-            std::pair{SRTO_IPTTL, description.ip_time_to_live},
-            std::pair{SRTO_IPTOS, description.ip_type_of_service},
-        };
-        for (const auto& [option, option_value] :
-             group_network_options) {
-            if (set_socket_option(*record, option,
-                    &option_value,
-                    static_cast<int>(sizeof(option_value)))
-                == SRT_ERROR) {
-                endpoint.errorcode = last_error().code;
-                configured = false;
-                break;
-            }
-        }
-        record->public_options.ip_type_of_service_explicit =
-            description.ip_type_of_service_explicit;
-        record->public_options.peer_idle_timeout_milliseconds =
-            description.peer_idle_timeout_milliseconds;
+        // Copy the complete validated group configuration before applying
+        // endpoint overrides. Neither snapshot contains runtime ownership.
         record->native_options = description.member_native_options;
-        // Keep public getters aligned with the group template before endpoint
-        // configuration applies any member-specific overrides.
-        record->public_options.receiver_latency_milliseconds =
-            description.member_receiver_latency_milliseconds;
-        record->public_options.peer_latency_milliseconds =
-            description.member_peer_latency_milliseconds;
-        record->public_options.maximum_bandwidth_bytes_per_second =
-            description.member_maximum_bandwidth_bytes_per_second;
-        record->public_options.connection_timeout_milliseconds =
-            description.member_connection_timeout_milliseconds;
-        record->public_options.maximum_payload_size = static_cast<std::int32_t>(
-            record->native_options.maximum_payload_size());
-        record->public_options.stream_id = description.member_stream_id;
-        if (configured) {
-            const bool drift_tracer = description.drift_tracer;
-            const std::int64_t minimum_input =
-                description.minimum_input_bandwidth_bytes_per_second;
-            const std::int32_t minimum_version =
-                description.minimum_peer_srt_version;
-            if (set_socket_option(*record, SRTO_DRIFTTRACER,
-                    &drift_tracer,
-                    static_cast<int>(sizeof(drift_tracer))) == SRT_ERROR
-                || set_socket_option(*record, SRTO_MININPUTBW,
-                    &minimum_input,
-                    static_cast<int>(sizeof(minimum_input))) == SRT_ERROR
-                || set_socket_option(*record, SRTO_MINVERSION,
-                    &minimum_version,
-                    static_cast<int>(sizeof(minimum_version))) == SRT_ERROR) {
-                endpoint.errorcode = last_error().code;
-                configured = false;
-            }
-        }
+        record->public_options = description.member_public_options;
         if (configured && endpoint.config != nullptr) {
             const auto config = endpoint.config->storage.snapshot();
             for (std::size_t option_index = 0;
@@ -430,6 +391,7 @@ int srt_connect_group(
         result = socket;
     }
 
+    option_lock.unlock();
     if (result == SRT_INVALID_SOCK) {
         set_last_error(SRT_ECONNSETUP);
         return SRT_ERROR;

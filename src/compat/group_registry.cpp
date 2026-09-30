@@ -81,34 +81,6 @@ void refresh_member_states(const std::shared_ptr<GroupRecord>& record) noexcept
     }
 }
 
-[[nodiscard]] bool read_boolean_option(
-    const void* value, int value_size, bool& result) noexcept
-{
-    static_assert(sizeof(bool) == 1, "The compatible SRT ABI requires 1-byte bool");
-    if (value == nullptr || value_size < 0) {
-        return false;
-    }
-    if (value_size == static_cast<int>(sizeof(bool))) {
-        unsigned char raw = 0;
-        std::memcpy(&raw, value, sizeof(raw));
-        if (raw > 1U) {
-            return false;
-        }
-        result = raw != 0U;
-        return true;
-    }
-    if (value_size != static_cast<int>(sizeof(std::int32_t))) {
-        return false;
-    }
-    std::int32_t compatible_integer = 0;
-    std::memcpy(&compatible_integer, value, sizeof(compatible_integer));
-    if (compatible_integer != 0 && compatible_integer != 1) {
-        return false;
-    }
-    result = compatible_integer != 0;
-    return true;
-}
-
 void advance_version(std::uint64_t& version) noexcept
 {
     ++version;
@@ -368,15 +340,7 @@ bool GroupRegistry::describe_connect(
     output.peer_idle_timeout_milliseconds =
         record->peer_idle_timeout_milliseconds;
     output.member_native_options = record->member_native_options;
-    output.member_receiver_latency_milliseconds =
-        record->member_receiver_latency_milliseconds;
-    output.member_peer_latency_milliseconds =
-        record->member_peer_latency_milliseconds;
-    output.member_connection_timeout_milliseconds =
-        record->member_connection_timeout_milliseconds;
-    output.member_maximum_bandwidth_bytes_per_second =
-        record->member_maximum_bandwidth_bytes_per_second;
-    output.member_stream_id = record->member_stream_id;
+    output.member_public_options = record->member_public_options;
     return true;
 }
 
@@ -400,8 +364,7 @@ int GroupRegistry::set_connect_callback(
 }
 
 int GroupRegistry::get_io_option(
-    SRTSOCKET group, SRT_SOCKOPT option,
-    void* value, int* value_size) noexcept
+    SRTSOCKET group, SRT_SOCKOPT option, void* value, int* value_size) noexcept
 {
     if (value == nullptr || value_size == nullptr || *value_size < 0) {
         set_last_error(SRT_EINVPARAM);
@@ -412,610 +375,196 @@ int GroupRegistry::get_io_option(
         set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
     }
-    if (option == SRTO_PEERVERSION) {
-        SRTSOCKET first_member = SRT_INVALID_SOCK;
-        {
-            std::lock_guard lock(record->mutex);
-            if (record->closed) {
-                set_last_error(SRT_EINVSOCK);
-                return SRT_ERROR;
-            }
-            if (!record->members.empty()) {
-                first_member = record->members.front().public_data.id;
-            }
-        }
-        std::int32_t peer_version = 0;
-        const auto member =
-            SocketRegistry::instance().find(first_member);
-        if (member != nullptr) {
-            std::lock_guard lock(member->mutex);
-            peer_version = static_cast<std::int32_t>(
-                member->peer_srt_version);
-        }
-        if (*value_size < static_cast<int>(sizeof(peer_version))) {
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
-        }
-        std::memcpy(value, &peer_version, sizeof(peer_version));
-        *value_size = static_cast<int>(sizeof(peer_version));
-        return 0;
-    }
-    if (option == SRTO_STREAMID || option == SRTO_PACKETFILTER
-        || option == SRTO_MAXBW) {
-        std::lock_guard lock(record->mutex);
-        if (record->closed) {
-            set_last_error(SRT_EINVSOCK);
-            return SRT_ERROR;
-        }
-        if (option == SRTO_STREAMID || option == SRTO_PACKETFILTER) {
-            const auto text = option == SRTO_STREAMID
-                ? record->member_stream_id.view()
-                : record->member_native_options.packet_filter();
-            if (*value_size < static_cast<int>(text.size() + 1U)) {
-                set_last_error(SRT_EINVPARAM);
-                return SRT_ERROR;
-            }
-            std::memcpy(value, text.data(), text.size());
-            static_cast<char*>(value)[text.size()] = '\0';
-            *value_size = static_cast<int>(text.size());
-        } else {
-            const auto bandwidth =
-                record->member_maximum_bandwidth_bytes_per_second;
-            if (*value_size < static_cast<int>(sizeof(bandwidth))) {
-                set_last_error(SRT_EINVPARAM);
-                return SRT_ERROR;
-            }
-            std::memcpy(value, &bandwidth, sizeof(bandwidth));
-            *value_size = static_cast<int>(sizeof(bandwidth));
-        }
-        return 0;
-    }
-    if (option == SRTO_MININPUTBW) {
-        std::int64_t minimum_input = 0;
-        {
-            std::lock_guard lock(record->mutex);
-            if (record->closed) {
-                set_last_error(SRT_EINVSOCK);
-                return SRT_ERROR;
-            }
-            minimum_input =
-                record->minimum_input_bandwidth_bytes_per_second;
-        }
-        if (*value_size < static_cast<int>(sizeof(minimum_input))) {
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
-        }
-        std::memcpy(value, &minimum_input, sizeof(minimum_input));
-        *value_size = static_cast<int>(sizeof(minimum_input));
-        return 0;
-    }
-    if (option == SRTO_PASSPHRASE) {
-        set_last_error(SRT_EINVOP);
-        return SRT_ERROR;
-    }
-    if (option == SRTO_PBKEYLEN || option == SRTO_KMREFRESHRATE
-        || option == SRTO_KMPREANNOUNCE || option == SRTO_ENFORCEDENCRYPTION
-#ifdef ENABLE_AEAD_API_PREVIEW
-        || option == SRTO_CRYPTOMODE
-#endif
-    ) {
-        std::int32_t integer_result = 0;
-        bool boolean_result = false;
-        bool boolean_option = option == SRTO_ENFORCEDENCRYPTION;
-        {
-            std::lock_guard lock(record->mutex);
-            if (record->closed) {
-                set_last_error(SRT_EINVSOCK);
-                return SRT_ERROR;
-            }
-            if (option == SRTO_PBKEYLEN) {
-                integer_result =
-                    static_cast<std::int32_t>(record->member_native_options
-                            .configured_encryption_key_length());
-#ifdef ENABLE_AEAD_API_PREVIEW
-            } else if (option == SRTO_CRYPTOMODE) {
-                integer_result = static_cast<std::int32_t>(
-                    record->member_native_options.get(SocketOption::crypto_mode)
-                        .value);
-#endif
-            } else if (option == SRTO_KMREFRESHRATE) {
-                integer_result =
-                    static_cast<std::int32_t>(record->member_native_options
-                            .get(SocketOption::key_refresh_rate_packets)
-                            .value);
-            } else if (option == SRTO_KMPREANNOUNCE) {
-                integer_result =
-                    static_cast<std::int32_t>(record->member_native_options
-                            .get(SocketOption::key_preannouncement_packets)
-                            .value);
-            } else {
-                boolean_result =
-                    record->member_native_options.enforced_encryption();
-            }
-        }
-        const int required = boolean_option
-            ? static_cast<int>(sizeof(boolean_result))
-            : static_cast<int>(sizeof(integer_result));
-        if (*value_size < required) {
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
-        }
-        if (boolean_option) {
-            std::memcpy(value, &boolean_result, sizeof(boolean_result));
-        } else {
-            std::memcpy(value, &integer_result, sizeof(integer_result));
-        }
-        *value_size = required;
-        return 0;
-    }
-
-    std::int32_t result = 0;
-    bool boolean_result = false;
-    bool boolean_option = false;
+    if (option == SRTO_STATE)
+        refresh_member_states(record);
+    SocketRecord configured {SocketRecord::Purpose::option_template};
+    SRTSOCKET first_member_handle = SRT_INVALID_SOCK;
+    const bool group_owned = option == SRTO_SNDSYN || option == SRTO_RCVSYN
+        || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO;
     {
         std::lock_guard lock(record->mutex);
         if (record->closed) {
             set_last_error(SRT_EINVSOCK);
             return SRT_ERROR;
         }
-        switch (option) {
-        case SRTO_LATENCY:
-        case SRTO_RCVLATENCY:
-            result = record->member_receiver_latency_milliseconds;
-            break;
-        case SRTO_PEERLATENCY:
-            result = record->member_peer_latency_milliseconds;
-            break;
-        case SRTO_CONNTIMEO:
-            result = record->member_connection_timeout_milliseconds;
-            break;
-        case SRTO_PAYLOADSIZE:
-            result = static_cast<std::int32_t>(
-                record->member_native_options.maximum_payload_size());
-            break;
-        case SRTO_ROBOTWEAX_CRYPTO_BACKEND:
-            result = static_cast<std::int32_t>(
-                ROBOTWEAX_SRT_COMPILED_CRYPTO_BACKEND);
-            break;
-        case SRTO_ROBOTWEAX_VERSION:
-            result = static_cast<std::int32_t>(ROBOTWEAX_SRT_VERSION_VALUE);
-            break;
-        case SRTO_SNDSYN:
-            boolean_result = record->send_synchronous;
-            boolean_option = true;
-            break;
-        case SRTO_RCVSYN:
-            boolean_result = record->receive_synchronous;
-            boolean_option = true;
-            break;
-        case SRTO_DRIFTTRACER:
-            boolean_result = record->drift_tracer;
-            boolean_option = true;
-            break;
-        case SRTO_SNDTIMEO:
-            result = record->send_timeout_milliseconds;
-            break;
-        case SRTO_RCVTIMEO:
-            result = record->receive_timeout_milliseconds;
-            break;
-        case SRTO_GROUPMINSTABLETIMEO:
-            if (record->type != SRT_GTYPE_BACKUP) {
-                set_last_error(SRT_EINVPARAM);
-                return SRT_ERROR;
-            }
-            result = record->minimum_stability_timeout_milliseconds;
-            break;
-        case SRTO_IPTTL:
-            result = record->ip_time_to_live;
-            break;
-        case SRTO_IPTOS:
-            result = record->ip_type_of_service;
-            break;
-        case SRTO_MINVERSION:
-            result = record->minimum_peer_srt_version;
-            break;
-        case SRTO_PEERIDLETIMEO:
-            result = record->peer_idle_timeout_milliseconds;
-            break;
-        case SRTO_BINDTODEVICE:
-        case SRTO_EVENT:
-        case SRTO_SNDDATA:
-        case SRTO_RCVDATA:
-        case SRTO_GROUPTYPE:
+        if (option == SRTO_BINDTODEVICE || option == SRTO_EVENT
+            || option == SRTO_SNDDATA || option == SRTO_RCVDATA
+            || option == SRTO_GROUPTYPE) {
             set_last_error(SRT_EINVOP);
             return SRT_ERROR;
-        default:
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
+        }
+        if (option == SRTO_STATE || option == SRTO_GROUPMINSTABLETIMEO) {
+            if (option == SRTO_GROUPMINSTABLETIMEO
+                && record->type != SRT_GTYPE_BACKUP) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            const std::int32_t result = option == SRTO_STATE
+                ? static_cast<std::int32_t>(aggregate_state(*record))
+                : record->minimum_stability_timeout_milliseconds;
+            if (*value_size < static_cast<int>(sizeof(result))) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            std::memcpy(value, &result, sizeof(result));
+            *value_size = sizeof(result);
+            return 0;
+        }
+        configured.public_options = record->member_public_options;
+        configured.native_options = record->member_native_options;
+        configured.public_options.send_synchronous = record->send_synchronous;
+        configured.public_options.receive_synchronous =
+            record->receive_synchronous;
+        configured.public_options.send_timeout_milliseconds =
+            record->send_timeout_milliseconds;
+        configured.public_options.receive_timeout_milliseconds =
+            record->receive_timeout_milliseconds;
+        if (!group_owned) {
+            for (const auto& member : record->members) {
+                if (member.public_data.sockstate != SRTS_CLOSED
+                    && member.public_data.sockstate != SRTS_NONEXIST) {
+                    first_member_handle = member.public_data.id;
+                    break;
+                }
+            }
         }
     }
-    const int required = boolean_option
-        ? static_cast<int>(sizeof(boolean_result))
-        : static_cast<int>(sizeof(result));
-    if (*value_size < required) {
-        set_last_error(SRT_EINVPARAM);
-        return SRT_ERROR;
-    }
-    if (boolean_option) {
-        std::memcpy(value, &boolean_result, sizeof(boolean_result));
-    } else {
-        std::memcpy(value, &result, sizeof(result));
-    }
-    *value_size = required;
-    return 0;
+    const auto first_member =
+        SocketRegistry::instance().find(first_member_handle);
+    return first_member != nullptr
+        ? get_socket_option(group, *first_member, option, value, value_size)
+        : get_socket_option(group, configured, option, value, value_size);
 }
 
-int GroupRegistry::set_io_option(
-    SRTSOCKET group, SRT_SOCKOPT option,
+int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
     const void* value, int value_size) noexcept
 {
-    if (value == nullptr) {
-        set_last_error(SRT_EINVPARAM);
-        return SRT_ERROR;
-    }
-    if (option == SRTO_PEERVERSION || option == SRTO_GROUPTYPE
-        || option == SRTO_BINDTODEVICE) {
-        set_last_error(SRT_EINVOP);
-        return SRT_ERROR;
-    }
-    if (option == SRTO_PASSPHRASE || option == SRTO_PBKEYLEN
-        || option == SRTO_KMREFRESHRATE || option == SRTO_KMPREANNOUNCE
-        || option == SRTO_ENFORCEDENCRYPTION
-#ifdef ENABLE_AEAD_API_PREVIEW
-        || option == SRTO_CRYPTOMODE
-#endif
-    ) {
-        const auto record = find(group);
-        if (record == nullptr) {
-            set_last_error(SRT_EINVSOCK);
-            return SRT_ERROR;
-        }
-        std::lock_guard lock(record->mutex);
-        if (record->closed) {
-            set_last_error(SRT_EINVSOCK);
-            return SRT_ERROR;
-        }
-        if (record->opened) {
-            set_last_error(SRT_ECONNSOCK);
-            return SRT_ERROR;
-        }
-        Error result = Error::invalid_state;
-        if (option == SRTO_PASSPHRASE) {
-            const std::string_view passphrase {static_cast<const char*>(value),
-                static_cast<std::size_t>(value_size)};
-            result = record->member_native_options.set_passphrase(passphrase);
-        } else if (option == SRTO_ENFORCEDENCRYPTION) {
-            bool parsed = false;
-            if (read_boolean_option(value, value_size, parsed)) {
-                result = record->member_native_options.set(
-                    SocketOption::enforced_encryption, parsed ? 1 : 0);
-            }
-        } else {
-            std::int32_t parsed = 0;
-            if (value_size == static_cast<int>(sizeof(parsed))) {
-                std::memcpy(&parsed, value, sizeof(parsed));
-                if (parsed >= 0) {
-                    SocketOption native_option =
-                        SocketOption::key_preannouncement_packets;
-                    if (option == SRTO_PBKEYLEN) {
-                        native_option = SocketOption::encryption_key_length;
-                    } else if (option == SRTO_KMREFRESHRATE) {
-                        native_option = SocketOption::key_refresh_rate_packets;
-#ifdef ENABLE_AEAD_API_PREVIEW
-                    } else if (option == SRTO_CRYPTOMODE) {
-                        native_option = SocketOption::crypto_mode;
-#endif
-                    }
-                    result = record->member_native_options.set(
-                        native_option, parsed);
-                }
-            }
-        }
-        if (result != Error::none) {
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
-        }
-        return 0;
-    }
-    if (option == SRTO_DRIFTTRACER || option == SRTO_MININPUTBW
-        || option == SRTO_MINVERSION) {
-        bool drift_tracer = true;
-        std::int64_t minimum_input = 0;
-        std::int32_t minimum_version = 0;
-        bool valid = false;
-        if (option == SRTO_DRIFTTRACER) {
-            valid = read_boolean_option(value, value_size, drift_tracer);
-        } else if (option == SRTO_MININPUTBW
-            && value_size == static_cast<int>(sizeof(minimum_input))) {
-            std::memcpy(&minimum_input, value, sizeof(minimum_input));
-            valid = minimum_input >= 0;
-        } else if (option == SRTO_MINVERSION
-            && value_size == static_cast<int>(sizeof(minimum_version))) {
-            std::memcpy(&minimum_version, value, sizeof(minimum_version));
-            valid = minimum_version >= 0
-                && minimum_version <= 0x00ff'ffff;
-        }
-        if (!valid) {
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
-        }
-        const auto record = find(group);
-        if (record == nullptr) {
-            set_last_error(SRT_EINVSOCK);
-            return SRT_ERROR;
-        }
-        std::vector<SRTSOCKET> members;
-        {
-            std::lock_guard lock(record->mutex);
-            if (record->closed) {
-                set_last_error(SRT_EINVSOCK);
-                return SRT_ERROR;
-            }
-            if (option == SRTO_MINVERSION && record->opened) {
-                set_last_error(SRT_ECONNSOCK);
-                return SRT_ERROR;
-            }
-            try {
-                members.reserve(record->members.size());
-                for (const auto& member : record->members) {
-                    members.push_back(member.public_data.id);
-                }
-            } catch (...) {
-                set_last_error(SRT_ENOBUF);
-                return SRT_ERROR;
-            }
-            if (option == SRTO_DRIFTTRACER) {
-                record->drift_tracer = drift_tracer;
-            } else if (option == SRTO_MININPUTBW) {
-                record->minimum_input_bandwidth_bytes_per_second =
-                    minimum_input;
-            } else {
-                record->minimum_peer_srt_version = minimum_version;
-            }
-        }
-        if (option != SRTO_MINVERSION) {
-            for (const SRTSOCKET member_handle : members) {
-                const auto member =
-                    SocketRegistry::instance().find(member_handle);
-                if (member == nullptr) {
-                    continue;
-                }
-                const void* member_value = option == SRTO_DRIFTTRACER
-                    ? static_cast<const void*>(&drift_tracer)
-                    : static_cast<const void*>(&minimum_input);
-                const int member_size = option == SRTO_DRIFTTRACER
-                    ? static_cast<int>(sizeof(drift_tracer))
-                    : static_cast<int>(sizeof(minimum_input));
-                if (set_socket_option(*member, option,
-                        member_value, member_size) == 0) {
-                    std::shared_ptr<ConnectionRuntime> runtime;
-                    SocketOptions native_options;
-                    {
-                        std::lock_guard member_lock(member->mutex);
-                        runtime = member->runtime;
-                        native_options = member->native_options;
-                    }
-                    if (runtime != nullptr) {
-                        runtime->apply_options(native_options);
-                    }
-                }
-            }
-        }
-        return 0;
-    }
-    // Member-option template: set before connect and inherited by every
-    // member, including members added after the group opens.
-    if (option == SRTO_STREAMID || option == SRTO_LATENCY
-        || option == SRTO_RCVLATENCY || option == SRTO_PEERLATENCY
-        || option == SRTO_MAXBW || option == SRTO_PACKETFILTER
-        || option == SRTO_PAYLOADSIZE || option == SRTO_CONNTIMEO) {
-        StreamId stream_id;
-        std::int32_t latency = 0;
-        std::int64_t maximum_bandwidth = 0;
-        std::int32_t integer_value = 0;
-        if (option == SRTO_STREAMID) {
-            if (value_size < 0
-                || value_size > static_cast<int>(maximum_stream_id_size)) {
-                set_last_error(SRT_EINVPARAM);
-                return SRT_ERROR;
-            }
-            if (!stream_id.assign({static_cast<const char*>(value),
-                    static_cast<std::size_t>(value_size)})) {
-                set_last_error(SRT_EINVPARAM);
-                return SRT_ERROR;
-            }
-        } else if (option == SRTO_PACKETFILTER) {
-            if (value_size <= 0
-                || value_size > static_cast<int>(
-                       maximum_packet_filter_configuration_size)) {
-                set_last_error(SRT_EINVPARAM);
-                return SRT_ERROR;
-            }
-        } else if (option == SRTO_MAXBW) {
-            if (value_size != static_cast<int>(sizeof(maximum_bandwidth))) {
-                set_last_error(SRT_EINVPARAM);
-                return SRT_ERROR;
-            }
-            std::memcpy(&maximum_bandwidth, value, sizeof(maximum_bandwidth));
-            if (maximum_bandwidth < -1) {
-                set_last_error(SRT_EINVPARAM);
-                return SRT_ERROR;
-            }
-        } else if (option == SRTO_PAYLOADSIZE || option == SRTO_CONNTIMEO) {
-            if (value_size != static_cast<int>(sizeof(integer_value))) {
-                set_last_error(SRT_EINVPARAM);
-                return SRT_ERROR;
-            }
-            std::memcpy(&integer_value, value, sizeof(integer_value));
-            if (integer_value < 0
-                || (option == SRTO_PAYLOADSIZE
-                    && integer_value > SRT_LIVE_MAX_PLSIZE)) {
-                set_last_error(SRT_EINVPARAM);
-                return SRT_ERROR;
-            }
-        } else {
-            if (value_size != static_cast<int>(sizeof(latency))) {
-                set_last_error(SRT_EINVPARAM);
-                return SRT_ERROR;
-            }
-            std::memcpy(&latency, value, sizeof(latency));
-            if (latency < 0
-                || latency > std::numeric_limits<std::uint16_t>::max()) {
-                set_last_error(SRT_EINVPARAM);
-                return SRT_ERROR;
-            }
-        }
-        const auto record = find(group);
-        if (record == nullptr) {
-            set_last_error(SRT_EINVSOCK);
-            return SRT_ERROR;
-        }
-        std::lock_guard lock(record->mutex);
-        if (record->closed) {
-            set_last_error(SRT_EINVSOCK);
-            return SRT_ERROR;
-        }
-        if (record->opened) {
-            set_last_error(SRT_ECONNSOCK);
-            return SRT_ERROR;
-        }
-        Error native = Error::none;
-        if (option == SRTO_STREAMID) {
-            record->member_stream_id = std::move(stream_id);
-        } else if (option == SRTO_PACKETFILTER) {
-            native = record->member_native_options.set_packet_filter(
-                {static_cast<const char*>(value),
-                    static_cast<std::size_t>(value_size)});
-        } else if (option == SRTO_PAYLOADSIZE) {
-            const std::int32_t effective = integer_value == 0
-                ? std::min<std::int32_t>(SRT_LIVE_DEF_PLSIZE,
-                      static_cast<std::int32_t>(record->member_native_options
-                              .maximum_payload_size_limit()))
-                : integer_value;
-            native = record->member_native_options.set(
-                SocketOption::maximum_payload_size, effective);
-        } else if (option == SRTO_CONNTIMEO) {
-            record->member_connection_timeout_milliseconds = integer_value;
-        } else if (option == SRTO_MAXBW) {
-            native = record->member_native_options.set(
-                SocketOption::maximum_bandwidth_bytes_per_second,
-                maximum_bandwidth);
-            record->member_maximum_bandwidth_bytes_per_second =
-                maximum_bandwidth;
-        } else {
-            // SRTO_LATENCY sets both directions; SRTO_RCVLATENCY only the
-            // receiver's; SRTO_PEERLATENCY only the peer's.
-            if (option == SRTO_LATENCY || option == SRTO_RCVLATENCY) {
-                native = record->member_native_options.set(
-                    SocketOption::receiver_latency_milliseconds, latency);
-                record->member_receiver_latency_milliseconds = latency;
-            }
-            if (native == Error::none
-                && (option == SRTO_LATENCY || option == SRTO_PEERLATENCY)) {
-                native = record->member_native_options.set(
-                    SocketOption::peer_latency_milliseconds, latency);
-                record->member_peer_latency_milliseconds = latency;
-            }
-        }
-        if (native != Error::none) {
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
-        }
-        return 0;
-    }
-    std::int32_t parsed = 0;
-    if (option == SRTO_SNDSYN || option == SRTO_RCVSYN) {
-        bool boolean_value = false;
-        if (!read_boolean_option(value, value_size, boolean_value)) {
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
-        }
-        parsed = boolean_value ? 1 : 0;
-    } else {
-        if (value_size != static_cast<int>(sizeof(parsed))) {
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
-        }
-        std::memcpy(&parsed, value, sizeof(parsed));
-    }
     const auto record = find(group);
     if (record == nullptr) {
         set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
     }
-    std::lock_guard lock(record->mutex);
-    if (record->closed) {
-        set_last_error(SRT_EINVSOCK);
-        return SRT_ERROR;
+    std::lock_guard option_lock(record->option_mutex);
+    SocketRecord configured {SocketRecord::Purpose::option_template};
+    std::vector<std::pair<SRTSOCKET, std::shared_ptr<SocketRecord>>> members;
+    const bool group_owned = option == SRTO_SNDSYN || option == SRTO_RCVSYN
+        || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO;
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->closed) {
+            set_last_error(SRT_EINVSOCK);
+            return SRT_ERROR;
+        }
+        if (option == SRTO_GROUPMINSTABLETIMEO) {
+            std::int32_t parsed = 0;
+            if (value == nullptr
+                || value_size != static_cast<int>(sizeof(parsed))) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            std::memcpy(&parsed, value, sizeof(parsed));
+            if (record->type != SRT_GTYPE_BACKUP || parsed < 60
+                || parsed > 5'000) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            if (record->opened) {
+                set_last_error(SRT_ECONNSOCK);
+                return SRT_ERROR;
+            }
+            record->minimum_stability_timeout_milliseconds = parsed;
+            return 0;
+        }
+        if (option == SRTO_BINDTODEVICE || option == SRTO_CONGESTION
+            || option == SRTO_GROUPCONNECT || option == SRTO_RENDEZVOUS
+            || option == SRTO_GROUPTYPE) {
+            set_last_error(SRT_EINVOP);
+            return SRT_ERROR;
+        }
+        configured.public_options = record->member_public_options;
+        configured.native_options = record->member_native_options;
+        configured.state = record->opened ? SRTS_CONNECTED : SRTS_INIT;
+        // Use the ordinary socket rules for validation and PRE/POST stages.
+        if (set_socket_option(configured, option, value, value_size)
+            == SRT_ERROR) {
+            return SRT_ERROR;
+        }
+        try {
+            if (!group_owned) {
+                members.reserve(record->members.size());
+                for (const auto& member : record->members) {
+                    members.emplace_back(member.public_data.id, nullptr);
+                }
+            }
+        } catch (...) {
+            set_last_error(SRT_ENOBUF);
+            return SRT_ERROR;
+        }
     }
-    switch (option) {
-    case SRTO_SNDSYN:
-        record->send_synchronous = parsed != 0;
-        break;
-    case SRTO_RCVSYN:
-        record->receive_synchronous = parsed != 0;
-        break;
-    case SRTO_SNDTIMEO:
-        if (parsed < -1) {
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
-        }
-        record->send_timeout_milliseconds = parsed;
-        break;
-    case SRTO_RCVTIMEO:
-        if (parsed < -1) {
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
-        }
-        record->receive_timeout_milliseconds = parsed;
-        break;
-    case SRTO_GROUPMINSTABLETIMEO:
-        if (record->type != SRT_GTYPE_BACKUP
-            || parsed < 60 || parsed > 5'000) {
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
-        }
-        if (record->opened) {
-            set_last_error(SRT_ECONNSOCK);
-            return SRT_ERROR;
-        }
-        record->minimum_stability_timeout_milliseconds = parsed;
-        break;
-    case SRTO_PEERIDLETIMEO:
-        if (parsed < 0) {
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
-        }
-        if (record->opened) {
-            set_last_error(SRT_ECONNSOCK);
-            return SRT_ERROR;
-        }
-        record->peer_idle_timeout_milliseconds = parsed;
-        break;
-    case SRTO_IPTTL:
-    case SRTO_IPTOS:
-        if ((option == SRTO_IPTTL
-                && (parsed < 1 || parsed > 255))
-            || (option == SRTO_IPTOS
-                && (parsed < 0 || parsed > 255))) {
-            set_last_error(SRT_EINVPARAM);
-            return SRT_ERROR;
-        }
-        if (record->opened) {
-            set_last_error(SRT_ECONNSOCK);
-            return SRT_ERROR;
-        }
-        if (option == SRTO_IPTTL) {
-            record->ip_time_to_live = parsed;
-        } else {
-            record->ip_type_of_service = parsed;
-            record->ip_type_of_service_explicit = true;
-        }
-        break;
-    default:
-        set_last_error(SRT_EINVPARAM);
-        return SRT_ERROR;
+    for (auto& [handle, member] : members) {
+        member = SocketRegistry::instance().find(handle);
     }
+    // Preflight every extant member before changing any member or template.
+    // A concurrently closed member may still fail during commit; report that
+    // error rather than claiming all links accepted the update.
+    for (const auto& [handle, member] : members) {
+        if (member == nullptr)
+            continue;
+        SocketRecord candidate {SocketRecord::Purpose::option_template};
+        {
+            std::lock_guard member_lock(member->mutex);
+            candidate.public_options = member->public_options;
+            candidate.native_options = member->native_options;
+            candidate.state = member->state;
+        }
+        if (set_socket_option(candidate, option, value, value_size)
+            == SRT_ERROR) {
+            return SRT_ERROR;
+        }
+    }
+    for (const auto& [handle, member] : members) {
+        if (member == nullptr)
+            continue;
+        if (set_socket_option(*member, option, value, value_size)
+            == SRT_ERROR) {
+            return SRT_ERROR;
+        }
+        std::shared_ptr<ConnectionRuntime> runtime;
+        SocketOptions native_options;
+        {
+            std::lock_guard member_lock(member->mutex);
+            runtime = member->runtime;
+            native_options = member->native_options;
+        }
+        if (runtime != nullptr)
+            runtime->apply_options(native_options);
+    }
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->closed) {
+            set_last_error(SRT_EINVSOCK);
+            return SRT_ERROR;
+        }
+        record->member_public_options = configured.public_options;
+        record->member_native_options = configured.native_options;
+        const auto& options = record->member_public_options;
+        record->send_synchronous = options.send_synchronous;
+        record->receive_synchronous = options.receive_synchronous;
+        record->send_timeout_milliseconds = options.send_timeout_milliseconds;
+        record->receive_timeout_milliseconds =
+            options.receive_timeout_milliseconds;
+        record->drift_tracer = options.drift_tracer;
+        record->minimum_input_bandwidth_bytes_per_second =
+            options.minimum_input_bandwidth_bytes_per_second;
+        record->minimum_peer_srt_version = options.minimum_peer_srt_version;
+        record->peer_idle_timeout_milliseconds =
+            options.peer_idle_timeout_milliseconds;
+        record->ip_time_to_live = options.ip_time_to_live;
+        record->ip_type_of_service = options.ip_type_of_service;
+        record->ip_type_of_service_explicit =
+            options.ip_type_of_service_explicit;
+    }
+    ReadinessSignal::notify(*record->readiness_source);
     return 0;
 }
 
@@ -1062,6 +611,8 @@ bool GroupRegistry::prepare_mirror(
         return false;
     }
 
+    PublicSocketOptions listener_public_options;
+    SocketOptions listener_native_options;
     std::uint64_t bond_scope = 0U;
     bool listener_send_synchronous = true;
     bool listener_receive_synchronous = true;
@@ -1077,6 +628,8 @@ bool GroupRegistry::prepare_mirror(
     }
     {
         std::lock_guard lock(listener_record->mutex);
+        listener_public_options = listener_record->public_options;
+        listener_native_options = listener_record->native_options;
         bond_scope = listener_record->accept_bond_scope;
         listener_send_synchronous =
             listener_record->public_options.send_synchronous;
@@ -1150,6 +703,15 @@ bool GroupRegistry::prepare_mirror(
         prepared->peer_group = peer_group;
         prepared->mirror_listener = listener;
         prepared->mirror_bond_scope = bond_scope;
+        prepared->member_public_options = listener_public_options;
+        prepared->member_native_options = listener_native_options;
+        prepared->peer_idle_timeout_milliseconds =
+            listener_public_options.peer_idle_timeout_milliseconds;
+        prepared->ip_time_to_live = listener_public_options.ip_time_to_live;
+        prepared->ip_type_of_service =
+            listener_public_options.ip_type_of_service;
+        prepared->ip_type_of_service_explicit =
+            listener_public_options.ip_type_of_service_explicit;
         prepared->send_synchronous = listener_send_synchronous;
         prepared->receive_synchronous = listener_receive_synchronous;
         prepared->send_timeout_milliseconds =
@@ -1216,6 +778,8 @@ bool GroupRegistry::add_member(
             return false;
         }
         const bool was_empty = record->members.empty();
+        const bool was_terminal =
+            record->opened && aggregate_state(*record) == SRTS_BROKEN;
         GroupMemberSnapshot member;
         member.generation = record->next_member_generation++;
         if (record->next_member_generation == 0U) {
@@ -1229,6 +793,12 @@ bool GroupRegistry::add_member(
         member.public_data.result = SRT_SUCCESS;
         member.public_data.token = token;
         record->members.push_back(member);
+        if (was_terminal) {
+            // A pending replacement clears the group's terminal OUT/ERR
+            // level even if it fails before the next epoll state sample.
+            record->readiness_source->note_not_ready(
+                SRT_EPOLL_OUT | SRT_EPOLL_ERR);
+        }
         ++record->snapshot_version;
         group_generation = record->generation;
         member_generation = member.generation;

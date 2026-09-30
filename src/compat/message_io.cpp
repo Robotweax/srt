@@ -982,6 +982,11 @@ int send_group_message_implementation(
             failed_members.push_back({member, result});
         }
 
+        if (!succeeded && would_block) {
+            // A replay/cursor preparation can block before queue_group_message
+            // observes the capacity shortage. Preserve that group low epoch.
+            group->readiness_source->note_not_ready(SRT_EPOLL_OUT);
+        }
         if (succeeded) {
             bool committed = false;
             {

@@ -162,6 +162,15 @@ For event-driven applications, use the complete `srt_epoll_*` family. Register
 the desired event mask, drain edge-triggered readiness until the operation is
 retryable, and release the epoll handle with `srt_epoll_release()`.
 
+`OUT` reports available send capacity; a larger message can still return
+`SRT_EASYNCSND` while some packet slots are free. That failed send records a
+low epoch so a later capacity notification can produce another `OUT` edge.
+Group `OUT` watches also retain member buffer-fill epochs, and a pending
+replacement member clears the group's terminal `OUT`/`ERR` epoch. These
+transitions remain observable when fill/drain or replacement/failure completes
+between two epoll waits. Group `IN` continues to follow its logical receive
+prefix rather than individual member queues.
+
 Connection callbacks run asynchronously and must return quickly. Do not block
 them on application work. Listener callbacks may inspect the provisional
 socket and set allowed connection-stage options before admission.

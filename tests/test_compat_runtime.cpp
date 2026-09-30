@@ -6338,6 +6338,20 @@ TEST(compat_runtime_rejects_malformed_controls_without_refreshing_liveness)
         }
     }
 
+    std::array<std::byte, 8> drop_payload {};
+    const SequenceNumber distant {
+        3'200U + SequenceNumber::half_range / 2U + 1U};
+    REQUIRE(encode_drop_request_payload(
+        {.message_number = 0, .sequences = {distant, distant}}, drop_payload));
+    PacketView drop;
+    drop.kind = PacketKind::control;
+    drop.control.type = ControlType::drop_request;
+    drop.payload = drop_payload;
+    now = 4'000;
+    runtime.process_packet(drop, peer);
+    REQUIRE(!runtime.broken());
+    REQUIRE_EQ(runtime.response_health().last_response_microseconds, 0U);
+
     now = 5'001;
     (void)runtime.poll();
     REQUIRE(runtime.broken());

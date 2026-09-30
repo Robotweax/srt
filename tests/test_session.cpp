@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <limits>
 #include <optional>
+#include <vector>
 
 using namespace robotweax::srt;
 
@@ -34,6 +35,245 @@ PacketView encode_and_decode(const ReliabilityAction& action,
 }
 
 } // namespace
+
+TEST(session_drop_request_rejects_ambiguous_progress_transactionally)
+{
+    constexpr auto limit = SequenceNumber::half_range / 2U;
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 5U}}) {
+        const std::array ranges {
+            SequenceRange {initial, initial.advanced(limit)},
+            SequenceRange {
+                initial.advanced(limit + 2U), initial.advanced(limit + 2U)},
+            SequenceRange {
+                initial.advanced(SequenceNumber::modulus - limit - 2U),
+                initial.advanced(SequenceNumber::mask)},
+        };
+        for (const bool deferred : {false, true}) {
+            for (const auto range : ranges) {
+                ReliabilitySession receiver {{
+                    .peer_initial_sequence = initial,
+                    .send_capacity_packets = 8,
+                    .receive_capacity_packets = 8,
+                }};
+                receiver.configure_live(
+                    {
+                        .receive_tsbpd = deferred,
+                        .too_late_packet_drop = deferred,
+                        .receive_delay_milliseconds = 100,
+                    },
+                    1'000, PacketTimestamp {0});
+                const std::array payload {std::byte {'p'}};
+                PacketView data;
+                data.kind = PacketKind::data;
+                data.data.sequence = initial;
+                data.data.message_number = 1;
+                data.data.boundary = MessageBoundary::solo;
+                data.payload = payload;
+                REQUIRE(receiver.receive(data, 1'001));
+                const auto before = receiver.next_receive_delivery_time();
+                std::array<std::byte, 64> storage {};
+                auto packet = encode_and_decode(
+                    {
+                        .kind = ReliabilityActionKind::drop_request,
+                        .drop = {0, range},
+                    },
+                    storage);
+                packet.control.timestamp = PacketTimestamp {0x7fff'fff0U};
+                const auto result = receiver.receive(packet, 1'002);
+                REQUIRE_EQ(result.error, Error::invalid_control_payload);
+                REQUIRE_EQ(result.actions.size, 0U);
+                REQUIRE_EQ(result.receiver_drop_packets, 0U);
+                REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(),
+                    initial.next());
+                REQUIRE_EQ(
+                    receiver.receive_buffer().first_stored_sequence(), initial);
+                REQUIRE_EQ(receiver.receive_buffer().occupied(), 1U);
+                REQUIRE_EQ(receiver.next_receive_delivery_time(), before);
+            }
+        }
+    }
+}
+
+TEST(session_drop_request_preserves_large_ttl_and_group_sequence_skips)
+{
+    constexpr std::uint32_t count = 5'000;
+    for (const auto initial :
+        {SequenceNumber {101}, SequenceNumber {SequenceNumber::mask - 100U}}) {
+        for (const bool group_skip : {false, true}) {
+            ReliabilitySession sender {{
+                .local_initial_sequence = initial,
+                .send_capacity_packets = count,
+                .receive_capacity_packets = 8,
+                .maximum_payload_size = 1,
+            }};
+            ReliabilityActions drops;
+            if (group_skip) {
+                REQUIRE_EQ(sender.skip_group_sequences(initial.advanced(count)),
+                    Error::none);
+                drops = sender.take_pending_drop_requests();
+            } else {
+                const std::vector payload(count, std::byte {'t'});
+                REQUIRE_EQ(sender.queue_message(
+                               payload, PacketTimestamp {0}, true, 0, 1),
+                    Error::none);
+                drops = sender.drop_expired_sender_message(2);
+            }
+            REQUIRE_EQ(drops.size, 1U);
+            REQUIRE_EQ(drops.values[0].drop.sequences.first, initial);
+            REQUIRE_EQ(drops.values[0].drop.sequences.last,
+                initial.advanced(count - 1U));
+            for (const bool deferred : {false, true}) {
+                ReliabilitySession receiver {{
+                    .peer_initial_sequence = initial,
+                    .send_capacity_packets = 8,
+                    .receive_capacity_packets = 8,
+                }};
+                receiver.configure_live(
+                    {
+                        .receive_tsbpd = deferred,
+                        .too_late_packet_drop = deferred,
+                        .receive_delay_milliseconds = 100,
+                    },
+                    1'000, PacketTimestamp {0});
+                std::array<std::byte, 64> storage {};
+                auto packet = encode_and_decode(drops.values[0], storage);
+                packet.control.timestamp = PacketTimestamp {20};
+                REQUIRE(receiver.receive(packet, 1'020));
+                REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(),
+                    initial.advanced(count));
+                if (deferred) {
+                    REQUIRE_EQ(
+                        receiver.receive_buffer().first_stored_sequence(),
+                        initial);
+                    REQUIRE_EQ(receiver.drop_too_late_receiver(101'020)
+                                   .receiver_drop_packets,
+                        count);
+                }
+                REQUIRE_EQ(receiver.receive_buffer().first_stored_sequence(),
+                    initial.advanced(count));
+            }
+        }
+    }
+}
+
+TEST(session_drop_request_full_grace_queue_is_nonmutating_backpressure)
+{
+    const SequenceNumber initial {100};
+    ReliabilitySession receiver {{
+        .peer_initial_sequence = initial,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 2,
+    }};
+    receiver.configure_live(
+        {
+            .receive_tsbpd = true,
+            .too_late_packet_drop = true,
+            .receive_delay_milliseconds = 100,
+        },
+        1'000, PacketTimestamp {0});
+    std::array<std::byte, 64> storage {};
+    for (std::uint32_t index : {0U, 2U}) {
+        const auto sequence = initial.advanced(index);
+        auto packet = encode_and_decode(
+            {
+                .kind = ReliabilityActionKind::drop_request,
+                .drop = {0, {sequence, sequence}},
+            },
+            storage);
+        packet.control.timestamp = PacketTimestamp {20 + index};
+        REQUIRE(receiver.receive(packet, 1'030));
+    }
+    const auto before = receiver.next_receive_delivery_time();
+    auto packet = encode_and_decode(
+        {
+            .kind = ReliabilityActionKind::drop_request,
+            .drop = {0, {initial.next(), initial.next()}},
+        },
+        storage);
+    for (const auto timestamp : {0x7fff'fff0U, 0xffff'ffe0U}) {
+        packet.control.timestamp = PacketTimestamp {timestamp};
+        const auto full = receiver.receive(packet, 1'031);
+        REQUIRE_EQ(full.error, Error::would_block);
+        REQUIRE_EQ(full.actions.size, 0U);
+        REQUIRE_EQ(
+            receiver.receive_buffer().next_ack_sequence(), initial.next());
+        REQUIRE_EQ(receiver.next_receive_delivery_time(), before);
+    }
+    packet = encode_and_decode(
+        {
+            .kind = ReliabilityActionKind::drop_request,
+            .drop = {0, {initial, initial}},
+        },
+        storage);
+    packet.control.timestamp = PacketTimestamp {90};
+    REQUIRE(receiver.receive(packet, 1'032));
+    REQUIRE_EQ(receiver.next_receive_delivery_time(), before);
+    const std::array payload {std::byte {'p'}};
+    PacketView data;
+    data.kind = PacketKind::data;
+    data.data.sequence = initial.next();
+    data.data.message_number = 1;
+    data.data.boundary = MessageBoundary::solo;
+    data.data.timestamp = PacketTimestamp {40};
+    data.payload = payload;
+    REQUIRE(receiver.receive(data, 1'040));
+    std::array<std::byte, 1> output {};
+    REQUIRE_EQ(
+        receiver.drop_too_late_receiver(101'040).receiver_drop_packets, 2U);
+    REQUIRE(receiver.pop_message_at(output, 101'040));
+    REQUIRE_EQ(output, payload);
+    REQUIRE(!receiver.next_receive_delivery_time());
+}
+
+TEST(session_drop_request_accepts_the_supported_sequence_boundaries)
+{
+    constexpr auto limit = SequenceNumber::half_range / 2U;
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 5U}}) {
+        ReliabilitySession receiver {{
+            .peer_initial_sequence = initial,
+            .send_capacity_packets = 8,
+            .receive_capacity_packets = 8,
+        }};
+        std::array<std::byte, 64> storage {};
+        const auto packet = encode_and_decode(
+            {
+                .kind = ReliabilityActionKind::drop_request,
+                .drop = {0, {initial, initial.advanced(limit - 1U)}},
+            },
+            storage);
+        const auto result = receiver.receive(packet, 1);
+        REQUIRE(result);
+        REQUIRE_EQ(result.receiver_drop_packets, limit);
+        REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(),
+            initial.advanced(limit));
+        REQUIRE_EQ(receiver.receive_buffer().first_stored_sequence(),
+            initial.advanced(limit));
+    }
+}
+
+TEST(session_group_sequence_skip_rejects_an_unsupported_drop_before_mutation)
+{
+    constexpr auto limit = SequenceNumber::half_range / 2U;
+    const SequenceNumber initial {SequenceNumber::mask - 5U};
+    ReliabilitySession sender {{
+        .local_initial_sequence = initial,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+    }};
+    REQUIRE_EQ(sender.skip_group_sequences(initial.advanced(limit + 1U)),
+        Error::invalid_state);
+    REQUIRE_EQ(sender.send_buffer().next_sequence(), initial);
+    REQUIRE(!sender.has_pending_drop_requests());
+    REQUIRE_EQ(
+        sender.skip_group_sequences(initial.advanced(limit)), Error::none);
+    const auto drops = sender.take_pending_drop_requests();
+    REQUIRE_EQ(drops.size, 1U);
+    REQUIRE_EQ(drops.values[0].drop.sequences.first, initial);
+    REQUIRE_EQ(
+        drops.values[0].drop.sequences.last, initial.advanced(limit - 1U));
+}
 
 TEST(reliability_session_recovers_a_lost_fragment_and_completes_ack_cycle)
 {

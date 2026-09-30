@@ -526,6 +526,7 @@ private:
     std::shared_ptr<ReadinessSource> group_readiness_source_;
     std::shared_ptr<ReadinessSource> readiness_source_ =
         std::make_shared<ReadinessSource>();
+    void note_not_ready(int events) noexcept;
     void notify_readiness() noexcept;
     struct FecReceiveBatch {
         Error error = Error::none;
