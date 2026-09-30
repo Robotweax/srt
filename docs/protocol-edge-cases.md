@@ -75,6 +75,36 @@ from the local `SRTO_FC` receive-window configuration.
 - Ranges older than retained sender history produce bounded DROPREQ responses;
   a range crossing the retention boundary is split with wrap-safe semantics.
 
+## DROPREQ admission and grace storage
+
+A DROPREQ identifies abandoned sequences, including a message whose queued
+packets expired before reaching the wire. A group member can also use DROPREQ
+to skip its unused part of the group sequence space. Such a range can exceed
+the receiver's packet-storage capacity. Receiver admission therefore does not
+require prior DATA for every abandoned sequence or impose a storage-window
+limit on the range.
+
+Robotweax applies an additional sequence-sanity policy: the inclusive range
+contains at most `2^29` packets, and each endpoint must be within `2^29`
+positions, forward or backward, of the current cumulative ACK boundary. This
+quarter-cycle bound is an implementation policy, not a new wire field. Invalid
+ranges leave receive slots, ACK/loss state and the TSBPD timestamp clock
+unchanged. Locally generated group skips obey the same range-length limit and
+fail before changing the sender sequence or queuing a control.
+
+Live receivers can retain a bounded number of accepted ranges until their
+playout grace expires. If this preallocated queue is full, an additional range
+returns internal `would_block` before clock or reliability mutation; the
+runtime ignores that control without terminating the connection or refreshing
+peer activity. Duplicate ranges retain their original deadline and need no
+additional queue entry. Grace expiry frees space for later controls or retries.
+
+DROPREQ is not cryptographically authenticated by the SRT control format. A
+plausible range from an on-path attacker or a spoofed peer endpoint remains
+indistinguishable from a legitimate TTL or group notification. Sequence checks
+limit implausible input; they do not prove the sender transmitted or abandoned
+the claimed packets. See the [security model](../SECURITY.md#runtime-key-material).
+
 ## HSv5 version and downgrade policy
 
 HSv5 discovery starts with a handshake packet whose numeric version is `4`.
