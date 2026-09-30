@@ -4,6 +4,7 @@
 #include "compat/group_replay_buffer.hpp"
 #include "compat/epoll.hpp"
 #include "compat/group_registry.hpp"
+#include "compat/message_io.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/transport_runtime.hpp"
 #include "robotweax/srt/codec.hpp"
@@ -733,6 +734,70 @@ TEST(compat_group_listener_option_is_boolean_and_pre_connection)
         record->state = SRTS_INIT;
     }
     REQUIRE_EQ(srt_close(listener), 0);
+}
+
+TEST(compat_group_receive_snapshots_preserve_members_across_inline_boundary)
+{
+    for (const std::size_t count : {16U, 17U, 32U}) {
+        const auto group = srt_create_group(SRT_GTYPE_BROADCAST);
+        REQUIRE(group != SRT_INVALID_SOCK);
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        constexpr std::uint32_t initial = 500;
+        {
+            std::lock_guard lock(record->mutex);
+            record->next_receive_sequence = initial;
+        }
+        const bool asynchronous = false;
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_RCVSYN, &asynchronous,
+                       static_cast<int>(sizeof(asynchronous))),
+            0);
+        std::vector<SRTSOCKET> sockets;
+        std::vector<std::shared_ptr<ConnectionRuntime>> runtimes;
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto socket = srt_create_socket();
+            REQUIRE(socket != SRT_INVALID_SOCK);
+            sockets.push_back(socket);
+            runtimes.push_back(attach_group_runtime(group, socket, initial));
+        }
+        REQUIRE(!robotweax::srt::compat::group_receive_readiness(record)
+                .message_ready);
+        const std::array<std::byte, 4> payload {
+            std::byte {1}, std::byte {2}, std::byte {3}, std::byte {4}};
+        robotweax::srt::PacketView packet;
+        packet.kind = robotweax::srt::PacketKind::data;
+        packet.data.sequence = SequenceNumber {initial};
+        packet.data.message_number = 1;
+        packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+        packet.data.in_order = true;
+        packet.payload = payload;
+        // A ready member beyond the inline boundary must remain selectable.
+        runtimes.back()->process_packet(packet, IpEndpoint::loopback(9'000));
+        REQUIRE(robotweax::srt::compat::group_receive_readiness(record)
+                .message_ready);
+        std::array<char, 4> received {};
+        REQUIRE_EQ(srt_recvmsg2(group, received.data(),
+                       static_cast<int>(received.size()), nullptr),
+            4);
+        REQUIRE_EQ(
+            std::memcmp(received.data(), payload.data(), payload.size()), 0);
+        REQUIRE(!robotweax::srt::compat::group_receive_readiness(record)
+                .message_ready);
+        REQUIRE_EQ(srt_close(sockets.back()), 0);
+        packet.data.sequence = packet.data.sequence.next();
+        packet.data.message_number = 2;
+        runtimes.front()->process_packet(packet, IpEndpoint::loopback(9'000));
+        // In particular 17 -> 16 members changes storage without retaining a
+        // pointer into the previous snapshot or losing the new cursor.
+        REQUIRE(robotweax::srt::compat::group_receive_readiness(record)
+                .message_ready);
+        REQUIRE_EQ(srt_recvmsg2(group, received.data(),
+                       static_cast<int>(received.size()), nullptr),
+            4);
+        REQUIRE_EQ(
+            std::memcmp(received.data(), payload.data(), payload.size()), 0);
+        REQUIRE_EQ(srt_close(group), 0);
+    }
 }
 
 TEST(compat_group_registry_scopes_mirrors_to_the_listener)
