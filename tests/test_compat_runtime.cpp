@@ -744,6 +744,139 @@ TEST(compat_dispatcher_many_channels_share_fixed_scheduler_shards)
     scheduler->stop();
 }
 
+TEST(compat_channel_pacing_wait_excludes_time_spent_in_the_poll_slice)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    std::uint64_t now = 1'000;
+    std::size_t sent = 0;
+    struct SendClock {
+        std::uint64_t* now;
+        std::size_t* sent;
+    } clock {&now, &sent};
+    channel->set_send_hook_for_testing(
+        [](std::span<const std::byte> bytes, IpEndpoint,
+            void* context) noexcept -> UdpIoResult {
+            auto& clock = *static_cast<SendClock*>(context);
+            *clock.now += 400;
+            ++*clock.sent;
+            return {.bytes_transferred = bytes.size()};
+        },
+        &clock);
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_payload_size, 16), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_bandwidth_bytes_per_second, 16'000),
+        Error::none);
+    auto runtime = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.channel = channel,
+            .peer = IpEndpoint::loopback(9'020),
+            .peer_socket_id = 77,
+            .initial_sequence = SequenceNumber {900},
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+            .now_function = injected_now,
+            .now_context = &now});
+    REQUIRE(channel->register_connection(77, runtime));
+    const std::array<std::byte, 16> payload {};
+    for (unsigned i = 0; i < 2; ++i) {
+        REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, 0).status,
+            MessageIoStatus::success);
+    }
+    const auto poll = channel->poll_connections_for_testing(
+        std::nullopt,
+        [](void* context) noexcept {
+            return ConnectionRuntime::Clock::time_point {}
+            + std::chrono::microseconds {*static_cast<std::uint64_t*>(context)};
+        },
+        &now);
+    REQUIRE_EQ(sent, 1U);
+    REQUIRE_EQ(now, 1'400U);
+    REQUIRE(!poll.immediate_work);
+    REQUIRE_EQ(poll.next_work_delay, std::chrono::microseconds {1'600});
+    REQUIRE_EQ(poll.next_work_deadline,
+        ConnectionRuntime::Clock::time_point {}
+            + std::chrono::microseconds {3'000});
+    channel->unregister_connection(77);
+}
+
+TEST(compat_runtime_pacing_deadline_retains_the_protocol_clock_origin)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_payload_size, 16), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_bandwidth_bytes_per_second, 16'000),
+        Error::none);
+    // A future origin keeps protocol time at zero without a wall-clock race.
+    const auto origin =
+        ConnectionRuntime::Clock::now() + std::chrono::seconds {1};
+    ConnectionRuntime runtime {{.channel = channel,
+        .peer = IpEndpoint::loopback(9'020),
+        .peer_socket_id = 77,
+        .initial_sequence = SequenceNumber {900},
+        .options = options,
+        .origin = origin}};
+    const std::array<std::byte, 16> payload {};
+    for (unsigned i = 0; i < 2; ++i) {
+        REQUIRE_EQ(runtime.queue_message(payload, 0, true, false, 0).status,
+            MessageIoStatus::success);
+    }
+    const auto result = runtime.poll();
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
+    REQUIRE_EQ(result.next_work_delay, std::chrono::microseconds {2'000});
+    REQUIRE_EQ(
+        result.next_work_deadline, origin + std::chrono::microseconds {2'000});
+}
+
+TEST(compat_runtime_receive_snapshot_preserves_tsbpd_and_retirement)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    std::uint64_t now = 1'000;
+    const auto peer = IpEndpoint::loopback(9'022);
+    ConnectionRuntime runtime {{.channel = channel,
+        .peer = peer,
+        .peer_socket_id = 77,
+        .initial_sequence = SequenceNumber {900},
+        .negotiated_options = {.receive_tsbpd = true,
+            .receive_delay_milliseconds = 20},
+        .origin = ConnectionRuntime::Clock::now(),
+        .now_function = injected_now,
+        .now_context = &now}};
+    const std::array payload {std::byte {'a'}};
+    runtime.process_packet({.kind = PacketKind::data,
+                               .data = {.sequence = SequenceNumber {900},
+                                   .boundary = MessageBoundary::solo,
+                                   .in_order = true,
+                                   .message_number = 1,
+                                   .timestamp = PacketTimestamp {1'000}},
+                               .payload = payload},
+        peer);
+    const auto waiting = runtime.receive_snapshot(SequenceNumber {900}, false);
+    REQUIRE(waiting.buffered);
+    REQUIRE(waiting.complete_expected);
+    REQUIRE(!waiting.readable_sequence.has_value());
+    REQUIRE(waiting.next_delivery.has_value());
+    now = 30'000;
+    const auto ready = runtime.receive_snapshot(SequenceNumber {900}, false);
+    REQUIRE_EQ(ready.readable_sequence, SequenceNumber {900});
+    REQUIRE_EQ(ready.floor_sequence, SequenceNumber {900});
+    runtime.mark_broken(0);
+    REQUIRE(runtime.terminal());
+    const auto terminal = runtime.receive_snapshot(SequenceNumber {900}, false);
+    REQUIRE_EQ(terminal.readable_sequence, SequenceNumber {900});
+    const auto retired = runtime.receive_snapshot(SequenceNumber {901}, true);
+    REQUIRE_EQ(retired.floor_sequence, SequenceNumber {901});
+    REQUIRE(!retired.buffered);
+    REQUIRE(!retired.complete_expected);
+    REQUIRE(!retired.readable_sequence.has_value());
+}
+
 TEST(compat_runtime_reports_the_next_paced_send_deadline)
 {
     const auto channel = std::make_shared<DatagramChannel>();
