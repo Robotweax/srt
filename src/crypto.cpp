@@ -836,6 +836,9 @@ Error CryptoSession::accept_key_material(
         for (const auto known_selector :
             {EncryptionKey::even, EncryptionKey::odd}) {
             const auto* history = receive_history(known_selector);
+            if (history == nullptr) {
+                return true;
+            }
             for (std::size_t index = 0; index < history->size; ++index) {
                 if (conflicts(
                         known_selector, history->generations[index].slot)) {
