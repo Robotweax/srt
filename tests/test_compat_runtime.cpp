@@ -7818,6 +7818,27 @@ TEST(compat_channel_fairness_preserves_deadlines_across_continuations)
 }
 
 #if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
+TEST(compat_channel_busy_timer_dispatch_leaves_coarse_fallback)
+{
+    DatagramChannel channel;
+    for (unsigned index = 0; index < TimerWakeMonitor::late_streak_to_enter;
+        ++index) {
+        channel.observe_timer_wake_for_testing(2'500);
+    }
+    REQUIRE(channel.coarse_timer_mode_for_testing());
+    channel.observe_timer_wake_for_testing(std::nullopt);
+    REQUIRE(!channel.coarse_timer_mode_for_testing());
+    // Busy dispatch also clears the old late streak. A fresh coarse host
+    // still enters fallback after the required independent clock samples.
+    for (unsigned index = 1; index < TimerWakeMonitor::late_streak_to_enter;
+        ++index) {
+        channel.observe_timer_wake_for_testing(2'500);
+        REQUIRE(!channel.coarse_timer_mode_for_testing());
+    }
+    channel.observe_timer_wake_for_testing(2'500);
+    REQUIRE(channel.coarse_timer_mode_for_testing());
+}
+
 TEST(compat_channel_coarse_timer_probes_under_sustained_paced_send)
 {
     auto scheduler = std::make_shared<RuntimeScheduler>(
