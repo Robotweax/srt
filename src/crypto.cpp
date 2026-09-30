@@ -521,7 +521,34 @@ Error CryptoSession::install_receive_key(EncryptionKey key_selection,
     if (result != Error::none) {
         return result;
     }
-    if (current->ready()) {
+    // A fresh companion key can authorize restoring a displaced generation.
+    // Remove the restored key and all newer intervening generations from the
+    // history: their ceilings would otherwise route its retransmissions to
+    // the key that displaced it. Older legitimate generations stay available.
+    std::size_t restored = history->size;
+    for (std::size_t index = 0; index < history->size; ++index) {
+        const auto& retired = history->generations[index].slot;
+        if (retired.ready() && retired.mode == mode
+            && retired.key_length == key.size()
+            && std::equal(key.begin(), key.end(), retired.key.begin())
+            && std::equal(salt.begin(), salt.end(), retired.salt.begin())) {
+            restored = index;
+            break;
+        }
+    }
+    if (restored != history->size) {
+        const std::size_t removed = restored + 1U;
+        for (std::size_t index = 0; index < removed; ++index) {
+            erase_slot(history->generations[index].slot);
+        }
+        for (std::size_t index = removed; index < history->size; ++index) {
+            history->generations[index - removed] =
+                std::move(history->generations[index]);
+            erase_slot(history->generations[index].slot);
+        }
+        history->size -= removed;
+        erase_slot(*current);
+    } else if (current->ready()) {
         remember_receive_key(*history, *current);
     } else {
         erase_slot(*current);
@@ -788,11 +815,39 @@ Error CryptoSession::accept_key_material(
     }
     std::array<std::byte, srt_salt_size> salt {};
     std::copy(material.salt.begin(), material.salt.end(), salt.begin());
-    // A retired selector must never replace the current receive key. A
-    // legitimate rotation can nevertheless contain one retired selector
-    // after foreign key material displaced both current selectors. Accept
-    // that request only when its other selector is genuinely new, and install
-    // only the non-retired key. A stale one- or two-key request still fails.
+    // Wrapped key bytes authenticate neither the complete salt nor the
+    // selector. A known key must retain its original receive identity across
+    // current slots and both bounded histories.
+    const auto changes_identity = [&](EncryptionKey selector,
+                                      std::span<const std::byte> key) {
+        const auto conflicts = [&](EncryptionKey known_selector,
+                                   const KeySlot& known) {
+            return known.ready() && known.key_length == key.size()
+                && std::equal(key.begin(), key.end(), known.key.begin())
+                && (selector != known_selector
+                    || known.mode != selection.effective_mode
+                    || !std::equal(
+                        salt.begin(), salt.end(), known.salt.begin()));
+        };
+        if (conflicts(EncryptionKey::even, receive_even_)
+            || conflicts(EncryptionKey::odd, receive_odd_)) {
+            return true;
+        }
+        for (const auto known_selector :
+            {EncryptionKey::even, EncryptionKey::odd}) {
+            const auto* history = receive_history(known_selector);
+            if (history == nullptr) {
+                return true;
+            }
+            for (std::size_t index = 0; index < history->size; ++index) {
+                if (conflicts(
+                        known_selector, history->generations[index].slot)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
     const bool replays_even = (material.keys == EncryptionKey::even
                                   || material.keys == EncryptionKey::reserved)
         && is_retired_receive_key(EncryptionKey::even,
@@ -823,6 +878,15 @@ Error CryptoSession::accept_key_material(
     const auto odd_key = std::span {plaintext}.subspan(
         material.keys == EncryptionKey::reserved ? material.key_length : 0U,
         material.key_length);
+    if ((has_even && changes_identity(EncryptionKey::even, even_key))
+        || (has_odd && changes_identity(EncryptionKey::odd, odd_key))
+        || (has_even && has_odd
+            && std::equal(even_key.begin(), even_key.end(), odd_key.begin()))) {
+        provider_.secure_erase(kek);
+        provider_.secure_erase(plaintext);
+        provider_.secure_erase(salt);
+        return reject(Error::invalid_key_material, CryptoState::bad_secret);
+    }
     const bool fresh_even = has_even && !replays_even
         && !matches_current(EncryptionKey::even, even_key);
     const bool fresh_odd = has_odd && !replays_odd
@@ -833,11 +897,11 @@ Error CryptoSession::accept_key_material(
         provider_.secure_erase(salt);
         return reject(Error::invalid_key_material, CryptoState::bad_secret);
     }
-    if (has_even && !replays_even) {
+    if (has_even) {
         result = install_receive_key(
             EncryptionKey::even, even_key, salt, selection.effective_mode);
     }
-    if (result == Error::none && has_odd && !replays_odd) {
+    if (result == Error::none && has_odd) {
         result = install_receive_key(
             EncryptionKey::odd, odd_key, salt, selection.effective_mode);
     }

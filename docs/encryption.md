@@ -326,9 +326,12 @@ retained for delayed packets. Known delayed KMREQ duplicates can be answered
 again without reinstalling old keys. A request containing only retired
 selector keys is rejected while those generations remain in the bounded key
 history (four per selector). If a two-selector request contains one retired
-key and one fresh key, only the fresh key is installed. This lets a legitimate
-rotation recover after foreign material displaced the prior current keys,
-without reinstalling a retired selector. Stale KMRSP messages cannot
+key and one fresh key, both announced keys are installed. Restoring a displaced
+key removes its intervening receive generations so original ciphertext can be
+retransmitted immediately, including before the next selector switch. Older
+legitimate generations remain available. Known key bytes must retain the same
+salt, selector, and cipher mode across both current receive slots and their
+bounded histories; relabeled material is rejected without changing the session. Stale KMRSP messages cannot
 acknowledge a newer request or roll the session back.
 Ciphertext outside the bounded history fails closed. Like libsrt, this side
 cannot tell a replayed announcement older than the whole history from a fresh
