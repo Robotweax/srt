@@ -1100,10 +1100,9 @@ void DatagramChannel::run_scheduled(const ScheduledWorkContext* context,
             if (!immediate && result.receive_wait_safe
                 && socket_readiness_ != nullptr && socket_watch_.valid()) {
                 armed = socket_readiness_->arm(socket_watch_);
-                if (!armed) {
-                    readiness_available_.store(
-                        false, std::memory_order_release);
-                }
+                // A registration failure can be transient. Keep the valid
+                // watch eligible for the next slice; below we retain the
+                // bounded timer fallback until arming succeeds again.
             }
             if (armed && !result.next_work_delay.has_value()
                 && !receive_release_pending) {

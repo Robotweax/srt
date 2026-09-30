@@ -39,6 +39,8 @@ public:
     [[nodiscard]] Token watch(
         std::uintptr_t socket, Callback callback) noexcept;
     [[nodiscard]] bool arm(Token token) noexcept;
+    // Inject bounded registration failures without stopping the watcher.
+    void fail_arms_for_testing(std::size_t count) noexcept;
     // Retire the watch and any poll snapshot containing it before the caller
     // closes the native socket. Already dispatched callbacks may still run.
     void cancel(Token token) noexcept;

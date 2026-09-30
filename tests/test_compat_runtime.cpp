@@ -8300,6 +8300,82 @@ TEST(
     });
 }
 
+TEST(compat_idle_readiness_recovers_after_transient_arm_failures)
+{
+    const auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {1, 8, 8});
+    REQUIRE(scheduler->start());
+    const auto watcher = scheduler->acquire_socket_readiness();
+    REQUIRE(watcher != nullptr);
+    watcher->fail_arms_for_testing(3);
+    auto channel = std::make_shared<DatagramChannel>();
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+    REQUIRE(channel->start(scheduler, 0));
+    await_idle_readiness([&] {
+        const auto state = scheduler->snapshot();
+        return watcher->snapshot().armed == 1U && state.completed >= 4U
+            && state.executing == 0U && state.queued == 0U
+            && state.timers == 0U;
+    });
+    REQUIRE(scheduler->snapshot().timers_scheduled >= 3U);
+    REQUIRE(watcher->snapshot().running);
+
+    UdpSocket source;
+    REQUIRE_EQ(source.bind(IpEndpoint::loopback()), Error::none);
+    const auto inbox = std::make_shared<DatagramInbox>(1);
+    REQUIRE(channel->register_setup_inbox(
+        42, source.local_endpoint().endpoint, inbox));
+    MutablePacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.destination_socket_id = 42;
+    std::array<std::byte, 64> bytes {};
+    const auto encoded = encode_packet(packet, bytes);
+    REQUIRE(encoded);
+    REQUIRE(source.send_to(std::span {bytes}.first(encoded.bytes_written),
+        channel->socket.local_endpoint().endpoint));
+    DatagramEnvelope received;
+    REQUIRE_EQ(inbox->pop_for(received, std::chrono::seconds {2}),
+        InboxPopStatus::received);
+    await_idle_readiness([&] {
+        const auto state = scheduler->snapshot();
+        return watcher->snapshot().armed == 1U && state.executing == 0U
+            && state.queued == 0U && state.timers == 0U;
+    });
+    REQUIRE_EQ(watcher->snapshot().notifications, 1U);
+    channel.reset();
+    scheduler->stop();
+}
+
+TEST(compat_idle_readiness_stopped_watcher_retains_timer_fallback)
+{
+    IdleReadinessFixture fixture;
+    fixture.watcher->stop();
+    const auto before = fixture.scheduler->snapshot().completed;
+    fixture.channel->notify_send_work();
+    await_idle_readiness([&] {
+        return fixture.scheduler->snapshot().completed >= before + 3U;
+    });
+    REQUIRE(fixture.channel->running());
+    REQUIRE(!fixture.watcher->snapshot().running);
+    UdpSocket source;
+    REQUIRE_EQ(source.bind(IpEndpoint::loopback()), Error::none);
+    const auto inbox = std::make_shared<DatagramInbox>(1);
+    REQUIRE(fixture.channel->register_setup_inbox(
+        42, source.local_endpoint().endpoint, inbox));
+    MutablePacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.destination_socket_id = 42;
+    std::array<std::byte, 64> bytes {};
+    const auto encoded = encode_packet(packet, bytes);
+    REQUIRE(encoded);
+    REQUIRE(source.send_to(std::span {bytes}.first(encoded.bytes_written),
+        fixture.channel->socket.local_endpoint().endpoint));
+    DatagramEnvelope received;
+    REQUIRE_EQ(inbox->pop_for(received, std::chrono::seconds {2}),
+        InboxPopStatus::received);
+    REQUIRE_EQ(fixture.watcher->snapshot().notifications, 0U);
+}
+
 TEST(compat_idle_readiness_registration_and_new_send_wake_a_quiet_channel)
 {
     IdleReadinessFixture fixture;
