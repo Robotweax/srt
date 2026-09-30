@@ -4144,6 +4144,100 @@ TEST(compat_group_member_option_getters_validate_buffer_sizes)
     }
 }
 
+TEST(compat_group_epoll_rearms_out_after_member_fill_and_ack_between_waits)
+{
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        const SRTSOCKET group = srt_create_group(type);
+        const SRTSOCKET member = srt_create_socket();
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        TestClock clock {
+            .channel =
+                std::make_shared<robotweax::srt::compat::DatagramChannel>()};
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        const auto runtime =
+            attach_group_runtime(group, member, record->initial_sequence, 1,
+                &clock, 1, false, 0, ConnectionRuntime::Clock::now(), record);
+        const int first = srt_epoll_create();
+        const int second = srt_epoll_create();
+        struct Cleanup {
+            SRTSOCKET group;
+            int first, second;
+            ~Cleanup()
+            {
+                (void)srt_epoll_release(first);
+                (void)srt_epoll_release(second);
+                (void)srt_close(group);
+            }
+        } cleanup {group, first, second};
+        const int watched = SRT_EPOLL_OUT | SRT_EPOLL_ET;
+        for (const auto eid : {first, second}) {
+            REQUIRE_EQ(srt_epoll_add_usock(eid, group, &watched), 0);
+            SRT_EPOLL_EVENT event {};
+            REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 1);
+        }
+        const std::array payload {std::byte {'p'}};
+        for (std::uint32_t iteration = 0; iteration < 3; ++iteration) {
+            REQUIRE_EQ(
+                runtime
+                    ->queue_group_message(payload,
+                        SequenceNumber {record->initial_sequence}.advanced(
+                            iteration),
+                        iteration + 1U, 0, true, -1)
+                    .status,
+                robotweax::srt::compat::MessageIoStatus::success);
+            clock.now_microseconds += 1'000;
+            (void)runtime->poll();
+            deliver_lite_ack(runtime,
+                SequenceNumber {record->initial_sequence}.advanced(
+                    iteration + 1U));
+            REQUIRE_EQ(runtime->sender_buffer_status().packets, 0U);
+            for (const auto eid : {first, second}) {
+                SRT_EPOLL_EVENT event {};
+                REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 1);
+                REQUIRE_EQ(event.events, SRT_EPOLL_OUT);
+                REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 0);
+            }
+        }
+    }
+}
+
+TEST(compat_group_epoll_rearms_err_after_replacement_between_waits)
+{
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        const SRTSOCKET group = srt_create_group(type);
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        const int eid = srt_epoll_create();
+        struct Cleanup {
+            SRTSOCKET group;
+            int eid;
+            ~Cleanup()
+            {
+                (void)srt_epoll_release(eid);
+                (void)srt_close(group);
+            }
+        } cleanup {group, eid};
+        const int watched = SRT_EPOLL_ERR | SRT_EPOLL_ET;
+        REQUIRE_EQ(srt_epoll_add_usock(eid, group, &watched), 0);
+        SRT_EPOLL_EVENT event {};
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 0);
+        for (int iteration = 0; iteration < 3; ++iteration) {
+            const SRTSOCKET member = srt_create_socket();
+            REQUIRE(member != SRT_INVALID_SOCK);
+            const auto runtime =
+                attach_group_runtime(group, member, record->initial_sequence);
+            // Do not sample the intervening healthy level: its low epoch must
+            // survive a complete replacement/break cycle between waits.
+            runtime->mark_broken(9);
+            REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 1);
+            REQUIRE_EQ(event.events, SRT_EPOLL_ERR);
+            REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 0);
+            REQUIRE_EQ(srt_close(member), 0);
+        }
+    }
+}
+
 TEST(compat_group_epoll_rearms_in_after_drain_and_refill)
 {
     for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
