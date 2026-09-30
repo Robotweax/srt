@@ -778,6 +778,8 @@ bool GroupRegistry::add_member(
             return false;
         }
         const bool was_empty = record->members.empty();
+        const bool was_terminal =
+            record->opened && aggregate_state(*record) == SRTS_BROKEN;
         GroupMemberSnapshot member;
         member.generation = record->next_member_generation++;
         if (record->next_member_generation == 0U) {
@@ -791,6 +793,12 @@ bool GroupRegistry::add_member(
         member.public_data.result = SRT_SUCCESS;
         member.public_data.token = token;
         record->members.push_back(member);
+        if (was_terminal) {
+            // A pending replacement clears the group's terminal OUT/ERR
+            // level even if it fails before the next epoll state sample.
+            record->readiness_source->note_not_ready(
+                SRT_EPOLL_OUT | SRT_EPOLL_ERR);
+        }
         ++record->snapshot_version;
         group_generation = record->generation;
         member_generation = member.generation;

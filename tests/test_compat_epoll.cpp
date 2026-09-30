@@ -291,6 +291,64 @@ TEST(compat_epoll_rearms_out_after_full_buffer_drains_before_wait)
     REQUIRE_EQ(srt_cleanup(), 0);
 }
 
+TEST(compat_epoll_rearms_out_after_message_exceeds_remaining_capacity)
+{
+    const SRTSOCKET socket = srt_create_socket();
+    const auto record = SocketRegistry::instance().find(socket);
+    REQUIRE(record != nullptr);
+    REQUIRE_EQ(record->native_options.set(SocketOption::send_buffer_packets, 4),
+        Error::none);
+    REQUIRE_EQ(
+        record->native_options.set(SocketOption::maximum_payload_size, 1),
+        Error::none);
+    const auto peer = Ipv4Endpoint::loopback(9'002);
+    const SequenceNumber initial {SequenceNumber::mask - 1U};
+    const auto runtime = attach_test_runtime(socket, peer, initial);
+    const int eid = srt_epoll_create();
+    struct Cleanup {
+        SRTSOCKET socket;
+        int eid;
+        ~Cleanup()
+        {
+            (void)srt_epoll_release(eid);
+            (void)srt_close(socket);
+        }
+    } cleanup {socket, eid};
+    const int watched = SRT_EPOLL_OUT | SRT_EPOLL_ET;
+    REQUIRE_EQ(srt_epoll_add_usock(eid, socket, &watched), 0);
+    SRT_EPOLL_EVENT event {};
+    REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 1);
+    const std::array<std::byte, 2> first {};
+    const std::array<std::byte, 3> larger {};
+    REQUIRE_EQ(runtime->queue_message(first, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(runtime->queue_message(larger, 0, true, false, -1).status,
+        MessageIoStatus::would_block);
+    REQUIRE(runtime->writable());
+    // Submit the first datagram before a cumulative ACK frees room for
+    // the larger message. One queued packet remains unacknowledged.
+    (void)runtime->poll();
+    std::array<std::byte, 4> bytes {};
+    const auto encoded = encode_acknowledgement_payload(
+        {
+            .kind = AcknowledgementKind::lite,
+            .next_sequence = initial.next(),
+        },
+        bytes);
+    REQUIRE(encoded);
+    PacketView acknowledgement;
+    acknowledgement.kind = PacketKind::control;
+    acknowledgement.control.type = ControlType::acknowledgement;
+    acknowledgement.payload = bytes;
+    runtime->process_packet(acknowledgement, peer);
+    REQUIRE_EQ(runtime->sender_buffer_status().packets, 1U);
+    REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 1);
+    REQUIRE_EQ(event.events, SRT_EPOLL_OUT);
+    REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 0);
+    REQUIRE_EQ(runtime->queue_message(larger, 0, true, false, -1).status,
+        MessageIoStatus::success);
+}
+
 TEST(compat_readiness_options_share_epoll_and_buffer_state)
 {
     const auto read_option = [](SRTSOCKET socket, SRT_SOCKOPT option) {

@@ -1576,7 +1576,7 @@ MessageIoResult ConnectionRuntime::queue_message(
         if (peer_error_pending_) {
             peer_error_pending_ = false;
             if (session_.send_buffer().available() == 0U) {
-                readiness_source_->note_not_ready(SRT_EPOLL_OUT);
+                note_not_ready(SRT_EPOLL_OUT);
             }
             notify_readiness();
             return {.status = MessageIoStatus::peer_error};
@@ -1600,7 +1600,7 @@ MessageIoResult ConnectionRuntime::queue_message(
             statistics_.update_send_duration(now, true);
             sample_sender_buffer_statistics(now);
             if (session_.send_buffer().available() == 0U) {
-                readiness_source_->note_not_ready(SRT_EPOLL_OUT);
+                note_not_ready(SRT_EPOLL_OUT);
             }
             const MessageIoResult result {
                 .status = MessageIoStatus::success,
@@ -1618,6 +1618,7 @@ MessageIoResult ConnectionRuntime::queue_message(
             return {.status = MessageIoStatus::invalid_state};
         }
         if (!blocking) {
+            note_not_ready(SRT_EPOLL_OUT);
             return {.status = MessageIoStatus::would_block};
         }
         if (has_deadline) {
@@ -1656,7 +1657,7 @@ MessageIoResult ConnectionRuntime::queue_group_message(
     if (peer_error_pending_) {
         peer_error_pending_ = false;
         if (session_.send_buffer().available() == 0U) {
-            readiness_source_->note_not_ready(SRT_EPOLL_OUT);
+            note_not_ready(SRT_EPOLL_OUT);
         }
         notify_readiness();
         return {.status = MessageIoStatus::peer_error};
@@ -1673,6 +1674,7 @@ MessageIoResult ConnectionRuntime::queue_group_message(
         message_number, packet_timestamp(source_time_microseconds), in_order,
         now, expiration_microseconds);
     if (queued == Error::buffer_too_small) {
+        note_not_ready(SRT_EPOLL_OUT);
         return {.status = MessageIoStatus::would_block};
     }
     if (queued != Error::none) {
@@ -1681,7 +1683,7 @@ MessageIoResult ConnectionRuntime::queue_group_message(
     statistics_.update_send_duration(now, true);
     sample_sender_buffer_statistics(now);
     if (session_.send_buffer().available() == 0U) {
-        readiness_source_->note_not_ready(SRT_EPOLL_OUT);
+        note_not_ready(SRT_EPOLL_OUT);
     }
     const MessageIoResult result {
         .status = MessageIoStatus::success,
@@ -1904,7 +1906,7 @@ MessageIoResult ConnectionRuntime::queue_stream(
         if (peer_error_pending_) {
             peer_error_pending_ = false;
             if (session_.send_buffer().available() == 0U) {
-                readiness_source_->note_not_ready(SRT_EPOLL_OUT);
+                note_not_ready(SRT_EPOLL_OUT);
             }
             notify_readiness();
             return {.status = MessageIoStatus::peer_error};
@@ -1921,7 +1923,7 @@ MessageIoResult ConnectionRuntime::queue_stream(
             statistics_.update_send_duration(now, true);
             sample_sender_buffer_statistics(now);
             if (session_.send_buffer().available() == 0U) {
-                readiness_source_->note_not_ready(SRT_EPOLL_OUT);
+                note_not_ready(SRT_EPOLL_OUT);
             }
             const MessageIoResult result {
                 .status = MessageIoStatus::success,
@@ -1937,6 +1939,7 @@ MessageIoResult ConnectionRuntime::queue_stream(
             return {.status = MessageIoStatus::invalid_state};
         }
         if (!blocking) {
+            note_not_ready(SRT_EPOLL_OUT);
             return {.status = MessageIoStatus::would_block};
         }
         if (has_deadline) {
@@ -3564,6 +3567,17 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         .next_work_delay =
             std::chrono::microseconds {pace.next_ready_microseconds - current},
     };
+}
+
+void ConnectionRuntime::note_not_ready(int events) noexcept
+{
+    readiness_source_->note_not_ready(events);
+    // Group send readiness is assembled from member send capacity. Preserve
+    // a member's low epoch on the source watched by group subscriptions too.
+    // Group IN epochs belong to its own logical receive cursor instead.
+    if (group_readiness_source_ != nullptr && (events & SRT_EPOLL_OUT) != 0) {
+        group_readiness_source_->note_not_ready(SRT_EPOLL_OUT);
+    }
 }
 
 void ConnectionRuntime::notify_readiness() noexcept
