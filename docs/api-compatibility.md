@@ -189,6 +189,15 @@ conversion, message-control initialization, and last-error inspection remain
 available. An affected child must call `exec` or `_exit`; Robotweax does not
 attempt to repair thread and mutex state copied from a multithreaded parent.
 
+Static compatibility state records its constructing process. If inherited
+destructors run in a child, Robotweax leaves that state intact until the OS
+reclaims the child's address space and descriptors. This prevents its own
+teardown from taking inherited locks, joining absent parent workers, or
+removing registrations from a shared kernel readiness queue. The owning
+process keeps normal reverse-order teardown, including when `srt_cleanup`
+is omitted. This defensive guard does not make general `exit` or C++ stack
+unwinding after a multithreaded fork safe; the child policy above still applies.
+
 ## Addressing and UDP ownership
 
 The released boundary supports:

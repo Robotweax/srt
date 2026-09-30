@@ -3,6 +3,7 @@
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/runtime_work_executor_service.hpp"
 #include "compat/socket_registry.hpp"
+#include "compat/socket_readiness.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -56,7 +57,7 @@ using namespace std::chrono_literals;
     if (srt_close(socket) != 0 || srt_cleanup() != 0) {
         _exit(12);
     }
-    _exit(0);
+    std::exit(0);
 }
 
 [[nodiscard]] bool rejected_with_fork_error(int result)
@@ -66,7 +67,7 @@ using namespace std::chrono_literals;
 }
 
 [[noreturn]] void verify_inherited_runtime_is_rejected(
-    SRTSOCKET inherited_socket, int inherited_poll)
+    SRTSOCKET inherited_socket, int inherited_poll, bool run_destructors)
 {
     if (!rejected_with_fork_error(srt_startup())) {
         _exit(20);
@@ -92,6 +93,11 @@ using namespace std::chrono_literals;
     if (srt_getversion() != SRT_VERSION_VALUE) {
         _exit(26);
     }
+    if (run_destructors) {
+        // Deliberately exercise inherited static teardown. exec/_exit remain
+        // the supported child path; this is a defensive cleanup regression.
+        std::exit(0);
+    }
     _exit(0);
 }
 
@@ -114,6 +120,38 @@ using namespace std::chrono_literals;
         return false;
     }
     return srt_listen(socket, 4) == 0;
+}
+
+[[nodiscard]] bool parent_listener_still_accepts(SRTSOCKET listener)
+{
+    sockaddr_in address {};
+    int address_size = sizeof(address);
+    if (srt_getsockname(
+            listener, reinterpret_cast<sockaddr*>(&address), &address_size)
+        != 0) {
+        return false;
+    }
+    const SRTSOCKET caller = srt_create_socket();
+    if (caller == SRT_INVALID_SOCK) {
+        return false;
+    }
+    constexpr int timeout_milliseconds = 2'000;
+    constexpr int receive_buffer_bytes = 1'048'576;
+    const bool connected =
+        srt_setsockflag(caller, SRTO_CONNTIMEO, &timeout_milliseconds,
+            sizeof(timeout_milliseconds))
+            == 0
+        && srt_setsockflag(caller, SRTO_UDP_RCVBUF, &receive_buffer_bytes,
+               sizeof(receive_buffer_bytes))
+            == 0
+        && srt_connect(
+               caller, reinterpret_cast<sockaddr*>(&address), address_size)
+            == 0;
+    const SRTSOCKET accepted =
+        connected ? srt_accept(listener, nullptr, nullptr) : SRT_INVALID_SOCK;
+    (void)srt_close(caller);
+    (void)srt_close(accepted);
+    return connected && accepted != SRT_INVALID_SOCK;
 }
 
 } // namespace
@@ -156,7 +194,20 @@ int main()
         std::fprintf(stderr, "parent work executor startup failed\n");
         return 14;
     }
-    (void)try_activate_listener(socket);
+    if (!try_activate_listener(socket)) {
+        std::fprintf(stderr, "parent listener activation failed\n");
+        return 16;
+    }
+    const auto watcher = scheduler->acquire_socket_readiness();
+    const auto arm_deadline = std::chrono::steady_clock::now() + 2s;
+    while (watcher != nullptr && watcher->snapshot().armed == 0U
+        && std::chrono::steady_clock::now() < arm_deadline) {
+        std::this_thread::sleep_for(1ms);
+    }
+    if (watcher == nullptr || watcher->snapshot().armed == 0U) {
+        std::fprintf(stderr, "parent listener readiness was not armed\n");
+        return 17;
+    }
 
     const int poll = srt_epoll_create();
     if (poll < 0) {
@@ -188,12 +239,18 @@ int main()
         std::this_thread::yield();
     }
 
-    const pid_t inherited_child = fork();
-    if (inherited_child == 0) {
-        verify_inherited_runtime_is_rejected(socket, poll);
+    int inherited_result = 0;
+    for (const bool run_destructors : {false, true}) {
+        const pid_t inherited_child = fork();
+        if (inherited_child == 0) {
+            verify_inherited_runtime_is_rejected(socket, poll, run_destructors);
+        }
+        inherited_result =
+            inherited_child < 0 ? 131 : wait_for_child(inherited_child, 5s);
+        if (inherited_result != 0) {
+            break;
+        }
     }
-    const int inherited_result = inherited_child < 0
-        ? 131 : wait_for_child(inherited_child, 5s);
     release_record_lock.store(true, std::memory_order_release);
     lock_holder.join();
     if (inherited_result != 0) {
@@ -201,6 +258,13 @@ int main()
             "inherited child runtime failed with status %d\n",
             inherited_result);
         return 8;
+    }
+    // A LISTENING status alone cannot detect EPOLL_CTL_DEL on the parent's
+    // inherited queue. Require real UDP handshake delivery after child exit.
+    if (!parent_listener_still_accepts(socket)) {
+        std::fprintf(
+            stderr, "parent listener stopped receiving after child exit\n");
+        return 18;
     }
 
     const SRT_SOCKSTATUS parent_state = srt_getsockstate(socket);

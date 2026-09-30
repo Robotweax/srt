@@ -1,4 +1,5 @@
 #include "compat/epoll.hpp"
+#include "compat/process_owned.hpp"
 
 #include "compat/error_state.hpp"
 #include "compat/group_registry.hpp"
@@ -88,8 +89,8 @@ class PollRegistry {
 public:
     [[nodiscard]] static PollRegistry& instance() noexcept
     {
-        static PollRegistry registry;
-        return registry;
+        static ProcessOwned<PollRegistry> registry;
+        return registry.get();
     }
 
     [[nodiscard]] int create() noexcept

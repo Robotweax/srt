@@ -20,6 +20,8 @@
 
 namespace robotweax::srt::compat {
 
+template <typename T> class ProcessOwned;
+
 class ListenerRuntime;
 class ConnectHandshakeOperation;
 
@@ -109,6 +111,8 @@ public:
     void clear() noexcept;
 
 private:
+    friend class ProcessOwned<SocketRegistry>;
+
     SocketRegistry() = default;
     ~SocketRegistry();
 

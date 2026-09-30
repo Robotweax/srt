@@ -1,4 +1,5 @@
 #include "compat/runtime_scheduler_service.hpp"
+#include "compat/process_owned.hpp"
 
 #include <mutex>
 #include <new>
@@ -66,8 +67,8 @@ private:
 
 [[nodiscard]] RuntimeSchedulerService& scheduler_service() noexcept
 {
-    static RuntimeSchedulerService service;
-    return service;
+    static ProcessOwned<RuntimeSchedulerService> service;
+    return service.get();
 }
 
 } // namespace
