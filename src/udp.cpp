@@ -84,7 +84,7 @@ void suppress_connection_reset_reports(NativeSocket socket) noexcept
     return error == WSAEWOULDBLOCK || error == WSAEINTR || error == WSAENOBUFS
         || error == WSAEHOSTUNREACH || error == WSAENETUNREACH
         || error == WSAENETDOWN || error == WSAECONNRESET
-        || error == WSAENETRESET;
+        || error == WSAENETRESET || error == WSAECONNREFUSED;
 }
 
 [[nodiscard]] bool is_not_connected_error(int error) noexcept
@@ -126,7 +126,7 @@ void suppress_connection_reset_reports(NativeSocket) noexcept { }
 {
     return is_would_block(error) || error == EINTR || error == ENOBUFS
         || error == EHOSTUNREACH || error == ENETUNREACH || error == ENETDOWN
-        || error == ECONNREFUSED
+        || error == ECONNREFUSED || error == EPERM || error == ENOMEM
 #if defined(EHOSTDOWN)
         || error == EHOSTDOWN
 #endif

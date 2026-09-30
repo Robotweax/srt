@@ -112,7 +112,6 @@ struct GroupIoMember {
     bool message_api = true;
     bool tsbpd_mode = true;
     bool terminal = false;
-    bool published_terminal = false;
     RuntimeResponseHealth response_health {};
 };
 
@@ -122,8 +121,7 @@ struct FailedGroupIoMember {
 };
 
 [[nodiscard]] std::vector<GroupIoMember> group_members(
-    const std::shared_ptr<GroupRecord>& group,
-    bool include_terminal_receivers = false)
+    const std::shared_ptr<GroupRecord>& group)
 {
     std::vector<GroupMemberSnapshot> snapshots;
     {
@@ -133,9 +131,9 @@ struct FailedGroupIoMember {
     std::vector<GroupIoMember> result;
     result.reserve(snapshots.size());
     for (const auto& snapshot : snapshots) {
-        if (snapshot.public_data.sockstate != SRTS_CONNECTED
-            && (!include_terminal_receivers
-                || snapshot.public_data.sockstate != SRTS_BROKEN)) {
+        const auto state =
+            SocketRegistry::instance().state(snapshot.public_data.id);
+        if (state != SRTS_CONNECTED && state != SRTS_BROKEN) {
             continue;
         }
         const auto socket =
@@ -150,8 +148,7 @@ struct FailedGroupIoMember {
         {
             std::lock_guard lock(socket->mutex);
             if ((socket->state != SRTS_CONNECTED
-                    && (!include_terminal_receivers
-                        || socket->state != SRTS_BROKEN))
+                    && socket->state != SRTS_BROKEN)
                 || socket->runtime == nullptr
                 || socket->group_id != group->handle
                 || socket->group_generation != group->generation
@@ -163,14 +160,8 @@ struct FailedGroupIoMember {
                 socket->public_options.maximum_payload_size;
             member.message_api = socket->public_options.message_api;
             member.tsbpd_mode = socket->public_options.tsbpd_mode;
-            member.published_terminal = socket->state == SRTS_BROKEN;
+            member.terminal = socket->state == SRTS_BROKEN;
         }
-        // Observe runtime shutdown for receive admission without publishing
-        // it to the socket registry. Buffered messages and statistics remain
-        // available until the caller queries the member's socket state.
-        member.terminal = member.published_terminal
-            || (include_terminal_receivers
-                && (member.runtime->broken() || member.runtime->peer_closed()));
         result.push_back(std::move(member));
     }
     return result;
@@ -226,10 +217,14 @@ struct GroupReceiveDecision {
             } else {
                 const bool complete_expected =
                     member.runtime->has_complete_buffered_message_at(expected);
-                if (!member.terminal || complete_expected) {
+                const bool buffered =
+                    member.runtime->has_buffered_receive_data();
+                const bool pending_terminal_delivery =
+                    member.terminal && buffered && member_delivery.has_value();
+                if (!member.terminal || complete_expected
+                    || pending_terminal_delivery) {
                     member_may_supply_expected = true;
-                    buffered_expected_path |=
-                        member.runtime->has_buffered_receive_data();
+                    buffered_expected_path |= buffered;
                 }
             }
             continue;
@@ -1136,6 +1131,33 @@ int send_group_message_implementation(
                 requested_data, requested_capacity, true);
             return length;
         }
+        if (group_type == SRT_GTYPE_BROADCAST) {
+            for (const auto& failure : failed_members) {
+                if (failure.result.status == MessageIoStatus::would_block) {
+                    GroupRegistry::instance().note_io_result(group->handle,
+                        generation, failure.member.id,
+                        failure.member.generation, SRT_GST_IDLE, SRT_EASYNCSND);
+                    continue;
+                }
+                GroupRegistry::instance().note_io_result(group->handle,
+                    generation, failure.member.id, failure.member.generation,
+                    SRT_GST_BROKEN, result_error(failure.result, true));
+                SocketRegistry::instance().close_failed(failure.member.id);
+            }
+            // A failed path does not turn congestion on the surviving paths
+            // into a terminal group error. Retire it once, then wait for those
+            // members or expose their ordinary nonblocking send result.
+            if (would_block) {
+                if (!blocking) {
+                    return fail(SRT_EASYNCSND);
+                }
+                if (ReadinessSignal::Clock::now() >= deadline) {
+                    return fail(SRT_ETIMEOUT);
+                }
+                ReadinessSignal::wait_until(observed, deadline);
+                continue;
+            }
+        }
         if (group_type == SRT_GTYPE_BACKUP && would_block) {
             // A replacement may have accepted only part of the bounded replay
             // range before its ordinary member send buffer filled. Let its
@@ -1208,7 +1230,7 @@ int receive_group_message_implementation(
 
     for (;;) {
         const std::uint64_t observed = ReadinessSignal::generation();
-        const auto members = group_members(group, true);
+        const auto members = group_members(group);
         if (members.empty()) {
             std::lock_guard lock(group->mutex);
             return fail(group->closed ? SRT_ESCLOSED : SRT_ENOCONN);
@@ -1278,8 +1300,7 @@ int receive_group_message_implementation(
                 }
                 GroupRegistry::instance().note_io_result(group->handle,
                     generation, selected->id, selected->generation,
-                    selected->published_terminal ? SRT_GST_BROKEN
-                                                 : SRT_GST_RUNNING,
+                    selected->terminal ? SRT_GST_BROKEN : SRT_GST_RUNNING,
                     static_cast<int>(result.bytes));
                 if (group_type == SRT_GTYPE_BACKUP) {
                     for (const auto& member : members) {
@@ -1331,7 +1352,7 @@ GroupReceiveReadiness group_receive_readiness(
     if (group == nullptr) {
         return readiness;
     }
-    const auto members = group_members(group, true);
+    const auto members = group_members(group);
     if (members.empty()) {
         readiness.terminal_error = true;
         return readiness;
