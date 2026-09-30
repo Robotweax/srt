@@ -6344,6 +6344,131 @@ TEST(compat_runtime_signals_readiness_only_on_receive_edges)
     REQUIRE(ReadinessSignal::generation() != generation);
 }
 
+namespace {
+void exercise_elapsed_delivery_readiness(bool data_trigger)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const auto peer = Ipv4Endpoint::loopback(11'007);
+    std::uint64_t now = 1'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 304,
+        .initial_sequence = SequenceNumber {5'000},
+        .negotiated_options = {.receive_tsbpd = true,
+            .receive_delay_milliseconds = 100},
+        .origin = ConnectionRuntime::Clock::now(),
+        .handshake_arrival_microseconds = 0,
+        .peer_handshake_timestamp = PacketTimestamp {0},
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+    ReadinessObserver observer;
+    ReadinessWatch watch {observer, 42, false};
+    REQUIRE(watch.bind(runtime.readiness_source()));
+    std::vector<SRTSOCKET> changes;
+    changes.reserve(1);
+    REQUIRE(observer.take_changes(changes));
+
+    const std::array payload {std::byte {'r'}};
+    PacketView data;
+    data.kind = PacketKind::data;
+    data.data.sequence = SequenceNumber {5'000};
+    data.data.message_number = 1;
+    data.data.boundary = MessageBoundary::solo;
+    data.data.timestamp = PacketTimestamp {1'000};
+    data.payload = payload;
+    runtime.process_packet(data, peer);
+    REQUIRE(!runtime.readable());
+    REQUIRE(!observer.take_changes(changes));
+    REQUIRE_EQ(changes, std::vector<SRTSOCKET> {42});
+
+    const std::array<std::byte, 4> keepalive_padding {};
+    PacketView trigger;
+    if (data_trigger) {
+        trigger = data;
+        trigger.data.sequence = SequenceNumber {5'001};
+        trigger.data.message_number = 2;
+        trigger.data.timestamp = PacketTimestamp {2'000};
+    } else {
+        trigger.kind = PacketKind::control;
+        trigger.control.type = ControlType::keepalive;
+        trigger.payload = keepalive_padding;
+    }
+    const auto generation = observer.generation();
+    // Cross the first message's deadline without a scheduler poll. The
+    // arriving packet does not change the head message or its deadline.
+    now = 101'000;
+    runtime.process_packet(trigger, peer);
+    REQUIRE(runtime.readable());
+    REQUIRE(observer.generation() != generation);
+    REQUIRE(!observer.take_changes(changes));
+    REQUIRE_EQ(changes, std::vector<SRTSOCKET> {42});
+    const auto published = observer.generation();
+    runtime.process_packet(trigger, peer);
+    (void)runtime.poll();
+    REQUIRE_EQ(observer.generation(), published);
+    REQUIRE(!observer.take_changes(changes));
+    REQUIRE(changes.empty());
+}
+}
+
+TEST(compat_runtime_control_packet_publishes_elapsed_delivery_readiness_once)
+{
+    exercise_elapsed_delivery_readiness(false);
+}
+
+TEST(compat_runtime_data_packet_publishes_elapsed_delivery_readiness_once)
+{
+    exercise_elapsed_delivery_readiness(true);
+}
+
+TEST(compat_runtime_packet_refill_signals_without_an_intervening_poll)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const auto peer = Ipv4Endpoint::loopback(11'008);
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 305,
+        .initial_sequence = SequenceNumber {5'000},
+        .origin = ConnectionRuntime::Clock::now(),
+    }};
+    ReadinessObserver observer;
+    ReadinessWatch watch {observer, 42, false};
+    REQUIRE(watch.bind(runtime.readiness_source()));
+    std::vector<SRTSOCKET> changes;
+    changes.reserve(1);
+    REQUIRE(observer.take_changes(changes));
+    const std::array payload {std::byte {'r'}};
+    PacketView data;
+    data.kind = PacketKind::data;
+    data.data.sequence = SequenceNumber {5'000};
+    data.data.message_number = 1;
+    data.data.boundary = MessageBoundary::solo;
+    data.payload = payload;
+    runtime.process_packet(data, peer);
+    REQUIRE(!observer.take_changes(changes));
+    REQUIRE_EQ(changes, std::vector<SRTSOCKET> {42});
+    std::array<std::byte, 1> received {};
+    REQUIRE_EQ(runtime.receive_message(received, false, -1).status,
+        MessageIoStatus::success);
+    REQUIRE(!runtime.readable());
+    REQUIRE(!observer.take_changes(changes));
+    const auto generation = observer.generation();
+    data.data.sequence = SequenceNumber {5'001};
+    data.data.message_number = 2;
+    runtime.process_packet(data, peer);
+    REQUIRE(runtime.readable());
+    REQUIRE(observer.generation() != generation);
+    REQUIRE(!observer.take_changes(changes));
+    REQUIRE_EQ(changes, std::vector<SRTSOCKET> {42});
+}
+
 TEST(compat_runtime_receiver_tlpktdrop_sends_a_cumulative_ack)
 {
     const auto channel =
