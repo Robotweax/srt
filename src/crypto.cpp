@@ -368,11 +368,11 @@ void CryptoSession::erase_receive_history(
     for (auto& generation : history.generations) {
         erase_slot(generation.slot);
         generation.sequence_ceiling_known = false;
-        generation.sequence_ceiling = {};
+        generation.sequence_ceiling_position = 0;
     }
     history.size = 0;
     history.discarded_sequence_ceiling_known = false;
-    history.discarded_sequence_ceiling = {};
+    history.discarded_sequence_ceiling_position = 0;
 }
 
 void CryptoSession::remember_receive_key(
@@ -384,8 +384,8 @@ void CryptoSession::remember_receive_key(
         const auto& discarded = history.generations[last];
         if (discarded.sequence_ceiling_known) {
             history.discarded_sequence_ceiling_known = true;
-            history.discarded_sequence_ceiling =
-                discarded.sequence_ceiling;
+            history.discarded_sequence_ceiling_position =
+                discarded.sequence_ceiling_position;
         }
         erase_slot(history.generations[last].slot);
     }
@@ -403,7 +403,7 @@ void CryptoSession::remember_receive_key(
     newest.sequence_ceiling_known =
         newest.slot.ready() && highest_receive_sequence_known_;
     if (newest.sequence_ceiling_known) {
-        newest.sequence_ceiling = highest_receive_sequence_;
+        newest.sequence_ceiling_position = highest_receive_position_;
     }
     history.size =
         std::min(history.size + 1U, history.generations.size());
@@ -537,6 +537,7 @@ Error CryptoSession::clone_transmit_keys_to_receive() noexcept
 {
     erase_receive_history(receive_even_history_);
     erase_receive_history(receive_odd_history_);
+    highest_receive_position_ = 0;
     highest_receive_sequence_known_ = false;
     Error result = clone_key(transmit_even_, receive_even_);
     if (result != Error::none) return result;
@@ -1165,25 +1166,31 @@ CryptoSession::KeySlot* CryptoSession::receive_slot_for_packet(
     // ciphertext even after that selector has been reused several times.
     // Search oldest to newest so the first ceiling containing the sequence
     // identifies the exact generation independently of arrival order.
-    // Current in-order traffic takes the single newest-ceiling comparison.
-    const bool may_be_historical =
-        history->size != 0U
-        && history->generations[0].sequence_ceiling_known
-        && sequence.distance_from(
-            history->generations[0].sequence_ceiling) <= 0;
+    // Modular comparisons against an old ceiling reverse direction after
+    // half the sequence space. Compare positions relative to the receive
+    // frontier instead, and only route through ceilings still within that
+    // half range.
+    const std::int64_t position = highest_receive_position_
+        + sequence.distance_from(highest_receive_sequence_);
+    const auto ceiling_is_recent = [this](std::int64_t ceiling) {
+        return ceiling > highest_receive_position_ - SequenceNumber::half_range;
+    };
+    const bool may_be_historical = highest_receive_sequence_known_
+        && history->size != 0U && history->generations[0].sequence_ceiling_known
+        && ceiling_is_recent(history->generations[0].sequence_ceiling_position)
+        && position <= history->generations[0].sequence_ceiling_position;
     if (may_be_historical) {
         if (history->discarded_sequence_ceiling_known
-            && sequence.distance_from(
-                history->discarded_sequence_ceiling) <= 0) {
+            && ceiling_is_recent(history->discarded_sequence_ceiling_position)
+            && position <= history->discarded_sequence_ceiling_position) {
             return nullptr;
         }
         for (std::size_t index = history->size;
              index > 0U; --index) {
             auto& generation = history->generations[index - 1U];
-            if (generation.slot.ready()
-                && generation.sequence_ceiling_known
-                && sequence.distance_from(
-                    generation.sequence_ceiling) <= 0) {
+            if (generation.slot.ready() && generation.sequence_ceiling_known
+                && ceiling_is_recent(generation.sequence_ceiling_position)
+                && position <= generation.sequence_ceiling_position) {
                 selected = &generation.slot;
                 break;
             }
@@ -1205,10 +1212,50 @@ void CryptoSession::note_accepted_receive_sequence(
 void CryptoSession::note_authenticated_receive_sequence(
     SequenceNumber sequence) noexcept
 {
-    if (!highest_receive_sequence_known_
-        || sequence.distance_from(highest_receive_sequence_) > 0) {
+    if (!highest_receive_sequence_known_) {
         highest_receive_sequence_ = sequence;
+        highest_receive_position_ = 0;
         highest_receive_sequence_known_ = true;
+        return;
+    }
+    const std::int32_t advance =
+        sequence.distance_from(highest_receive_sequence_);
+    if (advance > 0) {
+        // Rebase long-lived sessions before their absolute position can
+        // overflow. Old routing ceilings can expire without erasing the key
+        // slots retained for KMREQ replay detection.
+        if (highest_receive_position_ > std::numeric_limits<std::int64_t>::max()
+                - advance - SequenceNumber::half_range) {
+            const auto rebase = [this](ReceiveKeyHistory& history) {
+                for (auto& generation : history.generations) {
+                    if (generation.sequence_ceiling_known) {
+                        if (generation.sequence_ceiling_position
+                            <= highest_receive_position_
+                                - SequenceNumber::half_range) {
+                            generation.sequence_ceiling_known = false;
+                        } else {
+                            generation.sequence_ceiling_position -=
+                                highest_receive_position_;
+                        }
+                    }
+                }
+                if (history.discarded_sequence_ceiling_known) {
+                    if (history.discarded_sequence_ceiling_position
+                        <= highest_receive_position_
+                            - SequenceNumber::half_range) {
+                        history.discarded_sequence_ceiling_known = false;
+                    } else {
+                        history.discarded_sequence_ceiling_position -=
+                            highest_receive_position_;
+                    }
+                }
+            };
+            rebase(receive_even_history_);
+            rebase(receive_odd_history_);
+            highest_receive_position_ = 0;
+        }
+        highest_receive_position_ += advance;
+        highest_receive_sequence_ = sequence;
     }
 }
 

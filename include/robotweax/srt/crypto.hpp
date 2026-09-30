@@ -538,7 +538,7 @@ private:
         // this generation from the newer one without inspecting ciphertext.
         KeySlot slot{};
         bool sequence_ceiling_known = false;
-        SequenceNumber sequence_ceiling{};
+        std::int64_t sequence_ceiling_position = 0;
     };
 
     // Key selectors are reused on every other rotation. A bounded history
@@ -550,7 +550,7 @@ private:
             receive_key_history_capacity> generations{};
         std::size_t size = 0;
         bool discarded_sequence_ceiling_known = false;
-        SequenceNumber discarded_sequence_ceiling{};
+        std::int64_t discarded_sequence_ceiling_position = 0;
     };
 
     [[nodiscard]] Error validate_configuration() const noexcept;
@@ -637,6 +637,7 @@ private:
     ReceiveKeyHistory receive_even_history_{};
     ReceiveKeyHistory receive_odd_history_{};
     SequenceNumber highest_receive_sequence_{};
+    std::int64_t highest_receive_position_ = 0;
     bool highest_receive_sequence_known_ = false;
     KeyMaterialBuffer pending_key_material_{};
     KeyMaterialBuffer key_material_response_{};

@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -1648,6 +1649,142 @@ TEST(crypto_session_rejects_ciphertext_older_than_bounded_key_history)
                    old_key, SequenceNumber{100},
                    old_ciphertext, decrypted),
         Error::cryptographic_failure);
+}
+
+TEST(crypto_session_routes_current_key_past_old_half_range_ceiling)
+{
+    const CryptoConfiguration configuration {
+        .passphrase = "long receive key history fixture",
+        .key_length = 16,
+        .refresh_rate_packets = maximum_key_refresh_rate,
+        .preannouncement_packets = 1,
+    };
+    CryptoSession old_sender {configuration};
+    CryptoSession current_sender {configuration};
+    CryptoSession receiver {configuration};
+    REQUIRE_EQ(old_sender.start_initiator(), Error::none);
+    REQUIRE_EQ(
+        receiver.accept_key_material(old_sender.pending_key_material(), false),
+        Error::none);
+    REQUIRE_EQ(old_sender.acknowledge_key_material(
+                   receiver.key_material_response(), false),
+        Error::none);
+
+    const SequenceNumber old_sequence {SequenceNumber::mask - 20U};
+    const std::array<std::byte, 16> old_clear {std::byte {0x31}};
+    const std::array<std::byte, 16> current_clear {std::byte {0x72}};
+    std::array<std::byte, 16> ciphertext {};
+    std::array<std::byte, 16> plaintext {};
+    EncryptionKey key = EncryptionKey::none;
+    REQUIRE_EQ(old_sender.encrypt(old_sequence, old_clear, ciphertext, key),
+        Error::none);
+    REQUIRE_EQ(receiver.decrypt(key, old_sequence, ciphertext, plaintext),
+        Error::none);
+    REQUIRE_EQ(plaintext, old_clear);
+    receiver.note_accepted_receive_sequence(old_sequence);
+
+    REQUIRE_EQ(current_sender.start_initiator(), Error::none);
+    REQUIRE_EQ(receiver.accept_key_material(
+                   current_sender.pending_key_material(), false),
+        Error::none);
+    REQUIRE_EQ(current_sender.acknowledge_key_material(
+                   receiver.key_material_response(), false),
+        Error::none);
+    const SequenceNumber current_start = old_sequence.advanced(6U);
+    REQUIRE_EQ(
+        current_sender.encrypt(current_start, current_clear, ciphertext, key),
+        Error::none);
+    REQUIRE_EQ(receiver.decrypt(key, current_start, ciphertext, plaintext),
+        Error::none);
+    REQUIRE_EQ(plaintext, current_clear);
+    receiver.note_accepted_receive_sequence(current_start);
+
+    // Model accepted progress across an otherwise omitted long flight. Every
+    // observation advances by at most one receive-window-sized step.
+    for (std::uint32_t offset = 8'192U;
+        offset < SequenceNumber::half_range - 10U; offset += 8'192U) {
+        receiver.note_accepted_receive_sequence(old_sequence.advanced(offset));
+    }
+    const SequenceNumber near_boundary =
+        old_sequence.advanced(SequenceNumber::half_range - 10U);
+    REQUIRE_EQ(
+        current_sender.encrypt(near_boundary, current_clear, ciphertext, key),
+        Error::none);
+    REQUIRE_EQ(receiver.decrypt(key, near_boundary, ciphertext, plaintext),
+        Error::none);
+    REQUIRE_EQ(plaintext, current_clear);
+    receiver.note_accepted_receive_sequence(near_boundary);
+
+    const SequenceNumber past_boundary =
+        old_sequence.advanced(SequenceNumber::half_range + 1U);
+    REQUIRE_EQ(
+        current_sender.encrypt(past_boundary, current_clear, ciphertext, key),
+        Error::none);
+    REQUIRE_EQ(receiver.decrypt(key, past_boundary, ciphertext, plaintext),
+        Error::none);
+    REQUIRE_EQ(plaintext, current_clear);
+}
+
+TEST(crypto_session_ignores_aged_discarded_receive_key_ceiling)
+{
+    const CryptoConfiguration configuration {
+        .passphrase = "discarded receive ceiling fixture",
+        .key_length = 16,
+        .refresh_rate_packets = maximum_key_refresh_rate,
+        .preannouncement_packets = 1,
+    };
+    CryptoSession receiver {configuration};
+    std::array<std::unique_ptr<CryptoSession>, 7> senders {};
+    const std::array<std::byte, 16> clear {std::byte {0x5a}};
+    std::array<std::byte, 16> ciphertext {};
+    std::array<std::byte, 16> plaintext {};
+    EncryptionKey key = EncryptionKey::none;
+
+    for (std::uint32_t index = 0; index < 6U; ++index) {
+        senders[index] = std::make_unique<CryptoSession>(configuration);
+        REQUIRE_EQ(senders[index]->start_initiator(), Error::none);
+        REQUIRE_EQ(receiver.accept_key_material(
+                       senders[index]->pending_key_material(), false),
+            Error::none);
+        REQUIRE_EQ(senders[index]->acknowledge_key_material(
+                       receiver.key_material_response(), false),
+            Error::none);
+        const SequenceNumber sequence {index};
+        REQUIRE_EQ(senders[index]->encrypt(sequence, clear, ciphertext, key),
+            Error::none);
+        REQUIRE_EQ(receiver.decrypt(key, sequence, ciphertext, plaintext),
+            Error::none);
+        REQUIRE_EQ(plaintext, clear);
+        receiver.note_accepted_receive_sequence(sequence);
+    }
+
+    const SequenceNumber delayed_sequence {SequenceNumber::half_range + 1U};
+    std::array<std::byte, 16> delayed_ciphertext {};
+    EncryptionKey delayed_key = EncryptionKey::none;
+    REQUIRE_EQ(senders[5]->encrypt(
+                   delayed_sequence, clear, delayed_ciphertext, delayed_key),
+        Error::none);
+    for (std::uint32_t offset = 8'192U;
+        offset < SequenceNumber::half_range + 10U; offset += 8'192U) {
+        receiver.note_accepted_receive_sequence(SequenceNumber {offset});
+    }
+    const SequenceNumber frontier {SequenceNumber::half_range + 10U};
+    REQUIRE_EQ(
+        senders[5]->encrypt(frontier, clear, ciphertext, key), Error::none);
+    REQUIRE_EQ(
+        receiver.decrypt(key, frontier, ciphertext, plaintext), Error::none);
+    REQUIRE_EQ(plaintext, clear);
+    receiver.note_accepted_receive_sequence(frontier);
+
+    senders[6] = std::make_unique<CryptoSession>(configuration);
+    REQUIRE_EQ(senders[6]->start_initiator(), Error::none);
+    REQUIRE_EQ(
+        receiver.accept_key_material(senders[6]->pending_key_material(), false),
+        Error::none);
+    REQUIRE_EQ(receiver.decrypt(delayed_key, delayed_sequence,
+                   delayed_ciphertext, plaintext),
+        Error::none);
+    REQUIRE_EQ(plaintext, clear);
 }
 
 TEST(crypto_session_derives_each_directional_kek_once_across_rotations)
