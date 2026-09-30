@@ -376,7 +376,10 @@ void shutdown_record(
 
 } // namespace
 
-SocketRecord::SocketRecord()
+SocketRecord::SocketRecord(Purpose purpose)
+    : readiness_source(purpose == Purpose::transport
+              ? std::make_shared<ReadinessSource>()
+              : nullptr)
 {
     open_time_microseconds =
         std::chrono::duration_cast<std::chrono::microseconds>(
