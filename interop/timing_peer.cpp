@@ -856,7 +856,13 @@ int run(const Configuration& configuration)
             for (std::size_t member_index = 0;
                 member_index < control.grpdata_size; ++member_index) {
                 const auto& member = control.grpdata[member_index];
-                if (member.memberstate != SRT_GST_RUNNING) {
+                // A successful receive may drain a BROKEN path. Its current
+                // snapshot keeps BROKEN while reporting this receive's size.
+                const bool terminal_delivery = member.sockstate == SRTS_BROKEN
+                    && member.memberstate == SRT_GST_BROKEN
+                    && member.result == received;
+                if (member.memberstate != SRT_GST_RUNNING
+                    && !terminal_delivery) {
                     continue;
                 }
                 if (member.id == SRT_INVALID_SOCK) {

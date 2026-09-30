@@ -96,13 +96,18 @@ group has opened, attempts to change these template options fail with
 aggregate bandwidth cap across the group.
 
 The first connect on a new group waits for the first usable member when the
-public synchronization option requires blocking behavior. Later members may
+`SRTO_RCVSYN` option requires blocking behavior. Later members may
 complete in the background. Passing a group handle to ordinary `srt_connect`
 uses the same path and returns the created member socket ID, not zero.
 
 Connection callbacks are snapshotted per new member. Replacing the group
 callback affects future members and does not rewrite callback state already
 owned by an in-progress member.
+
+When Broadcast sends encounter both a failed member and congested surviving
+members, the failed member is closed once. Nonblocking sends report
+`SRT_EASYNCSND`; blocking sends wait for surviving capacity up to `SRTO_SNDTIMEO`.
+A send-buffer shortage does not close a surviving member.
 
 ## Listener admission
 
@@ -111,8 +116,11 @@ listener before `srt_listen` to accept a valid Broadcast or Backup request.
 Otherwise the request is rejected with `SRT_REJ_GROUP`.
 
 The first connected member publishes one mirror-group handle through
-`srt_accept`. Later members with the same peer group identity, type, and ISN
-join that mirror and do not create another accept result.
+`srt_accept`. Later members with the same peer group identity and type join that mirror
+without another accept result. The wire ISN can advance as traffic continues.
+Each direction uses its own group sequence cursor: a late mirror member starts
+sending at the mirror's current send cursor, while a late caller member starts
+receiving at the caller group's current receive cursor.
 
 `srt_accept_bond` forms an explicit domain from multiple listeners. Members of
 one peer group may then arrive through different listeners in that same domain.
@@ -180,11 +188,19 @@ If a required gap has left retained history, sender-side failover fails
 explicitly instead of replaying a discontinuous logical stream. On receive,
 negotiated TLPKTDROP may retire an unrecoverable gap. The group advances past
 it only after no member can deliver the expected sequence, including complete
-messages buffered on a terminal member until their TSBPD deadline.
+messages buffered on a terminal member until their TSBPD deadline. This also
+preserves complete messages behind a terminal member's pending head gap while
+its receiver-drop deadline has not arrived, even if a replacement starts at a
+later sequence.
 
 Closing or breaking one member does not terminate a group while another usable
 member exists. Applications may add a distinct replacement member. A broken
-member socket is not recycled into a new connection.
+member socket is not recycled into a new connection. Runtime shutdown is
+published by group receive, group-state queries, and `srt_group_data` without
+requiring a separate member-state query. A BROKEN member remains available
+for draining buffered messages; an explicitly closed member is detached from
+the membership list, including while its transport finishes asynchronous linger.
+Terminal members do not mask a pending replacement's CONNECTING state.
 
 ## Source time and TSBPD
 
