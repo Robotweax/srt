@@ -295,6 +295,21 @@ void shutdown_record(
         record->pending_accepts.store(0U, std::memory_order_release);
     }
     publish_group_state(record, broken_connection);
+    // A closed socket is no longer a member, even while its runtime lingers.
+    // Publish failure first so UPDATE remains observable for surviving paths.
+    SRTSOCKET group_id = SRT_INVALID_SOCK;
+    std::uint64_t group_generation = 0;
+    std::uint64_t member_generation = 0;
+    {
+        std::lock_guard lock(record->mutex);
+        group_id = record->group_id;
+        group_generation = record->group_generation;
+        member_generation = record->member_generation;
+    }
+    if (group_id != SRT_INVALID_SOCK && member_generation != 0U) {
+        GroupRegistry::instance().remove_member(group_id, group_generation,
+            static_cast<SRTSOCKET>(protocol_socket_id), member_generation);
+    }
 
     if (listener_inbox != nullptr) {
         listener_inbox->close();

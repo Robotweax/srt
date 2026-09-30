@@ -2361,7 +2361,7 @@ TEST(compat_broadcast_group_keeps_sending_after_one_member_path_fails)
     REQUIRE_EQ(srt_sendmsg2(group, payload,
                    static_cast<int>(sizeof(payload)), &control),
         static_cast<int>(sizeof(payload)));
-    REQUIRE_EQ(control.grpdata_size, data.size());
+    REQUIRE_EQ(control.grpdata_size, 1U);
     const auto healthy_data = std::find_if(
         data.begin(), data.end(), [healthy](const auto& member) {
             return member.id == healthy;
@@ -2371,13 +2371,12 @@ TEST(compat_broadcast_group_keeps_sending_after_one_member_path_fails)
             return member.id == failed;
         });
     REQUIRE(healthy_data != data.end());
-    REQUIRE(failed_data != data.end());
+    REQUIRE(failed_data == data.end());
     REQUIRE_EQ(healthy_data->memberstate, SRT_GST_RUNNING);
     REQUIRE_EQ(healthy_data->result,
         static_cast<int>(sizeof(payload)));
-    REQUIRE_EQ(failed_data->memberstate, SRT_GST_BROKEN);
-    REQUIRE(failed_data->sockstate == SRTS_CLOSING
-        || failed_data->sockstate == SRTS_CLOSED);
+    REQUIRE(srt_getsockstate(failed) == SRTS_CLOSING
+        || srt_getsockstate(failed) == SRTS_CLOSED);
 
     const auto duplicate_identity = healthy_runtime->queue_group_message(
         std::as_bytes(std::span {payload, sizeof(payload)}),
@@ -3085,9 +3084,11 @@ TEST(compat_backup_group_fails_over_to_the_next_weighted_member)
         data.begin(), data.end(), [backup](const auto& member) {
             return member.id == backup;
         });
-    REQUIRE(primary_data != data.end());
+    REQUIRE_EQ(control.grpdata_size, 1U);
+    REQUIRE(primary_data == data.end());
     REQUIRE(backup_data != data.end());
-    REQUIRE_EQ(primary_data->memberstate, SRT_GST_BROKEN);
+    REQUIRE(srt_getsockstate(primary) == SRTS_CLOSING
+        || srt_getsockstate(primary) == SRTS_CLOSED);
     REQUIRE_EQ(backup_data->memberstate, SRT_GST_RUNNING);
     REQUIRE_EQ(backup_data->result,
         static_cast<int>(sizeof(payload)));
@@ -4454,9 +4455,11 @@ TEST(compat_group_receive_observes_terminal_without_state_getter)
         REQUIRE(std::equal(payload.begin(), payload.end(),
             reinterpret_cast<const std::byte*>(received.data())));
         REQUIRE_EQ(control.grpdata_size, 1U);
-        REQUIRE_EQ(group_data[0].memberstate, SRT_GST_RUNNING);
+        REQUIRE_EQ(group_data[0].memberstate, SRT_GST_BROKEN);
+        REQUIRE_EQ(group_data[0].sockstate, SRTS_BROKEN);
         SRT_TRACEBSTATS member_statistics {};
-        REQUIRE_EQ(srt_bstats(member, &member_statistics, 0), 0);
+        REQUIRE_EQ(srt_bstats(member, &member_statistics, 0), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNLOST);
         REQUIRE_EQ(srt_recvmsg(group, received.data(),
                        static_cast<int>(received.size())),
             SRT_ERROR);
@@ -4631,4 +4634,82 @@ TEST(compat_group_connect_description_honors_receive_synchronous_before_open)
         REQUIRE_EQ(description.block_until_connected, synchronous);
         REQUIRE_EQ(srt_close(group), 0);
     }
+}
+
+TEST(compat_group_state_and_data_refresh_terminal_members)
+{
+    for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
+        for (const bool read_data_first : {false, true}) {
+            const auto group = srt_create_group(type);
+            const auto socket = srt_create_socket();
+            const auto record = GroupRegistry::instance().find(group);
+            REQUIRE(record != nullptr);
+            const auto runtime =
+                attach_group_runtime(group, socket, record->initial_sequence);
+            robotweax::srt::PacketView shutdown;
+            shutdown.kind = robotweax::srt::PacketKind::control;
+            shutdown.control.type = robotweax::srt::ControlType::shutdown;
+            const std::array<std::byte, 4> padding {};
+            shutdown.payload = padding;
+            runtime->process_packet(shutdown, IpEndpoint::loopback(9'000));
+            std::array<SRT_SOCKGROUPDATA, 1> data {};
+            std::size_t size = data.size();
+            if (!read_data_first) {
+                REQUIRE_EQ(srt_getsockstate(group), SRTS_BROKEN);
+            }
+            REQUIRE_EQ(srt_group_data(group, data.data(), &size), 1);
+            REQUIRE_EQ(data[0].sockstate, SRTS_BROKEN);
+            REQUIRE_EQ(data[0].memberstate, SRT_GST_BROKEN);
+            REQUIRE_EQ(srt_getsockstate(group), SRTS_BROKEN);
+            REQUIRE_EQ(srt_close(group), 0);
+        }
+    }
+}
+
+TEST(compat_group_close_detaches_members_across_replacement_cycles)
+{
+    for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
+        const auto group = srt_create_group(type);
+        const auto healthy = srt_create_socket();
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        (void)attach_group_runtime(group, healthy, record->initial_sequence);
+        for (int cycle = 0; cycle < 32; ++cycle) {
+            const auto replacement = srt_create_socket();
+            (void)attach_group_runtime(
+                group, replacement, record->initial_sequence);
+            std::size_t size = 0;
+            REQUIRE_EQ(srt_group_data(group, nullptr, &size), 0);
+            REQUIRE_EQ(size, 2U);
+            REQUIRE_EQ(srt_close(replacement), 0);
+            REQUIRE_EQ(srt_group_data(group, nullptr, &size), 0);
+            REQUIRE_EQ(size, 1U);
+            REQUIRE_EQ(srt_getsockstate(group), SRTS_CONNECTED);
+        }
+        REQUIRE_EQ(srt_close(healthy), 0);
+        REQUIRE_EQ(srt_getsockstate(group), SRTS_BROKEN);
+        REQUIRE_EQ(srt_close(group), 0);
+    }
+}
+
+TEST(compat_group_state_ignores_terminal_members_before_pending_replacement)
+{
+    const auto group = srt_create_group(SRT_GTYPE_BACKUP);
+    const auto record = GroupRegistry::instance().find(group);
+    REQUIRE(record != nullptr);
+    for (const auto state :
+        {SRTS_BROKEN, SRTS_CLOSING, SRTS_CLOSED, SRTS_NONEXIST}) {
+        {
+            std::lock_guard lock(record->mutex);
+            record->members.clear();
+            robotweax::srt::compat::GroupMemberSnapshot terminal;
+            terminal.public_data.sockstate = state;
+            record->members.push_back(terminal);
+            robotweax::srt::compat::GroupMemberSnapshot pending;
+            pending.public_data.sockstate = SRTS_CONNECTING;
+            record->members.push_back(pending);
+        }
+        REQUIRE_EQ(srt_getsockstate(group), SRTS_CONNECTING);
+    }
+    REQUIRE_EQ(srt_close(group), 0);
 }

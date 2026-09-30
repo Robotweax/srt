@@ -192,7 +192,12 @@ messages buffered on a terminal member until their TSBPD deadline.
 
 Closing or breaking one member does not terminate a group while another usable
 member exists. Applications may add a distinct replacement member. A broken
-member socket is not recycled into a new connection.
+member socket is not recycled into a new connection. Runtime shutdown is
+published by group receive, group-state queries, and `srt_group_data` without
+requiring a separate member-state query. A BROKEN member remains available
+for draining buffered messages; an explicitly closed member is detached from
+the membership list, including while its transport finishes asynchronous linger.
+Terminal members do not mask a pending replacement's CONNECTING state.
 
 ## Source time and TSBPD
 
