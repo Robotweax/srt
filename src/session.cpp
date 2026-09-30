@@ -10,6 +10,9 @@
 namespace robotweax::srt {
 namespace {
 
+constexpr auto maximum_peer_drop_distance =
+    static_cast<std::int32_t>(SequenceNumber::half_range / 2U);
+
 struct NakRangeSlices {
     Error error = Error::none;
     std::optional<SequenceRange> stale;
@@ -167,7 +170,8 @@ Error ReliabilitySession::skip_group_sequences(
 {
     const SequenceNumber current = send_buffer_.next_sequence();
     const std::int32_t distance = next_sequence.distance_from(current);
-    if (distance < 0 || send_buffer_.sequence_span() != 0U) {
+    if (distance < 0 || distance > maximum_peer_drop_distance
+        || send_buffer_.sequence_span() != 0U) {
         return Error::invalid_state;
     }
     if (distance == 0) {
@@ -922,12 +926,49 @@ ReliabilityProcessResult ReliabilitySession::receive(
         if (!decoded) {
             return {.error = decoded.error};
         }
+        // Keep every endpoint and the inclusive span within a quarter of the
+        // sequence space. A peer may abandon more than our storage window
+        // (queued TTL expiry or a group skip), but not an ambiguous epoch.
+        const auto span = decoded.request.sequences.last.distance_from(
+            decoded.request.sequences.first);
+        const auto boundary = receive_buffer_.next_ack_sequence();
+        const auto first_distance =
+            decoded.request.sequences.first.distance_from(boundary);
+        const auto last_distance =
+            decoded.request.sequences.last.distance_from(boundary);
+        if (span < 0 || span >= maximum_peer_drop_distance
+            || first_distance < -maximum_peer_drop_distance
+            || first_distance > maximum_peer_drop_distance
+            || last_distance < -maximum_peer_drop_distance
+            || last_distance > maximum_peer_drop_distance) {
+            return {.error = Error::invalid_control_payload};
+        }
         // DROPREQ can overtake an original datagram. Keep that datagram's
         // receive window open until the control packet's TSBPD deadline, but
         // retain the peer's range so a final gap can advance without needing
         // a later complete message to provide a local playout deadline.
         const bool defer_drop = live_options_.receive_tsbpd
             && live_options_.too_late_packet_drop && tsbpd_clock_.has_value();
+        const auto existing = defer_drop
+            ? std::find_if(pending_peer_drops_.begin(),
+                  pending_peer_drops_.end(),
+                  [&](const PendingPeerDrop& pending) {
+                      return pending.sequences.first
+                          == decoded.request.sequences.first
+                          && pending.sequences.last
+                          == decoded.request.sequences.last;
+                  })
+            : pending_peer_drops_.end();
+        // Refuse a new grace entry before advancing the timestamp clock or
+        // ACK/loss state. Duplicates keep their original deadline even when
+        // the preallocated queue is full. Timer expiry makes room for retry.
+        if (defer_drop && existing == pending_peer_drops_.end()
+            && pending_peer_drops_.size() == pending_peer_drops_.capacity()
+            && decoded.request.sequences.last.distance_from(
+                   receive_buffer_.first_stored_sequence())
+                >= 0) {
+            return {.error = Error::would_block};
+        }
         const std::uint64_t control_deadline = defer_drop
             ? tsbpd_clock_->delivery_time(packet.control.timestamp)
             : 0U;
@@ -944,18 +985,7 @@ ReliabilityProcessResult ReliabilitySession::receive(
             && decoded.request.sequences.last.distance_from(
                    receive_buffer_.first_stored_sequence())
                 >= 0) {
-            const auto existing = std::find_if(pending_peer_drops_.begin(),
-                pending_peer_drops_.end(), [&](const PendingPeerDrop& pending) {
-                    return pending.sequences.first
-                        == decoded.request.sequences.first
-                        && pending.sequences.last
-                        == decoded.request.sequences.last;
-                });
             if (existing == pending_peer_drops_.end()) {
-                if (pending_peer_drops_.size()
-                    == pending_peer_drops_.capacity()) {
-                    return {.error = Error::buffer_too_small};
-                }
                 pending_peer_drops_.push_back(
                     {decoded.request.sequences, deadline});
             }
