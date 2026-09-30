@@ -1418,10 +1418,11 @@ ReliabilityActions ReliabilitySession::poll_timers(
                 now_microseconds, AcknowledgementKind::lite));
             break;
         case TimerActionKind::periodic_loss_report: {
+            // The scheduler already owns the 20 ms polling floor. A second
+            // per-range floor would delay new gaps on low-RTT connections.
             const std::uint64_t retry_interval =
-                std::max<std::uint64_t>(minimum_nak_interval_microseconds,
-                    static_cast<std::uint64_t>(rtt_.smoothed_microseconds())
-                        + 4ULL * rtt_.variation_microseconds());
+                static_cast<std::uint64_t>(rtt_.smoothed_microseconds())
+                + 4ULL * rtt_.variation_microseconds();
             switch (
                 packet_filter_policy_
                     .effective_arq_level()) {
