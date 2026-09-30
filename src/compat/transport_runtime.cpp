@@ -955,7 +955,9 @@ void DatagramChannel::stop() noexcept
 }
 
 bool DatagramChannel::schedule_next_locked(bool immediate,
-    std::chrono::microseconds delay, bool coarse_timer_probe) noexcept
+    std::chrono::microseconds delay, bool coarse_timer_probe,
+    std::optional<std::chrono::steady_clock::time_point>
+        absolute_deadline) noexcept
 {
     if (!running_.load(std::memory_order_relaxed) || scheduler_ == nullptr
         || scheduled_work_context_ == nullptr) {
@@ -975,7 +977,8 @@ bool DatagramChannel::schedule_next_locked(bool immediate,
         scheduled_coarse_timer_probe_ = false;
         return true;
     }
-    const auto deadline = std::chrono::steady_clock::now() + delay;
+    const auto deadline =
+        absolute_deadline.value_or(std::chrono::steady_clock::now() + delay);
     const RuntimeScheduler::ScheduleResult scheduled =
         scheduler_->schedule_at(affinity_, deadline, std::move(task));
     if (scheduled.status != RuntimeScheduler::SubmitStatus::accepted) {
@@ -1088,6 +1091,7 @@ void DatagramChannel::run_scheduled(
                 readiness_parked_ = true;
             } else {
                 auto delay = result.next_work_delay.value_or(idle_wait_);
+                auto deadline = result.next_work_deadline;
                 // A read can follow this runtime's poll while the channel is
                 // still active. Keep a bounded follow-up instead of parking
                 // or waiting for a distant keepalive in that race.
@@ -1096,9 +1100,13 @@ void DatagramChannel::run_scheduled(
                     delay = std::min(delay,
                         std::chrono::duration_cast<std::chrono::microseconds>(
                             idle_wait_));
+                    if (deadline.has_value()) {
+                        deadline = std::min(*deadline,
+                            std::chrono::steady_clock::now() + delay);
+                    }
                 }
                 if (!schedule_next_locked(immediate, delay,
-                        result.coarse_timer_probe && !immediate)) {
+                        result.coarse_timer_probe && !immediate, deadline)) {
                     running_.store(false, std::memory_order_release);
                     scheduling_failed = true;
                 }
@@ -1251,11 +1259,14 @@ RuntimePollResult DatagramChannel::run_once() noexcept
 }
 
 RuntimePollResult DatagramChannel::poll_connections(
-    std::optional<std::chrono::steady_clock::time_point> injected_now) noexcept
+    std::optional<std::chrono::steady_clock::time_point> injected_now,
+    std::chrono::steady_clock::time_point (*clock)(void*) noexcept,
+    void* clock_context) noexcept
 {
     const auto current_time = [&] {
-        return injected_now.has_value() ? *injected_now
-                                        : std::chrono::steady_clock::now();
+        return clock != nullptr        ? clock(clock_context)
+            : injected_now.has_value() ? *injected_now
+                                       : std::chrono::steady_clock::now();
     };
     {
         std::lock_guard lock(routes_mutex_);
@@ -1285,7 +1296,6 @@ RuntimePollResult DatagramChannel::poll_connections(
         }
         // Keep the runtime alive through a concurrent unregister, without
         // holding the route table across protocol work or nonblocking sends.
-        const auto polled_at = current_time();
         const auto result = runtime->poll(remaining_send_attempts);
         poll_round_immediate_ |= result.immediate_work;
         const bool can_wait =
@@ -1302,7 +1312,13 @@ RuntimePollResult DatagramChannel::poll_connections(
                       idle_wait_));
         // Store an absolute deadline: each continuation must not restart an
         // earlier connection's pacing/backpressure/idle wait.
-        const auto deadline = polled_at + delay;
+        const auto relative_deadline = current_time() + delay;
+        const auto deadline = !injected_now.has_value() && clock == nullptr
+                && result.next_work_deadline.has_value()
+            ? (can_wait
+                      ? *result.next_work_deadline
+                      : std::min(*result.next_work_deadline, relative_deadline))
+            : relative_deadline;
         if (!poll_round_deadline_.has_value()
             || deadline < *poll_round_deadline_) {
             poll_round_deadline_ = deadline;
@@ -1341,16 +1357,21 @@ RuntimePollResult DatagramChannel::poll_connections(
         next_coarse_timer_probe_ = now + coarse_timer_probe_interval_;
         return {.next_work_delay = delay,
             .receive_wait_safe = can_wait,
-            .coarse_timer_probe = true};
+            .coarse_timer_probe = true,
+            .next_work_deadline = poll_round_deadline_};
     }
-    return {.next_work_delay = delay, .receive_wait_safe = can_wait};
+    return {.next_work_delay = delay,
+        .receive_wait_safe = can_wait,
+        .next_work_deadline = poll_round_deadline_};
 #else
     // Keep the pre-CR-12 cooperative pacing behavior on Windows and other
     // platforms, including the immediate continuation for due deadlines.
     if (delay < std::chrono::milliseconds {1}) {
         return {.immediate_work = true};
     }
-    return {.next_work_delay = delay, .receive_wait_safe = can_wait};
+    return {.next_work_delay = delay,
+        .receive_wait_safe = can_wait,
+        .next_work_deadline = poll_round_deadline_};
 #endif
 }
 
@@ -1861,10 +1882,43 @@ bool ConnectionRuntime::has_buffered_receive_data() noexcept
     return session_.receive_buffer().occupied() != 0U;
 }
 
+RuntimeReceiveSnapshot ConnectionRuntime::receive_snapshot(
+    SequenceNumber expected, bool retire_consumed_prefix) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (retire_consumed_prefix) {
+        (void)discard_received_before_locked(expected);
+    }
+    const auto now = now_microseconds();
+    const bool serviced = service_receiver_tlpktdrop_locked(now);
+    const auto& buffer = session_.receive_buffer();
+    RuntimeReceiveSnapshot result {
+        .floor_sequence = buffer.first_stored_sequence(),
+        .complete_expected = buffer.first_stored_sequence() == expected
+            && buffer.has_complete_message(),
+        .buffered = buffer.occupied() != 0U,
+    };
+    if (serviced && session_.message_ready_at(now)) {
+        result.readable_sequence = buffer.first_stored_sequence();
+    }
+    if (!result.readable_sequence.has_value() && !locally_closed_) {
+        result.next_delivery = session_.data_ready_at(now)
+            ? std::optional<Clock::time_point> {Clock::now()}
+            : next_receive_wakeup_locked(now);
+    }
+    return result;
+}
+
 bool ConnectionRuntime::discard_received_before(
     SequenceNumber next_sequence) noexcept
 {
     std::lock_guard lock(mutex_);
+    return discard_received_before_locked(next_sequence);
+}
+
+bool ConnectionRuntime::discard_received_before_locked(
+    SequenceNumber next_sequence) noexcept
+{
     const SequenceNumber previous_sequence =
         session_.receive_buffer().first_stored_sequence();
     const Error result = session_.discard_received_before(
@@ -3573,6 +3627,11 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     return {
         .next_work_delay =
             std::chrono::microseconds {pace.next_ready_microseconds - current},
+        .next_work_deadline = now_function_ == nullptr
+            ? deadline_from_origin_microseconds(
+                  origin_, pace.next_ready_microseconds)
+            : deadline_after_relative_microseconds(
+                  current, pace.next_ready_microseconds),
     };
 }
 
@@ -3734,6 +3793,12 @@ bool ConnectionRuntime::peer_closed() const noexcept
 {
     std::lock_guard lock(mutex_);
     return peer_closed_;
+}
+
+bool ConnectionRuntime::terminal() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    return broken_ || peer_closed_;
 }
 
 bool ConnectionRuntime::readable() noexcept
