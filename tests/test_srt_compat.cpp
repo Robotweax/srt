@@ -83,6 +83,58 @@ robotweax::srt::UdpIoResult send_distinct_peer_initial_sequence(
         std::span {response}.first(bytes.size()), peer);
 }
 
+struct ReplacedKeyResponse {
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+    int variant = 0;
+    std::atomic_int replacements = 0;
+
+    ~ReplacedKeyResponse()
+    {
+        channel->set_send_hook_for_testing(nullptr, nullptr);
+    }
+};
+
+robotweax::srt::UdpIoResult replace_key_response(
+    std::span<const std::byte> bytes, robotweax::srt::IpEndpoint peer,
+    void* context) noexcept
+{
+    using namespace robotweax::srt;
+    auto& replacement = *static_cast<ReplacedKeyResponse*>(context);
+    const auto decoded = decode_handshake_datagram(bytes);
+    if (!decoded
+        || decoded.message.packet.request != HandshakeRequest::conclusion
+        || !decoded.message.has_key_material_extension) {
+        return replacement.channel->socket.send_to(bytes, peer);
+    }
+    HandshakeAction response;
+    response.kind = HandshakeActionKind::send;
+    response.packet = decoded.message.packet;
+    response.has_handshake_extension = decoded.message.has_handshake_extension;
+    response.extension_type = decoded.message.extension_type;
+    response.extension_parameters = decoded.message.extension_parameters;
+    response.has_key_material_extension = replacement.variant != 0;
+    response.key_material_extension_type =
+        HandshakeExtensionType::key_material_response;
+    if (response.has_key_material_extension) {
+        const auto state = encode_key_material_state(replacement.variant == 1
+                ? CryptoState::no_secret
+                : CryptoState::bad_secret);
+        std::copy(
+            state.begin(), state.end(), response.key_material.bytes.begin());
+        response.key_material.size = state.size();
+    }
+    std::array<std::byte, 1'500> datagram {};
+    const auto encoded =
+        encode_handshake_datagram(response, decoded.control.timestamp,
+            decoded.control.destination_socket_id, datagram);
+    if (!encoded) {
+        return {.error = encoded.error};
+    }
+    ++replacement.replacements;
+    return replacement.channel->socket.send_to(
+        std::span {datagram}.first(encoded.bytes_written), peer);
+}
+
 struct InductionReplay {
     ~InductionReplay()
     {
@@ -3066,6 +3118,68 @@ TEST(srt_compat_encryption_works_without_an_advertised_key_length)
     REQUIRE_EQ(srt_close(listener), 0);
 }
 
+TEST(srt_compat_caller_distinguishes_missing_and_wrong_peer_secrets)
+{
+    for (const bool synchronous : {true, false}) {
+        for (int variant = 0; variant < 3; ++variant) {
+            ScopedSrtRuntime runtime;
+            REQUIRE_EQ(runtime.startup_result, 0);
+            const SRTSOCKET listener = srt_create_socket();
+            const SRTSOCKET caller = srt_create_socket();
+            REQUIRE(listener != SRT_INVALID_SOCK);
+            REQUIRE(caller != SRT_INVALID_SOCK);
+            constexpr char secret[] = "robotweax-rejection-fixture";
+            for (const auto socket : {listener, caller}) {
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_PASSPHRASE, secret,
+                               static_cast<int>(sizeof(secret) - 1U)),
+                    0);
+            }
+            REQUIRE_EQ(srt_setsockflag(caller, SRTO_RCVSYN, &synchronous,
+                           static_cast<int>(sizeof(synchronous))),
+                0);
+            sockaddr_in address {};
+            address.sin_family = AF_INET;
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            REQUIRE_EQ(srt_bind(listener, reinterpret_cast<sockaddr*>(&address),
+                           static_cast<int>(sizeof(address))),
+                0);
+            int size = static_cast<int>(sizeof(address));
+            REQUIRE_EQ(srt_getsockname(listener,
+                           reinterpret_cast<sockaddr*>(&address), &size),
+                0);
+            REQUIRE_EQ(srt_listen(listener, 4), 0);
+            const auto record =
+                robotweax::srt::compat::SocketRegistry::instance().find(
+                    listener);
+            REQUIRE(record != nullptr);
+            ReplacedKeyResponse replacement {record->channel, variant};
+            replacement.channel->set_send_hook_for_testing(
+                replace_key_response, &replacement);
+            const int poll = srt_epoll_create();
+            REQUIRE(poll >= 0);
+            const int events = SRT_EPOLL_ERR;
+            REQUIRE_EQ(srt_epoll_add_usock(poll, caller, &events), 0);
+            const int result = srt_connect(
+                caller, reinterpret_cast<sockaddr*>(&address), size);
+            if (synchronous) {
+                REQUIRE_EQ(result, SRT_ERROR);
+                REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESECFAIL);
+            } else {
+                REQUIRE_EQ(result, 0);
+                std::array<SRT_EPOLL_EVENT, 1> ready {};
+                REQUIRE_EQ(srt_epoll_uwait(poll, ready.data(), 1, 5'000), 1);
+                REQUIRE_EQ(ready[0].events, SRT_EPOLL_ERR);
+            }
+            REQUIRE(replacement.replacements.load() > 0);
+            REQUIRE_EQ(srt_getrejectreason(caller),
+                variant == 2 ? SRT_REJ_BADSECRET : SRT_REJ_UNSECURE);
+            REQUIRE_EQ(srt_epoll_release(poll), 0);
+            REQUIRE_EQ(srt_close(caller), 0);
+            REQUIRE_EQ(srt_close(listener), 0);
+        }
+    }
+}
+
 TEST(srt_compat_listener_reports_key_state_under_optional_encryption)
 {
     // Reference behaviour with SRTO_ENFORCEDENCRYPTION=false: a listener that
@@ -3794,6 +3908,18 @@ TEST(srt_compat_encrypted_rendezvous_peers_exchange_a_message)
     REQUIRE_EQ(srt_setsockflag(right, SRTO_FC, &right_flow_window,
                    static_cast<int>(sizeof(right_flow_window))),
         0);
+    constexpr std::int32_t left_receive_packets = 48;
+    constexpr std::int32_t right_receive_packets = 64;
+    constexpr std::int32_t left_receive_bytes =
+        left_receive_packets * (1'500 - 28);
+    constexpr std::int32_t right_receive_bytes =
+        right_receive_packets * (1'500 - 28);
+    REQUIRE_EQ(srt_setsockflag(left, SRTO_RCVBUF, &left_receive_bytes,
+                   static_cast<int>(sizeof(left_receive_bytes))),
+        0);
+    REQUIRE_EQ(srt_setsockflag(right, SRTO_RCVBUF, &right_receive_bytes,
+                   static_cast<int>(sizeof(right_receive_bytes))),
+        0);
     std::int32_t left_initial_sequence = -1;
     int left_initial_sequence_size =
         static_cast<int>(sizeof(left_initial_sequence));
@@ -3954,8 +4080,8 @@ TEST(srt_compat_encrypted_rendezvous_peers_exchange_a_message)
     SRT_TRACEBSTATS right_statistics {};
     REQUIRE_EQ(srt_bstats(left, &left_statistics, 0), 0);
     REQUIRE_EQ(srt_bstats(right, &right_statistics, 0), 0);
-    REQUIRE_EQ(left_statistics.pktFlowWindow, right_flow_window);
-    REQUIRE_EQ(right_statistics.pktFlowWindow, left_flow_window);
+    REQUIRE_EQ(left_statistics.pktFlowWindow, right_receive_packets);
+    REQUIRE_EQ(right_statistics.pktFlowWindow, left_receive_packets);
 
     std::int32_t connected_left_initial_sequence = -1;
     left_initial_sequence_size =
@@ -4147,6 +4273,15 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_FC, &listener_flow_window,
                    static_cast<int>(sizeof(listener_flow_window))),
         0);
+    constexpr std::int32_t listener_receive_packets = 48;
+    constexpr std::int32_t caller_receive_packets = 64;
+    constexpr std::int32_t listener_receive_bytes =
+        listener_receive_packets * (1'500 - 28);
+    constexpr std::int32_t caller_receive_bytes =
+        caller_receive_packets * (1'500 - 28);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVBUF, &listener_receive_bytes,
+                   static_cast<int>(sizeof(listener_receive_bytes))),
+        0);
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_PEERIDLETIMEO,
                    &listener_peer_idle_milliseconds,
                    static_cast<int>(sizeof(listener_peer_idle_milliseconds))),
@@ -4249,6 +4384,9 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
     REQUIRE_EQ(srt_setsockflag(caller, SRTO_FC, &caller_flow_window,
                    static_cast<int>(sizeof(caller_flow_window))),
         0);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_RCVBUF, &caller_receive_bytes,
+                   static_cast<int>(sizeof(caller_receive_bytes))),
+        0);
     const int connect_result = srt_connect(caller,
         reinterpret_cast<const sockaddr*>(&listener_name),
         static_cast<int>(sizeof(listener_name)));
@@ -4298,8 +4436,8 @@ TEST(srt_compat_blocking_caller_and_listener_complete_an_ipv4_handshake)
     SRT_TRACEBSTATS listener_statistics {};
     REQUIRE_EQ(srt_bstats(caller, &caller_statistics, 0), 0);
     REQUIRE_EQ(srt_bstats(accepted.load(), &listener_statistics, 0), 0);
-    REQUIRE_EQ(caller_statistics.pktFlowWindow, listener_flow_window);
-    REQUIRE_EQ(listener_statistics.pktFlowWindow, caller_flow_window);
+    REQUIRE_EQ(caller_statistics.pktFlowWindow, listener_receive_packets);
+    REQUIRE_EQ(listener_statistics.pktFlowWindow, caller_receive_packets);
     REQUIRE_EQ(callback_observation.calls, 1);
     REQUIRE_EQ(callback_observation.socket, accepted.load());
     REQUIRE_EQ(callback_observation.handshake_version, 5);
@@ -4748,9 +4886,14 @@ TEST(
     bind_address.sin_port = 0;
     bind_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
+    constexpr std::int32_t receive_packets = 64;
+    constexpr std::int32_t receive_bytes = receive_packets * (1'500 - 28);
     ListenCallbackObservation callback_observation;
     const SRTSOCKET listener = srt_create_socket();
     REQUIRE(listener != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVBUF, &receive_bytes,
+                   static_cast<int>(sizeof(receive_bytes))),
+        0);
     REQUIRE_EQ(srt_listen_callback(listener, observe_listener_connection,
                    &callback_observation),
         0);
@@ -4822,6 +4965,8 @@ TEST(
     REQUIRE_EQ(response.message.packet.socket_id,
         static_cast<std::uint32_t>(listener));
     REQUIRE(response.message.packet.syn_cookie != 0U);
+    REQUIRE_EQ(response.message.packet.flow_window,
+        static_cast<std::uint32_t>(receive_packets));
 
     // Once the peer commits to genuine HSv4, reject it canonically without
     // admission, callback publication, or an accepted socket allocation.

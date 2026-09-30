@@ -109,6 +109,13 @@ struct ActionResult {
     int rejection_reason = SRT_REJ_UNKNOWN;
 };
 
+[[nodiscard]] std::uint32_t advertised_flow_window(
+    const SocketOptions& native, const PublicSocketOptions& options) noexcept
+{
+    return static_cast<std::uint32_t>(std::min(native.receive_buffer_packets(),
+        static_cast<std::size_t>(options.flow_window_packets)));
+}
+
 [[nodiscard]] int crypto_rejection_reason(
     const CryptoSession& crypto, int fallback) noexcept
 {
@@ -1424,20 +1431,26 @@ public:
             // reference implementation's default without SRTO_PBKEYLEN); the
             // echoed key material then defines the key length on its own.
             const std::uint16_t advertised = message.packet.encryption_field;
-            if ((advertised != 0U
-                    && key_length_for_encryption_field(advertised)
-                        != setup_.crypto_key_length)
-                || !message.has_key_material_extension
-                || message.key_material_extension_type
-                    != HandshakeExtensionType::key_material_response
+            const bool key_length_matches = advertised == 0U
+                || key_length_for_encryption_field(advertised)
+                    == setup_.crypto_key_length;
+            const bool has_response = message.has_key_material_extension
+                && message.key_material_extension_type
+                    == HandshakeExtensionType::key_material_response;
+            if (!key_length_matches || !has_response
                 || setup_.crypto->acknowledge_key_material(
                        message.key_material.view(), true)
                     != Error::none) {
                 if (setup_.enforced_encryption
                     || !setup_.crypto->allows_plaintext_fallback()) {
                     return fail_connect(socket_, SRT_ESECFAIL, 0, asynchronous_,
-                        crypto_rejection_reason(
-                            *setup_.crypto, SRT_REJ_BADSECRET));
+                        crypto_rejection_reason(*setup_.crypto,
+                            key_length_matches
+                                    && (!has_response
+                                        || setup_.crypto->sender_state()
+                                            == CryptoState::no_secret)
+                                ? SRT_REJ_UNSECURE
+                                : SRT_REJ_BADSECRET));
                 }
                 // Optional encryption: keep encrypting with the local key
                 // instead of releasing plaintext, as the reference does. The
@@ -3233,8 +3246,8 @@ int connect_socket(
                     SequenceNumber {socket->connection_initial_sequence},
                 .maximum_transmission_unit = static_cast<std::uint32_t>(
                     socket->public_options.maximum_segment_size),
-                .flow_window = static_cast<std::uint32_t>(
-                    socket->public_options.flow_window_packets),
+                .flow_window = advertised_flow_window(
+                    socket->native_options, socket->public_options),
                 .timeout_milliseconds = retry_interval_milliseconds,
                 .maximum_retries = retry_budget(setup.timeout_milliseconds),
                 .extension_parameters =
@@ -3358,8 +3371,8 @@ int connect_socket(
                 SequenceNumber {socket->connection_initial_sequence},
             .maximum_transmission_unit = static_cast<std::uint32_t>(
                 socket->public_options.maximum_segment_size),
-            .flow_window = static_cast<std::uint32_t>(
-                socket->public_options.flow_window_packets),
+            .flow_window = advertised_flow_window(
+                socket->native_options, socket->public_options),
             .timeout_milliseconds = retry_interval_milliseconds,
             .maximum_retries = retry_budget(setup.timeout_milliseconds),
             .extension_parameters =
@@ -3808,8 +3821,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         .initial_sequence = SequenceNumber {connection_sequence},
         .maximum_transmission_unit =
             static_cast<std::uint32_t>(public_options.maximum_segment_size),
-        .flow_window =
-            static_cast<std::uint32_t>(public_options.flow_window_packets),
+        .flow_window = advertised_flow_window(native_options, public_options),
         .timeout_milliseconds = retry_interval_milliseconds,
         .maximum_retries = retry_budget(timeout_milliseconds),
         .encryption_field =
@@ -3994,8 +4006,8 @@ bool ListenerRuntime::start() noexcept
             .listener_socket_id = listener->protocol_socket_id,
             .maximum_transmission_unit = static_cast<std::uint32_t>(
                 listener->public_options.maximum_segment_size),
-            .flow_window = static_cast<std::uint32_t>(
-                listener->public_options.flow_window_packets),
+            .flow_window = advertised_flow_window(
+                listener->native_options, listener->public_options),
             .encryption_field = static_cast<std::uint16_t>(
                 encryption_field_for_key_length(listener->native_options
                         .configured_encryption_key_length())),
