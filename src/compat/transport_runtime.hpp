@@ -423,6 +423,7 @@ public:
     using Clock = std::chrono::steady_clock;
     using NowFunction = std::uint64_t (*)(void*) noexcept;
     using ReceivePopHook = void (*)(void*) noexcept;
+    using CloseRetryHook = void (*)(void*) noexcept;
 
     struct Configuration {
         std::weak_ptr<DatagramChannel> channel;
@@ -459,6 +460,10 @@ public:
         // under this runtime's lock. Never installed by the public API.
         ReceivePopHook receive_pop_hook_for_testing = nullptr;
         void* receive_pop_context_for_testing = nullptr;
+        // Internal deterministic-test seam before a close retry pause.
+        // Never installed by the public API.
+        CloseRetryHook close_retry_hook_for_testing = nullptr;
+        void* close_retry_context_for_testing = nullptr;
     };
 
     explicit ConnectionRuntime(Configuration configuration);
@@ -702,6 +707,8 @@ private:
     void* now_context_ = nullptr;
     ReceivePopHook receive_pop_hook_for_testing_ = nullptr;
     void* receive_pop_context_for_testing_ = nullptr;
+    CloseRetryHook close_retry_hook_for_testing_ = nullptr;
+    void* close_retry_context_for_testing_ = nullptr;
     std::size_t flow_window_packets_ = 1;
     int system_error_ = 0;
     bool locally_closed_ = false;

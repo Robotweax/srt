@@ -121,6 +121,11 @@ cadence.
 On close, the runtime submits a pending cumulative ACK before SHUTDOWN. If
 local UDP submission would block, it retries at 1 ms intervals within a shared
 10 ms close-drain budget, including an ACK already queued by a timer poll.
+The runtime becomes locally closed before this drain and releases its mutex
+during retry pauses, allowing the channel's scheduler shard to continue serving
+other connections. New sends, queued packet processing, and duplicate close
+calls cannot extend the closing FIFO. The calling thread still performs the
+bounded synchronous drain.
 The budget uses the steady clock, independently of the protocol clock. A
 permanent send error or exhausted budget ends the attempt; SHUTDOWN is not
 submitted ahead of an unsent final ACK. This is a bounded local-send attempt,

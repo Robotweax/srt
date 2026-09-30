@@ -6541,6 +6541,56 @@ TEST(compat_runtime_receiver_tlpktdrop_sends_a_cumulative_ack)
     REQUIRE_EQ(statistics.total.receiver_dropped.packets, 1U);
 }
 
+TEST(compat_runtime_closed_receive_drops_a_due_gap_without_sending_controls)
+{
+    auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {.address = {192, 0, 2, 15}, .port = 11'005};
+    std::uint64_t now = 1'010;
+    ConnectionRuntime runtime {{.channel = channel,
+        .peer = peer,
+        .peer_socket_id = 302,
+        .initial_sequence = SequenceNumber {3'200},
+        .negotiated_options = {.receive_tsbpd = true,
+            .too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
+            .periodic_nak = true,
+            .retransmit_flag = true,
+            .receive_delay_milliseconds = 120},
+        .origin = ConnectionRuntime::Clock::now(),
+        .handshake_arrival_microseconds = 1'000,
+        .peer_handshake_timestamp = PacketTimestamp {0},
+        .now_function = injected_now,
+        .now_context = &now}};
+    const std::array payload {std::byte {'p'}};
+    PacketView data {.kind = PacketKind::data,
+        .data = {.sequence = SequenceNumber {3'201},
+            .message_number = 2,
+            .boundary = MessageBoundary::solo,
+            .timestamp = PacketTimestamp {50}},
+        .payload = payload};
+    runtime.process_packet(data, peer);
+    (void)take_datagrams(output);
+    runtime.close();
+    const auto close_datagrams = take_datagrams(output);
+    REQUIRE(!close_datagrams.empty());
+    REQUIRE_EQ(decode_packet(close_datagrams.back()).packet.control.type,
+        ControlType::shutdown);
+    // An internal receiver can still consume already buffered data. Its
+    // expired gap must not produce another ACK after the close-owned FIFO.
+    now = 121'050;
+    std::array<std::byte, 1> received {};
+    REQUIRE_EQ(runtime.receive_message(received, false, -1).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(received, payload);
+    REQUIRE_EQ(
+        runtime.statistics(false, true).total.receiver_dropped.packets, 1U);
+    REQUIRE(take_datagrams(output).empty());
+    REQUIRE_EQ(runtime.receive_message(received, false, -1).status,
+        MessageIoStatus::local_closed);
+}
+
 TEST(compat_runtime_peer_error_wakes_a_blocked_sender_once)
 {
     const auto channel =
@@ -8861,6 +8911,142 @@ TEST(compat_channel_fairness_idle_round_preserves_elapsed_deadline)
             REQUIRE_EQ(clock->reads, reads_per_poll);
         }
         REQUIRE(fixture.attempted_ids.empty());
+    }
+}
+
+TEST(compat_runtime_close_backpressure_releases_the_scheduler_shard)
+{
+    struct RetryGate {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool entered = false;
+        bool released = false;
+
+        static void pause(void* context) noexcept
+        {
+            auto& gate = *static_cast<RetryGate*>(context);
+            std::unique_lock lock(gate.mutex);
+            gate.entered = true;
+            gate.changed.notify_all();
+            gate.changed.wait(lock, [&] {
+                return gate.released;
+            });
+        }
+    } gate;
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {1, 8, 8});
+    REQUIRE(scheduler->start());
+    auto channel = std::make_shared<DatagramChannel>();
+    BackpressureOutput blocked_output;
+    channel->set_send_hook_for_testing(backpressure_datagram, &blocked_output);
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::transmission_type, 1), Error::none);
+    std::uint64_t now = 100;
+    const Ipv4Endpoint peer {.address = {192, 0, 2, 91}, .port = 15091};
+    ConnectionRuntime closing {{.channel = channel,
+        .peer = peer,
+        .peer_socket_id = 910,
+        .initial_sequence = SequenceNumber {700},
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now(),
+        .now_function = injected_now,
+        .now_context = &now,
+        .close_retry_hook_for_testing = RetryGate::pause,
+        .close_retry_context_for_testing = &gate}};
+    const std::array payload {std::byte {'x'}};
+    PacketView data {.kind = PacketKind::data,
+        .data = {.sequence = SequenceNumber {700},
+            .message_number = 1,
+            .boundary = MessageBoundary::solo},
+        .payload = payload};
+    closing.process_packet(data, peer);
+
+    auto healthy_channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams healthy_output;
+    healthy_channel->set_send_hook_for_testing(
+        capture_datagram, &healthy_output);
+    ConnectionRuntime healthy {{.channel = healthy_channel,
+        .peer = peer,
+        .peer_socket_id = 911,
+        .initial_sequence = SequenceNumber {900},
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now(),
+        .now_function = injected_now,
+        .now_context = &now}};
+    REQUIRE_EQ(healthy.queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+
+    struct PollTask {
+        ConnectionRuntime* closing;
+        ConnectionRuntime* healthy;
+        PacketView data;
+        Ipv4Endpoint peer;
+        std::promise<MessageIoStatus> completed;
+
+        static void run(void* context) noexcept
+        {
+            auto& task = *static_cast<PollTask*>(context);
+            (void)task.closing->poll();
+            // A queued receive and a concurrent duplicate close must not
+            // extend or replace the FIFO owned by the first close caller.
+            task.closing->process_packet(task.data, task.peer);
+            const auto queued = task.closing->queue_message(
+                task.data.payload, 0, true, false, -1);
+            task.closing->close();
+            (void)task.healthy->poll();
+            task.completed.set_value(queued.status);
+        }
+    };
+    auto task = std::make_shared<PollTask>();
+    task->closing = &closing;
+    task->healthy = &healthy;
+    task->data = data;
+    task->data.data.sequence = SequenceNumber {701};
+    task->data.data.message_number = 2;
+    task->peer = peer;
+    auto completed = task->completed.get_future();
+    auto closer = std::async(std::launch::async, [&] {
+        closing.close();
+    });
+    bool retry_entered;
+    {
+        std::unique_lock lock(gate.mutex);
+        retry_entered =
+            gate.changed.wait_for(lock, std::chrono::seconds {2}, [&] {
+                return gate.entered;
+            });
+    }
+    const auto submitted =
+        scheduler->submit(0, {.function = PollTask::run, .context = task});
+    // The retry gate, rather than a sub-10 ms timing assertion, keeps close
+    // suspended until this same-shard poll and the healthy send complete.
+    const bool shard_progress = completed.wait_for(std::chrono::seconds {2})
+        == std::future_status::ready;
+    const auto healthy_datagrams = take_datagrams(healthy_output);
+    {
+        std::lock_guard lock(gate.mutex);
+        gate.released = true;
+    }
+    gate.changed.notify_all();
+    closer.get();
+    scheduler->stop();
+    // Always release the gate and join both workers before asserting, so
+    // this regression also fails cleanly with the old close implementation.
+    REQUIRE(retry_entered);
+    REQUIRE_EQ(submitted, RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE(shard_progress);
+    REQUIRE_EQ(completed.get(), MessageIoStatus::local_closed);
+    REQUIRE_EQ(healthy_datagrams.size(), 1U);
+    REQUIRE_EQ(
+        decode_packet(healthy_datagrams.front()).packet.kind, PacketKind::data);
+    REQUIRE(take_datagrams(blocked_output.accepted).empty());
+    for (const auto& attempt : blocked_output.attempts) {
+        const auto packet = decode_packet(attempt);
+        REQUIRE(packet);
+        REQUIRE_EQ(packet.packet.control.type, ControlType::acknowledgement);
+        const auto ack = decode_acknowledgement(packet.packet);
+        REQUIRE(ack);
+        REQUIRE_EQ(ack.acknowledgement.next_sequence, SequenceNumber {701});
     }
 }
 
