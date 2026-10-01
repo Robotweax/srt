@@ -105,8 +105,9 @@ checks, not maximum-capacity or real-WAN guarantees.
 
 ## Distribution status
 
-No 0.2.7 download assets, source archive hash, signed SDK checksum or Homebrew
-bottle is accepted yet. Package recipes still select 0.2.6 until the immutable
-0.2.7 product source is committed, archived, verified and repinned separately.
+No 0.2.7 download assets, signed SDK checksum or Homebrew bottle is accepted
+yet. The package recipes select byte-verified product commit
+`f254dd2c0fe084f7965238756b1d3b96665d592b`; archive SHA-256 is
+`7ba68805f66bca1da4e0d509d33aedab239a4de57ba9affb4db1481d4205c908`. Package qualification remains pending.
 Record exact source and tag commits, CI run links and post-signing checksums
 before changing this section to published status.
