@@ -74,6 +74,9 @@ struct GroupRecord {
     std::uint64_t snapshot_version = 0;
     std::uint64_t update_version = 0;
     std::uint64_t next_member_generation = 1;
+    // Generations increase in insertion order until wrap. Protected by mutex;
+    // a wrapped live membership retains the original exact linear lookup.
+    bool member_generations_ordered = true;
     std::uint32_t initial_sequence = 0;
     std::uint32_t next_send_sequence = 0;
     std::uint32_t next_send_message = 1;
