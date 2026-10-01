@@ -1,5 +1,14 @@
 # Package manager recipes
 
+## 0.2.7 preparation
+
+The source tree is preparing 0.2.7, but the recipes below still select the
+published 0.2.6 archive. They must be repinned and requalified before 0.2.7
+publication; a version-only source change does not update installed packages.
+See the [0.2.7 release process](../docs/release-process-0.2.7.md).
+
+## Published 0.2.6 recipes
+
 These recipes target the immutable Robotweax SRT 0.2.6 source commit
 `7ecb60ea8b4faca01ed86237b0cc9dc906350f6e`. This includes the rapid listener restart correction from PR #77.
 Source package and bottle requalification passed, and 0.2.6 was
