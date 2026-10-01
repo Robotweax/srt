@@ -710,6 +710,11 @@ private:
     std::array<PacketView, 1>
         single_fec_reconstructed_packet_{};
     std::optional<std::uint64_t> last_key_material_send_microseconds_;
+    void observe_key_sequence_position(
+        std::uint64_t position, std::uint64_t now) noexcept;
+    std::optional<std::uint64_t> key_rate_sample_microseconds_;
+    std::uint64_t key_rate_sample_position_ = 0;
+    std::uint64_t key_peak_sequence_rate_ = 0;
     std::optional<std::uint64_t> last_key_material_error_microseconds_;
     std::optional<std::uint64_t> last_uncached_kmreq_microseconds_;
     NowFunction now_function_ = nullptr;

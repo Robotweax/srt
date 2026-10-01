@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
@@ -20,6 +21,50 @@ import run_live_timing_interop as timing_interop  # noqa: E402
 
 
 class LiveTimingInteropTests(unittest.TestCase):
+    def test_capture_cannot_claim_the_reserved_srt_listener_port(self) -> None:
+        original_reservation = timing_interop.reserved_udp_ports
+        for host, family in (("127.0.0.1", socket.AF_INET), ("::1", socket.AF_INET6)):
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as temp:
+                endpoint_ports: tuple[int, ...] = ()
+
+                @contextmanager
+                def reserve(count: int, address: str):
+                    nonlocal endpoint_ports
+                    with original_reservation(count, address) as ports:
+                        endpoint_ports = ports
+                        yield ports
+
+                def capture(address: str, expected: int):
+                    self.assertEqual(address, host)
+                    self.assertEqual(expected, 1)
+                    self.assertEqual(len(endpoint_ports), 1)
+                    # An ephemeral capture bind must still be unable to
+                    # acquire the listener's selected port at this point.
+                    with socket.socket(family, socket.SOCK_DGRAM) as probe:
+                        with self.assertRaises(OSError):
+                            probe.bind((host, endpoint_ports[0]))
+                    result = mock.MagicMock()
+                    result.port = 9000
+                    result.__enter__.return_value = result
+                    return result
+
+                def start_listener(*_args, **_kwargs):
+                    # Release the reservation before the native child binds.
+                    with socket.socket(family, socket.SOCK_DGRAM) as probe:
+                        probe.bind((host, endpoint_ports[0]))
+                    raise RuntimeError("stop before native listener startup")
+
+                with (
+                    mock.patch.object(timing_interop, "reserved_udp_ports", reserve),
+                    mock.patch.object(timing_interop, "UdpCapture", side_effect=capture),
+                    mock.patch.object(timing_interop.subprocess, "Popen", side_effect=start_listener),
+                    self.assertRaisesRegex(RuntimeError, "stop before native listener startup"),
+                ):
+                    timing_interop.run_measurement(
+                        Path("timing-peer"), Path("sender-peer"), "binary-1200",
+                        1, 7_520_000, 120, 10, host, host, Path(temp),
+                    )
+
     def test_requested_raw_evidence_survives_validation_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

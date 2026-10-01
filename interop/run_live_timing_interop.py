@@ -3404,6 +3404,7 @@ def run_measurement(
                 faults,
                 host=host,
             )
+            udp_capture = UdpCapture(udp_host, message_count)
         relay_context = closing(rendezvous_relay)
     else:
         # Keep the listener port occupied while constructing a relay so the
@@ -3439,12 +3440,15 @@ def run_measurement(
                 )
             else:
                 relay_context = nullcontext(None)
+            # The handoff capture also binds an ephemeral UDP port. Keep
+            # the SRT endpoint reserved until this socket has been bound.
+            udp_capture = UdpCapture(udp_host, message_count)
     environment = os.environ.copy()
     if security.encrypted:
         environment[PASSPHRASE_ENVIRONMENT] = secrets.token_hex(24)
 
     with (
-        UdpCapture(udp_host, message_count) as udp_capture,
+        udp_capture,
         relay_context as relay,
         listener_stdout_path.open("w", encoding="utf-8")
         as listener_stdout,

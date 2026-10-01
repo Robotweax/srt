@@ -434,6 +434,9 @@ public:
         return unacknowledged_sending_;
     }
     [[nodiscard]] Error prepare_rotation() noexcept;
+    // A runtime may announce earlier to cover its observed exchange horizon.
+    // This never changes the refresh boundary or the configured minimum.
+    void set_preannouncement_floor(std::uint64_t sequence_positions) noexcept;
     [[nodiscard]] Error note_data_packet_sent() noexcept;
     // Before selecting/encrypting new DATA, account for skipped positions in
     // the monotonic send-buffer sequence space. Repeated peeks are idempotent.
@@ -635,6 +638,7 @@ private:
     std::uint32_t refresh_rate_packets_ = default_key_refresh_rate;
     std::uint32_t preannouncement_packets_ =
         default_key_preannouncement;
+    std::uint64_t preannouncement_floor_ = 0;
     KeySlot transmit_even_{};
     KeySlot transmit_odd_{};
     KeySlot receive_even_{};
