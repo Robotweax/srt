@@ -300,6 +300,24 @@ The configured preannouncement counts sequence positions; at high packet rates
 or after repeated control loss it can still be shorter than the exchange time,
 so new DATA waits at the refresh boundary as described below.
 
+Size this window for the highest expected rate of consumed sequence positions,
+including positions skipped by TTL or too-late packet drop. For a steady rate
+`R` positions/second, round-trip time `T` seconds, and up to `L` consecutive
+lost KMREQ attempts or their responses, a starting estimate is
+`preannouncement >= ceil(R * (T + L * retry_interval))`. Allow additional
+margin for bursts, scheduling delay and RTT variation. Use the initial
+100-ms retry interval when no RTT sample is available. This is a configuration
+estimate, not a delivery guarantee or automatic rate adaptation; sustained
+control loss can exhaust any finite window. The effective half-refresh cap
+below still applies, so increase the refresh interval within its supported
+key budget when the required window does not fit.
+
+For example, at 40,000 positions/second and 40-ms SRTT, the retry interval is
+60 ms. A window for two lost attempts and the successful exchange needs at
+least 6,400 positions before adding margin. The default 4,096-position window
+covers about 102 ms at that rate. Set `SRTO_KMPREANNOUNCE` before connecting;
+the library continues to pause safely if the successor key is not confirmed.
+
 The DATA IV is derived from the salt and the 31-bit sequence number, so the
 key lifetime is measured in consumed sequence numbers, not in transmitted
 packets. Sequence numbers that are skipped without a DATA packet being sent,

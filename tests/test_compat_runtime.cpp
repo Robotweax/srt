@@ -4520,6 +4520,197 @@ TEST(compat_runtime_gcm_ipv6_reserves_the_tag_at_the_mss_boundary)
         receiver_statistics.total.received.payload_bytes, plaintext.size());
 }
 
+namespace {
+
+void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t step,
+    std::uint32_t preannouncement, unsigned losses, bool lose_response)
+{
+    const CryptoConfiguration configuration {
+        .passphrase = "rotation loss horizon fixture",
+        .mode = mode,
+        .enable_aes_gcm = mode == CryptoMode::aes_gcm,
+        .key_length = 16,
+        .refresh_rate_packets = 1'025,
+        .preannouncement_packets = preannouncement,
+    };
+    auto crypto = std::make_shared<CryptoSession>(configuration);
+    CryptoSession receiver {configuration};
+    REQUIRE_EQ(crypto->start_initiator(), Error::none);
+    REQUIRE_EQ(
+        receiver.accept_key_material(crypto->pending_key_material(), false),
+        Error::none);
+    REQUIRE_EQ(crypto->acknowledge_key_material(
+                   receiver.key_material_response(), false),
+        Error::none);
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {{192, 0, 2, 24}, 14'004};
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 8), Error::none);
+    std::uint64_t now = 1'000'000;
+    const SequenceNumber initial {SequenceNumber::mask - 1'030U};
+    ConnectionRuntime sender {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 240,
+        .initial_sequence = initial,
+        .flow_window_packets = 64,
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now(),
+        .crypto = crypto,
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+    std::array<std::byte, 64> ack_storage {};
+    const auto ack = encode_acknowledgement_payload(
+        {.kind = AcknowledgementKind::small,
+            .next_sequence = initial,
+            .round_trip_time_microseconds = 4'000,
+            .round_trip_time_variance_microseconds = 1,
+            .available_receive_buffer_packets = 64},
+        ack_storage);
+    REQUIRE(ack);
+    sender.process_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::acknowledgement},
+            .payload = std::span {ack_storage}.first(ack.bytes_written)},
+        peer);
+    unsigned sent = 0;
+    unsigned queued = 0;
+    unsigned requests = 0;
+    unsigned rotations = 0;
+    unsigned stalled = 0;
+    std::optional<std::uint64_t> last_request;
+    std::optional<std::uint64_t> response_due;
+    std::vector<std::byte> pending_request;
+    std::vector<std::byte> pending_response;
+    constexpr unsigned messages = 2'052;
+    for (unsigned iteration = 0; iteration < 10'000 && sent < messages;
+        ++iteration, now += step) {
+        if (response_due.has_value() && now >= *response_due) {
+            sender.process_packet(
+                {.kind = PacketKind::control,
+                    .control = {.type = ControlType::user_defined,
+                        .subtype = key_material_response_subtype},
+                    .payload = pending_response},
+                peer);
+            REQUIRE(crypto->pending_key_material().empty());
+            response_due.reset();
+            pending_request.clear();
+            requests = 0;
+            last_request.reset();
+            ++rotations;
+        }
+        if (queued == sent) {
+            const std::array payload {static_cast<std::byte>(queued & 0xffU)};
+            REQUIRE_EQ(sender.queue_message(payload, 0, true, false, -1).status,
+                MessageIoStatus::success);
+            ++queued;
+        }
+        (void)sender.poll();
+        bool data_sent = false;
+        for (const auto& bytes : take_datagrams(output)) {
+            const auto packet = decode_packet(bytes);
+            REQUIRE(packet);
+            if (packet.packet.kind == PacketKind::data) {
+                REQUIRE(!packet.packet.data.retransmitted);
+                REQUIRE_EQ(packet.packet.data.sequence, initial.advanced(sent));
+                std::array<std::byte, 1> clear {};
+                if (mode == CryptoMode::aes_gcm) {
+                    REQUIRE_EQ(receiver.open(packet.packet.data,
+                                   packet.packet.payload.first(1),
+                                   packet.packet.payload.subspan(1), clear),
+                        Error::none);
+                } else {
+                    REQUIRE_EQ(
+                        receiver.decrypt(packet.packet.data.encryption_key,
+                            packet.packet.data.sequence, packet.packet.payload,
+                            clear),
+                        Error::none);
+                }
+                REQUIRE_EQ(clear[0], static_cast<std::byte>(sent & 0xffU));
+                receiver.note_accepted_receive_sequence(
+                    packet.packet.data.sequence);
+                const auto acknowledged = encode_acknowledgement_payload(
+                    {.kind = AcknowledgementKind::small,
+                        .next_sequence = packet.packet.data.sequence.next(),
+                        .round_trip_time_microseconds = 4'000,
+                        .round_trip_time_variance_microseconds = 1,
+                        .available_receive_buffer_packets = 64},
+                    ack_storage);
+                REQUIRE(acknowledged);
+                sender.process_packet(
+                    {.kind = PacketKind::control,
+                        .control = {.type = ControlType::acknowledgement},
+                        .payload = std::span {ack_storage}.first(
+                            acknowledged.bytes_written)},
+                    peer);
+                ++sent;
+                data_sent = true;
+            } else if (packet.packet.control.type == ControlType::user_defined
+                && packet.packet.control.subtype
+                    == key_material_request_subtype) {
+                if (pending_request.empty()) {
+                    pending_request.assign(packet.packet.payload.begin(),
+                        packet.packet.payload.end());
+                } else {
+                    REQUIRE(std::equal(pending_request.begin(),
+                        pending_request.end(), packet.packet.payload.begin(),
+                        packet.packet.payload.end()));
+                }
+                if (last_request.has_value()) {
+                    REQUIRE_EQ(now - *last_request, 10'000U);
+                }
+                last_request = now;
+                if (++requests <= losses) {
+                    if (lose_response) {
+                        REQUIRE_EQ(receiver.accept_key_material(
+                                       packet.packet.payload, false),
+                            Error::none);
+                    }
+                    continue;
+                }
+                REQUIRE(!response_due.has_value());
+                REQUIRE_EQ(
+                    receiver.accept_key_material(packet.packet.payload, false),
+                    Error::none);
+                const auto response = receiver.key_material_response();
+                pending_response.assign(response.begin(), response.end());
+                response_due = now + 4'000U;
+            }
+        }
+        if (!data_sent) {
+            ++stalled;
+        }
+        REQUIRE(!sender.broken());
+    }
+    REQUIRE_EQ(sent, messages);
+    REQUIRE_EQ(rotations, 2U);
+    REQUIRE_EQ(queued, sent);
+    // The wider configured horizon covers two retries plus
+    // one round trip even at 10k sequence positions/second.
+    REQUIRE_EQ(stalled == 0U, preannouncement == 256U);
+}
+
+} // namespace
+
+TEST(compat_runtime_rotation_loss_preserves_payload_and_configured_key_budget)
+{
+    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        for (const std::uint64_t step : {100U, 1'000U}) {
+            for (const std::uint32_t preannouncement : {1U, 256U}) {
+                for (const unsigned losses : {0U, 1U, 2U}) {
+                    for (const bool lose_response : {false, true}) {
+                        check_rotation_loss_horizon(
+                            mode, step, preannouncement, losses, lose_response);
+                    }
+                }
+            }
+        }
+    }
+}
+
 TEST(compat_runtime_sends_each_new_rotation_request_without_retry_delay)
 {
     const auto channel = std::make_shared<DatagramChannel>();
