@@ -5646,3 +5646,68 @@ TEST(compat_group_member_identity_updates_preserve_generation_wrap_and_reuse)
         }
     }
 }
+
+TEST(compat_group_send_result_buffers_keep_large_member_outcomes_exact)
+{
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        for (const unsigned count : {1U, 16U, 17U, 64U}) {
+            for (const bool congested_prefix : {false, true}) {
+                const auto group = srt_create_group(type);
+                const auto record = GroupRegistry::instance().find(group);
+                REQUIRE(record != nullptr);
+                const auto initial = record->initial_sequence;
+                const auto target = SequenceNumber {initial}.advanced(
+                    congested_prefix ? 1U : 0U);
+                record->next_send_sequence = target.value();
+                record->next_send_message = congested_prefix ? 2U : 1U;
+                const bool nonblocking = false;
+                REQUIRE_EQ(srt_setsockflag(group, SRTO_SNDSYN, &nonblocking,
+                               sizeof(nonblocking)),
+                    0);
+                std::array<SRTSOCKET, 64> sockets {};
+                const std::array<std::byte, 1> older {std::byte {'o'}};
+                for (unsigned index = 0; index < count; ++index) {
+                    sockets[index] = srt_create_socket();
+                    REQUIRE(sockets[index] != SRT_INVALID_SOCK);
+                    const auto runtime = attach_group_runtime(group,
+                        sockets[index],
+                        congested_prefix && index + 1U < count ? initial
+                                                               : target.value(),
+                        static_cast<std::uint16_t>(count - index), nullptr, 1U);
+                    if (congested_prefix && index + 1U < count) {
+                        REQUIRE_EQ(
+                            runtime
+                                ->queue_group_message(older,
+                                    SequenceNumber {initial}, 1U, 0, false, -1)
+                                .status,
+                            robotweax::srt::compat::MessageIoStatus::success);
+                    }
+                }
+                std::array<SRT_SOCKGROUPDATA, 64> data {};
+                SRT_MSGCTRL control = srt_msgctrl_default;
+                control.grpdata = data.data();
+                control.grpdata_size = data.size();
+                const char payload = 'n';
+                REQUIRE_EQ(srt_sendmsg2(group, &payload, 1, &control), 1);
+                REQUIRE_EQ(control.grpdata_size, count);
+                REQUIRE_EQ(
+                    static_cast<std::uint32_t>(control.pktseq), target.value());
+                REQUIRE_EQ(record->next_send_sequence, target.next().value());
+                for (unsigned index = 0; index < count; ++index) {
+                    REQUIRE_EQ(data[index].id, sockets[index]);
+                    REQUIRE_EQ(data[index].sockstate, SRTS_CONNECTED);
+                    const bool blocked = congested_prefix && index + 1U < count;
+                    const bool successful = type == SRT_GTYPE_BROADCAST
+                        ? !blocked
+                        : index == (congested_prefix ? count - 1U : 0U);
+                    REQUIRE_EQ(data[index].memberstate,
+                        successful ? SRT_GST_RUNNING : SRT_GST_IDLE);
+                    REQUIRE_EQ(data[index].result,
+                        successful ? 1
+                                   : (blocked ? SRT_EASYNCSND : SRT_SUCCESS));
+                }
+                REQUIRE_EQ(srt_close(group), 0);
+            }
+        }
+    }
+}
