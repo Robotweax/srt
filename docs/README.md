@@ -87,6 +87,8 @@ combining features.
 - [Incremental SRT epoll readiness](epoll-readiness.md)
 - [Loss-list prefix compaction](loss-list-compaction.md)
 - [Throughput profiling and empty-receive-buffer experiment](throughput-profiling.md)
+- [K43 many-connection host qualification](k43-host-qualification.md) —
+  native 64/256-connection CPU evidence and separate idle/dispatch timer metrics.
 - [CR-12 sub-millisecond pacing qualification](cr12-pacer-qualification.md) —
   native timer measurements, throughput, CPU, latency, and recovery evidence.
 

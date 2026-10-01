@@ -122,3 +122,6 @@ real UDP, scheduler dispatch and peer ACKs: its slice duration bounds a source
 of worker occupancy, but is neither measured application latency nor network
 throughput. End-to-end multi-connection, platform and reference-interoperability
 qualification is a separate final gate.
+
+See [K43 host qualification](k43-host-qualification.md) for native macOS
+64/256-connection CPU/transport evidence and the extended scheduler timer probe.
