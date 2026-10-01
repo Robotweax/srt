@@ -91,3 +91,55 @@ for 1, 16, 17 and 64 members in both modes; this is not a capacity test.
 Any follow-up production optimization requires profiling to separate transport,
 application polling and payload verification costs. An isolated allocation or
 metadata improvement is not automatically an end-to-end throughput improvement.
+
+## macOS qualification, 2026-10-01
+
+On Apple M1 Ultra (20 logical CPUs, 64 GiB RAM), 60 serial runs covered both modes,
+2/8/16/32/64 members, 10,000 messages of 1,316 bytes per run and three repeats per
+variant. Both peers used the same Release toolchain and OpenSSL 3.6.3. Baseline
+`89cf10dcf0ade0481ddc132c1849cb9779e6ddad` precedes PR #166; candidate diagnostic
+commit `86a9b97` has the production sources of main
+`fe0daf65be0fc0118d40bfdfef03b584543b7cf6`. The only production diff is #166's
+send-result bookkeeping change. These measurements do not attribute cumulative
+gains to earlier PF20 changes.
+
+All 60 runs passed exact payload/SHA-256 and membership/copy checks. There were
+no reported transport drops or DATA retransmissions. Each Broadcast sender sent
+exactly the member count times 10,000 unique DATA packets; Backup sent 10,000
+unique packets across its members. Measured receiver durations ranged from
+0.525 to 8.733 seconds. The application window and verification overhead remain
+part of this workload; no other builds or tests ran concurrently with this series.
+
+The following values are medians of three runs. CPU is sender plus receiver
+process CPU seconds per fixed workload; it is not a CPU utilization percentage.
+
+| Mode | Members | Before useful Mbit/s | After useful Mbit/s | After CPU seconds | After delivery p99 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Broadcast | 2 | 119.87 | 119.45 | 0.368 | 122.41 |
+| Broadcast | 8 | 89.10 | 88.49 | 1.275 | 122.62 |
+| Broadcast | 16 | 66.70 | 67.21 | 3.636 | 122.08 |
+| Broadcast | 32 | 24.94 | 25.00 | 13.486 | 124.63 |
+| Broadcast | 64 | 12.26 | 12.11 | 28.063 | 129.28 |
+| Backup | 2 | 194.36 | 194.00 | 0.212 | 121.78 |
+| Backup | 8 | 188.70 | 193.75 | 0.253 | 121.73 |
+| Backup | 16 | 193.30 | 193.60 | 0.316 | 121.68 |
+| Backup | 32 | 186.19 | 191.00 | 0.455 | 121.68 |
+| Backup | 64 | 186.89 | 183.98 | 0.766 | 122.35 |
+
+Median throughput changes range from -1.6% to +2.7% across these profiles, with
+mixed signs and overlapping observed ranges in most cases. This provides no
+consistent end-to-end throughput gain attributable to #166. It preserves the
+previously demonstrated allocation benefit without promoting it to a bandwidth
+claim. Large Broadcast groups consume substantially more CPU and useful
+throughput falls as copies increase; Backup's CPU also rises with idle membership.
+Profiling must separate required copy work, transport scheduling/receive scans and
+this application's member-buffer polling before choosing another optimization.
+
+This is macOS loopback qualification for a healthy, unencrypted fixed workload.
+Linux/Windows capacity, real independent paths, encrypted throughput, outages,
+long sustained transfers and alternative application windows remain open.
+An exploratory run's startup failures came from the diagnostic's two-step member
+size/fetch race; the final peer reserves its supported maximum before reading
+joining members. Those failed runs are retained separately and excluded from the
+qualified series. A further start barrier places both stats baselines before the
+first measured DATA packet.
