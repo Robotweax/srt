@@ -290,8 +290,9 @@ to reuse a DATA key in both directions, and not a finding about an upstream
 public-API vulnerability. Robotweax's direction-separation implementation and
 regressions are independently authored; no upstream code or tests are copied.
 
-At `refresh_rate - preannouncement`, the sender creates the inactive key and
-sends a wrapped KMREQ. It retries the same request until the matching KMRSP is
+By `refresh_rate - preannouncement`, the sender creates the inactive key and
+sends a wrapped KMREQ; the adaptive window below may bring this forward. It
+retries the same request until the matching KMRSP is
 received, then changes the DATA selector at the refresh boundary. Runtime
 retries wait `max(1.5 * SRTT, 10 ms)` after successful UDP submission once
 an RTT observation is available; before that, the interval is 100 ms. A matching
