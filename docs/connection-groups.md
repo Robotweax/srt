@@ -283,12 +283,21 @@ With asynchronous receive enabled on an empty connected group, receive returns
 
 `SRT_EPOLL_UPDATE` reports a nonterminal membership change, such as a later
 member joining or one path becoming broken while another remains usable.
-Failure of the last nonterminal member exposes terminal `IN|OUT|ERR` readiness.
+Failure of the last nonterminal member exposes terminal `IN|OUT|ERR` readiness
+once the logical receive path is drained. After peer SHUTDOWN, accepted messages
+retain their TSBPD deadlines and become readable before terminal ERR is exposed.
+A subscription to only `OUT|ERR` cannot drain that pending data and may continue
+to wait. Subscribe to `IN` as well and consume the remaining messages, or close
+the group explicitly when the application chooses to abandon them.
 `srt_epoll_wait` does not consume UPDATE; use `srt_epoll_uwait` when subscribing
 to that event.
 
 Group operations never hold the membership lock across member I/O or
 application callbacks.
+Each member's epoll state is sampled under one runtime lock, including send
+capacity, terminal state and delayed SHUTDOWN delivery. Group refresh still
+resolves and scans the current members; it does not retain a readiness cache
+across membership or runtime changes.
 
 ## Configuration limits
 
