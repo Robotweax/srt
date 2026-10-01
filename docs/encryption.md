@@ -328,8 +328,12 @@ the first usable rate sample, a burst before the next rate sample, and an RTT
 increase from 4 ms to 50 ms, with zero or two lost requests or responses.
 These transition profiles check exact payload delivery, safe DATA pauses and
 recovery after key confirmation without exceeding the configured key budget.
-They qualify these controlled profiles, not network throughput or arbitrary
-loss recovery.
+A further profile drops key requests or responses for two seconds during each
+rotation and changes the peer RTT from 4 ms to 50 ms and back while DATA is
+paused. It checks unchanged retry material, the current RTT retry floor, exact
+payload recovery and the key budget across both rotations and sequence wrap.
+These tests qualify controlled profiles, not network throughput, complete
+network outages or arbitrary loss recovery.
 
 For example, at 40,000 positions/second and 40-ms SRTT, the retry interval is
 60 ms. A window for two lost attempts and the successful exchange needs at

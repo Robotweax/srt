@@ -4531,14 +4531,23 @@ TEST(compat_runtime_gcm_ipv6_reserves_the_tag_at_the_mss_boundary)
 
 namespace {
 
-enum class RotationProfile { steady, fast_startup, rate_burst, rtt_increase };
+enum class RotationProfile {
+    steady,
+    fast_startup,
+    rate_burst,
+    rtt_increase,
+    control_blackout
+};
 
 void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
     std::uint32_t preannouncement, unsigned losses, bool lose_response,
     RotationProfile profile = RotationProfile::steady)
 {
     const std::uint32_t refresh =
-        profile == RotationProfile::fast_startup ? 33U : 1'025U;
+        (profile == RotationProfile::fast_startup
+            || profile == RotationProfile::control_blackout)
+        ? 33U
+        : 1'025U;
     const std::size_t payload_size =
         profile == RotationProfile::steady ? 1U : 8U;
     const auto step_for = [profile, steady_step](
@@ -4551,7 +4560,13 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
         }
         return steady_step;
     };
-    const auto rtt_for = [profile](unsigned sent) -> std::uint32_t {
+    const auto rtt_for = [profile](unsigned sent,
+                             std::uint64_t exchange_elapsed) -> std::uint32_t {
+        if (profile == RotationProfile::control_blackout) {
+            return exchange_elapsed >= 250'000U && exchange_elapsed < 1'000'000U
+                ? 50'000U
+                : 4'000U;
+        }
         return profile == RotationProfile::rtt_increase && sent >= 500U
             ? 50'000U
             : 4'000U;
@@ -4613,6 +4628,10 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
     unsigned rotations = 0;
     unsigned stalled = 0;
     unsigned budget_pauses = 0;
+    unsigned blackout_dropped = 0;
+    unsigned rtt_changes = 0;
+    std::uint32_t observed_rtt = 4'000U;
+    std::optional<std::uint64_t> blackout_start;
     std::optional<std::uint64_t> last_request;
     std::optional<std::uint64_t> response_due;
     std::vector<std::byte> pending_request;
@@ -4623,7 +4642,8 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
     for (unsigned iteration = 0; iteration < iteration_limit && sent < messages;
         ++iteration) {
         const auto step = step_for(sent);
-        const auto rtt = rtt_for(sent);
+        const auto rtt = rtt_for(
+            sent, blackout_start.has_value() ? now - *blackout_start : 0U);
         if (response_due.has_value() && now >= *response_due) {
             sender.process_packet(
                 {.kind = PacketKind::control,
@@ -4633,10 +4653,32 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
                 peer);
             REQUIRE(crypto->pending_key_material().empty());
             response_due.reset();
+            blackout_start.reset();
             pending_request.clear();
             requests = 0;
             last_request.reset();
             ++rotations;
+        }
+        if (rtt != observed_rtt) {
+            // A valid duplicate ACK can update the peer RTT while DATA waits
+            // for key confirmation. Exercise both an increase and a decrease.
+            const auto estimate = encode_acknowledgement_payload(
+                {.kind = AcknowledgementKind::small,
+                    .next_sequence = initial.advanced(sent),
+                    .round_trip_time_microseconds = rtt,
+                    .round_trip_time_variance_microseconds =
+                        rtt == 4'000U ? 1U : 2'000U,
+                    .available_receive_buffer_packets = 64},
+                ack_storage);
+            REQUIRE(estimate);
+            sender.process_packet(
+                {.kind = PacketKind::control,
+                    .control = {.type = ControlType::acknowledgement},
+                    .payload =
+                        std::span {ack_storage}.first(estimate.bytes_written)},
+                peer);
+            observed_rtt = rtt;
+            ++rtt_changes;
         }
         if (queued == sent) {
             std::array<std::byte, 8> payload {};
@@ -4703,6 +4745,10 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
             } else if (packet.packet.control.type == ControlType::user_defined
                 && packet.packet.control.subtype
                     == key_material_request_subtype) {
+                if (profile == RotationProfile::control_blackout
+                    && !blackout_start.has_value()) {
+                    blackout_start = now;
+                }
                 if (pending_request.empty()) {
                     pending_request.assign(packet.packet.payload.begin(),
                         packet.packet.payload.end());
@@ -4720,7 +4766,12 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
                     }
                 }
                 last_request = now;
-                if (++requests <= losses) {
+                ++requests;
+                const bool drop = profile == RotationProfile::control_blackout
+                    ? now - *blackout_start < 2'000'000U
+                    : requests <= losses;
+                if (drop) {
+                    ++blackout_dropped;
                     if (lose_response) {
                         REQUIRE_EQ(receiver.accept_key_material(
                                        packet.packet.payload, false),
@@ -4758,6 +4809,10 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
     REQUIRE_EQ(sent, messages);
     REQUIRE_EQ(rotations, 2U);
     REQUIRE_EQ(queued, sent);
+    if (profile == RotationProfile::control_blackout) {
+        REQUIRE(blackout_dropped > 4U);
+        REQUIRE_EQ(rtt_changes, 4U);
+    }
     if (profile != RotationProfile::steady) {
         if (profile != RotationProfile::rtt_increase || losses > 0U) {
             REQUIRE(budget_pauses > 0U);
@@ -4807,6 +4862,16 @@ TEST(compat_runtime_rotation_transitions_preserve_payload_and_key_budget)
                         mode, 100U, 1U, losses, lose_response, profile);
                 }
             }
+        }
+    }
+}
+
+TEST(compat_runtime_rotation_control_blackout_preserves_budget_and_recovers)
+{
+    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        for (const bool lose_response : {false, true}) {
+            check_rotation_loss_horizon(mode, 100U, 1U, 0U, lose_response,
+                RotationProfile::control_blackout);
         }
     }
 }
