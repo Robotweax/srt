@@ -183,6 +183,65 @@ class ScalabilityScorecardTests(unittest.TestCase):
         self.assertEqual(arguments.profiles, ["robotweax-self"])
         self.assertIsNone(arguments.reference_peer)
 
+    def test_monitor_accepts_completion_written_before_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            stdout = directory / "stdout"
+            stderr = directory / "stderr"
+            stdout.write_text("")
+            stderr.write_text("")
+            process = mock.Mock(pid=1234, returncode=0)
+
+            def observe_exit() -> int:
+                stdout.write_text(
+                    json.dumps({
+                        "event": "complete", "role": "listener",
+                    }) + "\n"
+                )
+                return 0
+
+            process.poll.side_effect = observe_exit
+            peer = scalability_scorecard.PeerProcess(
+                process, "listener", "robotweax", 0,
+                stdout, stderr, mock.Mock(), mock.Mock(),
+            )
+            with mock.patch.object(
+                scalability_scorecard, "sample_linux_processes",
+                return_value=None,
+            ), mock.patch.object(
+                scalability_scorecard, "terminate_all",
+            ) as terminate:
+                completed, exited, _ = scalability_scorecard.monitor_processes(
+                    [peer], 5, 0.005,
+                )
+            self.assertLessEqual(completed, exited)
+            terminate.assert_not_called()
+
+    def test_monitor_rejects_exit_without_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            stdout = directory / "stdout"
+            stderr = directory / "stderr"
+            stdout.write_text("")
+            stderr.write_text("")
+            process = mock.Mock(pid=1234, returncode=0)
+            process.poll.return_value = 0
+            peer = scalability_scorecard.PeerProcess(
+                process, "listener", "robotweax", 0,
+                stdout, stderr, mock.Mock(), mock.Mock(),
+            )
+            with mock.patch.object(
+                scalability_scorecard, "sample_linux_processes",
+                return_value=None,
+            ), mock.patch.object(
+                scalability_scorecard, "terminate_all",
+            ) as terminate, self.assertRaisesRegex(
+                scalability_scorecard.ScorecardFailure,
+                "a peer exited before transfer completion",
+            ):
+                scalability_scorecard.monitor_processes([peer], 5, 0.005)
+            terminate.assert_called_once_with([peer])
+
     def test_profile_orchestration_validates_every_output(self) -> None:
         fake_peer_source = f"""#!{sys.executable}
 import hashlib

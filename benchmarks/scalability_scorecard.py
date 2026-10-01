@@ -473,6 +473,12 @@ def monitor_processes(
     while True:
         now = time.monotonic()
         peaks.observe(sample_linux_processes(processes))
+        # Observe exits before reading output: an exited peer has finished
+        # writing, while a live peer can complete between these observations.
+        exited = {
+            peer.process.pid: peer.process.poll() is not None
+            for peer in processes
+        }
         completion = {
             peer.process.pid: complete_event(
                 read_output(peer.stdout_path), peer.role
@@ -481,7 +487,7 @@ def monitor_processes(
         }
         for peer in processes:
             if (
-                peer.process.poll() is not None
+                exited[peer.process.pid]
                 and completion[peer.process.pid] is None
             ):
                 terminate_all(processes)
@@ -496,7 +502,7 @@ def monitor_processes(
         all_complete = all(event is not None for event in completion.values())
         if all_complete and complete_observed_at is None:
             complete_observed_at = now
-        if all(peer.process.poll() is not None for peer in processes):
+        if all(exited.values()):
             exited_at = time.monotonic()
             return complete_observed_at or exited_at, exited_at, peaks
         if now >= deadline:

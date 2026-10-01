@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import socket
 import struct
@@ -25,6 +26,15 @@ class LiveTimingInteropTests(unittest.TestCase):
         original_reservation = timing_interop.reserved_udp_ports
         for host, family in (("127.0.0.1", socket.AF_INET), ("::1", socket.AF_INET6)):
             with self.subTest(host=host), tempfile.TemporaryDirectory() as temp:
+                if family == socket.AF_INET6:
+                    try:
+                        with socket.socket(family, socket.SOCK_DGRAM) as probe:
+                            probe.bind((host, 0))
+                    except OSError as error:
+                        if error.errno in (errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT,
+                                           errno.EADDRNOTAVAIL):
+                            self.skipTest(f"IPv6 loopback unavailable: {error}")
+                        raise
                 endpoint_ports: tuple[int, ...] = ()
 
                 @contextmanager

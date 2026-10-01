@@ -107,10 +107,26 @@ class CiTestRegistrationTests(unittest.TestCase):
             cmake,
         )
         commands = {name: arguments.split() for name, arguments in registrations}
-        self.assertEqual(len(registrations), 2)
+        empty_selection_checks = {
+            "robotweax_srt_rejects_empty_test_selection": ["robotweax_nonexistent_test_filter"],
+            "robotweax_srt_rejects_empty_exclusion_selection": ["--exclude", '""'],
+            "robotweax_srt_rejects_invalid_test_arguments": ["--unknown"],
+        }
+        self.assertEqual(len(registrations), 2 + len(empty_selection_checks))
         self.assertEqual(set(commands), {
             "robotweax_srt_tests", "robotweax_srt_rotation_tests",
+            *empty_selection_checks,
         })
+        for name, arguments in empty_selection_checks.items():
+            self.assertEqual(commands[name], arguments)
+        properties = re.search(
+            r"set_tests_properties\((robotweax_srt_rejects_empty_test_selection.*?)\)",
+            cmake, re.DOTALL,
+        )
+        self.assertIsNotNone(properties)
+        for name in empty_selection_checks:
+            self.assertIn(name, properties.group(1))
+        self.assertIn("PROPERTIES WILL_FAIL TRUE", properties.group(1))
         included = commands["robotweax_srt_rotation_tests"]
         self.assertEqual(len(included), 1)
         self.assertTrue(included[0])

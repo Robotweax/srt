@@ -55,6 +55,9 @@ The unfiltered `robotweax_srt_tests` run includes the compatibility cases;
 CTest does not repeat that subset in a second invocation. To diagnose only
 compatibility cases in a static build, run `./build/robotweax_srt_tests compat_`
 (or the executable in the configuration directory of a multi-config build).
+An inclusion or exclusion that selects no native cases exits with an error.
+Malformed runner arguments also fail instead of silently selecting cases.
+
 This filtered command does not replace the complete suite or the separate
 lifecycle and process-exit tests.
 

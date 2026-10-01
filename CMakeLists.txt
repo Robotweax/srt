@@ -354,6 +354,16 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         robotweax_srt_tests robotweax_srt_rotation_tests
         PROPERTIES TIMEOUT 30)
     set_tests_properties(robotweax_srt_rotation_tests PROPERTIES LABELS "encryption")
+    add_test(NAME robotweax_srt_rejects_empty_test_selection
+        COMMAND robotweax_srt_tests robotweax_nonexistent_test_filter)
+    add_test(NAME robotweax_srt_rejects_empty_exclusion_selection
+        COMMAND robotweax_srt_tests --exclude "")
+    add_test(NAME robotweax_srt_rejects_invalid_test_arguments
+        COMMAND robotweax_srt_tests --unknown)
+    set_tests_properties(robotweax_srt_rejects_empty_test_selection
+        robotweax_srt_rejects_empty_exclusion_selection
+        robotweax_srt_rejects_invalid_test_arguments PROPERTIES WILL_FAIL TRUE)
+
 
     add_executable(robotweax_srt_scheduler_tests
         tests/test_main.cpp
