@@ -6,14 +6,22 @@
 
 int main(int argc, char** argv)
 {
-    const std::string_view filter =
-        argc > 1 ? std::string_view{argv[1]} : std::string_view{};
+    const bool exclude = argc > 1 && std::string_view {argv[1]} == "--exclude";
+    if (exclude && argc != 3) {
+        std::cerr << "usage: " << argv[0] << " --exclude substring\n";
+        return 2;
+    }
+    std::string_view filter;
+    if (argc > 1) {
+        filter = argv[exclude ? 2 : 1];
+    }
     std::size_t failures = 0;
     std::size_t skipped = 0;
     std::size_t selected = 0;
     for (const auto& test : robotweax::srt::test::cases()) {
-        if (!filter.empty()
-            && std::string_view{test.name}.find(filter) == std::string_view::npos) {
+        const bool matches =
+            std::string_view {test.name}.find(filter) != std::string_view::npos;
+        if (!filter.empty() && matches == exclude) {
             continue;
         }
         ++selected;

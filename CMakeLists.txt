@@ -344,12 +344,16 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     target_include_directories(robotweax_srt_tests
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_features(robotweax_srt_tests PRIVATE cxx_std_20)
-    add_test(NAME robotweax_srt_tests COMMAND robotweax_srt_tests)
-    # The unfiltered run already includes every compatibility case. Keep the
-    # binary's optional filter for diagnosis, not a second CTest invocation.
+    # Keep the expensive rotation matrices in a separate bounded run. The
+    # exclusion makes these partitions disjoint; every native case runs once.
+    add_test(NAME robotweax_srt_tests
+        COMMAND robotweax_srt_tests --exclude compat_runtime_rotation_)
+    add_test(NAME robotweax_srt_rotation_tests
+        COMMAND robotweax_srt_tests compat_runtime_rotation_)
     set_tests_properties(
-        robotweax_srt_tests
+        robotweax_srt_tests robotweax_srt_rotation_tests
         PROPERTIES TIMEOUT 30)
+    set_tests_properties(robotweax_srt_rotation_tests PROPERTIES LABELS "encryption")
 
     add_executable(robotweax_srt_scheduler_tests
         tests/test_main.cpp
