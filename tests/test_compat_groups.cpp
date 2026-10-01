@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -5492,4 +5493,156 @@ TEST(compat_group_option_parity_mirror_uses_listener_then_member_values)
                    cleanup.mirror, SRTO_RCVLATENCY, &actual_latency, &size),
         0);
     REQUIRE_EQ(actual_latency, latency);
+}
+
+TEST(compat_group_member_identity_updates_remain_exact_after_compaction)
+{
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        const auto group = srt_create_group(type);
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        std::array<SRTSOCKET, 34> sockets {};
+        std::array<std::uint64_t, 34> generations {};
+        std::uint64_t group_generation = 0;
+        sockaddr_storage peer {};
+        const auto address = ipv4_address(9'123);
+        std::memcpy(&peer, &address, sizeof(address));
+        const auto add = [&](unsigned index) {
+            sockets[index] = srt_create_socket();
+            REQUIRE(sockets[index] != SRT_INVALID_SOCK);
+            REQUIRE(GroupRegistry::instance().add_member(group, sockets[index],
+                peer, 1, static_cast<int>(index), group_generation,
+                generations[index]));
+            GroupRegistry::instance().update_member(group, group_generation,
+                sockets[index], generations[index], SRTS_CONNECTED,
+                SRT_SUCCESS);
+        };
+        for (unsigned i = 0; i < 33; ++i) {
+            add(i);
+        }
+        std::uint64_t version = 0;
+        {
+            std::lock_guard lock(record->mutex);
+            REQUIRE(record->member_generations_ordered);
+            version = record->snapshot_version;
+        }
+        GroupRegistry::instance().note_io_result(group, group_generation,
+            sockets[9], generations[10], SRT_GST_RUNNING, SRT_ERROR);
+        GroupRegistry::instance().update_member(group, group_generation + 1U,
+            sockets[10], generations[10], SRTS_BROKEN, SRT_ERROR, true);
+        {
+            std::lock_guard lock(record->mutex);
+            REQUIRE_EQ(record->snapshot_version, version);
+        }
+        GroupRegistry::instance().remove_member(
+            group, group_generation, sockets[0], generations[0]);
+        add(33);
+        GroupRegistry::instance().note_io_result(group, group_generation,
+            sockets[32], generations[32], SRT_GST_RUNNING, SRT_ERROR);
+        GroupRegistry::instance().update_member(group, group_generation,
+            sockets[1], generations[1], SRTS_BROKEN, SRT_ERROR, true);
+        {
+            std::lock_guard lock(record->mutex);
+            REQUIRE(record->member_generations_ordered);
+            REQUIRE_EQ(record->members.size(), 33U);
+            REQUIRE_EQ(record->members.front().public_data.id, sockets[1]);
+            REQUIRE_EQ(
+                record->members.front().public_data.sockstate, SRTS_BROKEN);
+            REQUIRE_EQ(record->members[31].public_data.id, sockets[32]);
+            REQUIRE_EQ(
+                record->members[31].public_data.memberstate, SRT_GST_RUNNING);
+            REQUIRE_EQ(record->members[31].public_data.result, SRT_ERROR);
+            REQUIRE_EQ(record->members.back().public_data.id, sockets[33]);
+            REQUIRE_EQ(
+                record->members.back().public_data.sockstate, SRTS_CONNECTED);
+            REQUIRE_EQ(record->update_version, 1U);
+            version = record->snapshot_version;
+        }
+        GroupRegistry::instance().note_io_result(group, group_generation,
+            sockets[0], generations[0], SRT_GST_RUNNING, SRT_ERROR);
+        {
+            std::lock_guard lock(record->mutex);
+            REQUIRE_EQ(record->snapshot_version, version);
+        }
+        REQUIRE_EQ(srt_close(group), 0);
+        REQUIRE_EQ(srt_close(sockets[0]), 0);
+    }
+}
+
+TEST(compat_group_member_identity_updates_preserve_generation_wrap_and_reuse)
+{
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        const auto group = srt_create_group(type);
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        std::array<SRTSOCKET, 5> sockets {};
+        std::array<std::uint64_t, 5> generations {};
+        std::uint64_t group_generation = 0;
+        sockaddr_storage peer {};
+        const auto address = ipv4_address(9'124);
+        std::memcpy(&peer, &address, sizeof(address));
+        const auto add = [&](unsigned index) {
+            sockets[index] = srt_create_socket();
+            REQUIRE(sockets[index] != SRT_INVALID_SOCK);
+            REQUIRE(GroupRegistry::instance().add_member(group, sockets[index],
+                peer, 1, static_cast<int>(index), group_generation,
+                generations[index]));
+            GroupRegistry::instance().update_member(group, group_generation,
+                sockets[index], generations[index], SRTS_CONNECTED,
+                SRT_SUCCESS);
+        };
+        add(0);
+        {
+            std::lock_guard lock(record->mutex);
+            record->next_member_generation =
+                std::numeric_limits<std::uint64_t>::max() - 1U;
+        }
+        for (unsigned i = 1; i < 4; ++i) {
+            add(i);
+        }
+        REQUIRE_EQ(generations[0], generations[3]);
+        GroupRegistry::instance().note_io_result(group, group_generation,
+            sockets[3], generations[3], SRT_GST_RUNNING, SRT_ERROR);
+        {
+            std::lock_guard lock(record->mutex);
+            REQUIRE(!record->member_generations_ordered);
+            REQUIRE_EQ(
+                record->members[0].public_data.memberstate, SRT_GST_IDLE);
+            REQUIRE_EQ(
+                record->members[3].public_data.memberstate, SRT_GST_RUNNING);
+        }
+        GroupRegistry::instance().update_member(group, group_generation,
+            sockets[3], generations[3], SRTS_BROKEN, SRT_ERROR, true);
+        GroupRegistry::instance().remove_member(
+            group, group_generation, sockets[0], generations[0]);
+        GroupRegistry::instance().note_io_result(group, group_generation,
+            sockets[3], generations[3], SRT_GST_BROKEN, SRT_SUCCESS);
+        {
+            std::lock_guard lock(record->mutex);
+            REQUIRE_EQ(record->members.front().public_data.id, sockets[1]);
+            REQUIRE_EQ(record->members.back().public_data.id, sockets[3]);
+            REQUIRE_EQ(
+                record->members.back().public_data.sockstate, SRTS_BROKEN);
+            REQUIRE_EQ(record->members.back().public_data.result, SRT_SUCCESS);
+        }
+        for (unsigned i = 1; i < 4; ++i) {
+            GroupRegistry::instance().remove_member(
+                group, group_generation, sockets[i], generations[i]);
+        }
+        add(4);
+        GroupRegistry::instance().note_io_result(group, group_generation,
+            sockets[4], generations[4], SRT_GST_RUNNING, SRT_ERROR);
+        {
+            std::lock_guard lock(record->mutex);
+            REQUIRE(record->member_generations_ordered);
+            REQUIRE_EQ(record->members.size(), 1U);
+            REQUIRE_EQ(record->members.front().public_data.id, sockets[4]);
+            REQUIRE_EQ(record->members.front().public_data.memberstate,
+                SRT_GST_RUNNING);
+        }
+        REQUIRE_EQ(srt_close(group), 0);
+        for (unsigned i = 0; i < 4; ++i) {
+            REQUIRE_EQ(srt_close(sockets[i]), 0);
+        }
+    }
 }
