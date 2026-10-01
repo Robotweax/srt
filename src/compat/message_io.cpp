@@ -1455,18 +1455,20 @@ int receive_group_message_implementation(
 GroupReceiveReadiness group_receive_readiness(
     const std::shared_ptr<GroupRecord>& group)
 {
+    GroupReceiveReadiness readiness;
     if (group == nullptr) {
-        return {};
+        return readiness;
     }
     const auto members = group_members(group);
     if (members.empty()) {
-        return {.terminal_error = true};
+        readiness.terminal_error = true;
+        return readiness;
     }
     SequenceNumber expected;
     {
         std::lock_guard lock(group->mutex);
         if (group->closed) {
-            return {};
+            return readiness;
         }
         expected = SequenceNumber {group->next_receive_sequence};
     }
