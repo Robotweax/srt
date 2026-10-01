@@ -738,7 +738,7 @@ TEST(compat_group_listener_option_is_boolean_and_pre_connection)
 
 TEST(compat_group_receive_snapshots_preserve_members_across_inline_boundary)
 {
-    for (const std::size_t count : {16U, 17U, 32U}) {
+    for (const std::size_t count : {2U, 8U, 16U, 17U, 32U}) {
         const auto group = srt_create_group(SRT_GTYPE_BROADCAST);
         REQUIRE(group != SRT_INVALID_SOCK);
         const auto record = GroupRegistry::instance().find(group);
@@ -758,10 +758,17 @@ TEST(compat_group_receive_snapshots_preserve_members_across_inline_boundary)
             const auto socket = srt_create_socket();
             REQUIRE(socket != SRT_INVALID_SOCK);
             sockets.push_back(socket);
-            runtimes.push_back(attach_group_runtime(group, socket, initial));
+            runtimes.push_back(attach_group_runtime(group, socket, initial, 1,
+                nullptr, 0, false, 0, ConnectionRuntime::Clock::now(), record));
         }
         REQUIRE(!robotweax::srt::compat::group_receive_readiness(record)
                 .message_ready);
+        const int eid = srt_epoll_create();
+        REQUIRE(eid >= 0);
+        const int watched = SRT_EPOLL_IN | SRT_EPOLL_ERR | SRT_EPOLL_ET;
+        REQUIRE_EQ(srt_epoll_add_usock(eid, group, &watched), 0);
+        SRT_EPOLL_EVENT event {};
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 0);
         const std::array<std::byte, 4> payload {
             std::byte {1}, std::byte {2}, std::byte {3}, std::byte {4}};
         robotweax::srt::PacketView packet;
@@ -775,6 +782,10 @@ TEST(compat_group_receive_snapshots_preserve_members_across_inline_boundary)
         runtimes.back()->process_packet(packet, IpEndpoint::loopback(9'000));
         REQUIRE(robotweax::srt::compat::group_receive_readiness(record)
                 .message_ready);
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 1);
+        REQUIRE_EQ(event.fd, group);
+        REQUIRE_EQ(event.events, SRT_EPOLL_IN);
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 0);
         std::array<char, 4> received {};
         REQUIRE_EQ(srt_recvmsg2(group, received.data(),
                        static_cast<int>(received.size()), nullptr),
@@ -783,6 +794,7 @@ TEST(compat_group_receive_snapshots_preserve_members_across_inline_boundary)
             std::memcmp(received.data(), payload.data(), payload.size()), 0);
         REQUIRE(!robotweax::srt::compat::group_receive_readiness(record)
                 .message_ready);
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 0);
         REQUIRE_EQ(srt_close(sockets.back()), 0);
         packet.data.sequence = packet.data.sequence.next();
         packet.data.message_number = 2;
@@ -791,11 +803,41 @@ TEST(compat_group_receive_snapshots_preserve_members_across_inline_boundary)
         // pointer into the previous snapshot or losing the new cursor.
         REQUIRE(robotweax::srt::compat::group_receive_readiness(record)
                 .message_ready);
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 1);
+        REQUIRE_EQ(event.fd, group);
+        REQUIRE_EQ(event.events, SRT_EPOLL_IN);
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 0);
         REQUIRE_EQ(srt_recvmsg2(group, received.data(),
                        static_cast<int>(received.size()), nullptr),
             4);
         REQUIRE_EQ(
             std::memcmp(received.data(), payload.data(), payload.size()), 0);
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 0);
+        // Terminal publication must work without a separate getsockstate
+        // query, and the next refresh must see newly pending membership.
+        for (std::size_t index = 0; index + 1 < count; ++index) {
+            runtimes[index]->mark_broken(9);
+        }
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 1);
+        REQUIRE_EQ(event.events, SRT_EPOLL_IN | SRT_EPOLL_ERR);
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 0);
+        const auto pending = srt_create_socket();
+        REQUIRE(pending != SRT_INVALID_SOCK);
+        sockaddr_storage address {};
+        std::uint64_t group_generation = 0;
+        std::uint64_t member_generation = 0;
+        REQUIRE(GroupRegistry::instance().add_member(group, pending, address, 1,
+            pending, group_generation, member_generation));
+        const auto pending_record = SocketRegistry::instance().find(pending);
+        REQUIRE(pending_record != nullptr);
+        {
+            std::lock_guard lock(pending_record->mutex);
+            pending_record->group_id = group;
+            pending_record->group_generation = group_generation;
+            pending_record->member_generation = member_generation;
+        }
+        REQUIRE_EQ(srt_epoll_uwait(eid, &event, 1, 0), 0);
+        REQUIRE_EQ(srt_epoll_release(eid), 0);
         REQUIRE_EQ(srt_close(group), 0);
     }
 }

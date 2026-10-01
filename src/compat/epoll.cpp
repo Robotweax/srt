@@ -76,8 +76,6 @@ struct PollRecord {
     std::unordered_map<SRTSOCKET, Subscription> user_sockets;
     std::unordered_map<SYSSOCKET, int> system_sockets;
     std::vector<SRT_EPOLL_EVENT> user_ready_scratch;
-    std::vector<std::pair<SRTSOCKET, SRT_SOCKSTATUS>>
-        group_member_scratch;
     std::vector<SystemEvent> system_ready_scratch;
     std::vector<SystemPollDescriptor> system_poll_scratch;
     std::optional<Clock::time_point> next_user_wakeup;
@@ -213,9 +211,7 @@ private:
 #endif
 }
 
-[[nodiscard]] SubjectReadiness group_readiness(
-    SRTSOCKET handle,
-    std::vector<std::pair<SRTSOCKET, SRT_SOCKSTATUS>>& members)
+[[nodiscard]] SubjectReadiness group_readiness(SRTSOCKET handle)
 {
     const auto group = GroupRegistry::instance().find(handle);
     if (group == nullptr) {
@@ -226,80 +222,13 @@ private:
         readiness.exists = closed;
         return readiness;
     }
-
-    SubjectReadiness readiness{};
-    readiness.exists = true;
-    readiness.source = group->readiness_source;
-    bool opened = false;
-    bool closed = false;
-    members.clear();
-    {
-        std::lock_guard lock(group->mutex);
-        members.reserve(group->members.size());
-        for (const auto& member : group->members) {
-            members.emplace_back(
-                member.public_data.id,
-                member.public_data.sockstate);
-        }
-    }
-    for (const auto& member : members) {
-        (void)SocketRegistry::instance().state(member.first);
-    }
-    {
-        std::lock_guard lock(group->mutex);
-        readiness.update_version = group->update_version;
-        opened = group->opened;
-        closed = group->closed;
-        members.clear();
-        for (const auto& member : group->members) {
-            members.emplace_back(
-                member.public_data.id,
-                member.public_data.sockstate);
-        }
-    }
-
-    if (closed) {
-        readiness.events = SRT_EPOLL_ERR;
-        return readiness;
-    }
-
-    bool connected = false;
-    bool pending = false;
-    for (const auto& member : members) {
-        if (member.second == SRTS_CONNECTED) {
-            connected = true;
-            const auto member_readiness =
-                socket_readiness(member.first);
-            readiness.events |=
-                member_readiness.events & (SRT_EPOLL_OUT | SRT_EPOLL_ERR);
-        } else if (member.second != SRTS_BROKEN
-            && member.second != SRTS_CLOSING
-            && member.second != SRTS_CLOSED
-            && member.second != SRTS_NONEXIST) {
-            pending = true;
-        }
-    }
-    const GroupReceiveReadiness receive = group_receive_readiness(group);
-    if (receive.message_ready) {
-        readiness.events |= SRT_EPOLL_IN;
-    } else {
-        readiness.read_wakeup = receive.next_delivery;
-    }
-    if (opened && !connected && !pending) {
-        if (receive.terminal_error) {
-            readiness.events |= SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
-        }
-    }
-    return readiness;
+    return group_poll_readiness(group);
 }
 
-[[nodiscard]] SubjectReadiness subject_readiness(
-    SRTSOCKET handle,
-    std::vector<std::pair<SRTSOCKET, SRT_SOCKSTATUS>>& group_members)
+[[nodiscard]] SubjectReadiness subject_readiness(SRTSOCKET handle)
 {
-    return is_group_handle(handle)
-        ? group_readiness(handle, group_members)
-        : socket_readiness(handle);
+    return is_group_handle(handle) ? group_readiness(handle)
+                                   : socket_readiness(handle);
 }
 
 void remove_ready(PollRecord& record, Subscription& subscription) noexcept
@@ -401,14 +330,12 @@ void update_report(PollRecord& record, Subscription& subscription) noexcept
 void refresh_subscription(PollRecord& record, Subscription& subscription)
 {
     ++record.readiness_queries;
-    auto readiness =
-        subject_readiness(subscription.handle, record.group_member_scratch);
+    auto readiness = subject_readiness(subscription.handle);
     if (subscription.watch->bind(readiness.source)) {
         // Subscribe before the final query: a change between the initial query
         // and attachment must not leave a cached state without a notification.
         ++record.readiness_queries;
-        readiness =
-            subject_readiness(subscription.handle, record.group_member_scratch);
+        readiness = subject_readiness(subscription.handle);
         subscription.edge_seen = 0;
         subscription.low_seen = readiness.source == nullptr
             ? ReadinessSource::LowEpochs {}
@@ -663,10 +590,8 @@ int epoll_add_usock(
         return fail(SRT_EINVPOLLID);
     }
     SubjectReadiness initial;
-    std::vector<std::pair<SRTSOCKET, SRT_SOCKSTATUS>>
-        group_members;
     try {
-        initial = subject_readiness(socket, group_members);
+        initial = subject_readiness(socket);
     } catch (const std::bad_alloc&) {
         return fail(SRT_ENOBUF);
     } catch (...) {
@@ -684,8 +609,7 @@ int epoll_add_usock(
         if (record->released) {
             return fail(SRT_EINVPOLLID);
         }
-        const SubjectReadiness current =
-            subject_readiness(socket, group_members);
+        const SubjectReadiness current = subject_readiness(socket);
         if (!current.exists) {
             return fail(SRT_EINVSOCK);
         }
@@ -771,14 +695,11 @@ int epoll_update_usock(
         return fail(SRT_EINVPARAM);
     }
     try {
-        std::vector<std::pair<SRTSOCKET, SRT_SOCKSTATUS>>
-            group_members;
         std::lock_guard lock(record->mutex);
         if (record->released) {
             return fail(SRT_EINVPOLLID);
         }
-        const SubjectReadiness current =
-            subject_readiness(socket, group_members);
+        const SubjectReadiness current = subject_readiness(socket);
         if (!current.exists) {
             return fail(SRT_EINVSOCK);
         }
