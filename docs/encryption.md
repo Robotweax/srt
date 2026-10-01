@@ -322,6 +322,15 @@ exhaust the adaptive window. The effective half-refresh cap
 below still applies, so increase the refresh interval within its supported
 key budget when the required window does not fit.
 
+The deterministic runtime tests cover both CTR and GCM across two rotations
+and sequence wrap. Besides steady rates, they exercise a fast startup before
+the first usable rate sample, a burst before the next rate sample, and an RTT
+increase from 4 ms to 50 ms, with zero or two lost requests or responses.
+These transition profiles check exact payload delivery, safe DATA pauses and
+recovery after key confirmation without exceeding the configured key budget.
+They qualify these controlled profiles, not network throughput or arbitrary
+loss recovery.
+
 For example, at 40,000 positions/second and 40-ms SRTT, the retry interval is
 60 ms. A window for two lost attempts and the successful exchange needs at
 least 6,400 positions before adding margin. The default 4,096-position window

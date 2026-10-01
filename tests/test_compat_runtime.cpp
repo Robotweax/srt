@@ -4531,15 +4531,37 @@ TEST(compat_runtime_gcm_ipv6_reserves_the_tag_at_the_mss_boundary)
 
 namespace {
 
-void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t step,
-    std::uint32_t preannouncement, unsigned losses, bool lose_response)
+enum class RotationProfile { steady, fast_startup, rate_burst, rtt_increase };
+
+void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
+    std::uint32_t preannouncement, unsigned losses, bool lose_response,
+    RotationProfile profile = RotationProfile::steady)
 {
+    const std::uint32_t refresh =
+        profile == RotationProfile::fast_startup ? 33U : 1'025U;
+    const std::size_t payload_size =
+        profile == RotationProfile::steady ? 1U : 8U;
+    const auto step_for = [profile, steady_step](
+                              unsigned sent) -> std::uint64_t {
+        if (profile == RotationProfile::fast_startup) {
+            return 10U;
+        }
+        if (profile == RotationProfile::rate_burst) {
+            return sent < 950U ? 1'000U : sent < 1'400U ? 10U : 2'000U;
+        }
+        return steady_step;
+    };
+    const auto rtt_for = [profile](unsigned sent) -> std::uint32_t {
+        return profile == RotationProfile::rtt_increase && sent >= 500U
+            ? 50'000U
+            : 4'000U;
+    };
     const CryptoConfiguration configuration {
         .passphrase = "rotation loss horizon fixture",
         .mode = mode,
         .enable_aes_gcm = mode == CryptoMode::aes_gcm,
         .key_length = 16,
-        .refresh_rate_packets = 1'025,
+        .refresh_rate_packets = refresh,
         .preannouncement_packets = preannouncement,
     };
     auto crypto = std::make_shared<CryptoSession>(configuration);
@@ -4558,7 +4580,7 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t step,
     SocketOptions options;
     REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 8), Error::none);
     std::uint64_t now = 1'000'000;
-    const SequenceNumber initial {SequenceNumber::mask - 1'030U};
+    const SequenceNumber initial {SequenceNumber::mask - refresh - 5U};
     ConnectionRuntime sender {{
         .channel = channel,
         .peer = peer,
@@ -4590,13 +4612,18 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t step,
     unsigned requests = 0;
     unsigned rotations = 0;
     unsigned stalled = 0;
+    unsigned budget_pauses = 0;
     std::optional<std::uint64_t> last_request;
     std::optional<std::uint64_t> response_due;
     std::vector<std::byte> pending_request;
     std::vector<std::byte> pending_response;
-    constexpr unsigned messages = 2'052;
-    for (unsigned iteration = 0; iteration < 10'000 && sent < messages;
-        ++iteration, now += step) {
+    const unsigned messages = 2U * refresh + 2U;
+    const unsigned iteration_limit =
+        profile == RotationProfile::steady ? 10'000U : 100'000U;
+    for (unsigned iteration = 0; iteration < iteration_limit && sent < messages;
+        ++iteration) {
+        const auto step = step_for(sent);
+        const auto rtt = rtt_for(sent);
         if (response_due.has_value() && now >= *response_due) {
             sender.process_packet(
                 {.kind = PacketKind::control,
@@ -4612,8 +4639,16 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t step,
             ++rotations;
         }
         if (queued == sent) {
-            const std::array payload {static_cast<std::byte>(queued & 0xffU)};
-            REQUIRE_EQ(sender.queue_message(payload, 0, true, false, -1).status,
+            std::array<std::byte, 8> payload {};
+            for (std::size_t i = 0; i < payload_size; ++i) {
+                payload[i] = static_cast<std::byte>(
+                    (static_cast<std::uint64_t>(queued) >> (8U * i)) & 0xffU);
+            }
+            REQUIRE_EQ(
+                sender
+                    .queue_message(std::span {payload}.first(payload_size), 0,
+                        true, false, -1)
+                    .status,
                 MessageIoStatus::success);
             ++queued;
         }
@@ -4625,27 +4660,35 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t step,
             if (packet.packet.kind == PacketKind::data) {
                 REQUIRE(!packet.packet.data.retransmitted);
                 REQUIRE_EQ(packet.packet.data.sequence, initial.advanced(sent));
-                std::array<std::byte, 1> clear {};
+                std::array<std::byte, 8> clear {};
+                const auto plaintext = std::span {clear}.first(payload_size);
                 if (mode == CryptoMode::aes_gcm) {
                     REQUIRE_EQ(receiver.open(packet.packet.data,
-                                   packet.packet.payload.first(1),
-                                   packet.packet.payload.subspan(1), clear),
+                                   packet.packet.payload.first(payload_size),
+                                   packet.packet.payload.subspan(payload_size),
+                                   plaintext),
                         Error::none);
                 } else {
                     REQUIRE_EQ(
                         receiver.decrypt(packet.packet.data.encryption_key,
                             packet.packet.data.sequence, packet.packet.payload,
-                            clear),
+                            plaintext),
                         Error::none);
                 }
-                REQUIRE_EQ(clear[0], static_cast<std::byte>(sent & 0xffU));
+                for (std::size_t i = 0; i < payload_size; ++i) {
+                    REQUIRE_EQ(clear[i],
+                        static_cast<std::byte>(
+                            (static_cast<std::uint64_t>(sent) >> (8U * i))
+                            & 0xffU));
+                }
                 receiver.note_accepted_receive_sequence(
                     packet.packet.data.sequence);
                 const auto acknowledged = encode_acknowledgement_payload(
                     {.kind = AcknowledgementKind::small,
                         .next_sequence = packet.packet.data.sequence.next(),
-                        .round_trip_time_microseconds = 4'000,
-                        .round_trip_time_variance_microseconds = 1,
+                        .round_trip_time_microseconds = rtt,
+                        .round_trip_time_variance_microseconds =
+                            rtt == 4'000U ? 1U : 2'000U,
                         .available_receive_buffer_packets = 64},
                     ack_storage);
                 REQUIRE(acknowledged);
@@ -4669,7 +4712,12 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t step,
                         packet.packet.payload.end()));
                 }
                 if (last_request.has_value()) {
-                    REQUIRE_EQ(now - *last_request, 10'000U);
+                    if (profile == RotationProfile::steady) {
+                        REQUIRE_EQ(now - *last_request, 10'000U);
+                    } else {
+                        REQUIRE(now - *last_request >= std::max<std::uint64_t>(
+                                    10'000U, 3ULL * rtt / 2ULL));
+                    }
                 }
                 last_request = now;
                 if (++requests <= losses) {
@@ -4680,26 +4728,45 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t step,
                     }
                     continue;
                 }
-                REQUIRE(!response_due.has_value());
+                if (profile == RotationProfile::steady) {
+                    REQUIRE(!response_due.has_value());
+                }
+                if (response_due.has_value()) {
+                    // A repeated request must not postpone a valid response
+                    // that is already travelling back to the sender.
+                    continue;
+                }
                 REQUIRE_EQ(
                     receiver.accept_key_material(packet.packet.payload, false),
                     Error::none);
                 const auto response = receiver.key_material_response();
                 pending_response.assign(response.begin(), response.end());
-                response_due = now + 4'000U;
+                response_due = now + rtt;
             }
         }
         if (!data_sent) {
             ++stalled;
+            if (!crypto->pending_key_material().empty()
+                && !crypto->ready_to_send_data()) {
+                ++budget_pauses;
+            }
         }
         REQUIRE(!sender.broken());
-        REQUIRE(crypto->packets_on_active_key() <= 1'025U);
+        REQUIRE(crypto->packets_on_active_key() <= refresh);
+        now += step;
     }
     REQUIRE_EQ(sent, messages);
     REQUIRE_EQ(rotations, 2U);
     REQUIRE_EQ(queued, sent);
+    if (profile != RotationProfile::steady) {
+        if (profile != RotationProfile::rtt_increase || losses > 0U) {
+            REQUIRE(budget_pauses > 0U);
+        }
+        return;
+    }
     // The adaptive floor covers this loss horizon once a steady rate is
     // observed. Above the half-refresh cap, DATA still pauses safely.
+    const auto step = steady_step;
     const auto adaptive_positions =
         std::min<std::uint64_t>((34'004U + step - 1U) / step, 512U);
     const auto available_positions =
@@ -4720,6 +4787,24 @@ TEST(compat_runtime_rotation_loss_preserves_payload_and_configured_key_budget)
                         check_rotation_loss_horizon(
                             mode, step, preannouncement, losses, lose_response);
                     }
+                }
+            }
+        }
+    }
+}
+
+TEST(compat_runtime_rotation_transitions_preserve_payload_and_key_budget)
+{
+    // An unobserved startup rate, a burst before the next rate sample, and
+    // a longer RTT can exhaust even the bounded adaptive announcement window.
+    // Exercise safe DATA pauses and recovery across two rotations and wrap.
+    for (const auto profile : {RotationProfile::fast_startup,
+             RotationProfile::rate_burst, RotationProfile::rtt_increase}) {
+        for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+            for (const unsigned losses : {0U, 2U}) {
+                for (const bool lose_response : {false, true}) {
+                    check_rotation_loss_horizon(
+                        mode, 100U, 1U, losses, lose_response, profile);
                 }
             }
         }
