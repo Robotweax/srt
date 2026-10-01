@@ -1919,6 +1919,7 @@ RuntimeReceiveSnapshot ConnectionRuntime::receive_snapshot(
         .complete_expected = buffer.first_stored_sequence() == expected
             && buffer.has_complete_message(),
         .buffered = buffer.occupied() != 0U,
+        .terminal = broken_ || peer_closed_ || locally_closed_,
     };
     if (serviced && session_.message_ready_at(now)) {
         result.readable_sequence = buffer.first_stored_sequence();
@@ -2784,6 +2785,30 @@ bool ConnectionRuntime::send_peer_error_locked(
         {.kind = DatagramKind::other}, now);
 }
 
+void ConnectionRuntime::observe_key_sequence_position(
+    std::uint64_t position, std::uint64_t now) noexcept
+{
+    if (!key_rate_sample_microseconds_.has_value()
+        || now < *key_rate_sample_microseconds_
+        || position < key_rate_sample_position_) {
+        key_rate_sample_microseconds_ = now;
+        key_rate_sample_position_ = position;
+        return;
+    }
+    const auto elapsed = now - *key_rate_sample_microseconds_;
+    if (elapsed < 1'000U) {
+        return;
+    }
+    const auto consumed = position - key_rate_sample_position_;
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    const auto scaled =
+        consumed > maximum / 1'000'000U ? maximum : consumed * 1'000'000U;
+    const auto rate = scaled / elapsed + (scaled % elapsed != 0U ? 1U : 0U);
+    key_peak_sequence_rate_ = std::max(key_peak_sequence_rate_, rate);
+    key_rate_sample_microseconds_ = now;
+    key_rate_sample_position_ = position;
+}
+
 bool ConnectionRuntime::service_key_rotation(
     std::uint64_t now) noexcept
 {
@@ -2796,6 +2821,23 @@ bool ConnectionRuntime::service_key_rotation(
     if (crypto_->sender_state() == CryptoState::unsecured) {
         return true;
     }
+    const auto& rtt = session_.rtt();
+    const std::uint64_t retry_interval_microseconds = rtt.has_sample()
+        ? std::max<std::uint64_t>(
+              10'000U, 3ULL * rtt.smoothed_microseconds() / 2ULL)
+        : 100'000U;
+    // Cover two lost attempts, a successful round trip and scheduling/RTT
+    // variation. A bounded observed peak also counts TTL/group sequence gaps.
+    const std::uint64_t horizon =
+        (rtt.has_sample() ? rtt.smoothed_microseconds() : 100'000U)
+        + 2U * retry_interval_microseconds + 4ULL * rtt.variation_microseconds()
+        + 10'000U;
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    const auto scaled = key_peak_sequence_rate_ > maximum / horizon
+        ? maximum
+        : key_peak_sequence_rate_ * horizon;
+    crypto_->set_preannouncement_floor(
+        scaled / 1'000'000U + (scaled % 1'000'000U != 0U ? 1U : 0U));
     if (crypto_->prepare_rotation() != Error::none) {
         break_locked(0);
         return false;
@@ -2807,11 +2849,6 @@ bool ConnectionRuntime::service_key_rotation(
     }
     // Keep the initial cadence until an RTT observation is available. Once
     // measured, allow a round trip plus half an RTT before repeating KMREQ.
-    const auto& rtt = session_.rtt();
-    const std::uint64_t retry_interval_microseconds = rtt.has_sample()
-        ? std::max<std::uint64_t>(
-              10'000U, 3ULL * rtt.smoothed_microseconds() / 2ULL)
-        : 100'000U;
     const bool retry_due = !last_key_material_send_microseconds_.has_value()
         || now < *last_key_material_send_microseconds_
         || now - *last_key_material_send_microseconds_
@@ -3555,7 +3592,13 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             && !session_.has_pending_retransmission()) {
             const auto candidate = session_.send_buffer().peek_new_packet();
             if (candidate.has_value()) {
-                if (crypto_->prepare_data_packet(candidate->sequence_position)
+                observe_key_sequence_position(
+                    candidate->sequence_position, packet_time);
+                // Refresh the hint before accounting for this candidate's
+                // skipped positions; preparation may already announce a key.
+                if (!service_key_rotation(packet_time)
+                    || crypto_->prepare_data_packet(
+                           candidate->sequence_position)
                         != Error::none
                     || !service_key_rotation(packet_time)) {
                     break_locked(0);
@@ -3928,6 +3971,52 @@ ConnectionRuntime::next_readable_deadline() noexcept
         return Clock::now();
     }
     return next_receive_wakeup_locked(now);
+}
+
+SocketReadinessSnapshot ConnectionRuntime::readiness_snapshot(
+    bool socket_broken) noexcept
+{
+    std::lock_guard lock(mutex_);
+    SocketReadinessSnapshot readiness {};
+    readiness.exists = true;
+    // Fatal failures need no receive servicing. SHUTDOWN retains its tail
+    // until delivery/drain, using one state observation under this lock.
+    if ((socket_broken || broken_) && !peer_closed_) {
+        readiness.events = SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+        return readiness;
+    }
+    const auto now = now_microseconds();
+    if (!locally_closed_ && !service_receiver_tlpktdrop_locked(now)
+        && !peer_closed_) {
+        readiness.events = SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+        return readiness;
+    }
+    const bool data_ready = !locally_closed_ && session_.data_ready_at(now);
+    const auto wakeup = locally_closed_ ? std::nullopt
+        : data_ready ? std::optional<Clock::time_point> {Clock::now()}
+                     : next_receive_wakeup_locked(now);
+    if ((socket_broken || broken_) && peer_closed_) {
+        if (wakeup.has_value()) {
+            if (data_ready) {
+                readiness.events = SRT_EPOLL_IN;
+            } else {
+                readiness.read_wakeup = wakeup;
+            }
+        } else {
+            readiness.events = SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+        }
+        return readiness;
+    }
+    if (data_ready) {
+        readiness.events = SRT_EPOLL_IN;
+    } else {
+        readiness.read_wakeup = wakeup;
+    }
+    if (!locally_closed_ && !peer_closed_ && !broken_
+        && (peer_error_pending_ || session_.send_buffer().available() != 0U)) {
+        readiness.events |= SRT_EPOLL_OUT;
+    }
+    return readiness;
 }
 
 bool ConnectionRuntime::writable() const noexcept

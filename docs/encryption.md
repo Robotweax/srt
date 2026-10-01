@@ -54,7 +54,7 @@ inherit the Listener's policy and complete negotiation during HSv5 setup.
 | `SRTO_PBKEYLEN` | `int32_t` | `0`, `16`, `24`, or `32`; selects default/negotiated, AES-128, AES-192, or AES-256 key length |
 | `SRTO_ENFORCEDENCRYPTION` | Boolean | Defaults to true; rejects a peer that cannot satisfy the configured encryption policy |
 | `SRTO_KMREFRESHRATE` | nonnegative `int32_t` | Traffic-key refresh interval in consumed DATA sequence numbers, effectively capped at `2^30`; zero selects compatible default behavior |
-| `SRTO_KMPREANNOUNCE` | nonnegative `int32_t` | Number of consumed sequence positions before refresh at which the next key is announced; zero selects compatible default behavior |
+| `SRTO_KMPREANNOUNCE` | nonnegative `int32_t` | Minimum number of consumed sequence positions before refresh at which the next key is announced; the runtime may announce earlier; zero selects the default minimum |
 | `SRTO_KMSTATE` | read-only | Legacy: `SRTO_SNDKMSTATE` on a socket with `SRTO_SENDER` set, otherwise `SRTO_RCVKMSTATE` |
 | `SRTO_SNDKMSTATE` | read-only | Transmit key-material state |
 | `SRTO_RCVKMSTATE` | read-only | Receive key-material state |
@@ -290,15 +290,43 @@ to reuse a DATA key in both directions, and not a finding about an upstream
 public-API vulnerability. Robotweax's direction-separation implementation and
 regressions are independently authored; no upstream code or tests are copied.
 
-At `refresh_rate - preannouncement`, the sender creates the inactive key and
-sends a wrapped KMREQ. It retries the same request until the matching KMRSP is
+By `refresh_rate - preannouncement`, the sender creates the inactive key and
+sends a wrapped KMREQ; the adaptive window below may bring this forward. It
+retries the same request until the matching KMRSP is
 received, then changes the DATA selector at the refresh boundary. Runtime
 retries wait `max(1.5 * SRTT, 10 ms)` after successful UDP submission once
 an RTT observation is available; before that, the interval is 100 ms. A matching
 KMRSP clears this retry clock so the next rotation can be announced immediately.
-The configured preannouncement counts sequence positions; at high packet rates
-or after repeated control loss it can still be shorter than the exchange time,
-so new DATA waits at the refresh boundary as described below.
+The runtime may announce earlier using the highest observed consumption rate
+from samples at least 1 ms apart. Samples include sequence positions skipped by
+TTL, too-late packet drop or group skips, and exclude retransmissions. The
+configured preannouncement remains a minimum; its getter remains unchanged.
+The adaptive window covers one SRTT, two retry intervals, four RTT-variation
+estimates and 10 ms of scheduling margin. Before an RTT sample, it uses 100 ms
+for the round trip and each retry. The observed peak is retained for the
+connection, so a burst can keep later announcements early. Both the configured
+and adaptive windows are capped below half the effective refresh interval.
+This changes announcement timing only: key switching and the DATA pause at an
+unconfirmed refresh boundary retain their existing sequence budget.
+
+Size this window for the highest expected rate of consumed sequence positions,
+including positions skipped by TTL or too-late packet drop. For a steady rate
+`R` positions/second, round-trip time `T` seconds, and up to `L` consecutive
+lost KMREQ attempts or their responses, a starting estimate is
+`preannouncement >= ceil(R * (T + L * retry_interval))`. Allow additional
+margin for bursts, scheduling delay and RTT variation. Use the initial
+100-ms retry interval when no RTT sample is available. This is a configuration
+estimate, not a delivery guarantee. Startup before a usable rate sample,
+sudden faster bursts, prolonged RTT increases and sustained control loss can
+exhaust the adaptive window. The effective half-refresh cap
+below still applies, so increase the refresh interval within its supported
+key budget when the required window does not fit.
+
+For example, at 40,000 positions/second and 40-ms SRTT, the retry interval is
+60 ms. A window for two lost attempts and the successful exchange needs at
+least 6,400 positions before adding margin. The default 4,096-position window
+covers about 102 ms at that rate. Set `SRTO_KMPREANNOUNCE` before connecting;
+the library continues to pause safely if the successor key is not confirmed.
 
 The DATA IV is derived from the salt and the 31-bit sequence number, so the
 key lifetime is measured in consumed sequence numbers, not in transmitted
@@ -392,6 +420,15 @@ no longer available, failover fails closed rather than emitting an incomplete
 or unauthenticated prefix.
 
 ## Error and security behavior
+
+AES-CTR does not authenticate DATA or its sequence/key-selection metadata.
+Receive-window and sequence-epoch checks bound accepted input, but cannot
+distinguish forged in-window traffic from genuine reordered packets or prove
+which retained key generation encrypted it. Applications requiring DATA
+integrity must use and verify the negotiated AES-GCM profile described above.
+AES-GCM authenticates DATA, not SRT control packets: a plausible DROPREQ can
+still affect reliability state. These checks do not replace authentication of
+the transport peer and path.
 
 - An incompatible cryptographic mode or transport bundle rejects
   establishment with the bad-crypto-mode state.

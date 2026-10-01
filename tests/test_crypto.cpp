@@ -770,6 +770,60 @@ TEST(crypto_session_accepts_refresh_rates_below_the_nonce_period)
     }
 }
 
+TEST(crypto_session_adaptive_announcement_preserves_minimum_and_refresh_budget)
+{
+    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        for (const auto floor :
+            {0ULL, 1ULL, std::numeric_limits<unsigned long long>::max()}) {
+            const CryptoConfiguration configuration {
+                .passphrase = "adaptive key horizon fixture",
+                .mode = mode,
+                .enable_aes_gcm = true,
+                .refresh_rate_packets = 17,
+                .preannouncement_packets = 2,
+            };
+            CryptoSession sender {configuration};
+            CryptoSession receiver {configuration};
+            REQUIRE_EQ(sender.start_initiator(), Error::none);
+            REQUIRE_EQ(receiver.accept_key_material(
+                           sender.pending_key_material(), false),
+                Error::none);
+            REQUIRE_EQ(sender.acknowledge_key_material(
+                           receiver.key_material_response(), false),
+                Error::none);
+            sender.set_preannouncement_floor(floor);
+            const unsigned announcement_at = floor > 8U ? 9U : 15U;
+            for (unsigned position = 0; position < 16; ++position) {
+                REQUIRE_EQ(sender.prepare_data_packet(position), Error::none);
+                REQUIRE_EQ(!sender.pending_key_material().empty(),
+                    position >= announcement_at);
+                REQUIRE(sender.ready_to_send_data());
+                REQUIRE_EQ(sender.active_sender_key(), EncryptionKey::even);
+                REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+            }
+            REQUIRE_EQ(sender.packets_on_active_key(), 16U);
+            REQUIRE(!sender.ready_to_send_data());
+            const auto request = sender.pending_key_material();
+            const std::vector saved(request.begin(), request.end());
+            sender.set_preannouncement_floor(0U);
+            REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+            REQUIRE(std::equal(saved.begin(), saved.end(),
+                sender.pending_key_material().begin(),
+                sender.pending_key_material().end()));
+            REQUIRE_EQ(
+                receiver.accept_key_material(request, false), Error::none);
+            REQUIRE_EQ(sender.acknowledge_key_material(
+                           receiver.key_material_response(), false),
+                Error::none);
+            REQUIRE(sender.ready_to_send_data());
+            REQUIRE_EQ(sender.prepare_data_packet(16U), Error::none);
+            REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+            REQUIRE_EQ(sender.active_sender_key(), EncryptionKey::odd);
+            REQUIRE_EQ(sender.packets_on_active_key(), 0U);
+        }
+    }
+}
+
 TEST(crypto_session_rejects_refresh_rates_at_or_above_the_nonce_period)
 {
     for (const auto mode :
