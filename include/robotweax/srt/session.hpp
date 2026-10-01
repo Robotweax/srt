@@ -450,6 +450,9 @@ private:
         SequenceRange sequences {};
         std::uint64_t deadline_microseconds = 0;
     };
+    [[nodiscard]] static std::uint64_t peer_drop_identity(
+        SequenceRange range) noexcept;
+    void erase_peer_drop_identity(SequenceRange range) noexcept;
 
     friend class compat::ConnectionRuntime;
     [[nodiscard]] ReliabilityAction make_acknowledgement(
@@ -477,6 +480,9 @@ private:
     // Preallocated at construction so peer DROPREQs cannot allocate on the
     // receive path. A request remains pending until its playout grace expires.
     std::vector<PendingPeerDrop> pending_peer_drops_;
+    // Sorted exact identities give logarithmic duplicate admission without
+    // changing the grace entries' processing order or allocating on receive.
+    std::vector<std::uint64_t> pending_peer_drop_identities_;
     ReceiveLossList receive_loss_list_;
     ReceiveLossList filter_loss_list_;
     // Scratch space for receive-window clipping and deduplication of filter
