@@ -63,6 +63,29 @@ namespace {
         || state == SRTS_CLOSED || state == SRTS_NONEXIST;
 }
 
+// Callers hold group.mutex. Erasure keeps insertion order; successful append
+// tracks whether generation wrap invalidated the binary-search invariant.
+[[nodiscard]] auto find_member(
+    GroupRecord& group, SRTSOCKET socket, std::uint64_t generation) noexcept
+{
+    if (!group.member_generations_ordered) {
+        return std::find_if(group.members.begin(), group.members.end(),
+            [socket, generation](const auto& member) {
+                return member.generation == generation
+                    && member.public_data.id == socket;
+            });
+    }
+    const auto member =
+        std::lower_bound(group.members.begin(), group.members.end(), generation,
+            [](const auto& candidate, std::uint64_t sought) {
+                return candidate.generation < sought;
+            });
+    return member != group.members.end() && member->generation == generation
+            && member->public_data.id == socket
+        ? member
+        : group.members.end();
+}
+
 // Refresh outside the group lock: state publication takes the socket lock
 // first, then updates the generation-checked group snapshot.
 void refresh_member_states(const std::shared_ptr<GroupRecord>& record) noexcept
@@ -596,12 +619,7 @@ void GroupRegistry::note_io_result(
     if (record->closed || record->generation != group_generation) {
         return;
     }
-    const auto member = std::find_if(
-        record->members.begin(), record->members.end(),
-        [socket, member_generation](const auto& candidate) {
-            return candidate.public_data.id == socket
-                && candidate.generation == member_generation;
-        });
+    const auto member = find_member(*record, socket, member_generation);
     if (member == record->members.end()) {
         return;
     }
@@ -807,7 +825,11 @@ bool GroupRegistry::add_member(
         member.public_data.memberstate = SRT_GST_PENDING;
         member.public_data.result = SRT_SUCCESS;
         member.public_data.token = token;
+        const bool remains_ordered = was_empty
+            || (record->member_generations_ordered
+                && record->members.back().generation < member.generation);
         record->members.push_back(member);
+        record->member_generations_ordered = remains_ordered;
         if (was_terminal) {
             // A pending replacement clears the group's terminal OUT/ERR
             // level even if it fails before the next epoll state sample.
@@ -858,12 +880,7 @@ void GroupRegistry::update_member(
         if (record->closed || record->generation != group_generation) {
             return;
         }
-        const auto member =
-            std::find_if(record->members.begin(), record->members.end(),
-                [socket, member_generation](const auto& candidate) {
-                    return candidate.public_data.id == socket
-                        && candidate.generation == member_generation;
-                });
+        const auto member = find_member(*record, socket, member_generation);
         if (member == record->members.end()) {
             return;
         }
