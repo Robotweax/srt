@@ -426,6 +426,20 @@ void ReliabilitySession::note_ordered_packet() noexcept
     }
 }
 
+void ReliabilitySession::rearm_loss_report(
+    std::span<const std::byte> payload) noexcept
+{
+    while (!payload.empty()) {
+        const auto decoded = decode_loss_range(payload);
+        if (!decoded) {
+            return;
+        }
+        receive_loss_list_.rearm_report(decoded.range);
+        filter_loss_list_.rearm_report(decoded.range);
+        payload = payload.subspan(decoded.bytes_consumed);
+    }
+}
+
 void ReliabilitySession::append_pending_loss_report(ReliabilityActions& actions,
     bool action_slot_available, std::uint64_t now_microseconds) noexcept
 {
@@ -988,7 +1002,7 @@ ReliabilityProcessResult ReliabilitySession::receive(
             return {.error = Error::would_block};
         }
         const std::uint64_t control_deadline = defer_drop
-            ? tsbpd_clock_->delivery_time(packet.control.timestamp)
+            ? tsbpd_clock_->control_delivery_time(packet.control.timestamp)
             : 0U;
         const std::uint64_t maximum_grace =
             static_cast<std::uint64_t>(live_options_.receive_delay_milliseconds)
@@ -1047,8 +1061,7 @@ ReliabilityProcessResult ReliabilitySession::receive(
         if (!is_zero_word_payload(packet.payload)) {
             return {.error = Error::invalid_control_payload};
         }
-        observe_tsbpd_drift(
-            packet.control.timestamp, now_microseconds);
+        observe_tsbpd_drift(packet.control.timestamp, now_microseconds, false);
         return result;
     case ControlType::congestion_warning:
     case ControlType::shutdown:
@@ -1066,16 +1079,14 @@ ReliabilityProcessResult ReliabilitySession::receive(
     }
 }
 
-void ReliabilitySession::observe_tsbpd_drift(
-    PacketTimestamp timestamp,
-    std::uint64_t arrival_microseconds) noexcept
+void ReliabilitySession::observe_tsbpd_drift(PacketTimestamp timestamp,
+    std::uint64_t arrival_microseconds, bool advance_epoch) noexcept
 {
     if (!drift_tracer_enabled_ || !tsbpd_clock_.has_value()) {
         return;
     }
-    const auto drift = tsbpd_clock_->observe_arrival(
-        timestamp, arrival_microseconds,
-        rtt_.smoothed_microseconds());
+    const auto drift = tsbpd_clock_->observe_arrival(timestamp,
+        arrival_microseconds, rtt_.smoothed_microseconds(), advance_epoch);
     if (drift.window_complete
         && drift.correction_microseconds != 0) {
         ++drift_correction_count_;

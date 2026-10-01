@@ -13,12 +13,15 @@ and FEC preparation pauses until that FIFO drains; incoming control responses
 can still be queued. Each queued datagram is allocated only when needed and
 released on completion or cancellation. The FIFO accepts at most 128 datagrams,
 with at most 1,500 wire bytes per entry plus bookkeeping and allocator overhead.
-During a transient system-error retry episode, queued ACK, NAK, and ACKACK
-controls are replaced by the newest control of the same type; additional
-keepalives are omitted. This keeps inbound traffic from filling the FIFO with
-stale periodic controls during the retry window. DATA bytes and nonperiodic
-controls retain FIFO order. The next periodic NAK can recover losses omitted
-from a replaced report. Allocation failure or overflow remains terminal;
+While the FIFO is nonempty, queued ACK and ACKACK controls are replaced by
+the newest control of the same type, and redundant keepalives are omitted.
+An unsent NAK is rearmed in the bounded receive loss list before its queued
+marker is replaced. On retry, the marker is discarded and reports are rebuilt
+from losses that still exist. This covers disjoint ranges without reviving
+received or dropped DATA and works even when periodic NAK reports are disabled.
+Fresh ranges still wait for their reorder TTL. Reports larger than one packet
+remain pending for subsequent bounded batches. DATA bytes and nonperiodic
+controls retain FIFO order. Allocation failure or overflow remains terminal;
 overflow preserves the last transient system error when one is available.
 
 Retries use the existing channel scheduler, at most once per millisecond while
