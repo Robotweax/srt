@@ -1919,6 +1919,7 @@ RuntimeReceiveSnapshot ConnectionRuntime::receive_snapshot(
         .complete_expected = buffer.first_stored_sequence() == expected
             && buffer.has_complete_message(),
         .buffered = buffer.occupied() != 0U,
+        .terminal = broken_ || peer_closed_ || locally_closed_,
     };
     if (serviced && session_.message_ready_at(now)) {
         result.readable_sequence = buffer.first_stored_sequence();

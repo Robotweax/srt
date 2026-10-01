@@ -159,6 +159,7 @@ struct RuntimeReceiveSnapshot {
     SequenceNumber floor_sequence {};
     bool complete_expected = false;
     bool buffered = false;
+    bool terminal = false;
 };
 
 struct RuntimePollResult {

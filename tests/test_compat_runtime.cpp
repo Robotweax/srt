@@ -859,6 +859,7 @@ TEST(compat_runtime_receive_snapshot_preserves_tsbpd_and_retirement)
                                .payload = payload},
         peer);
     const auto waiting = runtime.receive_snapshot(SequenceNumber {900}, false);
+    REQUIRE(!waiting.terminal);
     REQUIRE(waiting.buffered);
     REQUIRE(waiting.complete_expected);
     REQUIRE(!waiting.readable_sequence.has_value());
@@ -870,6 +871,7 @@ TEST(compat_runtime_receive_snapshot_preserves_tsbpd_and_retirement)
     runtime.mark_broken(0);
     REQUIRE(runtime.terminal());
     const auto terminal = runtime.receive_snapshot(SequenceNumber {900}, false);
+    REQUIRE(terminal.terminal);
     REQUIRE_EQ(terminal.readable_sequence, SequenceNumber {900});
     const auto retired = runtime.receive_snapshot(SequenceNumber {901}, true);
     REQUIRE_EQ(retired.floor_sequence, SequenceNumber {901});

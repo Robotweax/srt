@@ -146,6 +146,18 @@ public:
         ++size_;
     }
 
+    void truncate(std::size_t size) noexcept
+    {
+        if (overflow_.capacity() != 0U) {
+            overflow_.resize(size);
+        } else {
+            for (std::size_t index = size; index < size_; ++index) {
+                inline_[index] = {};
+            }
+        }
+        size_ = size;
+    }
+
     [[nodiscard]] std::span<Value> view() noexcept
     {
         return {overflow_.capacity() != 0U ? overflow_.data() : inline_.data(),
@@ -189,39 +201,37 @@ private:
     std::size_t size_ = 0;
 };
 
-struct GroupIoIdentity {
-    SRTSOCKET id = SRT_INVALID_SOCK;
-    std::uint64_t generation = 0;
-    std::uint16_t weight = 0;
-};
-
 [[nodiscard]] GroupIoSnapshotBuffer<GroupIoMember> group_members(
-    const std::shared_ptr<GroupRecord>& group)
+    const std::shared_ptr<GroupRecord>& group,
+    std::uint64_t* snapshot_version = nullptr)
 {
-    GroupIoSnapshotBuffer<GroupIoIdentity> snapshots;
+    GroupIoSnapshotBuffer<GroupIoMember> result;
     {
         std::lock_guard lock(group->mutex);
-        snapshots.reserve(group->members.size());
+        result.reserve(group->members.size());
+        if (snapshot_version != nullptr) {
+            *snapshot_version = group->snapshot_version;
+        }
         for (const auto& member : group->members) {
-            snapshots.push_back({member.public_data.id, member.generation,
-                member.public_data.weight});
+            GroupIoMember identity;
+            identity.id = member.public_data.id;
+            identity.generation = member.generation;
+            identity.weight = member.public_data.weight;
+            result.push_back(std::move(identity));
         }
     }
-    GroupIoSnapshotBuffer<GroupIoMember> result;
-    result.reserve(snapshots.size());
-    for (const auto& snapshot : snapshots) {
-        const auto state = SocketRegistry::instance().state(snapshot.id);
+    // Resolve and compact the identities in their original storage, after
+    // releasing the membership lock. No second allocation for large groups.
+    std::size_t retained = 0;
+    for (auto& member : result) {
+        const auto state = SocketRegistry::instance().state(member.id);
         if (state != SRTS_CONNECTED && state != SRTS_BROKEN) {
             continue;
         }
-        const auto socket = SocketRegistry::instance().find(snapshot.id);
+        const auto socket = SocketRegistry::instance().find(member.id);
         if (socket == nullptr) {
             continue;
         }
-        GroupIoMember member;
-        member.id = snapshot.id;
-        member.generation = snapshot.generation;
-        member.weight = snapshot.weight;
         {
             std::lock_guard lock(socket->mutex);
             if ((socket->state != SRTS_CONNECTED
@@ -229,7 +239,7 @@ struct GroupIoIdentity {
                 || socket->runtime == nullptr
                 || socket->group_id != group->handle
                 || socket->group_generation != group->generation
-                || socket->member_generation != snapshot.generation) {
+                || socket->member_generation != member.generation) {
                 continue;
             }
             member.runtime = socket->runtime;
@@ -239,8 +249,12 @@ struct GroupIoIdentity {
             member.tsbpd_mode = socket->public_options.tsbpd_mode;
             member.terminal = socket->state == SRTS_BROKEN;
         }
-        result.push_back(std::move(member));
+        auto& destination = result.view()[retained++];
+        if (&destination != &member) {
+            destination = std::move(member);
+        }
     }
+    result.truncate(retained);
     return result;
 }
 
@@ -268,8 +282,8 @@ struct GroupReceiveDecision {
         }
     };
     for (const auto& member : members) {
-        decision.live_member |= !member.terminal;
         if (!member.message_api) {
+            decision.live_member |= !member.terminal;
             continue;
         }
         all_tsbpd &= member.tsbpd_mode;
@@ -277,6 +291,8 @@ struct GroupReceiveDecision {
         // path. Retire that prefix before judging group deliverability.
         const auto receive =
             member.runtime->receive_snapshot(expected, retire_consumed_prefix);
+        const bool terminal = member.terminal || receive.terminal;
+        decision.live_member |= !terminal;
         const auto candidate = receive.readable_sequence;
         if (!candidate.has_value()) {
             const auto member_delivery = receive.next_delivery;
@@ -292,8 +308,8 @@ struct GroupReceiveDecision {
                 const bool complete_expected = receive.complete_expected;
                 const bool buffered = receive.buffered;
                 const bool pending_terminal_delivery =
-                    member.terminal && buffered && member_delivery.has_value();
-                if (!member.terminal || complete_expected
+                    terminal && buffered && member_delivery.has_value();
+                if (!terminal || complete_expected
                     || pending_terminal_delivery) {
                     member_may_supply_expected = true;
                     buffered_expected_path |= buffered;
@@ -1337,7 +1353,8 @@ int receive_group_message_implementation(
 
     for (;;) {
         const std::uint64_t observed = ReadinessSignal::generation();
-        const auto members = group_members(group);
+        std::uint64_t snapshot_version = 0;
+        const auto members = group_members(group, &snapshot_version);
         if (members.empty()) {
             std::lock_guard lock(group->mutex);
             return fail(group->closed ? SRT_ESCLOSED : SRT_ENOCONN);
@@ -1400,7 +1417,30 @@ int receive_group_message_implementation(
                 // for edge-triggered observers even if a refill wins the
                 // race before their next wait.
                 if (group->readiness_source->has_observers()) {
-                    if (!group_receive_readiness(group).message_ready) {
+                    const auto snapshot_current = [&] {
+                        std::lock_guard lock(group->mutex);
+                        return !group->closed
+                            && group->snapshot_version == snapshot_version
+                            && group->next_receive_sequence
+                            == result.next_sequence.value();
+                    };
+                    // Reuse only this call's owning references. Membership
+                    // changes require fresh generation-checked resolution;
+                    // receive_snapshot observes current runtime state.
+                    bool message_ready = false;
+                    if (snapshot_current()) {
+                        message_ready = inspect_group_readiness(
+                            members.view(), result.next_sequence)
+                                            .message_ready;
+                        if (!snapshot_current()) {
+                            message_ready =
+                                group_receive_readiness(group).message_ready;
+                        }
+                    } else {
+                        message_ready =
+                            group_receive_readiness(group).message_ready;
+                    }
+                    if (!message_ready) {
                         group->readiness_source->note_not_ready(SRT_EPOLL_IN);
                         ReadinessSignal::notify(*group->readiness_source);
                     }
