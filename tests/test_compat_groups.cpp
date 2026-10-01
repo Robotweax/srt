@@ -4893,64 +4893,72 @@ TEST(compat_group_receive_observes_terminal_without_state_getter)
 TEST(compat_group_epoll_delays_terminal_error_until_buffered_delivery)
 {
     for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
-        const SRTSOCKET group = srt_create_group(type);
-        const SRTSOCKET member = srt_create_socket();
-        REQUIRE(group != SRT_INVALID_SOCK);
-        REQUIRE(member != SRT_INVALID_SOCK);
-        const auto record = GroupRegistry::instance().find(group);
-        REQUIRE(record != nullptr);
-        TestClock clock {
-            .channel =
-                std::make_shared<robotweax::srt::compat::DatagramChannel>()};
-        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
-        constexpr std::uint16_t delay_milliseconds = 100;
-        const auto runtime = attach_group_runtime(group, member,
-            record->initial_sequence, 1, &clock, 0, true, delay_milliseconds,
-            ConnectionRuntime::Clock::now(), record);
-        const bool asynchronous = false;
-        REQUIRE_EQ(srt_setsockflag(group, SRTO_RCVSYN, &asynchronous,
-                       static_cast<int>(sizeof(asynchronous))),
-            0);
-        const std::array<std::byte, 1> payload {std::byte {'x'}};
-        robotweax::srt::PacketView data;
-        data.kind = robotweax::srt::PacketKind::data;
-        data.data.sequence = SequenceNumber {record->initial_sequence};
-        data.data.message_number = 1;
-        data.data.boundary = robotweax::srt::MessageBoundary::solo;
-        data.data.in_order = true;
-        data.payload = payload;
-        runtime->process_packet(data, IpEndpoint::loopback(9'000));
-        robotweax::srt::PacketView shutdown;
-        shutdown.kind = robotweax::srt::PacketKind::control;
-        shutdown.control.type = robotweax::srt::ControlType::shutdown;
-        shutdown.control.destination_socket_id = 77;
-        const std::array<std::byte, 4> shutdown_padding {};
-        shutdown.payload = shutdown_padding;
-        runtime->process_packet(shutdown, IpEndpoint::loopback(9'000));
+        for (const int watched :
+            {SRT_EPOLL_IN | SRT_EPOLL_ERR, SRT_EPOLL_OUT | SRT_EPOLL_ERR}) {
+            const SRTSOCKET group = srt_create_group(type);
+            const SRTSOCKET member = srt_create_socket();
+            REQUIRE(group != SRT_INVALID_SOCK);
+            REQUIRE(member != SRT_INVALID_SOCK);
+            const auto record = GroupRegistry::instance().find(group);
+            REQUIRE(record != nullptr);
+            TestClock clock {.channel = std::make_shared<
+                                 robotweax::srt::compat::DatagramChannel>()};
+            clock.channel->set_send_hook_for_testing(
+                accept_test_datagram, nullptr);
+            constexpr std::uint16_t delay_milliseconds = 100;
+            const auto runtime = attach_group_runtime(group, member,
+                record->initial_sequence, 1, &clock, 0, true,
+                delay_milliseconds, ConnectionRuntime::Clock::now(), record);
+            const bool asynchronous = false;
+            REQUIRE_EQ(srt_setsockflag(group, SRTO_RCVSYN, &asynchronous,
+                           static_cast<int>(sizeof(asynchronous))),
+                0);
+            const std::array<std::byte, 1> payload {std::byte {'x'}};
+            robotweax::srt::PacketView data;
+            data.kind = robotweax::srt::PacketKind::data;
+            data.data.sequence = SequenceNumber {record->initial_sequence};
+            data.data.message_number = 1;
+            data.data.boundary = robotweax::srt::MessageBoundary::solo;
+            data.data.in_order = true;
+            data.payload = payload;
+            runtime->process_packet(data, IpEndpoint::loopback(9'000));
+            robotweax::srt::PacketView shutdown;
+            shutdown.kind = robotweax::srt::PacketKind::control;
+            shutdown.control.type = robotweax::srt::ControlType::shutdown;
+            shutdown.control.destination_socket_id = 77;
+            const std::array<std::byte, 4> shutdown_padding {};
+            shutdown.payload = shutdown_padding;
+            runtime->process_packet(shutdown, IpEndpoint::loopback(9'000));
 
-        const int poll = srt_epoll_create();
-        REQUIRE(poll >= 0);
-        const int watched = SRT_EPOLL_IN | SRT_EPOLL_ERR;
-        REQUIRE_EQ(srt_epoll_add_usock(poll, group, &watched), 0);
-        SRT_EPOLL_EVENT event {};
-        REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
-        std::array<char, 8> buffer {};
-        REQUIRE_EQ(srt_recvmsg(group, buffer.data(), buffer.size()), SRT_ERROR);
-        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+            const int poll = srt_epoll_create();
+            REQUIRE(poll >= 0);
+            REQUIRE_EQ(srt_epoll_add_usock(poll, group, &watched), 0);
+            SRT_EPOLL_EVENT event {};
+            REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+            std::array<char, 8> buffer {};
+            REQUIRE_EQ(
+                srt_recvmsg(group, buffer.data(), buffer.size()), SRT_ERROR);
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
 
-        clock.now_microseconds =
-            static_cast<std::uint64_t>(delay_milliseconds) * 1'000U;
-        REQUIRE_EQ(srt_epoll_update_usock(poll, group, &watched), 0);
-        REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
-        REQUIRE_EQ(event.events, SRT_EPOLL_IN);
-        REQUIRE_EQ(srt_recvmsg(group, buffer.data(), buffer.size()), 1);
-        REQUIRE_EQ(buffer[0], 'x');
-        REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
-        REQUIRE_EQ(event.events, SRT_EPOLL_IN | SRT_EPOLL_ERR);
-        REQUIRE_EQ(srt_recvmsg(group, buffer.data(), buffer.size()), SRT_ERROR);
-        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNLOST);
-        REQUIRE_EQ(srt_epoll_release(poll), 0);
-        REQUIRE_EQ(srt_close(group), 0);
+            clock.now_microseconds =
+                static_cast<std::uint64_t>(delay_milliseconds) * 1'000U;
+            REQUIRE_EQ(srt_epoll_update_usock(poll, group, &watched), 0);
+            if ((watched & SRT_EPOLL_IN) != 0) {
+                REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
+                REQUIRE_EQ(event.events, SRT_EPOLL_IN);
+            } else {
+                REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+            }
+            REQUIRE_EQ(srt_recvmsg(group, buffer.data(), buffer.size()), 1);
+            REQUIRE_EQ(buffer[0], 'x');
+            REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
+            REQUIRE_EQ(event.events, watched);
+            REQUIRE_EQ(
+                srt_recvmsg(group, buffer.data(), buffer.size()), SRT_ERROR);
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNLOST);
+            REQUIRE_EQ(srt_epoll_release(poll), 0);
+            REQUIRE_EQ(srt_close(group), 0);
+        }
     }
 }
 
