@@ -134,10 +134,21 @@ public:
         }
     }
 
+    // Results can be sparse even with many members. Keep the known upper
+    // bound, but spill only when the inline result storage is exhausted.
+    void reserve_deferred(std::size_t capacity) noexcept
+    {
+        deferred_capacity_ = capacity;
+    }
+
     void push_back(Value value)
     {
-        // Both snapshots reserve their complete upper bound before copying
-        // under the membership lock or filtering the resulting identities.
+        if (overflow_.capacity() == 0U && size_ == inline_capacity) {
+            overflow_.reserve(std::max(deferred_capacity_, size_ + 1U));
+            for (auto& entry : inline_) {
+                overflow_.push_back(std::move(entry));
+            }
+        }
         if (overflow_.capacity() != 0U) {
             overflow_.push_back(std::move(value));
         } else {
@@ -199,6 +210,7 @@ private:
     std::array<Value, inline_capacity> inline_ {};
     std::vector<Value> overflow_;
     std::size_t size_ = 0;
+    std::size_t deferred_capacity_ = 0;
 };
 
 [[nodiscard]] GroupIoSnapshotBuffer<GroupIoMember> group_members(
@@ -1032,9 +1044,11 @@ int send_group_message_implementation(
                 })) {
             return fail(SRT_EINVALMSGAPI);
         }
-        std::vector<FailedGroupIoMember> failed_members;
-        std::vector<std::pair<SRTSOCKET, std::uint64_t>>
+        GroupIoSnapshotBuffer<FailedGroupIoMember> failed_members;
+        GroupIoSnapshotBuffer<std::pair<SRTSOCKET, std::uint64_t>>
             successful_members;
+        failed_members.reserve_deferred(members.size());
+        successful_members.reserve_deferred(members.size());
         bool succeeded = false;
         bool would_block = false;
         bool hard_failure = false;
@@ -1070,8 +1084,7 @@ int send_group_message_implementation(
                     continue;
                 }
                 succeeded = true;
-                successful_members.emplace_back(
-                    member.id, member.generation);
+                successful_members.push_back({member.id, member.generation});
                 GroupRegistry::instance().note_io_result(
                     group->handle, generation, member.id,
                     member.generation, SRT_GST_RUNNING, length);
