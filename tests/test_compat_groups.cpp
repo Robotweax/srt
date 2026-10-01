@@ -1,3 +1,4 @@
+#include "compat/group_receive_retention.hpp"
 #include "test.hpp"
 
 #include "compat/group_config.hpp"
@@ -5736,5 +5737,373 @@ TEST(compat_groups_reject_file_and_disabled_tsbpd_transactionally)
         REQUIRE_EQ(srt_getsockflag(group, SRTO_TSBPDMODE, &tsbpd, &size), 0);
         REQUIRE(tsbpd);
         REQUIRE_EQ(srt_close(group), 0);
+    }
+}
+
+TEST(compat_group_closed_member_retains_due_and_future_prefix)
+{
+    for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
+        for (const bool rollover : {false, true}) {
+            for (const bool tlpktdrop : {false, true}) {
+                const auto group = srt_create_group(type);
+                const auto old_socket = srt_create_socket();
+                const auto replacement = srt_create_socket();
+                const auto record = GroupRegistry::instance().find(group);
+                REQUIRE(record != nullptr);
+                const SequenceNumber initial {
+                    rollover ? SequenceNumber::mask : record->initial_sequence};
+                {
+                    std::lock_guard lock(record->mutex);
+                    record->initial_sequence = initial.value();
+                    record->next_receive_sequence = initial.value();
+                }
+                TestClock clock {
+                    .channel = std::make_shared<
+                        robotweax::srt::compat::DatagramChannel>()};
+                clock.channel->set_send_hook_for_testing(
+                    accept_test_datagram, nullptr);
+                struct Cleanup {
+                    SRTSOCKET group;
+                    std::array<SRTSOCKET, 2> polls {
+                        SRT_INVALID_SOCK, SRT_INVALID_SOCK};
+                    ~Cleanup()
+                    {
+                        for (const auto poll : polls) {
+                            if (poll != SRT_INVALID_SOCK) {
+                                (void)srt_epoll_release(poll);
+                            }
+                        }
+                        (void)srt_close(group);
+                    }
+                } cleanup {group};
+                const auto origin = ConnectionRuntime::Clock::now();
+                auto old = attach_group_runtime(group, old_socket,
+                    initial.value(), 1, &clock, 0, true, 100, origin, record,
+                    {}, nullptr, nullptr, tlpktdrop);
+                const auto inject = [&](const auto& runtime,
+                                        std::uint32_t offset) {
+                    const std::array<std::byte, 1> payload {
+                        static_cast<std::byte>('a' + offset)};
+                    robotweax::srt::PacketView packet;
+                    packet.kind = robotweax::srt::PacketKind::data;
+                    packet.data.sequence = initial.advanced(offset);
+                    packet.data.message_number = offset + 1;
+                    packet.data.boundary =
+                        robotweax::srt::MessageBoundary::solo;
+                    packet.data.in_order = true;
+                    packet.data.timestamp =
+                        robotweax::srt::PacketTimestamp {offset * 1'000U};
+                    packet.payload = payload;
+                    runtime->process_packet(
+                        packet, IpEndpoint::loopback(9'000));
+                };
+                inject(old, 0);
+                inject(old, 1);
+                const auto later = attach_group_runtime(group, replacement,
+                    initial.advanced(2).value(), 1, &clock, 0, true, 100,
+                    origin, record, {}, nullptr, nullptr, tlpktdrop);
+                inject(later, 2);
+                const auto old_record =
+                    SocketRegistry::instance().find(old_socket);
+                REQUIRE(old_record != nullptr);
+                GroupRegistry::instance().retain_member_receive(group,
+                    record->generation + 1, old_socket,
+                    old_record->member_generation, old);
+                GroupRegistry::instance().retain_member_receive(group,
+                    record->generation, old_socket,
+                    old_record->member_generation + 1, old);
+                REQUIRE(record->retained_receive == nullptr);
+                const bool synchronous = false;
+                REQUIRE_EQ(srt_setsockflag(group, SRTO_RCVSYN, &synchronous,
+                               sizeof(synchronous)),
+                    0);
+                for (auto& poll : cleanup.polls) {
+                    poll = srt_epoll_create();
+                    const int flags =
+                        SRT_EPOLL_IN | SRT_EPOLL_ERR | SRT_EPOLL_ET;
+                    REQUIRE_EQ(srt_epoll_add_usock(poll, group, &flags), 0);
+                }
+                std::weak_ptr<ConnectionRuntime> old_owner = old;
+                REQUIRE_EQ(srt_close(old_socket), 0);
+                old.reset();
+                REQUIRE(old_owner.expired());
+                std::size_t count = 0;
+                REQUIRE_EQ(srt_group_data(group, nullptr, &count), 0);
+                REQUIRE_EQ(count, 1U);
+                std::array<char, 8> buffer {};
+                SRT_MSGCTRL control = srt_msgctrl_default;
+                REQUIRE_EQ(
+                    srt_recvmsg2(group, buffer.data(), buffer.size(), &control),
+                    SRT_ERROR);
+                REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+                REQUIRE_EQ(record->next_receive_sequence, initial.value());
+                for (const auto poll : cleanup.polls) {
+                    SRT_EPOLL_EVENT event {};
+                    REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+                }
+                for (std::uint32_t offset = 0; offset < 3; ++offset) {
+                    clock.now_microseconds = 100'000U + offset * 1'000U;
+                    for (const auto poll : cleanup.polls) {
+                        const int flags =
+                            SRT_EPOLL_IN | SRT_EPOLL_ERR | SRT_EPOLL_ET;
+                        REQUIRE_EQ(
+                            srt_epoll_update_usock(poll, group, &flags), 0);
+                        SRT_EPOLL_EVENT event {};
+                        REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
+                        REQUIRE_EQ(event.events, SRT_EPOLL_IN);
+                    }
+                    REQUIRE_EQ(srt_recvmsg2(group, buffer.data(), buffer.size(),
+                                   &control),
+                        1);
+                    REQUIRE_EQ(buffer[0], static_cast<char>('a' + offset));
+                    REQUIRE_EQ(control.pktseq,
+                        static_cast<std::int32_t>(
+                            initial.advanced(offset).value()));
+                    REQUIRE_EQ(
+                        control.msgno, static_cast<std::int32_t>(offset + 1));
+                }
+            }
+        }
+    }
+}
+
+TEST(compat_group_receive_racing_member_close_preserves_exact_prefix)
+{
+    for (unsigned iteration = 0; iteration < 16; ++iteration) {
+        const auto group = srt_create_group(SRT_GTYPE_BROADCAST);
+        const auto old_socket = srt_create_socket();
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        const SequenceNumber first {record->initial_sequence};
+        TestClock clock {
+            .channel =
+                std::make_shared<robotweax::srt::compat::DatagramChannel>()};
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        struct Cleanup {
+            SRTSOCKET group;
+            ~Cleanup()
+            {
+                (void)srt_close(group);
+            }
+        } cleanup {group};
+        const auto origin = ConnectionRuntime::Clock::now();
+        auto old = attach_group_runtime(group, old_socket, first.value(), 1,
+            &clock, 0, true, 100, origin, record, {}, nullptr, nullptr, false);
+        const auto later = attach_group_runtime(group, srt_create_socket(),
+            first.advanced(2).value(), 1, &clock, 0, true, 100, origin, record,
+            {}, nullptr, nullptr, false);
+        for (std::uint32_t offset = 0; offset < 3; ++offset) {
+            const std::array<std::byte, 1> payload {
+                static_cast<std::byte>('a' + offset)};
+            robotweax::srt::PacketView packet;
+            packet.kind = robotweax::srt::PacketKind::data;
+            packet.data.sequence = first.advanced(offset);
+            packet.data.message_number = offset + 1;
+            packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+            packet.data.in_order = true;
+            packet.payload = payload;
+            (offset < 2 ? old : later)
+                ->process_packet(packet, IpEndpoint::loopback(9'000));
+        }
+        clock.now_microseconds = 200'000;
+        const int timeout = 1'000;
+        REQUIRE_EQ(
+            srt_setsockflag(group, SRTO_RCVTIMEO, &timeout, sizeof(timeout)),
+            0);
+        std::jthread close_member([&] {
+            (void)srt_close(old_socket);
+        });
+        for (unsigned offset = 0; offset < 3; ++offset) {
+            std::array<char, 1> output {};
+            REQUIRE_EQ(srt_recvmsg(group, output.data(), output.size()), 1);
+            REQUIRE_EQ(output[0], static_cast<char>('a' + offset));
+        }
+        close_member.join();
+        old.reset();
+        REQUIRE_EQ(record->next_receive_sequence, first.advanced(3).value());
+    }
+}
+
+TEST(compat_group_closed_fragment_keeps_shared_clock_and_small_buffer_retry)
+{
+    const auto group = srt_create_group(SRT_GTYPE_BACKUP);
+    const auto socket = srt_create_socket();
+    const auto record = GroupRegistry::instance().find(group);
+    REQUIRE(record != nullptr);
+    const SequenceNumber first {record->initial_sequence};
+    TestClock clock {
+        .channel = std::make_shared<robotweax::srt::compat::DatagramChannel>()};
+    clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+    struct Cleanup {
+        SRTSOCKET group;
+        ~Cleanup()
+        {
+            (void)srt_close(group);
+        }
+    } cleanup {group};
+    const auto origin = ConnectionRuntime::Clock::now();
+    auto runtime = attach_group_runtime(
+        group, socket, first.value(), 1, &clock, 0, true, 100, origin, record);
+    const auto epoch = runtime->timestamp_origin_microseconds();
+    const std::array<std::byte, 2> payload {std::byte {'a'}, std::byte {'b'}};
+    for (std::uint32_t offset = 0; offset < 2; ++offset) {
+        robotweax::srt::PacketView packet;
+        packet.kind = robotweax::srt::PacketKind::data;
+        packet.data.sequence = first.advanced(offset);
+        packet.data.message_number = 7;
+        packet.data.boundary = offset == 0
+            ? robotweax::srt::MessageBoundary::first
+            : robotweax::srt::MessageBoundary::last;
+        packet.data.in_order = true;
+        packet.data.timestamp = robotweax::srt::PacketTimestamp {10'000};
+        packet.payload = payload;
+        runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+    }
+    REQUIRE_EQ(srt_close(socket), 0);
+    runtime.reset();
+    // A member added after retirement raises the shared release deadline.
+    (void)attach_group_runtime(group, srt_create_socket(),
+        first.advanced(2).value(), 1, &clock, 0, true, 300, origin, record);
+    const bool synchronous = false;
+    REQUIRE_EQ(
+        srt_setsockflag(group, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+        0);
+    std::array<char, 4> output {};
+    SRT_MSGCTRL control = srt_msgctrl_default;
+    clock.now_microseconds = 309'999;
+    REQUIRE_EQ(
+        srt_recvmsg2(group, output.data(), output.size(), &control), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+    clock.now_microseconds = 310'000;
+    REQUIRE_EQ(srt_recvmsg2(group, output.data(), 3, &control), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ELARGEMSG);
+    REQUIRE_EQ(record->next_receive_sequence, first.value());
+    REQUIRE_EQ(srt_recvmsg2(group, output.data(), output.size(), &control), 4);
+    REQUIRE_EQ(output, (std::array<char, 4> {'a', 'b', 'a', 'b'}));
+    REQUIRE_EQ(control.msgno, 7);
+    REQUIRE_EQ(control.pktseq, static_cast<std::int32_t>(first.value()));
+    REQUIRE_EQ(control.srctime, epoch + 310'000);
+    REQUIRE_EQ(record->next_receive_sequence, first.advanced(2).value());
+}
+
+TEST(compat_group_retention_bounds_fail_explicitly_and_deduplicate)
+{
+    using robotweax::srt::compat::GroupReceiveRetention;
+    using robotweax::srt::compat::RetainedGroupReceiveBatch;
+    const auto batch = [](SequenceNumber first, std::size_t bytes = 1U,
+                           std::uint32_t packets = 1U) {
+        RetainedGroupReceiveBatch result;
+        result.origin = ConnectionRuntime::Clock::now();
+        robotweax::srt::BufferedMessageCopy message {
+            .first_sequence = first,
+            .next_sequence = first.advanced(packets),
+            .message_number = 1,
+        };
+        message.payload.resize(bytes, std::byte {'x'});
+        result.copies.messages.push_back(std::move(message));
+        return result;
+    };
+    const SequenceNumber first {SequenceNumber::mask - 1U};
+    {
+        GroupReceiveRetention retained;
+        for (std::uint32_t index = 0; index < 32; ++index) {
+            retained.retain(batch(first), first);
+        }
+        REQUIRE(!retained.failed());
+        std::array<std::byte, 1> output {};
+        REQUIRE_EQ(retained.receive_message(output, first).status,
+            robotweax::srt::compat::MessageIoStatus::success);
+        REQUIRE_EQ(output[0], std::byte {'x'});
+        REQUIRE_EQ(retained.receive_message(output, first.next()).status,
+            robotweax::srt::compat::MessageIoStatus::would_block);
+    }
+    for (const bool packet_limit : {false, true}) {
+        GroupReceiveRetention retained;
+        retained.retain(
+            batch(first,
+                packet_limit ? 1U : GroupReceiveRetention::maximum_bytes + 1U,
+                packet_limit ? GroupReceiveRetention::maximum_packets + 1U
+                             : 1U),
+            first);
+        REQUIRE(retained.failed());
+        std::array<std::byte, 1> output {};
+        REQUIRE_EQ(retained.receive_message(output, first).status,
+            robotweax::srt::compat::MessageIoStatus::broken);
+    }
+    {
+        GroupReceiveRetention retained;
+        for (std::uint32_t index = 0;
+            index < GroupReceiveRetention::maximum_batches; ++index) {
+            retained.retain(batch(first.advanced(index)), first);
+        }
+        REQUIRE(!retained.failed());
+        retained.retain(
+            batch(first.advanced(GroupReceiveRetention::maximum_batches)),
+            first);
+        REQUIRE(retained.failed());
+    }
+}
+
+TEST(compat_group_retained_prefix_expiry_and_close_publish_terminal_failure)
+{
+    using robotweax::srt::compat::GroupReceiveRetention;
+    for (const bool expire : {false, true}) {
+        const auto group = srt_create_group(SRT_GTYPE_BACKUP);
+        const auto socket = srt_create_socket();
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        const SequenceNumber initial {record->initial_sequence};
+        TestClock clock {
+            .channel =
+                std::make_shared<robotweax::srt::compat::DatagramChannel>()};
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        struct Cleanup {
+            SRTSOCKET group;
+            ~Cleanup()
+            {
+                (void)srt_close(group);
+            }
+        } cleanup {group};
+        auto runtime = attach_group_runtime(group, socket, initial.value(), 1,
+            &clock, 0, true, 100, ConnectionRuntime::Clock::now(), record);
+        const std::array<std::byte, 1> payload {std::byte {'x'}};
+        robotweax::srt::PacketView packet;
+        packet.kind = robotweax::srt::PacketKind::data;
+        packet.data.sequence = initial;
+        packet.data.message_number = 1;
+        packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+        packet.payload = payload;
+        runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+        REQUIRE_EQ(srt_close(socket), 0);
+        runtime.reset();
+        const auto retained = record->retained_receive;
+        REQUIRE(retained != nullptr);
+        const auto poll = srt_epoll_create();
+        const int flags = SRT_EPOLL_IN | SRT_EPOLL_ERR;
+        REQUIRE_EQ(srt_epoll_add_usock(poll, group, &flags), 0);
+        std::array<std::byte, 1> output {};
+        if (expire) {
+            clock.now_microseconds =
+                GroupReceiveRetention::maximum_age_microseconds - 1U;
+            REQUIRE(!retained->failed());
+            clock.now_microseconds += 1U;
+            REQUIRE_EQ(srt_getsockstate(group), SRTS_BROKEN);
+            REQUIRE(retained->failed());
+            SRT_EPOLL_EVENT event {};
+            REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
+            REQUIRE((event.events & SRT_EPOLL_ERR) != 0);
+            REQUIRE_EQ(
+                srt_recvmsg(group, reinterpret_cast<char*>(output.data()),
+                    output.size()),
+                SRT_ERROR);
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNLOST);
+            REQUIRE_EQ(record->next_receive_sequence, initial.value());
+            REQUIRE_EQ(srt_sendmsg(group, "x", 1, -1, 1), SRT_ERROR);
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNLOST);
+        }
+        REQUIRE_EQ(srt_close(group), 0);
+        REQUIRE_EQ(retained->receive_message(output, initial).status,
+            robotweax::srt::compat::MessageIoStatus::local_closed);
+        REQUIRE_EQ(srt_epoll_release(poll), 0);
     }
 }

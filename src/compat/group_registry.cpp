@@ -1,3 +1,4 @@
+#include "compat/group_receive_retention.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/process_owned.hpp"
 #include "compat/random_identity.hpp"
@@ -19,6 +20,11 @@ namespace {
 [[nodiscard]] SRT_SOCKSTATUS aggregate_state(
     const GroupRecord& group) noexcept
 {
+    if (group.receive_retention_failed
+        || (group.retained_receive != nullptr
+            && group.retained_receive->failed())) {
+        return SRTS_BROKEN;
+    }
     if (group.closed) {
         return SRTS_CLOSED;
     }
@@ -933,6 +939,55 @@ void GroupRegistry::update_member(
     }
 }
 
+void GroupRegistry::retain_member_receive(SRTSOCKET group,
+    std::uint64_t group_generation, SRTSOCKET socket,
+    std::uint64_t member_generation,
+    const std::shared_ptr<ConnectionRuntime>& runtime) noexcept
+{
+    if (runtime == nullptr) {
+        return;
+    }
+    const auto record = find(group);
+    if (record == nullptr) {
+        return;
+    }
+    std::unique_lock retirement_lock(record->receive_retirement_mutex);
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->closed || record->generation != group_generation
+            || find_member(*record, socket, member_generation)
+                == record->members.end()) {
+            return;
+        }
+    }
+    // No membership metadata lock across runtime inspection or payload copy.
+    auto batch = runtime->copy_group_receive_prefix();
+    if (batch.copies.error == Error::none && batch.copies.messages.empty()) {
+        return;
+    }
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->closed || record->generation != group_generation
+            || find_member(*record, socket, member_generation)
+                == record->members.end()) {
+            return;
+        }
+        try {
+            if (record->retained_receive == nullptr) {
+                record->retained_receive =
+                    std::make_shared<GroupReceiveRetention>(
+                        record->readiness_source);
+            }
+            record->retained_receive->retain(std::move(batch),
+                SequenceNumber {record->next_receive_sequence});
+        } catch (...) {
+            record->receive_retention_failed = true;
+        }
+        ++record->snapshot_version;
+    }
+    ReadinessSignal::notify(*record->readiness_source);
+}
+
 void GroupRegistry::remove_member(
     SRTSOCKET group, std::uint64_t group_generation,
     SRTSOCKET socket, std::uint64_t member_generation) noexcept
@@ -1021,6 +1076,10 @@ void GroupRegistry::close(SRTSOCKET group) noexcept
             return;
         }
         record->closed = true;
+        if (record->retained_receive != nullptr) {
+            record->retained_receive->close();
+            record->retained_receive.reset();
+        }
         record->receive_clock.reset();
         (void)record->member_native_options.set_passphrase({});
         record->member_native_options = {};
@@ -1066,6 +1125,10 @@ void GroupRegistry::clear() noexcept
         auto& record = *entry.second;
         std::lock_guard lock(record.mutex);
         record.closed = true;
+        if (record.retained_receive != nullptr) {
+            record.retained_receive->close();
+            record.retained_receive.reset();
+        }
         record.receive_clock.reset();
         (void)record.member_native_options.set_passphrase({});
         record.member_native_options = {};

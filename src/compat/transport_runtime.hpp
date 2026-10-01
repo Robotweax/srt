@@ -30,6 +30,7 @@ namespace robotweax::srt::compat {
 class ConnectionRuntime;
 class RuntimeWorkExecutor;
 struct GroupRecord;
+struct RetainedGroupReceiveBatch;
 
 struct HandshakeRouteKey {
     IpEndpoint peer{};
@@ -511,6 +512,8 @@ public:
     [[nodiscard]] bool has_buffered_receive_data() noexcept;
     [[nodiscard]] RuntimeReceiveSnapshot receive_snapshot(
         SequenceNumber expected, bool retire_consumed_prefix) noexcept;
+    [[nodiscard]] RetainedGroupReceiveBatch
+    copy_group_receive_prefix() noexcept;
     [[nodiscard]] SocketReadinessSnapshot readiness_snapshot(
         bool socket_broken) noexcept;
     [[nodiscard]] MessageIoResult receive_stream(

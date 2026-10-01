@@ -48,6 +48,19 @@ struct BufferedMessageInfo {
     PacketTimestamp timestamp{};
 };
 
+struct BufferedMessageCopy {
+    SequenceNumber first_sequence {};
+    SequenceNumber next_sequence {};
+    PacketTimestamp timestamp {};
+    std::uint32_t message_number = 0;
+    std::vector<std::byte> payload {};
+};
+
+struct BufferedMessageCopies {
+    Error error = Error::none;
+    std::vector<BufferedMessageCopy> messages {};
+};
+
 class ReceiveBuffer {
 public:
     ReceiveBuffer(SequenceNumber initial_sequence, std::size_t capacity_packets);
@@ -89,6 +102,10 @@ public:
     [[nodiscard]] std::optional<PacketTimestamp> next_message_timestamp() const noexcept;
 
     [[nodiscard]] ReceiveInsertResult insert(const PacketView& packet) noexcept;
+    // A bounded, non-consuming copy of complete messages, including those
+    // behind a gap. Incomplete or rejected payload is never published.
+    [[nodiscard]] BufferedMessageCopies copy_complete_messages(
+        std::size_t maximum_packets, std::size_t maximum_bytes) const noexcept;
     [[nodiscard]] ReceivedMessageResult pop_message(
         std::span<std::byte> destination) noexcept;
     // Reads bytes from the head packets in order. With `due` set, stops in

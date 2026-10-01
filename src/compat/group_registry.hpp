@@ -24,6 +24,8 @@ struct TsbpdClockState;
 namespace robotweax::srt::compat {
 
 template <typename T> class ProcessOwned;
+class ConnectionRuntime;
+class GroupReceiveRetention;
 
 // Numeric identities plus generations deliberately replace reciprocal owning
 // pointers between sockets and groups.  The coordinator introduced by the
@@ -68,6 +70,8 @@ struct GroupRecord {
     mutable std::mutex option_mutex;
     mutable std::mutex send_mutex;
     mutable std::mutex receive_mutex;
+    // At most one bounded payload-copy staging batch per group during close.
+    mutable std::mutex receive_retirement_mutex;
     SRTSOCKET handle = SRT_INVALID_SOCK;
     SRT_GROUP_TYPE type = SRT_GTYPE_UNDEFINED;
     std::uint64_t generation = 0;
@@ -85,6 +89,9 @@ struct GroupRecord {
     // replacement member.
     std::uint32_t replay_acknowledged_sequence = 0;
     GroupReplayBuffer replay_history;
+    // Receive-only ownership detached from explicitly closed members.
+    std::shared_ptr<GroupReceiveRetention> retained_receive;
+    bool receive_retention_failed = false;
     std::uint32_t next_receive_sequence = 0;
     // The first completed caller handshake establishes the reverse sequence
     // space. Later members use the group's receive cursor independently of
@@ -199,15 +206,14 @@ public:
         int token, std::uint64_t& group_generation,
         std::uint64_t& member_generation,
         bool* first_member = nullptr) noexcept;
-    void mark_opened(
-        SRTSOCKET group, std::uint64_t group_generation) noexcept;
-    void update_member(
-        SRTSOCKET group, std::uint64_t group_generation,
+    void mark_opened(SRTSOCKET group, std::uint64_t group_generation) noexcept;
+    void update_member(SRTSOCKET group, std::uint64_t group_generation,
+        SRTSOCKET socket, std::uint64_t member_generation, SRT_SOCKSTATUS state,
+        int result, bool broken_connection = false) noexcept;
+    void retain_member_receive(SRTSOCKET group, std::uint64_t group_generation,
         SRTSOCKET socket, std::uint64_t member_generation,
-        SRT_SOCKSTATUS state, int result,
-        bool broken_connection = false) noexcept;
-    void remove_member(
-        SRTSOCKET group, std::uint64_t group_generation,
+        const std::shared_ptr<ConnectionRuntime>& runtime) noexcept;
+    void remove_member(SRTSOCKET group, std::uint64_t group_generation,
         SRTSOCKET socket, std::uint64_t member_generation) noexcept;
     [[nodiscard]] bool set_peer_group(
         SRTSOCKET group, std::uint64_t group_generation,

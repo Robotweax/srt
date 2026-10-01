@@ -684,3 +684,45 @@ TEST(receive_buffer_invalid_dimensions_fail_before_reserving_payload)
         REQUIRE(rejected);
     }
 }
+
+TEST(receive_buffer_bounded_complete_copy_preserves_fragments_and_gaps)
+{
+    const SequenceNumber initial {SequenceNumber::mask - 1U};
+    ReceiveBuffer buffer {initial, 8};
+    const std::array<std::byte, 1> a {std::byte {'a'}};
+    const std::array<std::byte, 1> b {std::byte {'b'}};
+    const std::array<std::byte, 1> c {std::byte {'c'}};
+    REQUIRE(buffer.insert(data_packet(initial, 1, MessageBoundary::first, a)));
+    REQUIRE(buffer.insert(
+        data_packet(initial.next(), 2, MessageBoundary::first, a)));
+    REQUIRE(buffer.insert(
+        data_packet(initial.advanced(2), 2, MessageBoundary::last, b)));
+    REQUIRE(buffer.insert(
+        data_packet(initial.advanced(3), 3, MessageBoundary::solo, c)));
+    const auto ack = buffer.next_ack_sequence();
+    const auto copied = buffer.copy_complete_messages(3, 3);
+    REQUIRE_EQ(copied.error, Error::none);
+    REQUIRE_EQ(copied.messages.size(), 2U);
+    REQUIRE_EQ(copied.messages[0].first_sequence, initial.next());
+    REQUIRE_EQ(copied.messages[0].next_sequence, initial.advanced(3));
+    REQUIRE_EQ(copied.messages[0].message_number, 2U);
+    REQUIRE_EQ(
+        copied.messages[0].payload, (std::vector<std::byte> {a[0], b[0]}));
+    REQUIRE_EQ(copied.messages[1].payload, (std::vector<std::byte> {c[0]}));
+    REQUIRE_EQ(buffer.occupied(), 4U);
+    REQUIRE_EQ(buffer.first_stored_sequence(), initial);
+    REQUIRE_EQ(buffer.next_ack_sequence(), ack);
+    for (const auto budget : {std::pair {2U, 3U}, std::pair {3U, 2U}}) {
+        const auto rejected =
+            buffer.copy_complete_messages(budget.first, budget.second);
+        REQUIRE_EQ(rejected.error, Error::buffer_too_small);
+        REQUIRE(rejected.messages.empty());
+        REQUIRE_EQ(buffer.occupied(), 4U);
+        REQUIRE_EQ(buffer.next_ack_sequence(), ack);
+    }
+    buffer.discard_message_payload(initial.next());
+    const auto remaining = buffer.copy_complete_messages(1, 1);
+    REQUIRE_EQ(remaining.error, Error::none);
+    REQUIRE_EQ(remaining.messages.size(), 1U);
+    REQUIRE_EQ(remaining.messages[0].message_number, 3U);
+}
