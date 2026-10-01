@@ -1,5 +1,6 @@
 #pragma once
 
+#include "compat/readiness.hpp"
 #include "compat/socket_registry.hpp"
 
 #include <chrono>
@@ -19,6 +20,10 @@ struct GroupReceiveReadiness {
 };
 
 [[nodiscard]] GroupReceiveReadiness group_receive_readiness(
+    const std::shared_ptr<GroupRecord>& group);
+
+// Aggregate OUT/ERR and logical IN from one fresh member runtime snapshot.
+[[nodiscard]] SocketReadinessSnapshot group_poll_readiness(
     const std::shared_ptr<GroupRecord>& group);
 
 [[nodiscard]] int send_message(
