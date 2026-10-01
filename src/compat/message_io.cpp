@@ -761,6 +761,38 @@ void fill_group_data(
             + std::chrono::milliseconds{timeout_milliseconds};
 }
 
+[[nodiscard]] GroupReceiveReadiness inspect_group_readiness(
+    std::span<const GroupIoMember> members, SequenceNumber expected)
+{
+    GroupReceiveReadiness readiness;
+    if (members.empty()) {
+        readiness.terminal_error = true;
+        return readiness;
+    }
+    // Mirror the receiver's gap skips without changing its logical cursor.
+    // Retire only the prefix already consumed by the real group cursor.
+    bool retire_consumed_prefix = true;
+    for (;;) {
+        const GroupReceiveDecision decision =
+            inspect_group_receive(members, expected, retire_consumed_prefix);
+        retire_consumed_prefix = false;
+        if (decision.selected != nullptr) {
+            readiness.message_ready = true;
+            return readiness;
+        }
+        if (!decision.skip_to.has_value()) {
+            readiness.next_delivery = decision.next_delivery;
+            readiness.terminal_error =
+                !decision.live_member && !decision.next_delivery.has_value();
+            return readiness;
+        }
+        if (decision.skip_to->distance_from(expected) <= 0) {
+            return readiness;
+        }
+        expected = *decision.skip_to;
+    }
+}
+
 } // namespace
 
 int send_message(
@@ -1440,28 +1472,64 @@ GroupReceiveReadiness group_receive_readiness(
         }
         expected = SequenceNumber {group->next_receive_sequence};
     }
-    // Mirror the receiver's gap skips without changing its logical cursor.
-    // Retire only the prefix already consumed by the real group cursor.
-    bool retire_consumed_prefix = true;
-    for (;;) {
-        const GroupReceiveDecision decision = inspect_group_receive(
-            members.view(), expected, retire_consumed_prefix);
-        retire_consumed_prefix = false;
-        if (decision.selected != nullptr) {
-            readiness.message_ready = true;
-            return readiness;
-        }
-        if (!decision.skip_to.has_value()) {
-            readiness.next_delivery = decision.next_delivery;
-            readiness.terminal_error =
-                !decision.live_member && !decision.next_delivery.has_value();
-            return readiness;
-        }
-        if (decision.skip_to->distance_from(expected) <= 0) {
-            return readiness;
-        }
-        expected = *decision.skip_to;
+    return inspect_group_readiness(members.view(), expected);
+}
+
+SocketReadinessSnapshot group_poll_readiness(
+    const std::shared_ptr<GroupRecord>& group)
+{
+    SocketReadinessSnapshot readiness {};
+    if (group == nullptr) {
+        return readiness;
     }
+    // Resolve identities and publish terminal member states once per query.
+    // These owned, generation-checked references live only for this refresh.
+    const auto members = group_members(group);
+    readiness.exists = true;
+    readiness.source = group->readiness_source;
+    bool opened = false;
+    bool connected = false;
+    bool pending = false;
+    SequenceNumber expected;
+    {
+        std::lock_guard lock(group->mutex);
+        readiness.update_version = group->update_version;
+        if (group->closed) {
+            readiness.events = SRT_EPOLL_ERR;
+            return readiness;
+        }
+        opened = group->opened;
+        expected = SequenceNumber {group->next_receive_sequence};
+        // Read current membership flags as well: a newly added pending member
+        // must suppress terminal readiness even if absent from this snapshot.
+        for (const auto& member : group->members) {
+            const auto state = member.public_data.sockstate;
+            connected |= state == SRTS_CONNECTED;
+            pending |= state != SRTS_CONNECTED && state != SRTS_BROKEN
+                && state != SRTS_CLOSING && state != SRTS_CLOSED
+                && state != SRTS_NONEXIST;
+        }
+    }
+    for (const auto& member : members) {
+        if (!member.terminal) {
+            // Include terminal transitions after the registry snapshot and
+            // preserve the runtime's delayed SHUTDOWN drain semantics.
+            const auto member_readiness =
+                connection_readiness(*member.runtime, false);
+            readiness.events |=
+                member_readiness.events & (SRT_EPOLL_OUT | SRT_EPOLL_ERR);
+        }
+    }
+    const auto receive = inspect_group_readiness(members.view(), expected);
+    if (receive.message_ready) {
+        readiness.events |= SRT_EPOLL_IN;
+    } else {
+        readiness.read_wakeup = receive.next_delivery;
+    }
+    if (opened && !connected && !pending && receive.terminal_error) {
+        readiness.events |= SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+    }
+    return readiness;
 }
 
 int send_group_message(const std::shared_ptr<GroupRecord>& group,
