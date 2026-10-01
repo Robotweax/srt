@@ -5122,6 +5122,59 @@ TEST(compat_group_state_and_data_refresh_terminal_members)
     }
 }
 
+TEST(
+    compat_group_status_refresh_preserves_terminal_publication_at_inline_boundary)
+{
+    for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
+        for (const unsigned count : {16U, 17U}) {
+            for (const unsigned first_query : {0U, 1U, 2U}) {
+                const auto group = srt_create_group(type);
+                const auto record = GroupRegistry::instance().find(group);
+                REQUIRE(record != nullptr);
+                std::vector<std::shared_ptr<ConnectionRuntime>> runtimes;
+                for (unsigned index = 0; index < count; ++index) {
+                    const auto socket = srt_create_socket();
+                    runtimes.push_back(attach_group_runtime(group, socket,
+                        record->initial_sequence, 1, nullptr, 8));
+                }
+                robotweax::srt::PacketView shutdown;
+                shutdown.kind = robotweax::srt::PacketKind::control;
+                shutdown.control.type = robotweax::srt::ControlType::shutdown;
+                const std::array<std::byte, 4> padding {};
+                shutdown.payload = padding;
+                for (const auto& runtime : runtimes) {
+                    runtime->process_packet(
+                        shutdown, IpEndpoint::loopback(9'000));
+                }
+                std::array<SRT_SOCKGROUPDATA, 17> data {};
+                if (first_query == 0U) {
+                    REQUIRE_EQ(srt_getsockstate(group), SRTS_BROKEN);
+                } else if (first_query == 1U) {
+                    std::size_t size = data.size();
+                    REQUIRE_EQ(srt_group_data(group, data.data(), &size),
+                        static_cast<int>(count));
+                    REQUIRE_EQ(size, count);
+                } else {
+                    int state = 0;
+                    int size = sizeof(state);
+                    REQUIRE_EQ(
+                        srt_getsockflag(group, SRTO_STATE, &state, &size), 0);
+                    REQUIRE_EQ(state, SRTS_BROKEN);
+                    REQUIRE_EQ(size, static_cast<int>(sizeof(state)));
+                }
+                std::size_t size = data.size();
+                REQUIRE_EQ(srt_group_data(group, data.data(), &size),
+                    static_cast<int>(count));
+                for (unsigned index = 0; index < count; ++index) {
+                    REQUIRE_EQ(data[index].sockstate, SRTS_BROKEN);
+                    REQUIRE_EQ(data[index].memberstate, SRT_GST_BROKEN);
+                }
+                REQUIRE_EQ(srt_close(group), 0);
+            }
+        }
+    }
+}
+
 TEST(compat_group_close_detaches_members_across_replacement_cycles)
 {
     for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
