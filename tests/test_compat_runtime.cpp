@@ -859,17 +859,26 @@ TEST(compat_runtime_receive_snapshot_preserves_tsbpd_and_retirement)
                                .payload = payload},
         peer);
     const auto waiting = runtime.receive_snapshot(SequenceNumber {900}, false);
+    REQUIRE(!waiting.terminal);
     REQUIRE(waiting.buffered);
     REQUIRE(waiting.complete_expected);
     REQUIRE(!waiting.readable_sequence.has_value());
     REQUIRE(waiting.next_delivery.has_value());
+    const auto poll_waiting = connection_readiness(runtime, false);
+    REQUIRE_EQ(poll_waiting.events, SRT_EPOLL_OUT);
+    REQUIRE(poll_waiting.read_wakeup.has_value());
     now = 30'000;
     const auto ready = runtime.receive_snapshot(SequenceNumber {900}, false);
     REQUIRE_EQ(ready.readable_sequence, SequenceNumber {900});
     REQUIRE_EQ(ready.floor_sequence, SequenceNumber {900});
+    REQUIRE_EQ(connection_readiness(runtime, false).events,
+        SRT_EPOLL_IN | SRT_EPOLL_OUT);
     runtime.mark_broken(0);
     REQUIRE(runtime.terminal());
     const auto terminal = runtime.receive_snapshot(SequenceNumber {900}, false);
+    REQUIRE(terminal.terminal);
+    REQUIRE_EQ(connection_readiness(runtime, false).events,
+        SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR);
     REQUIRE_EQ(terminal.readable_sequence, SequenceNumber {900});
     const auto retired = runtime.receive_snapshot(SequenceNumber {901}, true);
     REQUIRE_EQ(retired.floor_sequence, SequenceNumber {901});

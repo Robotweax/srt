@@ -292,44 +292,7 @@ SocketReadinessSnapshot socket_readiness(SRTSOCKET handle) noexcept
 SocketReadinessSnapshot connection_readiness(
     ConnectionRuntime& runtime, bool socket_broken) noexcept
 {
-    SocketReadinessSnapshot readiness {};
-    readiness.exists = true;
-    // Include terminal transitions after the registry snapshot in the same
-    // drain path. Checking runtime.broken() later and returning ERR directly
-    // can discard the final buffered messages in nonblocking consumers.
-    const bool broken = socket_broken || runtime.broken();
-    if (broken && runtime.peer_closed()) {
-        const bool readable = runtime.readable();
-        const auto read_wakeup = runtime.next_readable_deadline();
-        if (read_wakeup.has_value()) {
-            if (readable) {
-                // A peer SHUTDOWN must not surface EPOLL_ERR ahead of data
-                // already accepted into the receive buffer. FFmpeg treats
-                // ERR as terminal and otherwise skips the final recvmsg.
-                readiness.events = SRT_EPOLL_IN;
-            } else {
-                readiness.read_wakeup = read_wakeup;
-            }
-            return readiness;
-        }
-        readiness.events = SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
-        return readiness;
-    }
-    if (broken) {
-        readiness.events =
-            SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
-        return readiness;
-    }
-
-    if (runtime.readable()) {
-        readiness.events |= SRT_EPOLL_IN;
-    } else {
-        readiness.read_wakeup = runtime.next_readable_deadline();
-    }
-    if (runtime.writable()) {
-        readiness.events |= SRT_EPOLL_OUT;
-    }
-    return readiness;
+    return runtime.readiness_snapshot(socket_broken);
 }
 
 std::uint64_t ReadinessSignal::generation() noexcept
