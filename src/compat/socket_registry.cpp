@@ -281,6 +281,16 @@ void shutdown_record(
             && record->public_options.linger_enabled;
         linger_seconds =
             record->public_options.linger_seconds;
+        // Publish a receive-only prefix before this socket disappears from
+        // group resolution. The registry rechecks group/member generations;
+        // no group metadata lock is held across the bounded runtime copy.
+        if (record->group_id != SRT_INVALID_SOCK
+            && record->member_generation != 0U) {
+            GroupRegistry::instance().retain_member_receive(record->group_id,
+                record->group_generation,
+                static_cast<SRTSOCKET>(record->protocol_socket_id),
+                record->member_generation, record->runtime);
+        }
         record->state = SRTS_CLOSING;
         protocol_socket_id = record->protocol_socket_id;
         channel = std::move(record->channel);

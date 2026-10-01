@@ -263,6 +263,76 @@ std::optional<PacketTimestamp> ReceiveBuffer::next_message_timestamp() const noe
     return slot->header.timestamp;
 }
 
+BufferedMessageCopies ReceiveBuffer::copy_complete_messages(
+    std::size_t maximum_packets, std::size_t maximum_bytes) const noexcept
+{
+    BufferedMessageCopies result;
+    std::size_t packets = 0;
+    std::size_t bytes = 0;
+    try {
+        for (std::size_t offset = 0; offset < capacity() && occupied_ != 0U;
+            ++offset) {
+            const auto first_sequence = first_stored_sequence_.advanced(
+                static_cast<std::uint32_t>(offset));
+            const auto* first = find(first_sequence);
+            if (first == nullptr || first->payload_offset != 0U
+                || (first->header.boundary != MessageBoundary::solo
+                    && first->header.boundary != MessageBoundary::first)) {
+                continue;
+            }
+            const auto last = complete_message_last_offset(offset);
+            if (!last.has_value()) {
+                continue;
+            }
+            const auto packet_count = *last - offset + 1U;
+            if (packet_count > maximum_packets - packets) {
+                return {.error = Error::buffer_too_small};
+            }
+            std::size_t message_bytes = 0;
+            for (std::size_t index = offset; index <= *last; ++index) {
+                const auto* slot = find(first_stored_sequence_.advanced(
+                    static_cast<std::uint32_t>(index)));
+                if (slot == nullptr || slot->payload_offset != 0U) {
+                    return {.error = Error::invalid_state};
+                }
+                if (slot->payload_size
+                    > maximum_bytes - bytes - message_bytes) {
+                    return {.error = Error::buffer_too_small};
+                }
+                message_bytes += slot->payload_size;
+            }
+            if (message_bytes > maximum_bytes - bytes) {
+                return {.error = Error::buffer_too_small};
+            }
+            BufferedMessageCopy copy {
+                .first_sequence = first_sequence,
+                .next_sequence = first_stored_sequence_.advanced(
+                    static_cast<std::uint32_t>(*last + 1U)),
+                .timestamp = first->header.timestamp,
+                .message_number = first->header.message_number,
+            };
+            copy.payload.resize(message_bytes);
+            std::size_t written = 0;
+            for (std::size_t index = offset; index <= *last; ++index) {
+                const auto* slot = find(first_stored_sequence_.advanced(
+                    static_cast<std::uint32_t>(index)));
+                std::copy_n(payloads_.get(slot->payload_index).begin(),
+                    slot->payload_size,
+                    copy.payload.begin()
+                        + static_cast<std::ptrdiff_t>(written));
+                written += slot->payload_size;
+            }
+            result.messages.push_back(std::move(copy));
+            packets += packet_count;
+            bytes += message_bytes;
+            offset = *last;
+        }
+    } catch (...) {
+        return {.error = Error::buffer_too_small};
+    }
+    return result;
+}
+
 ReceivedMessageResult ReceiveBuffer::pop_message(
     std::span<std::byte> destination) noexcept
 {

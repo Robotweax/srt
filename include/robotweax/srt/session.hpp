@@ -335,6 +335,11 @@ public:
     [[nodiscard]] ReceivedMessageResult pop_message_at(
         std::span<std::byte> destination,
         std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] std::optional<TsbpdClock>
+    receive_clock_snapshot() const noexcept
+    {
+        return tsbpd_clock_;
+    }
     [[nodiscard]] Error discard_received_before(
         SequenceNumber next_sequence,
         std::uint64_t now_microseconds) noexcept;

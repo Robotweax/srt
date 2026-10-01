@@ -88,6 +88,7 @@ add_library(robotweax_srt
     src/compat/file_io.cpp
     src/compat/group_api.cpp
     src/compat/group_config.cpp
+    src/compat/group_receive_retention.cpp
     src/compat/group_replay_buffer.cpp
     src/compat/group_registry.cpp
     src/compat/listener_accept_queue.cpp

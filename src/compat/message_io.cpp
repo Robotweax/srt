@@ -1,3 +1,4 @@
+#include "compat/group_receive_retention.hpp"
 #include "compat/message_io.hpp"
 
 #include "compat/error_state.hpp"
@@ -109,6 +110,7 @@ struct GroupIoMember {
     std::uint64_t generation = 0;
     std::uint16_t weight = 0;
     std::shared_ptr<ConnectionRuntime> runtime;
+    std::shared_ptr<GroupReceiveRetention> retained;
     std::int32_t maximum_payload_size = 0;
     bool message_api = true;
     bool tsbpd_mode = true;
@@ -272,6 +274,36 @@ private:
     return result;
 }
 
+[[nodiscard]] bool group_receive_failed(
+    const std::shared_ptr<GroupRecord>& group)
+{
+    std::shared_ptr<GroupReceiveRetention> retained;
+    {
+        std::lock_guard lock(group->mutex);
+        if (group->receive_retention_failed) {
+            return true;
+        }
+        retained = group->retained_receive;
+    }
+    return retained != nullptr && retained->failed();
+}
+
+[[nodiscard]] GroupIoSnapshotBuffer<GroupIoMember> group_receive_members(
+    const std::shared_ptr<GroupRecord>& group,
+    std::uint64_t* snapshot_version = nullptr)
+{
+    auto members = group_members(group, snapshot_version);
+    std::shared_ptr<GroupReceiveRetention> retained;
+    {
+        std::lock_guard lock(group->mutex);
+        retained = group->retained_receive;
+    }
+    if (retained != nullptr) {
+        members.push_back({.retained = std::move(retained), .terminal = true});
+    }
+    return members;
+}
+
 struct GroupReceiveDecision {
     const GroupIoMember* selected = nullptr;
     std::optional<SequenceNumber> skip_to;
@@ -303,8 +335,10 @@ struct GroupReceiveDecision {
         all_tsbpd &= member.tsbpd_mode;
         // A member may still hold a prefix already consumed through another
         // path. Retire that prefix before judging group deliverability.
-        const auto receive =
-            member.runtime->receive_snapshot(expected, retire_consumed_prefix);
+        const auto receive = member.retained != nullptr
+            ? member.retained->snapshot(expected, retire_consumed_prefix)
+            : member.runtime->receive_snapshot(
+                  expected, retire_consumed_prefix);
         const bool terminal = member.terminal || receive.terminal;
         decision.live_member |= !terminal;
         const auto candidate = receive.readable_sequence;
@@ -337,7 +371,11 @@ struct GroupReceiveDecision {
             // inspection began. A readiness query never discards data at a
             // cursor it only simulated.
             if (retire_consumed_prefix) {
-                (void)member.runtime->discard_received_before(expected);
+                if (member.retained != nullptr) {
+                    member.retained->discard_before(expected);
+                } else {
+                    (void)member.runtime->discard_received_before(expected);
+                }
             }
         } else if (distance == 0) {
             if (decision.selected == nullptr) {
@@ -985,6 +1023,9 @@ int send_group_message_implementation(
     const std::size_t requested_capacity =
         local_control.grpdata_size;
 
+    if (group_receive_failed(group)) {
+        return fail(SRT_ECONNLOST);
+    }
     std::unique_lock io_lock(group->send_mutex);
     bool blocking = true;
     std::int32_t timeout = -1;
@@ -1009,6 +1050,9 @@ int send_group_message_implementation(
         buffer, static_cast<std::size_t>(length)});
 
     for (;;) {
+        if (group_receive_failed(group)) {
+            return fail(SRT_ECONNLOST);
+        }
         const std::uint64_t observed = ReadinessSignal::generation();
         auto members = group_members(group);
         if (members.empty()) {
@@ -1367,9 +1411,12 @@ int receive_group_message_implementation(
         buffer, static_cast<std::size_t>(length)});
 
     for (;;) {
+        if (group_receive_failed(group)) {
+            return fail(SRT_ECONNLOST);
+        }
         const std::uint64_t observed = ReadinessSignal::generation();
         std::uint64_t snapshot_version = 0;
-        const auto members = group_members(group, &snapshot_version);
+        const auto members = group_receive_members(group, &snapshot_version);
         if (members.empty()) {
             std::lock_guard lock(group->mutex);
             return fail(group->closed ? SRT_ESCLOSED : SRT_ENOCONN);
@@ -1392,6 +1439,9 @@ int receive_group_message_implementation(
             if (group->closed || group->generation != generation) {
                 return fail(SRT_ESCLOSED);
             }
+            if (group->snapshot_version != snapshot_version) {
+                continue;
+            }
             if (group->next_receive_sequence == expected) {
                 group->next_receive_sequence = decision.skip_to->value();
                 const auto skipped =
@@ -1405,8 +1455,10 @@ int receive_group_message_implementation(
         }
         const GroupIoMember* const selected = decision.selected;
         if (selected != nullptr) {
-            const auto result =
-                selected->runtime->receive_message(bytes, false, -1);
+            const auto result = selected->retained != nullptr
+                ? selected->retained->receive_message(
+                      bytes, SequenceNumber {expected})
+                : selected->runtime->receive_message(bytes, false, -1);
             if (result.status == MessageIoStatus::success) {
                 {
                     std::lock_guard lock(group->mutex);
@@ -1423,8 +1475,13 @@ int receive_group_message_implementation(
                 }
                 for (const auto& member : members) {
                     if (member.id != selected->id) {
-                        (void)member.runtime->discard_received_before(
-                            result.next_sequence);
+                        if (member.retained != nullptr) {
+                            member.retained->discard_before(
+                                result.next_sequence);
+                        } else {
+                            (void)member.runtime->discard_received_before(
+                                result.next_sequence);
+                        }
                     }
                 }
                 // The member's pop notification may run before the group
@@ -1491,6 +1548,15 @@ int receive_group_message_implementation(
                 return fail(SRT_ELARGEMSG);
             }
         }
+        if (group_receive_failed(group)) {
+            return fail(SRT_ECONNLOST);
+        }
+        {
+            std::lock_guard lock(group->mutex);
+            if (group->snapshot_version != snapshot_version) {
+                continue;
+            }
+        }
         if (!decision.live_member && !decision.next_delivery.has_value()) {
             return fail(SRT_ECONNLOST);
         }
@@ -1514,7 +1580,11 @@ GroupReceiveReadiness group_receive_readiness(
     if (group == nullptr) {
         return readiness;
     }
-    const auto members = group_members(group);
+    if (group_receive_failed(group)) {
+        readiness.terminal_error = true;
+        return readiness;
+    }
+    const auto members = group_receive_members(group);
     if (members.empty()) {
         readiness.terminal_error = true;
         return readiness;
@@ -1539,9 +1609,13 @@ SocketReadinessSnapshot group_poll_readiness(
     }
     // Resolve identities and publish terminal member states once per query.
     // These owned, generation-checked references live only for this refresh.
-    const auto members = group_members(group);
+    const auto members = group_receive_members(group);
     readiness.exists = true;
     readiness.source = group->readiness_source;
+    if (group_receive_failed(group)) {
+        readiness.events = SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+        return readiness;
+    }
     bool opened = false;
     bool connected = false;
     bool pending = false;

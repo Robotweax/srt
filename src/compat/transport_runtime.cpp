@@ -1,3 +1,4 @@
+#include "compat/group_receive_retention.hpp"
 #include "compat/transport_runtime.hpp"
 #include "compat/submillisecond_pacing_platform.hpp"
 
@@ -1930,6 +1931,23 @@ RuntimeReceiveSnapshot ConnectionRuntime::receive_snapshot(
             : next_receive_wakeup_locked(now);
     }
     return result;
+}
+
+RetainedGroupReceiveBatch
+ConnectionRuntime::copy_group_receive_prefix() noexcept
+{
+    std::lock_guard lock(mutex_);
+    return {
+        .copies = session_.receive_buffer().copy_complete_messages(
+            GroupReceiveRetention::maximum_packets,
+            GroupReceiveRetention::maximum_bytes),
+        .clock = session_.receive_clock_snapshot(),
+        .origin = origin_,
+        .origin_epoch_microseconds = origin_epoch_microseconds_,
+        .retired_at_microseconds = now_microseconds(),
+        .now_function = now_function_,
+        .now_context = now_context_,
+    };
 }
 
 bool ConnectionRuntime::discard_received_before(

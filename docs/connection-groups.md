@@ -231,6 +231,19 @@ published by group receive, group-state queries, and `srt_group_data` without
 requiring a separate member-state query. A BROKEN member remains available
 for draining buffered messages; an explicitly closed member is detached from
 the membership list, including while its transport finishes asynchronous linger.
+Before detaching an explicitly closed member, the group copies its complete
+unread messages into receive-only storage. Payload, sequence and message numbers,
+and the shared TSBPD clock remain available after the member transport is released.
+Adding a replacement cannot make these messages ready earlier or skip them.
+
+This storage is limited per group to 8,192 packets, 11,927,552 payload bytes and
+16 retained batches. Duplicate message ranges do not consume another batch.
+Unread batches expire 120 seconds after member closure; receive, readiness and
+state inspection check expiry. Allocation failure, capacity exhaustion or expiry
+breaks the logical group explicitly (`SRT_ECONNLOST`, `SRT_EPOLL_ERR`) rather than
+advancing past unread data. Closing the group releases this storage immediately.
+Retention preserves complete messages already received locally; it cannot recover
+incomplete messages or packets that reached no member.
 Terminal members do not mask a pending replacement's CONNECTING state.
 
 ## Source time and TSBPD
