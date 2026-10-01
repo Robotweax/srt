@@ -87,7 +87,8 @@ class CiBuildScopeTests(unittest.TestCase):
                         expected += ["robotweax_srt_handshake_probe",
                                      "robotweax_srt_group_peer"]
                     if benchmark:
-                        expected += ["robotweax_srt_scalability_peer"]
+                        expected += ["robotweax_srt_scalability_peer",
+                                     "robotweax_srt_group_throughput_peer"]
                     self.assertEqual(calls[1],
                                      ["--build", "build", "--parallel", "--target"]
                                      + expected)

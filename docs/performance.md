@@ -244,3 +244,9 @@ encryption or FEC changes wire overhead.
 Performance differences guide profiling and optimization. They never justify
 weakening packet validation, encryption, reliability, bounded-memory policy,
 TSBPD timing, or interoperability behavior.
+
+For real Broadcast and Backup group workloads with increasing member counts,
+use the [same-host group throughput diagnostic](group-throughput.md). Its exact
+payload and per-member copy checks keep useful throughput separate from transport
+copies; measurement spans and host limitations are recorded explicitly.
+

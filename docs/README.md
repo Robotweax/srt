@@ -81,6 +81,7 @@ combining features.
 - [Protocol edge-case policy](protocol-edge-cases.md)
 - [Bounded payload storage](payload-storage.md) — resident memory, capacity and ownership.
 - [Performance and scalability measurement](performance.md)
+- [Same-host UDP group throughput diagnostic](group-throughput.md)
 - [UDP send backpressure](udp-backpressure.md)
 - [Shared-channel scheduling fairness](channel-fairness.md)
 - [Idle channel readiness](idle-readiness.md)

@@ -1218,7 +1218,7 @@ jobs:
             targets+=(robotweax_srt_handshake_probe robotweax_srt_group_peer)
           fi
           if [[ "$BENCHMARK" == "true" ]]; then
-            targets+=(robotweax_srt_scalability_peer)
+            targets+=(robotweax_srt_scalability_peer robotweax_srt_group_throughput_peer)
           fi
           cmake --build build --parallel --target "${targets[@]}"
       - name: Build Robotweax SRT AEAD preview
@@ -1441,6 +1441,7 @@ jobs:
             build/robotweax_srt_handshake_probe \
             build/robotweax_srt_group_peer \
             build/robotweax_srt_scalability_peer \
+            build/robotweax_srt_group_throughput_peer \
             robotweax-binding-peer
           do
             if [[ -e "$candidate" ]]; then
@@ -2055,6 +2056,12 @@ jobs:
           --reference-peer ./reference-api-peer
           --host ::1
           --ipv6-matrix-only
+      - name: Run native UDP group integrity smoke
+        if: matrix.profile == 'scalability' && needs.changes.outputs.benchmark == 'true'
+        run: >-
+          python3 benchmarks/group_throughput_smoke.py
+          --peer build/robotweax_srt_group_throughput_peer
+          --output build/group-throughput-smoke.json
       - name: Run many-socket scalability functional profiles
         if: matrix.profile == 'scalability'
         run: >-

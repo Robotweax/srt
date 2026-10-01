@@ -755,6 +755,15 @@ if(ROBOTWEAX_SRT_BUILD_BENCHMARKS)
     target_compile_features(robotweax_srt_scalability_peer
         PRIVATE cxx_std_17)
 
+    if(UNIX)
+        add_executable(robotweax_srt_group_throughput_peer
+            benchmarks/group_throughput_peer.cpp)
+        target_link_libraries(robotweax_srt_group_throughput_peer
+            PRIVATE RobotweaxSRT::srt OpenSSL::Crypto)
+        target_compile_features(robotweax_srt_group_throughput_peer
+            PRIVATE cxx_std_17)
+    endif()
+
     add_executable(robotweax_srt_timer_wake_probe
         benchmarks/timer_wake_probe.cpp)
     target_link_libraries(robotweax_srt_timer_wake_probe
@@ -763,6 +772,17 @@ if(ROBOTWEAX_SRT_BUILD_BENCHMARKS)
         PRIVATE cxx_std_20)
     target_include_directories(robotweax_srt_timer_wake_probe
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+    if(UNIX AND ROBOTWEAX_SRT_BUILD_TESTS AND Python3_Interpreter_FOUND)
+        add_test(
+            NAME robotweax_srt_group_throughput_smoke
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/group_throughput_smoke.py
+                --peer $<TARGET_FILE:robotweax_srt_group_throughput_peer>
+                --output ${CMAKE_CURRENT_BINARY_DIR}/group-throughput-smoke.json)
+        set_tests_properties(robotweax_srt_group_throughput_smoke
+            PROPERTIES TIMEOUT 40 LABELS "benchmark;integration;group")
+    endif()
 
     if(ROBOTWEAX_SRT_BUILD_TESTS AND Python3_Interpreter_FOUND)
         add_test(

@@ -21,6 +21,7 @@ PROGRAMS = (
     "build/robotweax_srt_handshake_probe",
     "build/robotweax_srt_group_peer",
     "build/robotweax_srt_scalability_peer",
+    "build/robotweax_srt_group_throughput_peer",
     "robotweax-binding-peer",
 )
 
