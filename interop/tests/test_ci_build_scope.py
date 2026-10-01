@@ -99,12 +99,24 @@ class CiBuildScopeTests(unittest.TestCase):
 
 
 class CiTestRegistrationTests(unittest.TestCase):
-    def test_unfiltered_suite_is_registered_without_duplicate_compat_run(self) -> None:
+    def test_native_partitions_do_not_duplicate_or_omit_cases(self) -> None:
         cmake = (ROOT / "CMakeLists.txt").read_text()
-        self.assertIn("add_test(NAME robotweax_srt_tests COMMAND robotweax_srt_tests)",
-                      cmake)
+        registrations = re.findall(
+            r"add_test\(NAME\s+(\w+)\s+COMMAND\s+robotweax_srt_tests\b([^)]*)\)",
+            cmake,
+        )
+        commands = {name: arguments.split() for name, arguments in registrations}
+        self.assertEqual(len(registrations), 2)
+        self.assertEqual(set(commands), {
+            "robotweax_srt_tests", "robotweax_srt_rotation_tests",
+        })
+        included = commands["robotweax_srt_rotation_tests"]
+        self.assertEqual(len(included), 1)
+        self.assertTrue(included[0])
+        # Complementary filters cover every native case exactly once, even as
+        # more cases are added; an extra compatibility run would duplicate them.
+        self.assertEqual(commands["robotweax_srt_tests"], ["--exclude", *included])
         self.assertNotIn("NAME robotweax_srt_compat_tests", cmake)
-        self.assertNotIn("COMMAND robotweax_srt_tests compat_", cmake)
         # Process/lifetime probes are independent coverage, not duplicates.
         for name in ("robotweax_srt_lifecycle_tests",
                      "robotweax_srt_process_exit_tests"):
