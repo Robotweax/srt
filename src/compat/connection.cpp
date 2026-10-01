@@ -923,12 +923,12 @@ void set_key_material_state_response(
     }
     if (!channel->start()) {
         channel->unregister_connection(socket.protocol_socket_id);
-        runtime->close();
+        close_connection_runtime(runtime);
         return fail(SRT_ETHREAD);
     }
     if (runtime->broken() || runtime->peer_closed()) {
         channel->unregister_connection(socket.protocol_socket_id);
-        runtime->close();
+        close_connection_runtime(runtime);
         return fail(SRT_ECONNSETUP);
     }
     {
@@ -936,7 +936,7 @@ void set_key_material_state_response(
         if (socket.state == SRTS_CLOSING
             || socket.state == SRTS_CLOSED) {
             channel->unregister_connection(socket.protocol_socket_id);
-            runtime->close();
+            close_connection_runtime(runtime);
             return fail(SRT_ESCLOSED);
         }
         socket.runtime = std::move(runtime);
@@ -3313,6 +3313,9 @@ int connect_socket(
         if (scheduler == nullptr) {
             return fail_connect(*socket, SRT_ETHREAD, 0, true);
         }
+        // Prepare off-shard cleanup on the API caller, not in a later shard
+        // failure path. Resource failure retains bounded synchronous cleanup.
+        (void)acquire_runtime_work_executor();
         std::shared_ptr<AsyncRendezvousHandshakeActor> actor;
         try {
             actor = std::make_shared<AsyncRendezvousHandshakeActor>(
@@ -3446,6 +3449,7 @@ int connect_socket(
     if (scheduler == nullptr) {
         return fail_connect(*socket, SRT_ETHREAD, 0, true);
     }
+    (void)acquire_runtime_work_executor();
     std::shared_ptr<AsyncCallerHandshakeActor> actor;
     try {
         actor = std::make_shared<AsyncCallerHandshakeActor>(

@@ -88,7 +88,7 @@ void publish_group_state(
 void finish_close(DeferredClose close) noexcept
 {
     if (close.runtime != nullptr) {
-        close.runtime->close();
+        close_connection_runtime(close.runtime);
     }
     if (close.channel != nullptr
         && close.runtime != nullptr) {

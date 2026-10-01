@@ -83,6 +83,9 @@ public:
     RuntimeScheduler& operator=(const RuntimeScheduler&) = delete;
 
     [[nodiscard]] bool start() noexcept;
+    // Identifies affinity workers without walking scheduler instances or
+    // taking their locks. Blocking cleanup belongs on the work executor.
+    [[nodiscard]] static bool on_worker_thread() noexcept;
     [[nodiscard]] SubmitStatus submit(
         std::uint64_t affinity, Task task) noexcept;
     [[nodiscard]] ScheduleResult schedule_at(std::uint64_t affinity,

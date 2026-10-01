@@ -5,6 +5,7 @@
 #include "robotweax/srt/control.hpp"
 #include "compat/readiness.hpp"
 #include "compat/transport_runtime.hpp"
+#include "compat/runtime_work_executor.hpp"
 #include "compat/submillisecond_pacing_platform.hpp"
 #include "srt/srt.h"
 
@@ -9047,6 +9048,303 @@ TEST(compat_runtime_close_backpressure_releases_the_scheduler_shard)
         const auto ack = decode_acknowledgement(packet.packet);
         REQUIRE(ack);
         REQUIRE_EQ(ack.acknowledgement.next_sequence, SequenceNumber {701});
+    }
+}
+
+TEST(compat_runtime_first_shard_close_hands_off_drain_and_keeps_owners_alive)
+{
+    // Compare the explicit synchronous close contract with the owning
+    // compatibility boundary; no sub-10 ms scheduler timing assumptions.
+    for (const bool handoff : {false, true}) {
+        struct RetryGate {
+            std::mutex mutex;
+            std::condition_variable changed;
+            bool entered = false;
+            bool released = false;
+            static void pause(void* context) noexcept
+            {
+                auto& gate = *static_cast<RetryGate*>(context);
+                std::unique_lock lock(gate.mutex);
+                gate.entered = true;
+                gate.changed.notify_all();
+                gate.changed.wait(lock, [&] {
+                    return gate.released;
+                });
+            }
+        } gate;
+        auto scheduler = std::make_shared<RuntimeScheduler>(
+            RuntimeScheduler::Configuration {1, 8, 8});
+        auto executor = std::make_shared<RuntimeWorkExecutor>(
+            RuntimeWorkExecutor::Configuration {1, 8});
+        REQUIRE(scheduler->start());
+        REQUIRE(executor->start());
+        REQUIRE(!RuntimeScheduler::on_worker_thread());
+        auto channel = std::make_shared<DatagramChannel>();
+        BackpressureOutput output;
+        channel->set_send_hook_for_testing(backpressure_datagram, &output);
+        SocketOptions options;
+        REQUIRE_EQ(
+            options.set(SocketOption::transmission_type, 1), Error::none);
+        std::uint64_t now = 100;
+        const Ipv4Endpoint peer {.address = {192, 0, 2, 91}, .port = 15091};
+        auto closing = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {.channel = channel,
+                .peer = peer,
+                .peer_socket_id = 910,
+                .initial_sequence = SequenceNumber {700},
+                .options = options,
+                .origin = ConnectionRuntime::Clock::now(),
+                .now_function = injected_now,
+                .now_context = &now,
+                .close_retry_hook_for_testing = RetryGate::pause,
+                .close_retry_context_for_testing = &gate});
+        const std::array payload {std::byte {'x'}};
+        PacketView data {.kind = PacketKind::data,
+            .data = {.sequence = SequenceNumber {700},
+                .message_number = 1,
+                .boundary = MessageBoundary::solo},
+            .payload = payload};
+        closing->process_packet(data, peer);
+
+        auto healthy_channel = std::make_shared<DatagramChannel>();
+        CapturedDatagrams healthy_output;
+        healthy_channel->set_send_hook_for_testing(
+            capture_datagram, &healthy_output);
+        auto healthy = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {.channel = healthy_channel,
+                .peer = peer,
+                .peer_socket_id = 911,
+                .initial_sequence = SequenceNumber {900},
+                .options = options,
+                .origin = ConnectionRuntime::Clock::now()});
+        REQUIRE_EQ(healthy->queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+
+        struct CloseTask {
+            std::shared_ptr<ConnectionRuntime> runtime;
+            std::shared_ptr<RuntimeWorkExecutor> executor;
+            bool handoff;
+            std::promise<bool> completed;
+            static void run(void* context) noexcept
+            {
+                auto& task = *static_cast<CloseTask*>(context);
+                const bool on_shard = RuntimeScheduler::on_worker_thread();
+                if (task.handoff) {
+                    close_connection_runtime(task.runtime, task.executor);
+                } else {
+                    task.runtime->close();
+                }
+                task.completed.set_value(on_shard);
+            }
+        };
+        auto close_task = std::make_shared<CloseTask>();
+        close_task->runtime = closing;
+        close_task->executor = executor;
+        close_task->handoff = handoff;
+        auto closed = close_task->completed.get_future();
+        const auto close_status = scheduler->submit(
+            0, {.function = CloseTask::run, .context = close_task});
+        close_task.reset();
+        bool entered;
+        {
+            std::unique_lock lock(gate.mutex);
+            entered =
+                gate.changed.wait_for(lock, std::chrono::seconds {2}, [&] {
+                    return gate.entered;
+                });
+        }
+        struct HealthyTask {
+            std::shared_ptr<ConnectionRuntime> runtime;
+            std::promise<void> completed;
+            static void run(void* context) noexcept
+            {
+                auto& task = *static_cast<HealthyTask*>(context);
+                (void)task.runtime->poll();
+                task.completed.set_value();
+            }
+        };
+        auto healthy_task = std::make_shared<HealthyTask>();
+        healthy_task->runtime = healthy;
+        auto progressed = healthy_task->completed.get_future();
+        const auto healthy_status = scheduler->submit(
+            0, {.function = HealthyTask::run, .context = healthy_task});
+        const bool close_returned = closed.wait_for(std::chrono::seconds {0})
+            == std::future_status::ready;
+        const bool shard_progress =
+            progressed.wait_for(
+                handoff ? std::chrono::seconds {2} : std::chrono::seconds {0})
+            == std::future_status::ready;
+        const auto snapshot = scheduler->snapshot();
+        const auto before_release = take_datagrams(healthy_output);
+        const auto closed_send =
+            closing->queue_message(payload, 0, true, false, -1).status;
+        closing->close(); // Duplicate must not take over the pending drain.
+        std::weak_ptr<ConnectionRuntime> weak_runtime = closing;
+        std::weak_ptr<DatagramChannel> weak_channel = channel;
+        closing.reset();
+        channel.reset();
+        const bool owners_retained =
+            !weak_runtime.expired() && !weak_channel.expired();
+        {
+            std::lock_guard lock(gate.mutex);
+            gate.released = true;
+        }
+        gate.changed.notify_all();
+        scheduler->stop();
+        executor->stop();
+        REQUIRE(entered);
+        REQUIRE_EQ(close_status, RuntimeScheduler::SubmitStatus::accepted);
+        REQUIRE_EQ(healthy_status, RuntimeScheduler::SubmitStatus::accepted);
+        REQUIRE_EQ(shard_progress, handoff);
+        // Handoff may return immediately after the work worker reaches the
+        // gate; await the healthy task above before relying on its completion.
+        if (!handoff) {
+            REQUIRE(!close_returned);
+            REQUIRE_EQ(snapshot.queued, 1U);
+        }
+        REQUIRE(closed.get());
+        REQUIRE_EQ(before_release.size(), handoff ? 1U : 0U);
+        REQUIRE_EQ(closed_send, MessageIoStatus::local_closed);
+        REQUIRE(owners_retained == handoff);
+        REQUIRE(weak_runtime.expired());
+        REQUIRE(weak_channel.expired());
+        const auto sent = take_datagrams(output.accepted);
+        REQUIRE(sent.empty());
+    }
+}
+
+TEST(
+    compat_runtime_shard_close_preserves_ack_order_and_resource_failure_cleanup)
+{
+    // Available executor; full queue; stopped executor. Accepted work must
+    // drain on a work thread, while rejection must finish synchronously.
+    for (int scenario = 0; scenario < 3; ++scenario) {
+        auto scheduler = std::make_shared<RuntimeScheduler>(
+            RuntimeScheduler::Configuration {1, 8, 8});
+        auto executor = std::make_shared<RuntimeWorkExecutor>(
+            RuntimeWorkExecutor::Configuration {1, 1});
+        REQUIRE(scheduler->start());
+        REQUIRE(executor->start());
+        struct WorkGate {
+            std::mutex mutex;
+            std::condition_variable changed;
+            bool entered = false;
+            bool released = false;
+            static void run(void* context) noexcept
+            {
+                auto& gate = *static_cast<WorkGate*>(context);
+                std::unique_lock lock(gate.mutex);
+                gate.entered = true;
+                gate.changed.notify_all();
+                gate.changed.wait(lock, [&] {
+                    return gate.released;
+                });
+            }
+        };
+        auto work_gate = std::make_shared<WorkGate>();
+        if (scenario == 1) {
+            REQUIRE_EQ(executor->submit(
+                           {.function = WorkGate::run, .context = work_gate}),
+                RuntimeWorkExecutor::SubmitStatus::accepted);
+            bool entered;
+            {
+                std::unique_lock lock(work_gate->mutex);
+                entered = work_gate->changed.wait_for(
+                    lock, std::chrono::seconds {2}, [&] {
+                        return work_gate->entered;
+                    });
+            }
+            // Release before any assertion if a resource failure occurs.
+            const auto queued = executor->submit(
+                {.function = [](void*) noexcept { }, .context = work_gate});
+            if (!entered
+                || queued != RuntimeWorkExecutor::SubmitStatus::accepted) {
+                {
+                    std::lock_guard lock(work_gate->mutex);
+                    work_gate->released = true;
+                }
+                work_gate->changed.notify_all();
+                executor->stop();
+            }
+            REQUIRE(entered);
+            REQUIRE_EQ(queued, RuntimeWorkExecutor::SubmitStatus::accepted);
+        } else if (scenario == 2) {
+            executor->stop();
+        }
+        auto channel = std::make_shared<DatagramChannel>();
+        BackpressureOutput output;
+        // Exercise ACK then SHUTDOWN on accepted work; exercise permanently
+        // blocked FIFO and a frozen protocol clock on resource-failure paths.
+        output.blocked = scenario != 0;
+        channel->set_send_hook_for_testing(backpressure_datagram, &output);
+        SocketOptions options;
+        REQUIRE_EQ(
+            options.set(SocketOption::transmission_type, 1), Error::none);
+        std::uint64_t now = 100;
+        const Ipv4Endpoint peer {.address = {192, 0, 2, 91}, .port = 15091};
+        auto runtime = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {.channel = channel,
+                .peer = peer,
+                .peer_socket_id = 910,
+                .initial_sequence = SequenceNumber {700},
+                .options = options,
+                .origin = ConnectionRuntime::Clock::now(),
+                .now_function = injected_now,
+                .now_context = &now});
+        const std::array payload {std::byte {'x'}};
+        PacketView data {.kind = PacketKind::data,
+            .data = {.sequence = SequenceNumber {700},
+                .message_number = 1,
+                .boundary = MessageBoundary::solo},
+            .payload = payload};
+        runtime->process_packet(data, peer);
+        struct CloseTask {
+            std::shared_ptr<ConnectionRuntime> runtime;
+            std::shared_ptr<RuntimeWorkExecutor> executor;
+            std::promise<void> completed;
+            static void run(void* context) noexcept
+            {
+                auto& task = *static_cast<CloseTask*>(context);
+                close_connection_runtime(task.runtime, task.executor);
+                task.completed.set_value();
+            }
+        };
+        auto task = std::make_shared<CloseTask>();
+        task->runtime = runtime;
+        task->executor = executor;
+        auto completed = task->completed.get_future();
+        const auto submitted =
+            scheduler->submit(0, {.function = CloseTask::run, .context = task});
+        const bool finished = completed.wait_for(std::chrono::seconds {2})
+            == std::future_status::ready;
+        // Always unblock and join before assertions, including failure paths.
+        {
+            std::lock_guard lock(work_gate->mutex);
+            work_gate->released = true;
+        }
+        work_gate->changed.notify_all();
+        scheduler->stop();
+        executor->stop();
+        REQUIRE_EQ(submitted, RuntimeScheduler::SubmitStatus::accepted);
+        REQUIRE(finished);
+        const auto snapshot = executor->snapshot();
+        REQUIRE_EQ(snapshot.rejected_full, scenario == 1 ? 1U : 0U);
+        REQUIRE_EQ(snapshot.rejected_stopped, scenario == 2 ? 1U : 0U);
+        REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::local_closed);
+        const auto sent = take_datagrams(output.accepted);
+        if (scenario == 0) {
+            REQUIRE_EQ(sent.size(), 2U);
+            REQUIRE_EQ(decode_packet(sent[0]).packet.control.type,
+                ControlType::acknowledgement);
+            REQUIRE_EQ(decode_packet(sent[1]).packet.control.type,
+                ControlType::shutdown);
+        } else {
+            REQUIRE(sent.empty());
+            REQUIRE(!output.attempts.empty());
+            REQUIRE(output.attempts.size() <= 12U);
+            REQUIRE_EQ(runtime->poll().immediate_work, false);
+        }
     }
 }
 

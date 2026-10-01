@@ -28,6 +28,7 @@
 namespace robotweax::srt::compat {
 
 class ConnectionRuntime;
+class RuntimeWorkExecutor;
 struct GroupRecord;
 
 struct HandshakeRouteKey {
@@ -553,6 +554,11 @@ public:
         handshake_replay_key() const noexcept;
 
 private:
+    friend void close_connection_runtime(
+        const std::shared_ptr<ConnectionRuntime>& runtime,
+        std::shared_ptr<RuntimeWorkExecutor> executor) noexcept;
+    [[nodiscard]] bool begin_close() noexcept;
+    void finish_close() noexcept;
     // The group this member belongs to, if any: notified alongside the
     // member's own source so group watches need no process-wide rescans.
     std::shared_ptr<ReadinessSource> group_readiness_source_;
@@ -717,5 +723,12 @@ private:
     bool broken_ = false;
     bool last_readable_state_ = false;
 };
+
+// Owning close boundary used by compatibility call sites. Affinity workers
+// hand the final bounded drain to the fixed work executor after quiescing the
+// runtime. Queue/resource failure preserves the synchronous bounded cleanup.
+// An explicit executor permits deterministic capacity/lifetime tests.
+void close_connection_runtime(const std::shared_ptr<ConnectionRuntime>& runtime,
+    std::shared_ptr<RuntimeWorkExecutor> executor = {}) noexcept;
 
 } // namespace robotweax::srt::compat
