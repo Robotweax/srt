@@ -443,6 +443,13 @@ AES-GCM authenticates DATA, not SRT control packets: a plausible DROPREQ can
 still affect reliability state. These checks do not replace authentication of
 the transport peer and path.
 
+Controlled CTR/GCM tests cover one-position and 5,000-position peer skips
+with an eight-packet receive buffer, including sequence wrap. A wrong source
+endpoint, truncated payload or ambiguous distant range leaves the receive
+floor and peer liveness unchanged. A valid range advances the floor once,
+and subsequent protected DATA retains its exact payload. These are source,
+shape and range checks; the accepted DROPREQ itself has no authentication tag.
+
 - An incompatible cryptographic mode or transport bundle rejects
   establishment with the bad-crypto-mode state.
 - A wrong passphrase reports the normal bad-secret result before protected

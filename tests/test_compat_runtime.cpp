@@ -7244,6 +7244,145 @@ TEST(compat_runtime_rejects_malformed_controls_without_refreshing_liveness)
     REQUIRE(runtime.broken());
 }
 
+TEST(compat_runtime_encrypted_drop_controls_preserve_large_skips_and_validation)
+{
+    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        for (const auto initial : {SequenceNumber {4'000},
+                 SequenceNumber {SequenceNumber::mask - 2'500U}}) {
+            for (const unsigned skipped : {1U, 5'000U}) {
+                const auto next = initial.advanced(skipped);
+                const Ipv4Endpoint peer {{192, 0, 2, 61}, 14'401};
+                const Ipv4Endpoint other_peer {{192, 0, 2, 61}, 14'402};
+                const CryptoConfiguration configuration {
+                    .passphrase = "encrypted drop validation fixture",
+                    .mode = mode,
+                    .enable_aes_gcm = mode == CryptoMode::aes_gcm,
+                    .key_length = 16,
+                    .refresh_rate_packets = 8'192,
+                    .preannouncement_packets = 16,
+                };
+                auto sender_crypto =
+                    std::make_shared<CryptoSession>(configuration);
+                auto receiver_crypto =
+                    std::make_shared<CryptoSession>(configuration);
+                REQUIRE_EQ(sender_crypto->start_initiator(), Error::none);
+                REQUIRE_EQ(receiver_crypto->accept_key_material(
+                               sender_crypto->pending_key_material(), true),
+                    Error::none);
+                REQUIRE_EQ(sender_crypto->acknowledge_key_material(
+                               receiver_crypto->key_material_response(), true),
+                    Error::none);
+                confirm_directional_test_keys(*sender_crypto, *receiver_crypto);
+                SocketOptions options;
+                REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 8),
+                    Error::none);
+                REQUIRE_EQ(options.set(SocketOption::receive_buffer_packets, 8),
+                    Error::none);
+                std::uint64_t now = 0;
+                ConnectionRuntime receiver {{
+                    .peer = peer,
+                    .peer_socket_id = 610,
+                    .initial_sequence = initial,
+                    .options = options,
+                    .crypto = receiver_crypto,
+                    .now_function = injected_now,
+                    .now_context = &now,
+                }};
+                std::array<std::byte, 8> drop_payload {};
+                REQUIRE(encode_drop_request_payload(
+                    {1U, {initial, next.advanced(SequenceNumber::mask)}},
+                    drop_payload));
+                PacketView drop;
+                drop.kind = PacketKind::control;
+                drop.control.type = ControlType::drop_request;
+                drop.payload = drop_payload;
+                now = 4'000;
+                receiver.process_packet(drop, other_peer);
+                receiver.process_packet(
+                    {.kind = PacketKind::control,
+                        .control = {.type = ControlType::drop_request},
+                        .payload = std::span {drop_payload}.first(7U)},
+                    peer);
+                std::array<std::byte, 8> distant_payload {};
+                const auto distant =
+                    initial.advanced(SequenceNumber::half_range / 2U + 1U);
+                REQUIRE(encode_drop_request_payload(
+                    {1U, {distant, distant}}, distant_payload));
+                receiver.process_packet(
+                    {.kind = PacketKind::control,
+                        .control = {.type = ControlType::drop_request},
+                        .payload = distant_payload},
+                    peer);
+                REQUIRE_EQ(
+                    receiver.receive_snapshot(initial, false).floor_sequence,
+                    initial);
+                REQUIRE_EQ(
+                    receiver.response_health().last_response_microseconds, 0U);
+                REQUIRE_EQ(receiver.statistics(false, true)
+                               .total.receiver_dropped.packets,
+                    0U);
+                REQUIRE(!receiver.broken());
+
+                receiver.process_packet(drop, peer);
+                REQUIRE_EQ(
+                    receiver.receive_snapshot(next, false).floor_sequence,
+                    next);
+                REQUIRE_EQ(
+                    receiver.response_health().last_response_microseconds, now);
+                REQUIRE_EQ(receiver.statistics(false, true)
+                               .total.receiver_dropped.packets,
+                    skipped);
+                receiver.process_packet(drop, peer);
+                REQUIRE_EQ(
+                    receiver.receive_snapshot(next, false).floor_sequence,
+                    next);
+                REQUIRE_EQ(receiver.statistics(false, true)
+                               .total.receiver_dropped.packets,
+                    skipped);
+
+                const auto channel = std::make_shared<DatagramChannel>();
+                CapturedDatagrams output;
+                channel->set_send_hook_for_testing(capture_datagram, &output);
+                ConnectionRuntime sender {{
+                    .channel = channel,
+                    .peer = peer,
+                    .peer_socket_id = 610,
+                    .initial_sequence = next,
+                    .options = options,
+                    .crypto = sender_crypto,
+                    .now_function = injected_now,
+                    .now_context = &now,
+                }};
+                const std::array<std::byte, 8> payload {std::byte {1},
+                    std::byte {2}, std::byte {3}, std::byte {4}, std::byte {5},
+                    std::byte {6}, std::byte {7}, std::byte {8}};
+                REQUIRE_EQ(
+                    sender.queue_message(payload, 0, true, false, -1).status,
+                    MessageIoStatus::success);
+                (void)sender.poll();
+                unsigned data_packets = 0;
+                for (const auto& datagram : take_datagrams(output)) {
+                    const auto decoded = decode_packet(datagram);
+                    REQUIRE(decoded);
+                    if (decoded.packet.kind == PacketKind::data) {
+                        REQUIRE_EQ(decoded.packet.data.sequence, next);
+                        receiver.process_packet(decoded.packet, peer);
+                        ++data_packets;
+                    }
+                }
+                REQUIRE_EQ(data_packets, 1U);
+                std::array<std::byte, 8> received {};
+                const auto result =
+                    receiver.receive_message(received, false, -1);
+                REQUIRE_EQ(result.status, MessageIoStatus::success);
+                REQUIRE_EQ(result.bytes, payload.size());
+                REQUIRE_EQ(received, payload);
+                REQUIRE(!receiver.broken());
+            }
+        }
+    }
+}
+
 TEST(compat_runtime_ignores_a_replayed_retired_key_request)
 {
     const CryptoConfiguration configuration {
