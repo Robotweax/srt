@@ -474,6 +474,15 @@ SRT_SOCKSTATUS SocketRegistry::state(SRTSOCKET socket) noexcept
         }
         record = entry->second;
     }
+    return refresh_state(record);
+}
+
+SRT_SOCKSTATUS SocketRegistry::refresh_state(
+    const std::shared_ptr<SocketRecord>& record) noexcept
+{
+    if (record == nullptr) {
+        return SRTS_NONEXIST;
+    }
     SRT_SOCKSTATUS state = SRTS_NONEXIST;
     bool changed = false;
     {
