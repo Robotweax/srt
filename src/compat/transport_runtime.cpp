@@ -2835,16 +2835,23 @@ bool ConnectionRuntime::service_key_rotation(
         return true;
     }
     const auto& rtt = session_.rtt();
+    // Peer ACK estimates are unauthenticated. Do not let one estimate defer
+    // retries beyond half the locally configured peer-idle horizon. Large
+    // legitimate RTT profiles can raise that horizon without changing keys.
+    const auto retry_ceiling =
+        std::max<std::uint64_t>(10'000U, peer_idle_timeout_microseconds_ / 2U);
     const std::uint64_t retry_interval_microseconds = rtt.has_sample()
-        ? std::max<std::uint64_t>(
-              10'000U, 3ULL * rtt.smoothed_microseconds() / 2ULL)
-        : 100'000U;
+        ? std::min(retry_ceiling,
+              std::max<std::uint64_t>(
+                  10'000U, 3ULL * rtt.smoothed_microseconds() / 2ULL))
+        : std::min<std::uint64_t>(100'000U, retry_ceiling);
     // Cover two lost attempts, a successful round trip and scheduling/RTT
     // variation. A bounded observed peak also counts TTL/group sequence gaps.
     const std::uint64_t horizon =
-        (rtt.has_sample() ? rtt.smoothed_microseconds() : 100'000U)
-        + 2U * retry_interval_microseconds + 4ULL * rtt.variation_microseconds()
-        + 10'000U;
+        std::min<std::uint64_t>(peer_idle_timeout_microseconds_,
+            (rtt.has_sample() ? rtt.smoothed_microseconds() : 100'000U)
+                + 2U * retry_interval_microseconds
+                + 4ULL * rtt.variation_microseconds() + 10'000U);
     const auto maximum = std::numeric_limits<std::uint64_t>::max();
     const auto scaled = key_peak_sequence_rate_ > maximum / horizon
         ? maximum

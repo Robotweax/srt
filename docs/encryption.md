@@ -295,7 +295,13 @@ sends a wrapped KMREQ; the adaptive window below may bring this forward. It
 retries the same request until the matching KMRSP is
 received, then changes the DATA selector at the refresh boundary. Runtime
 retries wait `max(1.5 * SRTT, 10 ms)` after successful UDP submission once
-an RTT observation is available; before that, the interval is 100 ms. A matching
+an RTT observation is available; before that, the interval is 100 ms.
+Both intervals are capped at half the configured peer-idle timeout, with a
+10-ms minimum. The adaptive horizon is also capped at that peer-idle timeout.
+Unauthenticated peer RTT estimates therefore cannot postpone retries for
+minutes on a connection configured with a short local timeout. High-RTT
+profiles should configure a suitable peer-idle timeout. Retries reuse the
+same pending material and do not change the key sequence budget. A matching
 KMRSP clears this retry clock so the next rotation can be announced immediately.
 The runtime may announce earlier using the highest observed consumption rate
 from samples at least 1 ms apart. Samples include sequence positions skipped by
