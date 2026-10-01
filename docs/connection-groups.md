@@ -99,6 +99,12 @@ to fail after another member accepted the update; callers should check errors
 and member values when changing options during teardown. `SRTO_MAXBW` is a
 per-member limit, not an aggregate bandwidth cap.
 
+Group transports require Live mode and TSBPD. Setting `SRTO_TRANSTYPE=FILE`
+or disabling `SRTO_TSBPDMODE` fails with `SRT_EINVPARAM` before changing the
+member template or any connected member. `SRTO_MESSAGEAPI=false` retains its
+accepted option/getter behavior, but it does not provide usable Live group I/O;
+use Message API for group traffic.
+
 Group I/O synchronization, send/receive timeouts and Backup stability timeout
 remain owned by the group. `SRTO_STATE` returns the aggregate group state.
 Other supported getters use the first member, including negotiated latency,

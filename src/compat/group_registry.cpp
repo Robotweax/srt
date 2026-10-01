@@ -527,6 +527,13 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
             == SRT_ERROR) {
             return SRT_ERROR;
         }
+        if (configured.native_options.transmission_type()
+                != TransmissionType::live
+            || configured.native_options.get(SocketOption::tsbpd_mode).value
+                == 0) {
+            set_last_error(SRT_EINVPARAM);
+            return SRT_ERROR;
+        }
         try {
             if (!group_owned) {
                 members.reserve(record->members.size());

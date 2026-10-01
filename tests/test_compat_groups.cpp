@@ -5354,10 +5354,11 @@ TEST(compat_group_option_parity_uses_socket_validation_and_normalization)
     }
     check(SRTO_INPUTBW, std::int64_t {125'000});
     for (const auto option : {SRTO_REUSEADDR, SRTO_MESSAGEAPI, SRTO_NAKREPORT,
-             SRTO_TSBPDMODE, SRTO_TLPKTDROP, SRTO_SENDER}) {
+             SRTO_TLPKTDROP, SRTO_SENDER}) {
         check(option, false);
     }
-    check(SRTO_TRANSTYPE, SRTT_FILE);
+    check(SRTO_TRANSTYPE, SRTT_LIVE);
+    check(SRTO_TSBPDMODE, true);
     check(SRTO_LINGER, linger {1, 2});
 }
 
@@ -5709,5 +5710,31 @@ TEST(compat_group_send_result_buffers_keep_large_member_outcomes_exact)
                 REQUIRE_EQ(srt_close(group), 0);
             }
         }
+    }
+}
+
+TEST(compat_groups_reject_file_and_disabled_tsbpd_transactionally)
+{
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        const auto group = srt_create_group(type);
+        REQUIRE(group != SRT_INVALID_SOCK);
+        const auto file = SRTT_FILE;
+        const bool disabled = false;
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_TRANSTYPE, &file, sizeof(file)),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+        REQUIRE_EQ(
+            srt_setsockflag(group, SRTO_TSBPDMODE, &disabled, sizeof(disabled)),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+        SRT_TRANSTYPE actual = SRTT_FILE;
+        int size = sizeof(actual);
+        REQUIRE_EQ(srt_getsockflag(group, SRTO_TRANSTYPE, &actual, &size), 0);
+        REQUIRE_EQ(actual, SRTT_LIVE);
+        bool tsbpd = false;
+        size = sizeof(tsbpd);
+        REQUIRE_EQ(srt_getsockflag(group, SRTO_TSBPDMODE, &tsbpd, &size), 0);
+        REQUIRE(tsbpd);
+        REQUIRE_EQ(srt_close(group), 0);
     }
 }
