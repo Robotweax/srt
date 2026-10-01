@@ -103,6 +103,8 @@ ReliabilitySession::ReliabilitySession(Configuration configuration)
     , peer_socket_id_(configuration.peer_socket_id)
 {
     pending_peer_drops_.reserve(configuration.receive_capacity_packets);
+    pending_peer_drop_identities_.reserve(
+        configuration.receive_capacity_packets);
     filter_loss_ranges_.reserve(configuration.receive_capacity_packets);
 }
 
@@ -962,21 +964,20 @@ ReliabilityProcessResult ReliabilitySession::receive(
         // a later complete message to provide a local playout deadline.
         const bool defer_drop = live_options_.receive_tsbpd
             && live_options_.too_late_packet_drop && tsbpd_clock_.has_value();
-        const auto existing = defer_drop
-            ? std::find_if(pending_peer_drops_.begin(),
-                  pending_peer_drops_.end(),
-                  [&](const PendingPeerDrop& pending) {
-                      return pending.sequences.first
-                          == decoded.request.sequences.first
-                          && pending.sequences.last
-                          == decoded.request.sequences.last;
-                  })
-            : pending_peer_drops_.end();
+        const auto identity = peer_drop_identity(decoded.request.sequences);
+        const auto insertion =
+            std::lower_bound(pending_peer_drop_identities_.begin(),
+                pending_peer_drop_identities_.end(), identity);
+        const bool existing = defer_drop
+            && insertion != pending_peer_drop_identities_.end()
+            && *insertion == identity;
         // Refuse a new grace entry before advancing the timestamp clock or
         // ACK/loss state. Duplicates keep their original deadline even when
         // the preallocated queue is full. Timer expiry makes room for retry.
-        if (defer_drop && existing == pending_peer_drops_.end()
-            && pending_peer_drops_.size() == pending_peer_drops_.capacity()
+        if (defer_drop && !existing
+            && pending_peer_drops_.size()
+                >= std::min(pending_peer_drops_.capacity(),
+                    pending_peer_drop_identities_.capacity())
             && decoded.request.sequences.last.distance_from(
                    receive_buffer_.first_stored_sequence())
                 >= 0) {
@@ -998,9 +999,10 @@ ReliabilityProcessResult ReliabilitySession::receive(
             && decoded.request.sequences.last.distance_from(
                    receive_buffer_.first_stored_sequence())
                 >= 0) {
-            if (existing == pending_peer_drops_.end()) {
+            if (!existing) {
                 pending_peer_drops_.push_back(
                     {decoded.request.sequences, deadline});
+                pending_peer_drop_identities_.insert(insertion, identity);
             }
             const bool acknowledged =
                 receive_buffer_.acknowledge_peer_drop_range(
@@ -1302,6 +1304,25 @@ ReliabilitySession::first_deliverable_unit() const noexcept
                         : receive_buffer_.first_buffered_packet();
 }
 
+std::uint64_t ReliabilitySession::peer_drop_identity(
+    SequenceRange range) noexcept
+{
+    // Numeric wire values identify the range exactly across sequence wrap;
+    // ordering here is independent of the receiver's moving sequence epoch.
+    return (static_cast<std::uint64_t>(range.first.value()) << 32U)
+        | range.last.value();
+}
+
+void ReliabilitySession::erase_peer_drop_identity(SequenceRange range) noexcept
+{
+    const auto identity = peer_drop_identity(range);
+    const auto entry = std::lower_bound(pending_peer_drop_identities_.begin(),
+        pending_peer_drop_identities_.end(), identity);
+    if (entry != pending_peer_drop_identities_.end() && *entry == identity) {
+        pending_peer_drop_identities_.erase(entry);
+    }
+}
+
 ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
     std::uint64_t now_microseconds) noexcept
 {
@@ -1317,6 +1338,7 @@ ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
         if (pending.sequences.last.distance_from(
                 receive_buffer_.first_stored_sequence())
             < 0) {
+            erase_peer_drop_identity(pending.sequences);
             pending_peer_drops_.erase(pending_peer_drops_.begin()
                 + static_cast<std::ptrdiff_t>(index));
             continue;
@@ -1342,6 +1364,7 @@ ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
         }
         result.receiver_drop_packets += newly_dropped;
         peer_released |= newly_dropped != 0U;
+        erase_peer_drop_identity(pending.sequences);
         pending_peer_drops_.erase(
             pending_peer_drops_.begin() + static_cast<std::ptrdiff_t>(index));
     }

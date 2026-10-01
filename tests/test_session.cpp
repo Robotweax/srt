@@ -226,6 +226,68 @@ TEST(session_drop_request_full_grace_queue_is_nonmutating_backpressure)
     REQUIRE(!receiver.next_receive_delivery_time());
 }
 
+TEST(session_drop_request_index_preserves_wrapped_overlapping_grace_ranges)
+{
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 31U}}) {
+        ReliabilitySession receiver {{
+            .peer_initial_sequence = initial,
+            .send_capacity_packets = 8,
+            .receive_capacity_packets = 64,
+        }};
+        receiver.configure_live({.receive_tsbpd = true,
+                                    .too_late_packet_drop = true,
+                                    .receive_delay_milliseconds = 100},
+            1'000, PacketTimestamp {0});
+        std::array<std::byte, 64> storage {};
+        std::array<SequenceRange, 64> ranges {};
+        for (std::uint32_t index = 0; index < ranges.size(); ++index) {
+            // Interleave raw wire order and include two distinct ranges
+            // with the same first endpoint, spanning the 31-bit wrap.
+            const auto position = (index * 17U) % ranges.size();
+            const auto first = initial.advanced((position / 2U) * 2U);
+            ranges[index] = {first, first.advanced(position % 2U)};
+            auto packet =
+                encode_and_decode({.kind = ReliabilityActionKind::drop_request,
+                                      .drop = {0, ranges[index]}},
+                    storage);
+            packet.control.timestamp = PacketTimestamp {20U + index};
+            REQUIRE(receiver.receive(packet, 1'100));
+        }
+        const auto deadline = receiver.next_receive_delivery_time();
+        REQUIRE(deadline.has_value());
+        for (unsigned repetition = 0; repetition < 4; ++repetition) {
+            for (const auto range : ranges) {
+                auto packet = encode_and_decode(
+                    {.kind = ReliabilityActionKind::drop_request,
+                        .drop = {0, range}},
+                    storage);
+                packet.control.timestamp = PacketTimestamp {500U};
+                REQUIRE(receiver.receive(packet, 1'500));
+                REQUIRE_EQ(receiver.next_receive_delivery_time(), deadline);
+            }
+        }
+        const auto next = initial.advanced(64U);
+        auto packet =
+            encode_and_decode({.kind = ReliabilityActionKind::drop_request,
+                                  .drop = {0, {next, next}}},
+                storage);
+        REQUIRE_EQ(receiver.receive(packet, 1'500).error, Error::would_block);
+        REQUIRE_EQ(receiver.drop_too_late_receiver(101'500).error, Error::none);
+        REQUIRE_EQ(receiver.receive_buffer().first_stored_sequence(), next);
+        REQUIRE(!receiver.next_receive_delivery_time().has_value());
+        // Expiration removes the identity as well as the grace entry, and
+        // leaves the preallocated queue reusable for a later request.
+        packet.control.timestamp = PacketTimestamp {2'000U};
+        REQUIRE(receiver.receive(packet, 102'000));
+        REQUIRE(receiver.next_receive_delivery_time().has_value());
+        REQUIRE_EQ(receiver.drop_too_late_receiver(103'000).error, Error::none);
+        REQUIRE_EQ(
+            receiver.receive_buffer().first_stored_sequence(), next.next());
+        REQUIRE(!receiver.next_receive_delivery_time().has_value());
+    }
+}
+
 TEST(session_drop_request_accepts_the_supported_sequence_boundaries)
 {
     constexpr auto limit = SequenceNumber::half_range / 2U;

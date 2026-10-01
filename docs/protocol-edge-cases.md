@@ -113,6 +113,11 @@ returns internal `would_block` before clock or reliability mutation; the
 runtime ignores that control without terminating the connection or refreshing
 peer activity. Duplicate ranges retain their original deadline and need no
 additional queue entry. Grace expiry frees space for later controls or retries.
+Exact duplicate lookup uses a sorted, preallocated identity index rather than
+scanning every grace entry. This costs one additional 64-bit identity per
+receive-capacity slot and gives logarithmic lookup; inserting or removing a
+distinct identity and processing grace deadlines still have linear costs.
+The grace entries retain their original processing order.
 
 DROPREQ is not cryptographically authenticated by the SRT control format. A
 plausible range from an on-path attacker or a spoofed peer endpoint remains
