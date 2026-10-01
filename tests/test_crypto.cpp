@@ -2806,3 +2806,113 @@ TEST(crypto_session_preserves_receive_keys_when_material_changes_key_identity)
         REQUIRE_EQ(decrypted, clear);
     }
 }
+
+TEST(crypto_session_replayed_companion_cannot_erase_received_generations)
+{
+    const unsigned horizon = 10;
+    const auto modes = {
+        CryptoMode::aes_ctr,
+#ifdef ENABLE_AEAD_API_PREVIEW
+        CryptoMode::aes_gcm,
+#endif
+    };
+    for (const auto mode : modes) {
+        CryptoConfiguration config {
+            .passphrase = "private long horizon replay fixture",
+            .mode = mode,
+            .enable_aes_gcm = mode == CryptoMode::aes_gcm,
+            .key_length = 16,
+            .refresh_rate_packets = 3,
+            .preannouncement_packets = 1};
+        CryptoSession sender {config};
+        auto receiver = std::make_shared<CryptoSession>(config);
+        REQUIRE_EQ(sender.start_initiator(), Error::none);
+        auto request = sender.pending_key_material();
+        std::vector<std::byte> recorded;
+        REQUIRE_EQ(receiver->accept_key_material(request, false), Error::none);
+        REQUIRE_EQ(sender.acknowledge_key_material(
+                       receiver->key_material_response(), false),
+            Error::none);
+        const auto original = decode_key_material(request);
+        REQUIRE(original);
+
+        unsigned rotations = 0, packets = 0;
+        std::array<std::byte, 32> saved_even {}, saved_odd {};
+        DataHeader even_header {}, odd_header {};
+        SequenceNumber seq {SequenceNumber::mask - 15U};
+        const std::array<std::byte, 16> plaintext {
+            std::byte {0x5a}, std::byte {0x33}};
+        auto protect = [&](std::array<std::byte, 32>& wire,
+                           DataHeader& header) {
+            header = {.sequence = seq,
+                .message_number = 1,
+                .boundary = MessageBoundary::solo,
+                .in_order = true,
+                .encryption_key = sender.active_sender_key(),
+                .timestamp = PacketTimestamp {1000},
+                .destination_socket_id = 904};
+            EncryptionKey key = EncryptionKey::none;
+            auto error = mode == CryptoMode::aes_gcm
+                ? sender.seal(header, plaintext, std::span {wire}.first(16),
+                      std::span {wire}.last(16), key)
+                : sender.encrypt(
+                      seq, plaintext, std::span {wire}.first(16), key);
+            header.encryption_key = key;
+            return error;
+        };
+        while (rotations < horizon || sender.packets_on_active_key() == 0) {
+            REQUIRE(packets++ <= 500);
+            REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+            request = sender.pending_key_material();
+            if (!request.empty()) {
+                const auto km = decode_key_material(request);
+                if (recorded.empty() && km
+                    && km.key_material.keys == EncryptionKey::reserved)
+                    recorded.assign(request.begin(), request.end());
+                REQUIRE_EQ(
+                    receiver->accept_key_material(request, false), Error::none);
+                REQUIRE_EQ(sender.acknowledge_key_material(
+                               receiver->key_material_response(), false),
+                    Error::none);
+                ++rotations;
+            }
+            std::array<std::byte, 32> wire {};
+            DataHeader header;
+            REQUIRE_EQ(protect(wire, header), Error::none);
+            REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+            std::array<std::byte, 16> opened {};
+            auto result = mode == CryptoMode::aes_gcm
+                ? receiver->open(header, std::span {wire}.first(16),
+                      std::span {wire}.last(16), opened)
+                : receiver->decrypt(header.encryption_key, seq,
+                      std::span {wire}.first(16), opened);
+            REQUIRE_EQ(result, Error::none);
+            REQUIRE_EQ(opened, plaintext);
+            if (header.encryption_key == EncryptionKey::even) {
+                saved_even = wire;
+                even_header = header;
+            } else {
+                saved_odd = wire;
+                odd_header = header;
+            }
+            receiver->note_accepted_receive_sequence(seq);
+            seq = seq.next();
+        }
+
+        REQUIRE(!recorded.empty());
+        REQUIRE_EQ(receiver->accept_key_material(recorded, false),
+            Error::invalid_key_material);
+        for (const auto which : {0, 1}) {
+            const auto& wire = which == 0 ? saved_even : saved_odd;
+            const auto& header = which == 0 ? even_header : odd_header;
+            std::array<std::byte, 16> opened {};
+            const auto result = mode == CryptoMode::aes_gcm
+                ? receiver->open(header, std::span {wire}.first(16),
+                      std::span {wire}.last(16), opened)
+                : receiver->decrypt(header.encryption_key, header.sequence,
+                      std::span {wire}.first(16), opened);
+            REQUIRE_EQ(result, Error::none);
+            REQUIRE_EQ(opened, plaintext);
+        }
+    }
+}

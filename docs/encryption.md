@@ -378,11 +378,14 @@ Current receive keys and a bounded history of prior selector generations are
 retained for delayed packets. Known delayed KMREQ duplicates can be answered
 again without reinstalling old keys. A request containing only retired
 selector keys is rejected while those generations remain in the bounded key
-history (four per selector). If a two-selector request contains one retired
-key and one fresh key, both announced keys are installed. Restoring a displaced
-key removes its intervening receive generations so original ciphertext can be
-retransmitted immediately, including before the next selector switch. Older
-legitimate generations remain available. Known key bytes must retain the same
+history (four per selector). A two-selector request with a retired key and a fresh companion may restore
+that retired key only over replacements that have not received DATA. It cannot
+erase a current or intervening retained generation already used for reception.
+This is a bounded rollback guard: CTR reception does not authenticate the key
+choice, and material older than both histories is still indistinguishable from
+a fresh announcement. Unused provisional replacements can still be removed to
+recover original retransmissions, while older legitimate generations remain
+available. Known key bytes must retain the same
 salt, selector, and cipher mode across both current receive slots and their
 bounded histories; relabeled material is rejected without changing the session. Stale KMRSP messages cannot
 acknowledge a newer request or roll the session back.
