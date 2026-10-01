@@ -10319,6 +10319,141 @@ TEST(compat_runtime_backpressure_rearms_all_unsent_naks_and_bounds_eagain_flood)
     }
 }
 
+TEST(compat_runtime_km_retry_is_bounded_by_local_idle_horizon_and_recovers)
+{
+    for (const auto mode : {
+             CryptoMode::aes_ctr,
+#ifdef ENABLE_AEAD_API_PREVIEW
+             CryptoMode::aes_gcm,
+#endif
+         }) {
+        for (const auto estimate : {4'000U, 2'000'000U, 120'000'000U}) {
+            const CryptoConfiguration configuration {
+                .passphrase = "bounded km retry fixture",
+                .mode = mode,
+                .enable_aes_gcm = true,
+                .key_length = 16,
+                .refresh_rate_packets = 3,
+                .preannouncement_packets = 1};
+            auto crypto = std::make_shared<CryptoSession>(configuration);
+            CryptoSession receiver {configuration};
+            REQUIRE_EQ(crypto->start_initiator(), Error::none);
+            REQUIRE_EQ(receiver.accept_key_material(
+                           crypto->pending_key_material(), false),
+                Error::none);
+            REQUIRE_EQ(crypto->acknowledge_key_material(
+                           receiver.key_material_response(), false),
+                Error::none);
+            CapturedDatagrams output;
+            const auto channel = std::make_shared<DatagramChannel>();
+            channel->set_send_hook_for_testing(capture_datagram, &output);
+            std::uint64_t now = 1'000'000;
+            const auto peer = IpEndpoint::loopback(9000);
+            ConnectionRuntime runtime {{.channel = channel,
+                .peer = peer,
+                .initial_sequence = SequenceNumber {100},
+                .peer_idle_timeout_milliseconds = 10'000,
+                .crypto = crypto,
+                .now_function = injected_now,
+                .now_context = &now}};
+            std::array<std::byte, 64> ack_storage {};
+            const auto encoded = encode_acknowledgement_payload(
+                {.kind = AcknowledgementKind::small,
+                    .next_sequence = SequenceNumber {100},
+                    .round_trip_time_microseconds = estimate,
+                    .round_trip_time_variance_microseconds = 1,
+                    .available_receive_buffer_packets = 64},
+                ack_storage);
+            REQUIRE(encoded);
+            const PacketView ack {.kind = PacketKind::control,
+                .control = {.type = ControlType::acknowledgement},
+                .payload =
+                    std::span {ack_storage}.first(encoded.bytes_written)};
+            runtime.process_packet(ack, peer);
+            const std::array payload {std::byte {'x'}};
+            for (unsigned index = 0; index < 3; ++index) {
+                REQUIRE_EQ(
+                    runtime.queue_message(payload, 0, true, false, -1).status,
+                    MessageIoStatus::success);
+                now += 1'000;
+                (void)runtime.poll();
+            }
+            std::vector<std::byte> request;
+            for (const auto& bytes : take_datagrams(output)) {
+                const auto decoded = decode_packet(bytes);
+                REQUIRE(decoded);
+                if (decoded.packet.kind == PacketKind::control
+                    && decoded.packet.control.subtype
+                        == key_material_request_subtype) {
+                    request.assign(decoded.packet.payload.begin(),
+                        decoded.packet.payload.end());
+                }
+            }
+            REQUIRE(!request.empty());
+            // The first request is deliberately lost. Even a 120-second peer
+            // RTT must generate another attempt within this local horizon.
+            const auto interval = std::min<std::uint64_t>(5'000'000,
+                std::max<std::uint64_t>(10'000, 3ULL * estimate / 2));
+            now += interval;
+            runtime.process_packet(ack, peer);
+            (void)runtime.poll();
+            unsigned retries = 0;
+            for (const auto& bytes : take_datagrams(output)) {
+                const auto decoded = decode_packet(bytes);
+                REQUIRE(decoded);
+                if (decoded.packet.kind == PacketKind::control
+                    && decoded.packet.control.subtype
+                        == key_material_request_subtype) {
+                    ++retries;
+                    REQUIRE(std::equal(request.begin(), request.end(),
+                        decoded.packet.payload.begin(),
+                        decoded.packet.payload.end()));
+                }
+            }
+            REQUIRE_EQ(retries, 1U);
+            REQUIRE_EQ(
+                receiver.accept_key_material(request, false), Error::none);
+            runtime.process_packet(
+                {.kind = PacketKind::control,
+                    .control = {.type = ControlType::user_defined,
+                        .subtype = key_material_response_subtype},
+                    .payload = receiver.key_material_response()},
+                peer);
+            for (unsigned poll = 0; poll < 8; ++poll) {
+                now += 1'000;
+                (void)runtime.poll();
+            }
+            unsigned recovered_data = 0;
+            for (const auto& bytes : take_datagrams(output)) {
+                const auto decoded = decode_packet(bytes);
+                REQUIRE(decoded);
+                if (decoded.packet.kind != PacketKind::data) {
+                    continue;
+                }
+                std::array<std::byte, 1> plaintext {};
+                const auto error = mode == CryptoMode::aes_gcm
+                    ? receiver.open(decoded.packet.data,
+                          decoded.packet.payload.first(1),
+                          decoded.packet.payload.last(
+                              srt_gcm_authentication_tag_size),
+                          plaintext)
+                    : receiver.decrypt(decoded.packet.data.encryption_key,
+                          decoded.packet.data.sequence, decoded.packet.payload,
+                          plaintext);
+                REQUIRE_EQ(error, Error::none);
+                REQUIRE_EQ(plaintext, payload);
+                if (decoded.packet.data.sequence == SequenceNumber {102}) {
+                    ++recovered_data;
+                }
+            }
+            REQUIRE_EQ(recovered_data, 1U);
+            REQUIRE(crypto->ready_to_send_data());
+            REQUIRE(crypto->packets_on_active_key() <= 3U);
+            REQUIRE(!runtime.broken());
+        }
+    }
+}
+
 TEST(compat_runtime_oversized_data_does_not_ack_or_refresh_peer_liveness)
 {
     CapturedDatagrams output;
