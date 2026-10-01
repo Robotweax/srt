@@ -354,6 +354,7 @@ void CryptoSession::remember_key_material(
 
 void CryptoSession::erase_slot(KeySlot& slot) noexcept
 {
+    slot.received_payload = false;
     slot.ctr_cipher.reset();
     slot.authenticated_cipher.reset();
     provider_.secure_erase(slot.key);
@@ -891,7 +892,40 @@ Error CryptoSession::accept_key_material(
         && !matches_current(EncryptionKey::even, even_key);
     const bool fresh_odd = has_odd && !replays_odd
         && !matches_current(EncryptionKey::odd, odd_key);
-    if ((replays_even || replays_odd) && !fresh_even && !fresh_odd) {
+    const auto restore_would_erase_received_generation =
+        [&](EncryptionKey selector, std::span<const std::byte> key) {
+            const auto* current = receive_slot(selector);
+            const auto* history = receive_history(selector);
+            if (current == nullptr || history == nullptr
+                || current->received_payload) {
+                return true;
+            }
+            for (std::size_t index = 0; index < history->size; ++index) {
+                const auto& known = history->generations[index].slot;
+                if (known.ready() && known.mode == selection.effective_mode
+                    && known.key_length == key.size()
+                    && std::equal(key.begin(), key.end(), known.key.begin())
+                    && std::equal(
+                        salt.begin(), salt.end(), known.salt.begin())) {
+                    return false;
+                }
+                if (known.received_payload) {
+                    return true;
+                }
+            }
+            return true;
+        };
+    // A fresh companion is not evidence that a retired key is newer. Permit
+    // recovery from unused provisional replacements, but never erase a
+    // generation already used to receive DATA. CTR reception is not proof of
+    // authenticity; this is a bounded rollback guard, not replay protection.
+    if (((replays_even || replays_odd) && !fresh_even && !fresh_odd)
+        || (replays_even
+            && restore_would_erase_received_generation(
+                EncryptionKey::even, even_key))
+        || (replays_odd
+            && restore_would_erase_received_generation(
+                EncryptionKey::odd, odd_key))) {
         provider_.secure_erase(kek);
         provider_.secure_erase(plaintext);
         provider_.secure_erase(salt);
@@ -1400,7 +1434,11 @@ Error CryptoSession::decrypt(
     }
     const auto iv =
         make_srt_ctr_initialization_vector(sequence, slot->salt);
-    return slot->ctr_cipher->transform(iv, ciphertext, plaintext);
+    const auto result = slot->ctr_cipher->transform(iv, ciphertext, plaintext);
+    if (result == Error::none) {
+        slot->received_payload = true;
+    }
+    return result;
 }
 
 Error CryptoSession::seal(const DataHeader& header,
@@ -1461,6 +1499,7 @@ Error CryptoSession::open(const DataHeader& header,
     const Error result = slot->authenticated_cipher->open(
         iv, aad, ciphertext, authentication_tag, plaintext);
     if (result == Error::none) {
+        slot->received_payload = true;
         note_authenticated_receive_sequence(header.sequence);
     } else {
         provider_.secure_erase(plaintext);
