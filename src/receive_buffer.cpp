@@ -316,6 +316,9 @@ BufferedMessageCopies ReceiveBuffer::copy_complete_messages(
             for (std::size_t index = offset; index <= *last; ++index) {
                 const auto* slot = find(first_stored_sequence_.advanced(
                     static_cast<std::uint32_t>(index)));
+                if (slot == nullptr) {
+                    return {.error = Error::invalid_state};
+                }
                 std::copy_n(payloads_.get(slot->payload_index).begin(),
                     slot->payload_size,
                     copy.payload.begin()

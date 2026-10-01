@@ -53,12 +53,12 @@ struct BufferedMessageCopy {
     SequenceNumber next_sequence {};
     PacketTimestamp timestamp {};
     std::uint32_t message_number = 0;
-    std::vector<std::byte> payload;
+    std::vector<std::byte> payload {};
 };
 
 struct BufferedMessageCopies {
     Error error = Error::none;
-    std::vector<BufferedMessageCopy> messages;
+    std::vector<BufferedMessageCopy> messages {};
 };
 
 class ReceiveBuffer {

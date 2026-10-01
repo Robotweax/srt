@@ -109,8 +109,8 @@ struct GroupIoMember {
     SRTSOCKET id = SRT_INVALID_SOCK;
     std::uint64_t generation = 0;
     std::uint16_t weight = 0;
-    std::shared_ptr<ConnectionRuntime> runtime;
-    std::shared_ptr<GroupReceiveRetention> retained;
+    std::shared_ptr<ConnectionRuntime> runtime {};
+    std::shared_ptr<GroupReceiveRetention> retained {};
     std::int32_t maximum_payload_size = 0;
     bool message_api = true;
     bool tsbpd_mode = true;
