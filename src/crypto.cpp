@@ -1093,7 +1093,15 @@ std::uint64_t CryptoSession::effective_preannouncement() const noexcept
 {
     const std::uint64_t refresh = effective_refresh_rate();
     return std::min<std::uint64_t>(
-        preannouncement_packets_, (refresh - 1U) / 2U);
+        std::max<std::uint64_t>(
+            preannouncement_packets_, preannouncement_floor_),
+        (refresh - 1U) / 2U);
+}
+
+void CryptoSession::set_preannouncement_floor(std::uint64_t positions) noexcept
+{
+    preannouncement_floor_ =
+        std::min(positions, (effective_refresh_rate() - 1U) / 2U);
 }
 
 Error CryptoSession::note_data_packet_sent() noexcept

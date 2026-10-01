@@ -4684,13 +4684,19 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t step,
             ++stalled;
         }
         REQUIRE(!sender.broken());
+        REQUIRE(crypto->packets_on_active_key() <= 1'025U);
     }
     REQUIRE_EQ(sent, messages);
     REQUIRE_EQ(rotations, 2U);
     REQUIRE_EQ(queued, sent);
-    // The wider configured horizon covers two retries plus
-    // one round trip even at 10k sequence positions/second.
-    REQUIRE_EQ(stalled == 0U, preannouncement == 256U);
+    // The adaptive floor covers this loss horizon once a steady rate is
+    // observed. Above the half-refresh cap, DATA still pauses safely.
+    const auto adaptive_positions =
+        std::min<std::uint64_t>((34'004U + step - 1U) / step, 512U);
+    const auto available_positions =
+        std::max<std::uint64_t>(preannouncement, adaptive_positions);
+    REQUIRE_EQ(
+        stalled == 0U, available_positions * step >= 4'000U + losses * 10'000U);
 }
 
 } // namespace
@@ -4698,7 +4704,7 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t step,
 TEST(compat_runtime_rotation_loss_preserves_payload_and_configured_key_budget)
 {
     for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
-        for (const std::uint64_t step : {100U, 1'000U}) {
+        for (const std::uint64_t step : {10U, 25U, 100U, 1'000U}) {
             for (const std::uint32_t preannouncement : {1U, 256U}) {
                 for (const unsigned losses : {0U, 1U, 2U}) {
                     for (const bool lose_response : {false, true}) {
@@ -4708,6 +4714,91 @@ TEST(compat_runtime_rotation_loss_preserves_payload_and_configured_key_budget)
                 }
             }
         }
+    }
+}
+
+TEST(compat_runtime_adaptive_rotation_counts_group_sequence_skips)
+{
+    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        const CryptoConfiguration configuration {
+            .passphrase = "adaptive sequence skip fixture",
+            .mode = mode,
+            .enable_aes_gcm = true,
+            .refresh_rate_packets = 1'025,
+            .preannouncement_packets = 1,
+        };
+        auto crypto = std::make_shared<CryptoSession>(configuration);
+        CryptoSession receiver {configuration};
+        REQUIRE_EQ(crypto->start_initiator(), Error::none);
+        REQUIRE_EQ(
+            receiver.accept_key_material(crypto->pending_key_material(), false),
+            Error::none);
+        REQUIRE_EQ(crypto->acknowledge_key_material(
+                       receiver.key_material_response(), false),
+            Error::none);
+        const auto channel = std::make_shared<DatagramChannel>();
+        CapturedDatagrams output;
+        channel->set_send_hook_for_testing(capture_datagram, &output);
+        const auto peer = IpEndpoint::loopback(14'005);
+        const SequenceNumber initial {SequenceNumber::mask - 300U};
+        std::uint64_t now = 1'000'000U;
+        ConnectionRuntime sender {{.channel = channel,
+            .peer = peer,
+            .peer_socket_id = 241,
+            .initial_sequence = initial,
+            .flow_window_packets = 64,
+            .origin = ConnectionRuntime::Clock::now(),
+            .crypto = crypto,
+            .now_function = injected_now,
+            .now_context = &now}};
+        const std::array payload {std::byte {'s'}};
+        REQUIRE_EQ(sender.queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+        (void)sender.poll();
+        REQUIRE(crypto->pending_key_material().empty());
+        (void)take_datagrams(output);
+        std::array<std::byte, 64> ack_storage {};
+        const auto ack = encode_acknowledgement_payload(
+            {.kind = AcknowledgementKind::small,
+                .next_sequence = initial.next(),
+                .round_trip_time_microseconds = 4'000,
+                .round_trip_time_variance_microseconds = 1,
+                .available_receive_buffer_packets = 64},
+            ack_storage);
+        REQUIRE(ack);
+        sender.process_packet(
+            {.kind = PacketKind::control,
+                .control = {.type = ControlType::acknowledgement},
+                .payload = std::span {ack_storage}.first(ack.bytes_written)},
+            peer);
+        now += 1'000U;
+        REQUIRE_EQ(sender.skip_group_sequences(initial.advanced(600U)).status,
+            MessageIoStatus::success);
+        REQUIRE_EQ(sender.queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+        (void)sender.poll();
+        bool saw_request = false;
+        bool saw_data = false;
+        for (const auto& bytes : take_datagrams(output)) {
+            const auto packet = decode_packet(bytes);
+            REQUIRE(packet);
+            if (packet.packet.kind == PacketKind::data) {
+                REQUIRE(saw_request);
+                REQUIRE_EQ(packet.packet.data.sequence, initial.advanced(600U));
+                REQUIRE_EQ(
+                    packet.packet.data.encryption_key, EncryptionKey::even);
+                saw_data = true;
+            } else if (packet.packet.control.type == ControlType::user_defined
+                && packet.packet.control.subtype
+                    == key_material_request_subtype) {
+                saw_request = true;
+            }
+        }
+        REQUIRE(saw_request);
+        REQUIRE(saw_data);
+        REQUIRE(!sender.broken());
+        REQUIRE_EQ(crypto->packets_on_active_key(), 601U);
+        REQUIRE_EQ(crypto->active_sender_key(), EncryptionKey::even);
     }
 }
 
