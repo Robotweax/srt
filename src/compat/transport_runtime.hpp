@@ -511,6 +511,8 @@ public:
     [[nodiscard]] bool has_buffered_receive_data() noexcept;
     [[nodiscard]] RuntimeReceiveSnapshot receive_snapshot(
         SequenceNumber expected, bool retire_consumed_prefix) noexcept;
+    [[nodiscard]] SocketReadinessSnapshot readiness_snapshot(
+        bool socket_broken) noexcept;
     [[nodiscard]] MessageIoResult receive_stream(
         std::span<std::byte> destination,
         bool blocking,

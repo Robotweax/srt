@@ -3931,6 +3931,52 @@ ConnectionRuntime::next_readable_deadline() noexcept
     return next_receive_wakeup_locked(now);
 }
 
+SocketReadinessSnapshot ConnectionRuntime::readiness_snapshot(
+    bool socket_broken) noexcept
+{
+    std::lock_guard lock(mutex_);
+    SocketReadinessSnapshot readiness {};
+    readiness.exists = true;
+    // Fatal failures need no receive servicing. SHUTDOWN retains its tail
+    // until delivery/drain, using one state observation under this lock.
+    if ((socket_broken || broken_) && !peer_closed_) {
+        readiness.events = SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+        return readiness;
+    }
+    const auto now = now_microseconds();
+    if (!locally_closed_ && !service_receiver_tlpktdrop_locked(now)
+        && !peer_closed_) {
+        readiness.events = SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+        return readiness;
+    }
+    const bool data_ready = !locally_closed_ && session_.data_ready_at(now);
+    const auto wakeup = locally_closed_ ? std::nullopt
+        : data_ready ? std::optional<Clock::time_point> {Clock::now()}
+                     : next_receive_wakeup_locked(now);
+    if ((socket_broken || broken_) && peer_closed_) {
+        if (wakeup.has_value()) {
+            if (data_ready) {
+                readiness.events = SRT_EPOLL_IN;
+            } else {
+                readiness.read_wakeup = wakeup;
+            }
+        } else {
+            readiness.events = SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+        }
+        return readiness;
+    }
+    if (data_ready) {
+        readiness.events = SRT_EPOLL_IN;
+    } else {
+        readiness.read_wakeup = wakeup;
+    }
+    if (!locally_closed_ && !peer_closed_ && !broken_
+        && (peer_error_pending_ || session_.send_buffer().available() != 0U)) {
+        readiness.events |= SRT_EPOLL_OUT;
+    }
+    return readiness;
+}
+
 bool ConnectionRuntime::writable() const noexcept
 {
     std::lock_guard lock(mutex_);

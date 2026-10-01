@@ -294,6 +294,10 @@ to that event.
 
 Group operations never hold the membership lock across member I/O or
 application callbacks.
+Each member's epoll state is sampled under one runtime lock, including send
+capacity, terminal state and delayed SHUTDOWN delivery. Group refresh still
+resolves and scans the current members; it does not retain a readiness cache
+across membership or runtime changes.
 
 ## Configuration limits
 
