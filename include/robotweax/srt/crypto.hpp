@@ -526,6 +526,7 @@ private:
         std::array<std::byte, maximum_aes_key_size> key{};
         std::size_t key_length = 0;
         CryptoMode mode = CryptoMode::automatic;
+        bool received_payload = false;
         std::unique_ptr<PayloadCipher> ctr_cipher;
         std::unique_ptr<AuthenticatedPayloadCipher> authenticated_cipher;
 

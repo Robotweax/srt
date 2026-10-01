@@ -95,6 +95,9 @@ TEST(receive_loss_list_periodic_reports_and_drop_removal_cover_all_ranges)
         .last = SequenceNumber{15},
     }, 5));
 
+    for (unsigned age = 0; age < 6; ++age) {
+        losses.age_fresh();
+    }
     losses.mark_periodic_reports();
     const auto first = losses.take_pending_report();
     const auto second = losses.take_pending_report();
@@ -128,6 +131,8 @@ TEST(receive_loss_list_remove_range_keeps_losses_outside_the_range)
     // Trim the head and tail of entries the range partially overlaps.
     REQUIRE(losses.add({SequenceNumber {40}, SequenceNumber {45}}, 1));
     REQUIRE(losses.remove_range({SequenceNumber {12}, SequenceNumber {30}}));
+    losses.age_fresh();
+    losses.age_fresh();
     losses.mark_periodic_reports();
     std::array<SequenceRange, 8> reports {};
     REQUIRE_EQ(losses.take_pending_reports(reports), 2U);
@@ -151,6 +156,8 @@ TEST(receive_loss_list_remove_range_keeps_losses_outside_the_range)
         {SequenceNumber {SequenceNumber::mask - 1U}, SequenceNumber {1}}, 1));
     REQUIRE(wrapped.remove_range(
         {SequenceNumber {SequenceNumber::mask}, SequenceNumber {0}}));
+    wrapped.age_fresh();
+    wrapped.age_fresh();
     wrapped.mark_periodic_reports();
     REQUIRE_EQ(wrapped.take_pending_reports(reports), 2U);
     REQUIRE_EQ(reports[0].first, SequenceNumber {SequenceNumber::mask - 1U});
@@ -216,6 +223,11 @@ TEST(receive_loss_list_pending_and_membership_stay_consistent_under_churn)
             losses.age_fresh();
             break;
         case 5:
+            // The membership model has no TTL. Expire the maximum generated
+            // TTL before asserting that every surviving range is reportable.
+            for (unsigned age = 0; age < 4; ++age) {
+                losses.age_fresh();
+            }
             losses.mark_periodic_reports();
             REQUIRE_EQ(losses.has_pending_report(), !model.empty());
             break;
@@ -267,6 +279,8 @@ TEST(receive_loss_list_batches_pending_ranges_without_losing_overflow)
         }, 1));
     }
 
+    losses.age_fresh();
+    losses.age_fresh();
     losses.mark_periodic_reports();
     std::array<SequenceRange, batch_capacity> first_batch{};
     REQUIRE_EQ(
@@ -398,11 +412,9 @@ TEST(receive_loss_list_prefix_preserves_report_flags_ttl_and_split_capacity)
     losses.remove_through(SequenceNumber {21});
     REQUIRE_EQ(losses.size(), 3U);
     std::array<SequenceRange, 4> reports {};
-    REQUIRE_EQ(losses.take_pending_reports(reports), 2U);
-    REQUIRE_EQ(reports[0].first, SequenceNumber {22});
-    REQUIRE_EQ(reports[0].last, SequenceNumber {24});
-    REQUIRE_EQ(reports[1].first, SequenceNumber {30});
-    REQUIRE_EQ(reports[1].last, SequenceNumber {32});
+    REQUIRE_EQ(losses.take_pending_reports(reports), 1U);
+    REQUIRE_EQ(reports[0].first, SequenceNumber {30});
+    REQUIRE_EQ(reports[0].last, SequenceNumber {32});
     REQUIRE(!losses.has_pending_report());
     const auto split = losses.remove(SequenceNumber {23});
     REQUIRE(split.removed);
@@ -473,6 +485,9 @@ TEST(
     REQUIRE(!losses.has_pending_report());
     const auto overflow = first.advanced(512 + count * 2);
     REQUIRE(!losses.add({overflow, overflow}, 0));
+    losses.age_fresh();
+    losses.age_fresh();
+    losses.age_fresh();
     losses.mark_periodic_reports();
     std::array<SequenceRange, count> reports {};
     REQUIRE_EQ(losses.take_pending_reports(reports), count);
@@ -615,4 +630,50 @@ TEST(
     REQUIRE(losses.add({SequenceNumber {5}, SequenceNumber {5}}, 0));
     REQUIRE_EQ(losses.take_pending_reports(report, 100'001), 1U);
     REQUIRE_EQ(report[0].first, SequenceNumber {5});
+}
+
+TEST(receive_loss_list_periodic_report_respects_fresh_ttl_and_retry)
+{
+    ReceiveLossList losses {8};
+    REQUIRE(losses.add({SequenceNumber {10}, SequenceNumber {10}}, 2));
+    std::array<SequenceRange, 8> ranges {};
+    for (unsigned index = 0; index < 3; ++index) {
+        losses.mark_periodic_reports(1'000 + index, 100'000);
+        REQUIRE_EQ(losses.take_pending_reports(ranges, 1'000 + index), 0U);
+        losses.age_fresh();
+    }
+    REQUIRE_EQ(losses.take_pending_reports(ranges, 2'000), 1U);
+    losses.mark_periodic_reports(2'001, 100'000);
+    REQUIRE_EQ(losses.take_pending_reports(ranges, 2'001), 0U);
+    losses.mark_periodic_reports(102'000, 100'000);
+    REQUIRE_EQ(losses.take_pending_reports(ranges, 102'000), 1U);
+}
+
+TEST(
+    receive_loss_list_rearms_unsent_ranges_without_reviving_recovered_or_fresh_losses)
+{
+    ReceiveLossList losses {8};
+    REQUIRE(losses.add(
+        {SequenceNumber {SequenceNumber::mask - 1U}, SequenceNumber {2}}, 0));
+    REQUIRE(losses.add({SequenceNumber {5}, SequenceNumber {5}}, 2));
+    std::array<SequenceRange, 8> ranges {};
+    REQUIRE_EQ(losses.take_pending_reports(ranges, 100), 1U);
+    REQUIRE(losses.remove(SequenceNumber {0}).removed);
+    REQUIRE(losses.remove_range({SequenceNumber {1}, SequenceNumber {2}}));
+    losses.rearm_report(
+        {SequenceNumber {SequenceNumber::mask - 1U}, SequenceNumber {5}});
+    REQUIRE_EQ(losses.take_pending_reports(ranges, 101), 1U);
+    REQUIRE_EQ(ranges[0].first, SequenceNumber {SequenceNumber::mask - 1U});
+    REQUIRE_EQ(ranges[0].last, SequenceNumber {SequenceNumber::mask});
+}
+
+TEST(receive_loss_list_single_report_uses_the_supplied_clock_for_retry)
+{
+    ReceiveLossList losses {4};
+    REQUIRE(losses.add({SequenceNumber {10}, SequenceNumber {10}}, 0));
+    REQUIRE(losses.take_pending_report(1'000'000).has_value());
+    losses.mark_periodic_reports(1'000'001, 100'000);
+    REQUIRE(!losses.take_pending_report(1'000'001).has_value());
+    losses.mark_periodic_reports(1'100'000, 100'000);
+    REQUIRE(losses.take_pending_report(1'100'000).has_value());
 }

@@ -295,7 +295,13 @@ sends a wrapped KMREQ; the adaptive window below may bring this forward. It
 retries the same request until the matching KMRSP is
 received, then changes the DATA selector at the refresh boundary. Runtime
 retries wait `max(1.5 * SRTT, 10 ms)` after successful UDP submission once
-an RTT observation is available; before that, the interval is 100 ms. A matching
+an RTT observation is available; before that, the interval is 100 ms.
+Both intervals are capped at half the configured peer-idle timeout, with a
+10-ms minimum. The adaptive horizon is also capped at that peer-idle timeout.
+Unauthenticated peer RTT estimates therefore cannot postpone retries for
+minutes on a connection configured with a short local timeout. High-RTT
+profiles should configure a suitable peer-idle timeout. Retries reuse the
+same pending material and do not change the key sequence budget. A matching
 KMRSP clears this retry clock so the next rotation can be announced immediately.
 The runtime may announce earlier using the highest observed consumption rate
 from samples at least 1 ms apart. Samples include sequence positions skipped by
@@ -372,11 +378,14 @@ Current receive keys and a bounded history of prior selector generations are
 retained for delayed packets. Known delayed KMREQ duplicates can be answered
 again without reinstalling old keys. A request containing only retired
 selector keys is rejected while those generations remain in the bounded key
-history (four per selector). If a two-selector request contains one retired
-key and one fresh key, both announced keys are installed. Restoring a displaced
-key removes its intervening receive generations so original ciphertext can be
-retransmitted immediately, including before the next selector switch. Older
-legitimate generations remain available. Known key bytes must retain the same
+history (four per selector). A two-selector request with a retired key and a fresh companion may restore
+that retired key only over replacements that have not received DATA. It cannot
+erase a current or intervening retained generation already used for reception.
+This is a bounded rollback guard: CTR reception does not authenticate the key
+choice, and material older than both histories is still indistinguishable from
+a fresh announcement. Unused provisional replacements can still be removed to
+recover original retransmissions, while older legitimate generations remain
+available. Known key bytes must retain the same
 salt, selector, and cipher mode across both current receive slots and their
 bounded histories; relabeled material is rejected without changing the session. Stale KMRSP messages cannot
 acknowledge a newer request or roll the session back.

@@ -370,3 +370,10 @@ multi-host system must measure and apply clock offset before comparing them.
 - Software transmit completion is not physical wire-time evidence.
 - Application-specific latency, jitter, burst, PCR-rate, failover, and clock
   quality requirements must be validated on the intended platform and network.
+
+Control timestamps do not select the receive DATA epoch. KEEPALIVE drift
+sampling uses locally elapsed time as its epoch reference during DATA-free
+intervals; deferred DROPREQ deadlines project onto that clock without advancing
+its epoch or drift slew. This limits timestamp-induced epoch jumps while
+retaining ordinary drift sampling and long-idle wrap recovery. Control packets
+remain unauthenticated; this rule is not a control authenticity guarantee.

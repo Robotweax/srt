@@ -358,7 +358,7 @@ TsbpdClock::TsbpdClock(std::uint64_t handshake_arrival_microseconds,
 {
 }
 
-std::uint64_t TsbpdClock::unwrap(PacketTimestamp timestamp) noexcept
+std::uint64_t TsbpdClock::project(PacketTimestamp timestamp) const noexcept
 {
     // Unwrap relative to the latest value using the signed 32-bit distance, so
     // a timestamp that is slightly behind the latest one (a reordered packet,
@@ -377,6 +377,12 @@ std::uint64_t TsbpdClock::unwrap(PacketTimestamp timestamp) noexcept
     const std::uint64_t candidate = candidate_signed <= 0
         ? 0ULL
         : static_cast<std::uint64_t>(candidate_signed);
+    return candidate;
+}
+
+std::uint64_t TsbpdClock::unwrap(PacketTimestamp timestamp) noexcept
+{
+    const auto candidate = project(timestamp);
     latest_unwrapped_timestamp_ =
         std::max(latest_unwrapped_timestamp_, candidate);
     return candidate;
@@ -432,6 +438,20 @@ std::uint64_t TsbpdClock::delivery_time(PacketTimestamp timestamp) noexcept
     return signed_delivery <= 0 ? 0U : static_cast<std::uint64_t>(signed_delivery);
 }
 
+std::uint64_t TsbpdClock::control_delivery_time(
+    PacketTimestamp timestamp) const noexcept
+{
+    if (shared_state_) {
+        std::lock_guard lock(shared_state_->mutex);
+        return shared_state_->clock.control_delivery_time(timestamp);
+    }
+    const auto signed_delivery = time_base_microseconds_
+        + static_cast<std::int64_t>(project(timestamp)) + delay_microseconds_
+        + applied_drift_microseconds_;
+    return signed_delivery <= 0 ? 0U
+                                : static_cast<std::uint64_t>(signed_delivery);
+}
+
 bool TsbpdClock::ready(PacketTimestamp timestamp,
     std::uint64_t now_microseconds) noexcept
 {
@@ -449,17 +469,30 @@ bool TsbpdClock::too_late(PacketTimestamp timestamp,
 
 DriftUpdate TsbpdClock::observe_arrival(PacketTimestamp timestamp,
     std::uint64_t arrival_microseconds,
-    std::uint32_t round_trip_time_microseconds) noexcept
+    std::uint32_t round_trip_time_microseconds, bool advance_epoch) noexcept
 {
     if (shared_state_) {
         std::lock_guard lock(shared_state_->mutex);
-        return shared_state_->clock.observe_arrival(
-            timestamp, arrival_microseconds, round_trip_time_microseconds);
+        return shared_state_->clock.observe_arrival(timestamp,
+            arrival_microseconds, round_trip_time_microseconds, advance_epoch);
     }
     if (!first_round_trip_time_microseconds_.has_value()) {
         first_round_trip_time_microseconds_ = round_trip_time_microseconds;
     }
-    const auto unwrapped = unwrap(timestamp);
+    if (!advance_epoch) {
+        // Keep idle connections on the local elapsed-time epoch. A control's
+        // timestamp is only a drift sample, never the epoch reference. This
+        // also avoids the half-wrap ambiguity after a long DATA-free interval.
+        const auto local_source_time =
+            static_cast<std::int64_t>(arrival_microseconds)
+            - time_base_microseconds_ - applied_drift_microseconds_;
+        if (local_source_time > 0) {
+            latest_unwrapped_timestamp_ = std::max(latest_unwrapped_timestamp_,
+                static_cast<std::uint64_t>(local_source_time));
+        }
+    }
+    const auto unwrapped =
+        advance_epoch ? unwrap(timestamp) : project(timestamp);
     const auto rtt_delta = (static_cast<std::int64_t>(round_trip_time_microseconds)
         - static_cast<std::int64_t>(*first_round_trip_time_microseconds_)) / 2;
     const auto expected_arrival = time_base_microseconds_

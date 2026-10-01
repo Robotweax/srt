@@ -372,3 +372,29 @@ TEST(control_timer_shorter_rtt_advances_pending_nak_without_postponing_it)
     REQUIRE_EQ(due.size, 1U);
     REQUIRE_EQ(due.values[0], TimerActionKind::periodic_loss_report);
 }
+
+TEST(tsbpd_control_projection_cannot_advance_data_epoch)
+{
+    TsbpdClock clock {1'000'000, PacketTimestamp {0}, 100'000};
+    for (const auto stamp : {0x7fffffffU, 0xfffffffeU}) {
+        (void)clock.control_delivery_time(PacketTimestamp {stamp});
+        (void)clock.observe_arrival(
+            PacketTimestamp {stamp}, 6'000'000, 100'000, false);
+    }
+    REQUIRE_EQ(clock.delivery_time(PacketTimestamp {5'000'000}), 6'100'000U);
+}
+
+TEST(tsbpd_keepalive_uses_local_epoch_after_long_idle_and_multiple_wraps)
+{
+    for (const std::uint64_t elapsed :
+        {2'200'000'000ULL, 4'300'000'000ULL, 9'000'000'000ULL}) {
+        TsbpdClock clock {1'000'000, PacketTimestamp {0}, 100'000};
+        // A forged control timestamp during the idle interval cannot choose
+        // the epoch. Genuine DATA at the local elapsed time still unwraps.
+        (void)clock.observe_arrival(
+            PacketTimestamp {0x7fffffffU}, 1'000'000 + elapsed, 100'000, false);
+        REQUIRE_EQ(clock.delivery_time(
+                       PacketTimestamp {static_cast<std::uint32_t>(elapsed)}),
+            1'100'000 + elapsed);
+    }
+}

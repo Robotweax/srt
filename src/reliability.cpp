@@ -391,6 +391,24 @@ bool ReceiveLossList::remove_range(SequenceRange range) noexcept
     return true;
 }
 
+void ReceiveLossList::rearm_report(SequenceRange range) noexcept
+{
+    for (std::size_t index = lower_bound(range.first); index < size_; ++index) {
+        auto& entry = entries_[index];
+        if (entry.range.first.distance_from(range.last) > 0) {
+            break;
+        }
+        if (entry.fresh) {
+            continue;
+        }
+        if (!entry.initial_report_pending && !entry.periodic_report_pending) {
+            ++pending_count_;
+        }
+        entry.initial_report_pending = true;
+        entry.reported = false;
+    }
+}
+
 void ReceiveLossList::age_fresh() noexcept
 {
     if (fresh_count_ == 0U) {
@@ -420,6 +438,9 @@ void ReceiveLossList::mark_periodic_reports(std::uint64_t now_microseconds,
 {
     for (std::size_t index = 0; index < size_; ++index) {
         auto& entry = entries_[index];
+        if (entry.fresh) {
+            continue;
+        }
         if (entry.reported
             && (now_microseconds < entry.last_report_microseconds
                 || now_microseconds - entry.last_report_microseconds
@@ -433,12 +454,12 @@ void ReceiveLossList::mark_periodic_reports(std::uint64_t now_microseconds,
     }
 }
 
-std::optional<SequenceRange>
-ReceiveLossList::take_pending_report() noexcept
+std::optional<SequenceRange> ReceiveLossList::take_pending_report(
+    std::uint64_t now_microseconds) noexcept
 {
     SequenceRange report;
-    return take_pending_reports({&report, 1U}) == 1U
-        ? std::optional<SequenceRange>{report}
+    return take_pending_reports({&report, 1U}, now_microseconds) == 1U
+        ? std::optional<SequenceRange> {report}
         : std::nullopt;
 }
 

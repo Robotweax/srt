@@ -162,7 +162,12 @@ callback/lifecycle rules in the [Integration guide](integration.md).
 ## Timing model
 
 Protocol code consumes integer monotonic microseconds supplied by its owner.
-It does not read a global clock during a state transition. ACK, NAK, keepalive,
+It does not read a global clock during a state transition. Source-tree C++
+callers using timed retransmission or loss-report retry gates must pass the
+same monotonic microsecond clock to `next_data_packet`, `take_pending_report`
+and `take_pending_reports`. The legacy zero defaults represent protocol time
+zero for untimed fixtures; they cannot infer an application's current time.
+These internal C++ interfaces are not part of the installed stable C ABI. ACK, NAK, keepalive,
 retransmission, pacing, and TSBPD deadlines therefore use one explicit time
 domain and can be reproduced under a virtual clock.
 

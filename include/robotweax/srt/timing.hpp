@@ -199,6 +199,10 @@ public:
 
     [[nodiscard]] std::uint64_t delivery_time(
         PacketTimestamp timestamp) noexcept;
+    // Control timestamps may be projected, but must not advance the DATA
+    // epoch or the drift slew.
+    [[nodiscard]] std::uint64_t control_delivery_time(
+        PacketTimestamp timestamp) const noexcept;
     [[nodiscard]] bool ready(PacketTimestamp timestamp,
         std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] bool too_late(PacketTimestamp timestamp,
@@ -206,7 +210,8 @@ public:
         std::uint32_t tolerance_microseconds) noexcept;
     [[nodiscard]] DriftUpdate observe_arrival(PacketTimestamp timestamp,
         std::uint64_t arrival_microseconds,
-        std::uint32_t round_trip_time_microseconds) noexcept;
+        std::uint32_t round_trip_time_microseconds,
+        bool advance_epoch = true) noexcept;
 
 private:
     friend class compat::ConnectionRuntime;
@@ -214,6 +219,8 @@ private:
     // clock. Ordinary connections retain their allocation-free local clock.
     void share_group_clock(std::shared_ptr<TsbpdClockState>& state);
     std::shared_ptr<TsbpdClockState> shared_state_;
+    [[nodiscard]] std::uint64_t project(
+        PacketTimestamp timestamp) const noexcept;
     [[nodiscard]] std::uint64_t unwrap(PacketTimestamp timestamp) noexcept;
     void advance_applied_drift(std::uint64_t unwrapped_timestamp) noexcept;
 

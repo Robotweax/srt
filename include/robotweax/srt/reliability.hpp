@@ -87,6 +87,9 @@ public:
     // split that would exhaust the reserved slots returns false and leaves
     // that entry unchanged; callers must handle the failed removal.
     [[nodiscard]] bool remove_range(SequenceRange range) noexcept;
+    // Retry a report that was prepared but never submitted. Only surviving
+    // non-fresh losses become eligible; recovered/dropped ranges stay absent.
+    void rearm_report(SequenceRange range) noexcept;
     void age_fresh() noexcept;
     // Each emitted range waits its own retry interval. Newly discovered
     // ranges remain eligible for their first report independently.
@@ -95,8 +98,8 @@ public:
     [[nodiscard]] std::size_t take_pending_reports(
         std::span<SequenceRange> destination,
         std::uint64_t now_microseconds = 0) noexcept;
-    [[nodiscard]] std::optional<SequenceRange>
-    take_pending_report() noexcept;
+    [[nodiscard]] std::optional<SequenceRange> take_pending_report(
+        std::uint64_t now_microseconds = 0) noexcept;
     [[nodiscard]] bool has_pending_report() const noexcept;
 
 private:
