@@ -2200,11 +2200,11 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
             return false;
         }
     }
-    if (transient_send_failure_since_.has_value()
+    if (pending_datagram_size_ != 0U
         && completion.kind == DatagramKind::control) {
-        // Periodic controls are refreshed by inbound traffic even while the
-        // route is unavailable. Retain only the latest cumulative state for
-        // each type, so they cannot exhaust the retry FIFO before its window.
+        // Bound periodic controls during both EAGAIN and route retries.
+        // ACKs are cumulative; NAKs contain only newly due ranges, so restore
+        // the superseded report to the loss list before replacing its marker.
         if (completion.control == ControlType::keepalive) {
             return true;
         }
@@ -2215,6 +2215,12 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
                 pending != nullptr; pending = pending->next.get()) {
                 if (pending->completion.kind == DatagramKind::control
                     && pending->completion.control == completion.control) {
+                    if (completion.control
+                        == ControlType::negative_acknowledgement) {
+                        session_.rearm_loss_report(std::span {pending->bytes}
+                                .first(pending->size)
+                                .subspan(packet_header_size));
+                    }
                     std::copy(
                         bytes.begin(), bytes.end(), pending->bytes.begin());
                     pending->size = bytes.size();
@@ -2345,7 +2351,14 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
         auto& pending = *pending_datagram_head_;
         const auto bytes = std::span {pending.bytes}.first(pending.size);
         bool current = true;
-        if (pending.completion.kind == DatagramKind::data) {
+        if (pending.completion.kind == DatagramKind::control
+            && pending.completion.control
+                == ControlType::negative_acknowledgement) {
+            // Rebuild from surviving losses in poll_timers, rather than send
+            // stale bytes for DATA that arrived or was dropped during retry.
+            session_.rearm_loss_report(bytes.subspan(packet_header_size));
+            current = false;
+        } else if (pending.completion.kind == DatagramKind::data) {
             // ACK/TTL/TLPKTDROP can retire a prepared packet during the wait.
             current = session_.send_buffer().retains_packet(
                 pending.completion.data.sequence);
@@ -2822,16 +2835,23 @@ bool ConnectionRuntime::service_key_rotation(
         return true;
     }
     const auto& rtt = session_.rtt();
+    // Peer ACK estimates are unauthenticated. Do not let one estimate defer
+    // retries beyond half the locally configured peer-idle horizon. Large
+    // legitimate RTT profiles can raise that horizon without changing keys.
+    const auto retry_ceiling =
+        std::max<std::uint64_t>(10'000U, peer_idle_timeout_microseconds_ / 2U);
     const std::uint64_t retry_interval_microseconds = rtt.has_sample()
-        ? std::max<std::uint64_t>(
-              10'000U, 3ULL * rtt.smoothed_microseconds() / 2ULL)
-        : 100'000U;
+        ? std::min(retry_ceiling,
+              std::max<std::uint64_t>(
+                  10'000U, 3ULL * rtt.smoothed_microseconds() / 2ULL))
+        : std::min<std::uint64_t>(100'000U, retry_ceiling);
     // Cover two lost attempts, a successful round trip and scheduling/RTT
     // variation. A bounded observed peak also counts TTL/group sequence gaps.
     const std::uint64_t horizon =
-        (rtt.has_sample() ? rtt.smoothed_microseconds() : 100'000U)
-        + 2U * retry_interval_microseconds + 4ULL * rtt.variation_microseconds()
-        + 10'000U;
+        std::min<std::uint64_t>(peer_idle_timeout_microseconds_,
+            (rtt.has_sample() ? rtt.smoothed_microseconds() : 100'000U)
+                + 2U * retry_interval_microseconds
+                + 4ULL * rtt.variation_microseconds() + 10'000U);
     const auto maximum = std::numeric_limits<std::uint64_t>::max();
     const auto scaled = key_peak_sequence_rate_ > maximum / horizon
         ? maximum
@@ -2869,6 +2889,12 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     ReliabilityReceiveContext context,
     bool wire_received) noexcept
 {
+    // Reject oversized DATA before querying delivery state or doing provider
+    // work. Invalid input must neither terminate nor advance this session.
+    if (packet.kind == PacketKind::data
+        && packet.payload.size() > maximum_data_payload_size) {
+        return false;
+    }
     const std::size_t send_size_before =
         session_.send_buffer().size();
     // Readiness edges observed by blocked receivers and epoll: the next
@@ -2892,10 +2918,6 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         == PacketFilterReceiveDisposition::
             consume_filter_control;
     if (packet.kind == PacketKind::data) {
-        if (packet.payload.size() > clear_payload.size()) {
-            break_locked(0);
-            return false;
-        }
         if (options_.enforced_encryption()
             && packet.data.encryption_key != EncryptionKey::none
             && (crypto_ == nullptr || !crypto_->enabled())) {

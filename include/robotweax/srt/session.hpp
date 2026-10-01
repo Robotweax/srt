@@ -405,6 +405,7 @@ public:
         timer_scheduler_.on_receive_buffer_released(
             now_microseconds, last_advertised_receive_window_packets_ == 0U);
     }
+    void rearm_loss_report(std::span<const std::byte> payload) noexcept;
     void note_packet_sent(std::uint64_t now_microseconds) noexcept
     {
         timer_scheduler_.on_packet_sent(now_microseconds);
@@ -470,7 +471,7 @@ private:
     void update_loss_timer(
         std::uint64_t now_microseconds) noexcept;
     void observe_tsbpd_drift(PacketTimestamp timestamp,
-        std::uint64_t arrival_microseconds) noexcept;
+        std::uint64_t arrival_microseconds, bool advance_epoch = true) noexcept;
 
     SendBuffer send_buffer_;
     // Exclusive cumulative peer ACK boundary. Local TTL/TLPKTDROP advancement
