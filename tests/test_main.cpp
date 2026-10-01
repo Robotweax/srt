@@ -7,7 +7,9 @@
 int main(int argc, char** argv)
 {
     const bool exclude = argc > 1 && std::string_view {argv[1]} == "--exclude";
-    if (exclude && argc != 3) {
+    if ((exclude && argc != 3) || (!exclude && argc > 2)
+        || (argc > 1 && !exclude
+            && std::string_view {argv[1]}.starts_with("--"))) {
         std::cerr << "usage: " << argv[0] << " --exclude substring\n";
         return 2;
     }
@@ -21,7 +23,7 @@ int main(int argc, char** argv)
     for (const auto& test : robotweax::srt::test::cases()) {
         const bool matches =
             std::string_view {test.name}.find(filter) != std::string_view::npos;
-        if (!filter.empty() && matches == exclude) {
+        if (matches == exclude) {
             continue;
         }
         ++selected;
@@ -47,5 +49,9 @@ int main(int argc, char** argv)
         std::cout << " (" << skipped << " skipped)";
     }
     std::cout << '\n';
+    if (selected == 0U) {
+        std::cerr << "No tests selected\n";
+        return 2;
+    }
     return failures == 0 ? 0 : 1;
 }
