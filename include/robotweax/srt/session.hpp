@@ -452,7 +452,7 @@ private:
     };
     [[nodiscard]] static std::uint64_t peer_drop_identity(
         SequenceRange range) noexcept;
-    void erase_peer_drop_identity(SequenceRange range) noexcept;
+    void retire_peer_drop_identity(SequenceRange range) noexcept;
 
     friend class compat::ConnectionRuntime;
     [[nodiscard]] ReliabilityAction make_acknowledgement(

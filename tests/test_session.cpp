@@ -288,6 +288,82 @@ TEST(session_drop_request_index_preserves_wrapped_overlapping_grace_ranges)
     }
 }
 
+TEST(session_drop_request_batch_expiry_preserves_future_identity_and_capacity)
+{
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 31U}}) {
+        for (const bool message_api : {false, true}) {
+            ReliabilitySession receiver {{
+                .peer_initial_sequence = initial,
+                .send_capacity_packets = 8,
+                .receive_capacity_packets = 64,
+            }};
+            receiver.set_message_api(message_api);
+            receiver.configure_live({.receive_tsbpd = true,
+                                        .too_late_packet_drop = true,
+                                        .receive_delay_milliseconds = 100},
+                1'000, PacketTimestamp {0});
+            std::array<std::byte, 64> storage {};
+            const auto request = [&](std::uint32_t position,
+                                     std::uint32_t timestamp,
+                                     std::uint64_t now) {
+                const auto sequence = initial.advanced(position);
+                auto packet = encode_and_decode(
+                    {.kind = ReliabilityActionKind::drop_request,
+                        .drop = {0, {sequence, sequence}}},
+                    storage);
+                packet.control.timestamp = PacketTimestamp {timestamp};
+                return receiver.receive(packet, now);
+            };
+            // Admission order differs from both wire identity order and
+            // deadline order, including the 31-bit sequence wrap.
+            for (std::uint32_t index = 0; index < 64U; ++index) {
+                const auto position = (index * 17U) % 64U;
+                REQUIRE(
+                    request(position, position % 2U == 0U ? 20U : 80U, 1'100));
+            }
+            REQUIRE_EQ(request(64U, 90U, 1'100).error, Error::would_block);
+            const auto first = receiver.drop_too_late_receiver(101'030);
+            REQUIRE(first);
+            REQUIRE_EQ(first.receiver_drop_packets, 32U);
+            REQUIRE_EQ(receiver.receive_buffer().first_stored_sequence(),
+                initial.next());
+            REQUIRE_EQ(receiver.next_receive_delivery_time(),
+                std::optional<std::uint64_t> {101'080});
+            // Retained identities still detect duplicates; later copies
+            // cannot extend the original grace deadline.
+            for (std::uint32_t position = 1U; position < 64U; position += 2U) {
+                REQUIRE(request(position, 1'000U, 101'030));
+                REQUIRE_EQ(receiver.next_receive_delivery_time(),
+                    std::optional<std::uint64_t> {101'080});
+            }
+            for (std::uint32_t position = 64U; position < 96U; ++position) {
+                REQUIRE(request(position, 90U, 101'030));
+            }
+            REQUIRE_EQ(request(96U, 90U, 101'030).error, Error::would_block);
+            REQUIRE(request(95U, 1'000U, 101'030));
+            const auto second = receiver.drop_too_late_receiver(101'080);
+            REQUIRE(second);
+            REQUIRE_EQ(second.receiver_drop_packets, 32U);
+            REQUIRE_EQ(receiver.receive_buffer().first_stored_sequence(),
+                initial.advanced(64U));
+            REQUIRE_EQ(receiver.next_receive_delivery_time(),
+                std::optional<std::uint64_t> {101'090});
+            const auto third = receiver.drop_too_late_receiver(101'090);
+            REQUIRE(third);
+            REQUIRE_EQ(third.receiver_drop_packets, 32U);
+            REQUIRE_EQ(receiver.receive_buffer().first_stored_sequence(),
+                initial.advanced(96U));
+            REQUIRE(!receiver.next_receive_delivery_time());
+            REQUIRE(request(96U, 200U, 101'100));
+            REQUIRE_EQ(receiver.next_receive_delivery_time(),
+                std::optional<std::uint64_t> {101'200});
+            REQUIRE(receiver.drop_too_late_receiver(101'200));
+            REQUIRE(!receiver.next_receive_delivery_time());
+        }
+    }
+}
+
 TEST(session_drop_request_accepts_the_supported_sequence_boundaries)
 {
     constexpr auto limit = SequenceNumber::half_range / 2U;

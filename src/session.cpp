@@ -12,6 +12,10 @@ namespace {
 
 constexpr auto maximum_peer_drop_distance =
     static_cast<std::int32_t>(SequenceNumber::half_range / 2U);
+// Both wire endpoints use only 31 bits, leaving bit 63 available for an
+// in-call retirement marker. Clear all markers before returning to callers.
+constexpr std::uint64_t retired_peer_drop_identity = std::uint64_t {1} << 63U;
+static_assert(SequenceNumber::mask <= 0x7fff'ffffU);
 
 struct NakRangeSlices {
     Error error = Error::none;
@@ -1313,13 +1317,17 @@ std::uint64_t ReliabilitySession::peer_drop_identity(
         | range.last.value();
 }
 
-void ReliabilitySession::erase_peer_drop_identity(SequenceRange range) noexcept
+void ReliabilitySession::retire_peer_drop_identity(SequenceRange range) noexcept
 {
     const auto identity = peer_drop_identity(range);
     const auto entry = std::lower_bound(pending_peer_drop_identities_.begin(),
-        pending_peer_drop_identities_.end(), identity);
-    if (entry != pending_peer_drop_identities_.end() && *entry == identity) {
-        pending_peer_drop_identities_.erase(entry);
+        pending_peer_drop_identities_.end(), identity,
+        [](std::uint64_t indexed, std::uint64_t requested) {
+            return (indexed & ~retired_peer_drop_identity) < requested;
+        });
+    if (entry != pending_peer_drop_identities_.end()
+        && (*entry & ~retired_peer_drop_identity) == identity) {
+        *entry |= retired_peer_drop_identity;
     }
 }
 
@@ -1333,19 +1341,22 @@ ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
     }
 
     bool peer_released = false;
-    for (std::size_t index = 0; index < pending_peer_drops_.size();) {
-        const auto pending = pending_peer_drops_[index];
+    // Stable compaction preserves admission order and moves survivors once,
+    // rather than shifting both vectors after every expired/stale entry.
+    const auto retire_pending = [&](const PendingPeerDrop& pending) {
+        // A failed drop retains that entry and the untouched suffix, while
+        // completing cleanup of the successfully retired prefix.
+        if (result.error != Error::none) {
+            return false;
+        }
         if (pending.sequences.last.distance_from(
                 receive_buffer_.first_stored_sequence())
             < 0) {
-            erase_peer_drop_identity(pending.sequences);
-            pending_peer_drops_.erase(pending_peer_drops_.begin()
-                + static_cast<std::ptrdiff_t>(index));
-            continue;
+            retire_peer_drop_identity(pending.sequences);
+            return true;
         }
         if (now_microseconds < pending.deadline_microseconds) {
-            ++index;
-            continue;
+            return false;
         }
         std::size_t newly_dropped = 0U;
         const Error error = message_api_
@@ -1355,18 +1366,42 @@ ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
                   pending.sequences, 0U, &newly_dropped);
         if (error != Error::none) {
             result.error = error;
-            return result;
+            return false;
         }
         if (!receive_loss_list_.remove_range(pending.sequences)
             || !filter_loss_list_.remove_range(pending.sequences)) {
             result.error = Error::buffer_too_small;
-            return result;
+            return false;
         }
         result.receiver_drop_packets += newly_dropped;
         peer_released |= newly_dropped != 0U;
-        erase_peer_drop_identity(pending.sequences);
-        pending_peer_drops_.erase(
-            pending_peer_drops_.begin() + static_cast<std::ptrdiff_t>(index));
+        retire_peer_drop_identity(pending.sequences);
+        return true;
+    };
+    std::size_t retained = 0;
+    // Invoke the stateful processing explicitly in admission order; only the
+    // final identity compaction below uses a pure removal predicate.
+    for (std::size_t index = 0; index < pending_peer_drops_.size(); ++index) {
+        const auto pending = pending_peer_drops_[index];
+        if (!retire_pending(pending)) {
+            if (retained != index) {
+                pending_peer_drops_[retained] = pending;
+            }
+            ++retained;
+        }
+    }
+    if (retained != pending_peer_drops_.size()) {
+        pending_peer_drops_.resize(retained);
+        const auto identities = std::remove_if(
+            pending_peer_drop_identities_.begin(),
+            pending_peer_drop_identities_.end(), [](std::uint64_t identity) {
+                return (identity & retired_peer_drop_identity) != 0U;
+            });
+        pending_peer_drop_identities_.erase(
+            identities, pending_peer_drop_identities_.end());
+    }
+    if (result.error != Error::none) {
+        return result;
     }
 
     const auto message = first_deliverable_unit();
