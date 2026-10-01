@@ -98,6 +98,10 @@ public:
     [[nodiscard]] SRTSOCKET create() noexcept;
     [[nodiscard]] std::shared_ptr<SocketRecord> find(SRTSOCKET socket) noexcept;
     [[nodiscard]] SRT_SOCKSTATUS state(SRTSOCKET socket) noexcept;
+    // Refresh terminal state and publish group changes for an already held
+    // record. The caller retains responsibility for membership validation.
+    [[nodiscard]] SRT_SOCKSTATUS refresh_state(
+        const std::shared_ptr<SocketRecord>& record) noexcept;
     // Number of registered sockets, for leak and allocation checks.
     [[nodiscard]] std::size_t size() noexcept;
     void close(SRTSOCKET socket) noexcept;

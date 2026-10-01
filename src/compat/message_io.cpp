@@ -224,12 +224,14 @@ private:
     // releasing the membership lock. No second allocation for large groups.
     std::size_t retained = 0;
     for (auto& member : result) {
-        const auto state = SocketRegistry::instance().state(member.id);
-        if (state != SRTS_CONNECTED && state != SRTS_BROKEN) {
-            continue;
-        }
         const auto socket = SocketRegistry::instance().find(member.id);
         if (socket == nullptr) {
+            continue;
+        }
+        // Resolve once and keep the owner through terminal publication and
+        // generation validation, including concurrent member teardown.
+        const auto state = SocketRegistry::instance().refresh_state(socket);
+        if (state != SRTS_CONNECTED && state != SRTS_BROKEN) {
             continue;
         }
         {
