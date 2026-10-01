@@ -8,8 +8,10 @@
 #include "robotweax/srt/sequence.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <new>
+#include <span>
 
 namespace robotweax::srt::compat {
 namespace {
@@ -65,13 +67,25 @@ namespace {
 // first, then updates the generation-checked group snapshot.
 void refresh_member_states(const std::shared_ptr<GroupRecord>& record) noexcept
 {
-    std::vector<SRTSOCKET> sockets;
+    std::array<SRTSOCKET, 16> inline_sockets {};
+    std::vector<SRTSOCKET> overflow;
+    std::span<const SRTSOCKET> sockets;
     try {
         {
             std::lock_guard lock(record->mutex);
-            sockets.reserve(record->members.size());
-            for (const auto& member : record->members) {
-                sockets.push_back(member.public_data.id);
+            if (record->members.size() <= inline_sockets.size()) {
+                std::transform(record->members.begin(), record->members.end(),
+                    inline_sockets.begin(), [](const auto& member) {
+                        return member.public_data.id;
+                    });
+                sockets =
+                    std::span {inline_sockets}.first(record->members.size());
+            } else {
+                overflow.reserve(record->members.size());
+                for (const auto& member : record->members) {
+                    overflow.push_back(member.public_data.id);
+                }
+                sockets = overflow;
             }
         }
         for (const auto socket : sockets) {
