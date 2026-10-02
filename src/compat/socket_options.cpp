@@ -324,6 +324,11 @@ int get_socket_option(
     case SRTO_MAXBW:
         return write_value(
             value, value_size, options.maximum_bandwidth_bytes_per_second);
+#ifdef ENABLE_MAXREXMITBW
+    case SRTO_MAXREXMITBW:
+        return write_value(value, value_size,
+            options.maximum_retransmission_bandwidth_bytes_per_second);
+#endif
     case SRTO_STATE:
         return write_value(
             value, value_size, static_cast<std::int32_t>(socket.state));
@@ -717,6 +722,21 @@ int set_socket_option(
             static_cast<std::int32_t>(seconds);
         return 0;
     }
+#ifdef ENABLE_MAXREXMITBW
+    case SRTO_MAXREXMITBW: {
+        std::int64_t parsed = 0;
+        if (!read_value(value, value_size, parsed) || parsed < -1) {
+            return invalid_parameter();
+        }
+        if (set_native(socket.native_options,
+                SocketOption::maximum_retransmission_bandwidth_bytes_per_second,
+                parsed)
+            == SRT_ERROR)
+            return SRT_ERROR;
+        options.maximum_retransmission_bandwidth_bytes_per_second = parsed;
+        return 0;
+    }
+#endif
     case SRTO_MAXBW: {
         std::int64_t parsed = 0;
         if (!read_value(value, value_size, parsed) || parsed < -1) {

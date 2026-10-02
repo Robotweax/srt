@@ -98,9 +98,10 @@ class AeadContractTests(unittest.TestCase):
             header,
             re.compile(
                 r"#ifdef ENABLE_AEAD_API_PREVIEW\s+"
-                r"SRTO_CRYPTOMODE = 62,\s+"
-                r"SRTO_E_SIZE = 63\s+"
-                r"#else\s+SRTO_E_SIZE = 62\s+#endif"
+                r"SRTO_CRYPTOMODE = 62,\s+#endif\s+"
+                r"#ifdef ENABLE_MAXREXMITBW\s+SRTO_MAXREXMITBW = 63,\s+"
+                r"SRTO_E_SIZE = 64\s+#elif defined\(ENABLE_AEAD_API_PREVIEW\)\s+"
+                r"SRTO_E_SIZE = 63\s+#else\s+SRTO_E_SIZE = 62\s+#endif"
             ),
         )
 

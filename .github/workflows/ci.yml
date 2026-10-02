@@ -1014,6 +1014,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_SHARED_LIBS=ON
           -DENABLE_AEAD_API_PREVIEW=ON
+          -DENABLE_MAXREXMITBW=ON
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
           -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
       - name: Build shared AES-GCM preview
@@ -1032,6 +1033,15 @@ jobs:
           --output-on-failure
           --timeout 120
 
+      - name: Test optional retransmission limit
+        if: needs.changes.outputs.aead_platform == 'true'
+        run: >-
+          ctest --test-dir build-aead-shared
+          -C Release
+          -R robotweax_srt_tests
+          --no-tests=error
+          --output-on-failure
+          --timeout 120
   sanitizers:
     name: Address/undefined sanitizers
     needs: changes
@@ -1053,6 +1063,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Debug
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
           -DENABLE_AEAD_API_PREVIEW=ON
+          -DENABLE_MAXREXMITBW=ON
       - name: Verify fatal UBSan enforcement
         run: |
           cmake --build build --target robotweax_srt_ubsan_canary
