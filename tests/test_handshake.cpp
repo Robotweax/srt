@@ -1188,7 +1188,6 @@ TEST(configured_listener_does_not_force_an_unrequested_packet_filter)
     REQUIRE(!caller.has_negotiated_packet_filter());
 }
 
-
 TEST(caller_and_listener_negotiate_the_sensor_profile_identity)
 {
     const auto profile = parse_packet_filter_configuration(
