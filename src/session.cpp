@@ -1402,6 +1402,12 @@ Error ReliabilitySession::apply_peer_drop_range(SequenceRange range,
         || !filter_loss_list_.remove_range(range)) {
         return Error::buffer_too_small;
     }
+    // Both immediately effective requests and observed remainders retire
+    // this contiguous prefix from future DATA gap detection.
+    if (range.last.distance_from(highest_received_sequence_) > 0
+        && range.first.distance_from(highest_received_sequence_.next()) <= 0) {
+        highest_received_sequence_ = range.last;
+    }
     return Error::none;
 }
 
@@ -1446,11 +1452,6 @@ Error ReliabilitySession::apply_peer_drop_remainder(SequenceNumber observed,
         .last =
             pending.last.distance_from(observed) <= 0 ? pending.last : observed,
     };
-    if (pending.last.distance_from(effective.last) > 0) {
-        peer_drop_remainder_->sequences.first = effective.last.next();
-    } else {
-        peer_drop_remainder_.reset();
-    }
     const bool defer_drop = live_options_.receive_tsbpd
         && live_options_.too_late_packet_drop && tsbpd_clock_.has_value();
     const Error error = apply_peer_drop_range(
@@ -1458,12 +1459,12 @@ Error ReliabilitySession::apply_peer_drop_remainder(SequenceNumber observed,
     if (error != Error::none) {
         return error;
     }
-    // The peer demonstrably sent past the abandoned range; later DATA must
-    // not report it as loss again.
-    if (effective.last.distance_from(highest_received_sequence_) > 0
-        && effective.first.distance_from(highest_received_sequence_.next())
-            <= 0) {
-        highest_received_sequence_ = effective.last;
+    // Commit consumption only after the skip succeeds. Backpressure must
+    // leave the complete remainder available for a later DATA retry.
+    if (pending.last.distance_from(effective.last) > 0) {
+        peer_drop_remainder_->sequences.first = effective.last.next();
+    } else {
+        peer_drop_remainder_.reset();
     }
     return Error::none;
 }
