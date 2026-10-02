@@ -27,7 +27,7 @@ class RobotweaxSrt < Formula
   end
 
   test do
-    ENV.prepend_path "PKG_CONFIG_PATH", Formula["openssl@3"].opt_lib/"pkgconfig"
+    ENV.prepend_path "PKG_CONFIG_PATH", formula_opt_lib("openssl@3")/"pkgconfig"
 
     (testpath/"consumer.c").write <<~C
       #include <robotweax_srt.h>
