@@ -1447,8 +1447,8 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
         configuration.efficient_retransmission,
         configuration.negotiated_options.peer_periodic_nak
             || configuration.negotiated_options.periodic_nak);
-    if (configuration.options.congestion_controller()
-        == CongestionController::file) {
+    if (uses_file_congestion_control(
+            configuration.options.congestion_controller())) {
         const auto maximum_bandwidth = configuration.options.get(
             SocketOption::maximum_bandwidth_bytes_per_second);
         session_.configure_file(
@@ -1612,6 +1612,10 @@ MessageIoResult ConnectionRuntime::queue_message(
     std::int32_t ttl_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    if (options_.control_profile() && ttl_milliseconds >= 0) {
+        return {.status = MessageIoStatus::invalid_state};
+    }
+    in_order = in_order || options_.control_profile();
     const bool has_deadline = timeout_milliseconds >= 0;
     const Clock::time_point deadline = has_deadline
         ? Clock::now() + std::chrono::milliseconds{timeout_milliseconds}
@@ -1698,6 +1702,10 @@ MessageIoResult ConnectionRuntime::queue_group_message(
     std::int32_t ttl_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    if (options_.control_profile() && ttl_milliseconds >= 0) {
+        return {.status = MessageIoStatus::invalid_state};
+    }
+    in_order = in_order || options_.control_profile();
     if (locally_closed_) {
         return {.status = MessageIoStatus::local_closed};
     }
@@ -4276,8 +4284,7 @@ RuntimeStatisticsSnapshot ConnectionRuntime::statistics(
             / 1'000'000.0
         : 0.0;
     const std::uint64_t pacing_rate =
-        options_.congestion_controller()
-            == CongestionController::file
+        uses_file_congestion_control(options_.congestion_controller())
         ? session_.file_pacing_rate_bytes_per_second()
         : session_.live_pacing_rate_bytes_per_second();
     const std::size_t file_congestion_window =

@@ -62,6 +62,10 @@ bool parse_congestion_controller(
         controller = CongestionController::file;
         return true;
     }
+    if (name == "control-v1") {
+        controller = CongestionController::control;
+        return true;
+    }
     return false;
 }
 
