@@ -2580,7 +2580,10 @@ bool ConnectionRuntime::send_data(
         view.data.encryption_key =
             crypto_->active_sender_key();
     }
-    std::array<std::byte, 1500> datagram{};
+    // Clear/CTR encoding writes the complete submitted prefix. GCM writes
+    // its header, ciphertext and tag before submission; every failure returns
+    // without sending. The unused tail is never submitted.
+    std::array<std::byte, 1500> datagram;
     std::size_t datagram_size = 0U;
     if (authenticated_data && !encrypted_retransmission) {
         const auto budget =

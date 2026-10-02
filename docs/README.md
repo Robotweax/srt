@@ -62,6 +62,7 @@ and are not a source- or binary-compatibility contract.
 ## Transport features
 
 - [Encryption and key rotation](encryption.md)
+- [DATA send-buffer initialization](data-buffer-initialization.md)
 - [AES-GCM extension contract](aes-gcm-contract.md)
 - [File/Stream mode](file-mode.md)
 - [Reliable control-message profile](control-profile.md)
