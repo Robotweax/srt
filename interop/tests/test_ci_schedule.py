@@ -210,6 +210,60 @@ class ScheduledWorkflowTests(unittest.TestCase):
         self.assertIn("INTEGRATIONS_ONLY: ${{ inputs.integrations_only || false }}",
                       self.workflow)
 
+    def test_profile_branches_exclude_apps_on_manual_and_pr_runs(self):
+        step = self.workflow.split("      - name: Classify changed paths\n", 1)[1]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1].split(
+            "\n  dco:", 1)[0])
+        cases = [
+            ("workflow_dispatch", "branch", "dev/sensor-profile-verification", False),
+            ("workflow_dispatch", "branch", "dev/control-profile-verification", False),
+            ("pull_request", "branch", "dev/sensor-profile-integration-20261002", False),
+            ("pull_request", "branch", "dev/control-profile-integration-20261002", False),
+            ("workflow_dispatch", "branch", "main", True),
+            ("workflow_dispatch", "tag", "dev/sensor-profile-v1", True),
+        ]
+        for event, ref_type, branch, integrations in cases:
+            with self.subTest(event=event, branch=branch, ref_type=ref_type), \
+                    tempfile.TemporaryDirectory() as directory:
+                out = Path(directory) / "output"
+                summary = Path(directory) / "summary"
+                result = subprocess.run(["bash", "-c", script], cwd=ROOT,
+                    env={**os.environ, "INTEGRATIONS_ONLY": "false",
+                         "EVENT_NAME": event, "REF_TYPE": ref_type, "CI_BRANCH": branch,
+                         "EVIDENCE_RUN_ID": "", "BASE_SHA": "0" * 40, "HEAD_SHA": "HEAD",
+                         "RUNNER_TEMP": directory, "GITHUB_OUTPUT": str(out),
+                         "GITHUB_STEP_SUMMARY": str(summary)},
+                    capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                flags = dict(line.split("=", 1) for line in out.read_text().splitlines())
+                for name in ("ffmpeg", "gstreamer", "vlc", "obs", "obs_platforms"):
+                    self.assertEqual(flags[name], str(integrations).lower())
+                for name in ("core_tests", "package", "python", "debug", "shared",
+                             "sanitizers", "thread_sanitizer", "fuzz", "interop"):
+                    self.assertEqual(flags[name], "true")
+                if not integrations:
+                    self.assertIn("Sensor/Control profile CI", summary.read_text())
+
+    def test_profile_release_only_request_cannot_enable_apps(self):
+        step = self.workflow.split("      - name: Classify changed paths\n", 1)[1]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1].split(
+            "\n  dco:", 1)[0])
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "output"
+            summary = Path(directory) / "summary"
+            result = subprocess.run(["bash", "-c", script], cwd=ROOT,
+                env={**os.environ, "INTEGRATIONS_ONLY": "true",
+                     "EVENT_NAME": "workflow_dispatch", "REF_TYPE": "branch",
+                     "CI_BRANCH": "dev/control-profile-verification",
+                     "EVIDENCE_RUN_ID": "", "HEAD_SHA": SHA,
+                     "RUNNER_TEMP": directory, "GITHUB_OUTPUT": str(out),
+                     "GITHUB_STEP_SUMMARY": str(summary)},
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            flags = dict(line.split("=", 1) for line in out.read_text().splitlines())
+            self.assertFalse(any(value == "true" for key, value in flags.items()
+                                 if key != "docs_only"))
+
     def test_actual_classification_shell_skips_only_schedule_with_evidence(self):
         step = self.workflow.split("      - name: Classify changed paths\n", 1)[1]
         script = textwrap.dedent(step.split("        run: |\n", 1)[1].split(

@@ -116,6 +116,7 @@ jobs:
           INTEGRATIONS_ONLY: ${{ inputs.integrations_only || false }}
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
+          CI_BRANCH: ${{ github.head_ref || github.ref_name }}
           BASE_SHA: >-
             ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: >-
@@ -123,10 +124,18 @@ jobs:
           EVIDENCE_RUN_ID: ${{ steps.recent_full.outputs.evidence_run_id }}
         run: |
           set -euo pipefail
-          # Ecosystem builds run only on explicit full/release requests.
+          # Sensor/Control qualification excludes ecosystem applications even
+          # on manual full runs. Other branches retain explicit release suites.
+          profile_ci=false
+          if [[ "$REF_TYPE" == "branch" ]]; then
+            case "${CI_BRANCH:-}" in
+              dev/sensor-profile-*|dev/control-profile-*) profile_ci=true ;;
+            esac
+          fi
           integration_policy=()
-          if [[ "$EVENT_NAME" != "workflow_dispatch" && "$REF_TYPE" != "tag" \
-                && "${INTEGRATIONS_ONLY:-false}" != "true" ]]; then
+          if [[ "$profile_ci" == "true" ]] \
+              || [[ "$EVENT_NAME" != "workflow_dispatch" && "$REF_TYPE" != "tag" \
+                    && "${INTEGRATIONS_ONLY:-false}" != "true" ]]; then
             integration_policy=(--without-integrations)
           fi
           output_file="$RUNNER_TEMP/ci-classification.txt"
@@ -134,7 +143,7 @@ jobs:
           evidence_run_id="$EVIDENCE_RUN_ID"
           if [[ ! "$evidence_run_id" =~ ^[0-9]+$ ]]; then evidence_run_id=""; fi
           if [[ "${INTEGRATIONS_ONLY:-false}" == "true" ]]; then
-            python3 interop/ci_changes.py --integrations-only > "$output_file"
+            python3 interop/ci_changes.py --integrations-only "${integration_policy[@]-}" > "$output_file"
             : > "$changed_file"
           elif [[ "$EVENT_NAME" == "schedule" && "$evidence_run_id" =~ ^[0-9]+$ ]]; then
             python3 interop/ci_changes.py "${integration_policy[@]-}" > "$output_file"
@@ -174,6 +183,10 @@ jobs:
               echo "No changed paths."
             fi
             echo
+            if [[ "$profile_ci" == "true" ]]; then
+              echo "Sensor/Control profile CI: FFmpeg, GStreamer, VLC and OBS disabled."
+              echo
+            fi
             echo "| Gate | Enabled |"
             echo "| --- | --- |"
             while IFS='=' read -r gate enabled; do
