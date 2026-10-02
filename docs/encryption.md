@@ -268,14 +268,24 @@ has been unwrapped and accepted. Invalid fresh-salt requests therefore cannot
 evict the key used by normal rotations. In an established runtime, uncached
 (fresh-salt) KMREQs are admitted through a token bucket of four PBKDF2
 derivations per connection, refilled at one per 100 ms; rotations using the
-validated cached salt bypass that budget. A request whose salt was already
-seen (the peer retrying its announcement) uses a separate lane limited to one
-derivation per 100 ms, so a flood of distinct forged salts cannot starve the
-legitimate request indefinitely; the receiver remembers the last 256 salts
-for that purpose. KMREQ has no independent authentication before its wrapped
-keys are checked, so a peer-endpoint-matching sender can still delay a
-legitimate fresh-salt request by one retry interval, and an attacker who
-also repeats salts competes for the retry lane.
+validated cached salt bypass that budget. A request whose salt was recently
+seen uses a separate lane limited to one derivation per 100 ms. A fixed-size
+rotating Bloom filter remembers recent salts, including requests rejected by
+the bucket: three 100 ms windows of 32,768 bits (12 KiB of filter storage,
+allocated lazily on first fresh-salt admission) retain a candidate for
+200–300 ms after its latest observation. Packet-count churn
+does not evict entries within that interval; retries refresh it. An expired
+candidate is classified against the current filter and can be first-seen again.
+Filter lookup performs fixed work without further allocations. If initial
+bookkeeping allocation fails, the request is not derived and can be retried.
+
+This is a bounded, probabilistic mitigation, not a guarantee of timely key
+exchange under attack. Hash collisions or filter saturation may classify a
+new salt as a retry, so even a distinct-salt flood can compete for that lane.
+Repeated attacker salts also compete for it, and either can delay a legitimate
+request indefinitely. KMREQ has no independent authentication before its
+wrapped keys are checked; authenticated control packets are needed for a
+stronger security contract.
 
 
 ### Directional-key compatibility evidence

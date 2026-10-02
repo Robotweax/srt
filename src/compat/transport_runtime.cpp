@@ -2806,7 +2806,16 @@ ConnectionRuntime::receive_fec_packet(
 bool ConnectionRuntime::admit_fresh_salt_key_request(
     std::span<const std::byte> payload, std::uint64_t now) noexcept
 {
-    auto& admission = fresh_salt_admission_;
+    if (fresh_salt_admission_ == nullptr) {
+        try {
+            fresh_salt_admission_ = std::make_unique<FreshSaltAdmission>();
+        } catch (...) {
+            // Do not derive without a budget if bounded bookkeeping cannot
+            // be allocated. The peer can retry initialization later.
+            return false;
+        }
+    }
+    auto& admission = *fresh_salt_admission_;
     if (admission.last_refill_microseconds.has_value()
         && now >= *admission.last_refill_microseconds) {
         const std::uint64_t refills =
@@ -2832,13 +2841,51 @@ bool ConnectionRuntime::admit_fresh_salt_key_request(
             identity *= 0x0000'0100'0000'01b3ULL;
         }
     }
-    const bool repeated =
-        std::find(admission.salts.begin(), admission.salts.end(), identity)
-        != admission.salts.end();
+    // Avalanche the salt hash before slicing it into Bloom-filter positions;
+    // adjacent forged salts must not produce correlated high-bit positions.
+    identity = (identity ^ (identity >> 30U)) * 0xbf58'476d'1ce4'e5b9ULL;
+    identity = (identity ^ (identity >> 27U)) * 0x94d0'49bb'1331'11ebULL;
+    identity ^= identity >> 31U;
+    // Remember all recent requests, even ones denied by the token bucket.
+    // Three time windows preserve a candidate for at least two retry periods;
+    // packet-count churn cannot evict it. Work and storage stay fixed.
+    const auto epoch = now / FreshSaltAdmission::refill_interval_microseconds;
+    if (!admission.salt_epoch.has_value() || epoch < *admission.salt_epoch
+        || epoch - *admission.salt_epoch
+            >= FreshSaltAdmission::salt_window_count) {
+        for (auto& window : admission.salt_windows) {
+            window.fill(0U);
+        }
+    } else {
+        for (auto next = *admission.salt_epoch + 1U; next <= epoch; ++next) {
+            admission.salt_windows[next % FreshSaltAdmission::salt_window_count]
+                .fill(0U);
+        }
+    }
+    admission.salt_epoch = epoch;
+    std::array<std::size_t, 4> positions {};
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+        positions[index] = static_cast<std::size_t>((identity >> (index * 16U))
+            & (FreshSaltAdmission::salt_window_bits - 1U));
+    }
+    const bool repeated = std::any_of(admission.salt_windows.begin(),
+        admission.salt_windows.end(), [&](const auto& window) {
+            return std::all_of(
+                positions.begin(), positions.end(), [&](std::size_t position) {
+                    return (window[position / 64U]
+                               & (std::uint64_t {1} << (position % 64U)))
+                        != 0U;
+                });
+        });
+    auto& current =
+        admission.salt_windows[epoch % FreshSaltAdmission::salt_window_count];
+    for (const auto position : positions) {
+        current[position / 64U] |= std::uint64_t {1} << (position % 64U);
+    }
     if (repeated) {
         // A peer retries the same salt until it is answered. Give such a
-        // request its own rate-limited lane that first-seen salts cannot
-        // consume.
+        // request its own rate-limited lane. Filter false positives may
+        // also use this lane; it is a bounded mitigation, not authentication.
         if (admission.last_repeat_derivation_microseconds.has_value()
             && now >= *admission.last_repeat_derivation_microseconds
             && now - *admission.last_repeat_derivation_microseconds
@@ -2848,9 +2895,6 @@ bool ConnectionRuntime::admit_fresh_salt_key_request(
         admission.last_repeat_derivation_microseconds = now;
         return true;
     }
-    admission.salts[admission.next_salt] = identity;
-    admission.next_salt =
-        (admission.next_salt + 1U) % FreshSaltAdmission::remembered_salts;
     if (admission.tokens == 0U) {
         return false;
     }

@@ -730,19 +730,23 @@ private:
     // Admission of KMREQs that need a PBKDF2 derivation (fresh salt). The
     // derivation is the expensive, unauthenticated work a flood can target.
     // A token bucket bounds first-seen salts; a salt seen again (a peer
-    // retrying its request) uses a separate lane so a flood of distinct
-    // forged salts cannot starve the legitimate request indefinitely.
+    // retrying its request) uses a separate lane. A rotating Bloom filter
+    // retains recent candidates without packet-count-based eviction. False
+    // positives and saturation can still create retry-lane contention.
     struct FreshSaltAdmission {
         static constexpr std::uint64_t refill_interval_microseconds = 100'000;
         static constexpr std::uint32_t bucket_capacity = 4;
-        static constexpr std::size_t remembered_salts = 256;
+        static constexpr std::size_t salt_window_count = 3;
+        static constexpr std::size_t salt_window_bits = 32'768;
         std::uint32_t tokens = bucket_capacity;
         std::optional<std::uint64_t> last_refill_microseconds;
         std::optional<std::uint64_t> last_repeat_derivation_microseconds;
-        std::array<std::uint64_t, remembered_salts> salts {};
-        std::size_t next_salt = 0;
+        std::array<std::array<std::uint64_t, salt_window_bits / 64U>,
+            salt_window_count>
+            salt_windows {};
+        std::optional<std::uint64_t> salt_epoch;
     };
-    FreshSaltAdmission fresh_salt_admission_;
+    std::unique_ptr<FreshSaltAdmission> fresh_salt_admission_;
     [[nodiscard]] bool admit_fresh_salt_key_request(
         std::span<const std::byte> payload, std::uint64_t now) noexcept;
     NowFunction now_function_ = nullptr;
