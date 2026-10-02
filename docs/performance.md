@@ -23,6 +23,20 @@ fragmented receive losses to one compaction pass.
 [Bounded payload storage](payload-storage.md) separates packet metadata from
 reusable payload slots while preserving configured capacity.
 
+## Scheduler scaling scope
+
+A process-wide scheduler defaults to two worker shards. Each UDP channel keeps
+one fixed shard for receive dispatch and established-connection polling, including
+packet encryption and UDP sends. More application threads or more shards do not
+parallelize the protocol work of one shared listener. Multiple channels can use
+multiple shards; placement is round-robin by channel creation, not load-aware.
+The UDP channel also serializes sends with a channel-wide mutex.
+
+See [Scheduler shards and staged scaling](scheduler-shards.md) for bounded
+process configuration, reproducible comparisons and the connection-affinity
+investigation. Throughput limits must be reported with measured host and traffic
+conditions; extrapolating thread CPU is not a measured saturation limit.
+
 ## Comparative scorecard
 
 ### Send-buffer selection diagnostic

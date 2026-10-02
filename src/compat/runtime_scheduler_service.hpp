@@ -3,8 +3,15 @@
 #include "compat/runtime_scheduler.hpp"
 
 #include <memory>
+#include <optional>
+#include <string_view>
 
 namespace robotweax::srt::compat {
+
+// Strict decimal process-setting parser; no whitespace, signs or trailing
+// characters. The bound keeps worker count and preallocated storage finite.
+[[nodiscard]] std::optional<std::size_t> parse_runtime_scheduler_shards(
+    std::string_view value) noexcept;
 
 // Constructs the lifecycle owner early enough that socket-registry teardown
 // always precedes scheduler destruction. It does not start worker threads.
