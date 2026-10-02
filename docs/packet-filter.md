@@ -10,6 +10,22 @@ reliability policy.
 Configure `SRTO_PACKETFILTER` before `srt_bind`, `srt_listen`, or
 `srt_connect`. The supported grammar is:
 
+For the fixed sensor profile, applications can instead set
+`SRTO_TRANSTYPE=SRTT_SENSOR` on both endpoints before bind/connect. This
+selects the same `fec-sensor-v1,cols:4,rows:1,arq:never` filter and its
+low-latency Live/Message bundle in one call. An endpoint using the shorthand
+can connect to one configured with the exact filter string. The sensor type
+disables TSBPD, late-packet dropping, periodic NAK, and retransmission flags;
+its FEC recovery remains active. Switch back with `SRTT_LIVE` or `SRTT_FILE`
+before binding if the sensor filter is no longer wanted.
+
+```c
+SRT_TRANSTYPE type = SRTT_SENSOR;
+srt_setsockflag(socket, SRTO_TRANSTYPE, &type, sizeof(type));
+```
+
+For general FEC configurations, use:
+
 ```text
 fec,cols:N[,rows:N][,layout:even|staircase][,arq:never|onreq|always]
 ```

@@ -327,7 +327,9 @@ public:
     [[nodiscard]] ReceivedMessageResult pop_message(
         std::span<std::byte> destination) noexcept
     {
-        return receive_buffer_.pop_message(destination);
+        return packet_filter_policy_.sensor_profile()
+            ? receive_buffer_.pop_message_unordered(destination)
+            : receive_buffer_.pop_message(destination);
     }
     [[nodiscard]] ReceivedMessageResult pop_stream(
         std::span<std::byte> destination) noexcept
@@ -364,6 +366,10 @@ public:
     [[nodiscard]] ReliabilityProcessResult
     drop_too_late_receiver(
         std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] ReliabilityProcessResult expire_sensor_receive_gaps(
+        std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] std::optional<std::uint64_t>
+    next_sensor_receive_gap_deadline() const noexcept;
     [[nodiscard]] bool data_ready_at(
         std::uint64_t now_microseconds) noexcept
     {
@@ -408,6 +414,8 @@ public:
     [[nodiscard]] ReliabilityActions drop_expired_sender_message(
         std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] ReliabilityActions take_pending_drop_requests() noexcept;
+    [[nodiscard]] std::optional<std::uint64_t>
+    next_sender_retirement_deadline() const noexcept;
     [[nodiscard]] bool has_pending_drop_requests() noexcept
     {
         return send_buffer_.has_pending_drop_request();
@@ -548,6 +556,7 @@ private:
     bool peer_periodic_nak_ = false;
     bool drift_tracer_enabled_ = true;
     PacketFilterPolicy packet_filter_policy_{};
+    std::uint64_t next_sensor_retirement_repeat_microseconds_ = 0;
     std::uint64_t drift_correction_count_ = 0;
     std::int64_t total_drift_correction_microseconds_ = 0;
     std::uint32_t peer_socket_id_ = 0;
