@@ -411,9 +411,12 @@ int get_socket_option(
     case SRTO_SENDER:
         return write_value(value, value_size, options.data_sender);
     case SRTO_TRANSTYPE:
-        return write_value(
-            value, value_size,
-            static_cast<std::int32_t>(options.transmission_type));
+        return write_value(value, value_size,
+            static_cast<std::int32_t>(
+                socket.native_options.packet_filter_configuration()
+                        .sensor_profile()
+                    ? SRTT_SENSOR
+                    : options.transmission_type));
     case SRTO_RETRANSMITALGO:
         return write_value(
             value, value_size, options.retransmission_algorithm);
@@ -1008,25 +1011,49 @@ int set_socket_option(
         std::int32_t parsed = 0;
         if (!read_value(value, value_size, parsed)
             || (parsed != static_cast<std::int32_t>(SRTT_LIVE)
-                && parsed != static_cast<std::int32_t>(SRTT_FILE))) {
+                && parsed != static_cast<std::int32_t>(SRTT_FILE)
+                && parsed != static_cast<std::int32_t>(SRTT_SENSOR)
+                && parsed != static_cast<std::int32_t>(SRTT_CONTROL))) {
             return invalid_parameter();
         }
-        if (set_native(socket.native_options,
-                SocketOption::transmission_type, parsed)
-            == SRT_ERROR) {
-            return SRT_ERROR;
+        SocketOptions selected = socket.native_options;
+        if (selected.packet_filter_configuration().sensor_profile()
+            && parsed != static_cast<std::int32_t>(SRTT_SENSOR)
+            && selected.set_packet_filter({}) != Error::none) {
+            return invalid_parameter();
         }
+        if (parsed == static_cast<std::int32_t>(SRTT_CONTROL)
+            && selected.packet_filter_configuration().enabled
+            && selected.set_packet_filter({}) != Error::none) {
+            return invalid_parameter();
+        }
+        const std::int32_t base_type =
+            parsed == static_cast<std::int32_t>(SRTT_SENSOR)
+            ? static_cast<std::int32_t>(SRTT_LIVE)
+            : parsed == static_cast<std::int32_t>(SRTT_CONTROL)
+            ? static_cast<std::int32_t>(TransmissionType::control)
+            : parsed;
+        if (selected.set(SocketOption::transmission_type, base_type)
+                != Error::none
+            || (parsed == static_cast<std::int32_t>(SRTT_SENSOR)
+                && selected.set_packet_filter(sensor_profile_filter_v1)
+                    != Error::none)) {
+            return invalid_parameter();
+        }
+        socket.native_options = selected;
         options.transmission_type =
             static_cast<SRT_TRANSTYPE>(parsed);
-        if (options.transmission_type == SRTT_LIVE) {
-            options.tsbpd_mode = true;
+        if (options.transmission_type == SRTT_LIVE
+            || options.transmission_type == SRTT_SENSOR) {
+            const bool sensor = options.transmission_type == SRTT_SENSOR;
+            options.tsbpd_mode = !sensor;
             options.receiver_latency_milliseconds = 120;
             options.peer_latency_milliseconds = 0;
-            options.too_late_packet_drop = true;
+            options.too_late_packet_drop = !sensor;
             options.sender_drop_delay_milliseconds = 0;
             options.message_api = true;
-            options.periodic_nak = true;
-            options.retransmission_algorithm = 1;
+            options.periodic_nak = !sensor;
+            options.retransmission_algorithm = sensor ? 0 : 1;
             options.maximum_payload_size =
                 static_cast<std::int32_t>(
                     socket.native_options
@@ -1034,12 +1061,13 @@ int set_socket_option(
             options.linger_enabled = false;
             options.linger_seconds = 0;
         } else {
+            const bool control = options.transmission_type == SRTT_CONTROL;
             options.tsbpd_mode = false;
             options.receiver_latency_milliseconds = 0;
             options.peer_latency_milliseconds = 0;
             options.too_late_packet_drop = false;
             options.sender_drop_delay_milliseconds = -1;
-            options.message_api = false;
+            options.message_api = control;
             options.periodic_nak = false;
             options.retransmission_algorithm = 0;
             options.maximum_payload_size =
@@ -1058,14 +1086,33 @@ int set_socket_option(
         const std::string_view configuration{
             static_cast<const char*>(value),
             static_cast<std::size_t>(value_size)};
+        if (socket.native_options.packet_filter_configuration().sensor_profile()
+            && configuration != sensor_profile_filter_v1) {
+            return invalid_parameter();
+        }
         if (socket.native_options.set_packet_filter(
                 configuration) != Error::none) {
             return invalid_parameter();
+        }
+        if (socket.native_options.packet_filter_configuration()
+                .sensor_profile()) {
+            options.transmission_type = SRTT_SENSOR;
         }
         options.maximum_payload_size =
             static_cast<std::int32_t>(
                 socket.native_options
                     .maximum_payload_size());
+        options.tsbpd_mode =
+            socket.native_options.get(SocketOption::tsbpd_mode).value != 0;
+        options.too_late_packet_drop =
+            socket.native_options.get(SocketOption::too_late_packet_drop).value
+            != 0;
+        options.message_api =
+            socket.native_options.get(SocketOption::message_api).value != 0;
+        options.periodic_nak =
+            socket.native_options.get(SocketOption::periodic_nak).value != 0;
+        options.retransmission_algorithm = static_cast<std::int32_t>(
+            socket.native_options.get(SocketOption::retransmit_flag).value);
         return 0;
     }
     case SRTO_RETRANSMITALGO: {

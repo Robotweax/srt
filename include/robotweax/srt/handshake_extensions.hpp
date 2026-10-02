@@ -31,7 +31,16 @@ enum class HandshakeExtensionType : std::uint16_t {
 enum class CongestionController : std::uint8_t {
     live = 0,
     file = 1,
+    // control-v1 uses FileCC but carries a distinct bilateral wire identity.
+    control = 2,
 };
+
+[[nodiscard]] constexpr bool uses_file_congestion_control(
+    CongestionController controller) noexcept
+{
+    return controller == CongestionController::file
+        || controller == CongestionController::control;
+}
 
 [[nodiscard]] constexpr std::string_view congestion_controller_name(
     CongestionController controller) noexcept
@@ -41,6 +50,8 @@ enum class CongestionController : std::uint8_t {
         return "live";
     case CongestionController::file:
         return "file";
+    case CongestionController::control:
+        return "control-v1";
     }
     return {};
 }

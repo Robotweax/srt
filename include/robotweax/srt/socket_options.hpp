@@ -24,6 +24,7 @@ inline constexpr std::size_t ipv6_srt_packet_overhead = 64;
 enum class TransmissionType : std::uint8_t {
     live = 0,
     file = 1,
+    control = 2,
 };
 
 // Public options for every transport feature currently implemented by Robotweax.
@@ -128,6 +129,10 @@ public:
     {
         return transmission_type_;
     }
+    [[nodiscard]] bool control_profile() const noexcept
+    {
+        return transmission_type_ == TransmissionType::control;
+    }
     [[nodiscard]] CongestionController
     congestion_controller() const noexcept
     {
@@ -216,6 +221,7 @@ public:
         IpAddressFamily family) noexcept;
 
 private:
+    void apply_sensor_profile_bundle() noexcept;
 #ifdef ENABLE_AEAD_API_PREVIEW
     [[nodiscard]] bool supports_aes_gcm_transport_bundle(
         TransmissionType transmission_type,

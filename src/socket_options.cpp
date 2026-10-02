@@ -13,6 +13,17 @@ namespace {
 
 } // namespace
 
+void SocketOptions::apply_sensor_profile_bundle() noexcept
+{
+    transmission_type_ = TransmissionType::live;
+    congestion_controller_ = CongestionController::live;
+    tsbpd_mode_ = false;
+    too_late_packet_drop_ = false;
+    message_api_ = true;
+    periodic_nak_ = false;
+    retransmit_flag_ = false;
+}
+
 #ifdef ENABLE_AEAD_API_PREVIEW
 bool SocketOptions::supports_aes_gcm_transport_bundle(
     TransmissionType transmission_type,
@@ -80,6 +91,9 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         if (value < -1 || value > std::numeric_limits<std::int32_t>::max()) {
             return Error::invalid_state;
         }
+        if (control_profile() && value != -1) {
+            return Error::invalid_state;
+        }
         sender_drop_delay_milliseconds_ = static_cast<std::int32_t>(value);
         return Error::none;
     case SocketOption::drift_tracer:
@@ -88,6 +102,10 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         return Error::none;
     case SocketOption::tsbpd_mode:
         if (!is_boolean(value)) return Error::invalid_state;
+        if ((packet_filter_configuration_.sensor_profile() || control_profile())
+            && value != 0) {
+            return Error::invalid_state;
+        }
 #ifdef ENABLE_AEAD_API_PREVIEW
         if (crypto_mode_ == CryptoMode::aes_gcm
             && !supports_aes_gcm_transport_bundle(transmission_type_,
@@ -99,14 +117,26 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         return Error::none;
     case SocketOption::too_late_packet_drop:
         if (!is_boolean(value)) return Error::invalid_state;
+        if ((packet_filter_configuration_.sensor_profile() || control_profile())
+            && value != 0) {
+            return Error::invalid_state;
+        }
         too_late_packet_drop_ = value != 0;
         return Error::none;
     case SocketOption::periodic_nak:
         if (!is_boolean(value)) return Error::invalid_state;
+        if ((packet_filter_configuration_.sensor_profile() || control_profile())
+            && value != 0) {
+            return Error::invalid_state;
+        }
         periodic_nak_ = value != 0;
         return Error::none;
     case SocketOption::retransmit_flag:
         if (!is_boolean(value)) return Error::invalid_state;
+        if ((packet_filter_configuration_.sensor_profile() || control_profile())
+            && value != 0) {
+            return Error::invalid_state;
+        }
         retransmit_flag_ = value != 0;
         return Error::none;
     case SocketOption::maximum_reorder_tolerance_packets:
@@ -212,6 +242,10 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         return Error::none;
     case SocketOption::message_api:
         if (!is_boolean(value)) return Error::invalid_state;
+        if ((packet_filter_configuration_.sensor_profile() || control_profile())
+            && value == 0) {
+            return Error::invalid_state;
+        }
 #ifdef ENABLE_AEAD_API_PREVIEW
         if (crypto_mode_ == CryptoMode::aes_gcm
             && !supports_aes_gcm_transport_bundle(transmission_type_,
@@ -237,9 +271,15 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
             maximum_payload_size_ = std::min(
                 requested_maximum_payload_size_,
                 maximum_payload_size_limit());
+            if (packet_filter_configuration_.sensor_profile()) {
+                apply_sensor_profile_bundle();
+            }
             return Error::none;
         }
         if (value == static_cast<std::int64_t>(TransmissionType::file)) {
+            if (packet_filter_configuration_.sensor_profile()) {
+                return Error::invalid_state;
+            }
 #ifdef ENABLE_AEAD_API_PREVIEW
             if (crypto_mode_ == CryptoMode::aes_gcm
                 && packet_filter_configuration_.enabled) {
@@ -265,12 +305,44 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
                 maximum_payload_size_limit());
             return Error::none;
         }
+        if (value == static_cast<std::int64_t>(TransmissionType::control)) {
+            if (packet_filter_configuration_.enabled) {
+                return Error::invalid_state;
+            }
+#ifdef ENABLE_AEAD_API_PREVIEW
+            if (crypto_mode_ == CryptoMode::aes_gcm) {
+                return Error::invalid_state;
+            }
+#endif
+            transmission_type_ = TransmissionType::control;
+            congestion_controller_ = CongestionController::control;
+            tsbpd_mode_ = false;
+            receiver_latency_milliseconds_ = 0;
+            peer_latency_milliseconds_ = 0;
+            too_late_packet_drop_ = false;
+            sender_drop_delay_milliseconds_ = -1;
+            message_api_ = true;
+            periodic_nak_ = false;
+            retransmit_flag_ = false;
+            requested_maximum_payload_size_ = maximum_data_payload_size;
+            maximum_payload_size_ = std::min(
+                requested_maximum_payload_size_, maximum_payload_size_limit());
+            return Error::none;
+        }
         return Error::invalid_state;
     case SocketOption::congestion_controller:
         if (value == static_cast<std::int64_t>(
                 CongestionController::live)
             || value == static_cast<std::int64_t>(
                 CongestionController::file)) {
+            if (packet_filter_configuration_.sensor_profile()
+                && value
+                    != static_cast<std::int64_t>(CongestionController::live)) {
+                return Error::invalid_state;
+            }
+            if (control_profile()) {
+                return Error::invalid_state;
+            }
 #ifdef ENABLE_AEAD_API_PREVIEW
             if (crypto_mode_ == CryptoMode::aes_gcm
                 && !supports_aes_gcm_transport_bundle(transmission_type_,
@@ -372,13 +444,26 @@ Error SocketOptions::set_passphrase(
 Error SocketOptions::set_packet_filter(
     std::string_view configuration) noexcept
 {
+    if (control_profile() && !configuration.empty()) {
+        return Error::invalid_state;
+    }
     const auto parsed =
         parse_packet_filter_configuration(
             configuration);
     if (!parsed) {
         return parsed.error;
     }
+    if (parsed.configuration.sensor_profile()
+        && (transmission_type_ != TransmissionType::live
+            || congestion_controller_ != CongestionController::live
+            || !message_api_)) {
+        return Error::invalid_state;
+    }
 #ifdef ENABLE_AEAD_API_PREVIEW
+    if (parsed.configuration.sensor_profile()
+        && crypto_mode_ == CryptoMode::aes_gcm) {
+        return Error::invalid_state;
+    }
     if (parsed.configuration.enabled && crypto_mode_ == CryptoMode::aes_gcm
         && (transmission_type_ != TransmissionType::live
             || congestion_controller_ != CongestionController::live
@@ -388,6 +473,9 @@ Error SocketOptions::set_packet_filter(
 #endif
     packet_filter_configuration_ =
         parsed.configuration;
+    if (packet_filter_configuration_.sensor_profile()) {
+        apply_sensor_profile_bundle();
+    }
     maximum_payload_size_ = std::min(
         requested_maximum_payload_size_,
         maximum_payload_size_limit());
@@ -400,6 +488,13 @@ Error SocketOptions::set_congestion_controller(
     CongestionController parsed =
         CongestionController::live;
     if (!parse_congestion_controller(name, parsed)) {
+        return Error::invalid_state;
+    }
+    if (packet_filter_configuration_.sensor_profile()
+        && parsed != CongestionController::live) {
+        return Error::invalid_state;
+    }
+    if (control_profile() || parsed == CongestionController::control) {
         return Error::invalid_state;
     }
 #ifdef ENABLE_AEAD_API_PREVIEW
@@ -418,6 +513,9 @@ void SocketOptions::set_effective_packet_filter(
         configuration) noexcept
 {
     packet_filter_configuration_ = configuration;
+    if (packet_filter_configuration_.sensor_profile()) {
+        apply_sensor_profile_bundle();
+    }
     maximum_payload_size_ = std::min(
         requested_maximum_payload_size_,
         maximum_payload_size_limit());

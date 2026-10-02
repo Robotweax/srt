@@ -1447,8 +1447,8 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
         configuration.efficient_retransmission,
         configuration.negotiated_options.peer_periodic_nak
             || configuration.negotiated_options.periodic_nak);
-    if (configuration.options.congestion_controller()
-        == CongestionController::file) {
+    if (uses_file_congestion_control(
+            configuration.options.congestion_controller())) {
         const auto maximum_bandwidth = configuration.options.get(
             SocketOption::maximum_bandwidth_bytes_per_second);
         session_.configure_file(
@@ -1612,6 +1612,10 @@ MessageIoResult ConnectionRuntime::queue_message(
     std::int32_t ttl_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    if (options_.control_profile() && ttl_milliseconds >= 0) {
+        return {.status = MessageIoStatus::invalid_state};
+    }
+    in_order = in_order || options_.control_profile();
     const bool has_deadline = timeout_milliseconds >= 0;
     const Clock::time_point deadline = has_deadline
         ? Clock::now() + std::chrono::milliseconds{timeout_milliseconds}
@@ -1698,6 +1702,10 @@ MessageIoResult ConnectionRuntime::queue_group_message(
     std::int32_t ttl_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    if (options_.control_profile() && ttl_milliseconds >= 0) {
+        return {.status = MessageIoStatus::invalid_state};
+    }
+    in_order = in_order || options_.control_profile();
     if (locally_closed_) {
         return {.status = MessageIoStatus::local_closed};
     }
@@ -1889,7 +1897,10 @@ ConnectionRuntime::next_readable_message_sequence() noexcept
     if (!session_.message_ready_at(now)) {
         return std::nullopt;
     }
-    return session_.receive_buffer().first_stored_sequence();
+    const auto message = session_.receive_buffer().first_complete_message();
+    return message.has_value()
+        ? std::optional<SequenceNumber> {message->first_sequence}
+        : std::nullopt;
 }
 
 SequenceNumber ConnectionRuntime::receive_floor_sequence() noexcept
@@ -2145,6 +2156,29 @@ MessageIoResult ConnectionRuntime::receive_stream(
 bool ConnectionRuntime::service_receiver_tlpktdrop_locked(
     std::uint64_t now) noexcept
 {
+    const auto expired_sensor_gaps = session_.expire_sensor_receive_gaps(now);
+    if (!expired_sensor_gaps) {
+        break_locked(0);
+        return false;
+    }
+    if (expired_sensor_gaps.receiver_drop_packets != 0U) {
+        std::size_t average_payload =
+            statistics_.average_received_payload_bytes();
+        if (average_payload == 0U) {
+            average_payload = options_.maximum_payload_size();
+        }
+        statistics_.note_receiver_drop(
+            expired_sensor_gaps.receiver_drop_packets,
+            saturated_multiply(
+                expired_sensor_gaps.receiver_drop_packets, average_payload));
+        sample_receiver_buffer_statistics(now);
+        if (!send_actions(expired_sensor_gaps.actions, now)) {
+            return false;
+        }
+        receive_ready_.notify_all();
+        ReadinessSignal::notify();
+    }
+
     const auto dropped =
         session_.drop_too_late_receiver(now);
     if (!dropped) {
@@ -3736,6 +3770,26 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         && crypto_->enabled() && !crypto_->ready_to_send_data();
     const bool paced_work =
         filter_pending || (pending && !flow_blocked && !crypto_blocked);
+    const std::uint64_t current = now_microseconds();
+    auto retirement_deadline = session_.next_sender_retirement_deadline();
+    const auto receive_gap_deadline =
+        session_.next_sensor_receive_gap_deadline();
+    if (receive_gap_deadline.has_value()
+        && (!retirement_deadline.has_value()
+            || *receive_gap_deadline < *retirement_deadline)) {
+        retirement_deadline = receive_gap_deadline;
+    }
+    std::optional<std::chrono::microseconds> retirement_delay;
+    if (retirement_deadline.has_value()) {
+        if (*retirement_deadline <= current) {
+            return {
+                .immediate_work = true,
+                .next_work_delay = std::nullopt,
+            };
+        }
+        retirement_delay =
+            std::chrono::microseconds {*retirement_deadline - current};
+    }
 #ifdef ENABLE_MAXREXMITBW
     if (!filter_pending && !retransmission
         && session_.has_pending_retransmission()
@@ -3743,7 +3797,6 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             || flow_blocked || crypto_blocked)) {
         const auto candidate = session_.peek_retransmission_packet();
         if (candidate.has_value()) {
-            const auto current = now_microseconds();
             const auto wait = retransmission_budget_.delay(
                 packet_header_size + candidate->payload.size(), current);
             if (wait.has_value() && *wait != 0) {
@@ -3760,21 +3813,25 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     }
 #endif
     if (!paced_work) {
-        // Start conservatively: buffered DATA, receive delivery/drop work and
-        // pending key exchanges retain the established short polling path.
+        // Buffered DATA, receive delivery/drop work and pending key exchanges
+        // retain the short polling path. Sensor retirement still bounds it.
         if (!session_.idle_for_receive_wait()
             || session_.next_receive_delivery_time().has_value()
             || (crypto_ != nullptr
                 && !crypto_->pending_key_material().empty())) {
-            return {};
+            return {.next_work_delay = retirement_delay};
         }
-        const auto current = now_microseconds();
         const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
         const auto timeout = last_peer_activity_microseconds_
             + std::min(peer_idle_timeout_microseconds_ + 1U,
                 maximum - last_peer_activity_microseconds_);
-        const auto deadline =
+        auto deadline =
             std::min(timeout, session_.next_control_deadline(current));
+        // Delivered sensor markers and pending DROPREQs can outlive all
+        // payloads. Socket readiness alone must not postpone their deadlines.
+        if (retirement_deadline.has_value()) {
+            deadline = std::min(deadline, *retirement_deadline);
+        }
         const auto remaining = deadline > current ? deadline - current : 0U;
         return {.next_work_delay =
                     std::chrono::microseconds {
@@ -3782,7 +3839,6 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             .receive_wait_safe = true};
     }
 
-    const std::uint64_t current = now_microseconds();
     const PaceDecision pace = pacer_.query(current,
         filter_pending || retransmission
             ? 0U
@@ -3793,14 +3849,14 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             .next_work_delay = std::nullopt,
         };
     }
+    const auto next_ready = retirement_deadline.has_value()
+        ? std::min(pace.next_ready_microseconds, *retirement_deadline)
+        : pace.next_ready_microseconds;
     return {
-        .next_work_delay =
-            std::chrono::microseconds {pace.next_ready_microseconds - current},
+        .next_work_delay = std::chrono::microseconds {next_ready - current},
         .next_work_deadline = now_function_ == nullptr
-            ? deadline_from_origin_microseconds(
-                  origin_, pace.next_ready_microseconds)
-            : deadline_after_relative_microseconds(
-                  current, pace.next_ready_microseconds),
+            ? deadline_from_origin_microseconds(origin_, next_ready)
+            : deadline_after_relative_microseconds(current, next_ready),
     };
 }
 
@@ -4228,8 +4284,7 @@ RuntimeStatisticsSnapshot ConnectionRuntime::statistics(
             / 1'000'000.0
         : 0.0;
     const std::uint64_t pacing_rate =
-        options_.congestion_controller()
-            == CongestionController::file
+        uses_file_congestion_control(options_.congestion_controller())
         ? session_.file_pacing_rate_bytes_per_second()
         : session_.live_pacing_rate_bytes_per_second();
     const std::size_t file_congestion_window =

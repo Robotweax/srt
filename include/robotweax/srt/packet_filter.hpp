@@ -12,6 +12,8 @@ namespace robotweax::srt {
 
 inline constexpr std::size_t maximum_packet_filter_configuration_size = 512;
 inline constexpr std::size_t fec_filter_header_size = 4;
+inline constexpr std::string_view sensor_profile_filter_v1 =
+    "fec-sensor-v1,cols:4,rows:1,arq:never";
 
 struct FecControlHeader {
     std::int8_t group_index = -1;
@@ -72,6 +74,13 @@ struct PacketFilterConfiguration {
     {
         // The returned view aliases this configuration object.
         return {text.data(), text_size};
+    }
+
+    [[nodiscard]] constexpr bool sensor_profile() const noexcept
+    {
+        // Identity remains in the negotiated filter string, avoiding any
+        // data-layout change to this existing public C++ configuration type.
+        return view().starts_with("fec-sensor-v1,");
     }
 
     [[nodiscard]] constexpr std::size_t extra_header_size() const noexcept
@@ -136,6 +145,11 @@ public:
     [[nodiscard]] constexpr bool enabled() const noexcept
     {
         return configuration_.enabled;
+    }
+
+    [[nodiscard]] constexpr bool sensor_profile() const noexcept
+    {
+        return configuration_.sensor_profile();
     }
 
     [[nodiscard]] constexpr PacketFilterArqLevel
