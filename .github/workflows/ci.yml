@@ -1033,15 +1033,34 @@ jobs:
           --output-on-failure
           --timeout 120
 
+      # Native tests require internal symbols unavailable in shared builds.
+      - name: Configure static retransmission limit profile
+        if: needs.changes.outputs.aead_platform == 'true'
+        run: >-
+          cmake -S . -B build-maxrexmit-static
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SHARED_LIBS=OFF
+          -DENABLE_AEAD_API_PREVIEW=ON
+          -DENABLE_MAXREXMITBW=ON
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
+      - name: Build static retransmission limit tests
+        if: needs.changes.outputs.aead_platform == 'true'
+        run: >-
+          cmake --build build-maxrexmit-static
+          --config Release
+          --parallel
+          --target robotweax_srt_tests
       - name: Test optional retransmission limit
         if: needs.changes.outputs.aead_platform == 'true'
         run: >-
-          ctest --test-dir build-aead-shared
+          ctest --test-dir build-maxrexmit-static
           -C Release
-          -R robotweax_srt_tests
+          -R "^robotweax_srt_tests$"
           --no-tests=error
           --output-on-failure
           --timeout 120
+
   sanitizers:
     name: Address/undefined sanitizers
     needs: changes
