@@ -73,6 +73,15 @@ The payload ceiling depends on MSS, address family, encryption mode, and FEC
 overhead. A 1,316-byte application message is a common seven-times-188-byte
 MPEG-TS profile, not a protocol limit.
 
+`SRTO_PAYLOADSIZE` is not negotiated. The receiver sizes its recovery buffers
+from its own option and clips peer source and control payloads to that size,
+as the reference implementation does: a peer with a smaller payload size is
+zero padded and recovers normally; a peer with a larger payload size still has
+its groups tracked, but a missing packet longer than the local buffer cannot
+be rebuilt and is reported through group expiry for ARQ (`arq:onreq` or
+`always`). Configure the same `SRTO_PAYLOADSIZE` on both peers for full FEC
+recovery.
+
 ## Resource model
 
 Decoder storage is determined at construction by the local receive-window

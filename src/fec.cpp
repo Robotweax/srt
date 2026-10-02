@@ -171,6 +171,20 @@ void xor_payload(
     }
 }
 
+// A peer's SRTO_PAYLOADSIZE is not negotiated, so its source and control
+// payloads may be shorter or longer than the local recovery buffer. The
+// reference receiver clips both to its own buffer: shorter payloads are
+// implicitly zero padded, longer ones lose their tail and the group can
+// then only report, not rebuild, a missing packet. Rejecting the packets
+// instead would leave the group untracked and, with arq:onreq, suppress
+// every loss report for that group.
+[[nodiscard]] std::span<const std::byte> clip_to_recovery(
+    std::span<const std::byte> payload,
+    std::size_t maximum_payload_size) noexcept
+{
+    return payload.first(std::min(payload.size(), maximum_payload_size));
+}
+
 [[nodiscard]] std::uint8_t encryption_flag(
     EncryptionKey key) noexcept
 {
@@ -608,7 +622,7 @@ void RowFecDecoder::clip_source(
     }
     group.in_order = packet.data.in_order;
     xor_payload(recovery_payload(group),
-        packet.payload);
+        clip_to_recovery(packet.payload, maximum_payload_size_));
     ++group.collected;
 }
 
@@ -616,9 +630,7 @@ Error RowFecDecoder::clip_control(
     Group& group, const PacketView& packet,
     const FecControlDecodeResult& control) noexcept
 {
-    if (control.header.group_index != -1
-        || control.payload_recovery.size()
-            != maximum_payload_size_) {
+    if (control.header.group_index != -1) {
         return Error::invalid_control_payload;
     }
     if (group.has_control) {
@@ -633,7 +645,7 @@ Error RowFecDecoder::clip_control(
     group.destination_socket_id =
         packet.data.destination_socket_id;
     xor_payload(recovery_payload(group),
-        control.payload_recovery);
+        clip_to_recovery(control.payload_recovery, maximum_payload_size_));
     group.has_control = true;
     return Error::none;
 }
@@ -646,10 +658,15 @@ RowFecReceiveResult RowFecDecoder::try_reconstruct(
         return {};
     }
     if (group.missing_position_xor >= columns_
-        || group.length_recovery > maximum_payload_size_
         || group.flags_recovery > 3U || !group.has_message_anchor
         || group.message_anchor_number == 0U) {
         return {.error = Error::invalid_control_payload};
+    }
+    if (group.length_recovery > maximum_payload_size_) {
+        // The missing packet was longer than the local recovery buffer
+        // (peer SRTO_PAYLOADSIZE above ours). Its tail was clipped, so it
+        // cannot be rebuilt; row expiry reports it for ARQ instead.
+        return {};
     }
 
     const std::uint64_t missing_index =
@@ -823,10 +840,7 @@ RowFecReceiveResult RowFecDecoder::receive(const PacketView& wire_packet,
         const auto control =
             decode_fec_control_payload(
                 wire_packet.payload);
-        if (!control
-            || control.header.group_index != -1
-            || control.payload_recovery.size()
-                != maximum_payload_size_) {
+        if (!control || control.header.group_index != -1) {
             return {
                 .error =
                     Error::invalid_control_payload,
@@ -869,10 +883,6 @@ RowFecReceiveResult RowFecDecoder::receive(const PacketView& wire_packet,
         return finish_result(result);
     }
 
-    if (wire_packet.payload.size()
-        > maximum_payload_size_) {
-        return {.error = Error::invalid_packet_type};
-    }
     const auto index = unwrap(wire_packet.data.sequence, true, receive_floor);
     if (!index.has_value()) {
         return {};
@@ -1500,9 +1510,8 @@ void ColumnFecDecoder::clip_source(
         group.has_message_anchor = true;
     }
     group.in_order = packet.data.in_order;
-    xor_payload(
-        recovery_payload(group),
-        packet.payload);
+    xor_payload(recovery_payload(group),
+        clip_to_recovery(packet.payload, maximum_payload_size_));
     ++group.collected;
 }
 
@@ -1512,11 +1521,8 @@ Error ColumnFecDecoder::clip_control(
     const FecControlDecodeResult& control) noexcept
 {
     if (control.header.group_index < 0
-        || static_cast<std::uint32_t>(
-               control.header.group_index)
-            != group.column
-        || control.payload_recovery.size()
-            != maximum_payload_size_) {
+        || static_cast<std::uint32_t>(control.header.group_index)
+            != group.column) {
         return Error::invalid_control_payload;
     }
     if (group.has_control) {
@@ -1530,9 +1536,8 @@ Error ColumnFecDecoder::clip_control(
         packet.data.timestamp.value();
     group.destination_socket_id =
         packet.data.destination_socket_id;
-    xor_payload(
-        recovery_payload(group),
-        control.payload_recovery);
+    xor_payload(recovery_payload(group),
+        clip_to_recovery(control.payload_recovery, maximum_payload_size_));
     group.has_control = true;
     return Error::none;
 }
@@ -1549,12 +1554,15 @@ ColumnFecDecoder::try_reconstruct(
         return {};
     }
     if (group.missing_position_xor >= rows_
-        || group.length_recovery > maximum_payload_size_
         || group.flags_recovery > 3U || !group.has_message_anchor
         || group.message_anchor_number == 0U) {
         return {
             .error =
                 Error::invalid_control_payload};
+    }
+    if (group.length_recovery > maximum_payload_size_) {
+        // Clipped missing packet (see RowFecDecoder::try_reconstruct).
+        return {};
     }
     const std::uint64_t missing_index =
         location.base_index
@@ -1802,13 +1810,9 @@ ColumnFecReceiveResult ColumnFecDecoder::receive(const PacketView& wire_packet,
         const auto control =
             decode_fec_control_payload(
                 wire_packet.payload);
-        if (!control
-            || control.header.group_index < 0
-            || static_cast<std::uint32_t>(
-                   control.header.group_index)
-                >= columns_
-            || control.payload_recovery.size()
-                != maximum_payload_size_) {
+        if (!control || control.header.group_index < 0
+            || static_cast<std::uint32_t>(control.header.group_index)
+                >= columns_) {
             return {
                 .error =
                     Error::invalid_control_payload,
@@ -1867,11 +1871,6 @@ ColumnFecReceiveResult ColumnFecDecoder::receive(const PacketView& wire_packet,
         return finish_result(result);
     }
 
-    if (wire_packet.payload.size()
-        > maximum_payload_size_) {
-        return {
-            .error = Error::invalid_packet_type};
-    }
     const auto index = unwrap(wire_packet.data.sequence, true, receive_floor);
     if (!index.has_value()) {
         return finish_result();
