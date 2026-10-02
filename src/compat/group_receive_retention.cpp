@@ -27,30 +27,37 @@ std::uint64_t GroupReceiveRetention::delivery(RetainedGroupReceiveBatch& batch,
         : 0U;
 }
 
-void GroupReceiveRetention::fail_locked() noexcept
+void GroupReceiveRetention::drop_batch_locked(std::size_t index) noexcept
 {
-    batches_.clear();
-    packets_ = 0;
-    bytes_ = 0;
-    if (!failed_) {
-        failed_ = true;
-        if (const auto source = source_.lock()) {
-            ReadinessSignal::notify(*source);
-        }
+    auto& batch = batches_[index];
+    for (const auto& message : batch.copies.messages) {
+        packets_ -= static_cast<std::size_t>(
+            message.next_sequence.distance_from(message.first_sequence));
+        bytes_ -= message.payload.size();
     }
+    batches_.erase(batches_.begin() + static_cast<std::ptrdiff_t>(index));
 }
 
 void GroupReceiveRetention::expire_locked() noexcept
 {
-    for (const auto& batch : batches_) {
+    bool dropped = false;
+    for (std::size_t index = 0; index < batches_.size();) {
+        const auto& batch = batches_[index];
         const auto current = now(batch);
         if (current >= batch.retired_at_microseconds
             && current - batch.retired_at_microseconds
                 >= maximum_age_microseconds) {
-            // Resource expiry is an explicit terminal receive failure,
-            // never permission to skip unread data and continue the stream.
-            fail_locked();
-            return;
+            // Unread for the whole retention lifetime: the data is lost for
+            // this receiver and the group skips it like any other gap.
+            drop_batch_locked(index);
+            dropped = true;
+            continue;
+        }
+        ++index;
+    }
+    if (dropped) {
+        if (const auto source = source_.lock()) {
+            ReadinessSignal::notify(*source);
         }
     }
 }
@@ -85,63 +92,77 @@ void GroupReceiveRetention::retain(
     RetainedGroupReceiveBatch batch, SequenceNumber consumed) noexcept
 {
     std::lock_guard lock(mutex_);
-    if (closed_ || failed_) {
+    if (closed_) {
         return;
     }
     expire_locked();
-    if (failed_) {
-        return;
-    }
     discard_before_locked(consumed);
     if (batch.copies.error != Error::none) {
-        fail_locked();
+        // The copy is incomplete; what could not be copied is lost for this
+        // receiver, like data that never reached a member.
         return;
     }
-    std::array<std::pair<std::uint32_t, std::uint32_t>, maximum_packets>
-        identities {};
-    std::size_t identity_count = 0;
-    for (const auto& existing : batches_) {
-        for (const auto& retained : existing.copies.messages) {
-            identities[identity_count++] = {retained.first_sequence.value(),
-                retained.next_sequence.value()};
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> identities;
+    try {
+        identities.reserve(packets_);
+        for (const auto& existing : batches_) {
+            for (const auto& retained : existing.copies.messages) {
+                identities.emplace_back(retained.first_sequence.value(),
+                    retained.next_sequence.value());
+            }
         }
+    } catch (...) {
+        return;
     }
-    const auto end =
-        identities.begin() + static_cast<std::ptrdiff_t>(identity_count);
-    std::sort(identities.begin(), end);
+    std::sort(identities.begin(), identities.end());
     auto& messages = batch.copies.messages;
+    std::size_t packets = 0;
+    std::size_t bytes = 0;
     messages.erase(
         std::remove_if(messages.begin(), messages.end(),
             [&](const auto& message) {
                 if (message.first_sequence.distance_from(consumed) < 0) {
                     return true;
                 }
-                return std::binary_search(identities.begin(), end,
-                    std::pair {message.first_sequence.value(),
-                        message.next_sequence.value()});
+                if (std::binary_search(identities.begin(), identities.end(),
+                        std::pair {message.first_sequence.value(),
+                            message.next_sequence.value()})) {
+                    return true;
+                }
+                const auto count =
+                    message.next_sequence.distance_from(message.first_sequence);
+                // A message that can never fit the storage is dropped on
+                // its own; the rest of the batch stays retainable.
+                if (count <= 0
+                    || static_cast<std::size_t>(count) > maximum_packets
+                    || message.payload.size() > maximum_bytes) {
+                    return true;
+                }
+                packets += static_cast<std::size_t>(count);
+                bytes += message.payload.size();
+                return false;
             }),
         messages.end());
-    if (messages.empty()) {
-        return;
-    }
-    std::size_t packets = 0;
-    std::size_t bytes = 0;
-    for (const auto& message : messages) {
-        const auto count =
-            message.next_sequence.distance_from(message.first_sequence);
-        if (count <= 0
-            || static_cast<std::size_t>(count) > maximum_packets - packets
-            || message.payload.size() > maximum_bytes - bytes) {
-            fail_locked();
-            return;
+    // Keep the newest closed member's prefix: it is the one the group
+    // cursor reaches last. Oldest retained batches make room for it.
+    while (!messages.empty()
+        && (packets > maximum_packets - packets_
+            || bytes > maximum_bytes - bytes_)) {
+        if (batches_.empty()) {
+            // The batch alone exceeds the bounds: drop its highest messages.
+            const auto& last = messages.back();
+            packets -= static_cast<std::size_t>(
+                last.next_sequence.distance_from(last.first_sequence));
+            bytes -= last.payload.size();
+            messages.pop_back();
+            continue;
         }
-        packets += static_cast<std::size_t>(count);
-        bytes += message.payload.size();
+        drop_batch_locked(0);
     }
-    if (batches_.size() >= maximum_batches
-        || packets > maximum_packets - packets_
-        || bytes > maximum_bytes - bytes_) {
-        fail_locked();
+    while (!messages.empty() && batches_.size() >= maximum_batches) {
+        drop_batch_locked(0);
+    }
+    if (messages.empty()) {
         return;
     }
     try {
@@ -149,7 +170,7 @@ void GroupReceiveRetention::retain(
         packets_ += packets;
         bytes_ += bytes;
     } catch (...) {
-        fail_locked();
+        // Allocation failure: the prefix is lost for this receiver.
     }
 }
 
@@ -209,9 +230,6 @@ MessageIoResult GroupReceiveRetention::receive_message(
     if (closed_) {
         return {.status = MessageIoStatus::local_closed};
     }
-    if (failed_) {
-        return {.status = MessageIoStatus::broken};
-    }
     discard_before_locked(expected);
     for (auto& batch : batches_) {
         auto& messages = batch.copies.messages;
@@ -264,19 +282,6 @@ void GroupReceiveRetention::discard_before(SequenceNumber consumed) noexcept
 {
     std::lock_guard lock(mutex_);
     discard_before_locked(consumed);
-}
-
-bool GroupReceiveRetention::failed() noexcept
-{
-    std::lock_guard lock(mutex_);
-    expire_locked();
-    return failed_;
-}
-
-void GroupReceiveRetention::fail() noexcept
-{
-    std::lock_guard lock(mutex_);
-    fail_locked();
 }
 
 void GroupReceiveRetention::close() noexcept

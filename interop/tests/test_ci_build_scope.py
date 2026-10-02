@@ -112,10 +112,16 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_rejects_empty_exclusion_selection": ["--exclude", '""'],
             "robotweax_srt_rejects_invalid_test_arguments": ["--unknown"],
         }
-        self.assertEqual(len(registrations), 2 + len(empty_selection_checks))
-        self.assertEqual(set(commands), {
+        partitions = {
             "robotweax_srt_tests", "robotweax_srt_rotation_tests",
-            *empty_selection_checks,
+            "robotweax_srt_group_retention_prefix_tests",
+            "robotweax_srt_group_retention_oversized_tests",
+        }
+        self.assertEqual(
+            len(registrations), len(partitions) + len(empty_selection_checks),
+        )
+        self.assertEqual(set(commands), {
+            *partitions, *empty_selection_checks,
         })
         for name, arguments in empty_selection_checks.items():
             self.assertEqual(commands[name], arguments)
@@ -127,12 +133,39 @@ class CiTestRegistrationTests(unittest.TestCase):
         for name in empty_selection_checks:
             self.assertIn(name, properties.group(1))
         self.assertIn("PROPERTIES WILL_FAIL TRUE", properties.group(1))
-        included = commands["robotweax_srt_rotation_tests"]
-        self.assertEqual(len(included), 1)
-        self.assertTrue(included[0])
-        # Complementary filters cover every native case exactly once, even as
-        # more cases are added; an extra compatibility run would duplicate them.
-        self.assertEqual(commands["robotweax_srt_tests"], ["--exclude", *included])
+        self.assertEqual(commands["robotweax_srt_tests"], [
+            "--exclude", "compat_runtime_rotation_",
+            "compat_group_closed_member_retains_bounded_copy",
+        ])
+        target = re.search(
+            r"add_executable\(robotweax_srt_tests\s+([^)]*)\)", cmake,
+        )
+        self.assertIsNotNone(target)
+        cases = []
+        for source in target.group(1).split():
+            cases.extend(re.findall(
+                r"\bTEST\s*\(\s*(\w+)\s*\)",
+                (ROOT / source).read_text(),
+            ))
+        self.assertTrue(cases)
+        coverage = {case: [] for case in cases}
+        for name in partitions:
+            arguments = commands[name]
+            if arguments[0] == "--exclude":
+                self.assertGreater(len(arguments), 1)
+                selected = [case for case in cases
+                            if not any(value in case for value in arguments[1:])]
+            else:
+                self.assertEqual(len(arguments), 1)
+                self.assertTrue(arguments[0])
+                selected = [case for case in cases if arguments[0] in case]
+            self.assertTrue(selected, f"empty native partition: {name}")
+            for case in selected:
+                coverage[case].append(name)
+        # Check the actual source cases: changing filters must neither omit
+        # coverage nor run a case in multiple partitions.
+        for case, owners in coverage.items():
+            self.assertEqual(len(owners), 1, f"{case}: {owners}")
         self.assertNotIn("NAME robotweax_srt_compat_tests", cmake)
         # Process/lifetime probes are independent coverage, not duplicates.
         for name in ("robotweax_srt_lifecycle_tests",

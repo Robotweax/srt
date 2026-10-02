@@ -238,12 +238,22 @@ Adding a replacement cannot make these messages ready earlier or skip them.
 
 This storage is limited per group to 8,192 packets, 11,927,552 payload bytes and
 16 retained batches. Duplicate message ranges do not consume another batch.
-Unread batches expire 120 seconds after member closure; receive, readiness and
-state inspection check expiry. Allocation failure, capacity exhaustion or expiry
-breaks the logical group explicitly (`SRT_ECONNLOST`, `SRT_EPOLL_ERR`) rather than
-advancing past unread data. Closing the group releases this storage immediately.
-Retention preserves complete messages already received locally; it cannot recover
-incomplete messages or packets that reached no member.
+Unread batches expire 120 seconds after member closure; receive and readiness
+inspection check expiry. The bounds are enforced by discarding retained
+data, oldest batch first (a single message that can never fit is discarded on
+its own), and expiry or an allocation failure discards the affected batch.
+When copying a closed member, the earliest complete messages within the packet
+and byte limits are kept; an individually oversized message is skipped, and
+aggregate overflow discards the remaining tail. The copy never consumes the
+member's receive buffer.
+Discarded data is receiver-side loss: the group skips past it to the lowest
+sequence a remaining member can supply and counts the skipped packets in
+`pktRcvDropTotal`, exactly as for a gap no member can supply. Retention never
+breaks the group or its send path, matching the reference implementation,
+which discards a closed member's unread data outright. Closing the group
+releases this storage immediately. Retention preserves complete messages
+already received locally; it cannot recover incomplete messages or packets
+that reached no member.
 Terminal members do not mask a pending replacement's CONNECTING state.
 
 ## Source time and TSBPD

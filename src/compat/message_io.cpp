@@ -274,20 +274,6 @@ private:
     return result;
 }
 
-[[nodiscard]] bool group_receive_failed(
-    const std::shared_ptr<GroupRecord>& group)
-{
-    std::shared_ptr<GroupReceiveRetention> retained;
-    {
-        std::lock_guard lock(group->mutex);
-        if (group->receive_retention_failed) {
-            return true;
-        }
-        retained = group->retained_receive;
-    }
-    return retained != nullptr && retained->failed();
-}
-
 [[nodiscard]] GroupIoSnapshotBuffer<GroupIoMember> group_receive_members(
     const std::shared_ptr<GroupRecord>& group,
     std::uint64_t* snapshot_version = nullptr)
@@ -1028,9 +1014,6 @@ int send_group_message_implementation(
     const std::size_t requested_capacity =
         local_control.grpdata_size;
 
-    if (group_receive_failed(group)) {
-        return fail(SRT_ECONNLOST);
-    }
     std::unique_lock io_lock(group->send_mutex);
     bool blocking = true;
     std::int32_t timeout = -1;
@@ -1055,9 +1038,6 @@ int send_group_message_implementation(
         buffer, static_cast<std::size_t>(length)});
 
     for (;;) {
-        if (group_receive_failed(group)) {
-            return fail(SRT_ECONNLOST);
-        }
         const std::uint64_t observed = ReadinessSignal::generation();
         auto members = group_members(group);
         if (members.empty()) {
@@ -1416,9 +1396,6 @@ int receive_group_message_implementation(
         buffer, static_cast<std::size_t>(length)});
 
     for (;;) {
-        if (group_receive_failed(group)) {
-            return fail(SRT_ECONNLOST);
-        }
         const std::uint64_t observed = ReadinessSignal::generation();
         std::uint64_t snapshot_version = 0;
         const auto members = group_receive_members(group, &snapshot_version);
@@ -1553,9 +1530,6 @@ int receive_group_message_implementation(
                 return fail(SRT_ELARGEMSG);
             }
         }
-        if (group_receive_failed(group)) {
-            return fail(SRT_ECONNLOST);
-        }
         {
             std::lock_guard lock(group->mutex);
             if (group->snapshot_version != snapshot_version) {
@@ -1583,10 +1557,6 @@ GroupReceiveReadiness group_receive_readiness(
 {
     GroupReceiveReadiness readiness;
     if (group == nullptr) {
-        return readiness;
-    }
-    if (group_receive_failed(group)) {
-        readiness.terminal_error = true;
         return readiness;
     }
     const auto members = group_receive_members(group);
@@ -1617,10 +1587,6 @@ SocketReadinessSnapshot group_poll_readiness(
     const auto members = group_receive_members(group);
     readiness.exists = true;
     readiness.source = group->readiness_source;
-    if (group_receive_failed(group)) {
-        readiness.events = SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
-        return readiness;
-    }
     bool opened = false;
     bool connected = false;
     bool pending = false;

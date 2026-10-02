@@ -287,24 +287,34 @@ BufferedMessageCopies ReceiveBuffer::copy_complete_messages(
                 continue;
             }
             const auto packet_count = *last - offset + 1U;
-            if (packet_count > maximum_packets - packets) {
-                return {.error = Error::buffer_too_small};
+            if (packet_count > maximum_packets) {
+                offset = *last;
+                continue;
             }
             std::size_t message_bytes = 0;
+            bool oversized = false;
             for (std::size_t index = offset; index <= *last; ++index) {
                 const auto* slot = find(first_stored_sequence_.advanced(
                     static_cast<std::uint32_t>(index)));
                 if (slot == nullptr || slot->payload_offset != 0U) {
                     return {.error = Error::invalid_state};
                 }
-                if (slot->payload_size
-                    > maximum_bytes - bytes - message_bytes) {
-                    return {.error = Error::buffer_too_small};
+                if (slot->payload_size > maximum_bytes - message_bytes) {
+                    oversized = true;
+                    break;
                 }
                 message_bytes += slot->payload_size;
             }
-            if (message_bytes > maximum_bytes - bytes) {
-                return {.error = Error::buffer_too_small};
+            if (oversized) {
+                offset = *last;
+                continue;
+            }
+            // Keep the earliest complete messages within the copy budget.
+            // An individually oversized message does not erase that prefix
+            // or prevent later, retainable messages from being considered.
+            if (packet_count > maximum_packets - packets
+                || message_bytes > maximum_bytes - bytes) {
+                break;
             }
             BufferedMessageCopy copy {
                 .first_sequence = first_sequence,

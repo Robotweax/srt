@@ -139,13 +139,16 @@ message API on every member.
 When an explicitly closed member still holds complete unread messages, the
 group copies them into bounded receive-only storage (8,192 packets,
 11,927,552 payload bytes, 16 batches, 120 s unread lifetime; see
-[Connection groups](connection-groups.md)). Exceeding a bound, an allocation
-failure or expiry currently breaks the logical group explicitly, including
-its send path (`SRT_ECONNLOST`, `SRTS_BROKEN`, `SRT_EPOLL_ERR`), although the
-remaining members may be healthy. Haivision SRT discards the closed member's
-unread data instead and never fails the group for it. Applications that close
-or replace members while not reading the group must drain the group within the
-lifetime or recreate it.
+[Connection groups](connection-groups.md)). Exceeding a bound or expiry drops
+retained receive data; allocation failure discards the affected batch. The
+closed-member copy keeps the earliest complete messages within its packet and
+byte budget and skips individually oversized messages. At group capacity, older
+batches are evicted to make room for newer ones. Receive and readiness inspection
+check expiry. The group advances past data no remaining path can supply and
+counts the skipped packets in `pktRcvDropTotal`. This receive-side loss does not
+break healthy members or the group send path. Haivision SRT discards a closed
+member's unread data outright; Robotweax retention can preserve a bounded prefix
+but cannot guarantee delivery after its limits are reached.
 
 Group members retain per-path connection, security, and statistics state.
 Applications own topology, link diversity, path health inputs, member
