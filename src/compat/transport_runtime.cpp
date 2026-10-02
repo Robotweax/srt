@@ -2803,6 +2803,105 @@ ConnectionRuntime::receive_fec_packet(
     };
 }
 
+bool ConnectionRuntime::admit_fresh_salt_key_request(
+    std::span<const std::byte> payload, std::uint64_t now) noexcept
+{
+    if (fresh_salt_admission_ == nullptr) {
+        try {
+            fresh_salt_admission_ = std::make_unique<FreshSaltAdmission>();
+        } catch (...) {
+            // Do not derive without a budget if bounded bookkeeping cannot
+            // be allocated. The peer can retry initialization later.
+            return false;
+        }
+    }
+    auto& admission = *fresh_salt_admission_;
+    if (admission.last_refill_microseconds.has_value()
+        && now >= *admission.last_refill_microseconds) {
+        const std::uint64_t refills =
+            (now - *admission.last_refill_microseconds)
+            / FreshSaltAdmission::refill_interval_microseconds;
+        if (refills != 0U) {
+            admission.tokens = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(FreshSaltAdmission::bucket_capacity,
+                    admission.tokens + refills));
+            *admission.last_refill_microseconds +=
+                refills * FreshSaltAdmission::refill_interval_microseconds;
+        }
+    } else {
+        admission.last_refill_microseconds = now;
+    }
+    // Identify the request by its salt (the PBKDF2 input), not by the whole
+    // payload, so a retried request matches even if its key words differ.
+    const auto decoded = decode_key_material(payload);
+    std::uint64_t identity = 0xcbf2'9ce4'8422'2325ULL;
+    if (decoded) {
+        for (const std::byte value : decoded.key_material.salt) {
+            identity ^= static_cast<std::uint64_t>(value);
+            identity *= 0x0000'0100'0000'01b3ULL;
+        }
+    }
+    // Avalanche the salt hash before slicing it into Bloom-filter positions;
+    // adjacent forged salts must not produce correlated high-bit positions.
+    identity = (identity ^ (identity >> 30U)) * 0xbf58'476d'1ce4'e5b9ULL;
+    identity = (identity ^ (identity >> 27U)) * 0x94d0'49bb'1331'11ebULL;
+    identity ^= identity >> 31U;
+    // Remember all recent requests, even ones denied by the token bucket.
+    // Three time windows preserve a candidate for at least two retry periods;
+    // packet-count churn cannot evict it. Work and storage stay fixed.
+    const auto epoch = now / FreshSaltAdmission::refill_interval_microseconds;
+    if (!admission.salt_epoch.has_value() || epoch < *admission.salt_epoch
+        || epoch - *admission.salt_epoch
+            >= FreshSaltAdmission::salt_window_count) {
+        for (auto& window : admission.salt_windows) {
+            window.fill(0U);
+        }
+    } else {
+        for (auto next = *admission.salt_epoch + 1U; next <= epoch; ++next) {
+            admission.salt_windows[next % FreshSaltAdmission::salt_window_count]
+                .fill(0U);
+        }
+    }
+    admission.salt_epoch = epoch;
+    std::array<std::size_t, 4> positions {};
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+        positions[index] = static_cast<std::size_t>((identity >> (index * 16U))
+            & (FreshSaltAdmission::salt_window_bits - 1U));
+    }
+    const bool repeated = std::any_of(admission.salt_windows.begin(),
+        admission.salt_windows.end(), [&](const auto& window) {
+            return std::all_of(
+                positions.begin(), positions.end(), [&](std::size_t position) {
+                    return (window[position / 64U]
+                               & (std::uint64_t {1} << (position % 64U)))
+                        != 0U;
+                });
+        });
+    auto& current =
+        admission.salt_windows[epoch % FreshSaltAdmission::salt_window_count];
+    for (const auto position : positions) {
+        current[position / 64U] |= std::uint64_t {1} << (position % 64U);
+    }
+    if (repeated) {
+        // A peer retries the same salt until it is answered. Give such a
+        // request its own rate-limited lane. Filter false positives may
+        // also use this lane; it is a bounded mitigation, not authentication.
+        if (admission.last_repeat_derivation_microseconds.has_value()
+            && now >= *admission.last_repeat_derivation_microseconds
+            && now - *admission.last_repeat_derivation_microseconds
+                < FreshSaltAdmission::refill_interval_microseconds) {
+            return false;
+        }
+        admission.last_repeat_derivation_microseconds = now;
+        return true;
+    }
+    if (admission.tokens == 0U) {
+        return false;
+    }
+    --admission.tokens;
+    return true;
+}
+
 bool ConnectionRuntime::send_key_material(
     std::uint16_t subtype,
     std::span<const std::byte> key_material,
@@ -3328,18 +3427,12 @@ void ConnectionRuntime::process_packet(
         }
         if (packet.control.subtype
             == key_material_request_subtype) {
-            // A fresh salt requires PBKDF2 under this runtime lock. Limit
-            // such work to one attempt per KM retry interval; rotations on
-            // the validated cached salt remain available during a flood.
-            constexpr std::uint64_t derivation_interval_microseconds = 100'000;
-            if (crypto_->needs_receive_key_derivation(packet.payload)) {
-                if (last_uncached_kmreq_microseconds_.has_value()
-                    && now >= *last_uncached_kmreq_microseconds_
-                    && now - *last_uncached_kmreq_microseconds_
-                        < derivation_interval_microseconds) {
-                    return;
-                }
-                last_uncached_kmreq_microseconds_ = now;
+            // A fresh salt requires PBKDF2 under this runtime lock. Bound
+            // that work; rotations on the validated cached salt remain
+            // available during a flood.
+            if (crypto_->needs_receive_key_derivation(packet.payload)
+                && !admit_fresh_salt_key_request(packet.payload, now)) {
+                return;
             }
             const CryptoState previous_state =
                 crypto_->receiver_state();

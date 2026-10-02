@@ -147,6 +147,12 @@ public:
         fail_random_ = true;
     }
 
+    void deterministic_random_bytes(std::uint8_t seed) noexcept
+    {
+        deterministic_random_ = true;
+        random_byte_ = seed;
+    }
+
     [[nodiscard]] std::size_t pbkdf2_calls() const noexcept
     {
         return pbkdf2_calls_;
@@ -155,8 +161,16 @@ public:
     [[nodiscard]] Error random_bytes(
         std::span<std::byte> destination) noexcept override
     {
-        return fail_random_ ? Error::cryptographic_failure
-                            : delegate_.random_bytes(destination);
+        if (fail_random_) {
+            return Error::cryptographic_failure;
+        }
+        if (deterministic_random_) {
+            for (auto& value : destination) {
+                value = static_cast<std::byte>(random_byte_++);
+            }
+            return Error::none;
+        }
+        return delegate_.random_bytes(destination);
     }
 
     [[nodiscard]] Error pbkdf2_hmac_sha1(std::span<const std::byte> passphrase,
@@ -217,6 +231,8 @@ private:
     const std::byte* watched_address_ = nullptr;
     bool observed_erasure_ = false;
     bool fail_random_ = false;
+    bool deterministic_random_ = false;
+    std::uint8_t random_byte_ = 0;
     std::size_t pbkdf2_calls_ = 0;
     CryptoProvider& delegate_ = default_crypto_provider();
 };
@@ -2023,6 +2039,8 @@ TEST(crypto_runtime_budgets_uncached_key_derivations)
         .address = {192, 0, 2, 50}, .port = peer.port};
     runtime.process_packet(request, foreign_peer);
     REQUIRE_EQ(provider.pbkdf2_calls(), after_initial);
+    // First-seen salts draw from a bucket of four tokens; the fifth distinct
+    // salt within the refill interval is not derived.
     for (std::uint8_t index = 1; index <= 5; ++index) {
         forged[salt_offset + srt_salt_size - 1U] =
             original_salt_byte ^ static_cast<std::byte>(index);
@@ -2030,7 +2048,14 @@ TEST(crypto_runtime_budgets_uncached_key_derivations)
         runtime.process_packet(request, peer);
         REQUIRE(!runtime.broken());
     }
-    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial + 1U);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial + 4U);
+    // A denied request gets the independent retry lane, but repeating it
+    // again at the same instant must not trigger another derivation.
+    runtime.process_packet(request, peer);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial + 5U);
+    runtime.process_packet(request, peer);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial + 5U);
+    const std::size_t after_bucket = provider.pbkdf2_calls();
 
     std::vector<std::byte> rotation_request;
     for (int sent = 0; sent < 8 && rotation_request.empty(); ++sent) {
@@ -2047,14 +2072,24 @@ TEST(crypto_runtime_budgets_uncached_key_derivations)
         rotation_request.size());
     REQUIRE(std::equal(rotation_request.begin(), rotation_request.end(),
         receiver_crypto->key_material_response().begin()));
-    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial + 1U);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_bucket);
 
+    // One token refills per 100 ms.
     now += 100'000;
     forged[salt_offset + srt_salt_size - 1U] =
         original_salt_byte ^ std::byte {0x06};
     request.payload = forged;
     runtime.process_packet(request, peer);
-    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial + 2U);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_bucket + 1U);
+    forged[salt_offset + srt_salt_size - 1U] =
+        original_salt_byte ^ std::byte {0x07};
+    request.payload = forged;
+    runtime.process_packet(request, peer);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_bucket + 1U);
+    runtime.process_packet(request, peer);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_bucket + 2U);
+    runtime.process_packet(request, peer);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_bucket + 2U);
 
     CryptoSession fresh_sender {configuration};
     REQUIRE_EQ(fresh_sender.start_initiator(), Error::none);
@@ -2063,9 +2098,225 @@ TEST(crypto_runtime_budgets_uncached_key_derivations)
     request.payload = fresh_request;
     runtime.process_packet(request, peer);
     REQUIRE(!runtime.broken());
-    REQUIRE_EQ(provider.pbkdf2_calls(), after_initial + 3U);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_bucket + 3U);
     REQUIRE(std::equal(fresh_request.begin(), fresh_request.end(),
         receiver_crypto->key_material_response().begin()));
+}
+
+TEST(crypto_runtime_fresh_salt_retry_survives_a_forged_salt_flood)
+{
+    // A recent retry can use its own derivation lane while the first-seen
+    // budget is exhausted. This trace does not exercise filter collisions
+    // or saturation, which can still cause contention under attack.
+    using namespace robotweax::srt::compat;
+    CtrOnlyCryptoProvider provider;
+    const CryptoConfiguration configuration {
+        .passphrase = "fresh salt retry under flood",
+        .key_length = 16,
+        .refresh_rate_packets = 5,
+        .preannouncement_packets = 2,
+    };
+    CryptoSession sender {configuration};
+    auto receiver_crypto =
+        std::make_shared<CryptoSession>(configuration, provider);
+    REQUIRE_EQ(sender.start_initiator(), Error::none);
+    const std::vector<std::byte> initial_request {
+        sender.pending_key_material().begin(),
+        sender.pending_key_material().end()};
+    REQUIRE_EQ(receiver_crypto->accept_key_material(initial_request, false),
+        Error::none);
+    REQUIRE_EQ(sender.acknowledge_key_material(
+                   receiver_crypto->key_material_response(), false),
+        Error::none);
+
+    const auto channel = std::make_shared<DatagramChannel>();
+    channel->set_send_hook_for_testing(
+        [](std::span<const std::byte> bytes, Ipv4Endpoint,
+            void*) noexcept -> UdpIoResult {
+            return {.bytes_transferred = bytes.size()};
+        },
+        nullptr);
+    const Ipv4Endpoint peer {.address = {192, 0, 2, 51}, .port = 14'210};
+    std::uint64_t now = 1'000'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 491,
+        .initial_sequence = SequenceNumber {900},
+        .origin = ConnectionRuntime::Clock::now(),
+        .crypto = receiver_crypto,
+        .now_function = [](void* context) noexcept -> std::uint64_t {
+            return *static_cast<std::uint64_t*>(context);
+        },
+        .now_context = &now,
+    }};
+    PacketView request {
+        .kind = PacketKind::control,
+        .control = {.type = ControlType::user_defined,
+            .subtype = key_material_request_subtype,
+            .destination_socket_id = 491},
+    };
+    auto forged = initial_request;
+    const auto decoded = decode_key_material(forged);
+    REQUIRE(decoded);
+    const std::size_t salt_offset = static_cast<std::size_t>(
+        decoded.key_material.salt.data() - forged.data());
+    const auto flood = [&](std::uint8_t from, std::uint8_t to) {
+        for (std::uint8_t index = from; index <= to; ++index) {
+            forged[salt_offset + srt_salt_size - 1U] =
+                static_cast<std::byte>(index);
+            forged[salt_offset + srt_salt_size - 2U] =
+                static_cast<std::byte>(~index);
+            request.payload = forged;
+            runtime.process_packet(request, peer);
+            REQUIRE(!runtime.broken());
+            now += 1'000;
+        }
+    };
+    flood(1, 40);
+    const std::size_t after_flood = provider.pbkdf2_calls();
+
+    // The legitimate peer announces a new directional key with a fresh salt
+    // while the flood continues: its first copy finds no token.
+    CryptoSession fresh_sender {configuration};
+    REQUIRE_EQ(fresh_sender.start_initiator(), Error::none);
+    const std::vector<std::byte> fresh_request {
+        fresh_sender.pending_key_material().begin(),
+        fresh_sender.pending_key_material().end()};
+    request.payload = fresh_request;
+    runtime.process_packet(request, peer);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_flood);
+    flood(41, 60);
+    // Its retry (same salt) is admitted through the repeat lane although
+    // the flood keeps the first-seen bucket empty.
+    request.payload = fresh_request;
+    runtime.process_packet(request, peer);
+    REQUIRE(!runtime.broken());
+    REQUIRE(std::equal(fresh_request.begin(), fresh_request.end(),
+        receiver_crypto->key_material_response().begin()));
+    REQUIRE_EQ(receiver_crypto->receiver_state(), CryptoState::secured);
+}
+
+namespace {
+
+void verify_fresh_salt_retry_under_history_churn(unsigned scenario)
+{
+    // A 4,000/s distinct-salt flood churns beyond the old 256-entry history
+    // between genuine retries. It must not erase a recent retry candidate.
+    using namespace robotweax::srt::compat;
+    CtrOnlyCryptoProvider provider;
+    const CryptoConfiguration configuration {
+        .passphrase = "fresh salt retry under flood",
+        .key_length = 16,
+        .refresh_rate_packets = 5,
+        .preannouncement_packets = 2,
+    };
+    CtrOnlyCryptoProvider sender_provider;
+    sender_provider.deterministic_random_bytes(0x10);
+    CryptoSession sender {configuration, sender_provider};
+    auto receiver_crypto =
+        std::make_shared<CryptoSession>(configuration, provider);
+    REQUIRE_EQ(sender.start_initiator(), Error::none);
+    const std::vector<std::byte> initial_request {
+        sender.pending_key_material().begin(),
+        sender.pending_key_material().end()};
+    REQUIRE_EQ(receiver_crypto->accept_key_material(initial_request, false),
+        Error::none);
+    REQUIRE_EQ(sender.acknowledge_key_material(
+                   receiver_crypto->key_material_response(), false),
+        Error::none);
+
+    const auto channel = std::make_shared<DatagramChannel>();
+    channel->set_send_hook_for_testing(
+        [](std::span<const std::byte> bytes, Ipv4Endpoint,
+            void*) noexcept -> UdpIoResult {
+            return {.bytes_transferred = bytes.size()};
+        },
+        nullptr);
+    const Ipv4Endpoint peer {.address = {192, 0, 2, 51}, .port = 14'210};
+    std::uint64_t now = 1'000'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 491,
+        .initial_sequence = SequenceNumber {900},
+        .origin = ConnectionRuntime::Clock::now(),
+        .crypto = receiver_crypto,
+        .now_function = [](void* context) noexcept -> std::uint64_t {
+            return *static_cast<std::uint64_t*>(context);
+        },
+        .now_context = &now,
+    }};
+    PacketView request {
+        .kind = PacketKind::control,
+        .control = {.type = ControlType::user_defined,
+            .subtype = key_material_request_subtype,
+            .destination_socket_id = 491},
+    };
+    auto forged = initial_request;
+    const auto decoded = decode_key_material(forged);
+    REQUIRE(decoded);
+    const std::size_t salt_offset = static_cast<std::size_t>(
+        decoded.key_material.salt.data() - forged.data());
+    const auto flood = [&](std::uint32_t from, std::uint32_t to) {
+        for (std::uint32_t index = from; index <= to; ++index) {
+            forged[salt_offset + srt_salt_size - 1U] =
+                static_cast<std::byte>(index & 0xffU);
+            forged[salt_offset + srt_salt_size - 2U] =
+                static_cast<std::byte>((index >> 8U) & 0xffU);
+            request.payload = forged;
+            runtime.process_packet(request, peer);
+            REQUIRE(!runtime.broken());
+            now += 250;
+        }
+    };
+    flood(1, 401);
+    const std::size_t after_flood = provider.pbkdf2_calls();
+
+    // The legitimate peer announces a new directional key with a fresh salt
+    // while the flood continues: its first copy finds no token.
+    CtrOnlyCryptoProvider fresh_provider;
+    fresh_provider.deterministic_random_bytes(0x80);
+    CryptoSession fresh_sender {configuration, fresh_provider};
+    REQUIRE_EQ(fresh_sender.start_initiator(), Error::none);
+    const std::vector<std::byte> fresh_request {
+        fresh_sender.pending_key_material().begin(),
+        fresh_sender.pending_key_material().end()};
+    request.payload = fresh_request;
+    runtime.process_packet(request, peer);
+    REQUIRE_EQ(provider.pbkdf2_calls(), after_flood);
+    flood(402, 802);
+    if (scenario == 1U) {
+        now += 99'500;
+    } else if (scenario == 2U) {
+        now += 300'000;
+        flood(803, 806);
+        const auto before_expired_retry = provider.pbkdf2_calls();
+        request.payload = fresh_request;
+        runtime.process_packet(request, peer);
+        REQUIRE_EQ(provider.pbkdf2_calls(), before_expired_retry);
+        REQUIRE(!std::equal(fresh_request.begin(), fresh_request.end(),
+            receiver_crypto->key_material_response().begin()));
+        // A denied, aged-out request is remembered again for its next retry.
+        now += 100'000;
+    }
+    // Its retry (same salt) is admitted through the repeat lane although
+    // the flood keeps the first-seen bucket empty.
+    request.payload = fresh_request;
+    runtime.process_packet(request, peer);
+    REQUIRE(!runtime.broken());
+    REQUIRE(std::equal(fresh_request.begin(), fresh_request.end(),
+        receiver_crypto->key_material_response().begin()));
+    REQUIRE_EQ(receiver_crypto->receiver_state(), CryptoState::secured);
+}
+
+} // namespace
+
+TEST(crypto_runtime_fresh_salt_retry_survives_history_churn)
+{
+    for (const auto scenario : {0U, 1U, 2U}) {
+        verify_fresh_salt_retry_under_history_churn(scenario);
+    }
 }
 
 TEST(crypto_session_routes_ctr_keys_from_transport_accepted_sequences)
