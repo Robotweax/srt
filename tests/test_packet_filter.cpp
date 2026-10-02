@@ -311,7 +311,6 @@ TEST(packet_filter_policy_accepts_column_control_in_column_only_mode)
             consume_filter_control);
 }
 
-
 TEST(sensor_profile_parser_requires_the_versioned_fixed_contract)
 {
     const auto parsed = parse_packet_filter_configuration(
