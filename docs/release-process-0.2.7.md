@@ -1,9 +1,41 @@
 # Release process for Robotweax SRT 0.2.7
 
-Status: preparation only. Version and release-note changes are reviewable on
-`dev/release-0.2.7`. No new tag, GitHub release, signed SDK or tap update has
-been published. Release date is the actual publication date, not the date of
-this plan.
+Status: **completed and published on 2026-10-02**.
+Release: [v0.2.7](https://github.com/Robotweax/srt/releases/tag/v0.2.7).
+The protected annotated tag selects
+`1f9cc7c045f84ba188a08677bfc57ce7424e5aff`; it must not be moved or recreated.
+The following procedure records the completed release workflow. Commands that
+create refs or publish artifacts are historical instructions, not steps to rerun
+for this already published version.
+
+## Completed acceptance record
+
+- Product source `f254dd2c0fe084f7965238756b1d3b96665d592b` was frozen and its
+  downloaded archive verified against all 547 regular files and executable bits.
+- Version/recipe [PR #175](https://github.com/Robotweax/srt/pull/175) and formula
+  test [PR #176](https://github.com/Robotweax/srt/pull/176) were normally merged
+  with expected-head guards after their selected checks passed.
+- [Candidate full ecosystem qualification](https://github.com/Robotweax/srt/actions/runs/36933471258),
+  [final main CI](https://github.com/Robotweax/srt/actions/runs/36971215255),
+  [final tag CI](https://github.com/Robotweax/srt/actions/runs/36971349853),
+  [tag packages](https://github.com/Robotweax/srt/actions/runs/36971349877), and
+  [tag Linux packages](https://github.com/Robotweax/srt/actions/runs/36971349861) passed.
+- Existing `windows-release-signing` approval preceded signing. The
+  [final SDK workflow](https://github.com/Robotweax/srt/actions/runs/36971349763)
+  verified trusted Robotweax GmbH signatures/timestamps and retested the exact
+  signed installers on Windows. All three downloaded draft assets matched the
+  qualified signed artifact bytes and post-signing manifest before publication.
+- The separate [tap PR #6](https://github.com/Robotweax/homebrew-tap/pull/6) was
+  applied and closed by the existing `brew pr-pull` workflow, which cherry-picks
+  formula changes and adds a bottle commit rather than creating a PR merge commit.
+  [Native qualification](https://github.com/Robotweax/homebrew-tap/actions/runs/36970375530)
+  and [publication](https://github.com/Robotweax/homebrew-tap/actions/runs/36972971654)
+  passed. The published arm64_sequoia bottle matches the qualified artifact,
+  its formula hash and canonical recipe. Other bottle platforms are unqualified.
+
+See [release notes](release-notes-0.2.7.md) and the
+[package qualification record](../packaging/qualification-0.2.7.md) for exact
+hashes, asset links, failure-evidence exclusions and remaining limits.
 
 ## Source freeze and qualification
 
@@ -54,9 +86,9 @@ from a Windows cross-build.
    repeat qualification; metadata-only changes still require affected checks.
 
 Those workflows select immutable recipe archives, not the moving checkout.
-Their existing 0.2.6 pins must be replaced before claiming 0.2.7 qualification.
-The private preparation directory includes an archive verifier and a concrete
-pin inventory for this step.
+For 0.2.7, the historical 0.2.6 pins were replaced before qualification.
+The private release record retains the archive verifier, concrete pin inventory
+and original run/artifact evidence.
 
 ## Review and merge
 
