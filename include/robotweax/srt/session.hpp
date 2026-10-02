@@ -203,6 +203,15 @@ public:
         efficient_retransmission_ = enabled;
         peer_periodic_nak_ = peer_periodic_nak;
     }
+    [[nodiscard]] std::optional<OutboundPacket>
+    peek_retransmission_packet() noexcept
+    {
+        return send_buffer_.peek_retransmission_packet();
+    }
+    void requeue_prepared_retransmission(SequenceNumber sequence) noexcept
+    {
+        send_buffer_.requeue_prepared_retransmission(sequence);
+    }
     void note_retransmission_sent(
         SequenceNumber sequence, std::uint64_t now_microseconds) noexcept
     {
@@ -214,7 +223,8 @@ public:
     [[nodiscard]] std::optional<OutboundPacket> next_paced_data_packet(
         PacketPacer& pacer, std::uint64_t now_microseconds,
         std::size_t new_packet_wire_overhead = 0U,
-        bool defer_pacing_commit = false) noexcept;
+        bool defer_pacing_commit = false,
+        bool allow_retransmission = true) noexcept;
     [[nodiscard]] Error preserve_encrypted_payload(
         SequenceNumber sequence,
         EncryptionKey key,
@@ -459,6 +469,15 @@ private:
     [[nodiscard]] static std::uint64_t peer_drop_identity(
         SequenceRange range) noexcept;
     void retire_peer_drop_identity(SequenceRange range) noexcept;
+    [[nodiscard]] Error apply_peer_drop_range(SequenceRange range,
+        std::uint32_t message_number, bool defer_drop, std::uint64_t deadline,
+        std::uint64_t now_microseconds,
+        ReliabilityProcessResult& result) noexcept;
+    void remember_peer_drop_remainder(
+        SequenceRange remainder, std::uint64_t deadline) noexcept;
+    [[nodiscard]] Error apply_peer_drop_remainder(SequenceNumber observed,
+        std::uint64_t now_microseconds,
+        ReliabilityProcessResult& result) noexcept;
 
     friend class compat::ConnectionRuntime;
     [[nodiscard]] ReliabilityAction make_acknowledgement(
@@ -489,6 +508,9 @@ private:
     // Sorted exact identities give logarithmic duplicate admission without
     // changing the grace entries' processing order or allocating on receive.
     std::vector<std::uint64_t> pending_peer_drop_identities_;
+    // Part of a peer DROPREQ beyond the highest observed DATA sequence; it
+    // is applied once later DATA proves the peer advanced that far.
+    std::optional<PendingPeerDrop> peer_drop_remainder_;
     ReceiveLossList receive_loss_list_;
     ReceiveLossList filter_loss_list_;
     // Scratch space for receive-window clipping and deduplication of filter
@@ -507,6 +529,10 @@ private:
     std::optional<LiveRateController> live_rate_controller_;
     std::optional<FileRateController> file_rate_controller_;
     SequenceNumber highest_received_sequence_{};
+    // Highest DATA sequence seen on the wire, including packets rejected
+    // as beyond the receive window. Bounds how far an unauthenticated
+    // DROPREQ may advance acknowledgement and window.
+    SequenceNumber peer_send_horizon_ {};
     std::optional<SequenceNumber> probe_first_sequence_;
     std::uint64_t probe_first_arrival_microseconds_ = 0;
     NegotiatedLiveOptions live_options_{};

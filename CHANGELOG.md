@@ -4,6 +4,13 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
+## Unreleased
+
+- Add the default-off `ENABLE_MAXREXMITBW` build profile and `SRTO_MAXREXMITBW`
+  sender option, with exact protected-packet accounting, immediate zero-limit
+  suppression, per-member group templates and UDP-success-only budget commits.
+  See the [option contract](docs/socket-options.md#optional-retransmission-bandwidth-limit).
+
 ## 0.2.7 — Recovery and Runtime Hardening — 2026-10-02
 
 Published as [v0.2.7](https://github.com/Robotweax/srt/releases/tag/v0.2.7) from

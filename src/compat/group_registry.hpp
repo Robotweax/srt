@@ -154,6 +154,9 @@ public:
         SRTSOCKET group = SRT_INVALID_SOCK;
         std::uint64_t generation = 0;
         bool created = false;
+#ifdef ENABLE_MAXREXMITBW
+        std::int64_t maximum_retransmission_bandwidth_bytes_per_second = -1;
+#endif
         bool drift_tracer = true;
         std::int64_t minimum_input_bandwidth_bytes_per_second = 0;
         std::int32_t minimum_peer_srt_version = 0x0001'0000;

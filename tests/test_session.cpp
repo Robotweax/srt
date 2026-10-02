@@ -23,6 +23,24 @@ PacketView view_of(const OutboundPacket& outbound)
     return packet;
 }
 
+// Show the receiver that the peer has sent up to `sequence`. A DROPREQ may
+// only advance acknowledgement and window over sequences the peer has
+// demonstrably sent; the probe may fall beyond the receive window and is
+// then rejected, but it still raises the observed send horizon.
+void observe_peer_horizon(ReliabilitySession& receiver, SequenceNumber sequence,
+    std::uint64_t now_microseconds)
+{
+    static const std::array<std::byte, 1> payload {std::byte {'h'}};
+    PacketView probe;
+    probe.kind = PacketKind::data;
+    probe.data.sequence = sequence;
+    probe.data.message_number = 0x3ff'ffffU;
+    probe.data.boundary = MessageBoundary::solo;
+    probe.data.timestamp = PacketTimestamp {0};
+    probe.payload = payload;
+    REQUIRE(receiver.receive(probe, now_microseconds));
+}
+
 PacketView encode_and_decode(const ReliabilityAction& action,
     std::array<std::byte, 64>& storage)
 {
@@ -139,20 +157,221 @@ TEST(session_drop_request_preserves_large_ttl_and_group_sequence_skips)
                 std::array<std::byte, 64> storage {};
                 auto packet = encode_and_decode(drops.values[0], storage);
                 packet.control.timestamp = PacketTimestamp {20};
+                // The request covers sequences this receiver has never
+                // observed. It must not advance the acknowledgement or the
+                // window on its own: an unauthenticated DROPREQ could
+                // otherwise acknowledge sequences the peer never sent.
                 REQUIRE(receiver.receive(packet, 1'020));
-                REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(),
-                    initial.advanced(count));
+                REQUIRE_EQ(
+                    receiver.receive_buffer().next_ack_sequence(), initial);
+                REQUIRE_EQ(
+                    receiver.receive_buffer().first_stored_sequence(), initial);
+                // The first DATA beyond the range proves the peer's position
+                // and applies the whole skip.
+                const std::array payload {std::byte {'n'}};
+                PacketView data;
+                data.kind = PacketKind::data;
+                data.data.sequence = initial.advanced(count);
+                data.data.message_number = 2;
+                data.data.boundary = MessageBoundary::solo;
+                data.data.timestamp = PacketTimestamp {25};
+                data.payload = payload;
+                const auto applied = receiver.receive(data, 1'025);
+                REQUIRE(applied);
+                REQUIRE_EQ(applied.receiver_loss_packets, 0U);
                 if (deferred) {
+                    REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(),
+                        initial.advanced(count));
                     REQUIRE_EQ(
                         receiver.receive_buffer().first_stored_sequence(),
                         initial);
                     REQUIRE_EQ(receiver.drop_too_late_receiver(101'020)
                                    .receiver_drop_packets,
                         count);
+                } else {
+                    REQUIRE_EQ(applied.receiver_drop_packets, count);
+                    REQUIRE(applied.receiver_packet_accepted_unique);
+                    REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(),
+                        initial.advanced(count + 1U));
                 }
                 REQUIRE_EQ(receiver.receive_buffer().first_stored_sequence(),
                     initial.advanced(count));
             }
+        }
+    }
+}
+
+TEST(session_drop_request_cannot_acknowledge_unobserved_sequences)
+{
+    // Contract: a DROPREQ advances acknowledgement and window only over
+    // sequences the peer has demonstrably sent. A request for the maximum
+    // plausible range starting at the next expected sequence must neither
+    // acknowledge sequences never seen nor turn later genuine packets into
+    // duplicates.
+    constexpr auto limit = SequenceNumber::half_range / 2U;
+    for (const bool deferred : {false, true}) {
+        const SequenceNumber initial {100};
+        ReliabilitySession receiver {{
+            .peer_initial_sequence = initial,
+            .send_capacity_packets = 8,
+            .receive_capacity_packets = 8'192,
+        }};
+        receiver.configure_live(
+            {
+                .receive_tsbpd = deferred,
+                .too_late_packet_drop = deferred,
+                .receive_delay_milliseconds = 100,
+            },
+            1'000, PacketTimestamp {0});
+        const std::array payload {std::byte {'p'}};
+        PacketView data;
+        data.kind = PacketKind::data;
+        data.data.boundary = MessageBoundary::solo;
+        data.payload = payload;
+        for (std::uint32_t index = 0; index < 10U; ++index) {
+            data.data.sequence = initial.advanced(index);
+            data.data.message_number = index + 1U;
+            data.data.timestamp = PacketTimestamp {10U + index};
+            REQUIRE(receiver.receive(data, 1'010 + index));
+        }
+        const auto next = initial.advanced(10U);
+        REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(), next);
+
+        std::array<std::byte, 64> storage {};
+        auto packet = encode_and_decode(
+            {
+                .kind = ReliabilityActionKind::drop_request,
+                .drop = {0, {next, next.advanced(limit - 2U)}},
+            },
+            storage);
+        packet.control.timestamp = PacketTimestamp {20};
+        const auto held = receiver.receive(packet, 1'020);
+        REQUIRE(held);
+        REQUIRE_EQ(held.actions.size, 0U);
+        REQUIRE_EQ(held.receiver_drop_packets, 0U);
+        REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(), next);
+        REQUIRE_EQ(receiver.receive_buffer().occupied(), 10U);
+
+        data.data.sequence = next;
+        data.data.message_number = 11U;
+        data.data.timestamp = PacketTimestamp {21};
+        const auto genuine = receiver.receive(data, 1'021);
+        REQUIRE(genuine);
+        REQUIRE(genuine.receiver_packet_accepted_unique);
+        REQUIRE(!genuine.receiver_packet_belated);
+        REQUIRE_EQ(genuine.receiver_drop_packets, 0U);
+        REQUIRE_EQ(genuine.receiver_loss_packets, 0U);
+        REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(), next.next());
+        REQUIRE_EQ(receiver.receive_buffer().occupied(), 11U);
+        REQUIRE_EQ(
+            receiver.drop_too_late_receiver(101'021).receiver_drop_packets, 0U);
+        std::array<std::byte, 1> output {};
+        for (std::uint32_t index = 0; index < 11U; ++index) {
+            REQUIRE(receiver.pop_message_at(output, 101'021));
+            REQUIRE_EQ(output, payload);
+        }
+    }
+}
+
+TEST(session_drop_request_observed_range_does_not_recreate_loss)
+{
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 5U}}) {
+        for (const bool deferred : {false, true}) {
+            ReliabilitySession receiver {{
+                .peer_initial_sequence = initial,
+                .send_capacity_packets = 8,
+                .receive_capacity_packets = 8,
+            }};
+            receiver.configure_live({.receive_tsbpd = deferred,
+                                        .too_late_packet_drop = deferred,
+                                        .periodic_nak = true,
+                                        .receive_delay_milliseconds = 100},
+                1'000, PacketTimestamp {0});
+            observe_peer_horizon(receiver, initial.advanced(10U), 1'001);
+            std::array<std::byte, 64> storage {};
+            const auto request = encode_and_decode(
+                {.kind = ReliabilityActionKind::drop_request,
+                    .drop = {0, {initial, initial.advanced(9U)}}},
+                storage);
+            REQUIRE(receiver.receive(request, 1'002));
+            if (deferred) {
+                REQUIRE(receiver.drop_too_late_receiver(101'002));
+            }
+            const std::array payload {std::byte {'p'}};
+            PacketView data;
+            data.kind = PacketKind::data;
+            data.data.sequence = initial.advanced(10U);
+            data.data.message_number = 1;
+            data.data.boundary = MessageBoundary::solo;
+            data.payload = payload;
+            const auto received = receiver.receive(data, 101'003);
+            REQUIRE(received);
+            REQUIRE(received.receiver_packet_accepted_unique);
+            REQUIRE_EQ(received.receiver_loss_packets, 0U);
+            for (std::size_t index = 0; index < received.actions.size;
+                ++index) {
+                REQUIRE(received.actions.values[index].kind
+                    != ReliabilityActionKind::loss_report);
+            }
+        }
+    }
+}
+
+TEST(session_drop_request_remainder_survives_full_grace_queue)
+{
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 2U}}) {
+        // Exercise both full consumption and partial trimming of the remainder.
+        for (const auto proving_offset : {4U, 5U}) {
+            ReliabilitySession receiver {{
+                .peer_initial_sequence = initial,
+                .send_capacity_packets = 8,
+                .receive_capacity_packets = 2,
+            }};
+            receiver.configure_live({.receive_tsbpd = true,
+                                        .too_late_packet_drop = true,
+                                        .receive_delay_milliseconds = 100},
+                1'000, PacketTimestamp {0});
+            const std::array payload {std::byte {'p'}};
+            PacketView data;
+            data.kind = PacketKind::data;
+            data.data.sequence = initial.next();
+            data.data.message_number = 1;
+            data.data.boundary = MessageBoundary::solo;
+            data.payload = payload;
+            REQUIRE(receiver.receive(data, 1'001));
+            std::array<std::byte, 64> storage {};
+            for (const auto last_offset : {0U, 1U, 4U}) {
+                const auto first =
+                    last_offset == 4U ? initial.advanced(2U) : initial;
+                auto request = encode_and_decode(
+                    {.kind = ReliabilityActionKind::drop_request,
+                        .drop = {0, {first, initial.advanced(last_offset)}}},
+                    storage);
+                request.control.timestamp = PacketTimestamp {20};
+                REQUIRE(receiver.receive(request, 1'030));
+            }
+            data.data.sequence = initial.advanced(proving_offset);
+            data.data.message_number = 2;
+            data.data.timestamp = PacketTimestamp {30};
+            const auto blocked = receiver.receive(data, 1'040);
+            REQUIRE_EQ(blocked.error, Error::would_block);
+            REQUIRE_EQ(blocked.actions.size, 0U);
+            REQUIRE_EQ(blocked.receiver_drop_packets, 0U);
+            REQUIRE(receiver.drop_too_late_receiver(101'040));
+            std::array<std::byte, 1> output {};
+            REQUIRE(receiver.pop_message_at(output, 101'040));
+            REQUIRE_EQ(output, payload);
+            data.data.sequence = initial.advanced(5U);
+            data.data.timestamp = PacketTimestamp {40};
+            const auto retried = receiver.receive(data, 101'041);
+            REQUIRE(retried);
+            REQUIRE(retried.receiver_packet_accepted_unique);
+            REQUIRE_EQ(retried.receiver_drop_packets, 3U);
+            REQUIRE_EQ(retried.receiver_loss_packets, 0U);
+            REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(),
+                initial.advanced(6U));
         }
     }
 }
@@ -172,6 +391,7 @@ TEST(session_drop_request_full_grace_queue_is_nonmutating_backpressure)
             .receive_delay_milliseconds = 100,
         },
         1'000, PacketTimestamp {0});
+    observe_peer_horizon(receiver, initial.advanced(8U), 1'001);
     std::array<std::byte, 64> storage {};
     for (std::uint32_t index : {0U, 2U}) {
         const auto sequence = initial.advanced(index);
@@ -239,6 +459,7 @@ TEST(session_drop_request_index_preserves_wrapped_overlapping_grace_ranges)
                                     .too_late_packet_drop = true,
                                     .receive_delay_milliseconds = 100},
             1'000, PacketTimestamp {0});
+        observe_peer_horizon(receiver, initial.advanced(200U), 1'001);
         std::array<std::byte, 64> storage {};
         std::array<SequenceRange, 64> ranges {};
         for (std::uint32_t index = 0; index < ranges.size(); ++index) {
@@ -303,6 +524,7 @@ TEST(session_drop_request_batch_expiry_preserves_future_identity_and_capacity)
                                         .too_late_packet_drop = true,
                                         .receive_delay_milliseconds = 100},
                 1'000, PacketTimestamp {0});
+            observe_peer_horizon(receiver, initial.advanced(200U), 1'001);
             std::array<std::byte, 64> storage {};
             const auto request = [&](std::uint32_t position,
                                      std::uint32_t timestamp,
@@ -383,9 +605,23 @@ TEST(session_drop_request_accepts_the_supported_sequence_boundaries)
             storage);
         const auto result = receiver.receive(packet, 1);
         REQUIRE(result);
-        REQUIRE_EQ(result.receiver_drop_packets, limit);
+        // Accepted, but held until the peer demonstrably sent past it.
+        REQUIRE_EQ(result.receiver_drop_packets, 0U);
+        REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(), initial);
+        const std::array payload {std::byte {'n'}};
+        PacketView data;
+        data.kind = PacketKind::data;
+        data.data.sequence = initial.advanced(limit);
+        data.data.message_number = 1;
+        data.data.boundary = MessageBoundary::solo;
+        data.payload = payload;
+        const auto applied = receiver.receive(data, 2);
+        REQUIRE(applied);
+        REQUIRE_EQ(applied.receiver_drop_packets, limit);
+        REQUIRE_EQ(applied.receiver_loss_packets, 0U);
+        REQUIRE(applied.receiver_packet_accepted_unique);
         REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(),
-            initial.advanced(limit));
+            initial.advanced(limit + 1U));
         REQUIRE_EQ(receiver.receive_buffer().first_stored_sequence(),
             initial.advanced(limit));
     }
@@ -543,9 +779,10 @@ TEST(session_group_sequence_skip_queues_an_exact_dropreq)
         encode_and_decode(drops.values[0], control_storage);
     const auto dropped = receiver.receive(drop_packet, 1);
     REQUIRE(dropped);
-    REQUIRE_EQ(dropped.receiver_drop_packets, 3U);
+    // The skip is applied once the mirror's first packet proves its position.
+    REQUIRE_EQ(dropped.receiver_drop_packets, 0U);
     REQUIRE_EQ(
-        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {13});
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {10});
 
     const std::array<std::byte, 1> payload {std::byte {'g'}};
     REQUIRE_EQ(session.queue_group_message(
@@ -556,7 +793,12 @@ TEST(session_group_sequence_skip_queues_an_exact_dropreq)
     const auto data = session.next_data_packet();
     REQUIRE(data.has_value());
     REQUIRE_EQ(data->header.sequence, SequenceNumber {13});
-    REQUIRE(receiver.receive(view_of(*data), 2));
+    const auto skipped = receiver.receive(view_of(*data), 2);
+    REQUIRE(skipped);
+    REQUIRE_EQ(skipped.receiver_drop_packets, 3U);
+    REQUIRE_EQ(skipped.receiver_loss_packets, 0U);
+    REQUIRE_EQ(
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {14});
     std::array<std::byte, 1> output {};
     const auto received = receiver.pop_message_at(output, 2);
     REQUIRE(received);
@@ -620,11 +862,11 @@ TEST(session_live_drop_request_retains_received_and_in_flight_solo_packets)
     REQUIRE(processed);
     REQUIRE_EQ(processed.receiver_drop_packets, 0U);
     REQUIRE_EQ(receiver.receive_buffer().occupied(), 1U);
-    REQUIRE_EQ(processed.actions.size, 1U);
-    REQUIRE_EQ(processed.actions.values[0].kind,
-        ReliabilityActionKind::acknowledgement);
-    REQUIRE_EQ(processed.actions.values[0].acknowledgement.next_sequence,
-        SequenceNumber {12});
+    // Sequence 11 has not been observed yet, so the request cannot
+    // acknowledge it; the acknowledgement stays at the received data.
+    REQUIRE_EQ(processed.actions.size, 0U);
+    REQUIRE_EQ(
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {11});
 
     data.data.sequence = SequenceNumber {11};
     data.data.message_number = 2;
@@ -689,7 +931,7 @@ TEST(session_live_drop_request_leaves_true_gap_to_local_deadline_drop)
     REQUIRE_EQ(output, payload);
 }
 
-TEST(session_live_peer_drop_deadline_advances_without_a_later_message)
+TEST(session_live_peer_drop_beyond_observed_data_waits_for_later_data)
 {
     ReliabilitySession receiver {{
         .local_initial_sequence = SequenceNumber {100},
@@ -707,6 +949,10 @@ TEST(session_live_peer_drop_deadline_advances_without_a_later_message)
         },
         1'000, PacketTimestamp {0});
 
+    // The peer abandons its first eight packets before any of them, or
+    // anything later, was observed here. An unauthenticated request alone
+    // must not acknowledge or skip sequences the peer may never have sent,
+    // so nothing is released at the request's deadline.
     std::array<std::byte, 64> storage {};
     auto drop = encode_and_decode(
         {
@@ -715,23 +961,22 @@ TEST(session_live_peer_drop_deadline_advances_without_a_later_message)
         },
         storage);
     drop.control.timestamp = PacketTimestamp {70};
-    REQUIRE(receiver.receive(drop, 1'080));
+    const auto held = receiver.receive(drop, 1'080);
+    REQUIRE(held);
+    REQUIRE_EQ(held.actions.size, 0U);
     REQUIRE_EQ(
         receiver.receive_buffer().first_stored_sequence(), SequenceNumber {10});
-    REQUIRE_EQ(receiver.next_receive_delivery_time(),
-        std::optional<std::uint64_t> {101'070});
     REQUIRE_EQ(
-        receiver.drop_too_late_receiver(101'069).receiver_drop_packets, 0U);
-    const auto released = receiver.drop_too_late_receiver(101'070);
-    REQUIRE(released);
-    REQUIRE_EQ(released.receiver_drop_packets, 8U);
-    REQUIRE_EQ(released.actions.size, 1U);
-    REQUIRE_EQ(released.actions.values[0].acknowledgement.next_sequence,
-        SequenceNumber {18});
-    REQUIRE_EQ(
-        receiver.receive_buffer().first_stored_sequence(), SequenceNumber {18});
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {10});
     REQUIRE(!receiver.next_receive_delivery_time());
+    REQUIRE_EQ(
+        receiver.drop_too_late_receiver(101'070).receiver_drop_packets, 0U);
+    REQUIRE_EQ(
+        receiver.receive_buffer().first_stored_sequence(), SequenceNumber {10});
 
+    // The first packet past the range proves the peer's position; the held
+    // request is applied at once (its grace deadline already passed), the
+    // gap is not reported as loss, and the packet is delivered normally.
     const std::array<std::byte, 1> payload {std::byte {'n'}};
     PacketView fresh;
     fresh.kind = PacketKind::data;
@@ -743,6 +988,12 @@ TEST(session_live_peer_drop_deadline_advances_without_a_later_message)
     const auto received = receiver.receive(fresh, 101'071);
     REQUIRE(received);
     REQUIRE(received.receiver_packet_accepted_unique);
+    REQUIRE_EQ(received.receiver_drop_packets, 8U);
+    REQUIRE_EQ(received.receiver_loss_packets, 0U);
+    REQUIRE_EQ(
+        receiver.receive_buffer().first_stored_sequence(), SequenceNumber {18});
+    REQUIRE_EQ(
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {19});
     std::array<std::byte, 1> output {};
     REQUIRE(receiver.pop_message_at(output, 101'090));
     REQUIRE_EQ(output, payload);

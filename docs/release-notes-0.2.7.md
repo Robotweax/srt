@@ -29,8 +29,10 @@ an experimental Windows backend.
 - Preserve receive-key identity across refresh and bounded retired history,
   including the later correction that protects a newer generation after it
   has processed DATA.
-- Bound KM work and retry/preannounce timing. Long peer RTT requires a suitable
-  peer-idle configuration; retry mitigation does not authenticate ACK values.
+- Bound KM retry and preannounce timing by the peer-idle horizon. Long peer RTT
+  requires a suitable peer-idle configuration; retry mitigation does not
+  authenticate ACK values. The per-connection budget for fresh-salt key
+  derivations is unchanged and remains first-come, first-served.
 - Use random socket identities and strengthen handshake window and rejection
   validation. These changes do not authenticate all runtime control packets.
 

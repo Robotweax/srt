@@ -233,6 +233,154 @@ TEST(row_fec_decoder_reconstructs_one_missing_wire_packet)
         missing.begin()));
 }
 
+TEST(row_fec_decoder_zero_pads_a_shorter_peer_control_payload)
+{
+    // The peer's SRTO_PAYLOADSIZE is not negotiated. A peer encoder with
+    // a smaller payload size emits control payloads shorter than the local
+    // recovery buffer; they must still rebuild the missing packet.
+    const auto configuration = row_configuration(3U);
+    RowFecEncoder encoder {configuration, SequenceNumber {200}, 4U};
+    RowFecDecoder decoder {configuration, SequenceNumber {200}, 16U, 8U};
+    const std::array first {std::byte {'a'}, std::byte {'b'}};
+    const std::array missing {
+        std::byte {'C'}, std::byte {'D'}, std::byte {'E'}};
+    const std::array third {std::byte {'x'}};
+    const auto first_packet =
+        source_packet(200, 10U, EncryptionKey::none, first, true);
+    const auto missing_packet =
+        source_packet(201, 20U, EncryptionKey::none, missing, true);
+    const auto third_packet =
+        source_packet(202, 30U, EncryptionKey::none, third, true);
+    REQUIRE_EQ(encoder.feed_source(first_packet), Error::none);
+    REQUIRE_EQ(encoder.feed_source(missing_packet), Error::none);
+    REQUIRE_EQ(encoder.feed_source(third_packet), Error::none);
+    const auto control = encoder.control_packet();
+    REQUIRE(control.has_value());
+    REQUIRE_EQ(control->payload.size(), 4U + 4U);
+
+    REQUIRE(decoder.receive(first_packet));
+    REQUIRE(decoder.receive(third_packet));
+    const auto rebuilt = decoder.receive({
+        .kind = PacketKind::data,
+        .data = control->header,
+        .payload = control->payload,
+    });
+    REQUIRE(rebuilt);
+    REQUIRE(rebuilt.consume_control_packet);
+    REQUIRE(rebuilt.has_reconstructed_packet);
+    REQUIRE_EQ(
+        rebuilt.reconstructed_packet.data.sequence, SequenceNumber {201});
+    REQUIRE_EQ(rebuilt.reconstructed_packet.payload.size(), missing.size());
+    REQUIRE(std::equal(rebuilt.reconstructed_packet.payload.begin(),
+        rebuilt.reconstructed_packet.payload.end(), missing.begin()));
+}
+
+TEST(row_fec_decoder_reports_a_clipped_longer_peer_packet_for_arq)
+{
+    // A peer with a larger SRTO_PAYLOADSIZE sends source and control
+    // payloads longer than the local recovery buffer. The decoder keeps
+    // tracking the group: shorter missing packets are still rebuilt, and
+    // a missing packet longer than the buffer is reported through row
+    // expiry so ARQ recovers it, instead of leaving the row untracked.
+    const auto configuration = row_configuration(3U, "onreq");
+    RowFecEncoder encoder {configuration, SequenceNumber {300}, 8U};
+    RowFecDecoder decoder {configuration, SequenceNumber {300}, 32U, 4U};
+    const std::array long_payload {std::byte {'1'}, std::byte {'2'},
+        std::byte {'3'}, std::byte {'4'}, std::byte {'5'}, std::byte {'6'}};
+    const std::array short_payload {std::byte {'s'}, std::byte {'t'}};
+    const std::array other {std::byte {'o'}};
+
+    // Row 0: the longer packet 301 is lost -> cannot be rebuilt locally.
+    const auto p300 = source_packet(300, 1U, EncryptionKey::none, other);
+    const auto p301 = source_packet(301, 2U, EncryptionKey::none, long_payload);
+    const auto p302 = source_packet(302, 3U, EncryptionKey::none, long_payload);
+    REQUIRE_EQ(encoder.feed_source(p300), Error::none);
+    REQUIRE_EQ(encoder.feed_source(p301), Error::none);
+    REQUIRE_EQ(encoder.feed_source(p302), Error::none);
+    const auto control_row0 = encoder.control_packet();
+    REQUIRE(control_row0.has_value());
+    REQUIRE_EQ(control_row0->payload.size(), 4U + 8U);
+
+    REQUIRE(decoder.receive(p300));
+    REQUIRE(decoder.receive(p302));
+    const auto not_rebuilt = decoder.receive({
+        .kind = PacketKind::data,
+        .data = control_row0->header,
+        .payload = control_row0->payload,
+    });
+    REQUIRE(not_rebuilt);
+    REQUIRE(not_rebuilt.consume_control_packet);
+    REQUIRE(!not_rebuilt.has_reconstructed_packet);
+    encoder.consume_control_packet();
+
+    // Row 1: a short packet 304 is lost next to longer neighbours; the
+    // clipped control payload still rebuilds it exactly.
+    const auto p303 = source_packet(303, 4U, EncryptionKey::none, long_payload);
+    const auto p304 =
+        source_packet(304, 5U, EncryptionKey::none, short_payload);
+    const auto p305 = source_packet(305, 6U, EncryptionKey::none, long_payload);
+    REQUIRE_EQ(encoder.feed_source(p303), Error::none);
+    REQUIRE_EQ(encoder.feed_source(p304), Error::none);
+    REQUIRE_EQ(encoder.feed_source(p305), Error::none);
+    const auto control_row1 = encoder.control_packet();
+    REQUIRE(control_row1.has_value());
+    REQUIRE(decoder.receive(p303));
+    // Row 0 expires once row 1 passes its grace window; the clipped
+    // packet 301 is reported for ARQ instead of being rebuilt.
+    const auto expired = decoder.receive(p305);
+    REQUIRE(expired);
+    REQUIRE_EQ(expired.irrecoverable_losses.size(), 1U);
+    REQUIRE_EQ(expired.irrecoverable_losses[0].first, SequenceNumber {301});
+    REQUIRE_EQ(expired.irrecoverable_losses[0].last, SequenceNumber {301});
+    const auto rebuilt = decoder.receive({
+        .kind = PacketKind::data,
+        .data = control_row1->header,
+        .payload = control_row1->payload,
+    });
+    REQUIRE(rebuilt);
+    REQUIRE(rebuilt.has_reconstructed_packet);
+    REQUIRE_EQ(
+        rebuilt.reconstructed_packet.data.sequence, SequenceNumber {304});
+    REQUIRE_EQ(
+        rebuilt.reconstructed_packet.payload.size(), short_payload.size());
+    REQUIRE(std::equal(rebuilt.reconstructed_packet.payload.begin(),
+        rebuilt.reconstructed_packet.payload.end(), short_payload.begin()));
+}
+
+TEST(column_fec_decoder_zero_pads_a_shorter_peer_control_payload)
+{
+    const auto configuration = column_configuration(2U, 2U);
+    ColumnFecEncoder encoder {configuration, SequenceNumber {400}, 4U};
+    ColumnFecDecoder decoder {configuration, SequenceNumber {400}, 16U, 8U};
+    const std::array a {std::byte {'a'}};
+    const std::array missing {
+        std::byte {'M'}, std::byte {'N'}, std::byte {'O'}};
+    // Column 0 of the even layout: sequences 400 and 402.
+    const auto p400 = source_packet(400, 1U, EncryptionKey::none, a);
+    const auto p401 = source_packet(401, 2U, EncryptionKey::none, a);
+    const auto p402 = source_packet(402, 3U, EncryptionKey::none, missing);
+    for (const auto& packet : {p400, p401, p402}) {
+        REQUIRE_EQ(encoder.feed_source(packet), Error::none);
+    }
+    const auto control = encoder.control_packet();
+    REQUIRE(control.has_value());
+    REQUIRE_EQ(control->payload.size(), 4U + 4U);
+    REQUIRE(decoder.receive(p400));
+    REQUIRE(decoder.receive(p401));
+    const auto rebuilt = decoder.receive({
+        .kind = PacketKind::data,
+        .data = control->header,
+        .payload = control->payload,
+    });
+    REQUIRE(rebuilt);
+    REQUIRE(rebuilt.consume_control_packet);
+    REQUIRE(rebuilt.has_reconstructed_packet);
+    REQUIRE_EQ(
+        rebuilt.reconstructed_packet.data.sequence, SequenceNumber {402});
+    REQUIRE(std::equal(rebuilt.reconstructed_packet.payload.begin(),
+        rebuilt.reconstructed_packet.payload.end(), missing.begin()));
+}
+
 TEST(row_fec_decoder_reconstructs_exact_wrapped_message_number)
 {
     constexpr std::uint32_t maximum_message_number = 0x03ff'ffffU;

@@ -23,8 +23,8 @@ HOOKS = {
     "src/send_buffer.cpp": [
         ("    slot->retransmission_queued = true;\n",
          '    slot->retransmission_queued = true;\n    RWX_TRACE("queued", this, sequence.value());\n'),
-        ("        header.retransmitted = true;\n",
-         '        header.retransmitted = true;\n        RWX_TRACE("selected", this, sequence.value());\n'),
+        ("\n        header.retransmitted = true;\n",
+         '\n        header.retransmitted = true;\n        RWX_TRACE("selected", this, sequence.value());\n'),
         ("    const Error validation = validate_retransmission_range(range);\n",
          '    RWX_TRACE("request_nak", this, range.first.value(), range.last.value());\n'
          "    const Error validation = validate_retransmission_range(range);\n"),
