@@ -117,8 +117,10 @@ released boundaries:
 | `SRTO_CONGESTION` | Implemented LiveCC/FileCC selection; custom congestion modules are not supported |
 | `SRTO_PACKETFILTER` | Built-in bounded `fec` grammar and documented geometries only |
 
-The disabled-by-default `SRTO_MAXREXMITBW` declaration is outside the selected
-v1.5.7 default profile. `SRTO_CRYPTOMODE` is present only in an extension build.
+The default-off `SRTO_MAXREXMITBW` extension is outside the selected v1.5.7
+default profile. Development builds can enable `ENABLE_MAXREXMITBW`; see its
+[option contract](socket-options.md#optional-retransmission-bandwidth-limit).
+The published 0.2.7 binaries do not contain this extension. `SRTO_CRYPTOMODE` is present only in an extension build.
 `SYSSOCKET_INVALID` follows the platform's public `SYSSOCKET` representation.
 
 ## Lifecycle and concurrency

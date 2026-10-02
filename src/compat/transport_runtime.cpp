@@ -1548,6 +1548,14 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
             || column_fec_decoder_.has_value()
             || matrix_fec_decoder_.has_value());
     (void)session_.apply_dynamic_options(configuration.options);
+#ifdef ENABLE_MAXREXMITBW
+    retransmission_budget_.configure(
+        configuration.options
+            .get(
+                SocketOption::maximum_retransmission_bandwidth_bytes_per_second)
+            .value,
+        now_microseconds());
+#endif
     statistics_.update_reorder_state(
         session_.reorder_distance_packets(),
         session_.reorder_tolerance_packets());
@@ -2192,6 +2200,19 @@ ConnectionRuntime::next_receive_wakeup_locked(
               deadline_after_relative_microseconds(now, *delivery)};
 }
 
+bool ConnectionRuntime::retransmission_ready(std::uint64_t now) noexcept
+{
+#ifdef ENABLE_MAXREXMITBW
+    const auto packet = session_.peek_retransmission_packet();
+    return packet.has_value()
+        && retransmission_budget_.ready(
+            packet_header_size + packet->payload.size(), now);
+#else
+    (void)now;
+    return session_.has_pending_retransmission();
+#endif
+}
+
 bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
     DatagramCompletion completion, std::uint64_t now) noexcept
 {
@@ -2297,6 +2318,9 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
             session_.send_buffer().packets_in_flight());
         session_.note_data_packet_sent(now);
         if (completion.data.retransmitted) {
+#ifdef ENABLE_MAXREXMITBW
+            retransmission_budget_.consume(bytes.size(), now);
+#endif
             session_.note_retransmission_sent(completion.data.sequence, now);
         }
         pacer_.on_packet_sent(bytes.size(), now);
@@ -2392,6 +2416,17 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
                 && std::equal(
                     material.begin(), material.end(), queued_material.begin());
         }
+#ifdef ENABLE_MAXREXMITBW
+        if (current && pending.completion.kind == DatagramKind::data
+            && pending.completion.data.retransmitted
+            && !retransmission_budget_.ready(pending.size, now)) {
+            // A changed budget must not hold controls behind this DATA retry.
+            // Restore loss work; the main scheduler will wait for its budget.
+            session_.requeue_prepared_retransmission(
+                pending.completion.data.sequence);
+            current = false;
+        }
+#endif
         if (current) {
             if (poll_send_budget_ != nullptr) {
                 if (*poll_send_budget_ == 0U) {
@@ -3595,8 +3630,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         if (pending_datagram_size_ != 0U) {
             break;
         }
-        if (fec_control_ready()
-            && !session_.has_pending_retransmission()) {
+        if (fec_control_ready() && !retransmission_ready(now_microseconds())) {
             const std::uint64_t live_rate =
                 session_
                     .live_pacing_rate_bytes_per_second();
@@ -3629,7 +3663,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             continue;
         }
         if (crypto_ != nullptr && crypto_->enabled()
-            && !session_.has_pending_retransmission()) {
+            && !retransmission_ready(now_microseconds())) {
             const auto candidate = session_.send_buffer().peek_new_packet();
             if (candidate.has_value()) {
                 observe_key_sequence_position(
@@ -3650,10 +3684,10 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         // already owns its original ciphertext and does not depend on it.
         if (crypto_ != nullptr && crypto_->enabled()
             && !crypto_->ready_to_send_data()
-            && !session_.has_pending_retransmission()) {
+            && !retransmission_ready(now_microseconds())) {
             break;
         }
-        const bool retransmission = session_.has_pending_retransmission();
+        const bool retransmission = retransmission_ready(now_microseconds());
         if (!retransmission
             && session_.send_buffer().packets_in_flight()
                 >= flow_window_packets_) {
@@ -3663,8 +3697,8 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             crypto_ != nullptr && crypto_->authenticated_data_enabled()
             ? srt_gcm_authentication_tag_size
             : 0U;
-        const auto packet = session_.next_paced_data_packet(
-            pacer_, packet_time, new_packet_wire_overhead, true);
+        const auto packet = session_.next_paced_data_packet(pacer_, packet_time,
+            new_packet_wire_overhead, true, retransmission);
         if (!packet.has_value()) {
             break;
         }
@@ -3679,8 +3713,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     if (pending_datagram_size_ != 0U) {
         return pending_send_poll_result(now_microseconds());
     }
-    const bool retransmission =
-        session_.has_pending_retransmission();
+    const bool retransmission = retransmission_ready(now_microseconds());
     const bool pending = session_.has_pending_send_work();
     const bool flow_blocked = !retransmission
         && session_.send_buffer().packets_in_flight()
@@ -3703,6 +3736,29 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         && crypto_->enabled() && !crypto_->ready_to_send_data();
     const bool paced_work =
         filter_pending || (pending && !flow_blocked && !crypto_blocked);
+#ifdef ENABLE_MAXREXMITBW
+    if (!filter_pending && !retransmission
+        && session_.has_pending_retransmission()
+        && (!session_.send_buffer().peek_new_packet().has_value()
+            || flow_blocked || crypto_blocked)) {
+        const auto candidate = session_.peek_retransmission_packet();
+        if (candidate.has_value()) {
+            const auto current = now_microseconds();
+            const auto wait = retransmission_budget_.delay(
+                packet_header_size + candidate->payload.size(), current);
+            if (wait.has_value() && *wait != 0) {
+                return {.next_work_delay = std::chrono::microseconds {*wait},
+                    .next_work_deadline = now_function_ == nullptr
+                        ? deadline_from_origin_microseconds(
+                              origin_, current + *wait)
+                        : deadline_after_relative_microseconds(
+                              current, current + *wait)};
+            }
+            if (!wait.has_value())
+                return {};
+        }
+    }
+#endif
     if (!paced_work) {
         // Start conservatively: buffered DATA, receive delivery/drop work and
         // pending key exchanges retain the established short polling path.
@@ -3771,13 +3827,27 @@ void ConnectionRuntime::notify_readiness() noexcept
 void ConnectionRuntime::apply_options(
     const SocketOptions& options) noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
     options_ = options;
+#ifdef ENABLE_MAXREXMITBW
+    const auto limit =
+        options
+            .get(
+                SocketOption::maximum_retransmission_bandwidth_bytes_per_second)
+            .value;
+    const bool limit_changed = retransmission_budget_.limit() != limit;
+    retransmission_budget_.configure(limit, now_microseconds());
+#endif
     (void)session_.apply_dynamic_options(options_);
     statistics_.update_reorder_state(
         session_.reorder_distance_packets(),
         session_.reorder_tolerance_packets());
     notify_readiness();
+#ifdef ENABLE_MAXREXMITBW
+    lock.unlock();
+    if (limit_changed)
+        notify_channel_send_work();
+#endif
 }
 
 void ConnectionRuntime::break_locked(int system_error) noexcept

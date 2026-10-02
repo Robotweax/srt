@@ -58,6 +58,9 @@ enum class SocketOption : std::uint16_t {
 #ifdef ENABLE_AEAD_API_PREVIEW
     crypto_mode,
 #endif
+#ifdef ENABLE_MAXREXMITBW
+    maximum_retransmission_bandwidth_bytes_per_second,
+#endif
 };
 
 struct SocketOptionResult {
@@ -223,6 +226,9 @@ private:
     std::uint64_t input_bandwidth_ = 0;
     std::uint64_t minimum_input_bandwidth_ = 0;
     std::int64_t maximum_bandwidth_ = -1;
+#ifdef ENABLE_MAXREXMITBW
+    std::int64_t maximum_retransmission_bandwidth_ = -1;
+#endif
     std::uint32_t overhead_percent_ = 25;
     std::uint16_t receiver_latency_milliseconds_ = 120;
     std::uint16_t peer_latency_milliseconds_ = 0;

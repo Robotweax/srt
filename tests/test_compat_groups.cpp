@@ -6107,3 +6107,40 @@ TEST(compat_group_retained_prefix_expiry_and_close_publish_terminal_failure)
         REQUIRE_EQ(srt_epoll_release(poll), 0);
     }
 }
+
+#ifdef ENABLE_MAXREXMITBW
+TEST(maxrexmitbw_group_mirror_retains_listener_and_updated_member_template)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    const auto listener = srt_create_socket();
+    std::int64_t limit = 1700;
+    REQUIRE_EQ(
+        srt_setsockflag(listener, SRTO_MAXREXMITBW, &limit, sizeof(limit)), 0);
+    GroupRegistry::MirrorDescription first;
+    REQUIRE(GroupRegistry::instance().prepare_mirror(
+        listener, SRTGROUP_MASK | 178, SRT_GTYPE_BROADCAST, 700, first));
+    REQUIRE_EQ(first.maximum_retransmission_bandwidth_bytes_per_second, limit);
+    std::int64_t observed = 0;
+    int size = sizeof(observed);
+    REQUIRE_EQ(
+        srt_getsockflag(first.group, SRTO_MAXREXMITBW, &observed, &size), 0);
+    REQUIRE_EQ(observed, limit);
+    limit = 0;
+    REQUIRE_EQ(
+        srt_setsockflag(first.group, SRTO_MAXREXMITBW, &limit, sizeof(limit)),
+        0);
+    GroupRegistry::MirrorDescription later;
+    REQUIRE(GroupRegistry::instance().prepare_mirror(
+        listener, SRTGROUP_MASK | 178, SRT_GTYPE_BROADCAST, 701, later));
+    REQUIRE_EQ(later.maximum_retransmission_bandwidth_bytes_per_second, 0);
+    auto* config = srt_create_config();
+    REQUIRE(config != nullptr);
+    REQUIRE_EQ(
+        srt_config_add(config, SRTO_MAXREXMITBW, &limit, sizeof(limit)), 0);
+    REQUIRE_EQ(config->storage.snapshot().options[0].size, sizeof(limit));
+    srt_delete_config(config);
+    REQUIRE_EQ(srt_close(first.group), 0);
+    REQUIRE_EQ(srt_close(listener), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
+#endif
