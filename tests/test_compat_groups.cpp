@@ -5986,12 +5986,14 @@ TEST(compat_group_closed_fragment_keeps_shared_clock_and_small_buffer_retry)
     REQUIRE_EQ(record->next_receive_sequence, first.advanced(2).value());
 }
 
-TEST(compat_group_retention_bounds_fail_explicitly_and_deduplicate)
+TEST(compat_group_retention_bounds_drop_oldest_and_deduplicate)
 {
     using robotweax::srt::compat::GroupReceiveRetention;
+    using robotweax::srt::compat::MessageIoStatus;
     using robotweax::srt::compat::RetainedGroupReceiveBatch;
     const auto batch = [](SequenceNumber first, std::size_t bytes = 1U,
-                           std::uint32_t packets = 1U) {
+                           std::uint32_t packets = 1U,
+                           std::byte fill = std::byte {'x'}) {
         RetainedGroupReceiveBatch result;
         result.origin = ConnectionRuntime::Clock::now();
         robotweax::srt::BufferedMessageCopy message {
@@ -5999,25 +6001,27 @@ TEST(compat_group_retention_bounds_fail_explicitly_and_deduplicate)
             .next_sequence = first.advanced(packets),
             .message_number = 1,
         };
-        message.payload.resize(bytes, std::byte {'x'});
+        message.payload.resize(bytes, fill);
         result.copies.messages.push_back(std::move(message));
         return result;
     };
     const SequenceNumber first {SequenceNumber::mask - 1U};
+    std::array<std::byte, 1> output {};
     {
+        // Duplicate ranges consume no additional storage.
         GroupReceiveRetention retained;
         for (std::uint32_t index = 0; index < 32; ++index) {
             retained.retain(batch(first), first);
         }
-        REQUIRE(!retained.failed());
-        std::array<std::byte, 1> output {};
         REQUIRE_EQ(retained.receive_message(output, first).status,
-            robotweax::srt::compat::MessageIoStatus::success);
+            MessageIoStatus::success);
         REQUIRE_EQ(output[0], std::byte {'x'});
         REQUIRE_EQ(retained.receive_message(output, first.next()).status,
-            robotweax::srt::compat::MessageIoStatus::would_block);
+            MessageIoStatus::would_block);
     }
     for (const bool packet_limit : {false, true}) {
+        // A message that can never fit is dropped on its own; the storage
+        // stays usable for later prefixes and nothing becomes terminal.
         GroupReceiveRetention retained;
         retained.retain(
             batch(first,
@@ -6025,31 +6029,66 @@ TEST(compat_group_retention_bounds_fail_explicitly_and_deduplicate)
                 packet_limit ? GroupReceiveRetention::maximum_packets + 1U
                              : 1U),
             first);
-        REQUIRE(retained.failed());
-        std::array<std::byte, 1> output {};
         REQUIRE_EQ(retained.receive_message(output, first).status,
-            robotweax::srt::compat::MessageIoStatus::broken);
+            MessageIoStatus::would_block);
+        retained.retain(batch(first.next(), 1U, 1U, std::byte {'y'}), first);
+        REQUIRE_EQ(retained.receive_message(output, first.next()).status,
+            MessageIoStatus::success);
+        REQUIRE_EQ(output[0], std::byte {'y'});
     }
     {
+        // The batch bound evicts the oldest retained batch for the newest.
         GroupReceiveRetention retained;
         for (std::uint32_t index = 0;
             index < GroupReceiveRetention::maximum_batches; ++index) {
             retained.retain(batch(first.advanced(index)), first);
         }
-        REQUIRE(!retained.failed());
         retained.retain(
             batch(first.advanced(GroupReceiveRetention::maximum_batches)),
             first);
-        REQUIRE(retained.failed());
+        REQUIRE_EQ(retained.receive_message(output, first).status,
+            MessageIoStatus::would_block);
+        REQUIRE_EQ(retained.receive_message(output, first.next()).status,
+            MessageIoStatus::success);
+        REQUIRE_EQ(
+            retained
+                .receive_message(output,
+                    first.advanced(GroupReceiveRetention::maximum_batches))
+                .status,
+            MessageIoStatus::success);
+    }
+    {
+        // The packet bound evicts oldest batches until the newest fits.
+        GroupReceiveRetention retained;
+        retained.retain(
+            batch(first, 1U, GroupReceiveRetention::maximum_packets), first);
+        REQUIRE_EQ(retained.receive_message(output, first).status,
+            MessageIoStatus::success);
+        retained.retain(
+            batch(first, 1U, GroupReceiveRetention::maximum_packets), first);
+        retained.retain(
+            batch(first.advanced(GroupReceiveRetention::maximum_packets), 1U,
+                1U, std::byte {'z'}),
+            first);
+        REQUIRE_EQ(retained.receive_message(output, first).status,
+            MessageIoStatus::would_block);
+        REQUIRE_EQ(
+            retained
+                .receive_message(output,
+                    first.advanced(GroupReceiveRetention::maximum_packets))
+                .status,
+            MessageIoStatus::success);
+        REQUIRE_EQ(output[0], std::byte {'z'});
     }
 }
 
-TEST(compat_group_retained_prefix_expiry_and_close_publish_terminal_failure)
+TEST(compat_group_retained_prefix_expiry_drops_data_and_keeps_group_usable)
 {
     using robotweax::srt::compat::GroupReceiveRetention;
     for (const bool expire : {false, true}) {
         const auto group = srt_create_group(SRT_GTYPE_BACKUP);
         const auto socket = srt_create_socket();
+        const auto replacement = srt_create_socket();
         const auto record = GroupRegistry::instance().find(group);
         REQUIRE(record != nullptr);
         const SequenceNumber initial {record->initial_sequence};
@@ -6064,20 +6103,35 @@ TEST(compat_group_retained_prefix_expiry_and_close_publish_terminal_failure)
                 (void)srt_close(group);
             }
         } cleanup {group};
+        const auto origin = ConnectionRuntime::Clock::now();
         auto runtime = attach_group_runtime(group, socket, initial.value(), 1,
-            &clock, 0, true, 100, ConnectionRuntime::Clock::now(), record);
-        const std::array<std::byte, 1> payload {std::byte {'x'}};
-        robotweax::srt::PacketView packet;
-        packet.kind = robotweax::srt::PacketKind::data;
-        packet.data.sequence = initial;
-        packet.data.message_number = 1;
-        packet.data.boundary = robotweax::srt::MessageBoundary::solo;
-        packet.payload = payload;
-        runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+            &clock, 0, true, 100, origin, record);
+        const auto inject = [&](const auto& target, std::uint32_t offset,
+                                std::byte value) {
+            const std::array<std::byte, 1> payload {value};
+            robotweax::srt::PacketView packet;
+            packet.kind = robotweax::srt::PacketKind::data;
+            packet.data.sequence = initial.advanced(offset);
+            packet.data.message_number = offset + 1;
+            packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+            packet.data.timestamp =
+                robotweax::srt::PacketTimestamp {offset * 1'000U};
+            packet.payload = payload;
+            target->process_packet(packet, IpEndpoint::loopback(9'000));
+        };
+        inject(runtime, 0, std::byte {'x'});
+        // A healthy replacement already carries the next message.
+        const auto later = attach_group_runtime(group, replacement,
+            initial.next().value(), 1, &clock, 8, true, 100, origin, record);
+        inject(later, 1, std::byte {'y'});
         REQUIRE_EQ(srt_close(socket), 0);
         runtime.reset();
         const auto retained = record->retained_receive;
         REQUIRE(retained != nullptr);
+        const bool synchronous = false;
+        REQUIRE_EQ(srt_setsockflag(
+                       group, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+            0);
         const auto poll = srt_epoll_create();
         const int flags = SRT_EPOLL_IN | SRT_EPOLL_ERR;
         REQUIRE_EQ(srt_epoll_add_usock(poll, group, &flags), 0);
@@ -6085,21 +6139,42 @@ TEST(compat_group_retained_prefix_expiry_and_close_publish_terminal_failure)
         if (expire) {
             clock.now_microseconds =
                 GroupReceiveRetention::maximum_age_microseconds - 1U;
-            REQUIRE(!retained->failed());
+            // Still retained: the closed member's message is delivered.
+            REQUIRE_EQ(srt_getsockstate(group), SRTS_CONNECTED);
             clock.now_microseconds += 1U;
-            REQUIRE_EQ(srt_getsockstate(group), SRTS_BROKEN);
-            REQUIRE(retained->failed());
+            // Expired: the retained prefix is receiver-side loss, the group
+            // stays usable and skips to the replacement's data.
+            REQUIRE_EQ(srt_getsockstate(group), SRTS_CONNECTED);
             SRT_EPOLL_EVENT event {};
             REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
-            REQUIRE((event.events & SRT_EPOLL_ERR) != 0);
+            REQUIRE((event.events & SRT_EPOLL_ERR) == 0);
+            REQUIRE((event.events & SRT_EPOLL_IN) != 0);
             REQUIRE_EQ(
                 srt_recvmsg(group, reinterpret_cast<char*>(output.data()),
                     output.size()),
-                SRT_ERROR);
-            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNLOST);
-            REQUIRE_EQ(record->next_receive_sequence, initial.value());
-            REQUIRE_EQ(srt_sendmsg(group, "x", 1, -1, 1), SRT_ERROR);
-            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNLOST);
+                1);
+            REQUIRE_EQ(output[0], std::byte {'y'});
+            REQUIRE_EQ(
+                record->next_receive_sequence, initial.advanced(2).value());
+            SRT_TRACEBSTATS statistics {};
+            REQUIRE_EQ(srt_bistats(group, &statistics, 0, 1), 0);
+            REQUIRE_EQ(statistics.pktRcvDropTotal, 1);
+            // The send path is unaffected by receive-side retention loss.
+            if (srt_sendmsg(group, "x", 1, -1, 1) != 1) {
+                REQUIRE(srt_getlasterror(nullptr) != SRT_ECONNLOST);
+            }
+        } else {
+            clock.now_microseconds = 200'000;
+            REQUIRE_EQ(
+                srt_recvmsg(group, reinterpret_cast<char*>(output.data()),
+                    output.size()),
+                1);
+            REQUIRE_EQ(output[0], std::byte {'x'});
+            REQUIRE_EQ(
+                srt_recvmsg(group, reinterpret_cast<char*>(output.data()),
+                    output.size()),
+                1);
+            REQUIRE_EQ(output[0], std::byte {'y'});
         }
         REQUIRE_EQ(srt_close(group), 0);
         REQUIRE_EQ(retained->receive_message(output, initial).status,

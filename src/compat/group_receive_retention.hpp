@@ -20,6 +20,11 @@ struct RetainedGroupReceiveBatch {
     void* now_context = nullptr;
 };
 
+// Bounded receive-only storage for complete unread messages of a member that
+// was closed explicitly. The bounds (packets, bytes, batches, unread age)
+// are enforced by discarding retained data, oldest batch first, never by
+// failing the group: data that cannot be retained is receiver-side loss and
+// the group skips past it, exactly as it skips a gap no member can supply.
 class GroupReceiveRetention {
 public:
     explicit GroupReceiveRetention(
@@ -39,8 +44,6 @@ public:
     [[nodiscard]] MessageIoResult receive_message(
         std::span<std::byte> destination, SequenceNumber expected) noexcept;
     void discard_before(SequenceNumber consumed) noexcept;
-    [[nodiscard]] bool failed() noexcept;
-    void fail() noexcept;
     void close() noexcept;
 
 private:
@@ -50,13 +53,12 @@ private:
         const BufferedMessageCopy& message) noexcept;
     void expire_locked() noexcept;
     void discard_before_locked(SequenceNumber consumed) noexcept;
-    void fail_locked() noexcept;
+    void drop_batch_locked(std::size_t index) noexcept;
     std::weak_ptr<ReadinessSource> source_;
     std::mutex mutex_;
     std::vector<RetainedGroupReceiveBatch> batches_;
     std::size_t packets_ = 0;
     std::size_t bytes_ = 0;
-    bool failed_ = false;
     bool closed_ = false;
 };
 

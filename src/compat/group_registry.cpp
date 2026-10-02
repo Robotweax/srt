@@ -20,11 +20,6 @@ namespace {
 [[nodiscard]] SRT_SOCKSTATUS aggregate_state(
     const GroupRecord& group) noexcept
 {
-    if (group.receive_retention_failed
-        || (group.retained_receive != nullptr
-            && group.retained_receive->failed())) {
-        return SRTS_BROKEN;
-    }
     if (group.closed) {
         return SRTS_CLOSED;
     }
@@ -981,7 +976,8 @@ void GroupRegistry::retain_member_receive(SRTSOCKET group,
             record->retained_receive->retain(std::move(batch),
                 SequenceNumber {record->next_receive_sequence});
         } catch (...) {
-            record->receive_retention_failed = true;
+            // No retention storage: the closed member's unread prefix is
+            // lost for this receiver and the group skips it.
         }
         ++record->snapshot_version;
     }

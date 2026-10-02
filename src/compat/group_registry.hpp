@@ -91,7 +91,6 @@ struct GroupRecord {
     GroupReplayBuffer replay_history;
     // Receive-only ownership detached from explicitly closed members.
     std::shared_ptr<GroupReceiveRetention> retained_receive;
-    bool receive_retention_failed = false;
     std::uint32_t next_receive_sequence = 0;
     // The first completed caller handshake establishes the reverse sequence
     // space. Later members use the group's receive cursor independently of
