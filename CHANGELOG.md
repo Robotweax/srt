@@ -4,6 +4,26 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
+## 0.2.7 — Recovery and Runtime Hardening — Unreleased
+
+See [release notes](docs/release-notes-0.2.7.md) for the preparation status,
+compatibility contract and qualification limits.
+
+- Correct Live/File loss reporting, FEC window admission, directional packet
+  drops, ACK cadence, timing origins and transient UDP recovery.
+- Harden key-rotation transitions, optional-encryption state, receive-key
+  identity/history and bounded KM work/retry budgets. Long-horizon control
+  replay remains unresolved; this is not complete replay protection.
+- Correct Broadcast/Backup member options, late joins, backpressure, state
+  snapshots and logical readiness. Retain complete locally received unread
+  messages when an old member is explicitly closed, within documented bounds.
+- Correct edge-trigger rearming, receive deadlines, close/drain ordering,
+  callback reentry and fork-owned teardown; bound closed-handle history.
+- Improve readiness invalidation and group member bookkeeping; add targeted
+  pacing, host and group-throughput qualification without general speed claims.
+- Preserve C ABI line 0.2, compatible SRT API 1.5.7 and default crypto policy.
+  Rebuild direct source-tree C++ consumers with matching headers and library.
+
 ## 0.2.6 — Performance Optimization — 2026-09-26
 
 Published as [v0.2.6](https://github.com/Robotweax/srt/releases/tag/v0.2.6) from tag commit `50cba37`; the product

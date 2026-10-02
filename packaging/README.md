@@ -1,12 +1,17 @@
 # Package manager recipes
 
-These recipes target the immutable Robotweax SRT 0.2.6 source commit
-`7ecb60ea8b4faca01ed86237b0cc9dc906350f6e`. This includes the rapid listener restart correction from PR #77.
-Source package and bottle requalification passed, and 0.2.6 was
-[published on 2026-09-26](https://github.com/Robotweax/srt/releases/tag/v0.2.6). Older artifacts do not qualify this corrected source. See [the qualification record](qualification-0.2.6.md).
-The separately published [Robotweax/homebrew-tap](https://github.com/Robotweax/homebrew-tap)
-provides 0.2.6 with an Apple Silicon macOS 15 bottle.
-No vcpkg registry, PPA or COPR is published yet.
+## 0.2.7 candidate
+
+These recipes select the immutable Robotweax SRT 0.2.7 product source
+`f254dd2c0fe084f7965238756b1d3b96665d592b`, not the current checkout. All 547 regular files and their
+executable bits were compared with Git before pinning the downloaded archive.
+Archive SHA-256: `7ba68805f66bca1da4e0d509d33aedab239a4de57ba9affb4db1481d4205c908`.
+
+Qualification is pending. See the [0.2.7 record](qualification-0.2.7.md) and
+[release process](../docs/release-process-0.2.7.md). No 0.2.7 release or bottle
+is published yet. The public [Homebrew tap](https://github.com/Robotweax/homebrew-tap)
+still supplies 0.2.6; its [historical qualification](qualification-0.2.6.md)
+does not qualify this candidate. No vcpkg registry, PPA or COPR is published.
 
 ## Package contract
 
@@ -16,7 +21,7 @@ No vcpkg registry, PPA or COPR is published yet.
   `include/robotweax-srt`; consumers obtain include paths from package metadata.
 - Use OpenSSL from the package manager. BCrypt and AES-GCM preview are outside
   the initial recipes. Do not bundle third-party application binaries.
-- Preserve project version 0.2.6, ABI line 0.2 and compatible API 1.5.7 as separate
+- Preserve project version 0.2.7, ABI line 0.2 and compatible API 1.5.7 as separate
   version axes. Download only the exact source revision with verified hashes.
 - Installing this package does not redirect installed FFmpeg, GStreamer, VLC or
   OBS applications. Rebuild consumers explicitly with the selected provider;
@@ -28,7 +33,7 @@ No vcpkg registry, PPA or COPR is published yet.
 ## Linux package prototypes
 
 The [Ubuntu and Fedora recipes](linux/README.md) build DEB and RPM packages
-from the pinned 0.2.6 source archive. Separate runtime and development
+from the pinned 0.2.7 source archive. Separate runtime and development
 packages retain Robotweax-specific filenames and metadata. The Linux
 packages workflow builds and installs them on Ubuntu 24.04 and Fedora 44,
 executes installed consumers, checks coexistence with Haivision, and tests
@@ -114,7 +119,7 @@ pinned recipe version, or the recipe and fixtures must move together.
 Passing this workflow does not qualify an upgrade from an older package, binary
 bottles, all OS versions, or official distribution admission. See
 [0.2.5 qualification evidence](qualification-0.2.5.md) for historical results;
-these results do not qualify the [0.2.6 candidate](qualification-0.2.6.md).
+these results do not qualify the [0.2.7 candidate](qualification-0.2.7.md).
 
 The vcpkg qualification can also run locally using a bootstrapped checkout of
 the pinned vcpkg revision (a new work directory is required):
