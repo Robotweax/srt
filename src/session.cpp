@@ -104,6 +104,8 @@ ReliabilitySession::ReliabilitySession(Configuration configuration)
     , sender_retransmission_timer_(configuration.start_microseconds)
     , highest_received_sequence_(
           configuration.peer_initial_sequence.advanced(SequenceNumber::mask))
+    , peer_send_horizon_(
+          configuration.peer_initial_sequence.advanced(SequenceNumber::mask))
     , peer_socket_id_(configuration.peer_socket_id)
 {
     pending_peer_drops_.reserve(configuration.receive_capacity_packets);
@@ -585,6 +587,33 @@ ReliabilityProcessResult ReliabilitySession::receive(
             live_options_.retransmit_flag
             ? reorder_tolerance_packets_
             : 0U;
+        // DATA beyond a bounded DROPREQ remainder proves the peer advanced
+        // that far: apply the remainder first so the window and the loss
+        // bookkeeping skip the abandoned sequences instead of reporting them.
+        if (!context.filter_supplied && peer_drop_remainder_.has_value()) {
+            if (const Error skip_error = apply_peer_drop_remainder(
+                    packet.data.sequence.advanced(SequenceNumber::mask),
+                    now_microseconds, result);
+                skip_error != Error::none) {
+                return {.error = skip_error};
+            }
+            // An abandoned sequence that arrives anyway needs no drop.
+            if (peer_drop_remainder_.has_value()
+                && peer_drop_remainder_->sequences.first
+                    == packet.data.sequence) {
+                if (peer_drop_remainder_->sequences.last
+                    == packet.data.sequence) {
+                    peer_drop_remainder_.reset();
+                } else {
+                    peer_drop_remainder_->sequences.first =
+                        packet.data.sequence.next();
+                }
+            }
+        }
+        if (!context.filter_supplied
+            && packet.data.sequence.distance_from(peer_send_horizon_) > 0) {
+            peer_send_horizon_ = packet.data.sequence;
+        }
         const std::int32_t physical_distance =
             context.filter_supplied
             ? 0
@@ -985,25 +1014,6 @@ ReliabilityProcessResult ReliabilitySession::receive(
         // a later complete message to provide a local playout deadline.
         const bool defer_drop = live_options_.receive_tsbpd
             && live_options_.too_late_packet_drop && tsbpd_clock_.has_value();
-        const auto identity = peer_drop_identity(decoded.request.sequences);
-        const auto insertion =
-            std::lower_bound(pending_peer_drop_identities_.begin(),
-                pending_peer_drop_identities_.end(), identity);
-        const bool existing = defer_drop
-            && insertion != pending_peer_drop_identities_.end()
-            && *insertion == identity;
-        // Refuse a new grace entry before advancing the timestamp clock or
-        // ACK/loss state. Duplicates keep their original deadline even when
-        // the preallocated queue is full. Timer expiry makes room for retry.
-        if (defer_drop && !existing
-            && pending_peer_drops_.size()
-                >= std::min(pending_peer_drops_.capacity(),
-                    pending_peer_drop_identities_.capacity())
-            && decoded.request.sequences.last.distance_from(
-                   receive_buffer_.first_stored_sequence())
-                >= 0) {
-            return {.error = Error::would_block};
-        }
         const std::uint64_t control_deadline = defer_drop
             ? tsbpd_clock_->control_delivery_time(packet.control.timestamp)
             : 0U;
@@ -1016,46 +1026,42 @@ ReliabilityProcessResult ReliabilitySession::receive(
             : now_microseconds + maximum_grace;
         const std::uint64_t deadline =
             std::min(control_deadline, latest_deadline);
-        if (defer_drop && now_microseconds < deadline
-            && decoded.request.sequences.last.distance_from(
-                   receive_buffer_.first_stored_sequence())
-                >= 0) {
-            if (!existing) {
-                pending_peer_drops_.push_back(
-                    {decoded.request.sequences, deadline});
-                pending_peer_drop_identities_.insert(insertion, identity);
-            }
-            const bool acknowledged =
-                receive_buffer_.acknowledge_peer_drop_range(
-                    decoded.request.sequences);
-            if (acknowledged) {
-                result.actions.push(make_acknowledgement(now_microseconds));
-            }
+        // A DROPREQ is not authenticated and the peer may abandon sequences
+        // it never put on the wire. Apply it only up to the highest DATA
+        // sequence observed on the wire (the peer's send horizon); the rest
+        // becomes a pending skip that is applied as soon as later DATA proves
+        // the peer advanced that far.
+        // Advancing the acknowledgement or the receive window past observed
+        // data would ACK sequences the peer never sent (a reference sender
+        // breaks the connection on that) and would discard every genuine
+        // packet below the forged range as a duplicate.
+        const SequenceRange requested = decoded.request.sequences;
+        std::optional<SequenceRange> effective;
+        std::optional<SequenceRange> remainder;
+        if (requested.last.distance_from(peer_send_horizon_) <= 0) {
+            effective = requested;
+        } else if (requested.first.distance_from(peer_send_horizon_) <= 0) {
+            effective = SequenceRange {
+                .first = requested.first,
+                .last = peer_send_horizon_,
+            };
+            remainder = SequenceRange {
+                .first = peer_send_horizon_.next(),
+                .last = requested.last,
+            };
         } else {
-            const auto error = message_api_
-                ? receive_buffer_.drop_peer_requested_range(
-                      decoded.request.sequences, decoded.request.message_number,
-                      &result.receiver_drop_packets)
-                : receive_buffer_.drop_peer_requested_stream_range(
-                      decoded.request.sequences, decoded.request.message_number,
-                      &result.receiver_drop_packets);
+            remainder = requested;
+        }
+        if (effective.has_value()) {
+            const Error error = apply_peer_drop_range(*effective,
+                decoded.request.message_number, defer_drop, deadline,
+                now_microseconds, result);
             if (error != Error::none) {
                 return {.error = error};
             }
         }
-        // Only the dropped range stops being requested. Earlier losses the
-        // peer did not drop must keep their periodic NAK.
-        if (!receive_loss_list_.remove_range(decoded.request.sequences)
-            || !filter_loss_list_.remove_range(decoded.request.sequences)) {
-            return {.error = Error::buffer_too_small};
-        }
-        if (decoded.request.sequences.first.distance_from(
-                highest_received_sequence_.next())
-                <= 0
-            && decoded.request.sequences.last.distance_from(
-                   highest_received_sequence_)
-                > 0) {
-            highest_received_sequence_ = decoded.request.sequences.last;
+        if (remainder.has_value()) {
+            remember_peer_drop_remainder(*remainder, deadline);
         }
         update_loss_timer(now_microseconds);
         return result;
@@ -1266,6 +1272,9 @@ Error ReliabilitySession::discard_received_before(
     if (last.distance_from(highest_received_sequence_) > 0) {
         highest_received_sequence_ = last;
     }
+    if (last.distance_from(peer_send_horizon_) > 0) {
+        peer_send_horizon_ = last;
+    }
     timer_scheduler_.on_receive_buffer_released(
         now_microseconds);
     update_loss_timer(now_microseconds);
@@ -1343,6 +1352,121 @@ void ReliabilitySession::retire_peer_drop_identity(SequenceRange range) noexcept
         && (*entry & ~retired_peer_drop_identity) == identity) {
         *entry |= retired_peer_drop_identity;
     }
+}
+
+Error ReliabilitySession::apply_peer_drop_range(SequenceRange range,
+    std::uint32_t message_number, bool defer_drop, std::uint64_t deadline,
+    std::uint64_t now_microseconds, ReliabilityProcessResult& result) noexcept
+{
+    const auto identity = peer_drop_identity(range);
+    const auto insertion =
+        std::lower_bound(pending_peer_drop_identities_.begin(),
+            pending_peer_drop_identities_.end(), identity);
+    const bool existing = defer_drop
+        && insertion != pending_peer_drop_identities_.end()
+        && *insertion == identity;
+    const bool inside_window =
+        range.last.distance_from(receive_buffer_.first_stored_sequence()) >= 0;
+    // Refuse a new grace entry before advancing the timestamp clock or
+    // ACK/loss state. Duplicates keep their original deadline even when
+    // the preallocated queue is full. Timer expiry makes room for retry.
+    if (defer_drop && !existing && inside_window
+        && pending_peer_drops_.size()
+            >= std::min(pending_peer_drops_.capacity(),
+                pending_peer_drop_identities_.capacity())) {
+        return Error::would_block;
+    }
+    if (defer_drop && now_microseconds < deadline && inside_window) {
+        if (!existing) {
+            pending_peer_drops_.push_back({range, deadline});
+            pending_peer_drop_identities_.insert(insertion, identity);
+        }
+        if (receive_buffer_.acknowledge_peer_drop_range(range)) {
+            result.actions.push(make_acknowledgement(now_microseconds));
+        }
+    } else {
+        std::size_t newly_dropped = 0U;
+        const Error error = message_api_
+            ? receive_buffer_.drop_peer_requested_range(
+                  range, message_number, &newly_dropped)
+            : receive_buffer_.drop_peer_requested_stream_range(
+                  range, message_number, &newly_dropped);
+        if (error != Error::none) {
+            return error;
+        }
+        result.receiver_drop_packets += newly_dropped;
+    }
+    // Only the dropped range stops being requested. Earlier losses the
+    // peer did not drop must keep their periodic NAK.
+    if (!receive_loss_list_.remove_range(range)
+        || !filter_loss_list_.remove_range(range)) {
+        return Error::buffer_too_small;
+    }
+    // Both immediately effective requests and observed remainders retire
+    // this contiguous prefix from future DATA gap detection.
+    if (range.last.distance_from(highest_received_sequence_) > 0
+        && range.first.distance_from(highest_received_sequence_.next()) <= 0) {
+        highest_received_sequence_ = range.last;
+    }
+    return Error::none;
+}
+
+void ReliabilitySession::remember_peer_drop_remainder(
+    SequenceRange remainder, std::uint64_t deadline) noexcept
+{
+    if (peer_drop_remainder_.has_value()) {
+        auto& pending = peer_drop_remainder_->sequences;
+        const bool overlaps_or_adjacent =
+            remainder.first.distance_from(pending.last.next()) <= 0
+            && remainder.last.next().distance_from(pending.first) >= 0;
+        if (overlaps_or_adjacent) {
+            if (remainder.first.distance_from(pending.first) < 0) {
+                pending.first = remainder.first;
+            }
+            if (remainder.last.distance_from(pending.last) > 0) {
+                pending.last = remainder.last;
+            }
+            peer_drop_remainder_->deadline_microseconds = deadline;
+            return;
+        }
+    }
+    // Unrelated ranges: the newest request describes the peer's current
+    // send position. An older, disjoint remainder is recovered through the
+    // ordinary NAK -> DROPREQ exchange instead.
+    peer_drop_remainder_ = PendingPeerDrop {remainder, deadline};
+}
+
+Error ReliabilitySession::apply_peer_drop_remainder(SequenceNumber observed,
+    std::uint64_t now_microseconds, ReliabilityProcessResult& result) noexcept
+{
+    if (!peer_drop_remainder_.has_value()) {
+        return Error::none;
+    }
+    const SequenceRange pending = peer_drop_remainder_->sequences;
+    if (pending.first.distance_from(observed) > 0) {
+        return Error::none;
+    }
+    const std::uint64_t deadline = peer_drop_remainder_->deadline_microseconds;
+    const SequenceRange effective {
+        .first = pending.first,
+        .last =
+            pending.last.distance_from(observed) <= 0 ? pending.last : observed,
+    };
+    const bool defer_drop = live_options_.receive_tsbpd
+        && live_options_.too_late_packet_drop && tsbpd_clock_.has_value();
+    const Error error = apply_peer_drop_range(
+        effective, 0U, defer_drop, deadline, now_microseconds, result);
+    if (error != Error::none) {
+        return error;
+    }
+    // Commit consumption only after the skip succeeds. Backpressure must
+    // leave the complete remainder available for a later DATA retry.
+    if (pending.last.distance_from(effective.last) > 0) {
+        peer_drop_remainder_->sequences.first = effective.last.next();
+    } else {
+        peer_drop_remainder_.reset();
+    }
+    return Error::none;
 }
 
 ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(

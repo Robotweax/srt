@@ -6621,6 +6621,20 @@ TEST(compat_runtime_finishes_a_deferred_peer_drop_before_end_of_stream)
         .now_context = &now,
     }};
 
+    // The packet after the abandoned one arrives first; it proves the peer
+    // sent past sequence 3000, so the DROPREQ below is admitted into the
+    // deferred grace queue instead of being held for later data.
+    const std::array<std::byte, 1> later_payload {std::byte {'l'}};
+    PacketView later;
+    later.kind = PacketKind::data;
+    later.data.sequence = SequenceNumber {3'001};
+    later.data.message_number = 2;
+    later.data.boundary = MessageBoundary::solo;
+    later.data.timestamp = PacketTimestamp {1'000};
+    later.data.destination_socket_id = 300;
+    later.payload = later_payload;
+    runtime.process_packet(later, peer);
+
     std::array<std::byte, 8> drop_payload {};
     REQUIRE(encode_drop_request_payload(
         {1, {SequenceNumber {3'000}, SequenceNumber {3'000}}}, drop_payload));
@@ -6648,6 +6662,11 @@ TEST(compat_runtime_finishes_a_deferred_peer_drop_before_end_of_stream)
     now = 121'999;
     REQUIRE(!runtime.readable());
     now = 122'000;
+    REQUIRE(runtime.readable());
+    const auto delivered = runtime.receive_message(received, false, -1);
+    REQUIRE_EQ(delivered.status, MessageIoStatus::success);
+    REQUIRE_EQ(delivered.bytes, 1U);
+    REQUIRE_EQ(received, later_payload);
     REQUIRE(runtime.readable());
     REQUIRE_EQ(runtime.receive_message(received, false, -1).status,
         MessageIoStatus::peer_closed);
@@ -7334,22 +7353,23 @@ TEST(compat_runtime_encrypted_drop_controls_preserve_large_skips_and_validation)
                     0U);
                 REQUIRE(!receiver.broken());
 
+                // A valid request for sequences no DATA has reached yet is
+                // accepted but held: the window moves only once the peer
+                // demonstrably sent past the abandoned range.
                 receiver.process_packet(drop, peer);
                 REQUIRE_EQ(
-                    receiver.receive_snapshot(next, false).floor_sequence,
-                    next);
+                    receiver.receive_snapshot(initial, false).floor_sequence,
+                    initial);
                 REQUIRE_EQ(
                     receiver.response_health().last_response_microseconds, now);
                 REQUIRE_EQ(receiver.statistics(false, true)
                                .total.receiver_dropped.packets,
-                    skipped);
+                    0U);
                 receiver.process_packet(drop, peer);
                 REQUIRE_EQ(
-                    receiver.receive_snapshot(next, false).floor_sequence,
-                    next);
-                REQUIRE_EQ(receiver.statistics(false, true)
-                               .total.receiver_dropped.packets,
-                    skipped);
+                    receiver.receive_snapshot(initial, false).floor_sequence,
+                    initial);
+                REQUIRE(!receiver.broken());
 
                 const auto channel = std::make_shared<DatagramChannel>();
                 CapturedDatagrams output;
@@ -7382,6 +7402,13 @@ TEST(compat_runtime_encrypted_drop_controls_preserve_large_skips_and_validation)
                     }
                 }
                 REQUIRE_EQ(data_packets, 1U);
+                // The first DATA past the range applied the held skip.
+                REQUIRE_EQ(
+                    receiver.receive_snapshot(next, false).floor_sequence,
+                    next);
+                REQUIRE_EQ(receiver.statistics(false, true)
+                               .total.receiver_dropped.packets,
+                    skipped);
                 std::array<std::byte, 8> received {};
                 const auto result =
                     receiver.receive_message(received, false, -1);
