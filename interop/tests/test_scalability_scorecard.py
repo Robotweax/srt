@@ -17,6 +17,34 @@ import scalability_scorecard  # noqa: E402
 
 
 class ScalabilityScorecardTests(unittest.TestCase):
+    def test_scheduler_setting_is_explicit_and_reference_is_unaffected(self) -> None:
+        setting = "ROBOTWEAX_SRT_SCHEDULER_SHARDS"
+        with mock.patch.dict(os.environ, {setting: "invalid"}):
+            self.assertEqual(
+                scalability_scorecard.peer_environment("robotweax", 4)[setting], "4"
+            )
+            self.assertNotIn(
+                setting, scalability_scorecard.peer_environment("haivision", 4)
+            )
+            self.assertEqual(os.environ[setting], "invalid")
+        common = [
+            "--robotweax-peer", "/tmp/peer", "--profile", "robotweax-self",
+            "--output", "/tmp/report.json",
+        ]
+        self.assertEqual(
+            scalability_scorecard.parse_arguments(common).scheduler_shards, 2
+        )
+        self.assertEqual(
+            scalability_scorecard.parse_arguments(
+                [*common, "--scheduler-shards", "8"]
+            ).scheduler_shards, 8
+        )
+        for value in ("0", "65", "invalid"):
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                scalability_scorecard.parse_arguments(
+                    [*common, "--scheduler-shards", value]
+                )
+
     def test_topology_defaults_reserve_many_socket_playout_headroom(
         self,
     ) -> None:

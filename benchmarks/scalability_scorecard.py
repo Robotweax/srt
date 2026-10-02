@@ -54,6 +54,7 @@ class RunOptions:
     latency_milliseconds: int
     shutdown_grace_milliseconds: int
     sampling_interval_seconds: float
+    scheduler_shards: int = 2
 
 
 @dataclass
@@ -334,6 +335,16 @@ def sample_linux_processes(processes: Iterable[PeerProcess]) -> tuple[int, int] 
     return (rss_bytes, threads) if observed else None
 
 
+def peer_environment(implementation: str, scheduler_shards: int) -> dict[str, str]:
+    environment = os.environ.copy()
+    setting = "ROBOTWEAX_SRT_SCHEDULER_SHARDS"
+    if implementation == "robotweax":
+        environment[setting] = str(scheduler_shards)
+    else:
+        environment.pop(setting, None)
+    return environment
+
+
 def spawn_peer(
     program: Path,
     implementation: str,
@@ -352,6 +363,7 @@ def spawn_peer(
     try:
         process = subprocess.Popen(
             peer_command(program, role, port, payload_path, options),
+            env=peer_environment(implementation, options.scheduler_shards),
             stdout=stdout_stream,
             stderr=stderr_stream,
         )
@@ -377,6 +389,7 @@ def spawn_command_peer(
     implementation: str,
     role: str,
     directory: Path,
+    scheduler_shards: int = 2,
 ) -> PeerProcess:
     prefix = f"many-socket-{role}"
     stdout_path = directory / f"{prefix}.stdout"
@@ -386,6 +399,7 @@ def spawn_command_peer(
     try:
         process = subprocess.Popen(
             command,
+            env=peer_environment(implementation, scheduler_shards),
             stdout=stdout_stream,
             stderr=stderr_stream,
         )
@@ -831,6 +845,7 @@ def run_many_socket_profile(
             receiver_name,
             "listener",
             directory,
+            options.scheduler_shards,
         )
         peers.append(listener)
         wait_for_listeners([listener], options.timeout_seconds)
@@ -842,6 +857,7 @@ def run_many_socket_profile(
             sender_name,
             "caller",
             directory,
+            options.scheduler_shards,
         )
         peers.append(caller)
         complete_at, exited_at, peaks = monitor_processes(
@@ -1100,6 +1116,7 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
         choices=sorted(PROFILE_IMPLEMENTATIONS),
         dest="profiles",
     )
+    parser.add_argument("--scheduler-shards", type=int, choices=range(1, 65), default=2)
     parser.add_argument("--connections", default="1,8")
     parser.add_argument("--message-sizes", default="188,1316")
     parser.add_argument(
@@ -1170,6 +1187,8 @@ def main(argv: list[str] | None = None) -> int:
         "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
         "topology": arguments.topology,
         "methodology": {
+            "robotweax_scheduler_shards_requested": arguments.scheduler_shards,
+            "encryption": "none",
             "transport": "live",
             "message_api": True,
             "mss_bytes": 1500,
@@ -1282,6 +1301,7 @@ def main(argv: list[str] | None = None) -> int:
                                     )
                             options = RunOptions(
                                 host=DEFAULT_HOST,
+                                scheduler_shards=arguments.scheduler_shards,
                                 connections=connections,
                                 bytes_per_connection=(
                                     arguments.bytes_per_connection
