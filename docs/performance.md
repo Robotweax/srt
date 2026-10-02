@@ -5,6 +5,10 @@ size, lock counts, or one unusually fast local transfer are not substitutes for
 a controlled comparison. Protocol correctness and timing semantics remain
 mandatory while measuring speed.
 
+[DATA send-buffer initialization](data-buffer-initialization.md) documents the
+written-prefix proof for removing a redundant packet-buffer clear, independently
+of scheduler topology or pacing.
+
 For serial single-connection capacity investigations with explicit buffer and
 bandwidth settings, optimized symbolized builds and separate Linux CPU/scheduler
 captures, see [Throughput profiling](throughput-profiling.md). These diagnostics
@@ -22,10 +26,6 @@ for targeted runtime notifications and cached subscription state.
 fragmented receive losses to one compaction pass.
 [Bounded payload storage](payload-storage.md) separates packet metadata from
 reusable payload slots while preserving configured capacity.
-
-[DATA send-buffer initialization](data-buffer-initialization.md) documents the
-written-prefix proof for removing a redundant packet-buffer clear, independently
-of scheduler topology or pacing.
 
 ## Comparative scorecard
 
