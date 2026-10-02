@@ -12,10 +12,13 @@ import threading
 import time
 from pathlib import Path
 
+from interop_common import enlarge_relay_socket_buffers
+
 
 class UdpLossProxy:
     def __init__(self, listen_port: int, target_port: int) -> None:
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        enlarge_relay_socket_buffers(self._socket)
         self._socket.bind(("127.0.0.1", listen_port))
         self._socket.settimeout(0.05)
         self._target = ("127.0.0.1", target_port)

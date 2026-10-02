@@ -12,6 +12,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+from interop_common import enlarge_relay_socket_buffers
+
 
 def udp_peer_not_ready(error: OSError) -> bool:
     """ICMP port-unreachable feedback on these UDP-only relay sockets.
@@ -730,6 +732,7 @@ class HandshakeTraceProxy(_HandshakeTraceRecorder):
         canonical_host = str(address)
         self._socket = socket.socket(family, socket.SOCK_DGRAM)
         try:
+            enlarge_relay_socket_buffers(self._socket)
             self._socket.bind((canonical_host, 0))
             self._socket.settimeout(0.05)
         except OSError:
@@ -989,6 +992,7 @@ class RendezvousTraceProxy(_HandshakeTraceRecorder):
                 self._sender_socket,
                 self._receiver_socket,
             ):
+                enlarge_relay_socket_buffers(trace_socket)
                 trace_socket.bind((host, 0))
                 trace_socket.setblocking(False)
         except OSError:
@@ -2584,6 +2588,7 @@ class CallerListenerFaultProxy(RendezvousTraceProxy):
             raise RuntimeError("fault relay is already started")
         relay_socket = socket.socket(self._family, socket.SOCK_DGRAM)
         try:
+            enlarge_relay_socket_buffers(relay_socket)
             relay_socket.bind((self._target[0], 0))
             relay_socket.settimeout(0.05)
             self._socket = relay_socket
