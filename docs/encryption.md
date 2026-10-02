@@ -266,10 +266,16 @@ existing protection against unauthenticated key-control packets.
 The receiver caches a key-encryption key only after the corresponding KMREQ
 has been unwrapped and accepted. Invalid fresh-salt requests therefore cannot
 evict the key used by normal rotations. In an established runtime, uncached
-KMREQs are allowed one PBKDF2 attempt per 100 ms per connection; rotations
-using the validated cached salt bypass that budget. A peer-endpoint-matching
-sender can delay a legitimate fresh-salt request until a retry, because KMREQ
-has no independent authentication before its wrapped keys are checked.
+(fresh-salt) KMREQs are admitted through a token bucket of four PBKDF2
+derivations per connection, refilled at one per 100 ms; rotations using the
+validated cached salt bypass that budget. A request whose salt was already
+seen (the peer retrying its announcement) uses a separate lane limited to one
+derivation per 100 ms, so a flood of distinct forged salts cannot starve the
+legitimate request indefinitely; the receiver remembers the last 256 salts
+for that purpose. KMREQ has no independent authentication before its wrapped
+keys are checked, so a peer-endpoint-matching sender can still delay a
+legitimate fresh-salt request by one retry interval, and an attacker who
+also repeats salts competes for the retry lane.
 
 
 ### Directional-key compatibility evidence

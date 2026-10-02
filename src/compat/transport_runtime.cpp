@@ -2734,6 +2734,61 @@ ConnectionRuntime::receive_fec_packet(
     };
 }
 
+bool ConnectionRuntime::admit_fresh_salt_key_request(
+    std::span<const std::byte> payload, std::uint64_t now) noexcept
+{
+    auto& admission = fresh_salt_admission_;
+    if (admission.last_refill_microseconds.has_value()
+        && now >= *admission.last_refill_microseconds) {
+        const std::uint64_t refills =
+            (now - *admission.last_refill_microseconds)
+            / FreshSaltAdmission::refill_interval_microseconds;
+        if (refills != 0U) {
+            admission.tokens = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(FreshSaltAdmission::bucket_capacity,
+                    admission.tokens + refills));
+            *admission.last_refill_microseconds +=
+                refills * FreshSaltAdmission::refill_interval_microseconds;
+        }
+    } else {
+        admission.last_refill_microseconds = now;
+    }
+    // Identify the request by its salt (the PBKDF2 input), not by the whole
+    // payload, so a retried request matches even if its key words differ.
+    const auto decoded = decode_key_material(payload);
+    std::uint64_t identity = 0xcbf2'9ce4'8422'2325ULL;
+    if (decoded) {
+        for (const std::byte value : decoded.key_material.salt) {
+            identity ^= static_cast<std::uint64_t>(value);
+            identity *= 0x0000'0100'0000'01b3ULL;
+        }
+    }
+    const bool repeated =
+        std::find(admission.salts.begin(), admission.salts.end(), identity)
+        != admission.salts.end();
+    if (repeated) {
+        // A peer retries the same salt until it is answered. Give such a
+        // request its own rate-limited lane that first-seen salts cannot
+        // consume.
+        if (admission.last_repeat_derivation_microseconds.has_value()
+            && now >= *admission.last_repeat_derivation_microseconds
+            && now - *admission.last_repeat_derivation_microseconds
+                < FreshSaltAdmission::refill_interval_microseconds) {
+            return false;
+        }
+        admission.last_repeat_derivation_microseconds = now;
+        return true;
+    }
+    admission.salts[admission.next_salt] = identity;
+    admission.next_salt =
+        (admission.next_salt + 1U) % FreshSaltAdmission::remembered_salts;
+    if (admission.tokens == 0U) {
+        return false;
+    }
+    --admission.tokens;
+    return true;
+}
+
 bool ConnectionRuntime::send_key_material(
     std::uint16_t subtype,
     std::span<const std::byte> key_material,
@@ -3259,18 +3314,12 @@ void ConnectionRuntime::process_packet(
         }
         if (packet.control.subtype
             == key_material_request_subtype) {
-            // A fresh salt requires PBKDF2 under this runtime lock. Limit
-            // such work to one attempt per KM retry interval; rotations on
-            // the validated cached salt remain available during a flood.
-            constexpr std::uint64_t derivation_interval_microseconds = 100'000;
-            if (crypto_->needs_receive_key_derivation(packet.payload)) {
-                if (last_uncached_kmreq_microseconds_.has_value()
-                    && now >= *last_uncached_kmreq_microseconds_
-                    && now - *last_uncached_kmreq_microseconds_
-                        < derivation_interval_microseconds) {
-                    return;
-                }
-                last_uncached_kmreq_microseconds_ = now;
+            // A fresh salt requires PBKDF2 under this runtime lock. Bound
+            // that work; rotations on the validated cached salt remain
+            // available during a flood.
+            if (crypto_->needs_receive_key_derivation(packet.payload)
+                && !admit_fresh_salt_key_request(packet.payload, now)) {
+                return;
             }
             const CryptoState previous_state =
                 crypto_->receiver_state();

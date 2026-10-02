@@ -719,7 +719,24 @@ private:
     std::uint64_t key_rate_sample_position_ = 0;
     std::uint64_t key_peak_sequence_rate_ = 0;
     std::optional<std::uint64_t> last_key_material_error_microseconds_;
-    std::optional<std::uint64_t> last_uncached_kmreq_microseconds_;
+    // Admission of KMREQs that need a PBKDF2 derivation (fresh salt). The
+    // derivation is the expensive, unauthenticated work a flood can target.
+    // A token bucket bounds first-seen salts; a salt seen again (a peer
+    // retrying its request) uses a separate lane so a flood of distinct
+    // forged salts cannot starve the legitimate request indefinitely.
+    struct FreshSaltAdmission {
+        static constexpr std::uint64_t refill_interval_microseconds = 100'000;
+        static constexpr std::uint32_t bucket_capacity = 4;
+        static constexpr std::size_t remembered_salts = 256;
+        std::uint32_t tokens = bucket_capacity;
+        std::optional<std::uint64_t> last_refill_microseconds;
+        std::optional<std::uint64_t> last_repeat_derivation_microseconds;
+        std::array<std::uint64_t, remembered_salts> salts {};
+        std::size_t next_salt = 0;
+    };
+    FreshSaltAdmission fresh_salt_admission_;
+    [[nodiscard]] bool admit_fresh_salt_key_request(
+        std::span<const std::byte> payload, std::uint64_t now) noexcept;
     NowFunction now_function_ = nullptr;
     void* now_context_ = nullptr;
     ReceivePopHook receive_pop_hook_for_testing_ = nullptr;
