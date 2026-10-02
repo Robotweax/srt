@@ -8,6 +8,7 @@ import json
 import re
 import socket
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -38,14 +39,27 @@ def enlarge_relay_socket_buffers(
 ) -> None:
     """Request large send/receive buffers on a relay socket.
 
-    The kernel clamps the request to its configured maximum; a refusal is
-    not an error because the relay still works, only with less headroom.
+    The kernel may clamp or refuse a request. Report its raw getsockopt
+    values on stderr (Linux includes accounting overhead in these values),
+    without changing relay behavior or machine-readable stdout verdicts.
+    Setting or querying either direction may fail independently.
     """
-    for option in (socket.SO_RCVBUF, socket.SO_SNDBUF):
+    diagnostics: dict[str, object] = {"requested_bytes": size}
+    for direction, option in (
+        ("receive", socket.SO_RCVBUF), ("send", socket.SO_SNDBUF)
+    ):
+        result: dict[str, object] = {"request_status": "accepted"}
         try:
             sock.setsockopt(socket.SOL_SOCKET, option, size)
-        except OSError:
-            pass
+        except OSError as error:
+            result.update(request_status="refused", set_errno=error.errno)
+        try:
+            result["kernel_bytes"] = sock.getsockopt(socket.SOL_SOCKET, option)
+        except OSError as error:
+            result.update(kernel_bytes=None, get_errno=error.errno)
+        diagnostics[direction] = result
+    print("RELAY_SOCKET_BUFFERS " + json.dumps(diagnostics, sort_keys=True),
+          file=sys.stderr)
 
 
 def free_udp_port(host: str = "127.0.0.1") -> int:
