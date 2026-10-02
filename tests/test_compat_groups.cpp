@@ -5993,13 +5993,14 @@ TEST(compat_group_closed_fragment_keeps_shared_clock_and_small_buffer_retry)
     REQUIRE_EQ(record->next_receive_sequence, first.advanced(2).value());
 }
 
-TEST(
-    compat_group_closed_member_retains_bounded_copy_and_skips_oversized_message)
+namespace {
+
+void verify_closed_member_bounded_retention(bool oversized)
 {
     using robotweax::srt::compat::GroupReceiveRetention;
     const auto bound =
         static_cast<std::uint32_t>(GroupReceiveRetention::maximum_packets);
-    for (const bool oversized : {false, true}) {
+    {
         const auto group = srt_create_group(SRT_GTYPE_BACKUP);
         const auto socket = srt_create_socket();
         struct Cleanup {
@@ -6008,13 +6009,15 @@ TEST(
             {
                 (void)srt_close(group);
             }
-        } cleanup {group};
+        };
         const auto record = GroupRegistry::instance().find(group);
         REQUIRE(record != nullptr);
         const SequenceNumber first {record->initial_sequence};
         TestClock clock {
             .channel =
                 std::make_shared<robotweax::srt::compat::DatagramChannel>()};
+        // Closing members can still consult the injected clock.
+        Cleanup cleanup {group};
         clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
         const auto origin = ConnectionRuntime::Clock::now();
         auto runtime = attach_group_runtime(group, socket, first.value(), 1,
@@ -6022,15 +6025,16 @@ TEST(
             bound + 2U);
         const std::array payload {std::byte {'x'}};
         const std::array tail {std::byte {'y'}};
+        const auto prefix_packets = oversized ? bound + 1U : bound;
         for (std::uint32_t offset = 0; offset <= bound + 1U; ++offset) {
             robotweax::srt::PacketView packet;
             packet.kind = robotweax::srt::PacketKind::data;
             packet.data.sequence = first.advanced(offset);
             packet.data.message_number =
-                oversized && offset <= bound ? 1U : offset + 1U;
-            packet.data.boundary = oversized && offset <= bound
+                offset < prefix_packets ? 1U : offset + 1U;
+            packet.data.boundary = offset < prefix_packets
                 ? (offset == 0U ? robotweax::srt::MessageBoundary::first
-                          : offset == bound
+                          : offset + 1U == prefix_packets
                           ? robotweax::srt::MessageBoundary::last
                           : robotweax::srt::MessageBoundary::subsequent)
                 : robotweax::srt::MessageBoundary::solo;
@@ -6048,17 +6052,19 @@ TEST(
                        group, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
             0);
         REQUIRE_EQ(srt_getsockstate(group), SRTS_CONNECTED);
-        std::array<char, 1> output {};
+        std::array<char, GroupReceiveRetention::maximum_packets> output {};
         if (oversized) {
             // One unretainable fragmented message must not erase its tail.
             REQUIRE_EQ(srt_recvmsg(group, output.data(), output.size()), 1);
             REQUIRE_EQ(output[0], 'y');
         } else {
-            // Aggregate overflow keeps the earliest bounded prefix.
-            for (std::uint32_t offset = 0; offset < bound; ++offset) {
-                REQUIRE_EQ(srt_recvmsg(group, output.data(), output.size()), 1);
-                REQUIRE_EQ(output[0], 'x');
-            }
+            // A single fragmented message fills the packet budget. Deliver
+            // it once instead of repeatedly scanning 8,192 solo messages.
+            REQUIRE_EQ(srt_recvmsg(group, output.data(), output.size()),
+                static_cast<int>(bound));
+            REQUIRE(std::all_of(output.begin(), output.end(), [](char value) {
+                return value == 'x';
+            }));
         }
         REQUIRE_EQ(record->next_receive_sequence,
             first.advanced(oversized ? bound + 2U : bound).value());
@@ -6082,6 +6088,18 @@ TEST(
         REQUIRE_EQ(srt_bistats(group, &statistics, 0, 1), 0);
         REQUIRE_EQ(statistics.pktRcvDropTotal, oversized ? bound + 1U : 2U);
     }
+}
+
+} // namespace
+
+TEST(compat_group_closed_member_retains_bounded_copy_prefix)
+{
+    verify_closed_member_bounded_retention(false);
+}
+
+TEST(compat_group_closed_member_retains_bounded_copy_after_oversized_message)
+{
+    verify_closed_member_bounded_retention(true);
 }
 
 TEST(compat_group_retention_bounds_drop_oldest_and_deduplicate)
