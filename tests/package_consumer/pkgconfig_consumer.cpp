@@ -25,3 +25,11 @@ int main()
     const int cleanup_result = srt_cleanup();
     return version == SRT_VERSION_VALUE && cleanup_result != SRT_ERROR ? 0 : 2;
 }
+
+#if defined(ROBOTWEAX_SRT_EXPECT_MAXREXMITBW) && !defined(ENABLE_MAXREXMITBW)
+#error "installed metadata must propagate ENABLE_MAXREXMITBW"
+#endif
+#ifdef ENABLE_MAXREXMITBW
+static_assert(SRTO_MAXREXMITBW == 63, "retransmission option value");
+static_assert(SRTO_E_SIZE == 64, "optional profile extent");
+#endif

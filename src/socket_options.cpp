@@ -53,6 +53,13 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         if (value < -1) return Error::invalid_state;
         maximum_bandwidth_ = value;
         return Error::none;
+#ifdef ENABLE_MAXREXMITBW
+    case SocketOption::maximum_retransmission_bandwidth_bytes_per_second:
+        if (value < -1)
+            return Error::invalid_state;
+        maximum_retransmission_bandwidth_ = value;
+        return Error::none;
+#endif
     case SocketOption::overhead_bandwidth_percent:
         if (value < 0 || value > 100) return Error::invalid_state;
         overhead_percent_ = static_cast<std::uint32_t>(value);
@@ -303,6 +310,10 @@ SocketOptionResult SocketOptions::get(SocketOption option) const noexcept
     case SocketOption::input_bandwidth_bytes_per_second: return {.value = static_cast<std::int64_t>(input_bandwidth_)};
     case SocketOption::minimum_input_bandwidth_bytes_per_second: return {.value = static_cast<std::int64_t>(minimum_input_bandwidth_)};
     case SocketOption::maximum_bandwidth_bytes_per_second: return {.value = maximum_bandwidth_};
+#ifdef ENABLE_MAXREXMITBW
+    case SocketOption::maximum_retransmission_bandwidth_bytes_per_second:
+        return {.value = maximum_retransmission_bandwidth_};
+#endif
     case SocketOption::overhead_bandwidth_percent: return {.value = overhead_percent_};
     case SocketOption::receiver_latency_milliseconds: return {.value = receiver_latency_milliseconds_};
     case SocketOption::peer_latency_milliseconds: return {.value = peer_latency_milliseconds_};

@@ -10,6 +10,9 @@
 #include "compat/readiness.hpp"
 #include "compat/socket_readiness.hpp"
 #include "compat/statistics.hpp"
+#ifdef ENABLE_MAXREXMITBW
+#include "compat/retransmission_budget.hpp"
+#endif
 
 #include <array>
 #include <atomic>
@@ -686,6 +689,11 @@ private:
     ReliabilitySession session_;
     PacketPacer pacer_;
     SocketOptions options_;
+#ifdef ENABLE_MAXREXMITBW
+    RetransmissionBudget retransmission_budget_;
+
+#endif
+    [[nodiscard]] bool retransmission_ready(std::uint64_t now) noexcept;
     RuntimeStatisticsState statistics_;
     Clock::time_point origin_{};
     std::int64_t origin_epoch_microseconds_ = 0;
