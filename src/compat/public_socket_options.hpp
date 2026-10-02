@@ -20,6 +20,9 @@ struct PublicSocketOptions {
     std::int32_t udp_send_buffer_bytes = 65'536;
     std::int32_t udp_receive_buffer_bytes = 12'288'000;
     std::int64_t maximum_bandwidth_bytes_per_second = -1;
+#ifdef ENABLE_MAXREXMITBW
+    std::int64_t maximum_retransmission_bandwidth_bytes_per_second = -1;
+#endif
     std::int64_t input_bandwidth_bytes_per_second = 0;
     std::int64_t minimum_input_bandwidth_bytes_per_second = 0;
     std::int32_t overhead_bandwidth_percent = 25;

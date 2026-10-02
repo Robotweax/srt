@@ -102,3 +102,11 @@ int main(void)
         ? 0
         : 5;
 }
+
+#if defined(ROBOTWEAX_SRT_EXPECT_MAXREXMITBW) && !defined(ENABLE_MAXREXMITBW)
+#error "installed metadata must propagate ENABLE_MAXREXMITBW"
+#endif
+#ifdef ENABLE_MAXREXMITBW
+_Static_assert(SRTO_MAXREXMITBW == 63, "retransmission option value");
+_Static_assert(SRTO_E_SIZE == 64, "optional profile extent");
+#endif

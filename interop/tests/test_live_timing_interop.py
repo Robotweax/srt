@@ -2864,6 +2864,8 @@ class LiveTimingInteropTests(unittest.TestCase):
 
     def test_rendezvous_trace_records_causal_rotation_ordinals(self) -> None:
         relay_sockets = (mock.Mock(), mock.Mock())
+        for relay_socket in relay_sockets:
+            relay_socket.getsockopt.return_value = 8 * 1024 * 1024
         faults = timing_interop.fault_plan("fec-source-drop", 384)
         with mock.patch.object(
             timing_interop.socket,
@@ -3027,6 +3029,7 @@ class LiveTimingInteropTests(unittest.TestCase):
 
     def test_timing_trace_proxy_canonicalizes_ipv6_target(self) -> None:
         relay_socket = mock.Mock()
+        relay_socket.getsockopt.return_value = 8 * 1024 * 1024
         with mock.patch.object(
             timing_interop.socket, "socket", return_value=relay_socket
         ) as socket_factory:

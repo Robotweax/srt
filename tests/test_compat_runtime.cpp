@@ -4,6 +4,7 @@
 #include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/control.hpp"
 #include "compat/readiness.hpp"
+#include "compat/retransmission_budget.hpp"
 #include "compat/transport_runtime.hpp"
 #include "compat/runtime_work_executor.hpp"
 #include "compat/submillisecond_pacing_platform.hpp"
@@ -7696,7 +7697,8 @@ struct BackpressureFixture {
 
     explicit BackpressureFixture(bool too_late_drop = false,
         std::uint32_t peer_idle_timeout_milliseconds = 5'000,
-        bool peer_periodic_nak = false, std::uint32_t capacity = 64)
+        bool peer_periodic_nak = false, std::uint32_t capacity = 64,
+        bool file_mode = false)
     {
         channel->set_send_hook_for_testing(backpressure_datagram, &output);
         SocketOptions options;
@@ -7708,6 +7710,11 @@ struct BackpressureFixture {
         REQUIRE_EQ(options.set(SocketOption::maximum_bandwidth_bytes_per_second,
                        100'000),
             Error::none);
+        if (file_mode) {
+            REQUIRE_EQ(
+                options.set(SocketOption::transmission_type, 1), Error::none);
+            REQUIRE_EQ(options.set(SocketOption::message_api, 1), Error::none);
+        }
         runtime = std::make_unique<ConnectionRuntime>(
             ConnectionRuntime::Configuration {
                 .channel = channel,
@@ -10486,3 +10493,300 @@ TEST(compat_runtime_oversized_data_does_not_ack_or_refresh_peer_liveness)
     (void)runtime.poll();
     REQUIRE(runtime.broken());
 }
+
+TEST(maxrexmitbw_budget_preserves_fraction_and_has_exact_packet_deadline)
+{
+    RetransmissionBudget budget;
+    budget.configure(17, 1000);
+    REQUIRE(!budget.ready(17, 1000));
+    REQUIRE_EQ(*budget.delay(17, 1000), 1000000U);
+    REQUIRE(!budget.ready(17, 1000999));
+    REQUIRE_EQ(*budget.delay(17, 1000999), 1U);
+    REQUIRE(budget.ready(17, 1001000));
+    budget.consume(17, 1001000);
+    REQUIRE(!budget.ready(17, 1001000));
+    budget.configure(17, 1001000);
+    REQUIRE_EQ(*budget.delay(17, 1001000), 1000000U);
+}
+
+TEST(maxrexmitbw_budget_zero_transitions_and_int64_max_are_defined)
+{
+    RetransmissionBudget budget;
+    budget.configure(100000, 0);
+    REQUIRE(budget.ready(1500, 1000000));
+    budget.configure(0, 1000000);
+    REQUIRE(!budget.ready(1, 1000000));
+    REQUIRE(!budget.delay(1, 2000000).has_value());
+    budget.configure(-1, 2000000);
+    REQUIRE(budget.ready(1500, 2000000));
+    budget.configure(1, 3000000);
+    REQUIRE_EQ(*budget.delay(1500, 3000000), 1500000000U);
+    budget.configure(INT64_MAX, 3000000);
+    REQUIRE(budget.ready(1500, 3000001));
+    budget.consume(1500, 3000001);
+    REQUIRE(budget.ready(1500, UINT64_MAX));
+}
+
+TEST(maxrexmitbw_budget_recomputes_capacity_on_rate_change)
+{
+    RetransmissionBudget budget;
+    budget.configure(1000, 0);
+    REQUIRE(budget.ready(1500, 2000000));
+    budget.configure(100000, 2000000);
+    REQUIRE(!budget.ready(1, 2000000));
+    REQUIRE(budget.ready(10000, 2100000));
+    REQUIRE(!budget.ready(10001, 2200000));
+}
+
+#ifdef ENABLE_MAXREXMITBW
+TEST(maxrexmitbw_runtime_zero_allows_new_data_and_budget_wakes_retransmission)
+{
+    for (const bool file_mode : {false, true}) {
+        BackpressureFixture fixture {false, 5000, false, 64, file_mode};
+        fixture.output.blocked = false;
+        SocketOptions options;
+        if (file_mode) {
+            REQUIRE_EQ(
+                options.set(SocketOption::transmission_type, 1), Error::none);
+            REQUIRE_EQ(options.set(SocketOption::message_api, 1), Error::none);
+        }
+        REQUIRE_EQ(
+            options.set(
+                SocketOption::maximum_retransmission_bandwidth_bytes_per_second,
+                0),
+            Error::none);
+        fixture.runtime->apply_options(options);
+        fixture.enqueue();
+        (void)fixture.runtime->poll();
+        REQUIRE_EQ(
+            fixture.runtime->statistics(false, true).total.sent_unique.packets,
+            1U);
+        std::array<std::byte, 8> loss_bytes {};
+        const std::array losses {
+            SequenceRange {SequenceNumber {700}, SequenceNumber {700}}};
+        const auto encoded = encode_loss_ranges(losses, loss_bytes);
+        REQUIRE(encoded);
+        fixture.runtime->process_packet(
+            {.kind = PacketKind::control,
+                .control = {.type = ControlType::negative_acknowledgement},
+                .payload = std::span {loss_bytes}.first(encoded.bytes_written)},
+            fixture.peer);
+        fixture.now += 1000;
+        (void)fixture.runtime->poll();
+        REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                       .total.sent_retransmitted.packets,
+            0U);
+        fixture.enqueue();
+        fixture.now += 1000;
+        (void)fixture.runtime->poll();
+        REQUIRE_EQ(
+            fixture.runtime->statistics(false, true).total.sent_unique.packets,
+            2U);
+        REQUIRE_EQ(
+            options.set(
+                SocketOption::maximum_retransmission_bandwidth_bytes_per_second,
+                17),
+            Error::none);
+        fixture.runtime->apply_options(options);
+        auto result = fixture.runtime->poll();
+        REQUIRE(!result.immediate_work);
+        REQUIRE(result.next_work_delay.has_value());
+        REQUIRE_EQ(result.next_work_delay->count(), 1000000);
+        fixture.now += 999999;
+        (void)fixture.runtime->poll();
+        REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                       .total.sent_retransmitted.packets,
+            0U);
+        fixture.now += 1;
+        (void)fixture.runtime->poll();
+        REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                       .total.sent_retransmitted.packets,
+            1U);
+    }
+}
+
+TEST(
+    maxrexmitbw_runtime_backpressure_debits_only_success_and_changes_cancel_retry)
+{
+    for (const auto changed_limit : {std::int64_t {0}, std::int64_t {34}}) {
+        BackpressureFixture fixture;
+        fixture.channel->set_send_hook_for_testing(
+            +[](std::span<const std::byte> bytes, Ipv4Endpoint peer,
+                 void* context) noexcept {
+                auto& output = *static_cast<BackpressureOutput*>(context);
+                const auto decoded = decode_packet(bytes);
+                if (decoded && decoded.packet.kind == PacketKind::control)
+                    return capture_datagram(bytes, peer, &output.accepted);
+                return backpressure_datagram(bytes, peer, context);
+            },
+            &fixture.output);
+        fixture.output.blocked = false;
+        fixture.enqueue();
+        (void)fixture.runtime->poll();
+        SocketOptions options;
+        REQUIRE_EQ(
+            options.set(
+                SocketOption::maximum_retransmission_bandwidth_bytes_per_second,
+                17),
+            Error::none);
+        fixture.runtime->apply_options(options);
+        std::array<std::byte, 8> loss_bytes {};
+        const std::array losses {
+            SequenceRange {SequenceNumber {700}, SequenceNumber {700}}};
+        const auto encoded = encode_loss_ranges(losses, loss_bytes);
+        fixture.runtime->process_packet(
+            {.kind = PacketKind::control,
+                .control = {.type = ControlType::negative_acknowledgement},
+                .payload = std::span {loss_bytes}.first(encoded.bytes_written)},
+            fixture.peer);
+        fixture.output.blocked = true;
+        fixture.now += 1000000;
+        (void)fixture.runtime->poll();
+        const auto last_retransmission = [&]() {
+            for (auto it = fixture.output.attempts.rbegin();
+                it != fixture.output.attempts.rend(); ++it) {
+                const auto decoded = decode_packet(*it);
+                if (decoded && decoded.packet.kind == PacketKind::data
+                    && decoded.packet.data.retransmitted)
+                    return *it;
+            }
+            return std::vector<std::byte> {};
+        };
+        const auto original = last_retransmission();
+        REQUIRE(!original.empty());
+        for (int i = 0; i < 3; ++i) {
+            fixture.now += 1000;
+            (void)fixture.runtime->poll();
+            REQUIRE(last_retransmission() == original);
+        }
+        fixture.output.blocked = false;
+        fixture.now += 1000;
+        (void)fixture.runtime->poll();
+        REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                       .total.sent_retransmitted.packets,
+            1U);
+        // A new NAK cannot immediately spend the successful packet's budget again.
+        fixture.runtime->process_packet(
+            {.kind = PacketKind::control,
+                .control = {.type = ControlType::negative_acknowledgement},
+                .payload = std::span {loss_bytes}.first(encoded.bytes_written)},
+            fixture.peer);
+        (void)fixture.runtime->poll();
+        REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                       .total.sent_retransmitted.packets,
+            1U);
+        fixture.now += 1000000;
+        fixture.output.blocked = true;
+        (void)fixture.runtime->poll();
+        REQUIRE_EQ(
+            options.set(
+                SocketOption::maximum_retransmission_bandwidth_bytes_per_second,
+                changed_limit),
+            Error::none);
+        fixture.runtime->apply_options(options);
+        fixture.output.blocked = false;
+        fixture.now += 1000;
+        (void)fixture.runtime->poll();
+        REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                       .total.sent_retransmitted.packets,
+            1U);
+        REQUIRE_EQ(
+            options.set(
+                SocketOption::maximum_retransmission_bandwidth_bytes_per_second,
+                -1),
+            Error::none);
+        fixture.runtime->apply_options(options);
+        (void)fixture.runtime->poll();
+        REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                       .total.sent_retransmitted.packets,
+            2U);
+    }
+}
+#endif
+
+#ifdef ENABLE_MAXREXMITBW
+TEST(maxrexmitbw_runtime_counts_protected_payload_and_preserves_ciphertext)
+{
+    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        const CryptoConfiguration config {
+            .passphrase = "maxrexmitbw protected payload",
+            .mode = mode,
+            .enable_aes_gcm = mode == CryptoMode::aes_gcm,
+            .key_length = 16};
+        auto crypto = std::make_shared<CryptoSession>(config);
+        CryptoSession peer_crypto {config};
+        REQUIRE_EQ(crypto->start_initiator(), Error::none);
+        REQUIRE_EQ(peer_crypto.accept_key_material(
+                       crypto->pending_key_material(), true),
+            Error::none);
+        REQUIRE_EQ(crypto->acknowledge_key_material(
+                       peer_crypto.key_material_response(), true),
+            Error::none);
+        confirm_directional_test_keys(*crypto, peer_crypto);
+        CapturedDatagrams output;
+        auto channel = std::make_shared<DatagramChannel>();
+        channel->set_send_hook_for_testing(capture_datagram, &output);
+        const Ipv4Endpoint peer {.address = {192, 0, 2, 94}, .port = 15094};
+        std::uint64_t now = 1000;
+        const std::int64_t cost = mode == CryptoMode::aes_gcm ? 33 : 17;
+        SocketOptions options;
+        REQUIRE_EQ(
+            options.set(
+                SocketOption::maximum_retransmission_bandwidth_bytes_per_second,
+                cost),
+            Error::none);
+        ConnectionRuntime runtime {{.channel = channel,
+            .peer = peer,
+            .peer_socket_id = 94,
+            .initial_sequence = SequenceNumber {700},
+            .flow_window_packets = 64,
+            .options = options,
+            .negotiated_options = {.retransmit_flag = true},
+            .crypto = crypto,
+            .now_function = injected_now,
+            .now_context = &now}};
+        const std::array payload {std::byte {'x'}};
+        REQUIRE_EQ(
+            runtime.queue_message(payload, 0, true, false, -1, -1).status,
+            MessageIoStatus::success);
+        (void)runtime.poll();
+        const auto initial = take_datagrams(output);
+        REQUIRE_EQ(initial.size(), 1U);
+        REQUIRE_EQ(initial[0].size(), static_cast<std::size_t>(cost));
+        std::array<std::byte, 8> loss_bytes {};
+        const std::array losses {
+            SequenceRange {SequenceNumber {700}, SequenceNumber {700}}};
+        const auto encoded = encode_loss_ranges(losses, loss_bytes);
+        runtime.process_packet(
+            {.kind = PacketKind::control,
+                .control = {.type = ControlType::negative_acknowledgement},
+                .payload = std::span {loss_bytes}.first(encoded.bytes_written)},
+            peer);
+        const auto wait = runtime.poll();
+        REQUIRE(wait.next_work_delay.has_value());
+        REQUIRE_EQ(wait.next_work_delay->count(), 1000000);
+        now += 999999;
+        (void)runtime.poll();
+        REQUIRE_EQ(
+            runtime.statistics(false, true).total.sent_retransmitted.packets,
+            0U);
+        now += 1;
+        (void)runtime.poll();
+        REQUIRE_EQ(
+            runtime.statistics(false, true).total.sent_retransmitted.packets,
+            1U);
+        bool found = false;
+        for (const auto& bytes : take_datagrams(output)) {
+            const auto decoded = decode_packet(bytes);
+            if (decoded.packet.kind == PacketKind::data
+                && decoded.packet.data.retransmitted) {
+                REQUIRE_EQ(bytes.size(), initial[0].size());
+                REQUIRE(std::equal(bytes.begin() + packet_header_size,
+                    bytes.end(), initial[0].begin() + packet_header_size));
+                found = true;
+            }
+        }
+        REQUIRE(found);
+    }
+}
+#endif

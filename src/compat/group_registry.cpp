@@ -722,6 +722,11 @@ bool GroupRegistry::prepare_mirror(
                 if (record->type != type || offset <= -maximum_join_lag) {
                     return false;
                 }
+#ifdef ENABLE_MAXREXMITBW
+                output.maximum_retransmission_bandwidth_bytes_per_second =
+                    record->member_public_options
+                        .maximum_retransmission_bandwidth_bytes_per_second;
+#endif
                 output.group = record->handle;
                 output.generation = record->generation;
                 output.drift_tracer = record->drift_tracer;
@@ -771,6 +776,11 @@ bool GroupRegistry::prepare_mirror(
         if (next_generation_ == 0U) {
             next_generation_ = 1U;
         }
+#ifdef ENABLE_MAXREXMITBW
+        output.maximum_retransmission_bandwidth_bytes_per_second =
+            listener_public_options
+                .maximum_retransmission_bandwidth_bytes_per_second;
+#endif
         output.group = candidate;
         output.generation = prepared->generation;
         output.created = true;

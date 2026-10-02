@@ -388,9 +388,9 @@ std::optional<OutboundPacket> SendBuffer::peek_new_packet() const noexcept
 }
 
 std::optional<OutboundPacket> SendBuffer::next_packet(
-    bool defer_retransmission_commit) noexcept
+    bool defer_retransmission_commit, bool allow_retransmission) noexcept
 {
-    while (retransmission_size_ > 0U) {
+    while (allow_retransmission && retransmission_size_ > 0U) {
         const auto sequence = retransmission_queue_[retransmission_head_];
         retransmission_head_ = (retransmission_head_ + 1U) % capacity();
         --retransmission_size_;
@@ -424,6 +424,32 @@ std::optional<OutboundPacket> SendBuffer::next_packet(
         }
     }
     return std::nullopt;
+}
+
+std::optional<OutboundPacket> SendBuffer::peek_retransmission_packet() noexcept
+{
+    while (retransmission_size_ != 0U) {
+        auto* slot = find(retransmission_queue_[retransmission_head_]);
+        if (slot != nullptr && slot->retransmission_queued) {
+            auto header = slot->header;
+            header.retransmitted = true;
+            return OutboundPacket {.header = header,
+                .payload = payloads_.get(slot->payload_index),
+                .sequence_position = slot->sequence_position};
+        }
+        retransmission_head_ = (retransmission_head_ + 1U) % capacity();
+        --retransmission_size_;
+    }
+    return std::nullopt;
+}
+
+void SendBuffer::requeue_prepared_retransmission(
+    SequenceNumber sequence) noexcept
+{
+    if (auto* slot = find(sequence); slot != nullptr) {
+        slot->retransmission_queued = false;
+        (void)queue_retransmission(sequence);
+    }
 }
 
 bool SendBuffer::retains_packet(SequenceNumber sequence) const noexcept

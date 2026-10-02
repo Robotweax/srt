@@ -76,3 +76,11 @@ int main()
 #endif
     return srt_close(socket) == SRT_ERROR ? 4 : 0;
 }
+
+#if defined(ROBOTWEAX_SRT_EXPECT_MAXREXMITBW) && !defined(ENABLE_MAXREXMITBW)
+#error "installed metadata must propagate ENABLE_MAXREXMITBW"
+#endif
+#ifdef ENABLE_MAXREXMITBW
+static_assert(SRTO_MAXREXMITBW == 63, "retransmission option value");
+static_assert(SRTO_E_SIZE == 64, "optional profile extent");
+#endif

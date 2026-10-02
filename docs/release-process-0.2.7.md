@@ -34,7 +34,7 @@ for this already published version.
   its formula hash and canonical recipe. Other bottle platforms are unqualified.
 
 See [release notes](release-notes-0.2.7.md) and the
-[package qualification record](../packaging/qualification-0.2.7.md) for exact
+[package qualification record](https://github.com/Robotweax/srt/blob/main/packaging/qualification-0.2.7.md) for exact
 hashes, asset links, failure-evidence exclusions and remaining limits.
 
 ## Source freeze and qualification

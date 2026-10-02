@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 from interop_common import (
+    enlarge_relay_socket_buffers,
     nonnegative_statistic,
     parse_complete,
     reserved_udp_ports,
@@ -773,6 +774,7 @@ class UdpCapture:
         family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
         self._socket = socket.socket(family, socket.SOCK_DGRAM)
         try:
+            enlarge_relay_socket_buffers(self._socket)
             self._socket.bind((host, 0))
             self._socket.settimeout(0.1)
         except BaseException:

@@ -215,6 +215,9 @@ if(NOT "${ROBOTWEAX_SRT_OPENSSL_ROOT_DIR}" STREQUAL "")
     list(APPEND configure_command
         "-DOPENSSL_ROOT_DIR=${ROBOTWEAX_SRT_OPENSSL_ROOT_DIR}")
 endif()
+if(ROBOTWEAX_SRT_MAXREXMITBW)
+    list(APPEND configure_command -DROBOTWEAX_SRT_EXPECT_MAXREXMITBW=ON)
+endif()
 if(ROBOTWEAX_SRT_AEAD_API_PREVIEW)
     list(APPEND configure_command
         -DROBOTWEAX_SRT_EXPECT_AEAD_API_PREVIEW=ON)
@@ -286,6 +289,9 @@ if((ROBOTWEAX_SRT_SYSTEM_NAME STREQUAL "Linux" OR
         "${ROBOTWEAX_SRT_CXX_FLAGS}")
     separate_arguments(consumer_link_arguments UNIX_COMMAND
         "${ROBOTWEAX_SRT_EXE_LINKER_FLAGS}")
+    if(ROBOTWEAX_SRT_MAXREXMITBW)
+        list(APPEND consumer_cxx_arguments -DROBOTWEAX_SRT_EXPECT_MAXREXMITBW=1)
+    endif()
     if(ROBOTWEAX_SRT_AEAD_API_PREVIEW)
         list(APPEND consumer_cxx_arguments
             -DROBOTWEAX_SRT_EXPECT_AEAD_API_PREVIEW=1)
@@ -346,6 +352,9 @@ if((ROBOTWEAX_SRT_SYSTEM_NAME STREQUAL "Linux" OR
     separate_arguments(c_private_link_arguments UNIX_COMMAND "${c_libs}")
     separate_arguments(c_driver_arguments UNIX_COMMAND "${ROBOTWEAX_SRT_C_FLAGS}")
     separate_arguments(c_link_driver_arguments UNIX_COMMAND "${c_link_driver_flags}")
+    if(ROBOTWEAX_SRT_MAXREXMITBW)
+        list(APPEND c_driver_arguments -DROBOTWEAX_SRT_EXPECT_MAXREXMITBW=1)
+    endif()
     if(ROBOTWEAX_SRT_AEAD_API_PREVIEW)
         list(APPEND c_driver_arguments -DROBOTWEAX_SRT_EXPECT_AEAD_API_PREVIEW=1)
     endif()
