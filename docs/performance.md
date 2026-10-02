@@ -23,6 +23,10 @@ fragmented receive losses to one compaction pass.
 [Bounded payload storage](payload-storage.md) separates packet metadata from
 reusable payload slots while preserving configured capacity.
 
+[DATA send-buffer initialization](data-buffer-initialization.md) documents the
+written-prefix proof for removing a redundant packet-buffer clear, independently
+of scheduler topology or pacing.
+
 ## Comparative scorecard
 
 ### Send-buffer selection diagnostic
