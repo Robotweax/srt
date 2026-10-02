@@ -31,7 +31,18 @@ public:
         if (scheduler_ != nullptr) {
             return scheduler_;
         }
+#if defined(_WIN32)
+        char* setting = nullptr;
+        std::size_t setting_size = 0;
+        if (_dupenv_s(&setting, &setting_size, "ROBOTWEAX_SRT_SCHEDULER_SHARDS")
+            != 0) {
+            return {};
+        }
+        const std::unique_ptr<char, decltype(&std::free)> owned_setting(
+            setting, &std::free);
+#else
         const char* setting = std::getenv("ROBOTWEAX_SRT_SCHEDULER_SHARDS");
+#endif
         const auto shard_count = setting == nullptr
             ? std::optional<std::size_t> {default_runtime_scheduler_shards}
             : parse_runtime_scheduler_shards(setting);

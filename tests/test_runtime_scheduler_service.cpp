@@ -26,7 +26,16 @@ struct EnvironmentGuard {
     std::optional<std::string> original;
     EnvironmentGuard()
     {
-        if (const char* value = std::getenv(setting_name)) {
+#if defined(_WIN32)
+        char* value = nullptr;
+        std::size_t size = 0;
+        REQUIRE_EQ(_dupenv_s(&value, &size, setting_name), 0);
+        const std::unique_ptr<char, decltype(&std::free)> owned_value(
+            value, &std::free);
+#else
+        const char* value = std::getenv(setting_name);
+#endif
+        if (value != nullptr) {
             original = value;
         }
     }
