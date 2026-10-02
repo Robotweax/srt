@@ -103,7 +103,9 @@ public:
 
     [[nodiscard]] ReceiveInsertResult insert(const PacketView& packet) noexcept;
     // A bounded, non-consuming copy of complete messages, including those
-    // behind a gap. Incomplete or rejected payload is never published.
+    // behind a gap. Keep the earliest messages that fit the aggregate budget;
+    // skip a message that alone exceeds it. Incomplete or rejected payload is
+    // never published. Allocation failure reports an error without partial data.
     [[nodiscard]] BufferedMessageCopies copy_complete_messages(
         std::size_t maximum_packets, std::size_t maximum_bytes) const noexcept;
     [[nodiscard]] ReceivedMessageResult pop_message(

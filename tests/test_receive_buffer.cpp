@@ -713,10 +713,26 @@ TEST(receive_buffer_bounded_complete_copy_preserves_fragments_and_gaps)
     REQUIRE_EQ(buffer.first_stored_sequence(), initial);
     REQUIRE_EQ(buffer.next_ack_sequence(), ack);
     for (const auto budget : {std::pair {2U, 3U}, std::pair {3U, 2U}}) {
-        const auto rejected =
+        const auto bounded =
             buffer.copy_complete_messages(budget.first, budget.second);
-        REQUIRE_EQ(rejected.error, Error::buffer_too_small);
-        REQUIRE(rejected.messages.empty());
+        REQUIRE_EQ(bounded.error, Error::none);
+        REQUIRE_EQ(bounded.messages.size(), 1U);
+        REQUIRE_EQ(bounded.messages[0].message_number, 2U);
+        REQUIRE_EQ(
+            bounded.messages[0].payload, (std::vector<std::byte> {a[0], b[0]}));
+        REQUIRE_EQ(buffer.occupied(), 4U);
+        REQUIRE_EQ(buffer.next_ack_sequence(), ack);
+    }
+    // The two-packet message cannot fit either individual budget; keep the
+    // later solo message without consuming or acknowledging the source.
+    for (const auto budget : {std::pair {1U, 3U}, std::pair {3U, 1U}}) {
+        const auto bounded =
+            buffer.copy_complete_messages(budget.first, budget.second);
+        REQUIRE_EQ(bounded.error, Error::none);
+        REQUIRE_EQ(bounded.messages.size(), 1U);
+        REQUIRE_EQ(bounded.messages[0].message_number, 3U);
+        REQUIRE_EQ(
+            bounded.messages[0].payload, (std::vector<std::byte> {c[0]}));
         REQUIRE_EQ(buffer.occupied(), 4U);
         REQUIRE_EQ(buffer.next_ack_sequence(), ack);
     }

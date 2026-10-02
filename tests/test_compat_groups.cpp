@@ -113,7 +113,8 @@ std::shared_ptr<ConnectionRuntime> attach_group_runtime(SRTSOCKET group,
     robotweax::srt::PacketTimestamp handshake_timestamp = {},
     ConnectionRuntime::ReceivePopHook receive_pop_hook = nullptr,
     void* receive_pop_context = nullptr,
-    bool receive_too_late_packet_drop = false)
+    bool receive_too_late_packet_drop = false,
+    std::size_t receive_capacity_packets = 0U)
 {
     robotweax::srt::SocketOptions options;
     REQUIRE_EQ(options.set(
@@ -124,6 +125,12 @@ std::shared_ptr<ConnectionRuntime> attach_group_runtime(SRTSOCKET group,
         REQUIRE_EQ(options.set(
                        robotweax::srt::SocketOption::send_buffer_packets,
                        static_cast<std::int64_t>(send_capacity_packets)),
+            robotweax::srt::Error::none);
+    }
+    if (receive_capacity_packets != 0U) {
+        REQUIRE_EQ(
+            options.set(robotweax::srt::SocketOption::receive_buffer_packets,
+                static_cast<std::int64_t>(receive_capacity_packets)),
             robotweax::srt::Error::none);
     }
     const IpEndpoint peer = IpEndpoint::loopback(9'000);
@@ -5984,6 +5991,97 @@ TEST(compat_group_closed_fragment_keeps_shared_clock_and_small_buffer_retry)
     REQUIRE_EQ(control.pktseq, static_cast<std::int32_t>(first.value()));
     REQUIRE_EQ(control.srctime, epoch + 310'000);
     REQUIRE_EQ(record->next_receive_sequence, first.advanced(2).value());
+}
+
+TEST(
+    compat_group_closed_member_retains_bounded_copy_and_skips_oversized_message)
+{
+    using robotweax::srt::compat::GroupReceiveRetention;
+    const auto bound =
+        static_cast<std::uint32_t>(GroupReceiveRetention::maximum_packets);
+    for (const bool oversized : {false, true}) {
+        const auto group = srt_create_group(SRT_GTYPE_BACKUP);
+        const auto socket = srt_create_socket();
+        struct Cleanup {
+            SRTSOCKET group;
+            ~Cleanup()
+            {
+                (void)srt_close(group);
+            }
+        } cleanup {group};
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        const SequenceNumber first {record->initial_sequence};
+        TestClock clock {
+            .channel =
+                std::make_shared<robotweax::srt::compat::DatagramChannel>()};
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        const auto origin = ConnectionRuntime::Clock::now();
+        auto runtime = attach_group_runtime(group, socket, first.value(), 1,
+            &clock, 0, false, 0, origin, record, {}, nullptr, nullptr, false,
+            bound + 2U);
+        const std::array payload {std::byte {'x'}};
+        const std::array tail {std::byte {'y'}};
+        for (std::uint32_t offset = 0; offset <= bound + 1U; ++offset) {
+            robotweax::srt::PacketView packet;
+            packet.kind = robotweax::srt::PacketKind::data;
+            packet.data.sequence = first.advanced(offset);
+            packet.data.message_number =
+                oversized && offset <= bound ? 1U : offset + 1U;
+            packet.data.boundary = oversized && offset <= bound
+                ? (offset == 0U ? robotweax::srt::MessageBoundary::first
+                          : offset == bound
+                          ? robotweax::srt::MessageBoundary::last
+                          : robotweax::srt::MessageBoundary::subsequent)
+                : robotweax::srt::MessageBoundary::solo;
+            packet.data.in_order = true;
+            packet.payload = offset == bound + 1U ? tail : payload;
+            runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+        }
+        const auto later = attach_group_runtime(group, srt_create_socket(),
+            first.advanced(bound + 2U).value(), 1, &clock, 0, false, 0, origin,
+            record);
+        REQUIRE_EQ(srt_close(socket), 0);
+        runtime.reset();
+        const bool synchronous = false;
+        REQUIRE_EQ(srt_setsockflag(
+                       group, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+            0);
+        REQUIRE_EQ(srt_getsockstate(group), SRTS_CONNECTED);
+        std::array<char, 1> output {};
+        if (oversized) {
+            // One unretainable fragmented message must not erase its tail.
+            REQUIRE_EQ(srt_recvmsg(group, output.data(), output.size()), 1);
+            REQUIRE_EQ(output[0], 'y');
+        } else {
+            // Aggregate overflow keeps the earliest bounded prefix.
+            for (std::uint32_t offset = 0; offset < bound; ++offset) {
+                REQUIRE_EQ(srt_recvmsg(group, output.data(), output.size()), 1);
+                REQUIRE_EQ(output[0], 'x');
+            }
+        }
+        REQUIRE_EQ(record->next_receive_sequence,
+            first.advanced(oversized ? bound + 2U : bound).value());
+        SRT_TRACEBSTATS statistics {};
+        REQUIRE_EQ(srt_bistats(group, &statistics, 0, 1), 0);
+        REQUIRE_EQ(statistics.pktRcvDropTotal, oversized ? bound + 1U : 0U);
+        robotweax::srt::PacketView next;
+        next.kind = robotweax::srt::PacketKind::data;
+        next.data.sequence = first.advanced(bound + 2U);
+        next.data.message_number = bound + 3U;
+        next.data.boundary = robotweax::srt::MessageBoundary::solo;
+        const std::array next_payload {std::byte {'z'}};
+        next.payload = next_payload;
+        later->process_packet(next, IpEndpoint::loopback(9'000));
+        REQUIRE_EQ(srt_recvmsg(group, output.data(), output.size()), 1);
+        REQUIRE_EQ(output[0], 'z');
+        REQUIRE_EQ(
+            record->next_receive_sequence, first.advanced(bound + 3U).value());
+        REQUIRE_EQ(srt_recvmsg(group, output.data(), output.size()), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+        REQUIRE_EQ(srt_bistats(group, &statistics, 0, 1), 0);
+        REQUIRE_EQ(statistics.pktRcvDropTotal, oversized ? bound + 1U : 2U);
+    }
 }
 
 TEST(compat_group_retention_bounds_drop_oldest_and_deduplicate)
