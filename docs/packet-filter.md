@@ -78,9 +78,14 @@ from its own option and clips peer source and control payloads to that size,
 as the reference implementation does: a peer with a smaller payload size is
 zero padded and recovers normally; a peer with a larger payload size still has
 its groups tracked, but a missing packet longer than the local buffer cannot
-be rebuilt and is reported through group expiry for ARQ (`arq:onreq` or
-`always`). Configure the same `SRTO_PAYLOADSIZE` on both peers for full FEC
-recovery.
+be rebuilt. With `arq:onreq`, such losses are reported only when the group
+expires; Column and Matrix expiry requires subsequent packets to advance the
+sequence. If the stream stops first, losses in its final groups can remain
+unreported and unrecovered. `arq:always` uses ordinary loss reporting rather
+than waiting for FEC expiry, but does not provide an unconditional guarantee
+of recovery at stream end. Configure the same `SRTO_PAYLOADSIZE` on both peers
+for full FEC recovery; use `arq:always` when retransmission should not depend on
+FEC group expiry.
 
 ## Resource model
 
