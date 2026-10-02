@@ -393,6 +393,19 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     target_compile_features(
         robotweax_srt_scheduler_tests PRIVATE cxx_std_20)
 
+    # Environment and service-generation changes require an isolated process.
+    add_executable(robotweax_srt_scheduler_service_tests
+        tests/test_main.cpp
+        tests/test_runtime_scheduler_service.cpp)
+    target_link_libraries(robotweax_srt_scheduler_service_tests
+        PRIVATE RobotweaxSRT::srt Threads::Threads)
+    target_include_directories(robotweax_srt_scheduler_service_tests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(robotweax_srt_scheduler_service_tests PRIVATE cxx_std_20)
+    add_test(NAME robotweax_srt_scheduler_service_tests
+        COMMAND robotweax_srt_scheduler_service_tests)
+    set_tests_properties(robotweax_srt_scheduler_service_tests PROPERTIES TIMEOUT 30)
+
     # Lifecycle tests intentionally manipulate process-wide startup and
     # cleanup state. Keep them in a separate process so their reference-count
     # assertions cannot be affected by other compatibility tests.

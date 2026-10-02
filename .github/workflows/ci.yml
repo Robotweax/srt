@@ -1133,6 +1133,7 @@ jobs:
           robotweax_srt_process_exit_tests
           robotweax_srt_global_lifecycle_tests
           robotweax_srt_scheduler_tests
+          robotweax_srt_scheduler_service_tests
       - name: Run lifecycle stress suite
         env:
           TSAN_OPTIONS: halt_on_error=1
@@ -1141,6 +1142,7 @@ jobs:
           && ./build/robotweax_srt_process_exit_tests
           && ./build/robotweax_srt_global_lifecycle_tests
           && ./build/robotweax_srt_scheduler_tests
+          && ./build/robotweax_srt_scheduler_service_tests
 
   fuzz_smoke:
     name: Fuzz smoke
