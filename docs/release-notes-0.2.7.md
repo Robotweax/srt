@@ -1,7 +1,7 @@
 # Robotweax SRT 0.2.7 — Recovery and Runtime Hardening
 
-Status: **in preparation, not published**. No release tag or 0.2.7 installer
-is qualified yet. The latest published release remains 0.2.6.
+Published on **2026-10-02** as **v0.2.7**.
+Tag commit: `1f9cc7c045f84ba188a08677bfc57ce7424e5aff`.
 
 Project version: **0.2.7**. Shared-library C ABI line: **0.2**.
 Compatible SRT API and `srt_getversion()`: **1.5.7**. This is an implementation
@@ -62,8 +62,8 @@ See [encryption](encryption.md), [connection groups](connection-groups.md),
 ## Compatibility and upgrading
 
 The installed public C export inventory is unchanged from 0.2.6; the intended
-C ABI line remains 0.2. The release candidate still requires installed-consumer
-and export/ABI qualification in its static/shared and platform configurations.
+C ABI line remains 0.2. Installed-consumer and export/ABI checks passed in the qualified
+static/shared and platform configurations.
 Existing support boundaries remain in the [compatibility matrix](compatibility.md).
 
 Rebuild direct source-tree C++ consumers against matching headers and library.
@@ -73,12 +73,12 @@ implementation headers are outside the installed public API contract.
 
 ## Qualification and remaining limits
 
-The starting main commit is `acb515d861725db65425d788990d61d46bad85f2`.
-Its [post-merge CI](https://github.com/Robotweax/srt/actions/runs/36930373524)
-completed successfully. This is baseline evidence, not acceptance of a future
-0.2.7 tag, package source or signed installer. The final candidate must pass
-the [release process](release-process-0.2.7.md), including the explicit complete
-ecosystem suite; skipped integrations are not new qualification results.
+The final main [CI](https://github.com/Robotweax/srt/actions/runs/36971215255)
+and final tag [CI](https://github.com/Robotweax/srt/actions/runs/36971349853)
+passed. The explicit [complete ecosystem suite](https://github.com/Robotweax/srt/actions/runs/36933471258)
+executed the configured FFmpeg, GStreamer, VLC and OBS profiles successfully.
+Optional live-timing and dedicated native ARM64/performance profiles remain
+unmeasured; skipped profiles are not new qualification evidence.
 
 The latest group retention correction passed 893 native tests, 72 final
 sanitizer group tests and 24 bidirectional UDP prefix cases covering Clear,
@@ -103,11 +103,50 @@ checks, not maximum-capacity or real-WAN guarantees.
   guarantee. No new PPA, COPR, vcpkg registry or application binary distribution
   is promised.
 
-## Distribution status
+## Downloads and package qualification
 
-No 0.2.7 download assets, signed SDK checksum or Homebrew bottle is accepted
-yet. The package recipes select byte-verified product commit
-`f254dd2c0fe084f7965238756b1d3b96665d592b`; archive SHA-256 is
-`7ba68805f66bca1da4e0d509d33aedab239a4de57ba9affb4db1481d4205c908`. Package qualification remains pending.
-Record exact source and tag commits, CI run links and post-signing checksums
-before changing this section to published status.
+Both Windows SDK installers are Authenticode-signed by **Robotweax GmbH** with
+trusted timestamps. The [final SDK workflow](https://github.com/Robotweax/srt/actions/runs/36971349763)
+built all twelve OpenSSL/BCrypt Win32/x64/ARM64 Debug/Release variants,
+validated installation/coexistence/removal and retested the exact signed pair.
+The downloaded release files match the qualified signed CI artifact byte for
+byte; `SHA256SUMS` covers the final signed executables.
+
+- [robotweax-srt-0.2.7-windows-sdk-openssl.exe](https://github.com/Robotweax/srt/releases/download/v0.2.7/robotweax-srt-0.2.7-windows-sdk-openssl.exe)
+- [robotweax-srt-0.2.7-windows-sdk-bcrypt.exe](https://github.com/Robotweax/srt/releases/download/v0.2.7/robotweax-srt-0.2.7-windows-sdk-bcrypt.exe)
+- [SHA256SUMS](https://github.com/Robotweax/srt/releases/download/v0.2.7/SHA256SUMS)
+
+Post-signing SHA-256:
+
+- `robotweax-srt-0.2.7-windows-sdk-openssl.exe`: `6c9d64f8df22b4bb170a1fab43bfa0d0286b145839e6f49d55a27dacc7dd20f2`
+- `robotweax-srt-0.2.7-windows-sdk-bcrypt.exe`: `b636a03c69fd6ec66e9f870a78ff80b71ce7c98ea103362353e21a0519c61494`
+
+The immutable package product source is
+`f254dd2c0fe084f7965238756b1d3b96665d592b`. Its 547 regular files and executable
+bits were compared with the downloaded GitHub archive. Archive SHA-256:
+`7ba68805f66bca1da4e0d509d33aedab239a4de57ba9affb4db1481d4205c908`.
+The final tag [package-manager run](https://github.com/Robotweax/srt/actions/runs/36971349877)
+qualified Homebrew and six vcpkg static/dynamic profiles;
+[Linux packages](https://github.com/Robotweax/srt/actions/runs/36971349861)
+qualified Ubuntu 24.04 and Fedora 44 package builds and consumers.
+The [experimental BCrypt candidate qualification](https://github.com/Robotweax/srt/actions/runs/36933470714)
+also passed.
+
+The [public Homebrew tap](https://github.com/Robotweax/homebrew-tap) now supplies
+0.2.7 with a qualified **Apple Silicon macOS 15 (`arm64_sequoia`)**
+[bottle](https://github.com/Robotweax/homebrew-tap/releases/tag/robotweax-srt-0.2.7).
+The [publication workflow](https://github.com/Robotweax/homebrew-tap/actions/runs/36972971654)
+passed; the downloaded bottle matches the qualified native CI artifact byte
+for byte, and the published formula records the same hash.
+
+```sh
+brew install robotweax/tap/robotweax-srt
+```
+
+Other bottle platforms require their own native qualification.
+
+The original tap run ignored a failed consumer test and produced no bottle;
+that result is not accepted. The corrected [native bottle run](https://github.com/Robotweax/homebrew-tap/actions/runs/36970375530)
+passed with strict test and artifact checks. Original failure evidence remains
+retained. Bottle SHA-256:
+`8f54dc38670715a6addc2292de1fda26cacdd7e1d618a2d8a571b8011b233202`.

@@ -1,17 +1,18 @@
 # Package manager recipes
 
-## 0.2.7 candidate
+## 0.2.7 release
 
 These recipes select the immutable Robotweax SRT 0.2.7 product source
 `f254dd2c0fe084f7965238756b1d3b96665d592b`, not the current checkout. All 547 regular files and their
 executable bits were compared with Git before pinning the downloaded archive.
 Archive SHA-256: `7ba68805f66bca1da4e0d509d33aedab239a4de57ba9affb4db1481d4205c908`.
 
-Qualification is pending. See the [0.2.7 record](qualification-0.2.7.md) and
-[release process](../docs/release-process-0.2.7.md). No 0.2.7 release or bottle
-is published yet. The public [Homebrew tap](https://github.com/Robotweax/homebrew-tap)
-still supplies 0.2.6; its [historical qualification](qualification-0.2.6.md)
-does not qualify this candidate. No vcpkg registry, PPA or COPR is published.
+Source/package qualification and the signed Windows SDK release are complete.
+See the [0.2.7 record](qualification-0.2.7.md) and
+[release record](../docs/release-process-0.2.7.md).
+The public [Homebrew tap](https://github.com/Robotweax/homebrew-tap)
+supplies 0.2.7 with a qualified Apple Silicon macOS 15 bottle.
+No vcpkg registry, PPA or COPR is published.
 
 ## Package contract
 
@@ -48,9 +49,10 @@ OpenSSL. Install the reviewed copy from the public tap:
 brew install robotweax/tap/robotweax-srt
 ```
 
-Homebrew may ask you to trust this external formula. The published 0.2.5 bottle is
-qualified for Apple Silicon macOS 15. A source installation from the public tap
-also passed on Apple Silicon macOS 26. To evaluate a proposed recipe change in
+Homebrew may ask you to trust this external formula. The published 0.2.7 bottle is
+qualified for Apple Silicon macOS 15 (`arm64_sequoia`). Its downloaded bytes
+match the native CI artifact and the published formula's SHA-256.
+To evaluate a proposed recipe change in
 a development tap, copy the formula to its `Formula/` directory, then run:
 
 ```sh
@@ -61,9 +63,10 @@ brew audit --strict YOUR_USER/YOUR_TAP/robotweax-srt
 ```
 
 The formula includes a C consumer using Robotweax-specific symbols and checks
-that generic Haivision paths were not installed. The 0.2.5 macOS 15 bottle passed Homebrew test-bot, including installation from the
-created bottle; its published SHA-256 matches the reviewed CI artifact. Other
-Homebrew bottle platforms require their own native checks.
+that generic Haivision paths were not installed. Native Homebrew test-bot
+qualified the 0.2.7 bottle, including installation from the created bottle.
+Other bottle platforms require their own native checks. Historical source
+installation on macOS 26 does not qualify a new 0.2.7 bottle for that platform.
 
 ## vcpkg overlay
 

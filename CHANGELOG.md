@@ -4,10 +4,12 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
-## 0.2.7 — Recovery and Runtime Hardening — Unreleased
+## 0.2.7 — Recovery and Runtime Hardening — 2026-10-02
 
-See [release notes](docs/release-notes-0.2.7.md) for the preparation status,
-compatibility contract and qualification limits.
+Published as [v0.2.7](https://github.com/Robotweax/srt/releases/tag/v0.2.7) from
+tag commit `1f9cc7c`; the immutable package product source is `f254dd2`.
+See [release notes](docs/release-notes-0.2.7.md) for the compatibility contract,
+qualification evidence and remaining limits.
 
 - Correct Live/File loss reporting, FEC window admission, directional packet
   drops, ACK cadence, timing origins and transient UDP recovery.

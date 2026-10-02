@@ -12,10 +12,11 @@ depending on implementation-specific C++ internals.
 
 ## Release status
 
-Version **0.2.7** is being prepared as a pre-1.0 recovery and runtime
-hardening release. It is not published yet. See the
-[release notes](docs/release-notes-0.2.7.md) for changes and remaining limits.
-The latest published release is [v0.2.6](https://github.com/Robotweax/srt/releases/tag/v0.2.6).
+Version **0.2.7** was published on **2026-10-02** as a pre-1.0 recovery and
+runtime hardening release. The [latest release](https://github.com/Robotweax/srt/releases/tag/v0.2.7)
+includes signed OpenSSL and BCrypt Windows SDK installers and post-signing
+checksums. See the [release notes](docs/release-notes-0.2.7.md) for changes,
+qualification evidence and remaining limits.
 
 | Axis | Robotweax SRT 0.2.7 |
 | --- | --- |
