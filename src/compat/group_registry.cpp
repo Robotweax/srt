@@ -20,11 +20,6 @@ namespace {
 [[nodiscard]] SRT_SOCKSTATUS aggregate_state(
     const GroupRecord& group) noexcept
 {
-    if (group.receive_retention_failed
-        || (group.retained_receive != nullptr
-            && group.retained_receive->failed())) {
-        return SRTS_BROKEN;
-    }
     if (group.closed) {
         return SRTS_CLOSED;
     }
@@ -722,6 +717,11 @@ bool GroupRegistry::prepare_mirror(
                 if (record->type != type || offset <= -maximum_join_lag) {
                     return false;
                 }
+#ifdef ENABLE_MAXREXMITBW
+                output.maximum_retransmission_bandwidth_bytes_per_second =
+                    record->member_public_options
+                        .maximum_retransmission_bandwidth_bytes_per_second;
+#endif
                 output.group = record->handle;
                 output.generation = record->generation;
                 output.drift_tracer = record->drift_tracer;
@@ -771,6 +771,11 @@ bool GroupRegistry::prepare_mirror(
         if (next_generation_ == 0U) {
             next_generation_ = 1U;
         }
+#ifdef ENABLE_MAXREXMITBW
+        output.maximum_retransmission_bandwidth_bytes_per_second =
+            listener_public_options
+                .maximum_retransmission_bandwidth_bytes_per_second;
+#endif
         output.group = candidate;
         output.generation = prepared->generation;
         output.created = true;
@@ -981,7 +986,8 @@ void GroupRegistry::retain_member_receive(SRTSOCKET group,
             record->retained_receive->retain(std::move(batch),
                 SequenceNumber {record->next_receive_sequence});
         } catch (...) {
-            record->receive_retention_failed = true;
+            // No retention storage: the closed member's unread prefix is
+            // lost for this receiver and the group skips it.
         }
         ++record->snapshot_version;
     }

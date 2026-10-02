@@ -99,6 +99,20 @@ the receiver's packet-storage capacity. Receiver admission therefore does not
 require prior DATA for every abandoned sequence or impose a storage-window
 limit on the range.
 
+Admission and effect are separate steps. An accepted range takes effect only
+up to the peer's observed send horizon: the highest DATA sequence seen on the
+wire from that peer, including packets rejected as beyond the receive window.
+The part of the range above the horizon is held as a pending skip and is
+applied as soon as a later DATA packet proves the peer sent past it; the
+first packet after an abandoned tail therefore applies the skip and is not
+reported as loss. A DROPREQ alone never advances the cumulative ACK or the
+receive window over sequences no DATA has reached: that would acknowledge
+sequences the peer may never have sent (the reference sender treats such an
+ACK as an attack and breaks the connection) and would turn every genuine
+packet below the claimed range into a duplicate. Only the newest held skip is
+kept; an older, disjoint remainder is recovered through the ordinary
+NAK -> DROPREQ exchange.
+
 Robotweax applies an additional sequence-sanity policy: the inclusive range
 contains at most `2^29` packets, and each endpoint must be within `2^29`
 positions, forward or backward, of the current cumulative ACK boundary. This
@@ -122,8 +136,10 @@ The grace entries retain their original processing order.
 DROPREQ is not cryptographically authenticated by the SRT control format. A
 plausible range from an on-path attacker or a spoofed peer endpoint remains
 indistinguishable from a legitimate TTL or group notification. Sequence checks
-limit implausible input; they do not prove the sender transmitted or abandoned
-the claimed packets. See the [security model](../SECURITY.md#runtime-key-material).
+limit implausible input and the observed-horizon bound limits its effect to
+sequences the peer demonstrably sent; neither proves the sender abandoned the
+claimed packets, so a forged range can still discard packets that are merely
+late within the observed window. See the [security model](../SECURITY.md#runtime-key-material).
 
 ## HSv5 version and downgrade policy
 

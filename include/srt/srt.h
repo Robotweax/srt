@@ -155,6 +155,11 @@ typedef enum SRT_SOCKOPT {
     SRTO_ROBOTWEAX_CRYPTO_BACKEND = 0x01000002,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
+#endif
+#ifdef ENABLE_MAXREXMITBW
+    SRTO_MAXREXMITBW = 63,
+    SRTO_E_SIZE = 64
+#elif defined(ENABLE_AEAD_API_PREVIEW)
     SRTO_E_SIZE = 63
 #else
     SRTO_E_SIZE = 62
@@ -168,7 +173,11 @@ typedef enum SRT_SOCKOPT {
 typedef enum SRT_TRANSTYPE {
     SRTT_LIVE = 0,
     SRTT_FILE = 1,
-    SRTT_INVALID = 2
+    SRTT_INVALID = 2,
+    /* Robotweax-only preset for the negotiated fec-sensor-v1 profile. */
+    SRTT_SENSOR = 3,
+    /* Robotweax-only reliable, ordered control-v1 Message profile. */
+    SRTT_CONTROL = 4
 } SRT_TRANSTYPE;
 
 typedef enum SRT_KM_STATE {

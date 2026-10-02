@@ -60,6 +60,7 @@ bool SendBuffer::synchronize_empty(
     next_unsent_offset_ = 0U;
     buffered_plaintext_bytes_ = 0U;
     expiring_packet_count_ = 0U;
+    retained_drop_count_ = 0U;
     first_buffered_enqueue_microseconds_ = 0U;
     last_buffered_enqueue_microseconds_ = 0U;
     return true;
@@ -189,6 +190,7 @@ SendBuffer::Slot* SendBuffer::find(SequenceNumber sequence) noexcept
 void SendBuffer::discard_slot(
     Slot& slot, bool retain_drop_marker) noexcept
 {
+    const bool was_dropped = slot.dropped;
     if (slot.occupied) {
         payloads_.release(slot.payload_index);
         if (slot.sent) {
@@ -206,6 +208,13 @@ void SendBuffer::discard_slot(
     }
     slot.occupied = false;
     slot.dropped = retain_drop_marker;
+    if (was_dropped != retain_drop_marker) {
+        if (retain_drop_marker) {
+            ++retained_drop_count_;
+        } else {
+            --retained_drop_count_;
+        }
+    }
     slot.drop_request_queued = false;
     slot.sent = false;
     slot.retransmission_queued = false;
@@ -388,9 +397,9 @@ std::optional<OutboundPacket> SendBuffer::peek_new_packet() const noexcept
 }
 
 std::optional<OutboundPacket> SendBuffer::next_packet(
-    bool defer_retransmission_commit) noexcept
+    bool defer_retransmission_commit, bool allow_retransmission) noexcept
 {
-    while (retransmission_size_ > 0U) {
+    while (allow_retransmission && retransmission_size_ > 0U) {
         const auto sequence = retransmission_queue_[retransmission_head_];
         retransmission_head_ = (retransmission_head_ + 1U) % capacity();
         --retransmission_size_;
@@ -424,6 +433,32 @@ std::optional<OutboundPacket> SendBuffer::next_packet(
         }
     }
     return std::nullopt;
+}
+
+std::optional<OutboundPacket> SendBuffer::peek_retransmission_packet() noexcept
+{
+    while (retransmission_size_ != 0U) {
+        auto* slot = find(retransmission_queue_[retransmission_head_]);
+        if (slot != nullptr && slot->retransmission_queued) {
+            auto header = slot->header;
+            header.retransmitted = true;
+            return OutboundPacket {.header = header,
+                .payload = payloads_.get(slot->payload_index),
+                .sequence_position = slot->sequence_position};
+        }
+        retransmission_head_ = (retransmission_head_ + 1U) % capacity();
+        --retransmission_size_;
+    }
+    return std::nullopt;
+}
+
+void SendBuffer::requeue_prepared_retransmission(
+    SequenceNumber sequence) noexcept
+{
+    if (auto* slot = find(sequence); slot != nullptr) {
+        slot->retransmission_queued = false;
+        (void)queue_retransmission(sequence);
+    }
 }
 
 bool SendBuffer::retains_packet(SequenceNumber sequence) const noexcept
@@ -695,6 +730,46 @@ bool SendBuffer::has_pending_drop_request() noexcept
         compact_drop_request_queue();
     }
     return drop_request_size_ != 0U || range_drop_request_size_ != 0U;
+}
+
+std::size_t SendBuffer::queue_retained_drop_requests() noexcept
+{
+    std::size_t queued = 0U;
+    for (std::size_t offset = 0U; offset < sequence_span_;) {
+        const auto& slot = slots_[(head_ + offset) % capacity()];
+        if (!slot.dropped) {
+            ++offset;
+            continue;
+        }
+        const std::uint32_t message_number = slot.header.message_number;
+        if (queue_drop_request(
+                first_sequence_.advanced(static_cast<std::uint32_t>(offset)))) {
+            ++queued;
+        }
+        do {
+            ++offset;
+        } while (offset < sequence_span_
+            && slots_[(head_ + offset) % capacity()].dropped
+            && slots_[(head_ + offset) % capacity()].header.message_number
+                == message_number);
+    }
+    return queued;
+}
+
+bool SendBuffer::has_retained_drop() const noexcept
+{
+    return retained_drop_count_ != 0U;
+}
+
+std::optional<std::uint64_t>
+SendBuffer::next_expiration_microseconds() const noexcept
+{
+    if (expiring_packet_count_ == 0U) {
+        return std::nullopt;
+    }
+    // Mainline tracks a conservative lower bound and refines it during expiry.
+    // Reuse it here so polling a finite-TTL queue does not scan every slot.
+    return earliest_expiration_microseconds_;
 }
 
 bool SendBuffer::queue_range_drop_requests(

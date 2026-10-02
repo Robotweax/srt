@@ -197,6 +197,74 @@ TEST(receive_buffer_finds_the_first_complete_message_after_a_gap)
         PacketTimestamp{9'000});
 }
 
+TEST(receive_buffer_unordered_pop_preserves_gap_and_window_frontier)
+{
+    ReceiveBuffer buffer {SequenceNumber {100}, 8};
+    const std::array<std::byte, 1> payload {std::byte {'u'}};
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {102}, 7, MessageBoundary::solo, payload)));
+    buffer.mark_gap(
+        {.first = SequenceNumber {100}, .last = SequenceNumber {101}}, 500U);
+
+    REQUIRE_EQ(buffer.window_available(), 5U);
+    REQUIRE_EQ(buffer.next_gap_deadline(), std::optional<std::uint64_t> {500U});
+    std::array<std::byte, 1> output {};
+    const auto delivered = buffer.pop_message_unordered(output);
+    REQUIRE(delivered);
+    REQUIRE_EQ(delivered.first_sequence, SequenceNumber {102});
+    REQUIRE_EQ(output, payload);
+    REQUIRE_EQ(buffer.next_ack_sequence(), SequenceNumber {100});
+    REQUIRE_EQ(buffer.window_available(), 5U);
+    const auto duplicate = buffer.insert(
+        data_packet(SequenceNumber {102}, 7, MessageBoundary::solo, payload));
+    REQUIRE_EQ(duplicate.status, ReceiveStatus::duplicate);
+
+    REQUIRE(!buffer.next_expired_gap(499U).has_value());
+    REQUIRE_EQ(buffer.next_expired_gap(500U),
+        std::optional<SequenceNumber> {SequenceNumber {100}});
+    REQUIRE_EQ(buffer.drop_range({.first = SequenceNumber {100},
+                   .last = SequenceNumber {100}}),
+        Error::none);
+    REQUIRE_EQ(buffer.next_expired_gap(500U),
+        std::optional<SequenceNumber> {SequenceNumber {101}});
+    REQUIRE_EQ(buffer.drop_range({.first = SequenceNumber {101},
+                   .last = SequenceNumber {101}}),
+        Error::none);
+    REQUIRE_EQ(buffer.next_ack_sequence(), SequenceNumber {103});
+    REQUIRE_EQ(buffer.first_stored_sequence(), SequenceNumber {103});
+    REQUIRE_EQ(buffer.window_available(), 8U);
+}
+
+TEST(receive_buffer_unordered_pop_recycles_payload_across_ring_wrap)
+{
+    ReceiveBuffer buffer {SequenceNumber {SequenceNumber::mask - 3U}, 8};
+    for (std::uint32_t cycle = 1U; cycle <= 64U; ++cycle) {
+        const auto gap = buffer.first_stored_sequence();
+        const std::array payload {
+            static_cast<std::byte>(cycle), std::byte {42}};
+        const auto packet =
+            data_packet(gap.next(), cycle, MessageBoundary::solo, payload);
+        REQUIRE(buffer.insert(packet));
+        std::array<std::byte, 1> small {};
+        REQUIRE_EQ(
+            buffer.pop_message_unordered(small).error, Error::buffer_too_small);
+        REQUIRE_EQ(buffer.occupied(), 1U);
+        REQUIRE_EQ(buffer.buffered_payload_bytes(), payload.size());
+
+        std::array<std::byte, 2> output {};
+        REQUIRE(buffer.pop_message_unordered(output));
+        REQUIRE_EQ(output, payload);
+        REQUIRE_EQ(buffer.occupied(), 0U);
+        REQUIRE_EQ(buffer.buffered_payload_bytes(), 0U);
+        REQUIRE_EQ(buffer.insert(packet).status, ReceiveStatus::duplicate);
+        REQUIRE_EQ(buffer.next_ack_sequence(), gap);
+        REQUIRE_EQ(buffer.drop_range({.first = gap, .last = gap}), Error::none);
+        REQUIRE_EQ(buffer.first_stored_sequence(), gap.advanced(2U));
+        REQUIRE_EQ(buffer.next_ack_sequence(), gap.advanced(2U));
+        REQUIRE_EQ(buffer.window_available(), buffer.capacity());
+    }
+}
+
 TEST(receive_buffer_discards_redundant_prefix_for_group_delivery)
 {
     ReceiveBuffer buffer{SequenceNumber{100}, 8};
@@ -713,10 +781,26 @@ TEST(receive_buffer_bounded_complete_copy_preserves_fragments_and_gaps)
     REQUIRE_EQ(buffer.first_stored_sequence(), initial);
     REQUIRE_EQ(buffer.next_ack_sequence(), ack);
     for (const auto budget : {std::pair {2U, 3U}, std::pair {3U, 2U}}) {
-        const auto rejected =
+        const auto bounded =
             buffer.copy_complete_messages(budget.first, budget.second);
-        REQUIRE_EQ(rejected.error, Error::buffer_too_small);
-        REQUIRE(rejected.messages.empty());
+        REQUIRE_EQ(bounded.error, Error::none);
+        REQUIRE_EQ(bounded.messages.size(), 1U);
+        REQUIRE_EQ(bounded.messages[0].message_number, 2U);
+        REQUIRE_EQ(
+            bounded.messages[0].payload, (std::vector<std::byte> {a[0], b[0]}));
+        REQUIRE_EQ(buffer.occupied(), 4U);
+        REQUIRE_EQ(buffer.next_ack_sequence(), ack);
+    }
+    // The two-packet message cannot fit either individual budget; keep the
+    // later solo message without consuming or acknowledging the source.
+    for (const auto budget : {std::pair {1U, 3U}, std::pair {3U, 1U}}) {
+        const auto bounded =
+            buffer.copy_complete_messages(budget.first, budget.second);
+        REQUIRE_EQ(bounded.error, Error::none);
+        REQUIRE_EQ(bounded.messages.size(), 1U);
+        REQUIRE_EQ(bounded.messages[0].message_number, 3U);
+        REQUIRE_EQ(
+            bounded.messages[0].payload, (std::vector<std::byte> {c[0]}));
         REQUIRE_EQ(buffer.occupied(), 4U);
         REQUIRE_EQ(buffer.next_ack_sequence(), ack);
     }

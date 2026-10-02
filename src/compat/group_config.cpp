@@ -32,6 +32,9 @@ GroupSocketConfiguration::~GroupSocketConfiguration() noexcept
 bool is_group_member_option(SRT_SOCKOPT option) noexcept
 {
     switch (option) {
+#ifdef ENABLE_MAXREXMITBW
+    case SRTO_MAXREXMITBW:
+#endif
     case SRTO_BINDTODEVICE:
     case SRTO_CONNTIMEO:
     case SRTO_DRIFTTRACER:
@@ -71,6 +74,16 @@ bool GroupSocketConfiguration::add(
         return false;
     }
 
+#ifdef ENABLE_MAXREXMITBW
+    if (option == SRTO_MAXREXMITBW) {
+        std::int64_t limit = 0;
+        if (value_size != static_cast<int>(sizeof(limit)))
+            return false;
+        std::memcpy(&limit, value, sizeof(limit));
+        if (limit < -1)
+            return false;
+    }
+#endif
     std::lock_guard lock(mutex_);
     if (size_ >= options_.size()) {
         return false;

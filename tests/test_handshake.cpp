@@ -1,6 +1,7 @@
 #include "test.hpp"
 
 #include "robotweax/srt/handshake.hpp"
+#include "robotweax/srt/socket_options.hpp"
 
 #include <array>
 #include <cstddef>
@@ -966,6 +967,101 @@ TEST(listener_rejects_a_congestion_controller_mismatch)
         HandshakeActionKind::rejected);
 }
 
+TEST(control_profile_requires_a_matching_confirmed_wire_identity)
+{
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::control)),
+        Error::none);
+    std::uint32_t cookie_salt = 0x41c0'0001U;
+    const HandshakeMachine::Configuration caller_configuration {
+        .role = ConnectionRole::caller,
+        .local_socket_id = 100,
+        .extension_parameters = options.handshake_parameters(),
+        .congestion_controller = CongestionController::control,
+    };
+    HandshakeMachine caller {caller_configuration};
+    HandshakeMachine listener {{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 200,
+        .extension_parameters = options.handshake_parameters(),
+        .congestion_controller = CongestionController::control,
+        .cookie_generator = test_cookie,
+        .cookie_context = &cookie_salt,
+    }};
+    const auto induction = caller.start();
+    const auto induction_response =
+        listener.receive(message_from(induction.values[0]));
+    const auto conclusion =
+        caller.receive(message_from(induction_response.values[0]));
+    REQUIRE(conclusion.values[0].has_congestion_extension);
+    REQUIRE_EQ(conclusion.values[0].congestion_controller,
+        CongestionController::control);
+    const auto listener_done =
+        listener.receive(message_from(conclusion.values[0]));
+    REQUIRE_EQ(listener.state(), HandshakeState::connected);
+    REQUIRE(listener_done.values[0].has_congestion_extension);
+    const auto caller_done =
+        caller.receive(message_from(listener_done.values[0]));
+    REQUIRE_EQ(caller_done.values[0].kind, HandshakeActionKind::connected);
+
+    HandshakeMachine unconfirmed {caller_configuration};
+    (void)unconfirmed.start();
+    (void)unconfirmed.receive(message_from(induction_response.values[0]));
+    auto missing_confirmation = message_from(listener_done.values[0]);
+    missing_confirmation.has_congestion_extension = false;
+    const auto rejected = unconfirmed.receive(missing_confirmation);
+    REQUIRE_EQ(rejected.values[0].kind, HandshakeActionKind::rejected);
+    REQUIRE_EQ(unconfirmed.rejection_reason(), 13);
+
+    HandshakeMachine file_listener {{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 300,
+        .extension_parameters = options.handshake_parameters(),
+        .congestion_controller = CongestionController::file,
+        .cookie_generator = test_cookie,
+        .cookie_context = &cookie_salt,
+    }};
+    HandshakeMachine control_caller {caller_configuration};
+    const auto file_induction = control_caller.start();
+    const auto file_induction_response =
+        file_listener.receive(message_from(file_induction.values[0]));
+    const auto file_conclusion =
+        control_caller.receive(message_from(file_induction_response.values[0]));
+    const auto file_rejected =
+        file_listener.receive(message_from(file_conclusion.values[0]));
+    REQUIRE_EQ(file_listener.rejection_reason(), 13);
+    REQUIRE_EQ(file_rejected.values[1].kind, HandshakeActionKind::rejected);
+}
+
+TEST(control_profile_rejects_a_peer_requested_packet_filter)
+{
+    const auto filter = parse_packet_filter_configuration("fec,cols:4");
+    REQUIRE(filter);
+    std::uint32_t cookie_salt = 0x41c0'0002U;
+    HandshakeMachine caller {{
+        .role = ConnectionRole::caller,
+        .local_socket_id = 100,
+        .congestion_controller = CongestionController::control,
+        .packet_filter_configuration = filter.configuration,
+    }};
+    HandshakeMachine listener {{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 200,
+        .congestion_controller = CongestionController::control,
+        .cookie_generator = test_cookie,
+        .cookie_context = &cookie_salt,
+    }};
+    const auto induction = caller.start();
+    const auto induction_response =
+        listener.receive(message_from(induction.values[0]));
+    const auto conclusion =
+        caller.receive(message_from(induction_response.values[0]));
+    const auto rejected = listener.receive(message_from(conclusion.values[0]));
+    REQUIRE_EQ(listener.rejection_reason(), 14);
+    REQUIRE_EQ(rejected.values[1].kind, HandshakeActionKind::rejected);
+}
+
 TEST(caller_and_listener_negotiate_complementary_packet_filter_parameters)
 {
     const auto caller_filter =
@@ -1186,4 +1282,77 @@ TEST(configured_listener_does_not_force_an_unrequested_packet_filter)
     REQUIRE_EQ(caller_done.values[0].kind,
         HandshakeActionKind::connected);
     REQUIRE(!caller.has_negotiated_packet_filter());
+}
+
+TEST(caller_and_listener_negotiate_the_sensor_profile_identity)
+{
+    const auto profile = parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,arq:never");
+    REQUIRE(profile);
+
+    std::uint32_t cookie_salt = 0x53e1'5001U;
+    HandshakeMachine caller {{
+        .role = ConnectionRole::caller,
+        .local_socket_id = 100,
+        .initial_sequence = SequenceNumber {10},
+        .packet_filter_configuration = profile.configuration,
+    }};
+    HandshakeMachine listener {{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 200,
+        .initial_sequence = SequenceNumber {20},
+        .packet_filter_configuration = profile.configuration,
+        .cookie_generator = test_cookie,
+        .cookie_context = &cookie_salt,
+    }};
+
+    const auto induction = caller.start();
+    const auto induction_response =
+        listener.receive(message_from(induction.values[0]));
+    const auto conclusion =
+        caller.receive(message_from(induction_response.values[0]));
+    const auto listener_done =
+        listener.receive(message_from(conclusion.values[0]));
+    REQUIRE(listener.has_negotiated_packet_filter());
+    REQUIRE(listener.negotiated_packet_filter().sensor_profile());
+    REQUIRE_EQ(listener.negotiated_packet_filter().view(),
+        std::string_view {"fec-sensor-v1,cols:4,rows:1,arq:never"});
+
+    const auto caller_done =
+        caller.receive(message_from(listener_done.values[0]));
+    REQUIRE_EQ(caller_done.values[0].kind, HandshakeActionKind::connected);
+    REQUIRE(caller.has_negotiated_packet_filter());
+    REQUIRE(caller.negotiated_packet_filter().sensor_profile());
+}
+
+TEST(sensor_profile_listener_rejects_a_caller_without_the_profile)
+{
+    const auto profile = parse_packet_filter_configuration(
+        "fec-sensor-v1,cols:4,rows:1,arq:never");
+    REQUIRE(profile);
+    std::uint32_t cookie_salt = 0x81a5'5001U;
+    HandshakeMachine caller {{
+        .role = ConnectionRole::caller,
+        .local_socket_id = 100,
+    }};
+    HandshakeMachine listener {{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 200,
+        .packet_filter_configuration = profile.configuration,
+        .cookie_generator = test_cookie,
+        .cookie_context = &cookie_salt,
+    }};
+
+    const auto induction = caller.start();
+    const auto induction_response =
+        listener.receive(message_from(induction.values[0]));
+    const auto conclusion =
+        caller.receive(message_from(induction_response.values[0]));
+    REQUIRE(!conclusion.values[0].has_packet_filter_extension);
+    const auto rejected = listener.receive(message_from(conclusion.values[0]));
+    REQUIRE_EQ(listener.state(), HandshakeState::rejected);
+    REQUIRE_EQ(listener.rejection_reason(), 14);
+    REQUIRE_EQ(
+        static_cast<std::int32_t>(rejected.values[0].packet.request), 1'014);
+    REQUIRE_EQ(rejected.values[1].kind, HandshakeActionKind::rejected);
 }

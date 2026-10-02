@@ -10,6 +10,22 @@ reliability policy.
 Configure `SRTO_PACKETFILTER` before `srt_bind`, `srt_listen`, or
 `srt_connect`. The supported grammar is:
 
+For the fixed sensor profile, applications can instead set
+`SRTO_TRANSTYPE=SRTT_SENSOR` on both endpoints before bind/connect. This
+selects the same `fec-sensor-v1,cols:4,rows:1,arq:never` filter and its
+low-latency Live/Message bundle in one call. An endpoint using the shorthand
+can connect to one configured with the exact filter string. The sensor type
+disables TSBPD, late-packet dropping, periodic NAK, and retransmission flags;
+its FEC recovery remains active. Switch back with `SRTT_LIVE` or `SRTT_FILE`
+before binding if the sensor filter is no longer wanted.
+
+```c
+SRT_TRANSTYPE type = SRTT_SENSOR;
+srt_setsockflag(socket, SRTO_TRANSTYPE, &type, sizeof(type));
+```
+
+For general FEC configurations, use:
+
 ```text
 fec,cols:N[,rows:N][,layout:even|staircase][,arq:never|onreq|always]
 ```
@@ -72,6 +88,20 @@ authentication failure rather than unauthenticated plaintext.
 The payload ceiling depends on MSS, address family, encryption mode, and FEC
 overhead. A 1,316-byte application message is a common seven-times-188-byte
 MPEG-TS profile, not a protocol limit.
+
+`SRTO_PAYLOADSIZE` is not negotiated. The receiver sizes its recovery buffers
+from its own option and clips peer source and control payloads to that size,
+as the reference implementation does: a peer with a smaller payload size is
+zero padded and recovers normally; a peer with a larger payload size still has
+its groups tracked, but a missing packet longer than the local buffer cannot
+be rebuilt. With `arq:onreq`, such losses are reported only when the group
+expires; Column and Matrix expiry requires subsequent packets to advance the
+sequence. If the stream stops first, losses in its final groups can remain
+unreported and unrecovered. `arq:always` uses ordinary loss reporting rather
+than waiting for FEC expiry, but does not provide an unconditional guarantee
+of recovery at stream end. Configure the same `SRTO_PAYLOADSIZE` on both peers
+for full FEC recovery; use `arq:always` when retransmission should not depend on
+FEC group expiry.
 
 ## Resource model
 

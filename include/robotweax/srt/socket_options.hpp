@@ -24,6 +24,7 @@ inline constexpr std::size_t ipv6_srt_packet_overhead = 64;
 enum class TransmissionType : std::uint8_t {
     live = 0,
     file = 1,
+    control = 2,
 };
 
 // Public options for every transport feature currently implemented by Robotweax.
@@ -57,6 +58,9 @@ enum class SocketOption : std::uint16_t {
     congestion_controller,
 #ifdef ENABLE_AEAD_API_PREVIEW
     crypto_mode,
+#endif
+#ifdef ENABLE_MAXREXMITBW
+    maximum_retransmission_bandwidth_bytes_per_second,
 #endif
 };
 
@@ -124,6 +128,10 @@ public:
     [[nodiscard]] TransmissionType transmission_type() const noexcept
     {
         return transmission_type_;
+    }
+    [[nodiscard]] bool control_profile() const noexcept
+    {
+        return transmission_type_ == TransmissionType::control;
     }
     [[nodiscard]] CongestionController
     congestion_controller() const noexcept
@@ -213,6 +221,7 @@ public:
         IpAddressFamily family) noexcept;
 
 private:
+    void apply_sensor_profile_bundle() noexcept;
 #ifdef ENABLE_AEAD_API_PREVIEW
     [[nodiscard]] bool supports_aes_gcm_transport_bundle(
         TransmissionType transmission_type,
@@ -223,6 +232,9 @@ private:
     std::uint64_t input_bandwidth_ = 0;
     std::uint64_t minimum_input_bandwidth_ = 0;
     std::int64_t maximum_bandwidth_ = -1;
+#ifdef ENABLE_MAXREXMITBW
+    std::int64_t maximum_retransmission_bandwidth_ = -1;
+#endif
     std::uint32_t overhead_percent_ = 25;
     std::uint16_t receiver_latency_milliseconds_ = 120;
     std::uint16_t peer_latency_milliseconds_ = 0;

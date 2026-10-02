@@ -372,7 +372,19 @@ member.
 connect requires an explicitly bound socket, and listen/accept is invalid in
 that mode. `SRTO_TRANSTYPE=SRTT_FILE` is a pre-bind bundle that selects
 FileCC, maximum payload, buffer-mode extraction, and disables the live-only
-TSBPD/TLPKTDROP/periodic-NAK behavior. `SRTO_MESSAGEAPI` may select message
+TSBPD/TLPKTDROP/periodic-NAK behavior. The Robotweax extension
+`SRTO_TRANSTYPE=SRTT_SENSOR` (`3`) is a pre-bind shortcut for the versioned
+`fec-sensor-v1,cols:4,rows:1,arq:never` filter and its Live/Message sensor
+bundle. Set it on both caller and listener before bind/connect. It negotiates
+the same filter as `SRTO_PACKETFILTER` with that exact string, so the two
+configuration styles interoperate; `SRTO_TRANSTYPE` reads back `SRTT_SENSOR`
+for either style. Switching to `SRTT_LIVE` or `SRTT_FILE` clears the sensor
+filter and selects that type's normal bundle. `SRTT_INVALID` remains `2`.
+`SRTO_TRANSTYPE=SRTT_CONTROL` (`4`) selects Robotweax's versioned,
+reliable ordered-message profile with FileCC, no TSBPD, and a distinct
+`control-v1` handshake identity. Both endpoints must opt in. See
+[Reliable control-message profile](control-profile.md).
+`SRTO_MESSAGEAPI` may select message
 extraction before connection; the STREAM handshake flag is derived from that
 same value. `SRTO_LINGER` accepts `struct linger`: live mode defaults to
 `{0, 0}`, file mode to `{1, 180}`, and synchronous close waits for send-buffer
@@ -479,3 +491,47 @@ it therefore describes buffer occupancy rather than immediate application
 readability. Before a runtime exists, both packet counts are zero. Setting any
 of the three options, or retrieving them from a connection-group handle, fails
 with `SRT_EINVOP`.
+
+## Optional retransmission bandwidth limit
+
+Development builds can enable `-DENABLE_MAXREXMITBW=ON`. This extension is
+standard-off and was not included in the published 0.2.7 binaries. It exposes
+`SRTO_MAXREXMITBW=63` and sets `SRTO_E_SIZE=64`, independently of the AES-GCM
+build switch. Both the library and consumers must use matching feature flags;
+exported CMake targets and pkg-config metadata propagate the enabled flag.
+
+The option accepts `int64_t` values in bytes/second and is readable/writable
+before or after connection establishment. Default `-1` disables this additional
+limit; `0` prohibits DATA retransmissions; positive values limit retransmission
+traffic while preserving normal DATA and control/FEC traffic. Values below `-1`
+and incorrect setter widths fail without changing the value. This local sender
+policy does not require peer negotiation or change the wire format.
+
+Packet cost is the exact retained protected DATA payload (including a GCM tag,
+when present) plus the 16-byte SRT header. IP and UDP headers are excluded,
+following the documented option contract rather than upstream's fixed IPv4
+network-overhead accounting. Existing overall pacing/flow/congestion limits
+continue to apply. Live and File connections use the same retransmission gate.
+
+Each socket/member has its own token bucket. Capacity is the greater of 1500
+bytes and 100 ms of the configured rate. This allows bounded bursts; it is not
+a strict limit for every short interval. Changing the limit clears accumulated
+credit and fractional state; setting the same value retains them. Positive
+limits initially wait for enough credit for the exact candidate packet. Low
+rates retain a one-packet capacity, and raising the rate recomputes capacity
+without preserving an enlarged historical burst interval.
+
+Tokens are debited once, after UDP successfully accepts a complete datagram.
+Local would-block retries reuse immutable wire bytes and do not debit on failure.
+A limit change applies to queued retries too: a retry without sufficient credit is
+canceled and its pending loss work restored, allowing other traffic to progress.
+This includes immediate suppression after switching to zero. ACK/TTL/TLPKTDROP retirement still cancels stale retries.
+Returning to a positive or unlimited limit wakes the sender. Budget waits use a
+calculated packet-availability deadline; zero relies on ordinary protocol work
+and option changes, rather than immediate retransmission polling.
+
+Group setters update extant members and the late-join template. Listener and
+accepted-group templates carry the limit; member configuration can override it.
+The configured value is a per-member budget, not an aggregate group budget.
+Disabling retransmission can prevent successful loss recovery, especially for
+File transfers; this is an explicit application policy, not a packet-drop mode.

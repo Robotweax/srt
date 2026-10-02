@@ -203,6 +203,15 @@ public:
         efficient_retransmission_ = enabled;
         peer_periodic_nak_ = peer_periodic_nak;
     }
+    [[nodiscard]] std::optional<OutboundPacket>
+    peek_retransmission_packet() noexcept
+    {
+        return send_buffer_.peek_retransmission_packet();
+    }
+    void requeue_prepared_retransmission(SequenceNumber sequence) noexcept
+    {
+        send_buffer_.requeue_prepared_retransmission(sequence);
+    }
     void note_retransmission_sent(
         SequenceNumber sequence, std::uint64_t now_microseconds) noexcept
     {
@@ -214,7 +223,8 @@ public:
     [[nodiscard]] std::optional<OutboundPacket> next_paced_data_packet(
         PacketPacer& pacer, std::uint64_t now_microseconds,
         std::size_t new_packet_wire_overhead = 0U,
-        bool defer_pacing_commit = false) noexcept;
+        bool defer_pacing_commit = false,
+        bool allow_retransmission = true) noexcept;
     [[nodiscard]] Error preserve_encrypted_payload(
         SequenceNumber sequence,
         EncryptionKey key,
@@ -317,7 +327,9 @@ public:
     [[nodiscard]] ReceivedMessageResult pop_message(
         std::span<std::byte> destination) noexcept
     {
-        return receive_buffer_.pop_message(destination);
+        return packet_filter_policy_.sensor_profile()
+            ? receive_buffer_.pop_message_unordered(destination)
+            : receive_buffer_.pop_message(destination);
     }
     [[nodiscard]] ReceivedMessageResult pop_stream(
         std::span<std::byte> destination) noexcept
@@ -354,6 +366,10 @@ public:
     [[nodiscard]] ReliabilityProcessResult
     drop_too_late_receiver(
         std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] ReliabilityProcessResult expire_sensor_receive_gaps(
+        std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] std::optional<std::uint64_t>
+    next_sensor_receive_gap_deadline() const noexcept;
     [[nodiscard]] bool data_ready_at(
         std::uint64_t now_microseconds) noexcept
     {
@@ -398,6 +414,8 @@ public:
     [[nodiscard]] ReliabilityActions drop_expired_sender_message(
         std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] ReliabilityActions take_pending_drop_requests() noexcept;
+    [[nodiscard]] std::optional<std::uint64_t>
+    next_sender_retirement_deadline() const noexcept;
     [[nodiscard]] bool has_pending_drop_requests() noexcept
     {
         return send_buffer_.has_pending_drop_request();
@@ -459,6 +477,15 @@ private:
     [[nodiscard]] static std::uint64_t peer_drop_identity(
         SequenceRange range) noexcept;
     void retire_peer_drop_identity(SequenceRange range) noexcept;
+    [[nodiscard]] Error apply_peer_drop_range(SequenceRange range,
+        std::uint32_t message_number, bool defer_drop, std::uint64_t deadline,
+        std::uint64_t now_microseconds,
+        ReliabilityProcessResult& result) noexcept;
+    void remember_peer_drop_remainder(
+        SequenceRange remainder, std::uint64_t deadline) noexcept;
+    [[nodiscard]] Error apply_peer_drop_remainder(SequenceNumber observed,
+        std::uint64_t now_microseconds,
+        ReliabilityProcessResult& result) noexcept;
 
     friend class compat::ConnectionRuntime;
     [[nodiscard]] ReliabilityAction make_acknowledgement(
@@ -489,6 +516,9 @@ private:
     // Sorted exact identities give logarithmic duplicate admission without
     // changing the grace entries' processing order or allocating on receive.
     std::vector<std::uint64_t> pending_peer_drop_identities_;
+    // Part of a peer DROPREQ beyond the highest observed DATA sequence; it
+    // is applied once later DATA proves the peer advanced that far.
+    std::optional<PendingPeerDrop> peer_drop_remainder_;
     ReceiveLossList receive_loss_list_;
     ReceiveLossList filter_loss_list_;
     // Scratch space for receive-window clipping and deduplication of filter
@@ -507,6 +537,10 @@ private:
     std::optional<LiveRateController> live_rate_controller_;
     std::optional<FileRateController> file_rate_controller_;
     SequenceNumber highest_received_sequence_{};
+    // Highest DATA sequence seen on the wire, including packets rejected
+    // as beyond the receive window. Bounds how far an unauthenticated
+    // DROPREQ may advance acknowledgement and window.
+    SequenceNumber peer_send_horizon_ {};
     std::optional<SequenceNumber> probe_first_sequence_;
     std::uint64_t probe_first_arrival_microseconds_ = 0;
     NegotiatedLiveOptions live_options_{};
@@ -522,6 +556,7 @@ private:
     bool peer_periodic_nak_ = false;
     bool drift_tracer_enabled_ = true;
     PacketFilterPolicy packet_filter_policy_{};
+    std::uint64_t next_sensor_retirement_repeat_microseconds_ = 0;
     std::uint64_t drift_correction_count_ = 0;
     std::int64_t total_drift_correction_microseconds_ = 0;
     std::uint32_t peer_socket_id_ = 0;

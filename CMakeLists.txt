@@ -40,6 +40,7 @@ option(ROBOTWEAX_SRT_SENDER_DROP_TRACE
     "Enable the Linux sender-drop JSONL diagnostic" OFF)
 option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
     "Install opt-in srt.pc metadata for libsrt-compatible consumers" OFF)
+option(ENABLE_MAXREXMITBW "Enable optional retransmission bandwidth limit" OFF)
 option(ENABLE_AEAD_API_PREVIEW
     "Enable the version-pinned AES-GCM extension API" OFF)
 
@@ -149,6 +150,9 @@ if(ROBOTWEAX_SRT_SENDER_DROP_TRACE)
     endif()
     target_compile_definitions(robotweax_srt
         PRIVATE ROBOTWEAX_SRT_SENDER_DROP_TRACE)
+endif()
+if(ENABLE_MAXREXMITBW)
+    target_compile_definitions(robotweax_srt PUBLIC ENABLE_MAXREXMITBW)
 endif()
 if(ENABLE_AEAD_API_PREVIEW)
     target_compile_definitions(robotweax_srt
@@ -345,15 +349,23 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     target_include_directories(robotweax_srt_tests
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_features(robotweax_srt_tests PRIVATE cxx_std_20)
-    # Keep the expensive rotation matrices in a separate bounded run. The
-    # exclusion makes these partitions disjoint; every native case runs once.
+    # Keep rotation matrices and the full-size retention regression in
+    # separate bounded runs. Every native case runs in exactly one partition.
     add_test(NAME robotweax_srt_tests
-        COMMAND robotweax_srt_tests --exclude compat_runtime_rotation_)
+        COMMAND robotweax_srt_tests --exclude compat_runtime_rotation_
+            compat_group_closed_member_retains_bounded_copy)
     add_test(NAME robotweax_srt_rotation_tests
         COMMAND robotweax_srt_tests compat_runtime_rotation_)
+    add_test(NAME robotweax_srt_group_retention_prefix_tests
+        COMMAND robotweax_srt_tests
+            compat_group_closed_member_retains_bounded_copy_prefix)
+    add_test(NAME robotweax_srt_group_retention_oversized_tests
+        COMMAND robotweax_srt_tests
+            compat_group_closed_member_retains_bounded_copy_after_oversized_message)
     set_tests_properties(
         robotweax_srt_tests robotweax_srt_rotation_tests
-        PROPERTIES TIMEOUT 30)
+        robotweax_srt_group_retention_prefix_tests
+        robotweax_srt_group_retention_oversized_tests PROPERTIES TIMEOUT 30)
     set_tests_properties(robotweax_srt_rotation_tests PROPERTIES LABELS "encryption")
     add_test(NAME robotweax_srt_rejects_empty_test_selection
         COMMAND robotweax_srt_tests robotweax_nonexistent_test_filter)
@@ -1618,8 +1630,12 @@ if(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "bcrypt")
 endif()
 set(ROBOTWEAX_SRT_PC_CFLAGS "")
 if(ENABLE_AEAD_API_PREVIEW)
-    set(ROBOTWEAX_SRT_PC_CFLAGS "-DENABLE_AEAD_API_PREVIEW")
+    string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DENABLE_AEAD_API_PREVIEW")
 endif()
+if(ENABLE_MAXREXMITBW)
+    string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DENABLE_MAXREXMITBW")
+endif()
+string(STRIP "${ROBOTWEAX_SRT_PC_CFLAGS}" ROBOTWEAX_SRT_PC_CFLAGS)
 if(WIN32)
     string(APPEND ROBOTWEAX_SRT_PC_PRIVATE_LIBS " -lws2_32")
 endif()
@@ -1731,6 +1747,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             -DROBOTWEAX_SRT_PKG_CONFIG_EXECUTABLE=${ROBOTWEAX_SRT_PKG_CONFIG_EXECUTABLE}
             -DROBOTWEAX_SRT_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
             -DROBOTWEAX_SRT_BUILD_SHARED_LIBS=${BUILD_SHARED_LIBS}
+            -DROBOTWEAX_SRT_MAXREXMITBW=${ENABLE_MAXREXMITBW}
             -DROBOTWEAX_SRT_AEAD_API_PREVIEW=${ENABLE_AEAD_API_PREVIEW}
             -DROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT=${ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT}
             -DROBOTWEAX_SRT_PACKAGE_VERSION=${PROJECT_VERSION}

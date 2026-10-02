@@ -91,7 +91,6 @@ struct GroupRecord {
     GroupReplayBuffer replay_history;
     // Receive-only ownership detached from explicitly closed members.
     std::shared_ptr<GroupReceiveRetention> retained_receive;
-    bool receive_retention_failed = false;
     std::uint32_t next_receive_sequence = 0;
     // The first completed caller handshake establishes the reverse sequence
     // space. Later members use the group's receive cursor independently of
@@ -155,6 +154,9 @@ public:
         SRTSOCKET group = SRT_INVALID_SOCK;
         std::uint64_t generation = 0;
         bool created = false;
+#ifdef ENABLE_MAXREXMITBW
+        std::int64_t maximum_retransmission_bandwidth_bytes_per_second = -1;
+#endif
         bool drift_tracer = true;
         std::int64_t minimum_input_bandwidth_bytes_per_second = 0;
         std::int32_t minimum_peer_srt_version = 0x0001'0000;

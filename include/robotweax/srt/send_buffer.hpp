@@ -66,6 +66,10 @@ public:
     SendBuffer& operator=(const SendBuffer& other);
 
     [[nodiscard]] std::size_t capacity() const noexcept { return slots_.size(); }
+    [[nodiscard]] std::size_t maximum_payload_size() const noexcept
+    {
+        return maximum_payload_size_;
+    }
     [[nodiscard]] std::size_t size() const noexcept { return occupied_count_; }
     [[nodiscard]] std::size_t sequence_span() const noexcept
     {
@@ -102,7 +106,11 @@ public:
         std::uint64_t enqueue_microseconds = 0) noexcept;
 
     [[nodiscard]] std::optional<OutboundPacket> next_packet(
-        bool defer_retransmission_commit = false) noexcept;
+        bool defer_retransmission_commit = false,
+        bool allow_retransmission = true) noexcept;
+    [[nodiscard]] std::optional<OutboundPacket>
+    peek_retransmission_packet() noexcept;
+    void requeue_prepared_retransmission(SequenceNumber sequence) noexcept;
     [[nodiscard]] std::optional<OutboundPacket>
     peek_new_packet() const noexcept;
     // A prepared UDP retry must not revive an ACKed or expired packet.
@@ -139,6 +147,15 @@ public:
     [[nodiscard]] std::optional<SendDropResult>
     next_pending_drop_request() noexcept;
     [[nodiscard]] bool has_pending_drop_request() noexcept;
+    // Requeues one DROPREQ for every retained message tombstone. This is used
+    // by delivery profiles that cannot rely on a receiver NAK to recover a
+    // lost DROPREQ.
+    [[nodiscard]] std::size_t queue_retained_drop_requests() noexcept;
+    [[nodiscard]] bool has_retained_drop() const noexcept;
+    // Conservative wakeup bound; acknowledgement can leave an earlier bound
+    // until the next expiry scan refines it. Never later than an active TTL.
+    [[nodiscard]] std::optional<std::uint64_t>
+    next_expiration_microseconds() const noexcept;
     // Exposes the stale-entry compaction of the retransmission ring, which
     // the public queueing paths reach only when the ring is full.
     void compact_retransmission_queue_for_testing() noexcept
@@ -205,6 +222,7 @@ private:
     // Appending preserves this cursor, while removing a prefix rebases it.
     std::size_t next_unsent_offset_ = 0;
     std::size_t occupied_count_ = 0;
+    std::size_t retained_drop_count_ = 0;
     std::size_t buffered_plaintext_bytes_ = 0;
     std::size_t expiring_packet_count_ = 0;
     // Lower bound of every buffered expiration. Lets the per-poll expiry

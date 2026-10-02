@@ -479,13 +479,16 @@ TEST(per_message_expiry_stays_exact_around_the_earliest_expiration_bound)
         Error::none);
     while (buffer.next_packet().has_value()) {
     }
+    REQUIRE_EQ(buffer.next_expiration_microseconds(), 300U);
     // Nothing expires before 300; the earliest bound is refined by the scan.
     REQUIRE(!buffer.drop_expired_message(299));
     REQUIRE(!buffer.drop_expired_message(300));
     // The earliest message is acknowledged before it expires: the stale
     // bound must not suppress the next expiration at 500.
     REQUIRE_EQ(buffer.acknowledge_before(SequenceNumber {1}), Error::none);
+    REQUIRE_EQ(buffer.next_expiration_microseconds(), 300U);
     REQUIRE(!buffer.drop_expired_message(500));
+    REQUIRE_EQ(buffer.next_expiration_microseconds(), 500U);
     const auto first = buffer.drop_expired_message(501);
     REQUIRE(first);
     REQUIRE_EQ(first.first_message_number, 2U);
@@ -503,6 +506,7 @@ TEST(per_message_expiry_stays_exact_around_the_earliest_expiration_bound)
     REQUIRE(third);
     REQUIRE_EQ(third.first_message_number, 3U);
     REQUIRE(!buffer.drop_expired_message(100'000));
+    REQUIRE(!buffer.next_expiration_microseconds().has_value());
 }
 
 TEST(send_buffer_statistics_exclude_drop_tombstones_and_measure_span)

@@ -23,6 +23,7 @@
 #include <future>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -1310,6 +1311,404 @@ TEST(lifecycle_cleanup_closes_listener_caller_and_accepted_socket)
     REQUIRE_EQ(srt_getsockstate(listener), SRTS_NONEXIST);
     REQUIRE_EQ(srt_getsockstate(caller), SRTS_NONEXIST);
     REQUIRE_EQ(srt_getsockstate(accepted), SRTS_NONEXIST);
+}
+
+TEST(sensor_profile_negotiates_and_transfers_loopback_datagrams)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    constexpr char profile[] = "fec-sensor-v1,cols:4,rows:1,arq:never";
+    constexpr std::int32_t timeout_milliseconds = 2'000;
+
+    const SRTSOCKET listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    const SRT_TRANSTYPE sensor_type = SRTT_SENSOR;
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_TRANSTYPE, &sensor_type,
+                   static_cast<int>(sizeof(sensor_type))),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_port = 0;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (srt_bind(listener, reinterpret_cast<const sockaddr*>(&address),
+            static_cast<int>(sizeof(address)))
+        == SRT_ERROR) {
+        int system_error = 0;
+        REQUIRE_EQ(srt_getlasterror(&system_error), SRT_ESOCKFAIL);
+        REQUIRE(system_error != 0);
+        REQUIRE_EQ(srt_close(listener), 0);
+        REQUIRE_EQ(srt_cleanup(), 0);
+        return;
+    }
+    REQUIRE_EQ(srt_listen(listener, 1), 0);
+
+    sockaddr_in listener_name {};
+    int listener_name_size = static_cast<int>(sizeof(listener_name));
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&listener_name),
+            &listener_name_size),
+        0);
+
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_PACKETFILTER, profile,
+                   static_cast<int>(sizeof(profile) - 1U)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    REQUIRE_EQ(
+        srt_connect(caller, reinterpret_cast<const sockaddr*>(&listener_name),
+            static_cast<int>(sizeof(listener_name))),
+        0);
+    const SRTSOCKET accepted = srt_accept(listener, nullptr, nullptr);
+    REQUIRE(accepted != SRT_INVALID_SOCK);
+
+    for (const SRTSOCKET endpoint : {listener, caller, accepted}) {
+        SRT_TRANSTYPE actual_type = SRTT_INVALID;
+        int type_size = static_cast<int>(sizeof(actual_type));
+        REQUIRE_EQ(
+            srt_getsockflag(endpoint, SRTO_TRANSTYPE, &actual_type, &type_size),
+            0);
+        REQUIRE_EQ(actual_type, SRTT_SENSOR);
+    }
+
+    std::array<char, 96> negotiated {};
+    int negotiated_size = static_cast<int>(negotiated.size());
+    REQUIRE_EQ(srt_getsockflag(caller, SRTO_PACKETFILTER, negotiated.data(),
+                   &negotiated_size),
+        0);
+    REQUIRE((std::string_view {
+                 negotiated.data(), static_cast<std::size_t>(negotiated_size)}
+        == profile));
+
+    bool tsbpd = true;
+    int option_size = static_cast<int>(sizeof(tsbpd));
+    REQUIRE_EQ(
+        srt_getsockflag(caller, SRTO_TSBPDMODE, &tsbpd, &option_size), 0);
+    REQUIRE(!tsbpd);
+
+    constexpr std::array<std::string_view, 4> messages {
+        "imu:1", "imu:2", "imu:3", "imu:4"};
+    for (const auto message : messages) {
+        REQUIRE_EQ(srt_sendmsg(caller, message.data(),
+                       static_cast<int>(message.size()), -1, 1),
+            static_cast<int>(message.size()));
+    }
+    for (const auto expected : messages) {
+        std::array<char, 64> received {};
+        const int size = srt_recvmsg(
+            accepted, received.data(), static_cast<int>(received.size()));
+        REQUIRE_EQ(size, static_cast<int>(expected.size()));
+        REQUIRE(
+            (std::string_view {received.data(), static_cast<std::size_t>(size)}
+                == expected));
+    }
+
+    REQUIRE_EQ(srt_close(accepted), 0);
+    REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_close(listener), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
+
+TEST(control_profile_negotiates_and_transfers_ordered_loopback_commands)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    const SRT_TRANSTYPE control_type = SRTT_CONTROL;
+    constexpr std::int32_t timeout_milliseconds = 3'000;
+    const SRTSOCKET listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_TRANSTYPE, &control_type,
+                   static_cast<int>(sizeof(control_type))),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_port = 0;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (srt_bind(listener, reinterpret_cast<const sockaddr*>(&address),
+            static_cast<int>(sizeof(address)))
+        == SRT_ERROR) {
+        int system_error = 0;
+        REQUIRE_EQ(srt_getlasterror(&system_error), SRT_ESOCKFAIL);
+        REQUIRE(system_error != 0);
+        REQUIRE_EQ(srt_close(listener), 0);
+        REQUIRE_EQ(srt_cleanup(), 0);
+        return;
+    }
+    REQUIRE_EQ(srt_listen(listener, 1), 0);
+    sockaddr_in listener_name {};
+    int listener_name_size = static_cast<int>(sizeof(listener_name));
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&listener_name),
+            &listener_name_size),
+        0);
+
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_TRANSTYPE, &control_type,
+                   static_cast<int>(sizeof(control_type))),
+        0);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    REQUIRE_EQ(
+        srt_connect(caller, reinterpret_cast<const sockaddr*>(&listener_name),
+            static_cast<int>(sizeof(listener_name))),
+        0);
+    const SRTSOCKET accepted = srt_accept(listener, nullptr, nullptr);
+    REQUIRE(accepted != SRT_INVALID_SOCK);
+    for (const SRTSOCKET endpoint : {caller, accepted}) {
+        SRT_TRANSTYPE actual_type = SRTT_INVALID;
+        int size = static_cast<int>(sizeof(actual_type));
+        REQUIRE_EQ(
+            srt_getsockflag(endpoint, SRTO_TRANSTYPE, &actual_type, &size), 0);
+        REQUIRE_EQ(actual_type, SRTT_CONTROL);
+    }
+
+    SRT_MSGCTRL finite_lifetime = srt_msgctrl_default;
+    finite_lifetime.msgttl = 25;
+    constexpr char first[] = "arm";
+    REQUIRE_EQ(srt_sendmsg2(caller, first, static_cast<int>(sizeof(first) - 1U),
+                   &finite_lifetime),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVALMSGAPI);
+
+    for (const std::string_view command : {"arm", "move", "stop"}) {
+        REQUIRE_EQ(srt_sendmsg(caller, command.data(),
+                       static_cast<int>(command.size()), -1, 0),
+            static_cast<int>(command.size()));
+    }
+    for (const std::string_view expected : {"arm", "move", "stop"}) {
+        std::array<char, 32> received {};
+        const int size = srt_recvmsg(
+            accepted, received.data(), static_cast<int>(received.size()));
+        REQUIRE_EQ(size, static_cast<int>(expected.size()));
+        REQUIRE(
+            (std::string_view {received.data(), static_cast<std::size_t>(size)}
+                == expected));
+    }
+    REQUIRE_EQ(srt_close(accepted), 0);
+    REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_close(listener), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
+
+TEST(sensor_profile_crosses_a_real_udp_fault_relay_without_arq)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    constexpr char profile[] = "fec-sensor-v1,cols:4,rows:1,arq:never";
+    constexpr std::int32_t timeout_milliseconds = 2'000;
+
+    const SRTSOCKET listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_PACKETFILTER, profile,
+                   static_cast<int>(sizeof(profile) - 1U)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_port = 0;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&address),
+                   static_cast<int>(sizeof(address))),
+        0);
+    REQUIRE_EQ(srt_listen(listener, 1), 0);
+    sockaddr_in listener_name {};
+    int listener_name_size = static_cast<int>(sizeof(listener_name));
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&listener_name),
+            &listener_name_size),
+        0);
+    const IpEndpoint listener_endpoint =
+        IpEndpoint::loopback(ntohs(listener_name.sin_port));
+
+    UdpSocket relay;
+    REQUIRE(relay.valid());
+    REQUIRE_EQ(relay.bind(IpEndpoint::loopback()), Error::none);
+    const auto relay_endpoint = relay.local_endpoint();
+    REQUIRE(relay_endpoint);
+    std::atomic_size_t source_packets = 0U;
+    std::atomic_size_t parity_packets = 0U;
+    std::atomic_size_t duplicate_sources = 0U;
+    std::atomic_size_t relay_errors = 0U;
+    std::jthread relay_thread([&](std::stop_token stop) {
+        std::array<std::byte, 65'536> datagram {};
+        std::array<std::byte, 65'536> held_source {};
+        std::array<std::uint32_t, 8> observed_sequences {};
+        std::size_t observed_sequence_count = 0U;
+        std::size_t held_size = 0U;
+        IpEndpoint caller_endpoint {};
+        bool caller_known = false;
+        const auto forward = [&](std::span<const std::byte> bytes,
+                                 IpEndpoint destination) {
+            const auto sent = relay.send_to(bytes, destination);
+            if (!sent || sent.bytes_transferred != bytes.size()) {
+                ++relay_errors;
+            }
+        };
+        while (!stop.stop_requested()) {
+            const auto ready = relay.wait_readable(10);
+            if (!ready) {
+                ++relay_errors;
+                break;
+            }
+            if (!ready.ready) {
+                continue;
+            }
+            const auto received = relay.receive_from(datagram);
+            if (!received) {
+                ++relay_errors;
+                continue;
+            }
+            const auto bytes = std::span<const std::byte> {
+                datagram.data(), received.bytes_transferred};
+            if (received.peer == listener_endpoint) {
+                if (caller_known) {
+                    forward(bytes, caller_endpoint);
+                } else {
+                    ++relay_errors;
+                }
+                continue;
+            }
+
+            caller_endpoint = received.peer;
+            caller_known = true;
+            const auto decoded = decode_packet(bytes);
+            if (!decoded || decoded.packet.kind != PacketKind::data) {
+                forward(bytes, listener_endpoint);
+                continue;
+            }
+            if (decoded.packet.data.message_number == 0U) {
+                const std::size_t parity = ++parity_packets;
+                if (parity != 2U) {
+                    forward(bytes, listener_endpoint);
+                }
+                continue;
+            }
+
+            const std::uint32_t sequence = decoded.packet.data.sequence.value();
+            for (std::size_t index = 0U; index < observed_sequence_count;
+                ++index) {
+                if (observed_sequences[index] == sequence) {
+                    ++duplicate_sources;
+                }
+            }
+            if (observed_sequence_count < observed_sequences.size()) {
+                observed_sequences[observed_sequence_count++] = sequence;
+            }
+            const std::size_t source = ++source_packets;
+            if (source == 2U || source == 5U) {
+                continue;
+            }
+            if (source == 7U) {
+                std::copy(bytes.begin(), bytes.end(), held_source.begin());
+                held_size = bytes.size();
+                continue;
+            }
+            forward(bytes, listener_endpoint);
+            if (source == 8U && held_size != 0U) {
+                forward(
+                    std::span<const std::byte> {held_source.data(), held_size},
+                    listener_endpoint);
+                held_size = 0U;
+            }
+        }
+    });
+
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_PACKETFILTER, profile,
+                   static_cast<int>(sizeof(profile) - 1U)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_CONNTIMEO, &timeout_milliseconds,
+                   static_cast<int>(sizeof(timeout_milliseconds))),
+        0);
+    sockaddr_in relay_name {};
+    relay_name.sin_family = AF_INET;
+    relay_name.sin_port = htons(relay_endpoint.endpoint.port);
+    relay_name.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(
+        srt_connect(caller, reinterpret_cast<const sockaddr*>(&relay_name),
+            static_cast<int>(sizeof(relay_name))),
+        0);
+    const SRTSOCKET accepted = srt_accept(listener, nullptr, nullptr);
+    REQUIRE(accepted != SRT_INVALID_SOCK);
+
+    const auto send_sample = [&](char value) {
+        REQUIRE_EQ(srt_sendmsg(caller, &value, 1, -1, 1), 1);
+    };
+    std::array<bool, 8> delivered {};
+    const auto receive_sample = [&] {
+        char value = 0;
+        REQUIRE_EQ(srt_recvmsg(accepted, &value, 1), 1);
+        REQUIRE(value >= 'a');
+        REQUIRE(value <= 'h');
+        const std::size_t index = static_cast<std::size_t>(value - 'a');
+        REQUIRE(!delivered[index]);
+        delivered[index] = true;
+    };
+
+    for (char value = 'a'; value <= 'd'; ++value) {
+        send_sample(value);
+    }
+    for (std::size_t index = 0U; index < 4U; ++index) {
+        receive_sample();
+    }
+    for (std::size_t index = 0U; index < 4U; ++index) {
+        REQUIRE(delivered[index]);
+    }
+
+    const auto second_row_start = std::chrono::steady_clock::now();
+    for (char value = 'e'; value <= 'h'; ++value) {
+        send_sample(value);
+    }
+    for (std::size_t index = 0U; index < 3U; ++index) {
+        receive_sample();
+    }
+    const auto second_row_elapsed =
+        std::chrono::steady_clock::now() - second_row_start;
+    REQUIRE(second_row_elapsed < 500ms);
+    REQUIRE(!delivered[4]);
+    REQUIRE(delivered[5]);
+    REQUIRE(delivered[6]);
+    REQUIRE(delivered[7]);
+
+    SRT_TRACEBSTATS sender_statistics {};
+    SRT_TRACEBSTATS receiver_statistics {};
+    const auto acknowledgement_deadline = std::chrono::steady_clock::now() + 1s;
+    do {
+        REQUIRE_EQ(srt_bstats(caller, &sender_statistics, 0), 0);
+        if (sender_statistics.pktSndBuf == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(2ms);
+    } while (std::chrono::steady_clock::now() < acknowledgement_deadline);
+    REQUIRE_EQ(sender_statistics.pktSndBuf, 0);
+    REQUIRE_EQ(sender_statistics.pktRetransTotal, 0);
+    REQUIRE_EQ(sender_statistics.pktRecvNAKTotal, 0);
+    REQUIRE_EQ(srt_bstats(accepted, &receiver_statistics, 0), 0);
+    REQUIRE(receiver_statistics.pktRcvFilterSupplyTotal >= 1);
+    REQUIRE(receiver_statistics.pktRcvDropTotal >= 1);
+
+    REQUIRE_EQ(source_packets.load(std::memory_order_acquire), 8U);
+    REQUIRE_EQ(parity_packets.load(std::memory_order_acquire), 2U);
+    REQUIRE_EQ(duplicate_sources.load(std::memory_order_acquire), 0U);
+    REQUIRE_EQ(relay_errors.load(std::memory_order_acquire), 0U);
+
+    REQUIRE_EQ(srt_close(accepted), 0);
+    REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_close(listener), 0);
+    relay_thread.request_stop();
+    relay_thread.join();
+    REQUIRE_EQ(srt_cleanup(), 0);
 }
 
 TEST(lifecycle_cleanup_bypasses_connected_socket_linger_deadlines)

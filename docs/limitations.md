@@ -1,13 +1,13 @@
 # Known limitations
 
-Robotweax SRT 0.2.5 is an evidence-backed pre-1.0 release with an explicit
+Robotweax SRT 0.2.7 is an evidence-backed pre-1.0 release with an explicit
 support boundary. This document summarizes limits that application developers
 and integrators should account for. Unsupported operations are intended to fail
 with defined errors rather than being silently approximated.
 
 ## Version and ABI boundaries
 
-- The project version is 0.2.5 and the shared-library ABI line is 0.2.
+- The project version is 0.2.7 and the shared-library ABI line is 0.2.
 - Binary compatibility with the 0.1 ABI is not promised. Rebuild applications
   and dependencies against the 0.2 package.
 - The default compatible API target and `srt_getversion()` value are 1.5.7;
@@ -69,6 +69,21 @@ cross-implementation GCM support for File/Stream, encrypted groups, every key
 length, or every rotation profile. Review [Encryption](encryption.md) and test
 the exact peer profile.
 
+Key-material (KM) rollback protection is bounded. Known duplicate announcements
+can be answered again without reinstalling old keys. Known key material must
+retain its original salt, selector and cipher mode across current receive slots
+and the retired-key history (four generations per key parity); relabelled
+material is rejected. Requests containing only retired keys are rejected while
+those generations remain in the history. A captured KM announcement older than
+both histories is indistinguishable from a fresh announcement and can install
+an old key, disrupting reception until the sender's next rotation. See
+[Encryption and key rotation](encryption.md) for the bounded rollback rules.
+
+Control packets, including KM, ACK, NAK, DROPREQ and KEEPALIVE, are not
+authenticated by the protocol. AES-CTR provides payload confidentiality only;
+AES-GCM additionally authenticates protected DATA packets. GCM authentication
+does not extend to these runtime control packets.
+
 File/Stream plus packet-filter FEC is not a supported combination. GCM payloads
 also reserve a 16-byte authentication tag, reducing the application payload
 budget relative to AES-CTR for the same MSS and address family.
@@ -116,6 +131,24 @@ profiles in 0.2:
 - treating a group as one shared cryptographic session;
 - inferring encrypted mixed-implementation group support without an exact
   peer qualification.
+
+Members configured with `SRTO_MESSAGEAPI=false` are accepted by the group
+option setter but do not take part in group receive; group I/O requires the
+message API on every member.
+
+When an explicitly closed member still holds complete unread messages, the
+group copies them into bounded receive-only storage (8,192 packets,
+11,927,552 payload bytes, 16 batches, 120 s unread lifetime; see
+[Connection groups](connection-groups.md)). Exceeding a bound or expiry drops
+retained receive data; allocation failure discards the affected batch. The
+closed-member copy keeps the earliest complete messages within its packet and
+byte budget and skips individually oversized messages. At group capacity, older
+batches are evicted to make room for newer ones. Receive and readiness inspection
+check expiry. The group advances past data no remaining path can supply and
+counts the skipped packets in `pktRcvDropTotal`. This receive-side loss does not
+break healthy members or the group send path. Haivision SRT discards a closed
+member's unread data outright; Robotweax retention can preserve a bounded prefix
+but cannot guarantee delivery after its limits are reached.
 
 Group members retain per-path connection, security, and statistics state.
 Applications own topology, link diversity, path health inputs, member

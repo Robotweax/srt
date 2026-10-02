@@ -266,6 +266,15 @@ struct ListenerGroupAdmission {
             member->group_weight = peer.weight;
             member->group_accept_result = first_member;
         }
+#ifdef ENABLE_MAXREXMITBW
+        const auto maximum_retransmission =
+            mirror.maximum_retransmission_bandwidth_bytes_per_second;
+        if (set_socket_option(*member, SRTO_MAXREXMITBW,
+                &maximum_retransmission,
+                static_cast<int>(sizeof(maximum_retransmission)))
+            == SRT_ERROR)
+            return false;
+#endif
         const bool drift_tracer = mirror.drift_tracer;
         const std::int64_t minimum_input =
             mirror.minimum_input_bandwidth_bytes_per_second;
