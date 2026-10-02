@@ -203,6 +203,15 @@ public:
         efficient_retransmission_ = enabled;
         peer_periodic_nak_ = peer_periodic_nak;
     }
+    [[nodiscard]] std::optional<OutboundPacket>
+    peek_retransmission_packet() noexcept
+    {
+        return send_buffer_.peek_retransmission_packet();
+    }
+    void requeue_prepared_retransmission(SequenceNumber sequence) noexcept
+    {
+        send_buffer_.requeue_prepared_retransmission(sequence);
+    }
     void note_retransmission_sent(
         SequenceNumber sequence, std::uint64_t now_microseconds) noexcept
     {
@@ -214,7 +223,8 @@ public:
     [[nodiscard]] std::optional<OutboundPacket> next_paced_data_packet(
         PacketPacer& pacer, std::uint64_t now_microseconds,
         std::size_t new_packet_wire_overhead = 0U,
-        bool defer_pacing_commit = false) noexcept;
+        bool defer_pacing_commit = false,
+        bool allow_retransmission = true) noexcept;
     [[nodiscard]] Error preserve_encrypted_payload(
         SequenceNumber sequence,
         EncryptionKey key,

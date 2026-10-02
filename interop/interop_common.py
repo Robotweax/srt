@@ -8,6 +8,7 @@ import json
 import re
 import socket
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,6 +24,42 @@ def resolve_program_path(path: Path) -> Path:
     if not resolved.is_file():
         raise FileNotFoundError(f"program is not a regular file: {resolved}")
     return resolved
+
+
+# Relay sockets sit between two SRT peers that may burst a whole live
+# transfer (hundreds of 1.5 KB datagrams) within a few milliseconds.  The
+# kernel default receive buffer (often 208 KiB) then overflows while the
+# Python relay thread is descheduled, and the resulting unplanned loss is
+# indistinguishable from a protocol failure in the scenario verdict.
+RELAY_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024
+
+
+def enlarge_relay_socket_buffers(
+    sock: socket.socket, size: int = RELAY_SOCKET_BUFFER_BYTES
+) -> None:
+    """Request large send/receive buffers on a relay socket.
+
+    The kernel may clamp or refuse a request. Report its raw getsockopt
+    values on stderr (Linux includes accounting overhead in these values),
+    without changing relay behavior or machine-readable stdout verdicts.
+    Setting or querying either direction may fail independently.
+    """
+    diagnostics: dict[str, object] = {"requested_bytes": size}
+    for direction, option in (
+        ("receive", socket.SO_RCVBUF), ("send", socket.SO_SNDBUF)
+    ):
+        result: dict[str, object] = {"request_status": "accepted"}
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, option, size)
+        except OSError as error:
+            result.update(request_status="refused", set_errno=error.errno)
+        try:
+            result["kernel_bytes"] = sock.getsockopt(socket.SOL_SOCKET, option)
+        except OSError as error:
+            result.update(kernel_bytes=None, get_errno=error.errno)
+        diagnostics[direction] = result
+    print("RELAY_SOCKET_BUFFERS " + json.dumps(diagnostics, sort_keys=True),
+          file=sys.stderr)
 
 
 def free_udp_port(host: str = "127.0.0.1") -> int:

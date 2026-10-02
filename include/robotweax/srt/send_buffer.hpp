@@ -102,7 +102,11 @@ public:
         std::uint64_t enqueue_microseconds = 0) noexcept;
 
     [[nodiscard]] std::optional<OutboundPacket> next_packet(
-        bool defer_retransmission_commit = false) noexcept;
+        bool defer_retransmission_commit = false,
+        bool allow_retransmission = true) noexcept;
+    [[nodiscard]] std::optional<OutboundPacket>
+    peek_retransmission_packet() noexcept;
+    void requeue_prepared_retransmission(SequenceNumber sequence) noexcept;
     [[nodiscard]] std::optional<OutboundPacket>
     peek_new_packet() const noexcept;
     // A prepared UDP retry must not revive an ACKed or expired packet.

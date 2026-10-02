@@ -582,7 +582,11 @@ static_assert(SRT_KM_S_BADCRYPTOMODE == 5);
 static_assert(SRT_KM_S_E_SIZE == 6);
 #ifdef ENABLE_AEAD_API_PREVIEW
 static_assert(SRTO_CRYPTOMODE == 62);
+#ifdef ENABLE_MAXREXMITBW
+static_assert(SRTO_E_SIZE == 64);
+#else
 static_assert(SRTO_E_SIZE == 63);
+#endif
 static_assert(SRT_REJ_CRYPTO == 17);
 static_assert(SRT_REJ_E_SIZE == 18);
 #else
@@ -6564,3 +6568,32 @@ TEST(srt_compat_receive_drains_buffered_data_after_peer_shutdown)
         0);
     REQUIRE_EQ(srt_close(stream_socket), 0);
 }
+
+#ifdef ENABLE_MAXREXMITBW
+TEST(maxrexmitbw_public_option_validates_width_range_and_default)
+{
+    static_assert(SRTO_MAXREXMITBW == 63);
+    static_assert(SRTO_E_SIZE == 64);
+    REQUIRE_EQ(srt_startup(), 0);
+    const auto socket = srt_create_socket();
+    std::int64_t value = 123;
+    int size = sizeof(value);
+    REQUIRE_EQ(srt_getsockflag(socket, SRTO_MAXREXMITBW, &value, &size), 0);
+    REQUIRE_EQ(value, -1);
+    for (const std::int64_t candidate :
+        {INT64_C(-1), INT64_C(0), INT64_C(17), INT64_MAX}) {
+        REQUIRE_EQ(srt_setsockflag(
+                       socket, SRTO_MAXREXMITBW, &candidate, sizeof(candidate)),
+            0);
+        size = sizeof(value);
+        REQUIRE_EQ(srt_getsockflag(socket, SRTO_MAXREXMITBW, &value, &size), 0);
+        REQUIRE_EQ(value, candidate);
+    }
+    value = -2;
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_MAXREXMITBW, &value, sizeof(value)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_MAXREXMITBW, &value, 4), SRT_ERROR);
+    REQUIRE_EQ(srt_close(socket), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
+#endif

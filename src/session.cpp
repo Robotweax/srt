@@ -222,7 +222,8 @@ StreamEnqueueResult ReliabilitySession::queue_stream(
 
 std::optional<OutboundPacket> ReliabilitySession::next_paced_data_packet(
     PacketPacer& pacer, std::uint64_t now_microseconds,
-    std::size_t new_packet_wire_overhead, bool defer_pacing_commit) noexcept
+    std::size_t new_packet_wire_overhead, bool defer_pacing_commit,
+    bool allow_retransmission) noexcept
 {
     if (live_rate_controller_.has_value()) {
         pacer.set_rate(live_rate_controller_->pacing_rate_bytes_per_second());
@@ -232,14 +233,16 @@ std::optional<OutboundPacket> ReliabilitySession::next_paced_data_packet(
         pacer.set_flow_window(file_rate_controller_
                 ->congestion_window_packets());
     }
-    const bool retransmission = send_buffer_.has_pending_retransmission();
+    const bool retransmission =
+        allow_retransmission && send_buffer_.has_pending_retransmission();
     const std::size_t flow_count = retransmission
         ? 0U
         : send_buffer_.packets_in_flight();
     if (!pacer.query(now_microseconds, flow_count).ready) {
         return std::nullopt;
     }
-    auto packet = send_buffer_.next_packet(defer_pacing_commit);
+    auto packet =
+        send_buffer_.next_packet(defer_pacing_commit, allow_retransmission);
     if (packet.has_value()) {
         if (live_rate_controller_.has_value()) {
             live_rate_controller_->observe_payload(packet->payload.size());
