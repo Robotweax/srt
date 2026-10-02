@@ -69,13 +69,20 @@ cross-implementation GCM support for File/Stream, encrypted groups, every key
 length, or every rotation profile. Review [Encryption](encryption.md) and test
 the exact peer profile.
 
-Key-material (KM) replay protection is bounded. A receiver rejects re-announced
-or relabelled keys while they are within its current slots or its retired-key
-history (four generations per key parity). A captured KM announcement that is
-older than both histories is indistinguishable from a fresh announcement and
-is installed; reception then fails until the sender's next rotation. Control
-packets, including KM, ACK, NAK, DROPREQ and KEEPALIVE, are not authenticated
-by the protocol; encryption protects payload confidentiality only.
+Key-material (KM) rollback protection is bounded. Known duplicate announcements
+can be answered again without reinstalling old keys. Known key material must
+retain its original salt, selector and cipher mode across current receive slots
+and the retired-key history (four generations per key parity); relabelled
+material is rejected. Requests containing only retired keys are rejected while
+those generations remain in the history. A captured KM announcement older than
+both histories is indistinguishable from a fresh announcement and can install
+an old key, disrupting reception until the sender's next rotation. See
+[Encryption and key rotation](encryption.md) for the bounded rollback rules.
+
+Control packets, including KM, ACK, NAK, DROPREQ and KEEPALIVE, are not
+authenticated by the protocol. AES-CTR provides payload confidentiality only;
+AES-GCM additionally authenticates protected DATA packets. GCM authentication
+does not extend to these runtime control packets.
 
 File/Stream plus packet-filter FEC is not a supported combination. GCM payloads
 also reserve a 16-byte authentication tag, reducing the application payload
