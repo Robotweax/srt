@@ -159,6 +159,17 @@ future work and wakes blocked public operations.
 Applications must still synchronize their own data and must follow the
 callback/lifecycle rules in the [Integration guide](integration.md).
 
+The internal scheduler also supports explicitly configured persistent service
+slots with a coalesced wake and one reserved deadline. These slots do not consume
+ordinary job or timer capacity. Service callbacks run on the existing shard,
+with round-robin service selection and alternating service/ordinary dispatch
+when both are ready. Release closes service admission without blocking; an
+already dispatched callback retains its context until it returns, so clients
+must check their own generation and close barrier before effects. Final stop
+cancels pending service wakes, joins active callbacks, and retires contexts
+before concurrent stop callers return. The process scheduler currently reserves
+zero service slots; the UDP transport does not use this internal facility.
+
 ## Timing model
 
 Protocol code consumes integer monotonic microseconds supplied by its owner.
