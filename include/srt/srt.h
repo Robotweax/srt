@@ -678,7 +678,9 @@ SRT_API SRTSOCKET srt_accept_bond(
  * The callback runs on a connection worker and may run concurrently with
  * application code. `peer_address` and `stream_id` are borrowed only during
  * the callback. `socket` is provisional and may be inspected or configured
- * only through connection-stage APIs. Return 0 to admit and nonzero to reject.
+ * only through connection-stage APIs. A provisional non-group child may
+ * also select SRTO_TRANSTYPE here; this changes only its validated profile
+ * bundle, not shared UDP binding options. Return 0 to admit and nonzero to reject.
  * The callback must return promptly and must not throw through the C ABI.
  */
 typedef int srt_listen_callback_fn(
