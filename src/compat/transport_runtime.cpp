@@ -1550,7 +1550,12 @@ RuntimePollResult DatagramChannel::poll_connections(
         const auto result =
             dispatcher != nullptr && !dispatcher->setup_prefix_complete()
             ? RuntimePollResult {.next_work_delay = idle_wait_}
-            : runtime->poll(remaining_send_attempts);
+            : runtime->poll(remaining_send_attempts,
+                  dispatcher != nullptr ? dispatcher->inbox().get() : nullptr,
+                  static_cast<std::uint64_t>(
+                      std::chrono::duration_cast<std::chrono::microseconds>(
+                          idle_wait_)
+                          .count()));
         poll_round_immediate_ |= result.immediate_work;
         const bool can_wait =
             readiness_available_.load(std::memory_order_acquire)
@@ -3946,17 +3951,37 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
     return poll(remaining_send_attempts);
 }
 
-RuntimePollResult ConnectionRuntime::poll(
-    std::size_t& remaining_send_attempts) noexcept
+ConnectionDatagramInbox::Status ConnectionRuntime::admit_datagram(
+    ConnectionDatagramInbox& inbox, ConnectionDatagramInbox::Token token,
+    std::span<const std::byte> bytes, IpEndpoint peer,
+    std::uint64_t publication_time) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (locally_closed_ || broken_) {
+        return ConnectionDatagramInbox::Status::closed;
+    }
+    if (peer != peer_) {
+        return ConnectionDatagramInbox::Status::invalid;
+    }
+    // Bounded copy and pure reserved-service notification only. No injected
+    // clock or protocol callback executes across this admission fence.
+    return inbox.publish_unfenced(token, bytes, peer, publication_time);
+}
+
+RuntimePollResult ConnectionRuntime::poll(std::size_t& remaining_send_attempts,
+    const ConnectionDatagramInbox* ingress,
+    std::uint64_t maximum_ingress_wait_microseconds) noexcept
 {
     std::lock_guard lock(mutex_);
     poll_send_budget_ = &remaining_send_attempts;
-    const auto result = poll_locked();
+    const auto result = poll_locked(ingress, maximum_ingress_wait_microseconds);
     poll_send_budget_ = nullptr;
     return result;
 }
 
-RuntimePollResult ConnectionRuntime::poll_locked() noexcept
+RuntimePollResult ConnectionRuntime::poll_locked(
+    const ConnectionDatagramInbox* ingress,
+    std::uint64_t maximum_ingress_wait_microseconds) noexcept
 {
     if (locally_closed_ || peer_closed_ || broken_) {
         return {.receive_wait_safe = true};
@@ -3965,9 +3990,19 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         return {.immediate_work = true};
     }
     const std::uint64_t now = now_microseconds();
+    // Publication into a bound inbox takes this same runtime mutex, so an
+    // accepted copy cannot appear between this snapshot and the timeout check.
+    // A popped copy remains in-flight until its protocol handler completes.
+    std::uint64_t idle_limit = peer_idle_timeout_microseconds_;
+    if (ingress != nullptr && ingress->bound_to(this)) {
+        const auto pending = ingress->snapshot();
+        if (pending.queued != 0 || pending.in_flight) {
+            idle_limit += std::min(maximum_ingress_wait_microseconds,
+                peer_idle_timeout_microseconds_);
+        }
+    }
     if (now > last_peer_activity_microseconds_
-        && now - last_peer_activity_microseconds_
-            > peer_idle_timeout_microseconds_) {
+        && now - last_peer_activity_microseconds_ > idle_limit) {
         break_locked(0);
         return {};
     }
@@ -4194,8 +4229,8 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         }
         const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
         const auto timeout = last_peer_activity_microseconds_
-            + std::min(peer_idle_timeout_microseconds_ + 1U,
-                maximum - last_peer_activity_microseconds_);
+            + std::min(
+                idle_limit + 1U, maximum - last_peer_activity_microseconds_);
         auto deadline =
             std::min(timeout, session_.next_control_deadline(current));
         // Delivered sensor markers and pending DROPREQs can outlive all

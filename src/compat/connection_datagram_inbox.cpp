@@ -164,8 +164,41 @@ ConnectionDatagramInbox::notify_locked() noexcept
     return Status::wake_failed;
 }
 
+void ConnectionDatagramInbox::bind_runtime(
+    std::weak_ptr<ConnectionRuntime> runtime) noexcept
+{
+    ingress_identity_ = runtime.lock().get();
+    ingress_runtime_ = std::move(runtime);
+    ingress_bound_ = true;
+}
+
+bool ConnectionDatagramInbox::bound_to(
+    const ConnectionRuntime* runtime) const noexcept
+{
+    // Identity checks must not pin/destroy a foreign runtime under this
+    // caller's runtime mutex. Expiry also rejects allocator address reuse.
+    return ingress_bound_ && ingress_identity_ == runtime
+        && !ingress_runtime_.expired();
+}
+
 ConnectionDatagramInbox::Status ConnectionDatagramInbox::publish(Token token,
     std::span<const std::byte> bytes, IpEndpoint peer,
+    std::uint64_t now_microseconds) noexcept
+{
+    if (ingress_bound_) {
+        const auto runtime = ingress_runtime_.lock();
+        if (runtime == nullptr) {
+            close();
+            return Status::closed;
+        }
+        return runtime->admit_datagram(
+            *this, token, bytes, peer, now_microseconds);
+    }
+    return publish_unfenced(token, bytes, peer, now_microseconds);
+}
+
+ConnectionDatagramInbox::Status ConnectionDatagramInbox::publish_unfenced(
+    Token token, std::span<const std::byte> bytes, IpEndpoint peer,
     std::uint64_t now_microseconds) noexcept
 {
     // Decode before classifying admission; a caller cannot label DATA control.
@@ -218,6 +251,9 @@ ConnectionDatagramInbox::Status ConnectionDatagramInbox::pop(Token token,
     if (snapshot_.closed) {
         return Status::closed;
     }
+    if (snapshot_.in_flight) {
+        return Status::busy;
+    }
     if (snapshot_.queued == 0) {
         return Status::empty;
     }
@@ -230,6 +266,21 @@ ConnectionDatagramInbox::Status ConnectionDatagramInbox::pop(Token token,
     snapshot_.data_queued -= entry.data ? 1U : 0U;
     head_ = (head_ + 1U) % configuration_.capacity;
     --snapshot_.queued;
+    snapshot_.in_flight = ingress_bound_;
+    return Status::accepted;
+}
+
+ConnectionDatagramInbox::Status ConnectionDatagramInbox::complete(
+    Token token) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (!matches(token)) {
+        return Status::stale;
+    }
+    if (!snapshot_.in_flight) {
+        return Status::invalid;
+    }
+    snapshot_.in_flight = false;
     return Status::accepted;
 }
 
