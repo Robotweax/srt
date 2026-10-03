@@ -61,6 +61,27 @@ Malformed runner arguments also fail instead of silently selecting cases.
 This filtered command does not replace the complete suite or the separate
 lifecycle and process-exit tests.
 
+The isolated `robotweax_srt_connection_affinity_model_tests` executable checks
+bounded inbox ownership, FIFO admission, command cancellation, timer generations,
+close barriers, readiness epochs, and channel-credit accounting using injected
+time and explicit owner turns. Build and run it independently with:
+
+```sh
+cmake --build build --target robotweax_srt_connection_affinity_model_tests --parallel
+ctest --test-dir build -R '^robotweax_srt_connection_affinity_model_tests$' --output-on-failure
+```
+
+The model uses a mutex to serialize transitions and a simulated reserved wake
+lane. It is excluded from the library and installed headers; its results do not
+qualify UDP dispatch, scheduler wake delivery, public API or epoll integration,
+or transport performance. It also runs in the thread-sanitizer CI suite.
+
+The separate `robotweax_srt_connection_affinity_allocation_tests` executable
+checks the setup allocation and absence of subsequent pool-operation allocations
+by interposing global `new`/`delete`. It runs in ordinary and ASan/UBSan builds.
+In TSan builds this probe reports a skip because TSan owns those interceptors;
+the model's transition tests still run with TSan's own allocation instrumentation.
+
 ## CI build and selection scope
 
 Reference preparation builds only the peers required by the selected profiles,
