@@ -7,6 +7,7 @@
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/udp.hpp"
 #include "compat/runtime_scheduler.hpp"
+#include "compat/connection_work_binding.hpp"
 #include "compat/readiness.hpp"
 #include "compat/socket_readiness.hpp"
 #include "compat/statistics.hpp"
@@ -470,9 +471,14 @@ public:
         // Never installed by the public API.
         CloseRetryHook close_retry_hook_for_testing = nullptr;
         void* close_retry_context_for_testing = nullptr;
+        // Internal opt-in, one binding per connection, fixed before publication.
+        // Public setup leaves it null until transport admission/close gates
+        // are integrated. Keep the legacy channel wake during that transition.
+        std::shared_ptr<ConnectionWorkBinding> work_binding;
     };
 
     explicit ConnectionRuntime(Configuration configuration);
+    ~ConnectionRuntime();
 
     [[nodiscard]] MessageIoResult queue_message(
         std::span<const std::byte> message,
@@ -694,6 +700,7 @@ private:
     std::condition_variable receive_ready_;
     std::condition_variable send_ready_;
     std::weak_ptr<DatagramChannel> channel_;
+    const std::shared_ptr<ConnectionWorkBinding> work_binding_;
     IpEndpoint peer_{};
     std::uint32_t peer_socket_id_ = 0;
     ReliabilitySession session_;

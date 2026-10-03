@@ -1397,6 +1397,7 @@ RuntimePollResult DatagramChannel::poll_connections(
 
 ConnectionRuntime::ConnectionRuntime(Configuration configuration)
     : channel_(std::move(configuration.channel))
+    , work_binding_(std::move(configuration.work_binding))
     , peer_(configuration.peer)
     , peer_socket_id_(configuration.peer_socket_id)
     , session_({
@@ -1601,6 +1602,13 @@ void ConnectionRuntime::sample_receiver_buffer_statistics(
         now, receiver.occupied(),
         receiver.buffered_payload_bytes(),
         receiver.buffered_span_milliseconds());
+}
+
+ConnectionRuntime::~ConnectionRuntime()
+{
+    if (work_binding_ != nullptr) {
+        work_binding_->retire();
+    }
 }
 
 MessageIoResult ConnectionRuntime::queue_message(
@@ -4046,6 +4054,9 @@ void ConnectionRuntime::break_locked(int system_error) noexcept
 
 void ConnectionRuntime::notify_channel_send_work() noexcept
 {
+    if (work_binding_ != nullptr) {
+        (void)work_binding_->notify({.send = true});
+    }
     if (const auto channel = channel_.lock(); channel != nullptr) {
         channel->notify_send_work();
     }
@@ -4053,6 +4064,9 @@ void ConnectionRuntime::notify_channel_send_work() noexcept
 
 void ConnectionRuntime::notify_channel_receive_release() noexcept
 {
+    if (work_binding_ != nullptr) {
+        (void)work_binding_->notify({.receive_release = true});
+    }
     if (const auto channel = channel_.lock(); channel != nullptr) {
         channel->notify_receive_release();
     }
@@ -4090,7 +4104,7 @@ void ConnectionRuntime::close() noexcept
 
 bool ConnectionRuntime::begin_close() noexcept
 {
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
     if (locally_closed_) {
         return false;
     }
@@ -4098,6 +4112,10 @@ bool ConnectionRuntime::begin_close() noexcept
     receive_ready_.notify_all();
     send_ready_.notify_all();
     notify_readiness();
+    lock.unlock();
+    if (work_binding_ != nullptr) {
+        work_binding_->retire();
+    }
     return true;
 }
 
