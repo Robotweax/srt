@@ -210,8 +210,22 @@ acquire the runtime mutex. Registration snapshots it before taking the routing
 mutex and stores the optional key with the route; removal uses that stored key.
 The removed route's runtime remains pinned until after the routing mutex is
 released, so final runtime/service-context destruction runs outside that lock.
-These rules apply to route registration and removal; setup-inbox draining and
-shared-socket error propagation retain their separate serialization paths.
+Setup promotion seals the bounded datagram inbox while publishing the
+established route. Setup consumers can no longer remove the sealed prefix.
+Prefix processing runs after releasing the routing and inbox mutexes; a separate
+promotion mutex serializes its completion. Established datagram delivery,
+handshake replay and polling complete that prefix before protocol effects.
+Once the prefix has completed, the route drops its temporary inbox reference.
+
+A publisher which already captured the old setup inbox forwards to the original
+runtime after prefix completion, including after setup-source cleanup closes
+that inbox. It cannot append to the sealed queue or target a replacement route.
+The old inbox pins its runtime until the last captured reference is released;
+the runtime's close barrier still rejects protocol effects after local close.
+Failed route registration leaves the setup queue available to its consumer.
+This prefix barrier does not impose a total order on concurrent application and
+wire operations. Shared-socket error propagation retains its separate
+serialization path.
 
 ## Timing model
 
