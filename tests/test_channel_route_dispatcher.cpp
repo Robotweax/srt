@@ -783,8 +783,12 @@ TEST(channel_ingress_idle_popped_copy_stays_pending_until_protocol_completion)
         dispatcher->inbox()->pop(dispatcher->inbox()->token(), envelope, 1),
         ConnectionDatagramInbox::Status::busy);
     now.store(6001);
-    const auto waiting = fixture.channel->poll_connections_for_testing();
+    // Freeze both clocks: Windows requests immediate continuation below 1 ms,
+    // so host elapsed time must not shorten this exact 1 ms grace remainder.
+    const auto waiting = fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
     REQUIRE(!waiting.immediate_work);
+    REQUIRE_EQ(waiting.next_work_delay, std::chrono::microseconds {1000});
     REQUIRE(fixture.runtime->accepts_datagrams());
     dispatcher->close();
     REQUIRE(dispatcher->inbox()->snapshot().in_flight);
