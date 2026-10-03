@@ -409,6 +409,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
 
     add_executable(robotweax_srt_scheduler_tests
         tests/test_main.cpp
+        tests/test_compat_message_attempts.cpp
         tests/test_caller_handshake_events.cpp
         tests/test_caller_handshake_sources.cpp
         tests/test_listener_connection_setup_sources.cpp
