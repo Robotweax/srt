@@ -122,10 +122,13 @@ Error ReliabilitySession::queue_message(std::span<const std::byte> message,
     std::uint64_t enqueue_microseconds,
     std::uint64_t expiration_microseconds) noexcept
 {
+    if (message.empty())
+        return Error::invalid_state;
     if (packet_filter_policy_.sensor_profile()
         && message.size() > send_buffer_.maximum_payload_size()) {
         return Error::invalid_payload_size;
     }
+    compact_sensor_retired_prefix();
     const auto error = send_buffer_.enqueue_message(message,
         next_message_number_, timestamp, peer_socket_id_, in_order,
         enqueue_microseconds, expiration_microseconds);
@@ -481,9 +484,43 @@ void ReliabilitySession::append_pending_loss_report(ReliabilityActions& actions,
     }
 }
 
+void ReliabilitySession::compact_sensor_retired_prefix() noexcept
+{
+    if (packet_filter_policy_.sensor_profile()
+        && send_buffer_.available() == 0U) {
+        if (const auto prefix = send_buffer_.retired_prefix()) {
+            const auto first = sensor_retired_prefix_.has_value()
+                ? sensor_retired_prefix_->first
+                : prefix->first;
+            // No local compaction may span an ambiguous sequence epoch.
+            if ((!sensor_retired_prefix_.has_value()
+                    || sensor_retired_prefix_->last.next() == prefix->first)
+                && prefix->last.distance_from(first)
+                    < maximum_peer_drop_distance) {
+                if (!sensor_retired_prefix_.has_value())
+                    sensor_prefix_repeat_cursor_ = first;
+                sensor_retired_prefix_ = SequenceRange {first, prefix->last};
+                send_buffer_.release_retired_prefix();
+            }
+        }
+    }
+}
+
 void ReliabilitySession::append_pending_drop_requests(
     ReliabilityActions& actions) noexcept
 {
+    while (actions.size < actions.values.size()
+        && sensor_prefix_repeat_remaining_ != 0U
+        && sensor_retired_prefix_.has_value()) {
+        actions.push({.kind = ReliabilityActionKind::drop_request,
+            .drop = {0U,
+                {sensor_prefix_repeat_cursor_, sensor_prefix_repeat_cursor_}}});
+        --sensor_prefix_repeat_remaining_;
+        sensor_prefix_repeat_cursor_ =
+            sensor_prefix_repeat_cursor_ == sensor_retired_prefix_->last
+            ? sensor_retired_prefix_->first
+            : sensor_prefix_repeat_cursor_.next();
+    }
     while (actions.size < actions.values.size()) {
         const auto dropped = send_buffer_.next_pending_drop_request();
         if (!dropped.has_value()) {
@@ -684,6 +721,24 @@ ReliabilityProcessResult ReliabilitySession::receive(
         if (!inserted) {
             return {.error = inserted.error};
         }
+        if (inserted.status == ReceiveStatus::beyond_window
+            && !context.filter_supplied
+            && packet_filter_policy_.effective_arq_level()
+                == PacketFilterArqLevel::always) {
+            // A fresh physical DATA horizon proves missing sources even when
+            // this packet cannot fit. Request only the current bounded window;
+            // a retired sender can answer with DROPREQ without false ACKs.
+            const auto first = highest_received_sequence_.next().distance_from(
+                                   receive_buffer_.first_stored_sequence())
+                    > 0
+                ? highest_received_sequence_.next()
+                : receive_buffer_.first_stored_sequence();
+            const auto last = receive_buffer_.first_stored_sequence().advanced(
+                static_cast<std::uint32_t>(receive_buffer_.capacity() - 1U));
+            if (last.distance_from(first) >= 0
+                && !receive_loss_list_.add({first, last}, 0U))
+                return {.error = Error::buffer_too_small};
+        }
         if (packet_filter_policy_.sensor_profile() && inserted.has_gap) {
             const std::uint64_t maximum =
                 std::numeric_limits<std::uint64_t>::max();
@@ -845,8 +900,21 @@ ReliabilityProcessResult ReliabilitySession::receive(
             > 0) {
             peer_acknowledged_sequence_ = decoded.acknowledgement.next_sequence;
         }
+        if (sensor_retired_prefix_.has_value()) {
+            const auto boundary = decoded.acknowledgement.next_sequence;
+            if (boundary.distance_from(sensor_retired_prefix_->last) > 0) {
+                sensor_retired_prefix_.reset();
+                sensor_prefix_repeat_remaining_ = 0U;
+            } else if (boundary.distance_from(sensor_retired_prefix_->first)
+                > 0) {
+                sensor_retired_prefix_->first = boundary;
+                if (sensor_prefix_repeat_cursor_.distance_from(boundary) < 0)
+                    sensor_prefix_repeat_cursor_ = boundary;
+            }
+        }
         if (packet_filter_policy_.sensor_profile()
-            && !send_buffer_.has_retained_drop()) {
+            && !send_buffer_.has_retained_drop()
+            && !sensor_retired_prefix_.has_value()) {
             next_sensor_retirement_repeat_microseconds_ = 0U;
         }
         diagnostics::trace_ack(now_microseconds,
@@ -1229,11 +1297,13 @@ ReliabilityActions ReliabilitySession::drop_expired_sender_message(
             .dropped_packets = dropped.packets,
             .dropped_bytes = dropped.bytes,
         });
-        if (sensor_profile) {
+        if (sensor_profile
+            && next_sensor_retirement_repeat_microseconds_ == 0U) {
             next_sensor_retirement_repeat_microseconds_ = now_microseconds
                 + sensor_retirement_repeat_interval_microseconds;
         }
     }
+    compact_sensor_retired_prefix();
     if (send_buffer_.packets_in_flight() == 0U) {
         sender_retransmission_timer_.on_no_packets_in_flight();
     }
@@ -1246,7 +1316,8 @@ ReliabilitySession::next_sender_retirement_deadline() const noexcept
     std::optional<std::uint64_t> deadline =
         send_buffer_.next_expiration_microseconds();
     if (packet_filter_policy_.sensor_profile()
-        && send_buffer_.has_retained_drop()
+        && (send_buffer_.has_retained_drop()
+            || sensor_retired_prefix_.has_value())
         && next_sensor_retirement_repeat_microseconds_ != 0U
         && (!deadline.has_value()
             || next_sensor_retirement_repeat_microseconds_ < *deadline)) {
@@ -1795,9 +1866,19 @@ ReliabilityActions ReliabilitySession::poll_timers(
 {
     ReliabilityActions actions;
     if (packet_filter_policy_.sensor_profile()
-        && send_buffer_.has_retained_drop()
+        && (send_buffer_.has_retained_drop()
+            || sensor_retired_prefix_.has_value())
         && next_sensor_retirement_repeat_microseconds_ != 0U
         && now_microseconds >= next_sensor_retirement_repeat_microseconds_) {
+        if (sensor_retired_prefix_.has_value()) {
+            // Bound each timer's extra feedback to 32 controls, emitted in
+            // the ordinary four-action batches and runtime send budget.
+            sensor_prefix_repeat_remaining_ = std::min<std::size_t>(32U,
+                static_cast<std::size_t>(
+                    sensor_retired_prefix_->last.distance_from(
+                        sensor_retired_prefix_->first))
+                    + 1U);
+        }
         (void)send_buffer_.queue_retained_drop_requests();
         next_sensor_retirement_repeat_microseconds_ =
             now_microseconds + sensor_retirement_repeat_interval_microseconds;

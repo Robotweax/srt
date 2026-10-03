@@ -11203,3 +11203,110 @@ TEST(maxrexmitbw_runtime_counts_protected_payload_and_preserves_ciphertext)
     }
 }
 #endif
+
+TEST(compat_runtime_sensor_blackhole_continuous_ttl_expiry_recovers)
+{
+    auto sc = std::make_shared<DatagramChannel>();
+    auto rc = std::make_shared<DatagramChannel>();
+    CapturedDatagrams so, ro;
+    sc->set_send_hook_for_testing(capture_datagram, &so);
+    rc->set_send_hook_for_testing(capture_datagram, &ro);
+    const Ipv4Endpoint se {{192, 0, 2, 81}, 14601}, re {{192, 0, 2, 82}, 14602};
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set_packet_filter("fec-sensor-v1,cols:4,rows:1,arq:never"),
+        Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_payload_size, 16), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 16), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::receive_buffer_packets, 16), Error::none);
+    std::uint64_t now = 1000;
+    const auto origin = ConnectionRuntime::Clock::now();
+    ConnectionRuntime sender {{.channel = sc,
+        .peer = re,
+        .peer_socket_id = 820,
+        .initial_sequence = SequenceNumber {700},
+        .flow_window_packets = 16,
+        .options = options,
+        .origin = origin,
+        .now_function = injected_now,
+        .now_context = &now}};
+    ConnectionRuntime receiver {{.channel = rc,
+        .peer = se,
+        .peer_socket_id = 810,
+        .initial_sequence = SequenceNumber {700},
+        .flow_window_packets = 16,
+        .options = options,
+        .origin = origin,
+        .now_function = injected_now,
+        .now_context = &now}};
+    unsigned latest = 0, received = 0;
+    for (unsigned tick = 0; tick < 180; ++tick) {
+        now = 1000U + tick * 1000U;
+        const std::array<std::byte, 1> payload {static_cast<std::byte>(tick)};
+        const auto queued =
+            sender.queue_message(payload, 0, false, false, -1, 1);
+        REQUIRE(queued.status == MessageIoStatus::success
+            || queued.status == MessageIoStatus::would_block);
+        (void)sender.poll();
+        for (const auto& datagram : take_datagrams(so)) {
+            const auto packet = decode_packet(datagram);
+            REQUIRE(packet);
+            if (packet.packet.kind == PacketKind::data)
+                REQUIRE(!packet.packet.data.retransmitted);
+            if (tick >= 60)
+                receiver.process_packet(packet.packet, se);
+        }
+        (void)receiver.poll();
+        if (tick >= 60)
+            deliver(ro, sender, re);
+        else
+            (void)take_datagrams(ro);
+        std::array<std::byte, 16> out {};
+        for (;;) {
+            const auto read = receiver.receive_message(out, false, -1);
+            if (read.status == MessageIoStatus::would_block)
+                break;
+            REQUIRE_EQ(read.status, MessageIoStatus::success);
+            latest = std::max(latest, std::to_integer<unsigned>(out[0]));
+            ++received;
+        }
+    }
+    REQUIRE(received > 0U);
+    REQUIRE(latest >= 170U);
+}
+
+TEST(compat_runtime_sensor_blackhole_expiry_restores_writable_readiness)
+{
+    auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams captured;
+    channel->set_send_hook_for_testing(capture_datagram, &captured);
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set_packet_filter("fec-sensor-v1,cols:4,rows:1,arq:never"),
+        Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_payload_size, 16), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 4), Error::none);
+    std::uint64_t now = 1000;
+    ConnectionRuntime runtime {{.channel = channel,
+        .peer = {{192, 0, 2, 82}, 14602},
+        .peer_socket_id = 820,
+        .initial_sequence = SequenceNumber {700},
+        .flow_window_packets = 4,
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now(),
+        .now_function = injected_now,
+        .now_context = &now}};
+    const std::array<std::byte, 1> payload {std::byte {'x'}};
+    for (unsigned i = 0; i < 4; ++i)
+        REQUIRE_EQ(
+            runtime.queue_message(payload, 0, false, false, -1, 1).status,
+            MessageIoStatus::success);
+    REQUIRE(!runtime.writable());
+    now = 3000;
+    (void)runtime.poll(); // Every datagram is lost; no peer ACK exists.
+    REQUIRE(runtime.writable());
+    REQUIRE((runtime.readiness_snapshot(false).events & SRT_EPOLL_OUT) != 0);
+}

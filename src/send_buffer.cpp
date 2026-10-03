@@ -756,6 +756,24 @@ std::size_t SendBuffer::queue_retained_drop_requests() noexcept
     return queued;
 }
 
+std::optional<SequenceRange> SendBuffer::retired_prefix() const noexcept
+{
+    std::size_t count = 0U;
+    while (
+        count < sequence_span_ && slots_[(head_ + count) % capacity()].dropped)
+        ++count;
+    if (count == 0U)
+        return std::nullopt;
+    return SequenceRange {first_sequence_,
+        first_sequence_.advanced(static_cast<std::uint32_t>(count - 1U))};
+}
+
+void SendBuffer::release_retired_prefix() noexcept
+{
+    if (const auto prefix = retired_prefix())
+        (void)acknowledge_before(prefix->last.next());
+}
+
 bool SendBuffer::has_retained_drop() const noexcept
 {
     return retained_drop_count_ != 0U;

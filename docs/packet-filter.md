@@ -166,3 +166,27 @@ depends on peer version, direction, geometry, encryption profile, and ARQ mode.
 See [Compatibility status](compatibility.md),
 [Encryption](encryption.md), and [Known limitations](limitations.md) before
 combining FEC with other transport features.
+
+## Recovery after an unobserved Sensor window
+
+An expired Sensor prefix may occupy every source position while its DATA and
+initial retirement controls were lost. The sender can detach only contiguous
+expired tombstones from the payload ring into constant-size retirement state,
+admitting fresh samples without retaining or replaying the old payloads.
+Outstanding detached retirement spans stay below a quarter sequence epoch.
+ACK progress trims that state; local compaction is not peer acknowledgement.
+Single-sequence DROPREQs remain the wire contract. Each retirement timer admits
+at most 32 additional controls through the existing four-action and runtime
+send budgets. Continued TTL expiry does not postpone an already armed repeat.
+The receiver still limits every retirement to its observed physical DATA horizon.
+
+Live/reliable DATA beyond the bounded receive window now exposes the missing
+prefix within that window to ordinary loss reporting. A sender that abandoned
+those sources can repeat their DROPREQ instead of leaving the receive window
+stuck. No out-of-window DATA is delivered or falsely acknowledged.
+
+Deterministic recovery tests include wraparound, a lost complete source window,
+continuous Sensor TTL expiry with real runtime/FEC handling and an injected
+clock, backpressure for unexpired sources, and retirement before any physical
+DATA observation. This addresses [issue #198](https://github.com/Robotweax/srt/issues/198);
+Broadcast Link's separate netem qualification must also pass before integration.

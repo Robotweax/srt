@@ -5238,3 +5238,126 @@ TEST(session_low_rtt_loss_reports_do_not_apply_a_second_timer_floor)
         REQUIRE_EQ(reported_ranges, 2U);
     }
 }
+
+TEST(session_blackhole_live_reports_missing_prefix_on_beyond_window_data)
+{
+    for (auto initial :
+        {SequenceNumber {10}, SequenceNumber {SequenceNumber::mask - 2U}}) {
+        ReliabilitySession receiver {{.peer_initial_sequence = initial,
+            .send_capacity_packets = 4,
+            .receive_capacity_packets = 4}};
+        receiver.configure_live({.periodic_nak = true}, 0, PacketTimestamp {0});
+        const std::array<std::byte, 1> payload {std::byte {'n'}};
+        PacketView probe;
+        probe.kind = PacketKind::data;
+        probe.data.sequence = initial.advanced(6U);
+        probe.data.boundary = MessageBoundary::solo;
+        probe.data.message_number = 7;
+        probe.payload = payload;
+        const auto result = receiver.receive(probe, 100U);
+        REQUIRE(result);
+        REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(), initial);
+        REQUIRE_EQ(receiver.receive_buffer().occupied(), 0U);
+        bool reported = false;
+        for (std::size_t i = 0; i < result.actions.size; ++i) {
+            const auto& action = result.actions.values[i];
+            if (action.kind == ReliabilityActionKind::loss_report) {
+                REQUIRE_EQ(action.loss.first, initial);
+                REQUIRE_EQ(action.loss.last, initial.advanced(3U));
+                reported = true;
+            }
+        }
+        REQUIRE(reported);
+    }
+}
+
+TEST(session_blackhole_sensor_full_expired_window_admits_fresh_data)
+{
+    for (auto initial :
+        {SequenceNumber {10}, SequenceNumber {SequenceNumber::mask - 2U}}) {
+        ReliabilitySession sender {{.local_initial_sequence = initial,
+            .peer_initial_sequence = SequenceNumber {100},
+            .peer_socket_id = 900,
+            .send_capacity_packets = 4,
+            .receive_capacity_packets = 4}};
+        ReliabilitySession receiver {
+            {.local_initial_sequence = SequenceNumber {100},
+                .peer_initial_sequence = initial,
+                .peer_socket_id = 800,
+                .send_capacity_packets = 4,
+                .receive_capacity_packets = 4}};
+        const auto filter = parse_packet_filter_configuration(
+            "fec-sensor-v1,cols:4,rows:1,arq:never");
+        REQUIRE(filter);
+        sender.configure_live({.periodic_nak = false}, 0, PacketTimestamp {0});
+        receiver.configure_live(
+            {.periodic_nak = false}, 0, PacketTimestamp {0});
+        sender.configure_packet_filter(filter.configuration, true);
+        receiver.configure_packet_filter(filter.configuration, true);
+        const std::array<std::byte, 1> payload {std::byte {'n'}};
+        for (unsigned round = 0; round < 3; ++round) {
+            for (unsigned i = 0; i < 4; ++i) {
+                REQUIRE_EQ(sender.queue_message(payload,
+                               PacketTimestamp {round * 1000U + i}, true,
+                               round * 1000U + i, round * 1000U + 100U),
+                    Error::none);
+                REQUIRE(sender.next_data_packet()
+                        .has_value()); // Blackhole every DATA.
+            }
+            REQUIRE_EQ(sender.queue_message(payload, PacketTimestamp {0}),
+                Error::buffer_too_small);
+            for (unsigned i = 0; i < 4; ++i)
+                REQUIRE_EQ(
+                    sender.drop_expired_sender_message(round * 1000U + 101U)
+                        .size,
+                    1U);
+        }
+        const auto span_before_invalid = sender.send_buffer().sequence_span();
+        REQUIRE_EQ(sender.queue_message({}, PacketTimestamp {3000}),
+            Error::invalid_state);
+        REQUIRE_EQ(sender.send_buffer().sequence_span(), span_before_invalid);
+        REQUIRE_EQ(sender.queue_message(
+                       payload, PacketTimestamp {3000}, true, 3000, 0),
+            Error::none);
+        const auto fresh = sender.next_data_packet();
+        REQUIRE(fresh);
+        REQUIRE_EQ(fresh->header.sequence, initial.advanced(12U));
+        std::array<std::byte, 64> storage {};
+        // Retirement alone must never ACK unseen DATA. Deliver the observed
+        // probe afterwards; repeated single-sequence controls must release
+        // the entire lost prefix without ever replaying expired DATA.
+        for (unsigned turn = 0; turn < 40; ++turn) {
+            (void)sender.poll_timers(20'000U + turn * 10'000U);
+            while (sender.has_pending_drop_requests()) {
+                const auto controls = sender.take_pending_drop_requests();
+                for (std::size_t i = 0; i < controls.size; ++i) {
+                    const auto& action = controls.values[i];
+                    REQUIRE_EQ(
+                        action.kind, ReliabilityActionKind::drop_request);
+                    REQUIRE_EQ(action.drop.sequences.first,
+                        action.drop.sequences.last);
+                    const auto result =
+                        receiver.receive(encode_and_decode(action, storage),
+                            20'001U + turn * 10'000U);
+                    REQUIRE(result);
+                    for (std::size_t j = 0; j < result.actions.size; ++j)
+                        REQUIRE(sender.receive(
+                            encode_and_decode(
+                                result.actions.values[j], storage),
+                            20'002U + turn * 10'000U));
+                }
+            }
+            if (turn == 0) {
+                REQUIRE_EQ(
+                    receiver.receive_buffer().next_ack_sequence(), initial);
+                REQUIRE(receiver.receive(view_of(*fresh), 20'003U));
+            }
+        }
+        std::array<std::byte, 1> output {};
+        REQUIRE(receiver.pop_message(output));
+        REQUIRE_EQ(output, payload);
+        REQUIRE_EQ(sender.send_buffer().sequence_span(), 0U);
+        REQUIRE(!sender.next_data_packet().has_value());
+        REQUIRE(!sender.next_sender_retirement_deadline().has_value());
+    }
+}
