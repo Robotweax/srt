@@ -32,6 +32,7 @@
 namespace robotweax::srt::compat {
 
 class ConnectionRuntime;
+class ConnectionDatagramDispatcher;
 class RuntimeWorkExecutor;
 struct GroupRecord;
 struct RetainedGroupReceiveBatch;
@@ -119,6 +120,10 @@ public:
 
 private:
     friend class DatagramChannel;
+    friend class ConnectionDatagramDispatcher;
+    // Only the dispatcher consumes a queued, sealed setup prefix.
+    [[nodiscard]] bool pop_dispatch_prefix(DatagramEnvelope& envelope) noexcept;
+    [[nodiscard]] bool dispatch_prefix_empty() noexcept;
     // Complete the sealed setup prefix before established protocol work.
     void finish_promotion() noexcept;
     void drain_promotion_locked() noexcept;
@@ -127,6 +132,8 @@ private:
     std::mutex promotion_mutex_;
     std::shared_ptr<ConnectionRuntime> promoted_runtime_;
     IpEndpoint promoted_peer_ {};
+    std::weak_ptr<ConnectionDatagramDispatcher> promoted_dispatcher_;
+    bool queued_promotion_ = false;
     std::mutex mutex_;
     std::condition_variable ready_;
     std::vector<DatagramEnvelope> entries_;

@@ -1,5 +1,6 @@
 #include "compat/group_receive_retention.hpp"
 #include "compat/transport_runtime.hpp"
+#include "compat/connection_datagram_dispatcher.hpp"
 #include "compat/submillisecond_pacing_platform.hpp"
 
 #include "robotweax/srt/codec.hpp"
@@ -400,6 +401,14 @@ bool DatagramInbox::push(
             if (peer != promoted_peer_) {
                 return false;
             }
+            if (queued_promotion_) {
+                const auto dispatcher = promoted_dispatcher_.lock();
+                lock.unlock();
+                return dispatcher != nullptr
+                    && dispatcher->publish(
+                           dispatcher->inbox()->token(), datagram, peer)
+                    == ConnectionDatagramInbox::Status::accepted;
+            }
             lock.unlock();
             finish_promotion();
             deliver_promoted(datagram, peer);
@@ -649,8 +658,32 @@ void DatagramInbox::drain_promotion_locked() noexcept
     }
 }
 
+bool DatagramInbox::pop_dispatch_prefix(DatagramEnvelope& envelope) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (!queued_promotion_ || size_ == 0U) {
+        return false;
+    }
+    envelope = entries_[head_];
+    head_ = (head_ + 1U) % entries_.size();
+    --size_;
+    return true;
+}
+
+bool DatagramInbox::dispatch_prefix_empty() noexcept
+{
+    std::lock_guard lock(mutex_);
+    return size_ == 0U;
+}
+
 void DatagramInbox::finish_promotion() noexcept
 {
+    {
+        std::lock_guard lock(mutex_);
+        if (queued_promotion_) {
+            return;
+        }
+    }
     // Sealing prevents further queue insertion and setup consumption. Only
     // this mutex serializes prefix draining; no route/inbox lock spans protocol
     // processing. Late publishers retain this inbox's original runtime identity.

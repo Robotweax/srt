@@ -8,6 +8,7 @@
 
 namespace robotweax::srt::compat {
 class ConnectionRuntime;
+class DatagramInbox;
 
 // Optional datagram service. Runtime ownership remains with the connection;
 // its protocol methods enforce the close barrier under their existing mutex.
@@ -32,7 +33,12 @@ public:
         const std::shared_ptr<DatagramStorageBudget>& budget,
         std::uint64_t affinity, IpEndpoint peer,
         ConnectionDatagramInbox::Configuration inbox_configuration,
-        Configuration configuration) noexcept;
+        Configuration configuration,
+        // Optional cold, unregistered setup inbox. On success its existing
+        // ring becomes a sealed prefix; old publishers target this dispatcher.
+        // Failure leaves the setup inbox untouched. Channel route integration
+        // must independently commit ownership before exposing an established route.
+        const std::shared_ptr<DatagramInbox>& setup_prefix = nullptr) noexcept;
     ~ConnectionDatagramDispatcher();
     ConnectionDatagramDispatcher(const ConnectionDatagramDispatcher&) = delete;
     ConnectionDatagramDispatcher& operator=(
@@ -49,6 +55,8 @@ public:
     // Retire admission, then use the existing synchronous runtime close path.
     // A popped copy can resume afterwards, but cannot mutate the closed runtime.
     void close() noexcept;
+    // True only after prefix protocol effects finish, or admission is retired.
+    [[nodiscard]] bool setup_prefix_complete() const noexcept;
     [[nodiscard]] bool quiescent() const noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
 
