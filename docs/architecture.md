@@ -159,6 +159,16 @@ future work and wakes blocked public operations.
 Applications must still synchronize their own data and must follow the
 callback/lifecycle rules in the [Integration guide](integration.md).
 
+Message send and receive separate one locked state attempt from the synchronous
+wrapper's condition-variable waits. The attempt completes the existing buffer,
+metadata, error and readiness mutations without retaining caller spans or
+waiting for application capacity. The wrapper keeps the attempt and wait
+predicate under the same runtime mutex, then notifies channel work after a
+successful attempt has unlocked. A zero configured timeout still permits an
+immediately available commit; nonblocking pressure and blocking timeout remain
+distinct results. This separation does not introduce an asynchronous application
+gateway or move application state onto a scheduler shard.
+
 ## Timing model
 
 Protocol code consumes integer monotonic microseconds supplied by its owner.

@@ -624,6 +624,16 @@ private:
     [[nodiscard]] RuntimePollResult pending_send_poll_result(
         std::uint64_t now) const noexcept;
 
+    // Single message attempt while mutex_ is held: no condition-variable wait,
+    // retained caller span, or channel wake. The calling wrapper owns waiting
+    // and success notification after unlocking, preserving the wait predicate.
+    // Send arguments have already passed the control-profile validation.
+    [[nodiscard]] MessageIoResult try_queue_message_locked(
+        std::span<const std::byte> message,
+        std::int64_t source_time_microseconds, bool in_order,
+        std::int32_t ttl_milliseconds) noexcept;
+    [[nodiscard]] MessageIoResult try_receive_message_locked(
+        std::span<std::byte> destination, std::uint64_t now) noexcept;
     [[nodiscard]] RuntimePollResult poll_locked() noexcept;
     [[nodiscard]] std::uint64_t now_microseconds() const noexcept;
     [[nodiscard]] PacketTimestamp packet_timestamp(

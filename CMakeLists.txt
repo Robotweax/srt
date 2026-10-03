@@ -341,7 +341,8 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_udp.cpp
         tests/test_compat_epoll.cpp
         tests/test_compat_groups.cpp
-        tests/test_compat_runtime.cpp)
+        tests/test_compat_runtime.cpp
+        tests/test_compat_message_attempts.cpp)
     target_compile_definitions(robotweax_srt_tests PRIVATE
         ROBOTWEAX_SRT_EXPECT_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
     target_link_libraries(robotweax_srt_tests
