@@ -189,7 +189,7 @@ transport affinity or callbacks that reenter a runtime whose lock is held.
 
 An internal connection work binding can reserve one service at setup and keep
 its shard, scheduler scope and slot generation fixed. Send and receive-release
-hints coalesce into two flags; a hint published during dispatch requests another
+hints coalesce into fixed flags; a hint published during dispatch requests another
 turn. The binding retains no caller span or payload and allocates no storage per
 notification. It weakly references the scheduler, while the service pins its
 callback context until retirement. Client callbacks execute outside the hint
@@ -203,6 +203,33 @@ retire the binding without waiting; a dispatched callback can still finish and
 must check the runtime close barrier before effects. Binding retirement is not
 callback quiescence. Public connection setup supplies no binding, so this
 internal facility does not change UDP routing or activate per-connection polling.
+
+An internal connection datagram inbox owns a fixed ring allocated at setup.
+A shared storage budget charges the entire ring, including empty entries and
+closed inboxes still retained by publishers or consumers. Credits return only
+after ring destruction. The budget covers typed ring storage, including entry
+metadata, and excludes allocator bookkeeping, inbox objects and consumer-owned
+copies. Capacity multiplication is checked before reservation and allocation.
+
+Each inbox has an immutable process-local incarnation and scheduler service
+identity. Publishers and consumers must present the matching token; peer and
+packet framing are validated before admission. DATA is limited to capacity
+minus a configured control reserve. Structurally decoded control packets may
+use that reserve, but share one FIFO with DATA; this is an admission policy,
+not control authentication or priority reordering. Full admission rejects the
+new datagram without displacing older entries.
+
+Publication copies bytes and notifies the reserved service under the inbox
+mutex. The scheduler never invokes its callback inline. Each accepted insertion
+notifies, including during an active consumer turn; a bounded consumer rearms
+when work remains. If notification fails, admission closes and queued work is
+discarded rather than stranded. Close does not wait for a consumer and does not
+revoke a previously popped copy; the consumer still needs the runtime close
+barrier before effects. Inbox callbacks must avoid strong ownership cycles.
+Queue highwater, DATA/control rejections, failed notifications and monotonic
+queue delay are available internally. Public setup does not create these
+inboxes or reserve their services, so UDP delivery remains on the existing
+channel path.
 
 Established handshake replay routing uses the immutable peer endpoint, peer
 socket identifier and setup replay response. Reading this identity does not
