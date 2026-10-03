@@ -8,6 +8,7 @@
 
 namespace robotweax::srt::compat {
 class ConnectionRuntime;
+class DatagramChannel;
 class DatagramInbox;
 
 // Optional datagram service. Runtime ownership remains with the connection;
@@ -61,6 +62,16 @@ public:
     [[nodiscard]] Snapshot snapshot() const noexcept;
 
 private:
+    friend class DatagramChannel;
+    // Caller holds the route lock, and the prefix inbox lock when supplied.
+    // No clock, runtime protocol callback or client callback runs here.
+    [[nodiscard]] bool targets(
+        const std::shared_ptr<ConnectionRuntime>& runtime,
+        const DatagramChannel* channel) const noexcept;
+    [[nodiscard]] bool matches_peer(IpEndpoint peer) const noexcept;
+    [[nodiscard]] bool claim_route(
+        const std::shared_ptr<DatagramInbox>& prefix) noexcept;
+    [[nodiscard]] bool activate_route() noexcept;
     struct State;
     ConnectionDatagramDispatcher(std::shared_ptr<State> state,
         std::shared_ptr<ConnectionWorkBinding> binding) noexcept;

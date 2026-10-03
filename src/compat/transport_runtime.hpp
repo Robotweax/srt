@@ -225,13 +225,16 @@ public:
         IpEndpoint peer) noexcept;
     void set_send_hook_for_testing(
         SendHook hook, void* context) noexcept;
-    [[nodiscard]] bool register_connection(
-        std::uint32_t protocol_socket_id,
-        std::shared_ptr<ConnectionRuntime> runtime) noexcept;
+    [[nodiscard]] bool register_connection(std::uint32_t protocol_socket_id,
+        std::shared_ptr<ConnectionRuntime> runtime,
+        std::shared_ptr<ConnectionDatagramDispatcher> dispatcher =
+            nullptr) noexcept;
     [[nodiscard]] bool promote_setup_connection(
         std::uint32_t protocol_socket_id,
         const std::shared_ptr<DatagramInbox>& inbox,
-        std::shared_ptr<ConnectionRuntime> runtime) noexcept;
+        std::shared_ptr<ConnectionRuntime> runtime,
+        std::shared_ptr<ConnectionDatagramDispatcher> dispatcher =
+            nullptr) noexcept;
     void unregister_connection(std::uint32_t protocol_socket_id) noexcept;
     [[nodiscard]] bool replay_established_handshake(
         const HandshakeEnvelope& envelope) noexcept;
@@ -298,6 +301,10 @@ private:
         std::uint32_t protocol_socket_id,
         const std::shared_ptr<ConnectionRuntime>& runtime,
         const std::optional<HandshakeRouteKey>& replay_key);
+    void unregister_connection_locked(std::uint32_t protocol_socket_id,
+        std::shared_ptr<ConnectionRuntime>& runtime,
+        std::shared_ptr<ConnectionDatagramDispatcher>& dispatcher,
+        std::shared_ptr<DatagramInbox>& prefix) noexcept;
     [[nodiscard]] bool start_with_affinity(
         std::shared_ptr<RuntimeScheduler> scheduler,
         std::optional<std::uint64_t> affinity) noexcept;
@@ -386,10 +393,12 @@ private:
         std::shared_ptr<ConnectionRuntime> runtime;
         std::optional<HandshakeRouteKey> replay_key = std::nullopt;
         std::shared_ptr<DatagramInbox> setup_prefix = nullptr;
+        std::shared_ptr<ConnectionDatagramDispatcher> dispatcher = nullptr;
         ConnectionRoute* previous = nullptr;
         ConnectionRoute* next = nullptr;
     };
     std::unordered_map<std::uint32_t, ConnectionRoute> routes_;
+    std::size_t queued_routes_ = 0;
     // unordered_map rehash preserves element addresses. Erasure unlinks the
     // node and advances this cursor under routes_mutex_.
     ConnectionRoute* next_poll_route_ = nullptr;
@@ -436,6 +445,8 @@ private:
 };
 
 class ConnectionRuntime {
+    friend class ConnectionDatagramDispatcher;
+
 public:
     [[nodiscard]] const std::shared_ptr<ReadinessSource>&
     readiness_source() const noexcept
@@ -550,6 +561,9 @@ public:
     [[nodiscard]] bool process_handshake(
         const HandshakeMessage& message,
         IpEndpoint peer) noexcept;
+    // Advisory replay admission; authoritative check is repeated by the handler.
+    [[nodiscard]] bool accepts_handshake_replay(
+        const HandshakeMessage& message, IpEndpoint peer) const noexcept;
     [[nodiscard]] RuntimePollResult poll() noexcept;
     [[nodiscard]] RuntimePollResult poll(
         std::size_t& remaining_send_attempts) noexcept;
@@ -666,6 +680,8 @@ private:
         std::uint64_t now_microseconds) noexcept;
     void sample_receiver_buffer_statistics(
         std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] bool matches_handshake_replay(
+        const HandshakeMessage& message, IpEndpoint peer) const noexcept;
     void notify_channel_send_work() noexcept;
     void notify_channel_receive_release() noexcept;
     [[nodiscard]] bool send_actions(
@@ -735,7 +751,7 @@ private:
     std::uint64_t peer_idle_timeout_microseconds_ = 5'000'000;
     std::uint64_t last_peer_activity_microseconds_ = 0;
     const HandshakeAction handshake_replay_response_ {};
-    std::uint32_t handshake_replay_peer_cookie_ = 0;
+    const std::uint32_t handshake_replay_peer_cookie_ = 0;
     std::shared_ptr<CryptoSession> crypto_;
     CryptoState receiver_key_state_ = CryptoState::unsecured;
     // Non-null only during poll(), while mutex_ is held. Counts actual UDP
