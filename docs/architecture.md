@@ -187,6 +187,23 @@ its wait for application buffer capacity is disabled. Synthetic paused-service
 checks freeze the worker before it takes a runtime lock. They do not qualify
 transport affinity or callbacks that reenter a runtime whose lock is held.
 
+An internal connection work binding can reserve one service at setup and keep
+its shard, scheduler scope and slot generation fixed. Send and receive-release
+hints coalesce into two flags; a hint published during dispatch requests another
+turn. The binding retains no caller span or payload and allocates no storage per
+notification. It weakly references the scheduler, while the service pins its
+callback context until retirement. Client callbacks execute outside the hint
+publication lock. Contexts must avoid strong ownership cycles with their binding
+or runtime.
+
+An explicitly supplied runtime binding receives hints after the runtime mutex
+is released. The legacy channel wake is retained. A rejected hint cannot change
+an already committed application result. Local close and runtime destruction
+retire the binding without waiting; a dispatched callback can still finish and
+must check the runtime close barrier before effects. Binding retirement is not
+callback quiescence. Public connection setup supplies no binding, so this
+internal facility does not change UDP routing or activate per-connection polling.
+
 ## Timing model
 
 Protocol code consumes integer monotonic microseconds supplied by its owner.
