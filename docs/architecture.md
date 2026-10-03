@@ -256,6 +256,33 @@ and send budgets remain on their existing path. Public setup and route lookup
 do not instantiate or select this dispatcher, so this facility does not yet
 activate connection-shard transport.
 
+The internal dispatcher factory can also claim a cold, unregistered setup inbox.
+It seals that inbox without allocating or copying a second prefix ring. A worker
+consumes the accepted setup prefix before its normal connection inbox; both
+sources share the same per-turn limit. The prefix may be larger than the new
+inbox or its DATA allowance. Full admission to the new inbox cannot displace
+accepted setup packets. Prefix completion becomes observable only after the
+last popped prefix copy finishes its protocol handler, and the worker releases
+its old-ring reference outside metadata locks. An empty prefix still receives
+an initial service notification so ownership can be released.
+
+Captured setup publishers forward new datagrams to the same generation-bound
+connection inbox, including after setup close. The forwarding reference is weak;
+retirement or an expired dispatcher rejects publication rather than falling back
+to synchronous runtime delivery. Factory failure leaves the original setup queue
+available to its existing consumer. A sealed setup inbox retains its original
+runtime identity while external publishers hold it. Until prefix completion,
+the service also retains that existing setup inbox and its runtime pin; its
+ordinary inbox alone continues to hold the runtime weakly.
+
+Existing setup-ring storage remains bounded by its original capacity and is not
+charged to the new connection-ring storage budget. That budget does not claim to
+cover total process or transient setup memory. Claiming a prefix requires the
+caller to own an unregistered setup inbox; this factory is not an atomic channel
+route promotion operation. Channel route publication, polling barriers and
+public setup selection remain separate integration work. Public setup continues
+using the existing synchronous promotion path.
+
 Established handshake replay routing uses the immutable peer endpoint, peer
 socket identifier and setup replay response. Reading this identity does not
 acquire the runtime mutex. Registration snapshots it before taking the routing

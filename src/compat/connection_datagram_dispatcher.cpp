@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <utility>
 
 namespace robotweax::srt::compat {
@@ -24,6 +25,8 @@ struct ConnectionDatagramDispatcher::State {
     const Configuration configuration;
     std::shared_ptr<ConnectionDatagramInbox> inbox;
     std::weak_ptr<ConnectionWorkBinding> binding;
+    mutable std::mutex prefix_mutex;
+    std::shared_ptr<DatagramInbox> setup_prefix;
     std::atomic<std::uint64_t> completed_turns {0};
     std::atomic<std::uint64_t> dispatched_datagrams {0};
     std::atomic<std::size_t> maximum_turn_datagrams {0};
@@ -45,6 +48,11 @@ struct ConnectionDatagramDispatcher::State {
     void retire() noexcept
     {
         inbox->close();
+        std::shared_ptr<DatagramInbox> released;
+        {
+            std::lock_guard lock(prefix_mutex);
+            released = std::move(setup_prefix);
+        }
         if (auto service = binding.lock(); service != nullptr) {
             service->retire();
         }
@@ -67,9 +75,24 @@ struct ConnectionDatagramDispatcher::State {
                 break;
             }
             DatagramEnvelope envelope;
-            if (self.inbox->pop(self.inbox->token(), envelope, self.now())
-                != ConnectionDatagramInbox::Status::accepted) {
-                break;
+            std::shared_ptr<DatagramInbox> prefix;
+            {
+                std::lock_guard lock(self.prefix_mutex);
+                prefix = self.setup_prefix;
+            }
+            const bool from_prefix =
+                prefix != nullptr && prefix->pop_dispatch_prefix(envelope);
+            if (!from_prefix) {
+                if (prefix != nullptr) {
+                    std::lock_guard lock(self.prefix_mutex);
+                    if (self.setup_prefix == prefix) {
+                        self.setup_prefix.reset();
+                    }
+                }
+                if (self.inbox->pop(self.inbox->token(), envelope, self.now())
+                    != ConnectionDatagramInbox::Status::accepted) {
+                    break;
+                }
             }
             if (self.configuration.after_pop_for_testing != nullptr) {
                 self.configuration.after_pop_for_testing(
@@ -89,6 +112,14 @@ struct ConnectionDatagramDispatcher::State {
                     runtime->process_packet(decoded.packet, envelope.peer);
                 }
             }
+            // Empty is published only after the last popped prefix copy has
+            // completed its protocol call. Release the old ring outside locks.
+            if (from_prefix && prefix->dispatch_prefix_empty()) {
+                std::lock_guard lock(self.prefix_mutex);
+                if (self.setup_prefix == prefix) {
+                    self.setup_prefix.reset();
+                }
+            }
         }
         self.dispatched_datagrams.fetch_add(
             consumed, std::memory_order_relaxed);
@@ -99,10 +130,23 @@ struct ConnectionDatagramDispatcher::State {
         self.completed_turns.fetch_add(1, std::memory_order_release);
         if (!runtime->accepts_datagrams()) {
             self.retire();
-        } else if (self.inbox->rearm(self.inbox->token())
-            == ConnectionDatagramInbox::Status::wake_failed) {
-            runtime->mark_broken(0);
-            self.retire();
+        } else {
+            bool prefix_pending;
+            {
+                std::lock_guard lock(self.prefix_mutex);
+                prefix_pending = self.setup_prefix != nullptr;
+            }
+            const auto service = self.binding.lock();
+            const bool wake_failed = prefix_pending
+                ? service == nullptr
+                    || service->notify({.datagrams = true})
+                        != RuntimeScheduler::SubmitStatus::accepted
+                : self.inbox->rearm(self.inbox->token())
+                    == ConnectionDatagramInbox::Status::wake_failed;
+            if (wake_failed) {
+                runtime->mark_broken(0);
+                self.retire();
+            }
         }
     }
 };
@@ -122,7 +166,8 @@ ConnectionDatagramDispatcher::create(
     const std::shared_ptr<DatagramStorageBudget>& budget,
     std::uint64_t affinity, IpEndpoint peer,
     ConnectionDatagramInbox::Configuration inbox_configuration,
-    Configuration configuration) noexcept
+    Configuration configuration,
+    const std::shared_ptr<DatagramInbox>& setup_prefix) noexcept
 {
     if (runtime == nullptr || configuration.turn_budget == 0
         || configuration.turn_budget > maximum_turn_budget
@@ -145,9 +190,32 @@ ConnectionDatagramDispatcher::create(
         // completes before the first publication can make its callback runnable.
         state->inbox = std::move(inbox);
         state->binding = binding;
-        return std::shared_ptr<ConnectionDatagramDispatcher>(
-            new ConnectionDatagramDispatcher(
-                std::move(state), std::move(binding)));
+        auto dispatcher = std::shared_ptr<ConnectionDatagramDispatcher>(
+            new ConnectionDatagramDispatcher(state, binding));
+        if (setup_prefix != nullptr) {
+            std::lock_guard lock(setup_prefix->mutex_);
+            if (setup_prefix->promoted_runtime_ != nullptr
+                || setup_prefix->closed_) {
+                return nullptr;
+            }
+            {
+                std::lock_guard prefix_lock(state->prefix_mutex);
+                state->setup_prefix = setup_prefix;
+            }
+            setup_prefix->promoted_runtime_ = runtime;
+            setup_prefix->promoted_peer_ = peer;
+            setup_prefix->queued_promotion_ = true;
+            setup_prefix->promoted_dispatcher_ = dispatcher;
+            if (binding->notify({.datagrams = true})
+                != RuntimeScheduler::SubmitStatus::accepted) {
+                setup_prefix->promoted_runtime_.reset();
+                setup_prefix->queued_promotion_ = false;
+                setup_prefix->promoted_dispatcher_.reset();
+                return nullptr;
+            }
+            setup_prefix->ready_.notify_all();
+        }
+        return dispatcher;
     } catch (...) {
         return nullptr;
     }
@@ -195,6 +263,12 @@ void ConnectionDatagramDispatcher::close() noexcept
     if (const auto runtime = state_->runtime.lock(); runtime != nullptr) {
         runtime->close();
     }
+}
+
+bool ConnectionDatagramDispatcher::setup_prefix_complete() const noexcept
+{
+    std::lock_guard lock(state_->prefix_mutex);
+    return state_->setup_prefix == nullptr;
 }
 
 bool ConnectionDatagramDispatcher::quiescent() const noexcept

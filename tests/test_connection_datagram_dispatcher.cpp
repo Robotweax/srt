@@ -423,3 +423,233 @@ TEST(
         DispatchStatus::accepted);
     dispatch_receive(replacement.runtime, std::byte {1});
 }
+
+namespace {
+std::shared_ptr<ConnectionDatagramDispatcher> dispatch_prefix(
+    DispatchFixture& fixture, const std::shared_ptr<DatagramInbox>& prefix,
+    std::size_t capacity = 16, std::shared_ptr<DispatchGate> hook = nullptr,
+    std::uint64_t affinity = 1)
+{
+    return ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, affinity, dispatch_peer,
+        {.capacity = capacity, .control_reserve = 1},
+        {.turn_budget = 2,
+            .after_pop_for_testing =
+                hook == nullptr ? nullptr : DispatchGate::block,
+            .after_pop_context_for_testing = hook},
+        prefix);
+}
+}
+
+TEST(connection_datagram_dispatcher_prefix_exceeds_new_ring_without_loss)
+{
+    DispatchFixture fixture;
+    auto gate = std::make_shared<DispatchGate>();
+    DispatchRelease release {gate};
+    REQUIRE_EQ(fixture.scheduler->submit(
+                   1, {.function = DispatchGate::block, .context = gate}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    gate->wait();
+    auto prefix = std::make_shared<DatagramInbox>(9);
+    for (std::uint32_t index = 0; index < 9; ++index) {
+        REQUIRE(prefix->push(dispatch_data(index).view(), dispatch_peer));
+    }
+    auto dispatcher = dispatch_prefix(fixture, prefix, 2);
+    REQUIRE(dispatcher != nullptr);
+    REQUIRE(!dispatcher->setup_prefix_complete());
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().queued, 0U);
+    DatagramEnvelope copy;
+    REQUIRE_EQ(prefix->pop_for(copy, std::chrono::milliseconds {0}),
+        InboxPopStatus::closed);
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   dispatch_data(9).view(), dispatch_peer),
+        DispatchStatus::accepted);
+    REQUIRE(!prefix->push(dispatch_data(10).view(), dispatch_peer));
+    gate->release();
+    for (std::uint32_t index = 0; index < 10; ++index) {
+        dispatch_receive(fixture.runtime, static_cast<std::byte>(index + 1));
+    }
+    fixture.scheduler->stop();
+    REQUIRE(dispatcher->setup_prefix_complete());
+    REQUIRE_EQ(dispatcher->snapshot().dispatched_datagrams, 10U);
+    REQUIRE_EQ(dispatcher->snapshot().maximum_turn_datagrams, 2U);
+    REQUIRE_EQ(dispatcher->snapshot().completed_turns, 5U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().data_rejections, 1U);
+}
+
+TEST(connection_datagram_dispatcher_prefix_gate_waits_for_protocol_effects)
+{
+    DispatchFixture fixture;
+    auto prefix = std::make_shared<DatagramInbox>(1);
+    REQUIRE(prefix->push(dispatch_data(0).view(), dispatch_peer));
+    auto gate = std::make_shared<DispatchGate>();
+    DispatchRelease release {gate};
+    auto dispatcher = dispatch_prefix(fixture, prefix, 16, gate);
+    REQUIRE(dispatcher != nullptr);
+    gate->wait();
+    REQUIRE(!dispatcher->setup_prefix_complete());
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    prefix->close();
+    REQUIRE(prefix->push(dispatch_data(1).view(), dispatch_peer));
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().queued, 1U);
+    auto wrong_peer = dispatch_peer;
+    ++wrong_peer.port;
+    REQUIRE(!prefix->push(dispatch_data(2).view(), wrong_peer));
+    gate->release();
+    dispatch_receive(fixture.runtime, std::byte {1});
+    dispatch_receive(fixture.runtime, std::byte {2});
+    fixture.scheduler->stop();
+    REQUIRE(dispatcher->setup_prefix_complete());
+}
+
+TEST(connection_datagram_dispatcher_prefix_close_blocks_popped_protocol_effects)
+{
+    DispatchFixture fixture;
+    auto prefix = std::make_shared<DatagramInbox>(2);
+    REQUIRE(prefix->push(dispatch_data(0).view(), dispatch_peer));
+    REQUIRE(prefix->push(dispatch_data(1).view(), dispatch_peer));
+    auto gate = std::make_shared<DispatchGate>();
+    DispatchRelease release {gate};
+    auto dispatcher = dispatch_prefix(fixture, prefix, 16, gate);
+    REQUIRE(dispatcher != nullptr);
+    gate->wait();
+    dispatcher->close();
+    REQUIRE(!prefix->push(dispatch_data(2).view(), dispatch_peer));
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE(dispatcher->quiescent());
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    REQUIRE_EQ(dispatcher->snapshot().dispatched_datagrams, 1U);
+}
+
+TEST(connection_datagram_dispatcher_prefix_factory_failure_preserves_setup)
+{
+    DispatchFixture fixture;
+    auto existing = fixture.create();
+    auto prefix = std::make_shared<DatagramInbox>(2);
+    REQUIRE(prefix->push(dispatch_data(0).view(), dispatch_peer));
+    REQUIRE(dispatch_prefix(fixture, prefix) == nullptr);
+    DatagramEnvelope copy;
+    REQUIRE_EQ(prefix->pop_for(copy, std::chrono::milliseconds {0}),
+        InboxPopStatus::received);
+    REQUIRE_EQ(copy.size, dispatch_data(0).size);
+    REQUIRE(prefix->push(dispatch_data(1).view(), dispatch_peer));
+    REQUIRE(fixture.runtime->accepts_datagrams());
+}
+
+TEST(connection_datagram_dispatcher_prefix_cannot_be_claimed_twice)
+{
+    DispatchFixture fixture;
+    auto gate = std::make_shared<DispatchGate>();
+    DispatchRelease release {gate};
+    REQUIRE_EQ(fixture.scheduler->submit(
+                   1, {.function = DispatchGate::block, .context = gate}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    gate->wait();
+    auto prefix = std::make_shared<DatagramInbox>(1);
+    REQUIRE(prefix->push(dispatch_data(0).view(), dispatch_peer));
+    auto dispatcher = dispatch_prefix(fixture, prefix, 2);
+    REQUIRE(dispatcher != nullptr);
+    REQUIRE(dispatch_prefix(fixture, prefix, 2, nullptr, 0) == nullptr);
+    gate->release();
+    dispatch_receive(fixture.runtime, std::byte {1});
+    fixture.scheduler->stop();
+    REQUIRE_EQ(dispatcher->snapshot().dispatched_datagrams, 1U);
+}
+
+TEST(connection_datagram_dispatcher_retired_prefix_has_no_direct_fallback)
+{
+    DispatchFixture fixture;
+    auto gate = std::make_shared<DispatchGate>();
+    DispatchRelease release {gate};
+    REQUIRE_EQ(fixture.scheduler->submit(
+                   1, {.function = DispatchGate::block, .context = gate}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    gate->wait();
+    auto prefix = std::make_shared<DatagramInbox>(1);
+    REQUIRE(prefix->push(dispatch_data(0).view(), dispatch_peer));
+    auto dispatcher = dispatch_prefix(fixture, prefix);
+    REQUIRE(dispatcher != nullptr);
+    dispatcher->retire();
+    REQUIRE(!prefix->push(dispatch_data(1).view(), dispatch_peer));
+    dispatcher.reset();
+    REQUIRE(!prefix->push(dispatch_data(2).view(), dispatch_peer));
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+}
+
+TEST(connection_datagram_dispatcher_releases_consumed_prefix_storage)
+{
+    DispatchFixture fixture;
+    auto gate = std::make_shared<DispatchGate>();
+    DispatchRelease release {gate};
+    REQUIRE_EQ(fixture.scheduler->submit(
+                   1, {.function = DispatchGate::block, .context = gate}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    gate->wait();
+    auto prefix = std::make_shared<DatagramInbox>(1);
+    const std::weak_ptr<DatagramInbox> retained = prefix;
+    REQUIRE(prefix->push(dispatch_data(0).view(), dispatch_peer));
+    auto dispatcher = dispatch_prefix(fixture, prefix);
+    REQUIRE(dispatcher != nullptr);
+    prefix.reset();
+    REQUIRE(!retained.expired());
+    gate->release();
+    dispatch_receive(fixture.runtime, std::byte {1});
+    fixture.scheduler->stop();
+    REQUIRE(retained.expired());
+    REQUIRE(dispatcher->setup_prefix_complete());
+}
+
+TEST(connection_datagram_dispatcher_prefix_precedes_new_shutdown)
+{
+    DispatchFixture fixture;
+    auto gate = std::make_shared<DispatchGate>();
+    DispatchRelease release {gate};
+    REQUIRE_EQ(fixture.scheduler->submit(
+                   1, {.function = DispatchGate::block, .context = gate}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    gate->wait();
+    auto prefix = std::make_shared<DatagramInbox>(1);
+    REQUIRE(prefix->push(dispatch_data(0).view(), dispatch_peer));
+    auto dispatcher = dispatch_prefix(fixture, prefix);
+    REQUIRE(dispatcher != nullptr);
+    MutablePacketView packet;
+    packet.kind = PacketKind::control;
+    packet.control.type = ControlType::shutdown;
+    packet.control.destination_socket_id = 700;
+    DispatchWire shutdown;
+    const auto encoded = encode_packet(packet, shutdown.bytes);
+    REQUIRE(encoded);
+    shutdown.size = encoded.bytes_written;
+    REQUIRE(prefix->push(shutdown.view(), dispatch_peer));
+    REQUIRE(prefix->push(dispatch_data(1).view(), dispatch_peer));
+    gate->release();
+    // Wait for the prefix effect before stopping; scheduler stop may discard
+    // a service that has not begun executing. The running two-copy turn then
+    // finishes SHUTDOWN before stop can return.
+    dispatch_receive(fixture.runtime, std::byte {1});
+    fixture.scheduler->stop();
+    REQUIRE(fixture.runtime->peer_closed());
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    REQUIRE_EQ(dispatcher->snapshot().dispatched_datagrams, 2U);
+    std::array<std::byte, 8> bytes {};
+    REQUIRE_EQ(fixture.runtime->receive_message(bytes, false, 0).status,
+        MessageIoStatus::peer_closed);
+}
+
+TEST(connection_datagram_dispatcher_closed_prefix_failure_releases_credits)
+{
+    DispatchFixture fixture;
+    auto prefix = std::make_shared<DatagramInbox>(1);
+    prefix->close();
+    REQUIRE(dispatch_prefix(fixture, prefix) == nullptr);
+    // The rejected factory releases both its service slot and ring credits.
+    auto dispatcher = fixture.create();
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   dispatch_data(0).view(), dispatch_peer),
+        DispatchStatus::accepted);
+    dispatch_receive(fixture.runtime, std::byte {1});
+}
