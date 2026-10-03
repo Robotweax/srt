@@ -204,6 +204,15 @@ must check the runtime close barrier before effects. Binding retirement is not
 callback quiescence. Public connection setup supplies no binding, so this
 internal facility does not change UDP routing or activate per-connection polling.
 
+Established handshake replay routing uses the immutable peer endpoint, peer
+socket identifier and setup replay response. Reading this identity does not
+acquire the runtime mutex. Registration snapshots it before taking the routing
+mutex and stores the optional key with the route; removal uses that stored key.
+The removed route's runtime remains pinned until after the routing mutex is
+released, so final runtime/service-context destruction runs outside that lock.
+These rules apply to route registration and removal; setup-inbox draining and
+shared-socket error propagation retain their separate serialization paths.
+
 ## Timing model
 
 Protocol code consumes integer monotonic microseconds supplied by its owner.

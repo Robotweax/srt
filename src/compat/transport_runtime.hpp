@@ -280,7 +280,8 @@ private:
 
     [[nodiscard]] bool register_connection_locked(
         std::uint32_t protocol_socket_id,
-        const std::shared_ptr<ConnectionRuntime>& runtime);
+        const std::shared_ptr<ConnectionRuntime>& runtime,
+        const std::optional<HandshakeRouteKey>& replay_key);
     void drain_setup_inbox_locked(
         const std::shared_ptr<DatagramInbox>& inbox,
         const std::shared_ptr<ConnectionRuntime>& runtime,
@@ -371,6 +372,7 @@ private:
     std::mutex routes_mutex_;
     struct ConnectionRoute {
         std::shared_ptr<ConnectionRuntime> runtime;
+        std::optional<HandshakeRouteKey> replay_key = std::nullopt;
         ConnectionRoute* previous = nullptr;
         ConnectionRoute* next = nullptr;
     };
@@ -701,8 +703,8 @@ private:
     std::condition_variable send_ready_;
     std::weak_ptr<DatagramChannel> channel_;
     const std::shared_ptr<ConnectionWorkBinding> work_binding_;
-    IpEndpoint peer_{};
-    std::uint32_t peer_socket_id_ = 0;
+    const IpEndpoint peer_ {};
+    const std::uint32_t peer_socket_id_ = 0;
     ReliabilitySession session_;
     PacketPacer pacer_;
     SocketOptions options_;
@@ -716,7 +718,7 @@ private:
     std::int64_t origin_epoch_microseconds_ = 0;
     std::uint64_t peer_idle_timeout_microseconds_ = 5'000'000;
     std::uint64_t last_peer_activity_microseconds_ = 0;
-    HandshakeAction handshake_replay_response_{};
+    const HandshakeAction handshake_replay_response_ {};
     std::uint32_t handshake_replay_peer_cookie_ = 0;
     std::shared_ptr<CryptoSession> crypto_;
     CryptoState receiver_key_state_ = CryptoState::unsecured;

@@ -548,10 +548,11 @@ bool DatagramChannel::register_connection(
     if (protocol_socket_id == 0U || runtime == nullptr) {
         return false;
     }
+    const auto replay_key = runtime->handshake_replay_key();
     try {
         std::unique_lock lock(routes_mutex_);
         const bool registered =
-            register_connection_locked(protocol_socket_id, runtime);
+            register_connection_locked(protocol_socket_id, runtime, replay_key);
         lock.unlock();
         if (registered) {
             notify_send_work();
@@ -566,11 +567,11 @@ bool DatagramChannel::register_connection(
 
 bool DatagramChannel::register_connection_locked(
     std::uint32_t protocol_socket_id,
-    const std::shared_ptr<ConnectionRuntime>& runtime)
+    const std::shared_ptr<ConnectionRuntime>& runtime,
+    const std::optional<HandshakeRouteKey>& replay_key)
 {
-    const auto replay_key = runtime->handshake_replay_key();
-    const auto inserted = routes_.emplace(
-        protocol_socket_id, ConnectionRoute {.runtime = runtime});
+    const auto inserted = routes_.emplace(protocol_socket_id,
+        ConnectionRoute {.runtime = runtime, .replay_key = replay_key});
     if (!inserted.second) {
         return false;
     }
@@ -642,13 +643,13 @@ bool DatagramChannel::promote_setup_connection(
         || runtime == nullptr) {
         return false;
     }
+    const auto replay_key = runtime->handshake_replay_key();
     try {
         std::unique_lock lock(routes_mutex_);
         const auto setup = setup_routes_.find(protocol_socket_id);
-        if (setup == setup_routes_.end()
-            || setup->second.inbox != inbox
+        if (setup == setup_routes_.end() || setup->second.inbox != inbox
             || !register_connection_locked(
-                protocol_socket_id, runtime)) {
+                protocol_socket_id, runtime, replay_key)) {
             return false;
         }
         const IpEndpoint peer = setup->second.peer;
@@ -670,26 +671,31 @@ bool DatagramChannel::promote_setup_connection(
 void DatagramChannel::unregister_connection(
     std::uint32_t protocol_socket_id) noexcept
 {
-    std::lock_guard lock(routes_mutex_);
-    const auto route = routes_.find(protocol_socket_id);
-    if (route == routes_.end()) {
-        return;
-    }
-    const auto replay_key = route->second.runtime->handshake_replay_key();
-    if (replay_key.has_value()) {
-        handshake_routes_.erase(*replay_key);
-    }
-    auto& node = route->second;
-    if (node.next == &node) {
-        next_poll_route_ = nullptr;
-    } else {
-        node.previous->next = node.next;
-        node.next->previous = node.previous;
-        if (next_poll_route_ == &node) {
-            next_poll_route_ = node.next;
+    // Keep the last runtime reference until after releasing routes_mutex_.
+    // Its destructor can retire a service and destroy a client-owned context.
+    std::shared_ptr<ConnectionRuntime> retired;
+    {
+        std::lock_guard lock(routes_mutex_);
+        const auto route = routes_.find(protocol_socket_id);
+        if (route == routes_.end()) {
+            return;
         }
+        if (route->second.replay_key.has_value()) {
+            handshake_routes_.erase(*route->second.replay_key);
+        }
+        auto& node = route->second;
+        if (node.next == &node) {
+            next_poll_route_ = nullptr;
+        } else {
+            node.previous->next = node.next;
+            node.next->previous = node.previous;
+            if (next_poll_route_ == &node) {
+                next_poll_route_ = node.next;
+            }
+        }
+        retired = std::move(node.runtime);
+        routes_.erase(route);
     }
-    routes_.erase(route);
 }
 
 bool DatagramChannel::replay_established_handshake(
@@ -4533,7 +4539,8 @@ ConnectionRuntime::buffer_packet_counts() const noexcept
 std::optional<HandshakeRouteKey>
 ConnectionRuntime::handshake_replay_key() const noexcept
 {
-    std::lock_guard lock(mutex_);
+    // Setup identity and replay response are immutable after construction.
+    // Reading this key does not enter mutable protocol state or take mutex_.
     if (handshake_replay_response_.kind
         != HandshakeActionKind::send) {
         return std::nullopt;
