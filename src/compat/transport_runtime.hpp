@@ -555,6 +555,9 @@ public:
     [[nodiscard]] bool broken() const noexcept;
     [[nodiscard]] bool peer_closed() const noexcept;
     [[nodiscard]] bool terminal() const noexcept;
+    // Advisory ingress snapshot; protocol methods still check local close.
+    // Matches the packet-handler local-close/broken admission checks.
+    [[nodiscard]] bool accepts_datagrams() const noexcept;
     [[nodiscard]] bool readable() noexcept;
     [[nodiscard]] std::optional<Clock::time_point>
     next_readable_deadline() noexcept;
