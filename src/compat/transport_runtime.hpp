@@ -474,7 +474,7 @@ public:
         // Internal opt-in, one binding per connection, fixed before publication.
         // Public setup leaves it null until transport admission/close gates
         // are integrated. Keep the legacy channel wake during that transition.
-        std::shared_ptr<ConnectionWorkBinding> work_binding;
+        std::shared_ptr<ConnectionWorkBinding> work_binding = nullptr;
     };
 
     explicit ConnectionRuntime(Configuration configuration);
