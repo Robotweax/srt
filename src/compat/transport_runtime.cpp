@@ -395,7 +395,16 @@ bool DatagramInbox::push(
     ReadyFunction handler = nullptr;
     std::shared_ptr<void> handler_context;
     {
-        std::lock_guard lock(mutex_);
+        std::unique_lock lock(mutex_);
+        if (promoted_runtime_ != nullptr) {
+            if (peer != promoted_peer_) {
+                return false;
+            }
+            lock.unlock();
+            finish_promotion();
+            deliver_promoted(datagram, peer);
+            return true;
+        }
         if (closed_ || size_ == entries_.size()) {
             return false;
         }
@@ -431,7 +440,7 @@ InboxPopStatus DatagramInbox::pop_for(
         })) {
         return InboxPopStatus::timeout;
     }
-    if (size_ == 0U) {
+    if (promoted_runtime_ != nullptr || size_ == 0U) {
         return InboxPopStatus::closed;
     }
     envelope = entries_[head_];
@@ -577,8 +586,8 @@ bool DatagramChannel::register_connection_locked(
     }
     if (replay_key.has_value()) {
         try {
-            if (!handshake_routes_.emplace(
-                    *replay_key, runtime).second) {
+            if (!handshake_routes_.emplace(*replay_key, &inserted.first->second)
+                    .second) {
                 routes_.erase(inserted.first);
                 return false;
             }
@@ -601,36 +610,53 @@ bool DatagramChannel::register_connection_locked(
     return true;
 }
 
-void DatagramChannel::drain_setup_inbox_locked(
-    const std::shared_ptr<DatagramInbox>& inbox,
-    const std::shared_ptr<ConnectionRuntime>& runtime,
-    IpEndpoint peer) noexcept
+void DatagramInbox::deliver_promoted(
+    std::span<const std::byte> datagram, IpEndpoint peer) noexcept
 {
-    DatagramEnvelope envelope;
-    while (inbox->pop_for(
-               envelope, std::chrono::milliseconds{0})
-        == InboxPopStatus::received) {
-        if (envelope.peer != peer) {
-            continue;
-        }
-        const auto decoded = decode_packet(
-            std::span{envelope.bytes}.first(envelope.size));
-        if (!decoded) {
-            continue;
-        }
-        if (decoded.packet.kind == PacketKind::control
-            && decoded.packet.control.type
-                == ControlType::handshake) {
-            const auto handshake = decode_handshake_datagram(
-                std::span{envelope.bytes}.first(envelope.size));
-            if (handshake) {
-                (void)runtime->process_handshake(
-                    handshake.message, peer);
-            }
-            continue;
-        }
-        runtime->process_packet(decoded.packet, peer);
+    if (peer != promoted_peer_) {
+        return;
     }
+    const auto decoded = decode_packet(datagram);
+    if (!decoded) {
+        return;
+    }
+    if (decoded.packet.kind == PacketKind::control
+        && decoded.packet.control.type == ControlType::handshake) {
+        const auto handshake = decode_handshake_datagram(datagram);
+        if (handshake) {
+            (void)promoted_runtime_->process_handshake(handshake.message, peer);
+        }
+        return;
+    }
+    promoted_runtime_->process_packet(decoded.packet, peer);
+}
+
+void DatagramInbox::drain_promotion_locked() noexcept
+{
+    for (;;) {
+        DatagramEnvelope envelope;
+        {
+            std::lock_guard lock(mutex_);
+            if (promoted_runtime_ == nullptr || size_ == 0U) {
+                return;
+            }
+            envelope = entries_[head_];
+            head_ = (head_ + 1U) % entries_.size();
+            --size_;
+        }
+        deliver_promoted(
+            std::span {envelope.bytes}.first(envelope.size), envelope.peer);
+    }
+}
+
+void DatagramInbox::finish_promotion() noexcept
+{
+    // Sealing prevents further queue insertion and setup consumption. Only
+    // this mutex serializes prefix draining; no route/inbox lock spans protocol
+    // processing. Late publishers retain this inbox's original runtime identity.
+    std::lock_guard lock(promotion_mutex_);
+    drain_promotion_locked();
+    ready_.notify_all();
 }
 
 bool DatagramChannel::promote_setup_connection(
@@ -647,17 +673,30 @@ bool DatagramChannel::promote_setup_connection(
     try {
         std::unique_lock lock(routes_mutex_);
         const auto setup = setup_routes_.find(protocol_socket_id);
-        if (setup == setup_routes_.end() || setup->second.inbox != inbox
+        if (setup == setup_routes_.end() || setup->second.inbox != inbox) {
+            return false;
+        }
+        std::unique_lock inbox_lock(inbox->mutex_);
+        if (inbox->promoted_runtime_ != nullptr
             || !register_connection_locked(
                 protocol_socket_id, runtime, replay_key)) {
             return false;
         }
         const IpEndpoint peer = setup->second.peer;
+        inbox->promoted_runtime_ = runtime;
+        inbox->promoted_peer_ = peer;
+        routes_.find(protocol_socket_id)->second.setup_prefix = inbox;
         setup_routes_.erase(setup);
-        // Keep the routing lock until the bounded setup queue has drained.
-        // This preserves wire arrival order: newer datagrams cannot enter the
-        // runtime before packets received immediately behind the handshake.
-        drain_setup_inbox_locked(inbox, runtime, peer);
+        inbox_lock.unlock();
+        lock.unlock();
+        inbox->finish_promotion();
+        lock.lock();
+        const auto established = routes_.find(protocol_socket_id);
+        if (established != routes_.end()
+            && established->second.runtime == runtime
+            && established->second.setup_prefix == inbox) {
+            established->second.setup_prefix.reset();
+        }
         lock.unlock();
         notify_send_work();
         return true;
@@ -702,6 +741,7 @@ bool DatagramChannel::replay_established_handshake(
     const HandshakeEnvelope& envelope) noexcept
 {
     std::shared_ptr<ConnectionRuntime> runtime;
+    std::shared_ptr<DatagramInbox> setup_prefix;
     {
         std::lock_guard lock(routes_mutex_);
         const auto replay = handshake_routes_.find({
@@ -709,8 +749,12 @@ bool DatagramChannel::replay_established_handshake(
             .peer_socket_id = envelope.message.packet.socket_id,
         });
         if (replay != handshake_routes_.end()) {
-            runtime = replay->second;
+            runtime = replay->second->runtime;
+            setup_prefix = replay->second->setup_prefix;
         }
+    }
+    if (setup_prefix != nullptr) {
+        setup_prefix->finish_promotion();
     }
     return runtime != nullptr
         && runtime->process_handshake(envelope.message, envelope.peer);
@@ -1155,6 +1199,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
             return;
         }
         std::shared_ptr<ConnectionRuntime> replay_runtime;
+        std::shared_ptr<DatagramInbox> replay_prefix;
         std::shared_ptr<DatagramInbox> setup_inbox;
         std::shared_ptr<HandshakeInbox> inbox;
         {
@@ -1164,7 +1209,8 @@ void DatagramChannel::dispatch(const PacketView& packet,
                 .peer_socket_id = decoded.message.packet.socket_id,
             });
             if (replay != handshake_routes_.end()) {
-                replay_runtime = replay->second;
+                replay_runtime = replay->second->runtime;
+                replay_prefix = replay->second->setup_prefix;
             }
             const std::uint32_t destination_socket_id =
                 packet.control.destination_socket_id;
@@ -1222,6 +1268,9 @@ void DatagramChannel::dispatch(const PacketView& packet,
             }
             inbox = listener_inbox_.lock();
         }
+        if (replay_prefix != nullptr) {
+            replay_prefix->finish_promotion();
+        }
         if (replay_runtime != nullptr
             && replay_runtime->process_handshake(
                 decoded.message, peer)) {
@@ -1246,6 +1295,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
         ? packet.data.destination_socket_id
         : packet.control.destination_socket_id;
     std::shared_ptr<ConnectionRuntime> runtime;
+    std::shared_ptr<DatagramInbox> setup_prefix;
     std::shared_ptr<DatagramInbox> setup_inbox;
     {
         std::lock_guard lock(routes_mutex_);
@@ -1253,6 +1303,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
             destination_socket_id);
         if (route != routes_.end()) {
             runtime = route->second.runtime;
+            setup_prefix = route->second.setup_prefix;
         } else {
             const auto setup = setup_routes_.find(
                 destination_socket_id);
@@ -1261,6 +1312,9 @@ void DatagramChannel::dispatch(const PacketView& packet,
                 setup_inbox = setup->second.inbox;
             }
         }
+    }
+    if (setup_prefix != nullptr) {
+        setup_prefix->finish_promotion();
     }
     if (runtime != nullptr) {
         runtime->process_packet(packet, peer);
@@ -1308,6 +1362,7 @@ RuntimePollResult DatagramChannel::poll_connections(
         visited < maximum_connection_polls && remaining_send_attempts != 0U;
         ++visited) {
         std::shared_ptr<ConnectionRuntime> runtime;
+        std::shared_ptr<DatagramInbox> setup_prefix;
         {
             std::lock_guard lock(routes_mutex_);
             if (next_poll_route_ == nullptr) {
@@ -1317,11 +1372,15 @@ RuntimePollResult DatagramChannel::poll_connections(
                 break;
             }
             runtime = next_poll_route_->runtime;
+            setup_prefix = next_poll_route_->setup_prefix;
             next_poll_route_ = next_poll_route_->next;
             --poll_round_remaining_;
         }
         // Keep the runtime alive through a concurrent unregister, without
         // holding the route table across protocol work or nonblocking sends.
+        if (setup_prefix != nullptr) {
+            setup_prefix->finish_promotion();
+        }
         const auto result = runtime->poll(remaining_send_attempts);
         poll_round_immediate_ |= result.immediate_work;
         const bool can_wait =

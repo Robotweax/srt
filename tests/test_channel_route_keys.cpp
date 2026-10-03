@@ -305,3 +305,196 @@ TEST(channel_route_key_last_runtime_retirement_releases_routes_mutex)
     }
     scheduler->stop();
 }
+
+namespace {
+
+struct SetupWire {
+    std::array<std::byte, 1500> bytes {};
+    std::size_t size = 0;
+    std::span<const std::byte> view() const
+    {
+        return std::span {bytes}.first(size);
+    }
+};
+
+SetupWire setup_data(std::uint32_t sequence, std::byte value)
+{
+    const std::array payload {value};
+    MutablePacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.sequence = SequenceNumber {sequence};
+    packet.data.destination_socket_id = 700;
+    packet.data.message_number = sequence - 993;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.payload = payload;
+    SetupWire wire;
+    const auto encoded = encode_packet(packet, wire.bytes);
+    REQUIRE(encoded);
+    wire.size = encoded.bytes_written;
+    return wire;
+}
+
+SetupWire setup_conclusion()
+{
+    HandshakeAction action;
+    action.kind = HandshakeActionKind::send;
+    action.packet.version = handshake_version_5;
+    action.packet.request = HandshakeRequest::conclusion;
+    action.packet.socket_id = 90;
+    action.packet.syn_cookie = 0x12345678;
+    SetupWire wire;
+    const auto encoded = encode_handshake_datagram(action, {}, 700, wire.bytes);
+    REQUIRE(encoded);
+    wire.size = encoded.bytes_written;
+    return wire;
+}
+
+void require_setup_message(
+    const std::shared_ptr<ConnectionRuntime>& runtime, std::byte value)
+{
+    std::array<std::byte, 8> output {};
+    const auto result = runtime->receive_message(output, false, 0);
+    REQUIRE_EQ(result.status, MessageIoStatus::success);
+    REQUIRE_EQ(result.bytes, 1U);
+    REQUIRE_EQ(output.front(), value);
+}
+
+} // namespace
+
+TEST(channel_setup_transfer_late_publisher_survives_setup_close_and_id_reuse)
+{
+    auto channel = route_channel();
+    auto runtime = route_runtime(channel);
+    auto inbox = std::make_shared<DatagramInbox>(1);
+    REQUIRE(channel->register_setup_inbox(700, route_peer, inbox));
+    REQUIRE(inbox->push(setup_data(1000, std::byte {1}).view(), route_peer));
+    // This reference models a dispatch which captured the setup route before
+    // promotion, but has not yet published its datagram.
+    auto captured = inbox;
+    REQUIRE(channel->promote_setup_connection(700, inbox, runtime));
+    inbox->close();
+    channel->unregister_connection(700);
+    auto replacement = route_runtime(channel, 91);
+    REQUIRE(channel->register_connection(700, replacement));
+    REQUIRE(captured->push(setup_data(1001, std::byte {2}).view(), route_peer));
+    require_setup_message(runtime, std::byte {1});
+    require_setup_message(runtime, std::byte {2});
+    std::array<std::byte, 8> output {};
+    REQUIRE_EQ(replacement->receive_message(output, false, 0).status,
+        MessageIoStatus::would_block);
+    runtime->close();
+    REQUIRE(captured->push(setup_data(1002, std::byte {3}).view(), route_peer));
+    REQUIRE_EQ(runtime->receive_message(output, false, 0).status,
+        MessageIoStatus::local_closed);
+}
+
+TEST(channel_setup_transfer_seals_prefix_without_holding_routes_during_protocol)
+{
+    auto channel = route_channel();
+    RoutePopGate gate;
+    channel->set_send_hook_for_testing(
+        [](std::span<const std::byte> bytes, IpEndpoint,
+            void* context) noexcept {
+            RoutePopGate::block(context);
+            return UdpIoResult {.bytes_transferred = bytes.size()};
+        },
+        &gate);
+    auto runtime = route_runtime(channel);
+    auto inbox = std::make_shared<DatagramInbox>(2);
+    REQUIRE(channel->register_setup_inbox(700, route_peer, inbox));
+    REQUIRE(inbox->push(setup_conclusion().view(), route_peer));
+    REQUIRE(inbox->push(setup_data(1000, std::byte {1}).view(), route_peer));
+    auto replacement = route_runtime(channel, 91);
+    std::future<bool> promotion;
+    std::future<bool> other_route;
+    std::future<bool> late;
+    RoutePopRelease release {gate};
+    promotion = std::async(std::launch::async, [=] {
+        return channel->promote_setup_connection(700, inbox, runtime);
+    });
+    gate.wait();
+    // The first sealed packet is in protocol processing. A setup consumer
+    // cannot steal the remaining prefix, even though it is still buffered.
+    DatagramEnvelope envelope;
+    REQUIRE_EQ(inbox->pop_for(envelope, std::chrono::milliseconds {0}),
+        InboxPopStatus::closed);
+    other_route = std::async(std::launch::async, [=] {
+        channel->unregister_connection(700);
+        return channel->register_connection(700, replacement)
+            && channel->register_setup_inbox(
+                701, route_peer, std::make_shared<DatagramInbox>(1));
+    });
+    REQUIRE_EQ(other_route.wait_for(std::chrono::seconds {2}),
+        std::future_status::ready);
+    REQUIRE(other_route.get());
+    late = std::async(std::launch::async, [=] {
+        return inbox->push(setup_data(1001, std::byte {2}).view(), route_peer);
+    });
+    gate.release();
+    REQUIRE(promotion.get());
+    REQUIRE(late.get());
+    require_setup_message(runtime, std::byte {1});
+    require_setup_message(runtime, std::byte {2});
+    std::array<std::byte, 8> output {};
+    REQUIRE_EQ(replacement->receive_message(output, false, 0).status,
+        MessageIoStatus::would_block);
+}
+
+TEST(channel_setup_transfer_failed_registration_keeps_original_queue)
+{
+    auto channel = route_channel();
+    auto inbox = std::make_shared<DatagramInbox>(1);
+    auto first = route_runtime(channel);
+    REQUIRE(channel->register_connection(701, first));
+    REQUIRE(channel->register_setup_inbox(700, route_peer, inbox));
+    REQUIRE(inbox->push(setup_data(1000, std::byte {1}).view(), route_peer));
+    REQUIRE(
+        !channel->promote_setup_connection(700, inbox, route_runtime(channel)));
+    DatagramEnvelope envelope;
+    REQUIRE_EQ(inbox->pop_for(envelope, std::chrono::milliseconds {0}),
+        InboxPopStatus::received);
+    REQUIRE(inbox->push(setup_data(1000, std::byte {2}).view(), route_peer));
+    channel->unregister_connection(701);
+    auto runtime = route_runtime(channel);
+    REQUIRE(channel->promote_setup_connection(700, inbox, runtime));
+    require_setup_message(runtime, std::byte {2});
+    // Reusing a sealed inbox for another setup cannot overwrite its identity.
+    REQUIRE(channel->register_setup_inbox(702, route_peer, inbox));
+    REQUIRE(!channel->promote_setup_connection(
+        702, inbox, route_runtime(channel, 91)));
+    REQUIRE(channel->register_connection(702, route_runtime(channel, 92)));
+}
+
+TEST(channel_setup_transfer_keeps_capacity_and_peer_validation)
+{
+    auto channel = route_channel();
+    auto inbox = std::make_shared<DatagramInbox>(3);
+    auto runtime = route_runtime(channel);
+    REQUIRE(channel->register_setup_inbox(700, route_peer, inbox));
+    const std::array invalid {std::byte {1}};
+    REQUIRE(inbox->push(invalid, route_peer));
+    const Ipv4Endpoint other_peer {.address = {192, 0, 2, 92}, .port = 14901};
+    REQUIRE(inbox->push(setup_data(1000, std::byte {9}).view(), other_peer));
+    REQUIRE(inbox->push(setup_data(1000, std::byte {1}).view(), route_peer));
+    REQUIRE(!inbox->push(setup_data(1001, std::byte {2}).view(), route_peer));
+    REQUIRE(channel->promote_setup_connection(700, inbox, runtime));
+    REQUIRE(!inbox->push(setup_data(1001, std::byte {9}).view(), other_peer));
+    REQUIRE(inbox->push(setup_data(1001, std::byte {2}).view(), route_peer));
+    require_setup_message(runtime, std::byte {1});
+    require_setup_message(runtime, std::byte {2});
+}
+
+TEST(channel_setup_transfer_pins_runtime_only_until_last_old_inbox_reference)
+{
+    auto channel = route_channel();
+    auto runtime = route_runtime(channel);
+    std::weak_ptr<ConnectionRuntime> weak = runtime;
+    auto inbox = std::make_shared<DatagramInbox>(1);
+    REQUIRE(channel->register_setup_inbox(700, route_peer, inbox));
+    REQUIRE(channel->promote_setup_connection(700, inbox, runtime));
+    channel->unregister_connection(700);
+    runtime.reset();
+    REQUIRE(!weak.expired());
+    inbox.reset();
+    REQUIRE(weak.expired());
+}

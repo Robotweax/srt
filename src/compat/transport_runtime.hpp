@@ -118,6 +118,15 @@ public:
     void close() noexcept;
 
 private:
+    friend class DatagramChannel;
+    // Complete the sealed setup prefix before established protocol work.
+    void finish_promotion() noexcept;
+    void drain_promotion_locked() noexcept;
+    void deliver_promoted(
+        std::span<const std::byte> datagram, IpEndpoint peer) noexcept;
+    std::mutex promotion_mutex_;
+    std::shared_ptr<ConnectionRuntime> promoted_runtime_;
+    IpEndpoint promoted_peer_ {};
     std::mutex mutex_;
     std::condition_variable ready_;
     std::vector<DatagramEnvelope> entries_;
@@ -282,10 +291,6 @@ private:
         std::uint32_t protocol_socket_id,
         const std::shared_ptr<ConnectionRuntime>& runtime,
         const std::optional<HandshakeRouteKey>& replay_key);
-    void drain_setup_inbox_locked(
-        const std::shared_ptr<DatagramInbox>& inbox,
-        const std::shared_ptr<ConnectionRuntime>& runtime,
-        IpEndpoint peer) noexcept;
     [[nodiscard]] bool start_with_affinity(
         std::shared_ptr<RuntimeScheduler> scheduler,
         std::optional<std::uint64_t> affinity) noexcept;
@@ -373,6 +378,7 @@ private:
     struct ConnectionRoute {
         std::shared_ptr<ConnectionRuntime> runtime;
         std::optional<HandshakeRouteKey> replay_key = std::nullopt;
+        std::shared_ptr<DatagramInbox> setup_prefix = nullptr;
         ConnectionRoute* previous = nullptr;
         ConnectionRoute* next = nullptr;
     };
@@ -384,9 +390,9 @@ private:
     bool poll_round_immediate_ = false;
     bool poll_round_receive_wait_safe_ = true;
     std::optional<std::chrono::steady_clock::time_point> poll_round_deadline_;
-    std::unordered_map<HandshakeRouteKey,
-        std::shared_ptr<ConnectionRuntime>,
-        HandshakeRouteKeyHash> handshake_routes_;
+    std::unordered_map<HandshakeRouteKey, ConnectionRoute*,
+        HandshakeRouteKeyHash>
+        handshake_routes_;
     struct SetupRoute {
         IpEndpoint peer{};
         std::shared_ptr<DatagramInbox> inbox;
