@@ -718,7 +718,7 @@ std::uint64_t ingress_idle_now(void* pointer) noexcept
     return static_cast<std::atomic<std::uint64_t>*>(pointer)->load();
 }
 void ingress_idle_runtime(SinkFixture& fixture, std::atomic<std::uint64_t>& now,
-    std::uint32_t timeout_ms = 5)
+    std::uint32_t timeout_ms = 5, SinkGate* receive_gate = nullptr)
 {
     SocketOptions options;
     REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
@@ -731,7 +731,10 @@ void ingress_idle_runtime(SinkFixture& fixture, std::atomic<std::uint64_t>& now,
             .origin = ConnectionRuntime::Clock::now(),
             .peer_idle_timeout_milliseconds = timeout_ms,
             .now_function = ingress_idle_now,
-            .now_context = &now});
+            .now_context = &now,
+            .receive_pop_hook_for_testing =
+                receive_gate == nullptr ? nullptr : SinkGate::block,
+            .receive_pop_context_for_testing = receive_gate});
 }
 }
 
@@ -1058,5 +1061,321 @@ TEST(
     REQUIRE(!dispatcher->inbox()->snapshot().in_flight);
     (void)fixture.channel->poll_connections_for_testing();
     REQUIRE(!fixture.runtime->accepts_datagrams());
+    fixture.channel->unregister_connection(700);
+}
+
+namespace {
+std::shared_ptr<DatagramInbox> prefix_deadline_promote(SinkFixture& fixture,
+    const std::shared_ptr<ConnectionDatagramDispatcher>& dispatcher,
+    const SinkWire& wire)
+{
+    auto prefix = std::make_shared<DatagramInbox>(2);
+    REQUIRE(prefix->push(wire.view(), sink_peer));
+    REQUIRE(fixture.channel->register_setup_inbox(700, sink_peer, prefix, 90));
+    REQUIRE(fixture.channel->promote_setup_connection(
+        700, prefix, fixture.runtime, dispatcher));
+    return prefix;
+}
+}
+
+TEST(channel_prefix_deadline_queued_prefix_has_fixed_terminal_bound)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher(2);
+    auto prefix = prefix_deadline_promote(fixture, dispatcher, sink_data(0));
+    now.store(5001);
+    const auto waiting = fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE_EQ(waiting.next_work_delay, std::chrono::microseconds {2000});
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    REQUIRE(!dispatcher->setup_prefix_complete());
+    REQUIRE(prefix->push(sink_data(1).view(), sink_peer));
+    REQUIRE(!prefix->push(sink_data(2).view(), sink_peer));
+    now.store(6001);
+    const auto last_wait = fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE_EQ(last_wait.next_work_delay, std::chrono::microseconds {1000});
+    now.store(7000);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    now.store(7001);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    REQUIRE(dispatcher->setup_prefix_complete());
+    REQUIRE(dispatcher->inbox()->snapshot().closed);
+    REQUIRE(!prefix->push(sink_data(3).view(), sink_peer));
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE_EQ(dispatcher->snapshot().dispatched_datagrams, 0U);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_prefix_deadline_popped_prefix_cannot_resume_after_timeout)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(2, gate);
+    auto prefix = prefix_deadline_promote(fixture, dispatcher, sink_data(0));
+    gate->wait();
+    REQUIRE(!dispatcher->setup_prefix_complete());
+    REQUIRE(prefix->push(sink_data(1).view(), sink_peer));
+    now.store(6001);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    now.store(7001);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    REQUIRE(dispatcher->inbox()->snapshot().closed);
+    REQUIRE(!dispatcher->quiescent());
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE(dispatcher->quiescent());
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_prefix_deadline_completed_data_restores_ordinary_polling)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(2, gate);
+    auto prefix = prefix_deadline_promote(fixture, dispatcher, sink_data(0));
+    gate->wait();
+    now.store(6001);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    gate->release();
+    sink_receive(fixture.runtime, std::byte {1});
+    fixture.scheduler->stop();
+    REQUIRE(dispatcher->setup_prefix_complete());
+    now.store(11001);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    // Completion uses real handler activity (6001); empty ingress gets no grace.
+    now.store(11002);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_prefix_deadline_ignored_prefix_does_not_fabricate_activity)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(2, gate);
+    auto prefix = prefix_deadline_promote(fixture, dispatcher, sink_replay());
+    gate->wait();
+    now.store(6001);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE(dispatcher->setup_prefix_complete());
+    REQUIRE_EQ(fixture.replay_responses.load(), 0U);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_prefix_deadline_grace_is_capped_at_one_peer_timeout)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now, 1);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    auto prefix = prefix_deadline_promote(fixture, dispatcher, sink_data(0));
+    now.store(1001);
+    const auto waiting = fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE_EQ(waiting.next_work_delay, std::chrono::microseconds {1000});
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    now.store(2001);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    REQUIRE(dispatcher->inbox()->snapshot().closed);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_prefix_deadline_close_retires_prefix_without_worker_progress)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    auto prefix = prefix_deadline_promote(fixture, dispatcher, sink_data(0));
+    fixture.runtime->close();
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(dispatcher->setup_prefix_complete());
+    REQUIRE(dispatcher->inbox()->snapshot().closed);
+    REQUIRE(!prefix->push(sink_data(1).view(), sink_peer));
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_prefix_deadline_preserves_already_delivered_receive_data)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    const auto existing = sink_data(0);
+    const auto decoded = decode_packet(existing.view());
+    REQUIRE(decoded);
+    fixture.runtime->process_packet(decoded.packet, sink_peer);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 1U);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    auto prefix = prefix_deadline_promote(fixture, dispatcher, sink_data(1));
+    now.store(8001);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 1U);
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 1U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_prefix_deadline_does_not_spend_another_routes_send_allowance)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    auto prefix = prefix_deadline_promote(fixture, dispatcher, sink_data(0));
+    auto other = fixture.make_runtime(91, nullptr, false);
+    REQUIRE(fixture.channel->register_connection(701, other));
+    std::atomic<std::size_t> attempts {0};
+    SinkNeutralSend clear_hook {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(
+        [](std::span<const std::byte> bytes, IpEndpoint,
+            void* pointer) noexcept {
+            static_cast<std::atomic<std::size_t>*>(pointer)->fetch_add(1);
+            return UdpIoResult {.bytes_transferred = bytes.size()};
+        },
+        &attempts);
+    const std::array<std::byte, 1316> payload {};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1, -1).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(other->queue_message(payload, 0, true, false, -1, -1).status,
+        MessageIoStatus::success);
+    now.store(6001);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE_EQ(attempts.load(), 1U);
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    REQUIRE(other->accepts_datagrams());
+    now.store(7001);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    REQUIRE(other->accepts_datagrams());
+    REQUIRE_EQ(attempts.load(), 1U);
+    fixture.channel->unregister_connection(700);
+    fixture.channel->unregister_connection(701);
+}
+
+TEST(channel_prefix_deadline_busy_runtime_is_retried_without_blocking_channel)
+{
+    std::atomic<std::uint64_t> now {1000};
+    auto receive_gate = std::make_shared<SinkGate>();
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now, 5, receive_gate.get());
+    auto pop_gate = std::make_shared<SinkGate>();
+    auto dispatcher = fixture.dispatcher(2, pop_gate);
+    const auto existing = sink_data(0);
+    fixture.runtime->process_packet(
+        decode_packet(existing.view()).packet, sink_peer);
+    std::future<MessageIoResult> receiver;
+    std::future<RuntimePollResult> poll;
+    SinkRelease receive_release {receive_gate};
+    SinkRelease pop_release {pop_gate};
+    auto prefix = prefix_deadline_promote(fixture, dispatcher, sink_data(1));
+    pop_gate->wait();
+    receiver = std::async(std::launch::async, [&] {
+        std::array<std::byte, 8> bytes {};
+        return fixture.runtime->receive_message(bytes, false, 0);
+    });
+    receive_gate->wait();
+    now.store(8001);
+    poll = std::async(std::launch::async, [&] {
+        return fixture.channel->poll_connections_for_testing(
+            ConnectionRuntime::Clock::time_point {});
+    });
+    REQUIRE_EQ(
+        poll.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    REQUIRE_EQ(poll.get().next_work_delay, std::chrono::microseconds {2000});
+    REQUIRE(!dispatcher->inbox()->snapshot().closed);
+    // No route lock is retained while the runtime mutex is busy.
+    REQUIRE(fixture.channel->register_setup_inbox(
+        701, sink_peer, std::make_shared<DatagramInbox>(1), 91));
+    receive_gate->release();
+    REQUIRE_EQ(receiver.get().status, MessageIoStatus::success);
+    // The next available check uses the original fixed deadline.
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    REQUIRE(dispatcher->inbox()->snapshot().closed);
+    pop_gate->release();
+    fixture.scheduler->stop();
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_prefix_deadline_zero_peer_timeout_gets_no_processing_grace)
+{
+    std::atomic<std::uint64_t> now {0};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now, 0);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    auto prefix = prefix_deadline_promote(fixture, dispatcher, sink_data(0));
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    now.store(1);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    REQUIRE(dispatcher->inbox()->snapshot().closed);
     fixture.channel->unregister_connection(700);
 }
