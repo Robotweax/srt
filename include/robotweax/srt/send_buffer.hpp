@@ -152,6 +152,10 @@ public:
     // lost DROPREQ.
     [[nodiscard]] std::size_t queue_retained_drop_requests() noexcept;
     [[nodiscard]] bool has_retained_drop() const noexcept;
+    // A no-ARQ owner can move this contiguous tombstone prefix into its
+    // bounded retirement state, freeing payload slots for fresh DATA.
+    [[nodiscard]] std::optional<SequenceRange> retired_prefix() const noexcept;
+    void release_retired_prefix() noexcept;
     // Conservative wakeup bound; acknowledgement can leave an earlier bound
     // until the next expiry scan refines it. Never later than an active TTL.
     [[nodiscard]] std::optional<std::uint64_t>

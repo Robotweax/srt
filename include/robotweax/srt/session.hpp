@@ -308,7 +308,8 @@ public:
     }
     [[nodiscard]] bool has_pending_send_work() noexcept
     {
-        return send_buffer_.has_pending_drop_request()
+        return sensor_prefix_repeat_remaining_ != 0U
+            || send_buffer_.has_pending_drop_request()
             || send_buffer_.has_pending_retransmission()
             || send_buffer_.size() > send_buffer_.packets_in_flight();
     }
@@ -418,7 +419,8 @@ public:
     next_sender_retirement_deadline() const noexcept;
     [[nodiscard]] bool has_pending_drop_requests() noexcept
     {
-        return send_buffer_.has_pending_drop_request();
+        return sensor_prefix_repeat_remaining_ != 0U
+            || send_buffer_.has_pending_drop_request();
     }
     void note_receive_buffer_released(
         std::uint64_t now_microseconds) noexcept
@@ -500,6 +502,7 @@ private:
     void append_pending_loss_report(ReliabilityActions& actions,
         bool action_slot_available, std::uint64_t now_microseconds) noexcept;
     void append_pending_drop_requests(ReliabilityActions& actions) noexcept;
+    void compact_sensor_retired_prefix() noexcept;
     void update_loss_timer(
         std::uint64_t now_microseconds) noexcept;
     void observe_tsbpd_drift(PacketTimestamp timestamp,
@@ -557,6 +560,11 @@ private:
     bool drift_tracer_enabled_ = true;
     PacketFilterPolicy packet_filter_policy_{};
     std::uint64_t next_sensor_retirement_repeat_microseconds_ = 0;
+    // Expired contiguous prefix detached from the payload ring. Constant
+    // storage, bounded sequence distance, single-sequence wire retirements.
+    std::optional<SequenceRange> sensor_retired_prefix_;
+    SequenceNumber sensor_prefix_repeat_cursor_ {};
+    std::size_t sensor_prefix_repeat_remaining_ = 0;
     std::uint64_t drift_correction_count_ = 0;
     std::int64_t total_drift_correction_microseconds_ = 0;
     std::uint32_t peer_socket_id_ = 0;
