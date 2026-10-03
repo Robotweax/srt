@@ -25,7 +25,7 @@ struct ConnectionWorkBinding::State {
         }
         // A hint published while this callback runs remains pending and wakes
         // another turn. No client code executes under the publication mutex.
-        if (hints.send || hints.receive_release) {
+        if (hints.send || hints.receive_release || hints.datagrams) {
             state.function(state.context.get(), hints);
         }
     }
@@ -83,11 +83,13 @@ RuntimeScheduler::SubmitStatus ConnectionWorkBinding::notify(
         return RuntimeScheduler::SubmitStatus::stopped;
     }
     std::lock_guard lock(state_->mutex);
-    if (state_->retired || (!hints.send && !hints.receive_release)) {
+    if (state_->retired
+        || (!hints.send && !hints.receive_release && !hints.datagrams)) {
         return RuntimeScheduler::SubmitStatus::invalid;
     }
     state_->pending.send |= hints.send;
     state_->pending.receive_release |= hints.receive_release;
+    state_->pending.datagrams |= hints.datagrams;
     // Serialize notification with retirement. The scheduler never calls the
     // service inline and releases its shard lock before client dispatch.
     const auto status = scheduler->notify_service(token_);

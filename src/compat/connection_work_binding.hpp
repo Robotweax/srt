@@ -12,6 +12,7 @@ namespace robotweax::srt::compat {
 struct ConnectionWorkHints {
     bool send = false;
     bool receive_release = false;
+    bool datagrams = false;
 };
 
 class ConnectionWorkBinding {

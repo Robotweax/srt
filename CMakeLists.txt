@@ -114,6 +114,7 @@ add_library(robotweax_srt
     src/compat/socket_registry.cpp
     src/compat/statistics.cpp
     src/compat/srt_api.cpp
+    src/compat/connection_datagram_inbox.cpp
     src/compat/connection_work_binding.cpp
     src/compat/transport_runtime.cpp
     src/control.cpp
@@ -354,6 +355,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_rendezvous.cpp
         tests/test_socket_readiness.cpp
         tests/test_channel_route_keys.cpp
+        tests/test_connection_datagram_inbox.cpp
         tests/test_connection_work_binding.cpp
         tests/test_runtime_scheduler.cpp
         tests/test_connect_callback_executor.cpp
@@ -416,6 +418,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_listener_connection_setup_sources.cpp
         tests/test_listener_handshake_sources.cpp
         tests/test_channel_route_keys.cpp
+        tests/test_connection_datagram_inbox.cpp
         tests/test_connection_work_binding.cpp
         tests/test_runtime_scheduler.cpp
         tests/test_runtime_work_executor.cpp)
