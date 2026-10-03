@@ -314,6 +314,34 @@ ingress and runtime deadlines, complete cleanup quiescence and public transport
 activation require separate qualification; the route API alone does not claim
 exclusive shard ownership or a total application/wire order.
 
+A dispatcher-bound inbox also fences publication through the target runtime
+mutex, including publication through captured inbox handles. The bounded owned
+copy and pure service notification complete before that mutex is released;
+injected queue clocks are sampled outside it. Publication and channel timeout
+checks therefore have a defined admission boundary. Generic inboxes keep their
+existing admission path. A bound inbox permits only one popped copy at a time
+and records it as in-flight until its protocol handler returns. Close discards
+queued copies but retains this record; protocol completion clears it even after
+close. This record is not callback quiescence, and bound inbox consumption belongs
+to the dispatcher.
+
+After the sealed setup prefix has completed, channel polling for an optional
+route with queued or in-flight ingress grants peer-idle processing grace of at most its existing idle fallback interval
+(default 2 ms), capped at one configured peer-idle timeout. The limit is measured
+from the last real protocol activity, not from successive polls or publications.
+New, rejected or ignored traffic does not move that limit; an empty inbox loses
+the grace immediately. Once the fixed limit expires, timeout remains terminal
+even if ingress is still pending. A stalled service therefore cannot postpone
+peer timeout indefinitely. Only protocol handlers update peer activity.
+
+This grace applies to peer idle alone. Polling continues receiver delivery,
+control deadlines, pacing and outgoing sends with the original shared send
+allowance. Its idle wait hint reflects the fixed grace deadline instead of
+rearming a past peer deadline. Direct runtime polling and default routes without
+an ingress context preserve their existing timeout behavior. More general
+causal ordering between inbox cohorts and control/delivery deadlines, full cleanup
+quiescence and stalled setup-prefix handling remain separate integration gates.
+
 Established handshake replay routing uses the immutable peer endpoint, peer
 socket identifier and setup replay response. Reading this identity does not
 acquire the runtime mutex. Registration snapshots it before taking the routing

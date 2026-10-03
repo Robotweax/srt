@@ -8,6 +8,7 @@
 #include "robotweax/srt/udp.hpp"
 #include "compat/runtime_scheduler.hpp"
 #include "compat/connection_work_binding.hpp"
+#include "compat/connection_datagram_inbox.hpp"
 #include "compat/readiness.hpp"
 #include "compat/socket_readiness.hpp"
 #include "compat/statistics.hpp"
@@ -446,6 +447,7 @@ private:
 
 class ConnectionRuntime {
     friend class ConnectionDatagramDispatcher;
+    friend class ConnectionDatagramInbox;
 
 public:
     [[nodiscard]] const std::shared_ptr<ReadinessSource>&
@@ -565,8 +567,9 @@ public:
     [[nodiscard]] bool accepts_handshake_replay(
         const HandshakeMessage& message, IpEndpoint peer) const noexcept;
     [[nodiscard]] RuntimePollResult poll() noexcept;
-    [[nodiscard]] RuntimePollResult poll(
-        std::size_t& remaining_send_attempts) noexcept;
+    [[nodiscard]] RuntimePollResult poll(std::size_t& remaining_send_attempts,
+        const ConnectionDatagramInbox* ingress = nullptr,
+        std::uint64_t maximum_ingress_wait_microseconds = 0) noexcept;
     void apply_options(const SocketOptions& options) noexcept;
     void mark_broken(int system_error) noexcept;
     [[nodiscard]] bool report_peer_error(
@@ -672,7 +675,13 @@ private:
         std::int32_t ttl_milliseconds) noexcept;
     [[nodiscard]] MessageIoResult try_receive_message_locked(
         std::span<std::byte> destination, std::uint64_t now) noexcept;
-    [[nodiscard]] RuntimePollResult poll_locked() noexcept;
+    [[nodiscard]] RuntimePollResult poll_locked(
+        const ConnectionDatagramInbox* ingress = nullptr,
+        std::uint64_t maximum_ingress_wait_microseconds = 0) noexcept;
+    [[nodiscard]] ConnectionDatagramInbox::Status admit_datagram(
+        ConnectionDatagramInbox& inbox, ConnectionDatagramInbox::Token token,
+        std::span<const std::byte> bytes, IpEndpoint peer,
+        std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] std::uint64_t now_microseconds() const noexcept;
     [[nodiscard]] PacketTimestamp packet_timestamp(
         std::int64_t source_time_microseconds) const noexcept;
