@@ -179,6 +179,13 @@ successful attempt has unlocked. A zero configured timeout still permits an
 immediately available commit; nonblocking pressure and blocking timeout remain
 distinct results. This separation does not introduce an asynchronous application
 gateway or move application state onto a scheduler shard.
+Application capacity and scheduler service capacity are separate: a reserved
+service wake admits a future turn, not a completed send or receive. The current
+message adapters do not wait for such a turn. They still contend on the runtime
+mutex, and a nonblocking operation can wait for that serialization lock; only
+its wait for application buffer capacity is disabled. Synthetic paused-service
+checks freeze the worker before it takes a runtime lock. They do not qualify
+transport affinity or callbacks that reenter a runtime whose lock is held.
 
 ## Timing model
 
