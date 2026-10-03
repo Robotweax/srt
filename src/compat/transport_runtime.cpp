@@ -1621,61 +1621,16 @@ MessageIoResult ConnectionRuntime::queue_message(
         ? Clock::now() + std::chrono::milliseconds{timeout_milliseconds}
         : Clock::time_point{};
     for (;;) {
-        if (locally_closed_) {
-            return {.status = MessageIoStatus::local_closed};
-        }
-        if (peer_closed_) {
-            return {.status = MessageIoStatus::peer_closed};
-        }
-        if (broken_) {
-            return {
-                .status = MessageIoStatus::broken,
-                .system_error = system_error_,
-            };
-        }
-        if (peer_error_pending_) {
-            peer_error_pending_ = false;
-            if (session_.send_buffer().available() == 0U) {
-                note_not_ready(SRT_EPOLL_OUT);
-            }
-            notify_readiness();
-            return {.status = MessageIoStatus::peer_error};
-        }
-
-        const std::uint64_t now = now_microseconds();
-        statistics_.update_send_duration(
-            now, session_.send_buffer().size() != 0U);
-        const std::uint64_t expiration_microseconds =
-            message_expiration_microseconds(
-                now, source_time_microseconds,
-                origin_epoch_microseconds_, ttl_milliseconds);
-        const std::uint32_t message_number =
-            session_.next_message_number();
-        const SequenceNumber first_sequence =
-            session_.send_buffer().next_sequence();
-        const Error queued = session_.queue_message(message,
-            packet_timestamp(source_time_microseconds), in_order,
-            now, expiration_microseconds);
-        if (queued == Error::none) {
-            statistics_.update_send_duration(now, true);
-            sample_sender_buffer_statistics(now);
-            if (session_.send_buffer().available() == 0U) {
-                note_not_ready(SRT_EPOLL_OUT);
-            }
-            const MessageIoResult result {
-                .status = MessageIoStatus::success,
-                .bytes = message.size(),
-                .message_number = message_number,
-                .first_sequence = first_sequence,
-                .next_sequence = session_.send_buffer().next_sequence(),
-            };
+        const auto result = try_queue_message_locked(
+            message, source_time_microseconds, in_order, ttl_milliseconds);
+        if (result.status == MessageIoStatus::success) {
             lock.unlock();
             notify_channel_send_work();
             notify_readiness();
             return result;
         }
-        if (queued != Error::buffer_too_small) {
-            return {.status = MessageIoStatus::invalid_state};
+        if (result.status != MessageIoStatus::would_block) {
+            return result;
         }
         if (!blocking) {
             note_not_ready(SRT_EPOLL_OUT);
@@ -1691,6 +1646,63 @@ MessageIoResult ConnectionRuntime::queue_message(
             send_ready_.wait(lock);
         }
     }
+}
+
+MessageIoResult ConnectionRuntime::try_queue_message_locked(
+    std::span<const std::byte> message, std::int64_t source_time_microseconds,
+    bool in_order, std::int32_t ttl_milliseconds) noexcept
+{
+    if (locally_closed_) {
+        return {.status = MessageIoStatus::local_closed};
+    }
+    if (peer_closed_) {
+        return {.status = MessageIoStatus::peer_closed};
+    }
+    if (broken_) {
+        return {
+            .status = MessageIoStatus::broken,
+            .system_error = system_error_,
+        };
+    }
+    if (peer_error_pending_) {
+        peer_error_pending_ = false;
+        if (session_.send_buffer().available() == 0U) {
+            note_not_ready(SRT_EPOLL_OUT);
+        }
+        notify_readiness();
+        return {.status = MessageIoStatus::peer_error};
+    }
+
+    const std::uint64_t now = now_microseconds();
+    statistics_.update_send_duration(now, session_.send_buffer().size() != 0U);
+    const std::uint64_t expiration_microseconds =
+        message_expiration_microseconds(now, source_time_microseconds,
+            origin_epoch_microseconds_, ttl_milliseconds);
+    const std::uint32_t message_number = session_.next_message_number();
+    const SequenceNumber first_sequence =
+        session_.send_buffer().next_sequence();
+    const Error queued = session_.queue_message(message,
+        packet_timestamp(source_time_microseconds), in_order, now,
+        expiration_microseconds);
+    if (queued == Error::none) {
+        statistics_.update_send_duration(now, true);
+        sample_sender_buffer_statistics(now);
+        if (session_.send_buffer().available() == 0U) {
+            note_not_ready(SRT_EPOLL_OUT);
+        }
+        const MessageIoResult result {
+            .status = MessageIoStatus::success,
+            .bytes = message.size(),
+            .message_number = message_number,
+            .first_sequence = first_sequence,
+            .next_sequence = session_.send_buffer().next_sequence(),
+        };
+        return result;
+    }
+    if (queued != Error::buffer_too_small) {
+        return {.status = MessageIoStatus::invalid_state};
+    }
+    return {.status = MessageIoStatus::would_block};
 }
 
 MessageIoResult ConnectionRuntime::queue_group_message(
@@ -1803,67 +1815,15 @@ MessageIoResult ConnectionRuntime::receive_message(
         : Clock::time_point{};
     for (;;) {
         const std::uint64_t now = now_microseconds();
-        if (!service_receiver_tlpktdrop_locked(now)) {
-            return {
-                .status = MessageIoStatus::broken,
-                .system_error = system_error_,
-            };
-        }
-        const auto received =
-            session_.pop_message_at(destination, now);
-        if (received) {
-            if (receive_pop_hook_for_testing_ != nullptr) {
-                receive_pop_hook_for_testing_(receive_pop_context_for_testing_);
-            }
-            session_.note_receive_buffer_released(now);
-            sample_receiver_buffer_statistics(now);
-            if (!session_.data_ready_at(now)) {
-                readiness_source_->note_not_ready(SRT_EPOLL_IN);
-            }
-            std::int64_t source_time = 0;
-            const auto delivery = received.delivery_time_microseconds;
-            if (delivery.has_value()
-                && *delivery <= static_cast<std::uint64_t>(
-                    std::numeric_limits<std::int64_t>::max())) {
-                source_time = origin_epoch_microseconds_
-                    + static_cast<std::int64_t>(*delivery);
-            }
-            const MessageIoResult result {
-                .status = MessageIoStatus::success,
-                .bytes = received.bytes_written,
-                .message_number = received.message_number,
-                .first_sequence = received.first_sequence,
-                .next_sequence =
-                    session_.receive_buffer().first_stored_sequence(),
-                .source_time_microseconds = source_time,
-            };
+        const auto result = try_receive_message_locked(destination, now);
+        if (result.status == MessageIoStatus::success) {
             lock.unlock();
             notify_channel_receive_release();
             notify_readiness();
             return result;
         }
-        if (received.error == Error::buffer_too_small) {
-            return {.status = MessageIoStatus::buffer_too_small};
-        }
-        if (locally_closed_) {
-            return {.status = MessageIoStatus::local_closed};
-        }
-        // SHUTDOWN ends the peer's send side, but complete messages already
-        // in the receive buffer still have to pass through the TSBPD gate.
-        const bool delivery_pending =
-            session_.receive_buffer().has_complete_message()
-            || session_.next_receive_delivery_time().has_value();
-        if (peer_closed_ && !delivery_pending) {
-            return {.status = MessageIoStatus::peer_closed};
-        }
-        if (broken_ && !peer_closed_) {
-            return {
-                .status = MessageIoStatus::broken,
-                .system_error = system_error_,
-            };
-        }
-        if (received.error != Error::would_block) {
-            return {.status = MessageIoStatus::invalid_state};
+        if (result.status != MessageIoStatus::would_block) {
+            return result;
         }
         if (!blocking) {
             return {.status = MessageIoStatus::would_block};
@@ -1884,6 +1844,69 @@ MessageIoResult ConnectionRuntime::receive_message(
             receive_ready_.wait(lock);
         }
     }
+}
+
+MessageIoResult ConnectionRuntime::try_receive_message_locked(
+    std::span<std::byte> destination, std::uint64_t now) noexcept
+{
+    if (!service_receiver_tlpktdrop_locked(now)) {
+        return {
+            .status = MessageIoStatus::broken,
+            .system_error = system_error_,
+        };
+    }
+    const auto received = session_.pop_message_at(destination, now);
+    if (received) {
+        if (receive_pop_hook_for_testing_ != nullptr) {
+            receive_pop_hook_for_testing_(receive_pop_context_for_testing_);
+        }
+        session_.note_receive_buffer_released(now);
+        sample_receiver_buffer_statistics(now);
+        if (!session_.data_ready_at(now)) {
+            readiness_source_->note_not_ready(SRT_EPOLL_IN);
+        }
+        std::int64_t source_time = 0;
+        const auto delivery = received.delivery_time_microseconds;
+        if (delivery.has_value()
+            && *delivery <= static_cast<std::uint64_t>(
+                   std::numeric_limits<std::int64_t>::max())) {
+            source_time = origin_epoch_microseconds_
+                + static_cast<std::int64_t>(*delivery);
+        }
+        const MessageIoResult result {
+            .status = MessageIoStatus::success,
+            .bytes = received.bytes_written,
+            .message_number = received.message_number,
+            .first_sequence = received.first_sequence,
+            .next_sequence = session_.receive_buffer().first_stored_sequence(),
+            .source_time_microseconds = source_time,
+        };
+        return result;
+    }
+    if (received.error == Error::buffer_too_small) {
+        return {.status = MessageIoStatus::buffer_too_small};
+    }
+    if (locally_closed_) {
+        return {.status = MessageIoStatus::local_closed};
+    }
+    // SHUTDOWN ends the peer's send side, but complete messages already
+    // in the receive buffer still have to pass through the TSBPD gate.
+    const bool delivery_pending =
+        session_.receive_buffer().has_complete_message()
+        || session_.next_receive_delivery_time().has_value();
+    if (peer_closed_ && !delivery_pending) {
+        return {.status = MessageIoStatus::peer_closed};
+    }
+    if (broken_ && !peer_closed_) {
+        return {
+            .status = MessageIoStatus::broken,
+            .system_error = system_error_,
+        };
+    }
+    if (received.error != Error::would_block) {
+        return {.status = MessageIoStatus::invalid_state};
+    }
+    return {.status = MessageIoStatus::would_block};
 }
 
 std::optional<SequenceNumber>
