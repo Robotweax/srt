@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 namespace robotweax::srt::compat {
@@ -14,6 +15,36 @@ constexpr std::size_t invalid_timer_position =
     std::numeric_limits<std::size_t>::max();
 
 thread_local bool scheduler_worker_thread = false;
+
+// Tokens must not alias a slot in a later scheduler instance. Scope exhaustion
+// fails service-enabled startup instead of wrapping into a previous lifetime.
+std::atomic<std::uint64_t> next_service_scope {0};
+std::uint64_t acquire_service_scope() noexcept
+{
+    auto previous = next_service_scope.load(std::memory_order_relaxed);
+    while (previous != (std::numeric_limits<std::uint64_t>::max)()) {
+        if (next_service_scope.compare_exchange_weak(
+                previous, previous + 1U, std::memory_order_relaxed))
+            return previous + 1U;
+    }
+    return 0;
+}
+
+struct SchedulerStopScope;
+thread_local SchedulerStopScope* active_stop = nullptr;
+struct SchedulerStopScope {
+    RuntimeScheduler* owner;
+    SchedulerStopScope* previous = active_stop;
+    explicit SchedulerStopScope(RuntimeScheduler* scheduler) noexcept
+        : owner(scheduler)
+    {
+        active_stop = this;
+    }
+    ~SchedulerStopScope()
+    {
+        active_stop = previous;
+    }
+};
 
 struct SchedulerWorkerScope {
     bool previous = scheduler_worker_thread;
@@ -30,10 +61,11 @@ struct SchedulerWorkerScope {
 
 } // namespace
 
-RuntimeScheduler::Shard::Shard(
-    std::size_t queue_capacity, std::size_t timer_capacity)
+RuntimeScheduler::Shard::Shard(std::size_t queue_capacity,
+    std::size_t timer_capacity, std::size_t service_capacity)
     : entries(queue_capacity)
     , timer_slots(timer_capacity)
+    , service_slots(service_capacity)
 {
     timer_heap.reserve(timer_capacity);
     free_timer_slots.reserve(timer_capacity);
@@ -151,11 +183,22 @@ RuntimeScheduler::RuntimeScheduler(Configuration configuration)
         configuration_.timer_capacity_per_shard =
             configuration_.queue_capacity_per_shard;
     }
+    if (configuration_.service_capacity_per_shard != 0U) {
+        const auto maximum = (std::numeric_limits<std::size_t>::max)();
+        if (configuration_.shard_count
+                > maximum / configuration_.service_capacity_per_shard
+            || configuration_.shard_count
+                    * configuration_.service_capacity_per_shard
+                > maximum / sizeof(Shard::ServiceSlot))
+            throw std::length_error {"scheduler service storage size overflow"};
+        service_scope_ = acquire_service_scope();
+    }
     shards_.reserve(configuration_.shard_count);
     for (std::size_t index = 0; index < configuration_.shard_count; ++index) {
         shards_.push_back(
             std::make_unique<Shard>(configuration_.queue_capacity_per_shard,
-                configuration_.timer_capacity_per_shard));
+                configuration_.timer_capacity_per_shard,
+                configuration_.service_capacity_per_shard));
     }
 }
 
@@ -171,7 +214,9 @@ bool RuntimeScheduler::start() noexcept
         return true;
     }
     if (start_attempted_ || shards_.empty()
-        || configuration_.queue_capacity_per_shard == 0U) {
+        || configuration_.queue_capacity_per_shard == 0U
+        || (configuration_.service_capacity_per_shard != 0U
+            && service_scope_ == 0U)) {
         return false;
     }
     start_attempted_ = true;
@@ -331,17 +376,181 @@ RuntimeScheduler::acquire_socket_readiness() noexcept
     return socket_readiness_;
 }
 
+RuntimeScheduler::ServiceResult RuntimeScheduler::reserve_service(
+    std::uint64_t affinity, Task task) noexcept
+{
+    if (task.function == nullptr)
+        return {.status = SubmitStatus::invalid};
+    if (!accepting_.load(std::memory_order_acquire))
+        return {.status = SubmitStatus::stopped};
+    const auto shard_index = shard_for(affinity);
+    auto& shard = *shards_[shard_index];
+    std::lock_guard lock(shard.mutex);
+    if (!accepting_.load(std::memory_order_relaxed) || shard.stop_requested)
+        return {.status = SubmitStatus::stopped};
+    for (std::size_t index = 0; index < shard.service_slots.size(); ++index) {
+        auto& slot = shard.service_slots[index];
+        if (slot.reserved || slot.executing
+            || slot.generation == (std::numeric_limits<std::uint64_t>::max)())
+            continue;
+        slot.task = std::move(task);
+        ++slot.generation;
+        slot.reserved = true;
+        return {.status = SubmitStatus::accepted,
+            .token = {service_scope_, shard_index, index, slot.generation}};
+    }
+    return {.status = SubmitStatus::full};
+}
+
+RuntimeScheduler::SubmitStatus RuntimeScheduler::notify_service(
+    ServiceToken token) noexcept
+{
+    if (!token.valid() || token.scope != service_scope_
+        || token.shard >= shards_.size())
+        return SubmitStatus::invalid;
+    if (!accepting_.load(std::memory_order_acquire))
+        return SubmitStatus::stopped;
+    auto& shard = *shards_[token.shard];
+    {
+        std::lock_guard lock(shard.mutex);
+        if (!accepting_.load(std::memory_order_relaxed) || shard.stop_requested)
+            return SubmitStatus::stopped;
+        if (token.slot >= shard.service_slots.size())
+            return SubmitStatus::invalid;
+        auto& slot = shard.service_slots[token.slot];
+        if (!slot.reserved || slot.generation != token.generation)
+            return SubmitStatus::invalid;
+        service_wakes_.fetch_add(1U, std::memory_order_relaxed);
+        if (slot.pending)
+            service_coalesced_.fetch_add(1U, std::memory_order_relaxed);
+        else {
+            slot.pending = true;
+            ++shard.service_pending;
+        }
+    }
+    shard.ready.notify_one();
+    return SubmitStatus::accepted;
+}
+
+RuntimeScheduler::SubmitStatus RuntimeScheduler::schedule_service_at(
+    ServiceToken token, std::chrono::steady_clock::time_point deadline) noexcept
+{
+    if (!token.valid() || token.scope != service_scope_
+        || token.shard >= shards_.size())
+        return SubmitStatus::invalid;
+    if (!accepting_.load(std::memory_order_acquire))
+        return SubmitStatus::stopped;
+    auto& shard = *shards_[token.shard];
+    {
+        std::lock_guard lock(shard.mutex);
+        if (!accepting_.load(std::memory_order_relaxed) || shard.stop_requested)
+            return SubmitStatus::stopped;
+        if (token.slot >= shard.service_slots.size())
+            return SubmitStatus::invalid;
+        auto& slot = shard.service_slots[token.slot];
+        if (!slot.reserved || slot.generation != token.generation)
+            return SubmitStatus::invalid;
+        slot.deadline = deadline;
+    }
+    shard.ready.notify_one();
+    return SubmitStatus::accepted;
+}
+
+bool RuntimeScheduler::cancel_service_timer(ServiceToken token) noexcept
+{
+    if (!token.valid() || token.scope != service_scope_
+        || token.shard >= shards_.size())
+        return false;
+    auto& shard = *shards_[token.shard];
+    std::lock_guard lock(shard.mutex);
+    if (token.slot >= shard.service_slots.size())
+        return false;
+    auto& slot = shard.service_slots[token.slot];
+    if (!slot.reserved || slot.generation != token.generation
+        || !slot.deadline.has_value())
+        return false;
+    slot.deadline.reset();
+    // Cancellation cannot advance a deadline; an early clock wake is harmless.
+    return true;
+}
+
+bool RuntimeScheduler::release_service(ServiceToken token) noexcept
+{
+    if (!token.valid() || token.scope != service_scope_
+        || token.shard >= shards_.size())
+        return false;
+    auto& shard = *shards_[token.shard];
+    Task retired;
+    {
+        std::lock_guard lock(shard.mutex);
+        if (token.slot >= shard.service_slots.size())
+            return false;
+        auto& slot = shard.service_slots[token.slot];
+        if (!slot.reserved || slot.generation != token.generation)
+            return false;
+        slot.reserved = false;
+        slot.deadline.reset();
+        if (slot.pending) {
+            slot.pending = false;
+            --shard.service_pending;
+        }
+        if (!slot.executing) {
+            retired = std::move(slot.task);
+            slot.task = {};
+        }
+    }
+    // Context destructors may call back into scheduler APIs.
+    return true;
+}
+
+bool RuntimeScheduler::service_quiescent(ServiceToken token) const noexcept
+{
+    if (!token.valid() || token.scope != service_scope_
+        || token.shard >= shards_.size())
+        return false;
+    const auto& shard = *shards_[token.shard];
+    std::lock_guard lock(shard.mutex);
+    if (token.slot >= shard.service_slots.size())
+        return false;
+    const auto& slot = shard.service_slots[token.slot];
+    return slot.generation != token.generation
+        || (!slot.reserved && !slot.executing);
+}
+
 void RuntimeScheduler::stop() noexcept
 {
-    std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    // A context destructor can reenter stop on this same thread. The outer
+    // stop still owns completion; recursively waiting would wait on itself.
+    for (auto* scope = active_stop; scope != nullptr; scope = scope->previous)
+        if (scope->owner == this)
+            return;
+    const SchedulerStopScope stop_scope {this};
+    std::unique_lock lifecycle_lock(lifecycle_mutex_);
+    lifecycle_changed_.wait(lifecycle_lock, [this] {
+        return !stop_in_progress_;
+    });
+    if (stop_complete_)
+        return;
+    stop_in_progress_ = true;
     start_attempted_ = true;
     accepting_.store(false, std::memory_order_release);
-    if (socket_readiness_ != nullptr) {
-        socket_readiness_->stop();
-    }
+    const auto readiness = socket_readiness_;
+    lifecycle_lock.unlock();
+    // Joining and context destruction must not hold the lifecycle mutex:
+    // callbacks/destructors can take it to observe fail-closed startup.
+    if (readiness != nullptr)
+        readiness->stop();
     for (const auto& shard : shards_) {
         std::unique_lock lock(shard->mutex);
         shard->stop_requested = true;
+        // Admission closes immediately. Future service turns are canceled;
+        // executing callbacks retain their copied context until return.
+        for (auto& slot : shard->service_slots) {
+            slot.reserved = false;
+            slot.pending = false;
+            slot.deadline.reset();
+        }
+        shard->service_pending = 0;
         while (!shard->timer_heap.empty()) {
             Task canceled = shard->remove_timer(0U);
             timers_canceled_.fetch_add(1U, std::memory_order_relaxed);
@@ -357,6 +566,22 @@ void RuntimeScheduler::stop() noexcept
             shard->worker.join();
         }
     }
+    for (const auto& shard : shards_) {
+        for (std::size_t index = 0; index < shard->service_slots.size();
+            ++index) {
+            Task retired;
+            {
+                std::lock_guard lock(shard->mutex);
+                retired = std::move(shard->service_slots[index].task);
+                shard->service_slots[index].task = {};
+            }
+        }
+    }
+    lifecycle_lock.lock();
+    stop_complete_ = true;
+    stop_in_progress_ = false;
+    lifecycle_lock.unlock();
+    lifecycle_changed_.notify_all();
 }
 
 std::size_t RuntimeScheduler::shard_for(std::uint64_t affinity) const noexcept
@@ -384,12 +609,26 @@ RuntimeScheduler::Snapshot RuntimeScheduler::snapshot() const noexcept
         .timers_scheduled = timers_scheduled_.load(std::memory_order_relaxed),
         .timers_canceled = timers_canceled_.load(std::memory_order_relaxed),
         .accepting = accepting_.load(std::memory_order_acquire),
+        .service_capacity = configuration_.shard_count
+            * configuration_.service_capacity_per_shard,
+        .service_storage_bytes = configuration_.shard_count
+            * configuration_.service_capacity_per_shard
+            * sizeof(Shard::ServiceSlot),
+        .service_wakes = service_wakes_.load(std::memory_order_relaxed),
+        .service_coalesced = service_coalesced_.load(std::memory_order_relaxed),
+        .service_runs = service_runs_.load(std::memory_order_acquire),
     };
     for (const auto& shard : shards_) {
         std::lock_guard lock(shard->mutex);
         result.queued += shard->size;
         result.timers += shard->timer_heap.size();
         result.executing += shard->executing ? 1U : 0U;
+        for (const auto& slot : shard->service_slots) {
+            result.services_reserved += slot.reserved ? 1U : 0U;
+            result.services_pending += slot.pending ? 1U : 0U;
+            result.services_executing += slot.executing ? 1U : 0U;
+            result.service_timers += slot.deadline.has_value() ? 1U : 0U;
+        }
     }
     return result;
 }
@@ -408,10 +647,58 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
     for (;;) {
         Task task;
         bool timer_dispatch = false;
+        std::optional<std::size_t> service_dispatch;
         std::optional<std::chrono::steady_clock::time_point> timer_wake;
         {
             std::unique_lock lock(shard.mutex);
             for (;;) {
+                std::optional<std::chrono::steady_clock::time_point>
+                    wake_deadline;
+                std::optional<std::chrono::steady_clock::time_point>
+                    service_now;
+                for (auto& slot : shard.service_slots) {
+                    if (!slot.deadline.has_value())
+                        continue;
+                    if (!service_now.has_value())
+                        service_now = std::chrono::steady_clock::now();
+                    if (*service_now >= *slot.deadline) {
+                        slot.deadline.reset();
+                        if (!slot.pending) {
+                            slot.pending = true;
+                            ++shard.service_pending;
+                        }
+                    } else if (!wake_deadline.has_value()
+                        || *slot.deadline < *wake_deadline)
+                        wake_deadline = slot.deadline;
+                }
+                const bool timer_due = shard.service_pending != 0U
+                    && !shard.timer_heap.empty()
+                    && std::chrono::steady_clock::now()
+                        >= shard.timer_slots[shard.timer_heap.front()].deadline;
+                // Alternate a service turn with ordinary work when both are
+                // ready. With no pending service, legacy timer/FIFO order holds.
+                if (shard.service_pending != 0U
+                    && (shard.service_turn
+                        || (!timer_due && shard.size == 0U))) {
+                    for (std::size_t count = 0;
+                        count < shard.service_slots.size(); ++count) {
+                        const auto index = shard.next_service;
+                        shard.next_service =
+                            (index + 1U) % shard.service_slots.size();
+                        auto& slot = shard.service_slots[index];
+                        if (!slot.pending)
+                            continue;
+                        slot.pending = false;
+                        slot.executing = true;
+                        --shard.service_pending;
+                        task = slot.task;
+                        service_dispatch = index;
+                        shard.service_turn = false;
+                        idle_timer_wake.reset();
+                        break;
+                    }
+                    break;
+                }
                 if (!shard.timer_heap.empty()) {
                     const std::size_t timer_slot = shard.timer_heap.front();
                     const auto deadline =
@@ -431,6 +718,7 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
                             idle_timer_wake.reset();
                         }
                         task = shard.remove_timer(0U);
+                        shard.service_turn = true;
                         timer_dispatch = true;
                         break;
                     }
@@ -441,22 +729,28 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
                     shard.entries[shard.head] = {};
                     shard.head = (shard.head + 1U) % shard.entries.size();
                     --shard.size;
+                    shard.service_turn = true;
                     break;
                 }
                 if (shard.stop_requested) {
                     return;
                 }
-                if (shard.timer_heap.empty()) {
+                if (!shard.timer_heap.empty()) {
+                    const auto deadline =
+                        shard.timer_slots[shard.timer_heap.front()].deadline;
+                    if (!wake_deadline.has_value() || deadline < *wake_deadline)
+                        wake_deadline = deadline;
+                }
+                if (!wake_deadline.has_value()) {
                     idle_timer_wake.reset();
                     shard.ready.wait(lock);
                     continue;
                 }
-                const std::size_t timer_slot = shard.timer_heap.front();
-                const auto deadline = shard.timer_slots[timer_slot].deadline;
-                shard.ready.wait_until(lock, deadline);
+                shard.ready.wait_until(lock, *wake_deadline);
                 const auto woke_at = std::chrono::steady_clock::now();
-                idle_timer_wake = woke_at >= deadline ? std::optional {woke_at}
-                                                      : std::nullopt;
+                idle_timer_wake = woke_at >= *wake_deadline
+                    ? std::optional {woke_at}
+                    : std::nullopt;
                 // A callback can install an already overdue timer. That new
                 // timer was not present at this wake and must not inherit it.
                 // Counter wrap conservatively invalidates the observation.
@@ -470,11 +764,23 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
         } else {
             task.function(task.context.get());
         }
+        Task retired;
         {
             std::lock_guard lock(shard.mutex);
             shard.executing = false;
+            if (service_dispatch.has_value()) {
+                auto& slot = shard.service_slots[*service_dispatch];
+                slot.executing = false;
+                if (!slot.reserved) {
+                    retired = std::move(slot.task);
+                    slot.task = {};
+                }
+            }
         }
-        completed_.fetch_add(1U, std::memory_order_release);
+        if (service_dispatch.has_value())
+            service_runs_.fetch_add(1U, std::memory_order_release);
+        else
+            completed_.fetch_add(1U, std::memory_order_release);
     }
 }
 
