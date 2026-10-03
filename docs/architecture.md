@@ -231,6 +231,31 @@ queue delay are available internally. Public setup does not create these
 inboxes or reserve their services, so UDP delivery remains on the existing
 channel path.
 
+An optional datagram dispatcher binds an already constructed runtime to a
+reserved connection service and its owned inbox. The service context holds the
+runtime weakly and pins it only for an executing callback. Each turn consumes
+at most its configured budget of 1–16 datagrams, decodes handshake datagrams
+through the replay handler and delivers other packets through the existing
+runtime packet handler. Remaining work rearms the same service. Queue timing
+uses a monotonic clock; an injected clock must support concurrent producer and
+consumer calls and keep its context free of ownership cycles.
+
+Runtime ingress admission snapshots reject local close and broken state;
+packet and handshake handlers still enforce that barrier under their mutex.
+Retiring the dispatcher closes admission and retires its service, but an
+already dispatched callback can finish. Explicit dispatcher close additionally
+uses the existing synchronous runtime close path. Callback quiescence remains
+a separate query. A popped datagram cannot mutate a locally closed runtime.
+Peer shutdown preserves the existing buffered-prefix and late-packet behavior.
+Failed service notification also marks the target runtime broken.
+
+Dispatcher FIFO applies only to its inbox. It does not impose a total order on
+application operations or simultaneous direct channel delivery. The dispatcher
+does not poll the runtime or grant it a separate send allowance; channel polling
+and send budgets remain on their existing path. Public setup and route lookup
+do not instantiate or select this dispatcher, so this facility does not yet
+activate connection-shard transport.
+
 Established handshake replay routing uses the immutable peer endpoint, peer
 socket identifier and setup replay response. Reading this identity does not
 acquire the runtime mutex. Registration snapshots it before taking the routing

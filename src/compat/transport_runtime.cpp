@@ -4299,6 +4299,12 @@ bool ConnectionRuntime::peer_closed() const noexcept
     return peer_closed_;
 }
 
+bool ConnectionRuntime::accepts_datagrams() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    return !locally_closed_ && !broken_;
+}
+
 bool ConnectionRuntime::terminal() const noexcept
 {
     std::lock_guard lock(mutex_);
