@@ -339,8 +339,26 @@ control deadlines, pacing and outgoing sends with the original shared send
 allowance. Its idle wait hint reflects the fixed grace deadline instead of
 rearming a past peer deadline. Direct runtime polling and default routes without
 an ingress context preserve their existing timeout behavior. More general
-causal ordering between inbox cohorts and control/delivery deadlines, full cleanup
-quiescence and stalled setup-prefix handling remain separate integration gates.
+causal ordering between inbox cohorts and control/delivery deadlines and full
+cleanup quiescence remain separate integration gates.
+
+A pending sealed setup prefix also has a terminal peer-idle check. Channel
+polling tries the runtime mutex without waiting; if available, it checks the
+same fixed activity-based limit and capped processing grace. It performs no
+ordinary protocol poll, receiver delivery or outgoing send before prefix effects
+complete, and consumes none of the shared send allowance. On expiration or
+runtime close it retires the dispatcher outside runtime and route locks. A
+queued or popped prefix copy then cannot mutate the terminal runtime when the
+service resumes, and old publishers cannot fall back to direct delivery.
+Already accepted receive-buffer data retains the existing broken-runtime
+semantics.
+
+If another protocol/application operation owns the runtime mutex, the channel
+keeps its existing bounded idle retry. The next available check uses the same
+fixed deadline. This does not preempt a callback or establish a wall-clock bound
+for a permanently held runtime mutex; callback/cleanup quiescence remains a
+separate gate. Actual prefix handler activity can renew the ordinary peer timer,
+while ignored frames and additional queue publication cannot.
 
 Established handshake replay routing uses the immutable peer endpoint, peer
 socket identifier and setup replay response. Reading this identity does not

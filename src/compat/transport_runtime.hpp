@@ -448,6 +448,7 @@ private:
 class ConnectionRuntime {
     friend class ConnectionDatagramDispatcher;
     friend class ConnectionDatagramInbox;
+    friend class DatagramChannel;
 
 public:
     [[nodiscard]] const std::shared_ptr<ReadinessSource>&
@@ -675,6 +676,11 @@ private:
         std::int32_t ttl_milliseconds) noexcept;
     [[nodiscard]] MessageIoResult try_receive_message_locked(
         std::span<std::byte> destination, std::uint64_t now) noexcept;
+    // Prefix protocol effects must finish before ordinary polling. This path
+    // enforces only its terminal peer-idle bound, without sending or delivery.
+    [[nodiscard]] RuntimePollResult poll_setup_prefix_deadline(
+        std::uint64_t maximum_ingress_wait_microseconds,
+        bool& terminal) noexcept;
     [[nodiscard]] RuntimePollResult poll_locked(
         const ConnectionDatagramInbox* ingress = nullptr,
         std::uint64_t maximum_ingress_wait_microseconds = 0) noexcept;

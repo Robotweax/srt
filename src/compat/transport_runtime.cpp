@@ -1547,15 +1547,22 @@ RuntimePollResult DatagramChannel::poll_connections(
         }
         // Pending prefix effects must finish before any established poll. The
         // worker wakes the channel on completion; keep only a bounded fallback.
-        const auto result =
-            dispatcher != nullptr && !dispatcher->setup_prefix_complete()
-            ? RuntimePollResult {.next_work_delay = idle_wait_}
+        const auto ingress_wait = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(idle_wait_)
+                .count());
+        const bool prefix_pending =
+            dispatcher != nullptr && !dispatcher->setup_prefix_complete();
+        bool prefix_terminal = false;
+        const auto result = prefix_pending
+            ? runtime->poll_setup_prefix_deadline(ingress_wait, prefix_terminal)
             : runtime->poll(remaining_send_attempts,
                   dispatcher != nullptr ? dispatcher->inbox().get() : nullptr,
-                  static_cast<std::uint64_t>(
-                      std::chrono::duration_cast<std::chrono::microseconds>(
-                          idle_wait_)
-                          .count()));
+                  ingress_wait);
+        // Terminal prefix handling retires the sink outside both runtime and
+        // route locks. A paused protocol callback still has its close barrier.
+        if (prefix_terminal) {
+            dispatcher->retire();
+        }
         poll_round_immediate_ |= result.immediate_work;
         const bool can_wait =
             readiness_available_.load(std::memory_order_acquire)
@@ -3966,6 +3973,40 @@ ConnectionDatagramInbox::Status ConnectionRuntime::admit_datagram(
     // Bounded copy and pure reserved-service notification only. No injected
     // clock or protocol callback executes across this admission fence.
     return inbox.publish_unfenced(token, bytes, peer, publication_time);
+}
+
+RuntimePollResult ConnectionRuntime::poll_setup_prefix_deadline(
+    std::uint64_t maximum_ingress_wait_microseconds, bool& terminal) noexcept
+{
+    terminal = false;
+    // Preserve prefix polling's nonblocking barrier when another protocol or
+    // application operation owns the runtime. Retry on the existing fallback;
+    // a callback holding that mutex cannot be preempted by a timeout check.
+    std::unique_lock lock(mutex_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return {.next_work_delay = std::chrono::microseconds {
+                    maximum_ingress_wait_microseconds}};
+    }
+    if (locally_closed_ || peer_closed_ || broken_) {
+        terminal = true;
+        return {.receive_wait_safe = true};
+    }
+    const auto now = now_microseconds();
+    const auto grace = std::min(
+        maximum_ingress_wait_microseconds, peer_idle_timeout_microseconds_);
+    const auto idle_limit = peer_idle_timeout_microseconds_ + grace;
+    if (now > last_peer_activity_microseconds_
+        && now - last_peer_activity_microseconds_ > idle_limit) {
+        break_locked(0);
+        terminal = true;
+        return {.receive_wait_safe = true};
+    }
+    const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
+    const auto deadline = last_peer_activity_microseconds_
+        + std::min(idle_limit + 1U, maximum - last_peer_activity_microseconds_);
+    const auto remaining = deadline > now ? deadline - now : 0U;
+    return {.next_work_delay = std::chrono::microseconds {
+                std::min(remaining, maximum_ingress_wait_microseconds)}};
 }
 
 RuntimePollResult ConnectionRuntime::poll(std::size_t& remaining_send_attempts,
