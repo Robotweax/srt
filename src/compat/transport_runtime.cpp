@@ -559,25 +559,55 @@ void DatagramChannel::set_send_hook_for_testing(
     send_hook_context_ = context;
 }
 
-bool DatagramChannel::register_connection(
-    std::uint32_t protocol_socket_id,
-    std::shared_ptr<ConnectionRuntime> runtime) noexcept
+bool DatagramChannel::register_connection(std::uint32_t protocol_socket_id,
+    std::shared_ptr<ConnectionRuntime> runtime,
+    std::shared_ptr<ConnectionDatagramDispatcher> dispatcher) noexcept
 {
-    if (protocol_socket_id == 0U || runtime == nullptr) {
+    if (protocol_socket_id == 0U || runtime == nullptr
+        || (dispatcher != nullptr && !dispatcher->targets(runtime, this))) {
         return false;
     }
     const auto replay_key = runtime->handshake_replay_key();
+    std::shared_ptr<ConnectionRuntime> removed_runtime;
+    std::shared_ptr<ConnectionDatagramDispatcher> removed_dispatcher;
+    std::shared_ptr<DatagramInbox> removed_prefix;
     try {
         std::unique_lock lock(routes_mutex_);
-        const bool registered =
-            register_connection_locked(protocol_socket_id, runtime, replay_key);
-        lock.unlock();
-        if (registered) {
-            notify_send_work();
+        if (((dispatcher != nullptr || queued_routes_ != 0U)
+                && std::any_of(routes_.begin(), routes_.end(),
+                    [&](const auto& route) {
+                        return route.second.runtime == runtime
+                            && (dispatcher != nullptr
+                                || route.second.dispatcher != nullptr);
+                    }))
+            || !register_connection_locked(
+                protocol_socket_id, runtime, replay_key)) {
+            return false;
         }
-        return registered;
-    } catch (const std::bad_alloc&) {
-        return false;
+        bool claimed = false;
+        bool activated = true;
+        if (dispatcher != nullptr) {
+            claimed = dispatcher->claim_route(nullptr);
+            if (claimed) {
+                routes_.find(protocol_socket_id)->second.dispatcher =
+                    dispatcher;
+                ++queued_routes_;
+                activated = dispatcher->activate_route();
+            }
+            if (!claimed || !activated) {
+                unregister_connection_locked(protocol_socket_id,
+                    removed_runtime, removed_dispatcher, removed_prefix);
+                lock.unlock();
+                if (claimed) {
+                    dispatcher->retire();
+                    runtime->mark_broken(0);
+                }
+                return false;
+            }
+        }
+        lock.unlock();
+        notify_send_work();
+        return true;
     } catch (...) {
         return false;
     }
@@ -692,32 +722,75 @@ void DatagramInbox::finish_promotion() noexcept
     ready_.notify_all();
 }
 
-bool DatagramChannel::promote_setup_connection(
-    std::uint32_t protocol_socket_id,
+bool DatagramChannel::promote_setup_connection(std::uint32_t protocol_socket_id,
     const std::shared_ptr<DatagramInbox>& inbox,
-    std::shared_ptr<ConnectionRuntime> runtime) noexcept
+    std::shared_ptr<ConnectionRuntime> runtime,
+    std::shared_ptr<ConnectionDatagramDispatcher> dispatcher) noexcept
 {
-    if (protocol_socket_id == 0U
-        || inbox == nullptr
-        || runtime == nullptr) {
+    if (protocol_socket_id == 0U || inbox == nullptr || runtime == nullptr
+        || (dispatcher != nullptr && !dispatcher->targets(runtime, this))) {
         return false;
     }
     const auto replay_key = runtime->handshake_replay_key();
+    std::shared_ptr<ConnectionRuntime> removed_runtime;
+    std::shared_ptr<ConnectionDatagramDispatcher> removed_dispatcher;
+    std::shared_ptr<DatagramInbox> removed_prefix;
     try {
         std::unique_lock lock(routes_mutex_);
         const auto setup = setup_routes_.find(protocol_socket_id);
         if (setup == setup_routes_.end() || setup->second.inbox != inbox) {
             return false;
         }
+        if (dispatcher != nullptr
+            && !dispatcher->matches_peer(setup->second.peer)) {
+            return false;
+        }
         std::unique_lock inbox_lock(inbox->mutex_);
         if (inbox->promoted_runtime_ != nullptr
+            || (dispatcher != nullptr && inbox->closed_)
+            || ((dispatcher != nullptr || queued_routes_ != 0U)
+                && std::any_of(routes_.begin(), routes_.end(),
+                    [&](const auto& route) {
+                        return route.second.runtime == runtime
+                            && (dispatcher != nullptr
+                                || route.second.dispatcher != nullptr);
+                    }))
             || !register_connection_locked(
                 protocol_socket_id, runtime, replay_key)) {
+            return false;
+        }
+        if (dispatcher != nullptr && !dispatcher->claim_route(inbox)) {
+            unregister_connection_locked(protocol_socket_id, removed_runtime,
+                removed_dispatcher, removed_prefix);
             return false;
         }
         const IpEndpoint peer = setup->second.peer;
         inbox->promoted_runtime_ = runtime;
         inbox->promoted_peer_ = peer;
+        if (dispatcher != nullptr) {
+            inbox->queued_promotion_ = true;
+            inbox->promoted_dispatcher_ = dispatcher;
+            routes_.find(protocol_socket_id)->second.dispatcher = dispatcher;
+            ++queued_routes_;
+            if (!dispatcher->activate_route()) {
+                inbox->promoted_runtime_.reset();
+                inbox->queued_promotion_ = false;
+                inbox->promoted_dispatcher_.reset();
+                unregister_connection_locked(protocol_socket_id,
+                    removed_runtime, removed_dispatcher, removed_prefix);
+                inbox_lock.unlock();
+                lock.unlock();
+                dispatcher->retire();
+                runtime->mark_broken(0);
+                return false;
+            }
+            setup_routes_.erase(setup);
+            inbox->ready_.notify_all();
+            inbox_lock.unlock();
+            lock.unlock();
+            notify_send_work();
+            return true;
+        }
         routes_.find(protocol_socket_id)->second.setup_prefix = inbox;
         setup_routes_.erase(setup);
         inbox_lock.unlock();
@@ -740,39 +813,59 @@ bool DatagramChannel::promote_setup_connection(
     }
 }
 
+void DatagramChannel::unregister_connection_locked(
+    std::uint32_t protocol_socket_id,
+    std::shared_ptr<ConnectionRuntime>& retired,
+    std::shared_ptr<ConnectionDatagramDispatcher>& dispatcher,
+    std::shared_ptr<DatagramInbox>& prefix) noexcept
+{
+    const auto route = routes_.find(protocol_socket_id);
+    if (route == routes_.end()) {
+        return;
+    }
+    if (route->second.replay_key.has_value()) {
+        handshake_routes_.erase(*route->second.replay_key);
+    }
+    auto& node = route->second;
+    if (node.next == &node) {
+        next_poll_route_ = nullptr;
+    } else {
+        node.previous->next = node.next;
+        node.next->previous = node.previous;
+        if (next_poll_route_ == &node) {
+            next_poll_route_ = node.next;
+        }
+    }
+    retired = std::move(node.runtime);
+    dispatcher = std::move(node.dispatcher);
+    if (dispatcher != nullptr) {
+        --queued_routes_;
+    }
+    prefix = std::move(node.setup_prefix);
+    routes_.erase(route);
+}
+
 void DatagramChannel::unregister_connection(
     std::uint32_t protocol_socket_id) noexcept
 {
-    // Keep the last runtime reference until after releasing routes_mutex_.
-    // Its destructor can retire a service and destroy a client-owned context.
+    // Last owning references and service retirement run outside the route lock.
     std::shared_ptr<ConnectionRuntime> retired;
+    std::shared_ptr<ConnectionDatagramDispatcher> dispatcher;
+    std::shared_ptr<DatagramInbox> prefix;
     {
         std::lock_guard lock(routes_mutex_);
-        const auto route = routes_.find(protocol_socket_id);
-        if (route == routes_.end()) {
-            return;
-        }
-        if (route->second.replay_key.has_value()) {
-            handshake_routes_.erase(*route->second.replay_key);
-        }
-        auto& node = route->second;
-        if (node.next == &node) {
-            next_poll_route_ = nullptr;
-        } else {
-            node.previous->next = node.next;
-            node.next->previous = node.previous;
-            if (next_poll_route_ == &node) {
-                next_poll_route_ = node.next;
-            }
-        }
-        retired = std::move(node.runtime);
-        routes_.erase(route);
+        unregister_connection_locked(
+            protocol_socket_id, retired, dispatcher, prefix);
+    }
+    if (dispatcher != nullptr) {
+        dispatcher->retire();
     }
 }
 
 bool DatagramChannel::replay_established_handshake(
     const HandshakeEnvelope& envelope) noexcept
 {
+    std::shared_ptr<ConnectionDatagramDispatcher> dispatcher;
     std::shared_ptr<ConnectionRuntime> runtime;
     std::shared_ptr<DatagramInbox> setup_prefix;
     {
@@ -784,10 +877,33 @@ bool DatagramChannel::replay_established_handshake(
         if (replay != handshake_routes_.end()) {
             runtime = replay->second->runtime;
             setup_prefix = replay->second->setup_prefix;
+            dispatcher = replay->second->dispatcher;
         }
     }
     if (setup_prefix != nullptr) {
         setup_prefix->finish_promotion();
+    }
+    if (dispatcher != nullptr) {
+        if (!runtime->accepts_handshake_replay(
+                envelope.message, envelope.peer)) {
+            return false;
+        }
+        // Established replay only consumes the base identity fields. The
+        // envelope API has already decoded framing and owns no raw datagram.
+        HandshakeAction action;
+        action.kind = HandshakeActionKind::send;
+        action.packet = envelope.message.packet;
+        std::array<std::byte, DatagramEnvelope::maximum_size> bytes {};
+        const auto encoded =
+            encode_handshake_datagram(action, envelope.control.timestamp,
+                envelope.control.destination_socket_id, bytes);
+        if (!encoded) {
+            return false;
+        }
+        const auto status = dispatcher->publish(dispatcher->inbox()->token(),
+            std::span {bytes}.first(encoded.bytes_written), envelope.peer);
+        return status == ConnectionDatagramInbox::Status::accepted
+            || status == ConnectionDatagramInbox::Status::full;
     }
     return runtime != nullptr
         && runtime->process_handshake(envelope.message, envelope.peer);
@@ -1232,6 +1348,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
             return;
         }
         std::shared_ptr<ConnectionRuntime> replay_runtime;
+        std::shared_ptr<ConnectionDatagramDispatcher> replay_dispatcher;
         std::shared_ptr<DatagramInbox> replay_prefix;
         std::shared_ptr<DatagramInbox> setup_inbox;
         std::shared_ptr<HandshakeInbox> inbox;
@@ -1244,6 +1361,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
             if (replay != handshake_routes_.end()) {
                 replay_runtime = replay->second->runtime;
                 replay_prefix = replay->second->setup_prefix;
+                replay_dispatcher = replay->second->dispatcher;
             }
             const std::uint32_t destination_socket_id =
                 packet.control.destination_socket_id;
@@ -1304,9 +1422,16 @@ void DatagramChannel::dispatch(const PacketView& packet,
         if (replay_prefix != nullptr) {
             replay_prefix->finish_promotion();
         }
-        if (replay_runtime != nullptr
-            && replay_runtime->process_handshake(
-                decoded.message, peer)) {
+        if (replay_dispatcher != nullptr) {
+            if (replay_runtime->accepts_handshake_replay(
+                    decoded.message, peer)) {
+                // A valid but full replay is consumed, never diverted to setup.
+                (void)replay_dispatcher->publish(
+                    replay_dispatcher->inbox()->token(), datagram, peer);
+                return;
+            }
+        } else if (replay_runtime != nullptr
+            && replay_runtime->process_handshake(decoded.message, peer)) {
             return;
         }
         if (setup_inbox != nullptr) {
@@ -1328,6 +1453,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
         ? packet.data.destination_socket_id
         : packet.control.destination_socket_id;
     std::shared_ptr<ConnectionRuntime> runtime;
+    std::shared_ptr<ConnectionDatagramDispatcher> dispatcher;
     std::shared_ptr<DatagramInbox> setup_prefix;
     std::shared_ptr<DatagramInbox> setup_inbox;
     {
@@ -1336,6 +1462,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
             destination_socket_id);
         if (route != routes_.end()) {
             runtime = route->second.runtime;
+            dispatcher = route->second.dispatcher;
             setup_prefix = route->second.setup_prefix;
         } else {
             const auto setup = setup_routes_.find(
@@ -1349,7 +1476,9 @@ void DatagramChannel::dispatch(const PacketView& packet,
     if (setup_prefix != nullptr) {
         setup_prefix->finish_promotion();
     }
-    if (runtime != nullptr) {
+    if (dispatcher != nullptr) {
+        (void)dispatcher->publish(dispatcher->inbox()->token(), datagram, peer);
+    } else if (runtime != nullptr) {
         runtime->process_packet(packet, peer);
     } else if (setup_inbox != nullptr) {
         (void)setup_inbox->push(datagram, peer);
@@ -1395,6 +1524,7 @@ RuntimePollResult DatagramChannel::poll_connections(
         visited < maximum_connection_polls && remaining_send_attempts != 0U;
         ++visited) {
         std::shared_ptr<ConnectionRuntime> runtime;
+        std::shared_ptr<ConnectionDatagramDispatcher> dispatcher;
         std::shared_ptr<DatagramInbox> setup_prefix;
         {
             std::lock_guard lock(routes_mutex_);
@@ -1405,6 +1535,7 @@ RuntimePollResult DatagramChannel::poll_connections(
                 break;
             }
             runtime = next_poll_route_->runtime;
+            dispatcher = next_poll_route_->dispatcher;
             setup_prefix = next_poll_route_->setup_prefix;
             next_poll_route_ = next_poll_route_->next;
             --poll_round_remaining_;
@@ -1414,7 +1545,12 @@ RuntimePollResult DatagramChannel::poll_connections(
         if (setup_prefix != nullptr) {
             setup_prefix->finish_promotion();
         }
-        const auto result = runtime->poll(remaining_send_attempts);
+        // Pending prefix effects must finish before any established poll. The
+        // worker wakes the channel on completion; keep only a bounded fallback.
+        const auto result =
+            dispatcher != nullptr && !dispatcher->setup_prefix_complete()
+            ? RuntimePollResult {.next_work_delay = idle_wait_}
+            : runtime->poll(remaining_send_attempts);
         poll_round_immediate_ |= result.immediate_work;
         const bool can_wait =
             readiness_available_.load(std::memory_order_acquire)
@@ -3746,24 +3882,34 @@ void ConnectionRuntime::process_packet(
     }
 }
 
+bool ConnectionRuntime::matches_handshake_replay(
+    const HandshakeMessage& message, IpEndpoint peer) const noexcept
+{
+    return peer == peer_
+        && handshake_replay_response_.kind == HandshakeActionKind::send
+        && message.packet.request == HandshakeRequest::conclusion
+        && message.packet.socket_id == peer_socket_id_
+        && message.packet.syn_cookie
+        == (handshake_replay_peer_cookie_ != 0U
+                ? handshake_replay_peer_cookie_
+                : handshake_replay_response_.packet.syn_cookie);
+}
+
+bool ConnectionRuntime::accepts_handshake_replay(
+    const HandshakeMessage& message, IpEndpoint peer) const noexcept
+{
+    std::lock_guard lock(mutex_);
+    return !locally_closed_ && !broken_
+        && matches_handshake_replay(message, peer);
+}
+
 bool ConnectionRuntime::process_handshake(
     const HandshakeMessage& message,
     IpEndpoint peer) noexcept
 {
     std::lock_guard lock(mutex_);
-    if (peer != peer_
-        || locally_closed_
-        || broken_
-        || handshake_replay_response_.kind
-            != HandshakeActionKind::send
-        || message.packet.request
-            != HandshakeRequest::conclusion
-        || message.packet.socket_id != peer_socket_id_
-        || message.packet.syn_cookie
-            != (handshake_replay_peer_cookie_ != 0U
-                    ? handshake_replay_peer_cookie_
-                    : handshake_replay_response_
-                          .packet.syn_cookie)) {
+    if (locally_closed_ || broken_
+        || !matches_handshake_replay(message, peer)) {
         return false;
     }
 

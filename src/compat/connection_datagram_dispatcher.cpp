@@ -23,18 +23,23 @@ std::uint64_t queue_now() noexcept
 struct ConnectionDatagramDispatcher::State {
     const std::weak_ptr<ConnectionRuntime> runtime;
     const Configuration configuration;
+    const IpEndpoint peer;
     std::shared_ptr<ConnectionDatagramInbox> inbox;
     std::weak_ptr<ConnectionWorkBinding> binding;
     mutable std::mutex prefix_mutex;
     std::shared_ptr<DatagramInbox> setup_prefix;
+    bool route_claimed = false;
+    bool active = true;
+    bool retired = false;
     std::atomic<std::uint64_t> completed_turns {0};
     std::atomic<std::uint64_t> dispatched_datagrams {0};
     std::atomic<std::size_t> maximum_turn_datagrams {0};
 
-    State(
-        std::weak_ptr<ConnectionRuntime> target, Configuration config) noexcept
+    State(std::weak_ptr<ConnectionRuntime> target, Configuration config,
+        IpEndpoint endpoint) noexcept
         : runtime(std::move(target))
         , configuration(std::move(config))
+        , peer(endpoint)
     {
     }
 
@@ -51,6 +56,8 @@ struct ConnectionDatagramDispatcher::State {
         std::shared_ptr<DatagramInbox> released;
         {
             std::lock_guard lock(prefix_mutex);
+            retired = true;
+            active = false;
             released = std::move(setup_prefix);
         }
         if (auto service = binding.lock(); service != nullptr) {
@@ -63,11 +70,18 @@ struct ConnectionDatagramDispatcher::State {
         if (!hints.datagrams) {
             return;
         }
+        {
+            std::lock_guard lock(self.prefix_mutex);
+            if (!self.active || self.retired) {
+                return;
+            }
+        }
         const auto runtime = self.runtime.lock();
         if (runtime == nullptr) {
             self.retire();
             return;
         }
+        bool completed_prefix = false;
         std::size_t consumed = 0;
         for (; consumed < self.configuration.turn_budget; ++consumed) {
             if (!runtime->accepts_datagrams()) {
@@ -87,6 +101,7 @@ struct ConnectionDatagramDispatcher::State {
                     std::lock_guard lock(self.prefix_mutex);
                     if (self.setup_prefix == prefix) {
                         self.setup_prefix.reset();
+                        completed_prefix = true;
                     }
                 }
                 if (self.inbox->pop(self.inbox->token(), envelope, self.now())
@@ -118,6 +133,7 @@ struct ConnectionDatagramDispatcher::State {
                 std::lock_guard lock(self.prefix_mutex);
                 if (self.setup_prefix == prefix) {
                     self.setup_prefix.reset();
+                    completed_prefix = true;
                 }
             }
         }
@@ -128,6 +144,11 @@ struct ConnectionDatagramDispatcher::State {
                 self.maximum_turn_datagrams.load(std::memory_order_relaxed)),
             std::memory_order_relaxed);
         self.completed_turns.fetch_add(1, std::memory_order_release);
+        // Channel polling retains the shared send allowance. Wake it after
+        // asynchronous ingress effects and when the prefix barrier opens.
+        if (consumed != 0 || completed_prefix) {
+            runtime->notify_channel_send_work();
+        }
         if (!runtime->accepts_datagrams()) {
             self.retire();
         } else {
@@ -175,7 +196,8 @@ ConnectionDatagramDispatcher::create(
         return nullptr;
     }
     try {
-        auto state = std::make_shared<State>(runtime, std::move(configuration));
+        auto state =
+            std::make_shared<State>(runtime, std::move(configuration), peer);
         auto binding = ConnectionWorkBinding::create(
             scheduler, affinity, State::dispatch, state);
         if (binding == nullptr) {
@@ -201,6 +223,7 @@ ConnectionDatagramDispatcher::create(
             {
                 std::lock_guard prefix_lock(state->prefix_mutex);
                 state->setup_prefix = setup_prefix;
+                state->route_claimed = true;
             }
             setup_prefix->promoted_runtime_ = runtime;
             setup_prefix->promoted_peer_ = peer;
@@ -265,10 +288,56 @@ void ConnectionDatagramDispatcher::close() noexcept
     }
 }
 
+bool ConnectionDatagramDispatcher::targets(
+    const std::shared_ptr<ConnectionRuntime>& runtime,
+    const DatagramChannel* channel) const noexcept
+{
+    return runtime != nullptr && state_->runtime.lock() == runtime
+        && state_->peer == runtime->peer_
+        && runtime->channel_.lock().get() == channel;
+}
+
+bool ConnectionDatagramDispatcher::matches_peer(IpEndpoint peer) const noexcept
+{
+    return state_->peer == peer;
+}
+
+bool ConnectionDatagramDispatcher::claim_route(
+    const std::shared_ptr<DatagramInbox>& prefix) noexcept
+{
+    std::lock_guard lock(state_->prefix_mutex);
+    const auto admission = state_->inbox->snapshot();
+    if (state_->route_claimed || state_->retired
+        || state_->setup_prefix != nullptr || admission.closed
+        || admission.highwater != 0) {
+        return false;
+    }
+    state_->active = false;
+    state_->route_claimed = true;
+    state_->setup_prefix = prefix;
+    return true;
+}
+
+bool ConnectionDatagramDispatcher::activate_route() noexcept
+{
+    std::lock_guard lock(state_->prefix_mutex);
+    if (state_->retired || !state_->route_claimed) {
+        return false;
+    }
+    state_->active = true;
+    if (binding_->notify({.datagrams = true})
+        != RuntimeScheduler::SubmitStatus::accepted) {
+        state_->active = false;
+        return false;
+    }
+    return true;
+}
+
 bool ConnectionDatagramDispatcher::setup_prefix_complete() const noexcept
 {
     std::lock_guard lock(state_->prefix_mutex);
-    return state_->setup_prefix == nullptr;
+    return state_->retired
+        || (state_->active && state_->setup_prefix == nullptr);
 }
 
 bool ConnectionDatagramDispatcher::quiescent() const noexcept

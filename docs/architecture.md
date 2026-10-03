@@ -249,12 +249,12 @@ a separate query. A popped datagram cannot mutate a locally closed runtime.
 Peer shutdown preserves the existing buffered-prefix and late-packet behavior.
 Failed service notification also marks the target runtime broken.
 
-Dispatcher FIFO applies only to its inbox. It does not impose a total order on
-application operations or simultaneous direct channel delivery. The dispatcher
-does not poll the runtime or grant it a separate send allowance; channel polling
-and send budgets remain on their existing path. Public setup and route lookup
-do not instantiate or select this dispatcher, so this facility does not yet
-activate connection-shard transport.
+Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
+It does not impose a total order on application operations or independently
+invoked runtime handlers. The dispatcher does not poll the runtime or grant it a
+separate send allowance; channel polling and send budgets remain on their
+existing path. Internal route registration can select this dispatcher explicitly.
+Public setup does not create or select it, so the default transport is unchanged.
 
 The internal dispatcher factory can also claim a cold, unregistered setup inbox.
 It seals that inbox without allocating or copying a second prefix ring. A worker
@@ -277,11 +277,42 @@ ordinary inbox alone continues to hold the runtime weakly.
 
 Existing setup-ring storage remains bounded by its original capacity and is not
 charged to the new connection-ring storage budget. That budget does not claim to
-cover total process or transient setup memory. Claiming a prefix requires the
+cover total process or transient setup memory. Claiming a prefix through the standalone factory requires the
 caller to own an unregistered setup inbox; this factory is not an atomic channel
-route promotion operation. Channel route publication, polling barriers and
-public setup selection remain separate integration work. Public setup continues
-using the existing synchronous promotion path.
+route promotion operation. A caller promoting a registered setup inbox instead
+supplies a fresh dispatcher without a prefix to the optional channel route API.
+Public setup continues using the existing synchronous promotion path.
+
+Optional connection routes own a dispatcher bound to that exact runtime, peer
+and channel. Registration rejects a previously used, retired or already claimed
+dispatcher. Optional routes also reject runtime aliases that would mix direct
+and queued delivery; ordinary direct registration checks for queued aliases only
+when such routes exist. All route/replay-map allocation completes before setup
+sealing. Under the route and setup-inbox locks, promotion claims the cold service,
+seals the original ring, installs weak forwarding and publishes the route before
+activation. Activation only publishes a service hint; it invokes no clock or
+protocol callback inline. Failure unlinks the route and cached replay key and
+restores the original setup queue and route. Failed activation retires the
+service and marks its target broken after releasing both locks.
+
+Channel ingress snapshots strong runtime/dispatcher handles under the route
+lock and publishes owned datagram copies after unlocking. Established replay
+admission checks peer, cookie and terminal state outside that lock; the worker
+repeats the authoritative check before responding. Invalid replays retain the
+existing setup/listener fallback. Valid replays rejected by full admission are
+consumed without listener fallback. The decoded-envelope replay API queues the
+base identity fields used by the established replay handler; actual wire ingress
+queues the original datagram. Unregister unlinks the route and replay key, then
+retires the dispatcher and releases owning handles outside the route lock. Old
+setup publishers cannot retarget a reused socket identifier.
+
+Channel polling skips a route while its sealed setup prefix has unfinished
+protocol effects, retaining the bounded idle fallback. Dispatcher turns wake
+channel polling after ingress effects or prefix completion. Polling continues
+to use the existing shared channel send allowance. Ordering between queued new
+ingress and runtime deadlines, complete cleanup quiescence and public transport
+activation require separate qualification; the route API alone does not claim
+exclusive shard ownership or a total application/wire order.
 
 Established handshake replay routing uses the immutable peer endpoint, peer
 socket identifier and setup replay response. Reading this identity does not
@@ -289,8 +320,8 @@ acquire the runtime mutex. Registration snapshots it before taking the routing
 mutex and stores the optional key with the route; removal uses that stored key.
 The removed route's runtime remains pinned until after the routing mutex is
 released, so final runtime/service-context destruction runs outside that lock.
-Setup promotion seals the bounded datagram inbox while publishing the
-established route. Setup consumers can no longer remove the sealed prefix.
+On the default synchronous path, setup promotion seals the bounded datagram
+inbox while publishing the established route. Setup consumers can no longer remove the sealed prefix.
 Prefix processing runs after releasing the routing and inbox mutexes; a separate
 promotion mutex serializes its completion. Established datagram delivery,
 handshake replay and polling complete that prefix before protocol effects.
