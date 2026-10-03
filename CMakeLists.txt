@@ -290,6 +290,32 @@ endif()
 
 include(CTest)
 if(ROBOTWEAX_SRT_BUILD_TESTS)
+    # Deterministic ownership model only; excluded from the runtime and install.
+    add_executable(robotweax_srt_connection_affinity_model_tests
+        tests/test_main.cpp
+        tests/test_connection_affinity_model.cpp
+        src/compat/connection_affinity_model.cpp)
+    target_link_libraries(robotweax_srt_connection_affinity_model_tests PRIVATE Threads::Threads)
+    target_include_directories(robotweax_srt_connection_affinity_model_tests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(robotweax_srt_connection_affinity_model_tests PRIVATE cxx_std_20)
+    add_test(NAME robotweax_srt_connection_affinity_model_tests
+        COMMAND robotweax_srt_connection_affinity_model_tests)
+    set_tests_properties(robotweax_srt_connection_affinity_model_tests PROPERTIES
+        TIMEOUT 30 LABELS "runtime;model")
+    # Allocation interposition is isolated from the model's sanitizer binary.
+    add_executable(robotweax_srt_connection_affinity_allocation_tests
+        tests/test_main.cpp
+        tests/test_connection_affinity_allocations.cpp
+        src/compat/connection_affinity_model.cpp)
+    target_link_libraries(robotweax_srt_connection_affinity_allocation_tests PRIVATE Threads::Threads)
+    target_include_directories(robotweax_srt_connection_affinity_allocation_tests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(robotweax_srt_connection_affinity_allocation_tests PRIVATE cxx_std_20)
+    add_test(NAME robotweax_srt_connection_affinity_allocation_tests
+        COMMAND robotweax_srt_connection_affinity_allocation_tests)
+    set_tests_properties(robotweax_srt_connection_affinity_allocation_tests PROPERTIES
+        TIMEOUT 30 LABELS "runtime;model;allocation")
     # Explicit CI-only negative probe: uses this build's compiler and global
     # flags, but is not built by default, installed, or registered with CTest.
     add_executable(robotweax_srt_ubsan_canary EXCLUDE_FROM_ALL
