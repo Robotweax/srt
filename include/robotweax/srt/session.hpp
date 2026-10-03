@@ -170,6 +170,11 @@ public:
 
     explicit ReliabilitySession(Configuration configuration);
 
+    void configure_keepalive_interval(std::uint64_t microseconds) noexcept
+    {
+        timer_scheduler_.set_keepalive_interval(microseconds);
+    }
+
     void set_peer_socket_id(std::uint32_t socket_id) noexcept { peer_socket_id_ = socket_id; }
     [[nodiscard]] Error queue_message(std::span<const std::byte> message,
         PacketTimestamp timestamp, bool in_order = true,

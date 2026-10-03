@@ -117,3 +117,33 @@ installation, third-party integrations and final Haivision SRT 1.5.7 comparisons
 remain part of final qualification. No interop certification is inferred from
 local tests. macOS LeakSanitizer is unavailable in this toolchain; ASan/UBSan
 results do not claim leak-detection coverage.
+
+## Short peer-idle liveness budgets
+
+The compatibility runtime derives its idle keepalive cadence from the local
+`SRTO_PEERIDLETIMEO`: `clamp(timeout / 4, 10 ms, 1 s)`. Default 5-second and
+other budgets of at least 4 seconds retain the existing 1-second cadence.
+A 2-second budget uses 500 ms, leaving additional heartbeat opportunities when
+one control is lost. The existing action batches, send budgets and per-runtime
+scheduler ownership remain in force; there is no heartbeat thread.
+
+This adjusts heartbeat frequency, not the idle deadline. The last valid peer
+packet still anchors expiration; no local send or invalid peer control grants
+additional time. A completely silent peer still breaks after the configured
+budget. The 10 ms floor caps idle heartbeat generation at 100 per second;
+very small timeouts or long bursts of loss can still break the connection.
+This is not a guarantee for arbitrary loss or scheduling delays.
+
+The cadence uses the local timeout because this API does not negotiate the
+peer's idle budget. Applications must configure compatible policies at both
+ends. It adds no wire field or public C option and changes no stable C ABI.
+The generic reliability timer's default remains 1 second; the adaptation is
+selected by the compatibility runtime.
+
+Deterministic evidence in `compat_runtime_idle_liveness_*` uses an injected
+clock, 21 ms carrier delay, one omitted heartbeat and all four profile bundles.
+The previous 1-second cadence exhausted a 2-second budget before the next
+heartbeat arrived. The revised cadence survives that case; exact silence
+expiration, default cadence, minimum interval, same-time polling bounds and
+timer-anchor preservation are separately checked. This classifies the original
+observation as a short-budget loss-tolerance gap, rather than a scheduler stall.

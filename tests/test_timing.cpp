@@ -398,3 +398,16 @@ TEST(tsbpd_keepalive_uses_local_epoch_after_long_idle_and_multiple_wraps)
             1'100'000 + elapsed);
     }
 }
+
+TEST(control_timer_cadence_change_retains_data_send_anchor_and_clamps_zero)
+{
+    ControlTimerScheduler timer {0};
+    timer.on_packet_sent(100'000);
+    timer.set_keepalive_interval(500'000);
+    REQUIRE_EQ(timer.next_deadline(100'000), 600'000U);
+    REQUIRE_EQ(timer.poll(599'999).size, 0U);
+    REQUIRE_EQ(timer.poll(600'000).size, 1U);
+    timer.set_keepalive_interval(0);
+    REQUIRE_EQ(timer.poll(600'000).size, 0U);
+    REQUIRE_EQ(timer.poll(600'001).size, 1U);
+}

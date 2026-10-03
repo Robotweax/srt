@@ -64,6 +64,13 @@ ControlTimerScheduler::ControlTimerScheduler(std::uint64_t start_microseconds,
 {
 }
 
+void ControlTimerScheduler::set_keepalive_interval(
+    std::uint64_t microseconds) noexcept
+{
+    configuration_.keepalive_interval_microseconds =
+        std::max<std::uint64_t>(microseconds, 1U);
+}
+
 void ControlTimerScheduler::on_data_received(std::uint64_t) noexcept
 {
     acknowledgement_dirty_ = true;
