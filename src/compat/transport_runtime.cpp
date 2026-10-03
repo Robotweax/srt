@@ -1441,6 +1441,12 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
           configuration.close_retry_context_for_testing)
     , flow_window_packets_(effective_peer_flow_window(configuration))
 {
+    // Leave three further heartbeat opportunities inside a short local idle
+    // budget. The peer timeout itself is unchanged. Keep the usual one-second
+    // cadence for budgets of four seconds or longer, and cap idle heartbeat
+    // traffic at 100 controls/s for unusually small configured timeouts.
+    session_.configure_keepalive_interval(std::clamp<std::uint64_t>(
+        peer_idle_timeout_microseconds_ / 4U, 10'000U, 1'000'000U));
     const std::size_t receive_capacity =
         effective_receive_capacity(configuration);
     session_.configure_efficient_retransmission(

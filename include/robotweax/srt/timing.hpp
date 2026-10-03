@@ -48,6 +48,8 @@ public:
     ControlTimerScheduler(std::uint64_t start_microseconds,
         Configuration configuration);
 
+    // Change cadence without resetting the last DATA send time.
+    void set_keepalive_interval(std::uint64_t microseconds) noexcept;
     void on_data_received(std::uint64_t now_microseconds) noexcept;
     void on_receive_buffer_released(
         std::uint64_t now_microseconds, bool expedite = true) noexcept;

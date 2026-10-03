@@ -9540,6 +9540,143 @@ TEST(compat_idle_readiness_capacity_falls_back_to_timer_polling)
     }
 }
 
+TEST(
+    compat_runtime_idle_liveness_cadence_preserves_default_and_bounds_short_idle)
+{
+    for (const auto timeout_ms : {20U, 40U, 2000U, 4000U, 5000U}) {
+        const auto channel = std::make_shared<DatagramChannel>();
+        CapturedDatagrams output;
+        channel->set_send_hook_for_testing(capture_datagram, &output);
+        std::uint64_t now = 0;
+        ConnectionRuntime runtime {{.channel = channel,
+            .peer = Ipv4Endpoint::loopback(10000),
+            .peer_socket_id = 43,
+            .initial_sequence = SequenceNumber {100},
+            .origin =
+                ConnectionRuntime::Clock::now() + std::chrono::seconds {1},
+            .peer_idle_timeout_milliseconds = timeout_ms,
+            .now_function = injected_now,
+            .now_context = &now}};
+        const auto interval =
+            std::clamp<std::uint64_t>(timeout_ms * 250ULL, 10'000, 1'000'000);
+        REQUIRE_EQ(runtime.poll().next_work_delay,
+            std::chrono::microseconds {interval});
+        now = interval - 1;
+        (void)runtime.poll();
+        REQUIRE(take_datagrams(output).empty());
+        ++now;
+        (void)runtime.poll();
+        const auto sent = take_datagrams(output);
+        REQUIRE_EQ(sent.size(), 1U);
+        REQUIRE_EQ(decode_packet(sent.front()).packet.control.type,
+            ControlType::keepalive);
+        for (unsigned attempt = 0; attempt < 10; ++attempt) {
+            (void)runtime.poll();
+        }
+        REQUIRE(take_datagrams(output).empty());
+    }
+}
+
+TEST(compat_runtime_idle_liveness_survives_one_lost_keepalive_with_delay)
+{
+    for (unsigned profile = 0; profile < 4; ++profile) {
+        SocketOptions options;
+        REQUIRE_EQ(
+            options.set(SocketOption::transmission_type,
+                static_cast<std::int64_t>(profile == 2 ? TransmissionType::live
+                        : profile == 3 ? TransmissionType::control
+                        : profile == 1 ? TransmissionType::file
+                                       : TransmissionType::live)),
+            Error::none);
+        if (profile == 2) {
+            REQUIRE_EQ(options.set_packet_filter(
+                           "fec-sensor-v1,cols:4,rows:1,arq:never"),
+                Error::none);
+        }
+        const auto a_channel = std::make_shared<DatagramChannel>();
+        const auto b_channel = std::make_shared<DatagramChannel>();
+        CapturedDatagrams a_output, b_output;
+        a_channel->set_send_hook_for_testing(capture_datagram, &a_output);
+        b_channel->set_send_hook_for_testing(capture_datagram, &b_output);
+        const auto a_endpoint = Ipv4Endpoint::loopback(10001);
+        const auto b_endpoint = Ipv4Endpoint::loopback(10002);
+        std::uint64_t now = 0;
+        const auto origin =
+            ConnectionRuntime::Clock::now() + std::chrono::seconds {1};
+        ConnectionRuntime a {{.channel = a_channel,
+            .peer = b_endpoint,
+            .peer_socket_id = 42,
+            .initial_sequence = SequenceNumber {100},
+            .options = options,
+            .origin = origin,
+            .peer_idle_timeout_milliseconds = 2000,
+            .now_function = injected_now,
+            .now_context = &now}};
+        ConnectionRuntime b {{.channel = b_channel,
+            .peer = a_endpoint,
+            .peer_socket_id = 43,
+            .initial_sequence = SequenceNumber {100},
+            .options = options,
+            .origin = origin,
+            .peer_idle_timeout_milliseconds = 2000,
+            .now_function = injected_now,
+            .now_context = &now}};
+        struct Pending {
+            std::uint64_t due;
+            bool to_b;
+            std::vector<std::byte> bytes;
+        };
+        std::vector<Pending> pending;
+        bool dropped = false;
+        std::uint64_t last_a = 0, last_b = 0;
+        for (now = 0; now <= 3'500'000; now += 10'000) {
+            (void)a.poll();
+            (void)b.poll();
+            REQUIRE(!a.broken());
+            REQUIRE(!b.broken());
+            for (bool to_b : {true, false}) {
+                for (auto& bytes : take_datagrams(to_b ? a_output : b_output)) {
+                    const auto decoded = decode_packet(bytes);
+                    REQUIRE(decoded);
+                    REQUIRE_EQ(
+                        decoded.packet.control.type, ControlType::keepalive);
+                    if (to_b && !dropped) {
+                        dropped = true;
+                        continue;
+                    }
+                    pending.push_back({now + 21'000, to_b, std::move(bytes)});
+                }
+            }
+            for (auto it = pending.begin(); it != pending.end();) {
+                if (it->due > now) {
+                    ++it;
+                    continue;
+                }
+                const auto decoded = decode_packet(it->bytes);
+                (it->to_b ? b : a)
+                    .process_packet(
+                        decoded.packet, it->to_b ? a_endpoint : b_endpoint);
+                (it->to_b ? last_b : last_a) = now;
+                it = pending.erase(it);
+            }
+        }
+        REQUIRE(dropped);
+        REQUIRE(pending.size() <= 2U);
+        // Total silence still expires at the configured boundary, not later.
+        REQUIRE_EQ(last_a, last_b);
+        now = last_a + 2'000'000;
+        (void)a.poll();
+        (void)b.poll();
+        REQUIRE(!a.broken());
+        REQUIRE(!b.broken());
+        ++now;
+        (void)a.poll();
+        (void)b.poll();
+        REQUIRE(a.broken());
+        REQUIRE(b.broken());
+    }
+}
+
 TEST(compat_idle_readiness_runtime_deadlines_preserve_keepalive_and_timeout)
 {
     const auto channel = std::make_shared<DatagramChannel>();
@@ -9551,18 +9688,18 @@ TEST(compat_idle_readiness_runtime_deadlines_preserve_keepalive_and_timeout)
         .peer = Ipv4Endpoint::loopback(10000),
         .peer_socket_id = 43,
         .initial_sequence = SequenceNumber {100},
-        .origin = ConnectionRuntime::Clock::now(),
+        .origin = ConnectionRuntime::Clock::now() + std::chrono::seconds {1},
         .peer_idle_timeout_milliseconds = 1500,
         .now_function = injected_now,
         .now_context = &now,
     }};
     auto result = runtime.poll();
     REQUIRE(result.receive_wait_safe);
-    REQUIRE_EQ(result.next_work_delay, std::chrono::seconds {1});
+    REQUIRE_EQ(result.next_work_delay, std::chrono::microseconds {375'000});
     now = 1'100'000;
     result = runtime.poll();
     REQUIRE(result.receive_wait_safe);
-    REQUIRE_EQ(result.next_work_delay, std::chrono::microseconds {400'001});
+    REQUIRE_EQ(result.next_work_delay, std::chrono::microseconds {375'000});
     const auto packets = take_datagrams(output);
     REQUIRE_EQ(packets.size(), 1U);
     REQUIRE_EQ(decode_packet(packets.front()).packet.control.type,
