@@ -10,6 +10,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <limits>
 #include <thread>
 
 using namespace robotweax::srt;
@@ -698,4 +699,364 @@ TEST(
     SinkProbeWorker worker {probe, fixture.channel};
     fixture.channel->unregister_connection(700);
     REQUIRE(probe->progressed());
+}
+
+namespace {
+struct SinkNeutralSend {
+    std::shared_ptr<DatagramChannel> channel;
+    ~SinkNeutralSend()
+    {
+        channel->set_send_hook_for_testing(
+            [](std::span<const std::byte> bytes, IpEndpoint, void*) noexcept {
+                return UdpIoResult {.bytes_transferred = bytes.size()};
+            },
+            nullptr);
+    }
+};
+std::uint64_t ingress_idle_now(void* pointer) noexcept
+{
+    return static_cast<std::atomic<std::uint64_t>*>(pointer)->load();
+}
+void ingress_idle_runtime(SinkFixture& fixture, std::atomic<std::uint64_t>& now,
+    std::uint32_t timeout_ms = 5)
+{
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+    fixture.runtime = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.channel = fixture.channel,
+            .peer = sink_peer,
+            .peer_socket_id = 90,
+            .initial_sequence = SequenceNumber {1000},
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+            .peer_idle_timeout_milliseconds = timeout_ms,
+            .now_function = ingress_idle_now,
+            .now_context = &now});
+}
+}
+
+TEST(channel_ingress_idle_queued_data_gets_bounded_processing_grace)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.ingress(sink_data(0));
+    now.store(5001);
+    const auto waiting = fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    REQUIRE(!waiting.immediate_work);
+    REQUIRE_EQ(waiting.next_work_delay, std::chrono::microseconds {2000});
+    gate->release();
+    sink_receive(fixture.runtime, std::byte {1});
+    fixture.scheduler->stop();
+    REQUIRE(!dispatcher->inbox()->snapshot().in_flight);
+    now.store(6000);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_ingress_idle_popped_copy_stays_pending_until_protocol_completion)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(16, gate);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.ingress(sink_data(0));
+    gate->wait();
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().queued, 0U);
+    REQUIRE(dispatcher->inbox()->snapshot().in_flight);
+    DatagramEnvelope envelope;
+    REQUIRE_EQ(
+        dispatcher->inbox()->pop(dispatcher->inbox()->token(), envelope, 1),
+        ConnectionDatagramInbox::Status::busy);
+    now.store(6001);
+    // Freeze both clocks: Windows requests immediate continuation below 1 ms,
+    // so host elapsed time must not shorten this exact 1 ms grace remainder.
+    const auto waiting = fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(!waiting.immediate_work);
+    REQUIRE_EQ(waiting.next_work_delay, std::chrono::microseconds {1000});
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    dispatcher->close();
+    REQUIRE(dispatcher->inbox()->snapshot().in_flight);
+    REQUIRE(!dispatcher->quiescent());
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE(!dispatcher->inbox()->snapshot().in_flight);
+    REQUIRE(dispatcher->quiescent());
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_ingress_idle_grace_does_not_slide_with_more_or_rejected_ingress)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher(2);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.ingress(sink_data(0));
+    now.store(5001);
+    const auto first = fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE_EQ(first.next_work_delay, std::chrono::microseconds {2000});
+    now.store(6000);
+    (void)fixture.ingress(sink_data(1));
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().data_rejections, 1U);
+    const auto second = fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE_EQ(second.next_work_delay, std::chrono::microseconds {1001});
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    // Further accepted control traffic cannot move the last real activity time.
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_replay().view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    now.store(7001);
+    (void)fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_ingress_idle_invalid_and_stale_admission_do_not_postpone_timeout)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    auto stale = dispatcher->inbox()->token();
+    ++stale.incarnation;
+    REQUIRE_EQ(
+        dispatcher->inbox()->publish(stale, sink_data(0).view(), sink_peer, 1),
+        ConnectionDatagramInbox::Status::stale);
+    auto wrong_peer = sink_peer;
+    ++wrong_peer.port;
+    REQUIRE_EQ(dispatcher->inbox()->publish(dispatcher->inbox()->token(),
+                   sink_data(0).view(), wrong_peer, 1),
+        ConnectionDatagramInbox::Status::invalid);
+    const std::array<std::byte, 3> invalid {};
+    REQUIRE_EQ(dispatcher->inbox()->publish(
+                   dispatcher->inbox()->token(), invalid, sink_peer, 1),
+        ConnectionDatagramInbox::Status::invalid);
+    now.store(6001);
+    (void)fixture.channel->poll_connections_for_testing();
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().highwater, 0U);
+    fixture.channel->unregister_connection(700);
+}
+
+namespace {
+struct IdlePollClock {
+    std::atomic<std::uint64_t> now {1000};
+    std::atomic<bool> pause {false};
+    std::shared_ptr<SinkGate> gate = std::make_shared<SinkGate>();
+    static std::uint64_t read(void* pointer) noexcept
+    {
+        auto& self = *static_cast<IdlePollClock*>(pointer);
+        if (self.pause.exchange(false)) {
+            SinkGate::block(self.gate.get());
+        }
+        return self.now.load();
+    }
+};
+}
+
+TEST(channel_ingress_idle_raw_publication_cannot_cross_runtime_timeout_fence)
+{
+    IdlePollClock clock;
+    SinkFixture fixture;
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+    fixture.runtime = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.channel = fixture.channel,
+            .peer = sink_peer,
+            .peer_socket_id = 90,
+            .initial_sequence = SequenceNumber {1000},
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+            .peer_idle_timeout_milliseconds = 5,
+            .now_function = IdlePollClock::read,
+            .now_context = &clock});
+    auto worker_gate = std::make_shared<SinkGate>();
+    SinkRelease worker_release {worker_gate};
+    sink_block_worker(fixture, worker_gate);
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    std::future<RuntimePollResult> poll;
+    std::future<ConnectionDatagramInbox::Status> publication;
+    SinkRelease release {clock.gate};
+    clock.now.store(6001);
+    clock.pause.store(true);
+    poll = std::async(std::launch::async, [&] {
+        return fixture.channel->poll_connections_for_testing();
+    });
+    clock.gate->wait();
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    publication = std::async(std::launch::async, [&] {
+        entered.set_value();
+        return dispatcher->inbox()->publish(
+            dispatcher->inbox()->token(), sink_data(0).view(), sink_peer, 1);
+    });
+    started.get();
+    REQUIRE_EQ(publication.wait_for(std::chrono::milliseconds {50}),
+        std::future_status::timeout);
+    clock.gate->release();
+    (void)poll.get();
+    REQUIRE_EQ(publication.get(), ConnectionDatagramInbox::Status::closed);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().highwater, 0U);
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_ingress_idle_captured_inbox_rejects_closed_runtime)
+{
+    SinkFixture fixture;
+    auto dispatcher = fixture.dispatcher();
+    auto captured = dispatcher->inbox();
+    fixture.runtime->close();
+    REQUIRE_EQ(
+        captured->publish(captured->token(), sink_data(0).view(), sink_peer, 1),
+        ConnectionDatagramInbox::Status::closed);
+    REQUIRE_EQ(captured->snapshot().highwater, 0U);
+}
+
+TEST(channel_ingress_idle_other_poll_work_keeps_the_shared_send_allowance)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.ingress(sink_data(0));
+    std::atomic<std::size_t> attempts {0};
+    SinkNeutralSend clear_hook {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(
+        [](std::span<const std::byte> bytes, IpEndpoint,
+            void* pointer) noexcept {
+            static_cast<std::atomic<std::size_t>*>(pointer)->fetch_add(1);
+            return UdpIoResult {.bytes_transferred = bytes.size()};
+        },
+        &attempts);
+    const std::array<std::byte, 2500> payload {};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1, -1).status,
+        MessageIoStatus::success);
+    now.store(6001);
+    std::size_t remaining = 1;
+    const auto result =
+        fixture.runtime->poll(remaining, dispatcher->inbox().get(), 2000);
+    REQUIRE(result.next_work_delay.has_value());
+    REQUIRE_EQ(remaining, 0U);
+    REQUIRE_EQ(attempts.load(), 1U);
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    REQUIRE(fixture.runtime->poll(remaining, dispatcher->inbox().get(), 2000)
+            .immediate_work);
+    REQUIRE_EQ(attempts.load(), 1U);
+    // No send hook can outlive the local attempt counter.
+    fixture.channel->unregister_connection(700);
+    fixture.channel->set_send_hook_for_testing(
+        [](std::span<const std::byte> bytes, IpEndpoint, void*) noexcept {
+            return UdpIoResult {.bytes_transferred = bytes.size()};
+        },
+        nullptr);
+}
+
+TEST(channel_ingress_idle_foreign_inbox_cannot_mask_another_runtime_timeout)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture target;
+    SinkFixture foreign;
+    ingress_idle_runtime(target, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(foreign, gate);
+    auto dispatcher = foreign.dispatcher();
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_data(0).view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    now.store(6001);
+    std::size_t remaining = 64;
+    (void)target.runtime->poll(remaining, dispatcher->inbox().get(), 2000);
+    REQUIRE(!target.runtime->accepts_datagrams());
+}
+
+TEST(channel_ingress_idle_grace_is_capped_at_one_peer_timeout)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.ingress(sink_data(0));
+    now.store(11001);
+    std::size_t remaining = 64;
+    (void)fixture.runtime->poll(remaining, dispatcher->inbox().get(),
+        (std::numeric_limits<std::uint64_t>::max)());
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(
+    channel_ingress_idle_ignored_protocol_copy_does_not_fabricate_peer_activity)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(16, gate);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    // This runtime has no replay response, so the established handler ignores
+    // the otherwise valid framed handshake. Admission is not peer activity.
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_replay().view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    gate->wait();
+    now.store(5001);
+    (void)fixture.channel->poll_connections_for_testing();
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE_EQ(
+        fixture.runtime->response_health().last_response_microseconds, 0U);
+    REQUIRE(!dispatcher->inbox()->snapshot().in_flight);
+    (void)fixture.channel->poll_connections_for_testing();
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    fixture.channel->unregister_connection(700);
 }

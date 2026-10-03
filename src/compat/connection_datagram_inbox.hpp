@@ -13,6 +13,8 @@
 namespace robotweax::srt::compat {
 
 struct DatagramEnvelope;
+class ConnectionRuntime;
+class ConnectionDatagramDispatcher;
 
 // Charges preallocated ring storage, including empty and retired inboxes.
 // Allocator bookkeeping, inbox metadata and consumer-owned copies are excluded.
@@ -47,7 +49,8 @@ public:
         stale,
         invalid,
         closed,
-        wake_failed
+        wake_failed,
+        busy
     };
     struct Snapshot {
         std::size_t queued = 0;
@@ -58,6 +61,7 @@ public:
         std::uint64_t wake_failures = 0;
         std::uint64_t maximum_queue_delay = 0;
         bool closed = false;
+        bool in_flight = false;
     };
 
     [[nodiscard]] static std::optional<std::size_t> storage_bytes(
@@ -75,10 +79,14 @@ public:
         return token_;
     }
     // Bytes are copied before returning; control admission never bypasses FIFO.
+    // A dispatcher-bound inbox fences even captured publishers through its
+    // target runtime mutex. Generic inboxes retain their original admission.
     // A failed wake closes admission and discards queued work instead of leaving
     // accepted bytes without a runnable consumer. Caller treats it as terminal.
     [[nodiscard]] Status publish(Token token, std::span<const std::byte> bytes,
         IpEndpoint peer, std::uint64_t now_microseconds) noexcept;
+    // Bound inboxes have one dispatcher consumer; its popped copy remains
+    // in-flight through protocol completion. Further pops return busy.
     [[nodiscard]] Status pop(Token token, DatagramEnvelope& envelope,
         std::uint64_t now_microseconds) noexcept;
     // A bounded consumer turn must rearm if it leaves queued work behind.
@@ -89,6 +97,18 @@ public:
     [[nodiscard]] Snapshot snapshot() const noexcept;
 
 private:
+    friend class ConnectionRuntime;
+    friend class ConnectionDatagramDispatcher;
+    // Attached once by the dispatcher factory, before any publication/wake.
+    void bind_runtime(std::weak_ptr<ConnectionRuntime> runtime) noexcept;
+    [[nodiscard]] bool bound_to(
+        const ConnectionRuntime* runtime) const noexcept;
+    [[nodiscard]] Status publish_unfenced(Token token,
+        std::span<const std::byte> bytes, IpEndpoint peer,
+        std::uint64_t now_microseconds) noexcept;
+    // One popped copy at a time for a bound inbox. Completion follows protocol
+    // effects; close does not revoke this record or imply callback quiescence.
+    [[nodiscard]] Status complete(Token token) noexcept;
     struct Entry;
     ConnectionDatagramInbox(std::shared_ptr<DatagramStorageBudget> budget,
         std::weak_ptr<ConnectionWorkBinding> binding, Token token,
@@ -105,6 +125,9 @@ private:
     const Configuration configuration_;
     std::unique_ptr<Entry[]> entries_;
     const std::size_t storage_bytes_;
+    std::weak_ptr<ConnectionRuntime> ingress_runtime_;
+    const ConnectionRuntime* ingress_identity_ = nullptr;
+    bool ingress_bound_ = false;
     mutable std::mutex mutex_;
     std::size_t head_ = 0;
     Snapshot snapshot_ {};

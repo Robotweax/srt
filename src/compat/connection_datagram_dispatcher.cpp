@@ -127,6 +127,9 @@ struct ConnectionDatagramDispatcher::State {
                     runtime->process_packet(decoded.packet, envelope.peer);
                 }
             }
+            if (!from_prefix) {
+                (void)self.inbox->complete(self.inbox->token());
+            }
             // Empty is published only after the last popped prefix copy has
             // completed its protocol call. Release the old ring outside locks.
             if (from_prefix && prefix->dispatch_prefix_empty()) {
@@ -210,6 +213,7 @@ ConnectionDatagramDispatcher::create(
         }
         // The reserved service has not been notified or exposed. Initialization
         // completes before the first publication can make its callback runnable.
+        inbox->bind_runtime(runtime);
         state->inbox = std::move(inbox);
         state->binding = binding;
         auto dispatcher = std::shared_ptr<ConnectionDatagramDispatcher>(
