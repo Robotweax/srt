@@ -513,7 +513,13 @@ int set_socket_option(
         set_last_error(SRT_ESCLOSED);
         return SRT_ERROR;
     }
-    if (is_pre_bind(option) && socket.state != SRTS_INIT) {
+    // Only the provisional non-group child may select its atomic profile
+    // bundle during admission. UDP binding options remain pre-bind-only.
+    const bool admission_profile_selection = option == SRTO_TRANSTYPE
+        && socket.state == SRTS_CONNECTING && socket.listen_callback_active
+        && socket.incoming_group_type == SRT_GTYPE_UNDEFINED;
+    if (is_pre_bind(option) && socket.state != SRTS_INIT
+        && !admission_profile_selection) {
         set_last_error(is_connection_state(socket.state)
                 ? SRT_ECONNSOCK
                 : SRT_EBOUNDSOCK);

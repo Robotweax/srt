@@ -147,6 +147,26 @@ configure live transport through `<srt/srt.h>`.
 - Native IP time-to-live/hop-limit and IPv4/IPv6 traffic class
 - Linux network-interface binding with an explicit unsupported-platform result
 
+## Per-connection profile selection on a shared listener
+
+`SRTO_TRANSTYPE` normally remains a pre-bind option. During
+`srt_listen_callback`, the provisional, connecting non-group child socket may
+select its Live, File, Sensor or Control profile atomically. This allows one
+UDP listener to admit different profiles based on the caller's Stream ID.
+Choose the profile before setting profile-specific overrides; selecting a
+profile resets its bundle defaults. Both peers must use compatible profiles.
+Stream ID is a routing hint, not authentication or a peer-profile attestation.
+
+This exception applies only to the active admission window on the child;
+it does not change the listener or its shared UDP binding. MSS, buffers and
+other pre-bind options remain immutable. Group admissions, connected sockets,
+and sockets outside the callback window cannot use this exception. Invalid
+or unsupported combinations fail without committing a partial profile update;
+existing encryption and packet-filter constraints continue to apply.
+Callbacks must return promptly. Do not retain the provisional handle as an
+accepted connection: rejection, closure or handshake failure can invalidate it.
+Only a successfully accepted connection may be used for application I/O.
+
 ## AES-GCM extension option
 
 `SRTO_CRYPTOMODE` is deliberately absent from the default SRT v1.5.7 public
