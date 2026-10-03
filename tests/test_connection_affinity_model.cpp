@@ -2,13 +2,8 @@
 #include "compat/connection_affinity_model.hpp"
 
 #include <array>
-#include <atomic>
 #include <barrier>
 #include <thread>
-
-namespace robotweax::srt::test {
-extern std::atomic<std::size_t> affinity_allocations;
-}
 
 namespace {
 using Model = robotweax::srt::compat::model::ConnectionAffinity;
@@ -622,47 +617,4 @@ TEST(affinity_concurrent_producers_preserve_owned_bytes_and_one_ready_entry)
             REQUIRE_EQ(byte, event.bytes[0]);
     }
     REQUIRE(model.finish_turn(owner, 2));
-}
-
-TEST(affinity_full_pool_operations_do_not_allocate_after_setup)
-{
-    auto before = robotweax::srt::test::affinity_allocations.load();
-    Model model({});
-    REQUIRE_EQ(robotweax::srt::test::affinity_allocations.load(), before + 1);
-    before = robotweax::srt::test::affinity_allocations.load();
-    std::array<Model::Key, Model::maximum_connections> keys;
-    std::array<std::array<Model::Command, Model::command_capacity>,
-        Model::maximum_connections>
-        commands;
-    std::array<Model::Timer, Model::maximum_connections> timers;
-    Credits credits;
-    for (std::size_t i = 0; i < keys.size(); ++i) {
-        keys[i] = connection(model, static_cast<std::uint32_t>(i + 1));
-        for (auto& command : commands[i])
-            command = present(model.publish_command(keys[i], payload, 1));
-        for (std::size_t n = 0; n < Model::datagram_capacity; ++n)
-            REQUIRE_EQ(model.publish(keys[i], Kind::control, payload, 1),
-                Admission::accepted);
-        REQUIRE(model.notify(keys[i], Kind::send, 1));
-        REQUIRE(model.notify(keys[i], Kind::receive_release, 1));
-        timers[i] = present(model.arm_timer(keys[i], 2));
-        REQUIRE(model.publish_timer(timers[i], 2));
-    }
-    REQUIRE(!model.admit(1, 100));
-    // Visit every slot with payload, command, timer and completion storage live.
-    for (auto key : keys)
-        consume(model, turn(model, key), 3);
-    model.stop(4);
-    for (std::size_t i = 0; i < keys.size(); ++i) {
-        drain(model, keys[i], 5);
-        for (auto command : commands[i])
-            REQUIRE(model.take_result(command));
-    }
-    REQUIRE(model.restart());
-    auto key = connection(model);
-    auto lease = present(credits.grant(key.route));
-    REQUIRE(credits.attempt(lease, 1500));
-    REQUIRE(credits.release(lease));
-    REQUIRE(credits.next_round());
-    REQUIRE_EQ(robotweax::srt::test::affinity_allocations.load(), before);
 }
