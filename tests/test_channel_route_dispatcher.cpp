@@ -7,12 +7,14 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cerrno>
 #include <condition_variable>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <limits>
 #include <thread>
+#include <utility>
 
 using namespace robotweax::srt;
 using namespace robotweax::srt::compat;
@@ -2119,4 +2121,314 @@ TEST(channel_retirement_drain_paused_prefix_callback_retains_new_ring_credit)
     REQUIRE(!old_runtime.expired());
     prefix.reset();
     REQUIRE(old_runtime.expired());
+}
+
+TEST(channel_route_unregister_reclaims_quiet_ring_with_captured_handle)
+{
+    SinkFixture fixture;
+    auto dispatcher = fixture.dispatcher(4);
+    auto captured = dispatcher->inbox();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    fixture.channel->unregister_connection(700);
+    REQUIRE(captured->snapshot().closed);
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    REQUIRE(fixture.channel->retire_connection(700) == nullptr);
+    REQUIRE_EQ(
+        captured->publish(captured->token(), sink_data(0).view(), sink_peer, 0),
+        ConnectionDatagramInbox::Status::closed);
+}
+
+TEST(channel_route_retirement_receipt_survives_socket_id_reuse)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto old = fixture.dispatcher(4, gate);
+    auto captured = old->inbox();
+    REQUIRE(fixture.channel->register_connection(700, fixture.runtime, old));
+    (void)fixture.ingress(sink_data(0));
+    gate->wait();
+    auto receipt = fixture.channel->retire_connection(700);
+    REQUIRE(receipt == old);
+    fixture.runtime->close();
+    REQUIRE_EQ(
+        receipt->finish_retirement(std::chrono::steady_clock::now()).status,
+        ConnectionWorkBinding::DrainStatus::timeout);
+    old.reset();
+    auto next_runtime = fixture.make_runtime(91, nullptr, false);
+    auto next = ConnectionDatagramDispatcher::create(next_runtime,
+        fixture.scheduler, fixture.budget, 0, sink_peer,
+        {.capacity = 4, .control_reserve = 1}, {.turn_budget = 2});
+    REQUIRE(next != nullptr);
+    REQUIRE(fixture.channel->register_connection(700, next_runtime, next));
+    (void)fixture.ingress(sink_data(0));
+    sink_receive(next_runtime, std::byte {1});
+    REQUIRE_EQ(
+        captured->publish(captured->token(), sink_data(1).view(), sink_peer, 0),
+        ConnectionDatagramInbox::Status::closed);
+    gate->release();
+    REQUIRE(receipt
+            ->finish_retirement(
+                std::chrono::steady_clock::now() + std::chrono::seconds {2})
+            .storage_released);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(),
+        *ConnectionDatagramInbox::storage_bytes(4));
+    receipt.reset();
+    captured.reset();
+    (void)fixture.ingress(sink_data(1));
+    sink_receive(next_runtime, std::byte {2});
+    auto next_receipt = fixture.channel->retire_connection(700);
+    REQUIRE(next_receipt == next);
+    REQUIRE(next_receipt
+            ->finish_retirement(
+                std::chrono::steady_clock::now() + std::chrono::seconds {2})
+            .storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+}
+
+TEST(channel_route_retirement_receipt_rejects_worker_drain)
+{
+    SinkFixture fixture;
+    struct Probe {
+        std::weak_ptr<DatagramChannel> channel;
+        std::promise<ConnectionDatagramDispatcher::DrainResult> answer;
+        static void run(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Probe*>(pointer);
+            const auto channel = self.channel.lock();
+            const auto receipt =
+                channel != nullptr ? channel->retire_connection(700) : nullptr;
+            self.answer.set_value(receipt != nullptr
+                    ? receipt->finish_retirement(
+                          std::chrono::steady_clock::now()
+                          + std::chrono::seconds {10})
+                    : ConnectionDatagramDispatcher::DrainResult {
+                          ConnectionWorkBinding::DrainStatus::not_retired,
+                          false});
+        }
+    };
+    auto probe = std::make_shared<Probe>();
+    probe->channel = fixture.channel;
+    auto answer = probe->answer.get_future();
+    auto dispatcher =
+        ConnectionDatagramDispatcher::create(fixture.runtime, fixture.scheduler,
+            fixture.budget, 1, sink_peer, {.capacity = 4, .control_reserve = 1},
+            {.turn_budget = 2,
+                .after_pop_for_testing = Probe::run,
+                .after_pop_context_for_testing = probe});
+    REQUIRE(dispatcher != nullptr);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.ingress(sink_data(0));
+    REQUIRE_EQ(
+        answer.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    const auto result = answer.get();
+    REQUIRE_EQ(
+        result.status, ConnectionWorkBinding::DrainStatus::worker_thread);
+    REQUIRE(!result.storage_released);
+    REQUIRE(fixture.channel->retire_connection(700) == nullptr);
+    fixture.scheduler->stop();
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 1U);
+    REQUIRE(dispatcher->finish_retirement(std::chrono::steady_clock::now())
+            .storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+}
+
+TEST(channel_fatal_fault_retires_dispatcher_and_breaks_direct_routes)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(4, gate);
+    auto captured = dispatcher->inbox();
+    auto direct = fixture.make_runtime(91, nullptr, false);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    REQUIRE(fixture.channel->register_connection(701, direct));
+    (void)fixture.ingress(sink_data(0));
+    gate->wait();
+    auto fatal = [](std::span<std::byte>) noexcept {
+        return UdpIoResult {.error = Error::io_error, .system_error = EIO};
+    };
+    (void)fixture.channel->run_once_for_testing(fatal);
+    REQUIRE(fixture.runtime->broken());
+    REQUIRE(direct->broken());
+    REQUIRE(captured->snapshot().closed);
+    REQUIRE(!captured->snapshot().storage_released);
+    REQUIRE(!fixture.channel->register_connection(
+        702, fixture.make_runtime(92, nullptr, false)));
+    REQUIRE(!fixture.channel->replay_established_handshake(
+        {.message = decode_handshake_datagram(sink_replay().view()).message,
+            .peer = sink_peer}));
+    auto receipt = fixture.channel->retire_connection(700);
+    REQUIRE(receipt == dispatcher);
+    REQUIRE_EQ(
+        receipt->finish_retirement(std::chrono::steady_clock::now()).status,
+        ConnectionWorkBinding::DrainStatus::timeout);
+    gate->release();
+    REQUIRE(receipt
+            ->finish_retirement(
+                std::chrono::steady_clock::now() + std::chrono::seconds {2})
+            .storage_released);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    fixture.channel->unregister_connection(701);
+    // The first fatal error is terminal; repeated fanout cannot reopen admission.
+    (void)fixture.channel->run_once_for_testing(fatal);
+    REQUIRE(!fixture.channel->register_connection(700, direct));
+}
+
+TEST(channel_fault_fanout_releases_route_lock_and_follows_concurrent_detach)
+{
+    SinkFixture fixture;
+    struct Clock {
+        std::atomic_bool armed {false};
+        std::shared_ptr<SinkGate> gate = std::make_shared<SinkGate>();
+        static std::uint64_t now(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Clock*>(pointer);
+            if (self.armed.exchange(false)) {
+                SinkGate::block(self.gate.get());
+            }
+            return 1000;
+        }
+    } clock;
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+    auto first = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.channel = fixture.channel,
+            .peer = sink_peer,
+            .peer_socket_id = 93,
+            .initial_sequence = SequenceNumber {1000},
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+            .now_function = Clock::now,
+            .now_context = &clock});
+    auto pending = fixture.dispatcher(4);
+    auto last = fixture.make_runtime(94, nullptr, false);
+    REQUIRE(fixture.channel->register_connection(698, first));
+    REQUIRE(
+        fixture.channel->register_connection(699, fixture.runtime, pending));
+    REQUIRE(fixture.channel->register_connection(700, last));
+    std::future<void> fault;
+    std::future<std::shared_ptr<ConnectionDatagramDispatcher>> detached;
+    SinkRelease release {clock.gate};
+    clock.armed.store(true);
+    fault = std::async(std::launch::async, [&] {
+        auto fatal = [](std::span<std::byte>) noexcept {
+            return UdpIoResult {.error = Error::io_error, .system_error = EIO};
+        };
+        (void)fixture.channel->run_once_for_testing(fatal);
+    });
+    clock.gate->wait();
+    detached = std::async(std::launch::async, [&] {
+        (void)fixture.channel->retire_connection(698);
+        return fixture.channel->retire_connection(699);
+    });
+    // The runtime clock is paused under its mutex. Detach needs only the route
+    // lock, proving fanout does not retain that lock through protocol work.
+    REQUIRE_EQ(
+        detached.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    auto receipt = detached.get();
+    REQUIRE(receipt == pending);
+    REQUIRE(receipt->finish_retirement(std::chrono::steady_clock::now())
+            .storage_released);
+    clock.gate->release();
+    fault.get();
+    REQUIRE(first->broken());
+    REQUIRE(last->broken());
+    REQUIRE(!fixture.runtime->broken());
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_fault_fanout_retires_both_active_and_pending_shard_services)
+{
+    SinkFixture fixture;
+    auto active_gate = std::make_shared<SinkGate>();
+    auto pending_gate = std::make_shared<SinkGate>();
+    SinkRelease active_release {active_gate};
+    SinkRelease pending_release {pending_gate};
+    auto active = fixture.dispatcher(4, active_gate);
+    auto other_runtime = fixture.make_runtime(91, nullptr, false);
+    auto pending = ConnectionDatagramDispatcher::create(other_runtime,
+        fixture.scheduler, fixture.budget, 0, sink_peer,
+        {.capacity = 4, .control_reserve = 1}, {.turn_budget = 2});
+    REQUIRE(pending != nullptr);
+    REQUIRE(fixture.channel->register_connection(700, fixture.runtime, active));
+    REQUIRE(fixture.channel->register_connection(701, other_runtime, pending));
+    REQUIRE_EQ(fixture.scheduler->submit(
+                   0, {.function = SinkGate::block, .context = pending_gate}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    pending_gate->wait();
+    auto active_inbox = active->inbox();
+    auto pending_inbox = pending->inbox();
+    REQUIRE_EQ(
+        active->publish(active_inbox->token(), sink_data(0).view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    active_gate->wait();
+    REQUIRE_EQ(pending->publish(
+                   pending_inbox->token(), sink_data(0).view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    auto fatal = [](std::span<std::byte>) noexcept {
+        return UdpIoResult {.error = Error::io_error, .system_error = EIO};
+    };
+    (void)fixture.channel->run_once_for_testing(fatal);
+    REQUIRE(fixture.runtime->broken());
+    REQUIRE(other_runtime->broken());
+    REQUIRE(active_inbox->snapshot().closed);
+    REQUIRE(pending_inbox->snapshot().closed);
+    REQUIRE_EQ(pending_inbox->snapshot().queued, 0U);
+    fixture.channel->unregister_connection(701);
+    REQUIRE(pending_inbox->snapshot().storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(),
+        *ConnectionDatagramInbox::storage_bytes(4));
+    auto receipt = fixture.channel->retire_connection(700);
+    REQUIRE_EQ(
+        receipt->finish_retirement(std::chrono::steady_clock::now()).status,
+        ConnectionWorkBinding::DrainStatus::timeout);
+    active_gate->release();
+    REQUIRE(receipt
+            ->finish_retirement(
+                std::chrono::steady_clock::now() + std::chrono::seconds {2})
+            .storage_released);
+    pending_gate->release();
+    fixture.scheduler->stop();
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    REQUIRE_EQ(other_runtime->buffer_packet_counts().available_receive, 0U);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(active_inbox->publish(
+                   active_inbox->token(), sink_data(1).view(), sink_peer, 0),
+        ConnectionDatagramInbox::Status::closed);
+    REQUIRE_EQ(pending_inbox->publish(
+                   pending_inbox->token(), sink_data(1).view(), sink_peer, 0),
+        ConnectionDatagramInbox::Status::closed);
+}
+
+TEST(channel_transient_receive_error_preserves_route_admission)
+{
+    SinkFixture fixture;
+    auto dispatcher = fixture.dispatcher(4);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    bool received = false;
+    auto transient = [&](std::span<std::byte>) noexcept {
+        if (std::exchange(received, true)) {
+            return UdpIoResult {.error = Error::would_block};
+        }
+        return UdpIoResult {.error = Error::io_error, .system_error = EINTR};
+    };
+    (void)fixture.channel->run_once_for_testing(transient);
+    REQUIRE(!fixture.runtime->broken());
+    REQUIRE(!dispatcher->inbox()->snapshot().closed);
+    REQUIRE(fixture.channel->register_connection(
+        701, fixture.make_runtime(91, nullptr, false)));
+    (void)fixture.ingress(sink_data(0));
+    sink_receive(fixture.runtime, std::byte {1});
+    fixture.channel->unregister_connection(700);
+    fixture.channel->unregister_connection(701);
 }
