@@ -1918,3 +1918,205 @@ TEST(channel_cohort_wait_does_not_stop_another_route_on_shared_channel)
     fixture.channel->unregister_connection(700);
     fixture.channel->unregister_connection(701);
 }
+
+TEST(channel_retirement_drain_reclaims_ring_with_captured_closed_handles)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto old = fixture.dispatcher(4);
+    auto captured = old->inbox();
+    const auto token = captured->token();
+    REQUIRE_EQ(old->publish(token, sink_data(1).view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    const auto result =
+        old->finish_retirement(std::chrono::steady_clock::now());
+    REQUIRE_EQ(result.status, ConnectionWorkBinding::DrainStatus::quiescent);
+    REQUIRE(result.storage_released);
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    DatagramEnvelope envelope;
+    REQUIRE_EQ(captured->pop(token, envelope, 0),
+        ConnectionDatagramInbox::Status::closed);
+    REQUIRE_EQ(captured->rearm(token), ConnectionDatagramInbox::Status::closed);
+    REQUIRE_EQ(captured->publish(token, sink_data(0).view(), sink_peer, 0),
+        ConnectionDatagramInbox::Status::closed);
+    auto next = fixture.dispatcher(4);
+    REQUIRE_EQ(next->publish(token, sink_data(0).view(), sink_peer),
+        ConnectionDatagramInbox::Status::stale);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(),
+        *ConnectionDatagramInbox::storage_bytes(4));
+    REQUIRE(old->finish_retirement(std::chrono::steady_clock::time_point {})
+            .storage_released);
+    old.reset();
+    captured.reset();
+    REQUIRE_EQ(fixture.budget->reserved_bytes(),
+        *ConnectionDatagramInbox::storage_bytes(4));
+    REQUIRE_EQ(
+        next->publish(next->inbox()->token(), sink_data(0).view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    gate->release();
+    sink_receive(fixture.runtime, std::byte {1});
+    fixture.scheduler->stop();
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    REQUIRE(next->finish_retirement(std::chrono::steady_clock::now())
+            .storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+}
+
+TEST(channel_retirement_drain_timeout_keeps_inflight_ring_until_close_barrier)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(4, gate);
+    auto captured = dispatcher->inbox();
+    REQUIRE_EQ(
+        dispatcher->publish(captured->token(), sink_data(0).view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    gate->wait();
+    dispatcher->close();
+    const auto first =
+        dispatcher->finish_retirement(std::chrono::steady_clock::now());
+    REQUIRE_EQ(first.status, ConnectionWorkBinding::DrainStatus::timeout);
+    REQUIRE(!first.storage_released);
+    REQUIRE(captured->snapshot().in_flight);
+    REQUIRE(!captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(),
+        *ConnectionDatagramInbox::storage_bytes(4));
+    gate->release();
+    const auto second = dispatcher->finish_retirement(
+        std::chrono::steady_clock::now() + std::chrono::seconds {2});
+    REQUIRE_EQ(second.status, ConnectionWorkBinding::DrainStatus::quiescent);
+    REQUIRE(second.storage_released);
+    REQUIRE(!captured->snapshot().in_flight);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    REQUIRE_EQ(
+        captured->publish(captured->token(), sink_data(1).view(), sink_peer, 0),
+        ConnectionDatagramInbox::Status::closed);
+    fixture.scheduler->stop();
+}
+
+TEST(channel_retirement_drain_concurrent_callers_return_ring_credit_once)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    auto dispatcher = fixture.dispatcher(4, gate);
+    auto captured = dispatcher->inbox();
+    std::future<ConnectionDatagramDispatcher::DrainResult> first;
+    std::future<ConnectionDatagramDispatcher::DrainResult> second;
+    SinkRelease release {gate};
+    REQUIRE_EQ(
+        dispatcher->publish(captured->token(), sink_data(0).view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    gate->wait();
+    first = std::async(std::launch::async, [&] {
+        return dispatcher->finish_retirement(
+            std::chrono::steady_clock::now() + std::chrono::seconds {2});
+    });
+    second = std::async(std::launch::async, [&] {
+        return dispatcher->finish_retirement(
+            std::chrono::steady_clock::now() + std::chrono::seconds {2});
+    });
+    REQUIRE_EQ(first.wait_for(std::chrono::milliseconds {0}),
+        std::future_status::timeout);
+    REQUIRE_EQ(second.wait_for(std::chrono::milliseconds {0}),
+        std::future_status::timeout);
+    gate->release();
+    const auto a = first.get();
+    const auto b = second.get();
+    REQUIRE_EQ(a.status, ConnectionWorkBinding::DrainStatus::quiescent);
+    REQUIRE_EQ(b.status, ConnectionWorkBinding::DrainStatus::quiescent);
+    REQUIRE(a.storage_released && b.storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    fixture.scheduler->stop();
+    REQUIRE(
+        dispatcher->finish_retirement(std::chrono::steady_clock::time_point {})
+            .storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+}
+
+TEST(channel_retirement_drain_worker_retires_without_wait_or_ring_free)
+{
+    SinkFixture fixture;
+    struct Probe {
+        std::weak_ptr<ConnectionDatagramDispatcher> dispatcher;
+        std::promise<ConnectionDatagramDispatcher::DrainResult> answer;
+        static void run(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Probe*>(pointer);
+            const auto dispatcher = self.dispatcher.lock();
+            self.answer.set_value(dispatcher != nullptr
+                    ? dispatcher->finish_retirement(
+                          std::chrono::steady_clock::now()
+                          + std::chrono::seconds {10})
+                    : ConnectionDatagramDispatcher::DrainResult {
+                          ConnectionWorkBinding::DrainStatus::not_retired,
+                          false});
+        }
+    };
+    auto probe = std::make_shared<Probe>();
+    auto result = probe->answer.get_future();
+    auto dispatcher =
+        ConnectionDatagramDispatcher::create(fixture.runtime, fixture.scheduler,
+            fixture.budget, 1, sink_peer, {.capacity = 4, .control_reserve = 1},
+            {.turn_budget = 2,
+                .after_pop_for_testing = Probe::run,
+                .after_pop_context_for_testing = probe});
+    REQUIRE(dispatcher != nullptr);
+    probe->dispatcher = dispatcher;
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_data(0).view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    REQUIRE_EQ(
+        result.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    const auto on_worker = result.get();
+    REQUIRE_EQ(
+        on_worker.status, ConnectionWorkBinding::DrainStatus::worker_thread);
+    REQUIRE(!on_worker.storage_released);
+    fixture.scheduler->stop();
+    // Admission retirement permits the already popped callback to finish;
+    // callers needing no further state mutation must close the runtime first.
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 1U);
+    REQUIRE(dispatcher->finish_retirement(std::chrono::steady_clock::now())
+            .storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+}
+
+TEST(channel_retirement_drain_paused_prefix_callback_retains_new_ring_credit)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(4, gate);
+    auto prefix = prefix_deadline_promote(fixture, dispatcher, sink_data(0));
+    gate->wait();
+    REQUIRE(!dispatcher->inbox()->snapshot().in_flight);
+    REQUIRE(!dispatcher->setup_prefix_complete());
+    dispatcher->close();
+    const auto timeout =
+        dispatcher->finish_retirement(std::chrono::steady_clock::now());
+    REQUIRE_EQ(timeout.status, ConnectionWorkBinding::DrainStatus::timeout);
+    REQUIRE(!timeout.storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(),
+        *ConnectionDatagramInbox::storage_bytes(4));
+    REQUIRE(!prefix->push(sink_data(1).view(), sink_peer));
+    gate->release();
+    const auto quiet = dispatcher->finish_retirement(
+        std::chrono::steady_clock::now() + std::chrono::seconds {2});
+    REQUIRE_EQ(quiet.status, ConnectionWorkBinding::DrainStatus::quiescent);
+    REQUIRE(quiet.storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    fixture.channel->unregister_connection(700);
+    fixture.scheduler->stop();
+    std::weak_ptr<ConnectionRuntime> old_runtime = fixture.runtime;
+    fixture.runtime.reset();
+    // The separate old setup handle still pins its original runtime identity.
+    REQUIRE(!old_runtime.expired());
+    prefix.reset();
+    REQUIRE(old_runtime.expired());
+}

@@ -1,13 +1,16 @@
 #include "compat/connection_work_binding.hpp"
 
 #include <mutex>
+#include <condition_variable>
 #include <utility>
 
 namespace robotweax::srt::compat {
 
 struct ConnectionWorkBinding::State {
     std::mutex mutex;
+    std::condition_variable drained;
     ConnectionWorkHints pending;
+    bool callback_active = false;
     bool retired = false;
     Function function = nullptr;
     std::shared_ptr<void> context;
@@ -22,12 +25,19 @@ struct ConnectionWorkBinding::State {
                 return;
             }
             hints = std::exchange(state.pending, {});
+            if (!hints.send && !hints.receive_release && !hints.datagrams) {
+                return;
+            }
+            state.callback_active = true;
         }
         // A hint published while this callback runs remains pending and wakes
         // another turn. No client code executes under the publication mutex.
-        if (hints.send || hints.receive_release || hints.datagrams) {
-            state.function(state.context.get(), hints);
+        state.function(state.context.get(), hints);
+        {
+            std::lock_guard lock(state.mutex);
+            state.callback_active = false;
         }
+        state.drained.notify_all();
     }
 };
 
@@ -116,8 +126,39 @@ void ConnectionWorkBinding::retire() noexcept
 
 bool ConnectionWorkBinding::quiescent() const noexcept
 {
+    bool retired;
+    {
+        std::lock_guard lock(state_->mutex);
+        if (state_->callback_active) {
+            return false;
+        }
+        retired = state_->retired;
+    }
+    // An expired weak pointer alone is not a barrier: the scheduler destructor
+    // can be joining a client callback after its last strong reference vanished.
     const auto scheduler = scheduler_.lock();
-    return scheduler == nullptr || scheduler->service_quiescent(token_);
+    return scheduler != nullptr ? scheduler->service_quiescent(token_)
+                                : retired;
+}
+
+ConnectionWorkBinding::DrainStatus ConnectionWorkBinding::wait_quiescent(
+    std::chrono::steady_clock::time_point deadline) const noexcept
+{
+    if (RuntimeScheduler::on_worker_thread()) {
+        return DrainStatus::worker_thread;
+    }
+    std::unique_lock lock(state_->mutex);
+    if (!state_->retired) {
+        return DrainStatus::not_retired;
+    }
+    if (!state_->drained.wait_until(lock, deadline, [this] {
+            return !state_->callback_active;
+        })) {
+        return DrainStatus::timeout;
+    }
+    // Retirement and dispatch use this mutex. No new client callback can enter
+    // after retirement, including a service task already copied by a worker.
+    return DrainStatus::quiescent;
 }
 
 } // namespace robotweax::srt::compat

@@ -63,6 +63,7 @@ public:
         std::uint64_t maximum_queue_delay = 0;
         bool closed = false;
         bool in_flight = false;
+        bool storage_released = false;
         // Bound inbox FIFO progress: completion follows protocol effects.
         // Rejected publications and discarded close entries never advance it.
         std::uint64_t admitted = 0;
@@ -114,6 +115,9 @@ private:
     // One popped copy at a time for a bound inbox. Completion follows protocol
     // effects; close does not revoke this record or imply callback quiescence.
     [[nodiscard]] Status complete(Token token) noexcept;
+    // Dispatcher calls only after retirement and its client callback barrier.
+    // Closed captured handles retain metadata but no longer pin ring credits.
+    [[nodiscard]] bool reclaim_retired_storage() noexcept;
     struct Entry;
     ConnectionDatagramInbox(std::shared_ptr<DatagramStorageBudget> budget,
         std::weak_ptr<ConnectionWorkBinding> binding, Token token,
@@ -134,6 +138,7 @@ private:
     const ConnectionRuntime* ingress_identity_ = nullptr;
     bool ingress_bound_ = false;
     mutable std::mutex mutex_;
+    std::mutex reclamation_mutex_;
     std::size_t head_ = 0;
     Snapshot snapshot_ {};
 };

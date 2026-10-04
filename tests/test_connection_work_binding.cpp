@@ -432,3 +432,127 @@ TEST(connection_work_binding_runtime_close_discards_queued_hint)
     REQUIRE_EQ(runtime->queue_message(input, 0, true, false, 0).status,
         MessageIoStatus::local_closed);
 }
+
+TEST(connection_work_binding_drain_deadline_preserves_running_callback)
+{
+    auto scheduler = work_scheduler();
+    auto probe = std::make_shared<WorkProbe>();
+    auto gate = std::make_shared<WorkGate>();
+    probe->first_turn_gate = gate;
+    auto binding =
+        ConnectionWorkBinding::create(scheduler, 0, WorkProbe::run, probe);
+    REQUIRE(binding != nullptr);
+    std::future<ConnectionWorkBinding::DrainStatus> drain;
+    WorkGateRelease release {gate};
+    REQUIRE_EQ(binding->wait_quiescent(std::chrono::steady_clock::now()),
+        ConnectionWorkBinding::DrainStatus::not_retired);
+    REQUIRE_EQ(binding->notify({.datagrams = true}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    gate->wait();
+    binding->retire();
+    REQUIRE_EQ(binding->wait_quiescent(std::chrono::steady_clock::now()),
+        ConnectionWorkBinding::DrainStatus::timeout);
+    REQUIRE(!binding->quiescent());
+    drain = std::async(std::launch::async, [&] {
+        return binding->wait_quiescent(
+            std::chrono::steady_clock::now() + std::chrono::seconds {2});
+    });
+    REQUIRE_EQ(drain.wait_for(std::chrono::milliseconds {0}),
+        std::future_status::timeout);
+    gate->release();
+    REQUIRE_EQ(drain.get(), ConnectionWorkBinding::DrainStatus::quiescent);
+    REQUIRE_EQ(
+        binding->wait_quiescent(std::chrono::steady_clock::time_point {}),
+        ConnectionWorkBinding::DrainStatus::quiescent);
+    scheduler->stop();
+    REQUIRE(binding->quiescent());
+}
+
+TEST(connection_work_binding_drain_rejects_wait_on_any_affinity_worker)
+{
+    auto scheduler = work_scheduler();
+    auto binding = ConnectionWorkBinding::create(
+        scheduler, 0, [](void*, ConnectionWorkHints) noexcept { }, nullptr);
+    REQUIRE(binding != nullptr);
+    binding->retire();
+    auto answer =
+        std::make_shared<std::promise<ConnectionWorkBinding::DrainStatus>>();
+    auto result = answer->get_future();
+    struct Check {
+        std::shared_ptr<ConnectionWorkBinding> binding;
+        std::shared_ptr<std::promise<ConnectionWorkBinding::DrainStatus>>
+            answer;
+    };
+    auto check = std::make_shared<Check>(Check {binding, answer});
+    REQUIRE_EQ(scheduler->submit(0,
+                   {.function =
+                           [](void* pointer) noexcept {
+                               auto& self = *static_cast<Check*>(pointer);
+                               self.answer->set_value(
+                                   self.binding->wait_quiescent(
+                                       std::chrono::steady_clock::now()
+                                       + std::chrono::seconds {10}));
+                           },
+                       .context = check}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(
+        result.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    REQUIRE_EQ(result.get(), ConnectionWorkBinding::DrainStatus::worker_thread);
+    scheduler->stop();
+}
+
+namespace {
+struct DrainScheduler : RuntimeScheduler {
+    std::shared_ptr<WorkGate> destructor_gate;
+    explicit DrainScheduler(std::shared_ptr<WorkGate> gate)
+        : RuntimeScheduler(Configuration {.shard_count = 1,
+              .queue_capacity_per_shard = 1,
+              .timer_capacity_per_shard = 1,
+              .service_capacity_per_shard = 1})
+        , destructor_gate(std::move(gate))
+    {
+    }
+    ~DrainScheduler()
+    {
+        WorkGate::block(destructor_gate.get());
+    }
+};
+}
+
+TEST(connection_work_binding_drain_expired_scheduler_is_not_callback_completion)
+{
+    auto destructor_gate = std::make_shared<WorkGate>();
+    auto callback_gate = std::make_shared<WorkGate>();
+    std::shared_ptr<RuntimeScheduler> scheduler =
+        std::make_shared<DrainScheduler>(destructor_gate);
+    REQUIRE(scheduler->start());
+    std::weak_ptr<RuntimeScheduler> old_scheduler = scheduler;
+    auto probe = std::make_shared<WorkProbe>();
+    probe->first_turn_gate = callback_gate;
+    auto binding =
+        ConnectionWorkBinding::create(scheduler, 0, WorkProbe::run, probe);
+    REQUIRE(binding != nullptr);
+    std::future<void> destruction;
+    WorkGateRelease release_destructor {destructor_gate};
+    WorkGateRelease release_callback {callback_gate};
+    REQUIRE_EQ(binding->notify({.datagrams = true}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    callback_gate->wait();
+    destruction = std::async(
+        std::launch::async, [owned = std::move(scheduler)]() mutable {
+            owned.reset();
+        });
+    destructor_gate->wait();
+    REQUIRE(old_scheduler.expired());
+    binding->retire();
+    REQUIRE(!binding->quiescent());
+    REQUIRE_EQ(binding->wait_quiescent(std::chrono::steady_clock::now()),
+        ConnectionWorkBinding::DrainStatus::timeout);
+    callback_gate->release();
+    REQUIRE_EQ(binding->wait_quiescent(
+                   std::chrono::steady_clock::now() + std::chrono::seconds {2}),
+        ConnectionWorkBinding::DrainStatus::quiescent);
+    REQUIRE(binding->quiescent());
+    destructor_gate->release();
+    destruction.get();
+}

@@ -41,6 +41,12 @@ public:
     // enforce the runtime close barrier before protocol effects. Never waits.
     void retire() noexcept;
     [[nodiscard]] bool quiescent() const noexcept;
+    enum class DrainStatus { quiescent, timeout, worker_thread, not_retired };
+    // Client callback barrier independent of scheduler lifetime. Retire first;
+    // never call while holding a runtime/route/inbox lock needed by a callback.
+    // All affinity workers reject this wait, including an already quiet one.
+    [[nodiscard]] DrainStatus wait_quiescent(
+        std::chrono::steady_clock::time_point deadline) const noexcept;
 
 private:
     struct State;

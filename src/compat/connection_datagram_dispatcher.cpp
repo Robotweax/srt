@@ -349,6 +349,18 @@ bool ConnectionDatagramDispatcher::quiescent() const noexcept
     return binding_->quiescent();
 }
 
+ConnectionDatagramDispatcher::DrainResult
+ConnectionDatagramDispatcher::finish_retirement(
+    std::chrono::steady_clock::time_point deadline) noexcept
+{
+    retire();
+    const auto status = binding_->wait_quiescent(deadline);
+    return {.status = status,
+        .storage_released =
+            status == ConnectionWorkBinding::DrainStatus::quiescent
+            && state_->inbox->reclaim_retired_storage()};
+}
+
 ConnectionDatagramDispatcher::Snapshot
 ConnectionDatagramDispatcher::snapshot() const noexcept
 {

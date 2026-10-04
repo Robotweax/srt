@@ -249,6 +249,30 @@ a separate query. A popped datagram cannot mutate a locally closed runtime.
 Peer shutdown preserves the existing buffered-prefix and late-packet behavior.
 Failed service notification also marks the target runtime broken.
 
+Internal `finish_retirement(deadline)` retires admission and waits for the
+binding's client callback to return before reclaiming the connection inbox ring.
+Retirement and callback entry share a mutex: a service task already copied by a
+worker cannot start a new client callback after retirement. This barrier tracks
+callback activity independently of scheduler ownership; expiry of a weak
+scheduler reference does not prove completion while its destructor joins workers.
+All affinity workers reject the wait. Off-worker callers must hold no runtime,
+route or inbox lock needed by the callback. A deadline timeout retains storage
+and credits, and callers can retry. This operation does not close the runtime or
+stop the scheduler; call explicit close first when late protocol mutation must
+be prevented. Already dispatched work may finish against a live runtime.
+
+After callback completion, ring destruction precedes budget credit return.
+Concurrent drainers serialize reclamation and report actual completion. Captured
+closed inbox handles remain safe and retain metadata, without retaining that
+ring or returning its credits twice. The barrier also covers a paused setup-prefix
+callback, even when the connection inbox has no in-flight entry. The old setup
+ring and runtime identity can remain alive through captured setup handles and
+are outside the connection ring budget. Callback completion does not promise
+immediate service-slot reuse or destruction of scheduler task contexts; the
+worker epilogue and generation rules still govern those resources. Route-wide
+and process-wide cleanup, fault fanout and public activation remain separate
+integration steps.
+
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently
 invoked runtime handlers. The dispatcher does not poll the runtime or grant it a

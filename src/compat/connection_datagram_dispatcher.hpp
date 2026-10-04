@@ -59,6 +59,16 @@ public:
     // True only after prefix protocol effects finish, or admission is retired.
     [[nodiscard]] bool setup_prefix_complete() const noexcept;
     [[nodiscard]] bool quiescent() const noexcept;
+    struct DrainResult {
+        ConnectionWorkBinding::DrainStatus status;
+        bool storage_released = false;
+    };
+    // Retire admission, then wait only for client callbacks outside all worker,
+    // route/runtime/inbox locks. No runtime close or scheduler stop is implied.
+    // Deadline timeout keeps ring credits; retry is idempotent. Captured closed
+    // inbox handles remain safe after a successful ring reclamation.
+    [[nodiscard]] DrainResult finish_retirement(
+        std::chrono::steady_clock::time_point deadline) noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
 
 private:
