@@ -167,8 +167,28 @@ when both are ready. Release closes service admission without blocking; an
 already dispatched callback retains its context until it returns, so clients
 must check their own generation and close barrier before effects. Final stop
 cancels pending service wakes, joins active callbacks, and retires contexts
-before concurrent stop callers return. The process scheduler currently reserves
-zero service slots; the UDP transport does not use this internal facility.
+before concurrent stop callers return. The process scheduler defaults to zero
+service slots; public UDP setup still does not create dispatchers automatically.
+
+For explicit internal prototype integration,
+`ROBOTWEAX_SRT_SCHEDULER_SERVICES_PER_SHARD` configures 0..4096 preallocated
+service slots per shard. Only an unsigned decimal integer is valid; signs,
+whitespace, empty values, overflow and trailing characters reject scheduler
+acquisition without publishing a generation. A missing value selects zero.
+Invalid input or allocation failure permits retry. The first successful scheduler
+acquisition fixes the capacity for that generation; changes take effect only
+after scheduler stop/final cleanup. Service-table storage is allocated before
+workers start, separately from ring storage, ordinary queues and timer tables.
+
+Admission is local to a shard: a full shard rejects even if another shard has
+space. Release permits reuse only after an executing callback returns. Different
+scheduler generations have separate tables and tokens; old binding destruction
+cannot release a new generation's slot. This bounds each generation's table,
+not aggregate tables retained across all generations or process metadata. The
+retained process ring ceiling still independently caps physical connection rings.
+A process-wide bound for retained service-table generations and complete scheduled
+network poll/send/public dispatcher setup remain subsequent integration gates.
+These are provisional resource limits, not measured acceptance thresholds.
 
 Message send and receive separate one locked state attempt from the synchronous
 wrapper's condition-variable waits. The attempt completes the existing buffer,
@@ -489,7 +509,8 @@ initialization. No budget lock is held during prefix promotion or callback wake.
 Admission does not commit a route: a concurrent shutdown is fenced separately by
 route registration, and the caller owns retirement of an unregistered dispatcher.
 Original explicit-budget factories remain available for internal callers. Public
-setup still supplies no dispatcher and production service capacity remains zero.
+setup still supplies no dispatcher; process service capacity defaults to zero
+and may be explicitly configured for internal prototype integration.
 Complete scheduled poll/send and selectable public setup remain subsequent gates.
 
 Internal `DatagramChannel::create_budgeted` and `adopt_budgeted` factories admit

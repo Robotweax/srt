@@ -55,6 +55,24 @@ public:
         if (!shard_count.has_value()) {
             return {};
         }
+#if defined(_WIN32)
+        char* service_setting = nullptr;
+        std::size_t service_setting_size = 0;
+        if (_dupenv_s(&service_setting, &service_setting_size,
+                "ROBOTWEAX_SRT_SCHEDULER_SERVICES_PER_SHARD")
+            != 0)
+            return {};
+        const std::unique_ptr<char, decltype(&std::free)> owned_service_setting(
+            service_setting, &std::free);
+#else
+        const char* service_setting =
+            std::getenv("ROBOTWEAX_SRT_SCHEDULER_SERVICES_PER_SHARD");
+#endif
+        const auto service_count = service_setting == nullptr
+            ? std::optional<std::size_t> {0U}
+            : parse_runtime_scheduler_services(service_setting);
+        if (!service_count.has_value())
+            return {};
         try {
             auto scheduler = std::make_shared<RuntimeScheduler>(
                 RuntimeScheduler::Configuration {
@@ -63,6 +81,7 @@ public:
                         runtime_scheduler_queue_capacity,
                     .timer_capacity_per_shard =
                         runtime_scheduler_timer_capacity,
+                    .service_capacity_per_shard = *service_count,
                 });
             if (!scheduler->start()) {
                 return {};
@@ -186,6 +205,20 @@ std::optional<std::size_t> parse_runtime_scheduler_shards(
         || count == 0U || count > 64U) {
         return std::nullopt;
     }
+    return count;
+}
+
+std::optional<std::size_t> parse_runtime_scheduler_services(
+    std::string_view value) noexcept
+{
+    if (value.empty())
+        return std::nullopt;
+    std::size_t count = 0;
+    const auto parsed =
+        std::from_chars(value.data(), value.data() + value.size(), count);
+    if (parsed.ec != std::errc {} || parsed.ptr != value.data() + value.size()
+        || count > 4096U)
+        return std::nullopt;
     return count;
 }
 

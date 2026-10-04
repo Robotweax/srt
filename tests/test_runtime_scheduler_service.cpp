@@ -8,6 +8,9 @@
 #include <cstdlib>
 #include <barrier>
 #include <future>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <vector>
 #include <optional>
 #include <string>
@@ -651,4 +654,201 @@ TEST(scheduler_service_channel_ring_policy_cleanup_restart_preserves_owner)
     REQUIRE_EQ(srt_cleanup(), 0);
     REQUIRE_EQ(fixture.process->reserved_bytes(), 0U);
     REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
+}
+
+TEST(scheduler_service_parses_bounded_service_capacity)
+{
+    for (const auto value : {"0", "1", "256", "4096", "0002"})
+        REQUIRE(parse_runtime_scheduler_services(value).has_value());
+    REQUIRE_EQ(*parse_runtime_scheduler_services("0"), 0U);
+    REQUIRE_EQ(*parse_runtime_scheduler_services("0002"), 2U);
+    for (const auto value : {"", "4097", "-1", "+2", " 2", "2 ", "2x", "1.5",
+             "999999999999999999999999999999999999999999"})
+        REQUIRE(!parse_runtime_scheduler_services(value).has_value());
+}
+
+TEST(scheduler_service_service_capacity_is_fixed_per_generation_and_retryable)
+{
+    constexpr const char* service_name =
+        "ROBOTWEAX_SRT_SCHEDULER_SERVICES_PER_SHARD";
+    EnvironmentGuard services {service_name};
+    EnvironmentGuard shards;
+    stop_runtime_scheduler();
+    REQUIRE_EQ(set_setting("2"), 0);
+#if !defined(_WIN32)
+    REQUIRE_EQ(set_named_setting(service_name, ""), 0);
+    REQUIRE(acquire_runtime_scheduler() == nullptr);
+#endif
+    for (const auto value : {"4097", "-1", "invalid", "1 "}) {
+        REQUIRE_EQ(set_named_setting(service_name, value), 0);
+        REQUIRE(acquire_runtime_scheduler() == nullptr);
+    }
+    REQUIRE_EQ(set_named_setting(service_name, "2"), 0);
+    REQUIRE_EQ(srt_startup(), 0);
+    auto scheduler = acquire_runtime_scheduler();
+    REQUIRE(scheduler != nullptr);
+    REQUIRE_EQ(scheduler->snapshot().service_capacity, 4U);
+    const auto callback = [](void*, ConnectionWorkHints) noexcept { };
+    auto first = ConnectionWorkBinding::create(scheduler, 0, callback, nullptr);
+    auto second =
+        ConnectionWorkBinding::create(scheduler, 0, callback, nullptr);
+    REQUIRE(first != nullptr);
+    REQUIRE(second != nullptr);
+    REQUIRE(ConnectionWorkBinding::create(scheduler, 0, callback, nullptr)
+        == nullptr);
+    auto other_shard =
+        ConnectionWorkBinding::create(scheduler, 1, callback, nullptr);
+    REQUIRE(other_shard != nullptr);
+    first->retire();
+    auto replacement =
+        ConnectionWorkBinding::create(scheduler, 0, callback, nullptr);
+    REQUIRE(replacement != nullptr);
+    REQUIRE_EQ(set_named_setting(service_name, "invalid"), 0);
+    REQUIRE_EQ(acquire_runtime_scheduler().get(), scheduler.get());
+    REQUIRE_EQ(scheduler->snapshot().service_capacity, 4U);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE(!scheduler->snapshot().accepting);
+    REQUIRE_EQ(set_named_setting(service_name, "1"), 0);
+    REQUIRE_EQ(srt_startup(), 0);
+    auto next = acquire_runtime_scheduler();
+    REQUIRE(next != nullptr);
+    REQUIRE(next != scheduler);
+    REQUIRE_EQ(next->snapshot().service_capacity, 2U);
+    auto next_binding =
+        ConnectionWorkBinding::create(next, 0, callback, nullptr);
+    REQUIRE(next_binding != nullptr);
+    first.reset();
+    second.reset();
+    replacement.reset();
+    other_shard.reset();
+    REQUIRE_EQ(next->snapshot().services_reserved, 1U);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE_EQ(set_named_setting(service_name, nullptr), 0);
+    auto disabled = acquire_runtime_scheduler();
+    REQUIRE(disabled != nullptr);
+    REQUIRE_EQ(disabled->snapshot().service_capacity, 0U);
+    REQUIRE(ConnectionWorkBinding::create(disabled, 0, callback, nullptr)
+        == nullptr);
+}
+
+TEST(
+    scheduler_service_selected_slots_admit_channel_dispatcher_and_refund_ring_rejection)
+{
+    constexpr const char* service_name =
+        "ROBOTWEAX_SRT_SCHEDULER_SERVICES_PER_SHARD";
+    EnvironmentGuard services {service_name};
+    EnvironmentGuard shards;
+    REQUIRE_EQ(set_setting("1"), 0);
+    REQUIRE_EQ(set_named_setting(service_name, "1"), 0);
+    stop_runtime_scheduler();
+    auto scheduler = acquire_runtime_scheduler();
+    REQUIRE(scheduler != nullptr);
+    auto process = acquire_runtime_inbox_storage_budget();
+    REQUIRE_EQ(process->reserved_inboxes(), 0U);
+    auto channel = std::make_shared<DatagramChannel>();
+    auto runtime = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.channel = channel,
+            .peer = robotweax::srt::IpEndpoint::loopback(9901),
+            .peer_socket_id = 10});
+    REQUIRE(channel->create_budgeted_dispatcher(runtime, scheduler, 0,
+                {.capacity = 0, .control_reserve = 0}, {})
+        == nullptr);
+    REQUIRE_EQ(scheduler->snapshot().services_reserved, 0U);
+    auto dispatcher = channel->create_budgeted_dispatcher(
+        runtime, scheduler, 0, {.capacity = 1, .control_reserve = 0}, {});
+    REQUIRE(dispatcher != nullptr);
+    REQUIRE_EQ(process->reserved_inboxes(), 1U);
+    REQUIRE(channel->create_budgeted_dispatcher(runtime, scheduler, 0,
+                {.capacity = 1, .control_reserve = 0}, {})
+        == nullptr);
+    REQUIRE_EQ(process->reserved_inboxes(), 1U);
+    dispatcher->retire_and_reclaim();
+    auto replacement = channel->create_budgeted_dispatcher(
+        runtime, scheduler, 0, {.capacity = 1, .control_reserve = 0}, {});
+    REQUIRE(replacement != nullptr);
+    dispatcher.reset();
+    REQUIRE_EQ(process->reserved_inboxes(), 1U);
+    replacement.reset();
+    REQUIRE_EQ(process->reserved_inboxes(), 0U);
+    REQUIRE_EQ(scheduler->snapshot().services_reserved, 0U);
+}
+
+TEST(scheduler_service_selected_slot_is_not_reused_until_callback_returns)
+{
+    constexpr const char* service_name =
+        "ROBOTWEAX_SRT_SCHEDULER_SERVICES_PER_SHARD";
+    EnvironmentGuard services {service_name};
+    EnvironmentGuard shards;
+    REQUIRE_EQ(set_setting("1"), 0);
+    REQUIRE_EQ(set_named_setting(service_name, "1"), 0);
+    stop_runtime_scheduler();
+    auto scheduler = acquire_runtime_scheduler();
+    REQUIRE(scheduler != nullptr);
+    struct Gate {
+        std::promise<void> entered;
+        std::mutex mutex;
+        std::condition_variable ready;
+        bool release = false;
+    };
+    auto gate = std::make_shared<Gate>();
+    auto entered = gate->entered.get_future();
+    struct Release {
+        std::shared_ptr<Gate> gate;
+        void open()
+        {
+            {
+                std::lock_guard lock(gate->mutex);
+                gate->release = true;
+            }
+            gate->ready.notify_all();
+        }
+        ~Release()
+        {
+            open();
+        }
+    } release {gate};
+    auto binding = ConnectionWorkBinding::create(
+        scheduler, 0,
+        [](void* pointer, ConnectionWorkHints) noexcept {
+            auto& gate = *static_cast<Gate*>(pointer);
+            gate.entered.set_value();
+            std::unique_lock lock(gate.mutex);
+            gate.ready.wait(lock, [&] {
+                return gate.release;
+            });
+        },
+        gate);
+    REQUIRE(binding != nullptr);
+    REQUIRE_EQ(binding->notify({.send = true}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(
+        entered.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    binding->retire();
+    const auto callback = [](void*, ConnectionWorkHints) noexcept { };
+    REQUIRE(ConnectionWorkBinding::create(scheduler, 0, callback, nullptr)
+        == nullptr);
+    // Retirement closes reservation admission, but execution still pins reuse.
+    REQUIRE_EQ(scheduler->snapshot().services_reserved, 0U);
+    REQUIRE_EQ(scheduler->snapshot().services_executing, 1U);
+    release.open();
+    REQUIRE_EQ(binding->wait_quiescent(
+                   std::chrono::steady_clock::now() + std::chrono::seconds {2}),
+        ConnectionWorkBinding::DrainStatus::quiescent);
+    // The client barrier precedes the scheduler epilogue; admission may still
+    // reject until that epilogue returns the physical slot.
+    std::shared_ptr<ConnectionWorkBinding> replacement;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    do {
+        replacement =
+            ConnectionWorkBinding::create(scheduler, 0, callback, nullptr);
+        if (replacement != nullptr)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    } while (std::chrono::steady_clock::now() < deadline);
+    REQUIRE(replacement != nullptr);
+    binding.reset();
+    REQUIRE_EQ(scheduler->snapshot().services_reserved, 1U);
+    replacement.reset();
+    REQUIRE_EQ(scheduler->snapshot().services_reserved, 0U);
 }

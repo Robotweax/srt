@@ -37,6 +37,11 @@ acquire_runtime_inbox_storage_budget() noexcept;
 [[nodiscard]] std::optional<std::size_t> parse_runtime_scheduler_shards(
     std::string_view value) noexcept;
 
+// Internal opt-in service slots per shard: strict decimal 0..4096, default 0.
+// Fixed for a scheduler generation; stopped/final-cleanup generations may differ.
+[[nodiscard]] std::optional<std::size_t> parse_runtime_scheduler_services(
+    std::string_view value) noexcept;
+
 // Constructs the lifecycle owner early enough that socket-registry teardown
 // always precedes scheduler destruction. It does not start worker threads.
 void prepare_runtime_scheduler_service() noexcept;
