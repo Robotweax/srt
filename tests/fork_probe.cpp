@@ -90,6 +90,10 @@ using namespace std::chrono_literals;
     if (!rejected_with_fork_error(srt_cleanup())) {
         _exit(25);
     }
+    if (robotweax::srt::compat::acquire_runtime_inbox_storage_budget()
+        != nullptr) {
+        _exit(27);
+    }
     if (srt_getversion() != SRT_VERSION_VALUE) {
         _exit(26);
     }
@@ -187,6 +191,11 @@ int main()
     if (scheduler == nullptr || !scheduler->snapshot().accepting) {
         std::fprintf(stderr, "parent scheduler startup failed\n");
         return 12;
+    }
+    if (robotweax::srt::compat::acquire_runtime_inbox_storage_budget()
+        == nullptr) {
+        std::fprintf(stderr, "parent inbox budget acquisition failed\n");
+        return 17;
     }
     const auto work_executor =
         robotweax::srt::compat::acquire_runtime_work_executor();

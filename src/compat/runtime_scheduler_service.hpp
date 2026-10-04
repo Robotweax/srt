@@ -8,6 +8,18 @@
 
 namespace robotweax::srt::compat {
 
+class DatagramStorageBudget;
+
+// Internal prototype ring ceiling, in MiB, with strict decimal range 1..1024.
+[[nodiscard]] std::optional<std::size_t> parse_runtime_inbox_storage_mib(
+    std::string_view value) noexcept;
+
+// One lazily allocated process owner, retained across scheduler stop and final
+// cleanup. Null is fail-closed; invalid settings/allocation may be retried.
+// The prototype must pass it explicitly to inbox/dispatcher admission.
+[[nodiscard]] std::shared_ptr<DatagramStorageBudget>
+acquire_runtime_inbox_storage_budget() noexcept;
+
 // Strict decimal process-setting parser; no whitespace, signs or trailing
 // characters. The bound keeps worker count and preallocated storage finite.
 [[nodiscard]] std::optional<std::size_t> parse_runtime_scheduler_shards(

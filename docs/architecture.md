@@ -434,8 +434,21 @@ Independent channels or scheduler generations can share the same process ceiling
 the prototype owner must deliberately retain and pass that budget across its
 admission scope. Original setup rings, inbox metadata, allocator bookkeeping and
 consumer copies remain excluded. This supplies internal layered ring admission;
-it does not install a global budget provider, cap all process memory, change
-service capacities or activate public dispatcher setup.
+it does not cap all process memory, change service capacities or activate public
+dispatcher setup.
+
+The internal prototype can acquire a lazy process-owned ring budget from the
+runtime scheduler service. `ROBOTWEAX_SRT_INBOX_STORAGE_MIB` sets its ceiling:
+strict decimal 1..1024 MiB, default 64 MiB. Invalid input or allocation failure
+returns null and permits retry. The first successful acquisition fixes the
+ceiling for the owning process lifetime; later environment changes, scheduler
+stop and final cleanup never replace or reset it. Thus old independently owned
+callbacks/rings continue charging the same ceiling after runtime restart. This
+is a provisional admission bound, not a measured acceptance threshold. Acquisition
+starts no workers, and a fork child is rejected before inherited mutex access.
+Clients must explicitly pass this owner to layered inbox/dispatcher factories;
+public setup is still unchanged. Channel-count/service admission and selectable
+scheduled poll/send integration remain subsequent gates.
 
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently
