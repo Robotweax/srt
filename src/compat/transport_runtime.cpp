@@ -554,6 +554,53 @@ DatagramChannel::~DatagramChannel()
     stop();
 }
 
+void DatagramChannel::release_native_credit() noexcept
+{
+    native_credit_.reset();
+}
+
+std::shared_ptr<DatagramChannel> DatagramChannel::create_budgeted(
+    IpAddressFamily family,
+    const std::shared_ptr<NativeChannelBudget>& budget) noexcept
+{
+    if (budget == nullptr || !budget->reserve())
+        return {};
+    bool reservation_owned = true;
+    try {
+        auto channel =
+            std::shared_ptr<DatagramChannel>(new DatagramChannel(family));
+        channel->native_credit_.budget = budget;
+        reservation_owned = false;
+        if (!channel->socket.valid())
+            return {};
+        return channel;
+    } catch (...) {
+        if (reservation_owned)
+            budget->release();
+        return {};
+    }
+}
+
+std::shared_ptr<DatagramChannel> DatagramChannel::adopt_budgeted(
+    UdpSocket& acquired_socket,
+    const std::shared_ptr<NativeChannelBudget>& budget) noexcept
+{
+    if (!acquired_socket.valid() || budget == nullptr || !budget->reserve())
+        return {};
+    bool reservation_owned = true;
+    try {
+        auto channel = std::shared_ptr<DatagramChannel>(
+            new DatagramChannel(std::move(acquired_socket)));
+        channel->native_credit_.budget = budget;
+        reservation_owned = false;
+        return channel;
+    } catch (...) {
+        if (reservation_owned)
+            budget->release();
+        return {};
+    }
+}
+
 UdpIoResult DatagramChannel::send_datagram(
     std::span<const std::byte> bytes,
     IpEndpoint peer) noexcept
@@ -1273,6 +1320,7 @@ DatagramChannel::ShutdownStatus DatagramChannel::shutdown(
         // Move ownership out without opening a replacement descriptor.
         auto retired_socket = std::move(socket);
     }
+    release_native_credit();
     shutdown_finished_ = true;
     return ShutdownStatus::retired;
 }

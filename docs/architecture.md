@@ -471,6 +471,25 @@ original setup rings, metadata retained after reclamation or every scheduler
 generation's service table. Automatic owner adoption, native channel-count
 admission and selectable scheduled poll/send/public setup remain subsequent gates.
 
+Internal `DatagramChannel::create_budgeted` and `adopt_budgeted` factories admit
+one native channel slot before opening or taking ownership of a UDP socket.
+Their shared `NativeChannelBudget` bounds simultaneous reservations; the lazy
+process owner admits 4,096 and survives cleanup/restart. A fork child is rejected
+before accessing inherited owner locks. Allocation/open failure refunds the slot.
+Count rejection leaves an adopted descriptor with its caller; allocation failure
+after ownership transfer can close it. Factory failures return null.
+
+Terminal shutdown destroys the native socket before returning the slot; repeated
+shutdown or later captured-handle destruction cannot return it again. Busy,
+worker-thread rejection and channel-task timeout retain the credit. Destructor
+joins existing channel work and closes the socket before credit return. These
+internal factories do not replace the existing public binding constructors:
+prototype callers must share/pass the owner explicitly, and independently owned
+channels require owning shutdown outside the bind registry. Captured closed
+metadata, caller-owned descriptors, original constructor use and process memory
+are outside this cap. Budgeted factory adoption in public setup, per-channel ring
+owner policy and selectable scheduled poll/send integration remain subsequent gates.
+
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently
 invoked runtime handlers. The dispatcher does not poll the runtime or grant it a

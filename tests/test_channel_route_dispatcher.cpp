@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <barrier>
 #include <atomic>
 #include <chrono>
 #include <cerrno>
@@ -2899,7 +2900,10 @@ TEST(channel_shutdown_active_channel_task_deadline_retains_context_for_retry)
             return 1000;
         }
     } clock;
-    auto channel = std::make_shared<DatagramChannel>(IpAddressFamily::ipv4);
+    auto native_budget = std::make_shared<NativeChannelBudget>(1);
+    auto channel =
+        DatagramChannel::create_budgeted(IpAddressFamily::ipv4, native_budget);
+    REQUIRE(channel != nullptr);
     REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
     SocketOptions options;
     REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
@@ -2921,6 +2925,10 @@ TEST(channel_shutdown_active_channel_task_deadline_retains_context_for_retry)
         DatagramChannel::ShutdownStatus::timeout);
     REQUIRE(!channel->running());
     REQUIRE(channel->socket.valid());
+    REQUIRE_EQ(native_budget->reserved_channels(), 1U);
+    REQUIRE(
+        DatagramChannel::create_budgeted(IpAddressFamily::ipv4, native_budget)
+        == nullptr);
     REQUIRE(!channel->start(fixture.scheduler, 1));
     REQUIRE(!channel->register_setup_inbox(
         701, sink_peer, std::make_shared<DatagramInbox>(4)));
@@ -2929,6 +2937,12 @@ TEST(channel_shutdown_active_channel_task_deadline_retains_context_for_retry)
                    std::chrono::steady_clock::now() + std::chrono::seconds {2}),
         DatagramChannel::ShutdownStatus::retired);
     REQUIRE(!channel->socket.valid());
+    REQUIRE_EQ(native_budget->reserved_channels(), 0U);
+    auto replacement =
+        DatagramChannel::create_budgeted(IpAddressFamily::ipv4, native_budget);
+    REQUIRE(replacement != nullptr);
+    REQUIRE_EQ(channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE_EQ(native_budget->reserved_channels(), 1U);
     REQUIRE(!runtime->accepts_datagrams());
 }
 
@@ -3086,4 +3100,123 @@ TEST(
     REQUIRE_EQ(process->reserved_inboxes(), 0U);
     REQUIRE_EQ(channel->reserved_inboxes(), 0U);
     REQUIRE_EQ(fixture.scheduler->snapshot().services_reserved, 0U);
+}
+
+TEST(native_channel_admission_rejects_zero_null_and_preserves_rejected_adoption)
+{
+    auto zero = std::make_shared<NativeChannelBudget>(0);
+    REQUIRE(DatagramChannel::create_budgeted(IpAddressFamily::ipv4, zero)
+        == nullptr);
+    REQUIRE(DatagramChannel::create_budgeted(IpAddressFamily::ipv4, nullptr)
+        == nullptr);
+    UdpSocket socket {IpAddressFamily::ipv4};
+    REQUIRE(socket.valid());
+    const auto identity = socket.native_handle();
+    REQUIRE(DatagramChannel::adopt_budgeted(socket, zero) == nullptr);
+    REQUIRE(socket.valid());
+    REQUIRE_EQ(socket.native_handle(), identity);
+    REQUIRE_EQ(zero->reserved_channels(), 0U);
+    auto budget = std::make_shared<NativeChannelBudget>(1);
+    auto channel = DatagramChannel::adopt_budgeted(socket, budget);
+    REQUIRE(channel != nullptr);
+    REQUIRE(!socket.valid());
+    REQUIRE_EQ(channel->socket.native_handle(), identity);
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    REQUIRE(DatagramChannel::adopt_budgeted(socket, budget) == nullptr);
+    REQUIRE_EQ(channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE(!channel->socket.valid());
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+}
+
+TEST(native_channel_admission_destruction_returns_one_credit_after_last_owner)
+{
+    auto budget = std::make_shared<NativeChannelBudget>(1);
+    auto channel =
+        DatagramChannel::create_budgeted(IpAddressFamily::ipv4, budget);
+    REQUIRE(channel != nullptr);
+    REQUIRE(channel->socket.valid());
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+    const auto endpoint = channel->socket.local_endpoint();
+    REQUIRE(endpoint);
+    auto captured = channel;
+    channel.reset();
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    REQUIRE(DatagramChannel::create_budgeted(IpAddressFamily::ipv4, budget)
+        == nullptr);
+    captured.reset();
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+    auto replacement =
+        DatagramChannel::create_budgeted(IpAddressFamily::ipv4, budget);
+    REQUIRE(replacement != nullptr);
+    REQUIRE_EQ(replacement->socket.bind(endpoint.endpoint), Error::none);
+    replacement.reset();
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+}
+
+TEST(native_channel_concurrent_admission_has_one_winner)
+{
+    auto budget = std::make_shared<NativeChannelBudget>(1);
+    std::barrier start {3};
+    auto create = [&] {
+        start.arrive_and_wait();
+        return DatagramChannel::create_budgeted(IpAddressFamily::ipv4, budget);
+    };
+    auto left = std::async(std::launch::async, create);
+    auto right = std::async(std::launch::async, create);
+    start.arrive_and_wait();
+    auto first = left.get();
+    auto second = right.get();
+    REQUIRE((first != nullptr) != (second != nullptr));
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    auto winner = first != nullptr ? first : second;
+    auto retire = [winner] {
+        return winner->shutdown();
+    };
+    auto a = std::async(std::launch::async, retire);
+    auto b = std::async(std::launch::async, retire);
+    for (const auto result : {a.get(), b.get()})
+        REQUIRE(result == DatagramChannel::ShutdownStatus::retired
+            || result == DatagramChannel::ShutdownStatus::busy);
+    REQUIRE(!winner->socket.valid());
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+    auto replacement =
+        DatagramChannel::create_budgeted(IpAddressFamily::ipv4, budget);
+    REQUIRE(replacement != nullptr);
+    first.reset();
+    second.reset();
+    winner.reset();
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    replacement.reset();
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+}
+
+TEST(native_channel_worker_shutdown_rejection_keeps_credit_for_external_retry)
+{
+    SinkFixture fixture;
+    auto budget = std::make_shared<NativeChannelBudget>(1);
+    auto channel =
+        DatagramChannel::create_budgeted(IpAddressFamily::ipv4, budget);
+    REQUIRE(channel != nullptr);
+    struct Probe {
+        std::shared_ptr<DatagramChannel> channel;
+        std::promise<DatagramChannel::ShutdownStatus> result;
+        static void run(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Probe*>(pointer);
+            self.result.set_value(self.channel->shutdown());
+        }
+    };
+    auto probe = std::make_shared<Probe>();
+    probe->channel = channel;
+    auto result = probe->result.get_future();
+    REQUIRE_EQ(fixture.scheduler->submit(
+                   0, {.function = Probe::run, .context = probe}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(
+        result.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    REQUIRE_EQ(result.get(), DatagramChannel::ShutdownStatus::worker_thread);
+    REQUIRE(channel->socket.valid());
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    REQUIRE_EQ(channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
 }

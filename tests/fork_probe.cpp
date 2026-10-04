@@ -94,6 +94,10 @@ using namespace std::chrono_literals;
         != nullptr) {
         _exit(27);
     }
+    if (robotweax::srt::compat::acquire_runtime_native_channel_budget()
+        != nullptr) {
+        _exit(28);
+    }
     if (srt_getversion() != SRT_VERSION_VALUE) {
         _exit(26);
     }
@@ -196,6 +200,10 @@ int main()
         == nullptr) {
         std::fprintf(stderr, "parent inbox budget acquisition failed\n");
         return 17;
+    }
+    if (robotweax::srt::compat::acquire_runtime_native_channel_budget()
+        == nullptr) {
+        return 18;
     }
     const auto work_executor =
         robotweax::srt::compat::acquire_runtime_work_executor();
