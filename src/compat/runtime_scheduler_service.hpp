@@ -37,6 +37,11 @@ acquire_runtime_inbox_storage_budget() noexcept;
 [[nodiscard]] std::optional<std::size_t> parse_runtime_scheduler_shards(
     std::string_view value) noexcept;
 
+// Retained process ceiling for service-enabled generation tables: 32 MiB/eight
+// generations, including stopped tables until scheduler destruction.
+[[nodiscard]] std::shared_ptr<SchedulerServiceStorageBudget>
+acquire_runtime_service_storage_budget() noexcept;
+
 // Internal opt-in service slots per shard: strict decimal 0..4096, default 0.
 // Fixed for a scheduler generation; stopped/final-cleanup generations may differ.
 [[nodiscard]] std::optional<std::size_t> parse_runtime_scheduler_services(

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <new>
 #include <stdexcept>
 #include <utility>
 
@@ -176,6 +177,53 @@ RuntimeScheduler::Task RuntimeScheduler::Shard::remove_timer(
     return task;
 }
 
+SchedulerServiceStorageBudget::SchedulerServiceStorageBudget(
+    std::size_t maximum_bytes, std::size_t maximum_generations) noexcept
+    : maximum_bytes_(maximum_bytes)
+    , maximum_generations_(maximum_generations)
+{
+}
+
+SchedulerServiceStorageBudget::Snapshot
+SchedulerServiceStorageBudget::snapshot() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    return reserved_;
+}
+
+bool SchedulerServiceStorageBudget::reserve(std::size_t bytes) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (reserved_.generations >= maximum_generations_
+        || bytes > maximum_bytes_ - reserved_.bytes)
+        return false;
+    reserved_.bytes += bytes;
+    ++reserved_.generations;
+    return true;
+}
+
+void SchedulerServiceStorageBudget::release(std::size_t bytes) noexcept
+{
+    std::lock_guard lock(mutex_);
+    reserved_.bytes -= bytes;
+    --reserved_.generations;
+}
+
+std::optional<std::size_t> RuntimeScheduler::service_storage_bytes(
+    const Configuration& configuration) noexcept
+{
+    if (configuration.service_capacity_per_shard == 0U)
+        return 0U;
+    const auto maximum = (std::numeric_limits<std::size_t>::max)();
+    if (configuration.shard_count
+            > maximum / configuration.service_capacity_per_shard
+        || configuration.shard_count * configuration.service_capacity_per_shard
+            > maximum / sizeof(Shard::ServiceSlot))
+        return std::nullopt;
+    return configuration.shard_count * configuration.service_capacity_per_shard
+        * sizeof(Shard::ServiceSlot);
+}
+
 RuntimeScheduler::RuntimeScheduler(Configuration configuration)
     : configuration_(configuration)
 {
@@ -184,13 +232,16 @@ RuntimeScheduler::RuntimeScheduler(Configuration configuration)
             configuration_.queue_capacity_per_shard;
     }
     if (configuration_.service_capacity_per_shard != 0U) {
-        const auto maximum = (std::numeric_limits<std::size_t>::max)();
-        if (configuration_.shard_count
-                > maximum / configuration_.service_capacity_per_shard
-            || configuration_.shard_count
-                    * configuration_.service_capacity_per_shard
-                > maximum / sizeof(Shard::ServiceSlot))
+        const auto bytes = service_storage_bytes(configuration_);
+        if (!bytes.has_value())
             throw std::length_error {"scheduler service storage size overflow"};
+        if (*bytes != 0U && configuration_.service_storage_budget != nullptr) {
+            if (!configuration_.service_storage_budget->reserve(*bytes))
+                throw std::bad_alloc {};
+            service_storage_credit_.budget =
+                configuration_.service_storage_budget;
+            service_storage_credit_.bytes = *bytes;
+        }
         service_scope_ = acquire_service_scope();
     }
     shards_.reserve(configuration_.shard_count);

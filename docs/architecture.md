@@ -186,8 +186,24 @@ scheduler generations have separate tables and tokens; old binding destruction
 cannot release a new generation's slot. This bounds each generation's table,
 not aggregate tables retained across all generations or process metadata. The
 retained process ring ceiling still independently caps physical connection rings.
-A process-wide bound for retained service-table generations and complete scheduled
-network poll/send/public dispatcher setup remain subsequent integration gates.
+Service-enabled process scheduler generations now share one retained
+`SchedulerServiceStorageBudget`: a provisional 32 MiB of physical service-slot
+storage and at most eight generations. Byte and generation reservations are
+checked together before allocation. Exhaustion rejects scheduler acquisition;
+releasing a retained generation permits retry without resetting the owner.
+Construction rollback returns credit, including failures after partial table
+allocation. Stop joins callbacks but retains table storage, so it does not refund
+this credit. Destruction frees shard vectors before returning credit; an expired
+scheduler weak reference during its destructor's callback join is not a refund
+barrier. Captured bindings after table destruction cannot return credit twice.
+
+The optional budget is also available to explicitly constructed internal
+schedulers. Original unbudgeted constructors and service-disabled generations
+remain outside this additional ceiling, as do ordinary queues/timers, worker
+stacks, allocator bookkeeping and callback metadata. It does not bound all process
+memory. Process owner acquisition rejects fork children before inherited mutexes.
+Complete scheduled network poll/send/public dispatcher setup remains a subsequent
+integration gate.
 These are provisional resource limits, not measured acceptance thresholds.
 
 Message send and receive separate one locked state attempt from the synchronous

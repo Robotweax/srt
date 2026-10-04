@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <barrier>
 #include <future>
+#include <limits>
+#include <new>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -463,6 +465,15 @@ TEST(
 }
 
 namespace {
+void require_dispatcher_storage_drained(
+    const std::shared_ptr<ConnectionDatagramDispatcher>& dispatcher)
+{
+    const auto drained = dispatcher->finish_retirement(
+        std::chrono::steady_clock::now() + std::chrono::seconds {2});
+    REQUIRE_EQ(drained.status, ConnectionWorkBinding::DrainStatus::quiescent);
+    REQUIRE(drained.storage_released);
+}
+
 struct ChannelBudgetFixture {
     EnvironmentGuard setting {"ROBOTWEAX_SRT_INBOX_STORAGE_MIB"};
     std::shared_ptr<DatagramStorageBudget> process;
@@ -595,6 +606,9 @@ TEST(
     auto captured = dispatcher->inbox();
     REQUIRE(channel->register_connection(700, runtime, dispatcher));
     REQUIRE_EQ(channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE(!runtime->accepts_datagrams());
+    REQUIRE(captured->snapshot().closed);
+    require_dispatcher_storage_drained(dispatcher);
     REQUIRE(captured->snapshot().storage_released);
     REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
     REQUIRE(fixture.create(channel, runtime) == nullptr);
@@ -628,6 +642,12 @@ TEST(scheduler_service_channel_ring_policy_cleanup_restart_preserves_owner)
     REQUIRE(old_channel->register_connection(700, old_runtime, old_dispatcher));
     REQUIRE_EQ(fixture.process->reserved_inboxes(), 1U);
     REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE(!old_channel->socket.valid());
+    REQUIRE(!old_runtime->accepts_datagrams());
+    REQUIRE(captured->snapshot().closed);
+    // This independently owned scheduler is not joined by process cleanup.
+    // Retirement fences admission; the receipt proves client callback drain.
+    require_dispatcher_storage_drained(old_dispatcher);
     REQUIRE(captured->snapshot().storage_released);
     REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
     REQUIRE_EQ(
@@ -652,6 +672,7 @@ TEST(scheduler_service_channel_ring_policy_cleanup_restart_preserves_owner)
     old_channel.reset();
     REQUIRE_EQ(fixture.process->reserved_inboxes(), 1U);
     REQUIRE_EQ(srt_cleanup(), 0);
+    require_dispatcher_storage_drained(dispatcher);
     REQUIRE_EQ(fixture.process->reserved_bytes(), 0U);
     REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
 }
@@ -851,4 +872,218 @@ TEST(scheduler_service_selected_slot_is_not_reused_until_callback_returns)
     REQUIRE_EQ(scheduler->snapshot().services_reserved, 1U);
     replacement.reset();
     REQUIRE_EQ(scheduler->snapshot().services_reserved, 0U);
+}
+
+TEST(
+    scheduler_service_storage_budget_retains_stopped_tables_and_rolls_back_failure)
+{
+    RuntimeScheduler::Configuration configuration {.shard_count = 1,
+        .queue_capacity_per_shard = 1,
+        .timer_capacity_per_shard = 1,
+        .service_capacity_per_shard = 2};
+    const auto bytes = *RuntimeScheduler::service_storage_bytes(configuration);
+    auto budget = std::make_shared<SchedulerServiceStorageBudget>(bytes, 2);
+    configuration.service_storage_budget = budget;
+    auto first = std::make_shared<RuntimeScheduler>(configuration);
+    REQUIRE(first->start());
+    first->stop();
+    REQUIRE_EQ(budget->snapshot().bytes, bytes);
+    REQUIRE_EQ(budget->snapshot().generations, 1U);
+    bool rejected = false;
+    try {
+        auto second = std::make_shared<RuntimeScheduler>(configuration);
+    } catch (const std::bad_alloc&) {
+        rejected = true;
+    }
+    REQUIRE(rejected);
+    REQUIRE_EQ(budget->snapshot().generations, 1U);
+    first.reset();
+    REQUIRE_EQ(budget->snapshot().bytes, 0U);
+    // Admission succeeds, then physical ordinary-vector allocation fails.
+    configuration.queue_capacity_per_shard =
+        (std::numeric_limits<std::size_t>::max)();
+    rejected = false;
+    try {
+        auto failed = std::make_shared<RuntimeScheduler>(configuration);
+    } catch (const std::exception&) {
+        rejected = true;
+    }
+    REQUIRE(rejected);
+    REQUIRE_EQ(budget->snapshot().bytes, 0U);
+    REQUIRE_EQ(budget->snapshot().generations, 0U);
+    configuration.queue_capacity_per_shard = 0;
+    auto failed_start = std::make_shared<RuntimeScheduler>(configuration);
+    REQUIRE(!failed_start->start());
+    REQUIRE_EQ(budget->snapshot().generations, 1U);
+    failed_start.reset();
+    REQUIRE_EQ(budget->snapshot().generations, 0U);
+    configuration.service_capacity_per_shard =
+        (std::numeric_limits<std::size_t>::max)();
+    REQUIRE(
+        !RuntimeScheduler::service_storage_bytes(configuration).has_value());
+}
+
+TEST(scheduler_service_storage_budget_serializes_generation_admission)
+{
+    RuntimeScheduler::Configuration configuration {.shard_count = 1,
+        .queue_capacity_per_shard = 1,
+        .timer_capacity_per_shard = 1,
+        .service_capacity_per_shard = 1};
+    const auto bytes = *RuntimeScheduler::service_storage_bytes(configuration);
+    auto budget = std::make_shared<SchedulerServiceStorageBudget>(bytes * 2, 1);
+    configuration.service_storage_budget = budget;
+    std::barrier start {3};
+    auto admit = [&] {
+        start.arrive_and_wait();
+        try {
+            return std::make_shared<RuntimeScheduler>(configuration);
+        } catch (const std::bad_alloc&) {
+            return std::shared_ptr<RuntimeScheduler> {};
+        }
+    };
+    auto left = std::async(std::launch::async, admit);
+    auto right = std::async(std::launch::async, admit);
+    start.arrive_and_wait();
+    auto first = left.get();
+    auto second = right.get();
+    REQUIRE((first != nullptr) != (second != nullptr));
+    REQUIRE_EQ(budget->snapshot().generations, 1U);
+    REQUIRE_EQ(budget->snapshot().bytes, bytes);
+    first.reset();
+    second.reset();
+    REQUIRE_EQ(budget->snapshot().generations, 0U);
+    auto retry = std::make_shared<RuntimeScheduler>(configuration);
+    REQUIRE_EQ(budget->snapshot().generations, 1U);
+    retry.reset();
+    REQUIRE_EQ(budget->snapshot().bytes, 0U);
+}
+
+TEST(
+    scheduler_service_process_table_budget_survives_cleanup_and_rejects_ninth_generation)
+{
+    constexpr const char* name = "ROBOTWEAX_SRT_SCHEDULER_SERVICES_PER_SHARD";
+    EnvironmentGuard services {name};
+    EnvironmentGuard shards;
+    stop_runtime_scheduler();
+    REQUIRE_EQ(set_setting("1"), 0);
+    REQUIRE_EQ(set_named_setting(name, "1"), 0);
+    auto budget = acquire_runtime_service_storage_budget();
+    REQUIRE(budget != nullptr);
+    REQUIRE_EQ(budget->snapshot().generations, 0U);
+    std::vector<std::shared_ptr<RuntimeScheduler>> retained;
+    for (std::size_t i = 0; i < 8; ++i) {
+        REQUIRE_EQ(srt_startup(), 0);
+        auto generation = acquire_runtime_scheduler();
+        REQUIRE(generation != nullptr);
+        retained.push_back(generation);
+        REQUIRE_EQ(srt_cleanup(), 0);
+        REQUIRE(!generation->snapshot().accepting);
+        REQUIRE_EQ(budget->snapshot().generations, i + 1);
+    }
+    REQUIRE_EQ(acquire_runtime_service_storage_budget().get(), budget.get());
+    REQUIRE(acquire_runtime_scheduler() == nullptr);
+    REQUIRE_EQ(budget->snapshot().generations, 8U);
+    // Service-disabled original tables remain outside this additional ceiling.
+    REQUIRE_EQ(set_named_setting(name, "0"), 0);
+    auto disabled = acquire_runtime_scheduler();
+    REQUIRE(disabled != nullptr);
+    REQUIRE_EQ(disabled->snapshot().service_capacity, 0U);
+    REQUIRE_EQ(budget->snapshot().generations, 8U);
+    stop_runtime_scheduler();
+    disabled.reset();
+    retained.pop_back();
+    REQUIRE_EQ(budget->snapshot().generations, 7U);
+    REQUIRE_EQ(set_named_setting(name, "1"), 0);
+    auto next = acquire_runtime_scheduler();
+    REQUIRE(next != nullptr);
+    REQUIRE_EQ(budget->snapshot().generations, 8U);
+    stop_runtime_scheduler();
+    retained.clear();
+    REQUIRE_EQ(budget->snapshot().generations, 1U);
+    next.reset();
+    REQUIRE_EQ(budget->snapshot().generations, 0U);
+    REQUIRE_EQ(budget->snapshot().bytes, 0U);
+}
+
+TEST(
+    scheduler_service_storage_credit_survives_last_owner_destructor_callback_join)
+{
+    RuntimeScheduler::Configuration configuration {.shard_count = 1,
+        .queue_capacity_per_shard = 1,
+        .timer_capacity_per_shard = 1,
+        .service_capacity_per_shard = 1};
+    const auto bytes = *RuntimeScheduler::service_storage_bytes(configuration);
+    auto budget = std::make_shared<SchedulerServiceStorageBudget>(bytes, 1);
+    configuration.service_storage_budget = budget;
+    auto scheduler = std::make_shared<RuntimeScheduler>(configuration);
+    REQUIRE(scheduler->start());
+    std::weak_ptr<RuntimeScheduler> weak = scheduler;
+    struct Gate {
+        std::promise<void> entered;
+        std::mutex mutex;
+        std::condition_variable ready;
+        bool release = false;
+    };
+    auto gate = std::make_shared<Gate>();
+    auto entered = gate->entered.get_future();
+    struct Teardown {
+        std::shared_ptr<Gate> gate;
+        std::thread destroy;
+        void open()
+        {
+            {
+                std::lock_guard lock(gate->mutex);
+                gate->release = true;
+            }
+            gate->ready.notify_all();
+        }
+        ~Teardown()
+        {
+            open();
+            if (destroy.joinable())
+                destroy.join();
+        }
+    } teardown {gate, {}};
+    auto binding = ConnectionWorkBinding::create(
+        scheduler, 0,
+        [](void* pointer, ConnectionWorkHints) noexcept {
+            auto& gate = *static_cast<Gate*>(pointer);
+            gate.entered.set_value();
+            std::unique_lock lock(gate.mutex);
+            gate.ready.wait(lock, [&] {
+                return gate.release;
+            });
+        },
+        gate);
+    REQUIRE(binding != nullptr);
+    REQUIRE_EQ(binding->notify({.send = true}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(
+        entered.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    teardown.destroy = std::thread([owner = std::move(scheduler)]() mutable {
+        owner.reset();
+    });
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    while (!weak.expired() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    REQUIRE(weak.expired());
+    REQUIRE_EQ(budget->snapshot().bytes, bytes);
+    REQUIRE_EQ(budget->snapshot().generations, 1U);
+    bool rejected = false;
+    try {
+        auto replacement = std::make_shared<RuntimeScheduler>(configuration);
+    } catch (const std::bad_alloc&) {
+        rejected = true;
+    }
+    REQUIRE(rejected);
+    teardown.open();
+    teardown.destroy.join();
+    REQUIRE_EQ(budget->snapshot().bytes, 0U);
+    REQUIRE_EQ(budget->snapshot().generations, 0U);
+    auto replacement = std::make_shared<RuntimeScheduler>(configuration);
+    binding.reset();
+    REQUIRE_EQ(budget->snapshot().generations, 1U);
+    replacement.reset();
+    REQUIRE_EQ(budget->snapshot().generations, 0U);
 }

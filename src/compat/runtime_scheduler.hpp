@@ -15,6 +15,28 @@ namespace robotweax::srt::compat {
 
 class SocketReadiness;
 
+// Physical persistent service-table storage, shared across scheduler generations.
+// Ordinary queues/timers, allocator bookkeeping and callback metadata are excluded.
+class SchedulerServiceStorageBudget {
+public:
+    struct Snapshot {
+        std::size_t bytes = 0;
+        std::size_t generations = 0;
+    };
+    SchedulerServiceStorageBudget(
+        std::size_t maximum_bytes, std::size_t maximum_generations) noexcept;
+    [[nodiscard]] Snapshot snapshot() const noexcept;
+
+private:
+    friend class RuntimeScheduler;
+    [[nodiscard]] bool reserve(std::size_t bytes) noexcept;
+    void release(std::size_t bytes) noexcept;
+    const std::size_t maximum_bytes_;
+    const std::size_t maximum_generations_;
+    mutable std::mutex mutex_;
+    Snapshot reserved_;
+};
+
 class RuntimeScheduler {
 public:
     using TaskFunction = void (*)(void*) noexcept;
@@ -26,7 +48,12 @@ public:
         // Independent, preallocated persistent service slots. The production
         // service defaults to zero; internal preview can opt in to bounded slots.
         std::size_t service_capacity_per_shard = 0;
+        // Optional shared generation/table budget, reserved before table allocation.
+        std::shared_ptr<SchedulerServiceStorageBudget> service_storage_budget;
     };
+
+    [[nodiscard]] static std::optional<std::size_t> service_storage_bytes(
+        const Configuration& configuration) noexcept;
 
     struct Task {
         TaskFunction function = nullptr;
@@ -199,7 +226,18 @@ private:
 
     void run(std::size_t shard_index) noexcept;
 
+    struct ServiceStorageCredit {
+        std::shared_ptr<SchedulerServiceStorageBudget> budget;
+        std::size_t bytes = 0;
+        ~ServiceStorageCredit()
+        {
+            if (budget != nullptr)
+                budget->release(bytes);
+        }
+    };
     Configuration configuration_;
+    // Reverse destruction frees shard vectors before returning physical credit.
+    ServiceStorageCredit service_storage_credit_;
     std::uint64_t service_scope_ = 0;
     std::vector<std::unique_ptr<Shard>> shards_;
     std::mutex lifecycle_mutex_;
