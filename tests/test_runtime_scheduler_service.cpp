@@ -465,6 +465,15 @@ TEST(
 }
 
 namespace {
+void require_dispatcher_storage_drained(
+    const std::shared_ptr<ConnectionDatagramDispatcher>& dispatcher)
+{
+    const auto drained = dispatcher->finish_retirement(
+        std::chrono::steady_clock::now() + std::chrono::seconds {2});
+    REQUIRE_EQ(drained.status, ConnectionWorkBinding::DrainStatus::quiescent);
+    REQUIRE(drained.storage_released);
+}
+
 struct ChannelBudgetFixture {
     EnvironmentGuard setting {"ROBOTWEAX_SRT_INBOX_STORAGE_MIB"};
     std::shared_ptr<DatagramStorageBudget> process;
@@ -597,6 +606,9 @@ TEST(
     auto captured = dispatcher->inbox();
     REQUIRE(channel->register_connection(700, runtime, dispatcher));
     REQUIRE_EQ(channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE(!runtime->accepts_datagrams());
+    REQUIRE(captured->snapshot().closed);
+    require_dispatcher_storage_drained(dispatcher);
     REQUIRE(captured->snapshot().storage_released);
     REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
     REQUIRE(fixture.create(channel, runtime) == nullptr);
@@ -630,6 +642,12 @@ TEST(scheduler_service_channel_ring_policy_cleanup_restart_preserves_owner)
     REQUIRE(old_channel->register_connection(700, old_runtime, old_dispatcher));
     REQUIRE_EQ(fixture.process->reserved_inboxes(), 1U);
     REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE(!old_channel->socket.valid());
+    REQUIRE(!old_runtime->accepts_datagrams());
+    REQUIRE(captured->snapshot().closed);
+    // This independently owned scheduler is not joined by process cleanup.
+    // Retirement fences admission; the receipt proves client callback drain.
+    require_dispatcher_storage_drained(old_dispatcher);
     REQUIRE(captured->snapshot().storage_released);
     REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
     REQUIRE_EQ(
@@ -654,6 +672,7 @@ TEST(scheduler_service_channel_ring_policy_cleanup_restart_preserves_owner)
     old_channel.reset();
     REQUIRE_EQ(fixture.process->reserved_inboxes(), 1U);
     REQUIRE_EQ(srt_cleanup(), 0);
+    require_dispatcher_storage_drained(dispatcher);
     REQUIRE_EQ(fixture.process->reserved_bytes(), 0U);
     REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
 }
