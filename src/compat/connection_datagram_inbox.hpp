@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -20,16 +21,21 @@ class ConnectionDatagramDispatcher;
 // Allocator bookkeeping, inbox metadata and consumer-owned copies are excluded.
 class DatagramStorageBudget {
 public:
-    explicit DatagramStorageBudget(std::size_t maximum_bytes) noexcept;
+    explicit DatagramStorageBudget(std::size_t maximum_bytes,
+        std::size_t maximum_inboxes =
+            std::numeric_limits<std::size_t>::max()) noexcept;
     [[nodiscard]] std::size_t reserved_bytes() const noexcept;
+    [[nodiscard]] std::size_t reserved_inboxes() const noexcept;
 
 private:
     friend class ConnectionDatagramInbox;
     [[nodiscard]] bool reserve(std::size_t bytes) noexcept;
     void release(std::size_t bytes) noexcept;
     const std::size_t maximum_bytes_;
+    const std::size_t maximum_inboxes_;
     mutable std::mutex mutex_;
     std::size_t reserved_bytes_ = 0;
+    std::size_t reserved_inboxes_ = 0;
 };
 
 class ConnectionDatagramInbox {

@@ -548,13 +548,15 @@ TEST(connection_inbox_identical_channel_and_process_budget_is_charged_once)
     const auto bytes = *ConnectionDatagramInbox::storage_bytes(4);
     auto scheduler = inbox_scheduler();
     auto binding = inbox_binding(scheduler);
-    auto budget = std::make_shared<DatagramStorageBudget>(bytes);
+    auto budget = std::make_shared<DatagramStorageBudget>(bytes, 1);
     auto inbox = ConnectionDatagramInbox::create(budget, binding, inbox_peer,
         {.capacity = 4, .control_reserve = 1}, budget);
     REQUIRE(inbox != nullptr);
     REQUIRE_EQ(budget->reserved_bytes(), bytes);
+    REQUIRE_EQ(budget->reserved_inboxes(), 1U);
     inbox.reset();
     REQUIRE_EQ(budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(budget->reserved_inboxes(), 0U);
     scheduler->stop();
 }
 
@@ -591,5 +593,108 @@ TEST(connection_inbox_concurrent_channel_admission_respects_one_process_ring)
     REQUIRE_EQ(first_budget->reserved_bytes(), 0U);
     REQUIRE_EQ(second_budget->reserved_bytes(), 0U);
     REQUIRE_EQ(process->reserved_bytes(), 0U);
+    scheduler->stop();
+}
+
+TEST(connection_inbox_count_ceilings_reject_despite_available_bytes)
+{
+    const auto bytes = *ConnectionDatagramInbox::storage_bytes(4);
+    auto scheduler = inbox_scheduler();
+    auto first_binding = inbox_binding(scheduler);
+    auto second_binding = inbox_binding(scheduler);
+    auto process = std::make_shared<DatagramStorageBudget>(bytes * 4, 1);
+    auto channel = std::make_shared<DatagramStorageBudget>(bytes * 4, 1);
+    auto other = std::make_shared<DatagramStorageBudget>(bytes * 4, 1);
+    auto first = ConnectionDatagramInbox::create(channel, first_binding,
+        inbox_peer, {.capacity = 4, .control_reserve = 1}, process);
+    REQUIRE(first != nullptr);
+    // Local count rejection never charges the process budget.
+    REQUIRE(ConnectionDatagramInbox::create(channel, second_binding, inbox_peer,
+                {.capacity = 4, .control_reserve = 1}, process)
+        == nullptr);
+    REQUIRE_EQ(channel->reserved_inboxes(), 1U);
+    REQUIRE_EQ(process->reserved_inboxes(), 1U);
+    // Process count rejection rolls back a different channel's reservation.
+    REQUIRE(ConnectionDatagramInbox::create(other, second_binding, inbox_peer,
+                {.capacity = 4, .control_reserve = 1}, process)
+        == nullptr);
+    REQUIRE_EQ(other->reserved_inboxes(), 0U);
+    REQUIRE_EQ(other->reserved_bytes(), 0U);
+    first->close();
+    REQUIRE_EQ(channel->reserved_inboxes(), 1U);
+    REQUIRE_EQ(process->reserved_inboxes(), 1U);
+    first.reset();
+    REQUIRE_EQ(channel->reserved_inboxes(), 0U);
+    REQUIRE_EQ(process->reserved_inboxes(), 0U);
+    auto next = ConnectionDatagramInbox::create(other, second_binding,
+        inbox_peer, {.capacity = 4, .control_reserve = 1}, process);
+    REQUIRE(next != nullptr);
+    next.reset();
+    REQUIRE_EQ(other->reserved_inboxes(), 0U);
+    REQUIRE_EQ(process->reserved_inboxes(), 0U);
+    scheduler->stop();
+}
+
+TEST(connection_inbox_zero_count_and_byte_rejection_leave_no_count_charge)
+{
+    const auto bytes = *ConnectionDatagramInbox::storage_bytes(4);
+    auto scheduler = inbox_scheduler();
+    auto binding = inbox_binding(scheduler);
+    auto process = std::make_shared<DatagramStorageBudget>(bytes * 4, 2);
+    for (const auto& channel :
+        {std::make_shared<DatagramStorageBudget>(bytes * 4, 0),
+            std::make_shared<DatagramStorageBudget>(bytes - 1, 2)}) {
+        REQUIRE(ConnectionDatagramInbox::create(channel, binding, inbox_peer,
+                    {.capacity = 4, .control_reserve = 1}, process)
+            == nullptr);
+        REQUIRE_EQ(channel->reserved_inboxes(), 0U);
+        REQUIRE_EQ(channel->reserved_bytes(), 0U);
+        REQUIRE_EQ(process->reserved_inboxes(), 0U);
+    }
+    auto channel = std::make_shared<DatagramStorageBudget>(bytes * 4, 2);
+    REQUIRE(ConnectionDatagramInbox::create(channel, binding, inbox_peer,
+                {.capacity = 4, .control_reserve = 5}, process)
+        == nullptr);
+    REQUIRE_EQ(channel->reserved_inboxes(), 0U);
+    REQUIRE_EQ(process->reserved_inboxes(), 0U);
+    scheduler->stop();
+}
+
+TEST(
+    connection_inbox_concurrent_count_admission_has_one_winner_and_refunds_loser)
+{
+    const auto bytes = *ConnectionDatagramInbox::storage_bytes(4);
+    auto scheduler = inbox_scheduler();
+    auto first_binding = inbox_binding(scheduler);
+    auto second_binding = inbox_binding(scheduler);
+    auto process = std::make_shared<DatagramStorageBudget>(bytes * 4, 1);
+    auto first_budget = std::make_shared<DatagramStorageBudget>(bytes * 4, 2);
+    auto second_budget = std::make_shared<DatagramStorageBudget>(bytes * 4, 2);
+    std::barrier start {3};
+    auto create = [&](const auto& channel, const auto& binding) {
+        start.arrive_and_wait();
+        return ConnectionDatagramInbox::create(channel, binding, inbox_peer,
+            {.capacity = 4, .control_reserve = 1}, process);
+    };
+    auto left = std::async(std::launch::async, [&] {
+        return create(first_budget, first_binding);
+    });
+    auto right = std::async(std::launch::async, [&] {
+        return create(second_budget, second_binding);
+    });
+    start.arrive_and_wait();
+    auto first = left.get();
+    auto second = right.get();
+    REQUIRE((first != nullptr) != (second != nullptr));
+    REQUIRE_EQ(process->reserved_inboxes(), 1U);
+    REQUIRE_EQ(process->reserved_bytes(), bytes);
+    REQUIRE_EQ(
+        first_budget->reserved_inboxes() + second_budget->reserved_inboxes(),
+        1U);
+    first.reset();
+    second.reset();
+    REQUIRE_EQ(process->reserved_inboxes(), 0U);
+    REQUIRE_EQ(first_budget->reserved_inboxes(), 0U);
+    REQUIRE_EQ(second_budget->reserved_inboxes(), 0U);
     scheduler->stop();
 }
