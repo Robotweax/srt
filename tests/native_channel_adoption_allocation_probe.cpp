@@ -83,6 +83,17 @@ int main()
         return 7;
     const auto identity = socket.native_handle();
     for (int allocation = 0; allocation < allocations; ++allocation) {
+#if defined(_MSVC_STL_VERSION) && _ITERATOR_DEBUG_LEVEL != 0
+        // MSVC's _Hash_vec allocator constructor is noexcept but allocates a
+        // debug iterator proxy. A failure there terminates inside the STL,
+        // before our factory can catch it. Exercise object/control block here;
+        // Release and other libraries also exercise every subobject allocation.
+        if (allocation != 0 && allocation != allocations - 1)
+            continue;
+#endif
+        std::fprintf(stderr, "Injecting factory allocation failure %d/%d\n",
+            allocation + 1, allocations);
+        std::fflush(stderr);
         fail_after.store(allocation, std::memory_order_relaxed);
         auto rejected = DatagramChannel::adopt_budgeted(socket, budget);
         const auto pending_failure =
@@ -100,7 +111,8 @@ int main()
     if (accepted->shutdown() != DatagramChannel::ShutdownStatus::retired
         || accepted->socket.valid() || budget->reserved_channels() != 0U)
         return 5;
-    std::printf("All %d factory allocations preserve native ownership and "
+    std::printf("Selected failures among %d factory allocations preserve "
+                "native ownership and "
                 "refund credits on failure; retry passes.\n",
         allocations);
     return 0;
