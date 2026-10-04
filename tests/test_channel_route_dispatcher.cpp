@@ -2,6 +2,7 @@
 #include "compat/connection_datagram_dispatcher.hpp"
 #include "compat/transport_runtime.hpp"
 #include "robotweax/srt/control.hpp"
+#include "srt/srt.h"
 
 #include <algorithm>
 #include <array>
@@ -2415,12 +2416,19 @@ TEST(channel_transient_receive_error_preserves_route_admission)
     auto dispatcher = fixture.dispatcher(4);
     REQUIRE(
         fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+#if defined(_WIN32)
+    constexpr int interrupted_receive = WSAEINTR;
+#else
+    constexpr int interrupted_receive = EINTR;
+#endif
+    REQUIRE(UdpSocket::is_transient_receive_error(interrupted_receive));
     bool received = false;
     auto transient = [&](std::span<std::byte>) noexcept {
         if (std::exchange(received, true)) {
             return UdpIoResult {.error = Error::would_block};
         }
-        return UdpIoResult {.error = Error::io_error, .system_error = EINTR};
+        return UdpIoResult {
+            .error = Error::io_error, .system_error = interrupted_receive};
     };
     (void)fixture.channel->run_once_for_testing(transient);
     REQUIRE(!fixture.runtime->broken());
