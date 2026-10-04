@@ -447,7 +447,7 @@ callbacks/rings continue charging the same ceiling after runtime restart. This
 is a provisional admission bound, not a measured acceptance threshold. Acquisition
 starts no workers, and a fork child is rejected before inherited mutex access.
 Clients must explicitly pass this owner to layered inbox/dispatcher factories;
-public setup is still unchanged. Channel-count/service admission and selectable
+public dispatcher setup is still unchanged. Complete service admission and selectable
 scheduled poll/send integration remain subsequent gates.
 
 Ring budgets can also bound the number of physical inbox rings, independently
@@ -476,19 +476,21 @@ one native channel slot before opening or taking ownership of a UDP socket.
 Their shared `NativeChannelBudget` bounds simultaneous reservations; the lazy
 process owner admits 4,096 and survives cleanup/restart. A fork child is rejected
 before accessing inherited owner locks. Allocation/open failure refunds the slot.
-Count rejection leaves an adopted descriptor with its caller; allocation failure
-after ownership transfer can close it. Factory failures return null.
+All adoption factory failures leave the acquired descriptor with its caller.
+The unopened channel and shared control block are allocated before the noexcept
+ownership move; no temporary replacement socket is opened. Factory failures
+return null.
 
 Terminal shutdown destroys the native socket before returning the slot; repeated
 shutdown or later captured-handle destruction cannot return it again. Busy,
 worker-thread rejection and channel-task timeout retain the credit. Destructor
-joins existing channel work and closes the socket before credit return. These
-internal factories do not replace the existing public binding constructors:
-prototype callers must share/pass the owner explicitly, and independently owned
+joins existing channel work and closes the socket before credit return. The
+default public binding path retains the original constructors. Selected native
+admission uses the retained owner as described below; independently owned
 channels require owning shutdown outside the bind registry. Captured closed
 metadata, caller-owned descriptors, original constructor use and process memory
-are outside this cap. Budgeted factory adoption in public setup, per-channel ring
-owner policy and selectable scheduled poll/send integration remain subsequent gates.
+are outside this cap. Per-channel ring
+owner policy and selectable scheduled poll/send/dispatcher setup remain subsequent gates.
 
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently
@@ -706,7 +708,11 @@ reuse their channel before reserving/opening another descriptor; IPv6 default
 policy reuse requires a locally probed matching default policy. Other IPv6
 policy combinations retain normal native probing/conflict checks.
 
-This selector enables native-bind admission only. Public native socket adoption,
-per-channel inbox budget policy, service capacity and dispatcher activation are
-unchanged. An externally adopted channel is outside this admission cap. The
+This selector enables native-channel admission only. The same selector now covers public native UDP adoption. Validation errors
+preserve caller ownership; budget/allocation rejection returns `SRT_ENOBUF` with
+the descriptor still owned by the caller. Later configuration or registry failure
+releases native ownership back to the caller and refunds the admission credit.
+Successful adoption transfers ownership into the counted channel until native
+close. Per-channel inbox policy, service capacity and dispatcher activation are
+unchanged. Descriptors still owned by callers remain outside this cap. The
 complete scheduled poll/send/setup prototype and its evaluation remain gated.

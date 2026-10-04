@@ -11,6 +11,10 @@
 
 namespace robotweax::srt {
 
+namespace compat {
+class DatagramChannel;
+}
+
 enum class IpAddressFamily : std::uint8_t {
     ipv4,
     ipv6,
@@ -246,6 +250,7 @@ public:
         int system_error) noexcept;
 
 private:
+    friend class compat::DatagramChannel;
     struct UnopenedTag {
     };
 

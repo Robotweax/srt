@@ -536,6 +536,9 @@ private:
     SocketRecord& socket,
     UDPSOCKET native_socket) noexcept
 {
+    const auto bounded = runtime_bounded_bind_enabled();
+    if (!bounded.has_value())
+        return fail(SRT_EINVPARAM);
     UdpSocket acquired = UdpSocket::acquire_native(
         static_cast<std::uintptr_t>(native_socket));
     if (!acquired.valid()) {
@@ -546,8 +549,17 @@ private:
 
     std::shared_ptr<DatagramChannel> channel;
     try {
-        channel = std::make_shared<DatagramChannel>(
-            std::move(acquired));
+        if (*bounded) {
+            auto budget = acquire_runtime_native_channel_budget();
+            if (budget != nullptr)
+                channel = DatagramChannel::adopt_budgeted(acquired, budget);
+            if (channel == nullptr) {
+                (void)acquired.release_native();
+                return fail(SRT_ENOBUF);
+            }
+        } else {
+            channel = std::make_shared<DatagramChannel>(std::move(acquired));
+        }
     } catch (const std::bad_alloc&) {
         (void)acquired.release_native();
         return fail(SRT_ENOBUF);

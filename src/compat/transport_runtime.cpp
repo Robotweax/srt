@@ -549,6 +549,11 @@ DatagramChannel::DatagramChannel(
 {
 }
 
+DatagramChannel::DatagramChannel(UnopenedTag) noexcept
+    : socket(UdpSocket::UnopenedTag {})
+{
+}
+
 DatagramChannel::~DatagramChannel()
 {
     stop();
@@ -590,9 +595,12 @@ std::shared_ptr<DatagramChannel> DatagramChannel::adopt_budgeted(
     bool reservation_owned = true;
     try {
         auto channel = std::shared_ptr<DatagramChannel>(
-            new DatagramChannel(std::move(acquired_socket)));
+            new DatagramChannel(UnopenedTag {}));
+        // No descriptor was opened or transferred before the object and its
+        // shared control block exist. The following assignments cannot throw.
         channel->native_credit_.budget = budget;
         reservation_owned = false;
+        channel->socket = std::move(acquired_socket);
         return channel;
     } catch (...) {
         if (reservation_owned)
