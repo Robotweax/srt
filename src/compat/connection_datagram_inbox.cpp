@@ -226,6 +226,12 @@ ConnectionDatagramInbox::Status ConnectionDatagramInbox::publish_unfenced(
             data ? snapshot_.data_rejections : snapshot_.control_rejections);
         return Status::full;
     }
+    if (ingress_bound_
+        && snapshot_.admitted == std::numeric_limits<std::uint64_t>::max()) {
+        // A completion fence must never alias an earlier cohort after wrap.
+        close_locked();
+        return Status::exhausted;
+    }
     const auto tail = (head_ + snapshot_.queued) % configuration_.capacity;
     auto& entry = entries_[tail];
     std::copy(bytes.begin(), bytes.end(), entry.envelope.bytes.begin());
@@ -234,6 +240,9 @@ ConnectionDatagramInbox::Status ConnectionDatagramInbox::publish_unfenced(
     entry.published_at = now_microseconds;
     entry.data = data;
     ++snapshot_.queued;
+    if (ingress_bound_) {
+        ++snapshot_.admitted;
+    }
     snapshot_.data_queued += data ? 1U : 0U;
     snapshot_.highwater = std::max(snapshot_.highwater, snapshot_.queued);
     // Notify under the publication mutex, including when already nonempty.
@@ -281,6 +290,7 @@ ConnectionDatagramInbox::Status ConnectionDatagramInbox::complete(
         return Status::invalid;
     }
     snapshot_.in_flight = false;
+    ++snapshot_.completed;
     return Status::accepted;
 }
 

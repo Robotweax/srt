@@ -1,6 +1,7 @@
 #include "test.hpp"
 #include "compat/connection_datagram_dispatcher.hpp"
 #include "compat/transport_runtime.hpp"
+#include "robotweax/srt/control.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1378,4 +1379,542 @@ TEST(channel_prefix_deadline_zero_peer_timeout_gets_no_processing_grace)
     REQUIRE(!fixture.runtime->accepts_datagrams());
     REQUIRE(dispatcher->inbox()->snapshot().closed);
     fixture.channel->unregister_connection(700);
+}
+
+namespace {
+struct CohortWireCounts {
+    std::atomic<std::size_t> data {0};
+    std::atomic<std::size_t> retransmitted {0};
+    std::atomic<std::size_t> drops {0};
+    static UdpIoResult send(
+        std::span<const std::byte> bytes, IpEndpoint, void* pointer) noexcept
+    {
+        auto& counts = *static_cast<CohortWireCounts*>(pointer);
+        const auto packet = decode_packet(bytes);
+        if (packet && packet.packet.kind == PacketKind::data) {
+            counts.data.fetch_add(1);
+            counts.retransmitted.fetch_add(
+                packet.packet.data.retransmitted ? 1 : 0);
+        } else if (packet
+            && packet.packet.control.type == ControlType::drop_request) {
+            counts.drops.fetch_add(1);
+        }
+        return {.bytes_transferred = bytes.size()};
+    }
+};
+void cohort_runtime(SinkFixture& fixture, std::atomic<std::uint64_t>& now,
+    bool file = false, NegotiatedLiveOptions negotiated = {})
+{
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+    if (file) {
+        REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                       static_cast<std::int64_t>(TransmissionType::file)),
+            Error::none);
+        REQUIRE_EQ(
+            options.set(SocketOption::maximum_payload_size, 4), Error::none);
+    }
+    fixture.runtime = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.channel = fixture.channel,
+            .peer = sink_peer,
+            .peer_socket_id = 90,
+            .initial_sequence = SequenceNumber {1000},
+            .options = options,
+            .negotiated_options = negotiated,
+            .efficient_retransmission = false,
+            .origin = ConnectionRuntime::Clock::now(),
+            .peer_idle_timeout_milliseconds = 1000,
+            .now_function = ingress_idle_now,
+            .now_context = &now});
+}
+RuntimePollResult cohort_poll(SinkFixture& fixture)
+{
+    return fixture.channel->poll_connections_for_testing(
+        ConnectionRuntime::Clock::time_point {});
+}
+SinkWire cohort_ack()
+{
+    std::array<std::byte, 32> payload {};
+    const auto encoded = encode_acknowledgement_payload(
+        {.kind = AcknowledgementKind::lite,
+            .next_sequence = SequenceNumber {1001}},
+        payload);
+    REQUIRE(encoded);
+    SinkWire wire;
+    const auto packet = encode_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::acknowledgement,
+                .destination_socket_id = 700},
+            .payload = std::span {payload}.first(encoded.bytes_written)},
+        wire.bytes);
+    REQUIRE(packet);
+    wire.size = packet.bytes_written;
+    return wire;
+}
+SinkWire cohort_nak()
+{
+    std::array<std::byte, 8> payload {};
+    const std::array losses {SequenceRange {
+        .first = SequenceNumber {1000}, .last = SequenceNumber {1000}}};
+    const auto encoded = encode_loss_ranges(losses, payload);
+    REQUIRE(encoded);
+    SinkWire wire;
+    const auto packet = encode_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::negative_acknowledgement,
+                .destination_socket_id = 700},
+            .payload = std::span {payload}.first(encoded.bytes_written)},
+        wire.bytes);
+    REQUIRE(packet);
+    wire.size = packet.bytes_written;
+    return wire;
+}
+struct CohortSteps {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::size_t entered = 0;
+    std::size_t released = 0;
+    static void block(void* pointer) noexcept
+    {
+        auto& self = *static_cast<CohortSteps*>(pointer);
+        std::unique_lock lock(self.mutex);
+        const auto step = ++self.entered;
+        self.changed.notify_all();
+        self.changed.wait(lock, [&] {
+            return self.released >= step;
+        });
+    }
+    void wait(std::size_t step)
+    {
+        std::unique_lock lock(mutex);
+        REQUIRE(changed.wait_for(lock, std::chrono::seconds {2}, [&] {
+            return entered >= step;
+        }));
+    }
+    void release(std::size_t step)
+    {
+        std::lock_guard lock(mutex);
+        released = step;
+        changed.notify_all();
+    }
+};
+struct CohortRelease {
+    std::shared_ptr<CohortSteps> steps;
+    ~CohortRelease()
+    {
+        steps->release(std::numeric_limits<std::size_t>::max());
+    }
+};
+}
+
+TEST(channel_cohort_later_admission_does_not_extend_original_completion_fence)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    cohort_runtime(fixture, now);
+    auto steps = std::make_shared<CohortSteps>();
+    CohortRelease release {steps};
+    auto dispatcher =
+        ConnectionDatagramDispatcher::create(fixture.runtime, fixture.scheduler,
+            fixture.budget, 1, sink_peer, {.capacity = 4, .control_reserve = 1},
+            {.turn_budget = 2,
+                .after_pop_for_testing = CohortSteps::block,
+                .after_pop_context_for_testing = steps});
+    REQUIRE(dispatcher != nullptr);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    CohortWireCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(CohortWireCounts::send, &counts);
+    const std::array payload {std::byte {9}};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    (void)fixture.ingress(sink_data(0));
+    steps->wait(1);
+    REQUIRE_EQ(
+        cohort_poll(fixture).next_work_delay, std::chrono::microseconds {2000});
+    REQUIRE_EQ(counts.data.load(), 0U);
+    (void)fixture.ingress(sink_data(1));
+    steps->release(1);
+    steps->wait(2);
+    const auto pending = dispatcher->inbox()->snapshot();
+    REQUIRE_EQ(pending.admitted, 2U);
+    REQUIRE_EQ(pending.completed, 1U);
+    REQUIRE(pending.in_flight);
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.data.load(), 1U);
+    steps->release(2);
+    fixture.scheduler->stop();
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 2U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_cohort_expiry_keeps_polling_until_original_backlog_finishes)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    cohort_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher(2);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    CohortWireCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(CohortWireCounts::send, &counts);
+    const std::array payload {std::byte {9}};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    (void)fixture.ingress(sink_data(0));
+    (void)cohort_poll(fixture);
+    now.store(2999);
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.data.load(), 0U);
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_data(1).view(), sink_peer),
+        ConnectionDatagramInbox::Status::full);
+    now.store(3000);
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.data.load(), 1U);
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_replay().view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    now.store(3100);
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.data.load(), 2U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 0U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_cohort_wait_does_not_spend_shared_send_credit)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    cohort_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(4, gate);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    CohortWireCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(CohortWireCounts::send, &counts);
+    const std::array<std::byte, 2500> payload {};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    (void)fixture.ingress(sink_data(0));
+    gate->wait();
+    std::size_t credit = 1;
+    (void)fixture.runtime->poll(credit, dispatcher->inbox().get(), 2000, true);
+    REQUIRE_EQ(credit, 1U);
+    REQUIRE_EQ(counts.data.load(), 0U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().queued, 0U);
+    REQUIRE(dispatcher->inbox()->snapshot().in_flight);
+    now.store(3000);
+    (void)fixture.runtime->poll(credit, dispatcher->inbox().get(), 2000, true);
+    REQUIRE_EQ(credit, 0U);
+    REQUIRE_EQ(counts.data.load(), 1U);
+    (void)fixture.runtime->poll(credit, dispatcher->inbox().get(), 2000, true);
+    REQUIRE_EQ(counts.data.load(), 1U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_cohort_accepted_ack_precedes_due_sender_retransmission)
+{
+    std::atomic<std::uint64_t> now {100000};
+    SinkFixture fixture;
+    cohort_runtime(fixture, now, true);
+    CohortWireCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(CohortWireCounts::send, &counts);
+    const std::array<std::byte, 4> payload {};
+    REQUIRE_EQ(fixture.runtime->queue_stream(payload, false, -1).bytes, 4U);
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(counts.data.load(), 1U);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(4, gate);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    now.store(430000);
+    (void)fixture.ingress(cohort_ack());
+    gate->wait();
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.retransmitted.load(), 0U);
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 1U);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().unacknowledged_send, 0U);
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.data.load(), 1U);
+    REQUIRE_EQ(counts.retransmitted.load(), 0U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_cohort_accepted_nak_is_applied_before_next_poll_send)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    cohort_runtime(fixture, now, true);
+    CohortWireCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(CohortWireCounts::send, &counts);
+    const std::array<std::byte, 4> payload {};
+    REQUIRE_EQ(fixture.runtime->queue_stream(payload, false, -1).bytes, 4U);
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(counts.data.load(), 1U);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(4, gate);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.ingress(cohort_nak());
+    gate->wait();
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.retransmitted.load(), 0U);
+    gate->release();
+    fixture.scheduler->stop();
+    now.store(1100); // The original DATA pacing slot must also have elapsed.
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.data.load(), 2U);
+    REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                   .total.sent_retransmitted.packets,
+        1U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_cohort_expiry_services_sender_ttl_under_stalled_ingress)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    cohort_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    CohortWireCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(CohortWireCounts::send, &counts);
+    const std::array payload {std::byte {9}};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1, 2).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_replay().view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    (void)cohort_poll(fixture);
+    now.store(2999);
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.drops.load(), 0U);
+    REQUIRE_EQ(counts.data.load(), 0U);
+    now.store(3001);
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.drops.load(), 1U);
+    REQUIRE_EQ(counts.data.load(), 0U);
+    REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                   .total.sender_message_ttl_dropped.packets,
+        1U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 0U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_cohort_data_fills_gap_before_receiver_deadline_poll)
+{
+    std::atomic<std::uint64_t> now {100};
+    SinkFixture fixture;
+    cohort_runtime(fixture, now, false,
+        {.receive_tsbpd = true,
+            .too_late_packet_drop = true,
+            .periodic_nak = true,
+            .receive_delay_milliseconds = 1});
+    const auto following = sink_data(1);
+    fixture.runtime->process_packet(
+        decode_packet(following.view()).packet, sink_peer);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 1U);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(4, gate);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.ingress(sink_data(0));
+    gate->wait();
+    now.store(1500);
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(
+        fixture.runtime->receive_floor_sequence(), SequenceNumber {1000});
+    gate->release();
+    fixture.scheduler->stop();
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 2U);
+    sink_receive(fixture.runtime, std::byte {1});
+    sink_receive(fixture.runtime, std::byte {2});
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_cohort_closed_inbox_releases_wait_without_fabricated_completion)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    cohort_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(4, gate);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    CohortWireCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(CohortWireCounts::send, &counts);
+    const std::array payload {std::byte {9}};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    (void)fixture.ingress(sink_data(0));
+    gate->wait();
+    (void)cohort_poll(fixture);
+    dispatcher->retire();
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 0U);
+    REQUIRE(dispatcher->inbox()->snapshot().in_flight);
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.data.load(), 1U);
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 1U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_cohort_peer_timeout_remains_outer_terminal_bound)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    ingress_idle_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.ingress(sink_data(0));
+    now.store(6001);
+    REQUIRE_EQ(
+        cohort_poll(fixture).next_work_delay, std::chrono::microseconds {1000});
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    now.store(7001);
+    (void)cohort_poll(fixture);
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 0U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_cohort_unbounded_requested_wait_is_capped_at_two_milliseconds)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    cohort_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    CohortWireCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(CohortWireCounts::send, &counts);
+    const std::array payload {std::byte {9}};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_data(0).view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    std::size_t credit = 1;
+    const auto waiting =
+        fixture.runtime->poll(credit, dispatcher->inbox().get(),
+            std::numeric_limits<std::uint64_t>::max(), true);
+    REQUIRE_EQ(waiting.next_work_delay, std::chrono::microseconds {2000});
+    now.store(3000);
+    (void)fixture.runtime->poll(credit, dispatcher->inbox().get(),
+        std::numeric_limits<std::uint64_t>::max(), true);
+    REQUIRE_EQ(counts.data.load(), 1U);
+    REQUIRE_EQ(credit, 0U);
+}
+
+TEST(channel_cohort_expired_ack_wait_does_not_suppress_sender_rto)
+{
+    std::atomic<std::uint64_t> now {100000};
+    SinkFixture fixture;
+    cohort_runtime(fixture, now, true);
+    CohortWireCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(CohortWireCounts::send, &counts);
+    const std::array<std::byte, 4> payload {};
+    REQUIRE_EQ(fixture.runtime->queue_stream(payload, false, -1).bytes, 4U);
+    (void)fixture.runtime->poll();
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(4, gate);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    now.store(430000);
+    (void)fixture.ingress(cohort_ack());
+    gate->wait();
+    REQUIRE_EQ(counts.data.load(), 1U);
+    now.store(432000);
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.data.load(), 2U);
+    REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                   .total.sent_retransmitted.packets,
+        1U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 0U);
+    gate->release();
+    fixture.scheduler->stop();
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().unacknowledged_send, 0U);
+    REQUIRE_EQ(counts.data.load(), 2U);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_cohort_wait_does_not_stop_another_route_on_shared_channel)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    cohort_runtime(fixture, now);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    // Publish directly so the next explicit channel poll owns both route visits.
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_data(0).view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    auto other = fixture.make_runtime(91, nullptr, false);
+    REQUIRE(fixture.channel->register_connection(701, other));
+    CohortWireCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(CohortWireCounts::send, &counts);
+    const std::array payload {std::byte {9}};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(other->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.data.load(), 1U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 0U);
+    REQUIRE(fixture.runtime->accepts_datagrams());
+    REQUIRE(other->accepts_datagrams());
+    now.store(3000);
+    (void)cohort_poll(fixture);
+    REQUIRE_EQ(counts.data.load(), 2U);
+    fixture.channel->unregister_connection(700);
+    fixture.channel->unregister_connection(701);
 }
