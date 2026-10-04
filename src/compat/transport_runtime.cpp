@@ -609,6 +609,43 @@ std::shared_ptr<DatagramChannel> DatagramChannel::adopt_budgeted(
     }
 }
 
+std::shared_ptr<ConnectionDatagramDispatcher>
+DatagramChannel::create_budgeted_dispatcher(
+    const std::shared_ptr<ConnectionRuntime>& runtime,
+    const std::shared_ptr<RuntimeScheduler>& scheduler, std::uint64_t affinity,
+    ConnectionDatagramInbox::Configuration inbox_configuration,
+    ConnectionDatagramDispatcher::Configuration configuration,
+    const std::shared_ptr<DatagramInbox>& setup_prefix) noexcept
+{
+    // Process acquisition rejects inherited state before any channel lock.
+    auto process = acquire_runtime_inbox_storage_budget();
+    if (process == nullptr || runtime == nullptr
+        || runtime->channel_.lock().get() != this
+        || shutdown_requested_.load(std::memory_order_acquire))
+        return nullptr;
+    std::shared_ptr<DatagramStorageBudget> local;
+    try {
+        std::lock_guard lock(inbox_budget_mutex_);
+        if (inbox_budget_ == nullptr) {
+            local = std::make_shared<DatagramStorageBudget>(
+                maximum_inbox_storage_bytes, maximum_inbox_count);
+            process_inbox_budget_ = std::move(process);
+            inbox_budget_ = local;
+        } else {
+            local = inbox_budget_;
+        }
+        process = process_inbox_budget_;
+    } catch (...) {
+        return nullptr;
+    }
+    // No budget lock is held while prefix promotion can notify callbacks.
+    // A concurrent terminal shutdown is fenced again at route registration;
+    // a caller holding an unregistered dispatcher owns its retirement.
+    return ConnectionDatagramDispatcher::create(runtime, scheduler, local,
+        affinity, runtime->peer_, inbox_configuration, std::move(configuration),
+        setup_prefix, process);
+}
+
 UdpIoResult DatagramChannel::send_datagram(
     std::span<const std::byte> bytes,
     IpEndpoint peer) noexcept
