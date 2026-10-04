@@ -1,5 +1,6 @@
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/process_owned.hpp"
+#include "compat/connection_datagram_inbox.hpp"
 
 #include <charconv>
 #include <cstdlib>
@@ -17,6 +18,9 @@ constexpr std::size_t default_runtime_scheduler_shards = 2U;
 // because all sockets start in one burst.
 constexpr std::size_t runtime_scheduler_queue_capacity = 4'096U;
 constexpr std::size_t runtime_scheduler_timer_capacity = 4'096U;
+
+constexpr std::size_t default_inbox_storage_mib = 64U;
+constexpr std::size_t bytes_per_mib = 1024U * 1024U;
 
 class RuntimeSchedulerService {
 public:
@@ -68,6 +72,38 @@ public:
         }
     }
 
+    [[nodiscard]] std::shared_ptr<DatagramStorageBudget>
+    acquire_budget() noexcept
+    {
+        std::lock_guard lock(mutex_);
+        if (inbox_budget_ != nullptr)
+            return inbox_budget_;
+#if defined(_WIN32)
+        char* setting = nullptr;
+        std::size_t setting_size = 0;
+        if (_dupenv_s(
+                &setting, &setting_size, "ROBOTWEAX_SRT_INBOX_STORAGE_MIB")
+            != 0)
+            return {};
+        const std::unique_ptr<char, decltype(&std::free)> owned_setting(
+            setting, &std::free);
+#else
+        const char* setting = std::getenv("ROBOTWEAX_SRT_INBOX_STORAGE_MIB");
+#endif
+        const auto mib = setting == nullptr
+            ? std::optional<std::size_t> {default_inbox_storage_mib}
+            : parse_runtime_inbox_storage_mib(setting);
+        if (!mib.has_value())
+            return {};
+        try {
+            inbox_budget_ =
+                std::make_shared<DatagramStorageBudget>(*mib * bytes_per_mib);
+            return inbox_budget_;
+        } catch (...) {
+            return {};
+        }
+    }
+
     void stop() noexcept
     {
         std::shared_ptr<RuntimeScheduler> scheduler;
@@ -83,6 +119,8 @@ public:
 private:
     std::mutex mutex_;
     std::shared_ptr<RuntimeScheduler> scheduler_;
+    // Never reset at scheduler stop: old callbacks can retain ring charges.
+    std::shared_ptr<DatagramStorageBudget> inbox_budget_;
 };
 
 [[nodiscard]] RuntimeSchedulerService& scheduler_service() noexcept
@@ -107,6 +145,29 @@ std::optional<std::size_t> parse_runtime_scheduler_shards(
         return std::nullopt;
     }
     return count;
+}
+
+std::optional<std::size_t> parse_runtime_inbox_storage_mib(
+    std::string_view value) noexcept
+{
+    if (value.empty())
+        return std::nullopt;
+    std::size_t mib = 0;
+    const auto parsed =
+        std::from_chars(value.data(), value.data() + value.size(), mib);
+    if (parsed.ec != std::errc {} || parsed.ptr != value.data() + value.size()
+        || mib == 0U || mib > 1024U)
+        return std::nullopt;
+    return mib;
+}
+
+std::shared_ptr<DatagramStorageBudget>
+acquire_runtime_inbox_storage_budget() noexcept
+{
+    // Reject a fork child before touching any inherited owner/budget mutex.
+    if (!stateful_process_available())
+        return {};
+    return scheduler_service().acquire_budget();
 }
 
 void prepare_runtime_scheduler_service() noexcept
