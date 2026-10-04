@@ -18,6 +18,7 @@ struct ConnectionWorkHints {
 class ConnectionWorkBinding {
 public:
     using Function = void (*)(void*, ConnectionWorkHints) noexcept;
+    using CompletionFunction = void (*)(void*) noexcept;
 
     // One reservation per binding; affinity and scope/generation never change.
     // Failure is setup failure, never application-buffer pressure. The supplied
@@ -25,7 +26,10 @@ public:
     [[nodiscard]] static std::shared_ptr<ConnectionWorkBinding> create(
         const std::shared_ptr<RuntimeScheduler>& scheduler,
         std::uint64_t affinity, Function function,
-        std::shared_ptr<void> context) noexcept;
+        std::shared_ptr<void> context,
+        // Optional bounded completion work, outside binding locks. Runs after
+        // client dispatch and when explicitly requested at retirement.
+        CompletionFunction completion = nullptr) noexcept;
     ~ConnectionWorkBinding();
     ConnectionWorkBinding(const ConnectionWorkBinding&) = delete;
     ConnectionWorkBinding& operator=(const ConnectionWorkBinding&) = delete;
@@ -39,7 +43,9 @@ public:
     // Closes admission, discards queued hints and retires the reservation.
     // A previously dispatched callback can finish; callers must independently
     // enforce the runtime close barrier before protocol effects. Never waits.
-    void retire() noexcept;
+    // Request completion only for owning resource teardown. A concurrent
+    // callback includes that request in its completion barrier.
+    void retire(bool request_completion = false) noexcept;
     [[nodiscard]] bool quiescent() const noexcept;
     enum class DrainStatus { quiescent, timeout, worker_thread, not_retired };
     // Client callback barrier independent of scheduler lifetime. Retire first;

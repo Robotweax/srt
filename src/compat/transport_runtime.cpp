@@ -4556,8 +4556,12 @@ bool ConnectionRuntime::begin_close() noexcept
 }
 
 void close_connection_runtime(const std::shared_ptr<ConnectionRuntime>& runtime,
-    std::shared_ptr<RuntimeWorkExecutor> executor) noexcept
+    std::shared_ptr<RuntimeWorkExecutor> executor,
+    std::shared_ptr<ConnectionDatagramDispatcher> retirement) noexcept
 {
+    if (retirement != nullptr) {
+        retirement->retire_and_reclaim();
+    }
     if (runtime == nullptr || !runtime->begin_close()) {
         return;
     }
@@ -4565,11 +4569,13 @@ void close_connection_runtime(const std::shared_ptr<ConnectionRuntime>& runtime,
         struct CloseTask {
             std::shared_ptr<ConnectionRuntime> runtime;
             std::shared_ptr<DatagramChannel> channel;
+            std::shared_ptr<ConnectionDatagramDispatcher> retirement;
         };
         try {
             auto task = std::make_shared<CloseTask>(CloseTask {
                 .runtime = runtime,
                 .channel = runtime->channel_.lock(),
+                .retirement = std::move(retirement),
             });
             if (executor == nullptr) {
                 executor = existing_runtime_work_executor();

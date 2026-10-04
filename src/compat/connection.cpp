@@ -931,21 +931,22 @@ void set_key_material_state_response(
         return fail(SRT_ENOBUF);
     }
     if (!channel->start()) {
-        channel->unregister_connection(socket.protocol_socket_id);
-        close_connection_runtime(runtime);
+        auto retirement = channel->retire_connection(socket.protocol_socket_id);
+        close_connection_runtime(runtime, {}, std::move(retirement));
         return fail(SRT_ETHREAD);
     }
     if (runtime->broken() || runtime->peer_closed()) {
-        channel->unregister_connection(socket.protocol_socket_id);
-        close_connection_runtime(runtime);
+        auto retirement = channel->retire_connection(socket.protocol_socket_id);
+        close_connection_runtime(runtime, {}, std::move(retirement));
         return fail(SRT_ECONNSETUP);
     }
     {
         std::lock_guard lock(socket.mutex);
         if (socket.state == SRTS_CLOSING
             || socket.state == SRTS_CLOSED) {
-            channel->unregister_connection(socket.protocol_socket_id);
-            close_connection_runtime(runtime);
+            auto retirement =
+                channel->retire_connection(socket.protocol_socket_id);
+            close_connection_runtime(runtime, {}, std::move(retirement));
             return fail(SRT_ESCLOSED);
         }
         socket.runtime = std::move(runtime);

@@ -11,9 +11,35 @@ struct ConnectionWorkBinding::State {
     std::condition_variable drained;
     ConnectionWorkHints pending;
     bool callback_active = false;
+    bool completion_pending = false;
     bool retired = false;
     Function function = nullptr;
+    CompletionFunction completion = nullptr;
     std::shared_ptr<void> context;
+
+    void finish() noexcept
+    {
+        for (;;) {
+            {
+                std::lock_guard lock(mutex);
+                completion_pending = false;
+            }
+            if (completion != nullptr) {
+                completion(context.get());
+            }
+            {
+                std::lock_guard lock(mutex);
+                // A request racing the hook must get another pass before the
+                // barrier opens. Dispatcher teardown requests this only once.
+                if (completion_pending) {
+                    continue;
+                }
+                callback_active = false;
+            }
+            drained.notify_all();
+            return;
+        }
+    }
 
     static void dispatch(void* pointer) noexcept
     {
@@ -33,11 +59,7 @@ struct ConnectionWorkBinding::State {
         // A hint published while this callback runs remains pending and wakes
         // another turn. No client code executes under the publication mutex.
         state.function(state.context.get(), hints);
-        {
-            std::lock_guard lock(state.mutex);
-            state.callback_active = false;
-        }
-        state.drained.notify_all();
+        state.finish();
     }
 };
 
@@ -52,7 +74,8 @@ ConnectionWorkBinding::ConnectionWorkBinding(
 
 std::shared_ptr<ConnectionWorkBinding> ConnectionWorkBinding::create(
     const std::shared_ptr<RuntimeScheduler>& scheduler, std::uint64_t affinity,
-    Function function, std::shared_ptr<void> context) noexcept
+    Function function, std::shared_ptr<void> context,
+    CompletionFunction completion) noexcept
 {
     if (scheduler == nullptr || function == nullptr) {
         return nullptr;
@@ -61,6 +84,7 @@ std::shared_ptr<ConnectionWorkBinding> ConnectionWorkBinding::create(
     try {
         auto state = std::make_shared<State>();
         state->function = function;
+        state->completion = completion;
         state->context = std::move(context);
         const auto result = scheduler->reserve_service(
             affinity, {.function = State::dispatch, .context = state});
@@ -109,18 +133,26 @@ RuntimeScheduler::SubmitStatus ConnectionWorkBinding::notify(
     return status;
 }
 
-void ConnectionWorkBinding::retire() noexcept
+void ConnectionWorkBinding::retire(bool request_completion) noexcept
 {
+    bool complete = false;
     {
         std::lock_guard lock(state_->mutex);
-        if (state_->retired) {
-            return;
-        }
         state_->retired = true;
         state_->pending = {};
+        if (request_completion && state_->completion != nullptr) {
+            state_->completion_pending = true;
+            if (!state_->callback_active) {
+                state_->callback_active = true;
+                complete = true;
+            }
+        }
     }
     if (const auto scheduler = scheduler_.lock(); scheduler != nullptr) {
         (void)scheduler->release_service(token_);
+    }
+    if (complete) {
+        state_->finish();
     }
 }
 

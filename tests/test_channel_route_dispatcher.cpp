@@ -3,6 +3,8 @@
 #include "compat/transport_runtime.hpp"
 #include "robotweax/srt/control.hpp"
 #include "srt/srt.h"
+#include "compat/runtime_work_executor.hpp"
+#include "compat/socket_registry.hpp"
 
 #include <algorithm>
 #include <array>
@@ -2439,4 +2441,244 @@ TEST(channel_transient_receive_error_preserves_route_admission)
     sink_receive(fixture.runtime, std::byte {1});
     fixture.channel->unregister_connection(700);
     fixture.channel->unregister_connection(701);
+}
+
+TEST(channel_owning_close_reclaims_after_owner_drops_active_receipt)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(4, gate);
+    auto captured = dispatcher->inbox();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.ingress(sink_data(0));
+    gate->wait();
+    auto receipt = fixture.channel->retire_connection(700);
+    close_connection_runtime(fixture.runtime, {}, receipt);
+    REQUIRE(captured->snapshot().closed);
+    REQUIRE(!captured->snapshot().storage_released);
+    std::weak_ptr<ConnectionDatagramDispatcher> old = dispatcher;
+    dispatcher.reset();
+    receipt.reset();
+    REQUIRE(old.expired());
+    REQUIRE_EQ(fixture.budget->reserved_bytes(),
+        *ConnectionDatagramInbox::storage_bytes(4));
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    auto next_scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {.shard_count = 1,
+            .queue_capacity_per_shard = 1,
+            .timer_capacity_per_shard = 1,
+            .service_capacity_per_shard = 1});
+    REQUIRE(next_scheduler->start());
+    auto next_runtime = fixture.make_runtime(91, nullptr, false);
+    auto next = ConnectionDatagramDispatcher::create(next_runtime,
+        next_scheduler, fixture.budget, 0, sink_peer,
+        {.capacity = 4, .control_reserve = 1}, {.turn_budget = 2});
+    REQUIRE(next != nullptr);
+    REQUIRE_EQ(next->inbox()->publish(
+                   captured->token(), sink_data(1).view(), sink_peer, 0),
+        ConnectionDatagramInbox::Status::stale);
+    captured.reset();
+    REQUIRE_EQ(fixture.budget->reserved_bytes(),
+        *ConnectionDatagramInbox::storage_bytes(4));
+    next->retire_and_reclaim();
+    next_scheduler->stop();
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+}
+
+TEST(channel_duplicate_owning_close_reclaims_quiet_receipt)
+{
+    SinkFixture fixture;
+    auto dispatcher = fixture.dispatcher(4);
+    auto captured = dispatcher->inbox();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    // Registration can wake an empty callback. Join it to prove this case is
+    // quiet rather than depending on how quickly the worker starts.
+    fixture.scheduler->stop();
+    // Runtime close may already have happened before this owner detaches.
+    fixture.runtime->close();
+    auto receipt = fixture.channel->retire_connection(700);
+    close_connection_runtime(fixture.runtime, {}, receipt);
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    close_connection_runtime(fixture.runtime, {}, receipt);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+}
+
+TEST(channel_worker_owning_close_full_executor_keeps_callback_reclamation)
+{
+    SinkFixture fixture;
+    auto executor = std::make_shared<RuntimeWorkExecutor>(
+        RuntimeWorkExecutor::Configuration {1, 1});
+    REQUIRE(executor->start());
+    auto executor_gate = std::make_shared<SinkGate>();
+    SinkRelease release_executor {executor_gate};
+    REQUIRE_EQ(executor->submit(
+                   {.function = SinkGate::block, .context = executor_gate}),
+        RuntimeWorkExecutor::SubmitStatus::accepted);
+    executor_gate->wait();
+    REQUIRE_EQ(executor->submit({.function = [](void*) noexcept { },
+                   .context = executor_gate}),
+        RuntimeWorkExecutor::SubmitStatus::accepted);
+    struct Probe {
+        std::weak_ptr<DatagramChannel> channel;
+        std::weak_ptr<ConnectionRuntime> runtime;
+        std::shared_ptr<RuntimeWorkExecutor> executor;
+        std::promise<bool> closed;
+        static void run(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Probe*>(pointer);
+            const auto channel = self.channel.lock();
+            const auto runtime = self.runtime.lock();
+            if (channel == nullptr || runtime == nullptr) {
+                self.closed.set_value(false);
+                return;
+            }
+            auto receipt = channel->retire_connection(700);
+            close_connection_runtime(
+                runtime, self.executor, std::move(receipt));
+            self.closed.set_value(!runtime->accepts_datagrams());
+        }
+    };
+    auto probe = std::make_shared<Probe>();
+    probe->channel = fixture.channel;
+    probe->runtime = fixture.runtime;
+    probe->executor = executor;
+    auto closed = probe->closed.get_future();
+    auto dispatcher =
+        ConnectionDatagramDispatcher::create(fixture.runtime, fixture.scheduler,
+            fixture.budget, 1, sink_peer, {.capacity = 4, .control_reserve = 1},
+            {.turn_budget = 2,
+                .after_pop_for_testing = Probe::run,
+                .after_pop_context_for_testing = probe});
+    REQUIRE(dispatcher != nullptr);
+    auto captured = dispatcher->inbox();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.ingress(sink_data(0));
+    REQUIRE_EQ(
+        closed.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    REQUIRE(closed.get());
+    fixture.scheduler->stop();
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    REQUIRE_EQ(executor->snapshot().rejected_full, 1U);
+    executor_gate->release();
+    executor->stop();
+}
+
+TEST(channel_registry_close_owns_active_route_reclamation)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(4, gate);
+    auto captured = dispatcher->inbox();
+    auto& registry = SocketRegistry::instance();
+    const auto socket = registry.create();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    struct CloseHandle {
+        SRTSOCKET socket;
+        ~CloseHandle()
+        {
+            SocketRegistry::instance().close(socket);
+        }
+    } close_handle {socket};
+    auto record = registry.find(socket);
+    REQUIRE(record != nullptr);
+    {
+        std::lock_guard lock(record->mutex);
+        record->channel = fixture.channel;
+        record->runtime = fixture.runtime;
+        record->state = SRTS_CONNECTED;
+        record->public_options.linger_enabled = false;
+    }
+    REQUIRE(fixture.channel->register_connection(
+        record->protocol_socket_id, fixture.runtime, dispatcher));
+    REQUIRE_EQ(
+        dispatcher->publish(captured->token(), sink_data(0).view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    gate->wait();
+    registry.close(socket);
+    {
+        std::lock_guard lock(record->mutex);
+        REQUIRE_EQ(record->state, SRTS_CLOSED);
+    }
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    REQUIRE(captured->snapshot().closed);
+    REQUIRE(!captured->snapshot().storage_released);
+    dispatcher.reset();
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+}
+
+TEST(
+    channel_worker_owning_close_accepted_task_retains_receipt_until_final_drain)
+{
+    SinkFixture fixture;
+    auto callback_gate = std::make_shared<SinkGate>();
+    auto executor_gate = std::make_shared<SinkGate>();
+    auto executor = std::make_shared<RuntimeWorkExecutor>(
+        RuntimeWorkExecutor::Configuration {1, 1});
+    REQUIRE(executor->start());
+    SinkRelease callback_release {callback_gate};
+    SinkRelease executor_release {executor_gate};
+    REQUIRE_EQ(executor->submit(
+                   {.function = SinkGate::block, .context = executor_gate}),
+        RuntimeWorkExecutor::SubmitStatus::accepted);
+    executor_gate->wait();
+    auto dispatcher = fixture.dispatcher(4, callback_gate);
+    auto captured = dispatcher->inbox();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.ingress(sink_data(0));
+    callback_gate->wait();
+    struct Close {
+        std::shared_ptr<DatagramChannel> channel;
+        std::shared_ptr<ConnectionRuntime> runtime;
+        std::shared_ptr<RuntimeWorkExecutor> executor;
+        std::promise<bool> done;
+        static void run(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Close*>(pointer);
+            close_connection_runtime(self.runtime, self.executor,
+                self.channel->retire_connection(700));
+            self.done.set_value(!self.runtime->accepts_datagrams());
+        }
+    };
+    auto close = std::make_shared<Close>();
+    close->channel = fixture.channel;
+    close->runtime = fixture.runtime;
+    close->executor = executor;
+    auto done = close->done.get_future();
+    REQUIRE_EQ(fixture.scheduler->submit(
+                   0, {.function = Close::run, .context = close}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(
+        done.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    REQUIRE(done.get());
+    REQUIRE_EQ(executor->snapshot().queued, 1U);
+    std::weak_ptr<ConnectionDatagramDispatcher> receipt = dispatcher;
+    dispatcher.reset();
+    REQUIRE(!receipt.expired());
+    REQUIRE(!captured->snapshot().storage_released);
+    callback_gate->release();
+    fixture.scheduler->stop();
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE(!receipt.expired());
+    executor_gate->release();
+    executor->stop();
+    REQUIRE(receipt.expired());
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
 }

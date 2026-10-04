@@ -53,6 +53,10 @@ public:
     // Admission/service retirement only. A dispatched callback may finish;
     // this is not a runtime close or callback quiescence barrier.
     void retire() noexcept;
+    // Owning close paths request eventual ring reclamation without waiting.
+    // An active callback runs bounded reclamation after its protocol body;
+    // otherwise retirement completes it inline. No runtime close is implied.
+    void retire_and_reclaim() noexcept;
     // Retire admission, then use the existing synchronous runtime close path.
     // A popped copy can resume afterwards, but cannot mutate the closed runtime.
     void close() noexcept;
