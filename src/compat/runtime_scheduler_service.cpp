@@ -74,6 +74,11 @@ public:
         if (!service_count.has_value())
             return {};
         try {
+            auto service_budget = *service_count == 0U
+                ? nullptr
+                : acquire_service_budget_locked();
+            if (*service_count != 0U && service_budget == nullptr)
+                return {};
             auto scheduler = std::make_shared<RuntimeScheduler>(
                 RuntimeScheduler::Configuration {
                     .shard_count = *shard_count,
@@ -82,6 +87,7 @@ public:
                     .timer_capacity_per_shard =
                         runtime_scheduler_timer_capacity,
                     .service_capacity_per_shard = *service_count,
+                    .service_storage_budget = std::move(service_budget),
                 });
             if (!scheduler->start()) {
                 return {};
@@ -163,6 +169,13 @@ public:
         return selected;
     }
 
+    [[nodiscard]] std::shared_ptr<SchedulerServiceStorageBudget>
+    acquire_service_budget() noexcept
+    {
+        std::lock_guard lock(mutex_);
+        return acquire_service_budget_locked();
+    }
+
     void stop() noexcept
     {
         std::shared_ptr<RuntimeScheduler> scheduler;
@@ -176,7 +189,22 @@ public:
     }
 
 private:
+    [[nodiscard]] std::shared_ptr<SchedulerServiceStorageBudget>
+    acquire_service_budget_locked() noexcept
+    {
+        if (service_budget_ == nullptr) {
+            try {
+                service_budget_ =
+                    std::make_shared<SchedulerServiceStorageBudget>(
+                        32U * 1024U * 1024U, 8U);
+            } catch (...) {
+                return {};
+            }
+        }
+        return service_budget_;
+    }
     std::mutex mutex_;
+    std::shared_ptr<SchedulerServiceStorageBudget> service_budget_;
     std::shared_ptr<RuntimeScheduler> scheduler_;
     // Never reset at scheduler stop: old callbacks can retain ring charges.
     std::shared_ptr<DatagramStorageBudget> inbox_budget_;
@@ -234,6 +262,14 @@ std::optional<std::size_t> parse_runtime_inbox_storage_mib(
         || mib == 0U || mib > 1024U)
         return std::nullopt;
     return mib;
+}
+
+std::shared_ptr<SchedulerServiceStorageBudget>
+acquire_runtime_service_storage_budget() noexcept
+{
+    if (!stateful_process_available())
+        return {};
+    return scheduler_service().acquire_service_budget();
 }
 
 std::shared_ptr<DatagramStorageBudget>

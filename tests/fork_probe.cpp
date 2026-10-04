@@ -98,6 +98,10 @@ using namespace std::chrono_literals;
         != nullptr) {
         _exit(28);
     }
+    if (robotweax::srt::compat::acquire_runtime_service_storage_budget()
+        != nullptr) {
+        _exit(30);
+    }
     if (robotweax::srt::compat::runtime_bounded_bind_enabled().has_value()) {
         _exit(29);
     }
@@ -207,6 +211,10 @@ int main()
     if (robotweax::srt::compat::acquire_runtime_native_channel_budget()
         == nullptr) {
         return 18;
+    }
+    if (robotweax::srt::compat::acquire_runtime_service_storage_budget()
+        == nullptr) {
+        return 19;
     }
     const auto work_executor =
         robotweax::srt::compat::acquire_runtime_work_executor();
