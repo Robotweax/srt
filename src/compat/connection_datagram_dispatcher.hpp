@@ -26,14 +26,16 @@ public:
 private:
     friend class DatagramChannel;
     friend class ConnectionDatagramDispatcher;
-    explicit ChannelPollSendBudget(
-        std::weak_ptr<DatagramChannel> channel) noexcept
+    explicit ChannelPollSendBudget(std::weak_ptr<DatagramChannel> channel,
+        std::uint64_t ingress_wait) noexcept
         : channel_(std::move(channel))
+        , ingress_wait_microseconds_(ingress_wait)
     {
     }
     [[nodiscard]] std::size_t take(std::size_t maximum) noexcept;
     void refund(std::size_t unused) noexcept;
     const std::weak_ptr<DatagramChannel> channel_;
+    const std::uint64_t ingress_wait_microseconds_;
     std::atomic<std::size_t> remaining_ {maximum_attempts};
 };
 
@@ -72,6 +74,7 @@ public:
         RuntimePollResult result;
         std::size_t send_attempts = 0;
         std::shared_ptr<ChannelPollSendBudget> round;
+        std::chrono::steady_clock::time_point completed_at;
     };
     // Explicit internal request, never inline protocol work. One pending/active/
     // unconsumed result per dispatcher; caller owns deadlines and route commit.

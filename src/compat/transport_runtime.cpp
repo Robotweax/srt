@@ -662,12 +662,31 @@ DatagramChannel::begin_poll_round() noexcept
             || !poll_budget_.expired())
             return nullptr;
         auto budget = std::shared_ptr<ChannelPollSendBudget>(
-            new ChannelPollSendBudget(std::move(owner)));
+            new ChannelPollSendBudget(std::move(owner),
+                static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        idle_wait_)
+                        .count())));
         poll_budget_ = budget;
         return budget;
     } catch (...) {
         return nullptr;
     }
+}
+
+bool DatagramChannel::enable_scheduled_polling() noexcept
+{
+    if (!stateful_process_available())
+        return false;
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    if (running_.load(std::memory_order_relaxed)
+        || shutdown_requested_.load(std::memory_order_acquire))
+        return false;
+    std::lock_guard route_lock(routes_mutex_);
+    if (!routes_.empty())
+        return false;
+    scheduled_polling_enabled_ = true;
+    return true;
 }
 
 UdpIoResult DatagramChannel::send_datagram(
@@ -756,7 +775,9 @@ bool DatagramChannel::register_connection_locked(
         return false;
     }
     const auto inserted = routes_.emplace(protocol_socket_id,
-        ConnectionRoute {.runtime = runtime, .replay_key = replay_key});
+        ConnectionRoute {.runtime = runtime,
+            .socket_id = protocol_socket_id,
+            .replay_key = replay_key});
     if (!inserted.second) {
         return false;
     }
@@ -1352,6 +1373,11 @@ DatagramChannel::ShutdownStatus DatagramChannel::shutdown(
     if (!stop(deadline)) {
         return ShutdownStatus::timeout;
     }
+    // stop() joined the channel task. Captured polls remain safe through service
+    // retirement below, but must not retain coordinator receipts after shutdown.
+    scheduled_polls_ = {};
+    scheduled_poll_count_ = 0;
+    scheduled_poll_round_.reset();
     decltype(routes_) routes;
     decltype(setup_routes_) setups;
     std::shared_ptr<HandshakeInbox> listener;
@@ -1794,6 +1820,9 @@ RuntimePollResult DatagramChannel::poll_connections(
             : injected_now.has_value() ? *injected_now
                                        : std::chrono::steady_clock::now();
     };
+    if (scheduled_polling_enabled_)
+        return poll_scheduled_connections(
+            current_time(), !injected_now.has_value() && clock == nullptr);
     {
         std::lock_guard lock(routes_mutex_);
         if (poll_round_remaining_ == 0U) {
@@ -1847,33 +1876,159 @@ RuntimePollResult DatagramChannel::poll_connections(
         if (prefix_terminal) {
             dispatcher->retire();
         }
-        poll_round_immediate_ |= result.immediate_work;
-        const bool can_wait =
-            readiness_available_.load(std::memory_order_acquire)
-            && result.receive_wait_safe;
-        poll_round_receive_wait_safe_ &= can_wait;
-        if (can_wait && !result.next_work_delay.has_value()) {
-            continue;
+        record_poll_result(result, current_time(),
+            !injected_now.has_value() && clock == nullptr);
+    }
+    return finish_poll_round(current_time());
+}
+
+RuntimePollResult DatagramChannel::poll_scheduled_connections(
+    std::chrono::steady_clock::time_point now,
+    bool use_absolute_deadlines) noexcept
+{
+    const auto waiting = [&] {
+        // Completion notifications wake the existing channel task. A bounded
+        // timer also covers retirement/no-notification and rejected admission;
+        // never spin merely because a service callback has not completed.
+        const auto deadline = now + idle_wait_;
+        return RuntimePollResult {
+            .next_work_delay = idle_wait_, .next_work_deadline = deadline};
+    };
+    if (scheduled_poll_round_ != nullptr) {
+        bool pending = false;
+        for (std::size_t index = 0; index < scheduled_poll_count_; ++index) {
+            auto& poll = scheduled_polls_[index];
+            if (poll.dispatcher == nullptr)
+                continue;
+            bool current = false;
+            {
+                std::lock_guard lock(routes_mutex_);
+                const auto route = routes_.find(poll.socket_id);
+                current = route != routes_.end()
+                    && route->second.runtime == poll.runtime
+                    && route->second.dispatcher == poll.dispatcher;
+            }
+            auto completion = poll.dispatcher->take_poll_completion();
+            if (!current || poll.dispatcher->inbox()->snapshot().closed) {
+                // Detach retires the captured dispatcher outside the route lock.
+                // A reused socket id never inherits this old completion.
+                poll = {};
+            } else if (completion.has_value()) {
+                if (completion->round == scheduled_poll_round_)
+                    record_poll_result(completion->result,
+                        use_absolute_deadlines ? completion->completed_at : now,
+                        use_absolute_deadlines);
+                poll = {};
+            } else {
+                pending = true;
+            }
         }
-        const auto delay = can_wait
-            ? *result.next_work_delay
-            : std::min(result.next_work_delay.value_or(idle_wait_),
-                  std::chrono::duration_cast<std::chrono::microseconds>(
-                      idle_wait_));
-        // Store an absolute deadline: each continuation must not restart an
-        // earlier connection's pacing/backpressure/idle wait.
-        const auto relative_deadline = current_time() + delay;
-        const auto deadline = !injected_now.has_value() && clock == nullptr
-                && result.next_work_deadline.has_value()
-            ? (can_wait
-                      ? *result.next_work_deadline
-                      : std::min(*result.next_work_deadline, relative_deadline))
-            : relative_deadline;
-        if (!poll_round_deadline_.has_value()
-            || deadline < *poll_round_deadline_) {
-            poll_round_deadline_ = deadline;
+        if (pending)
+            return waiting();
+        scheduled_poll_count_ = 0;
+        scheduled_poll_round_.reset();
+        // Continue the same finite route sweep on the next channel turn. In
+        // particular, do not reset earlier pacing/idle deadlines per window.
+        return finish_poll_round(now);
+    }
+    {
+        std::lock_guard lock(routes_mutex_);
+        if (poll_round_remaining_ == 0U) {
+            poll_round_remaining_ = routes_.size();
+            poll_round_immediate_ = false;
+            poll_round_receive_wait_safe_ = true;
+            poll_round_deadline_.reset();
+        }
+        if (next_poll_route_ == nullptr)
+            poll_round_remaining_ = 0U;
+    }
+    if (poll_round_remaining_ == 0U)
+        return finish_poll_round(now);
+    auto round = begin_poll_round();
+    if (round == nullptr)
+        return waiting();
+    scheduled_poll_round_ = round;
+    for (std::size_t visited = 0; visited < scheduled_poll_window_capacity;
+        ++visited) {
+        ScheduledPoll poll;
+        std::shared_ptr<DatagramInbox> prefix;
+        {
+            std::lock_guard lock(routes_mutex_);
+            if (next_poll_route_ == nullptr)
+                poll_round_remaining_ = 0U;
+            if (poll_round_remaining_ == 0U)
+                break;
+            poll = {next_poll_route_->socket_id, next_poll_route_->runtime,
+                next_poll_route_->dispatcher};
+            prefix = next_poll_route_->setup_prefix;
+            next_poll_route_ = next_poll_route_->next;
+            --poll_round_remaining_;
+        }
+        if (prefix != nullptr)
+            prefix->finish_promotion();
+        if (poll.dispatcher != nullptr) {
+            if (poll.dispatcher->request_poll(round)) {
+                scheduled_polls_[scheduled_poll_count_++] = std::move(poll);
+            } else {
+                // Capacity/retirement refusal must not fall back to legacy
+                // inline protocol polling or create an unbounded retry queue.
+                record_poll_result({.next_work_delay = idle_wait_}, now,
+                    use_absolute_deadlines);
+            }
+        } else {
+            // Mixed routes share the same allowance. Direct routes retain their
+            // existing synchronous channel poll, with one finite turn grant.
+            const auto grant =
+                round->take(ConnectionDatagramDispatcher::maximum_turn_budget);
+            auto remaining = grant;
+            const auto result = poll.runtime->poll(remaining, nullptr,
+                static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        idle_wait_)
+                        .count()),
+                true);
+            round->refund(remaining);
+            record_poll_result(result, now, use_absolute_deadlines);
         }
     }
+    if (scheduled_poll_count_ != 0U)
+        return waiting();
+    scheduled_poll_round_.reset();
+    return finish_poll_round(now);
+}
+
+void DatagramChannel::record_poll_result(const RuntimePollResult& result,
+    std::chrono::steady_clock::time_point observed_at,
+    bool use_absolute_deadlines) noexcept
+{
+    poll_round_immediate_ |= result.immediate_work;
+    const bool can_wait = readiness_available_.load(std::memory_order_acquire)
+        && result.receive_wait_safe;
+    poll_round_receive_wait_safe_ &= can_wait;
+    if (can_wait && !result.next_work_delay.has_value()) {
+        return;
+    }
+    const auto delay = can_wait
+        ? *result.next_work_delay
+        : std::min(result.next_work_delay.value_or(idle_wait_),
+              std::chrono::duration_cast<std::chrono::microseconds>(
+                  idle_wait_));
+    // Store an absolute deadline: each continuation must not restart an
+    // earlier connection's pacing/backpressure/idle wait.
+    const auto relative_deadline = observed_at + delay;
+    const auto deadline =
+        use_absolute_deadlines && result.next_work_deadline.has_value()
+        ? (can_wait ? *result.next_work_deadline
+                    : std::min(*result.next_work_deadline, relative_deadline))
+        : relative_deadline;
+    if (!poll_round_deadline_.has_value() || deadline < *poll_round_deadline_) {
+        poll_round_deadline_ = deadline;
+    }
+}
+
+RuntimePollResult DatagramChannel::finish_poll_round(
+    std::chrono::steady_clock::time_point now) noexcept
+{
     if (poll_round_remaining_ != 0U || poll_round_immediate_) {
         return {.immediate_work = true};
     }
@@ -1884,7 +2039,7 @@ RuntimePollResult DatagramChannel::poll_connections(
     }
     const auto delay = poll_round_deadline_.has_value()
         ? std::chrono::duration_cast<std::chrono::microseconds>(
-              *poll_round_deadline_ - current_time())
+              *poll_round_deadline_ - now)
         : std::chrono::duration_cast<std::chrono::microseconds>(idle_wait_);
 #if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
     if (delay <= std::chrono::microseconds::zero()) {
@@ -1899,12 +2054,12 @@ RuntimePollResult DatagramChannel::poll_connections(
     // coarse timer never lowers the send rate.
     if (coarse_timer_mode_.load(std::memory_order_relaxed)
         && delay < std::chrono::milliseconds {1}) {
-        const auto now = std::chrono::steady_clock::now();
+        const auto probe_now = std::chrono::steady_clock::now();
         std::lock_guard lifecycle_lock(lifecycle_mutex_);
-        if (now < next_coarse_timer_probe_) {
+        if (probe_now < next_coarse_timer_probe_) {
             return {.immediate_work = true};
         }
-        next_coarse_timer_probe_ = now + coarse_timer_probe_interval_;
+        next_coarse_timer_probe_ = probe_now + coarse_timer_probe_interval_;
         return {.next_work_delay = delay,
             .receive_wait_safe = can_wait,
             .coarse_timer_probe = true,

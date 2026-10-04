@@ -569,10 +569,34 @@ a second explicit round until all holders release it. Retirement discards pendin
 requests and stored completions; an active callback still follows the existing
 runtime close barrier. A foreign channel's round is rejected.
 
-This is an explicit primitive: the caller must commit the route, collect results,
-coordinate rounds and arm deadlines. It must replace concurrent legacy channel
-polling when activated. The existing automatic channel polling path and public
-setup remain unchanged; public setup does not create or select dispatchers.
+`DatagramChannel::enable_scheduled_polling` selects an internal coordinator only
+on a cold, empty, nonterminal channel before worker startup. The normal channel
+receive/task loop then requests service polls for dispatcher routes, collects
+completions and uses the existing notification/timer machinery. It never falls
+back to inline polling for a refused dispatcher request. Direct routes retain
+synchronous polling and share the same channel allowance.
+
+The coordinator stores a fixed window of four captured requests, matching four
+full 16-attempt grants within the 64-attempt allowance. The intrusive route cursor
+continues a finite sweep across windows; no fanout vector is allocated. A pending
+window uses a bounded idle timer and completion wakeups rather than immediate
+resubmission. The next window waits for that window's pending receipts, so a slow
+callback can delay the sweep; there is no independent per-route latency promise.
+Earlier deadlines survive window boundaries. Receipts record worker completion
+time so result collection cannot restart a pacing/backpressure/idle delay.
+The round captures the channel's ingress-wait policy. Setup-prefix and finite
+cohort precedence remain inside the service's existing runtime poll helpers.
+
+Collection rechecks socket-id/runtime/dispatcher identity under the route lock,
+and consumes results outside it. Detached or retired captures cannot affect a
+new route reusing the same socket id. Shutdown joins the channel task before
+releasing its captured requests and then retires services under the existing
+close barrier. An active retired callback can retain a round briefly; a refused
+new-round admission uses the bounded fallback.
+
+Public setup still does not select the coordinator or create dispatchers. The
+unselected automatic polling path is unchanged. The prototype requires public
+selection and complete-candidate qualification before performance evaluation.
 There is no cross-shard fairness or measured performance claim.
 
 The internal dispatcher factory can also claim a cold, unregistered setup inbox.

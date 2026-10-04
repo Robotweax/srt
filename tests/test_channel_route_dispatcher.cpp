@@ -3389,3 +3389,194 @@ TEST(channel_scheduled_poll_refuses_wrong_channel_and_discards_retired_request)
         fixture.channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
     REQUIRE(fixture.channel->begin_poll_round() == nullptr);
 }
+
+namespace {
+void await_coordinated_turn(
+    const std::shared_ptr<ConnectionDatagramDispatcher>& dispatcher)
+{
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    while (dispatcher->snapshot().completed_turns == 0U
+        && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    REQUIRE(dispatcher->snapshot().completed_turns != 0U);
+}
+}
+
+TEST(channel_poll_coordinator_selects_only_cold_channel)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    REQUIRE(!fixture.channel->enable_scheduled_polling());
+    REQUIRE_EQ(
+        fixture.channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE(!fixture.channel->enable_scheduled_polling());
+}
+
+TEST(
+    channel_poll_coordinator_waits_without_inline_poll_and_keeps_application_commit)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    ScheduledSendCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(
+        ScheduledSendCounts::send, &counts);
+    const std::array payload {std::byte {7}};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    for (std::size_t visit = 0; visit < 10; ++visit) {
+        const auto result = fixture.channel->poll_connections_for_testing();
+        REQUIRE(!result.immediate_work);
+        REQUIRE(result.next_work_delay.has_value());
+        REQUIRE(result.next_work_deadline.has_value());
+        REQUIRE_EQ(counts.attempts.load(), 0U);
+    }
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    gate->release();
+    await_coordinated_turn(dispatcher);
+    (void)fixture.channel->poll_connections_for_testing();
+    REQUIRE(counts.attempts.load() > 0U);
+    REQUIRE_EQ(counts.off_worker.load(), 0U);
+    REQUIRE(!dispatcher->take_poll_completion().has_value());
+    REQUIRE(fixture.channel->begin_poll_round() != nullptr);
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_poll_coordinator_preserves_worker_deadline_while_receipt_waits)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.channel->poll_connections_for_testing();
+    await_coordinated_turn(dispatcher);
+    // The completion is already published. Advance real time past the channel's
+    // two-millisecond fallback to test deadline aging, not callback ordering.
+    const auto after_deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds {3};
+    while (std::chrono::steady_clock::now() < after_deadline)
+        std::this_thread::yield();
+    const auto result = fixture.channel->poll_connections_for_testing();
+    REQUIRE(result.immediate_work);
+    REQUIRE(!dispatcher->take_poll_completion().has_value());
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_poll_coordinator_discards_detached_receipt_on_socket_id_reuse)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto old_runtime = fixture.runtime;
+    auto old = fixture.dispatcher();
+    REQUIRE(fixture.channel->register_connection(700, old_runtime, old));
+    (void)fixture.channel->poll_connections_for_testing();
+    fixture.channel->unregister_connection(700);
+    fixture.runtime = fixture.make_runtime(91, nullptr, false);
+    auto fresh = fixture.dispatcher();
+    REQUIRE(fixture.channel->register_connection(700, fixture.runtime, fresh));
+    (void)fixture.channel->poll_connections_for_testing();
+    const std::array payload {std::byte {9}};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    (void)fixture.channel->poll_connections_for_testing();
+    gate->release();
+    await_coordinated_turn(fresh);
+    (void)fixture.channel->poll_connections_for_testing();
+    REQUIRE(!old->take_poll_completion().has_value());
+    REQUIRE_EQ(old->snapshot().completed_turns, 0U);
+    REQUIRE(!fresh->take_poll_completion().has_value());
+    fixture.channel->unregister_connection(700);
+}
+
+TEST(channel_poll_coordinator_bounds_window_and_keeps_direct_route_deadline)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    // Four direct routes fill the first window. The fifth route remains at the
+    // intrusive cursor and is dispatched only by the next channel turn.
+    std::array<std::shared_ptr<ConnectionRuntime>, 4> direct;
+    for (std::size_t index = 0; index < direct.size(); ++index) {
+        direct[index] = fixture.make_runtime(
+            static_cast<std::uint32_t>(91 + index), nullptr, false);
+        REQUIRE(fixture.channel->register_connection(
+            static_cast<std::uint32_t>(701 + index), direct[index]));
+    }
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    REQUIRE(fixture.channel->poll_connections_for_testing().immediate_work);
+    // No dispatcher request fit the preceding window, so an external round
+    // is available now. Releasing it allows the second window to proceed.
+    auto probe = fixture.channel->begin_poll_round();
+    REQUIRE(probe != nullptr);
+    probe.reset();
+    REQUIRE(!fixture.channel->poll_connections_for_testing().immediate_work);
+    const auto after_deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds {3};
+    while (std::chrono::steady_clock::now() < after_deadline)
+        std::this_thread::yield();
+    gate->release();
+    await_coordinated_turn(dispatcher);
+    REQUIRE(fixture.channel->poll_connections_for_testing().immediate_work);
+    fixture.channel->unregister_connection(700);
+    for (std::size_t index = 0; index < direct.size(); ++index)
+        fixture.channel->unregister_connection(
+            static_cast<std::uint32_t>(701 + index));
+}
+
+TEST(channel_poll_coordinator_drives_real_channel_wakes_and_shutdown)
+{
+    SinkFixture fixture;
+    fixture.channel = std::make_shared<DatagramChannel>(IpAddressFamily::ipv4);
+    REQUIRE_EQ(
+        fixture.channel->socket.bind(IpEndpoint::loopback()), Error::none);
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    fixture.runtime = fixture.make_runtime(90, nullptr, false);
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    ScheduledSendCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(
+        ScheduledSendCounts::send, &counts);
+    const std::array payload {std::byte {7}};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    REQUIRE(fixture.channel->start(fixture.scheduler, 0));
+    REQUIRE(!fixture.channel->enable_scheduled_polling());
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    while (counts.attempts.load() == 0U
+        && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    REQUIRE(counts.attempts.load() > 0U);
+    REQUIRE_EQ(counts.off_worker.load(), 0U);
+    REQUIRE_EQ(
+        fixture.channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE(dispatcher->inbox()->snapshot().closed);
+    REQUIRE(!dispatcher->take_poll_completion().has_value());
+    REQUIRE(fixture.channel->begin_poll_round() == nullptr);
+}
