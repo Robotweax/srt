@@ -391,13 +391,32 @@ outside the binding-registry mutex.
 Internal retirement finish serializes concurrent/reentrant callers and retains
 unfinished channel ownership on busy, task-barrier timeout or affinity-worker
 rejection. A subsequent off-worker finish, including a later final cleanup,
-retries those batches. There is no background retry thread and no guarantee
-that worker/reentrant cleanup joins all old resources. Pending batches consume
+retries those batches. There is no background retry thread. Reentrant calls into an existing cleanup
+do not join its outer owner; the final worker transition is guarded separately
+below. Pending batches consume
 storage proportional to their still-owned binding generations, until retry;
 there is no new process-wide channel admission cap. The finish deadline covers
 channel-task barriers only, retaining the channel shutdown mutex/network/callback
 limits. Connection callback ring completion and higher-level operation/resource
 qualification remain separate gates; this is not public dispatcher activation.
+
+The final runtime-cleanup transition rejects an affinity scheduler worker before
+consuming the last startup reference, changing the cleanup gate or detaching any
+registry/service ownership. The public wrapper reports `SRT_ERROR` / `SRT_EINVOP`;
+an off-worker caller can then perform the preserved final cleanup. Nonfinal nested
+reference release, zero-reference cleanup and reentry into an already active
+cleanup keep their existing behavior. This prevents scheduler self-join without
+creating a detached cleanup thread or pretending a rejected final teardown joined.
+
+A lifecycle regression uses an actual dispatcher callback paused after pop on an
+independently owned scheduler. Its final cleanup attempt is rejected. Off-worker
+process cleanup closes the old runtime/channel while the paused copy keeps its
+ring credits; a fresh same-port binding has a different channel/handle and cannot
+reserve those credits early. Callback completion releases the old ring, allowing
+the fresh dispatcher to reuse the budget, while stale old publishers remain
+closed and the old copied packet cannot mutate either generation. An independently
+owned scheduler must still be joined by its owner; this does not activate the
+process dispatcher's service capacity or establish an API/wire total order.
 
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently

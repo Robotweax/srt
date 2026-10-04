@@ -159,7 +159,10 @@ int srt_cleanup(void)
     }
     ROBOTWEAX_SRT_COMPAT_LOG(LOG_NOTICE, SRT_LOGFA_API_CTRL,
         ".N", "SRT.ac", "cleanup requested");
-    robotweax::srt::compat::runtime_cleanup();
+    if (!robotweax::srt::compat::runtime_cleanup()) {
+        robotweax::srt::compat::set_last_error(SRT_EINVOP);
+        return SRT_ERROR;
+    }
     return 0;
 }
 

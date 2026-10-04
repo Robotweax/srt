@@ -678,7 +678,7 @@ int runtime_create_epoll() noexcept
     return epoll_create();
 }
 
-void runtime_cleanup() noexcept
+bool runtime_cleanup() noexcept
 {
     auto& lifecycle = runtime_lifecycle();
     std::shared_ptr<ConnectCallbackExecutor> retired_callbacks;
@@ -686,10 +686,13 @@ void runtime_cleanup() noexcept
     if (lifecycle.cleaning) {
         // A callback or worker retiring under final cleanup may call cleanup
         // again. There is no generation reference left for it to release.
-        return;
+        return true;
     }
     if (lifecycle.startup_count == 0U) {
-        return;
+        return true;
+    }
+    if (lifecycle.startup_count == 1U && RuntimeScheduler::on_worker_thread()) {
+        return false;
     }
     --lifecycle.startup_count;
     if (lifecycle.startup_count == 0U) {
@@ -719,6 +722,7 @@ void runtime_cleanup() noexcept
             retired_callbacks->stop();
         }
     }
+    return true;
 }
 
 } // namespace robotweax::srt::compat
