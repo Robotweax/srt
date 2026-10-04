@@ -8,6 +8,7 @@
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/runtime_work_executor_service.hpp"
 #include "compat/socket_registry.hpp"
+#include "compat/socket_io.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/random_identity.hpp"
 #include "compat/transport_runtime.hpp"
@@ -20,6 +21,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
+#include <mutex>
 #include <future>
 #include <memory>
 #include <span>
@@ -1897,4 +1900,304 @@ TEST(lifecycle_cleanup_stops_an_active_key_rotation)
         REQUIRE(record->crypto == nullptr);
     }
     REQUIRE_EQ(srt_getsockstate(socket), SRTS_NONEXIST);
+}
+
+namespace {
+using namespace robotweax::srt::compat;
+struct CleanupCycle {
+    bool active = true;
+    ~CleanupCycle()
+    {
+        if (active) {
+            (void)srt_cleanup();
+        }
+    }
+    void finish()
+    {
+        REQUIRE_EQ(srt_cleanup(), 0);
+        active = false;
+    }
+};
+std::pair<SRTSOCKET, std::shared_ptr<DatagramChannel>> bound_cleanup_channel(
+    std::uint16_t port = 0)
+{
+    const auto socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(port);
+    REQUIRE_EQ(srt_bind(socket, reinterpret_cast<sockaddr*>(&address),
+                   sizeof(address)),
+        0);
+    auto record = SocketRegistry::instance().find(socket);
+    REQUIRE(record != nullptr);
+    std::lock_guard lock(record->mutex);
+    return {socket, record->channel};
+}
+struct CleanupGate {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered = false;
+    bool released = false;
+    static void block(void* pointer) noexcept
+    {
+        auto& self = *static_cast<CleanupGate*>(pointer);
+        std::unique_lock lock(self.mutex);
+        self.entered = true;
+        self.changed.notify_all();
+        self.changed.wait(lock, [&] {
+            return self.released;
+        });
+    }
+    void wait()
+    {
+        std::unique_lock lock(mutex);
+        REQUIRE(changed.wait_for(lock, 2s, [&] {
+            return entered;
+        }));
+    }
+    void release() noexcept
+    {
+        std::lock_guard lock(mutex);
+        released = true;
+        changed.notify_all();
+    }
+};
+struct CleanupGateRelease {
+    std::shared_ptr<CleanupGate> gate;
+    std::shared_ptr<RuntimeScheduler> scheduler;
+    ~CleanupGateRelease()
+    {
+        gate->release();
+        if (scheduler != nullptr) {
+            scheduler->stop();
+        }
+    }
+};
+} // namespace
+
+TEST(lifecycle_final_cleanup_retires_captured_open_and_closed_bound_channels)
+{
+    for (bool closed : {false, true}) {
+        REQUIRE_EQ(srt_startup(), 0);
+        CleanupCycle cycle;
+        auto [socket, channel] = bound_cleanup_channel();
+        REQUIRE(channel->socket.valid());
+        auto scheduler = acquire_runtime_scheduler();
+        REQUIRE(scheduler != nullptr);
+        auto readiness = scheduler->acquire_socket_readiness();
+        REQUIRE(readiness != nullptr);
+        REQUIRE(channel->start(scheduler, 0));
+        REQUIRE_EQ(readiness->snapshot().registered, 1U);
+        if (closed) {
+            REQUIRE_EQ(srt_close(socket), 0);
+            REQUIRE(channel->socket.valid());
+        }
+        cycle.finish();
+        REQUIRE(!channel->socket.valid());
+        REQUIRE(!channel->running());
+        REQUIRE(!scheduler->snapshot().accepting);
+        REQUIRE_EQ(readiness->snapshot().registered, 0U);
+        REQUIRE_EQ(
+            channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+        REQUIRE_EQ(srt_getsockstate(socket), SRTS_NONEXIST);
+    }
+}
+
+TEST(lifecycle_bound_channel_shared_close_and_fresh_generation_are_distinct)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle first_cycle;
+    auto [first, old_channel] = bound_cleanup_channel();
+    const auto endpoint = old_channel->socket.local_endpoint();
+    REQUIRE(endpoint);
+    auto [second, shared_channel] =
+        bound_cleanup_channel(endpoint.endpoint.port);
+    REQUIRE_EQ(shared_channel.get(), old_channel.get());
+    REQUIRE_EQ(srt_close(first), 0);
+    REQUIRE(old_channel->socket.valid());
+    REQUIRE_EQ(srt_getsockstate(second), SRTS_OPENED);
+    first_cycle.finish();
+    REQUIRE(!old_channel->socket.valid());
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle second_cycle;
+    auto [fresh, fresh_channel] = bound_cleanup_channel(endpoint.endpoint.port);
+    REQUIRE(fresh != first && fresh != second);
+    REQUIRE(fresh_channel.get() != old_channel.get());
+    REQUIRE(fresh_channel->socket.valid());
+    REQUIRE_EQ(srt_close(first), 0);
+    REQUIRE(fresh_channel->socket.valid());
+    second_cycle.finish();
+    REQUIRE(!fresh_channel->socket.valid());
+}
+
+TEST(lifecycle_final_cleanup_retires_captured_acquired_udp_channel)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle cycle;
+    UdpSocket native;
+    REQUIRE_EQ(native.bind(IpEndpoint::loopback()), Error::none);
+    const auto socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_bind_acquire(
+                   socket, static_cast<UDPSOCKET>(native.release_native())),
+        0);
+    auto record = SocketRegistry::instance().find(socket);
+    REQUIRE(record != nullptr);
+    auto channel = record->channel;
+    REQUIRE(channel != nullptr);
+    cycle.finish();
+    REQUIRE(!channel->socket.valid());
+}
+
+TEST(
+    lifecycle_bound_channel_worker_rejection_retains_batch_until_off_worker_retry)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle cycle;
+    auto [socket, channel] = bound_cleanup_channel();
+    std::weak_ptr<DatagramChannel> captured = channel;
+    prepare_bound_channel_retirement();
+    REQUIRE_EQ(srt_close(socket), 0);
+    channel.reset();
+    REQUIRE(!captured.expired());
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {.shard_count = 1,
+            .queue_capacity_per_shard = 2,
+            .timer_capacity_per_shard = 2});
+    REQUIRE(scheduler->start());
+    struct Probe {
+        std::promise<BoundChannelRetirementStatus> result;
+        static void run(void* pointer) noexcept
+        {
+            static_cast<Probe*>(pointer)->result.set_value(
+                finish_bound_channel_retirement(
+                    std::chrono::steady_clock::time_point::max()));
+        }
+    };
+    auto probe = std::make_shared<Probe>();
+    auto result = probe->result.get_future();
+    REQUIRE_EQ(scheduler->submit(0, {.function = Probe::run, .context = probe}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(result.wait_for(2s), std::future_status::ready);
+    REQUIRE_EQ(result.get(), BoundChannelRetirementStatus::worker_thread);
+    REQUIRE(!captured.expired());
+    REQUIRE_EQ(
+        finish_bound_channel_retirement(std::chrono::steady_clock::now() + 2s),
+        BoundChannelRetirementStatus::retired);
+    REQUIRE(captured.expired());
+    scheduler->stop();
+    cycle.finish();
+}
+
+TEST(lifecycle_bound_channel_retirement_serializes_reentry_and_new_generation)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle cycle;
+    auto [socket, channel] = bound_cleanup_channel();
+    struct Probe {
+        std::shared_ptr<CleanupGate> gate = std::make_shared<CleanupGate>();
+        BoundChannelRetirementStatus reentered =
+            BoundChannelRetirementStatus::retired;
+        static void ready(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Probe*>(pointer);
+            self.reentered = finish_bound_channel_retirement(
+                std::chrono::steady_clock::time_point::max());
+            CleanupGate::block(self.gate.get());
+        }
+    };
+    auto probe = std::make_shared<Probe>();
+    auto inbox = std::make_shared<DatagramInbox>(1);
+    REQUIRE(inbox->set_ready_handler(Probe::ready, probe));
+    REQUIRE(
+        channel->register_setup_inbox(701, IpEndpoint::loopback(9000), inbox));
+    prepare_bound_channel_retirement();
+    std::future<BoundChannelRetirementStatus> finishing;
+    CleanupGateRelease release {probe->gate};
+    finishing = std::async(std::launch::async, [] {
+        return finish_bound_channel_retirement(
+            std::chrono::steady_clock::now() + 2s);
+    });
+    probe->gate->wait();
+    REQUIRE_EQ(
+        finish_bound_channel_retirement(std::chrono::steady_clock::now()),
+        BoundChannelRetirementStatus::busy);
+    auto [fresh, new_channel] = bound_cleanup_channel();
+    REQUIRE(new_channel.get() != channel.get());
+    prepare_bound_channel_retirement();
+    probe->gate->release();
+    REQUIRE_EQ(finishing.wait_for(2s), std::future_status::ready);
+    REQUIRE_EQ(finishing.get(), BoundChannelRetirementStatus::retired);
+    REQUIRE_EQ(probe->reentered, BoundChannelRetirementStatus::busy);
+    REQUIRE(!channel->socket.valid());
+    REQUIRE(!new_channel->socket.valid());
+    cycle.finish();
+}
+
+TEST(lifecycle_bound_channel_task_timeout_retains_ownership_for_retry)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle cycle;
+    auto [socket, channel] = bound_cleanup_channel();
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {.shard_count = 1,
+            .queue_capacity_per_shard = 4,
+            .timer_capacity_per_shard = 4});
+    REQUIRE(scheduler->start());
+    struct Clock {
+        std::atomic_bool armed {false};
+        std::shared_ptr<CleanupGate> gate = std::make_shared<CleanupGate>();
+        static std::uint64_t now(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Clock*>(pointer);
+            if (self.armed.exchange(false)) {
+                CleanupGate::block(self.gate.get());
+            }
+            return 1000;
+        }
+    } clock;
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+    auto runtime = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.channel = channel,
+            .peer = IpEndpoint::loopback(9000),
+            .peer_socket_id = 90,
+            .initial_sequence = SequenceNumber {1000},
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+            .now_function = Clock::now,
+            .now_context = &clock});
+    REQUIRE(channel->register_connection(700, runtime));
+    CleanupGateRelease release {clock.gate, scheduler};
+    clock.armed.store(true);
+    REQUIRE(channel->start(scheduler, 0));
+    clock.gate->wait();
+    prepare_bound_channel_retirement();
+    REQUIRE_EQ(
+        finish_bound_channel_retirement(std::chrono::steady_clock::now()),
+        BoundChannelRetirementStatus::timeout);
+    REQUIRE(channel->socket.valid());
+    REQUIRE(!channel->running());
+    clock.gate->release();
+    REQUIRE_EQ(
+        finish_bound_channel_retirement(std::chrono::steady_clock::now() + 2s),
+        BoundChannelRetirementStatus::retired);
+    REQUIRE(!channel->socket.valid());
+    REQUIRE(!runtime->accepts_datagrams());
+    scheduler->stop();
+    cycle.finish();
+}
+
+TEST(lifecycle_nested_cleanup_preserves_bound_channel_until_final_reference)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle cycle;
+    auto [socket, channel] = bound_cleanup_channel();
+    REQUIRE_EQ(srt_startup(), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE(channel->socket.valid());
+    cycle.finish();
+    REQUIRE(!channel->socket.valid());
 }
