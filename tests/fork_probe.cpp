@@ -98,6 +98,9 @@ using namespace std::chrono_literals;
         != nullptr) {
         _exit(28);
     }
+    if (robotweax::srt::compat::runtime_bounded_bind_enabled().has_value()) {
+        _exit(29);
+    }
     if (srt_getversion() != SRT_VERSION_VALUE) {
         _exit(26);
     }

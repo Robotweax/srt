@@ -693,3 +693,20 @@ state, or silently select a different protocol mode.
 Detailed external contracts are listed in [Protocol edge cases](protocol-edge-cases.md),
 [Public API compatibility](api-compatibility.md), and
 [Known limitations](limitations.md).
+
+
+The internal native-bind preview can be selected with
+`ROBOTWEAX_SRT_BOUNDED_BIND=1` before the first bind selection. Absent or `0`
+uses the original path. Other values fail bind with `SRT_EINVPARAM` and allow
+configuration retry. The first valid choice is fixed for the process lifetime,
+including cleanup/restart; environment changes cannot switch it later. Enabled
+public explicit/automatic native binds use the retained process channel budget
+and return `SRT_ENOBUF` on budgeted factory failure. Compatible shared bindings
+reuse their channel before reserving/opening another descriptor; IPv6 default
+policy reuse requires a locally probed matching default policy. Other IPv6
+policy combinations retain normal native probing/conflict checks.
+
+This selector enables native-bind admission only. Public native socket adoption,
+per-channel inbox budget policy, service capacity and dispatcher activation are
+unchanged. An externally adopted channel is outside this admission cap. The
+complete scheduled poll/send/setup prototype and its evaluation remain gated.

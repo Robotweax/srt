@@ -1,5 +1,6 @@
 #include "compat/socket_io.hpp"
 #include "compat/process_owned.hpp"
+#include "compat/runtime_scheduler_service.hpp"
 
 #include "compat/error_state.hpp"
 
@@ -147,6 +148,7 @@ namespace {
 struct BindingEntry {
     IpEndpoint endpoint{};
     std::int32_t ipv6_only = -1;
+    std::int32_t ipv6_policy = -1;
     std::int32_t udp_send_buffer_bytes = 0;
     std::int32_t udp_receive_buffer_bytes = 0;
     std::int32_t ip_time_to_live = 64;
@@ -156,6 +158,20 @@ struct BindingEntry {
     bool reusable = false;
     std::weak_ptr<DatagramChannel> channel;
 };
+
+[[nodiscard]] bool reusable_options(
+    const SocketRecord& socket, const BindingEntry& entry) noexcept
+{
+    return socket.public_options.reuse_address && entry.reusable
+        && socket.public_options.udp_send_buffer_bytes
+        == entry.udp_send_buffer_bytes
+        && socket.public_options.udp_receive_buffer_bytes
+        == entry.udp_receive_buffer_bytes
+        && socket.public_options.ip_time_to_live == entry.ip_time_to_live
+        && socket.public_options.ip_type_of_service == entry.ip_type_of_service
+        && socket.public_options.bound_device_size == entry.bound_device_size
+        && socket.public_options.bound_device == entry.bound_device;
+}
 
 struct BoundChannelBatch {
     std::vector<std::shared_ptr<DatagramChannel>> channels;
@@ -175,10 +191,50 @@ public:
         std::lock_guard lock(mutex_);
         remove_expired();
 
+        const auto bounded = runtime_bounded_bind_enabled();
+        if (!bounded.has_value())
+            return fail(SRT_EINVPARAM);
+        if (*bounded) {
+            if (explicit_binding && requested.is_ipv6()
+                && requested.is_wildcard()
+                && socket.public_options.ipv6_only == -1)
+                return fail(SRT_EINVPARAM);
+            // Reuse a known compatible channel before claiming/opening another
+            // native descriptor. Unknown default IPv6 policy uses normal probing.
+            if (requested.port != 0U) {
+                for (const auto& entry : entries_) {
+                    const bool policy_matches = !requested.is_ipv6()
+                        || (socket.public_options.ipv6_only == -1
+                                ? entry.ipv6_policy == -1
+                                : entry.ipv6_only
+                                    == socket.public_options.ipv6_only);
+                    if (requested == entry.endpoint && policy_matches
+                        && reusable_options(socket, entry)) {
+                        auto existing = entry.channel.lock();
+                        if (existing != nullptr) {
+                            channel = std::move(existing);
+                            local = entry.endpoint;
+                            socket.effective_ipv6_only = entry.ipv6_only;
+                            return 0;
+                        }
+                    }
+                }
+            }
+        }
+
         std::shared_ptr<DatagramChannel> candidate;
         try {
-            candidate = std::make_shared<DatagramChannel>(
-                requested.family);
+            if (*bounded) {
+                auto budget = acquire_runtime_native_channel_budget();
+                if (budget == nullptr)
+                    return fail(SRT_ENOBUF);
+                candidate =
+                    DatagramChannel::create_budgeted(requested.family, budget);
+                if (candidate == nullptr)
+                    return fail(SRT_ENOBUF);
+            } else {
+                candidate = std::make_shared<DatagramChannel>(requested.family);
+            }
         } catch (const std::bad_alloc&) {
             return fail(SRT_ENOBUF);
         } catch (...) {
@@ -200,26 +256,9 @@ public:
                         entry.ipv6_only)) {
                     continue;
                 }
-                if (identical_binding(requested,
-                        effective_ipv6_only,
-                        entry.endpoint,
-                        entry.ipv6_only)
-                    && socket.public_options.reuse_address
-                    && entry.reusable
-                    && socket.public_options
-                            .udp_send_buffer_bytes
-                        == entry.udp_send_buffer_bytes
-                    && socket.public_options
-                            .udp_receive_buffer_bytes
-                        == entry.udp_receive_buffer_bytes
-                    && socket.public_options.ip_time_to_live
-                        == entry.ip_time_to_live
-                    && socket.public_options.ip_type_of_service
-                        == entry.ip_type_of_service
-                    && socket.public_options.bound_device_size
-                        == entry.bound_device_size
-                    && socket.public_options.bound_device
-                        == entry.bound_device) {
+                if (identical_binding(requested, effective_ipv6_only,
+                        entry.endpoint, entry.ipv6_only)
+                    && reusable_options(socket, entry)) {
                     channel = entry.channel.lock();
                     if (channel != nullptr) {
                         local = entry.endpoint;
@@ -250,7 +289,7 @@ public:
         channel = std::move(candidate);
         socket.effective_ipv6_only =
             effective_ipv6_only;
-        if (remember(socket, local, effective_ipv6_only, channel)
+        if (remember(socket, local, effective_ipv6_only, channel, true)
             == SRT_ERROR) {
             channel.reset();
             return SRT_ERROR;
@@ -407,12 +446,10 @@ private:
         return 0;
     }
 
-    [[nodiscard]] int remember(
-        const SocketRecord& socket,
-        IpEndpoint endpoint,
+    [[nodiscard]] int remember(const SocketRecord& socket, IpEndpoint endpoint,
         std::int32_t effective_ipv6_only,
-        const std::shared_ptr<DatagramChannel>& channel)
-        noexcept
+        const std::shared_ptr<DatagramChannel>& channel,
+        bool locally_opened = false) noexcept
     {
         try {
             if (prepared_ == nullptr) {
@@ -430,22 +467,17 @@ private:
             entries_.push_back({
                 .endpoint = endpoint,
                 .ipv6_only = effective_ipv6_only,
+                .ipv6_policy =
+                    locally_opened ? socket.public_options.ipv6_only : -2,
                 .udp_send_buffer_bytes =
-                    socket.public_options
-                        .udp_send_buffer_bytes,
+                    socket.public_options.udp_send_buffer_bytes,
                 .udp_receive_buffer_bytes =
-                    socket.public_options
-                        .udp_receive_buffer_bytes,
-                .ip_time_to_live =
-                    socket.public_options.ip_time_to_live,
-                .ip_type_of_service =
-                    socket.public_options.ip_type_of_service,
-                .bound_device =
-                    socket.public_options.bound_device,
-                .bound_device_size =
-                    socket.public_options.bound_device_size,
-                .reusable =
-                    socket.public_options.reuse_address,
+                    socket.public_options.udp_receive_buffer_bytes,
+                .ip_time_to_live = socket.public_options.ip_time_to_live,
+                .ip_type_of_service = socket.public_options.ip_type_of_service,
+                .bound_device = socket.public_options.bound_device,
+                .bound_device_size = socket.public_options.bound_device_size,
+                .reusable = socket.public_options.reuse_address,
                 .channel = channel,
             });
             return 0;
