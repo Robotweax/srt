@@ -130,7 +130,9 @@ ConnectionDatagramInbox::~ConnectionDatagramInbox()
 {
     // Physical storage must be gone before making the credit available again.
     entries_.reset();
-    budget_->release(storage_bytes_);
+    if (!snapshot_.storage_released) {
+        budget_->release(storage_bytes_);
+    }
 }
 
 bool ConnectionDatagramInbox::matches(Token token) const noexcept
@@ -292,6 +294,32 @@ ConnectionDatagramInbox::Status ConnectionDatagramInbox::complete(
     snapshot_.in_flight = false;
     ++snapshot_.completed;
     return Status::accepted;
+}
+
+bool ConnectionDatagramInbox::reclaim_retired_storage() noexcept
+{
+    // Multiple off-worker drainers must all observe actual credit return,
+    // not only another caller's intent to reclaim the physical ring.
+    std::lock_guard reclamation_lock(reclamation_mutex_);
+    std::unique_ptr<Entry[]> released;
+    {
+        std::lock_guard lock(mutex_);
+        if (!snapshot_.closed || snapshot_.in_flight) {
+            return false;
+        }
+        if (snapshot_.storage_released) {
+            return true;
+        }
+        released = std::move(entries_);
+    }
+    // Physical ring destruction precedes credit return, outside inbox locks.
+    released.reset();
+    budget_->release(storage_bytes_);
+    {
+        std::lock_guard lock(mutex_);
+        snapshot_.storage_released = true;
+    }
+    return true;
 }
 
 ConnectionDatagramInbox::Status ConnectionDatagramInbox::rearm(
