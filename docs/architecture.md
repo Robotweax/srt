@@ -371,6 +371,34 @@ callbacks installed after terminal publication and process-wide channel
 retirement remain separate ownership concerns. The full cleanup/restart gate is
 not completed by this actor barrier alone.
 
+Final process cleanup now detaches bound-channel identities before registry
+teardown and captures surviving bound/adopted channels in a retirement owner.
+A second capture after socket-record teardown includes binds that were already
+holding a record mutex at the first capture. Binding admission prepares the
+batch node and geometrically grown channel slots before publishing a new
+binding. Capture uses those slots without a teardown allocation, so old handles
+can keep their channel object alive without keeping its native socket open.
+The dormant binding registry is initialized among socket-registry teardown
+dependencies, with the existing process-owned fork behavior.
+
+After listener/setup record close and work-executor/scheduler stop, an external
+final cleanup completes channel retirement before reopening lifecycle admission.
+Normal individual socket close retains shared-channel behavior; nested cleanup
+references do not retire the binding generation. New bindings cannot reuse old
+binding identities after capture. Callback waits and native shutdown happen
+outside the binding-registry mutex.
+
+Internal retirement finish serializes concurrent/reentrant callers and retains
+unfinished channel ownership on busy, task-barrier timeout or affinity-worker
+rejection. A subsequent off-worker finish, including a later final cleanup,
+retries those batches. There is no background retry thread and no guarantee
+that worker/reentrant cleanup joins all old resources. Pending batches consume
+storage proportional to their still-owned binding generations, until retry;
+there is no new process-wide channel admission cap. The finish deadline covers
+channel-task barriers only, retaining the channel shutdown mutex/network/callback
+limits. Connection callback ring completion and higher-level operation/resource
+qualification remain separate gates; this is not public dispatcher activation.
+
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently
 invoked runtime handlers. The dispatcher does not poll the runtime or grant it a

@@ -157,6 +157,12 @@ struct BindingEntry {
     std::weak_ptr<DatagramChannel> channel;
 };
 
+struct BoundChannelBatch {
+    std::vector<std::shared_ptr<DatagramChannel>> channels;
+    std::shared_ptr<BoundChannelBatch> next;
+    std::size_t completed = 0;
+};
+
 class BindingRegistry {
 public:
     [[nodiscard]] int bind_new(
@@ -271,6 +277,66 @@ public:
             socket, local, effective_ipv6_only, channel);
     }
 
+    void prepare_retirement() noexcept
+    {
+        std::lock_guard lock(mutex_);
+        if (prepared_ == nullptr) {
+            return;
+        }
+        // remember() reserved one slot per entry before publishing binding.
+        // No allocation and no channel callback occurs under this mutex.
+        for (const auto& entry : entries_) {
+            if (auto channel = entry.channel.lock()) {
+                prepared_->channels.push_back(std::move(channel));
+            }
+        }
+        entries_.clear();
+        prepared_->next = std::move(pending_);
+        pending_ = std::move(prepared_);
+    }
+
+    [[nodiscard]] BoundChannelRetirementStatus finish_retirement(
+        std::chrono::steady_clock::time_point deadline) noexcept
+    {
+        if (RuntimeScheduler::on_worker_thread()) {
+            return BoundChannelRetirementStatus::worker_thread;
+        }
+        std::unique_lock finishing(finish_mutex_, std::try_to_lock);
+        if (!finishing.owns_lock()) {
+            return BoundChannelRetirementStatus::busy;
+        }
+        for (;;) {
+            std::shared_ptr<BoundChannelBatch> batch;
+            {
+                std::lock_guard lock(mutex_);
+                batch = pending_;
+            }
+            if (batch == nullptr) {
+                return BoundChannelRetirementStatus::retired;
+            }
+            for (; batch->completed < batch->channels.size();
+                ++batch->completed) {
+                const auto status =
+                    batch->channels[batch->completed]->shutdown(deadline);
+                if (status == DatagramChannel::ShutdownStatus::timeout) {
+                    return BoundChannelRetirementStatus::timeout;
+                }
+                if (status != DatagramChannel::ShutdownStatus::retired) {
+                    return BoundChannelRetirementStatus::busy;
+                }
+                batch->channels[batch->completed].reset();
+            }
+            {
+                std::lock_guard lock(mutex_);
+                auto* link = &pending_;
+                while (*link != batch) {
+                    link = &(*link)->next;
+                }
+                *link = std::move(batch->next);
+            }
+        }
+    }
+
 private:
     static int configure_socket(
         SocketRecord& socket,
@@ -349,6 +415,18 @@ private:
         noexcept
     {
         try {
+            if (prepared_ == nullptr) {
+                prepared_ = std::make_shared<BoundChannelBatch>();
+            }
+            auto& channels = prepared_->channels;
+            const auto needed = entries_.size() + 1U;
+            if (channels.capacity() < needed) {
+                const auto grown =
+                    channels.capacity() > channels.max_size() / 2U
+                    ? needed
+                    : channels.capacity() * 2U;
+                channels.reserve(std::max(needed, grown));
+            }
             entries_.push_back({
                 .endpoint = endpoint,
                 .ipv6_only = effective_ipv6_only,
@@ -390,7 +468,10 @@ private:
     }
 
     std::mutex mutex_;
+    std::mutex finish_mutex_;
     std::vector<BindingEntry> entries_;
+    std::shared_ptr<BoundChannelBatch> prepared_;
+    std::shared_ptr<BoundChannelBatch> pending_;
 };
 
 [[nodiscard]] BindingRegistry& binding_registry()
@@ -516,6 +597,22 @@ private:
 }
 
 } // namespace
+
+void prepare_bound_channel_registry() noexcept
+{
+    (void)binding_registry();
+}
+
+void prepare_bound_channel_retirement() noexcept
+{
+    binding_registry().prepare_retirement();
+}
+
+BoundChannelRetirementStatus finish_bound_channel_retirement(
+    std::chrono::steady_clock::time_point deadline) noexcept
+{
+    return binding_registry().finish_retirement(deadline);
+}
 
 int decode_ip_endpoint(
     const sockaddr* name, int name_size, IpEndpoint& endpoint,

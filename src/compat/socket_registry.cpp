@@ -5,6 +5,7 @@
 #include "compat/connect_handshake_operation.hpp"
 #include "compat/connection.hpp"
 #include "compat/epoll.hpp"
+#include "compat/socket_io.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/random_identity.hpp"
 #include "compat/readiness.hpp"
@@ -411,6 +412,7 @@ SocketRegistry& SocketRegistry::instance() noexcept
     prepare_runtime_scheduler_service();
     prepare_runtime_work_executor_service();
     prepare_connect_callback_executor();
+    prepare_bound_channel_registry();
     epoll_initialize();
     (void)GroupRegistry::instance();
     static ProcessOwned<SocketRegistry> registry;
@@ -693,11 +695,19 @@ void runtime_cleanup() noexcept
     if (lifecycle.startup_count == 0U) {
         lifecycle.cleaning = true;
         lifecycle_lock.unlock();
+        prepare_bound_channel_retirement();
         GroupRegistry::instance().clear();
         SocketRegistry::instance().clear();
+        // A bind already holding a record mutex may have finished after the
+        // first snapshot. Record close has now fenced those in-flight binds.
+        prepare_bound_channel_retirement();
         stop_runtime_work_executor();
         retired_callbacks = retire_connect_callback_executor();
         stop_runtime_scheduler();
+        // Off-worker cleanup joins channel tasks through scheduler stop first.
+        // Worker/reentrant failures keep old channels in the retirement owner.
+        (void)finish_bound_channel_retirement(
+            std::chrono::steady_clock::time_point::max());
         // The callback executor has been detached from the service. Its
         // workers may run application TLS destructors that start a new
         // generation, so finish their joins after reopening admission.
