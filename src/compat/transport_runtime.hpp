@@ -275,8 +275,8 @@ public:
     explicit DatagramChannel(UdpSocket acquired_socket) noexcept;
     ~DatagramChannel();
     // Internal prototype admission before native open/ownership transfer.
-    // Count rejection leaves an acquired descriptor with its caller. A later
-    // allocation failure may consume/close it, returning the reserved credit.
+    // Adoption leaves an acquired descriptor with its caller on any failure.
+    // Ownership moves only after all factory allocations have succeeded.
     [[nodiscard]] static std::shared_ptr<DatagramChannel> create_budgeted(
         IpAddressFamily family,
         const std::shared_ptr<NativeChannelBudget>& budget) noexcept;
@@ -380,6 +380,10 @@ public:
     }
 
 private:
+    struct UnopenedTag { };
+    // Container construction may allocate; let the factory catch failures
+    // before any native descriptor is transferred.
+    explicit DatagramChannel(UnopenedTag);
     void release_native_credit() noexcept;
 
     struct ScheduledWorkContext {

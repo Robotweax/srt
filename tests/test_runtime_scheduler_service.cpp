@@ -413,3 +413,48 @@ TEST(scheduler_service_bounded_bind_reuses_explicit_ipv6_policy)
     REQUIRE(!channel->socket.valid());
     REQUIRE_EQ(budget->reserved_channels(), 0U);
 }
+
+TEST(
+    scheduler_service_bounded_public_udp_adoption_refunds_conflict_and_retires_native)
+{
+    constexpr const char* selector = "ROBOTWEAX_SRT_BOUNDED_BIND";
+    EnvironmentGuard restore {selector};
+    REQUIRE_EQ(set_named_setting(selector, "1"), 0);
+    auto budget = acquire_runtime_native_channel_budget();
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+    REQUIRE_EQ(srt_startup(), 0);
+    robotweax::srt::UdpSocket native {robotweax::srt::IpAddressFamily::ipv4};
+    REQUIRE_EQ(native.bind(robotweax::srt::IpEndpoint::loopback()),
+        robotweax::srt::Error::none);
+    const auto endpoint = native.local_endpoint();
+    REQUIRE(endpoint);
+    const auto raw = native.release_native();
+    const auto socket = srt_create_socket();
+    REQUIRE_EQ(srt_bind_acquire(socket, static_cast<UDPSOCKET>(raw)), 0);
+    auto channel = SocketRegistry::instance().find(socket)->channel;
+    REQUIRE(channel != nullptr);
+    REQUIRE_EQ(channel->socket.native_handle(), raw);
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    // Duplicate registry ownership is rejected; the existing descriptor stays valid.
+    const auto duplicate = srt_create_socket();
+    REQUIRE_EQ(
+        srt_bind_acquire(duplicate, static_cast<UDPSOCKET>(raw)), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EBINDCONFLICT);
+    REQUIRE(channel->socket.local_endpoint());
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    REQUIRE_EQ(srt_close(duplicate), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE(!channel->socket.valid());
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+    REQUIRE_EQ(srt_startup(), 0);
+    robotweax::srt::UdpSocket next {robotweax::srt::IpAddressFamily::ipv4};
+    REQUIRE_EQ(next.bind(endpoint.endpoint), robotweax::srt::Error::none);
+    const auto fresh_socket = srt_create_socket();
+    REQUIRE_EQ(srt_bind_acquire(
+                   fresh_socket, static_cast<UDPSOCKET>(next.release_native())),
+        0);
+    channel.reset();
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+}
