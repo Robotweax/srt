@@ -20,6 +20,7 @@ constexpr std::size_t runtime_scheduler_queue_capacity = 4'096U;
 constexpr std::size_t runtime_scheduler_timer_capacity = 4'096U;
 
 constexpr std::size_t default_inbox_storage_mib = 64U;
+constexpr std::size_t runtime_inbox_count_limit = 4'096U;
 constexpr std::size_t bytes_per_mib = 1024U * 1024U;
 
 class RuntimeSchedulerService {
@@ -96,8 +97,8 @@ public:
         if (!mib.has_value())
             return {};
         try {
-            inbox_budget_ =
-                std::make_shared<DatagramStorageBudget>(*mib * bytes_per_mib);
+            inbox_budget_ = std::make_shared<DatagramStorageBudget>(
+                *mib * bytes_per_mib, runtime_inbox_count_limit);
             return inbox_budget_;
         } catch (...) {
             return {};

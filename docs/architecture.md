@@ -450,6 +450,27 @@ Clients must explicitly pass this owner to layered inbox/dispatcher factories;
 public setup is still unchanged. Channel-count/service admission and selectable
 scheduled poll/send integration remain subsequent gates.
 
+Ring budgets can also bound the number of physical inbox rings, independently
+of bytes. Byte and count checks/reservations happen together under each budget's
+mutex before allocation. The process owner admits at most 4,096 rings; internal
+channel-budget constructors can set their own count ceiling (zero rejects all).
+Existing one-argument budgets preserve their byte-only admission policy. A local
+or process rejection and every later factory rollback return all acquired byte
+and count credits. Close or a drain timeout retains counts until physical ring
+reclamation/destruction; captured reclaimed handles do not retain count credits.
+Aliased process/channel budgets charge once. Budget accessor calls are separate
+observations, not an atomic multi-budget snapshot.
+
+Dispatcher service reservation remains independently bounded per scheduler
+shard and occurs before ring admission; a full/stopped service returns without
+ring charges. Failed ring/prefix admission retires that service. A dispatched
+callback can retain its service slot past client ring reclamation until the
+scheduler epilogue, so ring-count release does not promise immediate service
+reuse in that interval. Process ring count is not a cap on bound channels,
+original setup rings, metadata retained after reclamation or every scheduler
+generation's service table. Automatic owner adoption, native channel-count
+admission and selectable scheduled poll/send/public setup remain subsequent gates.
+
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently
 invoked runtime handlers. The dispatcher does not poll the runtime or grant it a

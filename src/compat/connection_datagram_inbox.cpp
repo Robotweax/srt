@@ -32,18 +32,22 @@ void increment(std::uint64_t& value) noexcept
 }
 } // namespace
 
-DatagramStorageBudget::DatagramStorageBudget(std::size_t maximum_bytes) noexcept
+DatagramStorageBudget::DatagramStorageBudget(
+    std::size_t maximum_bytes, std::size_t maximum_inboxes) noexcept
     : maximum_bytes_(maximum_bytes)
+    , maximum_inboxes_(maximum_inboxes)
 {
 }
 
 bool DatagramStorageBudget::reserve(std::size_t bytes) noexcept
 {
     std::lock_guard lock(mutex_);
-    if (bytes > maximum_bytes_ - reserved_bytes_) {
+    if (reserved_inboxes_ == maximum_inboxes_
+        || bytes > maximum_bytes_ - reserved_bytes_) {
         return false;
     }
     reserved_bytes_ += bytes;
+    ++reserved_inboxes_;
     return true;
 }
 
@@ -51,12 +55,19 @@ void DatagramStorageBudget::release(std::size_t bytes) noexcept
 {
     std::lock_guard lock(mutex_);
     reserved_bytes_ -= bytes;
+    --reserved_inboxes_;
 }
 
 std::size_t DatagramStorageBudget::reserved_bytes() const noexcept
 {
     std::lock_guard lock(mutex_);
     return reserved_bytes_;
+}
+
+std::size_t DatagramStorageBudget::reserved_inboxes() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    return reserved_inboxes_;
 }
 
 struct ConnectionDatagramInbox::Entry {

@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <barrier>
 #include <future>
+#include <vector>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -138,7 +139,7 @@ TEST(
         REQUIRE_EQ(set_named_setting(budget_setting, value), 0);
         REQUIRE(acquire_runtime_inbox_storage_budget() == nullptr);
     }
-    REQUIRE_EQ(set_named_setting(budget_setting, "1"), 0);
+    REQUIRE_EQ(set_named_setting(budget_setting, "8"), 0);
     std::barrier start {3};
     auto acquire = [&] {
         start.arrive_and_wait();
@@ -151,6 +152,7 @@ TEST(
     REQUIRE(budget != nullptr);
     REQUIRE_EQ(right.get().get(), budget.get());
     REQUIRE_EQ(budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(budget->reserved_inboxes(), 0U);
 
     // Budget acquisition does not start scheduler workers or admit services.
     REQUIRE_EQ(set_setting("1"), 0);
@@ -167,7 +169,7 @@ TEST(
     auto binding = ConnectionWorkBinding::create(
         independent, 0, [](void*, ConnectionWorkHints) noexcept { }, nullptr);
     REQUIRE(binding != nullptr);
-    constexpr std::size_t limit = 1024U * 1024U;
+    constexpr std::size_t limit = 8U * 1024U * 1024U;
     const auto entry_bytes = *ConnectionDatagramInbox::storage_bytes(1);
     const auto capacity = limit / entry_bytes;
     REQUIRE(capacity > 1U);
@@ -175,13 +177,33 @@ TEST(
     const robotweax::srt::Ipv4Endpoint peer {
         .address = {192, 0, 2, 93}, .port = 14903};
     auto channel = std::make_shared<DatagramStorageBudget>(limit);
+    // Small rings exhaust the process count ceiling while byte room remains.
+    std::vector<std::shared_ptr<ConnectionDatagramInbox>> small_rings;
+    small_rings.reserve(4096);
+    for (std::size_t i = 0; i < 4096; ++i) {
+        auto ring = ConnectionDatagramInbox::create(channel, binding, peer,
+            {.capacity = 1, .control_reserve = 0}, budget);
+        REQUIRE(ring != nullptr);
+        small_rings.push_back(std::move(ring));
+    }
+    REQUIRE_EQ(budget->reserved_inboxes(), 4096U);
+    REQUIRE(budget->reserved_bytes() < limit - entry_bytes);
+    REQUIRE(ConnectionDatagramInbox::create(channel, binding, peer,
+                {.capacity = 1, .control_reserve = 0}, budget)
+        == nullptr);
+    REQUIRE_EQ(channel->reserved_inboxes(), 4096U);
+    small_rings.clear();
+    REQUIRE_EQ(budget->reserved_inboxes(), 0U);
+    REQUIRE_EQ(channel->reserved_inboxes(), 0U);
     auto old_ring = ConnectionDatagramInbox::create(channel, binding, peer,
         {.capacity = capacity, .control_reserve = 1}, budget);
     REQUIRE(old_ring != nullptr);
     REQUIRE_EQ(budget->reserved_bytes(), charged);
+    REQUIRE_EQ(budget->reserved_inboxes(), 1U);
     REQUIRE_EQ(srt_cleanup(), 0);
     REQUIRE(!old_scheduler->snapshot().accepting);
     REQUIRE_EQ(budget->reserved_bytes(), charged);
+    REQUIRE_EQ(budget->reserved_inboxes(), 1U);
 
     // Neither configuration changes nor a new scheduler generation reset the
     // process owner, including when the caller drops its own owner handle.
@@ -200,15 +222,19 @@ TEST(
         == nullptr);
     REQUIRE_EQ(fresh_channel->reserved_bytes(), 0U);
     REQUIRE_EQ(budget->reserved_bytes(), charged);
+    REQUIRE_EQ(budget->reserved_inboxes(), 1U);
     old_ring.reset();
     REQUIRE_EQ(channel->reserved_bytes(), 0U);
     REQUIRE_EQ(budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(budget->reserved_inboxes(), 0U);
     auto fresh_ring = ConnectionDatagramInbox::create(fresh_channel, binding,
         peer, {.capacity = capacity, .control_reserve = 1}, budget);
     REQUIRE(fresh_ring != nullptr);
     REQUIRE_EQ(budget->reserved_bytes(), charged);
+    REQUIRE_EQ(budget->reserved_inboxes(), 1U);
     fresh_ring.reset();
     REQUIRE_EQ(budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(budget->reserved_inboxes(), 0U);
     binding->retire();
     independent->stop();
     REQUIRE_EQ(srt_cleanup(), 0);
