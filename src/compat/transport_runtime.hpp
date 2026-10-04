@@ -118,8 +118,12 @@ public:
     void clear_ready_handler() noexcept;
     [[nodiscard]] bool ready() noexcept;
     void close() noexcept;
+    // Terminal publication fence, including a captured promoted handle.
+    // Ordinary setup close preserves its established forwarding contract.
+    void retire() noexcept;
 
 private:
+    void close_publication(bool terminal) noexcept;
     friend class DatagramChannel;
     friend class ConnectionDatagramDispatcher;
     // Only the dispatcher consumes a queued, sealed setup prefix.
@@ -143,6 +147,7 @@ private:
     ReadyFunction ready_handler_ = nullptr;
     std::weak_ptr<void> ready_context_;
     bool closed_ = false;
+    bool admission_retired_ = false;
 };
 
 enum class MessageIoStatus : std::uint8_t {
@@ -258,6 +263,17 @@ public:
     [[nodiscard]] bool start() noexcept;
     [[nodiscard]] bool start(std::shared_ptr<RuntimeScheduler> scheduler,
         std::uint64_t affinity) noexcept;
+    enum class ShutdownStatus { retired, busy, timeout, worker_thread };
+    // Terminal owning channel boundary. Off-worker only: stop channel work,
+    // detach all routes, close runtimes/inboxes and retire the native socket.
+    // Connection callbacks finish their ring reclamation asynchronously.
+    // Concurrent/reentrant calls report busy instead of waiting on callbacks.
+    // Deadline covers the active channel task barrier. Runtime close retains
+    // its existing mutex/network retry behavior; this is not a global deadline.
+    [[nodiscard]] ShutdownStatus shutdown(
+        std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::now()
+            + std::chrono::milliseconds {250}) noexcept;
     void notify_send_work() noexcept;
     void notify_receive_release() noexcept;
     void set_idle_wait_for_testing(std::chrono::milliseconds timeout) noexcept;
@@ -387,10 +403,15 @@ private:
         std::span<const std::byte> datagram,
         IpEndpoint peer) noexcept;
     void mark_connections_broken(int system_error) noexcept;
-    void stop() noexcept;
+    bool stop(std::chrono::steady_clock::time_point deadline =
+                  std::chrono::steady_clock::time_point::max()) noexcept;
     void notify_work(bool receive_release) noexcept;
 
+    std::mutex shutdown_mutex_;
+    std::atomic_bool shutdown_requested_ = false;
+    bool shutdown_finished_ = false;
     std::mutex send_mutex_;
+    bool send_closed_ = false;
     std::mutex lifecycle_mutex_;
     std::condition_variable lifecycle_idle_;
     SendHook send_hook_ = nullptr;

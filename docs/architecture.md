@@ -324,7 +324,37 @@ dispatched work against a live runtime to finish. Service-slot reuse and task
 context destruction still require the scheduler epilogue. The hook reclaims
 only the connection ring, not captured original setup rings or arbitrary task
 contexts. Listener/setup teardown, scheduled channel stop and full process
-cleanup/restart qualification remain further lifecycle gates.
+cleanup/restart qualification are continued by the internal boundary below.
+
+Internal `DatagramChannel::shutdown(deadline)` is terminal for the whole shared
+channel. It rejects affinity workers before changing state; concurrent or
+reentrant calls report busy. It fences start, route/setup/listener registration
+and channel dispatch, cancels the readiness watch/timer and waits for the active
+scheduled channel task. The supplied deadline covers that task barrier (default
+250 ms). Timeout retains the scheduler/context, routes and native socket for a
+retry, with channel admission and scheduling still fenced. Captured dispatcher
+handles retain their runtime admission until the retry reaches route teardown.
+The deadline does not preempt runtime mutex acquisition, protocol network retry,
+or inbox ready handlers.
+
+Once the channel task is quiet, route/setup tables are swapped into local owning
+batches without a fanout allocation. Readiness callbacks and runtime close run
+outside route/lifecycle locks. Listener inbox publication is closed; setup
+inboxes get an explicit terminal retirement fence. Ordinary setup `close()`
+continues its existing promoted-handle forwarding contract. Terminal retirement
+rejects publication even through promoted handles and rejects later promotion.
+Established routes transfer their dispatchers to the owning close boundary;
+active connection callbacks still finish asynchronous ring reclamation. The
+native socket is retired under the send mutex after the runtime close attempts,
+and later direct channel sends fail. Already captured original setup rings and
+ready callback contexts retain their existing lifetimes.
+
+A retired status proves channel task stop, route detachment and socket retirement;
+it does not promise that every connection callback or higher-level listener/
+setup operation has been joined. The shutdown boundary is internal and explicit.
+It does not close a shared listener channel when just one accepted socket or the
+listener handle closes. Process-wide cleanup ownership, listener/setup operation
+joins and restart/generation qualification remain further integration gates.
 
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently
