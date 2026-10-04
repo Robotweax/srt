@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <future>
 #include <mutex>
 #include <thread>
 
@@ -868,4 +869,181 @@ TEST(listener_handshake_inbox_uses_weak_readiness_ownership)
     REQUIRE_EQ(close_counter->value, 2U);
     inbox.close();
     REQUIRE_EQ(close_counter->value, 2U);
+}
+
+namespace {
+template <typename Actor> struct TerminalPublicationGate {
+    std::weak_ptr<Actor> actor;
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered = false;
+    bool released = false;
+    static void notify(void* context) noexcept
+    {
+        auto& gate = *static_cast<TerminalPublicationGate*>(context);
+        const auto owner = gate.actor.lock();
+        if (owner == nullptr || !owner->snapshot().terminal) {
+            return;
+        }
+        std::unique_lock lock(gate.mutex);
+        gate.entered = true;
+        gate.changed.notify_all();
+        gate.changed.wait(lock, [&] {
+            return gate.released;
+        });
+    }
+    void release() noexcept
+    {
+        std::lock_guard lock(mutex);
+        released = true;
+        changed.notify_all();
+    }
+};
+template <typename Actor> struct TerminalPublicationRelease {
+    std::shared_ptr<TerminalPublicationGate<Actor>> gate;
+    ~TerminalPublicationRelease()
+    {
+        gate->release();
+    }
+};
+} // namespace
+
+TEST(listener_handshake_actor_stop_joins_unstarted_terminal_publication)
+{
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {.shard_count = 1,
+            .queue_capacity_per_shard = 4,
+            .timer_capacity_per_shard = 4});
+    REQUIRE(scheduler->start());
+    auto actor = std::make_shared<ListenerHandshakeActor>(scheduler, 0U,
+        std::make_shared<HandshakeInbox>(1), admission_configuration(), 1U,
+        fixed_listener_time_window, std::make_shared<std::uint64_t>(1U));
+    auto gate =
+        std::make_shared<TerminalPublicationGate<ListenerHandshakeActor>>();
+    gate->actor = actor;
+    REQUIRE(actor->set_result_ready_handler(
+        TerminalPublicationGate<ListenerHandshakeActor>::notify, gate));
+    std::future<void> closing;
+    std::future<void> stopping;
+    TerminalPublicationRelease<ListenerHandshakeActor> release {gate};
+    closing = std::async(std::launch::async, [actor] {
+        actor->close();
+    });
+    {
+        std::unique_lock lock(gate->mutex);
+        REQUIRE(gate->changed.wait_for(lock, std::chrono::seconds {2}, [&] {
+            return gate->entered;
+        }));
+    }
+    REQUIRE(actor->snapshot().terminal);
+    auto entering_stop = std::make_shared<std::promise<void>>();
+    auto entered_stop = entering_stop->get_future();
+    stopping = std::async(std::launch::async, [actor, entering_stop] {
+        entering_stop->set_value();
+        actor->stop();
+    });
+    REQUIRE_EQ(entered_stop.wait_for(std::chrono::seconds {2}),
+        std::future_status::ready);
+    REQUIRE_EQ(stopping.wait_for(std::chrono::milliseconds {30}),
+        std::future_status::timeout);
+    gate->release();
+    REQUIRE_EQ(
+        stopping.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    stopping.get();
+    if (closing.valid()) {
+        closing.get();
+    }
+    actor->clear_result_ready_handler();
+    actor->stop();
+    scheduler->stop();
+}
+
+TEST(listener_handshake_actor_stop_joins_scheduled_terminal_publication)
+{
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {.shard_count = 1,
+            .queue_capacity_per_shard = 4,
+            .timer_capacity_per_shard = 4});
+    REQUIRE(scheduler->start());
+    auto actor = std::make_shared<ListenerHandshakeActor>(scheduler, 0U,
+        std::make_shared<HandshakeInbox>(1), admission_configuration(), 1U,
+        fixed_listener_time_window, std::make_shared<std::uint64_t>(1U));
+    auto gate =
+        std::make_shared<TerminalPublicationGate<ListenerHandshakeActor>>();
+    gate->actor = actor;
+    REQUIRE(actor->set_result_ready_handler(
+        TerminalPublicationGate<ListenerHandshakeActor>::notify, gate));
+    std::future<void> closing;
+    std::future<void> stopping;
+    TerminalPublicationRelease<ListenerHandshakeActor> release {gate};
+    REQUIRE_EQ(actor->start(), ListenerHandshakeDispatchStatus::completed);
+    actor->close();
+    {
+        std::unique_lock lock(gate->mutex);
+        REQUIRE(gate->changed.wait_for(lock, std::chrono::seconds {2}, [&] {
+            return gate->entered;
+        }));
+    }
+    REQUIRE(actor->snapshot().terminal);
+    auto entering_stop = std::make_shared<std::promise<void>>();
+    auto entered_stop = entering_stop->get_future();
+    stopping = std::async(std::launch::async, [actor, entering_stop] {
+        entering_stop->set_value();
+        actor->stop();
+    });
+    REQUIRE_EQ(entered_stop.wait_for(std::chrono::seconds {2}),
+        std::future_status::ready);
+    REQUIRE_EQ(stopping.wait_for(std::chrono::milliseconds {30}),
+        std::future_status::timeout);
+    gate->release();
+    REQUIRE_EQ(
+        stopping.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    stopping.get();
+    if (closing.valid()) {
+        closing.get();
+    }
+    actor->clear_result_ready_handler();
+    actor->stop();
+    scheduler->stop();
+}
+
+TEST(listener_handshake_actor_terminal_publication_can_reenter_stop)
+{
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {.shard_count = 1,
+            .queue_capacity_per_shard = 4,
+            .timer_capacity_per_shard = 4});
+    REQUIRE(scheduler->start());
+    for (bool started : {false, true}) {
+        auto actor = std::make_shared<ListenerHandshakeActor>(scheduler, 0U,
+            std::make_shared<HandshakeInbox>(1), admission_configuration(), 1U,
+            fixed_listener_time_window, std::make_shared<std::uint64_t>(1U));
+        struct Probe {
+            std::weak_ptr<ListenerHandshakeActor> actor;
+            std::promise<void> returned;
+            static void notify(void* context) noexcept
+            {
+                auto& probe = *static_cast<Probe*>(context);
+                const auto owner = probe.actor.lock();
+                if (owner != nullptr && owner->snapshot().terminal) {
+                    owner->stop();
+                    probe.returned.set_value();
+                }
+            }
+        };
+        auto probe = std::make_shared<Probe>();
+        probe->actor = actor;
+        auto returned = probe->returned.get_future();
+        REQUIRE(actor->set_result_ready_handler(Probe::notify, probe));
+        if (started) {
+            REQUIRE_EQ(
+                actor->start(), ListenerHandshakeDispatchStatus::completed);
+        }
+        actor->close();
+        REQUIRE_EQ(returned.wait_for(std::chrono::seconds {2}),
+            std::future_status::ready);
+        actor->stop();
+        actor->clear_result_ready_handler();
+    }
+    scheduler->stop();
 }

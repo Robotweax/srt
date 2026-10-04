@@ -171,6 +171,8 @@ public:
     // sole mutator that emits the selected protocol generation's wire result.
     [[nodiscard]] bool reject(int rejection_reason) noexcept;
     void close() noexcept;
+    // Off-thread stop joins terminal publication and the active actor task.
+    // A stop reentered by that task/publication only requests close.
     void stop() noexcept;
 
     [[nodiscard]] ListenerConnectionSetupActorResult wait() noexcept;
@@ -234,6 +236,8 @@ private:
     std::optional<std::chrono::microseconds> pending_retry_delay_;
     std::optional<int> initial_rejection_reason_;
     std::thread::id active_thread_ {};
+    std::thread::id terminal_thread_ {};
+    bool terminal_complete_ = false;
     bool started_ = false;
     bool initialized_ = false;
     bool close_requested_ = false;

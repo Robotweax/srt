@@ -191,6 +191,8 @@ public:
 
     [[nodiscard]] ListenerHandshakeDispatchStatus start() noexcept;
     void close() noexcept;
+    // Off-thread stop joins terminal publication and the active actor task.
+    // A stop reentered by that task/publication only requests close.
     void stop() noexcept;
 
     [[nodiscard]] ListenerHandshakeActorResult wait() noexcept;
@@ -235,6 +237,8 @@ private:
     ListenerHandshakeDispatchStatus failure_ =
         ListenerHandshakeDispatchStatus::completed;
     std::thread::id active_thread_ {};
+    std::thread::id terminal_thread_ {};
+    bool terminal_complete_ = false;
     bool started_ = false;
     bool close_requested_ = false;
     bool pending_ = false;
