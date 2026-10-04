@@ -187,13 +187,13 @@ struct ConnectionDatagramDispatcher::State {
             if (channel != nullptr && runtime->channel_.lock() == channel) {
                 bool terminal = false;
                 if (poll_prefix_pending) {
-                    result =
-                        runtime->poll_setup_prefix_deadline(2000U, terminal);
+                    result = runtime->poll_setup_prefix_deadline(
+                        round->ingress_wait_microseconds_, terminal);
                 } else {
                     const auto grant = round->take(maximum_turn_budget);
                     auto remaining = grant;
-                    result =
-                        runtime->poll(remaining, self.inbox.get(), 2000U, true);
+                    result = runtime->poll(remaining, self.inbox.get(),
+                        round->ingress_wait_microseconds_, true);
                     used = grant - remaining;
                     round->refund(remaining);
                 }
@@ -204,8 +204,8 @@ struct ConnectionDatagramDispatcher::State {
                 std::lock_guard lock(self.prefix_mutex);
                 self.poll_active = false;
                 if (!self.retired)
-                    self.poll_completion =
-                        PollCompletion {result, used, std::move(round)};
+                    self.poll_completion = PollCompletion {result, used,
+                        std::move(round), std::chrono::steady_clock::now()};
             }
             runtime->notify_channel_send_work();
         }

@@ -297,6 +297,9 @@ public:
     [[nodiscard]] std::shared_ptr<ChannelPollSendBudget>
     begin_poll_round() noexcept;
 
+    // Internal cold-channel selection. No automatic public setup selection.
+    [[nodiscard]] bool enable_scheduled_polling() noexcept;
+
     DatagramChannel(const DatagramChannel&) = delete;
     DatagramChannel& operator=(const DatagramChannel&) = delete;
 
@@ -474,6 +477,14 @@ private:
         std::chrono::steady_clock::time_point (*clock)(
             void*) noexcept = nullptr,
         void* clock_context = nullptr) noexcept;
+    [[nodiscard]] RuntimePollResult poll_scheduled_connections(
+        std::chrono::steady_clock::time_point now,
+        bool use_absolute_deadlines) noexcept;
+    void record_poll_result(const RuntimePollResult& result,
+        std::chrono::steady_clock::time_point observed_at,
+        bool use_absolute_deadlines) noexcept;
+    [[nodiscard]] RuntimePollResult finish_poll_round(
+        std::chrono::steady_clock::time_point now) noexcept;
     [[nodiscard]] bool schedule_next_locked(bool immediate,
         std::chrono::microseconds delay, bool coarse_timer_probe = false,
         std::optional<std::chrono::steady_clock::time_point> deadline =
@@ -490,6 +501,21 @@ private:
                   std::chrono::steady_clock::time_point::max()) noexcept;
     void notify_work(bool receive_release) noexcept;
 
+    // Channel-task-owned coordinator state; shutdown clears it after task join.
+    // Four full grants fit the channel's 64-attempt allowance. No fanout vector.
+    static constexpr std::size_t scheduled_poll_window_capacity =
+        ChannelPollSendBudget::maximum_attempts
+        / ConnectionDatagramDispatcher::maximum_turn_budget;
+    struct ScheduledPoll {
+        std::uint32_t socket_id = 0;
+        std::shared_ptr<ConnectionRuntime> runtime;
+        std::shared_ptr<ConnectionDatagramDispatcher> dispatcher;
+    };
+    bool scheduled_polling_enabled_ = false;
+    std::shared_ptr<ChannelPollSendBudget> scheduled_poll_round_;
+    std::array<ScheduledPoll, scheduled_poll_window_capacity>
+        scheduled_polls_ {};
+    std::size_t scheduled_poll_count_ = 0;
     std::mutex poll_budget_mutex_;
     std::weak_ptr<ChannelPollSendBudget> poll_budget_;
     std::mutex inbox_budget_mutex_;
@@ -507,6 +533,7 @@ private:
     std::mutex routes_mutex_;
     struct ConnectionRoute {
         std::shared_ptr<ConnectionRuntime> runtime;
+        std::uint32_t socket_id = 0;
         std::optional<HandshakeRouteKey> replay_key = std::nullopt;
         std::shared_ptr<DatagramInbox> setup_prefix = nullptr;
         std::shared_ptr<ConnectionDatagramDispatcher> dispatcher = nullptr;
