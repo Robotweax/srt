@@ -334,13 +334,37 @@ the grace immediately. Once the fixed limit expires, timeout remains terminal
 even if ingress is still pending. A stalled service therefore cannot postpone
 peer timeout indefinitely. Only protocol handlers update peer activity.
 
-This grace applies to peer idle alone. Polling continues receiver delivery,
-control deadlines, pacing and outgoing sends with the original shared send
-allowance. Its idle wait hint reflects the fixed grace deadline instead of
-rearming a past peer deadline. Direct runtime polling and default routes without
-an ingress context preserve their existing timeout behavior. More general
-causal ordering between inbox cohorts and control/delivery deadlines and full
-cleanup quiescence remain separate integration gates.
+This grace applies to peer idle alone. Its idle wait hint reflects the fixed
+grace deadline instead of rearming a past peer deadline. Direct runtime polling
+and default routes without an ingress context preserve their existing timeout
+behavior.
+
+Optional channel polling additionally captures one finite normal-ingress cohort
+under the same runtime admission mutex: its cutoff is the inbox's admitted FIFO
+count, and completion advances only after each protocol handler returns. New
+publications and rejected frames cannot extend that cutoff. Generic inboxes do
+not have these counters; a bound counter exhaustion closes admission and makes
+the runtime terminal rather than wrapping into an old completion fence. Closing
+an inbox discards entries without fabricating protocol completion.
+
+Before an ordinary poll, an unfinished cohort gets at most the configured idle
+interval, hard capped at 2 ms, from its first capture. The already fixed peer-idle
+limit remains the outer terminal bound. Completion releases an ordinary poll
+before any later cohort can be captured. Expiration releases polling until that
+original cohort finishes; continued arrivals cannot restart its wait. Closing
+or replacing the bound inbox also releases the fence. The wait consumes no
+shared send allowance, and other routes continue their own channel poll visits.
+
+This is bounded precedence over ordinary poll work, including receiver drops,
+control timers, sender TTL/RTO and sends. It may add up to 2 ms of per-connection
+poll/send/delivery latency when a worker is delayed. On expiry those decisions
+may overtake queued effects, preserving progress under sustained ingress or a
+stalled service. It is not an unconditional total wire/API order, nor a guarantee
+that packet admission precedes a timer after an arbitrarily stalled handler.
+Application calls and packet-triggered protocol work retain their existing mutex
+semantics; direct runtime polling retains the noncoordinated default. Complete
+scheduled poll/send ownership, callback/cleanup quiescence and public activation
+still require separate qualification.
 
 A pending sealed setup prefix also has a terminal peer-idle check. Channel
 polling tries the runtime mutex without waiting; if available, it checks the

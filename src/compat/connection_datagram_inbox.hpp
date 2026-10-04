@@ -50,7 +50,8 @@ public:
         invalid,
         closed,
         wake_failed,
-        busy
+        busy,
+        exhausted
     };
     struct Snapshot {
         std::size_t queued = 0;
@@ -62,6 +63,10 @@ public:
         std::uint64_t maximum_queue_delay = 0;
         bool closed = false;
         bool in_flight = false;
+        // Bound inbox FIFO progress: completion follows protocol effects.
+        // Rejected publications and discarded close entries never advance it.
+        std::uint64_t admitted = 0;
+        std::uint64_t completed = 0;
     };
 
     [[nodiscard]] static std::optional<std::size_t> storage_bytes(

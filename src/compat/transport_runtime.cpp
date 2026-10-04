@@ -1557,7 +1557,7 @@ RuntimePollResult DatagramChannel::poll_connections(
             ? runtime->poll_setup_prefix_deadline(ingress_wait, prefix_terminal)
             : runtime->poll(remaining_send_attempts,
                   dispatcher != nullptr ? dispatcher->inbox().get() : nullptr,
-                  ingress_wait);
+                  ingress_wait, true);
         // Terminal prefix handling retires the sink outside both runtime and
         // route locks. A paused protocol callback still has its close barrier.
         if (prefix_terminal) {
@@ -3972,7 +3972,12 @@ ConnectionDatagramInbox::Status ConnectionRuntime::admit_datagram(
     }
     // Bounded copy and pure reserved-service notification only. No injected
     // clock or protocol callback executes across this admission fence.
-    return inbox.publish_unfenced(token, bytes, peer, publication_time);
+    const auto status =
+        inbox.publish_unfenced(token, bytes, peer, publication_time);
+    if (status == ConnectionDatagramInbox::Status::exhausted) {
+        break_locked(0);
+    }
+    return status;
 }
 
 RuntimePollResult ConnectionRuntime::poll_setup_prefix_deadline(
@@ -4011,18 +4016,21 @@ RuntimePollResult ConnectionRuntime::poll_setup_prefix_deadline(
 
 RuntimePollResult ConnectionRuntime::poll(std::size_t& remaining_send_attempts,
     const ConnectionDatagramInbox* ingress,
-    std::uint64_t maximum_ingress_wait_microseconds) noexcept
+    std::uint64_t maximum_ingress_wait_microseconds,
+    bool coordinate_ingress) noexcept
 {
     std::lock_guard lock(mutex_);
     poll_send_budget_ = &remaining_send_attempts;
-    const auto result = poll_locked(ingress, maximum_ingress_wait_microseconds);
+    const auto result = poll_locked(
+        ingress, maximum_ingress_wait_microseconds, coordinate_ingress);
     poll_send_budget_ = nullptr;
     return result;
 }
 
 RuntimePollResult ConnectionRuntime::poll_locked(
     const ConnectionDatagramInbox* ingress,
-    std::uint64_t maximum_ingress_wait_microseconds) noexcept
+    std::uint64_t maximum_ingress_wait_microseconds,
+    bool coordinate_ingress) noexcept
 {
     if (locally_closed_ || peer_closed_ || broken_) {
         return {.receive_wait_safe = true};
@@ -4035,9 +4043,12 @@ RuntimePollResult ConnectionRuntime::poll_locked(
     // accepted copy cannot appear between this snapshot and the timeout check.
     // A popped copy remains in-flight until its protocol handler completes.
     std::uint64_t idle_limit = peer_idle_timeout_microseconds_;
-    if (ingress != nullptr && ingress->bound_to(this)) {
-        const auto pending = ingress->snapshot();
-        if (pending.queued != 0 || pending.in_flight) {
+    const bool bound_ingress = ingress != nullptr && ingress->bound_to(this);
+    const auto ingress_pending = bound_ingress
+        ? ingress->snapshot()
+        : ConnectionDatagramInbox::Snapshot {};
+    if (bound_ingress) {
+        if (ingress_pending.queued != 0 || ingress_pending.in_flight) {
             idle_limit += std::min(maximum_ingress_wait_microseconds,
                 peer_idle_timeout_microseconds_);
         }
@@ -4046,6 +4057,47 @@ RuntimePollResult ConnectionRuntime::poll_locked(
         && now - last_peer_activity_microseconds_ > idle_limit) {
         break_locked(0);
         return {};
+    }
+    if (coordinate_ingress) {
+        const auto cohort_wait =
+            std::min<std::uint64_t>(maximum_ingress_wait_microseconds,
+                maximum_ingress_poll_wait_microseconds);
+        const auto incarnation =
+            bound_ingress ? ingress->token().incarnation : 0;
+        if (!bound_ingress || ingress_pending.closed || cohort_wait == 0
+            || poll_ingress_incarnation_ != incarnation) {
+            poll_ingress_active_ = false;
+            poll_ingress_expired_ = false;
+            poll_ingress_incarnation_ = incarnation;
+        }
+        if (poll_ingress_active_) {
+            if (ingress_pending.completed >= poll_ingress_cutoff_) {
+                // Run an ordinary poll before capturing any later cohort.
+                poll_ingress_active_ = false;
+                poll_ingress_expired_ = false;
+            } else if (now >= poll_ingress_deadline_) {
+                poll_ingress_expired_ = true;
+            }
+        } else if (bound_ingress && !ingress_pending.closed
+            && ingress_pending.admitted != ingress_pending.completed
+            && cohort_wait != 0) {
+            poll_ingress_cutoff_ = ingress_pending.admitted;
+            const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
+            poll_ingress_deadline_ = now + std::min(cohort_wait, maximum - now);
+            poll_ingress_active_ = true;
+            poll_ingress_expired_ = now >= poll_ingress_deadline_;
+        }
+        if (poll_ingress_active_ && !poll_ingress_expired_) {
+            const auto remaining = poll_ingress_deadline_ - now;
+            const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
+            const auto peer_deadline = last_peer_activity_microseconds_
+                + std::min(idle_limit + 1U,
+                    maximum - last_peer_activity_microseconds_);
+            const auto peer_remaining =
+                peer_deadline > now ? peer_deadline - now : 0;
+            return {.next_work_delay = std::chrono::microseconds {
+                        std::min(remaining, peer_remaining)}};
+        }
     }
     if (!service_receiver_tlpktdrop_locked(now)) {
         return {};

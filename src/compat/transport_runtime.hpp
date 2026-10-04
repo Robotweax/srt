@@ -570,7 +570,8 @@ public:
     [[nodiscard]] RuntimePollResult poll() noexcept;
     [[nodiscard]] RuntimePollResult poll(std::size_t& remaining_send_attempts,
         const ConnectionDatagramInbox* ingress = nullptr,
-        std::uint64_t maximum_ingress_wait_microseconds = 0) noexcept;
+        std::uint64_t maximum_ingress_wait_microseconds = 0,
+        bool coordinate_ingress = false) noexcept;
     void apply_options(const SocketOptions& options) noexcept;
     void mark_broken(int system_error) noexcept;
     [[nodiscard]] bool report_peer_error(
@@ -683,7 +684,8 @@ private:
         bool& terminal) noexcept;
     [[nodiscard]] RuntimePollResult poll_locked(
         const ConnectionDatagramInbox* ingress = nullptr,
-        std::uint64_t maximum_ingress_wait_microseconds = 0) noexcept;
+        std::uint64_t maximum_ingress_wait_microseconds = 0,
+        bool coordinate_ingress = false) noexcept;
     [[nodiscard]] ConnectionDatagramInbox::Status admit_datagram(
         ConnectionDatagramInbox& inbox, ConnectionDatagramInbox::Token token,
         std::span<const std::byte> bytes, IpEndpoint peer,
@@ -765,6 +767,16 @@ private:
     std::int64_t origin_epoch_microseconds_ = 0;
     std::uint64_t peer_idle_timeout_microseconds_ = 5'000'000;
     std::uint64_t last_peer_activity_microseconds_ = 0;
+    static constexpr std::uint64_t maximum_ingress_poll_wait_microseconds =
+        2000;
+    // Runtime mutex protects the one optional channel-poll ingress cohort.
+    // Expiry releases polling until that original cohort completes; additional
+    // publications cannot restart its wait or starve protocol timers/sends.
+    std::uint64_t poll_ingress_incarnation_ = 0;
+    std::uint64_t poll_ingress_cutoff_ = 0;
+    std::uint64_t poll_ingress_deadline_ = 0;
+    bool poll_ingress_active_ = false;
+    bool poll_ingress_expired_ = false;
     const HandshakeAction handshake_replay_response_ {};
     const std::uint32_t handshake_replay_peer_cookie_ = 0;
     std::shared_ptr<CryptoSession> crypto_;
