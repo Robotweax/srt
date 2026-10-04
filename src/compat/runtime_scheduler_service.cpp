@@ -1,6 +1,7 @@
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/process_owned.hpp"
 #include "compat/connection_datagram_inbox.hpp"
+#include "compat/transport_runtime.hpp"
 
 #include <charconv>
 #include <cstdlib>
@@ -105,6 +106,20 @@ public:
         }
     }
 
+    [[nodiscard]] std::shared_ptr<NativeChannelBudget>
+    acquire_channel_budget() noexcept
+    {
+        std::lock_guard lock(mutex_);
+        if (channel_budget_ != nullptr)
+            return channel_budget_;
+        try {
+            channel_budget_ = std::make_shared<NativeChannelBudget>(4096U);
+            return channel_budget_;
+        } catch (...) {
+            return {};
+        }
+    }
+
     void stop() noexcept
     {
         std::shared_ptr<RuntimeScheduler> scheduler;
@@ -122,6 +137,7 @@ private:
     std::shared_ptr<RuntimeScheduler> scheduler_;
     // Never reset at scheduler stop: old callbacks can retain ring charges.
     std::shared_ptr<DatagramStorageBudget> inbox_budget_;
+    std::shared_ptr<NativeChannelBudget> channel_budget_;
 };
 
 [[nodiscard]] RuntimeSchedulerService& scheduler_service() noexcept
@@ -169,6 +185,14 @@ acquire_runtime_inbox_storage_budget() noexcept
     if (!stateful_process_available())
         return {};
     return scheduler_service().acquire_budget();
+}
+
+std::shared_ptr<NativeChannelBudget>
+acquire_runtime_native_channel_budget() noexcept
+{
+    if (!stateful_process_available())
+        return {};
+    return scheduler_service().acquire_channel_budget();
 }
 
 void prepare_runtime_scheduler_service() noexcept

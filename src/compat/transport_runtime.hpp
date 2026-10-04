@@ -208,7 +208,62 @@ struct MessageIoResult {
     int system_error = 0;
 };
 
+// Counts budgeted native channel ownership, including shutdown timeouts.
+// Original constructors and caller-owned descriptors are outside this scope.
+class NativeChannelBudget {
+public:
+    explicit NativeChannelBudget(std::size_t maximum_channels) noexcept
+        : maximum_channels_(maximum_channels)
+    {
+    }
+    [[nodiscard]] std::size_t maximum_channels() const noexcept
+    {
+        return maximum_channels_;
+    }
+    [[nodiscard]] std::size_t reserved_channels() const noexcept
+    {
+        return reserved_.load(std::memory_order_relaxed);
+    }
+
+private:
+    friend class DatagramChannel;
+    [[nodiscard]] bool reserve() noexcept
+    {
+        auto previous = reserved_.load(std::memory_order_relaxed);
+        while (previous < maximum_channels_) {
+            if (reserved_.compare_exchange_weak(
+                    previous, previous + 1U, std::memory_order_relaxed))
+                return true;
+        }
+        return false;
+    }
+    void release() noexcept
+    {
+        reserved_.fetch_sub(1U, std::memory_order_relaxed);
+    }
+    const std::size_t maximum_channels_;
+    std::atomic<std::size_t> reserved_ {0};
+};
+
 class DatagramChannel : public std::enable_shared_from_this<DatagramChannel> {
+    struct NativeCredit {
+        std::shared_ptr<NativeChannelBudget> budget;
+        ~NativeCredit()
+        {
+            reset();
+        }
+        void reset() noexcept
+        {
+            if (budget != nullptr) {
+                budget->release();
+                budget.reset();
+            }
+        }
+    };
+    // Declared before socket: implicit destruction closes the descriptor before
+    // returning the credit, preserving the existing member teardown order.
+    NativeCredit native_credit_;
+
 public:
     using SendHook = UdpIoResult (*)(
         std::span<const std::byte>,
@@ -219,6 +274,15 @@ public:
     explicit DatagramChannel(IpAddressFamily family) noexcept;
     explicit DatagramChannel(UdpSocket acquired_socket) noexcept;
     ~DatagramChannel();
+    // Internal prototype admission before native open/ownership transfer.
+    // Count rejection leaves an acquired descriptor with its caller. A later
+    // allocation failure may consume/close it, returning the reserved credit.
+    [[nodiscard]] static std::shared_ptr<DatagramChannel> create_budgeted(
+        IpAddressFamily family,
+        const std::shared_ptr<NativeChannelBudget>& budget) noexcept;
+    [[nodiscard]] static std::shared_ptr<DatagramChannel> adopt_budgeted(
+        UdpSocket& acquired_socket,
+        const std::shared_ptr<NativeChannelBudget>& budget) noexcept;
 
     DatagramChannel(const DatagramChannel&) = delete;
     DatagramChannel& operator=(const DatagramChannel&) = delete;
@@ -316,6 +380,8 @@ public:
     }
 
 private:
+    void release_native_credit() noexcept;
+
     struct ScheduledWorkContext {
         std::weak_ptr<DatagramChannel> owner;
     };

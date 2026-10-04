@@ -1,6 +1,7 @@
 #include "test.hpp"
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/connection_datagram_inbox.hpp"
+#include "compat/transport_runtime.hpp"
 #include "srt/srt.h"
 
 #include <cstdlib>
@@ -239,4 +240,38 @@ TEST(
     independent->stop();
     REQUIRE_EQ(srt_cleanup(), 0);
     REQUIRE_EQ(acquire_runtime_inbox_storage_budget().get(), identity);
+}
+
+TEST(scheduler_service_native_budget_survives_cleanup_with_independent_owner)
+{
+    EnvironmentGuard restore;
+    REQUIRE_EQ(set_setting("1"), 0);
+    auto budget = acquire_runtime_native_channel_budget();
+    REQUIRE(budget != nullptr);
+    REQUIRE_EQ(budget->maximum_channels(), 4096U);
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+    auto channel = DatagramChannel::create_budgeted(
+        robotweax::srt::IpAddressFamily::ipv4, budget);
+    REQUIRE(channel != nullptr);
+    REQUIRE_EQ(srt_startup(), 0);
+    auto first = acquire_runtime_scheduler();
+    REQUIRE(first != nullptr);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    // This internal channel was never registered in the owning bind registry.
+    // Its caller owns terminal shutdown; cleanup must not reset its allowance.
+    REQUIRE(channel->socket.valid());
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    REQUIRE_EQ(srt_startup(), 0);
+    auto next = acquire_runtime_scheduler();
+    REQUIRE(next != nullptr);
+    REQUIRE(next.get() != first.get());
+    REQUIRE_EQ(acquire_runtime_native_channel_budget().get(), budget.get());
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    REQUIRE_EQ(channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    std::weak_ptr<NativeChannelBudget> captured = budget;
+    budget.reset();
+    channel.reset();
+    REQUIRE(!captured.expired());
 }

@@ -9,6 +9,12 @@
 namespace robotweax::srt::compat {
 
 class DatagramStorageBudget;
+class NativeChannelBudget;
+
+// Internal process owner for up to 4,096 budgeted native channel generations.
+// Retained across cleanup; callers must explicitly use the budgeted factories.
+[[nodiscard]] std::shared_ptr<NativeChannelBudget>
+acquire_runtime_native_channel_budget() noexcept;
 
 // Internal prototype ring ceiling, in MiB, with strict decimal range 1..1024.
 [[nodiscard]] std::optional<std::size_t> parse_runtime_inbox_storage_mib(
