@@ -120,6 +120,30 @@ public:
         }
     }
 
+    [[nodiscard]] std::optional<bool> bounded_bind() noexcept
+    {
+        std::lock_guard lock(mutex_);
+        if (bounded_bind_.has_value())
+            return bounded_bind_;
+#if defined(_WIN32)
+        char* setting = nullptr;
+        std::size_t setting_size = 0;
+        if (_dupenv_s(&setting, &setting_size, "ROBOTWEAX_SRT_BOUNDED_BIND")
+            != 0)
+            return std::nullopt;
+        const std::unique_ptr<char, decltype(&std::free)> owned_setting(
+            setting, &std::free);
+#else
+        const char* setting = std::getenv("ROBOTWEAX_SRT_BOUNDED_BIND");
+#endif
+        const auto selected = setting == nullptr
+            ? std::optional<bool> {false}
+            : parse_runtime_bounded_bind(setting);
+        if (selected.has_value())
+            bounded_bind_ = selected;
+        return selected;
+    }
+
     void stop() noexcept
     {
         std::shared_ptr<RuntimeScheduler> scheduler;
@@ -138,6 +162,7 @@ private:
     // Never reset at scheduler stop: old callbacks can retain ring charges.
     std::shared_ptr<DatagramStorageBudget> inbox_budget_;
     std::shared_ptr<NativeChannelBudget> channel_budget_;
+    std::optional<bool> bounded_bind_;
 };
 
 [[nodiscard]] RuntimeSchedulerService& scheduler_service() noexcept
@@ -193,6 +218,22 @@ acquire_runtime_native_channel_budget() noexcept
     if (!stateful_process_available())
         return {};
     return scheduler_service().acquire_channel_budget();
+}
+
+std::optional<bool> parse_runtime_bounded_bind(std::string_view value) noexcept
+{
+    if (value == "0")
+        return false;
+    if (value == "1")
+        return true;
+    return std::nullopt;
+}
+
+std::optional<bool> runtime_bounded_bind_enabled() noexcept
+{
+    if (!stateful_process_available())
+        return std::nullopt;
+    return scheduler_service().bounded_bind();
 }
 
 void prepare_runtime_scheduler_service() noexcept

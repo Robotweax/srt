@@ -2,6 +2,7 @@
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/connection_datagram_inbox.hpp"
 #include "compat/transport_runtime.hpp"
+#include "compat/socket_registry.hpp"
 #include "srt/srt.h"
 
 #include <cstdlib>
@@ -274,4 +275,141 @@ TEST(scheduler_service_native_budget_survives_cleanup_with_independent_owner)
     budget.reset();
     channel.reset();
     REQUIRE(!captured.expired());
+}
+
+TEST(scheduler_service_bounded_bind_selector_is_strict)
+{
+    REQUIRE_EQ(*parse_runtime_bounded_bind("0"), false);
+    REQUIRE_EQ(*parse_runtime_bounded_bind("1"), true);
+    for (const auto value : {"", "01", "true", "2", " 1", "1 ", "-1"})
+        REQUIRE(!parse_runtime_bounded_bind(value).has_value());
+}
+
+TEST(
+    scheduler_service_bounded_public_bind_reuses_channel_and_keeps_owner_across_cleanup)
+{
+    constexpr const char* selector = "ROBOTWEAX_SRT_BOUNDED_BIND";
+    EnvironmentGuard restore {selector};
+    auto budget = acquire_runtime_native_channel_budget();
+    REQUIRE(budget != nullptr);
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+    REQUIRE_EQ(srt_startup(), 0);
+    auto first = srt_create_socket();
+    REQUIRE(first != SRT_INVALID_SOCK);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(set_named_setting(selector, "invalid"), 0);
+    REQUIRE_EQ(
+        srt_bind(first, reinterpret_cast<sockaddr*>(&address), sizeof(address)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+    REQUIRE_EQ(set_named_setting(selector, "1"), 0);
+    REQUIRE_EQ(
+        srt_bind(first, reinterpret_cast<sockaddr*>(&address), sizeof(address)),
+        0);
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    int size = sizeof(address);
+    REQUIRE_EQ(
+        srt_getsockname(first, reinterpret_cast<sockaddr*>(&address), &size),
+        0);
+    auto old = SocketRegistry::instance().find(first)->channel;
+    REQUIRE(old != nullptr);
+    auto shared = srt_create_socket();
+    REQUIRE(shared != SRT_INVALID_SOCK);
+    REQUIRE_EQ(
+        srt_bind(shared, reinterpret_cast<sockaddr*>(&address), size), 0);
+    REQUIRE_EQ(
+        SocketRegistry::instance().find(shared)->channel.get(), old.get());
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    auto conflict = srt_create_socket();
+    const bool reuse = false;
+    REQUIRE_EQ(
+        srt_setsockflag(conflict, SRTO_REUSEADDR, &reuse, sizeof(reuse)), 0);
+    REQUIRE_EQ(srt_bind(conflict, reinterpret_cast<sockaddr*>(&address), size),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EBINDCONFLICT);
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    REQUIRE_EQ(srt_close(conflict), 0);
+    // A native bind failure after factory admission must refund its credit.
+    robotweax::srt::UdpSocket occupied {robotweax::srt::IpAddressFamily::ipv4};
+    REQUIRE_EQ(occupied.bind(robotweax::srt::IpEndpoint::loopback()),
+        robotweax::srt::Error::none);
+    const auto endpoint = occupied.local_endpoint();
+    REQUIRE(endpoint);
+    sockaddr_in taken {};
+    taken.sin_family = AF_INET;
+    taken.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    taken.sin_port = htons(endpoint.endpoint.port);
+    auto failed = srt_create_socket();
+    REQUIRE_EQ(
+        srt_bind(failed, reinterpret_cast<sockaddr*>(&taken), sizeof(taken)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESOCKFAIL);
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    REQUIRE_EQ(srt_close(failed), 0);
+    // Later environment changes cannot bypass the selected process budget.
+    REQUIRE_EQ(set_named_setting(selector, "0"), 0);
+    REQUIRE_EQ(*runtime_bounded_bind_enabled(), true);
+    REQUIRE_EQ(srt_close(first), 0);
+    REQUIRE(old->socket.valid());
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE(!old->socket.valid());
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+    REQUIRE_EQ(srt_startup(), 0);
+    auto replacement = srt_create_socket();
+    REQUIRE_EQ(
+        srt_bind(replacement, reinterpret_cast<sockaddr*>(&address), size), 0);
+    auto fresh = SocketRegistry::instance().find(replacement)->channel;
+    REQUIRE(fresh != nullptr);
+    REQUIRE(fresh.get() != old.get());
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    old.reset();
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE(!fresh->socket.valid());
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+}
+
+TEST(scheduler_service_bounded_bind_reuses_explicit_ipv6_policy)
+{
+    constexpr const char* selector = "ROBOTWEAX_SRT_BOUNDED_BIND";
+    EnvironmentGuard restore {selector};
+    REQUIRE_EQ(set_named_setting(selector, "1"), 0);
+    robotweax::srt::UdpSocket probe {robotweax::srt::IpAddressFamily::ipv6};
+    SKIP_UNLESS(probe.valid()
+            && probe.bind(robotweax::srt::IpEndpoint::ipv6_loopback())
+                == robotweax::srt::Error::none,
+        "IPv6 loopback unavailable");
+    auto budget = acquire_runtime_native_channel_budget();
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
+    REQUIRE_EQ(srt_startup(), 0);
+    auto first = srt_create_socket();
+    auto second = srt_create_socket();
+    const int ipv6_only = 1;
+    for (const auto socket : {first, second})
+        REQUIRE_EQ(srt_setsockflag(
+                       socket, SRTO_IPV6ONLY, &ipv6_only, sizeof(ipv6_only)),
+            0);
+    sockaddr_in6 address {};
+    address.sin6_family = AF_INET6;
+    address.sin6_addr = in6addr_loopback;
+    REQUIRE_EQ(
+        srt_bind(first, reinterpret_cast<sockaddr*>(&address), sizeof(address)),
+        0);
+    int size = sizeof(address);
+    REQUIRE_EQ(
+        srt_getsockname(first, reinterpret_cast<sockaddr*>(&address), &size),
+        0);
+    REQUIRE_EQ(
+        srt_bind(second, reinterpret_cast<sockaddr*>(&address), size), 0);
+    auto channel = SocketRegistry::instance().find(first)->channel;
+    REQUIRE_EQ(
+        SocketRegistry::instance().find(second)->channel.get(), channel.get());
+    REQUIRE_EQ(budget->reserved_channels(), 1U);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE(!channel->socket.valid());
+    REQUIRE_EQ(budget->reserved_channels(), 0U);
 }

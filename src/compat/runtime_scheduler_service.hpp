@@ -11,6 +11,12 @@ namespace robotweax::srt::compat {
 class DatagramStorageBudget;
 class NativeChannelBudget;
 
+// Strict internal preview selector: only "0" and "1" are valid.
+[[nodiscard]] std::optional<bool> parse_runtime_bounded_bind(
+    std::string_view value) noexcept;
+// Freeze first valid process selection; invalid input permits retry.
+[[nodiscard]] std::optional<bool> runtime_bounded_bind_enabled() noexcept;
+
 // Internal process owner for up to 4,096 budgeted native channel generations.
 // Retained across cleanup; callers must explicitly use the budgeted factories.
 [[nodiscard]] std::shared_ptr<NativeChannelBudget>
