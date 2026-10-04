@@ -471,6 +471,27 @@ original setup rings, metadata retained after reclamation or every scheduler
 generation's service table. Automatic owner adoption, native channel-count
 admission and selectable scheduled poll/send/public setup remain subsequent gates.
 
+`DatagramChannel::create_budgeted_dispatcher` supplies an explicit internal
+channel policy for subsequent prototype integration. Every dispatcher admitted
+through this method shares one lazy channel budget (8 MiB and 256 physical rings)
+and the retained process ring owner. These are provisional admission ceilings,
+not measured acceptance thresholds. Parallel admission cannot create independent
+budgets on one channel; different channel generations get different local owners
+but continue charging the same process ceiling. A local or process rejection
+refunds ring credits and the unexposed service slot through the existing factories.
+Budget owners outlive the channel when a dispatcher still owns a physical ring;
+closed captured metadata does not charge a reclaimed ring again.
+
+The method rejects a runtime owned by another channel and terminal channel
+admission. Process-owner acquisition rejects fork children before channel locks.
+Allocation failure permits retry; neither budget is replaced after successful
+initialization. No budget lock is held during prefix promotion or callback wake.
+Admission does not commit a route: a concurrent shutdown is fenced separately by
+route registration, and the caller owns retirement of an unregistered dispatcher.
+Original explicit-budget factories remain available for internal callers. Public
+setup still supplies no dispatcher and production service capacity remains zero.
+Complete scheduled poll/send and selectable public setup remain subsequent gates.
+
 Internal `DatagramChannel::create_budgeted` and `adopt_budgeted` factories admit
 one native channel slot before opening or taking ownership of a UDP socket.
 Their shared `NativeChannelBudget` bounds simultaneous reservations; the lazy

@@ -458,3 +458,197 @@ TEST(
     REQUIRE_EQ(srt_cleanup(), 0);
     REQUIRE_EQ(budget->reserved_channels(), 0U);
 }
+
+namespace {
+struct ChannelBudgetFixture {
+    EnvironmentGuard setting {"ROBOTWEAX_SRT_INBOX_STORAGE_MIB"};
+    std::shared_ptr<DatagramStorageBudget> process;
+    std::shared_ptr<RuntimeScheduler> scheduler;
+    ChannelBudgetFixture()
+    {
+        REQUIRE_EQ(set_named_setting(setting.name, "8"), 0);
+        process = acquire_runtime_inbox_storage_budget();
+        REQUIRE(process != nullptr);
+        REQUIRE_EQ(process->reserved_inboxes(), 0U);
+        scheduler = std::make_shared<RuntimeScheduler>(
+            RuntimeScheduler::Configuration {.shard_count = 1,
+                .queue_capacity_per_shard = 16,
+                .timer_capacity_per_shard = 16,
+                .service_capacity_per_shard = 600});
+        REQUIRE(scheduler->start());
+    }
+    ~ChannelBudgetFixture()
+    {
+        scheduler->stop();
+    }
+    std::shared_ptr<ConnectionRuntime> runtime(
+        const std::shared_ptr<DatagramChannel>& channel)
+    {
+        return std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {.channel = channel,
+                .peer = robotweax::srt::IpEndpoint::loopback(9900),
+                .peer_socket_id = 9});
+    }
+    std::shared_ptr<ConnectionDatagramDispatcher> create(
+        const std::shared_ptr<DatagramChannel>& channel,
+        const std::shared_ptr<ConnectionRuntime>& runtime,
+        std::size_t capacity = 1)
+    {
+        return channel->create_budgeted_dispatcher(runtime, scheduler, 0,
+            {.capacity = capacity, .control_reserve = 0}, {});
+    }
+};
+}
+
+TEST(scheduler_service_channel_ring_policy_shares_concurrent_count_and_refunds)
+{
+    ChannelBudgetFixture fixture;
+    auto channel = std::make_shared<DatagramChannel>();
+    auto runtime = fixture.runtime(channel);
+    std::barrier start {3};
+    auto admit = [&] {
+        std::vector<std::shared_ptr<ConnectionDatagramDispatcher>> admitted;
+        start.arrive_and_wait();
+        for (std::size_t i = 0; i < DatagramChannel::maximum_inbox_count / 2;
+            ++i) {
+            auto dispatcher = fixture.create(channel, runtime);
+            REQUIRE(dispatcher != nullptr);
+            admitted.push_back(std::move(dispatcher));
+        }
+        return admitted;
+    };
+    auto left = std::async(std::launch::async, admit);
+    auto right = std::async(std::launch::async, admit);
+    start.arrive_and_wait();
+    auto first = left.get();
+    auto second = right.get();
+    REQUIRE_EQ(fixture.process->reserved_inboxes(),
+        DatagramChannel::maximum_inbox_count);
+    REQUIRE(fixture.create(channel, runtime) == nullptr);
+    REQUIRE_EQ(fixture.scheduler->snapshot().services_reserved,
+        fixture.process->reserved_inboxes());
+    auto other = std::make_shared<DatagramChannel>();
+    auto other_runtime = fixture.runtime(other);
+    auto independent = fixture.create(other, other_runtime);
+    REQUIRE(independent != nullptr);
+    REQUIRE_EQ(fixture.process->reserved_inboxes(),
+        DatagramChannel::maximum_inbox_count + 1);
+    auto captured = first.back()->inbox();
+    first.back()->retire_and_reclaim();
+    auto replacement = fixture.create(channel, runtime);
+    REQUIRE(replacement != nullptr);
+    captured.reset();
+    REQUIRE_EQ(fixture.process->reserved_inboxes(),
+        DatagramChannel::maximum_inbox_count + 1);
+    first.clear();
+    second.clear();
+    replacement.reset();
+    independent.reset();
+    REQUIRE_EQ(fixture.process->reserved_bytes(), 0U);
+    REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
+}
+
+TEST(scheduler_service_channel_ring_policy_enforces_bytes_and_process_ceiling)
+{
+    ChannelBudgetFixture fixture;
+    auto channel = std::make_shared<DatagramChannel>();
+    auto runtime = fixture.runtime(channel);
+    const auto unit = *ConnectionDatagramInbox::storage_bytes(1);
+    const auto capacity = DatagramChannel::maximum_inbox_storage_bytes / unit;
+    REQUIRE(fixture.create(channel, runtime, capacity + 1) == nullptr);
+    REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
+    REQUIRE_EQ(fixture.scheduler->snapshot().services_reserved, 0U);
+    auto full = fixture.create(channel, runtime, capacity);
+    REQUIRE(full != nullptr);
+    REQUIRE_EQ(fixture.process->reserved_bytes(), capacity * unit);
+    REQUIRE(fixture.create(channel, runtime) == nullptr);
+    REQUIRE_EQ(fixture.scheduler->snapshot().services_reserved,
+        fixture.process->reserved_inboxes());
+    auto other = std::make_shared<DatagramChannel>();
+    auto other_runtime = fixture.runtime(other);
+    REQUIRE(fixture.create(other, other_runtime) == nullptr);
+    REQUIRE_EQ(fixture.process->reserved_bytes(), capacity * unit);
+    REQUIRE_EQ(fixture.scheduler->snapshot().services_reserved, 1U);
+    full->retire_and_reclaim();
+    REQUIRE_EQ(fixture.process->reserved_bytes(), 0U);
+    auto retry = fixture.create(other, other_runtime);
+    REQUIRE(retry != nullptr);
+    retry.reset();
+    REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
+}
+
+TEST(
+    scheduler_service_channel_ring_policy_rejects_wrong_owner_and_terminal_channel)
+{
+    ChannelBudgetFixture fixture;
+    auto channel = std::make_shared<DatagramChannel>();
+    auto other = std::make_shared<DatagramChannel>();
+    auto wrong_runtime = fixture.runtime(other);
+    REQUIRE(fixture.create(channel, wrong_runtime) == nullptr);
+    REQUIRE(fixture.create(channel, nullptr) == nullptr);
+    auto runtime = fixture.runtime(channel);
+    auto dispatcher = fixture.create(channel, runtime);
+    REQUIRE(dispatcher != nullptr);
+    auto captured = dispatcher->inbox();
+    REQUIRE(channel->register_connection(700, runtime, dispatcher));
+    REQUIRE_EQ(channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
+    REQUIRE(fixture.create(channel, runtime) == nullptr);
+    auto fresh_runtime = fixture.runtime(channel);
+    REQUIRE(fixture.create(channel, fresh_runtime) == nullptr);
+    auto next = fixture.create(other, wrong_runtime);
+    REQUIRE(next != nullptr);
+    dispatcher.reset();
+    captured.reset();
+    REQUIRE_EQ(fixture.process->reserved_inboxes(), 1U);
+    next.reset();
+    REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
+}
+
+TEST(scheduler_service_channel_ring_policy_cleanup_restart_preserves_owner)
+{
+    ChannelBudgetFixture fixture;
+    REQUIRE_EQ(srt_startup(), 0);
+    robotweax::srt::UdpSocket native {robotweax::srt::IpAddressFamily::ipv4};
+    REQUIRE_EQ(native.bind(robotweax::srt::IpEndpoint::loopback()),
+        robotweax::srt::Error::none);
+    auto socket = srt_create_socket();
+    REQUIRE_EQ(srt_bind_acquire(
+                   socket, static_cast<UDPSOCKET>(native.release_native())),
+        0);
+    auto old_channel = SocketRegistry::instance().find(socket)->channel;
+    auto old_runtime = fixture.runtime(old_channel);
+    auto old_dispatcher = fixture.create(old_channel, old_runtime);
+    REQUIRE(old_dispatcher != nullptr);
+    auto captured = old_dispatcher->inbox();
+    REQUIRE(old_channel->register_connection(700, old_runtime, old_dispatcher));
+    REQUIRE_EQ(fixture.process->reserved_inboxes(), 1U);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
+    REQUIRE_EQ(
+        acquire_runtime_inbox_storage_budget().get(), fixture.process.get());
+    REQUIRE_EQ(srt_startup(), 0);
+    robotweax::srt::UdpSocket next {robotweax::srt::IpAddressFamily::ipv4};
+    REQUIRE_EQ(next.bind(robotweax::srt::IpEndpoint::loopback()),
+        robotweax::srt::Error::none);
+    socket = srt_create_socket();
+    REQUIRE_EQ(
+        srt_bind_acquire(socket, static_cast<UDPSOCKET>(next.release_native())),
+        0);
+    auto channel = SocketRegistry::instance().find(socket)->channel;
+    REQUIRE(channel != old_channel);
+    auto runtime = fixture.runtime(channel);
+    auto dispatcher = fixture.create(channel, runtime);
+    REQUIRE(dispatcher != nullptr);
+    REQUIRE(channel->register_connection(700, runtime, dispatcher));
+    old_dispatcher.reset();
+    captured.reset();
+    old_runtime.reset();
+    old_channel.reset();
+    REQUIRE_EQ(fixture.process->reserved_inboxes(), 1U);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE_EQ(fixture.process->reserved_bytes(), 0U);
+    REQUIRE_EQ(fixture.process->reserved_inboxes(), 0U);
+}

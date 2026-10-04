@@ -7,6 +7,7 @@
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/udp.hpp"
 #include "compat/runtime_scheduler.hpp"
+#include "compat/connection_datagram_dispatcher.hpp"
 #include "compat/connection_work_binding.hpp"
 #include "compat/connection_datagram_inbox.hpp"
 #include "compat/readiness.hpp"
@@ -284,6 +285,22 @@ public:
         UdpSocket& acquired_socket,
         const std::shared_ptr<NativeChannelBudget>& budget) noexcept;
 
+    // Internal prototype policy, shared by every dispatcher created here.
+    // Provisional ceilings, independent of the retained process ring ceiling.
+    static constexpr std::size_t maximum_inbox_storage_bytes =
+        8U * 1024U * 1024U;
+    static constexpr std::size_t maximum_inbox_count = 256U;
+    // Admission only: caller must commit the route separately. No worker startup
+    // or public activation. Null on terminal channel, wrong owner or budget failure.
+    [[nodiscard]] std::shared_ptr<ConnectionDatagramDispatcher>
+    create_budgeted_dispatcher(
+        const std::shared_ptr<ConnectionRuntime>& runtime,
+        const std::shared_ptr<RuntimeScheduler>& scheduler,
+        std::uint64_t affinity,
+        ConnectionDatagramInbox::Configuration inbox_configuration,
+        ConnectionDatagramDispatcher::Configuration configuration,
+        const std::shared_ptr<DatagramInbox>& setup_prefix = nullptr) noexcept;
+
     DatagramChannel(const DatagramChannel&) = delete;
     DatagramChannel& operator=(const DatagramChannel&) = delete;
 
@@ -477,6 +494,9 @@ private:
                   std::chrono::steady_clock::time_point::max()) noexcept;
     void notify_work(bool receive_release) noexcept;
 
+    std::mutex inbox_budget_mutex_;
+    std::shared_ptr<DatagramStorageBudget> inbox_budget_;
+    std::shared_ptr<DatagramStorageBudget> process_inbox_budget_;
     std::mutex shutdown_mutex_;
     std::atomic_bool shutdown_requested_ = false;
     bool shutdown_finished_ = false;
