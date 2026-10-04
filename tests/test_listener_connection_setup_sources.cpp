@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <memory>
+#include <future>
 #include <mutex>
 #include <thread>
 
@@ -644,4 +645,187 @@ TEST(listener_connection_setup_actor_rejects_stopped_scheduler)
     const ListenerConnectionSetupActorResult failure = actor->wait();
     REQUIRE_EQ(failure.kind, ListenerConnectionSetupActorResultKind::failure);
     REQUIRE_EQ(failure.failure, ListenerConnectionSetupDispatchStatus::stopped);
+}
+
+namespace {
+template <typename Actor> struct TerminalPublicationGate {
+    std::weak_ptr<Actor> actor;
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered = false;
+    bool released = false;
+    static void notify(void* context) noexcept
+    {
+        auto& gate = *static_cast<TerminalPublicationGate*>(context);
+        const auto owner = gate.actor.lock();
+        if (owner == nullptr || !owner->snapshot().terminal) {
+            return;
+        }
+        std::unique_lock lock(gate.mutex);
+        gate.entered = true;
+        gate.changed.notify_all();
+        gate.changed.wait(lock, [&] {
+            return gate.released;
+        });
+    }
+    void release() noexcept
+    {
+        std::lock_guard lock(mutex);
+        released = true;
+        changed.notify_all();
+    }
+};
+template <typename Actor> struct TerminalPublicationRelease {
+    std::shared_ptr<TerminalPublicationGate<Actor>> gate;
+    ~TerminalPublicationRelease()
+    {
+        gate->release();
+    }
+};
+} // namespace
+
+TEST(listener_connection_setup_actor_stop_joins_unstarted_terminal_publication)
+{
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {.shard_count = 1,
+            .queue_capacity_per_shard = 4,
+            .timer_capacity_per_shard = 4});
+    REQUIRE(scheduler->start());
+    auto actor = std::make_shared<ListenerConnectionSetupActor>(scheduler, 0U,
+        std::make_shared<DatagramInbox>(1),
+        setup_admission(ListenerHandshakeProtocol::hsv5), setup_configuration(),
+        1U);
+    auto gate = std::make_shared<
+        TerminalPublicationGate<ListenerConnectionSetupActor>>();
+    gate->actor = actor;
+    REQUIRE(actor->set_result_ready_handler(
+        TerminalPublicationGate<ListenerConnectionSetupActor>::notify, gate));
+    std::future<void> closing;
+    std::future<void> stopping;
+    TerminalPublicationRelease<ListenerConnectionSetupActor> release {gate};
+    closing = std::async(std::launch::async, [actor] {
+        actor->close();
+    });
+    {
+        std::unique_lock lock(gate->mutex);
+        REQUIRE(gate->changed.wait_for(lock, std::chrono::seconds {2}, [&] {
+            return gate->entered;
+        }));
+    }
+    REQUIRE(actor->snapshot().terminal);
+    auto entering_stop = std::make_shared<std::promise<void>>();
+    auto entered_stop = entering_stop->get_future();
+    stopping = std::async(std::launch::async, [actor, entering_stop] {
+        entering_stop->set_value();
+        actor->stop();
+    });
+    REQUIRE_EQ(entered_stop.wait_for(std::chrono::seconds {2}),
+        std::future_status::ready);
+    REQUIRE_EQ(stopping.wait_for(std::chrono::milliseconds {30}),
+        std::future_status::timeout);
+    gate->release();
+    REQUIRE_EQ(
+        stopping.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    stopping.get();
+    if (closing.valid()) {
+        closing.get();
+    }
+    actor->clear_result_ready_handler();
+    actor->stop();
+    scheduler->stop();
+}
+
+TEST(listener_connection_setup_actor_stop_joins_scheduled_terminal_publication)
+{
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {.shard_count = 1,
+            .queue_capacity_per_shard = 4,
+            .timer_capacity_per_shard = 4});
+    REQUIRE(scheduler->start());
+    auto actor = std::make_shared<ListenerConnectionSetupActor>(scheduler, 0U,
+        std::make_shared<DatagramInbox>(1),
+        setup_admission(ListenerHandshakeProtocol::hsv5), setup_configuration(),
+        1U);
+    auto gate = std::make_shared<
+        TerminalPublicationGate<ListenerConnectionSetupActor>>();
+    gate->actor = actor;
+    REQUIRE(actor->set_result_ready_handler(
+        TerminalPublicationGate<ListenerConnectionSetupActor>::notify, gate));
+    std::future<void> closing;
+    std::future<void> stopping;
+    TerminalPublicationRelease<ListenerConnectionSetupActor> release {gate};
+    REQUIRE_EQ(actor->start(
+                   std::chrono::steady_clock::now() + std::chrono::seconds {2}),
+        ListenerConnectionSetupDispatchStatus::completed);
+    actor->close();
+    {
+        std::unique_lock lock(gate->mutex);
+        REQUIRE(gate->changed.wait_for(lock, std::chrono::seconds {2}, [&] {
+            return gate->entered;
+        }));
+    }
+    REQUIRE(actor->snapshot().terminal);
+    auto entering_stop = std::make_shared<std::promise<void>>();
+    auto entered_stop = entering_stop->get_future();
+    stopping = std::async(std::launch::async, [actor, entering_stop] {
+        entering_stop->set_value();
+        actor->stop();
+    });
+    REQUIRE_EQ(entered_stop.wait_for(std::chrono::seconds {2}),
+        std::future_status::ready);
+    REQUIRE_EQ(stopping.wait_for(std::chrono::milliseconds {30}),
+        std::future_status::timeout);
+    gate->release();
+    REQUIRE_EQ(
+        stopping.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    stopping.get();
+    if (closing.valid()) {
+        closing.get();
+    }
+    actor->clear_result_ready_handler();
+    actor->stop();
+    scheduler->stop();
+}
+
+TEST(listener_connection_setup_actor_terminal_publication_can_reenter_stop)
+{
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {.shard_count = 1,
+            .queue_capacity_per_shard = 4,
+            .timer_capacity_per_shard = 4});
+    REQUIRE(scheduler->start());
+    for (bool started : {false, true}) {
+        auto actor = std::make_shared<ListenerConnectionSetupActor>(scheduler,
+            0U, std::make_shared<DatagramInbox>(1),
+            setup_admission(ListenerHandshakeProtocol::hsv5),
+            setup_configuration(), 1U);
+        struct Probe {
+            std::weak_ptr<ListenerConnectionSetupActor> actor;
+            std::promise<void> returned;
+            static void notify(void* context) noexcept
+            {
+                auto& probe = *static_cast<Probe*>(context);
+                const auto owner = probe.actor.lock();
+                if (owner != nullptr && owner->snapshot().terminal) {
+                    owner->stop();
+                    probe.returned.set_value();
+                }
+            }
+        };
+        auto probe = std::make_shared<Probe>();
+        probe->actor = actor;
+        auto returned = probe->returned.get_future();
+        REQUIRE(actor->set_result_ready_handler(Probe::notify, probe));
+        if (started) {
+            REQUIRE_EQ(actor->start(std::chrono::steady_clock::now()
+                           + std::chrono::seconds {2}),
+                ListenerConnectionSetupDispatchStatus::completed);
+        }
+        actor->close();
+        REQUIRE_EQ(returned.wait_for(std::chrono::seconds {2}),
+            std::future_status::ready);
+        actor->stop();
+        actor->clear_result_ready_handler();
+    }
+    scheduler->stop();
 }

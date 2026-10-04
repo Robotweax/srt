@@ -425,11 +425,12 @@ void ListenerHandshakeActor::stop() noexcept
 {
     close();
     std::unique_lock lock(mutex_);
-    if (active_thread_ == std::this_thread::get_id()) {
+    if (active_thread_ == std::this_thread::get_id()
+        || terminal_thread_ == std::this_thread::get_id()) {
         return;
     }
     completed_.wait(lock, [this] {
-        return terminal_;
+        return terminal_complete_ && active_thread_ == std::thread::id {};
     });
 }
 
@@ -733,6 +734,7 @@ void ListenerHandshakeActor::finish(
             return;
         }
         terminal_ = true;
+        terminal_thread_ = std::this_thread::get_id();
         failure_ = terminal.kind == ListenerHandshakeActorResultKind::failure
             ? terminal.failure
             : ListenerHandshakeDispatchStatus::completed;
@@ -750,8 +752,13 @@ void ListenerHandshakeActor::finish(
         inbox_->close();
     }
     ready_.notify_all();
-    completed_.notify_all();
     notify_result_ready();
+    {
+        std::lock_guard lock(mutex_);
+        terminal_thread_ = {};
+        terminal_complete_ = true;
+    }
+    completed_.notify_all();
 }
 
 void ListenerHandshakeActor::notify_result_ready() noexcept

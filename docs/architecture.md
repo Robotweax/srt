@@ -356,6 +356,21 @@ It does not close a shared listener channel when just one accepted socket or the
 listener handle closes. Process-wide cleanup ownership, listener/setup operation
 joins and restart/generation qualification remain further integration gates.
 
+Listener handshake and accepted-setup actor `stop()` now distinguishes terminal
+result publication from terminal completion. An external stop waits until the
+original terminal result-ready callback has returned and an active actor task
+has left its client work. A terminal callback or that actor task reentering
+`stop()` only requests close and returns, preserving self-close without waiting
+on itself. Results remain observable through `wait()` as soon as terminal state
+is published; result availability is not a callback join.
+
+This strengthens the existing listener/setup stop calls used by owning handle
+close and process cleanup. It adds no finite shutdown deadline and does not
+provide an arbitrary affinity-worker wait API. Queued task-context epilogues,
+callbacks installed after terminal publication and process-wide channel
+retirement remain separate ownership concerns. The full cleanup/restart gate is
+not completed by this actor barrier alone.
+
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently
 invoked runtime handlers. The dispatcher does not poll the runtime or grant it a
