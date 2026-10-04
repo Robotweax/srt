@@ -381,7 +381,9 @@ public:
 
 private:
     struct UnopenedTag { };
-    explicit DatagramChannel(UnopenedTag) noexcept;
+    // Container construction may allocate; let the factory catch failures
+    // before any native descriptor is transferred.
+    explicit DatagramChannel(UnopenedTag);
     void release_native_credit() noexcept;
 
     struct ScheduledWorkContext {

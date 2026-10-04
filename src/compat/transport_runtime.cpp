@@ -549,7 +549,7 @@ DatagramChannel::DatagramChannel(
 {
 }
 
-DatagramChannel::DatagramChannel(UnopenedTag) noexcept
+DatagramChannel::DatagramChannel(UnopenedTag)
     : socket(UdpSocket::UnopenedTag {})
 {
 }
