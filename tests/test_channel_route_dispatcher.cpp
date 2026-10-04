@@ -2133,6 +2133,9 @@ TEST(channel_route_unregister_reclaims_quiet_ring_with_captured_handle)
     auto captured = dispatcher->inbox();
     REQUIRE(
         fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    // Registration may still be running its empty service callback. This
+    // case asserts the quiet path, so join that wake before unregister.
+    fixture.scheduler->stop();
     fixture.channel->unregister_connection(700);
     REQUIRE(captured->snapshot().closed);
     REQUIRE(captured->snapshot().storage_released);
@@ -2681,4 +2684,250 @@ TEST(
     executor->stop();
     REQUIRE(receipt.expired());
     REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+}
+
+TEST(
+    channel_shutdown_closes_routes_setup_listener_and_fences_reentrant_admission)
+{
+    SinkFixture fixture;
+    auto setup = std::make_shared<DatagramInbox>(4);
+    auto listener = std::make_shared<HandshakeInbox>(4);
+    struct Probe {
+        std::weak_ptr<DatagramChannel> channel;
+        std::atomic<unsigned> busy {0};
+        static void ready(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Probe*>(pointer);
+            if (auto channel = self.channel.lock(); channel != nullptr
+                && channel->shutdown()
+                    == DatagramChannel::ShutdownStatus::busy) {
+                self.busy.fetch_add(1);
+            }
+        }
+    };
+    auto probe = std::make_shared<Probe>();
+    probe->channel = fixture.channel;
+    REQUIRE(setup->set_ready_handler(Probe::ready, probe));
+    REQUIRE(listener->set_ready_handler(Probe::ready, probe));
+    REQUIRE(fixture.channel->register_setup_inbox(701, sink_peer, setup));
+    REQUIRE(fixture.channel->set_listener_inbox(listener));
+    REQUIRE(fixture.channel->register_connection(700, fixture.runtime));
+    REQUIRE_EQ(
+        fixture.channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE_EQ(probe->busy.load(), 2U);
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    REQUIRE(!fixture.channel->socket.valid());
+    REQUIRE(!fixture.channel->start(fixture.scheduler, 0));
+    REQUIRE(!fixture.channel->register_connection(700, fixture.runtime));
+    REQUIRE(!fixture.channel->register_setup_inbox(702, sink_peer, setup));
+    REQUIRE(!fixture.channel->set_listener_inbox(listener));
+    REQUIRE(!setup->push(sink_data(0).view(), sink_peer));
+    REQUIRE(!listener->push({}));
+    DatagramEnvelope datagram;
+    HandshakeEnvelope handshake;
+    REQUIRE_EQ(setup->pop_for(datagram, std::chrono::milliseconds {0}),
+        InboxPopStatus::closed);
+    REQUIRE_EQ(listener->pop_for(handshake, std::chrono::milliseconds {0}),
+        InboxPopStatus::closed);
+    REQUIRE_EQ(
+        fixture.channel->send_datagram(sink_data(0).view(), sink_peer).error,
+        Error::io_error);
+    REQUIRE_EQ(
+        fixture.channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE_EQ(probe->busy.load(), 2U);
+}
+
+TEST(channel_shutdown_preserves_active_callback_ring_until_completion)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher = fixture.dispatcher(4, gate);
+    auto captured = dispatcher->inbox();
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    (void)fixture.ingress(sink_data(0));
+    gate->wait();
+    REQUIRE_EQ(
+        fixture.channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE(!fixture.runtime->accepts_datagrams());
+    REQUIRE(captured->snapshot().closed);
+    REQUIRE(!captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(),
+        *ConnectionDatagramInbox::storage_bytes(4));
+    dispatcher.reset();
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+}
+
+TEST(channel_shutdown_worker_rejection_does_not_start_teardown)
+{
+    SinkFixture fixture;
+    auto answer =
+        std::make_shared<std::promise<DatagramChannel::ShutdownStatus>>();
+    auto result = answer->get_future();
+    struct Task {
+        std::shared_ptr<DatagramChannel> channel;
+        std::shared_ptr<std::promise<DatagramChannel::ShutdownStatus>> answer;
+        static void run(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Task*>(pointer);
+            self.answer->set_value(self.channel->shutdown());
+        }
+    };
+    auto task = std::make_shared<Task>(Task {fixture.channel, answer});
+    REQUIRE_EQ(
+        fixture.scheduler->submit(0, {.function = Task::run, .context = task}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(
+        result.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    REQUIRE_EQ(result.get(), DatagramChannel::ShutdownStatus::worker_thread);
+    REQUIRE(fixture.channel->socket.valid());
+    REQUIRE(fixture.channel->register_connection(700, fixture.runtime));
+    REQUIRE_EQ(
+        fixture.channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+}
+
+TEST(channel_shutdown_concurrent_call_reports_busy_with_admission_closed)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    auto setup = std::make_shared<DatagramInbox>(4);
+    REQUIRE(setup->set_ready_handler(SinkGate::block, gate));
+    REQUIRE(fixture.channel->register_setup_inbox(701, sink_peer, setup));
+    std::future<DatagramChannel::ShutdownStatus> shutdown;
+    SinkRelease release {gate};
+    shutdown = std::async(std::launch::async, [&] {
+        return fixture.channel->shutdown();
+    });
+    gate->wait();
+    REQUIRE_EQ(
+        fixture.channel->shutdown(), DatagramChannel::ShutdownStatus::busy);
+    REQUIRE(!fixture.channel->start(fixture.scheduler, 0));
+    REQUIRE(!fixture.channel->register_connection(700, fixture.runtime));
+    REQUIRE(!fixture.channel->register_setup_inbox(702, sink_peer, setup));
+    gate->release();
+    REQUIRE_EQ(shutdown.get(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE_EQ(
+        fixture.channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+}
+
+TEST(
+    channel_shutdown_retires_native_watch_and_allows_fresh_channel_on_shared_scheduler)
+{
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {.shard_count = 2,
+            .queue_capacity_per_shard = 8,
+            .timer_capacity_per_shard = 8,
+            .service_capacity_per_shard = 1});
+    REQUIRE(scheduler->start());
+    auto channel = std::make_shared<DatagramChannel>(IpAddressFamily::ipv4);
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+    auto readiness = scheduler->acquire_socket_readiness();
+    REQUIRE(readiness != nullptr);
+    REQUIRE(channel->start(scheduler, 0));
+    REQUIRE_EQ(readiness->snapshot().registered, 1U);
+    REQUIRE_EQ(channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE(!channel->running());
+    REQUIRE(!channel->socket.valid());
+    REQUIRE_EQ(readiness->snapshot().registered, 0U);
+    REQUIRE(!channel->start(scheduler, 1));
+    auto fresh = std::make_shared<DatagramChannel>(IpAddressFamily::ipv4);
+    REQUIRE_EQ(fresh->socket.bind(IpEndpoint::loopback()), Error::none);
+    REQUIRE(fresh->start(scheduler, 0));
+    REQUIRE_EQ(readiness->snapshot().registered, 1U);
+    REQUIRE_EQ(fresh->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE_EQ(readiness->snapshot().registered, 0U);
+    scheduler->stop();
+}
+
+TEST(
+    channel_shutdown_closes_sealed_prefix_publication_and_reclaims_connection_ring)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto prefix = std::make_shared<DatagramInbox>(4);
+    REQUIRE(prefix->push(sink_data(0).view(), sink_peer));
+    REQUIRE(fixture.channel->register_setup_inbox(700, sink_peer, prefix));
+    auto dispatcher = fixture.dispatcher(4, gate);
+    REQUIRE(dispatcher != nullptr);
+    REQUIRE(fixture.channel->promote_setup_connection(
+        700, prefix, fixture.runtime, dispatcher));
+    gate->wait();
+    auto captured = dispatcher->inbox();
+    REQUIRE_EQ(
+        fixture.channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE(!prefix->push(sink_data(1).view(), sink_peer));
+    REQUIRE(!captured->snapshot().storage_released);
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+}
+
+TEST(datagram_inbox_terminal_retirement_fences_promoted_handle)
+{
+    SinkFixture fixture;
+    auto prefix = std::make_shared<DatagramInbox>(4);
+    REQUIRE(fixture.channel->register_setup_inbox(700, sink_peer, prefix));
+    REQUIRE(fixture.channel->promote_setup_connection(
+        700, prefix, fixture.runtime));
+    prefix->retire();
+    REQUIRE(!prefix->push(sink_data(0).view(), sink_peer));
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+    REQUIRE_EQ(
+        fixture.channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+}
+
+TEST(channel_shutdown_active_channel_task_deadline_retains_context_for_retry)
+{
+    SinkFixture fixture;
+    struct Clock {
+        std::atomic_bool armed {false};
+        std::shared_ptr<SinkGate> gate = std::make_shared<SinkGate>();
+        static std::uint64_t now(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Clock*>(pointer);
+            if (self.armed.exchange(false)) {
+                SinkGate::block(self.gate.get());
+            }
+            return 1000;
+        }
+    } clock;
+    auto channel = std::make_shared<DatagramChannel>(IpAddressFamily::ipv4);
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+    auto runtime = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.channel = channel,
+            .peer = sink_peer,
+            .peer_socket_id = 90,
+            .initial_sequence = SequenceNumber {1000},
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+            .now_function = Clock::now,
+            .now_context = &clock});
+    REQUIRE(channel->register_connection(700, runtime));
+    SinkRelease release {clock.gate};
+    clock.armed.store(true);
+    REQUIRE(channel->start(fixture.scheduler, 0));
+    clock.gate->wait();
+    REQUIRE_EQ(channel->shutdown(std::chrono::steady_clock::now()),
+        DatagramChannel::ShutdownStatus::timeout);
+    REQUIRE(!channel->running());
+    REQUIRE(channel->socket.valid());
+    REQUIRE(!channel->start(fixture.scheduler, 1));
+    REQUIRE(!channel->register_setup_inbox(
+        701, sink_peer, std::make_shared<DatagramInbox>(4)));
+    clock.gate->release();
+    REQUIRE_EQ(channel->shutdown(
+                   std::chrono::steady_clock::now() + std::chrono::seconds {2}),
+        DatagramChannel::ShutdownStatus::retired);
+    REQUIRE(!channel->socket.valid());
+    REQUIRE(!runtime->accepts_datagrams());
 }

@@ -397,6 +397,9 @@ bool DatagramInbox::push(
     std::shared_ptr<void> handler_context;
     {
         std::unique_lock lock(mutex_);
+        if (admission_retired_) {
+            return false;
+        }
         if (promoted_runtime_ != nullptr) {
             if (peer != promoted_peer_) {
                 return false;
@@ -501,10 +504,21 @@ bool DatagramInbox::ready() noexcept
 
 void DatagramInbox::close() noexcept
 {
+    close_publication(false);
+}
+
+void DatagramInbox::retire() noexcept
+{
+    close_publication(true);
+}
+
+void DatagramInbox::close_publication(bool terminal) noexcept
+{
     ReadyFunction handler = nullptr;
     std::shared_ptr<void> handler_context;
     {
         std::lock_guard lock(mutex_);
+        admission_retired_ |= terminal;
         if (closed_) {
             return;
         }
@@ -545,6 +559,9 @@ UdpIoResult DatagramChannel::send_datagram(
     IpEndpoint peer) noexcept
 {
     std::lock_guard lock(send_mutex_);
+    if (send_closed_) {
+        return {.error = Error::io_error};
+    }
     if (send_hook_ != nullptr) {
         return send_hook_(bytes, peer, send_hook_context_);
     }
@@ -618,7 +635,8 @@ bool DatagramChannel::register_connection_locked(
     const std::shared_ptr<ConnectionRuntime>& runtime,
     const std::optional<HandshakeRouteKey>& replay_key)
 {
-    if (channel_faulted_) {
+    if (channel_faulted_
+        || shutdown_requested_.load(std::memory_order_acquire)) {
         return false;
     }
     const auto inserted = routes_.emplace(protocol_socket_id,
@@ -749,7 +767,7 @@ bool DatagramChannel::promote_setup_connection(std::uint32_t protocol_socket_id,
             return false;
         }
         std::unique_lock inbox_lock(inbox->mutex_);
-        if (inbox->promoted_runtime_ != nullptr
+        if (inbox->admission_retired_ || inbox->promoted_runtime_ != nullptr
             || (dispatcher != nullptr && inbox->closed_)
             || ((dispatcher != nullptr || queued_routes_ != 0U)
                 && std::any_of(routes_.begin(), routes_.end(),
@@ -889,7 +907,8 @@ bool DatagramChannel::replay_established_handshake(
     std::shared_ptr<DatagramInbox> setup_prefix;
     {
         std::lock_guard lock(routes_mutex_);
-        if (channel_faulted_) {
+        if (channel_faulted_
+            || shutdown_requested_.load(std::memory_order_acquire)) {
             return false;
         }
         const auto replay = handshake_routes_.find({
@@ -940,6 +959,9 @@ bool DatagramChannel::register_setup_inbox(std::uint32_t protocol_socket_id,
     }
     try {
         std::lock_guard lock(routes_mutex_);
+        if (shutdown_requested_.load(std::memory_order_acquire)) {
+            return false;
+        }
         return setup_routes_
             .emplace(protocol_socket_id,
                 SetupRoute {
@@ -973,7 +995,8 @@ bool DatagramChannel::set_listener_inbox(
         return false;
     }
     std::lock_guard lock(routes_mutex_);
-    if (!listener_inbox_.expired()) {
+    if (shutdown_requested_.load(std::memory_order_acquire)
+        || !listener_inbox_.expired()) {
         return false;
     }
     listener_inbox_ = std::move(inbox);
@@ -1004,6 +1027,9 @@ bool DatagramChannel::start_with_affinity(
     std::shared_ptr<RuntimeScheduler> scheduler,
     std::optional<std::uint64_t> affinity) noexcept
 {
+    if (shutdown_requested_.load(std::memory_order_acquire)) {
+        return false;
+    }
     std::shared_ptr<ScheduledWorkContext> context;
     try {
         context = std::make_shared<ScheduledWorkContext>();
@@ -1021,6 +1047,9 @@ bool DatagramChannel::start_with_affinity(
         ? scheduler->acquire_socket_readiness()
         : nullptr;
     std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    if (shutdown_requested_.load(std::memory_order_acquire)) {
+        return false;
+    }
     if (running()) {
         return true;
     }
@@ -1140,7 +1169,8 @@ void DatagramChannel::set_idle_wait_for_testing(
     }
 }
 
-void DatagramChannel::stop() noexcept
+bool DatagramChannel::stop(
+    std::chrono::steady_clock::time_point deadline) noexcept
 {
     std::shared_ptr<RuntimeScheduler> scheduler;
     std::shared_ptr<SocketReadiness> readiness;
@@ -1168,13 +1198,83 @@ void DatagramChannel::stop() noexcept
     {
         std::unique_lock lifecycle_lock(lifecycle_mutex_);
         if (task_active_ && active_thread_ != std::this_thread::get_id()) {
-            lifecycle_idle_.wait(lifecycle_lock, [this] {
+            const auto quiet = [this] {
                 return !task_active_;
-            });
+            };
+            if (deadline == std::chrono::steady_clock::time_point::max()) {
+                lifecycle_idle_.wait(lifecycle_lock, quiet);
+            } else if (!lifecycle_idle_.wait_until(
+                           lifecycle_lock, deadline, quiet)) {
+                // Keep the scheduler/context until a later shutdown retry.
+                return false;
+            }
         }
         scheduler_.reset();
         scheduled_work_context_.reset();
     }
+    return true;
+}
+
+DatagramChannel::ShutdownStatus DatagramChannel::shutdown(
+    std::chrono::steady_clock::time_point deadline) noexcept
+{
+    if (RuntimeScheduler::on_worker_thread()) {
+        return ShutdownStatus::worker_thread;
+    }
+    std::unique_lock shutdown_lock(shutdown_mutex_, std::try_to_lock);
+    if (!shutdown_lock.owns_lock()) {
+        return ShutdownStatus::busy;
+    }
+    if (shutdown_finished_) {
+        return ShutdownStatus::retired;
+    }
+    {
+        std::lock_guard lifecycle_lock(lifecycle_mutex_);
+        shutdown_requested_.store(true, std::memory_order_release);
+        running_.store(false, std::memory_order_release);
+    }
+    if (!stop(deadline)) {
+        return ShutdownStatus::timeout;
+    }
+    decltype(routes_) routes;
+    decltype(setup_routes_) setups;
+    std::shared_ptr<HandshakeInbox> listener;
+    {
+        std::lock_guard route_lock(routes_mutex_);
+        routes.swap(routes_);
+        setups.swap(setup_routes_);
+        listener = listener_inbox_.lock();
+        listener_inbox_.reset();
+        handshake_routes_.clear();
+        queued_routes_ = 0;
+        next_poll_route_ = nullptr;
+        next_fault_route_ = nullptr;
+        fault_routes_remaining_ = 0;
+        poll_round_remaining_ = 0;
+        poll_round_deadline_.reset();
+    }
+    // No route/lifecycle lock crosses readiness callbacks or protocol close.
+    if (listener != nullptr) {
+        listener->close();
+    }
+    for (auto& setup : setups) {
+        setup.second.inbox->retire();
+    }
+    for (auto& route : routes) {
+        if (route.second.setup_prefix != nullptr) {
+            route.second.setup_prefix->retire();
+        }
+        close_connection_runtime(
+            route.second.runtime, {}, std::move(route.second.dispatcher));
+    }
+    {
+        std::lock_guard send_lock(send_mutex_);
+        send_closed_ = true;
+        // Move ownership out without opening a replacement descriptor.
+        auto retired_socket = std::move(socket);
+    }
+    shutdown_finished_ = true;
+    return ShutdownStatus::retired;
 }
 
 bool DatagramChannel::schedule_next_locked(bool immediate,
@@ -1376,7 +1476,8 @@ void DatagramChannel::dispatch(const PacketView& packet,
         std::shared_ptr<HandshakeInbox> inbox;
         {
             std::lock_guard lock(routes_mutex_);
-            if (channel_faulted_) {
+            if (channel_faulted_
+                || shutdown_requested_.load(std::memory_order_acquire)) {
                 return;
             }
             const auto replay = handshake_routes_.find({
@@ -1483,7 +1584,8 @@ void DatagramChannel::dispatch(const PacketView& packet,
     std::shared_ptr<DatagramInbox> setup_inbox;
     {
         std::lock_guard lock(routes_mutex_);
-        if (channel_faulted_) {
+        if (channel_faulted_
+            || shutdown_requested_.load(std::memory_order_acquire)) {
             return;
         }
         const auto route = routes_.find(
@@ -1517,7 +1619,8 @@ void DatagramChannel::mark_connections_broken(int system_error) noexcept
 {
     {
         std::lock_guard lock(routes_mutex_);
-        if (channel_faulted_) {
+        if (channel_faulted_
+            || shutdown_requested_.load(std::memory_order_acquire)) {
             return;
         }
         channel_faulted_ = true;
