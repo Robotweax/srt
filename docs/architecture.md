@@ -552,10 +552,28 @@ owner policy and selectable scheduled poll/send/dispatcher setup remain subseque
 
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently
-invoked runtime handlers. The dispatcher does not poll the runtime or grant it a
-separate send allowance; channel polling and send budgets remain on their
-existing path. Internal route registration can select this dispatcher explicitly.
-Public setup does not create or select it, so the default transport is unchanged.
+invoked runtime handlers. An explicit internal `request_poll` can now run one
+protocol poll on the dispatcher's affinity service. It accepts one pending,
+active, or unconsumed completion per dispatcher and never polls inline. When a
+turn also carries ingress, bounded FIFO draining precedes the poll. An unfinished
+setup prefix receives only its existing deadline check; ordinary polls reuse the
+runtime mutex and finite ingress-cohort precedence. Application attempts keep
+their synchronous runtime-mutex commit semantics.
+
+`DatagramChannel::begin_poll_round` creates a channel-bound shared allowance of
+64 ordinary poll send attempts. Each service turn reserves at most 16 attempts,
+refunds unused attempts, and returns the poll result and actual attempt count.
+Connections on different shards share that allowance atomically. Requests,
+active callbacks and unconsumed completion receipts retain the round, preventing
+a second explicit round until all holders release it. Retirement discards pending
+requests and stored completions; an active callback still follows the existing
+runtime close barrier. A foreign channel's round is rejected.
+
+This is an explicit primitive: the caller must commit the route, collect results,
+coordinate rounds and arm deadlines. It must replace concurrent legacy channel
+polling when activated. The existing automatic channel polling path and public
+setup remain unchanged; public setup does not create or select dispatchers.
+There is no cross-shard fairness or measured performance claim.
 
 The internal dispatcher factory can also claim a cold, unregistered setup inbox.
 It seals that inbox without allocating or copying a second prefix ring. A worker

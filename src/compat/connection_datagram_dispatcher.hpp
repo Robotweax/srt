@@ -1,6 +1,9 @@
 #pragma once
 
 #include "compat/connection_datagram_inbox.hpp"
+#include "compat/runtime_poll_result.hpp"
+#include <atomic>
+#include <utility>
 
 #include <cstddef>
 #include <cstdint>
@@ -10,6 +13,29 @@ namespace robotweax::srt::compat {
 class ConnectionRuntime;
 class DatagramChannel;
 class DatagramInbox;
+
+// A finite send allowance for one channel round, shared across shard callbacks.
+class ChannelPollSendBudget {
+public:
+    static constexpr std::size_t maximum_attempts = 64;
+    [[nodiscard]] std::size_t remaining() const noexcept
+    {
+        return remaining_.load(std::memory_order_relaxed);
+    }
+
+private:
+    friend class DatagramChannel;
+    friend class ConnectionDatagramDispatcher;
+    explicit ChannelPollSendBudget(
+        std::weak_ptr<DatagramChannel> channel) noexcept
+        : channel_(std::move(channel))
+    {
+    }
+    [[nodiscard]] std::size_t take(std::size_t maximum) noexcept;
+    void refund(std::size_t unused) noexcept;
+    const std::weak_ptr<DatagramChannel> channel_;
+    std::atomic<std::size_t> remaining_ {maximum_attempts};
+};
 
 // Optional datagram service. Runtime ownership remains with the connection;
 // its protocol methods enforce the close barrier under their existing mutex.
@@ -42,6 +68,16 @@ public:
         const std::shared_ptr<DatagramInbox>& setup_prefix = nullptr,
         const std::shared_ptr<DatagramStorageBudget>& process_budget =
             nullptr) noexcept;
+    struct PollCompletion {
+        RuntimePollResult result;
+        std::size_t send_attempts = 0;
+        std::shared_ptr<ChannelPollSendBudget> round;
+    };
+    // Explicit internal request, never inline protocol work. One pending/active/
+    // unconsumed result per dispatcher; caller owns deadlines and route commit.
+    [[nodiscard]] bool request_poll(
+        std::shared_ptr<ChannelPollSendBudget> round) noexcept;
+    [[nodiscard]] std::optional<PollCompletion> take_poll_completion() noexcept;
     ~ConnectionDatagramDispatcher();
     ConnectionDatagramDispatcher(const ConnectionDatagramDispatcher&) = delete;
     ConnectionDatagramDispatcher& operator=(
