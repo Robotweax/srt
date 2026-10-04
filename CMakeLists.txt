@@ -462,6 +462,18 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_scheduler_service_tests)
     set_tests_properties(robotweax_srt_scheduler_service_tests PROPERTIES TIMEOUT 30)
 
+    # The process-fixed affinity selector needs its own public API test process.
+    add_executable(robotweax_srt_public_affinity_setup_tests
+        tests/test_main.cpp tests/test_public_affinity_setup.cpp)
+    target_link_libraries(robotweax_srt_public_affinity_setup_tests
+        PRIVATE RobotweaxSRT::srt Threads::Threads)
+    target_include_directories(robotweax_srt_public_affinity_setup_tests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(robotweax_srt_public_affinity_setup_tests PRIVATE cxx_std_20)
+    add_test(NAME robotweax_srt_public_affinity_setup_tests
+        COMMAND robotweax_srt_public_affinity_setup_tests)
+    set_tests_properties(robotweax_srt_public_affinity_setup_tests PROPERTIES TIMEOUT 45)
+
     # Lifecycle tests intentionally manipulate process-wide startup and
     # cleanup state. Keep them in a separate process so their reference-count
     # assertions cannot be affected by other compatibility tests.

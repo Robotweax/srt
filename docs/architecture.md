@@ -168,13 +168,15 @@ already dispatched callback retains its context until it returns, so clients
 must check their own generation and close barrier before effects. Final stop
 cancels pending service wakes, joins active callbacks, and retires contexts
 before concurrent stop callers return. The process scheduler defaults to zero
-service slots; public UDP setup still does not create dispatchers automatically.
+service slots unless the public affinity prototype described below is selected.
 
 For explicit internal prototype integration,
 `ROBOTWEAX_SRT_SCHEDULER_SERVICES_PER_SHARD` configures 0..4096 preallocated
 service slots per shard. Only an unsigned decimal integer is valid; signs,
 whitespace, empty values, overflow and trailing characters reject scheduler
-acquisition without publishing a generation. A missing value selects zero.
+acquisition without publishing a generation. A missing value selects zero, or
+1024 per shard when the public affinity prototype is selected. That prototype
+rejects an explicit zero-service configuration.
 Invalid input or allocation failure permits retry. The first successful scheduler
 acquisition fixes the capacity for that generation; changes take effect only
 after scheduler stop/final cleanup. Service-table storage is allocated before
@@ -202,8 +204,8 @@ schedulers. Original unbudgeted constructors and service-disabled generations
 remain outside this additional ceiling, as do ordinary queues/timers, worker
 stacks, allocator bookkeeping and callback metadata. It does not bound all process
 memory. Process owner acquisition rejects fork children before inherited mutexes.
-Complete scheduled network poll/send/public dispatcher setup remains a subsequent
-integration gate.
+The public affinity prototype composes these owners as described below; complete
+candidate qualification and measured evaluation remain separate gates.
 These are provisional resource limits, not measured acceptance thresholds.
 
 Message send and receive separate one locked state attempt from the synchronous
@@ -306,8 +308,8 @@ ring and runtime identity can remain alive through captured setup handles and
 are outside the connection ring budget. Callback completion does not promise
 immediate service-slot reuse or destruction of scheduler task contexts; the
 worker epilogue and generation rules still govern those resources. Route-wide
-and process-wide cleanup, fault fanout and public activation remain separate
-integration steps.
+and process-wide cleanup and fault fanout use the owning boundaries below; public
+selection is described with the coordinator.
 
 Internal channel `retire_connection(id)` removes the route incarnation and
 retires dispatcher admission outside the route lock. It returns that dispatcher
@@ -434,7 +436,8 @@ storage proportional to their still-owned binding generations, until retry;
 there is no new process-wide channel admission cap. The finish deadline covers
 channel-task barriers only, retaining the channel shutdown mutex/network/callback
 limits. Connection callback ring completion and higher-level operation/resource
-qualification remain separate gates; this is not public dispatcher activation.
+qualification remain separate gates; this retirement mechanism alone does not
+activate dispatchers.
 
 The final runtime-cleanup transition rejects an affinity scheduler worker before
 consuming the last startup reference, changing the cleanup gate or detaching any
@@ -483,8 +486,7 @@ callbacks/rings continue charging the same ceiling after runtime restart. This
 is a provisional admission bound, not a measured acceptance threshold. Acquisition
 starts no workers, and a fork child is rejected before inherited mutex access.
 Clients must explicitly pass this owner to layered inbox/dispatcher factories;
-public dispatcher setup is still unchanged. Complete service admission and selectable
-scheduled poll/send integration remain subsequent gates.
+the selected public prototype does so. Unselected public setup remains unchanged.
 
 Ring budgets can also bound the number of physical inbox rings, independently
 of bytes. Byte and count checks/reservations happen together under each budget's
@@ -504,8 +506,8 @@ callback can retain its service slot past client ring reclamation until the
 scheduler epilogue, so ring-count release does not promise immediate service
 reuse in that interval. Process ring count is not a cap on bound channels,
 original setup rings, metadata retained after reclamation or every scheduler
-generation's service table. Automatic owner adoption, native channel-count
-admission and selectable scheduled poll/send/public setup remain subsequent gates.
+generation's service table. Selected public setup combines these ring owners with
+independent native-channel and service-table admission.
 
 `DatagramChannel::create_budgeted_dispatcher` supplies an explicit internal
 channel policy for subsequent prototype integration. Every dispatcher admitted
@@ -525,9 +527,8 @@ initialization. No budget lock is held during prefix promotion or callback wake.
 Admission does not commit a route: a concurrent shutdown is fenced separately by
 route registration, and the caller owns retirement of an unregistered dispatcher.
 Original explicit-budget factories remain available for internal callers. Public
-setup still supplies no dispatcher; process service capacity defaults to zero
-and may be explicitly configured for internal prototype integration.
-Complete scheduled poll/send and selectable public setup remain subsequent gates.
+setup supplies no dispatcher by default. The selected public prototype uses this
+factory before committing each established route.
 
 Internal `DatagramChannel::create_budgeted` and `adopt_budgeted` factories admit
 one native channel slot before opening or taking ownership of a UDP socket.
@@ -547,8 +548,8 @@ default public binding path retains the original constructors. Selected native
 admission uses the retained owner as described below; independently owned
 channels require owning shutdown outside the bind registry. Captured closed
 metadata, caller-owned descriptors, original constructor use and process memory
-are outside this cap. Per-channel ring
-owner policy and selectable scheduled poll/send/dispatcher setup remain subsequent gates.
+are outside this cap. Selected public affinity setup combines this native owner
+with per-channel rings and process service admission.
 
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently
@@ -594,10 +595,36 @@ releasing its captured requests and then retires services under the existing
 close barrier. An active retired callback can retain a round briefly; a refused
 new-round admission uses the bounded fallback.
 
-Public setup still does not select the coordinator or create dispatchers. The
-unselected automatic polling path is unchanged. The prototype requires public
-selection and complete-candidate qualification before performance evaluation.
-There is no cross-shard fairness or measured performance claim.
+The public prototype is selected with `ROBOTWEAX_SRT_CONNECTION_AFFINITY=1`
+before the first scheduler acquisition or native bind selection. Absence or `0`
+keeps the original setup. Only `0` and `1` are valid; invalid selection rejects
+bind with `SRT_EINVPARAM` and permits configuration retry. The first valid choice
+is fixed for the process lifetime, including cleanup/restart. Fork children are
+rejected before inherited selector locks.
+
+Selected explicit/automatic binds and native adoption use the retained native
+channel budget even when the independent bounded-bind preview is off. They select
+the coordinator on the fresh channel before it starts. Selected binding validates
+service-enabled scheduler admission before opening/transferring a native socket;
+failure returns `SRT_ENOBUF`, preserving an adopted descriptor with its caller.
+Default capacity is 1024 services per shard; the generation's explicit service
+setting still applies, with zero refused. Explicit IPv6 wildcard binding inherits
+the bounded-native preview requirement to choose `SRTO_IPV6ONLY` explicitly.
+
+Caller (including asynchronous Caller), Listener accept and Rendezvous runtime
+installation share one attachment boundary. Selected attachment reserves a
+budgeted64-slot inbox with16 control-reserved slots and a fixed affinity service
+before route commit. Runtime placement uses a process sequence, avoiding aligned
+pointer/even-stride socket-id collapse. Setup promotion commits the existing
+sealed prefix together with the dispatcher; it does not claim/promote the prefix
+in the factory before channel route commit. Admission or registration failure
+returns `SRT_ENOBUF` and retires unexposed resources, with no inline fallback.
+Existing close/cleanup boundaries retire these route-owned dispatchers.
+
+The default automatic polling path is unchanged. These are provisional resource
+policies and a selectable candidate, requiring complete-candidate qualification
+and measured evaluation before the aggregate main decision. There is no
+cross-shard fairness or measured performance claim.
 
 The internal dispatcher factory can also claim a cold, unregistered setup inbox.
 It seals that inbox without allocating or copying a second prefix ring. A worker
@@ -706,8 +733,8 @@ stalled service. It is not an unconditional total wire/API order, nor a guarante
 that packet admission precedes a timer after an arbitrarily stalled handler.
 Application calls and packet-triggered protocol work retain their existing mutex
 semantics; direct runtime polling retains the noncoordinated default. Complete
-scheduled poll/send ownership, callback/cleanup quiescence and public activation
-still require separate qualification.
+selected scheduled poll/send, callback/cleanup quiescence and the complete public
+candidate still require qualification.
 
 A pending sealed setup prefix also has a terminal peer-idle check. Channel
 polling tries the runtime mutex without waiting; if available, it checks the
@@ -815,4 +842,5 @@ releases native ownership back to the caller and refunds the admission credit.
 Successful adoption transfers ownership into the counted channel until native
 close. Per-channel inbox policy, service capacity and dispatcher activation are
 unchanged. Descriptors still owned by callers remain outside this cap. The
-complete scheduled poll/send/setup prototype and its evaluation remain gated.
+public affinity selector described above separately composes native admission,
+dispatchers and scheduled polling. Full candidate evaluation remains gated.
