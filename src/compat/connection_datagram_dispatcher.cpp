@@ -199,7 +199,8 @@ ConnectionDatagramDispatcher::create(
     std::uint64_t affinity, IpEndpoint peer,
     ConnectionDatagramInbox::Configuration inbox_configuration,
     Configuration configuration,
-    const std::shared_ptr<DatagramInbox>& setup_prefix) noexcept
+    const std::shared_ptr<DatagramInbox>& setup_prefix,
+    const std::shared_ptr<DatagramStorageBudget>& process_budget) noexcept
 {
     if (runtime == nullptr || configuration.turn_budget == 0
         || configuration.turn_budget > maximum_turn_budget
@@ -215,7 +216,7 @@ ConnectionDatagramDispatcher::create(
             return nullptr;
         }
         auto inbox = ConnectionDatagramInbox::create(
-            budget, binding, peer, inbox_configuration);
+            budget, binding, peer, inbox_configuration, process_budget);
         if (inbox == nullptr) {
             return nullptr;
         }

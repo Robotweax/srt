@@ -418,6 +418,25 @@ closed and the old copied packet cannot mutate either generation. An independent
 owned scheduler must still be joined by its owner; this does not activate the
 process dispatcher's service capacity or establish an API/wire total order.
 
+Internal inbox/dispatcher factories can additionally receive a shared process
+`DatagramStorageBudget` alongside the existing channel budget. Ring admission
+requires both ceilings before allocating physical ring storage. A second-ceiling
+rejection rolls back the first reservation; later factory failures and the
+existing array/object/control-block failure paths release every owned charge.
+Passing the same budget object at both levels charges it once. Budget mutexes are
+acquired separately; there is no paired lock or atomic two-budget snapshot/fairness
+guarantee. Concurrent attempts can fail closed without waiting for credit.
+
+Physical ring destruction precedes returning both credits. A paused connection
+callback, retirement timeout and captured closed handle retain the established
+ownership contract, with completed drain/reclamation returning both charges once.
+Independent channels or scheduler generations can share the same process ceiling;
+the prototype owner must deliberately retain and pass that budget across its
+admission scope. Original setup rings, inbox metadata, allocator bookkeeping and
+consumer copies remain excluded. This supplies internal layered ring admission;
+it does not install a global budget provider, cap all process memory, change
+service capacities or activate public dispatcher setup.
+
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently
 invoked runtime handlers. The dispatcher does not poll the runtime or grant it a

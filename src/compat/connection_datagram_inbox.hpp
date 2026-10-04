@@ -75,7 +75,11 @@ public:
     [[nodiscard]] static std::shared_ptr<ConnectionDatagramInbox> create(
         const std::shared_ptr<DatagramStorageBudget>& budget,
         const std::shared_ptr<ConnectionWorkBinding>& binding, IpEndpoint peer,
-        Configuration configuration) noexcept;
+        Configuration configuration,
+        // Optional shared process ceiling in addition to the channel budget.
+        // Identical budget objects are charged once.
+        const std::shared_ptr<DatagramStorageBudget>& process_budget =
+            nullptr) noexcept;
     ~ConnectionDatagramInbox();
     ConnectionDatagramInbox(const ConnectionDatagramInbox&) = delete;
     ConnectionDatagramInbox& operator=(const ConnectionDatagramInbox&) = delete;
@@ -122,12 +126,15 @@ private:
     ConnectionDatagramInbox(std::shared_ptr<DatagramStorageBudget> budget,
         std::weak_ptr<ConnectionWorkBinding> binding, Token token,
         IpEndpoint peer, Configuration configuration,
-        std::unique_ptr<Entry[]> entries, std::size_t storage_bytes) noexcept;
+        std::unique_ptr<Entry[]> entries, std::size_t storage_bytes,
+        std::shared_ptr<DatagramStorageBudget> process_budget) noexcept;
+    void release_storage_credit() noexcept;
     [[nodiscard]] bool matches(Token token) const noexcept;
     [[nodiscard]] Status notify_locked() noexcept;
     void close_locked() noexcept;
 
     const std::shared_ptr<DatagramStorageBudget> budget_;
+    const std::shared_ptr<DatagramStorageBudget> process_budget_;
     const std::weak_ptr<ConnectionWorkBinding> binding_;
     const Token token_;
     const IpEndpoint peer_;

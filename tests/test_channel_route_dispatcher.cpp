@@ -2931,3 +2931,105 @@ TEST(channel_shutdown_active_channel_task_deadline_retains_context_for_retry)
     REQUIRE(!channel->socket.valid());
     REQUIRE(!runtime->accepts_datagrams());
 }
+
+TEST(channel_process_budget_retains_both_ring_charges_through_callback_timeout)
+{
+    SinkFixture first;
+    SinkFixture second;
+    const auto bytes = *ConnectionDatagramInbox::storage_bytes(4);
+    auto process = std::make_shared<DatagramStorageBudget>(bytes);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    auto dispatcher =
+        ConnectionDatagramDispatcher::create(first.runtime, first.scheduler,
+            first.budget, 1, sink_peer, {.capacity = 4, .control_reserve = 1},
+            {.turn_budget = 2,
+                .after_pop_for_testing = SinkGate::block,
+                .after_pop_context_for_testing = gate},
+            nullptr, process);
+    REQUIRE(dispatcher != nullptr);
+    auto captured = dispatcher->inbox();
+    REQUIRE(first.channel->register_connection(700, first.runtime, dispatcher));
+    (void)first.ingress(sink_data(0));
+    gate->wait();
+    REQUIRE_EQ(
+        first.channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE_EQ(
+        dispatcher->finish_retirement(std::chrono::steady_clock::now()).status,
+        ConnectionWorkBinding::DrainStatus::timeout);
+    REQUIRE(!captured->snapshot().storage_released);
+    REQUIRE_EQ(first.budget->reserved_bytes(), bytes);
+    REQUIRE_EQ(process->reserved_bytes(), bytes);
+    auto replacement = ConnectionDatagramDispatcher::create(second.runtime,
+        second.scheduler, second.budget, 1, sink_peer,
+        {.capacity = 4, .control_reserve = 1}, {}, nullptr, process);
+    REQUIRE(replacement == nullptr);
+    REQUIRE_EQ(second.budget->reserved_bytes(), 0U);
+    dispatcher.reset();
+    gate->release();
+    first.scheduler->stop();
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(first.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(process->reserved_bytes(), 0U);
+    replacement = ConnectionDatagramDispatcher::create(second.runtime,
+        second.scheduler, second.budget, 1, sink_peer,
+        {.capacity = 4, .control_reserve = 1}, {}, nullptr, process);
+    REQUIRE(replacement != nullptr);
+    replacement->retire_and_reclaim();
+    second.scheduler->stop();
+    REQUIRE_EQ(second.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(process->reserved_bytes(), 0U);
+    REQUIRE_EQ(first.runtime->buffer_packet_counts().available_receive, 0U);
+}
+
+TEST(
+    channel_process_budget_late_prefix_failure_returns_both_charges_and_service)
+{
+    SinkFixture fixture;
+    const auto bytes = *ConnectionDatagramInbox::storage_bytes(4);
+    auto process = std::make_shared<DatagramStorageBudget>(bytes);
+    auto prefix = std::make_shared<DatagramInbox>(1);
+    prefix->close();
+    auto rejected = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 4, .control_reserve = 1}, {}, prefix, process);
+    REQUIRE(rejected == nullptr);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(process->reserved_bytes(), 0U);
+    auto accepted = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 4, .control_reserve = 1}, {}, nullptr, process);
+    REQUIRE(accepted != nullptr);
+    accepted->retire_and_reclaim();
+    fixture.scheduler->stop();
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(process->reserved_bytes(), 0U);
+}
+
+TEST(channel_process_budget_concurrent_drain_returns_both_credits_once)
+{
+    SinkFixture fixture;
+    const auto bytes = *ConnectionDatagramInbox::storage_bytes(4);
+    auto process = std::make_shared<DatagramStorageBudget>(bytes);
+    auto dispatcher = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 4, .control_reserve = 1}, {}, nullptr, process);
+    REQUIRE(dispatcher != nullptr);
+    auto captured = dispatcher->inbox();
+    fixture.scheduler->stop();
+    auto drain = [dispatcher] {
+        return dispatcher->finish_retirement(
+            std::chrono::steady_clock::now() + std::chrono::seconds {2});
+    };
+    auto first = std::async(std::launch::async, drain);
+    auto second = std::async(std::launch::async, drain);
+    REQUIRE(first.get().storage_released);
+    REQUIRE(second.get().storage_released);
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(process->reserved_bytes(), 0U);
+    dispatcher.reset();
+    captured.reset();
+    REQUIRE_EQ(fixture.budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(process->reserved_bytes(), 0U);
+}
