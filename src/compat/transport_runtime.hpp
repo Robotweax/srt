@@ -190,14 +190,6 @@ struct RuntimeReceiveSnapshot {
     bool terminal = false;
 };
 
-struct RuntimePollResult {
-    bool immediate_work = false;
-    std::optional<std::chrono::microseconds> next_work_delay = std::nullopt;
-    bool receive_wait_safe = false;
-    bool coarse_timer_probe = false;
-    std::optional<std::chrono::steady_clock::time_point> next_work_deadline =
-        std::nullopt;
-};
 
 struct MessageIoResult {
     MessageIoStatus status = MessageIoStatus::success;
@@ -300,6 +292,10 @@ public:
         ConnectionDatagramInbox::Configuration inbox_configuration,
         ConnectionDatagramDispatcher::Configuration configuration,
         const std::shared_ptr<DatagramInbox>& setup_prefix = nullptr) noexcept;
+
+    // One live explicit poll round per channel, including unconsumed receipts.
+    [[nodiscard]] std::shared_ptr<ChannelPollSendBudget>
+    begin_poll_round() noexcept;
 
     DatagramChannel(const DatagramChannel&) = delete;
     DatagramChannel& operator=(const DatagramChannel&) = delete;
@@ -494,6 +490,8 @@ private:
                   std::chrono::steady_clock::time_point::max()) noexcept;
     void notify_work(bool receive_release) noexcept;
 
+    std::mutex poll_budget_mutex_;
+    std::weak_ptr<ChannelPollSendBudget> poll_budget_;
     std::mutex inbox_budget_mutex_;
     std::shared_ptr<DatagramStorageBudget> inbox_budget_;
     std::shared_ptr<DatagramStorageBudget> process_inbox_budget_;

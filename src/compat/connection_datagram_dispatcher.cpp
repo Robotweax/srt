@@ -20,6 +20,22 @@ std::uint64_t queue_now() noexcept
 }
 } // namespace
 
+std::size_t ChannelPollSendBudget::take(std::size_t maximum) noexcept
+{
+    auto remaining = remaining_.load(std::memory_order_relaxed);
+    for (;;) {
+        const auto granted = std::min(remaining, maximum);
+        if (remaining_.compare_exchange_weak(
+                remaining, remaining - granted, std::memory_order_relaxed))
+            return granted;
+    }
+}
+
+void ChannelPollSendBudget::refund(std::size_t unused) noexcept
+{
+    remaining_.fetch_add(unused, std::memory_order_relaxed);
+}
+
 struct ConnectionDatagramDispatcher::State {
     const std::weak_ptr<ConnectionRuntime> runtime;
     const Configuration configuration;
@@ -28,6 +44,9 @@ struct ConnectionDatagramDispatcher::State {
     std::weak_ptr<ConnectionWorkBinding> binding;
     mutable std::mutex prefix_mutex;
     std::shared_ptr<DatagramInbox> setup_prefix;
+    std::shared_ptr<ChannelPollSendBudget> pending_poll;
+    bool poll_active = false;
+    std::optional<PollCompletion> poll_completion;
     bool route_claimed = false;
     bool active = true;
     bool retired = false;
@@ -59,6 +78,8 @@ struct ConnectionDatagramDispatcher::State {
             std::lock_guard lock(prefix_mutex);
             retired = true;
             active = false;
+            pending_poll.reset();
+            poll_completion.reset();
             released = std::move(setup_prefix);
         }
         if (auto service = binding.lock(); service != nullptr) {
@@ -75,7 +96,7 @@ struct ConnectionDatagramDispatcher::State {
     static void dispatch(void* pointer, ConnectionWorkHints hints) noexcept
     {
         auto& self = *static_cast<State*>(pointer);
-        if (!hints.datagrams) {
+        if (!hints.datagrams && !hints.send) {
             return;
         }
         {
@@ -91,7 +112,8 @@ struct ConnectionDatagramDispatcher::State {
         }
         bool completed_prefix = false;
         std::size_t consumed = 0;
-        for (; consumed < self.configuration.turn_budget; ++consumed) {
+        for (; hints.datagrams && consumed < self.configuration.turn_budget;
+            ++consumed) {
             if (!runtime->accepts_datagrams()) {
                 self.retire();
                 break;
@@ -147,6 +169,45 @@ struct ConnectionDatagramDispatcher::State {
                     completed_prefix = true;
                 }
             }
+        }
+        std::shared_ptr<ChannelPollSendBudget> round;
+        bool poll_prefix_pending;
+        {
+            std::lock_guard lock(self.prefix_mutex);
+            if (!self.retired && self.pending_poll != nullptr) {
+                round = std::move(self.pending_poll);
+                self.poll_active = true;
+            }
+            poll_prefix_pending = self.setup_prefix != nullptr;
+        }
+        if (round != nullptr) {
+            RuntimePollResult result;
+            std::size_t used = 0;
+            const auto channel = round->channel_.lock();
+            if (channel != nullptr && runtime->channel_.lock() == channel) {
+                bool terminal = false;
+                if (poll_prefix_pending) {
+                    result =
+                        runtime->poll_setup_prefix_deadline(2000U, terminal);
+                } else {
+                    const auto grant = round->take(maximum_turn_budget);
+                    auto remaining = grant;
+                    result =
+                        runtime->poll(remaining, self.inbox.get(), 2000U, true);
+                    used = grant - remaining;
+                    round->refund(remaining);
+                }
+                if (terminal)
+                    self.retire();
+            }
+            {
+                std::lock_guard lock(self.prefix_mutex);
+                self.poll_active = false;
+                if (!self.retired)
+                    self.poll_completion =
+                        PollCompletion {result, used, std::move(round)};
+            }
+            runtime->notify_channel_send_work();
         }
         self.dispatched_datagrams.fetch_add(
             consumed, std::memory_order_relaxed);
@@ -286,6 +347,34 @@ ConnectionDatagramInbox::Status ConnectionDatagramDispatcher::publish(
         retire();
     }
     return status;
+}
+
+bool ConnectionDatagramDispatcher::request_poll(
+    std::shared_ptr<ChannelPollSendBudget> round) noexcept
+{
+    const auto runtime = state_->runtime.lock();
+    const auto channel = round != nullptr ? round->channel_.lock() : nullptr;
+    if (runtime == nullptr || channel == nullptr
+        || runtime->channel_.lock() != channel || !runtime->accepts_datagrams())
+        return false;
+    std::lock_guard lock(state_->prefix_mutex);
+    if (state_->retired || !state_->active || state_->pending_poll != nullptr
+        || state_->poll_active || state_->poll_completion.has_value())
+        return false;
+    state_->pending_poll = std::move(round);
+    if (binding_->notify({.send = true})
+        != RuntimeScheduler::SubmitStatus::accepted) {
+        state_->pending_poll.reset();
+        return false;
+    }
+    return true;
+}
+
+std::optional<ConnectionDatagramDispatcher::PollCompletion>
+ConnectionDatagramDispatcher::take_poll_completion() noexcept
+{
+    std::lock_guard lock(state_->prefix_mutex);
+    return std::exchange(state_->poll_completion, std::nullopt);
 }
 
 void ConnectionDatagramDispatcher::retire() noexcept

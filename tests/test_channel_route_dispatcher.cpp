@@ -3220,3 +3220,172 @@ TEST(native_channel_worker_shutdown_rejection_keeps_credit_for_external_retry)
     REQUIRE_EQ(channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
     REQUIRE_EQ(budget->reserved_channels(), 0U);
 }
+
+namespace {
+ConnectionDatagramDispatcher::PollCompletion await_scheduled_poll(
+    const std::shared_ptr<ConnectionDatagramDispatcher>& dispatcher)
+{
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    do {
+        if (auto completion = dispatcher->take_poll_completion())
+            return std::move(*completion);
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    } while (std::chrono::steady_clock::now() < deadline);
+    REQUIRE(false);
+    return {};
+}
+struct ScheduledSendCounts {
+    std::atomic<std::size_t> attempts {0};
+    std::atomic<std::size_t> off_worker {0};
+    bool blocked = false;
+    static UdpIoResult send(
+        std::span<const std::byte> bytes, IpEndpoint, void* pointer) noexcept
+    {
+        auto& counts = *static_cast<ScheduledSendCounts*>(pointer);
+        counts.attempts.fetch_add(1);
+        if (!RuntimeScheduler::on_worker_thread())
+            counts.off_worker.fetch_add(1);
+        return counts.blocked ? UdpIoResult {.error = Error::would_block}
+                              : UdpIoResult {.bytes_transferred = bytes.size()};
+    }
+};
+}
+
+TEST(
+    channel_scheduled_poll_runs_real_send_on_service_and_keeps_application_commit)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    ScheduledSendCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(
+        ScheduledSendCounts::send, &counts);
+    auto round = fixture.channel->begin_poll_round();
+    REQUIRE(round != nullptr);
+    REQUIRE(fixture.channel->begin_poll_round() == nullptr);
+    const std::array payload {std::byte {7}};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    REQUIRE(dispatcher->request_poll(round));
+    REQUIRE(!dispatcher->request_poll(round));
+    REQUIRE_EQ(counts.attempts.load(), 0U);
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    gate->release();
+    auto completion = await_scheduled_poll(dispatcher);
+    REQUIRE(completion.round == round);
+    REQUIRE(completion.send_attempts > 0U);
+    REQUIRE_EQ(completion.send_attempts, counts.attempts.load());
+    REQUIRE_EQ(counts.off_worker.load(), 0U);
+    REQUIRE_EQ(round->remaining(),
+        ChannelPollSendBudget::maximum_attempts - completion.send_attempts);
+    round.reset();
+    REQUIRE(fixture.channel->begin_poll_round() == nullptr);
+    completion.round.reset();
+    REQUIRE(fixture.channel->begin_poll_round() != nullptr);
+}
+
+TEST(channel_scheduled_poll_shares_exhaustible_send_allowance_across_shards)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    cohort_runtime(fixture, now);
+    auto other = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.channel = fixture.channel,
+            .peer = sink_peer,
+            .peer_socket_id = 91,
+            .initial_sequence = SequenceNumber {1000},
+            .origin = ConnectionRuntime::Clock::now(),
+            .now_function = ingress_idle_now,
+            .now_context = &now});
+    auto first = fixture.dispatcher(1);
+    auto second = ConnectionDatagramDispatcher::create(other, fixture.scheduler,
+        fixture.budget, 0, sink_peer, {.capacity = 1, .control_reserve = 0},
+        {});
+    REQUIRE(second != nullptr);
+    ScheduledSendCounts counts;
+    counts.blocked = true;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(
+        ScheduledSendCounts::send, &counts);
+    const std::array payload {std::byte {7}};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(other->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    auto round = fixture.channel->begin_poll_round();
+    std::size_t spent = 0;
+    for (std::size_t turn = 0; round->remaining() != 0U && turn < 100; ++turn) {
+        now.fetch_add(2000);
+        REQUIRE(first->request_poll(round));
+        REQUIRE(second->request_poll(round));
+        auto left = await_scheduled_poll(first);
+        auto right = await_scheduled_poll(second);
+        REQUIRE(left.send_attempts
+            <= ConnectionDatagramDispatcher::maximum_turn_budget);
+        REQUIRE(right.send_attempts
+            <= ConnectionDatagramDispatcher::maximum_turn_budget);
+        spent += left.send_attempts + right.send_attempts;
+        REQUIRE(spent <= ChannelPollSendBudget::maximum_attempts);
+    }
+    REQUIRE_EQ(round->remaining(), 0U);
+    REQUIRE_EQ(spent, 64U);
+    REQUIRE_EQ(counts.attempts.load(), spent);
+    REQUIRE_EQ(counts.off_worker.load(), 0U);
+    now.fetch_add(2000);
+    REQUIRE(first->request_poll(round));
+    auto exhausted = await_scheduled_poll(first);
+    REQUIRE_EQ(exhausted.send_attempts, 0U);
+    REQUIRE_EQ(counts.attempts.load(), spent);
+}
+
+TEST(channel_scheduled_poll_drains_prior_ingress_before_protocol_poll)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher(4);
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_data(0).view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    auto round = fixture.channel->begin_poll_round();
+    REQUIRE(dispatcher->request_poll(round));
+    gate->release();
+    auto completion = await_scheduled_poll(dispatcher);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 1U);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 1U);
+    REQUIRE(completion.round == round);
+}
+
+TEST(channel_scheduled_poll_refuses_wrong_channel_and_discards_retired_request)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher();
+    auto other = std::make_shared<DatagramChannel>();
+    auto foreign = other->begin_poll_round();
+    REQUIRE(!dispatcher->request_poll(foreign));
+    REQUIRE(!dispatcher->request_poll(nullptr));
+    auto round = fixture.channel->begin_poll_round();
+    REQUIRE(dispatcher->request_poll(round));
+    dispatcher->close();
+    round.reset();
+    REQUIRE(fixture.channel->begin_poll_round() != nullptr);
+    gate->release();
+    fixture.scheduler->stop();
+    REQUIRE(!dispatcher->take_poll_completion().has_value());
+    REQUIRE(!dispatcher->request_poll(fixture.channel->begin_poll_round()));
+    REQUIRE_EQ(
+        fixture.channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+    REQUIRE(fixture.channel->begin_poll_round() == nullptr);
+}

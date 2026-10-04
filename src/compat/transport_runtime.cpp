@@ -7,6 +7,7 @@
 #include "compat/readiness.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/runtime_scheduler_service.hpp"
+#include "compat/process_state.hpp"
 #include "compat/runtime_work_executor_service.hpp"
 #include "sender_drop_trace.hpp"
 
@@ -644,6 +645,29 @@ DatagramChannel::create_budgeted_dispatcher(
     return ConnectionDatagramDispatcher::create(runtime, scheduler, local,
         affinity, runtime->peer_, inbox_configuration, std::move(configuration),
         setup_prefix, process);
+}
+
+std::shared_ptr<ChannelPollSendBudget>
+DatagramChannel::begin_poll_round() noexcept
+{
+    if (!stateful_process_available()
+        || shutdown_requested_.load(std::memory_order_acquire))
+        return nullptr;
+    auto owner = weak_from_this();
+    if (owner.expired())
+        return nullptr;
+    try {
+        std::lock_guard lock(poll_budget_mutex_);
+        if (shutdown_requested_.load(std::memory_order_acquire)
+            || !poll_budget_.expired())
+            return nullptr;
+        auto budget = std::shared_ptr<ChannelPollSendBudget>(
+            new ChannelPollSendBudget(std::move(owner)));
+        poll_budget_ = budget;
+        return budget;
+    } catch (...) {
+        return nullptr;
+    }
 }
 
 UdpIoResult DatagramChannel::send_datagram(
