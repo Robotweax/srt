@@ -9,6 +9,7 @@
 #include "compat/runtime_work_executor_service.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/socket_io.hpp"
+#include "compat/connection_datagram_dispatcher.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/random_identity.hpp"
 #include "compat/transport_runtime.hpp"
@@ -2200,4 +2201,265 @@ TEST(lifecycle_nested_cleanup_preserves_bound_channel_until_final_reference)
     REQUIRE(channel->socket.valid());
     cycle.finish();
     REQUIRE(!channel->socket.valid());
+}
+
+namespace {
+struct WorkerCleanupResult {
+    int result;
+    int error;
+    int second_result;
+    int second_error;
+};
+struct WorkerCleanupProbe {
+    std::promise<WorkerCleanupResult> result;
+    static void run(void* pointer) noexcept
+    {
+        auto& self = *static_cast<WorkerCleanupProbe*>(pointer);
+        WorkerCleanupResult observed {};
+        observed.result = srt_cleanup();
+        observed.error = srt_getlasterror(nullptr);
+        observed.second_result = srt_cleanup();
+        observed.second_error = srt_getlasterror(nullptr);
+        self.result.set_value(observed);
+    }
+};
+WorkerCleanupResult cleanup_on_worker(
+    const std::shared_ptr<RuntimeScheduler>& scheduler)
+{
+    auto probe = std::make_shared<WorkerCleanupProbe>();
+    auto result = probe->result.get_future();
+    REQUIRE_EQ(scheduler->submit(
+                   0, {.function = WorkerCleanupProbe::run, .context = probe}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(result.wait_for(2s), std::future_status::ready);
+    return result.get();
+}
+std::shared_ptr<RuntimeScheduler> cleanup_test_scheduler()
+{
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {.shard_count = 1,
+            .queue_capacity_per_shard = 4,
+            .timer_capacity_per_shard = 4,
+            .service_capacity_per_shard = 1});
+    REQUIRE(scheduler->start());
+    return scheduler;
+}
+} // namespace
+
+TEST(
+    lifecycle_final_cleanup_on_process_worker_rejects_before_reference_or_channel_teardown)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle cycle;
+    auto [socket, channel] = bound_cleanup_channel();
+    auto scheduler = acquire_runtime_scheduler();
+    REQUIRE(scheduler != nullptr);
+    REQUIRE(channel->start(scheduler, 0));
+    const auto observed = cleanup_on_worker(scheduler);
+    REQUIRE_EQ(observed.result, SRT_ERROR);
+    REQUIRE_EQ(observed.error, SRT_EINVOP);
+    REQUIRE_EQ(observed.second_result, SRT_ERROR);
+    REQUIRE_EQ(observed.second_error, SRT_EINVOP);
+    REQUIRE(scheduler->snapshot().accepting);
+    REQUIRE(channel->running());
+    REQUIRE(channel->socket.valid());
+    REQUIRE_EQ(srt_getsockstate(socket), SRTS_OPENED);
+    cycle.finish();
+    REQUIRE(!scheduler->snapshot().accepting);
+    REQUIRE(!channel->socket.valid());
+    REQUIRE_EQ(srt_getsockstate(socket), SRTS_NONEXIST);
+}
+
+TEST(
+    lifecycle_worker_nested_cleanup_releases_nonfinal_reference_but_preserves_final_one)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle cycle;
+    REQUIRE_EQ(srt_startup(), 0);
+    auto [socket, channel] = bound_cleanup_channel();
+    auto scheduler = cleanup_test_scheduler();
+    const auto observed = cleanup_on_worker(scheduler);
+    REQUIRE_EQ(observed.result, 0);
+    REQUIRE_EQ(observed.second_result, SRT_ERROR);
+    REQUIRE_EQ(observed.second_error, SRT_EINVOP);
+    REQUIRE(channel->socket.valid());
+    cycle.finish();
+    REQUIRE(!channel->socket.valid());
+    scheduler->stop();
+}
+
+TEST(lifecycle_worker_cleanup_without_startup_reference_is_an_idempotent_noop)
+{
+    auto scheduler = cleanup_test_scheduler();
+    const auto observed = cleanup_on_worker(scheduler);
+    REQUIRE_EQ(observed.result, 0);
+    REQUIRE_EQ(observed.second_result, 0);
+    scheduler->stop();
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle cycle;
+    auto [socket, channel] = bound_cleanup_channel();
+    cycle.finish();
+    REQUIRE(!channel->socket.valid());
+}
+
+TEST(
+    lifecycle_channel_terminal_callback_cleanup_reentry_does_not_consume_new_generation)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle cycle;
+    auto [socket, channel] = bound_cleanup_channel();
+    struct Probe {
+        int result = SRT_ERROR;
+        std::size_t calls = 0;
+        static void ready(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Probe*>(pointer);
+            self.result = srt_cleanup();
+            ++self.calls;
+        }
+    };
+    auto probe = std::make_shared<Probe>();
+    auto inbox = std::make_shared<DatagramInbox>(1);
+    REQUIRE(inbox->set_ready_handler(Probe::ready, probe));
+    REQUIRE(
+        channel->register_setup_inbox(701, IpEndpoint::loopback(9000), inbox));
+    cycle.finish();
+    REQUIRE_EQ(probe->result, 0);
+    REQUIRE_EQ(probe->calls, 1U);
+    REQUIRE(!channel->socket.valid());
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle fresh_cycle;
+    auto [fresh, fresh_channel] = bound_cleanup_channel();
+    REQUIRE(fresh != socket);
+    REQUIRE(fresh_channel->socket.valid());
+    fresh_cycle.finish();
+    REQUIRE(!fresh_channel->socket.valid());
+}
+
+TEST(
+    lifecycle_callback_cleanup_rejection_and_old_ring_credits_survive_process_restart)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle cycle;
+    auto [socket, channel] = bound_cleanup_channel();
+    const auto local = channel->socket.local_endpoint();
+    REQUIRE(local);
+    auto record = SocketRegistry::instance().find(socket);
+    REQUIRE(record != nullptr);
+    auto scheduler = cleanup_test_scheduler();
+    auto budget = std::make_shared<DatagramStorageBudget>(
+        *ConnectionDatagramInbox::storage_bytes(4));
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+    auto make_runtime = [&](const std::shared_ptr<DatagramChannel>& owner) {
+        return std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {.channel = owner,
+                .peer = IpEndpoint::loopback(9000),
+                .peer_socket_id = 90,
+                .initial_sequence = SequenceNumber {1000},
+                .options = options,
+                .origin = ConnectionRuntime::Clock::now(),
+                .now_function = [](void*) noexcept -> std::uint64_t {
+                    return 1000;
+                }});
+    };
+    auto runtime = make_runtime(channel);
+    struct Probe {
+        std::shared_ptr<CleanupGate> gate = std::make_shared<CleanupGate>();
+        int cleanup_result = 0;
+        int cleanup_error = 0;
+        static void popped(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Probe*>(pointer);
+            self.cleanup_result = srt_cleanup();
+            self.cleanup_error = srt_getlasterror(nullptr);
+            CleanupGate::block(self.gate.get());
+        }
+    };
+    auto probe = std::make_shared<Probe>();
+    CleanupGateRelease release {probe->gate, scheduler};
+    auto dispatcher =
+        ConnectionDatagramDispatcher::create(runtime, scheduler, budget, 0,
+            IpEndpoint::loopback(9000), {.capacity = 4, .control_reserve = 1},
+            {.turn_budget = 2,
+                .after_pop_for_testing = Probe::popped,
+                .after_pop_context_for_testing = probe});
+    REQUIRE(dispatcher != nullptr);
+    auto captured = dispatcher->inbox();
+    const auto old_token = captured->token();
+    {
+        std::lock_guard lock(record->mutex);
+        record->runtime = runtime;
+        record->state = SRTS_CONNECTED;
+        record->public_options.linger_enabled = false;
+    }
+    REQUIRE(channel->register_connection(
+        record->protocol_socket_id, runtime, dispatcher));
+    std::array<std::byte, 64> wire {};
+    const std::array payload {std::byte {1}};
+    MutablePacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.sequence = SequenceNumber {1000};
+    packet.data.destination_socket_id = record->protocol_socket_id;
+    packet.data.message_number = 1;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.payload = payload;
+    const auto encoded = encode_packet(packet, wire);
+    REQUIRE(encoded);
+    REQUIRE_EQ(dispatcher->publish(old_token,
+                   std::span(wire).first(encoded.bytes_written),
+                   IpEndpoint::loopback(9000)),
+        ConnectionDatagramInbox::Status::accepted);
+    probe->gate->wait();
+    REQUIRE_EQ(probe->cleanup_result, SRT_ERROR);
+    REQUIRE_EQ(probe->cleanup_error, SRT_EINVOP);
+    REQUIRE(runtime->accepts_datagrams());
+    REQUIRE(channel->socket.valid());
+    cycle.finish();
+    REQUIRE(!channel->socket.valid());
+    REQUIRE(!runtime->accepts_datagrams());
+    REQUIRE(captured->snapshot().closed);
+    REQUIRE(!captured->snapshot().storage_released);
+    REQUIRE_EQ(
+        budget->reserved_bytes(), *ConnectionDatagramInbox::storage_bytes(4));
+    dispatcher.reset();
+    REQUIRE_EQ(srt_startup(), 0);
+    CleanupCycle fresh_cycle;
+    auto [fresh, new_channel] = bound_cleanup_channel(local.endpoint.port);
+    REQUIRE(fresh != socket);
+    REQUIRE(new_channel.get() != channel.get());
+    auto new_scheduler = cleanup_test_scheduler();
+    auto new_runtime = make_runtime(new_channel);
+    auto new_dispatcher = ConnectionDatagramDispatcher::create(new_runtime,
+        new_scheduler, budget, 0, IpEndpoint::loopback(9000),
+        {.capacity = 4, .control_reserve = 1}, {});
+    REQUIRE(new_dispatcher == nullptr);
+    probe->gate->release();
+    scheduler->stop();
+    REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(runtime->buffer_packet_counts().available_receive, 0U);
+    new_dispatcher = ConnectionDatagramDispatcher::create(new_runtime,
+        new_scheduler, budget, 0, IpEndpoint::loopback(9000),
+        {.capacity = 4, .control_reserve = 1}, {});
+    REQUIRE(new_dispatcher != nullptr);
+    REQUIRE_EQ(captured->publish(old_token,
+                   std::span(wire).first(encoded.bytes_written),
+                   IpEndpoint::loopback(9000), 1000),
+        ConnectionDatagramInbox::Status::closed);
+    REQUIRE_EQ(new_runtime->buffer_packet_counts().available_receive, 0U);
+    auto fresh_record = SocketRegistry::instance().find(fresh);
+    REQUIRE(fresh_record != nullptr);
+    {
+        std::lock_guard lock(fresh_record->mutex);
+        fresh_record->runtime = new_runtime;
+        fresh_record->state = SRTS_CONNECTED;
+        fresh_record->public_options.linger_enabled = false;
+    }
+    REQUIRE(new_channel->register_connection(
+        fresh_record->protocol_socket_id, new_runtime, new_dispatcher));
+    fresh_cycle.finish();
+    new_scheduler->stop();
+    REQUIRE_EQ(budget->reserved_bytes(), 0U);
+    REQUIRE(!new_channel->socket.valid());
 }

@@ -152,7 +152,9 @@ void mark_runtime_cleanup_worker_thread() noexcept;
 [[nodiscard]] SRTSOCKET runtime_create_group(
     SRT_GROUP_TYPE type) noexcept;
 [[nodiscard]] int runtime_create_epoll() noexcept;
-void runtime_cleanup() noexcept;
+// Final cleanup cannot join its own affinity worker. Rejection preserves the
+// last startup reference and leaves all teardown state unchanged.
+[[nodiscard]] bool runtime_cleanup() noexcept;
 
 [[nodiscard]] std::size_t service_deferred_closes(
     std::chrono::steady_clock::time_point now) noexcept;

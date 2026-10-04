@@ -132,6 +132,13 @@ A startup from a callback or cleanup worker during final cleanup fails with
 `SRT_EINVOP` to avoid waiting on its own teardown. Other threads wait for that
 cleanup to finish before starting a new generation.
 
+A final `srt_cleanup()` invoked on an internal affinity scheduler worker fails
+with `SRT_ERROR` and `SRT_EINVOP` before consuming the final startup reference or
+starting teardown: that worker cannot join itself. An external thread must
+perform the final cleanup. Nonfinal nested reference release and zero-reference
+idempotent cleanup remain successful on workers. Reentry while cleanup is already
+in progress remains a no-op and does not consume a new generation reference.
+
 The final cleanup:
 
 - prevents late registry insertion into a generation being destroyed;
