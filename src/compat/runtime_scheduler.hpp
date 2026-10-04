@@ -24,7 +24,7 @@ public:
         std::size_t queue_capacity_per_shard = 0;
         std::size_t timer_capacity_per_shard = 0;
         // Independent, preallocated persistent service slots. The production
-        // service leaves this at zero until a client is integrated.
+        // service defaults to zero; internal preview can opt in to bounded slots.
         std::size_t service_capacity_per_shard = 0;
     };
 
