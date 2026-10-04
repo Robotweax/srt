@@ -273,6 +273,31 @@ worker epilogue and generation rules still govern those resources. Route-wide
 and process-wide cleanup, fault fanout and public activation remain separate
 integration steps.
 
+Internal channel `retire_connection(id)` removes the route incarnation and
+retires dispatcher admission outside the route lock. It returns that dispatcher
+as a drain receipt. An off-worker owner can retain the receipt across a deadline
+timeout and retry `finish_retirement`; later socket-ID reuse cannot redirect
+that receipt to the new route. Missing and direct routes return no dispatcher.
+No runtime close is implicit. The legacy unregister wrapper attempts immediate
+reclamation off-worker without waiting; it skips the drain on affinity workers.
+If a callback is active, callers needing explicit credit-return proof must use
+and retain the receipt. Dropping it leaves ordinary shared ownership responsible
+for eventual destruction; captured closed inbox handles can still retain a ring
+that was not explicitly reclaimed. No hidden retirement queue is allocated.
+
+Fatal shared-channel failure closes established-route admission and channel
+packet routing, then retires each remaining dispatcher and marks its runtime
+broken outside the route lock. An intrusive cursor follows concurrent detach
+without allocating a fanout snapshot; the first fatal failure owns this pass.
+Routes remain owned until detached, providing the same drain receipts after a
+fault. Concurrently detached routes belong to their detaching owner, rather than
+a later fault pass. A paused protocol callback can delay runtime fault marking
+under its existing mutex; this is not a preemption or wall-clock fanout bound.
+Transient receive errors keep the current route admission behavior. A failed
+channel requires replacement for new established connections. Listener/setup
+cleanup, scheduled-channel stop, process cleanup/restart, and retained-receipt
+ownership at public handle close remain further lifecycle integration gates.
+
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently
 invoked runtime handlers. The dispatcher does not poll the runtime or grant it a

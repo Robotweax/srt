@@ -618,6 +618,9 @@ bool DatagramChannel::register_connection_locked(
     const std::shared_ptr<ConnectionRuntime>& runtime,
     const std::optional<HandshakeRouteKey>& replay_key)
 {
+    if (channel_faulted_) {
+        return false;
+    }
     const auto inserted = routes_.emplace(protocol_socket_id,
         ConnectionRoute {.runtime = runtime, .replay_key = replay_key});
     if (!inserted.second) {
@@ -827,6 +830,12 @@ void DatagramChannel::unregister_connection_locked(
         handshake_routes_.erase(*route->second.replay_key);
     }
     auto& node = route->second;
+    if (node.fault_pending) {
+        --fault_routes_remaining_;
+    }
+    if (next_fault_route_ == &node) {
+        next_fault_route_ = node.next == &node ? nullptr : node.next;
+    }
     if (node.next == &node) {
         next_poll_route_ = nullptr;
     } else {
@@ -845,8 +854,8 @@ void DatagramChannel::unregister_connection_locked(
     routes_.erase(route);
 }
 
-void DatagramChannel::unregister_connection(
-    std::uint32_t protocol_socket_id) noexcept
+std::shared_ptr<ConnectionDatagramDispatcher>
+DatagramChannel::retire_connection(std::uint32_t protocol_socket_id) noexcept
 {
     // Last owning references and service retirement run outside the route lock.
     std::shared_ptr<ConnectionRuntime> retired;
@@ -860,6 +869,16 @@ void DatagramChannel::unregister_connection(
     if (dispatcher != nullptr) {
         dispatcher->retire();
     }
+    return dispatcher;
+}
+
+void DatagramChannel::unregister_connection(
+    std::uint32_t protocol_socket_id) noexcept
+{
+    const auto receipt = retire_connection(protocol_socket_id);
+    if (receipt != nullptr && !RuntimeScheduler::on_worker_thread()) {
+        (void)receipt->finish_retirement(std::chrono::steady_clock::now());
+    }
 }
 
 bool DatagramChannel::replay_established_handshake(
@@ -870,6 +889,9 @@ bool DatagramChannel::replay_established_handshake(
     std::shared_ptr<DatagramInbox> setup_prefix;
     {
         std::lock_guard lock(routes_mutex_);
+        if (channel_faulted_) {
+            return false;
+        }
         const auto replay = handshake_routes_.find({
             .peer = envelope.peer,
             .peer_socket_id = envelope.message.packet.socket_id,
@@ -1354,6 +1376,9 @@ void DatagramChannel::dispatch(const PacketView& packet,
         std::shared_ptr<HandshakeInbox> inbox;
         {
             std::lock_guard lock(routes_mutex_);
+            if (channel_faulted_) {
+                return;
+            }
             const auto replay = handshake_routes_.find({
                 .peer = peer,
                 .peer_socket_id = decoded.message.packet.socket_id,
@@ -1458,6 +1483,9 @@ void DatagramChannel::dispatch(const PacketView& packet,
     std::shared_ptr<DatagramInbox> setup_inbox;
     {
         std::lock_guard lock(routes_mutex_);
+        if (channel_faulted_) {
+            return;
+        }
         const auto route = routes_.find(
             destination_socket_id);
         if (route != routes_.end()) {
@@ -1487,9 +1515,45 @@ void DatagramChannel::dispatch(const PacketView& packet,
 
 void DatagramChannel::mark_connections_broken(int system_error) noexcept
 {
-    std::lock_guard lock(routes_mutex_);
-    for (const auto& route : routes_) {
-        route.second.runtime->mark_broken(system_error);
+    {
+        std::lock_guard lock(routes_mutex_);
+        if (channel_faulted_) {
+            return;
+        }
+        channel_faulted_ = true;
+        next_fault_route_ = next_poll_route_;
+        fault_routes_remaining_ = routes_.size();
+        for (auto& route : routes_) {
+            route.second.fault_pending = true;
+        }
+    }
+    for (;;) {
+        std::shared_ptr<ConnectionRuntime> runtime;
+        std::shared_ptr<ConnectionDatagramDispatcher> dispatcher;
+        {
+            std::lock_guard lock(routes_mutex_);
+            if (fault_routes_remaining_ == 0U) {
+                next_fault_route_ = nullptr;
+                break;
+            }
+            // Registration is closed. Concurrent detach updates this cursor
+            // and the pending count before erasing a node.
+            while (!next_fault_route_->fault_pending) {
+                next_fault_route_ = next_fault_route_->next;
+            }
+            auto& route = *next_fault_route_;
+            next_fault_route_ = route.next;
+            route.fault_pending = false;
+            --fault_routes_remaining_;
+            runtime = route.runtime;
+            dispatcher = route.dispatcher;
+        }
+        // Protocol clocks/readiness and service retirement must never execute
+        // under the route table mutex. Strong snapshots survive detach/reuse.
+        if (dispatcher != nullptr) {
+            dispatcher->retire();
+        }
+        runtime->mark_broken(system_error);
     }
 }
 

@@ -236,6 +236,12 @@ public:
         std::shared_ptr<ConnectionRuntime> runtime,
         std::shared_ptr<ConnectionDatagramDispatcher> dispatcher =
             nullptr) noexcept;
+    // Detach this incarnation and retire admission outside the route lock.
+    // The returned dispatcher is an optional drain receipt: retain it to retry
+    // finish_retirement after a timeout. No runtime close is implied.
+    [[nodiscard]] std::shared_ptr<ConnectionDatagramDispatcher>
+    retire_connection(std::uint32_t protocol_socket_id) noexcept;
+    // Legacy detach with an off-worker, non-waiting reclamation attempt.
     void unregister_connection(std::uint32_t protocol_socket_id) noexcept;
     [[nodiscard]] bool replay_established_handshake(
         const HandshakeEnvelope& envelope) noexcept;
@@ -395,11 +401,17 @@ private:
         std::optional<HandshakeRouteKey> replay_key = std::nullopt;
         std::shared_ptr<DatagramInbox> setup_prefix = nullptr;
         std::shared_ptr<ConnectionDatagramDispatcher> dispatcher = nullptr;
+        bool fault_pending = false;
         ConnectionRoute* previous = nullptr;
         ConnectionRoute* next = nullptr;
     };
     std::unordered_map<std::uint32_t, ConnectionRoute> routes_;
     std::size_t queued_routes_ = 0;
+    // Fatal channel failure is terminal for established-route admission. The
+    // intrusive cursor follows erasure without allocating a fanout snapshot.
+    bool channel_faulted_ = false;
+    ConnectionRoute* next_fault_route_ = nullptr;
+    std::size_t fault_routes_remaining_ = 0;
     // unordered_map rehash preserves element addresses. Erasure unlinks the
     // node and advances this cursor under routes_mutex_.
     ConnectionRoute* next_poll_route_ = nullptr;
