@@ -87,13 +87,11 @@ void publish_group_state(
 
 void finish_close(DeferredClose close) noexcept
 {
+    auto retirement = close.channel != nullptr && close.runtime != nullptr
+        ? close.channel->retire_connection(close.protocol_socket_id)
+        : nullptr;
     if (close.runtime != nullptr) {
-        close_connection_runtime(close.runtime);
-    }
-    if (close.channel != nullptr
-        && close.runtime != nullptr) {
-        close.channel->unregister_connection(
-            close.protocol_socket_id);
+        close_connection_runtime(close.runtime, {}, std::move(retirement));
     }
     if (close.record != nullptr) {
         std::lock_guard lock(close.record->mutex);

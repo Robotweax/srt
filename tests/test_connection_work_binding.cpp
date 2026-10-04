@@ -4,6 +4,7 @@
 #include "compat/transport_runtime.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <future>
@@ -555,4 +556,62 @@ TEST(connection_work_binding_drain_expired_scheduler_is_not_callback_completion)
     REQUIRE(binding->quiescent());
     destructor_gate->release();
     destruction.get();
+}
+
+TEST(connection_work_binding_completion_request_racing_hook_gets_another_pass)
+{
+    auto scheduler = work_scheduler();
+    struct Probe {
+        std::atomic<unsigned> calls {0};
+        std::shared_ptr<WorkGate> gate = std::make_shared<WorkGate>();
+        static void complete(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Probe*>(pointer);
+            if (self.calls.fetch_add(1) == 0) {
+                WorkGate::block(self.gate.get());
+            }
+        }
+    };
+    auto probe = std::make_shared<Probe>();
+    WorkGateRelease release {probe->gate};
+    auto binding = ConnectionWorkBinding::create(
+        scheduler, 0, [](void*, ConnectionWorkHints) noexcept { }, probe,
+        Probe::complete);
+    REQUIRE(binding != nullptr);
+    REQUIRE_EQ(binding->notify({.datagrams = true}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    probe->gate->wait();
+    binding->retire(true);
+    REQUIRE_EQ(binding->wait_quiescent(std::chrono::steady_clock::now()),
+        ConnectionWorkBinding::DrainStatus::timeout);
+    probe->gate->release();
+    REQUIRE_EQ(binding->wait_quiescent(
+                   std::chrono::steady_clock::now() + std::chrono::seconds {2}),
+        ConnectionWorkBinding::DrainStatus::quiescent);
+    REQUIRE_EQ(probe->calls.load(), 2U);
+    scheduler->stop();
+}
+
+TEST(connection_work_binding_quiet_retirement_includes_completion_in_barrier)
+{
+    auto scheduler = work_scheduler();
+    auto gate = std::make_shared<WorkGate>();
+    auto binding = ConnectionWorkBinding::create(
+        scheduler, 0, [](void*, ConnectionWorkHints) noexcept { }, gate,
+        WorkGate::block);
+    REQUIRE(binding != nullptr);
+    std::future<void> retirement;
+    WorkGateRelease release {gate};
+    retirement = std::async(std::launch::async, [&] {
+        binding->retire(true);
+    });
+    gate->wait();
+    REQUIRE(!binding->quiescent());
+    REQUIRE_EQ(binding->wait_quiescent(std::chrono::steady_clock::now()),
+        ConnectionWorkBinding::DrainStatus::timeout);
+    gate->release();
+    retirement.get();
+    REQUIRE_EQ(binding->wait_quiescent(std::chrono::steady_clock::now()),
+        ConnectionWorkBinding::DrainStatus::quiescent);
+    scheduler->stop();
 }

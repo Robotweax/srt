@@ -296,7 +296,35 @@ under its existing mutex; this is not a preemption or wall-clock fanout bound.
 Transient receive errors keep the current route admission behavior. A failed
 channel requires replacement for new established connections. Listener/setup
 cleanup, scheduled-channel stop, process cleanup/restart, and retained-receipt
-ownership at public handle close remain further lifecycle integration gates.
+ownership at public handle close are addressed incrementally below.
+
+Owning compatibility close now detaches the route and transfers its retirement
+receipt into `close_connection_runtime`. The close helper requests eventual
+ring reclamation before establishing the runtime close barrier, even when the
+runtime was already locally closed. An accepted executor close task owns the
+receipt through its final protocol drain. A full/stopped executor or allocation
+failure still takes the existing bounded synchronous protocol close fallback;
+it cannot discard the callback's ring-reclamation obligation.
+
+Each dispatcher binding has a bounded completion hook with the same context as
+its client callback. Reclamation is requested once per dispatcher. If a callback
+is active, its completion hook frees the closed ring only after protocol work
+returns; a request racing the hook gets a further pass before quiescence is
+published. If no callback is active, retirement performs the requested bounded
+reclamation inline, including on a worker, without a callback wait or network
+I/O. The quiescence barrier includes the hook. Captured closed inbox handles
+remain safe, and dropping the external dispatcher/receipt cannot strand the
+ring credit while the executing scheduler task owns the completion context.
+No additional retirement queue or waiter thread is introduced.
+
+Registry handle close and deferred-linger completion use this owning boundary,
+as do established-setup failure close paths. Admission retirement remains
+distinct from runtime close; `retire_and_reclaim()` alone permits already
+dispatched work against a live runtime to finish. Service-slot reuse and task
+context destruction still require the scheduler epilogue. The hook reclaims
+only the connection ring, not captured original setup rings or arbitrary task
+contexts. Listener/setup teardown, scheduled channel stop and full process
+cleanup/restart qualification remain further lifecycle gates.
 
 Dispatcher FIFO covers its sealed setup prefix followed by its connection inbox.
 It does not impose a total order on application operations or independently

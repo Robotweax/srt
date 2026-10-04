@@ -31,6 +31,7 @@ struct ConnectionDatagramDispatcher::State {
     bool route_claimed = false;
     bool active = true;
     bool retired = false;
+    std::atomic_bool reclaim_requested {false};
     std::atomic<std::uint64_t> completed_turns {0};
     std::atomic<std::uint64_t> dispatched_datagrams {0};
     std::atomic<std::size_t> maximum_turn_datagrams {0};
@@ -62,6 +63,13 @@ struct ConnectionDatagramDispatcher::State {
         }
         if (auto service = binding.lock(); service != nullptr) {
             service->retire();
+        }
+    }
+    static void complete(void* pointer) noexcept
+    {
+        auto& self = *static_cast<State*>(pointer);
+        if (self.reclaim_requested.load(std::memory_order_acquire)) {
+            (void)self.inbox->reclaim_retired_storage();
         }
     }
     static void dispatch(void* pointer, ConnectionWorkHints hints) noexcept
@@ -202,7 +210,7 @@ ConnectionDatagramDispatcher::create(
         auto state =
             std::make_shared<State>(runtime, std::move(configuration), peer);
         auto binding = ConnectionWorkBinding::create(
-            scheduler, affinity, State::dispatch, state);
+            scheduler, affinity, State::dispatch, state, State::complete);
         if (binding == nullptr) {
             return nullptr;
         }
@@ -282,6 +290,16 @@ ConnectionDatagramInbox::Status ConnectionDatagramDispatcher::publish(
 void ConnectionDatagramDispatcher::retire() noexcept
 {
     state_->retire();
+}
+
+void ConnectionDatagramDispatcher::retire_and_reclaim() noexcept
+{
+    const bool first_request =
+        !state_->reclaim_requested.exchange(true, std::memory_order_acq_rel);
+    retire();
+    if (first_request) {
+        binding_->retire(true);
+    }
 }
 
 void ConnectionDatagramDispatcher::close() noexcept
