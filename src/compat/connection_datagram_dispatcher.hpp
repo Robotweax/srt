@@ -39,7 +39,9 @@ public:
         // ring becomes a sealed prefix; old publishers target this dispatcher.
         // Failure leaves the setup inbox untouched. Channel route integration
         // must independently commit ownership before exposing an established route.
-        const std::shared_ptr<DatagramInbox>& setup_prefix = nullptr) noexcept;
+        const std::shared_ptr<DatagramInbox>& setup_prefix = nullptr,
+        const std::shared_ptr<DatagramStorageBudget>& process_budget =
+            nullptr) noexcept;
     ~ConnectionDatagramDispatcher();
     ConnectionDatagramDispatcher(const ConnectionDatagramDispatcher&) = delete;
     ConnectionDatagramDispatcher& operator=(

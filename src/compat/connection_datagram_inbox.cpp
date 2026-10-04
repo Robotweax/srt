@@ -79,8 +79,10 @@ ConnectionDatagramInbox::ConnectionDatagramInbox(
     std::shared_ptr<DatagramStorageBudget> budget,
     std::weak_ptr<ConnectionWorkBinding> binding, Token token, IpEndpoint peer,
     Configuration configuration, std::unique_ptr<Entry[]> entries,
-    std::size_t storage_bytes) noexcept
+    std::size_t storage_bytes,
+    std::shared_ptr<DatagramStorageBudget> process_budget) noexcept
     : budget_(std::move(budget))
+    , process_budget_(std::move(process_budget))
     , binding_(std::move(binding))
     , token_(token)
     , peer_(peer)
@@ -93,7 +95,8 @@ ConnectionDatagramInbox::ConnectionDatagramInbox(
 std::shared_ptr<ConnectionDatagramInbox> ConnectionDatagramInbox::create(
     const std::shared_ptr<DatagramStorageBudget>& budget,
     const std::shared_ptr<ConnectionWorkBinding>& binding, IpEndpoint peer,
-    Configuration configuration) noexcept
+    Configuration configuration,
+    const std::shared_ptr<DatagramStorageBudget>& process_budget) noexcept
 {
     const auto bytes = storage_bytes(configuration.capacity);
     if (budget == nullptr || binding == nullptr || !binding->token().valid()
@@ -102,25 +105,36 @@ std::shared_ptr<ConnectionDatagramInbox> ConnectionDatagramInbox::create(
         || !budget->reserve(*bytes)) {
         return nullptr;
     }
+    const auto process = process_budget != budget ? process_budget : nullptr;
+    if (process != nullptr && !process->reserve(*bytes)) {
+        budget->release(*bytes);
+        return nullptr;
+    }
+    const auto rollback = [&] {
+        budget->release(*bytes);
+        if (process != nullptr) {
+            process->release(*bytes);
+        }
+    };
     // Keep reservation ownership explicit across array/object/control-block
     // allocation failures. A constructed object's destructor owns its charge.
     bool reservation_owned = true;
     try {
         const auto incarnation = reserve_incarnation();
         if (incarnation == 0) {
-            budget->release(*bytes);
+            rollback();
             return nullptr;
         }
         auto entries = std::make_unique<Entry[]>(configuration.capacity);
         auto inbox = std::unique_ptr<ConnectionDatagramInbox>(
             new ConnectionDatagramInbox(budget, binding,
                 {.incarnation = incarnation, .service = binding->token()}, peer,
-                configuration, std::move(entries), *bytes));
+                configuration, std::move(entries), *bytes, process));
         reservation_owned = false;
         return std::shared_ptr<ConnectionDatagramInbox>(std::move(inbox));
     } catch (...) {
         if (reservation_owned) {
-            budget->release(*bytes);
+            rollback();
         }
         return nullptr;
     }
@@ -131,7 +145,15 @@ ConnectionDatagramInbox::~ConnectionDatagramInbox()
     // Physical storage must be gone before making the credit available again.
     entries_.reset();
     if (!snapshot_.storage_released) {
-        budget_->release(storage_bytes_);
+        release_storage_credit();
+    }
+}
+
+void ConnectionDatagramInbox::release_storage_credit() noexcept
+{
+    budget_->release(storage_bytes_);
+    if (process_budget_ != nullptr) {
+        process_budget_->release(storage_bytes_);
     }
 }
 
@@ -314,7 +336,7 @@ bool ConnectionDatagramInbox::reclaim_retired_storage() noexcept
     }
     // Physical ring destruction precedes credit return, outside inbox locks.
     released.reset();
-    budget_->release(storage_bytes_);
+    release_storage_credit();
     {
         std::lock_guard lock(mutex_);
         snapshot_.storage_released = true;

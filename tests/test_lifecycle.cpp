@@ -2349,6 +2349,8 @@ TEST(
     auto scheduler = cleanup_test_scheduler();
     auto budget = std::make_shared<DatagramStorageBudget>(
         *ConnectionDatagramInbox::storage_bytes(4));
+    auto channel_budget = std::make_shared<DatagramStorageBudget>(
+        *ConnectionDatagramInbox::storage_bytes(4));
     SocketOptions options;
     REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
     auto make_runtime = [&](const std::shared_ptr<DatagramChannel>& owner) {
@@ -2378,12 +2380,13 @@ TEST(
     };
     auto probe = std::make_shared<Probe>();
     CleanupGateRelease release {probe->gate, scheduler};
-    auto dispatcher =
-        ConnectionDatagramDispatcher::create(runtime, scheduler, budget, 0,
-            IpEndpoint::loopback(9000), {.capacity = 4, .control_reserve = 1},
-            {.turn_budget = 2,
-                .after_pop_for_testing = Probe::popped,
-                .after_pop_context_for_testing = probe});
+    auto dispatcher = ConnectionDatagramDispatcher::create(runtime, scheduler,
+        channel_budget, 0, IpEndpoint::loopback(9000),
+        {.capacity = 4, .control_reserve = 1},
+        {.turn_budget = 2,
+            .after_pop_for_testing = Probe::popped,
+            .after_pop_context_for_testing = probe},
+        nullptr, budget);
     REQUIRE(dispatcher != nullptr);
     auto captured = dispatcher->inbox();
     const auto old_token = captured->token();
@@ -2430,18 +2433,22 @@ TEST(
     REQUIRE(new_channel.get() != channel.get());
     auto new_scheduler = cleanup_test_scheduler();
     auto new_runtime = make_runtime(new_channel);
+    auto new_channel_budget = std::make_shared<DatagramStorageBudget>(
+        *ConnectionDatagramInbox::storage_bytes(4));
     auto new_dispatcher = ConnectionDatagramDispatcher::create(new_runtime,
-        new_scheduler, budget, 0, IpEndpoint::loopback(9000),
-        {.capacity = 4, .control_reserve = 1}, {});
+        new_scheduler, new_channel_budget, 0, IpEndpoint::loopback(9000),
+        {.capacity = 4, .control_reserve = 1}, {}, nullptr, budget);
     REQUIRE(new_dispatcher == nullptr);
+    REQUIRE_EQ(new_channel_budget->reserved_bytes(), 0U);
     probe->gate->release();
     scheduler->stop();
     REQUIRE(captured->snapshot().storage_released);
+    REQUIRE_EQ(channel_budget->reserved_bytes(), 0U);
     REQUIRE_EQ(budget->reserved_bytes(), 0U);
     REQUIRE_EQ(runtime->buffer_packet_counts().available_receive, 0U);
     new_dispatcher = ConnectionDatagramDispatcher::create(new_runtime,
-        new_scheduler, budget, 0, IpEndpoint::loopback(9000),
-        {.capacity = 4, .control_reserve = 1}, {});
+        new_scheduler, new_channel_budget, 0, IpEndpoint::loopback(9000),
+        {.capacity = 4, .control_reserve = 1}, {}, nullptr, budget);
     REQUIRE(new_dispatcher != nullptr);
     REQUIRE_EQ(captured->publish(old_token,
                    std::span(wire).first(encoded.bytes_written),
@@ -2461,5 +2468,6 @@ TEST(
     fresh_cycle.finish();
     new_scheduler->stop();
     REQUIRE_EQ(budget->reserved_bytes(), 0U);
+    REQUIRE_EQ(new_channel_budget->reserved_bytes(), 0U);
     REQUIRE(!new_channel->socket.valid());
 }
