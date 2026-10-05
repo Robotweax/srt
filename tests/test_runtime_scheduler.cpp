@@ -1241,3 +1241,134 @@ TEST(
     REQUIRE_EQ(scheduler.snapshot().service_runs, 1U);
     REQUIRE_EQ(scheduler.snapshot().service_timers, 0U);
 }
+
+TEST(
+    compat_runtime_scheduler_service_scan_skips_unused_tail_and_reclaims_released_slots)
+{
+    for (const bool release_tail : {false, true}) {
+        RuntimeScheduler scheduler({.shard_count = 1,
+            .queue_capacity_per_shard = 4,
+            .timer_capacity_per_shard = 1,
+            .service_capacity_per_shard = 1024});
+        REQUIRE(scheduler.start());
+        auto blocked = std::make_shared<Gate>();
+        GateRelease blocked_release {blocked};
+        REQUIRE_EQ(scheduler.submit(0, {wait_at_gate, blocked}),
+            RuntimeScheduler::SubmitStatus::accepted);
+        wait_until_started(blocked);
+        auto complete = std::make_shared<Completion>();
+        const auto service =
+            scheduler.reserve_service(0, {record_completion, complete});
+        REQUIRE_EQ(service.status, RuntimeScheduler::SubmitStatus::accepted);
+        if (release_tail) {
+            const auto middle =
+                scheduler.reserve_service(0, {record_completion, complete});
+            const auto tail =
+                scheduler.reserve_service(0, {record_completion, complete});
+            REQUIRE_EQ(tail.status, RuntimeScheduler::SubmitStatus::accepted);
+            REQUIRE(scheduler.release_service(middle.token));
+            REQUIRE(scheduler.release_service(tail.token));
+        }
+        REQUIRE_EQ(
+            scheduler.schedule_service_at(service.token,
+                std::chrono::steady_clock::now() + std::chrono::hours {1}),
+            RuntimeScheduler::SubmitStatus::accepted);
+        REQUIRE_EQ(scheduler.notify_service(service.token),
+            RuntimeScheduler::SubmitStatus::accepted);
+        auto after = std::make_shared<Gate>();
+        GateRelease after_release {after};
+        REQUIRE_EQ(scheduler.submit(0, {wait_at_gate, after}),
+            RuntimeScheduler::SubmitStatus::accepted);
+        const auto before = scheduler.snapshot().service_slot_inspections;
+        release_gate(blocked);
+        wait_until_started(after);
+        wait_until_complete(complete);
+        const auto snapshot = scheduler.snapshot();
+        // One deadline check before service dispatch, one ready-slot check,
+        // then one deadline check before the following FIFO callback.
+        REQUIRE_EQ(snapshot.service_slot_inspections - before, 3U);
+        REQUIRE_EQ(snapshot.service_runs, 1U);
+        REQUIRE_EQ(snapshot.service_timers, 1U);
+        REQUIRE(scheduler.release_service(service.token));
+        release_gate(after);
+        scheduler.stop();
+    }
+}
+
+TEST(compat_runtime_scheduler_service_scan_keeps_live_tail_timer_across_holes)
+{
+    RuntimeScheduler scheduler({1, 4, 1, 1024});
+    REQUIRE(scheduler.start());
+    auto blocked = std::make_shared<Gate>();
+    GateRelease blocked_release {blocked};
+    REQUIRE_EQ(scheduler.submit(0, {wait_at_gate, blocked}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    wait_until_started(blocked);
+    auto complete = std::make_shared<Completion>();
+    const auto first =
+        scheduler.reserve_service(0, {record_completion, complete});
+    const auto middle =
+        scheduler.reserve_service(0, {record_completion, complete});
+    const auto tail =
+        scheduler.reserve_service(0, {record_completion, complete});
+    REQUIRE_EQ(tail.status, RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE(scheduler.release_service(first.token));
+    REQUIRE(scheduler.release_service(middle.token));
+    REQUIRE_EQ(scheduler.schedule_service_at(
+                   tail.token, std::chrono::steady_clock::time_point {}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    auto after = std::make_shared<Gate>();
+    GateRelease after_release {after};
+    REQUIRE_EQ(scheduler.submit(0, {wait_at_gate, after}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    const auto before = scheduler.snapshot().service_slot_inspections;
+    release_gate(blocked);
+    wait_until_started(after);
+    wait_until_complete(complete);
+    REQUIRE_EQ(scheduler.snapshot().service_slot_inspections - before, 9U);
+    REQUIRE(scheduler.release_service(tail.token));
+    const auto replacement =
+        scheduler.reserve_service(0, {record_completion, complete});
+    REQUIRE_EQ(replacement.status, RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(replacement.token.slot, first.token.slot);
+    REQUIRE(replacement.token.generation != first.token.generation);
+    REQUIRE_EQ(scheduler.notify_service(first.token),
+        RuntimeScheduler::SubmitStatus::invalid);
+    REQUIRE(scheduler.release_service(replacement.token));
+    release_gate(after);
+    scheduler.stop();
+}
+
+TEST(compat_runtime_scheduler_service_scan_trims_released_tail_after_callback)
+{
+    RuntimeScheduler scheduler({1, 4, 1, 1024});
+    REQUIRE(scheduler.start());
+    auto complete = std::make_shared<Completion>();
+    const auto first =
+        scheduler.reserve_service(0, {record_completion, complete});
+    auto blocked = std::make_shared<Gate>();
+    GateRelease blocked_release {blocked};
+    const auto tail = scheduler.reserve_service(0, {wait_at_gate, blocked});
+    REQUIRE_EQ(tail.status, RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(scheduler.notify_service(tail.token),
+        RuntimeScheduler::SubmitStatus::accepted);
+    wait_until_started(blocked);
+    REQUIRE(scheduler.release_service(tail.token));
+    REQUIRE(!scheduler.service_quiescent(tail.token));
+    auto after = std::make_shared<Gate>();
+    GateRelease after_release {after};
+    REQUIRE_EQ(scheduler.notify_service(first.token),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(scheduler.submit(0, {wait_at_gate, after}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    const auto before = scheduler.snapshot().service_slot_inspections;
+    release_gate(blocked);
+    // The callback is a service turn: alternate into queued FIFO work first.
+    wait_until_started(after);
+    REQUIRE(scheduler.service_quiescent(tail.token));
+    REQUIRE_EQ(scheduler.snapshot().service_slot_inspections - before, 1U);
+    release_gate(after);
+    wait_until_complete(complete);
+    REQUIRE(scheduler.release_service(first.token));
+    scheduler.stop();
+}

@@ -131,6 +131,8 @@ public:
         std::uint64_t service_wakes = 0;
         std::uint64_t service_coalesced = 0;
         std::uint64_t service_runs = 0;
+        // Actual deadline/ready slot inspections, excluding admission scans.
+        std::uint64_t service_slot_inspections = 0;
     };
 
     explicit RuntimeScheduler(Configuration configuration);
@@ -213,7 +215,12 @@ private:
         std::vector<std::size_t> timer_heap;
         std::vector<std::size_t> free_timer_slots;
         std::vector<ServiceSlot> service_slots;
+        // Exclusive upper bound of reserved or still executing slots. Stable
+        // token indices stay in the preallocated table; empty tail is skipped.
+        std::size_t service_scan_limit = 0;
+        void trim_service_scan_limit() noexcept;
         std::size_t service_pending = 0;
+        std::uint64_t service_slot_inspections = 0;
         std::size_t next_service = 0;
         bool service_turn = true;
         std::size_t head = 0;
