@@ -231,6 +231,27 @@ TEST(statistics_ipv6_wire_bytes_include_the_larger_ip_header)
     REQUIRE_EQ(averaged.sender_buffer_bytes, 164U);
 }
 
+TEST(
+    statistics_ipv6_retransmission_preserves_unique_and_total_header_accounting)
+{
+    RuntimeStatisticsState state {0, ipv6_statistics_packet_header_bytes};
+    state.note_data_sent(1200U, false);
+    state.note_data_sent(1200U, true);
+    state.note_data_received(1200U, true, false);
+    state.note_data_received(1200U, false, true);
+    SRT_TRACEBSTATS statistics {};
+    populate_trace_statistics(state.snapshot(1000, {}, false), statistics);
+    REQUIRE_EQ(statistics.pktSentTotal, 2);
+    REQUIRE_EQ(statistics.pktRecvTotal, 2);
+    REQUIRE_EQ(statistics.pktSentUniqueTotal, 1);
+    REQUIRE_EQ(statistics.pktRecvUniqueTotal, 1);
+    REQUIRE_EQ(statistics.byteSentUniqueTotal, 1264U);
+    REQUIRE_EQ(statistics.byteRecvUniqueTotal, 1264U);
+    REQUIRE_EQ(statistics.byteRetransTotal, 1264U);
+    REQUIRE_EQ(statistics.byteSentTotal, 2528U);
+    REQUIRE_EQ(statistics.byteRecvTotal, 2528U);
+}
+
 TEST(statistics_maps_sender_supply_and_loss_filter_counters)
 {
     RuntimeStatisticsState state;
