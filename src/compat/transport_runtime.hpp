@@ -443,7 +443,14 @@ private:
     [[nodiscard]] RuntimePollResult run_receive_slice(
         Receive&& receive) noexcept
     {
-        constexpr std::size_t maximum_receive_batch = 64;
+        // Let the selected services finish the prior receive/poll quantum
+        // before reading more UDP input. A 64-packet legacy slice exceeds the
+        // default ring's 48 data slots even with an otherwise empty inbox.
+        if (scheduled_polling_enabled_ && scheduled_poll_round_ != nullptr)
+            return poll_connections();
+        const std::size_t maximum_receive_batch = scheduled_polling_enabled_
+            ? ConnectionDatagramDispatcher::maximum_turn_budget
+            : 64;
         std::array<std::byte, 1500> datagram {};
         std::size_t received_count = 0;
         for (; received_count < maximum_receive_batch; ++received_count) {
@@ -478,7 +485,9 @@ private:
         // A full slice can leave UDP input unread. After would_block, however,
         // the receive queue is drained: preserve the connection poll deadline
         // instead of forcing another empty receive and complete route sweep.
-        if (received_count == maximum_receive_batch) {
+        if (received_count == maximum_receive_batch
+            && (!scheduled_polling_enabled_
+                || scheduled_poll_round_ == nullptr)) {
             result.immediate_work = true;
             result.next_work_delay.reset();
         }

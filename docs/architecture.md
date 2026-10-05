@@ -577,6 +577,17 @@ completions and uses the existing notification/timer machinery. It never falls
 back to inline polling for a refused dispatcher request. Direct routes retain
 synchronous polling and share the same channel allowance.
 
+Selected channel receive slices are capped at 16 datagrams, matching the maximum
+service turn instead of the legacy 64-datagram receive quantum. While a scheduled
+poll window remains in flight, the channel collects its completion receipts before
+reading another slice. A full receive slice does not force immediate receive
+continuation over that pending window. This avoids manufacturing a larger burst
+than the default inbox's 48 data slots while services are still catching up;
+remaining input stays in the native UDP buffer. Existing notification and bounded
+timer fallback drive collection. Inbox limits and rejection policy are unchanged,
+and this does not promise loss-free reception at arbitrary input rates or bypass
+the existing shared-channel window latency limitation.
+
 The coordinator stores a fixed window of four captured requests, matching four
 full 16-attempt grants within the 64-attempt allowance. The intrusive route cursor
 continues a finite sweep across windows; no fanout vector is allocated. A pending

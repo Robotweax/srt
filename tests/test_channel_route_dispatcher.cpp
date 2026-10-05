@@ -3580,3 +3580,52 @@ TEST(channel_poll_coordinator_drives_real_channel_wakes_and_shutdown)
     REQUIRE(!dispatcher->take_poll_completion().has_value());
     REQUIRE(fixture.channel->begin_poll_round() == nullptr);
 }
+
+TEST(channel_poll_coordinator_bounds_ingress_and_waits_for_service_receipt)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    fixture.budget = std::make_shared<DatagramStorageBudget>(
+        *ConnectionDatagramInbox::storage_bytes(64));
+    auto dispatcher = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 64, .control_reserve = 16}, {.turn_budget = 16});
+    REQUIRE(dispatcher != nullptr);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    std::uint32_t received = 0;
+    auto receive = [&](std::span<std::byte> bytes) noexcept {
+        if (received == 64)
+            return UdpIoResult {.error = Error::would_block};
+        const auto wire = sink_data(received++);
+        std::copy(wire.view().begin(), wire.view().end(), bytes.begin());
+        return UdpIoResult {.bytes_transferred = wire.size, .peer = sink_peer};
+    };
+    const auto first = fixture.channel->run_once_for_testing(receive);
+    REQUIRE_EQ(received, 16U);
+    REQUIRE(!first.immediate_work);
+    REQUIRE(first.next_work_delay.has_value());
+    for (std::size_t turn = 0; turn < 10; ++turn) {
+        const auto pending = fixture.channel->run_once_for_testing(receive);
+        REQUIRE(!pending.immediate_work);
+        REQUIRE_EQ(received, 16U);
+    }
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().queued, 16U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().data_rejections, 0U);
+    gate->release();
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    while (dispatcher->inbox()->snapshot().completed != 64U
+        && std::chrono::steady_clock::now() < deadline) {
+        (void)fixture.channel->run_once_for_testing(receive);
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+    REQUIRE_EQ(received, 64U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 64U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().data_rejections, 0U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().control_rejections, 0U);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 64U);
+}
