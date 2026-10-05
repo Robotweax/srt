@@ -746,6 +746,9 @@ Error ReceiveBuffer::discard_before(
     if (next_ack_sequence_.distance_from(next_sequence) < 0) {
         next_ack_sequence_ = next_sequence;
     }
+    // Retiring a group prefix may expose packets already buffered after a gap.
+    // Acknowledge that contiguous suffix before an application pop removes it.
+    advance_acknowledgement();
     refresh_first_buffered_timestamp();
     return Error::none;
 }

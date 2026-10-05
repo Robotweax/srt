@@ -810,3 +810,30 @@ TEST(receive_buffer_bounded_complete_copy_preserves_fragments_and_gaps)
     REQUIRE_EQ(remaining.messages.size(), 1U);
     REQUIRE_EQ(remaining.messages[0].message_number, 3U);
 }
+
+TEST(receive_buffer_discarded_prefix_advances_ack_over_retained_suffix)
+{
+    for (const SequenceNumber first :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 1U}}) {
+        ReceiveBuffer buffer {first, 8};
+        const std::array payload {std::byte {'x'}};
+        REQUIRE(buffer.insert(
+            data_packet(first.next(), 2, MessageBoundary::solo, payload)));
+        REQUIRE(buffer.insert(
+            data_packet(first.advanced(3), 4, MessageBoundary::solo, payload)));
+        REQUIRE_EQ(buffer.next_ack_sequence(), first);
+        REQUIRE_EQ(buffer.discard_before(first.next()), Error::none);
+        // Group delivery may retire a missing copy using a different member.
+        // The retained suffix must be acknowledged before its payload is popped.
+        REQUIRE_EQ(buffer.next_ack_sequence(), first.advanced(2));
+        std::array<std::byte, 1> output {};
+        REQUIRE(buffer.pop_message(output));
+        REQUIRE_EQ(buffer.next_ack_sequence(), first.advanced(2));
+        REQUIRE_EQ(buffer.first_stored_sequence(), first.advanced(2));
+        // The unobserved intervening sequence still stops cumulative ACK.
+        REQUIRE_EQ(buffer.discard_before(first.advanced(3)), Error::none);
+        REQUIRE_EQ(buffer.next_ack_sequence(), first.advanced(4));
+        REQUIRE(buffer.pop_message(output));
+        REQUIRE_EQ(buffer.next_ack_sequence(), first.advanced(4));
+    }
+}

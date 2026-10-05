@@ -5238,3 +5238,48 @@ TEST(session_low_rtt_loss_reports_do_not_apply_a_second_timer_floor)
         REQUIRE_EQ(reported_ranges, 2U);
     }
 }
+
+TEST(session_group_prefix_retirement_acknowledges_retained_last_packet)
+{
+    for (const SequenceNumber first :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask}}) {
+        ReliabilitySession receiver {{.local_initial_sequence = first,
+            .peer_initial_sequence = first,
+            .receive_capacity_packets = 8}};
+        ReliabilitySession sender {{.local_initial_sequence = first,
+            .peer_initial_sequence = first,
+            .send_capacity_packets = 8}};
+        const std::array payload {std::byte {'x'}};
+        REQUIRE_EQ(
+            sender.queue_message(payload, PacketTimestamp {0}), Error::none);
+        REQUIRE_EQ(
+            sender.queue_message(payload, PacketTimestamp {0}), Error::none);
+        REQUIRE(sender.next_data_packet().has_value());
+        REQUIRE(sender.next_data_packet().has_value());
+        PacketView packet;
+        packet.kind = PacketKind::data;
+        packet.data.sequence = first.next();
+        packet.data.message_number = 2;
+        packet.data.boundary = MessageBoundary::solo;
+        packet.payload = payload;
+        REQUIRE(receiver.receive(packet, 100));
+        REQUIRE_EQ(
+            receiver.discard_received_before(first.next(), 200), Error::none);
+        std::array<std::byte, 1> output {};
+        REQUIRE(receiver.pop_message(output));
+        const auto actions = receiver.flush_acknowledgement(300);
+        REQUIRE_EQ(actions.size, 1U);
+        REQUIRE_EQ(
+            actions.values[0].kind, ReliabilityActionKind::acknowledgement);
+        REQUIRE_EQ(
+            actions.values[0].acknowledgement.next_sequence, first.advanced(2));
+        std::array<std::byte, 64> control_storage {};
+        REQUIRE(sender.receive(
+            encode_and_decode(actions.values[0], control_storage), 350));
+        REQUIRE_EQ(sender.send_buffer().size(), 0U);
+        // A retransmitted duplicate cannot regress the cumulative boundary.
+        REQUIRE(receiver.receive(packet, 400));
+        REQUIRE_EQ(
+            receiver.receive_buffer().next_ack_sequence(), first.advanced(2));
+    }
+}
