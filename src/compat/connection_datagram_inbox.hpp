@@ -99,8 +99,12 @@ public:
     // target runtime mutex. Generic inboxes retain their original admission.
     // A failed wake closes admission and discards queued work instead of leaving
     // accepted bytes without a runnable consumer. Caller treats it as terminal.
+    // Optional synchronous receipt: zero on rejection, otherwise this bound
+    // inbox's FIFO admission count captured before releasing its lock. No
+    // caller pointer is retained and later publishers cannot extend it.
     [[nodiscard]] Status publish(Token token, std::span<const std::byte> bytes,
-        IpEndpoint peer, std::uint64_t now_microseconds) noexcept;
+        IpEndpoint peer, std::uint64_t now_microseconds,
+        std::uint64_t* admitted_cutoff = nullptr) noexcept;
     // Bound inboxes have one dispatcher consumer; its popped copy remains
     // in-flight through protocol completion. Further pops return busy.
     [[nodiscard]] Status pop(Token token, DatagramEnvelope& envelope,
@@ -121,7 +125,8 @@ private:
         const ConnectionRuntime* runtime) const noexcept;
     [[nodiscard]] Status publish_unfenced(Token token,
         std::span<const std::byte> bytes, IpEndpoint peer,
-        std::uint64_t now_microseconds) noexcept;
+        std::uint64_t now_microseconds,
+        std::uint64_t* admitted_cutoff) noexcept;
     // One popped copy at a time for a bound inbox. Completion follows protocol
     // effects; close does not revoke this record or imply callback quiescence.
     [[nodiscard]] Status complete(Token token) noexcept;

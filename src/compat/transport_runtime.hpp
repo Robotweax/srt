@@ -440,16 +440,19 @@ private:
         std::optional<std::chrono::steady_clock::time_point> idle_wake =
             std::nullopt) noexcept;
     [[nodiscard]] RuntimePollResult run_once() noexcept;
+    struct NativeIngressReceipt {
+        std::shared_ptr<ConnectionDatagramDispatcher> dispatcher;
+        std::uint64_t cutoff = 0;
+    };
+    [[nodiscard]] bool native_receive_ready() noexcept;
     template <typename Receive>
     [[nodiscard]] RuntimePollResult run_receive_slice(
         Receive&& receive) noexcept
     {
-        // Let the selected services finish the prior receive/poll quantum
-        // before reading more UDP input. A 64-packet legacy slice exceeds the
-        // default ring's 48 data slots even with an otherwise empty inbox.
-        if (scheduled_polling_enabled_
-            && (scheduled_poll_round_ != nullptr || poll_round_remaining_ != 0U
-                || poll_round_ingress_pending_))
+        // Wait for protocol completion of this channel's admitted packets,
+        // independently of idle/send poll receipts on unrelated routes. The
+        // native quantum still fits inside the default ring's 48 DATA slots.
+        if (scheduled_polling_enabled_ && !native_receive_ready())
             return poll_connections();
         const std::size_t maximum_receive_batch = scheduled_polling_enabled_
             ? ConnectionDatagramDispatcher::maximum_turn_budget
@@ -478,9 +481,14 @@ private:
             const auto decoded = decode_packet(
                 std::span {datagram}.first(received.bytes_transferred));
             if (decoded) {
+                NativeIngressReceipt receipt;
                 dispatch(decoded.packet,
                     std::span {datagram}.first(received.bytes_transferred),
-                    received.peer);
+                    received.peer,
+                    scheduled_polling_enabled_ ? &receipt : nullptr);
+                if (receipt.dispatcher != nullptr)
+                    native_ingress_[native_ingress_count_++] =
+                        std::move(receipt);
             }
         }
 
@@ -489,8 +497,7 @@ private:
         // the receive queue is drained: preserve the connection poll deadline
         // instead of forcing another empty receive and complete route sweep.
         if (received_count == maximum_receive_batch
-            && (!scheduled_polling_enabled_
-                || scheduled_poll_round_ == nullptr)) {
+            && (!scheduled_polling_enabled_ || native_receive_ready())) {
             result.immediate_work = true;
             result.next_work_delay.reset();
         }
@@ -517,10 +524,12 @@ private:
     void observe_timer_wake_locked(
         std::optional<std::uint64_t> lateness_microseconds,
         std::chrono::steady_clock::time_point now) noexcept;
-    void dispatch(
-        const PacketView& packet,
-        std::span<const std::byte> datagram,
-        IpEndpoint peer) noexcept;
+    void dispatch(const PacketView& packet, std::span<const std::byte> datagram,
+        IpEndpoint peer, NativeIngressReceipt* receipt = nullptr) noexcept;
+    void publish_native_ingress(
+        const std::shared_ptr<ConnectionDatagramDispatcher>& dispatcher,
+        std::span<const std::byte> datagram, IpEndpoint peer,
+        NativeIngressReceipt* receipt) noexcept;
     void mark_connections_broken(int system_error) noexcept;
     bool stop(std::chrono::steady_clock::time_point deadline =
                   std::chrono::steady_clock::time_point::max()) noexcept;
@@ -536,6 +545,15 @@ private:
         std::shared_ptr<ConnectionRuntime> runtime;
         std::shared_ptr<ConnectionDatagramDispatcher> dispatcher;
     };
+    // One fixed receipt per native datagram, pinning its original dispatcher
+    // incarnation. No route-id lookup or cross-generation completion credit.
+    std::array<NativeIngressReceipt,
+        ConnectionDatagramDispatcher::maximum_turn_budget>
+        native_ingress_ {};
+    std::size_t native_ingress_count_ = 0;
+    // Setup-inbox forwarding has no established admission receipt. Preserve
+    // the prior conservative poll-sweep barrier for slices using that path.
+    bool native_setup_pending_ = false;
     bool scheduled_polling_enabled_ = false;
     std::atomic_bool poll_refresh_pending_ = false;
     std::shared_ptr<ChannelPollSendBudget> scheduled_poll_round_;
@@ -867,7 +885,8 @@ private:
     [[nodiscard]] ConnectionDatagramInbox::Status admit_datagram(
         ConnectionDatagramInbox& inbox, ConnectionDatagramInbox::Token token,
         std::span<const std::byte> bytes, IpEndpoint peer,
-        std::uint64_t now_microseconds) noexcept;
+        std::uint64_t now_microseconds,
+        std::uint64_t* admitted_cutoff = nullptr) noexcept;
     [[nodiscard]] std::uint64_t now_microseconds() const noexcept;
     [[nodiscard]] PacketTimestamp packet_timestamp(
         std::int64_t source_time_microseconds) const noexcept;

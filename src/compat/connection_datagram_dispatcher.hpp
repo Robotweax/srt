@@ -90,7 +90,7 @@ public:
     inbox() const noexcept;
     [[nodiscard]] ConnectionDatagramInbox::Status publish(
         ConnectionDatagramInbox::Token token, std::span<const std::byte> bytes,
-        IpEndpoint peer) noexcept;
+        IpEndpoint peer, std::uint64_t* admitted_cutoff = nullptr) noexcept;
     // Admission/service retirement only. A dispatched callback may finish;
     // this is not a runtime close or callback quiescence barrier.
     void retire() noexcept;

@@ -218,8 +218,10 @@ bool ConnectionDatagramInbox::bound_to(
 
 ConnectionDatagramInbox::Status ConnectionDatagramInbox::publish(Token token,
     std::span<const std::byte> bytes, IpEndpoint peer,
-    std::uint64_t now_microseconds) noexcept
+    std::uint64_t now_microseconds, std::uint64_t* admitted_cutoff) noexcept
 {
+    if (admitted_cutoff != nullptr)
+        *admitted_cutoff = 0;
     if (ingress_bound_) {
         const auto runtime = ingress_runtime_.lock();
         if (runtime == nullptr) {
@@ -227,14 +229,15 @@ ConnectionDatagramInbox::Status ConnectionDatagramInbox::publish(Token token,
             return Status::closed;
         }
         return runtime->admit_datagram(
-            *this, token, bytes, peer, now_microseconds);
+            *this, token, bytes, peer, now_microseconds, admitted_cutoff);
     }
-    return publish_unfenced(token, bytes, peer, now_microseconds);
+    return publish_unfenced(
+        token, bytes, peer, now_microseconds, admitted_cutoff);
 }
 
 ConnectionDatagramInbox::Status ConnectionDatagramInbox::publish_unfenced(
     Token token, std::span<const std::byte> bytes, IpEndpoint peer,
-    std::uint64_t now_microseconds) noexcept
+    std::uint64_t now_microseconds, std::uint64_t* admitted_cutoff) noexcept
 {
     // Decode before classifying admission; a caller cannot label DATA control.
     if (bytes.empty() || bytes.size() > DatagramEnvelope::maximum_size
@@ -282,7 +285,10 @@ ConnectionDatagramInbox::Status ConnectionDatagramInbox::publish_unfenced(
     snapshot_.highwater = std::max(snapshot_.highwater, snapshot_.queued);
     // Notify under the publication mutex, including when already nonempty.
     // A running consumer can never finish its turn across an unseen insertion.
-    return notify_locked();
+    const auto status = notify_locked();
+    if (status == Status::accepted && admitted_cutoff != nullptr)
+        *admitted_cutoff = snapshot_.admitted;
+    return status;
 }
 
 ConnectionDatagramInbox::Status ConnectionDatagramInbox::pop(Token token,

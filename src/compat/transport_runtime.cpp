@@ -1415,6 +1415,9 @@ DatagramChannel::ShutdownStatus DatagramChannel::shutdown(
     }
     // stop() joined the channel task. Captured polls remain safe through service
     // retirement below, but must not retain coordinator receipts after shutdown.
+    native_ingress_ = {};
+    native_ingress_count_ = 0;
+    native_setup_pending_ = false;
     scheduled_polls_ = {};
     scheduled_poll_count_ = 0;
     scheduled_poll_round_.reset();
@@ -1643,8 +1646,53 @@ void DatagramChannel::run_scheduled(const ScheduledWorkContext* context,
     }
 }
 
+bool DatagramChannel::native_receive_ready() noexcept
+{
+    if (native_setup_pending_
+        && (scheduled_poll_round_ != nullptr || poll_round_remaining_ != 0U
+            || poll_round_ingress_pending_))
+        return false;
+    for (std::size_t index = 0; index < native_ingress_count_; ++index) {
+        const auto& receipt = native_ingress_[index];
+        const auto ingress = receipt.dispatcher->inbox()->snapshot();
+        // Close/retirement discards admission; it does not fabricate protocol
+        // completion or release callback storage. The pinned old dispatcher
+        // cannot grant credit to a replacement route with the same socket id.
+        if (!ingress.closed
+            && (ingress.completed < receipt.cutoff
+                || !receipt.dispatcher->setup_prefix_complete()))
+            return false;
+    }
+    native_ingress_ = {};
+    native_ingress_count_ = 0;
+    native_setup_pending_ = false;
+    return true;
+}
+
+void DatagramChannel::publish_native_ingress(
+    const std::shared_ptr<ConnectionDatagramDispatcher>& dispatcher,
+    std::span<const std::byte> datagram, IpEndpoint peer,
+    NativeIngressReceipt* receipt) noexcept
+{
+    std::uint64_t cutoff = 0;
+    const auto status = dispatcher->publish(dispatcher->inbox()->token(),
+        datagram, peer, receipt != nullptr ? &cutoff : nullptr);
+    if (receipt == nullptr)
+        return;
+    if (status == ConnectionDatagramInbox::Status::full) {
+        // A foreign publisher may have used the ring before this arrival.
+        // Keep finite backpressure instead of retrying native admission into
+        // the same full inbox on every channel turn.
+        cutoff = dispatcher->inbox()->snapshot().admitted;
+    } else if (status != ConnectionDatagramInbox::Status::accepted) {
+        return;
+    }
+    *receipt = {dispatcher, cutoff};
+}
+
 void DatagramChannel::dispatch(const PacketView& packet,
-    std::span<const std::byte> datagram, IpEndpoint peer) noexcept
+    std::span<const std::byte> datagram, IpEndpoint peer,
+    NativeIngressReceipt* receipt) noexcept
 {
     if (packet.kind == PacketKind::control
         && packet.control.type == ControlType::handshake) {
@@ -1735,8 +1783,8 @@ void DatagramChannel::dispatch(const PacketView& packet,
             if (replay_runtime->accepts_handshake_replay(
                     decoded.message, peer)) {
                 // A valid but full replay is consumed, never diverted to setup.
-                (void)replay_dispatcher->publish(
-                    replay_dispatcher->inbox()->token(), datagram, peer);
+                publish_native_ingress(
+                    replay_dispatcher, datagram, peer, receipt);
                 return;
             }
         } else if (replay_runtime != nullptr
@@ -1744,6 +1792,8 @@ void DatagramChannel::dispatch(const PacketView& packet,
             return;
         }
         if (setup_inbox != nullptr) {
+            if (receipt != nullptr)
+                native_setup_pending_ = true;
             (void)setup_inbox->push(datagram, peer);
             return;
         }
@@ -1790,10 +1840,12 @@ void DatagramChannel::dispatch(const PacketView& packet,
         setup_prefix->finish_promotion();
     }
     if (dispatcher != nullptr) {
-        (void)dispatcher->publish(dispatcher->inbox()->token(), datagram, peer);
+        publish_native_ingress(dispatcher, datagram, peer, receipt);
     } else if (runtime != nullptr) {
         runtime->process_packet(packet, peer);
     } else if (setup_inbox != nullptr) {
+        if (receipt != nullptr)
+            native_setup_pending_ = true;
         (void)setup_inbox->push(datagram, peer);
     }
 }
@@ -4455,7 +4507,7 @@ RuntimePollResult ConnectionRuntime::poll() noexcept
 ConnectionDatagramInbox::Status ConnectionRuntime::admit_datagram(
     ConnectionDatagramInbox& inbox, ConnectionDatagramInbox::Token token,
     std::span<const std::byte> bytes, IpEndpoint peer,
-    std::uint64_t publication_time) noexcept
+    std::uint64_t publication_time, std::uint64_t* admitted_cutoff) noexcept
 {
     std::lock_guard lock(mutex_);
     if (locally_closed_ || broken_) {
@@ -4466,8 +4518,8 @@ ConnectionDatagramInbox::Status ConnectionRuntime::admit_datagram(
     }
     // Bounded copy and pure reserved-service notification only. No injected
     // clock or protocol callback executes across this admission fence.
-    const auto status =
-        inbox.publish_unfenced(token, bytes, peer, publication_time);
+    const auto status = inbox.publish_unfenced(
+        token, bytes, peer, publication_time, admitted_cutoff);
     if (status == ConnectionDatagramInbox::Status::exhausted) {
         break_locked(0);
     }
