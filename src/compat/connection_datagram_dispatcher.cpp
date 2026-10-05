@@ -36,6 +36,40 @@ void ChannelPollSendBudget::refund(std::size_t unused) noexcept
     remaining_.fetch_add(unused, std::memory_order_relaxed);
 }
 
+void ChannelPollSendBudget::begin_completion_window() noexcept
+{
+    std::lock_guard lock(completion_mutex_);
+    completion_window_ = true;
+}
+
+bool ChannelPollSendBudget::enroll_poll() noexcept
+{
+    std::lock_guard lock(completion_mutex_);
+    if (!completion_window_)
+        return true;
+    if (enrollment_sealed_ || pending_polls_ == maximum_poll_requests)
+        return false;
+    ++pending_polls_;
+    return true;
+}
+
+bool ChannelPollSendBudget::finish_poll(bool urgent) noexcept
+{
+    std::lock_guard lock(completion_mutex_);
+    if (!completion_window_)
+        return true;
+    if (pending_polls_ != 0U)
+        --pending_polls_;
+    return urgent || (enrollment_sealed_ && pending_polls_ == 0U);
+}
+
+bool ChannelPollSendBudget::seal_completion_window() noexcept
+{
+    std::lock_guard lock(completion_mutex_);
+    enrollment_sealed_ = true;
+    return pending_polls_ == 0U;
+}
+
 struct ConnectionDatagramDispatcher::State {
     const std::weak_ptr<ConnectionRuntime> runtime;
     const Configuration configuration;
@@ -74,13 +108,23 @@ struct ConnectionDatagramDispatcher::State {
     {
         inbox->close();
         std::shared_ptr<DatagramInbox> released;
+        std::shared_ptr<ChannelPollSendBudget> cancelled_poll;
         {
             std::lock_guard lock(prefix_mutex);
             retired = true;
             active = false;
-            pending_poll.reset();
+            cancelled_poll = std::move(pending_poll);
             poll_completion.reset();
             released = std::move(setup_prefix);
+        }
+        if (cancelled_poll != nullptr && cancelled_poll->finish_poll(true)) {
+            if (const auto target = runtime.lock()) {
+                if (configuration.before_poll_wake_for_testing != nullptr) {
+                    configuration.before_poll_wake_for_testing(
+                        configuration.poll_wake_context_for_testing.get());
+                }
+                target->notify_channel_poll_completion();
+            }
         }
         if (auto service = binding.lock(); service != nullptr) {
             service->retire();
@@ -200,14 +244,36 @@ struct ConnectionDatagramDispatcher::State {
                 if (terminal)
                     self.retire();
             }
+            const auto completed_at = std::chrono::steady_clock::now();
+            bool retired;
             {
                 std::lock_guard lock(self.prefix_mutex);
                 self.poll_active = false;
-                if (!self.retired)
-                    self.poll_completion = PollCompletion {result, used,
-                        std::move(round), std::chrono::steady_clock::now()};
+                retired = self.retired;
+                if (!retired)
+                    self.poll_completion =
+                        PollCompletion {result, used, round, completed_at};
             }
-            runtime->notify_channel_poll_completion();
+            const auto ingress_wait =
+                std::chrono::microseconds {round->ingress_wait_microseconds_};
+            const auto horizon = completed_at + ingress_wait;
+            // Only an idle, non-urgent partial receipt can wait for the other
+            // members of this same window. Unknown/short/absolute deadlines,
+            // runnable work and retirement keep their existing immediate wake.
+            const bool urgent = retired || result.immediate_work
+                || !result.receive_wait_safe
+                || (result.next_work_delay.has_value()
+                    && *result.next_work_delay <= ingress_wait)
+                || (result.next_work_deadline.has_value()
+                    && *result.next_work_deadline <= horizon);
+            if (round->finish_poll(urgent)) {
+                if (self.configuration.before_poll_wake_for_testing
+                    != nullptr) {
+                    self.configuration.before_poll_wake_for_testing(
+                        self.configuration.poll_wake_context_for_testing.get());
+                }
+                runtime->notify_channel_poll_completion();
+            }
         }
         self.dispatched_datagrams.fetch_add(
             consumed, std::memory_order_relaxed);
@@ -363,9 +429,12 @@ bool ConnectionDatagramDispatcher::request_poll(
     if (state_->retired || !state_->active || state_->pending_poll != nullptr
         || state_->poll_active || state_->poll_completion.has_value())
         return false;
+    if (!round->enroll_poll())
+        return false;
     state_->pending_poll = std::move(round);
     if (binding_->notify({.send = true})
         != RuntimeScheduler::SubmitStatus::accepted) {
+        (void)state_->pending_poll->finish_poll(false);
         state_->pending_poll.reset();
         return false;
     }

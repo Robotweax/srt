@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 
 namespace robotweax::srt::compat {
 class ConnectionRuntime;
@@ -18,6 +19,7 @@ class DatagramInbox;
 class ChannelPollSendBudget {
 public:
     static constexpr std::size_t maximum_attempts = 64;
+    static constexpr std::size_t maximum_poll_requests = 4;
     [[nodiscard]] std::size_t remaining() const noexcept
     {
         return remaining_.load(std::memory_order_relaxed);
@@ -34,6 +36,16 @@ private:
     }
     [[nodiscard]] std::size_t take(std::size_t maximum) noexcept;
     void refund(std::size_t unused) noexcept;
+    // Only the channel coordinator opens/closes a finite four-request window.
+    // Standalone internal polls keep their existing per-completion wake.
+    void begin_completion_window() noexcept;
+    [[nodiscard]] bool enroll_poll() noexcept;
+    [[nodiscard]] bool finish_poll(bool urgent) noexcept;
+    [[nodiscard]] bool seal_completion_window() noexcept;
+    std::mutex completion_mutex_;
+    std::size_t pending_polls_ = 0;
+    bool completion_window_ = false;
+    bool enrollment_sealed_ = false;
     const std::weak_ptr<DatagramChannel> channel_;
     const std::uint64_t ingress_wait_microseconds_;
     std::atomic<std::size_t> remaining_ {maximum_attempts};
@@ -50,6 +62,8 @@ public:
         std::shared_ptr<void> now_context = nullptr;
         void (*after_pop_for_testing)(void*) noexcept = nullptr;
         std::shared_ptr<void> after_pop_context_for_testing = nullptr;
+        void (*before_poll_wake_for_testing)(void*) noexcept = nullptr;
+        std::shared_ptr<void> poll_wake_context_for_testing = nullptr;
     };
     struct Snapshot {
         std::uint64_t completed_turns = 0;
