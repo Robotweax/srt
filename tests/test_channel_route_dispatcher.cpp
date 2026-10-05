@@ -4214,3 +4214,179 @@ TEST(channel_poll_completion_keeps_idle_control_deadline_partial_wake)
     fixture.channel->unregister_connection(700);
     fixture.channel->unregister_connection(701);
 }
+
+// Buffered completion wakes remain urgent despite explicit maintenance bounds.
+TEST(channel_buffered_poll_partial_receipt_keeps_urgent_delivery_wake)
+{
+    for (const std::uint64_t protocol_time : {1000U, 119000U}) {
+        std::atomic<std::uint64_t> now {1000};
+        SinkFixture fixture;
+        REQUIRE(fixture.channel->enable_scheduled_polling());
+        fixture.budget = std::make_shared<DatagramStorageBudget>(
+            2 * *ConnectionDatagramInbox::storage_bytes(16));
+        cohort_runtime(fixture, now, false,
+            {.receive_tsbpd = true, .receive_delay_milliseconds = 120});
+        const auto wire = sink_data(0);
+        fixture.runtime->process_packet(
+            decode_packet(wire.view()).packet, sink_peer);
+        now.store(protocol_time);
+        const auto delivery =
+            fixture.runtime->receive_snapshot(SequenceNumber {1000}, false);
+        REQUIRE(delivery.buffered);
+        REQUIRE(delivery.complete_expected);
+        REQUIRE(!delivery.readable_sequence.has_value());
+        REQUIRE(delivery.next_delivery.has_value());
+        // Keep the short maintenance bound and shorten it for future delivery.
+        const auto result = fixture.runtime->poll();
+        REQUIRE(!result.immediate_work);
+        REQUIRE(!result.receive_wait_safe);
+        REQUIRE_EQ(result.next_work_delay,
+            std::chrono::microseconds {protocol_time == 1000 ? 2000 : 1000});
+        REQUIRE(result.next_work_deadline.has_value());
+        auto gate = std::make_shared<SinkGate>();
+        SinkRelease release {gate};
+        sink_block_worker(fixture, gate);
+        auto first_gate = std::make_shared<SinkGate>();
+        SinkRelease first_release {first_gate};
+        REQUIRE_EQ(fixture.scheduler->submit(
+                       0, {.function = SinkGate::block, .context = first_gate}),
+            RuntimeScheduler::SubmitStatus::accepted);
+        first_gate->wait();
+        auto probe = std::make_shared<PollWakeProbe>();
+        auto first = ConnectionDatagramDispatcher::create(fixture.runtime,
+            fixture.scheduler, fixture.budget, 0, sink_peer,
+            {.capacity = 16, .control_reserve = 0},
+            {.before_poll_wake_for_testing = PollWakeProbe::observe,
+                .poll_wake_context_for_testing = probe});
+        auto other_runtime = fixture.make_runtime(91, nullptr, false);
+        auto last = ConnectionDatagramDispatcher::create(other_runtime,
+            fixture.scheduler, fixture.budget, 1, sink_peer,
+            {.capacity = 16, .control_reserve = 0},
+            {.before_poll_wake_for_testing = PollWakeProbe::observe,
+                .poll_wake_context_for_testing = probe});
+        REQUIRE(first != nullptr);
+        REQUIRE(last != nullptr);
+        REQUIRE(
+            fixture.channel->register_connection(700, fixture.runtime, first));
+        REQUIRE(fixture.channel->register_connection(701, other_runtime, last));
+        const auto channel_time = ConnectionRuntime::Clock::time_point {};
+        REQUIRE(!fixture.channel->poll_connections_for_testing(channel_time)
+                .immediate_work);
+        first_gate->release();
+        await_coordinated_turn(first);
+        REQUIRE_EQ(probe->wakes.load(), 1U);
+        const auto repark =
+            fixture.channel->poll_connections_for_testing(channel_time);
+        REQUIRE(!repark.immediate_work);
+        REQUIRE_EQ(repark.next_work_delay, std::chrono::microseconds {2000});
+        REQUIRE_EQ(repark.next_work_deadline,
+            channel_time + std::chrono::microseconds {2000});
+        REQUIRE_EQ(last->snapshot().completed_turns, 0U);
+        REQUIRE(!first->take_poll_completion()
+                .has_value()); // coordinator collected it
+        REQUIRE_EQ(
+            fixture.runtime->buffer_packet_counts().available_receive, 1U);
+        const auto after =
+            fixture.runtime->receive_snapshot(SequenceNumber {1000}, false);
+        REQUIRE(after.next_delivery.has_value());
+        REQUIRE(!after.readable_sequence.has_value());
+        gate->release();
+        await_coordinated_turn(last);
+        (void)fixture.channel->poll_connections_for_testing(channel_time);
+        now.store(120001);
+        sink_receive(fixture.runtime, std::byte {1});
+        REQUIRE_EQ(
+            fixture.runtime->buffer_packet_counts().available_receive, 0U);
+        fixture.channel->unregister_connection(700);
+        fixture.channel->unregister_connection(701);
+    }
+}
+
+TEST(channel_buffered_poll_deadline_bounds_control_and_readable_data)
+{
+    for (const auto& item :
+        std::array {std::pair {9999U, 1U}, std::pair {120001U, 2000U}}) {
+        std::atomic<std::uint64_t> now {1000};
+        SinkFixture fixture;
+        // Keep the control scheduler's construction epoch deterministic too.
+        fixture.runtime = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {.channel = fixture.channel,
+                .peer = sink_peer,
+                .peer_socket_id = 90,
+                .initial_sequence = SequenceNumber {1000},
+                .negotiated_options = {.receive_tsbpd = true,
+                    .receive_delay_milliseconds = 120},
+                .origin =
+                    ConnectionRuntime::Clock::now() + std::chrono::minutes {1},
+                .now_function = ingress_idle_now,
+                .now_context = &now});
+        const auto wire = sink_data(0);
+        fixture.runtime->process_packet(
+            decode_packet(wire.view()).packet, sink_peer);
+        now.store(item.first);
+        const auto result = fixture.runtime->poll();
+        REQUIRE(!result.immediate_work);
+        REQUIRE(!result.receive_wait_safe);
+        REQUIRE_EQ(
+            result.next_work_delay, std::chrono::microseconds {item.second});
+        REQUIRE(result.next_work_deadline.has_value());
+        REQUIRE_EQ(
+            fixture.runtime->buffer_packet_counts().available_receive, 1U);
+        if (item.first > 120000) {
+            REQUIRE(fixture.runtime->readable());
+            sink_receive(fixture.runtime, std::byte {1});
+        }
+    }
+}
+
+TEST(channel_buffered_poll_deadline_preserves_native_clock_origin)
+{
+    SinkFixture fixture;
+    const auto origin =
+        ConnectionRuntime::Clock::now() + std::chrono::minutes {1};
+    fixture.runtime = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.channel = fixture.channel,
+            .peer = sink_peer,
+            .peer_socket_id = 90,
+            .initial_sequence = SequenceNumber {1000},
+            .negotiated_options = {.receive_tsbpd = true,
+                .receive_delay_milliseconds = 120},
+            .origin = origin});
+    const auto wire = sink_data(0);
+    fixture.runtime->process_packet(
+        decode_packet(wire.view()).packet, sink_peer);
+    const auto result = fixture.runtime->poll();
+    REQUIRE(!result.receive_wait_safe);
+    // A future origin clamps the native protocol clock to zero without a
+    // narrow real-time race; deadline conversion must retain that origin.
+    REQUIRE_EQ(
+        result.next_work_deadline, origin + std::chrono::microseconds {2000});
+}
+
+TEST(channel_buffered_poll_deadline_bounds_peer_timeout)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    fixture.runtime = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.channel = fixture.channel,
+            .peer = sink_peer,
+            .peer_socket_id = 90,
+            .initial_sequence = SequenceNumber {1000},
+            .negotiated_options = {.receive_tsbpd = true,
+                .receive_delay_milliseconds = 120},
+            .peer_idle_timeout_milliseconds = 1,
+            .now_function = ingress_idle_now,
+            .now_context = &now});
+    const auto wire = sink_data(0);
+    fixture.runtime->process_packet(
+        decode_packet(wire.view()).packet, sink_peer);
+    now.store(2000);
+    const auto result = fixture.runtime->poll();
+    REQUIRE(!fixture.runtime->broken());
+    REQUIRE(!result.receive_wait_safe);
+    REQUIRE_EQ(result.next_work_delay, std::chrono::microseconds {1});
+    REQUIRE(result.next_work_deadline.has_value());
+    now.store(2001);
+    (void)fixture.runtime->poll();
+    REQUIRE(fixture.runtime->broken());
+}

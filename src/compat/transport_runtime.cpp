@@ -4861,13 +4861,38 @@ RuntimePollResult ConnectionRuntime::poll_locked(
     }
 #endif
     if (!paced_work) {
-        // Buffered DATA, receive delivery/drop work and pending key exchanges
-        // retain the short polling path. Sensor retirement still bounds it.
-        if (!session_.idle_for_receive_wait()
-            || session_.next_receive_delivery_time().has_value()
+        // Buffered receive work remains unsafe for native readiness parking.
+        // Its next future delivery/control/retirement/peer deadline can still
+        // shorten the existing bounded maintenance poll. This is not a grant
+        // to defer its completion notification or to skip other protocol work.
+        const auto delivery = session_.next_receive_delivery_time();
+        if (!session_.idle_for_receive_wait() || delivery.has_value()
             || (crypto_ != nullptr
                 && !crypto_->pending_key_material().empty())) {
-            return {.next_work_delay = retirement_delay};
+            if (!delivery.has_value())
+                return {.next_work_delay = retirement_delay};
+            const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
+            auto deadline = current
+                + std::min(
+                    maximum_ingress_poll_wait_microseconds, maximum - current);
+            deadline =
+                std::min(deadline, session_.next_control_deadline(current));
+            deadline = std::min(deadline,
+                last_peer_activity_microseconds_
+                    + std::min(idle_limit + 1U,
+                        maximum - last_peer_activity_microseconds_));
+            if (retirement_deadline.has_value())
+                deadline = std::min(deadline, *retirement_deadline);
+            // Once DATA is readable, application consumption owns delivery.
+            // Repeatedly returning that past deadline would spin the channel
+            // while a receiver deliberately leaves the payload buffered.
+            if (*delivery > current)
+                deadline = std::min(deadline, *delivery);
+            const auto remaining = deadline > current ? deadline - current : 0U;
+            return {.next_work_delay = std::chrono::microseconds {remaining},
+                .next_work_deadline = now_function_ == nullptr
+                    ? deadline_from_origin_microseconds(origin_, deadline)
+                    : deadline_after_relative_microseconds(current, deadline)};
         }
         const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
         const auto timeout = last_peer_activity_microseconds_

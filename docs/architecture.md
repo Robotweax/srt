@@ -577,6 +577,19 @@ completions and uses the existing notification/timer machinery. It never falls
 back to inline polling for a refused dispatcher request. Direct routes retain
 synchronous polling and share the same channel allowance.
 
+A buffered TSBPD receiver retains `receive_wait_safe=false` and immediate
+completion notification. Its ordinary poll now exposes a relative and absolute
+maintenance deadline bounded by two milliseconds, shortened by a future
+receive-delivery, control, sender/sensor retirement or peer-timeout deadline.
+The bound remains conservative for other send/retry/crypto work; a known time
+alone does not permit completion deferral or native readiness parking. An
+already readable payload no longer supplies a future delivery deadline, so
+leaving DATA buffered in the application does not force a zero-delay loop.
+Default protocol clocks convert deadlines from the connection origin; injected
+clocks use relative conversion. Partial-window collection still uses its
+existing bounded waiting path; this change does not claim that a partial receipt
+can advance its completed route while another worker remains pending.
+
 Selected channel receive slices are capped at 16 datagrams, matching the maximum
 service turn instead of the legacy 64-datagram receive quantum. A fixed array of
 at most 16 native admission receipts captures each affected dispatcher and its
