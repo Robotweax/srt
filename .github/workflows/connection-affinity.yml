@@ -14,6 +14,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       connection_affinity: true
+      without_integrations: true
 
   qualification_gate:
     name: Connection affinity qualification gate

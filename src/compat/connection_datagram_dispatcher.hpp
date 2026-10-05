@@ -36,7 +36,8 @@ private:
     }
     [[nodiscard]] std::size_t take(std::size_t maximum) noexcept;
     void refund(std::size_t unused) noexcept;
-    // Only the channel coordinator opens/closes a finite four-request window.
+    // Only the channel coordinator opens/closes enrollment for at most four
+    // outstanding captured members. Renewals retain the original send budget.
     // Standalone internal polls keep their existing per-completion wake.
     void begin_completion_window() noexcept;
     [[nodiscard]] bool enroll_poll() noexcept;

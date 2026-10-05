@@ -401,6 +401,11 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         robotweax_srt_tests robotweax_srt_rotation_tests
         robotweax_srt_group_retention_prefix_tests
         robotweax_srt_group_retention_oversized_tests PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        # The full core suite takes 24-26 seconds in Windows Debug on hosted
+        # runners; allow scheduling variance without relaxing smaller suites.
+        set_tests_properties(robotweax_srt_tests PROPERTIES TIMEOUT 60)
+    endif()
     set_tests_properties(robotweax_srt_rotation_tests PROPERTIES LABELS "encryption")
     add_test(NAME robotweax_srt_rejects_empty_test_selection
         COMMAND robotweax_srt_tests robotweax_nonexistent_test_filter)

@@ -1982,9 +1982,24 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
         // Completion notifications wake the existing channel task. A bounded
         // timer also covers retirement/no-notification and rejected admission;
         // never spin merely because a service callback has not completed.
-        const auto deadline = now + idle_wait_;
+        auto deadline = now + idle_wait_;
+        if (scheduled_poll_round_ != nullptr
+            && scheduled_poll_round_->remaining() != 0U) {
+            for (std::size_t index = 0; index < scheduled_poll_count_;
+                ++index) {
+                const auto& poll = scheduled_polls_[index];
+                // Expired/refused work must never make an incomplete window
+                // spin. Due captured members are renewed before this wait.
+                if (poll.completed && poll.deadline.has_value()
+                    && *poll.deadline > now)
+                    deadline = std::min(deadline, *poll.deadline);
+            }
+        }
         return RuntimePollResult {
-            .next_work_delay = idle_wait_, .next_work_deadline = deadline};
+            .next_work_delay =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    deadline - now),
+            .next_work_deadline = deadline};
     };
     if (scheduled_poll_round_ != nullptr) {
         bool pending = false;
@@ -2000,13 +2015,21 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
                     && route->second.runtime == poll.runtime
                     && route->second.dispatcher == poll.dispatcher;
             }
-            auto completion = poll.dispatcher->take_poll_completion();
+            auto completion = poll.completed
+                ? std::nullopt
+                : poll.dispatcher->take_poll_completion();
             if (!current || poll.dispatcher->inbox()->snapshot().closed) {
                 // Detach retires the captured dispatcher outside the route lock.
                 // A reused socket id never inherits this old completion.
                 poll = {};
+            } else if (poll.completed) {
+                continue;
             } else if (completion.has_value()) {
                 if (completion->round == scheduled_poll_round_) {
+                    poll.completed = true;
+                    poll.deadline = poll_result_deadline(completion->result,
+                        use_absolute_deadlines ? completion->completed_at : now,
+                        use_absolute_deadlines);
                     record_poll_result(completion->result,
                         use_absolute_deadlines ? completion->completed_at : now,
                         use_absolute_deadlines);
@@ -2017,14 +2040,45 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
                     poll_round_ingress_pending_ |= ingress.queued != 0U
                         || ingress.in_flight
                         || !poll.dispatcher->setup_prefix_complete();
+                } else {
+                    poll = {};
                 }
-                poll = {};
             } else {
                 pending = true;
             }
         }
-        if (pending)
+        if (pending) {
+            bool enrollment_open = false;
+            // Four captured slots bound both outstanding service polls and
+            // renewal requests in this channel turn. A renewal never starts a
+            // new route sweep, native ingress slice, or 64-attempt allowance.
+            for (std::size_t index = 0; index < scheduled_poll_count_;
+                ++index) {
+                auto& poll = scheduled_polls_[index];
+                if (!poll.completed || !poll.deadline.has_value()
+                    || *poll.deadline > now
+                    || scheduled_poll_round_->remaining() == 0U)
+                    continue;
+                if (!enrollment_open) {
+                    scheduled_poll_round_->begin_completion_window();
+                    enrollment_open = true;
+                }
+                if (poll.dispatcher->request_poll(scheduled_poll_round_)) {
+                    poll.completed = false;
+                    poll.deadline.reset();
+                } else {
+                    // A receipt can be published before its callback clears
+                    // scheduler ownership. Preserve a finite retry if that
+                    // callback, retirement or service admission rejects reuse.
+                    poll.deadline = now + idle_wait_;
+                }
+            }
+            if (enrollment_open
+                && scheduled_poll_round_->seal_completion_window())
+                return {.immediate_work = true};
             return waiting();
+        }
+        scheduled_polls_ = {};
         scheduled_poll_count_ = 0;
         scheduled_poll_round_.reset();
         // Continue the same finite route sweep on the next channel turn. In
@@ -2104,33 +2158,44 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
     return finish_poll_round(now);
 }
 
-void DatagramChannel::record_poll_result(const RuntimePollResult& result,
+std::optional<std::chrono::steady_clock::time_point>
+DatagramChannel::poll_result_deadline(const RuntimePollResult& result,
     std::chrono::steady_clock::time_point observed_at,
-    bool use_absolute_deadlines) noexcept
+    bool use_absolute_deadlines) const noexcept
 {
-    poll_round_immediate_ |= result.immediate_work;
+    // Runnable receipts retain the conservative probe while a different
+    // member is pending; the sweep's immediate flag still applies at closure.
     const bool can_wait = readiness_available_.load(std::memory_order_acquire)
         && result.receive_wait_safe;
-    poll_round_receive_wait_safe_ &= can_wait;
-    if (can_wait && !result.next_work_delay.has_value()) {
-        return;
-    }
+    if (can_wait && !result.next_work_delay.has_value())
+        return std::nullopt;
     const auto delay = can_wait
         ? *result.next_work_delay
         : std::min(result.next_work_delay.value_or(idle_wait_),
               std::chrono::duration_cast<std::chrono::microseconds>(
                   idle_wait_));
-    // Store an absolute deadline: each continuation must not restart an
-    // earlier connection's pacing/backpressure/idle wait.
     const auto relative_deadline = observed_at + delay;
-    const auto deadline =
-        use_absolute_deadlines && result.next_work_deadline.has_value()
+    return use_absolute_deadlines && result.next_work_deadline.has_value()
         ? (can_wait ? *result.next_work_deadline
                     : std::min(*result.next_work_deadline, relative_deadline))
         : relative_deadline;
-    if (!poll_round_deadline_.has_value() || deadline < *poll_round_deadline_) {
+}
+
+void DatagramChannel::record_poll_result(const RuntimePollResult& result,
+    std::chrono::steady_clock::time_point observed_at,
+    bool use_absolute_deadlines) noexcept
+{
+    poll_round_immediate_ |= result.immediate_work;
+    poll_round_receive_wait_safe_ &=
+        readiness_available_.load(std::memory_order_acquire)
+        && result.receive_wait_safe;
+    // Preserve earlier sweep deadlines even if a captured member is renewed.
+    const auto deadline =
+        poll_result_deadline(result, observed_at, use_absolute_deadlines);
+    if (deadline.has_value()
+        && (!poll_round_deadline_.has_value()
+            || *deadline < *poll_round_deadline_))
         poll_round_deadline_ = deadline;
-    }
 }
 
 RuntimePollResult DatagramChannel::finish_poll_round(

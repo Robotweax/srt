@@ -586,9 +586,23 @@ alone does not permit completion deferral or native readiness parking. An
 already readable payload no longer supplies a future delivery deadline, so
 leaving DATA buffered in the application does not force a zero-delay loop.
 Default protocol clocks convert deadlines from the connection origin; injected
-clocks use relative conversion. Partial-window collection still uses its
-existing bounded waiting path; this change does not claim that a partial receipt
-can advance its completed route while another worker remains pending.
+clocks use relative conversion. A partial-window wait retains the earliest future
+maintenance deadline of its captured, completed routes instead of restarting
+that wait at each collection. At a captured route's deadline the coordinator can
+renew that route on its reserved worker while another captured member is still
+pending. Renewal reopens only enrollment: it retains the original channel-bound
+64-attempt allowance and all outstanding members. Four fixed slots bound both
+outstanding poll requests and new requests in each channel turn. The number of
+renewal turns is not capped; each such turn must wait for its deadline or service
+receipt and cannot refill the send allowance. Runnable receipts lacking a future deadline, failed renewals and exhausted
+allowances retain the two-millisecond fallback rather than resubmitting merely
+because an old deadline is due. Captured route/runtime/dispatcher identity is
+checked on every visit; retirement/reuse cannot grant a replacement a renewal.
+Receipt publication before callback exit may queue a renewal on the same binding
+and must not lose its follow-up service turn. Completed captures are released
+when the window closes. Earlier windows' deadlines remain in the finite sweep
+aggregate; this is not a per-route cache across windows and does not change the
+completion notification policy or native ingress receipts.
 
 Selected channel receive slices are capped at 16 datagrams, matching the maximum
 service turn instead of the legacy 64-datagram receive quantum. A fixed array of
@@ -622,7 +636,8 @@ resubmission. The next window waits for that window's pending receipts, so a slo
 callback can delay the sweep; there is no independent per-route latency promise.
 New send or receive-release work keeps a sticky refresh notification until a new
 finite sweep begins. Collecting an older idle receipt cannot park that newer work.
-Receipt-only wakeups do not set the refresh notification or requeue the service.
+Receipt-only wakeups do not set the refresh notification or directly requeue
+the service; due captured renewals remain a coordinator decision.
 Within one request window, idle partial completions with no deadline inside the
 channel's bounded ingress wait defer their receipt-only wake until the final
 member completes. The channel seals enrollment before waiting, so callbacks
@@ -630,7 +645,8 @@ that finish during enrollment cannot lose the continuation. Standalone internal
 poll requests keep their existing per-completion wake. Runnable work, short or
 unknown waits, earlier absolute deadlines and retirement retain immediate
 notification; ingress effects and external work keep their separate wake paths.
-The fixed request count and shared send allowance are unchanged.
+Captured membership remains fixed. Renewals do not add a slot or replenish
+the shared send allowance.
 Earlier deadlines survive window boundaries. Receipts record worker completion
 time so result collection cannot restart a pacing/backpressure/idle delay.
 The round captures the channel's ingress-wait policy. Setup-prefix and finite
