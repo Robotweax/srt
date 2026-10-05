@@ -873,3 +873,13 @@ close. Per-channel inbox policy, service capacity and dispatcher activation are
 unchanged. Descriptors still owned by callers remain outside this cap. The
 public affinity selector described above separately composes native admission,
 dispatchers and scheduled polling. Full candidate evaluation remains gated.
+
+The connection-affinity preview keeps stable service token indices in its
+preallocated scheduler table. Deadline and ready-service scans stop after the
+highest reserved or still executing slot, rather than visiting unused tail
+capacity on every turn. Releasing the tail trims this bound; a released callback
+keeps its slot inside the bound until its execution completes. Interior holes
+remain visible to round-robin selection, and admission capacity, generation
+checks, timer deadlines and ordinary-work alternation retain their existing
+contracts. Internal `service_slot_inspections` counts actual deadline/ready slot
+visits under the shard lock; it does not count admission scans or native wakeups.

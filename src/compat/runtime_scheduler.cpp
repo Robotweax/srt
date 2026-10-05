@@ -76,6 +76,18 @@ RuntimeScheduler::Shard::Shard(std::size_t queue_capacity,
     }
 }
 
+void RuntimeScheduler::Shard::trim_service_scan_limit() noexcept
+{
+    while (service_scan_limit != 0U) {
+        const auto& slot = service_slots[service_scan_limit - 1U];
+        if (slot.reserved || slot.executing)
+            break;
+        --service_scan_limit;
+    }
+    if (next_service >= service_scan_limit)
+        next_service = 0U;
+}
+
 bool RuntimeScheduler::Shard::timer_less(
     std::size_t left_slot, std::size_t right_slot) const noexcept
 {
@@ -447,6 +459,8 @@ RuntimeScheduler::ServiceResult RuntimeScheduler::reserve_service(
         slot.task = std::move(task);
         ++slot.generation;
         slot.reserved = true;
+        shard.service_scan_limit =
+            std::max(shard.service_scan_limit, index + 1U);
         return {.status = SubmitStatus::accepted,
             .token = {service_scope_, shard_index, index, slot.generation}};
     }
@@ -549,6 +563,7 @@ bool RuntimeScheduler::release_service(ServiceToken token) noexcept
             retired = std::move(slot.task);
             slot.task = {};
         }
+        shard.trim_service_scan_limit();
     }
     // Context destructors may call back into scheduler APIs.
     return true;
@@ -602,6 +617,7 @@ void RuntimeScheduler::stop() noexcept
             slot.deadline.reset();
         }
         shard->service_pending = 0;
+        shard->trim_service_scan_limit();
         while (!shard->timer_heap.empty()) {
             Task canceled = shard->remove_timer(0U);
             timers_canceled_.fetch_add(1U, std::memory_order_relaxed);
@@ -672,6 +688,7 @@ RuntimeScheduler::Snapshot RuntimeScheduler::snapshot() const noexcept
     for (const auto& shard : shards_) {
         std::lock_guard lock(shard->mutex);
         result.queued += shard->size;
+        result.service_slot_inspections += shard->service_slot_inspections;
         result.timers += shard->timer_heap.size();
         result.executing += shard->executing ? 1U : 0U;
         for (const auto& slot : shard->service_slots) {
@@ -707,7 +724,10 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
                     wake_deadline;
                 std::optional<std::chrono::steady_clock::time_point>
                     service_now;
-                for (auto& slot : shard.service_slots) {
+                for (std::size_t index = 0; index < shard.service_scan_limit;
+                    ++index) {
+                    auto& slot = shard.service_slots[index];
+                    ++shard.service_slot_inspections;
                     if (!slot.deadline.has_value())
                         continue;
                     if (!service_now.has_value())
@@ -732,10 +752,11 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
                     && (shard.service_turn
                         || (!timer_due && shard.size == 0U))) {
                     for (std::size_t count = 0;
-                        count < shard.service_slots.size(); ++count) {
+                        count < shard.service_scan_limit; ++count) {
+                        ++shard.service_slot_inspections;
                         const auto index = shard.next_service;
                         shard.next_service =
-                            (index + 1U) % shard.service_slots.size();
+                            (index + 1U) % shard.service_scan_limit;
                         auto& slot = shard.service_slots[index];
                         if (!slot.pending)
                             continue;
@@ -825,6 +846,7 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
                 if (!slot.reserved) {
                     retired = std::move(slot.task);
                     slot.task = {};
+                    shard.trim_service_scan_limit();
                 }
             }
         }
