@@ -207,7 +207,7 @@ struct ConnectionDatagramDispatcher::State {
                     self.poll_completion = PollCompletion {result, used,
                         std::move(round), std::chrono::steady_clock::now()};
             }
-            runtime->notify_channel_send_work();
+            runtime->notify_channel_poll_completion();
         }
         self.dispatched_datagrams.fetch_add(
             consumed, std::memory_order_relaxed);

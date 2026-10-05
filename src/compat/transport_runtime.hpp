@@ -318,6 +318,12 @@ public:
         IpEndpoint peer) noexcept;
     void set_send_hook_for_testing(
         SendHook hook, void* context) noexcept;
+    using SendCompletionHook = void (*)(
+        std::span<const std::byte>, IpEndpoint, void*) noexcept;
+    // Test-only handoff barrier after successful native I/O and after releasing
+    // send serialization. Captured shared context survives concurrent removal.
+    void set_send_completion_hook_for_testing(
+        SendCompletionHook hook, std::shared_ptr<void> context) noexcept;
     [[nodiscard]] bool register_connection(std::uint32_t protocol_socket_id,
         std::shared_ptr<ConnectionRuntime> runtime,
         std::shared_ptr<ConnectionDatagramDispatcher> dispatcher =
@@ -363,6 +369,7 @@ public:
             + std::chrono::milliseconds {250}) noexcept;
     void notify_send_work() noexcept;
     void notify_receive_release() noexcept;
+    void notify_poll_completion() noexcept;
     void set_idle_wait_for_testing(std::chrono::milliseconds timeout) noexcept;
     [[nodiscard]] bool coarse_timer_mode_for_testing() const noexcept
     {
@@ -437,7 +444,16 @@ private:
     [[nodiscard]] RuntimePollResult run_receive_slice(
         Receive&& receive) noexcept
     {
-        constexpr std::size_t maximum_receive_batch = 64;
+        // Let the selected services finish the prior receive/poll quantum
+        // before reading more UDP input. A 64-packet legacy slice exceeds the
+        // default ring's 48 data slots even with an otherwise empty inbox.
+        if (scheduled_polling_enabled_
+            && (scheduled_poll_round_ != nullptr || poll_round_remaining_ != 0U
+                || poll_round_ingress_pending_))
+            return poll_connections();
+        const std::size_t maximum_receive_batch = scheduled_polling_enabled_
+            ? ConnectionDatagramDispatcher::maximum_turn_budget
+            : 64;
         std::array<std::byte, 1500> datagram {};
         std::size_t received_count = 0;
         for (; received_count < maximum_receive_batch; ++received_count) {
@@ -472,7 +488,9 @@ private:
         // A full slice can leave UDP input unread. After would_block, however,
         // the receive queue is drained: preserve the connection poll deadline
         // instead of forcing another empty receive and complete route sweep.
-        if (received_count == maximum_receive_batch) {
+        if (received_count == maximum_receive_batch
+            && (!scheduled_polling_enabled_
+                || scheduled_poll_round_ == nullptr)) {
             result.immediate_work = true;
             result.next_work_delay.reset();
         }
@@ -519,6 +537,7 @@ private:
         std::shared_ptr<ConnectionDatagramDispatcher> dispatcher;
     };
     bool scheduled_polling_enabled_ = false;
+    std::atomic_bool poll_refresh_pending_ = false;
     std::shared_ptr<ChannelPollSendBudget> scheduled_poll_round_;
     std::array<ScheduledPoll, scheduled_poll_window_capacity>
         scheduled_polls_ {};
@@ -537,6 +556,8 @@ private:
     std::condition_variable lifecycle_idle_;
     SendHook send_hook_ = nullptr;
     void* send_hook_context_ = nullptr;
+    SendCompletionHook send_completion_hook_ = nullptr;
+    std::shared_ptr<void> send_completion_context_;
     std::mutex routes_mutex_;
     struct ConnectionRoute {
         std::shared_ptr<ConnectionRuntime> runtime;
@@ -560,6 +581,7 @@ private:
     ConnectionRoute* next_poll_route_ = nullptr;
     std::size_t poll_round_remaining_ = 0;
     bool poll_round_immediate_ = false;
+    bool poll_round_ingress_pending_ = false;
     bool poll_round_receive_wait_safe_ = true;
     std::optional<std::chrono::steady_clock::time_point> poll_round_deadline_;
     std::unordered_map<HandshakeRouteKey, ConnectionRoute*,
@@ -856,6 +878,7 @@ private:
     [[nodiscard]] bool matches_handshake_replay(
         const HandshakeMessage& message, IpEndpoint peer) const noexcept;
     void notify_channel_send_work() noexcept;
+    void notify_channel_poll_completion() noexcept;
     void notify_channel_receive_release() noexcept;
     [[nodiscard]] bool send_actions(
         const ReliabilityActions& actions,

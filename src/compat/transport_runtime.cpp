@@ -702,14 +702,24 @@ UdpIoResult DatagramChannel::send_datagram(
     std::span<const std::byte> bytes,
     IpEndpoint peer) noexcept
 {
-    std::lock_guard lock(send_mutex_);
-    if (send_closed_) {
-        return {.error = Error::io_error};
+    UdpIoResult sent;
+    SendCompletionHook completion = nullptr;
+    std::shared_ptr<void> context;
+    {
+        std::lock_guard lock(send_mutex_);
+        if (send_closed_) {
+            return {.error = Error::io_error};
+        }
+        sent = send_hook_ != nullptr
+            ? send_hook_(bytes, peer, send_hook_context_)
+            : socket.send_to(bytes, peer);
+        completion = send_completion_hook_;
+        if (completion != nullptr)
+            context = send_completion_context_;
     }
-    if (send_hook_ != nullptr) {
-        return send_hook_(bytes, peer, send_hook_context_);
-    }
-    return socket.send_to(bytes, peer);
+    if (sent && completion != nullptr)
+        completion(bytes, peer, context.get());
+    return sent;
 }
 
 void DatagramChannel::set_send_hook_for_testing(
@@ -718,6 +728,18 @@ void DatagramChannel::set_send_hook_for_testing(
     std::lock_guard lock(send_mutex_);
     send_hook_ = hook;
     send_hook_context_ = context;
+}
+
+void DatagramChannel::set_send_completion_hook_for_testing(
+    SendCompletionHook hook, std::shared_ptr<void> context) noexcept
+{
+    std::shared_ptr<void> released;
+    {
+        std::lock_guard lock(send_mutex_);
+        released = std::move(send_completion_context_);
+        send_completion_context_ = std::move(context);
+        send_completion_hook_ = hook;
+    }
 }
 
 bool DatagramChannel::register_connection(std::uint32_t protocol_socket_id,
@@ -1242,12 +1264,21 @@ bool DatagramChannel::start_with_affinity(
 
 void DatagramChannel::notify_send_work() noexcept
 {
+    if (scheduled_polling_enabled_)
+        poll_refresh_pending_.store(true, std::memory_order_release);
     notify_work(false);
 }
 
 void DatagramChannel::notify_receive_release() noexcept
 {
+    if (scheduled_polling_enabled_)
+        poll_refresh_pending_.store(true, std::memory_order_release);
     notify_work(true);
+}
+
+void DatagramChannel::notify_poll_completion() noexcept
+{
+    notify_work(false);
 }
 
 void DatagramChannel::notify_work(bool receive_release) noexcept
@@ -1923,10 +1954,18 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
                 // A reused socket id never inherits this old completion.
                 poll = {};
             } else if (completion.has_value()) {
-                if (completion->round == scheduled_poll_round_)
+                if (completion->round == scheduled_poll_round_) {
                     record_poll_result(completion->result,
                         use_absolute_deadlines ? completion->completed_at : now,
                         use_absolute_deadlines);
+                    // A service poll can complete while its bounded turn is
+                    // still draining the setup prefix or established inbox.
+                    // Its receipt does not grant another native receive slice.
+                    const auto ingress = poll.dispatcher->inbox()->snapshot();
+                    poll_round_ingress_pending_ |= ingress.queued != 0U
+                        || ingress.in_flight
+                        || !poll.dispatcher->setup_prefix_complete();
+                }
                 poll = {};
             } else {
                 pending = true;
@@ -1943,8 +1982,12 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
     {
         std::lock_guard lock(routes_mutex_);
         if (poll_round_remaining_ == 0U) {
+            // Only a fresh sweep acknowledges new work. An older receipt
+            // cannot clear a notification that arrived while it was in flight.
+            poll_refresh_pending_.store(false, std::memory_order_release);
             poll_round_remaining_ = routes_.size();
             poll_round_immediate_ = false;
+            poll_round_ingress_pending_ = false;
             poll_round_receive_wait_safe_ = true;
             poll_round_deadline_.reset();
         }
@@ -2038,7 +2081,10 @@ void DatagramChannel::record_poll_result(const RuntimePollResult& result,
 RuntimePollResult DatagramChannel::finish_poll_round(
     std::chrono::steady_clock::time_point now) noexcept
 {
-    if (poll_round_remaining_ != 0U || poll_round_immediate_) {
+    if (poll_round_remaining_ != 0U || poll_round_immediate_
+        || (scheduled_polling_enabled_ && poll_round_ingress_pending_)
+        || (scheduled_polling_enabled_
+            && poll_refresh_pending_.load(std::memory_order_acquire))) {
         return {.immediate_work = true};
     }
     const bool can_wait = poll_round_receive_wait_safe_
@@ -4879,6 +4925,13 @@ void ConnectionRuntime::notify_channel_send_work() noexcept
     }
     if (const auto channel = channel_.lock(); channel != nullptr) {
         channel->notify_send_work();
+    }
+}
+
+void ConnectionRuntime::notify_channel_poll_completion() noexcept
+{
+    if (const auto channel = channel_.lock(); channel != nullptr) {
+        channel->notify_poll_completion();
     }
 }
 

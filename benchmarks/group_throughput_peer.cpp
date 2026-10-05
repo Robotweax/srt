@@ -96,11 +96,42 @@ std::size_t pending(const std::vector<SRT_SOCKGROUPDATA>& data)
     }
     return maximum;
 }
+void report_pending(const std::vector<SRT_SOCKGROUPDATA>& data,
+    std::chrono::milliseconds elapsed)
+{
+    for (const auto& member : data) {
+        std::size_t blocks = 0;
+        std::size_t bytes = 0;
+        if (srt_getsndbuffer(member.id, &blocks, &bytes) == SRT_ERROR
+            || blocks == 0)
+            continue;
+        SRT_TRACEBSTATS sample {};
+        const bool sampled = srt_bstats(member.id, &sample, 0) != SRT_ERROR;
+        std::cerr << "group send drain elapsed_ms=" << elapsed.count()
+                  << " member=" << member.id << " token=" << member.token
+                  << " state=" << srt_getsockstate(member.id)
+                  << " pending_blocks=" << blocks << " pending_bytes=" << bytes
+                  << " stats_available=" << sampled
+                  << " unique_sent=" << sample.pktSentUniqueTotal
+                  << " received_acks=" << sample.pktRecvACKTotal
+                  << " retransmitted=" << sample.pktRetransTotal
+                  << " send_drops=" << sample.pktSndDropTotal << '\n';
+    }
+}
 void drain(const std::vector<SRT_SOCKGROUPDATA>& data)
 {
-    const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
+    const auto started = Clock::now();
+    const auto deadline = started + std::chrono::milliseconds(timeout_ms);
+    auto next_report = started + std::chrono::seconds {1};
     while (pending(data) != 0) {
-        require(Clock::now() < deadline, "send drain timeout");
+        const auto now = Clock::now();
+        if (now >= next_report) {
+            report_pending(data,
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - started));
+            next_report = now + std::chrono::seconds {1};
+        }
+        require(now < deadline, "send drain timeout");
         std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
 }

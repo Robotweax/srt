@@ -7,8 +7,17 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      connection_affinity:
+        description: Qualify the opt-in connection affinity candidate
+        type: boolean
+        default: false
   workflow_call:
     inputs:
+      connection_affinity:
+        description: Qualify the opt-in connection affinity candidate
+        type: boolean
+        default: false
       integrations_only:
         description: Run only the complete release integration suite
         type: boolean
@@ -20,6 +29,7 @@ permissions:
   contents: read
 
 env:
+  ROBOTWEAX_SRT_CONNECTION_AFFINITY: ${{ inputs.connection_affinity && '1' || '0' }}
   OBS_COMMIT: ba2f32bdf791005443988a4955e963663e16b1ed
   VLC_COMMIT: 6de05adcbaf2e8b85fe86aad4169393098628119
   GSTREAMER_COMMIT: 070125524a8422e29d3b69a372ed4f62fd343ffa
@@ -166,6 +176,7 @@ jobs:
           cat "$output_file" >> "$GITHUB_OUTPUT"
           {
             echo "### CI change classification"
+            echo "Connection affinity selector: ${ROBOTWEAX_SRT_CONNECTION_AFFINITY:-0}"
             echo
             if [[ -s "$changed_file" ]]; then
               echo '```text'
@@ -1135,6 +1146,7 @@ jobs:
           robotweax_srt_scheduler_tests
           robotweax_srt_scheduler_service_tests
           robotweax_srt_connection_affinity_model_tests
+          robotweax_srt_public_affinity_setup_tests
       - name: Run lifecycle stress suite
         env:
           TSAN_OPTIONS: halt_on_error=1
@@ -1143,8 +1155,10 @@ jobs:
           && ./build/robotweax_srt_process_exit_tests
           && ./build/robotweax_srt_global_lifecycle_tests
           && ./build/robotweax_srt_scheduler_tests
-          && ./build/robotweax_srt_scheduler_service_tests
+          && cmake -E env ROBOTWEAX_SRT_CONNECTION_AFFINITY=0
+          ./build/robotweax_srt_scheduler_service_tests
           && ./build/robotweax_srt_connection_affinity_model_tests
+          && ./build/robotweax_srt_public_affinity_setup_tests
 
   fuzz_smoke:
     name: Fuzz smoke

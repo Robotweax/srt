@@ -577,12 +577,30 @@ completions and uses the existing notification/timer machinery. It never falls
 back to inline polling for a refused dispatcher request. Direct routes retain
 synchronous polling and share the same channel allowance.
 
+Selected channel receive slices are capped at 16 datagrams, matching the maximum
+service turn instead of the legacy 64-datagram receive quantum. While a scheduled
+poll window remains in flight, the channel collects its completion receipts before
+reading another slice. Receipt collection also checks for an unfinished setup
+prefix or queued/in-flight established ingress. Those require another finite
+service sweep before native receive resumes; a poll receipt alone does not prove
+that its bounded turn drained ingress. Continuations across route windows likewise
+retain receive backpressure. A full receive slice does not force immediate receive
+continuation over that pending window. This avoids manufacturing a larger burst
+than the default inbox's 48 data slots while services are still catching up;
+remaining input stays in the native UDP buffer. Existing notification and bounded
+timer fallback drive collection. Inbox limits and rejection policy are unchanged,
+and this does not promise loss-free reception at arbitrary input rates or bypass
+the existing shared-channel window latency limitation.
+
 The coordinator stores a fixed window of four captured requests, matching four
 full 16-attempt grants within the 64-attempt allowance. The intrusive route cursor
 continues a finite sweep across windows; no fanout vector is allocated. A pending
 window uses a bounded idle timer and completion wakeups rather than immediate
 resubmission. The next window waits for that window's pending receipts, so a slow
 callback can delay the sweep; there is no independent per-route latency promise.
+New send or receive-release work keeps a sticky refresh notification until a new
+finite sweep begins. Collecting an older idle receipt cannot park that newer work.
+Receipt-only wakeups do not set the refresh notification or requeue the service.
 Earlier deadlines survive window boundaries. Receipts record worker completion
 time so result collection cannot restart a pacing/backpressure/idle delay.
 The round captures the channel's ingress-wait policy. Setup-prefix and finite
@@ -601,6 +619,17 @@ keeps the original setup. Only `0` and `1` are valid; invalid selection rejects
 bind with `SRT_EINVPARAM` and permits configuration retry. The first valid choice
 is fixed for the process lifetime, including cleanup/restart. Fork children are
 rejected before inherited selector locks.
+
+The `Connection affinity qualification` workflow reuses the normal CI with the
+selector enabled for public API, platform, sanitizer and reference interoperability
+processes. It runs on pull requests targeting `dev/connection-affinity`; manual
+CI runs can also select the `connection_affinity` input. The ordinary CI defaults
+to selector `0`. The scheduler-service policy suite explicitly pins selector `0`
+because it verifies the legacy default-zero service table and the earlier bounded
+bind primitives. The public-affinity setup suite separately exercises candidate
+admission, exhaustion, teardown and restart. Both workflows must pass before a
+candidate is accepted; passing these functional checks does not establish a
+performance benefit or replace the final candidate evaluation.
 
 Selected explicit/automatic binds and native adoption use the retained native
 channel budget even when the independent bounded-bind preview is off. They select
