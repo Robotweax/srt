@@ -191,10 +191,14 @@ public:
         std::lock_guard lock(mutex_);
         remove_expired();
 
+        const auto affinity = runtime_connection_affinity_enabled();
         const auto bounded = runtime_bounded_bind_enabled();
-        if (!bounded.has_value())
+        if (!affinity.has_value() || !bounded.has_value())
             return fail(SRT_EINVPARAM);
-        if (*bounded) {
+        if (*affinity && acquire_runtime_scheduler() == nullptr)
+            return fail(SRT_ENOBUF);
+        const bool budgeted = *bounded || *affinity;
+        if (budgeted) {
             if (explicit_binding && requested.is_ipv6()
                 && requested.is_wildcard()
                 && socket.public_options.ipv6_only == -1)
@@ -224,7 +228,7 @@ public:
 
         std::shared_ptr<DatagramChannel> candidate;
         try {
-            if (*bounded) {
+            if (budgeted) {
                 auto budget = acquire_runtime_native_channel_budget();
                 if (budget == nullptr)
                     return fail(SRT_ENOBUF);
@@ -241,6 +245,8 @@ public:
             return fail(SRT_ESYSOBJ);
         }
 
+        if (*affinity && !candidate->enable_scheduled_polling())
+            return fail(SRT_ENOBUF);
         std::int32_t effective_ipv6_only = -1;
         if (configure_socket(socket, requested, explicit_binding,
                 *candidate, effective_ipv6_only)
@@ -536,9 +542,12 @@ private:
     SocketRecord& socket,
     UDPSOCKET native_socket) noexcept
 {
+    const auto affinity = runtime_connection_affinity_enabled();
     const auto bounded = runtime_bounded_bind_enabled();
-    if (!bounded.has_value())
+    if (!affinity.has_value() || !bounded.has_value())
         return fail(SRT_EINVPARAM);
+    if (*affinity && acquire_runtime_scheduler() == nullptr)
+        return fail(SRT_ENOBUF);
     UdpSocket acquired = UdpSocket::acquire_native(
         static_cast<std::uintptr_t>(native_socket));
     if (!acquired.valid()) {
@@ -549,7 +558,7 @@ private:
 
     std::shared_ptr<DatagramChannel> channel;
     try {
-        if (*bounded) {
+        if (*bounded || *affinity) {
             auto budget = acquire_runtime_native_channel_budget();
             if (budget != nullptr)
                 channel = DatagramChannel::adopt_budgeted(acquired, budget);
@@ -566,6 +575,10 @@ private:
     } catch (...) {
         (void)acquired.release_native();
         return fail(SRT_ESYSOBJ);
+    }
+    if (*affinity && !channel->enable_scheduled_polling()) {
+        (void)channel->socket.release_native();
+        return fail(SRT_ENOBUF);
     }
     if (channel->socket.set_send_buffer_size(
             socket.public_options.udp_send_buffer_bytes)

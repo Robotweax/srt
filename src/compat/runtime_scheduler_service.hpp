@@ -17,6 +17,12 @@ class NativeChannelBudget;
 // Freeze first valid process selection; invalid input permits retry.
 [[nodiscard]] std::optional<bool> runtime_bounded_bind_enabled() noexcept;
 
+// Process-fixed public prototype selector, strict0/1, default off. Invalid
+// values permit retry. Selected setup requires budgeted native channels and
+// reserves a connection dispatcher before route commit.
+[[nodiscard]] std::optional<bool>
+runtime_connection_affinity_enabled() noexcept;
+
 // Internal process owner for up to 4,096 budgeted native channel generations.
 // Retained across cleanup; callers must explicitly use the budgeted factories.
 [[nodiscard]] std::shared_ptr<NativeChannelBudget>
@@ -42,7 +48,7 @@ acquire_runtime_inbox_storage_budget() noexcept;
 [[nodiscard]] std::shared_ptr<SchedulerServiceStorageBudget>
 acquire_runtime_service_storage_budget() noexcept;
 
-// Internal opt-in service slots per shard: strict decimal 0..4096, default 0.
+// Internal opt-in service slots per shard: strict decimal 0..4096, default0 (1024 when the public affinity prototype is selected).
 // Fixed for a scheduler generation; stopped/final-cleanup generations may differ.
 [[nodiscard]] std::optional<std::size_t> parse_runtime_scheduler_services(
     std::string_view value) noexcept;

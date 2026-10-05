@@ -300,6 +300,13 @@ public:
     // Internal cold-channel selection. No automatic public setup selection.
     [[nodiscard]] bool enable_scheduled_polling() noexcept;
 
+    [[nodiscard]] bool scheduled_polling_enabled() const noexcept
+    {
+        return scheduled_polling_enabled_;
+    }
+    [[nodiscard]] std::shared_ptr<ConnectionDatagramDispatcher>
+    connection_dispatcher_for_testing(std::uint32_t socket_id) noexcept;
+
     DatagramChannel(const DatagramChannel&) = delete;
     DatagramChannel& operator=(const DatagramChannel&) = delete;
 

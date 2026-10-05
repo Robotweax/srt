@@ -105,6 +105,9 @@ using namespace std::chrono_literals;
     if (robotweax::srt::compat::runtime_bounded_bind_enabled().has_value()) {
         _exit(29);
     }
+    if (robotweax::srt::compat::runtime_connection_affinity_enabled()
+            .has_value())
+        _exit(31);
     if (srt_getversion() != SRT_VERSION_VALUE) {
         _exit(26);
     }

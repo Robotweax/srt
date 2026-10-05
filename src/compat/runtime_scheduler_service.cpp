@@ -68,10 +68,13 @@ public:
         const char* service_setting =
             std::getenv("ROBOTWEAX_SRT_SCHEDULER_SERVICES_PER_SHARD");
 #endif
+        const auto affinity = connection_affinity_locked();
+        if (!affinity.has_value())
+            return {};
         const auto service_count = service_setting == nullptr
-            ? std::optional<std::size_t> {0U}
+            ? std::optional<std::size_t> {*affinity ? 1024U : 0U}
             : parse_runtime_scheduler_services(service_setting);
-        if (!service_count.has_value())
+        if (!service_count.has_value() || (*affinity && *service_count == 0U))
             return {};
         try {
             auto service_budget = *service_count == 0U
@@ -169,6 +172,12 @@ public:
         return selected;
     }
 
+    [[nodiscard]] std::optional<bool> connection_affinity() noexcept
+    {
+        std::lock_guard lock(mutex_);
+        return connection_affinity_locked();
+    }
+
     [[nodiscard]] std::shared_ptr<SchedulerServiceStorageBudget>
     acquire_service_budget() noexcept
     {
@@ -189,6 +198,29 @@ public:
     }
 
 private:
+    [[nodiscard]] std::optional<bool> connection_affinity_locked() noexcept
+    {
+        if (connection_affinity_.has_value())
+            return connection_affinity_;
+#if defined(_WIN32)
+        char* setting = nullptr;
+        std::size_t setting_size = 0;
+        if (_dupenv_s(
+                &setting, &setting_size, "ROBOTWEAX_SRT_CONNECTION_AFFINITY")
+            != 0)
+            return std::nullopt;
+        const std::unique_ptr<char, decltype(&std::free)> owned_setting(
+            setting, &std::free);
+#else
+        const char* setting = std::getenv("ROBOTWEAX_SRT_CONNECTION_AFFINITY");
+#endif
+        const auto selected = setting == nullptr
+            ? std::optional<bool> {false}
+            : parse_runtime_bounded_bind(setting);
+        if (selected.has_value())
+            connection_affinity_ = selected;
+        return selected;
+    }
     [[nodiscard]] std::shared_ptr<SchedulerServiceStorageBudget>
     acquire_service_budget_locked() noexcept
     {
@@ -210,6 +242,7 @@ private:
     std::shared_ptr<DatagramStorageBudget> inbox_budget_;
     std::shared_ptr<NativeChannelBudget> channel_budget_;
     std::optional<bool> bounded_bind_;
+    std::optional<bool> connection_affinity_;
 };
 
 [[nodiscard]] RuntimeSchedulerService& scheduler_service() noexcept
@@ -303,6 +336,13 @@ std::optional<bool> runtime_bounded_bind_enabled() noexcept
     if (!stateful_process_available())
         return std::nullopt;
     return scheduler_service().bounded_bind();
+}
+
+std::optional<bool> runtime_connection_affinity_enabled() noexcept
+{
+    if (!stateful_process_available())
+        return std::nullopt;
+    return scheduler_service().connection_affinity();
 }
 
 void prepare_runtime_scheduler_service() noexcept

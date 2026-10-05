@@ -689,6 +689,15 @@ bool DatagramChannel::enable_scheduled_polling() noexcept
     return true;
 }
 
+std::shared_ptr<ConnectionDatagramDispatcher>
+DatagramChannel::connection_dispatcher_for_testing(
+    std::uint32_t socket_id) noexcept
+{
+    std::lock_guard lock(routes_mutex_);
+    const auto route = routes_.find(socket_id);
+    return route == routes_.end() ? nullptr : route->second.dispatcher;
+}
+
 UdpIoResult DatagramChannel::send_datagram(
     std::span<const std::byte> bytes,
     IpEndpoint peer) noexcept

@@ -21,6 +21,7 @@
 #include "robotweax/srt/crypto_provider.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <condition_variable>
@@ -922,12 +923,28 @@ void set_key_material_state_response(
         return fail(SRT_ESYSOBJ);
     }
 
+    std::shared_ptr<ConnectionDatagramDispatcher> dispatcher;
+    if (channel->scheduled_polling_enabled()) {
+        // Fresh placement per runtime, not pointer/socket-id modulo: even-stride
+        // accepted socket ids must not collapse onto one shard.
+        static std::atomic<std::uint64_t> next_affinity {0};
+        auto scheduler = acquire_runtime_scheduler();
+        if (scheduler == nullptr)
+            return fail(SRT_ENOBUF);
+        dispatcher = channel->create_budgeted_dispatcher(runtime, scheduler,
+            next_affinity.fetch_add(1, std::memory_order_relaxed), {}, {});
+        if (dispatcher == nullptr)
+            return fail(SRT_ENOBUF);
+    }
+
     const bool route_registered = setup_inbox != nullptr
         ? channel->promote_setup_connection(
-              socket.protocol_socket_id, setup_inbox, runtime)
+              socket.protocol_socket_id, setup_inbox, runtime, dispatcher)
         : channel->register_connection(
-              socket.protocol_socket_id, runtime);
+              socket.protocol_socket_id, runtime, dispatcher);
     if (!route_registered) {
+        if (dispatcher != nullptr)
+            close_connection_runtime(runtime, {}, std::move(dispatcher));
         return fail(SRT_ENOBUF);
     }
     if (!channel->start()) {
