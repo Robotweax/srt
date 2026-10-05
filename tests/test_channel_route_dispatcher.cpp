@@ -4408,7 +4408,8 @@ struct PartialPollWindow {
     std::shared_ptr<ConnectionDatagramDispatcher> last;
     explicit PartialPollWindow(bool buffered,
         const std::shared_ptr<SinkGate>& receipt_gate = nullptr,
-        bool advancing_clock = false)
+        bool advancing_clock = false,
+        const std::shared_ptr<PollWakeProbe>& wake_probe = nullptr)
     {
         REQUIRE(fixture.channel->enable_scheduled_polling());
         fixture.budget = std::make_shared<DatagramStorageBudget>(
@@ -4439,13 +4440,20 @@ struct PartialPollWindow {
         first = ConnectionDatagramDispatcher::create(fixture.runtime,
             fixture.scheduler, fixture.budget, 0, sink_peer,
             {.capacity = 16, .control_reserve = 0},
-            {.before_poll_wake_for_testing =
-                    receipt_gate == nullptr ? nullptr : SinkGate::block,
-                .poll_wake_context_for_testing = receipt_gate});
+            {.before_poll_wake_for_testing = receipt_gate != nullptr
+                    ? SinkGate::block
+                    : wake_probe != nullptr ? PollWakeProbe::observe
+                                            : nullptr,
+                .poll_wake_context_for_testing = receipt_gate != nullptr
+                    ? std::static_pointer_cast<void>(receipt_gate)
+                    : std::static_pointer_cast<void>(wake_probe)});
         other = fixture.make_runtime(91, nullptr, false);
         last = ConnectionDatagramDispatcher::create(other, fixture.scheduler,
             fixture.budget, 1, sink_peer,
-            {.capacity = 16, .control_reserve = 0}, {});
+            {.capacity = 16, .control_reserve = 0},
+            {.before_poll_wake_for_testing =
+                    wake_probe != nullptr ? PollWakeProbe::observe : nullptr,
+                .poll_wake_context_for_testing = wake_probe});
         REQUIRE(first != nullptr);
         REQUIRE(last != nullptr);
         REQUIRE(
@@ -4650,5 +4658,70 @@ TEST(channel_partial_poll_runnable_receipt_keeps_bounded_probe)
     (void)window.poll(2000);
     window.wait_turn(2);
     REQUIRE_EQ(window.sends.attempts.load(), 32U);
+    REQUIRE_EQ(window.sends.off_worker.load(), 0U);
+}
+
+TEST(channel_buffered_completion_defers_to_established_native_revisit)
+{
+    auto probe = std::make_shared<PollWakeProbe>();
+    PartialPollWindow window {true, nullptr, false, probe};
+    const auto wire = sink_data(0);
+    window.fixture.runtime->process_packet(
+        decode_packet(wire.view()).packet, sink_peer);
+    const auto result = window.fixture.runtime->poll();
+    REQUIRE(result.buffered_completion_wait_safe);
+    REQUIRE(!result.receive_wait_safe);
+    REQUIRE_EQ(result.next_work_delay, std::chrono::microseconds {2000});
+    REQUIRE(
+        !window.fixture.channel->poll_connections_for_testing().immediate_work);
+    window.first_gate->release();
+    window.wait_turn(1);
+    REQUIRE_EQ(probe->wakes.load(), 0U);
+    REQUIRE_EQ(window.last->snapshot().completed_turns, 0U);
+    REQUIRE_EQ(window.sends.attempts.load(), 0U);
+    window.last_gate->release();
+    await_coordinated_turn(window.last);
+    REQUIRE_EQ(probe->wakes.load(), 1U);
+    // Final completion is never suppressed even when the partial was deferred.
+    REQUIRE(!window.fixture.channel->poll_connections_for_testing()
+            .receive_wait_safe);
+}
+
+TEST(channel_buffered_completion_without_native_revisit_stays_urgent)
+{
+    auto probe = std::make_shared<PollWakeProbe>();
+    PartialPollWindow window {true, nullptr, false, probe};
+    const auto wire = sink_data(0);
+    window.fixture.runtime->process_packet(
+        decode_packet(wire.view()).packet, sink_peer);
+    window.start(); // Synthetic channel clock cannot certify native wait.
+    REQUIRE_EQ(probe->wakes.load(), 1U);
+    const auto receipt = window.first->take_poll_completion();
+    REQUIRE(receipt.has_value());
+    REQUIRE(receipt->result.buffered_completion_wait_safe);
+}
+
+TEST(channel_buffered_completion_with_sender_work_stays_urgent)
+{
+    auto probe = std::make_shared<PollWakeProbe>();
+    PartialPollWindow window {true, nullptr, false, probe};
+    const auto wire = sink_data(0);
+    window.fixture.runtime->process_packet(
+        decode_packet(wire.view()).packet, sink_peer);
+    const std::array payload {std::byte {7}};
+    for (unsigned i = 0; i < 32; ++i)
+        REQUIRE_EQ(
+            window.fixture.runtime->queue_message(payload, 0, true, false, -1)
+                .status,
+            MessageIoStatus::success);
+    REQUIRE(
+        !window.fixture.channel->poll_connections_for_testing().immediate_work);
+    window.first_gate->release();
+    window.wait_turn(1);
+    REQUIRE_EQ(probe->wakes.load(), 1U);
+    const auto receipt = window.first->take_poll_completion();
+    REQUIRE(receipt.has_value());
+    REQUIRE(!receipt->result.buffered_completion_wait_safe);
+    REQUIRE(receipt->round->remaining() < 64U);
     REQUIRE_EQ(window.sends.off_worker.load(), 0U);
 }

@@ -56,11 +56,27 @@ bool ChannelPollSendBudget::enroll_poll() noexcept
     return true;
 }
 
-bool ChannelPollSendBudget::finish_poll(bool urgent) noexcept
+void ChannelPollSendBudget::set_completion_wait_deadline(
+    std::optional<std::chrono::steady_clock::time_point> deadline) noexcept
+{
+    std::lock_guard lock(completion_mutex_);
+    completion_wait_deadline_ = deadline;
+}
+
+bool ChannelPollSendBudget::finish_poll(bool urgent,
+    std::optional<std::chrono::steady_clock::time_point>
+        buffered_deadline) noexcept
 {
     std::lock_guard lock(completion_mutex_);
     if (!completion_window_)
         return true;
+    // The channel fixes this bound before collecting any receipts. Comparing
+    // under the enrollment lock prevents a worker from using an older bound
+    // while the coordinator prepares a later sleep. Final completions wake.
+    if (buffered_deadline.has_value() && completion_wait_deadline_.has_value()
+        && *buffered_deadline >= *completion_wait_deadline_
+        && *buffered_deadline > std::chrono::steady_clock::now())
+        urgent = false;
     if (pending_polls_ != 0U)
         --pending_polls_;
     return urgent || (enrollment_sealed_ && pending_polls_ == 0U);
@@ -260,16 +276,21 @@ struct ConnectionDatagramDispatcher::State {
             const auto ingress_wait =
                 std::chrono::microseconds {round->ingress_wait_microseconds_};
             const auto horizon = completed_at + ingress_wait;
-            // Only an idle, non-urgent partial receipt can wait for the other
-            // members of this same window. Unknown/short/absolute deadlines,
-            // runnable work and retirement keep their existing immediate wake.
+            // Idle non-urgent partial receipts retain their existing policy.
+            // Buffered receive-only receipts additionally need the coordinator's
+            // locked, no-later native revisit bound below. Sender/key/unknown
+            // work and retirement retain their existing immediate wake.
             const bool urgent = retired || result.immediate_work
                 || !result.receive_wait_safe
                 || (result.next_work_delay.has_value()
                     && *result.next_work_delay <= ingress_wait)
                 || (result.next_work_deadline.has_value()
                     && *result.next_work_deadline <= horizon);
-            if (round->finish_poll(urgent)) {
+            const auto buffered_deadline = !retired && !result.immediate_work
+                    && result.buffered_completion_wait_safe
+                ? result.next_work_deadline
+                : std::nullopt;
+            if (round->finish_poll(urgent, buffered_deadline)) {
                 if (self.configuration.before_poll_wake_for_testing
                     != nullptr) {
                     self.configuration.before_poll_wake_for_testing(
