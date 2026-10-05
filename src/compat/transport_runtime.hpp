@@ -369,6 +369,7 @@ public:
             + std::chrono::milliseconds {250}) noexcept;
     void notify_send_work() noexcept;
     void notify_receive_release() noexcept;
+    void notify_poll_completion() noexcept;
     void set_idle_wait_for_testing(std::chrono::milliseconds timeout) noexcept;
     [[nodiscard]] bool coarse_timer_mode_for_testing() const noexcept
     {
@@ -534,6 +535,7 @@ private:
         std::shared_ptr<ConnectionDatagramDispatcher> dispatcher;
     };
     bool scheduled_polling_enabled_ = false;
+    std::atomic_bool poll_refresh_pending_ = false;
     std::shared_ptr<ChannelPollSendBudget> scheduled_poll_round_;
     std::array<ScheduledPoll, scheduled_poll_window_capacity>
         scheduled_polls_ {};
@@ -873,6 +875,7 @@ private:
     [[nodiscard]] bool matches_handshake_replay(
         const HandshakeMessage& message, IpEndpoint peer) const noexcept;
     void notify_channel_send_work() noexcept;
+    void notify_channel_poll_completion() noexcept;
     void notify_channel_receive_release() noexcept;
     [[nodiscard]] bool send_actions(
         const ReliabilityActions& actions,

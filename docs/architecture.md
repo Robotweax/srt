@@ -594,6 +594,9 @@ continues a finite sweep across windows; no fanout vector is allocated. A pendin
 window uses a bounded idle timer and completion wakeups rather than immediate
 resubmission. The next window waits for that window's pending receipts, so a slow
 callback can delay the sweep; there is no independent per-route latency promise.
+New send or receive-release work keeps a sticky refresh notification until a new
+finite sweep begins. Collecting an older idle receipt cannot park that newer work.
+Receipt-only wakeups do not set the refresh notification or requeue the service.
 Earlier deadlines survive window boundaries. Receipts record worker completion
 time so result collection cannot restart a pacing/backpressure/idle delay.
 The round captures the channel's ingress-wait policy. Setup-prefix and finite

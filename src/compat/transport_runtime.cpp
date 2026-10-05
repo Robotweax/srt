@@ -1264,12 +1264,21 @@ bool DatagramChannel::start_with_affinity(
 
 void DatagramChannel::notify_send_work() noexcept
 {
+    if (scheduled_polling_enabled_)
+        poll_refresh_pending_.store(true, std::memory_order_release);
     notify_work(false);
 }
 
 void DatagramChannel::notify_receive_release() noexcept
 {
+    if (scheduled_polling_enabled_)
+        poll_refresh_pending_.store(true, std::memory_order_release);
     notify_work(true);
+}
+
+void DatagramChannel::notify_poll_completion() noexcept
+{
+    notify_work(false);
 }
 
 void DatagramChannel::notify_work(bool receive_release) noexcept
@@ -1965,6 +1974,9 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
     {
         std::lock_guard lock(routes_mutex_);
         if (poll_round_remaining_ == 0U) {
+            // Only a fresh sweep acknowledges new work. An older receipt
+            // cannot clear a notification that arrived while it was in flight.
+            poll_refresh_pending_.store(false, std::memory_order_release);
             poll_round_remaining_ = routes_.size();
             poll_round_immediate_ = false;
             poll_round_receive_wait_safe_ = true;
@@ -2060,7 +2072,9 @@ void DatagramChannel::record_poll_result(const RuntimePollResult& result,
 RuntimePollResult DatagramChannel::finish_poll_round(
     std::chrono::steady_clock::time_point now) noexcept
 {
-    if (poll_round_remaining_ != 0U || poll_round_immediate_) {
+    if (poll_round_remaining_ != 0U || poll_round_immediate_
+        || (scheduled_polling_enabled_
+            && poll_refresh_pending_.load(std::memory_order_acquire))) {
         return {.immediate_work = true};
     }
     const bool can_wait = poll_round_receive_wait_safe_
@@ -4901,6 +4915,13 @@ void ConnectionRuntime::notify_channel_send_work() noexcept
     }
     if (const auto channel = channel_.lock(); channel != nullptr) {
         channel->notify_send_work();
+    }
+}
+
+void ConnectionRuntime::notify_channel_poll_completion() noexcept
+{
+    if (const auto channel = channel_.lock(); channel != nullptr) {
+        channel->notify_poll_completion();
     }
 }
 

@@ -3629,3 +3629,31 @@ TEST(channel_poll_coordinator_bounds_ingress_and_waits_for_service_receipt)
     REQUIRE_EQ(dispatcher->inbox()->snapshot().control_rejections, 0U);
     REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 64U);
 }
+
+TEST(channel_poll_coordinator_refreshes_after_new_work_with_old_idle_receipt)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    REQUIRE(!fixture.channel->poll_connections_for_testing().immediate_work);
+    await_coordinated_turn(dispatcher);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    const std::array payload {std::byte {7}};
+    REQUIRE_EQ(fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    REQUIRE(fixture.channel->poll_connections_for_testing().immediate_work);
+}
+
+TEST(channel_poll_coordinator_idle_receipt_does_not_invent_new_work)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    auto dispatcher = fixture.dispatcher();
+    REQUIRE(fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    REQUIRE(!fixture.channel->poll_connections_for_testing().immediate_work);
+    await_coordinated_turn(dispatcher);
+    REQUIRE(!fixture.channel->poll_connections_for_testing().immediate_work);
+}
