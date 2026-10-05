@@ -331,15 +331,17 @@ ConnectionDatagramDispatcher::inbox() const noexcept
 
 ConnectionDatagramInbox::Status ConnectionDatagramDispatcher::publish(
     ConnectionDatagramInbox::Token token, std::span<const std::byte> bytes,
-    IpEndpoint peer) noexcept
+    IpEndpoint peer, std::uint64_t* admitted_cutoff) noexcept
 {
+    if (admitted_cutoff != nullptr)
+        *admitted_cutoff = 0;
     const auto target = state_->runtime.lock();
     if (target == nullptr || !target->accepts_datagrams()) {
         retire();
         return ConnectionDatagramInbox::Status::closed;
     }
-    const auto status =
-        state_->inbox->publish(token, bytes, peer, state_->now());
+    const auto status = state_->inbox->publish(
+        token, bytes, peer, state_->now(), admitted_cutoff);
     if (status == ConnectionDatagramInbox::Status::wake_failed) {
         if (const auto runtime = state_->runtime.lock(); runtime != nullptr) {
             runtime->mark_broken(0);

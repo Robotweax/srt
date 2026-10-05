@@ -3630,6 +3630,265 @@ TEST(channel_poll_coordinator_bounds_ingress_and_waits_for_service_receipt)
     REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 64U);
 }
 
+TEST(channel_receive_progress_does_not_wait_for_unrelated_poll_receipt)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    fixture.budget = std::make_shared<DatagramStorageBudget>(
+        2 * *ConnectionDatagramInbox::storage_bytes(64));
+    auto affected = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 0, sink_peer,
+        {.capacity = 64, .control_reserve = 16}, {.turn_budget = 16});
+    REQUIRE(affected != nullptr);
+    auto other_runtime = fixture.make_runtime(91, nullptr, false);
+    auto unrelated = ConnectionDatagramDispatcher::create(other_runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 64, .control_reserve = 16}, {.turn_budget = 16});
+    REQUIRE(unrelated != nullptr);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, affected));
+    REQUIRE(
+        fixture.channel->register_connection(701, other_runtime, unrelated));
+    // Six routes span multiple four-request windows. The paused unrelated
+    // dispatcher holds the first window while later routes remain unvisited.
+    std::array<std::shared_ptr<ConnectionRuntime>, 4> later;
+    for (std::size_t index = 0; index < later.size(); ++index) {
+        later[index] = fixture.make_runtime(
+            static_cast<std::uint32_t>(92 + index), nullptr, false);
+        REQUIRE(fixture.channel->register_connection(
+            static_cast<std::uint32_t>(702 + index), later[index]));
+    }
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    const auto unrelated_turns = unrelated->snapshot().completed_turns;
+    std::uint32_t received = 0;
+    auto receive = [&](std::span<std::byte> bytes) noexcept {
+        if (received == 32)
+            return UdpIoResult {.error = Error::would_block};
+        const auto wire = sink_data(received++);
+        std::copy(wire.view().begin(), wire.view().end(), bytes.begin());
+        return UdpIoResult {.bytes_transferred = wire.size, .peer = sink_peer};
+    };
+    (void)fixture.channel->run_once_for_testing(receive);
+    REQUIRE_EQ(received, 16U);
+    const auto deadline =
+        ConnectionRuntime::Clock::now() + std::chrono::seconds {2};
+    while (affected->inbox()->snapshot().completed != 16U
+        && ConnectionRuntime::Clock::now() < deadline)
+        std::this_thread::yield();
+    REQUIRE_EQ(affected->inbox()->snapshot().completed, 16U);
+    REQUIRE_EQ(unrelated->snapshot().completed_turns, unrelated_turns);
+    // The affected protocol work is complete. The other shard remains paused
+    // by an explicit CV gate, so its absent poll receipt cannot be mistaken
+    // for packet backpressure on the affected connection.
+    (void)fixture.channel->run_once_for_testing(receive);
+    REQUIRE_EQ(received, 32U);
+    REQUIRE_EQ(unrelated->snapshot().completed_turns, unrelated_turns);
+    REQUIRE_EQ(affected->inbox()->snapshot().data_rejections, 0U);
+}
+
+TEST(channel_receive_progress_waits_for_popped_protocol_effect)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    auto worker_gate = std::make_shared<SinkGate>();
+    SinkRelease worker_release {worker_gate};
+    sink_block_worker(fixture, worker_gate);
+    auto popped = std::make_shared<SinkGate>();
+    SinkRelease popped_release {popped};
+    fixture.budget = std::make_shared<DatagramStorageBudget>(
+        *ConnectionDatagramInbox::storage_bytes(64));
+    auto dispatcher = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 64, .control_reserve = 16},
+        {.turn_budget = 16,
+            .after_pop_for_testing = SinkGate::block,
+            .after_pop_context_for_testing = popped});
+    REQUIRE(dispatcher != nullptr);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    std::uint32_t received = 0;
+    auto receive = [&](std::span<std::byte> bytes) noexcept {
+        const auto wire = sink_data(received++);
+        std::copy(wire.view().begin(), wire.view().end(), bytes.begin());
+        return UdpIoResult {.bytes_transferred = wire.size, .peer = sink_peer};
+    };
+    (void)fixture.channel->run_once_for_testing(receive);
+    worker_gate->release();
+    popped->wait();
+    REQUIRE(dispatcher->inbox()->snapshot().in_flight);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 0U);
+    for (std::size_t turn = 0; turn < 10; ++turn) {
+        const auto pending = fixture.channel->run_once_for_testing(receive);
+        REQUIRE(!pending.immediate_work);
+        REQUIRE_EQ(received, 16U);
+    }
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().data_rejections, 0U);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 0U);
+}
+
+TEST(channel_receive_progress_cutoff_excludes_later_foreign_publication)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    fixture.budget = std::make_shared<DatagramStorageBudget>(
+        *ConnectionDatagramInbox::storage_bytes(64));
+    auto dispatcher = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 64, .control_reserve = 16}, {.turn_budget = 16});
+    REQUIRE(dispatcher != nullptr);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    std::uint32_t received = 0;
+    auto receive = [&](std::span<std::byte> bytes) noexcept {
+        const auto wire = sink_data(received++);
+        std::copy(wire.view().begin(), wire.view().end(), bytes.begin());
+        return UdpIoResult {.bytes_transferred = wire.size, .peer = sink_peer};
+    };
+    (void)fixture.channel->run_once_for_testing(receive);
+    const auto deadline =
+        ConnectionRuntime::Clock::now() + std::chrono::seconds {2};
+    while (dispatcher->inbox()->snapshot().completed != 16U
+        && ConnectionRuntime::Clock::now() < deadline)
+        std::this_thread::yield();
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 16U);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    std::uint64_t foreign_cutoff = 0;
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_data(100).view(), sink_peer, &foreign_cutoff),
+        ConnectionDatagramInbox::Status::accepted);
+    REQUIRE_EQ(foreign_cutoff, 17U);
+    // Later work cannot extend the already completed native receipt. The
+    // following native quantum does capture it as an earlier FIFO dependency.
+    (void)fixture.channel->run_once_for_testing(receive);
+    REQUIRE_EQ(received, 32U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().admitted, 33U);
+    for (std::size_t turn = 0; turn < 10; ++turn) {
+        (void)fixture.channel->run_once_for_testing(receive);
+        REQUIRE_EQ(received, 32U);
+    }
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().data_rejections, 0U);
+}
+
+TEST(channel_receive_progress_retired_receipt_cannot_alias_reused_route)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    fixture.budget = std::make_shared<DatagramStorageBudget>(
+        2 * *ConnectionDatagramInbox::storage_bytes(64));
+    auto old_runtime = fixture.runtime;
+    auto old = ConnectionDatagramDispatcher::create(old_runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 64, .control_reserve = 16}, {.turn_budget = 16});
+    REQUIRE(old != nullptr);
+    REQUIRE(fixture.channel->register_connection(700, old_runtime, old));
+    std::uint32_t received = 0;
+    auto receive = [&](std::span<std::byte> bytes) noexcept {
+        const auto wire = sink_data(received++ % 16);
+        std::copy(wire.view().begin(), wire.view().end(), bytes.begin());
+        return UdpIoResult {.bytes_transferred = wire.size, .peer = sink_peer};
+    };
+    (void)fixture.channel->run_once_for_testing(receive);
+    REQUIRE_EQ(received, 16U);
+    REQUIRE(fixture.channel->retire_connection(700) == old);
+    REQUIRE(old->inbox()->snapshot().closed);
+    REQUIRE_EQ(old->inbox()->snapshot().completed, 0U);
+    fixture.runtime = fixture.make_runtime(91, nullptr, false);
+    auto fresh = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 0, sink_peer,
+        {.capacity = 64, .control_reserve = 16}, {.turn_budget = 16});
+    REQUIRE(fresh != nullptr);
+    REQUIRE(fixture.channel->register_connection(700, fixture.runtime, fresh));
+    (void)fixture.channel->run_once_for_testing(receive);
+    REQUIRE_EQ(received, 32U);
+    REQUIRE_EQ(fresh->inbox()->snapshot().admitted, 16U);
+    REQUIRE_EQ(old->inbox()->snapshot().completed, 0U);
+    REQUIRE_EQ(old_runtime->buffer_packet_counts().available_receive, 0U);
+}
+
+TEST(channel_receive_progress_full_foreign_inbox_keeps_control_reserve)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    fixture.budget = std::make_shared<DatagramStorageBudget>(
+        *ConnectionDatagramInbox::storage_bytes(64));
+    auto dispatcher = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 64, .control_reserve = 16}, {.turn_budget = 16});
+    REQUIRE(dispatcher != nullptr);
+    REQUIRE(
+        fixture.channel->register_connection(700, fixture.runtime, dispatcher));
+    for (std::uint32_t index = 0; index < 48; ++index)
+        REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                       sink_data(index).view(), sink_peer),
+            ConnectionDatagramInbox::Status::accepted);
+    std::uint32_t received = 0;
+    auto receive = [&](std::span<std::byte> bytes) noexcept {
+        const auto wire = sink_data(48 + received++);
+        std::copy(wire.view().begin(), wire.view().end(), bytes.begin());
+        return UdpIoResult {.bytes_transferred = wire.size, .peer = sink_peer};
+    };
+    (void)fixture.channel->run_once_for_testing(receive);
+    REQUIRE_EQ(received, 16U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().data_rejections, 16U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().admitted, 48U);
+    for (std::size_t turn = 0; turn < 10; ++turn) {
+        (void)fixture.channel->run_once_for_testing(receive);
+        REQUIRE_EQ(received, 16U);
+    }
+    MutablePacketView packet;
+    packet.kind = PacketKind::control;
+    packet.control.type = ControlType::keepalive;
+    packet.control.destination_socket_id = 700;
+    SinkWire control;
+    const auto encoded = encode_packet(packet, control.bytes);
+    REQUIRE(encoded);
+    control.size = encoded.bytes_written;
+    std::uint64_t cutoff = 0;
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(), control.view(),
+                   sink_peer, &cutoff),
+        ConnectionDatagramInbox::Status::accepted);
+    REQUIRE_EQ(cutoff, 49U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().queued, 49U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().data_queued, 48U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().control_rejections, 0U);
+}
+
+TEST(channel_native_ingress_cutoff_is_zero_for_rejected_publication)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto dispatcher = fixture.dispatcher(2);
+    std::uint64_t cutoff = 99;
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_data(0).view(), sink_peer, &cutoff),
+        ConnectionDatagramInbox::Status::accepted);
+    REQUIRE_EQ(cutoff, 1U);
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_data(1).view(), sink_peer, &cutoff),
+        ConnectionDatagramInbox::Status::full);
+    REQUIRE_EQ(cutoff, 0U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().admitted, 1U);
+    dispatcher->retire();
+    cutoff = 99;
+    REQUIRE_EQ(dispatcher->publish(dispatcher->inbox()->token(),
+                   sink_data(1).view(), sink_peer, &cutoff),
+        ConnectionDatagramInbox::Status::closed);
+    REQUIRE_EQ(cutoff, 0U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 0U);
+}
+
 TEST(channel_poll_coordinator_refreshes_after_new_work_with_old_idle_receipt)
 {
     SinkFixture fixture;

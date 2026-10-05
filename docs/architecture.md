@@ -578,19 +578,28 @@ back to inline polling for a refused dispatcher request. Direct routes retain
 synchronous polling and share the same channel allowance.
 
 Selected channel receive slices are capped at 16 datagrams, matching the maximum
-service turn instead of the legacy 64-datagram receive quantum. While a scheduled
-poll window remains in flight, the channel collects its completion receipts before
-reading another slice. Receipt collection also checks for an unfinished setup
-prefix or queued/in-flight established ingress. Those require another finite
-service sweep before native receive resumes; a poll receipt alone does not prove
-that its bounded turn drained ingress. Continuations across route windows likewise
-retain receive backpressure. A full receive slice does not force immediate receive
-continuation over that pending window. This avoids manufacturing a larger burst
-than the default inbox's 48 data slots while services are still catching up;
-remaining input stays in the native UDP buffer. Existing notification and bounded
-timer fallback drive collection. Inbox limits and rejection policy are unchanged,
-and this does not promise loss-free reception at arbitrary input rates or bypass
-the existing shared-channel window latency limitation.
+service turn instead of the legacy 64-datagram receive quantum. A fixed array of
+at most 16 native admission receipts captures each affected dispatcher and its
+FIFO cutoff. The cutoff is returned under the inbox publication lock only after
+successful admission and wake delivery. Protocol completion, including any sealed
+setup prefix, grants the next native slice independently of idle/send poll receipts
+on unrelated routes. Later publications cannot extend an existing cutoff. Full
+admission records a conservative finite cutoff of the occupied inbox instead of
+repeatedly receiving into a full ring; rejection itself creates no completion
+credit. A paused affected callback still keeps the next slice in the native UDP
+buffer. Unpromoted setup-inbox forwarding retains the previous conservative
+poll-sweep barrier because that path supplies no established admission receipt.
+
+Receipts pin the original dispatcher incarnation. Retirement releases the native
+wait without advancing protocol completion or reclaiming active callback storage;
+a reused socket id cannot alias the old receipt. Shutdown releases captures after
+joining the channel task. Every turn still visits the finite poll coordinator,
+with its four-request window, shared 64-attempt allowance and absolute deadlines.
+A full native slice requests immediate continuation only if its own effects have
+completed or retired. Existing notification and bounded timer fallback drive
+waiting; inbox limits and rejection policy are unchanged. This does not promise
+loss-free reception at arbitrary input rates, independent polling of each route,
+or a performance improvement without a separate matched-head Lab experiment.
 
 The coordinator stores a fixed window of four captured requests, matching four
 full 16-attempt grants within the 64-attempt allowance. The intrusive route cursor

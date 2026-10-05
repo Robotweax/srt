@@ -5612,12 +5612,24 @@ TEST(srt_compat_ipv6_caller_listener_names_and_payload_are_end_to_end)
         0);
     REQUIRE_EQ(caller_statistics.byteMSS, listener_mss);
     REQUIRE_EQ(accepted_statistics.byteMSS, listener_mss);
+    // A slow scheduler/ACK path may cause a valid retransmission. Unique
+    // counters describe this one application payload; totals count every DATA
+    // transmission and must retain the address-family header on each copy.
+    constexpr auto packet_bytes = request.size()
+        + robotweax::srt::compat::ipv6_statistics_packet_header_bytes;
+    REQUIRE_EQ(caller_statistics.pktSentUniqueTotal, 1);
+    REQUIRE_EQ(accepted_statistics.pktRecvUniqueTotal, 1);
+    REQUIRE_EQ(caller_statistics.byteSentUniqueTotal, packet_bytes);
+    REQUIRE_EQ(accepted_statistics.byteRecvUniqueTotal, packet_bytes);
     REQUIRE_EQ(caller_statistics.byteSentTotal,
-        request.size()
-            + robotweax::srt::compat::ipv6_statistics_packet_header_bytes);
+        caller_statistics.byteSentUniqueTotal
+            + caller_statistics.byteRetransTotal);
+    REQUIRE_EQ(caller_statistics.byteSentTotal,
+        static_cast<std::uint64_t>(caller_statistics.pktSentTotal)
+            * packet_bytes);
     REQUIRE_EQ(accepted_statistics.byteRecvTotal,
-        request.size()
-            + robotweax::srt::compat::ipv6_statistics_packet_header_bytes);
+        static_cast<std::uint64_t>(accepted_statistics.pktRecvTotal)
+            * packet_bytes);
 
     REQUIRE_EQ(srt_close(caller), 0);
     REQUIRE_EQ(srt_close(accepted.load()), 0);
@@ -5745,14 +5757,24 @@ TEST(srt_compat_dual_stack_ipv6_caller_connects_to_ipv4_listener)
     REQUIRE_EQ(
         srt_bstats(accepted.load(), &accepted_statistics, 0),
         0);
+    // A slow scheduler/ACK path may cause a valid retransmission. Unique
+    // counters describe this one application payload; totals count every DATA
+    // transmission and must retain the address-family header on each copy.
+    constexpr auto packet_bytes = sizeof(payload)
+        + robotweax::srt::compat::ipv4_statistics_packet_header_bytes;
+    REQUIRE_EQ(caller_statistics.pktSentUniqueTotal, 1);
+    REQUIRE_EQ(accepted_statistics.pktRecvUniqueTotal, 1);
+    REQUIRE_EQ(caller_statistics.byteSentUniqueTotal, packet_bytes);
+    REQUIRE_EQ(accepted_statistics.byteRecvUniqueTotal, packet_bytes);
     REQUIRE_EQ(caller_statistics.byteSentTotal,
-        sizeof(payload)
-            + robotweax::srt::compat::
-                ipv4_statistics_packet_header_bytes);
+        caller_statistics.byteSentUniqueTotal
+            + caller_statistics.byteRetransTotal);
+    REQUIRE_EQ(caller_statistics.byteSentTotal,
+        static_cast<std::uint64_t>(caller_statistics.pktSentTotal)
+            * packet_bytes);
     REQUIRE_EQ(accepted_statistics.byteRecvTotal,
-        sizeof(payload)
-            + robotweax::srt::compat::
-                ipv4_statistics_packet_header_bytes);
+        static_cast<std::uint64_t>(accepted_statistics.pktRecvTotal)
+            * packet_bytes);
 
     REQUIRE_EQ(srt_close(caller), 0);
     REQUIRE_EQ(srt_close(accepted.load()), 0);
