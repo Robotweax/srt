@@ -196,11 +196,44 @@ class ConnectionAffinityGateTests(unittest.TestCase):
                     capture_output=True, text=True, timeout=5)
                 self.assertEqual(completed.returncode == 0, result == "success")
 
+    def test_manual_qualification_excludes_only_ecosystem_jobs(self) -> None:
+        ci = WORKFLOW.read_text()
+        self.assertIn(
+            "WITHOUT_INTEGRATIONS: ${{ inputs.without_integrations || false }}",
+            ci)
+        policy = ci.split("          integration_policy=()\n", 1)[1].split(
+            '          output_file=', 1)[0]
+        policy = textwrap.dedent(policy)
+        # Execute the real workflow policy and classifier for manual runs.
+        # Release CI keeps integrations; qualification must keep every other gate.
+        results = []
+        for without in ("false", "true"):
+            completed = subprocess.run(
+                ["bash", "-c", "integration_policy=()\n" + policy
+                 + '\npython3 interop/ci_changes.py --full "${integration_policy[@]}"'],
+                cwd=WORKFLOW.parents[2],
+                env={**os.environ, "WITHOUT_INTEGRATIONS": without,
+                     "EVENT_NAME": "workflow_dispatch", "REF_TYPE": "branch",
+                     "INTEGRATIONS_ONLY": "false", "profile_ci": "false"},
+                capture_output=True, text=True, check=True, timeout=10)
+            results.append(dict(line.split("=", 1)
+                                for line in completed.stdout.splitlines()))
+        release, qualification = results
+        integrations = {"ffmpeg", "gstreamer", "vlc", "obs", "obs_platforms"}
+        for name, enabled in release.items():
+            with self.subTest(gate=name):
+                if name in integrations:
+                    self.assertEqual(enabled, "true")
+                    self.assertEqual(qualification[name], "false")
+                else:
+                    self.assertEqual(qualification[name], enabled)
+
     def test_selected_workflow_covers_reusable_ci_and_permissions(self) -> None:
         workflow = (WORKFLOW.parent / "connection-affinity.yml").read_text()
         selected = job_blocks(workflow)["selected_candidate"]
         self.assertIn("uses: ./.github/workflows/ci.yml", selected)
         self.assertIn("connection_affinity: true", selected)
+        self.assertIn("without_integrations: true", selected)
         self.assertIn("actions: read", workflow)
         ci = WORKFLOW.read_text()
         self.assertIn(

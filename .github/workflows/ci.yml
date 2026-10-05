@@ -18,6 +18,10 @@ on:
         description: Qualify the opt-in connection affinity candidate
         type: boolean
         default: false
+      without_integrations:
+        description: Exclude FFmpeg, GStreamer, VLC and all OBS integration jobs
+        type: boolean
+        default: false
       integrations_only:
         description: Run only the complete release integration suite
         type: boolean
@@ -124,6 +128,7 @@ jobs:
         shell: bash
         env:
           INTEGRATIONS_ONLY: ${{ inputs.integrations_only || false }}
+          WITHOUT_INTEGRATIONS: ${{ inputs.without_integrations || false }}
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
           CI_BRANCH: ${{ github.head_ref || github.ref_name }}
@@ -143,7 +148,8 @@ jobs:
             esac
           fi
           integration_policy=()
-          if [[ "$profile_ci" == "true" ]] \
+          if [[ "${WITHOUT_INTEGRATIONS:-false}" == "true" ]] \
+              || [[ "$profile_ci" == "true" ]] \
               || [[ "$EVENT_NAME" != "workflow_dispatch" && "$REF_TYPE" != "tag" \
                     && "${INTEGRATIONS_ONLY:-false}" != "true" ]]; then
             integration_policy=(--without-integrations)
@@ -194,6 +200,10 @@ jobs:
               echo "No changed paths."
             fi
             echo
+            if [[ "${WITHOUT_INTEGRATIONS:-false}" == "true" ]]; then
+              echo "Qualification policy: FFmpeg, GStreamer, VLC and all OBS profiles disabled."
+              echo
+            fi
             if [[ "$profile_ci" == "true" ]]; then
               echo "Sensor/Control profile CI: FFmpeg, GStreamer, VLC and OBS disabled."
               echo
