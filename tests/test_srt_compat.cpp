@@ -41,7 +41,6 @@ using NativeSocketLength = socklen_t;
 #endif
 
 struct FinalHandshakeGate {
-    std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
     std::atomic_bool response_observed = false;
     std::atomic_bool release_response = false;
 };
@@ -465,16 +464,10 @@ int reject_listener_connection(
     throw std::runtime_error{"listener callback rejection"};
 }
 
-robotweax::srt::UdpIoResult gate_final_handshake_response(
-    std::span<const std::byte> bytes,
-    robotweax::srt::Ipv4Endpoint peer,
-    void* context) noexcept
+void gate_final_handshake_response(std::span<const std::byte> bytes,
+    robotweax::srt::IpEndpoint, void* context) noexcept
 {
     auto& gate = *static_cast<FinalHandshakeGate*>(context);
-    const auto sent = gate.channel->socket.send_to(bytes, peer);
-    if (!sent) {
-        return sent;
-    }
     const auto decoded =
         robotweax::srt::decode_handshake_datagram(bytes);
     const bool final_response = decoded
@@ -486,7 +479,7 @@ robotweax::srt::UdpIoResult gate_final_handshake_response(
                 handshake_response;
     if (!final_response
         || gate.response_observed.exchange(true)) {
-        return sent;
+        return;
     }
 
     const auto deadline = std::chrono::steady_clock::now()
@@ -497,12 +490,14 @@ robotweax::srt::UdpIoResult gate_final_handshake_response(
             std::chrono::milliseconds{1});
     }
     if (gate.release_response.load()) {
-        // Keep the accepting thread inside the final send long enough for
-        // the channel worker to dispatch the caller's first data packet.
+        // Hold final-send completion after releasing send serialization, so
+        // the installed runtime can process the caller's first data packet.
+        // Holding send_mutex here also blocks unrelated shard work that sends
+        // through this channel, turning the intended handoff race into a stall.
         std::this_thread::sleep_for(
             std::chrono::milliseconds{25});
     }
-    return sent;
+    return;
 }
 
 void close_udp_socket(UDPSOCKET socket) noexcept
@@ -5956,9 +5951,9 @@ TEST(srt_compat_listener_routes_data_before_sending_final_kmrsp)
         listener_channel = listener_record->channel;
     }
     REQUIRE(listener_channel != nullptr);
-    FinalHandshakeGate gate{.channel = listener_channel};
-    listener_channel->set_send_hook_for_testing(
-        gate_final_handshake_response, &gate);
+    const auto gate = std::make_shared<FinalHandshakeGate>();
+    listener_channel->set_send_completion_hook_for_testing(
+        gate_final_handshake_response, gate);
 
     std::atomic<SRTSOCKET> accepted{SRT_INVALID_SOCK};
     std::atomic<int> accept_error{SRT_SUCCESS};
@@ -5985,18 +5980,26 @@ TEST(srt_compat_listener_routes_data_before_sending_final_kmrsp)
     const int connect_result = srt_connect(caller,
         reinterpret_cast<const sockaddr*>(&listener_name),
         static_cast<int>(sizeof(listener_name)));
+    const int connect_error = srt_getlasterror(nullptr);
+    const std::string connect_error_text = srt_getlasterror_str();
     constexpr char payload[] = "first encrypted packet";
     const int send_result = connect_result == 0
         ? srt_send(caller, payload,
               static_cast<int>(sizeof(payload)))
         : SRT_ERROR;
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
-    gate.release_response.store(true);
+    gate->release_response.store(true);
     accept_thread.join();
-    listener_channel->set_send_hook_for_testing(nullptr, nullptr);
+    listener_channel->set_send_completion_hook_for_testing(nullptr, nullptr);
 
-    REQUIRE_EQ(connect_result, 0);
-    REQUIRE(gate.response_observed.load());
+    if (connect_result != 0) {
+        throw std::runtime_error("final KMRSP race: connect returned "
+            + std::to_string(connect_result) + ", error "
+            + std::to_string(connect_error) + ": " + connect_error_text
+            + ", final response observed "
+            + std::to_string(gate->response_observed.load()));
+    }
+    REQUIRE(gate->response_observed.load());
     REQUIRE_EQ(send_result, static_cast<int>(sizeof(payload)));
     REQUIRE(accepted.load() != SRT_INVALID_SOCK);
     REQUIRE_EQ(accept_error.load(), SRT_SUCCESS);

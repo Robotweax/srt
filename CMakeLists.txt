@@ -460,7 +460,11 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     target_compile_features(robotweax_srt_scheduler_service_tests PRIVATE cxx_std_20)
     add_test(NAME robotweax_srt_scheduler_service_tests
         COMMAND robotweax_srt_scheduler_service_tests)
-    set_tests_properties(robotweax_srt_scheduler_service_tests PROPERTIES TIMEOUT 30)
+    # This suite checks the legacy/default-zero service policy and explicitly
+    # selected bounded-bind primitives. Public candidate admission is covered by
+    # public_affinity_setup and the other suites under the selected CI run.
+    set_tests_properties(robotweax_srt_scheduler_service_tests PROPERTIES
+        TIMEOUT 30 ENVIRONMENT "ROBOTWEAX_SRT_CONNECTION_AFFINITY=0")
 
     # The process-fixed affinity selector needs its own public API test process.
     add_executable(robotweax_srt_public_affinity_setup_tests

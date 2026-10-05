@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <future>
 #include <mutex>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -108,8 +109,18 @@ void exchange(SRTSOCKET first, SRTSOCKET second)
         REQUIRE_EQ(
             srt_sendmsg(pair.first, payload.data(), payload.size(), -1, 1), 4);
         std::array<char, 1500> received {};
-        REQUIRE_EQ(
-            srt_recvmsg(pair.second, received.data(), received.size()), 4);
+        const int count =
+            srt_recvmsg(pair.second, received.data(), received.size());
+        if (count != 4) {
+            const auto error = srt_getlasterror(nullptr);
+            std::ostringstream message;
+            message << "receive returned " << count << ", error " << error
+                    << ": " << srt_getlasterror_str() << ", sender state "
+                    << srt_getsockstate(pair.first) << ", receiver state "
+                    << srt_getsockstate(pair.second) << ", dispatched "
+                    << dispatcher(pair.second)->snapshot().dispatched_datagrams;
+            throw std::runtime_error(message.str());
+        }
         REQUIRE(std::equal(payload.begin(), payload.end(), received.begin()));
         REQUIRE(dispatcher(pair.second)->snapshot().dispatched_datagrams > 0U);
     }

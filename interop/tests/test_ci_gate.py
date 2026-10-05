@@ -179,5 +179,34 @@ class RequiredCiGateTests(unittest.TestCase):
                     )
 
 
+class ConnectionAffinityGateTests(unittest.TestCase):
+    def test_selected_candidate_result_must_succeed(self) -> None:
+        workflow = (WORKFLOW.parent / "connection-affinity.yml").read_text()
+        blocks = job_blocks(workflow)
+        gate = blocks["qualification_gate"]
+        self.assertIn("if: always()", gate)
+        self.assertIn("needs: selected_candidate", gate)
+        command = re.search(r"^        run: (.+)$", gate, re.MULTILINE)
+        self.assertIsNotNone(command)
+        for result in ("success", "failure", "cancelled", "skipped", ""):
+            with self.subTest(result=result):
+                completed = subprocess.run(
+                    ["bash", "-c", command[1]],
+                    env={**os.environ, "RESULT": result},
+                    capture_output=True, text=True, timeout=5)
+                self.assertEqual(completed.returncode == 0, result == "success")
+
+    def test_selected_workflow_covers_reusable_ci_and_permissions(self) -> None:
+        workflow = (WORKFLOW.parent / "connection-affinity.yml").read_text()
+        selected = job_blocks(workflow)["selected_candidate"]
+        self.assertIn("uses: ./.github/workflows/ci.yml", selected)
+        self.assertIn("connection_affinity: true", selected)
+        self.assertIn("actions: read", workflow)
+        ci = WORKFLOW.read_text()
+        self.assertIn(
+            "ROBOTWEAX_SRT_CONNECTION_AFFINITY: ${{ inputs.connection_affinity && '1' || '0' }}",
+            ci)
+
+
 if __name__ == "__main__":
     unittest.main()

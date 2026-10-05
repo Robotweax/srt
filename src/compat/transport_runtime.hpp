@@ -318,6 +318,12 @@ public:
         IpEndpoint peer) noexcept;
     void set_send_hook_for_testing(
         SendHook hook, void* context) noexcept;
+    using SendCompletionHook = void (*)(
+        std::span<const std::byte>, IpEndpoint, void*) noexcept;
+    // Test-only handoff barrier after successful native I/O and after releasing
+    // send serialization. Captured shared context survives concurrent removal.
+    void set_send_completion_hook_for_testing(
+        SendCompletionHook hook, std::shared_ptr<void> context) noexcept;
     [[nodiscard]] bool register_connection(std::uint32_t protocol_socket_id,
         std::shared_ptr<ConnectionRuntime> runtime,
         std::shared_ptr<ConnectionDatagramDispatcher> dispatcher =
@@ -537,6 +543,8 @@ private:
     std::condition_variable lifecycle_idle_;
     SendHook send_hook_ = nullptr;
     void* send_hook_context_ = nullptr;
+    SendCompletionHook send_completion_hook_ = nullptr;
+    std::shared_ptr<void> send_completion_context_;
     std::mutex routes_mutex_;
     struct ConnectionRoute {
         std::shared_ptr<ConnectionRuntime> runtime;

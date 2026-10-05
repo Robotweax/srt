@@ -1,0 +1,28 @@
+name: Connection affinity qualification
+
+on:
+  pull_request:
+    branches: [dev/connection-affinity]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  selected_candidate:
+    uses: ./.github/workflows/ci.yml
+    with:
+      connection_affinity: true
+
+  qualification_gate:
+    name: Connection affinity qualification gate
+    if: always()
+    needs: selected_candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require selected candidate validation
+        env:
+          RESULT: ${{ needs.selected_candidate.result }}
+        run: test "$RESULT" = success

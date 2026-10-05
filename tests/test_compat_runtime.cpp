@@ -11203,3 +11203,55 @@ TEST(maxrexmitbw_runtime_counts_protected_payload_and_preserves_ciphertext)
     }
 }
 #endif
+
+TEST(
+    compat_runtime_send_completion_barrier_releases_serialization_and_pins_context)
+{
+    struct Gate {
+        std::atomic_bool entered = false;
+        std::atomic_bool released = false;
+    };
+    auto channel = std::make_shared<DatagramChannel>();
+    REQUIRE_EQ(channel->socket.bind(IpEndpoint::loopback()), Error::none);
+    const auto endpoint = channel->socket.local_endpoint();
+    REQUIRE(endpoint);
+    auto gate = std::make_shared<Gate>();
+    std::weak_ptr<Gate> retained = gate;
+    channel->set_send_completion_hook_for_testing(
+        [](std::span<const std::byte>, IpEndpoint, void* pointer) noexcept {
+            auto& context = *static_cast<Gate*>(pointer);
+            context.entered.store(true);
+            const auto deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds {2};
+            while (!context.released.load()
+                && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        },
+        gate);
+    const std::array<std::byte, 1> payload {std::byte {1}};
+    auto first = std::async(std::launch::async, [&] {
+        return channel->send_datagram(payload, endpoint.endpoint);
+    });
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {1};
+    while (!gate->entered.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    REQUIRE(gate->entered.load());
+    REQUIRE_EQ(first.wait_for(std::chrono::milliseconds {0}),
+        std::future_status::timeout);
+    channel->set_send_completion_hook_for_testing(nullptr, nullptr);
+    gate.reset();
+    REQUIRE(!retained.expired());
+    REQUIRE(channel->send_datagram(payload, endpoint.endpoint));
+    // Another send and hook removal completed while the original completion
+    // remains paused. Its captured context cannot be destroyed underneath it.
+    REQUIRE_EQ(first.wait_for(std::chrono::milliseconds {0}),
+        std::future_status::timeout);
+    {
+        const auto context = retained.lock();
+        REQUIRE(context != nullptr);
+        context->released.store(true);
+    }
+    REQUIRE(first.get());
+    REQUIRE(retained.expired());
+}

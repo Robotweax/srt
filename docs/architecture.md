@@ -602,6 +602,17 @@ bind with `SRT_EINVPARAM` and permits configuration retry. The first valid choic
 is fixed for the process lifetime, including cleanup/restart. Fork children are
 rejected before inherited selector locks.
 
+The `Connection affinity qualification` workflow reuses the normal CI with the
+selector enabled for public API, platform, sanitizer and reference interoperability
+processes. It runs on pull requests targeting `dev/connection-affinity`; manual
+CI runs can also select the `connection_affinity` input. The ordinary CI defaults
+to selector `0`. The scheduler-service policy suite explicitly pins selector `0`
+because it verifies the legacy default-zero service table and the earlier bounded
+bind primitives. The public-affinity setup suite separately exercises candidate
+admission, exhaustion, teardown and restart. Both workflows must pass before a
+candidate is accepted; passing these functional checks does not establish a
+performance benefit or replace the final candidate evaluation.
+
 Selected explicit/automatic binds and native adoption use the retained native
 channel budget even when the independent bounded-bind preview is off. They select
 the coordinator on the fresh channel before it starts. Selected binding validates

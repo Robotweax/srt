@@ -702,14 +702,24 @@ UdpIoResult DatagramChannel::send_datagram(
     std::span<const std::byte> bytes,
     IpEndpoint peer) noexcept
 {
-    std::lock_guard lock(send_mutex_);
-    if (send_closed_) {
-        return {.error = Error::io_error};
+    UdpIoResult sent;
+    SendCompletionHook completion = nullptr;
+    std::shared_ptr<void> context;
+    {
+        std::lock_guard lock(send_mutex_);
+        if (send_closed_) {
+            return {.error = Error::io_error};
+        }
+        sent = send_hook_ != nullptr
+            ? send_hook_(bytes, peer, send_hook_context_)
+            : socket.send_to(bytes, peer);
+        completion = send_completion_hook_;
+        if (completion != nullptr)
+            context = send_completion_context_;
     }
-    if (send_hook_ != nullptr) {
-        return send_hook_(bytes, peer, send_hook_context_);
-    }
-    return socket.send_to(bytes, peer);
+    if (sent && completion != nullptr)
+        completion(bytes, peer, context.get());
+    return sent;
 }
 
 void DatagramChannel::set_send_hook_for_testing(
@@ -718,6 +728,18 @@ void DatagramChannel::set_send_hook_for_testing(
     std::lock_guard lock(send_mutex_);
     send_hook_ = hook;
     send_hook_context_ = context;
+}
+
+void DatagramChannel::set_send_completion_hook_for_testing(
+    SendCompletionHook hook, std::shared_ptr<void> context) noexcept
+{
+    std::shared_ptr<void> released;
+    {
+        std::lock_guard lock(send_mutex_);
+        released = std::move(send_completion_context_);
+        send_completion_context_ = std::move(context);
+        send_completion_hook_ = hook;
+    }
 }
 
 bool DatagramChannel::register_connection(std::uint32_t protocol_socket_id,
