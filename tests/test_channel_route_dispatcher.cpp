@@ -3637,7 +3637,8 @@ TEST(channel_poll_coordinator_refreshes_after_new_work_with_old_idle_receipt)
     auto dispatcher = fixture.dispatcher();
     REQUIRE(
         fixture.channel->register_connection(700, fixture.runtime, dispatcher));
-    REQUIRE(!fixture.channel->poll_connections_for_testing().immediate_work);
+    const auto now = ConnectionRuntime::Clock::time_point {};
+    REQUIRE(!fixture.channel->poll_connections_for_testing(now).immediate_work);
     await_coordinated_turn(dispatcher);
     auto gate = std::make_shared<SinkGate>();
     SinkRelease release {gate};
@@ -3646,7 +3647,7 @@ TEST(channel_poll_coordinator_refreshes_after_new_work_with_old_idle_receipt)
     REQUIRE_EQ(
         fixture.runtime->queue_message(payload, 0, true, false, -1).status,
         MessageIoStatus::success);
-    REQUIRE(fixture.channel->poll_connections_for_testing().immediate_work);
+    REQUIRE(fixture.channel->poll_connections_for_testing(now).immediate_work);
 }
 
 TEST(channel_poll_coordinator_idle_receipt_does_not_invent_new_work)
@@ -3656,7 +3657,75 @@ TEST(channel_poll_coordinator_idle_receipt_does_not_invent_new_work)
     auto dispatcher = fixture.dispatcher();
     REQUIRE(
         fixture.channel->register_connection(700, fixture.runtime, dispatcher));
-    REQUIRE(!fixture.channel->poll_connections_for_testing().immediate_work);
+    const auto now = ConnectionRuntime::Clock::time_point {};
+    REQUIRE(!fixture.channel->poll_connections_for_testing(now).immediate_work);
     await_coordinated_turn(dispatcher);
-    REQUIRE(!fixture.channel->poll_connections_for_testing().immediate_work);
+    // Wall-clock waiting may exceed the genuine protocol deadline. This case
+    // tests receipt notifications, so keep the coordinator clock fixed.
+    REQUIRE(!fixture.channel->poll_connections_for_testing(now).immediate_work);
+}
+
+TEST(channel_poll_coordinator_keeps_ingress_backpressure_through_setup_prefix)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    auto worker_gate = std::make_shared<SinkGate>();
+    SinkRelease worker_release {worker_gate};
+    sink_block_worker(fixture, worker_gate);
+    auto prefix = std::make_shared<DatagramInbox>(32);
+    REQUIRE(fixture.channel->register_setup_inbox(700, sink_peer, prefix, 90));
+    for (std::uint32_t index = 0; index < 32; ++index)
+        REQUIRE(prefix->push(sink_data(index).view(), sink_peer));
+    struct PrefixPause {
+        std::size_t popped = 0;
+        std::shared_ptr<SinkGate> gate = std::make_shared<SinkGate>();
+        static void after_pop(void* pointer) noexcept
+        {
+            auto& self = *static_cast<PrefixPause*>(pointer);
+            if (++self.popped == 17)
+                SinkGate::block(self.gate.get());
+        }
+    };
+    auto pause = std::make_shared<PrefixPause>();
+    SinkRelease prefix_release {pause->gate};
+    fixture.budget = std::make_shared<DatagramStorageBudget>(
+        *ConnectionDatagramInbox::storage_bytes(64));
+    auto dispatcher = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 64, .control_reserve = 16},
+        {.turn_budget = 16,
+            .after_pop_for_testing = PrefixPause::after_pop,
+            .after_pop_context_for_testing = pause});
+    REQUIRE(dispatcher != nullptr);
+    REQUIRE(fixture.channel->promote_setup_connection(
+        700, prefix, fixture.runtime, dispatcher));
+    std::uint32_t received = 0;
+    auto receive = [&](std::span<std::byte> bytes) noexcept {
+        if (received == 32)
+            return UdpIoResult {.error = Error::would_block};
+        const auto wire = sink_data(32 + received++);
+        std::copy(wire.view().begin(), wire.view().end(), bytes.begin());
+        return UdpIoResult {.bytes_transferred = wire.size, .peer = sink_peer};
+    };
+    (void)fixture.channel->run_once_for_testing(receive);
+    REQUIRE_EQ(received, 16U);
+    worker_gate->release();
+    pause->gate->wait();
+    await_coordinated_turn(dispatcher);
+    (void)fixture.channel->run_once_for_testing(receive);
+    (void)fixture.channel->run_once_for_testing(receive);
+    REQUIRE_EQ(received, 16U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().queued, 16U);
+    pause->gate->release();
+    const auto deadline =
+        ConnectionRuntime::Clock::now() + std::chrono::seconds {2};
+    while (dispatcher->inbox()->snapshot().completed != 32U
+        && ConnectionRuntime::Clock::now() < deadline) {
+        (void)fixture.channel->run_once_for_testing(receive);
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+    REQUIRE_EQ(received, 32U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().completed, 32U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().data_rejections, 0U);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 64U);
 }

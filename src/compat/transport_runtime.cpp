@@ -1954,10 +1954,18 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
                 // A reused socket id never inherits this old completion.
                 poll = {};
             } else if (completion.has_value()) {
-                if (completion->round == scheduled_poll_round_)
+                if (completion->round == scheduled_poll_round_) {
                     record_poll_result(completion->result,
                         use_absolute_deadlines ? completion->completed_at : now,
                         use_absolute_deadlines);
+                    // A service poll can complete while its bounded turn is
+                    // still draining the setup prefix or established inbox.
+                    // Its receipt does not grant another native receive slice.
+                    const auto ingress = poll.dispatcher->inbox()->snapshot();
+                    poll_round_ingress_pending_ |= ingress.queued != 0U
+                        || ingress.in_flight
+                        || !poll.dispatcher->setup_prefix_complete();
+                }
                 poll = {};
             } else {
                 pending = true;
@@ -1979,6 +1987,7 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
             poll_refresh_pending_.store(false, std::memory_order_release);
             poll_round_remaining_ = routes_.size();
             poll_round_immediate_ = false;
+            poll_round_ingress_pending_ = false;
             poll_round_receive_wait_safe_ = true;
             poll_round_deadline_.reset();
         }
@@ -2073,6 +2082,7 @@ RuntimePollResult DatagramChannel::finish_poll_round(
     std::chrono::steady_clock::time_point now) noexcept
 {
     if (poll_round_remaining_ != 0U || poll_round_immediate_
+        || (scheduled_polling_enabled_ && poll_round_ingress_pending_)
         || (scheduled_polling_enabled_
             && poll_refresh_pending_.load(std::memory_order_acquire))) {
         return {.immediate_work = true};

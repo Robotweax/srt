@@ -447,7 +447,9 @@ private:
         // Let the selected services finish the prior receive/poll quantum
         // before reading more UDP input. A 64-packet legacy slice exceeds the
         // default ring's 48 data slots even with an otherwise empty inbox.
-        if (scheduled_polling_enabled_ && scheduled_poll_round_ != nullptr)
+        if (scheduled_polling_enabled_
+            && (scheduled_poll_round_ != nullptr || poll_round_remaining_ != 0U
+                || poll_round_ingress_pending_))
             return poll_connections();
         const std::size_t maximum_receive_batch = scheduled_polling_enabled_
             ? ConnectionDatagramDispatcher::maximum_turn_budget
@@ -579,6 +581,7 @@ private:
     ConnectionRoute* next_poll_route_ = nullptr;
     std::size_t poll_round_remaining_ = 0;
     bool poll_round_immediate_ = false;
+    bool poll_round_ingress_pending_ = false;
     bool poll_round_receive_wait_safe_ = true;
     std::optional<std::chrono::steady_clock::time_point> poll_round_deadline_;
     std::unordered_map<HandshakeRouteKey, ConnectionRoute*,

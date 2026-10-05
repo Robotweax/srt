@@ -580,7 +580,11 @@ synchronous polling and share the same channel allowance.
 Selected channel receive slices are capped at 16 datagrams, matching the maximum
 service turn instead of the legacy 64-datagram receive quantum. While a scheduled
 poll window remains in flight, the channel collects its completion receipts before
-reading another slice. A full receive slice does not force immediate receive
+reading another slice. Receipt collection also checks for an unfinished setup
+prefix or queued/in-flight established ingress. Those require another finite
+service sweep before native receive resumes; a poll receipt alone does not prove
+that its bounded turn drained ingress. Continuations across route windows likewise
+retain receive backpressure. A full receive slice does not force immediate receive
 continuation over that pending window. This avoids manufacturing a larger burst
 than the default inbox's 48 data slots while services are still catching up;
 remaining input stays in the native UDP buffer. Existing notification and bounded
