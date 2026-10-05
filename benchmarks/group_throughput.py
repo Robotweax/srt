@@ -93,7 +93,8 @@ def prepare(args, out):
 class Peer:
     def __init__(self, command, log_prefix):
         self.events = queue.Queue()
-        self.stderr = log_prefix.with_suffix(".stderr").open("w")
+        self.stderr_path = log_prefix.with_suffix(".stderr")
+        self.stderr = self.stderr_path.open("w")
         self.stdout = log_prefix.with_suffix(".stdout").open("w")
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=self.stderr, text=True, bufsize=1)
@@ -193,6 +194,15 @@ def case(program, mode, members, messages, size, log_prefix, timeout):
             if peer.process.wait(timeout=max(0.001, deadline - time.monotonic())) != 0:
                 raise RuntimeError("peer exited unsuccessfully")
         return {"qualified": True, "sender": send_result, "receiver": receive_result, "metrics": metrics}
+    except Exception as error:
+        diagnostics = []
+        for peer in peers:
+            role = "send" if peer is peers[-1] and len(peers) == 2 else "receive"
+            detail = peer.stderr_path.read_text(errors="replace")[-8192:]
+            diagnostics.append(f"--- {role} stderr ({peer.stderr_path}) ---\n{detail}")
+        raise RuntimeError(
+            f"group case mode={mode} members={members} messages={messages}: {error}\n"
+            + "\n".join(diagnostics)) from error
     finally:
         for peer in peers:
             peer.close()
