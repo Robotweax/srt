@@ -168,3 +168,26 @@ workers, reordered controls, queue exhaustion, key rotation and close/reopen
 before running the Linux relay matrix. Production integration depends on these
 results. Crypto-only offload (C) is an alternative only if profiles justify it;
 it still needs pinned key/IV lifetime, bounded queues and ordered completion.
+
+
+## Persistent service notification publication
+
+A producer sets a service slot's pending bit and calls `notify_one` while
+holding that shard's mutex. A later producer observing the bit under the same
+mutex may coalesce its notification: the earlier notification has already been
+published before the mutex becomes available. Merely setting pending and then
+notifying after unlocking would leave a paused publisher gap.
+
+The shard worker can also set pending when a service deadline becomes due.
+That worker is already active and checks pending before returning to its wait,
+so this origin needs no additional producer notification. Clearing pending for
+execution, release and stop uses the same shard mutex. A producer arriving after
+execution clears pending publishes a fresh notification even while the callback
+is running. Coalescing remains per slot; another slot on the same shard still
+publishes its own first notification. Token scope and generation validation
+precedes both paths.
+
+`service_wakes` continues to count accepted calls and `service_coalesced` counts
+calls finding pending work. These counters do not count kernel wakeups. Ordinary
+queue notifications, service timer registration and shutdown notifications retain
+their existing behavior. No ingress allowance, poll window or deadline changes.

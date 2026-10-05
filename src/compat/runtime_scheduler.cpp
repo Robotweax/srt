@@ -486,14 +486,30 @@ RuntimeScheduler::SubmitStatus RuntimeScheduler::notify_service(
         if (!slot.reserved || slot.generation != token.generation)
             return SubmitStatus::invalid;
         service_wakes_.fetch_add(1U, std::memory_order_relaxed);
-        if (slot.pending)
+        if (slot.pending) {
+            // A producer publishes its notification before releasing this
+            // mutex. Timer-created pending work is owned by this shard's
+            // active worker. Either origin guarantees a later observer need
+            // not notify again; pending is cleared only under this same lock.
             service_coalesced_.fetch_add(1U, std::memory_order_relaxed);
-        else {
+        } else {
             slot.pending = true;
             ++shard.service_pending;
+            // Keep pending publication and notify_one in one critical section:
+            // another producer cannot coalesce behind a paused, unpublished
+            // first notification. A worker running a callback will inspect the
+            // new pending bit on its next turn, even if no waiter is woken.
+            if (configuration_.service_notification_hook_for_testing != nullptr)
+                configuration_.service_notification_hook_for_testing(
+                    configuration_.service_notification_context_for_testing,
+                    false);
+            shard.ready.notify_one();
+            if (configuration_.service_notification_hook_for_testing != nullptr)
+                configuration_.service_notification_hook_for_testing(
+                    configuration_.service_notification_context_for_testing,
+                    true);
         }
     }
-    shard.ready.notify_one();
     return SubmitStatus::accepted;
 }
 
