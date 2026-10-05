@@ -2051,6 +2051,7 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
     auto round = begin_poll_round();
     if (round == nullptr)
         return waiting();
+    round->begin_completion_window();
     scheduled_poll_round_ = round;
     for (std::size_t visited = 0; visited < scheduled_poll_window_capacity;
         ++visited) {
@@ -2095,8 +2096,10 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
             record_poll_result(result, now, use_absolute_deadlines);
         }
     }
+    const bool window_complete = round->seal_completion_window();
     if (scheduled_poll_count_ != 0U)
-        return waiting();
+        return window_complete ? RuntimePollResult {.immediate_work = true}
+                               : waiting();
     scheduled_poll_round_.reset();
     return finish_poll_round(now);
 }

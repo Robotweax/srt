@@ -3988,3 +3988,229 @@ TEST(channel_poll_coordinator_keeps_ingress_backpressure_through_setup_prefix)
     REQUIRE_EQ(dispatcher->inbox()->snapshot().data_rejections, 0U);
     REQUIRE_EQ(fixture.runtime->buffer_packet_counts().available_receive, 64U);
 }
+
+namespace {
+struct PollWakeProbe {
+    std::atomic<std::size_t> wakes {0};
+    static void observe(void* context) noexcept
+    {
+        static_cast<PollWakeProbe*>(context)->wakes.fetch_add(1);
+    }
+};
+}
+
+TEST(channel_poll_completion_defers_idle_partial_window_wake)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    fixture.budget = std::make_shared<DatagramStorageBudget>(
+        2 * *ConnectionDatagramInbox::storage_bytes(16));
+    fixture.runtime = fixture.make_runtime(90, nullptr, false);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto first_gate = std::make_shared<SinkGate>();
+    SinkRelease first_release {first_gate};
+    REQUIRE_EQ(fixture.scheduler->submit(
+                   0, {.function = SinkGate::block, .context = first_gate}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    first_gate->wait();
+    auto probe = std::make_shared<PollWakeProbe>();
+    auto first = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 0, sink_peer,
+        {.capacity = 16, .control_reserve = 0},
+        {.before_poll_wake_for_testing = PollWakeProbe::observe,
+            .poll_wake_context_for_testing = probe});
+    auto other_runtime = fixture.make_runtime(91, nullptr, false);
+    auto last = ConnectionDatagramDispatcher::create(other_runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 16, .control_reserve = 0},
+        {.before_poll_wake_for_testing = PollWakeProbe::observe,
+            .poll_wake_context_for_testing = probe});
+    REQUIRE(first != nullptr);
+    REQUIRE(last != nullptr);
+    REQUIRE(fixture.channel->register_connection(700, fixture.runtime, first));
+    REQUIRE(fixture.channel->register_connection(701, other_runtime, last));
+    REQUIRE(!fixture.channel->poll_connections_for_testing().immediate_work);
+    first_gate->release();
+    await_coordinated_turn(first);
+    REQUIRE_EQ(probe->wakes.load(), 0U);
+    // Consuming the idle partial receipt cannot advance the same window while
+    // its unrelated worker remains paused. No DATA or early deadline exists.
+    REQUIRE(!fixture.channel->poll_connections_for_testing().immediate_work);
+    REQUIRE_EQ(last->snapshot().completed_turns, 0U);
+    gate->release();
+    await_coordinated_turn(last);
+    REQUIRE_EQ(probe->wakes.load(), 1U);
+    (void)fixture.channel->poll_connections_for_testing();
+    fixture.channel->unregister_connection(700);
+    fixture.channel->unregister_connection(701);
+}
+
+TEST(channel_poll_completion_keeps_short_deadline_partial_wake)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    fixture.budget = std::make_shared<DatagramStorageBudget>(
+        2 * *ConnectionDatagramInbox::storage_bytes(16));
+    fixture.runtime = fixture.make_runtime(90, nullptr, false);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto first_gate = std::make_shared<SinkGate>();
+    SinkRelease first_release {first_gate};
+    REQUIRE_EQ(fixture.scheduler->submit(
+                   0, {.function = SinkGate::block, .context = first_gate}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    first_gate->wait();
+    auto probe = std::make_shared<PollWakeProbe>();
+    auto first = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 0, sink_peer,
+        {.capacity = 16, .control_reserve = 0},
+        {.before_poll_wake_for_testing = PollWakeProbe::observe,
+            .poll_wake_context_for_testing = probe});
+    auto other_runtime = fixture.make_runtime(91, nullptr, false);
+    auto last = ConnectionDatagramDispatcher::create(other_runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 16, .control_reserve = 0},
+        {.before_poll_wake_for_testing = PollWakeProbe::observe,
+            .poll_wake_context_for_testing = probe});
+    REQUIRE(first != nullptr);
+    REQUIRE(last != nullptr);
+    REQUIRE(fixture.channel->register_connection(700, fixture.runtime, first));
+    REQUIRE(fixture.channel->register_connection(701, other_runtime, last));
+    REQUIRE(!fixture.channel->poll_connections_for_testing().immediate_work);
+    const std::array payload {std::byte {7}};
+    for (std::size_t i = 0; i < 32; ++i) {
+        REQUIRE_EQ(
+            fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+    }
+    first_gate->release();
+    await_coordinated_turn(first);
+    REQUIRE_EQ(probe->wakes.load(), 1U);
+    auto receipt = first->take_poll_completion();
+    REQUIRE(receipt.has_value());
+    REQUIRE(!receipt->result.receive_wait_safe);
+    REQUIRE(receipt->result.next_work_delay.has_value());
+    REQUIRE(*receipt->result.next_work_delay < std::chrono::milliseconds {2});
+    REQUIRE(receipt->result.next_work_deadline.has_value());
+    REQUIRE_EQ(last->snapshot().completed_turns, 0U);
+    gate->release();
+    await_coordinated_turn(last);
+    REQUIRE_EQ(probe->wakes.load(), 2U);
+    fixture.channel->unregister_connection(700);
+    fixture.channel->unregister_connection(701);
+}
+
+TEST(channel_poll_completion_retired_pending_member_wakes_without_credit)
+{
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    fixture.budget = std::make_shared<DatagramStorageBudget>(
+        2 * *ConnectionDatagramInbox::storage_bytes(16));
+    fixture.runtime = fixture.make_runtime(90, nullptr, false);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto first_gate = std::make_shared<SinkGate>();
+    SinkRelease first_release {first_gate};
+    REQUIRE_EQ(fixture.scheduler->submit(
+                   0, {.function = SinkGate::block, .context = first_gate}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    first_gate->wait();
+    auto probe = std::make_shared<PollWakeProbe>();
+    auto first = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 0, sink_peer,
+        {.capacity = 16, .control_reserve = 0},
+        {.before_poll_wake_for_testing = PollWakeProbe::observe,
+            .poll_wake_context_for_testing = probe});
+    auto other_runtime = fixture.make_runtime(91, nullptr, false);
+    auto last = ConnectionDatagramDispatcher::create(other_runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 16, .control_reserve = 0},
+        {.before_poll_wake_for_testing = PollWakeProbe::observe,
+            .poll_wake_context_for_testing = probe});
+    REQUIRE(first != nullptr);
+    REQUIRE(last != nullptr);
+    REQUIRE(fixture.channel->register_connection(700, fixture.runtime, first));
+    REQUIRE(fixture.channel->register_connection(701, other_runtime, last));
+    REQUIRE(!fixture.channel->poll_connections_for_testing().immediate_work);
+    first_gate->release();
+    await_coordinated_turn(first);
+    REQUIRE_EQ(probe->wakes.load(), 0U);
+    // Retirement cancels the pending request but never fabricates an inbox
+    // completion or a protocol result. The old round still wakes for progress.
+    fixture.channel->unregister_connection(701);
+    REQUIRE_EQ(probe->wakes.load(), 1U);
+    REQUIRE_EQ(last->inbox()->snapshot().completed, 0U);
+    REQUIRE(!last->take_poll_completion().has_value());
+    gate->release();
+    (void)fixture.channel->poll_connections_for_testing();
+    fixture.channel->unregister_connection(700);
+    fixture.channel->unregister_connection(701);
+}
+
+TEST(channel_poll_completion_keeps_idle_control_deadline_partial_wake)
+{
+    std::atomic<std::uint64_t> now {1000};
+    SinkFixture fixture;
+    REQUIRE(fixture.channel->enable_scheduled_polling());
+    fixture.budget = std::make_shared<DatagramStorageBudget>(
+        2 * *ConnectionDatagramInbox::storage_bytes(16));
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+    fixture.runtime = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.channel = fixture.channel,
+            .peer = sink_peer,
+            .peer_socket_id = 90,
+            .initial_sequence = SequenceNumber {1000},
+            .options = options,
+            .origin = ConnectionRuntime::Clock::now(),
+            .now_function = ingress_idle_now,
+            .now_context = &now});
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto first_gate = std::make_shared<SinkGate>();
+    SinkRelease first_release {first_gate};
+    REQUIRE_EQ(fixture.scheduler->submit(
+                   0, {.function = SinkGate::block, .context = first_gate}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    first_gate->wait();
+    auto probe = std::make_shared<PollWakeProbe>();
+    auto first = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 0, sink_peer,
+        {.capacity = 16, .control_reserve = 0},
+        {.before_poll_wake_for_testing = PollWakeProbe::observe,
+            .poll_wake_context_for_testing = probe});
+    auto other_runtime = fixture.make_runtime(91, nullptr, false);
+    auto last = ConnectionDatagramDispatcher::create(other_runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 16, .control_reserve = 0},
+        {.before_poll_wake_for_testing = PollWakeProbe::observe,
+            .poll_wake_context_for_testing = probe});
+    REQUIRE(first != nullptr);
+    REQUIRE(last != nullptr);
+    REQUIRE(fixture.channel->register_connection(700, fixture.runtime, first));
+    REQUIRE(fixture.channel->register_connection(701, other_runtime, last));
+    REQUIRE(!fixture.channel->poll_connections_for_testing().immediate_work);
+    // An empty receiver is safe to wait for native readiness, but its initial
+    // keepalive is due inside the channel's two-millisecond fallback horizon.
+    now.store(999000);
+    first_gate->release();
+    await_coordinated_turn(first);
+    auto receipt = first->take_poll_completion();
+    REQUIRE(receipt.has_value());
+    REQUIRE_EQ(probe->wakes.load(), 1U);
+    REQUIRE(receipt->result.receive_wait_safe);
+    REQUIRE(receipt->result.next_work_delay.has_value());
+    REQUIRE(*receipt->result.next_work_delay < std::chrono::milliseconds {2});
+
+    REQUIRE_EQ(last->snapshot().completed_turns, 0U);
+    gate->release();
+    await_coordinated_turn(last);
+    REQUIRE_EQ(probe->wakes.load(), 2U);
+    fixture.channel->unregister_connection(700);
+    fixture.channel->unregister_connection(701);
+}

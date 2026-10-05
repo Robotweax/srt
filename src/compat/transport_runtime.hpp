@@ -540,6 +540,8 @@ private:
     static constexpr std::size_t scheduled_poll_window_capacity =
         ChannelPollSendBudget::maximum_attempts
         / ConnectionDatagramDispatcher::maximum_turn_budget;
+    static_assert(scheduled_poll_window_capacity
+        == ChannelPollSendBudget::maximum_poll_requests);
     struct ScheduledPoll {
         std::uint32_t socket_id = 0;
         std::shared_ptr<ConnectionRuntime> runtime;

@@ -610,6 +610,14 @@ callback can delay the sweep; there is no independent per-route latency promise.
 New send or receive-release work keeps a sticky refresh notification until a new
 finite sweep begins. Collecting an older idle receipt cannot park that newer work.
 Receipt-only wakeups do not set the refresh notification or requeue the service.
+Within one request window, idle partial completions with no deadline inside the
+channel's bounded ingress wait defer their receipt-only wake until the final
+member completes. The channel seals enrollment before waiting, so callbacks
+that finish during enrollment cannot lose the continuation. Standalone internal
+poll requests keep their existing per-completion wake. Runnable work, short or
+unknown waits, earlier absolute deadlines and retirement retain immediate
+notification; ingress effects and external work keep their separate wake paths.
+The fixed request count and shared send allowance are unchanged.
 Earlier deadlines survive window boundaries. Receipts record worker completion
 time so result collection cannot restart a pacing/backpressure/idle delay.
 The round captures the channel's ingress-wait policy. Setup-prefix and finite
