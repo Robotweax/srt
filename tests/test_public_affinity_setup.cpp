@@ -122,7 +122,15 @@ void exchange(SRTSOCKET first, SRTSOCKET second)
             throw std::runtime_error(message.str());
         }
         REQUIRE(std::equal(payload.begin(), payload.end(), received.begin()));
-        REQUIRE(dispatcher(pair.second)->snapshot().dispatched_datagrams > 0U);
+        const auto sink = dispatcher(pair.second);
+        // Protocol delivery wakes the receiver before the service callback
+        // publishes its accounting at the end of the turn.
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds {2};
+        while (sink->snapshot().dispatched_datagrams == 0U
+            && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        REQUIRE(sink->snapshot().dispatched_datagrams > 0U);
     }
 }
 SRTSOCKET accept(Sockets& sockets, SRTSOCKET listener)
