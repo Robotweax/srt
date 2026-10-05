@@ -13,6 +13,10 @@ struct RuntimePollResult {
     // A known deadline alone does not permit native parking or coalescing.
     std::optional<std::chrono::steady_clock::time_point> next_work_deadline =
         std::nullopt;
+    // Buffered receive-only maintenance can defer a partial completion wake
+    // only behind an already established, no-later channel revisit deadline.
+    // This does not permit native receive parking or cover sender/key work.
+    bool buffered_completion_wait_safe = false;
 };
 
 } // namespace robotweax::srt::compat

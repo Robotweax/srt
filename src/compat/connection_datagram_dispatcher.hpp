@@ -41,9 +41,15 @@ private:
     // Standalone internal polls keep their existing per-completion wake.
     void begin_completion_window() noexcept;
     [[nodiscard]] bool enroll_poll() noexcept;
-    [[nodiscard]] bool finish_poll(bool urgent) noexcept;
+    void set_completion_wait_deadline(
+        std::optional<std::chrono::steady_clock::time_point> deadline) noexcept;
+    [[nodiscard]] bool finish_poll(bool urgent,
+        std::optional<std::chrono::steady_clock::time_point> buffered_deadline =
+            std::nullopt) noexcept;
     [[nodiscard]] bool seal_completion_window() noexcept;
     std::mutex completion_mutex_;
+    std::optional<std::chrono::steady_clock::time_point>
+        completion_wait_deadline_;
     std::size_t pending_polls_ = 0;
     bool completion_window_ = false;
     bool enrollment_sealed_ = false;

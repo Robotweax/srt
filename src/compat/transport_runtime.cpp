@@ -2002,6 +2002,12 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
             .next_work_deadline = deadline};
     };
     if (scheduled_poll_round_ != nullptr) {
+        // Establish the latest permissible fallback before collecting receipts.
+        // Any completion published afterwards either fits this bound or wakes.
+        // Synthetic channel clocks cannot certify a native worker deadline.
+        scheduled_poll_round_->set_completion_wait_deadline(
+            use_absolute_deadlines ? std::optional {now + idle_wait_}
+                                   : std::nullopt);
         bool pending = false;
         for (std::size_t index = 0; index < scheduled_poll_count_; ++index) {
             auto& poll = scheduled_polls_[index];
@@ -2105,6 +2111,9 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
     auto round = begin_poll_round();
     if (round == nullptr)
         return waiting();
+    round->set_completion_wait_deadline(use_absolute_deadlines
+            ? std::optional {now + idle_wait_}
+            : std::nullopt);
     round->begin_completion_window();
     scheduled_poll_round_ = round;
     for (std::size_t visited = 0; visited < scheduled_poll_window_capacity;
@@ -4928,8 +4937,9 @@ RuntimePollResult ConnectionRuntime::poll_locked(
     if (!paced_work) {
         // Buffered receive work remains unsafe for native readiness parking.
         // Its next future delivery/control/retirement/peer deadline can still
-        // shorten the existing bounded maintenance poll. This is not a grant
-        // to defer its completion notification or to skip other protocol work.
+        // shorten the existing bounded maintenance poll. Receive-only results
+        // can defer a partial completion behind a no-later coordinator timer;
+        // sender/filter/retransmission/key work retains urgent completion.
         const auto delivery = session_.next_receive_delivery_time();
         if (!session_.idle_for_receive_wait() || delivery.has_value()
             || (crypto_ != nullptr
@@ -4957,7 +4967,12 @@ RuntimePollResult ConnectionRuntime::poll_locked(
             return {.next_work_delay = std::chrono::microseconds {remaining},
                 .next_work_deadline = now_function_ == nullptr
                     ? deadline_from_origin_microseconds(origin_, deadline)
-                    : deadline_after_relative_microseconds(current, deadline)};
+                    : deadline_after_relative_microseconds(current, deadline),
+                .buffered_completion_wait_safe = remaining != 0U && !pending
+                    && !filter_pending && !retransmission
+                    && !session_.has_pending_retransmission()
+                    && (crypto_ == nullptr
+                        || crypto_->pending_key_material().empty())};
         }
         const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
         const auto timeout = last_peer_activity_microseconds_
