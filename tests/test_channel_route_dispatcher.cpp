@@ -4409,7 +4409,8 @@ struct PartialPollWindow {
     explicit PartialPollWindow(bool buffered,
         const std::shared_ptr<SinkGate>& receipt_gate = nullptr,
         bool advancing_clock = false,
-        const std::shared_ptr<PollWakeProbe>& wake_probe = nullptr)
+        const std::shared_ptr<PollWakeProbe>& wake_probe = nullptr,
+        bool native_clock = false)
     {
         REQUIRE(fixture.channel->enable_scheduled_polling());
         fixture.budget = std::make_shared<DatagramStorageBudget>(
@@ -4423,8 +4424,9 @@ struct PartialPollWindow {
                     .receive_delay_milliseconds = 120},
                 .origin =
                     ConnectionRuntime::Clock::now() + std::chrono::minutes {1},
-                .now_function = advancing_clock
-                ? [](void* context) noexcept -> std::uint64_t {
+                .now_function = native_clock ? nullptr
+                                             : advancing_clock
+                    ? [](void* context) noexcept -> std::uint64_t {
                     return static_cast<std::atomic<std::uint64_t>*>(context)
                         ->fetch_add(1000);
                 }
@@ -4664,7 +4666,10 @@ TEST(channel_partial_poll_runnable_receipt_keeps_bounded_probe)
 TEST(channel_buffered_completion_defers_to_established_native_revisit)
 {
     auto probe = std::make_shared<PollWakeProbe>();
-    PartialPollWindow window {true, nullptr, false, probe};
+    // Native future origin keeps the absolute deadline deterministic even if
+    // a loaded host pauses the callback longer than the 2ms relative bound.
+    // The channel's fallback timer remains 2ms; no timing-dependent wake count.
+    PartialPollWindow window {true, nullptr, false, probe, true};
     const auto wire = sink_data(0);
     window.fixture.runtime->process_packet(
         decode_packet(wire.view()).packet, sink_peer);
