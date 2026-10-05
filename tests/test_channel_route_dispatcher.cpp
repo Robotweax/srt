@@ -4278,9 +4278,12 @@ TEST(channel_buffered_poll_partial_receipt_keeps_urgent_delivery_wake)
         const auto repark =
             fixture.channel->poll_connections_for_testing(channel_time);
         REQUIRE(!repark.immediate_work);
-        REQUIRE_EQ(repark.next_work_delay, std::chrono::microseconds {2000});
+        REQUIRE_EQ(repark.next_work_delay,
+            std::chrono::microseconds {protocol_time == 1000 ? 2000 : 1000});
         REQUIRE_EQ(repark.next_work_deadline,
-            channel_time + std::chrono::microseconds {2000});
+            channel_time
+                + std::chrono::microseconds {
+                    protocol_time == 1000 ? 2000 : 1000});
         REQUIRE_EQ(last->snapshot().completed_turns, 0U);
         REQUIRE(!first->take_poll_completion()
                 .has_value()); // coordinator collected it
@@ -4389,4 +4392,263 @@ TEST(channel_buffered_poll_deadline_bounds_peer_timeout)
     now.store(2001);
     (void)fixture.runtime->poll();
     REQUIRE(fixture.runtime->broken());
+}
+
+namespace {
+struct PartialPollWindow {
+    std::atomic<std::uint64_t> now {1000};
+    ScheduledSendCounts sends;
+    SinkFixture fixture;
+    std::shared_ptr<SinkGate> first_gate = std::make_shared<SinkGate>();
+    std::shared_ptr<SinkGate> last_gate = std::make_shared<SinkGate>();
+    SinkRelease first_release {first_gate};
+    SinkRelease last_release {last_gate};
+    std::shared_ptr<ConnectionDatagramDispatcher> first;
+    std::shared_ptr<ConnectionRuntime> other;
+    std::shared_ptr<ConnectionDatagramDispatcher> last;
+    explicit PartialPollWindow(bool buffered,
+        const std::shared_ptr<SinkGate>& receipt_gate = nullptr,
+        bool advancing_clock = false)
+    {
+        REQUIRE(fixture.channel->enable_scheduled_polling());
+        fixture.budget = std::make_shared<DatagramStorageBudget>(
+            2 * *ConnectionDatagramInbox::storage_bytes(16));
+        fixture.runtime = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {.channel = fixture.channel,
+                .peer = sink_peer,
+                .peer_socket_id = 90,
+                .initial_sequence = SequenceNumber {1000},
+                .negotiated_options = {.receive_tsbpd = buffered,
+                    .receive_delay_milliseconds = 120},
+                .origin =
+                    ConnectionRuntime::Clock::now() + std::chrono::minutes {1},
+                .now_function = advancing_clock
+                ? [](void* context) noexcept -> std::uint64_t {
+                    return static_cast<std::atomic<std::uint64_t>*>(context)
+                        ->fetch_add(1000);
+                }
+                : ingress_idle_now,
+                .now_context = &now});
+        fixture.channel->set_send_hook_for_testing(
+            ScheduledSendCounts::send, &sends);
+        sink_block_worker(fixture, last_gate);
+        REQUIRE_EQ(fixture.scheduler->submit(
+                       0, {.function = SinkGate::block, .context = first_gate}),
+            RuntimeScheduler::SubmitStatus::accepted);
+        first_gate->wait();
+        first = ConnectionDatagramDispatcher::create(fixture.runtime,
+            fixture.scheduler, fixture.budget, 0, sink_peer,
+            {.capacity = 16, .control_reserve = 0},
+            {.before_poll_wake_for_testing =
+                    receipt_gate == nullptr ? nullptr : SinkGate::block,
+                .poll_wake_context_for_testing = receipt_gate});
+        other = fixture.make_runtime(91, nullptr, false);
+        last = ConnectionDatagramDispatcher::create(other, fixture.scheduler,
+            fixture.budget, 1, sink_peer,
+            {.capacity = 16, .control_reserve = 0}, {});
+        REQUIRE(first != nullptr);
+        REQUIRE(last != nullptr);
+        REQUIRE(
+            fixture.channel->register_connection(700, fixture.runtime, first));
+        REQUIRE(fixture.channel->register_connection(701, other, last));
+    }
+    ~PartialPollWindow()
+    {
+        first_gate->release();
+        last_gate->release();
+        fixture.scheduler->stop();
+    }
+    void start()
+    {
+        REQUIRE(!poll(0).immediate_work);
+        first_gate->release();
+        wait_turn(1);
+    }
+    void wait_turn(std::uint64_t count)
+    {
+        const auto deadline =
+            ConnectionRuntime::Clock::now() + std::chrono::seconds {2};
+        while (first->snapshot().completed_turns < count
+            && ConnectionRuntime::Clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        REQUIRE_EQ(first->snapshot().completed_turns, count);
+    }
+    RuntimePollResult poll(std::uint64_t microseconds)
+    {
+        return fixture.channel->poll_connections_for_testing(
+            ConnectionRuntime::Clock::time_point {}
+            + std::chrono::microseconds {microseconds});
+    }
+};
+}
+
+TEST(
+    channel_partial_poll_deadline_does_not_slide_and_renews_before_peer_finishes)
+{
+    PartialPollWindow window {true};
+    const auto wire = sink_data(0);
+    window.fixture.runtime->process_packet(
+        decode_packet(wire.view()).packet, sink_peer);
+    window.now.store(119000);
+    window.start();
+    REQUIRE_EQ(
+        window.poll(0).next_work_delay, std::chrono::microseconds {1000});
+    const auto early = window.poll(500);
+    REQUIRE_EQ(early.next_work_delay, std::chrono::microseconds {500});
+    REQUIRE_EQ(early.next_work_deadline,
+        ConnectionRuntime::Clock::time_point {}
+            + std::chrono::microseconds {1000});
+    REQUIRE_EQ(window.first->snapshot().completed_turns, 1U);
+    window.now.store(120001);
+    (void)window.poll(1000);
+    window.wait_turn(2);
+    REQUIRE_EQ(window.last->snapshot().completed_turns, 0U);
+    REQUIRE(window.fixture.channel->begin_poll_round() == nullptr);
+    const auto renewed = window.poll(1000);
+    REQUIRE(!renewed.immediate_work);
+    REQUIRE_EQ(renewed.next_work_delay, std::chrono::microseconds {2000});
+    sink_receive(window.fixture.runtime, std::byte {1});
+    // Repeated visits at the same time cannot renew the new future deadline.
+    for (unsigned i = 0; i < 10; ++i)
+        REQUIRE_EQ(window.poll(1000).next_work_delay,
+            std::chrono::microseconds {2000});
+    REQUIRE_EQ(window.first->snapshot().completed_turns, 2U);
+    REQUIRE_EQ(window.last->inbox()->snapshot().completed, 0U);
+    REQUIRE_EQ(window.sends.off_worker.load(), 0U);
+}
+
+TEST(channel_partial_poll_renewals_exhaust_same_budget_then_wait_without_spin)
+{
+    PartialPollWindow window {false};
+    window.sends.blocked = true;
+    const std::array payload {std::byte {7}};
+    REQUIRE_EQ(
+        window.fixture.runtime->queue_message(payload, 0, true, false, -1)
+            .status,
+        MessageIoStatus::success);
+    window.start();
+    (void)window.poll(0);
+    std::uint64_t channel_time = 0;
+    for (unsigned i = 0; window.sends.attempts.load() < 64 && i < 100; ++i) {
+        channel_time += 2000;
+        window.now.fetch_add(2000);
+        const auto completed = window.first->snapshot().completed_turns;
+        (void)window.poll(channel_time);
+        window.wait_turn(completed + 1);
+        (void)window.poll(channel_time);
+        REQUIRE(window.sends.attempts.load() <= 64);
+    }
+    REQUIRE_EQ(window.sends.attempts.load(), 64U);
+    const auto completed = window.first->snapshot().completed_turns;
+    for (unsigned i = 0; i < 10; ++i) {
+        channel_time += 2000;
+        window.now.fetch_add(2000);
+        const auto result = window.poll(channel_time);
+        REQUIRE(!result.immediate_work);
+        REQUIRE_EQ(result.next_work_delay, std::chrono::microseconds {2000});
+    }
+    REQUIRE_EQ(window.first->snapshot().completed_turns, completed);
+    REQUIRE_EQ(window.sends.attempts.load(), 64U);
+    REQUIRE_EQ(window.sends.off_worker.load(), 0U);
+    REQUIRE_EQ(window.last->snapshot().completed_turns, 0U);
+    REQUIRE(window.fixture.channel->begin_poll_round() == nullptr);
+}
+
+TEST(channel_partial_poll_completed_route_cannot_renew_after_socket_id_reuse)
+{
+    PartialPollWindow window {true};
+    const auto wire = sink_data(0);
+    window.fixture.runtime->process_packet(
+        decode_packet(wire.view()).packet, sink_peer);
+    window.now.store(119000);
+    window.start();
+    (void)window.poll(0);
+    REQUIRE(window.fixture.channel->retire_connection(700) == window.first);
+    auto replacement = window.fixture.make_runtime(92, nullptr, false);
+    REQUIRE(window.fixture.channel->register_connection(700, replacement));
+    const std::array payload {std::byte {7}};
+    REQUIRE_EQ(replacement->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    const auto attempts = window.sends.attempts.load();
+    const auto result = window.poll(1000);
+    REQUIRE(!result.immediate_work);
+    REQUIRE_EQ(result.next_work_delay, std::chrono::microseconds {2000});
+    REQUIRE_EQ(window.sends.attempts.load(), attempts);
+    REQUIRE_EQ(window.first->snapshot().completed_turns, 1U);
+    REQUIRE_EQ(window.last->snapshot().completed_turns, 0U);
+}
+
+TEST(channel_partial_poll_renewal_published_before_callback_exit_is_not_lost)
+{
+    auto receipt_gate = std::make_shared<SinkGate>();
+    // Release before the window destructor joins its blocked scheduler.
+    PartialPollWindow window {true, receipt_gate};
+    SinkRelease release_receipt {receipt_gate};
+    const auto wire = sink_data(0);
+    window.fixture.runtime->process_packet(
+        decode_packet(wire.view()).packet, sink_peer);
+    window.now.store(119000);
+    REQUIRE(!window.poll(0).immediate_work);
+    window.first_gate->release();
+    receipt_gate->wait();
+    REQUIRE_EQ(window.first->snapshot().completed_turns, 0U);
+    REQUIRE_EQ(
+        window.poll(0).next_work_delay, std::chrono::microseconds {1000});
+    window.now.store(120001);
+    (void)window.poll(1000);
+    REQUIRE_EQ(window.first->snapshot().completed_turns, 0U);
+    receipt_gate->release();
+    window.wait_turn(2);
+    REQUIRE_EQ(window.last->snapshot().completed_turns, 0U);
+    REQUIRE(window.fixture.channel->begin_poll_round() == nullptr);
+    REQUIRE_EQ(
+        window.poll(1000).next_work_delay, std::chrono::microseconds {2000});
+}
+
+TEST(channel_partial_poll_refused_renewal_has_finite_retry)
+{
+    PartialPollWindow window {true};
+    const auto wire = sink_data(0);
+    window.fixture.runtime->process_packet(
+        decode_packet(wire.view()).packet, sink_peer);
+    window.now.store(119000);
+    window.start();
+    (void)window.poll(0);
+    window.fixture.runtime->mark_broken(0);
+    REQUIRE(!window.first->inbox()->snapshot().closed);
+    for (unsigned i = 0; i < 10; ++i) {
+        const auto result = window.poll(1000);
+        REQUIRE(!result.immediate_work);
+        REQUIRE_EQ(result.next_work_delay, std::chrono::microseconds {2000});
+    }
+    REQUIRE_EQ(window.first->snapshot().completed_turns, 1U);
+    REQUIRE_EQ(window.last->snapshot().completed_turns, 0U);
+    REQUIRE(window.fixture.channel->begin_poll_round() == nullptr);
+}
+
+TEST(channel_partial_poll_runnable_receipt_keeps_bounded_probe)
+{
+    PartialPollWindow window {false, nullptr, true};
+    const std::array payload {std::byte {7}};
+    for (unsigned i = 0; i < 40; ++i)
+        REQUIRE_EQ(
+            window.fixture.runtime->queue_message(payload, 0, true, false, -1)
+                .status,
+            MessageIoStatus::success);
+    window.start();
+    REQUIRE_EQ(window.sends.attempts.load(), 16U);
+    // The advancing protocol clock leaves additional paced DATA runnable after
+    // the full first grant. Repeated collection visits do not renew it at once.
+    for (unsigned i = 0; i < 10; ++i) {
+        const auto result = window.poll(0);
+        REQUIRE(!result.immediate_work);
+        REQUIRE_EQ(result.next_work_delay, std::chrono::microseconds {2000});
+    }
+    REQUIRE_EQ(window.first->snapshot().completed_turns, 1U);
+    REQUIRE_EQ(window.last->snapshot().completed_turns, 0U);
+    REQUIRE_EQ(window.sends.attempts.load(), 16U);
+    (void)window.poll(2000);
+    window.wait_turn(2);
+    REQUIRE_EQ(window.sends.attempts.load(), 32U);
+    REQUIRE_EQ(window.sends.off_worker.load(), 0U);
 }

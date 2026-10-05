@@ -40,6 +40,9 @@ void ChannelPollSendBudget::begin_completion_window() noexcept
 {
     std::lock_guard lock(completion_mutex_);
     completion_window_ = true;
+    // Reopening enrollment does not replenish the shared send allowance or
+    // remove outstanding members. Only captured, completed routes can renew.
+    enrollment_sealed_ = false;
 }
 
 bool ChannelPollSendBudget::enroll_poll() noexcept

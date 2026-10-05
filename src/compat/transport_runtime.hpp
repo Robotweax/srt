@@ -512,6 +512,10 @@ private:
     [[nodiscard]] RuntimePollResult poll_scheduled_connections(
         std::chrono::steady_clock::time_point now,
         bool use_absolute_deadlines) noexcept;
+    [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
+    poll_result_deadline(const RuntimePollResult& result,
+        std::chrono::steady_clock::time_point observed_at,
+        bool use_absolute_deadlines) const noexcept;
     void record_poll_result(const RuntimePollResult& result,
         std::chrono::steady_clock::time_point observed_at,
         bool use_absolute_deadlines) noexcept;
@@ -546,6 +550,9 @@ private:
         std::uint32_t socket_id = 0;
         std::shared_ptr<ConnectionRuntime> runtime;
         std::shared_ptr<ConnectionDatagramDispatcher> dispatcher;
+        bool completed = false;
+        std::optional<std::chrono::steady_clock::time_point> deadline =
+            std::nullopt;
     };
     // One fixed receipt per native datagram, pinning its original dispatcher
     // incarnation. No route-id lookup or cross-generation completion credit.
