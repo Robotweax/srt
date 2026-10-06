@@ -29,7 +29,44 @@ storage and worker stacks grow with the requested count. The default remains
 conservative; CPU count does not automatically choose workers or account for
 container quotas. Connection count alone is not a reason to raise the setting.
 
-## What scales today
+## Experimental connection affinity and admission limits
+
+`ROBOTWEAX_SRT_CONNECTION_AFFINITY=1` selects the opt-in connection-affinity
+preview. Unset or `0` preserves the default path. Set it before the first scheduler
+acquisition or bind; the first valid selection is retained across cleanup/restart.
+Only the exact values `0` and `1` are accepted. Invalid input fails bind with
+`SRT_EINVPARAM`. The preview assigns protocol work to bounded connection services;
+it has not established a performance benefit. See [Architecture](architecture.md)
+for the ownership and scheduling contract.
+
+Admission must fit all of these independent ceilings:
+
+| Resource | Default | Configuration |
+| --- | --- | --- |
+| Physical connection-ring storage per UDP channel | 8 MiB and 256 rings | Fixed preview policy |
+| Physical connection-ring storage per process | 64 MiB and 4,096 rings | `ROBOTWEAX_SRT_INBOX_STORAGE_MIB`, decimal 1–1024 MiB; the count ceiling is fixed |
+| Connection services per scheduler shard | 1,024 | `ROBOTWEAX_SRT_SCHEDULER_SERVICES_PER_SHARD`, decimal 0–4,096; zero refuses selected binds |
+
+These are ceilings, not guaranteed connection counts. Each selected connection
+preallocates a 64-entry ring, including 16 control-reserved entries. Empty rings
+still consume their full storage charge; retired rings retain that charge until
+physical reclamation. On a build with 99,328-byte rings, the 8 MiB channel ceiling
+permits **84 rings**, so an otherwise idle shared listener reaches its byte limit
+before its 256-ring count limit. The exact count depends on the build's entry
+layout and other retained rings. Raising the process storage setting does not
+raise the channel ceiling. Loopback pairs in one process charge both endpoints.
+
+If established-runtime admission fails for lack of resources, a listener sends
+the existing HSv5 System rejection before sending a successful CONCLUSION. A
+caller receiving it reports `SRT_ECONNREJ` and `srt_getrejectreason()` returns
+`SRT_REJ_SYSTEM`; the wire reason does not identify the exhausted budget. Local
+attachment failure reports `SRT_ENOBUF`. UDP rejection delivery is best effort,
+so a lost rejection can still produce a connection timeout. There is no inline
+fallback. Close unused connections and allow retirement to reclaim storage
+before retrying. Configure process limits before runtime activity; the retained
+process ring owner keeps its first successful configuration across restart.
+
+## What scales on the default path today
 
 Each UDP channel receives a fixed affinity, assigned in channel creation order
 modulo the shard count. All receive dispatch and connection polling for one

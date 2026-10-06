@@ -4394,6 +4394,20 @@ bool ListenerRuntime::process_setup_result(
                     context->setup_inbox, admitted_group)
                 == SRT_ERROR) {
                 const ErrorState error = last_error();
+                if (error.code == SRT_ENOBUF && replay_response != nullptr) {
+                    // Runtime admission precedes the successful CONCLUSION.
+                    // Report exhausted local resources through the existing
+                    // HSv5 rejection contract instead of letting the peer time out.
+                    HandshakeAction rejection {
+                        .kind = HandshakeActionKind::send,
+                        .packet = replay_response->packet,
+                    };
+                    rejection.packet.extension_field = 0U;
+                    rejection.packet.request =
+                        static_cast<HandshakeRequest>(1'000 + SRT_REJ_SYSTEM);
+                    (void)send_action(*context->channel, context->initial.peer,
+                        rejection, context->caller_socket_id, context->origin);
+                }
                 return finish_setup_context(context, false,
                     static_cast<SRT_ERRNO>(error.code), error.system_error);
             }
