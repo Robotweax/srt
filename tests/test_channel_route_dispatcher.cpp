@@ -4993,3 +4993,208 @@ TEST(channel_buffered_completion_with_sender_work_stays_urgent)
     REQUIRE(receipt->round->remaining() < 64U);
     REQUIRE_EQ(window.sends.off_worker.load(), 0U);
 }
+
+namespace {
+struct IdleReuseFixture : SinkFixture {
+    std::shared_ptr<ConnectionDatagramDispatcher> route;
+    IdleReuseFixture()
+    {
+        REQUIRE(channel->enable_scheduled_polling());
+        runtime = std::make_shared<ConnectionRuntime>(
+            native_receive_certificate_configuration(channel));
+        auto gate = std::make_shared<SinkGate>();
+        SinkRelease release {gate};
+        sink_block_worker(*this, gate);
+        route = dispatcher();
+        REQUIRE(channel->register_connection(700, runtime, route));
+        REQUIRE(!channel->poll_connections_for_testing().immediate_work);
+        gate->release();
+        await_coordinated_turn(route);
+        // A queued task on the same shard positively fences callback return;
+        // quiescent() is a retirement barrier, not an idle-service predicate.
+        auto fence = std::make_shared<SinkGate>();
+        SinkRelease fence_release {fence};
+        sink_block_worker(*this, fence);
+        REQUIRE(!channel->poll_connections_for_testing().immediate_work);
+    }
+    ~IdleReuseFixture()
+    {
+        channel->unregister_connection(700);
+    }
+};
+struct ReuseCounter {
+    std::size_t count = 0;
+    static void observe(void* pointer) noexcept
+    {
+        ++static_cast<ReuseCounter*>(pointer)->count;
+    }
+};
+}
+
+TEST(channel_idle_poll_reuse_skips_service_enrollment_without_native_credit)
+{
+    IdleReuseFixture fixture;
+    ReuseCounter reuse;
+    fixture.channel->set_receive_reuse_hook_for_testing(
+        ReuseCounter::observe, &reuse);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    const auto turns = fixture.route->snapshot().completed_turns;
+    for (std::size_t index = 0; index < 8; ++index) {
+        const auto result = fixture.channel->poll_connections_for_testing();
+        REQUIRE(!result.immediate_work);
+        REQUIRE(!result.receive_wait_safe);
+        REQUIRE(result.next_work_delay.has_value());
+        REQUIRE(*result.next_work_delay <= std::chrono::milliseconds {2});
+        REQUIRE(fixture.channel->begin_poll_round() != nullptr);
+    }
+    REQUIRE_EQ(reuse.count, 8U);
+    REQUIRE_EQ(fixture.route->snapshot().completed_turns, turns);
+}
+
+TEST(channel_idle_poll_reuse_rejects_runtime_mutation_without_binding_wake)
+{
+    IdleReuseFixture fixture;
+    ReuseCounter reuse;
+    fixture.channel->set_receive_reuse_hook_for_testing(
+        ReuseCounter::observe, &reuse);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    auto options =
+        native_receive_certificate_configuration(fixture.channel).options;
+    fixture.runtime->apply_options(options);
+    (void)fixture.channel->poll_connections_for_testing();
+    REQUIRE_EQ(reuse.count, 0U);
+    REQUIRE(fixture.channel->begin_poll_round() == nullptr);
+}
+
+TEST(channel_idle_poll_reuse_rejects_global_refresh_and_synthetic_channel_clock)
+{
+    for (bool synthetic : {false, true}) {
+        IdleReuseFixture fixture;
+        ReuseCounter reuse;
+        fixture.channel->set_receive_reuse_hook_for_testing(
+            ReuseCounter::observe, &reuse);
+        auto gate = std::make_shared<SinkGate>();
+        SinkRelease release {gate};
+        sink_block_worker(fixture, gate);
+        if (!synthetic)
+            fixture.channel->notify_send_work();
+        (void)fixture.channel->poll_connections_for_testing(synthetic
+                ? std::optional {ConnectionRuntime::Clock::now()}
+                : std::nullopt);
+        REQUIRE_EQ(reuse.count, 0U);
+        REQUIRE(fixture.channel->begin_poll_round() == nullptr);
+    }
+}
+
+TEST(channel_idle_poll_reuse_preserves_post_validation_application_wake)
+{
+    IdleReuseFixture fixture;
+    struct Commit {
+        ConnectionRuntime* runtime;
+        MessageIoStatus status = MessageIoStatus::invalid_state;
+        std::size_t calls = 0;
+        static void send(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Commit*>(pointer);
+            const std::array payload {std::byte {7}};
+            self.status =
+                self.runtime->queue_message(payload, 0, true, false, -1).status;
+            ++self.calls;
+        }
+    } commit {fixture.runtime.get()};
+    fixture.channel->set_receive_reuse_hook_for_testing(Commit::send, &commit);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    REQUIRE(fixture.channel->poll_connections_for_testing().immediate_work);
+    REQUIRE_EQ(commit.status, MessageIoStatus::success);
+    REQUIRE_EQ(commit.calls, 1U);
+    // The refresh survives closing this sweep; the next turn must enroll work.
+    (void)fixture.channel->poll_connections_for_testing();
+    REQUIRE_EQ(commit.calls, 1U);
+    REQUIRE(fixture.channel->begin_poll_round() == nullptr);
+}
+
+TEST(channel_idle_poll_reuse_rejects_retirement_after_validation)
+{
+    IdleReuseFixture fixture;
+    struct Detach {
+        DatagramChannel* channel;
+        std::size_t calls = 0;
+        static void remove(void* pointer) noexcept
+        {
+            auto& self = *static_cast<Detach*>(pointer);
+            self.channel->unregister_connection(700);
+            ++self.calls;
+        }
+    } detach {fixture.channel.get()};
+    fixture.channel->set_receive_reuse_hook_for_testing(
+        Detach::remove, &detach);
+    (void)fixture.channel->poll_connections_for_testing();
+    REQUIRE_EQ(detach.calls, 1U);
+    REQUIRE(fixture.channel->begin_poll_round() != nullptr);
+    fixture.channel->set_receive_reuse_hook_for_testing(nullptr, nullptr);
+    REQUIRE(!fixture.channel->poll_connections_for_testing().immediate_work);
+    REQUIRE_EQ(detach.calls, 1U);
+}
+
+TEST(channel_idle_poll_reuse_keeps_native_ingress_cutoff_independent)
+{
+    IdleReuseFixture fixture;
+    ReuseCounter reuse;
+    fixture.channel->set_receive_reuse_hook_for_testing(
+        ReuseCounter::observe, &reuse);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    sink_block_worker(fixture, gate);
+    (void)fixture.channel->poll_connections_for_testing();
+    REQUIRE_EQ(reuse.count, 1U);
+    (void)fixture.ingress(sink_data(0));
+    REQUIRE_EQ(fixture.route->inbox()->snapshot().queued, 1U);
+    std::size_t receive_calls = 0;
+    auto receive = [&](std::span<std::byte>) noexcept {
+        ++receive_calls;
+        return UdpIoResult {.error = Error::would_block};
+    };
+    (void)fixture.channel->run_once_for_testing(receive);
+    REQUIRE_EQ(receive_calls, 0U);
+    REQUIRE_EQ(reuse.count, 1U);
+    gate->release();
+    sink_receive(fixture.runtime, std::byte {1});
+}
+
+TEST(channel_idle_poll_reuse_wakes_active_channel_after_validation_before_park)
+{
+    IdleReuseFixture fixture;
+    REQUIRE_EQ(
+        fixture.channel->socket.bind(IpEndpoint::loopback()), Error::none);
+    ScheduledSendCounts counts;
+    SinkNeutralSend neutral {fixture.channel};
+    fixture.channel->set_send_hook_for_testing(
+        ScheduledSendCounts::send, &counts);
+    auto gate = std::make_shared<SinkGate>();
+    SinkRelease release {gate};
+    fixture.channel->set_receive_reuse_hook_for_testing(
+        SinkGate::block, gate.get());
+    REQUIRE(fixture.channel->start(fixture.scheduler, 0));
+    gate->wait();
+    const std::array payload {std::byte {7}};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    // The channel task has passed proof validation but cannot schedule its wait.
+    // Application notification must retain follow-up progress across that gap.
+    gate->release();
+    const auto deadline =
+        ConnectionRuntime::Clock::now() + std::chrono::seconds {2};
+    while (counts.attempts.load() == 0U
+        && ConnectionRuntime::Clock::now() < deadline)
+        std::this_thread::yield();
+    REQUIRE(counts.attempts.load() != 0U);
+    REQUIRE_EQ(
+        fixture.channel->shutdown(), DatagramChannel::ShutdownStatus::retired);
+}

@@ -234,9 +234,41 @@ clocks, synthetic clocks, crypto sessions, packet filters and file congestion
 control do not produce certificates. The deadline comes from the actual poll's
 protocol clock and remains bounded by its existing maintenance interval.
 
-No coordinator currently consumes this certificate. It grants no native receive
-credit and does not by itself permit parking or skipping a poll: a future
-consumer must also preserve route identity, wake publication and native ingress
-progress. Existing poll budgets, receive wait flags and scheduling remain
-unchanged. The additional fixed metadata and validation can add overhead; this
-producer step makes no performance claim.
+The certificate grants no native receive credit and does not by itself permit
+parking or skipping a poll: consumers must also preserve route identity, wake
+publication and native ingress progress. The producer preserves existing poll
+budgets and flags; the bounded consumer below specifies its conservative wait.
+The additional fixed metadata and validation can add overhead; certification
+makes no performance claim.
+
+
+## Bounded idle poll reuse
+
+A scheduled channel can retain one fixed receive observation in an existing
+route node: the Runtime certificate, pre-poll binding stamp and inbox admission
+count. It consumes that observation only for native channel clocks, unchanged
+runtime/dispatcher identity, a complete setup prefix, an idle dispatcher and
+current Runtime/inbox/work generations. A rejected observation is cleared and
+uses the existing bounded service enrollment; it never polls synchronously.
+Removing a route removes its observation. Old receipts are stored only against
+their captured runtime and dispatcher, so a reused socket ID inherits nothing.
+
+Global send/release refresh acknowledges its marker with an atomic exchange at
+the start of a sweep and disables reuse throughout that sweep. A notification
+arriving afterwards remains pending and forces follow-up. After validation,
+producers retain the existing channel pending/timer notification handshake;
+the state proof does not replace wake publication. Synthetic clocks, direct
+routes and uncertified modes retain their previous behavior.
+
+Reuse performs no service enrollment, protocol poll, send-budget grant or
+completion publication. It retains the original absolute protocol deadline
+and contributes an unsafe receive wait to the existing short conservative
+channel revisit. Thus it grants no native parking permission. Native ingress
+receipts, setup barriers and cutoffs are still checked independently before
+another native receive slice. The four-route window, shared 64-attempt budget
+and existing route sweep remain bounded as before.
+
+This initial consumer keeps the short channel timer and global refresh fallback.
+It removes some service polls but may add metadata/validation overhead or short
+channel revisits. Performance benefit requires separate measurement; it is not
+an O(1) scheduler or a longer buffered-receive maintenance interval.

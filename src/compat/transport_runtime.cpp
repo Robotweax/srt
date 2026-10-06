@@ -2048,6 +2048,29 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
                     poll.deadline = poll_result_deadline(completion->result,
                         use_absolute_deadlines ? completion->completed_at : now,
                         use_absolute_deadlines);
+                    {
+                        std::lock_guard lock(routes_mutex_);
+                        const auto route = routes_.find(poll.socket_id);
+                        if (route != routes_.end()
+                            && route->second.runtime == poll.runtime
+                            && route->second.dispatcher == poll.dispatcher) {
+                            route->second.receive_poll.reset();
+                            if (use_absolute_deadlines
+                                && !completion->result.immediate_work
+                                && completion->send_attempts == 0U
+                                && completion->result.receive_certificate
+                                    .has_value()) {
+                                route->second.receive_poll =
+                                    ConnectionDatagramDispatcher::
+                                        ReceivePollObservation {
+                                            *completion->result
+                                                .receive_certificate,
+                                            completion->observed_work,
+                                            completion
+                                                ->observed_ingress_admitted};
+                            }
+                        }
+                    }
                     record_poll_result(completion->result,
                         use_absolute_deadlines ? completion->completed_at : now,
                         use_absolute_deadlines);
@@ -2108,7 +2131,12 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
         if (poll_round_remaining_ == 0U) {
             // Only a fresh sweep acknowledges new work. An older receipt
             // cannot clear a notification that arrived while it was in flight.
-            poll_refresh_pending_.store(false, std::memory_order_release);
+            // Unknown/global work invalidates reuse for the entire sweep.
+            // exchange preserves a notification arriving after acknowledgement.
+            const bool refresh = poll_refresh_pending_.exchange(
+                false, std::memory_order_acq_rel);
+            poll_round_receive_reuse_allowed_ =
+                use_absolute_deadlines && !refresh;
             poll_round_remaining_ = routes_.size();
             poll_round_immediate_ = false;
             poll_round_ingress_pending_ = false;
@@ -2132,6 +2160,8 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
         ++visited) {
         ScheduledPoll poll;
         std::shared_ptr<DatagramInbox> prefix;
+        std::optional<ConnectionDatagramDispatcher::ReceivePollObservation>
+            cached;
         {
             std::lock_guard lock(routes_mutex_);
             if (next_poll_route_ == nullptr)
@@ -2141,12 +2171,44 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
             poll = {next_poll_route_->socket_id, next_poll_route_->runtime,
                 next_poll_route_->dispatcher};
             prefix = next_poll_route_->setup_prefix;
+            cached =
+                std::exchange(next_poll_route_->receive_poll, std::nullopt);
             next_poll_route_ = next_poll_route_->next;
             --poll_round_remaining_;
         }
         if (prefix != nullptr)
             prefix->finish_promotion();
         if (poll.dispatcher != nullptr) {
+            if (use_absolute_deadlines && poll_round_receive_reuse_allowed_
+                && !poll_refresh_pending_.load(std::memory_order_acquire)
+                && prefix == nullptr && cached.has_value()
+                && cached->certificate.valid_until
+                    > std::chrono::steady_clock::now()
+                && poll.dispatcher->receive_poll_is_current(*cached)) {
+                // A proof is not a completion or native ingress credit. Keep
+                // the existing short conservative channel revisit while
+                // retaining the producer's original absolute protocol deadline.
+                if (receive_reuse_hook_ != nullptr)
+                    receive_reuse_hook_(receive_reuse_context_);
+                bool current = false;
+                {
+                    std::lock_guard lock(routes_mutex_);
+                    const auto route = routes_.find(poll.socket_id);
+                    current = route != routes_.end()
+                        && route->second.runtime == poll.runtime
+                        && route->second.dispatcher == poll.dispatcher;
+                    if (current)
+                        route->second.receive_poll = cached;
+                }
+                if (current) {
+                    record_poll_result(
+                        {.next_work_deadline = cached->certificate.valid_until},
+                        now, true);
+                    continue;
+                }
+                // The captured incarnation was removed; never poll a replacement.
+                continue;
+            }
             if (poll.dispatcher->request_poll(round)) {
                 scheduled_polls_[scheduled_poll_count_++] = std::move(poll);
             } else {
