@@ -407,7 +407,7 @@ jobs:
           -DROBOTWEAX_SRT_BUILD_TOOLS=${{ needs.changes.outputs.core_tests }}
       - name: Build
         if: needs.changes.outputs.core_tests == 'true'
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel ${{ runner.os == 'macOS' && '3' || '' }}
       - name: Build selected public consumers
         if: needs.changes.outputs.core_tests != 'true'
         shell: bash
@@ -421,11 +421,17 @@ jobs:
           fi
           cmake --build build --config Release --parallel --target "${targets[@]}"
       - name: Test
-        if: needs.changes.outputs.core_tests == 'true'
+        if: needs.changes.outputs.core_tests == 'true' && runner.os != 'macOS'
         run: >-
           ctest --test-dir build
           -C Release
           --output-on-failure
+      - name: Test macOS bounded batches
+        if: needs.changes.outputs.core_tests == 'true' && runner.os == 'macOS'
+        run: >-
+          ./tools/python tools/run_macos_ci_tests.py
+          --build build --configuration Release
+
       - name: Test selected public consumers
         if: needs.changes.outputs.core_tests != 'true'
         shell: bash
@@ -462,12 +468,19 @@ jobs:
           -DCMAKE_BUILD_TYPE=Debug
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
       - name: Build
-        run: cmake --build build --config Debug --parallel
+        run: cmake --build build --config Debug --parallel ${{ runner.os == 'macOS' && '3' || '' }}
       - name: Test
+        if: runner.os != 'macOS'
         run: >-
           ctest --test-dir build
           -C Debug
           --output-on-failure
+      - name: Test macOS bounded batches
+        if: runner.os == 'macOS'
+        run: >-
+          ./tools/python tools/run_macos_ci_tests.py
+          --build build --configuration Debug
+
 
   shared_library:
     name: Shared library (${{ matrix.os }})
@@ -494,7 +507,7 @@ jobs:
         run: >-
           cmake --build build
           --config Release
-          --parallel
+          --parallel ${{ runner.os == 'macOS' && '3' || '' }}
           --target robotweax_srt_shared_lifecycle_tests
           robotweax_srt_global_lifecycle_tests
           robotweax_srt_late_cleanup_tests
@@ -511,7 +524,7 @@ jobs:
       - name: Configure legacy packaging
         run: cmake -S . -B build -DROBOTWEAX_SRT_INSTALL_LAYOUT=legacy
       - name: Relink legacy library
-        run: cmake --build build --config Release --parallel --target robotweax_srt
+        run: cmake --build build --config Release --parallel ${{ runner.os == 'macOS' && '3' || '' }} --target robotweax_srt
       - name: Test legacy package consumer
         run: >-
           ctest --test-dir build -C Release
@@ -993,14 +1006,14 @@ jobs:
         run: >-
           cmake --build build-aead-static
           --config Release
-          --parallel
+          --parallel ${{ runner.os == 'macOS' && '3' || '' }}
           --target robotweax_srt
       - name: Build AES-GCM public demos
         if: needs.changes.outputs.examples == 'true'
         run: >-
           cmake --build build-aead-static
           --config Release
-          --parallel
+          --parallel ${{ runner.os == 'macOS' && '3' || '' }}
           --target robotweax_srt_message_demo robotweax_srt_file_demo robotweax_srt_group_demo robotweax_srt_udp_bridge
       - name: Test explicit CTR and GCM demo modes
         if: needs.changes.outputs.examples == 'true'
@@ -1035,7 +1048,7 @@ jobs:
         run: >-
           cmake --build build-aead-shared
           --config Release
-          --parallel
+          --parallel ${{ runner.os == 'macOS' && '3' || '' }}
       - name: Test shared ABI, exports, and package consumers
         if: needs.changes.outputs.aead_platform == 'true'
         run: >-
@@ -1062,7 +1075,7 @@ jobs:
         run: >-
           cmake --build build-maxrexmit-static
           --config Release
-          --parallel
+          --parallel ${{ runner.os == 'macOS' && '3' || '' }}
           --target robotweax_srt_tests
       - name: Test optional retransmission limit
         if: needs.changes.outputs.aead_platform == 'true'

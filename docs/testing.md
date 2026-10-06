@@ -64,6 +64,16 @@ exactly once across the partitions, each retaining a 30-second process deadline.
 Run `ctest --test-dir build -R '^robotweax_srt_key_length_tests$'` to select the
 key-length partition; it is also covered by the `encryption` label.
 
+macOS CI limits compilation to three concurrent jobs. Its full static suites
+run timing-sensitive tests serially, then run the process-isolated crypto setup
+fault probes with two concurrent CTest slots. The batching helper discovers the
+registered tests first, preserves their deadlines, and fails if discovery or
+either batch fails. To reproduce that scheduling locally:
+
+```sh
+./tools/python tools/run_macos_ci_tests.py --build build --configuration Debug
+```
+
 This filtered command does not replace the complete suite or the separate
 lifecycle and process-exit tests.
 
