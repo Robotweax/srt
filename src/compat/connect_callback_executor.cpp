@@ -33,6 +33,9 @@ struct ConnectCallbackExecutor::State {
     std::uint64_t reused = 0;
     std::uint64_t completed = 0;
     bool stopping = false;
+    bool exit_released = false;
+    std::size_t retirement_waiters = 0;
+    std::condition_variable exit_ready;
 };
 
 ConnectCallbackExecutor::ConnectCallbackExecutor(std::size_t maximum_idle)
@@ -112,6 +115,16 @@ void ConnectCallbackExecutor::run(
         if (worker->task.function == nullptr)
             break;
     }
+    // Admission retirement can happen while runtime cleanup still rejects
+    // restart. Joining later is insufficient: this thread could otherwise
+    // enter application TLS destruction before that join begins.
+    if (state->stopping && !state->exit_released) {
+        ++state->retirement_waiters;
+        state->exit_ready.wait(lock, [&] {
+            return state->exit_released;
+        });
+        --state->retirement_waiters;
+    }
     if (!worker->joining) {
         // Match the existing callback-worker self-retirement. Never join a
         // retiring thread on the protocol shard or under this mutex: user
@@ -140,8 +153,10 @@ void ConnectCallbackExecutor::stop() noexcept
     std::list<std::shared_ptr<Worker>> workers;
     {
         std::lock_guard lock(state->mutex);
+        state->exit_released = true;
         workers.swap(state->workers);
     }
+    state->exit_ready.notify_all();
     for (const auto& worker : workers) {
         if (worker->thread.get_id() == std::this_thread::get_id()) {
             worker->thread.detach();
@@ -156,7 +171,8 @@ ConnectCallbackExecutor::snapshot() const noexcept
 {
     std::lock_guard lock(state_->mutex);
     return {state_->workers.size(), state_->idle, state_->created,
-        state_->reused, state_->completed, state_->stopping};
+        state_->reused, state_->completed, state_->stopping,
+        state_->retirement_waiters};
 }
 
 namespace {

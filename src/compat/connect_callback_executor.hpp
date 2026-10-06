@@ -23,6 +23,8 @@ public:
         std::uint64_t reused = 0;
         std::uint64_t completed = 0;
         bool stopping = false;
+        // Workers held before thread exit/TLS destruction until stop().
+        std::size_t retirement_waiters = 0;
     };
 
     explicit ConnectCallbackExecutor(std::size_t maximum_idle);
@@ -32,6 +34,8 @@ public:
 
     [[nodiscard]] bool submit(Task task) noexcept;
     // Retire admission without waiting for application TLS destructors.
+    // Workers retain their thread until stop() releases exit, so TLS cannot
+    // run while the runtime owner still has generation admission closed.
     // The owner must subsequently stop/join outside runtime lifecycle locks.
     void request_stop() noexcept;
     void stop() noexcept;

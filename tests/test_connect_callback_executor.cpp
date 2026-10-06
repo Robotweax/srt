@@ -175,9 +175,16 @@ TEST(connect_callback_executor_retirement_preserves_accepted_task)
     const bool rejected =
         !executor.submit({block, std::make_shared<Gate>(), 0});
     release(gate);
+    const auto retirement_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {3};
+    while (executor.snapshot().retirement_waiters != 1
+        && std::chrono::steady_clock::now() < retirement_deadline)
+        std::this_thread::yield();
+    const bool parked = executor.snapshot().retirement_waiters == 1;
     executor.stop();
     REQUIRE(started);
     REQUIRE(rejected);
+    REQUIRE(parked);
     REQUIRE_EQ(gate->delivered_error, SRT_ETIMEOUT);
     REQUIRE_EQ(executor.snapshot().completed, 1U);
     REQUIRE_EQ(executor.snapshot().workers, 0U);
