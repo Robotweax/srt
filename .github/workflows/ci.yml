@@ -1082,7 +1082,7 @@ jobs:
         run: >-
           ctest --test-dir build-maxrexmit-static
           -C Release
-          -R "^robotweax_srt_(tests|key_length_tests)$"
+          -R "^robotweax_srt_(tests|key_length_tests|gcm_profile_tests)$"
           --no-tests=error
           --output-on-failure
           --timeout 120
