@@ -96,6 +96,11 @@ public:
         std::size_t send_attempts = 0;
         std::shared_ptr<ChannelPollSendBudget> round;
         std::chrono::steady_clock::time_point completed_at;
+        // Captured before runtime polling, never refreshed at receipt delivery.
+        // Together these are diagnostic freshness inputs only: the complete
+        // protocol invalidation audit and eligibility proof are still absent.
+        ConnectionWorkBinding::WorkObservation observed_work;
+        std::uint64_t observed_ingress_admitted = 0;
     };
     // Explicit internal request, never inline protocol work. One pending/active/
     // unconsumed result per dispatcher; caller owns deadlines and route commit.

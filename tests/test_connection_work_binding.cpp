@@ -125,6 +125,8 @@ TEST(connection_work_binding_coalesces_reasons_despite_pool_pressure)
         ConnectionWorkBinding::create(scheduler, 1, WorkProbe::run, probe);
     REQUIRE(binding != nullptr);
     REQUIRE_EQ(binding->token().shard, scheduler->shard_for(1));
+    const auto before = binding->observe_work();
+    REQUIRE(binding->work_is_current(before));
     std::array<std::future<RuntimeScheduler::SubmitStatus>, 16> callers;
     WorkGateRelease release {gate};
     REQUIRE_EQ(
@@ -156,6 +158,10 @@ TEST(connection_work_binding_coalesces_reasons_despite_pool_pressure)
         REQUIRE_EQ(caller.get(), RuntimeScheduler::SubmitStatus::accepted);
     }
     REQUIRE_EQ(scheduler->snapshot().services_pending, 1U);
+    const auto after = binding->observe_work();
+    REQUIRE_EQ(after.epoch, before.epoch + callers.size());
+    REQUIRE(!binding->work_is_current(before));
+    REQUIRE(binding->work_is_current(after));
     gate->release();
     probe->wait(1);
     binding->retire();
@@ -179,8 +185,10 @@ TEST(connection_work_binding_publication_during_dispatch_gets_another_turn)
     REQUIRE_EQ(binding->notify({.send = true}),
         RuntimeScheduler::SubmitStatus::accepted);
     gate->wait();
+    const auto during = binding->observe_work();
     REQUIRE_EQ(binding->notify({.receive_release = true}),
         RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE(!binding->work_is_current(during));
     REQUIRE_EQ(binding->notify({.receive_release = true}),
         RuntimeScheduler::SubmitStatus::accepted);
     gate->release();
@@ -207,7 +215,10 @@ TEST(connection_work_binding_retirement_rejects_old_generation)
     gate->wait();
     REQUIRE_EQ(
         old->notify({.send = true}), RuntimeScheduler::SubmitStatus::accepted);
+    const auto old_observation = old->observe_work();
     old->retire();
+    REQUIRE(!old->work_is_current(old_observation));
+    REQUIRE_EQ(old->observe_work().epoch, 0U);
     old->retire();
     REQUIRE(old->quiescent());
     auto probe = std::make_shared<WorkProbe>();
@@ -222,12 +233,43 @@ TEST(connection_work_binding_retirement_rejects_old_generation)
         RuntimeScheduler::SubmitStatus::invalid);
     REQUIRE_EQ(binding->notify({.receive_release = true}),
         RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(binding->observe_work().epoch, old_observation.epoch);
+    REQUIRE(!binding->work_is_current(old_observation));
     gate->release();
     probe->wait(1);
     binding->retire();
     scheduler->stop();
     REQUIRE_EQ(old_probe->count, 0U);
     REQUIRE(!probe->turns[0].send && probe->turns[0].receive_release);
+}
+
+TEST(connection_work_binding_epoch_exhaustion_never_revives_old_observations)
+{
+    const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
+    REQUIRE_EQ(next_connection_work_epoch(maximum - 1U), maximum);
+    REQUIRE_EQ(next_connection_work_epoch(maximum), 0U);
+    REQUIRE_EQ(next_connection_work_epoch(0U), 0U);
+}
+
+TEST(connection_work_binding_observations_do_not_alias_foreign_scheduler_scope)
+{
+    auto first_scheduler = work_scheduler();
+    auto second_scheduler = work_scheduler();
+    auto probe = std::make_shared<WorkProbe>();
+    auto first = ConnectionWorkBinding::create(
+        first_scheduler, 0, WorkProbe::run, probe);
+    auto second = ConnectionWorkBinding::create(
+        second_scheduler, 0, WorkProbe::run, probe);
+    REQUIRE(first != nullptr && second != nullptr);
+    const auto observation = first->observe_work();
+    REQUIRE_EQ(observation.epoch, second->observe_work().epoch);
+    REQUIRE(first->work_is_current(observation));
+    REQUIRE(!second->work_is_current(observation));
+    REQUIRE(!first->work_is_current({}));
+    first->retire();
+    second->retire();
+    first_scheduler->stop();
+    second_scheduler->stop();
 }
 
 TEST(connection_work_binding_retirement_does_not_wait_for_active_callback)
