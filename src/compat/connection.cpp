@@ -1425,6 +1425,12 @@ public:
                     socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_BADSECRET);
             }
             if (peer_key_length != setup_.crypto_key_length) {
+                // An explicit application choice is a requirement, not a
+                // default that an unauthenticated advertisement may replace.
+                if (setup_.options.configured_encryption_key_length() != 0U) {
+                    return fail_connect(socket_, SRT_ESECFAIL, 0, asynchronous_,
+                        SRT_REJ_BADSECRET);
+                }
                 const int replaced = replace_crypto(peer_key_length,
                     message.packet.encryption_field, overall_deadline);
                 if (replaced == SRT_ERROR) {
@@ -3827,6 +3833,12 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     setup_context->policy_error = policy_error;
     setup_context->policy_rejected = policy_rejected;
     setup_context->cookie_context.cookie = admission.validated_cookie;
+    // Callback options may differ from the caller's validated KMREQ. The
+    // final response describes the accepted key, not the callback's default.
+    const std::size_t response_key_length =
+        crypto != nullptr && crypto->receiver_state() == CryptoState::secured
+        ? crypto->key_length()
+        : native_options.configured_encryption_key_length();
     ListenerConnectionSetupSteps::Configuration configuration;
     configuration.hsv5 = {
         .role = ConnectionRole::listener,
@@ -3837,9 +3849,8 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         .flow_window = advertised_flow_window(native_options, public_options),
         .timeout_milliseconds = retry_interval_milliseconds,
         .maximum_retries = retry_budget(timeout_milliseconds),
-        .encryption_field =
-            static_cast<std::uint16_t>(encryption_field_for_key_length(
-                native_options.configured_encryption_key_length())),
+        .encryption_field = static_cast<std::uint16_t>(
+            encryption_field_for_key_length(response_key_length)),
         .extension_parameters = native_options.handshake_parameters(),
         .minimum_peer_srt_version =
             static_cast<std::uint32_t>(public_options.minimum_peer_srt_version),

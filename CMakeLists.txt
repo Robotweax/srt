@@ -360,6 +360,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_session.cpp
         tests/test_acknowledged_source_drop.cpp
         tests/test_srt_compat.cpp
+        tests/test_compat_key_negotiation.cpp
         tests/test_profile_admission.cpp
         tests/test_socket_options.cpp
         tests/test_simulation.cpp
