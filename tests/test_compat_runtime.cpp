@@ -4577,7 +4577,7 @@ TEST(compat_runtime_encrypts_payloads_and_exchanges_rotation_keys)
     }
 }
 
-TEST(compat_runtime_gcm_caller_listener_authenticates_live_data_and_faults)
+static void exercise_gcm_message_profile(bool control)
 {
     const auto caller_channel = std::make_shared<DatagramChannel>();
     const auto listener_channel = std::make_shared<DatagramChannel>();
@@ -4618,6 +4618,15 @@ TEST(compat_runtime_gcm_caller_listener_authenticates_live_data_and_faults)
     REQUIRE(listener_crypto->authenticated_data_enabled());
 
     SocketOptions options;
+    if (control) {
+        REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                       static_cast<std::int64_t>(TransmissionType::control)),
+            Error::none);
+    }
+#ifdef ENABLE_AEAD_API_PREVIEW
+    REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+#endif
+    const SequenceNumber initial {control ? SequenceNumber::mask - 1U : 500U};
     REQUIRE_EQ(
         options.set(SocketOption::maximum_payload_size, 64), Error::none);
     REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 8), Error::none);
@@ -4626,11 +4635,39 @@ TEST(compat_runtime_gcm_caller_listener_authenticates_live_data_and_faults)
     const auto origin = ConnectionRuntime::Clock::now();
     std::uint64_t caller_now = 1'000'000;
     std::uint64_t listener_now = 1'000'000;
+    if (control) {
+        ConnectionRuntime bounded {{
+            .channel = caller_channel,
+            .peer = listener_endpoint,
+            .peer_socket_id = 520,
+            .initial_sequence = initial,
+            .flow_window_packets = 256,
+            .options = options,
+            .origin = origin,
+            .crypto = caller_crypto,
+            .now_function = injected_now,
+            .now_context = &caller_now,
+        }};
+        const std::array<std::byte, 513> over_capacity {};
+        REQUIRE_EQ(
+            bounded.queue_message(over_capacity, 0, false, false, -1).status,
+            MessageIoStatus::would_block);
+        REQUIRE_EQ(bounded
+                       .queue_message(std::span {over_capacity}.first(512), 0,
+                           false, false, -1)
+                       .status,
+            MessageIoStatus::success);
+        REQUIRE_EQ(bounded
+                       .queue_message(std::span {over_capacity}.first(1), 0,
+                           false, false, -1)
+                       .status,
+            MessageIoStatus::would_block);
+    }
     ConnectionRuntime caller {{
         .channel = caller_channel,
         .peer = listener_endpoint,
         .peer_socket_id = 520,
-        .initial_sequence = SequenceNumber {500},
+        .initial_sequence = initial,
         .flow_window_packets = 256,
         .options = options,
         .origin = origin,
@@ -4642,7 +4679,7 @@ TEST(compat_runtime_gcm_caller_listener_authenticates_live_data_and_faults)
         .channel = listener_channel,
         .peer = caller_endpoint,
         .peer_socket_id = 510,
-        .initial_sequence = SequenceNumber {500},
+        .initial_sequence = initial,
         .flow_window_packets = 256,
         .options = options,
         .origin = origin,
@@ -4698,12 +4735,21 @@ TEST(compat_runtime_gcm_caller_listener_authenticates_live_data_and_faults)
     listener.process_packet(plaintext, caller_endpoint);
     REQUIRE(!listener.broken());
 
+    auto altered_header = first_datagram;
+    altered_header[11] ^= std::byte {1}; // Authenticated timestamp.
+    auto altered_ciphertext = first_datagram;
+    altered_ciphertext[packet_header_size] ^= std::byte {1};
+    for (const auto* corrupted : {&altered_header, &altered_ciphertext}) {
+        const auto packet = decode_packet(*corrupted);
+        REQUIRE(packet);
+        listener.process_packet(packet.packet, caller_endpoint);
+    }
     std::array<std::byte, 128> received {};
     REQUIRE_EQ(listener.receive_message(received, false, -1).status,
         MessageIoStatus::would_block);
     const auto failed_statistics = listener.statistics(false, true);
-    REQUIRE_EQ(failed_statistics.total.receiver_undecryptable.packets, 3U);
-    REQUIRE_EQ(failed_statistics.total.receiver_dropped.packets, 3U);
+    REQUIRE_EQ(failed_statistics.total.receiver_undecryptable.packets, 5U);
+    REQUIRE_EQ(failed_statistics.total.receiver_dropped.packets, 5U);
 
     listener.process_packet(first_packet.packet, caller_endpoint);
     listener.process_packet(first_packet.packet, caller_endpoint);
@@ -4766,13 +4812,39 @@ TEST(compat_runtime_gcm_caller_listener_authenticates_live_data_and_faults)
     const auto reordered_packet = decode_packet(reordered_datagram);
     REQUIRE(lost_packet);
     REQUIRE(reordered_packet);
-    REQUIRE_EQ(lost_packet.packet.data.sequence, SequenceNumber {501});
-    REQUIRE_EQ(reordered_packet.packet.data.sequence, SequenceNumber {502});
+    REQUIRE_EQ(lost_packet.packet.data.sequence, initial.next());
+    REQUIRE_EQ(reordered_packet.packet.data.sequence, initial.advanced(2));
 
     listener.process_packet(reordered_packet.packet, caller_endpoint);
     REQUIRE_EQ(listener.receive_message(received, false, -1).status,
         MessageIoStatus::would_block);
-    listener.process_packet(lost_packet.packet, caller_endpoint);
+    if (control) {
+        caller_now += 330'000;
+        (void)caller.poll();
+        const auto recovery = take_datagrams(caller_output);
+        bool recovered = false;
+        for (const auto& datagram : recovery) {
+            const auto retry = decode_packet(datagram);
+            REQUIRE(retry);
+            if (retry.packet.kind == PacketKind::data
+                && retry.packet.data.sequence
+                    == lost_packet.packet.data.sequence) {
+                REQUIRE(retry.packet.data.retransmitted);
+                REQUIRE(retry.packet.data.in_order);
+                REQUIRE_EQ(retry.packet.data.timestamp,
+                    lost_packet.packet.data.timestamp);
+                REQUIRE(std::equal(retry.packet.payload.begin(),
+                    retry.packet.payload.end(),
+                    lost_packet.packet.payload.begin(),
+                    lost_packet.packet.payload.end()));
+                listener.process_packet(retry.packet, caller_endpoint);
+                recovered = true;
+            }
+        }
+        REQUIRE(recovered);
+    } else {
+        listener.process_packet(lost_packet.packet, caller_endpoint);
+    }
     listener.process_packet(reordered_packet.packet, caller_endpoint);
     listener_now = caller_now + 1'000'000;
     const auto received_lost = listener.receive_message(received, false, -1);
@@ -4819,6 +4891,18 @@ TEST(compat_runtime_gcm_caller_listener_authenticates_live_data_and_faults)
     REQUIRE(!caller.broken());
     REQUIRE(!listener.broken());
 }
+
+TEST(compat_runtime_gcm_caller_listener_authenticates_live_data_and_faults)
+{
+    exercise_gcm_message_profile(false);
+}
+
+#ifdef ENABLE_AEAD_API_PREVIEW
+TEST(compat_runtime_gcm_control_authenticates_ordered_recovery_at_sequence_wrap)
+{
+    exercise_gcm_message_profile(true);
+}
+#endif
 
 TEST(compat_runtime_gcm_ipv6_reserves_the_tag_at_the_mss_boundary)
 {
@@ -6470,7 +6554,7 @@ TEST(compat_runtime_retransmits_original_ciphertext_across_key_rotation)
         statistics.total.sent_retransmitted.packets, 3U);
 }
 
-TEST(compat_runtime_gcm_retransmits_immutable_tag_across_key_rotation)
+static void exercise_gcm_immutable_rotation(bool control)
 {
     const auto sender_channel = std::make_shared<DatagramChannel>();
     const auto receiver_channel = std::make_shared<DatagramChannel>();
@@ -6509,6 +6593,14 @@ TEST(compat_runtime_gcm_retransmits_immutable_tag_across_key_rotation)
     confirm_directional_test_keys(*sender_crypto, *receiver_crypto);
 
     SocketOptions options;
+    if (control) {
+        REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                       static_cast<std::int64_t>(TransmissionType::control)),
+            Error::none);
+    }
+#ifdef ENABLE_AEAD_API_PREVIEW
+    REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+#endif
     REQUIRE_EQ(
         options.set(SocketOption::maximum_payload_size, 32), Error::none);
     REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 8), Error::none);
@@ -6686,6 +6778,18 @@ TEST(compat_runtime_gcm_retransmits_immutable_tag_across_key_rotation)
     REQUIRE(!sender.broken());
     REQUIRE(!receiver.broken());
 }
+
+TEST(compat_runtime_gcm_retransmits_immutable_tag_across_key_rotation)
+{
+    exercise_gcm_immutable_rotation(false);
+}
+
+#ifdef ENABLE_AEAD_API_PREVIEW
+TEST(compat_runtime_gcm_control_retransmits_immutable_tag_across_key_rotation)
+{
+    exercise_gcm_immutable_rotation(true);
+}
+#endif
 
 TEST(compat_runtime_sends_one_shutdown_and_reports_peer_close)
 {

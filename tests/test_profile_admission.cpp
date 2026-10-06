@@ -315,11 +315,18 @@ TEST(srt_compat_profile_admission_preserves_gcm_constraints_atomically)
     REQUIRE_EQ(set(socket.handle, SRTO_CRYPTOMODE, std::int32_t {2}), 0);
     provisional(socket.handle);
     const auto before = bundle(socket.handle);
-    for (const auto profile : {SRTT_SENSOR, SRTT_CONTROL}) {
-        REQUIRE_EQ(set(socket.handle, SRTO_TRANSTYPE, profile), SRT_ERROR);
-        REQUIRE_EQ(bundle(socket.handle), before);
-        REQUIRE_EQ(integer(socket.handle, SRTO_CRYPTOMODE), 2);
-    }
+    REQUIRE_EQ(set(socket.handle, SRTO_TRANSTYPE, SRTT_SENSOR), SRT_ERROR);
+    REQUIRE_EQ(bundle(socket.handle), before);
+    REQUIRE_EQ(integer(socket.handle, SRTO_CRYPTOMODE), 2);
+    REQUIRE_EQ(set(socket.handle, SRTO_TRANSTYPE, SRTT_CONTROL), 0);
+    REQUIRE_EQ(integer(socket.handle, SRTO_TRANSTYPE), SRTT_CONTROL);
+    REQUIRE(boolean(socket.handle, SRTO_MESSAGEAPI));
+    REQUIRE(!boolean(socket.handle, SRTO_TSBPDMODE));
+    REQUIRE(!boolean(socket.handle, SRTO_TLPKTDROP));
+    const auto control = bundle(socket.handle);
+    REQUIRE_EQ(set(socket.handle, SRTO_ENFORCEDENCRYPTION, false), SRT_ERROR);
+    REQUIRE_EQ(bundle(socket.handle), control);
+    REQUIRE_EQ(integer(socket.handle, SRTO_CRYPTOMODE), 2);
     REQUIRE_EQ(set(socket.handle, SRTO_TRANSTYPE, SRTT_FILE), 0);
     REQUIRE_EQ(integer(socket.handle, SRTO_TRANSTYPE), SRTT_FILE);
     REQUIRE_EQ(integer(socket.handle, SRTO_CRYPTOMODE), 2);

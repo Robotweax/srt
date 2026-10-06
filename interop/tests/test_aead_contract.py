@@ -492,6 +492,12 @@ class AeadContractTests(unittest.TestCase):
                     "tsbpd": False,
                     "message_api": False,
                 },
+                {
+                    "transmission_type": "control",
+                    "congestion_control": "control-v1",
+                    "tsbpd": False,
+                    "message_api": True,
+                },
             ],
         )
         wire = self.manifest["wire"]

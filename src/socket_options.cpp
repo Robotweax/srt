@@ -36,8 +36,12 @@ bool SocketOptions::supports_aes_gcm_transport_bundle(
     const bool file_stream = transmission_type == TransmissionType::file
         && congestion_controller == CongestionController::file && !tsbpd_mode
         && !message_api;
-    return packet_filter_configuration_.enabled ? live_message
-                                                : (live_message || file_stream);
+    const bool control_message = transmission_type == TransmissionType::control
+        && congestion_controller == CongestionController::control && !tsbpd_mode
+        && message_api && enforced_encryption_;
+    return packet_filter_configuration_.enabled
+        ? live_message
+        : (live_message || file_stream || control_message);
 }
 #endif
 
@@ -234,6 +238,9 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
     }
     case SocketOption::enforced_encryption:
         if (!is_boolean(value)) return Error::invalid_state;
+        if (value == 0 && requires_authenticated_data()) {
+            return Error::invalid_state;
+        }
         enforced_encryption_ = value != 0;
         return Error::none;
     case SocketOption::rendezvous:
@@ -310,7 +317,7 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
                 return Error::invalid_state;
             }
 #ifdef ENABLE_AEAD_API_PREVIEW
-            if (crypto_mode_ == CryptoMode::aes_gcm) {
+            if (crypto_mode_ == CryptoMode::aes_gcm && !enforced_encryption_) {
                 return Error::invalid_state;
             }
 #endif

@@ -117,7 +117,7 @@ The released Robotweax-to-Robotweax GCM scope includes:
 
 - AES-128/192/256-GCM primitives and key slots;
 - IPv4 and IPv6 Caller/Listener and Rendezvous;
-- Live/Message and File/Stream transport;
+- Live/Message, File/Stream, and Robotweax Control/Message transport;
 - public Stream I/O and file helpers;
 - acknowledged key rotation and immutable retransmission;
 - Row, Column, and Matrix FEC over authenticated protected payloads;

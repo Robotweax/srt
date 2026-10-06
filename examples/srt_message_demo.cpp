@@ -38,6 +38,7 @@ enum class CryptoMode {
 
 struct Configuration {
     Role role = Role::caller;
+    SRT_TRANSTYPE transport_type = SRTT_LIVE;
     std::string bind_address = "127.0.0.1";
     std::string remote_address = "127.0.0.1";
     std::uint16_t port = 0;
@@ -185,6 +186,8 @@ void print_usage(std::ostream& stream)
         << "  --passphrase-env NAME   Read the passphrase from environment\n"
         << "  --pbkeylen 16|24|32     AES key length (default 32)\n"
         << "  --crypto ctr|gcm        Payload encryption mode (default ctr)\n"
+        << "  --profile live|control  Message transport profile (default "
+           "live)\n"
         << "  --packet-filter CONFIG  SRTO_PACKETFILTER value\n"
         << "  --timeout-ms VALUE      Connect and I/O timeout (default "
            "5000)\n\n"
@@ -285,6 +288,15 @@ template <typename Integer>
             configuration.key_length = parse_integer<std::int32_t>(
                 require_value(argc, argv, index, option), option);
             configuration.key_length_requested = true;
+        } else if (option == "--profile") {
+            const auto profile = require_value(argc, argv, index, option);
+            if (profile == "live") {
+                configuration.transport_type = SRTT_LIVE;
+            } else if (profile == "control") {
+                configuration.transport_type = SRTT_CONTROL;
+            } else {
+                throw std::runtime_error("--profile must be live or control");
+            }
         } else if (option == "--crypto") {
             const std::string_view mode =
                 require_value(argc, argv, index, option);
@@ -424,7 +436,7 @@ void set_string_option(
 
 void configure_socket(SRTSOCKET socket, const Configuration& configuration)
 {
-    const SRT_TRANSTYPE transport_type = SRTT_LIVE;
+    const SRT_TRANSTYPE transport_type = configuration.transport_type;
     const bool message_api = true;
     set_option(socket, SRTO_TRANSTYPE, transport_type);
     set_option(socket, SRTO_MESSAGEAPI, message_api);

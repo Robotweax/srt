@@ -654,6 +654,20 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
                 robotweax_srt_message_demo_${message_demo_scenario}
                 PROPERTIES TIMEOUT 20 LABELS "example;integration")
         endforeach()
+        set(control_demo_crypto_modes ctr)
+        if(ENABLE_AEAD_API_PREVIEW)
+            list(APPEND control_demo_crypto_modes gcm)
+        endif()
+        foreach(control_demo_crypto IN LISTS control_demo_crypto_modes)
+            add_test(NAME robotweax_srt_control_demo_${control_demo_crypto}
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/test_message_demo.py
+                    --demo $<TARGET_FILE:robotweax_srt_message_demo>
+                    --scenario caller-listener --profile control
+                    --crypto ${control_demo_crypto})
+            set_tests_properties(robotweax_srt_control_demo_${control_demo_crypto}
+                PROPERTIES TIMEOUT 20 LABELS "example;integration")
+        endforeach()
         foreach(file_demo_scenario IN ITEMS
                 caller-listener
                 rendezvous)
