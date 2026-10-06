@@ -5015,7 +5015,11 @@ struct IdleReuseFixture : SinkFixture {
         auto fence = std::make_shared<SinkGate>();
         SinkRelease fence_release {fence};
         sink_block_worker(*this, fence);
-        REQUIRE(!channel->poll_connections_for_testing().immediate_work);
+        // Collect the completed window before starting reuse assertions. Its
+        // original 2ms maintenance deadline may be due after the callback
+        // barrier; that correctly requests an immediate channel continuation.
+        (void)channel->poll_connections_for_testing();
+        REQUIRE(channel->begin_poll_round() != nullptr);
     }
     ~IdleReuseFixture()
     {
