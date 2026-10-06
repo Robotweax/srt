@@ -231,6 +231,31 @@ TEST(statistics_ipv6_wire_bytes_include_the_larger_ip_header)
     REQUIRE_EQ(averaged.sender_buffer_bytes, 164U);
 }
 
+TEST(statistics_tail_probe_counts_wire_copies_without_inflating_unique_bytes)
+{
+    for (const auto headers : {ipv4_statistics_packet_header_bytes,
+             ipv6_statistics_packet_header_bytes}) {
+        RuntimeStatisticsState state {0, headers};
+        state.note_data_sent(100U, false);
+        state.note_data_sent(100U, true);
+        state.note_data_received(100U, true, false);
+        state.note_data_received(100U, false, true);
+        const auto snapshot = state.snapshot(1'000, {}, false);
+        SRT_TRACEBSTATS result {};
+        populate_trace_statistics(snapshot, result);
+        REQUIRE_EQ(result.pktSentUniqueTotal, 1);
+        REQUIRE_EQ(result.pktRecvUniqueTotal, 1);
+        REQUIRE_EQ(result.pktSentTotal, 2);
+        REQUIRE_EQ(result.pktRecvTotal, 2);
+        REQUIRE_EQ(result.pktRetransTotal, 1);
+        REQUIRE_EQ(result.byteSentUniqueTotal, 100U + headers);
+        REQUIRE_EQ(result.byteRecvUniqueTotal, 100U + headers);
+        REQUIRE_EQ(result.byteSentTotal, 2U * (100U + headers));
+        REQUIRE_EQ(result.byteRecvTotal, 2U * (100U + headers));
+        REQUIRE_EQ(result.byteRetransTotal, 100U + headers);
+    }
+}
+
 TEST(statistics_maps_sender_supply_and_loss_filter_counters)
 {
     RuntimeStatisticsState state;

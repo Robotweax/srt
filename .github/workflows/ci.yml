@@ -1069,7 +1069,7 @@ jobs:
         run: >-
           ctest --test-dir build-maxrexmit-static
           -C Release
-          -R "^robotweax_srt_tests$"
+          -R "^robotweax_srt_(tests|key_length_tests)$"
           --no-tests=error
           --output-on-failure
           --timeout 120
