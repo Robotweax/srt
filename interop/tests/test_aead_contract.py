@@ -498,6 +498,13 @@ class AeadContractTests(unittest.TestCase):
                     "tsbpd": False,
                     "message_api": True,
                 },
+                {
+                    "transmission_type": "sensor",
+                    "congestion_control": "live",
+                    "tsbpd": False,
+                    "message_api": True,
+                    "packet_filter": "fec-sensor-v1,cols:4,rows:1,arq:never",
+                },
             ],
         )
         wire = self.manifest["wire"]

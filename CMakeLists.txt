@@ -382,7 +382,27 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     # separate bounded runs. Every native case runs in exactly one partition.
     add_test(NAME robotweax_srt_tests
         COMMAND robotweax_srt_tests --exclude compat_runtime_rotation_
-            compat_group_closed_member_retains_bounded_copy key_length)
+            compat_group_closed_member_retains_bounded_copy key_length
+            srt_compat_gcm_ srt_compat_sensor_gcm_bounded_sample_stream_)
+    if(ENABLE_AEAD_API_PREVIEW)
+        # Paced public profile scenarios have a separate aggregate budget.
+        add_test(NAME robotweax_srt_gcm_profile_tests
+            COMMAND robotweax_srt_tests srt_compat_gcm_)
+        set_tests_properties(robotweax_srt_gcm_profile_tests PROPERTIES
+            TIMEOUT 30 LABELS "encryption;integration;profile")
+        add_test(NAME robotweax_srt_sensor_gcm_aes128_tests
+            COMMAND robotweax_srt_tests srt_compat_sensor_gcm_bounded_sample_stream_aes128)
+        set_tests_properties(robotweax_srt_sensor_gcm_aes128_tests PROPERTIES
+            TIMEOUT 30 LABELS "encryption;integration;profile")
+        add_test(NAME robotweax_srt_sensor_gcm_aes192_tests
+            COMMAND robotweax_srt_tests srt_compat_sensor_gcm_bounded_sample_stream_aes192)
+        set_tests_properties(robotweax_srt_sensor_gcm_aes192_tests PROPERTIES
+            TIMEOUT 30 LABELS "encryption;integration;profile")
+        add_test(NAME robotweax_srt_sensor_gcm_aes256_tests
+            COMMAND robotweax_srt_tests srt_compat_sensor_gcm_bounded_sample_stream_aes256)
+        set_tests_properties(robotweax_srt_sensor_gcm_aes256_tests PROPERTIES
+            TIMEOUT 30 LABELS "encryption;integration;profile")
+    endif()
     add_test(NAME robotweax_srt_key_length_tests
         COMMAND robotweax_srt_tests key_length)
     add_test(NAME robotweax_srt_rotation_tests
@@ -658,15 +678,17 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         if(ENABLE_AEAD_API_PREVIEW)
             list(APPEND control_demo_crypto_modes gcm)
         endif()
-        foreach(control_demo_crypto IN LISTS control_demo_crypto_modes)
-            add_test(NAME robotweax_srt_control_demo_${control_demo_crypto}
-                COMMAND ${Python3_EXECUTABLE}
-                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/test_message_demo.py
-                    --demo $<TARGET_FILE:robotweax_srt_message_demo>
-                    --scenario caller-listener --profile control
-                    --crypto ${control_demo_crypto})
-            set_tests_properties(robotweax_srt_control_demo_${control_demo_crypto}
-                PROPERTIES TIMEOUT 20 LABELS "example;integration")
+        foreach(message_profile IN ITEMS control sensor)
+            foreach(control_demo_crypto IN LISTS control_demo_crypto_modes)
+                add_test(NAME robotweax_srt_${message_profile}_demo_${control_demo_crypto}
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/examples/test_message_demo.py
+                        --demo $<TARGET_FILE:robotweax_srt_message_demo>
+                        --scenario caller-listener --profile ${message_profile}
+                        --crypto ${control_demo_crypto})
+                set_tests_properties(robotweax_srt_${message_profile}_demo_${control_demo_crypto}
+                    PROPERTIES TIMEOUT 20 LABELS "example;integration")
+            endforeach()
         endforeach()
         foreach(file_demo_scenario IN ITEMS
                 caller-listener

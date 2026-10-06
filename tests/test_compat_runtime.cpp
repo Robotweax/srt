@@ -109,7 +109,8 @@ std::vector<std::byte> encrypt_fixture(
 
 void exercise_gcm_fec_geometry(std::string_view filter,
     std::uint32_t source_count, std::span<const std::uint32_t> dropped_sources,
-    std::size_t expected_filter_packets, std::size_t expected_supplied_packets)
+    std::size_t expected_filter_packets, std::size_t expected_supplied_packets,
+    bool corrupt_parity = false)
 {
     const auto sender_channel = std::make_shared<DatagramChannel>();
     const auto receiver_channel = std::make_shared<DatagramChannel>();
@@ -154,6 +155,11 @@ void exercise_gcm_fec_geometry(std::string_view filter,
     REQUIRE_EQ(
         options.set(SocketOption::receive_buffer_packets, 64), Error::none);
     REQUIRE_EQ(options.set_packet_filter(filter), Error::none);
+    const bool sensor = options.packet_filter_configuration().sensor_profile();
+#ifdef ENABLE_AEAD_API_PREVIEW
+    REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+#endif
+    const SequenceNumber initial {sensor ? SequenceNumber::mask - 1U : 900U};
     const auto origin = ConnectionRuntime::Clock::now();
     std::uint64_t sender_now = 1'500'000;
     std::uint64_t receiver_now = 1'500'000;
@@ -161,13 +167,13 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         .channel = sender_channel,
         .peer = receiver_endpoint,
         .peer_socket_id = 720,
-        .initial_sequence = SequenceNumber {900},
+        .initial_sequence = initial,
         .flow_window_packets = 256,
         .options = options,
         .negotiated_options =
             {
-                .periodic_nak = true,
-                .retransmit_flag = true,
+                .periodic_nak = !sensor,
+                .retransmit_flag = !sensor,
             },
         .origin = origin,
         .crypto = sender_crypto,
@@ -178,13 +184,13 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         .channel = receiver_channel,
         .peer = sender_endpoint,
         .peer_socket_id = 710,
-        .initial_sequence = SequenceNumber {900},
+        .initial_sequence = initial,
         .flow_window_packets = 256,
         .options = options,
         .negotiated_options =
             {
-                .periodic_nak = true,
-                .retransmit_flag = true,
+                .periodic_nak = !sensor,
+                .retransmit_flag = !sensor,
             },
         .origin = origin,
         .crypto = receiver_crypto,
@@ -220,39 +226,93 @@ void exercise_gcm_fec_geometry(std::string_view filter,
             REQUIRE_EQ(decoded.packet.payload.size(),
                 1U + srt_gcm_authentication_tag_size);
             const std::uint32_t index =
-                (decoded.packet.data.sequence.value() - 900U)
+                (decoded.packet.data.sequence.value() - initial.value())
                 & SequenceNumber::mask;
             if (std::find(dropped_sources.begin(), dropped_sources.end(), index)
                 != dropped_sources.end()) {
                 continue;
             }
         }
-        receiver.process_packet(decoded.packet, sender_endpoint);
+        if (sensor && decoded.packet.data.message_number != 0U) {
+            for (const auto offset :
+                {11U, static_cast<unsigned>(packet_header_size),
+                    static_cast<unsigned>(datagram.size() - 1U)}) {
+                auto corrupted = datagram;
+                corrupted[offset] ^= std::byte {1};
+                const auto invalid = decode_packet(corrupted);
+                REQUIRE(invalid);
+                receiver.process_packet(invalid.packet, sender_endpoint);
+            }
+        }
+        if (corrupt_parity && decoded.packet.data.message_number == 0U) {
+            auto corrupted = datagram;
+            corrupted[packet_header_size + fec_filter_header_size + 10U] ^=
+                std::byte {1};
+            const auto invalid = decode_packet(corrupted);
+            REQUIRE(invalid);
+            receiver.process_packet(invalid.packet, sender_endpoint);
+        } else {
+            receiver.process_packet(decoded.packet, sender_endpoint);
+            if (sensor && decoded.packet.data.message_number != 0U) {
+                receiver.process_packet(decoded.packet, sender_endpoint);
+            }
+        }
         ++receiver_now;
     }
     REQUIRE_EQ(source_packets, source_count);
     REQUIRE_EQ(filter_packets, expected_filter_packets);
 
     std::array<std::byte, 16> received_bytes {};
-    for (std::uint32_t index = 0; index < source_count; ++index) {
+    std::vector<bool> delivered(source_count, false);
+    const auto expected_messages =
+        source_count - (corrupt_parity ? dropped_sources.size() : 0U);
+    for (std::size_t index = 0; index < expected_messages; ++index) {
         const auto received =
             receiver.receive_message(received_bytes, false, -1);
         REQUIRE_EQ(received.status, MessageIoStatus::success);
-        REQUIRE_EQ(received.message_number, index + 1U);
-        REQUIRE_EQ(received.first_sequence, SequenceNumber {900U + index});
+        const auto offset = received.first_sequence.distance_from(initial);
+        REQUIRE(
+            offset >= 0 && static_cast<std::uint32_t>(offset) < source_count);
+        REQUIRE(!delivered[offset]);
+        delivered[offset] = true;
+        REQUIRE_EQ(
+            received.message_number, static_cast<std::uint32_t>(offset) + 1U);
+        if (!sensor) {
+            REQUIRE_EQ(static_cast<std::size_t>(offset), index);
+        }
         REQUIRE_EQ(received.bytes, 1U);
         REQUIRE_EQ(received_bytes[0],
-            static_cast<std::byte>(static_cast<unsigned char>('A') + index));
+            static_cast<std::byte>(static_cast<unsigned char>('A') + offset));
     }
+    REQUIRE_EQ(receiver.receive_message(received_bytes, false, -1).status,
+        MessageIoStatus::would_block);
     const auto statistics = receiver.statistics(false, true);
     REQUIRE_EQ(statistics.total.receiver_filter_extra, expected_filter_packets);
     REQUIRE_EQ(
         statistics.total.receiver_filter_supply, expected_supplied_packets);
     REQUIRE_EQ(statistics.total.receiver_filter_loss, 0U);
-    REQUIRE_EQ(statistics.total.receiver_undecryptable.packets, 0U);
+    REQUIRE_EQ(statistics.total.receiver_undecryptable.packets,
+        sensor ? 3U * (source_count - dropped_sources.size())
+                + (corrupt_parity ? 1U : 0U)
+               : 0U);
 }
 
 } // namespace
+
+#ifdef ENABLE_AEAD_API_PREVIEW
+TEST(compat_runtime_gcm_sensor_authenticates_fec_and_duplicate_data)
+{
+    const std::array<std::uint32_t, 1> missing {1};
+    exercise_gcm_fec_geometry(
+        "fec-sensor-v1,cols:4,rows:1,arq:never", 4, missing, 1, 1);
+}
+TEST(compat_runtime_gcm_sensor_rejects_corrupted_parity_reconstruction)
+{
+    const std::array<std::uint32_t, 1> missing {1};
+    exercise_gcm_fec_geometry(
+        "fec-sensor-v1,cols:4,rows:1,arq:never", 4, missing, 1, 0, true);
+}
+#endif
 
 TEST(compat_handshake_inbox_is_bounded_ordered_and_closeable)
 {
@@ -1760,7 +1820,7 @@ TEST(compat_runtime_message_ttl_uses_injected_clock_and_sends_dropreq)
         }));
 }
 
-TEST(compat_runtime_sensor_fec_and_repeated_retirement_survive_faults)
+static void exercise_sensor_recovery(bool gcm)
 {
     const auto sender_channel = std::make_shared<DatagramChannel>();
     const auto receiver_channel = std::make_shared<DatagramChannel>();
@@ -1786,6 +1846,31 @@ TEST(compat_runtime_sensor_fec_and_repeated_retirement_survive_faults)
     REQUIRE_EQ(
         options.set_packet_filter("fec-sensor-v1,cols:4,rows:1,arq:never"),
         Error::none);
+    std::shared_ptr<CryptoSession> sender_crypto;
+    std::shared_ptr<CryptoSession> receiver_crypto;
+    if (gcm) {
+#ifdef ENABLE_AEAD_API_PREVIEW
+        REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+#endif
+        const CryptoConfiguration configuration {
+            .passphrase = "authenticated sensor test fixture",
+            .mode = CryptoMode::aes_gcm,
+            .enable_aes_gcm = true,
+            .key_length = 32,
+            .refresh_rate_packets = 64,
+            .preannouncement_packets = 8,
+        };
+        sender_crypto = std::make_shared<CryptoSession>(configuration);
+        receiver_crypto = std::make_shared<CryptoSession>(configuration);
+        REQUIRE_EQ(sender_crypto->start_initiator(), Error::none);
+        REQUIRE_EQ(receiver_crypto->accept_key_material(
+                       sender_crypto->pending_key_material(), true),
+            Error::none);
+        REQUIRE_EQ(sender_crypto->acknowledge_key_material(
+                       receiver_crypto->key_material_response(), true),
+            Error::none);
+        confirm_directional_test_keys(*sender_crypto, *receiver_crypto);
+    }
     const auto origin = ConnectionRuntime::Clock::now();
     std::uint64_t sender_now = 1'000U;
     std::uint64_t receiver_now = 1'000U;
@@ -1797,6 +1882,7 @@ TEST(compat_runtime_sensor_fec_and_repeated_retirement_survive_faults)
         .flow_window_packets = 256,
         .options = options,
         .origin = origin,
+        .crypto = sender_crypto,
         .now_function = injected_now,
         .now_context = &sender_now,
     }};
@@ -1808,6 +1894,7 @@ TEST(compat_runtime_sensor_fec_and_repeated_retirement_survive_faults)
         .flow_window_packets = 256,
         .options = options,
         .origin = origin,
+        .crypto = receiver_crypto,
         .now_function = injected_now,
         .now_context = &receiver_now,
     }};
@@ -1958,7 +2045,20 @@ TEST(compat_runtime_sensor_fec_and_repeated_retirement_survive_faults)
         REQUIRE_EQ(decoded.packet.kind, PacketKind::control);
         REQUIRE(decoded.packet.control.type != ControlType::drop_request);
     }
+    REQUIRE_EQ(
+        sender.statistics(false, true).total.sent_retransmitted.packets, 0U);
 }
+
+TEST(compat_runtime_sensor_fec_and_repeated_retirement_survive_faults)
+{
+    exercise_sensor_recovery(false);
+}
+#ifdef ENABLE_AEAD_API_PREVIEW
+TEST(compat_runtime_gcm_sensor_fec_and_repeated_retirement_survive_faults)
+{
+    exercise_sensor_recovery(true);
+}
+#endif
 
 TEST(compat_runtime_sensor_retirement_wait_respects_peer_timeout)
 {

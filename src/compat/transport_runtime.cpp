@@ -3102,10 +3102,9 @@ bool ConnectionRuntime::service_key_rotation(
 }
 
 bool ConnectionRuntime::process_reliability_packet_locked(
-    const PacketView& packet,
-    std::uint64_t now,
-    ReliabilityReceiveContext context,
-    bool wire_received) noexcept
+    const PacketView& packet, std::uint64_t now,
+    ReliabilityReceiveContext context, bool wire_received,
+    std::span<const std::byte> authenticated_plaintext) noexcept
 {
     // Reject oversized DATA before querying delivery state or doing provider
     // work. Invalid input must neither terminate nor advance this session.
@@ -3146,6 +3145,9 @@ bool ConnectionRuntime::process_reliability_packet_locked(
             // FEC control payloads contain recovery bytes for ciphertext;
             // the outer KK selector is descriptive and does not request a
             // second decryption pass.
+        } else if (!authenticated_plaintext.empty()) {
+            clear_packet.data.encryption_key = EncryptionKey::none;
+            clear_packet.payload = authenticated_plaintext;
         } else if (crypto_ != nullptr && crypto_->enabled()) {
             if (options_.enforced_encryption()
                 && packet.data.encryption_key == EncryptionKey::none) {
@@ -3213,8 +3215,7 @@ bool ConnectionRuntime::process_reliability_packet_locked(
                 clear_packet.data.encryption_key = EncryptionKey::none;
                 clear_packet.payload = destination;
             }
-        } else if (packet.data.encryption_key
-            != EncryptionKey::none) {
+        } else if (packet.data.encryption_key != EncryptionKey::none) {
             // Optional encryption without a local secret (NOSECRET): the peer
             // keeps encrypting. Acknowledge the sequence, discard the payload.
             statistics_.note_receiver_undecryptable(packet.payload.size());
@@ -3567,13 +3568,40 @@ void ConnectionRuntime::process_packet(
 
     if (packet.kind == PacketKind::data
         && fec_decoder_active()) {
+        std::array<std::byte, maximum_data_payload_size>
+            authenticated_payload {};
+        std::span<const std::byte> authenticated_plaintext;
+        if (packet.data.message_number != 0U && crypto_ != nullptr
+            && crypto_->authenticated_data_enabled()) {
+            const auto budget = options_.payload_budget(
+                peer_.wire_family(), CryptoMode::aes_gcm);
+            const auto protected_payload =
+                decode_protected_payload(packet.payload, budget);
+            if (!protected_payload) {
+                statistics_.note_receiver_undecryptable(packet.payload.size());
+                return;
+            }
+            auto destination = std::span {authenticated_payload}.first(
+                protected_payload.payload.ciphertext.size());
+            if (crypto_->open(packet.data, protected_payload.payload.ciphertext,
+                    protected_payload.payload.authentication_tag, destination)
+                != Error::none) {
+                statistics_.note_receiver_undecryptable(packet.payload.size());
+                return;
+            }
+            // Only authenticated source wire bytes may contribute to parity
+            // recovery. Reuse the verified plaintext for the ordinary receive
+            // path, while recovered packets still undergo their own open.
+            authenticated_plaintext = destination;
+        }
         const auto filtered =
             receive_fec_packet(packet);
         if (!filtered) {
             // A malformed FEC source must not hide otherwise acceptable
             // original DATA from the reliability receive window.
             if (packet.data.message_number != 0U
-                && process_reliability_packet_locked(packet, now)) {
+                && process_reliability_packet_locked(
+                    packet, now, {}, true, authenticated_plaintext)) {
                 last_peer_activity_microseconds_ = now;
             }
             return;
@@ -3620,9 +3648,8 @@ void ConnectionRuntime::process_packet(
             return;
         }
         if (!filtered.reconstructed_packets.empty()) {
-            if (!process_reliability_packet_locked(
-                    packet, now,
-                    {.defer_feedback = true})) {
+            if (!process_reliability_packet_locked(packet, now,
+                    {.defer_feedback = true}, true, authenticated_plaintext)) {
                 return;
             }
             if (!process_reconstructed(
@@ -3634,7 +3661,7 @@ void ConnectionRuntime::process_packet(
             return;
         }
         if (!process_reliability_packet_locked(
-                packet, now)) {
+                packet, now, {}, true, authenticated_plaintext)) {
             return;
         }
         (void)report_filter_losses_locked(

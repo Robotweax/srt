@@ -100,18 +100,20 @@ GCM accepts exactly these coherent bundles:
 | Live/Message | LiveCC | On | Message | Built-in Row/Column/Matrix filters allowed |
 | File/Stream | FileCC | Off | Stream and file helpers | Not allowed |
 | Control/Message | FileCC (`control-v1`) | Off | Ordered messages | Not allowed |
+| Sensor/Message | LiveCC | Off | Best-effort samples | Required `fec-sensor-v1` |
 
 Setting `SRTO_TRANSTYPE` changes the corresponding bundle atomically. An
 inconsistent partial mutation while GCM is selected fails instead of silently
 changing another transport property.
 
-Control/GCM requires a nonempty passphrase and enforced encryption. Selecting
+Control/GCM and Sensor/GCM require a nonempty passphrase and enforced encryption. Selecting
 this combination while `SRTO_ENFORCEDENCRYPTION=false`, or disabling enforcement
 after selecting it, returns `SRT_EINVPARAM`. A Caller without a passphrase fails
 locally with `SRT_ESECFAIL`; a Listener admission without a passphrase rejects
 with `SRT_REJ_UNSECURE`, including after its admission callback. Optional
 plaintext fallback remains available only for the previously supported bundles.
-See [Control delivery and carrier limits](control-profile.md).
+See [Control delivery and carrier limits](control-profile.md) and
+[authenticated Sensor delivery](packet-filter.md#authenticated-sensor-samples).
 
 Caller/Listener and Rendezvous support both IPv4 and IPv6. Rendezvous requires
 `SRTO_RENDEZVOUS` and explicit GCM on both peers; option-setting order does not

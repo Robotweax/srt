@@ -69,6 +69,12 @@ int main()
         (void)srt_close(socket);
         return 5;
     }
+    const SRT_TRANSTYPE sensor = SRTT_SENSOR;
+    if (srt_setsockflag(socket, SRTO_TRANSTYPE, &sensor, sizeof(sensor))
+        == SRT_ERROR) {
+        (void)srt_close(socket);
+        return 6;
+    }
     crypto_mode = -1;
     int crypto_mode_size = static_cast<int>(sizeof(crypto_mode));
     if (srt_getsockflag(

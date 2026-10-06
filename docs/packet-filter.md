@@ -77,8 +77,9 @@ recovery.
 FEC reserves four bytes from the maximum application payload. The sender
 encrypts or authenticates DATA before generating parity, so FEC protects the
 bytes carried on the wire. A control packet is not encrypted a second time.
-The receiver reconstructs protected DATA first and then invokes the normal
-decrypt or authenticate path.
+For GCM, the receiver authenticates original source DATA before admitting
+its protected wire bytes to FEC state. It reconstructs missing protected DATA
+and authenticates each reconstruction before reliability or application delivery.
 
 With AES-GCM, parity covers `ciphertext || 16-byte authentication tag`.
 Authentication completes before reconstructed plaintext is visible to
@@ -190,3 +191,59 @@ continuous Sensor TTL expiry with real runtime/FEC handling and an injected
 clock, backpressure for unexpired sources, and retirement before any physical
 DATA observation. This addresses [issue #198](https://github.com/Robotweax/srt/issues/198);
 Broadcast Link's separate netem qualification must also pass before integration.
+
+## Authenticated Sensor samples
+
+`ENABLE_AEAD_API_PREVIEW=ON` permits explicit `SRTO_CRYPTOMODE=2` with
+`SRTT_SENSOR` or the exact `fec-sensor-v1,cols:4,rows:1,arq:never` filter.
+Selecting the transport and GCM in either order preserves the Sensor bundle:
+Message API, no TSBPD, no late-packet dropping, no periodic NAK, and no new ARQ
+obligation. A secret and enforced encryption are mandatory. Optional encryption
+is an invalid combination; missing credentials or mode/filter mismatch fails
+before application delivery. See the [GCM negotiation contract](aes-gcm-contract.md).
+After establishment require mode `2`; after exchanging DATA, both
+`SRTO_SNDKMSTATE` and `SRTO_RCVKMSTATE` must be `SRT_KM_S_SECURED`.
+
+A Sensor message is one complete sample fitting the effective `SRTO_PAYLOADSIZE`.
+It is not fragmented. With MSS 1500, unfiltered overhead plus FEC and the GCM tag
+leaves at most 1436 plaintext bytes for IPv4 or 1416 for IPv6. Selecting
+`SRTT_SENSOR` defaults to 1316 bytes, so a 1316-byte carrier fits either family.
+The direct filter string retains the previously requested payload size, clipped
+to the same ceiling. At IPv6 MSS 1280 the ceiling is 1196 bytes. Oversized sends
+fail with `SRT_EINVOP` under the existing Sensor Message API error mapping;
+set matching payload sizes on both peers for recovery.
+
+Keep `inorder=0` for independent current samples. Finite `msgttl` is permitted;
+expired sources are retired rather than retransmitted. One lost source in a
+four-source row can be reconstructed with parity. Larger loss or unavailable
+parity can lose samples: the existing 20-ms receive-gap deadline and bounded
+retirement remain active. A read returns a complete available sample or the
+usual timeout/nonblocking error, not a fabricated replacement. Receive order
+need not match source order after FEC recovery. Use sequence/sample identities
+when the application needs the newest value. Send success reports local buffering.
+
+Original and reconstructed DATA authenticate before publication. Corrupted
+source bytes cannot populate GCM FEC state; corrupt parity can prevent recovery
+but cannot publish unauthenticated plaintext. `pktRcvUndecryptTotal` reports
+rejected protected DATA/reconstruction; `pktRcvFilterSupplyTotal` counts unique
+successfully admitted reconstructions. Filter extra/loss and receive-drop
+counters describe recovery traffic and abandoned gaps; none promise loss-free
+Sensor delivery. Duplicates do not generate another application receive. Rotation,
+old receive slots and replay state remain bounded and connection-local.
+
+The direct Message demo supports both directions without a consumer SDK:
+
+```sh
+# Supply the same SRT_SENSOR_SECRET in both shells.
+robotweax_srt_message_demo listener --port 9001 --profile sensor \
+  --crypto gcm --passphrase-env SRT_SENSOR_SECRET --nonblocking
+robotweax_srt_message_demo caller --host 127.0.0.1 --port 9001 \
+  --profile sensor --crypto gcm --passphrase-env SRT_SENSOR_SECRET \
+  --message sample --nonblocking
+```
+
+The echo illustrates a healthy connection; Sensor does not guarantee command
+acknowledgements. Transport ACK/NAK, key management, retirement and shutdown
+controls are not all authenticated by DATA GCM. Unauthenticated parity and
+transport controls retain denial-of-service limits. Fresh sockets have fresh
+crypto/recovery state, without persistent replay or exactly-once execution history.

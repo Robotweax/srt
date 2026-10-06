@@ -2,6 +2,7 @@
 #include "compat/socket_registry.hpp"
 #include "srt.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -128,8 +129,20 @@ int select_profile(
 struct Listener {
     Socket socket;
     sockaddr_in address {};
-    explicit Listener(Admission& admission)
+    explicit Listener(Admission& admission, bool gcm = false)
     {
+#ifdef ENABLE_AEAD_API_PREVIEW
+        if (gcm) {
+            REQUIRE_EQ(
+                set(socket.handle, SRTO_CRYPTOMODE, std::int32_t {2}), 0);
+            constexpr char secret[] = "profile-admission-gcm-test-fixture";
+            REQUIRE_EQ(srt_setsockflag(socket.handle, SRTO_PASSPHRASE, secret,
+                           sizeof(secret) - 1),
+                0);
+        }
+#else
+        REQUIRE(!gcm);
+#endif
         REQUIRE_EQ(set(socket.handle, SRTO_CONNTIMEO, std::int32_t {1000}), 0);
         REQUIRE_EQ(set(socket.handle, SRTO_RCVTIMEO, std::int32_t {2000}), 0);
         REQUIRE_EQ(set(socket.handle, SRTO_SNDBUF, std::int32_t {65536}), 0);
@@ -308,15 +321,75 @@ TEST(srt_compat_profile_admission_external_close_during_callback_is_terminal)
 }
 
 #ifdef ENABLE_AEAD_API_PREVIEW
+TEST(srt_compat_gcm_sensor_shares_listener_with_live_file_and_control)
+{
+    Runtime runtime;
+    Admission admission;
+    Listener listener(admission, true);
+    const auto listener_bundle = bundle(listener.socket.handle);
+    const std::array<SRT_TRANSTYPE, 4> profiles {
+        SRTT_LIVE, SRTT_FILE, SRTT_CONTROL, SRTT_SENSOR};
+    std::array<Socket, 4> callers;
+    std::array<SRTSOCKET, 4> children;
+    for (std::size_t index = 0; index < profiles.size(); ++index) {
+        admission.profile = profiles[index];
+        prepare(callers[index], profiles[index]);
+        REQUIRE_EQ(
+            set(callers[index].handle, SRTO_CRYPTOMODE, std::int32_t {2}), 0);
+        constexpr char secret[] = "profile-admission-gcm-test-fixture";
+        REQUIRE_EQ(srt_setsockflag(callers[index].handle, SRTO_PASSPHRASE,
+                       secret, sizeof(secret) - 1),
+            0);
+        const std::array<char, 2> stream_id {
+            static_cast<char>('0' + index), '\0'};
+        REQUIRE_EQ(srt_setsockflag(callers[index].handle, SRTO_STREAMID,
+                       stream_id.data(), 1),
+            0);
+        REQUIRE_EQ(srt_connect(callers[index].handle,
+                       reinterpret_cast<const sockaddr*>(&listener.address),
+                       sizeof(listener.address)),
+            0);
+        children[index] = srt_accept(listener.socket.handle, nullptr, nullptr);
+        REQUIRE(children[index] != SRT_INVALID_SOCK);
+        REQUIRE_EQ(integer(children[index], SRTO_TRANSTYPE), profiles[index]);
+        REQUIRE_EQ(bundle(listener.socket.handle), listener_bundle);
+    }
+    for (std::size_t index = 0; index < profiles.size(); ++index) {
+        const std::array<char, 5> command {
+            static_cast<char>(index), '\0', 'g', 'c', 'm'};
+        std::array<char, 1600> received {};
+        for (const bool reverse : {false, true}) {
+            const auto sender =
+                reverse ? children[index] : callers[index].handle;
+            const auto receiver =
+                reverse ? callers[index].handle : children[index];
+            REQUIRE_EQ(srt_send(sender, command.data(), command.size()),
+                static_cast<int>(command.size()));
+            REQUIRE_EQ(srt_recv(receiver, received.data(), received.size()),
+                static_cast<int>(command.size()));
+            REQUIRE(
+                std::equal(command.begin(), command.end(), received.begin()));
+            REQUIRE_EQ(integer(sender, SRTO_CRYPTOMODE), 2);
+            REQUIRE_EQ(integer(receiver, SRTO_CRYPTOMODE), 2);
+            REQUIRE_EQ(integer(sender, SRTO_SNDKMSTATE),
+                static_cast<int>(SRT_KM_S_SECURED));
+            REQUIRE_EQ(integer(receiver, SRTO_RCVKMSTATE),
+                static_cast<int>(SRT_KM_S_SECURED));
+        }
+    }
+    for (const auto child : children) {
+        REQUIRE_EQ(srt_close(child), 0);
+    }
+}
+
 TEST(srt_compat_profile_admission_preserves_gcm_constraints_atomically)
 {
     Runtime runtime;
     Socket socket;
     REQUIRE_EQ(set(socket.handle, SRTO_CRYPTOMODE, std::int32_t {2}), 0);
     provisional(socket.handle);
-    const auto before = bundle(socket.handle);
-    REQUIRE_EQ(set(socket.handle, SRTO_TRANSTYPE, SRTT_SENSOR), SRT_ERROR);
-    REQUIRE_EQ(bundle(socket.handle), before);
+    REQUIRE_EQ(set(socket.handle, SRTO_TRANSTYPE, SRTT_SENSOR), 0);
+    REQUIRE_EQ(integer(socket.handle, SRTO_TRANSTYPE), SRTT_SENSOR);
     REQUIRE_EQ(integer(socket.handle, SRTO_CRYPTOMODE), 2);
     REQUIRE_EQ(set(socket.handle, SRTO_TRANSTYPE, SRTT_CONTROL), 0);
     REQUIRE_EQ(integer(socket.handle, SRTO_TRANSTYPE), SRTT_CONTROL);

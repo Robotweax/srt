@@ -663,10 +663,9 @@ private:
     [[nodiscard]] FecReceiveBatch receive_fec_packet(
         const PacketView& wire_packet) noexcept;
     [[nodiscard]] bool process_reliability_packet_locked(
-        const PacketView& packet,
-        std::uint64_t now_microseconds,
-        ReliabilityReceiveContext context = {},
-        bool wire_received = true) noexcept;
+        const PacketView& packet, std::uint64_t now_microseconds,
+        ReliabilityReceiveContext context = {}, bool wire_received = true,
+        std::span<const std::byte> authenticated_plaintext = {}) noexcept;
     [[nodiscard]] bool report_filter_losses_locked(
         std::span<const SequenceRange> losses,
         std::uint64_t now_microseconds) noexcept;
