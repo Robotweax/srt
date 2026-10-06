@@ -175,6 +175,31 @@ Packet filtering reduces payload capacity and changes statistics. Applications
 must validate expected loss bursts and overhead rather than enabling a filter
 without a traffic-specific geometry. See [Packet-filter FEC](packet-filter.md).
 
+## Live tail probes and retransmission counters
+
+With Live congestion control, peer periodic NAK support, and ordinary ARQ
+(`always`), Robotweax schedules one last-sent DATA probe when the sender RTO
+expires with unacknowledged packets and no pending selective retransmission.
+The probe recovers a lost final packet and exposes preceding gaps that the
+receiver could not otherwise report. It is paced and uses the existing timeout
+backoff; a cumulative ACK that clears the flight stops further probing.
+
+An ACK delayed beyond that timeout can therefore cause a probe even when all
+original DATA arrived. A nonzero `pktRetransTotal` with zero sender/receiver
+loss counters is possible on a path with no DATA loss. The receiver can observe
+an extra DATA datagram while delivering each message only once. Retransmission
+counters alone are not proof of packet loss, and clean-path monitoring should
+not assume they are always zero.
+
+This is a deliberate recovery-policy difference from Haivision SRT v1.5.7 at
+`899348d8318eb9a3c5a5b6ec43c4a1114288773a`. Source review of
+[`srtcore/core.cpp`, `CUDT::checkRexmitTimer`](https://github.com/Haivision/srt/blob/899348d8318eb9a3c5a5b6ec43c4a1114288773a/srtcore/core.cpp#L12219)
+confirms that its Live timer fallback is disabled when the peer advertises
+periodic NAK support. No identical recovery policy is claimed. File mode,
+peers without periodic NAK, and filter-controlled ARQ have separate fallback
+rules. See [Live flight-tail recovery](testing.md#live-flight-tail-recovery)
+for the deterministic regression and lost-tail delivery checks.
+
 ## Timing and media scope
 
 Robotweax provides SRT pacing, TSBPD delivery, source-time metadata, and timing

@@ -4642,6 +4642,98 @@ TEST(sensor_profile_gap_deadlines_are_independent_and_do_not_extend)
     REQUIRE(!receiver.next_sensor_receive_gap_deadline().has_value());
 }
 
+TEST(live_session_late_ack_can_probe_already_delivered_tail_without_loss)
+{
+    for (const auto initial : {10U, SequenceNumber::mask}) {
+        for (const auto kind :
+            {AcknowledgementKind::lite, AcknowledgementKind::full}) {
+            for (const bool late_ack : {false, true}) {
+                const auto first = SequenceNumber {initial};
+                ReliabilitySession sender {{
+                    .local_initial_sequence = first,
+                    .peer_initial_sequence = SequenceNumber {100},
+                    .send_capacity_packets = 4,
+                    .receive_capacity_packets = 4,
+                    .maximum_payload_size = 1,
+                }};
+                ReliabilitySession receiver {{
+                    .local_initial_sequence = SequenceNumber {100},
+                    .peer_initial_sequence = first,
+                    .send_capacity_packets = 4,
+                    .receive_capacity_packets = 4,
+                    .maximum_payload_size = 1,
+                }};
+                const NegotiatedLiveOptions options {.periodic_nak = true};
+                sender.configure_live(options, 0, PacketTimestamp {0});
+                receiver.configure_live(options, 0, PacketTimestamp {0});
+                const std::array input {std::byte {'x'}, std::byte {'y'}};
+                for (const auto byte : input) {
+                    REQUIRE_EQ(sender.queue_message(
+                                   std::span {&byte, 1}, PacketTimestamp {0}),
+                        Error::none);
+                    const auto packet = sender.next_data_packet();
+                    REQUIRE(packet.has_value());
+                    sender.note_data_packet_sent(100);
+                    const auto received =
+                        receiver.receive(view_of(*packet), 200);
+                    REQUIRE(received);
+                    REQUIRE(received.receiver_packet_accepted_unique);
+                    REQUIRE_EQ(received.receiver_loss_packets, 0U);
+                    for (const auto& action :
+                        std::span {received.actions.values}.first(
+                            received.actions.size)) {
+                        REQUIRE(
+                            action.kind != ReliabilityActionKind::loss_report);
+                    }
+                    std::array<std::byte, 1> output {};
+                    REQUIRE(receiver.pop_message(output));
+                    REQUIRE_EQ(output[0], byte);
+                }
+                REQUIRE_EQ(receiver.receive_buffer().next_ack_sequence(),
+                    first.advanced(2));
+
+                // Both originals reached the application. Only the cumulative
+                // ACK is delayed; no NAK has selected a retransmission.
+                std::array<std::byte, 64> control_storage {};
+                const ReliabilityAction acknowledgement {
+                    .kind = ReliabilityActionKind::acknowledgement,
+                    .acknowledgement = {.kind = kind,
+                        .acknowledgement_number =
+                            kind == AcknowledgementKind::full ? 1U : 0U,
+                        .next_sequence =
+                            receiver.receive_buffer().next_ack_sequence(),
+                        .round_trip_time_microseconds = 100'000,
+                        .round_trip_time_variance_microseconds = 50'000},
+                };
+                REQUIRE(!sender.poll_sender_retransmission_timeout(330'099));
+                if (late_ack) {
+                    REQUIRE(sender.poll_sender_retransmission_timeout(330'100));
+                    const auto probe = sender.next_data_packet();
+                    REQUIRE(probe.has_value());
+                    REQUIRE_EQ(probe->header.sequence, first.next());
+                    REQUIRE(probe->header.retransmitted);
+                    REQUIRE_EQ(probe->payload[0], input[1]);
+                    REQUIRE(!sender.next_data_packet().has_value());
+                    sender.note_data_packet_sent(330'100);
+                    const auto duplicate =
+                        receiver.receive(view_of(*probe), 330'101);
+                    REQUIRE(duplicate);
+                    REQUIRE(!duplicate.receiver_packet_accepted_unique);
+                    REQUIRE_EQ(duplicate.receiver_loss_packets, 0U);
+                    std::array<std::byte, 1> output {};
+                    REQUIRE(!receiver.pop_message(output));
+                }
+                REQUIRE(sender.receive(
+                    encode_and_decode(acknowledgement, control_storage),
+                    late_ack ? 330'102 : 330'099));
+                REQUIRE_EQ(sender.send_buffer().packets_in_flight(), 0U);
+                REQUIRE(!sender.poll_sender_retransmission_timeout(2'000'000));
+                REQUIRE(!sender.next_data_packet().has_value());
+            }
+        }
+    }
+}
+
 TEST(live_session_periodic_nak_rto_probes_only_tail_of_unacknowledged_flight)
 {
     ReliabilitySession sender {{
