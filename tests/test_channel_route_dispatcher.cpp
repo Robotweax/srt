@@ -3291,6 +3291,43 @@ TEST(
     REQUIRE(fixture.channel->begin_poll_round() != nullptr);
 }
 
+TEST(channel_scheduled_poll_receipt_keeps_observation_before_later_ingress)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    auto dispatcher = ConnectionDatagramDispatcher::create(fixture.runtime,
+        fixture.scheduler, fixture.budget, 1, sink_peer,
+        {.capacity = 16, .control_reserve = 1},
+        {.before_poll_wake_for_testing = SinkGate::block,
+            .poll_wake_context_for_testing = gate});
+    REQUIRE(dispatcher != nullptr);
+    SinkRelease release {gate};
+    auto round = fixture.channel->begin_poll_round();
+    REQUIRE(round != nullptr);
+    REQUIRE(dispatcher->request_poll(round));
+    gate->wait();
+    // The first poll has completed, but its receipt remains undelivered.
+    // Publish new work before taking it: delivery must not refresh its inputs.
+    const auto data = sink_data(0);
+    REQUIRE_EQ(dispatcher->publish(
+                   dispatcher->inbox()->token(), data.view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    const auto first = await_scheduled_poll(dispatcher);
+    REQUIRE(first.observed_work.service.valid());
+    REQUIRE(first.observed_work.epoch != 0U);
+    REQUIRE_EQ(first.observed_ingress_admitted, 0U);
+    REQUIRE_EQ(dispatcher->inbox()->snapshot().admitted, 1U);
+    REQUIRE(dispatcher->request_poll(round));
+    gate->release();
+    const auto next = await_scheduled_poll(dispatcher);
+    REQUIRE(next.observed_work.epoch > first.observed_work.epoch);
+    REQUIRE_EQ(next.observed_ingress_admitted, 1U);
+    REQUIRE_EQ(
+        next.observed_work.service.scope, first.observed_work.service.scope);
+    REQUIRE_EQ(next.observed_work.service.generation,
+        first.observed_work.service.generation);
+}
+
 TEST(channel_scheduled_poll_shares_exhaustible_send_allowance_across_shards)
 {
     std::atomic<std::uint64_t> now {1000};

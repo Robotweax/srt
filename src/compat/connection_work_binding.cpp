@@ -10,6 +10,7 @@ struct ConnectionWorkBinding::State {
     std::mutex mutex;
     std::condition_variable drained;
     ConnectionWorkHints pending;
+    std::uint64_t work_epoch = 1;
     bool callback_active = false;
     bool completion_pending = false;
     bool retired = false;
@@ -124,6 +125,10 @@ RuntimeScheduler::SubmitStatus ConnectionWorkBinding::notify(
     state_->pending.send |= hints.send;
     state_->pending.receive_release |= hints.receive_release;
     state_->pending.datagrams |= hints.datagrams;
+    // Invalidate before publishing the wake, including already-pending hints.
+    // Internal poll requests also advance: conservative metadata, not a count
+    // of independent application events or a cache eligibility certificate.
+    state_->work_epoch = next_connection_work_epoch(state_->work_epoch);
     // Serialize notification with retirement. The scheduler never calls the
     // service inline and releases its shard lock before client dispatch.
     const auto status = scheduler->notify_service(token_);
@@ -133,12 +138,32 @@ RuntimeScheduler::SubmitStatus ConnectionWorkBinding::notify(
     return status;
 }
 
+ConnectionWorkBinding::WorkObservation
+ConnectionWorkBinding::observe_work() const noexcept
+{
+    std::lock_guard lock(state_->mutex);
+    return {token_, state_->retired ? 0U : state_->work_epoch};
+}
+
+bool ConnectionWorkBinding::work_is_current(
+    WorkObservation observation) const noexcept
+{
+    std::lock_guard lock(state_->mutex);
+    const auto& service = observation.service;
+    return !state_->retired && observation.epoch != 0U
+        && observation.epoch == state_->work_epoch
+        && service.scope == token_.scope && service.shard == token_.shard
+        && service.slot == token_.slot
+        && service.generation == token_.generation;
+}
+
 void ConnectionWorkBinding::retire(bool request_completion) noexcept
 {
     bool complete = false;
     {
         std::lock_guard lock(state_->mutex);
         state_->retired = true;
+        state_->work_epoch = 0;
         state_->pending = {};
         if (request_completion && state_->completion != nullptr) {
             state_->completion_pending = true;

@@ -191,3 +191,21 @@ precedes both paths.
 calls finding pending work. These counters do not count kernel wakeups. Ordinary
 queue notifications, service timer registration and shutdown notifications retain
 their existing behavior. No ingress allowance, poll window or deadline changes.
+
+
+## Internal work observations
+
+Each connection work binding retains a monotonic work epoch under its existing
+publication mutex. Every nonempty notification advances it before publishing
+the service wake, including coalesced notifications and internal poll requests.
+The observation includes the service scope, shard, slot and generation; a reused
+slot or a different scheduler cannot validate the earlier binding's observation.
+Retirement and epoch exhaustion invalidate observations permanently. Epochs are
+work revisions, not application-event or native-wakeup counters.
+
+Dispatcher poll receipts capture that observation and the inbox admission count
+before runtime polling. Delivery does not refresh either value. The absolute
+work deadline, when present, retains its existing producer and clock semantics.
+These fields are metadata only: they do not cover all protocol-state writers,
+certify clock/deadline safety, grant native receive credit or permit skipping a
+poll. The coordinator continues to request and collect polls as before.

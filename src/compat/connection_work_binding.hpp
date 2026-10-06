@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <limits>
 
 namespace robotweax::srt::compat {
 
@@ -14,6 +15,16 @@ struct ConnectionWorkHints {
     bool receive_release = false;
     bool datagrams = false;
 };
+
+// Zero permanently disables freshness after exhaustion; never wrap into an
+// earlier observation. This is a work revision, not a notification counter.
+[[nodiscard]] constexpr std::uint64_t next_connection_work_epoch(
+    std::uint64_t epoch) noexcept
+{
+    return epoch == 0U || epoch == (std::numeric_limits<std::uint64_t>::max)()
+        ? 0U
+        : epoch + 1U;
+}
 
 class ConnectionWorkBinding {
 public:
@@ -40,6 +51,15 @@ public:
     }
     [[nodiscard]] RuntimeScheduler::SubmitStatus notify(
         ConnectionWorkHints hints) noexcept;
+    struct WorkObservation {
+        RuntimeScheduler::ServiceToken service;
+        std::uint64_t epoch = 0;
+    };
+    // Metadata only: hints do not cover every protocol-state writer or every
+    // datagram admitted behind an existing wake. Never grants poll reuse.
+    [[nodiscard]] WorkObservation observe_work() const noexcept;
+    [[nodiscard]] bool work_is_current(
+        WorkObservation observation) const noexcept;
     // Closes admission, discards queued hints and retires the reservation.
     // A previously dispatched callback can finish; callers must independently
     // enforce the runtime close barrier before protocol effects. Never waits.

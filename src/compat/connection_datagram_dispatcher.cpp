@@ -244,6 +244,12 @@ struct ConnectionDatagramDispatcher::State {
             poll_prefix_pending = self.setup_prefix != nullptr;
         }
         if (round != nullptr) {
+            const auto service = self.binding.lock();
+            const auto observed_work = service != nullptr
+                ? service->observe_work()
+                : ConnectionWorkBinding::WorkObservation {};
+            const auto observed_ingress_admitted =
+                self.inbox->snapshot().admitted;
             RuntimePollResult result;
             std::size_t used = 0;
             const auto channel = round->channel_.lock();
@@ -270,8 +276,8 @@ struct ConnectionDatagramDispatcher::State {
                 self.poll_active = false;
                 retired = self.retired;
                 if (!retired)
-                    self.poll_completion =
-                        PollCompletion {result, used, round, completed_at};
+                    self.poll_completion = PollCompletion {result, used, round,
+                        completed_at, observed_work, observed_ingress_admitted};
             }
             const auto ingress_wait =
                 std::chrono::microseconds {round->ingress_wait_microseconds_};
