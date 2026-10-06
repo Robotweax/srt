@@ -776,6 +776,11 @@ public:
         const ConnectionDatagramInbox* ingress = nullptr,
         std::uint64_t maximum_ingress_wait_microseconds = 0,
         bool coordinate_ingress = false) noexcept;
+    // Checks an unchanged runtime-owned certificate under the protocol mutex.
+    // This alone does not authorize native parking or a channel cache consumer.
+    [[nodiscard]] bool receive_certificate_is_current(
+        const RuntimeReceivePollCertificate& certificate,
+        const ConnectionDatagramInbox* ingress = nullptr) const noexcept;
     void apply_options(const SocketOptions& options) noexcept;
     void mark_broken(int system_error) noexcept;
     [[nodiscard]] bool report_peer_error(
@@ -955,6 +960,14 @@ private:
     void break_locked(int system_error) noexcept;
 
     mutable std::mutex mutex_;
+    void invalidate_receive_certificate_locked() noexcept;
+    [[nodiscard]] std::optional<RuntimeReceivePollCertificate>
+    certify_idle_receive_locked(Clock::time_point deadline,
+        const ConnectionDatagramInbox* ingress) noexcept;
+    std::uint64_t poll_state_epoch_ = 1;
+    std::optional<RuntimeReceivePollCertificate> receive_certificate_;
+    const std::uint64_t poll_runtime_incarnation_;
+    const bool poll_has_group_;
     std::condition_variable receive_ready_;
     std::condition_variable send_ready_;
     std::weak_ptr<DatagramChannel> channel_;

@@ -28,6 +28,18 @@ namespace {
     return next_affinity.fetch_add(1U, std::memory_order_relaxed);
 }
 
+[[nodiscard]] std::uint64_t reserve_poll_runtime_incarnation() noexcept
+{
+    static std::atomic<std::uint64_t> next {1U};
+    auto value = next.load(std::memory_order_relaxed);
+    while (value != 0U) {
+        if (next.compare_exchange_weak(value, next_connection_work_epoch(value),
+                std::memory_order_relaxed))
+            return value;
+    }
+    return 0U;
+}
+
 constexpr std::size_t maximum_send_batch = 64;
 constexpr std::size_t maximum_connection_polls = 64;
 constexpr std::uint64_t maximum_transient_send_retry_microseconds = 5'000'000U;
@@ -2265,7 +2277,9 @@ RuntimePollResult DatagramChannel::finish_poll_round(
 }
 
 ConnectionRuntime::ConnectionRuntime(Configuration configuration)
-    : channel_(std::move(configuration.channel))
+    : poll_runtime_incarnation_(reserve_poll_runtime_incarnation())
+    , poll_has_group_(configuration.group != nullptr)
+    , channel_(std::move(configuration.channel))
     , work_binding_(std::move(configuration.work_binding))
     , peer_(configuration.peer)
     , peer_socket_id_(configuration.peer_socket_id)
@@ -2489,6 +2503,7 @@ MessageIoResult ConnectionRuntime::queue_message(
     std::int32_t ttl_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    invalidate_receive_certificate_locked();
     if (options_.control_profile() && ttl_milliseconds >= 0) {
         return {.status = MessageIoStatus::invalid_state};
     }
@@ -2529,6 +2544,7 @@ MessageIoResult ConnectionRuntime::try_queue_message_locked(
     std::span<const std::byte> message, std::int64_t source_time_microseconds,
     bool in_order, std::int32_t ttl_milliseconds) noexcept
 {
+    invalidate_receive_certificate_locked();
     if (locally_closed_) {
         return {.status = MessageIoStatus::local_closed};
     }
@@ -2591,6 +2607,7 @@ MessageIoResult ConnectionRuntime::queue_group_message(
     std::int32_t ttl_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    invalidate_receive_certificate_locked();
     if (options_.control_profile() && ttl_milliseconds >= 0) {
         return {.status = MessageIoStatus::invalid_state};
     }
@@ -2655,6 +2672,7 @@ MessageIoResult ConnectionRuntime::skip_group_sequences(
     SequenceNumber next_sequence) noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     if (locally_closed_) {
         return {.status = MessageIoStatus::local_closed};
     }
@@ -2686,6 +2704,7 @@ MessageIoResult ConnectionRuntime::receive_message(
     std::int32_t timeout_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    invalidate_receive_certificate_locked();
     const bool has_deadline = timeout_milliseconds >= 0;
     const Clock::time_point deadline = has_deadline
         ? Clock::now() + std::chrono::milliseconds{timeout_milliseconds}
@@ -2726,6 +2745,7 @@ MessageIoResult ConnectionRuntime::receive_message(
 MessageIoResult ConnectionRuntime::try_receive_message_locked(
     std::span<std::byte> destination, std::uint64_t now) noexcept
 {
+    invalidate_receive_certificate_locked();
     if (!service_receiver_tlpktdrop_locked(now)) {
         return {
             .status = MessageIoStatus::broken,
@@ -2790,6 +2810,7 @@ std::optional<SequenceNumber>
 ConnectionRuntime::next_readable_message_sequence() noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     const std::uint64_t now = now_microseconds();
     if (!service_receiver_tlpktdrop_locked(now)) {
         return std::nullopt;
@@ -2806,6 +2827,7 @@ ConnectionRuntime::next_readable_message_sequence() noexcept
 SequenceNumber ConnectionRuntime::receive_floor_sequence() noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     return session_.receive_buffer().first_stored_sequence();
 }
 
@@ -2813,6 +2835,7 @@ bool ConnectionRuntime::has_complete_buffered_message_at(
     SequenceNumber sequence) noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     const auto& buffer = session_.receive_buffer();
     return buffer.first_stored_sequence() == sequence
         && buffer.has_complete_message();
@@ -2821,6 +2844,7 @@ bool ConnectionRuntime::has_complete_buffered_message_at(
 bool ConnectionRuntime::has_buffered_receive_data() noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     return session_.receive_buffer().occupied() != 0U;
 }
 
@@ -2828,6 +2852,7 @@ RuntimeReceiveSnapshot ConnectionRuntime::receive_snapshot(
     SequenceNumber expected, bool retire_consumed_prefix) noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     if (retire_consumed_prefix) {
         (void)discard_received_before_locked(expected);
     }
@@ -2856,6 +2881,7 @@ RetainedGroupReceiveBatch
 ConnectionRuntime::copy_group_receive_prefix() noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     return {
         .copies = session_.receive_buffer().copy_complete_messages(
             GroupReceiveRetention::maximum_packets,
@@ -2873,6 +2899,7 @@ bool ConnectionRuntime::discard_received_before(
     SequenceNumber next_sequence) noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     return discard_received_before_locked(next_sequence);
 }
 
@@ -2904,11 +2931,13 @@ MessageIoResult ConnectionRuntime::queue_stream(
     std::int32_t timeout_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    invalidate_receive_certificate_locked();
     const bool has_deadline = timeout_milliseconds >= 0;
     const Clock::time_point deadline = has_deadline
         ? Clock::now() + std::chrono::milliseconds{timeout_milliseconds}
         : Clock::time_point{};
     for (;;) {
+        invalidate_receive_certificate_locked();
         if (locally_closed_) {
             return {.status = MessageIoStatus::local_closed};
         }
@@ -2978,11 +3007,13 @@ MessageIoResult ConnectionRuntime::receive_stream(
     std::int32_t timeout_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    invalidate_receive_certificate_locked();
     const bool has_deadline = timeout_milliseconds >= 0;
     const Clock::time_point deadline = has_deadline
         ? Clock::now() + std::chrono::milliseconds{timeout_milliseconds}
         : Clock::time_point{};
     for (;;) {
+        invalidate_receive_certificate_locked();
         const std::uint64_t now = now_microseconds();
         // A gap ahead of due bytes is dropped here as well, so a stream
         // reader is not held behind a loss whose deadline has passed.
@@ -4286,6 +4317,7 @@ void ConnectionRuntime::process_packet(
         return;
     }
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     if (locally_closed_ || broken_) {
         return;
     }
@@ -4543,6 +4575,7 @@ bool ConnectionRuntime::process_handshake(
     IpEndpoint peer) noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     if (locally_closed_ || broken_
         || !matches_handshake_replay(message, peer)) {
         return false;
@@ -4587,6 +4620,7 @@ ConnectionDatagramInbox::Status ConnectionRuntime::admit_datagram(
     std::uint64_t publication_time, std::uint64_t* admitted_cutoff) noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     if (locally_closed_ || broken_) {
         return ConnectionDatagramInbox::Status::closed;
     }
@@ -4615,6 +4649,7 @@ RuntimePollResult ConnectionRuntime::poll_setup_prefix_deadline(
         return {.next_work_delay = std::chrono::microseconds {
                     maximum_ingress_wait_microseconds}};
     }
+    invalidate_receive_certificate_locked();
     if (locally_closed_ || peer_closed_ || broken_) {
         terminal = true;
         return {.receive_wait_safe = true};
@@ -4643,11 +4678,73 @@ RuntimePollResult ConnectionRuntime::poll(std::size_t& remaining_send_attempts,
     bool coordinate_ingress) noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     poll_send_budget_ = &remaining_send_attempts;
     const auto result = poll_locked(
         ingress, maximum_ingress_wait_microseconds, coordinate_ingress);
     poll_send_budget_ = nullptr;
     return result;
+}
+
+void ConnectionRuntime::invalidate_receive_certificate_locked() noexcept
+{
+    poll_state_epoch_ = next_connection_work_epoch(poll_state_epoch_);
+    receive_certificate_.reset();
+}
+
+std::optional<RuntimeReceivePollCertificate>
+ConnectionRuntime::certify_idle_receive_locked(
+    Clock::time_point deadline, const ConnectionDatagramInbox* ingress) noexcept
+{
+    // No shared clock/crypto/filter or buffered/sender state is certified in
+    // this first scope. The deadline is computed by the actual protocol poll.
+    if (poll_runtime_incarnation_ == 0U || poll_state_epoch_ == 0U
+        || now_function_ != nullptr || poll_has_group_ || crypto_ != nullptr
+        || options_.congestion_controller() != CongestionController::live
+        || !options_.packet_filter().empty() || locally_closed_ || peer_closed_
+        || broken_ || pending_datagram_size_ != 0U
+        || !session_.idle_for_receive_wait()
+        || session_.has_pending_drop_requests() || poll_ingress_active_
+        || deadline <= Clock::now()) {
+        return std::nullopt;
+    }
+    std::uint64_t ingress_incarnation = 0;
+    if (ingress != nullptr) {
+        if (!ingress->bound_to(this))
+            return std::nullopt;
+        const auto state = ingress->snapshot();
+        if (state.closed || state.queued != 0U || state.in_flight)
+            return std::nullopt;
+        ingress_incarnation = ingress->token().incarnation;
+    }
+    receive_certificate_ =
+        RuntimeReceivePollCertificate {poll_runtime_incarnation_,
+            poll_state_epoch_, ingress_incarnation, deadline};
+    return receive_certificate_;
+}
+
+bool ConnectionRuntime::receive_certificate_is_current(
+    const RuntimeReceivePollCertificate& certificate,
+    const ConnectionDatagramInbox* ingress) const noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (!receive_certificate_.has_value() || certificate.state_epoch == 0U
+        || certificate.runtime_incarnation != poll_runtime_incarnation_
+        || certificate.state_epoch != poll_state_epoch_
+        || certificate.valid_until != receive_certificate_->valid_until
+        || certificate.ingress_incarnation
+            != receive_certificate_->ingress_incarnation
+        || certificate.valid_until <= Clock::now() || locally_closed_
+        || peer_closed_ || broken_) {
+        return false;
+    }
+    if (certificate.ingress_incarnation == 0U)
+        return ingress == nullptr;
+    if (ingress == nullptr || !ingress->bound_to(this)
+        || ingress->token().incarnation != certificate.ingress_incarnation)
+        return false;
+    const auto state = ingress->snapshot();
+    return !state.closed && state.queued == 0U && !state.in_flight;
 }
 
 RuntimePollResult ConnectionRuntime::poll_locked(
@@ -4986,10 +5083,14 @@ RuntimePollResult ConnectionRuntime::poll_locked(
             deadline = std::min(deadline, *retirement_deadline);
         }
         const auto remaining = deadline > current ? deadline - current : 0U;
+        const auto certificate_deadline = deadline_from_origin_microseconds(
+            origin_, current + std::min<std::uint64_t>(remaining, 1'000'000U));
         return {.next_work_delay =
                     std::chrono::microseconds {
                         std::min<std::uint64_t>(remaining, 1'000'000U)},
-            .receive_wait_safe = true};
+            .receive_wait_safe = true,
+            .receive_certificate =
+                certify_idle_receive_locked(certificate_deadline, ingress)};
     }
 
     const PaceDecision pace = pacer_.query(current,
@@ -5037,6 +5138,7 @@ void ConnectionRuntime::apply_options(
     const SocketOptions& options) noexcept
 {
     std::unique_lock lock(mutex_);
+    invalidate_receive_certificate_locked();
     options_ = options;
 #ifdef ENABLE_MAXREXMITBW
     const auto limit =
@@ -5108,6 +5210,7 @@ void ConnectionRuntime::notify_channel_receive_release() noexcept
 void ConnectionRuntime::mark_broken(int system_error) noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     break_locked(system_error);
 }
 
@@ -5115,6 +5218,7 @@ bool ConnectionRuntime::report_peer_error(
     std::int32_t error_code) noexcept
 {
     std::unique_lock lock(mutex_);
+    invalidate_receive_certificate_locked();
     if (locally_closed_ || peer_closed_ || broken_) {
         return false;
     }
@@ -5138,6 +5242,7 @@ void ConnectionRuntime::close() noexcept
 bool ConnectionRuntime::begin_close() noexcept
 {
     std::unique_lock lock(mutex_);
+    invalidate_receive_certificate_locked();
     if (locally_closed_) {
         return false;
     }
@@ -5199,6 +5304,7 @@ void close_connection_runtime(const std::shared_ptr<ConnectionRuntime>& runtime,
 void ConnectionRuntime::finish_close() noexcept
 {
     std::unique_lock lock(mutex_);
+    invalidate_receive_certificate_locked();
     // This caller owns the final FIFO drain. Polls, queued receives, new
     // sends and duplicate close calls must stay quiescent while its retry
     // pauses let other runtimes on the channel's shard make progress.
@@ -5288,6 +5394,7 @@ bool ConnectionRuntime::terminal() const noexcept
 bool ConnectionRuntime::readable() noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     if (locally_closed_) {
         return false;
     }
@@ -5311,6 +5418,7 @@ std::optional<ConnectionRuntime::Clock::time_point>
 ConnectionRuntime::next_readable_deadline() noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     if (locally_closed_) {
         return std::nullopt;
     }
@@ -5325,6 +5433,7 @@ SocketReadinessSnapshot ConnectionRuntime::readiness_snapshot(
     bool socket_broken) noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     SocketReadinessSnapshot readiness {};
     readiness.exists = true;
     // Fatal failures need no receive servicing. SHUTDOWN retains its tail
@@ -5441,6 +5550,7 @@ RuntimeStatisticsSnapshot ConnectionRuntime::statistics(
     bool clear_interval, bool instantaneous) noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     const std::uint64_t now = now_microseconds();
     statistics_.update_send_duration(
         now, session_.send_buffer().size() != 0U);
@@ -5556,6 +5666,7 @@ RuntimeResponseHealth ConnectionRuntime::response_health() const noexcept
 SenderBufferStatus ConnectionRuntime::sender_buffer_status() noexcept
 {
     std::lock_guard lock(mutex_);
+    invalidate_receive_certificate_locked();
     const auto& send_buffer = session_.send_buffer();
     return {
         .packets = send_buffer.size(),

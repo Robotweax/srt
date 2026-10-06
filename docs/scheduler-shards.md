@@ -209,3 +209,34 @@ work deadline, when present, retains its existing producer and clock semantics.
 These fields are metadata only: they do not cover all protocol-state writers,
 certify clock/deadline safety, grant native receive credit or permit skipping a
 poll. The coordinator continues to request and collect polls as before.
+
+
+## Runtime idle receive certificates
+
+An internal poll may return a receive certificate containing its runtime
+incarnation, state epoch, optional inbox incarnation and native absolute
+deadline. The runtime issues and stores it under its state mutex. Validation
+requires the same runtime, unchanged state epoch, exact issued deadline and
+an open, empty, inactive bound inbox when one was supplied. A later poll
+replaces the certificate; expiration, retirement or epoch exhaustion rejects
+it. Incarnations and state epochs never wrap into reusable values.
+
+Protocol-state entry points invalidate the certificate under the runtime mutex
+before mutation and before any subsequent service notification. Blocking
+application operations invalidate again after reacquiring that mutex, so an
+intervening poll cannot certify a later application commit. Some queries also
+invalidate conservatively. This state epoch is independent of the optional
+work binding and does not depend on dispatcher and runtime bindings matching.
+
+The initial scope is native-clock live receive polling with no buffered receive
+data, outstanding send work, pending datagram or drop requests. Shared group
+clocks, synthetic clocks, crypto sessions, packet filters and file congestion
+control do not produce certificates. The deadline comes from the actual poll's
+protocol clock and remains bounded by its existing maintenance interval.
+
+No coordinator currently consumes this certificate. It grants no native receive
+credit and does not by itself permit parking or skipping a poll: a future
+consumer must also preserve route identity, wake publication and native ingress
+progress. Existing poll budgets, receive wait flags and scheduling remain
+unchanged. The additional fixed metadata and validation can add overhead; this
+producer step makes no performance claim.

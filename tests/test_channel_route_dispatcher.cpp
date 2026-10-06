@@ -5,6 +5,7 @@
 #include "srt/srt.h"
 #include "compat/runtime_work_executor.hpp"
 #include "compat/socket_registry.hpp"
+#include "compat/group_registry.hpp"
 
 #include <algorithm>
 #include <array>
@@ -4377,6 +4378,231 @@ TEST(channel_buffered_poll_deadline_bounds_control_and_readable_data)
             sink_receive(fixture.runtime, std::byte {1});
         }
     }
+}
+
+namespace {
+ConnectionRuntime::Configuration native_receive_certificate_configuration(
+    const std::shared_ptr<DatagramChannel>& channel)
+{
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+    // As in the native buffered-deadline regression: clamp protocol time at
+    // zero without injecting a different clock or racing a short deadline.
+    return {.channel = channel,
+        .peer = sink_peer,
+        .peer_socket_id = 90,
+        .initial_sequence = SequenceNumber {1000},
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now() + std::chrono::minutes {1}};
+}
+
+RuntimeReceivePollCertificate current_receive_certificate(
+    ConnectionRuntime& runtime)
+{
+    const auto result = runtime.poll();
+    REQUIRE(result.receive_wait_safe);
+    REQUIRE(result.receive_certificate.has_value());
+    REQUIRE(
+        runtime.receive_certificate_is_current(*result.receive_certificate));
+    return *result.receive_certificate;
+}
+}
+
+TEST(channel_receive_certificate_retains_native_deadline_and_runtime_identity)
+{
+    SinkFixture fixture;
+    auto configuration =
+        native_receive_certificate_configuration(fixture.channel);
+    ConnectionRuntime first(configuration);
+    ConnectionRuntime second(configuration);
+    const auto certificate = current_receive_certificate(first);
+    REQUIRE_EQ(certificate.valid_until,
+        configuration.origin + std::chrono::seconds {1});
+    REQUIRE(certificate.runtime_incarnation != 0U);
+    const auto foreign = current_receive_certificate(second);
+    REQUIRE_EQ(certificate.state_epoch, foreign.state_epoch);
+    REQUIRE_EQ(certificate.valid_until, foreign.valid_until);
+    REQUIRE(!second.receive_certificate_is_current(certificate));
+    auto extended = certificate;
+    extended.valid_until += std::chrono::hours {1};
+    REQUIRE(!first.receive_certificate_is_current(extended));
+    auto expired = certificate;
+    expired.valid_until = ConnectionRuntime::Clock::now();
+    REQUIRE(!first.receive_certificate_is_current(expired));
+    const auto next = current_receive_certificate(first);
+    REQUIRE(next.state_epoch > certificate.state_epoch);
+    REQUIRE(!first.receive_certificate_is_current(certificate));
+}
+
+TEST(channel_receive_certificate_concurrent_runtime_incarnations_do_not_alias)
+{
+    SinkFixture fixture;
+    const auto configuration =
+        native_receive_certificate_configuration(fixture.channel);
+    std::array<std::future<RuntimeReceivePollCertificate>, 8> certificates;
+    std::barrier start(static_cast<std::ptrdiff_t>(certificates.size()));
+    for (auto& result : certificates) {
+        result = std::async(std::launch::async, [&] {
+            start.arrive_and_wait();
+            ConnectionRuntime runtime(configuration);
+            return current_receive_certificate(runtime);
+        });
+    }
+    std::array<std::uint64_t, 8> incarnations;
+    for (std::size_t index = 0; index < certificates.size(); ++index) {
+        incarnations[index] = certificates[index].get().runtime_incarnation;
+        REQUIRE(incarnations[index] != 0U);
+    }
+    std::sort(incarnations.begin(), incarnations.end());
+    REQUIRE(std::adjacent_find(incarnations.begin(), incarnations.end())
+        == incarnations.end());
+}
+
+TEST(channel_receive_certificate_invalidates_options_and_receive_state_queries)
+{
+    SinkFixture fixture;
+    ConnectionRuntime runtime(
+        native_receive_certificate_configuration(fixture.channel));
+    const auto first = current_receive_certificate(runtime);
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+    runtime.apply_options(options);
+    REQUIRE(!runtime.receive_certificate_is_current(first));
+    auto certificate = current_receive_certificate(runtime);
+    std::array<std::byte, 1> destination;
+    REQUIRE_EQ(runtime.receive_message(destination, false, 0).status,
+        MessageIoStatus::would_block);
+    REQUIRE(!runtime.receive_certificate_is_current(certificate));
+    certificate = current_receive_certificate(runtime);
+    (void)runtime.readiness_snapshot(false);
+    REQUIRE(!runtime.receive_certificate_is_current(certificate));
+    certificate = current_receive_certificate(runtime);
+    runtime.close();
+    REQUIRE(!runtime.receive_certificate_is_current(certificate));
+    REQUIRE(!runtime.poll().receive_certificate.has_value());
+}
+
+TEST(channel_receive_certificate_invalidates_application_commit_before_wake)
+{
+    SinkFixture fixture;
+    auto gate = std::make_shared<SinkGate>();
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {.shard_count = 1,
+            .queue_capacity_per_shard = 1,
+            .timer_capacity_per_shard = 1,
+            .service_capacity_per_shard = 1,
+            .service_notification_hook_for_testing =
+                [](void* context, bool published) noexcept {
+                    if (!published)
+                        SinkGate::block(context);
+                },
+            .service_notification_context_for_testing = gate.get()});
+    REQUIRE(scheduler->start());
+    auto binding = ConnectionWorkBinding::create(
+        scheduler, 0, [](void*, ConnectionWorkHints) noexcept { },
+        std::make_shared<int>(0));
+    REQUIRE(binding != nullptr);
+    auto configuration =
+        native_receive_certificate_configuration(fixture.channel);
+    configuration.work_binding = binding;
+    ConnectionRuntime runtime(configuration);
+    const auto certificate = current_receive_certificate(runtime);
+    std::future<MessageIoResult> queued;
+    SinkRelease release {gate};
+    const std::array payload {std::byte {1}};
+    queued = std::async(std::launch::async, [&] {
+        return runtime.queue_message(payload, 0, true, false, -1);
+    });
+    gate->wait();
+    // Queue commit has released the runtime mutex, but its wake publisher is
+    // still paused. Freshness must be invalidated by mutation, not that wake.
+    REQUIRE(!runtime.receive_certificate_is_current(certificate));
+    gate->release();
+    REQUIRE_EQ(queued.get().status, MessageIoStatus::success);
+    REQUIRE(!runtime.poll().receive_certificate.has_value());
+    binding->retire();
+    scheduler->stop();
+}
+
+TEST(channel_receive_certificate_binds_empty_inbox_and_invalidates_admission)
+{
+    SinkFixture fixture;
+    fixture.runtime = std::make_shared<ConnectionRuntime>(
+        native_receive_certificate_configuration(fixture.channel));
+    auto dispatcher = fixture.dispatcher();
+    const auto inbox = dispatcher->inbox();
+    auto remaining = ChannelPollSendBudget::maximum_attempts;
+    const auto result =
+        fixture.runtime->poll(remaining, inbox.get(), 2000, true);
+    REQUIRE(result.receive_certificate.has_value());
+    const auto certificate = *result.receive_certificate;
+    REQUIRE_EQ(certificate.ingress_incarnation, inbox->token().incarnation);
+    REQUIRE(fixture.runtime->receive_certificate_is_current(
+        certificate, inbox.get()));
+    REQUIRE(!fixture.runtime->receive_certificate_is_current(certificate));
+    auto probe = std::make_shared<SinkGate>();
+    SinkRelease release {probe};
+    sink_block_worker(fixture, probe);
+    const auto data = sink_data(0);
+    REQUIRE_EQ(dispatcher->publish(inbox->token(), data.view(), sink_peer),
+        ConnectionDatagramInbox::Status::accepted);
+    REQUIRE(!fixture.runtime->receive_certificate_is_current(
+        certificate, inbox.get()));
+    REQUIRE_EQ(inbox->snapshot().queued, 1U);
+    probe->release();
+}
+
+TEST(
+    channel_receive_certificate_rejects_shared_clocks_filters_crypto_and_synthetic_time)
+{
+    SinkFixture fixture;
+    const auto base = native_receive_certificate_configuration(fixture.channel);
+    std::atomic<std::uint64_t> now {0};
+    for (unsigned variant = 0; variant < 5; ++variant) {
+        auto configuration = base;
+        if (variant == 0) {
+            configuration.group = std::make_shared<GroupRecord>();
+        } else if (variant == 1) {
+            configuration.now_function = ingress_idle_now;
+            configuration.now_context = &now;
+        } else if (variant == 2) {
+            REQUIRE_EQ(
+                configuration.options.set_packet_filter("fec,rows:1,cols:4"),
+                Error::none);
+        } else if (variant == 3) {
+            configuration.crypto =
+                std::make_shared<CryptoSession>(CryptoConfiguration {});
+        } else {
+            REQUIRE_EQ(
+                configuration.options.set(SocketOption::transmission_type,
+                    static_cast<int>(SRTT_FILE)),
+                Error::none);
+        }
+        ConnectionRuntime runtime(std::move(configuration));
+        REQUIRE(!runtime.poll().receive_certificate.has_value());
+    }
+}
+
+TEST(channel_receive_certificate_rejects_buffered_receive_and_pending_sender)
+{
+    SinkFixture fixture;
+    ConnectionRuntime receiver(
+        native_receive_certificate_configuration(fixture.channel));
+    auto certificate = current_receive_certificate(receiver);
+    const auto data = sink_data(0);
+    receiver.process_packet(decode_packet(data.view()).packet, sink_peer);
+    REQUIRE(!receiver.receive_certificate_is_current(certificate));
+    REQUIRE(!receiver.poll().receive_certificate.has_value());
+    std::array<std::byte, 1> destination;
+    REQUIRE_EQ(receiver.receive_message(destination, false, 0).status,
+        MessageIoStatus::success);
+    certificate = current_receive_certificate(receiver);
+    ConnectionRuntime sender(
+        native_receive_certificate_configuration(fixture.channel));
+    const std::array payload {std::byte {1}};
+    REQUIRE_EQ(sender.queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    REQUIRE(!sender.poll().receive_certificate.has_value());
 }
 
 TEST(channel_buffered_poll_deadline_preserves_native_clock_origin)
