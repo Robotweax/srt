@@ -447,6 +447,24 @@ ConnectionDatagramInbox::Status ConnectionDatagramDispatcher::publish(
     return status;
 }
 
+bool ConnectionDatagramDispatcher::receive_poll_is_current(
+    const ReceivePollObservation& observation) const noexcept
+{
+    {
+        std::lock_guard lock(state_->prefix_mutex);
+        if (state_->retired || !state_->active || !state_->route_claimed
+            || state_->setup_prefix != nullptr
+            || state_->pending_poll != nullptr || state_->poll_active
+            || state_->poll_completion.has_value())
+            return false;
+    }
+    const auto runtime = state_->runtime.lock();
+    return runtime != nullptr && binding_->work_is_current(observation.work)
+        && state_->inbox->snapshot().admitted == observation.ingress_admitted
+        && runtime->receive_certificate_is_current(
+            observation.certificate, state_->inbox.get());
+}
+
 bool ConnectionDatagramDispatcher::request_poll(
     std::shared_ptr<ChannelPollSendBudget> round) noexcept
 {

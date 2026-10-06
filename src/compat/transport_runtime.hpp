@@ -370,6 +370,14 @@ public:
     void notify_send_work() noexcept;
     void notify_receive_release() noexcept;
     void notify_poll_completion() noexcept;
+    // Set only while the channel task is stopped; runs outside route/runtime locks.
+    using ReceiveReuseHook = void (*)(void*) noexcept;
+    void set_receive_reuse_hook_for_testing(
+        ReceiveReuseHook hook, void* context) noexcept
+    {
+        receive_reuse_hook_ = hook;
+        receive_reuse_context_ = context;
+    }
     void set_idle_wait_for_testing(std::chrono::milliseconds timeout) noexcept;
     [[nodiscard]] bool coarse_timer_mode_for_testing() const noexcept
     {
@@ -592,6 +600,8 @@ private:
         std::optional<HandshakeRouteKey> replay_key = std::nullopt;
         std::shared_ptr<DatagramInbox> setup_prefix = nullptr;
         std::shared_ptr<ConnectionDatagramDispatcher> dispatcher = nullptr;
+        std::optional<ConnectionDatagramDispatcher::ReceivePollObservation>
+            receive_poll = std::nullopt;
         bool fault_pending = false;
         ConnectionRoute* previous = nullptr;
         ConnectionRoute* next = nullptr;
@@ -610,6 +620,9 @@ private:
     bool poll_round_immediate_ = false;
     bool poll_round_ingress_pending_ = false;
     bool poll_round_receive_wait_safe_ = true;
+    bool poll_round_receive_reuse_allowed_ = false;
+    ReceiveReuseHook receive_reuse_hook_ = nullptr;
+    void* receive_reuse_context_ = nullptr;
     std::optional<std::chrono::steady_clock::time_point> poll_round_deadline_;
     std::unordered_map<HandshakeRouteKey, ConnectionRoute*,
         HandshakeRouteKeyHash>

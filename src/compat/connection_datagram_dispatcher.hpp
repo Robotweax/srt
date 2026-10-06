@@ -102,6 +102,14 @@ public:
         ConnectionWorkBinding::WorkObservation observed_work;
         std::uint64_t observed_ingress_admitted = 0;
     };
+    struct ReceivePollObservation {
+        RuntimeReceivePollCertificate certificate;
+        ConnectionWorkBinding::WorkObservation work;
+        std::uint64_t ingress_admitted = 0;
+    };
+    // A snapshot only; channel route lifetime and wake handshakes remain separate.
+    [[nodiscard]] bool receive_poll_is_current(
+        const ReceivePollObservation& observation) const noexcept;
     // Explicit internal request, never inline protocol work. One pending/active/
     // unconsumed result per dispatcher; caller owns deadlines and route commit.
     [[nodiscard]] bool request_poll(
