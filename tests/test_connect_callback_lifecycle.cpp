@@ -218,3 +218,37 @@ TEST(connect_callback_lifecycle_thread_local_destructor_can_restart_runtime)
     REQUIRE(observation->valid.load());
     REQUIRE_EQ(executor->snapshot().workers, 0U);
 }
+
+TEST(connect_callback_lifecycle_retirement_holds_tls_until_stop_releases_exit)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    robotweax::srt::compat::ConnectCallbackExecutor executor(1);
+    auto observation = std::make_shared<TlsCleanupObservation>();
+    auto context =
+        std::make_shared<std::shared_ptr<TlsCleanupObservation>>(observation);
+    REQUIRE(executor.submit({initialize_callback_thread_local, context, 0}));
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {3};
+    while (executor.snapshot().idle != 1
+        && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    REQUIRE_EQ(executor.snapshot().idle, 1U);
+    executor.request_stop();
+    const auto retirement_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {3};
+    while (executor.snapshot().retirement_waiters != 1
+        && std::chrono::steady_clock::now() < retirement_deadline)
+        std::this_thread::yield();
+    // Positive handshake with the exit barrier, not a sleep-based assertion.
+    REQUIRE_EQ(executor.snapshot().retirement_waiters, 1U);
+    REQUIRE(executor.snapshot().stopping);
+    REQUIRE(!executor.submit({initialize_callback_thread_local, context, 0}));
+    REQUIRE(!observation->entered.load());
+    REQUIRE(!observation->finished.load());
+    executor.stop();
+    REQUIRE(observation->finished.load());
+    REQUIRE(observation->valid.load());
+    REQUIRE_EQ(executor.snapshot().retirement_waiters, 0U);
+    REQUIRE_EQ(executor.snapshot().workers, 0U);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}

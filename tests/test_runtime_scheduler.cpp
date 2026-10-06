@@ -3,6 +3,7 @@
 #include "compat/runtime_scheduler.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -1371,4 +1372,202 @@ TEST(compat_runtime_scheduler_service_scan_trims_released_tail_after_callback)
     wait_until_complete(complete);
     REQUIRE(scheduler.release_service(first.token));
     scheduler.stop();
+}
+
+namespace {
+struct NotificationPublication {
+    std::shared_ptr<Gate> pause = std::make_shared<Gate>();
+    std::atomic<unsigned> before = 0;
+    std::atomic<unsigned> published = 0;
+    bool pause_first = false;
+    std::atomic_bool first_published = false;
+    static void observe(void* ptr, bool after) noexcept
+    {
+        auto& self = *static_cast<NotificationPublication*>(ptr);
+        static thread_local bool first_notification = false;
+        if (after) {
+            self.published.fetch_add(1);
+            if (first_notification)
+                self.first_published = true;
+        } else {
+            first_notification = self.before.fetch_add(1) == 0;
+            if (first_notification && self.pause_first)
+                wait_at_gate(self.pause.get());
+        }
+    }
+};
+RuntimeScheduler::Configuration notification_configuration(
+    NotificationPublication& publication, std::size_t shards = 1)
+{
+    return {.shard_count = shards,
+        .queue_capacity_per_shard = 4,
+        .timer_capacity_per_shard = 4,
+        .service_capacity_per_shard = 4,
+        .service_notification_hook_for_testing =
+            NotificationPublication::observe,
+        .service_notification_context_for_testing = &publication};
+}
+}
+
+TEST(compat_runtime_scheduler_service_paused_publication_precedes_coalescing)
+{
+    NotificationPublication publication;
+    publication.pause_first = true;
+    RuntimeScheduler scheduler(notification_configuration(publication, 2));
+    REQUIRE(scheduler.start());
+    const auto worker = std::make_shared<Gate>();
+    const GateRelease release_worker {worker};
+    REQUIRE_EQ(scheduler.submit(0, {wait_at_gate, worker}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    wait_until_started(worker);
+    const auto completion = std::make_shared<Completion>();
+    const auto reservation =
+        scheduler.reserve_service(0, {record_completion, completion});
+    REQUIRE_EQ(reservation.status, RuntimeScheduler::SubmitStatus::accepted);
+    const auto independent = std::make_shared<Completion>();
+    const auto other =
+        scheduler.reserve_service(1, {record_completion, independent});
+    REQUIRE_EQ(other.status, RuntimeScheduler::SubmitStatus::accepted);
+    std::atomic<RuntimeScheduler::SubmitStatus> first {
+        RuntimeScheduler::SubmitStatus::invalid};
+    std::atomic<RuntimeScheduler::SubmitStatus> second {
+        RuntimeScheduler::SubmitStatus::invalid};
+    std::jthread publisher([&] {
+        first = scheduler.notify_service(reservation.token);
+    });
+    const GateRelease release_publisher {publication.pause};
+    wait_until_started(publication.pause);
+    REQUIRE_EQ(publication.published.load(), 0U);
+    // Only the owning shard is held by the paused publisher.
+    REQUIRE_EQ(scheduler.notify_service(other.token),
+        RuntimeScheduler::SubmitStatus::accepted);
+    wait_until_complete(independent);
+    const auto follower_started = std::make_shared<Gate>();
+    std::atomic_bool follower_observed_publication = false;
+    std::jthread follower([&] {
+        {
+            std::lock_guard lock(follower_started->mutex);
+            follower_started->started = true;
+        }
+        follower_started->changed.notify_all();
+        second = scheduler.notify_service(reservation.token);
+        follower_observed_publication = publication.first_published.load();
+    });
+    const GateRelease release_follower {publication.pause};
+    wait_until_started(follower_started);
+    release_gate(publication.pause);
+    publisher.join();
+    follower.join();
+    REQUIRE(follower_observed_publication.load());
+    REQUIRE_EQ(first.load(), RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(second.load(), RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(publication.before.load(), 2U);
+    REQUIRE_EQ(publication.published.load(), 2U);
+    REQUIRE_EQ(scheduler.snapshot().service_coalesced, 1U);
+    release_gate(worker);
+    wait_until_complete(completion);
+    scheduler.stop();
+    REQUIRE_EQ(scheduler.snapshot().service_runs, 2U);
+}
+
+TEST(compat_runtime_scheduler_service_coalescing_preserves_each_slot_and_reuse)
+{
+    NotificationPublication publication;
+    RuntimeScheduler scheduler(notification_configuration(publication));
+    REQUIRE(scheduler.start());
+    const auto worker = std::make_shared<Gate>();
+    const GateRelease release {worker};
+    REQUIRE_EQ(scheduler.submit(0, {wait_at_gate, worker}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    wait_until_started(worker);
+    const auto discarded = std::make_shared<Completion>();
+    const auto old =
+        scheduler.reserve_service(0, {record_completion, discarded});
+    REQUIRE_EQ(old.status, RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(scheduler.notify_service(old.token),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(scheduler.notify_service(old.token),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE(scheduler.release_service(old.token));
+    const auto current = std::make_shared<Completion>();
+    const auto fresh =
+        scheduler.reserve_service(0, {record_completion, current});
+    REQUIRE_EQ(fresh.status, RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(fresh.token.slot, old.token.slot);
+    REQUIRE(fresh.token.generation != old.token.generation);
+    REQUIRE_EQ(scheduler.notify_service(old.token),
+        RuntimeScheduler::SubmitStatus::invalid);
+    REQUIRE_EQ(scheduler.notify_service(fresh.token),
+        RuntimeScheduler::SubmitStatus::accepted);
+    const auto neighbor = std::make_shared<Completion>();
+    const auto other =
+        scheduler.reserve_service(0, {record_completion, neighbor});
+    REQUIRE_EQ(other.status, RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(scheduler.notify_service(other.token),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(scheduler.notify_service(other.token),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(publication.published.load(), 3U);
+    release_gate(worker);
+    wait_until_complete(current);
+    wait_until_complete(neighbor);
+    scheduler.stop();
+    REQUIRE(!discarded->complete);
+    REQUIRE_EQ(scheduler.snapshot().service_runs, 2U);
+    REQUIRE_EQ(scheduler.snapshot().service_coalesced, 2U);
+    REQUIRE_EQ(scheduler.notify_service(fresh.token),
+        RuntimeScheduler::SubmitStatus::stopped);
+}
+
+namespace {
+struct TimerCreatedPending {
+    RuntimeScheduler* scheduler = nullptr;
+    RuntimeScheduler::ServiceToken token;
+    std::shared_ptr<Gate> worker = std::make_shared<Gate>();
+    std::shared_ptr<Completion> complete = std::make_shared<Completion>();
+    std::atomic<unsigned> calls = 0;
+    std::atomic_bool valid = true;
+    static void dispatch(void* ptr) noexcept
+    {
+        auto& self = *static_cast<TimerCreatedPending*>(ptr);
+        if (self.calls.fetch_add(1) == 0) {
+            self.valid = self.scheduler->schedule_service_at(
+                             self.token, std::chrono::steady_clock::now())
+                == RuntimeScheduler::SubmitStatus::accepted;
+            self.valid = self.valid.load()
+                && self.scheduler->submit(0, {wait_at_gate, self.worker})
+                    == RuntimeScheduler::SubmitStatus::accepted;
+        } else {
+            record_completion(self.complete.get());
+        }
+    }
+};
+}
+
+TEST(
+    compat_runtime_scheduler_service_timer_pending_needs_no_second_notification)
+{
+    NotificationPublication publication;
+    RuntimeScheduler scheduler(notification_configuration(publication));
+    REQUIRE(scheduler.start());
+    const auto state = std::make_shared<TimerCreatedPending>();
+    state->scheduler = &scheduler;
+    const GateRelease release {state->worker};
+    const auto reservation =
+        scheduler.reserve_service(0, {TimerCreatedPending::dispatch, state});
+    REQUIRE_EQ(reservation.status, RuntimeScheduler::SubmitStatus::accepted);
+    state->token = reservation.token;
+    REQUIRE_EQ(scheduler.notify_service(reservation.token),
+        RuntimeScheduler::SubmitStatus::accepted);
+    wait_until_started(state->worker);
+    REQUIRE(state->valid.load());
+    REQUIRE_EQ(scheduler.snapshot().services_pending, 1U);
+    REQUIRE_EQ(scheduler.notify_service(reservation.token),
+        RuntimeScheduler::SubmitStatus::accepted);
+    REQUIRE_EQ(publication.published.load(), 1U);
+    REQUIRE_EQ(scheduler.snapshot().service_coalesced, 1U);
+    release_gate(state->worker);
+    wait_until_complete(state->complete);
+    scheduler.stop();
+    REQUIRE_EQ(scheduler.snapshot().service_runs, 2U);
 }

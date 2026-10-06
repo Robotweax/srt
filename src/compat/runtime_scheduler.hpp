@@ -50,6 +50,12 @@ public:
         std::size_t service_capacity_per_shard = 0;
         // Optional shared generation/table budget, reserved before table allocation.
         std::shared_ptr<SchedulerServiceStorageBudget> service_storage_budget;
+        // Test-only pause/observation of notification publication. Runs under
+        // the shard mutex; must not call back into this scheduler. false is
+        // before notify_one, true is after it. Production leaves this null.
+        void (*service_notification_hook_for_testing)(
+            void*, bool) noexcept = nullptr;
+        void* service_notification_context_for_testing = nullptr;
     };
 
     [[nodiscard]] static std::optional<std::size_t> service_storage_bytes(
