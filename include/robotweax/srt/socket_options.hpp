@@ -116,7 +116,9 @@ public:
     [[nodiscard]] bool requires_authenticated_data() const noexcept
     {
 #ifdef ENABLE_AEAD_API_PREVIEW
-        return control_profile() && crypto_mode_ == CryptoMode::aes_gcm;
+        return (control_profile()
+                   || packet_filter_configuration_.sensor_profile())
+            && crypto_mode_ == CryptoMode::aes_gcm;
 #else
         return false;
 #endif

@@ -341,6 +341,13 @@
           "congestion_control": "control-v1",
           "tsbpd": false,
           "message_api": true
+        },
+        {
+          "transmission_type": "sensor",
+          "congestion_control": "live",
+          "tsbpd": false,
+          "message_api": true,
+          "packet_filter": "fec-sensor-v1,cols:4,rows:1,arq:never"
         }
       ],
       "connected_getter_returns_effective_mode": true

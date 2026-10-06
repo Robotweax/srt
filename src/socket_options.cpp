@@ -39,6 +39,12 @@ bool SocketOptions::supports_aes_gcm_transport_bundle(
     const bool control_message = transmission_type == TransmissionType::control
         && congestion_controller == CongestionController::control && !tsbpd_mode
         && message_api && enforced_encryption_;
+    const bool sensor_message = transmission_type == TransmissionType::live
+        && congestion_controller == CongestionController::live && !tsbpd_mode
+        && message_api && enforced_encryption_;
+    if (packet_filter_configuration_.sensor_profile()) {
+        return sensor_message;
+    }
     return packet_filter_configuration_.enabled
         ? live_message
         : (live_message || file_stream || control_message);
@@ -468,13 +474,14 @@ Error SocketOptions::set_packet_filter(
     }
 #ifdef ENABLE_AEAD_API_PREVIEW
     if (parsed.configuration.sensor_profile()
-        && crypto_mode_ == CryptoMode::aes_gcm) {
+        && crypto_mode_ == CryptoMode::aes_gcm && !enforced_encryption_) {
         return Error::invalid_state;
     }
     if (parsed.configuration.enabled && crypto_mode_ == CryptoMode::aes_gcm
         && (transmission_type_ != TransmissionType::live
             || congestion_controller_ != CongestionController::live
-            || !tsbpd_mode_ || !message_api_)) {
+            || (!tsbpd_mode_ && !parsed.configuration.sensor_profile())
+            || !message_api_)) {
         return Error::invalid_state;
     }
 #endif

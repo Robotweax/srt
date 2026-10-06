@@ -217,7 +217,7 @@ def main() -> int:
         required=True,
     )
     parser.add_argument("--crypto", choices=("ctr", "gcm"), default="ctr")
-    parser.add_argument("--profile", choices=("live", "control"), default="live")
+    parser.add_argument("--profile", choices=("live", "control", "sensor"), default="live")
     arguments = parser.parse_args()
     if arguments.scenario == "caller-listener":
         run_caller_listener(arguments.demo, arguments.crypto, arguments.profile)

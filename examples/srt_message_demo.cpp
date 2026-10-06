@@ -186,7 +186,8 @@ void print_usage(std::ostream& stream)
         << "  --passphrase-env NAME   Read the passphrase from environment\n"
         << "  --pbkeylen 16|24|32     AES key length (default 32)\n"
         << "  --crypto ctr|gcm        Payload encryption mode (default ctr)\n"
-        << "  --profile live|control  Message transport profile (default "
+        << "  --profile live|control|sensor  Message transport profile "
+           "(default "
            "live)\n"
         << "  --packet-filter CONFIG  SRTO_PACKETFILTER value\n"
         << "  --timeout-ms VALUE      Connect and I/O timeout (default "
@@ -294,8 +295,11 @@ template <typename Integer>
                 configuration.transport_type = SRTT_LIVE;
             } else if (profile == "control") {
                 configuration.transport_type = SRTT_CONTROL;
+            } else if (profile == "sensor") {
+                configuration.transport_type = SRTT_SENSOR;
             } else {
-                throw std::runtime_error("--profile must be live or control");
+                throw std::runtime_error(
+                    "--profile must be live, control or sensor");
             }
         } else if (option == "--crypto") {
             const std::string_view mode =

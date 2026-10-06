@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -2839,11 +2840,11 @@ TEST(srt_compat_crypto_mode_preview_matches_upstream_option_contract)
     const SRT_TRANSTYPE sensor_type = SRTT_SENSOR;
     REQUIRE_EQ(srt_setsockflag(socket, SRTO_TRANSTYPE, &sensor_type,
                    static_cast<int>(sizeof(sensor_type))),
-        SRT_ERROR);
+        0);
     SRT_TRANSTYPE actual_type = SRTT_INVALID;
     size = static_cast<int>(sizeof(actual_type));
     REQUIRE_EQ(srt_getsockflag(socket, SRTO_TRANSTYPE, &actual_type, &size), 0);
-    REQUIRE_EQ(actual_type, SRTT_LIVE);
+    REQUIRE_EQ(actual_type, SRTT_SENSOR);
     const SRT_TRANSTYPE control_type = SRTT_CONTROL;
     REQUIRE_EQ(srt_setsockflag(socket, SRTO_TRANSTYPE, &control_type,
                    static_cast<int>(sizeof(control_type))),
@@ -2924,7 +2925,7 @@ TEST(srt_compat_crypto_mode_preview_matches_upstream_option_contract)
     REQUIRE_EQ(srt_cleanup(), 0);
 }
 
-TEST(srt_compat_gcm_control_bidirectional_rotation_and_listener_isolation)
+static void exercise_gcm_profile_listener_isolation(bool sensor)
 {
     ScopedSrtRuntime runtime;
     REQUIRE_EQ(runtime.startup_result, 0);
@@ -2936,7 +2937,7 @@ TEST(srt_compat_gcm_control_bidirectional_rotation_and_listener_isolation)
         if (gcm_first) {
             set_integer(socket, SRTO_CRYPTOMODE, 2);
         }
-        const SRT_TRANSTYPE type = SRTT_CONTROL;
+        const SRT_TRANSTYPE type = sensor ? SRTT_SENSOR : SRTT_CONTROL;
         REQUIRE_EQ(
             srt_setsockflag(socket, SRTO_TRANSTYPE, &type, sizeof(type)), 0);
         set_integer(socket, SRTO_CRYPTOMODE, 2);
@@ -2982,7 +2983,8 @@ TEST(srt_compat_gcm_control_bidirectional_rotation_and_listener_isolation)
         for (int round = 0; round < 40; ++round) {
             for (std::size_t index = 0; index < callers.size(); ++index) {
                 // Include a fragmented command as well as the consumer's 1316-byte carrier.
-                std::vector<char> command(round == 0 ? 20'000U : 1'316U);
+                std::vector<char> command(
+                    round == 0 && !sensor ? 20'000U : 1'316U);
                 for (std::size_t byte = 0; byte < command.size(); ++byte) {
                     command[byte] = static_cast<char>(
                         (byte + index * 71U + round * 13U) & 255U);
@@ -2994,7 +2996,17 @@ TEST(srt_compat_gcm_control_bidirectional_rotation_and_listener_isolation)
                     const auto receiver =
                         reverse ? callers[index] : accepted[index];
                     SRT_MSGCTRL control = srt_msgctrl_default;
-                    if (round == 0) {
+                    if (sensor) {
+                        control.msgttl = 10'000;
+                        if (round == 0) {
+                            const std::array<char, 1'317> oversized {};
+                            REQUIRE_EQ(srt_sendmsg2(sender, oversized.data(),
+                                           oversized.size(), &control),
+                                SRT_ERROR);
+                            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+                        }
+                    }
+                    if (round == 0 && !sensor) {
                         control.msgttl = 1;
                         REQUIRE_EQ(srt_sendmsg2(sender, command.data(),
                                        command.size(), &control),
@@ -3066,7 +3078,16 @@ TEST(srt_compat_gcm_control_bidirectional_rotation_and_listener_isolation)
     }
 }
 
-TEST(srt_compat_gcm_control_fails_closed_before_payload)
+TEST(srt_compat_gcm_control_bidirectional_rotation_and_listener_isolation)
+{
+    exercise_gcm_profile_listener_isolation(false);
+}
+TEST(srt_compat_gcm_sensor_bidirectional_rotation_and_listener_isolation)
+{
+    exercise_gcm_profile_listener_isolation(true);
+}
+
+static void exercise_gcm_profile_fail_closed(bool sensor)
 {
     ScopedSrtRuntime runtime;
     REQUIRE_EQ(runtime.startup_result, 0);
@@ -3076,8 +3097,10 @@ TEST(srt_compat_gcm_control_fails_closed_before_payload)
         REQUIRE(listener != SRT_INVALID_SOCK);
         REQUIRE(caller != SRT_INVALID_SOCK);
         for (const auto socket : {listener, caller}) {
-            const SRT_TRANSTYPE type =
-                socket == listener && mismatch == 3 ? SRTT_LIVE : SRTT_CONTROL;
+            const SRT_TRANSTYPE type = socket == listener && mismatch == 3
+                ? SRTT_LIVE
+                : sensor ? SRTT_SENSOR
+                         : SRTT_CONTROL;
             REQUIRE_EQ(
                 srt_setsockflag(socket, SRTO_TRANSTYPE, &type, sizeof(type)),
                 0);
@@ -3127,6 +3150,154 @@ TEST(srt_compat_gcm_control_fails_closed_before_payload)
         REQUIRE_EQ(srt_accept(listener, nullptr, nullptr), SRT_INVALID_SOCK);
         REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
         REQUIRE_EQ(srt_close(caller), 0);
+        REQUIRE_EQ(srt_close(listener), 0);
+    }
+}
+
+TEST(srt_compat_gcm_control_fails_closed_before_payload)
+{
+    exercise_gcm_profile_fail_closed(false);
+}
+TEST(srt_compat_gcm_sensor_fails_closed_before_payload)
+{
+    exercise_gcm_profile_fail_closed(true);
+}
+
+TEST(srt_compat_gcm_sensor_bounded_sample_stream)
+{
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    constexpr std::uint32_t samples = 400;
+    for (const std::int32_t key_length : {16, 24, 32}) {
+        const auto listener = srt_create_socket();
+        const auto caller = srt_create_socket();
+        REQUIRE(listener != SRT_INVALID_SOCK && caller != SRT_INVALID_SOCK);
+        const auto set = [](SRTSOCKET socket, SRT_SOCKOPT option, auto value) {
+            REQUIRE_EQ(
+                srt_setsockflag(socket, option, &value, sizeof(value)), 0);
+        };
+        for (const auto socket : {listener, caller}) {
+            set(socket, SRTO_TRANSTYPE, SRTT_SENSOR);
+            set(socket, SRTO_CRYPTOMODE, std::int32_t {2});
+            set(socket, SRTO_PBKEYLEN, key_length);
+            set(socket, SRTO_KMREFRESHRATE, std::int32_t {16});
+            set(socket, SRTO_KMPREANNOUNCE, std::int32_t {4});
+            set(socket, SRTO_CONNTIMEO, std::int32_t {3000});
+            set(socket, SRTO_SNDBUF, std::int32_t {65536});
+            set(socket, SRTO_RCVBUF, std::int32_t {65536});
+            constexpr char secret[] = "bounded-sensor-gcm-test-fixture";
+            REQUIRE_EQ(srt_setsockflag(
+                           socket, SRTO_PASSPHRASE, secret, sizeof(secret) - 1),
+                0);
+        }
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        REQUIRE_EQ(
+            srt_bind(listener, reinterpret_cast<const sockaddr*>(&address),
+                sizeof(address)),
+            0);
+        int size = sizeof(address);
+        REQUIRE_EQ(srt_getsockname(
+                       listener, reinterpret_cast<sockaddr*>(&address), &size),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 1), 0);
+        REQUIRE_EQ(srt_connect(caller,
+                       reinterpret_cast<const sockaddr*>(&address), size),
+            0);
+        const auto accepted = srt_accept(listener, nullptr, nullptr);
+        REQUIRE(accepted != SRT_INVALID_SOCK);
+        const std::array<SRTSOCKET, 2> sockets {caller, accepted};
+        for (const auto socket : sockets) {
+            set(socket, SRTO_SNDSYN, false);
+            set(socket, SRTO_RCVSYN, false);
+        }
+        std::array<std::array<bool, samples>, 2> seen {};
+        std::array<std::uint32_t, 2> delivered {};
+        std::array<std::uint32_t, 2> newest {};
+        const auto drain = [&] {
+            for (std::size_t direction = 0; direction < sockets.size();
+                ++direction) {
+                for (std::size_t budget = 0; budget < 64; ++budget) {
+                    std::array<char, 1316> received {};
+                    const int count = srt_recvmsg(sockets[1 - direction],
+                        received.data(), received.size());
+                    if (count == SRT_ERROR) {
+                        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+                        break;
+                    }
+                    REQUIRE_EQ(count, static_cast<int>(received.size()));
+                    std::uint32_t identity = 0;
+                    for (std::size_t byte = 0; byte < 4; ++byte) {
+                        identity |=
+                            static_cast<std::uint32_t>(
+                                static_cast<unsigned char>(received[byte]))
+                            << (byte * 8U);
+                    }
+                    REQUIRE(identity >= 1 && identity <= samples);
+                    REQUIRE(!seen[direction][identity - 1]);
+                    seen[direction][identity - 1] = true;
+                    for (std::size_t byte = 4; byte < received.size(); ++byte) {
+                        REQUIRE_EQ(static_cast<unsigned char>(received[byte]),
+                            static_cast<unsigned char>(
+                                (identity + byte * 29U + direction * 93U)
+                                & 255U));
+                    }
+                    ++delivered[direction];
+                    newest[direction] = std::max(newest[direction], identity);
+                }
+            }
+        };
+        for (std::uint32_t identity = 1; identity <= samples; ++identity) {
+            for (std::size_t direction = 0; direction < sockets.size();
+                ++direction) {
+                std::array<char, 1316> payload {};
+                for (std::size_t byte = 0; byte < 4; ++byte) {
+                    payload[byte] = static_cast<char>(identity >> (byte * 8U));
+                }
+                for (std::size_t byte = 4; byte < payload.size(); ++byte) {
+                    payload[byte] = static_cast<char>(
+                        (identity + byte * 29U + direction * 93U) & 255U);
+                }
+                const int sent = srt_sendmsg(
+                    sockets[direction], payload.data(), payload.size(), 50, 0);
+                if (sent == SRT_ERROR) {
+                    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCSND);
+                } else {
+                    REQUIRE_EQ(sent, static_cast<int>(payload.size()));
+                }
+            }
+            drain();
+            std::this_thread::sleep_for(std::chrono::milliseconds {5});
+        }
+        for (int attempt = 0; attempt < 40; ++attempt) {
+            drain();
+            std::this_thread::sleep_for(std::chrono::milliseconds {5});
+        }
+        for (std::size_t direction = 0; direction < sockets.size();
+            ++direction) {
+            REQUIRE(delivered[direction] > samples / 2);
+            REQUIRE(newest[direction] > samples - 50);
+            SRT_TRACEBSTATS statistics {};
+            REQUIRE_EQ(srt_bstats(sockets[direction], &statistics, 0), 0);
+            REQUIRE_EQ(statistics.pktRetransTotal, 0);
+            std::int32_t mode = 0;
+            int mode_size = sizeof(mode);
+            REQUIRE_EQ(srt_getsockflag(sockets[direction], SRTO_CRYPTOMODE,
+                           &mode, &mode_size),
+                0);
+            REQUIRE_EQ(mode, 2);
+            std::cout << "sensor key_bytes=" << key_length
+                      << " direction=" << direction
+                      << " delivered=" << delivered[direction]
+                      << " newest=" << newest[direction]
+                      << " retransmissions=" << statistics.pktRetransTotal
+                      << " fec_supply=" << statistics.pktRcvFilterSupplyTotal
+                      << " undecryptable=" << statistics.pktRcvUndecryptTotal
+                      << '\n';
+        }
+        REQUIRE_EQ(srt_close(caller), 0);
+        REQUIRE_EQ(srt_close(accepted), 0);
         REQUIRE_EQ(srt_close(listener), 0);
     }
 }

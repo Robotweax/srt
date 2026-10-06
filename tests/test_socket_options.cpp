@@ -291,15 +291,52 @@ TEST(socket_options_enable_gcm_only_through_the_preview_contract)
     REQUIRE_EQ(sensor_after_gcm.set(SocketOption::crypto_mode, 2), Error::none);
     REQUIRE_EQ(sensor_after_gcm.set_packet_filter(
                    "fec-sensor-v1,cols:4,rows:1,arq:never"),
-        Error::invalid_state);
+        Error::none);
 
     SocketOptions gcm_after_sensor;
     REQUIRE_EQ(gcm_after_sensor.set_packet_filter(
                    "fec-sensor-v1,cols:4,rows:1,arq:never"),
         Error::none);
-    REQUIRE_EQ(gcm_after_sensor.set(SocketOption::crypto_mode, 2),
-        Error::invalid_state);
+    REQUIRE_EQ(gcm_after_sensor.set(SocketOption::crypto_mode, 2), Error::none);
 }
+TEST(socket_options_gcm_sensor_keeps_best_effort_bundle_and_carrier_budget)
+{
+    for (const bool gcm_first : {false, true}) {
+        SocketOptions options;
+        if (gcm_first) {
+            REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+        }
+        REQUIRE_EQ(
+            options.set_packet_filter("fec-sensor-v1,cols:4,rows:1,arq:never"),
+            Error::none);
+        REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+        REQUIRE(options.requires_authenticated_data());
+        REQUIRE_EQ(options.get(SocketOption::tsbpd_mode).value, 0);
+        REQUIRE_EQ(options.get(SocketOption::too_late_packet_drop).value, 0);
+        REQUIRE_EQ(options.get(SocketOption::periodic_nak).value, 0);
+        REQUIRE_EQ(options.get(SocketOption::retransmit_flag).value, 0);
+        REQUIRE_EQ(options.maximum_payload_size(), 1'436U);
+        REQUIRE_EQ(options.maximum_payload_size_limit(), 1'436U);
+        REQUIRE_EQ(
+            options.maximum_payload_size_limit(IpAddressFamily::ipv6), 1'416U);
+        REQUIRE_EQ(options.set(SocketOption::enforced_encryption, 0),
+            Error::invalid_state);
+        REQUIRE_EQ(
+            options.set(SocketOption::tsbpd_mode, 1), Error::invalid_state);
+        REQUIRE_EQ(options.set(SocketOption::too_late_packet_drop, 1),
+            Error::invalid_state);
+        REQUIRE_EQ(
+            options.set_congestion_controller("file"), Error::invalid_state);
+    }
+    SocketOptions optional;
+    REQUIRE_EQ(optional.set(SocketOption::enforced_encryption, 0), Error::none);
+    REQUIRE_EQ(optional.set(SocketOption::crypto_mode, 2), Error::none);
+    REQUIRE_EQ(
+        optional.set_packet_filter("fec-sensor-v1,cols:4,rows:1,arq:never"),
+        Error::invalid_state);
+    REQUIRE(!optional.packet_filter_configuration().enabled);
+}
+
 TEST(socket_options_gcm_control_preserves_bundle_and_mandatory_encryption)
 {
     for (const bool gcm_first : {false, true}) {
