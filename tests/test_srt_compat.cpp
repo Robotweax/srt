@@ -5617,12 +5617,26 @@ TEST(srt_compat_ipv6_caller_listener_names_and_payload_are_end_to_end)
         0);
     REQUIRE_EQ(caller_statistics.byteMSS, listener_mss);
     REQUIRE_EQ(accepted_statistics.byteMSS, listener_mss);
+    REQUIRE_EQ(caller_statistics.pktSentUniqueTotal, 1);
+    REQUIRE_EQ(accepted_statistics.pktRecvUniqueTotal, 1);
+    REQUIRE_EQ(caller_statistics.byteSentUniqueTotal,
+        request.size()
+            + robotweax::srt::compat::ipv6_statistics_packet_header_bytes);
+    REQUIRE_EQ(accepted_statistics.byteRecvUniqueTotal,
+        request.size()
+            + robotweax::srt::compat::ipv6_statistics_packet_header_bytes);
+    // A delayed ACK can cause a tail probe. Count every wire copy exactly,
+    // while the unique counters still describe the single original message.
     REQUIRE_EQ(caller_statistics.byteSentTotal,
-        request.size()
-            + robotweax::srt::compat::ipv6_statistics_packet_header_bytes);
+        caller_statistics.pktSentTotal * caller_statistics.byteSentUniqueTotal);
+    REQUIRE_EQ(caller_statistics.pktRetransTotal,
+        caller_statistics.pktSentTotal - caller_statistics.pktSentUniqueTotal);
+    REQUIRE_EQ(caller_statistics.byteRetransTotal,
+        caller_statistics.pktRetransTotal
+            * caller_statistics.byteSentUniqueTotal);
     REQUIRE_EQ(accepted_statistics.byteRecvTotal,
-        request.size()
-            + robotweax::srt::compat::ipv6_statistics_packet_header_bytes);
+        accepted_statistics.pktRecvTotal
+            * accepted_statistics.byteRecvUniqueTotal);
 
     REQUIRE_EQ(srt_close(caller), 0);
     REQUIRE_EQ(srt_close(accepted.load()), 0);
@@ -5750,14 +5764,24 @@ TEST(srt_compat_dual_stack_ipv6_caller_connects_to_ipv4_listener)
     REQUIRE_EQ(
         srt_bstats(accepted.load(), &accepted_statistics, 0),
         0);
+    REQUIRE_EQ(caller_statistics.pktSentUniqueTotal, 1);
+    REQUIRE_EQ(accepted_statistics.pktRecvUniqueTotal, 1);
+    REQUIRE_EQ(caller_statistics.byteSentUniqueTotal,
+        sizeof(payload)
+            + robotweax::srt::compat::ipv4_statistics_packet_header_bytes);
+    REQUIRE_EQ(accepted_statistics.byteRecvUniqueTotal,
+        sizeof(payload)
+            + robotweax::srt::compat::ipv4_statistics_packet_header_bytes);
     REQUIRE_EQ(caller_statistics.byteSentTotal,
-        sizeof(payload)
-            + robotweax::srt::compat::
-                ipv4_statistics_packet_header_bytes);
+        caller_statistics.pktSentTotal * caller_statistics.byteSentUniqueTotal);
+    REQUIRE_EQ(caller_statistics.pktRetransTotal,
+        caller_statistics.pktSentTotal - caller_statistics.pktSentUniqueTotal);
+    REQUIRE_EQ(caller_statistics.byteRetransTotal,
+        caller_statistics.pktRetransTotal
+            * caller_statistics.byteSentUniqueTotal);
     REQUIRE_EQ(accepted_statistics.byteRecvTotal,
-        sizeof(payload)
-            + robotweax::srt::compat::
-                ipv4_statistics_packet_header_bytes);
+        accepted_statistics.pktRecvTotal
+            * accepted_statistics.byteRecvUniqueTotal);
 
     REQUIRE_EQ(srt_close(caller), 0);
     REQUIRE_EQ(srt_close(accepted.load()), 0);

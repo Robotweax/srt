@@ -114,6 +114,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         }
         partitions = {
             "robotweax_srt_tests", "robotweax_srt_rotation_tests",
+            "robotweax_srt_key_length_tests",
             "robotweax_srt_group_retention_prefix_tests",
             "robotweax_srt_group_retention_oversized_tests",
         }
@@ -136,7 +137,23 @@ class CiTestRegistrationTests(unittest.TestCase):
         self.assertEqual(commands["robotweax_srt_tests"], [
             "--exclude", "compat_runtime_rotation_",
             "compat_group_closed_member_retains_bounded_copy",
+            "key_length",
         ])
+        bounded_properties = re.search(
+            r"set_tests_properties\(\s*(robotweax_srt_tests.*?)\)",
+            cmake, re.DOTALL,
+        )
+        self.assertIsNotNone(bounded_properties)
+        for name in partitions:
+            self.assertIn(name, bounded_properties.group(1))
+        self.assertIn("PROPERTIES TIMEOUT 30", bounded_properties.group(1))
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        optional_step = workflow.split("- name: Test optional retransmission limit", 1)[1]
+        optional_step = optional_step.split("\n  sanitizers:", 1)[0]
+        selection = re.search(r'-R "([^"]+)"', optional_step)
+        self.assertIsNotNone(selection)
+        self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_tests"))
+        self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_key_length_tests"))
         target = re.search(
             r"add_executable\(robotweax_srt_tests\s+([^)]*)\)", cmake,
         )
