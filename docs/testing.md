@@ -58,11 +58,15 @@ compatibility cases in a static build, run `./build/robotweax_srt_tests compat_`
 An inclusion or exclusion that selects no native cases exits with an error.
 Malformed runner arguments also fail instead of silently selecting cases.
 
-CTest runs key-length negotiation, runtime key rotation, and the bounded
-closed-member retention cases in separate native partitions. Each case runs
+CTest runs key-length negotiation, runtime key rotation, GCM public profile
+scenarios (including the paced Sensor sample stream), and bounded closed-member
+retention cases in separate native partitions. Each case runs
 exactly once across the partitions, each retaining a 30-second process deadline.
 Run `ctest --test-dir build -R '^robotweax_srt_key_length_tests$'` to select the
-key-length partition; it is also covered by the `encryption` label.
+key-length partition; it is also covered by the `encryption` label. In GCM builds,
+`robotweax_srt_gcm_profile_tests` selects the public profile scenarios and retains
+its own 30-second budget. The optional retransmission-limit CI configuration also
+runs this partition.
 
 The native crypto recovery regression also drives 32 key announcements before
 replaying recorded initial KMREQ material, then requires exact DATA recovery
