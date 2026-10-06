@@ -836,6 +836,8 @@ bool DatagramChannel::register_connection_locked(
             throw;
         }
     }
+    runtime->poll_route_socket_id_.store(
+        protocol_socket_id, std::memory_order_relaxed);
     auto& route = inserted.first->second;
     if (next_poll_route_ == nullptr) {
         route.previous = route.next = &route;
@@ -1296,11 +1298,11 @@ void DatagramChannel::notify_connection_work(
         // Match the live incarnation, not a reusable socket id or the optional
         // runtime binding. Dispatcher-owned epochs and runtime mutation epochs
         // still validate the affected route's cached proof independently.
-        const bool routed = std::any_of(
-            routes_.begin(), routes_.end(), [runtime](const auto& route) {
-                return route.second.runtime.get() == runtime
-                    && route.second.dispatcher != nullptr;
-            });
+        const auto route = routes_.find(
+            runtime->poll_route_socket_id_.load(std::memory_order_relaxed));
+        const bool routed = route != routes_.end()
+            && route->second.runtime.get() == runtime
+            && route->second.dispatcher != nullptr;
         if (!routed)
             poll_refresh_pending_.store(true, std::memory_order_release);
         // Preserve urgency even if this sweep already visited the route.

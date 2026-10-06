@@ -985,6 +985,8 @@ private:
     std::optional<RuntimeReceivePollCertificate> receive_certificate_;
     const std::uint64_t poll_runtime_incarnation_;
     const bool poll_has_group_;
+    // Lookup hint only: the channel must still match the runtime incarnation.
+    std::atomic<std::uint32_t> poll_route_socket_id_ {0};
     std::condition_variable receive_ready_;
     std::condition_variable send_ready_;
     std::weak_ptr<DatagramChannel> channel_;
