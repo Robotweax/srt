@@ -418,6 +418,9 @@ public:
     }
 
 private:
+    friend class ConnectionRuntime;
+    void notify_connection_work(
+        const ConnectionRuntime* runtime, bool receive_release) noexcept;
     struct UnopenedTag { };
     // Container construction may allocate; let the factory catch failures
     // before any native descriptor is transferred.
@@ -573,6 +576,7 @@ private:
     bool native_setup_pending_ = false;
     bool scheduled_polling_enabled_ = false;
     std::atomic_bool poll_refresh_pending_ = false;
+    std::atomic_bool poll_connection_work_pending_ = false;
     std::shared_ptr<ChannelPollSendBudget> scheduled_poll_round_;
     std::array<ScheduledPoll, scheduled_poll_window_capacity>
         scheduled_polls_ {};

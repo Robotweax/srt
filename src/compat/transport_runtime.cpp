@@ -1288,6 +1288,27 @@ void DatagramChannel::notify_receive_release() noexcept
     notify_work(true);
 }
 
+void DatagramChannel::notify_connection_work(
+    const ConnectionRuntime* runtime, bool receive_release) noexcept
+{
+    if (scheduled_polling_enabled_) {
+        std::lock_guard lock(routes_mutex_);
+        // Match the live incarnation, not a reusable socket id or the optional
+        // runtime binding. Dispatcher-owned epochs and runtime mutation epochs
+        // still validate the affected route's cached proof independently.
+        const bool routed = std::any_of(
+            routes_.begin(), routes_.end(), [runtime](const auto& route) {
+                return route.second.runtime.get() == runtime
+                    && route.second.dispatcher != nullptr;
+            });
+        if (!routed)
+            poll_refresh_pending_.store(true, std::memory_order_release);
+        // Preserve urgency even if this sweep already visited the route.
+        poll_connection_work_pending_.store(true, std::memory_order_release);
+    }
+    notify_work(receive_release);
+}
+
 void DatagramChannel::notify_poll_completion() noexcept
 {
     notify_work(false);
@@ -2135,6 +2156,10 @@ RuntimePollResult DatagramChannel::poll_scheduled_connections(
             // exchange preserves a notification arriving after acknowledgement.
             const bool refresh = poll_refresh_pending_.exchange(
                 false, std::memory_order_acq_rel);
+            // Publishers classify and mark route work under routes_mutex_, so
+            // acknowledgement cannot split its identity check and publication.
+            poll_connection_work_pending_.exchange(
+                false, std::memory_order_acq_rel);
             poll_round_receive_reuse_allowed_ =
                 use_absolute_deadlines && !refresh;
             poll_round_remaining_ = routes_.size();
@@ -2287,7 +2312,9 @@ RuntimePollResult DatagramChannel::finish_poll_round(
     if (poll_round_remaining_ != 0U || poll_round_immediate_
         || (scheduled_polling_enabled_ && poll_round_ingress_pending_)
         || (scheduled_polling_enabled_
-            && poll_refresh_pending_.load(std::memory_order_acquire))) {
+            && (poll_refresh_pending_.load(std::memory_order_acquire)
+                || poll_connection_work_pending_.load(
+                    std::memory_order_acquire)))) {
         return {.immediate_work = true};
     }
     const bool can_wait = poll_round_receive_wait_safe_
@@ -5248,7 +5275,7 @@ void ConnectionRuntime::notify_channel_send_work() noexcept
         (void)work_binding_->notify({.send = true});
     }
     if (const auto channel = channel_.lock(); channel != nullptr) {
-        channel->notify_send_work();
+        channel->notify_connection_work(this, false);
     }
 }
 
@@ -5265,7 +5292,7 @@ void ConnectionRuntime::notify_channel_receive_release() noexcept
         (void)work_binding_->notify({.receive_release = true});
     }
     if (const auto channel = channel_.lock(); channel != nullptr) {
-        channel->notify_receive_release();
+        channel->notify_connection_work(this, true);
     }
 }
 

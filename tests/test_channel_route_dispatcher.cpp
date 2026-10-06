@@ -4997,7 +4997,9 @@ TEST(channel_buffered_completion_with_sender_work_stays_urgent)
 namespace {
 struct IdleReuseFixture : SinkFixture {
     std::shared_ptr<ConnectionDatagramDispatcher> route;
-    IdleReuseFixture()
+    std::shared_ptr<ConnectionRuntime> other_runtime;
+    std::shared_ptr<ConnectionDatagramDispatcher> other_route;
+    explicit IdleReuseFixture(bool paired = false)
     {
         REQUIRE(channel->enable_scheduled_polling());
         runtime = std::make_shared<ConnectionRuntime>(
@@ -5007,9 +5009,31 @@ struct IdleReuseFixture : SinkFixture {
         sink_block_worker(*this, gate);
         route = dispatcher();
         REQUIRE(channel->register_connection(700, runtime, route));
+        if (paired) {
+            other_runtime = std::make_shared<ConnectionRuntime>(
+                native_receive_certificate_configuration(channel));
+            auto other_budget = std::make_shared<DatagramStorageBudget>(
+                *ConnectionDatagramInbox::storage_bytes(16));
+            other_route = ConnectionDatagramDispatcher::create(other_runtime,
+                scheduler, other_budget, 0, sink_peer,
+                {.capacity = 16, .control_reserve = 1}, {});
+            REQUIRE(other_route != nullptr);
+            REQUIRE(
+                channel->register_connection(701, other_runtime, other_route));
+        }
         REQUIRE(!channel->poll_connections_for_testing().immediate_work);
         gate->release();
         await_coordinated_turn(route);
+        if (other_route != nullptr) {
+            await_coordinated_turn(other_route);
+            auto other_fence = std::make_shared<SinkGate>();
+            SinkRelease other_release {other_fence};
+            REQUIRE_EQ(
+                scheduler->submit(
+                    0, {.function = SinkGate::block, .context = other_fence}),
+                RuntimeScheduler::SubmitStatus::accepted);
+            other_fence->wait();
+        }
         // A queued task on the same shard positively fences callback return;
         // quiescent() is a retirement barrier, not an idle-service predicate.
         auto fence = std::make_shared<SinkGate>();
@@ -5023,6 +5047,7 @@ struct IdleReuseFixture : SinkFixture {
     }
     ~IdleReuseFixture()
     {
+        channel->unregister_connection(701);
         channel->unregister_connection(700);
     }
 };
@@ -5055,6 +5080,61 @@ TEST(channel_idle_poll_reuse_skips_service_enrollment_without_native_credit)
     }
     REQUIRE_EQ(reuse.count, 8U);
     REQUIRE_EQ(fixture.route->snapshot().completed_turns, turns);
+}
+
+TEST(channel_idle_poll_route_work_preserves_other_runtime_certificate)
+{
+    for (bool receive_release : {false, true}) {
+        IdleReuseFixture fixture {true};
+        ReuseCounter reuse;
+        fixture.channel->set_receive_reuse_hook_for_testing(
+            ReuseCounter::observe, &reuse);
+        auto gate = std::make_shared<SinkGate>();
+        SinkRelease release {gate};
+        sink_block_worker(fixture, gate);
+        const auto turns = fixture.route->snapshot().completed_turns;
+        // Public-style runtimes use dispatcher-owned bindings. The actual
+        // application operation must invalidate only its own cached proof.
+        if (receive_release) {
+            const auto wire = sink_data(0);
+            fixture.other_runtime->process_packet(
+                decode_packet(wire.view()).packet, sink_peer);
+            sink_receive(fixture.other_runtime, std::byte {1});
+        } else {
+            const std::array payload {std::byte {7}};
+            REQUIRE_EQ(fixture.other_runtime
+                           ->queue_message(payload, 0, true, false, -1)
+                           .status,
+                MessageIoStatus::success);
+        }
+        (void)fixture.channel->poll_connections_for_testing();
+        REQUIRE_EQ(reuse.count, 1U);
+        REQUIRE_EQ(fixture.route->snapshot().completed_turns, turns);
+        REQUIRE(fixture.channel->begin_poll_round() == nullptr);
+    }
+}
+
+TEST(channel_idle_poll_unknown_runtime_work_keeps_global_refresh)
+{
+    for (bool direct : {false, true}) {
+        IdleReuseFixture fixture;
+        ReuseCounter reuse;
+        fixture.channel->set_receive_reuse_hook_for_testing(
+            ReuseCounter::observe, &reuse);
+        auto gate = std::make_shared<SinkGate>();
+        SinkRelease release {gate};
+        sink_block_worker(fixture, gate);
+        auto unknown = std::make_shared<ConnectionRuntime>(
+            native_receive_certificate_configuration(fixture.channel));
+        if (direct)
+            REQUIRE(fixture.channel->register_connection(701, unknown));
+        const std::array payload {std::byte {7}};
+        REQUIRE_EQ(unknown->queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+        (void)fixture.channel->poll_connections_for_testing();
+        REQUIRE_EQ(reuse.count, 0U);
+        REQUIRE(fixture.channel->begin_poll_round() == nullptr);
+    }
 }
 
 TEST(channel_idle_poll_reuse_rejects_runtime_mutation_without_binding_wake)

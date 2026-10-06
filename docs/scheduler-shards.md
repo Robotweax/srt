@@ -290,9 +290,15 @@ uses the existing bounded service enrollment; it never polls synchronously.
 Removing a route removes its observation. Old receipts are stored only against
 their captured runtime and dispatcher, so a reused socket ID inherits nothing.
 
-Global send/release refresh acknowledges its marker with an atomic exchange at
-the start of a sweep and disables reuse throughout that sweep. A notification
-arriving afterwards remains pending and forces follow-up. After validation,
+Unknown/global send or release work acknowledges its refresh marker with an
+atomic exchange at the start of a sweep and disables reuse throughout that
+sweep. Work from an exact live runtime with a queued route instead preserves
+other routes' proofs: each affected proof still validates its own runtime,
+dispatcher work and ingress epochs. Classification and publication share the
+route lock with sweep acknowledgement. A separate pending marker retains
+urgency if that sweep already visited the route. Unregistered runtimes and
+direct routes use the global fallback; socket readability and setup retain
+global refresh. No reusable socket ID supplies identity. After validation,
 producers retain the existing channel pending/timer notification handshake;
 the state proof does not replace wake publication. Synthetic clocks, direct
 routes and uncertified modes retain their previous behavior.
