@@ -2774,112 +2774,128 @@ TEST(crypto_session_survives_repeated_rotation_and_sequence_rollover)
 
 TEST(crypto_session_ignores_a_replayed_request_for_a_retired_key)
 {
-    for (const CryptoMode mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
-        const CryptoConfiguration configuration {
-            .passphrase = "retired key replay",
-            .mode = mode,
-            .enable_aes_gcm = true,
-            .key_length = 16,
-            .refresh_rate_packets = 3,
-            .preannouncement_packets = 1,
-        };
-        CryptoSession sender {configuration};
-        CryptoSession receiver {configuration};
-        REQUIRE_EQ(sender.start_initiator(), Error::none);
-        REQUIRE_EQ(
-            receiver.accept_key_material(sender.pending_key_material(), false),
-            Error::none);
-        REQUIRE_EQ(sender.acknowledge_key_material(
-                       receiver.key_material_response(), false),
-            Error::none);
-
-        const std::array<std::byte, 16> clear {std::byte {0x5a}};
-        // Drive enough rotations that the earliest rotation request has aged
-        // out of the receiver's raw message history (4 entries), while its key
-        // is still one of the retired generations.
-        std::vector<std::byte> first_rotation_request;
-        std::size_t rotations = 0;
-        SequenceNumber sequence {100};
-        while (rotations < 7) {
-            REQUIRE_EQ(sender.prepare_rotation(), Error::none);
-            const auto request = sender.pending_key_material();
-            if (!request.empty()) {
-                if (first_rotation_request.empty()) {
-                    first_rotation_request.assign(
-                        request.begin(), request.end());
-                }
-                REQUIRE_EQ(
-                    receiver.accept_key_material(request, false), Error::none);
+    for (const auto key_length : {16U, 24U, 32U}) {
+        for (const auto initial_sequence : {100U, SequenceNumber::mask - 15U}) {
+            for (const CryptoMode mode :
+                {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+                const CryptoConfiguration configuration {
+                    .passphrase = "retired key replay",
+                    .mode = mode,
+                    .enable_aes_gcm = true,
+                    .key_length = key_length,
+                    .refresh_rate_packets = 3,
+                    .preannouncement_packets = 1,
+                };
+                CryptoSession sender {configuration};
+                CryptoSession receiver {configuration};
+                REQUIRE_EQ(sender.start_initiator(), Error::none);
+                REQUIRE_EQ(receiver.accept_key_material(
+                               sender.pending_key_material(), false),
+                    Error::none);
                 REQUIRE_EQ(sender.acknowledge_key_material(
                                receiver.key_material_response(), false),
                     Error::none);
-                ++rotations;
-            }
-            std::array<std::byte, 16> ciphertext {};
-            std::array<std::byte, 16> plaintext {};
-            EncryptionKey key = EncryptionKey::none;
-            const DataHeader header {
-                .sequence = sequence,
-                .message_number = sequence.value(),
-                .boundary = MessageBoundary::solo,
-                .in_order = true,
-                .encryption_key = sender.active_sender_key(),
-                .timestamp = PacketTimestamp {sequence.value()},
-                .destination_socket_id = 0x1234'5678U,
-            };
-            std::array<std::byte, srt_gcm_authentication_tag_size> tag {};
-            if (mode == CryptoMode::aes_gcm) {
-                REQUIRE_EQ(sender.seal(header, clear, ciphertext, tag, key),
-                    Error::none);
-            } else {
-                REQUIRE_EQ(sender.encrypt(sequence, clear, ciphertext, key),
-                    Error::none);
-            }
-            REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
-            if (mode == CryptoMode::aes_gcm) {
-                REQUIRE_EQ(receiver.open(header, ciphertext, tag, plaintext),
-                    Error::none);
-            } else {
+
+                const std::array<std::byte, 16> clear {std::byte {0x5a}};
+                // Drive enough rotations that the earliest rotation request has aged
+                // out of the receiver's raw message history (4 entries), while its key
+                // is still one of the retired generations.
+                std::vector<std::byte> first_rotation_request;
+                std::size_t rotations = 0;
+                std::size_t packets = 0;
+                SequenceNumber sequence {initial_sequence};
+                while (rotations < 7) {
+                    REQUIRE(packets++ < 64U);
+                    REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+                    const auto request = sender.pending_key_material();
+                    if (!request.empty()) {
+                        if (first_rotation_request.empty()) {
+                            first_rotation_request.assign(
+                                request.begin(), request.end());
+                        }
+                        REQUIRE_EQ(receiver.accept_key_material(request, false),
+                            Error::none);
+                        REQUIRE_EQ(sender.acknowledge_key_material(
+                                       receiver.key_material_response(), false),
+                            Error::none);
+                        ++rotations;
+                    }
+                    std::array<std::byte, 16> ciphertext {};
+                    std::array<std::byte, 16> plaintext {};
+                    EncryptionKey key = EncryptionKey::none;
+                    const DataHeader header {
+                        .sequence = sequence,
+                        .message_number = 1,
+                        .boundary = MessageBoundary::solo,
+                        .in_order = true,
+                        .encryption_key = sender.active_sender_key(),
+                        .timestamp = PacketTimestamp {sequence.value()},
+                        .destination_socket_id = 0x1234'5678U,
+                    };
+                    std::array<std::byte, srt_gcm_authentication_tag_size>
+                        tag {};
+                    if (mode == CryptoMode::aes_gcm) {
+                        REQUIRE_EQ(
+                            sender.seal(header, clear, ciphertext, tag, key),
+                            Error::none);
+                    } else {
+                        REQUIRE_EQ(
+                            sender.encrypt(sequence, clear, ciphertext, key),
+                            Error::none);
+                    }
+                    REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+                    if (mode == CryptoMode::aes_gcm) {
+                        REQUIRE_EQ(
+                            receiver.open(header, ciphertext, tag, plaintext),
+                            Error::none);
+                    } else {
+                        REQUIRE_EQ(receiver.decrypt(
+                                       key, sequence, ciphertext, plaintext),
+                            Error::none);
+                    }
+                    REQUIRE_EQ(plaintext, clear);
+                    receiver.note_accepted_receive_sequence(sequence);
+                    sequence = sequence.next();
+                }
+                REQUIRE(!first_rotation_request.empty());
+
+                // The replay is refused without touching the secured session ...
                 REQUIRE_EQ(
-                    receiver.decrypt(key, sequence, ciphertext, plaintext),
-                    Error::none);
+                    receiver.accept_key_material(first_rotation_request, false),
+                    Error::invalid_key_material);
+                REQUIRE_EQ(receiver.receiver_state(), CryptoState::secured);
+
+                // ... and the peer's current key keeps working.
+                std::array<std::byte, 16> ciphertext {};
+                std::array<std::byte, 16> plaintext {};
+                EncryptionKey key = EncryptionKey::none;
+                const DataHeader header {
+                    .sequence = sequence,
+                    .message_number = 1,
+                    .boundary = MessageBoundary::solo,
+                    .in_order = true,
+                    .encryption_key = sender.active_sender_key(),
+                    .timestamp = PacketTimestamp {sequence.value()},
+                    .destination_socket_id = 0x1234'5678U,
+                };
+                if (mode == CryptoMode::aes_gcm) {
+                    std::array<std::byte, srt_gcm_authentication_tag_size>
+                        tag {};
+                    REQUIRE_EQ(sender.seal(header, clear, ciphertext, tag, key),
+                        Error::none);
+                    REQUIRE_EQ(
+                        receiver.open(header, ciphertext, tag, plaintext),
+                        Error::none);
+                } else {
+                    REQUIRE_EQ(sender.encrypt(sequence, clear, ciphertext, key),
+                        Error::none);
+                    REQUIRE_EQ(
+                        receiver.decrypt(key, sequence, ciphertext, plaintext),
+                        Error::none);
+                }
+                REQUIRE_EQ(plaintext, clear);
             }
-            receiver.note_accepted_receive_sequence(sequence);
-            sequence = sequence.next();
         }
-        REQUIRE(!first_rotation_request.empty());
-
-        // The replay is refused without touching the secured session ...
-        REQUIRE_EQ(receiver.accept_key_material(first_rotation_request, false),
-            Error::invalid_key_material);
-        REQUIRE_EQ(receiver.receiver_state(), CryptoState::secured);
-
-        // ... and the peer's current key keeps working.
-        std::array<std::byte, 16> ciphertext {};
-        std::array<std::byte, 16> plaintext {};
-        EncryptionKey key = EncryptionKey::none;
-        const DataHeader header {
-            .sequence = sequence,
-            .message_number = sequence.value(),
-            .boundary = MessageBoundary::solo,
-            .in_order = true,
-            .encryption_key = sender.active_sender_key(),
-            .timestamp = PacketTimestamp {sequence.value()},
-            .destination_socket_id = 0x1234'5678U,
-        };
-        if (mode == CryptoMode::aes_gcm) {
-            std::array<std::byte, srt_gcm_authentication_tag_size> tag {};
-            REQUIRE_EQ(
-                sender.seal(header, clear, ciphertext, tag, key), Error::none);
-            REQUIRE_EQ(
-                receiver.open(header, ciphertext, tag, plaintext), Error::none);
-        } else {
-            REQUIRE_EQ(
-                sender.encrypt(sequence, clear, ciphertext, key), Error::none);
-            REQUIRE_EQ(receiver.decrypt(key, sequence, ciphertext, plaintext),
-                Error::none);
-        }
-        REQUIRE_EQ(plaintext, clear);
     }
 }
 
