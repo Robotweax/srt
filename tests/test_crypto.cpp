@@ -2899,6 +2899,137 @@ TEST(crypto_session_ignores_a_replayed_request_for_a_retired_key)
     }
 }
 
+TEST(crypto_session_stale_response_cannot_release_a_pending_rotation)
+{
+    for (const auto key_length : {16U, 24U, 32U}) {
+        for (const auto initial_sequence : {100U, SequenceNumber::mask - 2U}) {
+            for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+                for (const auto prior_rotations : {0U, 32U}) {
+                    const CryptoConfiguration configuration {
+                        .passphrase = "stale response boundary fixture",
+                        .mode = mode,
+                        .enable_aes_gcm = true,
+                        .key_length = key_length,
+                        .refresh_rate_packets = 3,
+                        .preannouncement_packets = 1,
+                    };
+                    CryptoSession sender {configuration};
+                    CryptoSession receiver {configuration};
+                    REQUIRE_EQ(sender.start_initiator(), Error::none);
+                    REQUIRE_EQ(receiver.accept_key_material(
+                                   sender.pending_key_material(), false),
+                        Error::none);
+                    const auto initial_response =
+                        receiver.key_material_response();
+                    const std::vector<std::byte> stale_response {
+                        initial_response.begin(), initial_response.end()};
+                    REQUIRE_EQ(sender.acknowledge_key_material(
+                                   initial_response, false),
+                        Error::none);
+                    SequenceNumber sequence {initial_sequence};
+                    std::size_t packets = 0;
+                    const auto exchange = [&] {
+                        REQUIRE(packets++ < 128U);
+                        REQUIRE(sender.ready_to_send_data());
+                        const std::array<std::byte, 16> clear {
+                            std::byte {0xc3}, static_cast<std::byte>(packets)};
+                        std::array<std::byte, 16> ciphertext {}, plaintext {};
+                        std::array<std::byte, srt_gcm_authentication_tag_size>
+                            tag {};
+                        EncryptionKey selected = EncryptionKey::none;
+                        const DataHeader header {
+                            .sequence = sequence,
+                            .message_number = 1,
+                            .boundary = MessageBoundary::solo,
+                            .in_order = true,
+                            .encryption_key = sender.active_sender_key(),
+                            .timestamp = PacketTimestamp {sequence.value()},
+                            .destination_socket_id = 0x1234'5678U,
+                        };
+                        if (mode == CryptoMode::aes_gcm) {
+                            REQUIRE_EQ(sender.seal(header, clear, ciphertext,
+                                           tag, selected),
+                                Error::none);
+                            REQUIRE_EQ(receiver.open(
+                                           header, ciphertext, tag, plaintext),
+                                Error::none);
+                        } else {
+                            REQUIRE_EQ(sender.encrypt(sequence, clear,
+                                           ciphertext, selected),
+                                Error::none);
+                            REQUIRE_EQ(receiver.decrypt(selected, sequence,
+                                           ciphertext, plaintext),
+                                Error::none);
+                        }
+                        REQUIRE_EQ(plaintext, clear);
+                        receiver.note_accepted_receive_sequence(sequence);
+                        REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+                        sequence = sequence.next();
+                    };
+                    for (unsigned rotation = 0; rotation < prior_rotations;
+                        ++rotation) {
+                        exchange();
+                        exchange();
+                        REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+                        REQUIRE_EQ(receiver.accept_key_material(
+                                       sender.pending_key_material(), false),
+                            Error::none);
+                        REQUIRE_EQ(sender.acknowledge_key_material(
+                                       receiver.key_material_response(), false),
+                            Error::none);
+                        exchange();
+                        REQUIRE_EQ(sender.packets_on_active_key(), 0U);
+                    }
+                    exchange();
+                    exchange();
+                    REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+                    const auto request = sender.pending_key_material();
+                    const std::vector<std::byte> pending {
+                        request.begin(), request.end()};
+                    REQUIRE(!pending.empty());
+                    const auto active = sender.active_sender_key();
+                    REQUIRE_EQ(sender.sender_state(), CryptoState::securing);
+                    REQUIRE(!sender.ready_to_send_data());
+                    const auto stale_result = prior_rotations == 0U
+                        ? Error::none
+                        : Error::invalid_key_material;
+                    for (unsigned duplicate = 0; duplicate < 2U; ++duplicate) {
+                        REQUIRE_EQ(sender.acknowledge_key_material(
+                                       stale_response, false),
+                            stale_result);
+                        REQUIRE_EQ(
+                            sender.sender_state(), CryptoState::securing);
+                        REQUIRE(!sender.ready_to_send_data());
+                        REQUIRE_EQ(sender.active_sender_key(), active);
+                        REQUIRE_EQ(sender.packets_on_active_key(), 2U);
+                        const auto still_pending =
+                            sender.pending_key_material();
+                        REQUIRE_EQ(std::vector<std::byte>(still_pending.begin(),
+                                       still_pending.end()),
+                            pending);
+                    }
+                    REQUIRE_EQ(receiver.accept_key_material(pending, false),
+                        Error::none);
+                    REQUIRE_EQ(sender.acknowledge_key_material(
+                                   receiver.key_material_response(), false),
+                        Error::none);
+                    REQUIRE(sender.ready_to_send_data());
+                    REQUIRE(sender.pending_key_material().empty());
+                    REQUIRE_EQ(sender.sender_state(), CryptoState::secured);
+                    REQUIRE_EQ(
+                        sender.acknowledge_key_material(stale_response, false),
+                        stale_result);
+                    REQUIRE_EQ(sender.sender_state(), CryptoState::secured);
+                    REQUIRE(sender.ready_to_send_data());
+                    exchange();
+                    REQUIRE(sender.active_sender_key() != active);
+                    exchange();
+                }
+            }
+        }
+    }
+}
+
 TEST(crypto_session_recovers_legitimate_rotation_after_long_horizon_key_replay)
 {
     for (const auto key_length : {16U, 24U, 32U}) {

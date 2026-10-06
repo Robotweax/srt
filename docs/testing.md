@@ -74,6 +74,14 @@ request so future freshness protection is not constrained to today's acceptance
 behavior. It checks recovery, not prevention of the documented long-horizon
 replay exposure; it does not qualify UDP injection, Rendezvous, or group modes.
 
+The stale-KMRSP boundary regression covers both a retained initial response
+and one evicted after 32 rotations. Across AES-128/192/256, CTR/GCM, and sequence
+rollover, duplicate old responses must preserve the pending request, current
+selector, packet count, and DATA hold at preannouncement. Only the matching
+current response releases DATA; exact payload checks span the selector switch.
+This checks response matching and bounded duplicate handling, not authentication
+of the runtime control exchange.
+
 macOS CI limits compilation to three concurrent jobs. Its full static suites
 run timing-sensitive tests serially, then run the process-isolated crypto setup
 fault probes with two concurrent CTest slots. The batching helper discovers the
