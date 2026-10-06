@@ -694,6 +694,14 @@ pointer/even-stride socket-id collapse. Setup promotion commits the existing
 sealed prefix together with the dispatcher; it does not claim/promote the prefix
 in the factory before channel route commit. Admission or registration failure
 returns `SRT_ENOBUF` and retires unexposed resources, with no inline fallback.
+On listener attachment exhaustion, the peer receives a best-effort HSv5 System
+rejection instead of a successful CONCLUSION; a received rejection produces
+`SRT_ECONNREJ` with `SRT_REJ_SYSTEM` at the caller. Byte ceilings can bind before
+ring-count ceilings: a 99,328-byte default ring yields 84 rings in the 8 MiB
+channel budget. This is build-dependent and includes retained physical rings,
+not a universal socket limit. Process-limit tuning cannot increase that channel
+ceiling. See [Scheduler configuration](scheduler-shards.md#experimental-connection-affinity-and-admission-limits)
+for configuration and troubleshooting.
 Existing close/cleanup boundaries retire these route-owned dispatchers.
 
 The default automatic polling path is unchanged. These are provisional resource

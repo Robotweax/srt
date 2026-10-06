@@ -327,6 +327,18 @@ TEST(public_affinity_ring_exhaustion_fails_without_route_then_retry_recovers)
         srt_connect(refused, reinterpret_cast<const sockaddr*>(&endpoint),
             sizeof(endpoint)),
         SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNREJ);
+    REQUIRE_EQ(srt_getrejectreason(refused), SRT_REJ_SYSTEM);
+    const bool asynchronous = false;
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_RCVSYN, &asynchronous, sizeof(asynchronous)),
+        0);
+    REQUIRE_EQ(srt_accept(listener, nullptr, nullptr), SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+    const bool synchronous = true;
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+        0);
     auto record = SocketRegistry::instance().find(refused);
     {
         std::lock_guard lock(record->mutex);
