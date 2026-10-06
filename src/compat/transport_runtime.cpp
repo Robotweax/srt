@@ -1273,9 +1273,10 @@ void DatagramChannel::mark_connections_broken(int system_error) noexcept
 
 RuntimePollResult DatagramChannel::run_once() noexcept
 {
-    return run_receive_slice([this](std::span<std::byte> datagram) noexcept {
-        return socket.receive_from(datagram);
-    });
+    return run_batch_receive_slice(
+        [this](std::span<ReceiveSlot> slots) noexcept {
+            return socket.receive_batch(slots);
+        });
 }
 
 RuntimePollResult DatagramChannel::poll_connections(

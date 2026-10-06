@@ -203,6 +203,10 @@ public:
     UdpSocket socket;
     std::mutex receive_mutex;
 
+    using ReceiveSlot = UdpSocket::ReceiveSlot;
+    using ReceiveBatch = UdpSocket::ReceiveBatchResult;
+    static constexpr std::size_t maximum_receive_batch = 64;
+
     [[nodiscard]] UdpIoResult send_datagram(
         std::span<const std::byte> bytes,
         IpEndpoint peer) noexcept;
@@ -258,6 +262,13 @@ public:
     {
         return run_receive_slice(receive);
     }
+    // Same slice with a deterministic batch source.
+    template <typename ReceiveBatchSource>
+    [[nodiscard]] RuntimePollResult run_batch_for_testing(
+        ReceiveBatchSource& receive) noexcept
+    {
+        return run_batch_receive_slice(receive);
+    }
     // Drive the connection slice without socket I/O or a running scheduler.
     [[nodiscard]] RuntimePollResult poll_connections_for_testing(
         std::optional<std::chrono::steady_clock::time_point> now = std::nullopt,
@@ -296,46 +307,66 @@ private:
         std::optional<std::chrono::steady_clock::time_point> idle_wake =
             std::nullopt) noexcept;
     [[nodiscard]] RuntimePollResult run_once() noexcept;
+    // Adapts a one-datagram source (tests) to the batch slice.
     template <typename Receive>
     [[nodiscard]] RuntimePollResult run_receive_slice(
         Receive&& receive) noexcept
     {
-        constexpr std::size_t maximum_receive_batch = 64;
-        std::array<std::byte, 1500> datagram {};
-        std::size_t received_count = 0;
-        for (; received_count < maximum_receive_batch; ++received_count) {
-            const UdpIoResult received = receive(datagram);
-            if (received.error == Error::would_block) {
-                break;
+        auto batch = [&receive](std::span<ReceiveSlot> slots) noexcept {
+            for (std::size_t index = 0; index < slots.size(); ++index) {
+                auto& slot = slots[index];
+                slot.status = receive(std::span {slot.bytes});
+                if (slot.status.error == Error::would_block) {
+                    return ReceiveBatch {
+                        .count = index, .terminal = slot.status};
+                }
+                if (!slot.status && slot.status.error != Error::buffer_too_small
+                    && !(slot.status.error == Error::io_error
+                        && UdpSocket::is_transient_receive_error(
+                            slot.status.system_error))) {
+                    return ReceiveBatch {
+                        .count = index, .terminal = slot.status};
+                }
             }
-            if (received.error == Error::buffer_too_small) {
+            return ReceiveBatch {.count = slots.size()};
+        };
+        return run_batch_receive_slice(batch);
+    }
+    template <typename ReceiveBatchSource>
+    [[nodiscard]] RuntimePollResult run_batch_receive_slice(
+        ReceiveBatchSource&& receive) noexcept
+    {
+        const auto slots = std::span {receive_slots_};
+        const ReceiveBatch received = receive(slots);
+        for (std::size_t index = 0; index < received.count; ++index) {
+            const auto& slot = slots[index];
+            // Truncated datagrams and per-datagram network reports (a queued
+            // ICMP error, an interrupted call) are consumed without dispatch.
+            if (!slot.status) {
                 continue;
             }
-            if (received.error == Error::io_error
-                && UdpSocket::is_transient_receive_error(
-                    received.system_error)) {
-                // A queued ICMP report or interrupted call for one peer
-                // is not a fault of the shared socket.
-                continue;
-            }
-            if (!received) {
-                mark_connections_broken(received.system_error);
-                break;
-            }
-            const auto decoded = decode_packet(
-                std::span {datagram}.first(received.bytes_transferred));
+            const auto datagram = std::span<const std::byte> {slot.bytes}.first(
+                slot.status.bytes_transferred);
+            const auto decoded = decode_packet(datagram);
             if (decoded) {
-                dispatch(decoded.packet,
-                    std::span {datagram}.first(received.bytes_transferred),
-                    received.peer);
+                dispatch(decoded.packet, datagram, slot.status.peer);
             }
+        }
+        if (received.count < slots.size()
+            && received.terminal.error != Error::none
+            && received.terminal.error != Error::would_block
+            && !(received.terminal.error == Error::io_error
+                && UdpSocket::is_transient_receive_error(
+                    received.terminal.system_error))) {
+            // After the datagrams already received in this batch.
+            mark_connections_broken(received.terminal.system_error);
         }
 
         auto result = poll_connections();
         // A full slice can leave UDP input unread. After would_block, however,
         // the receive queue is drained: preserve the connection poll deadline
         // instead of forcing another empty receive and complete route sweep.
-        if (received_count == maximum_receive_batch) {
+        if (received.count == slots.size()) {
             result.immediate_work = true;
             result.next_work_delay.reset();
         }
@@ -363,6 +394,8 @@ private:
     void notify_work(bool receive_release) noexcept;
 
     std::mutex send_mutex_;
+    // Owned by the single active receive slice (run_scheduled serializes it).
+    std::array<ReceiveSlot, maximum_receive_batch> receive_slots_;
     std::mutex lifecycle_mutex_;
     std::condition_variable lifecycle_idle_;
     SendHook send_hook_ = nullptr;

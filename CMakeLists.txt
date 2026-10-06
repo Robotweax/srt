@@ -141,6 +141,16 @@ add_library(robotweax_srt
 add_library(RobotweaxSRT::srt ALIAS robotweax_srt)
 
 target_compile_definitions(robotweax_srt PRIVATE ROBOTWEAX_SRT_BUILDING)
+# Batched UDP receive (recvmmsg). Absent on macOS, Windows and some
+# libc/API levels; the portable per-datagram loop is used there.
+include(CheckSymbolExists)
+set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+check_symbol_exists(recvmmsg "sys/socket.h" ROBOTWEAX_SRT_HAVE_RECVMMSG)
+unset(CMAKE_REQUIRED_DEFINITIONS)
+if(ROBOTWEAX_SRT_HAVE_RECVMMSG)
+    target_compile_definitions(robotweax_srt PRIVATE
+        ROBOTWEAX_SRT_HAVE_RECVMMSG=1)
+endif()
 target_compile_definitions(robotweax_srt PRIVATE
     ROBOTWEAX_SRT_COMPILED_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
 if(ROBOTWEAX_SRT_SENDER_DROP_TRACE)
@@ -370,7 +380,8 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_compat_epoll.cpp
         tests/test_compat_groups.cpp
         tests/test_compat_runtime.cpp
-        tests/test_compat_message_attempts.cpp)
+        tests/test_compat_message_attempts.cpp
+        tests/test_udp_receive_batch.cpp)
     target_compile_definitions(robotweax_srt_tests PRIVATE
         ROBOTWEAX_SRT_EXPECT_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
     target_link_libraries(robotweax_srt_tests

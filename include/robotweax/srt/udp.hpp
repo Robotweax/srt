@@ -177,6 +177,28 @@ struct UdpDeviceOptionResult {
  */
 class UdpSocket {
 public:
+    /** Largest datagram a batch receive slot holds. */
+    static constexpr std::size_t maximum_batch_datagram_size = 1500U;
+
+    /**
+     * One datagram of a batch receive. status has the receive_from meaning
+     * for this datagram: success with size and peer, or buffer_too_small for
+     * a truncated datagram whose bytes must not be used.
+     */
+    struct ReceiveSlot {
+        std::array<std::byte, maximum_batch_datagram_size> bytes;
+        UdpIoResult status {};
+    };
+
+    struct ReceiveBatchResult {
+        // Slots [0, count) were filled, in arrival order.
+        std::size_t count = 0;
+        // Why the batch ended before filling every slot: would_block when
+        // the receive queue is empty, io_error for a socket fault. none when
+        // every slot was filled.
+        UdpIoResult terminal {};
+    };
+
     UdpSocket() noexcept;
     explicit UdpSocket(IpAddressFamily family) noexcept;
     ~UdpSocket();
@@ -235,6 +257,14 @@ public:
     // bytes_transferred is destination.size().
     [[nodiscard]] UdpIoResult receive_from(std::span<std::byte> destination) noexcept;
     /**
+     * Receives up to slots.size() datagrams with as few kernel transitions as
+     * the platform allows (recvmmsg on Linux; one receive_from per datagram
+     * elsewhere). Transient reports are retried as receive_from does. The
+     * batch ends at would_block, at a socket fault, or when slots are full.
+     */
+    [[nodiscard]] ReceiveBatchResult receive_batch(
+        std::span<ReceiveSlot> slots) noexcept;
+    /**
      * True when a receive failure reports a per-datagram network condition
      * (an ICMP error for an earlier send, an interrupted call) rather than
      * a fault of the socket itself. Such reports must not end a session.
@@ -259,6 +289,8 @@ private:
     int open_system_error_ = 0;
     int last_system_error_ = 0;
     IpAddressFamily family_ = IpAddressFamily::ipv4;
+    // First request of the next Linux receive_batch(), from the last batch.
+    std::uint16_t receive_batch_hint_ = 8U;
 };
 
 } // namespace robotweax::srt

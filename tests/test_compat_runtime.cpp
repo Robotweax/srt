@@ -9939,6 +9939,42 @@ TEST(compat_channel_receive_slice_io_error_marks_connections_broken)
     REQUIRE(runtime->broken());
 }
 
+TEST(
+    compat_channel_receive_batch_fault_after_datagrams_marks_connections_broken)
+{
+#if defined(_WIN32)
+    constexpr int transient_error = WSAECONNRESET;
+    constexpr int fatal_error = WSAENOTSOCK;
+#else
+    constexpr int transient_error = ECONNREFUSED;
+    constexpr int fatal_error = EBADF;
+#endif
+    FairnessFixture fixture;
+    auto runtime = fixture.add(1);
+    std::size_t calls = 0;
+    int terminal_error = transient_error;
+    // Two consumed (truncated) datagrams, then the batch ends with an error.
+    auto receive = [&](std::span<DatagramChannel::ReceiveSlot> slots) noexcept
+        -> DatagramChannel::ReceiveBatch {
+        ++calls;
+        for (std::size_t index = 0; index < 2U; ++index) {
+            slots[index].status = {.error = Error::buffer_too_small};
+        }
+        return {.count = 2U,
+            .terminal = {
+                .error = Error::io_error, .system_error = terminal_error}};
+    };
+    // A per-datagram report ending the batch keeps the shared socket.
+    (void)fixture.channel->run_batch_for_testing(receive);
+    REQUIRE_EQ(calls, 1U);
+    REQUIRE(!runtime->broken());
+    // A socket fault breaks every route, after the batch was consumed.
+    terminal_error = fatal_error;
+    (void)fixture.channel->run_batch_for_testing(receive);
+    REQUIRE_EQ(calls, 2U);
+    REQUIRE(runtime->broken());
+}
+
 TEST(compat_channel_receive_slice_transient_report_keeps_connections)
 {
     // A queued ICMP error for one peer (Winsock WSAECONNRESET, POSIX

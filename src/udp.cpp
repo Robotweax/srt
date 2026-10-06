@@ -4,6 +4,7 @@
 #include "compat/platform_networking.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <climits>
 #include <cstdint>
@@ -344,8 +345,8 @@ UdpSocket::UdpSocket(UdpSocket&& other) noexcept
     : native_(std::exchange(other.native_, invalid_native))
     , open_system_error_(std::exchange(other.open_system_error_, 0))
     , last_system_error_(std::exchange(other.last_system_error_, 0))
-    , family_(std::exchange(
-          other.family_, IpAddressFamily::ipv4))
+    , family_(std::exchange(other.family_, IpAddressFamily::ipv4))
+    , receive_batch_hint_(other.receive_batch_hint_)
 {
 }
 
@@ -358,6 +359,7 @@ UdpSocket& UdpSocket::operator=(UdpSocket&& other) noexcept
         last_system_error_ = std::exchange(other.last_system_error_, 0);
         family_ = std::exchange(
             other.family_, IpAddressFamily::ipv4);
+        receive_batch_hint_ = other.receive_batch_hint_;
     }
     return *this;
 }
@@ -869,6 +871,124 @@ UdpIoResult UdpSocket::receive_from(std::span<std::byte> destination) noexcept
             .peer = from_sockaddr(peer),
         };
     }
+}
+
+UdpSocket::ReceiveBatchResult UdpSocket::receive_batch(
+    std::span<ReceiveSlot> slots) noexcept
+{
+    if (!valid()) {
+        return {.terminal = {
+                    .error = Error::io_error,
+                    .system_error = open_system_error_,
+                }};
+    }
+#if defined(ROBOTWEAX_SRT_HAVE_RECVMMSG)
+    constexpr std::size_t maximum_messages = 64;
+    constexpr std::size_t minimum_first_request = 8;
+    constexpr int maximum_transient_reports = 8;
+    int transient_reports = 0;
+    const auto batch = [&]() noexcept -> ReceiveBatchResult {
+        std::size_t total = 0;
+        while (total < slots.size()) {
+            // Preparing 64 headers for a call that finds an empty queue costs
+            // 0.1-0.2 us more than recvmsg(). The first request follows the
+            // previous batch (twice its size, 8 to 64): wide while a queue builds
+            // up, narrow at low load. A full answer widens the next call to 64.
+            const std::size_t first_request = std::clamp<std::size_t>(
+                receive_batch_hint_, minimum_first_request, maximum_messages);
+            const std::size_t requested =
+                std::min(total == 0U ? first_request : maximum_messages,
+                    slots.size() - total);
+            std::array<mmsghdr, maximum_messages> messages;
+            std::array<iovec, maximum_messages> buffers;
+            std::array<sockaddr_storage, maximum_messages> peers;
+            for (std::size_t index = 0; index < requested; ++index) {
+                auto& slot = slots[total + index];
+                buffers[index] = {
+                    .iov_base = slot.bytes.data(),
+                    .iov_len = slot.bytes.size(),
+                };
+                messages[index] = {};
+                auto& header = messages[index].msg_hdr;
+                header.msg_name = &peers[index];
+                header.msg_namelen =
+                    static_cast<socklen_t>(sizeof(peers[index]));
+                header.msg_iov = &buffers[index];
+                header.msg_iovlen = 1;
+            }
+            // The kernel stops at the first empty queue and reports an error
+            // after the first message on the next call, so each failure seen
+            // here belongs to the first datagram of this call.
+            const int result = ::recvmmsg(to_native(native_), messages.data(),
+                static_cast<unsigned int>(requested), 0, nullptr);
+            if (result < 0) {
+                const int error = last_socket_error();
+                if (is_transient_receive_system_error(error)) {
+                    if (++transient_reports <= maximum_transient_reports) {
+                        continue;
+                    }
+                    return {.count = total,
+                        .terminal = {
+                            .error = Error::would_block,
+                            .system_error = error,
+                        }};
+                }
+                return {.count = total,
+                    .terminal = {
+                        .error = is_would_block(error) ? Error::would_block
+                                                       : Error::io_error,
+                        .system_error = error,
+                    }};
+            }
+            if (result == 0) {
+                return {
+                    .count = total, .terminal = {.error = Error::would_block}};
+            }
+            for (std::size_t index = 0;
+                index < static_cast<std::size_t>(result); ++index) {
+                auto& slot = slots[total + index];
+                const auto& header = messages[index].msg_hdr;
+                if ((header.msg_flags & MSG_TRUNC) != 0) {
+                    slot.status = {
+                        .error = Error::buffer_too_small,
+                        .bytes_transferred = slot.bytes.size(),
+                        .peer = from_sockaddr(peers[index]),
+                        .system_error = EMSGSIZE,
+                    };
+                } else {
+                    slot.status = {
+                        .bytes_transferred = messages[index].msg_len,
+                        .peer = from_sockaddr(peers[index]),
+                    };
+                }
+            }
+            total += static_cast<std::size_t>(result);
+            if (static_cast<std::size_t>(result) < requested) {
+                // A nonblocking recvmmsg() returns a short count only when the
+                // queue ran empty, or when an error follows that the next call
+                // reports. Readiness is level-triggered, so a datagram that
+                // arrives later still wakes the channel; confirming the empty
+                // queue with another call would only add a syscall per slice.
+                return {
+                    .count = total, .terminal = {.error = Error::would_block}};
+            }
+        }
+        return {.count = total};
+    }();
+    receive_batch_hint_ = static_cast<std::uint16_t>(
+        std::min<std::size_t>(2U * batch.count, maximum_messages));
+    return batch;
+#else
+    for (std::size_t index = 0; index < slots.size(); ++index) {
+        auto& slot = slots[index];
+        slot.status = receive_from(slot.bytes);
+        if (slot.status.error == Error::would_block
+            || (!slot.status && slot.status.error != Error::buffer_too_small)) {
+            return {.count = index, .terminal = slot.status};
+        }
+    }
+    return {.count = slots.size()};
+#endif
 }
 
 bool UdpSocket::is_transient_receive_error(int system_error) noexcept
