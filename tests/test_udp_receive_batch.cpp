@@ -1,9 +1,11 @@
 #include "test.hpp"
 #include "robotweax/srt/udp.hpp"
+#include "robotweax/srt/codec.hpp"
 #include "compat/transport_runtime.hpp"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -13,32 +15,79 @@
 using namespace robotweax::srt;
 using namespace robotweax::srt::compat;
 
-// the receive slice consumes a batch and dispatches each datagram in
-// order; a truncated slot is skipped without ending the slice.
+// Observe actual dispatch through peer-bound routes, including valid bytes
+// in a slot marked truncated so ignoring its error would cause delivery.
 TEST(receive_slice_dispatches_batch_and_skips_truncated_slot)
 {
     const auto channel = std::make_shared<DatagramChannel>();
+    const std::array peers {
+        IpEndpoint::loopback(20000), IpEndpoint::loopback(20001)};
+    const std::array inboxes {
+        std::make_shared<DatagramInbox>(7), std::make_shared<DatagramInbox>(7)};
+    REQUIRE(channel->register_setup_inbox(42, peers[0], inboxes[0]));
+    REQUIRE(channel->register_setup_inbox(43, peers[1], inboxes[1]));
+    std::array<std::vector<std::byte>, 7> datagrams;
+    std::array<UdpIoResult, 7> statuses;
+    for (std::size_t index = 0; index < datagrams.size(); ++index) {
+        const bool second_route = index == 1U || index == 4U;
+        const std::array payload {
+            static_cast<std::byte>(index), std::byte {0xa5}};
+        MutablePacketView packet;
+        packet.kind = PacketKind::data;
+        packet.data.sequence =
+            SequenceNumber {static_cast<std::uint32_t>(index)};
+        packet.data.message_number = 1;
+        packet.data.boundary = MessageBoundary::solo;
+        packet.data.destination_socket_id = second_route ? 43U : 42U;
+        packet.payload = payload;
+        std::array<std::byte, 64> bytes {};
+        const auto encoded = encode_packet(packet, bytes);
+        REQUIRE(encoded);
+        datagrams[index].assign(
+            bytes.begin(), bytes.begin() + encoded.bytes_written);
+        statuses[index] = {
+            .error = index == 2U ? Error::buffer_too_small : Error::none,
+            .bytes_transferred = encoded.bytes_written,
+            // Slot 5 has the right destination but the wrong peer.
+            .peer = peers[second_route || index == 5U ? 1U : 0U],
+        };
+    }
     std::size_t calls = 0;
-    std::size_t delivered = 0;
     auto receive = [&](std::span<DatagramChannel::ReceiveSlot> slots) noexcept
         -> DatagramChannel::ReceiveBatch {
         ++calls;
-        if (calls > 1) {
-            return {.count = 0, .terminal = {.error = Error::would_block}};
+        if (calls > 1U) {
+            return {.terminal = {.error = Error::would_block}};
         }
-        const std::size_t count = std::min<std::size_t>(5U, slots.size());
-        for (std::size_t index = 0; index < count; ++index) {
-            slots[index].status = index == 2U
-                ? UdpIoResult {.error = Error::buffer_too_small}
-                : UdpIoResult {.bytes_transferred = 3U};
-            ++delivered;
+        for (std::size_t index = 0; index < datagrams.size(); ++index) {
+            std::copy(datagrams[index].begin(), datagrams[index].end(),
+                slots[index].bytes.begin());
+            slots[index].status = statuses[index];
         }
-        return {.count = count, .terminal = {.error = Error::would_block}};
+        return {.count = datagrams.size(),
+            .terminal = {.error = Error::would_block}};
     };
     const auto result = channel->run_batch_for_testing(receive);
     REQUIRE_EQ(calls, 1U);
-    REQUIRE_EQ(delivered, 5U);
     REQUIRE(!result.immediate_work);
+    const auto verify = [&](std::size_t route,
+                            std::span<const std::size_t> expected) {
+        for (const auto index : expected) {
+            DatagramEnvelope received;
+            REQUIRE_EQ(inboxes[route]->pop_for(
+                           received, std::chrono::milliseconds {0}),
+                InboxPopStatus::received);
+            REQUIRE_EQ(received.peer, peers[route]);
+            REQUIRE_EQ(received.size, datagrams[index].size());
+            REQUIRE(std::equal(datagrams[index].begin(), datagrams[index].end(),
+                received.bytes.begin()));
+        }
+        REQUIRE(!inboxes[route]->ready());
+    };
+    const std::array<std::size_t, 3> first {0, 3, 6};
+    const std::array<std::size_t, 2> second {1, 4};
+    verify(0, first);
+    verify(1, second);
 }
 
 // a full batch still asks the scheduler for an immediate re-run.
