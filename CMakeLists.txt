@@ -382,7 +382,9 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     # separate bounded runs. Every native case runs in exactly one partition.
     add_test(NAME robotweax_srt_tests
         COMMAND robotweax_srt_tests --exclude compat_runtime_rotation_
-            compat_group_closed_member_retains_bounded_copy)
+            compat_group_closed_member_retains_bounded_copy key_length)
+    add_test(NAME robotweax_srt_key_length_tests
+        COMMAND robotweax_srt_tests key_length)
     add_test(NAME robotweax_srt_rotation_tests
         COMMAND robotweax_srt_tests compat_runtime_rotation_)
     add_test(NAME robotweax_srt_group_retention_prefix_tests
@@ -392,10 +394,11 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests
             compat_group_closed_member_retains_bounded_copy_after_oversized_message)
     set_tests_properties(
-        robotweax_srt_tests robotweax_srt_rotation_tests
+        robotweax_srt_tests robotweax_srt_rotation_tests robotweax_srt_key_length_tests
         robotweax_srt_group_retention_prefix_tests
         robotweax_srt_group_retention_oversized_tests PROPERTIES TIMEOUT 30)
     set_tests_properties(robotweax_srt_rotation_tests PROPERTIES LABELS "encryption")
+    set_tests_properties(robotweax_srt_key_length_tests PROPERTIES LABELS "encryption")
     add_test(NAME robotweax_srt_rejects_empty_test_selection
         COMMAND robotweax_srt_tests robotweax_nonexistent_test_filter)
     add_test(NAME robotweax_srt_rejects_empty_exclusion_selection
