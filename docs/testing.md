@@ -595,6 +595,17 @@ Session unit tests also check repeated probing without an ACK, termination after
 a cumulative ACK, and the unchanged full-flight fallback outside periodic-NAK
 Live ordinary ARQ. These deterministic checks do not measure outage bandwidth.
 
+`live_session_late_ack_can_probe_already_delivered_tail_without_loss` delivers
+every original packet to the receiver and application, then withholds the
+cumulative ACK past the sender RTO. It checks a single duplicate tail probe,
+no reported receive loss, no duplicate application delivery, and no further
+probe after the ACK clears the flight. Paired ACK-before-timeout controls
+produce no probe. Both lite/full ACKs and sequence rollover are covered using
+injected protocol time. This is a core-session policy regression, not a
+measurement of host scheduling delay or public statistics. The observable
+counter difference is documented in
+[Known limitations](limitations.md#live-tail-probes-and-retransmission-counters).
+
 `robotweax_srt_live_tail_burst_recovery` drops the last three original DATA
 packets and requires complete recovery and cumulative ACKs. Run both tail cases:
 
