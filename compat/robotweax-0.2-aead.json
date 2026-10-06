@@ -335,6 +335,12 @@
           "congestion_control": "file",
           "tsbpd": false,
           "message_api": false
+        },
+        {
+          "transmission_type": "control",
+          "congestion_control": "control-v1",
+          "tsbpd": false,
+          "message_api": true
         }
       ],
       "connected_getter_returns_effective_mode": true

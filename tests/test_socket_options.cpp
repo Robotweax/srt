@@ -300,6 +300,59 @@ TEST(socket_options_enable_gcm_only_through_the_preview_contract)
     REQUIRE_EQ(gcm_after_sensor.set(SocketOption::crypto_mode, 2),
         Error::invalid_state);
 }
+TEST(socket_options_gcm_control_preserves_bundle_and_mandatory_encryption)
+{
+    for (const bool gcm_first : {false, true}) {
+        SocketOptions options;
+        if (gcm_first) {
+            REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+        }
+        REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                       static_cast<std::int64_t>(TransmissionType::control)),
+            Error::none);
+        REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+        REQUIRE(options.requires_authenticated_data());
+        REQUIRE(options.message_api());
+        REQUIRE_EQ(
+            options.congestion_controller(), CongestionController::control);
+        REQUIRE_EQ(options.maximum_payload_size(), 1'440U);
+        REQUIRE_EQ(
+            options.maximum_payload_size_limit(IpAddressFamily::ipv6), 1'420U);
+        REQUIRE_EQ(
+            options.set(SocketOption::tsbpd_mode, 1), Error::invalid_state);
+        REQUIRE_EQ(options.set(SocketOption::too_late_packet_drop, 1),
+            Error::invalid_state);
+        REQUIRE_EQ(
+            options.set(SocketOption::message_api, 0), Error::invalid_state);
+        REQUIRE_EQ(options.set(SocketOption::enforced_encryption, 0),
+            Error::invalid_state);
+        REQUIRE_EQ(options.set_packet_filter("fec,cols:4,rows:1"),
+            Error::invalid_state);
+        REQUIRE_EQ(
+            options.set_congestion_controller("file"), Error::invalid_state);
+        REQUIRE(options.requires_authenticated_data());
+        REQUIRE_EQ(options.set(SocketOption::crypto_mode, 1), Error::none);
+        REQUIRE(!options.requires_authenticated_data());
+    }
+    SocketOptions optional;
+    REQUIRE_EQ(optional.set(SocketOption::enforced_encryption, 0), Error::none);
+    REQUIRE_EQ(optional.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::control)),
+        Error::none);
+    REQUIRE_EQ(
+        optional.set(SocketOption::crypto_mode, 2), Error::invalid_state);
+    REQUIRE_EQ(optional.transmission_type(), TransmissionType::control);
+    REQUIRE_EQ(optional.get(SocketOption::crypto_mode).value, 0);
+    REQUIRE_EQ(optional.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::live)),
+        Error::none);
+    REQUIRE_EQ(optional.set(SocketOption::crypto_mode, 2), Error::none);
+    REQUIRE_EQ(optional.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::control)),
+        Error::invalid_state);
+    REQUIRE_EQ(optional.transmission_type(), TransmissionType::live);
+}
+
 #endif
 
 TEST(socket_options_expose_rendezvous_as_a_validated_boolean)

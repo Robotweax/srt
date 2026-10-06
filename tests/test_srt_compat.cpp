@@ -2847,10 +2847,14 @@ TEST(srt_compat_crypto_mode_preview_matches_upstream_option_contract)
     const SRT_TRANSTYPE control_type = SRTT_CONTROL;
     REQUIRE_EQ(srt_setsockflag(socket, SRTO_TRANSTYPE, &control_type,
                    static_cast<int>(sizeof(control_type))),
-        SRT_ERROR);
+        0);
     size = static_cast<int>(sizeof(actual_type));
     REQUIRE_EQ(srt_getsockflag(socket, SRTO_TRANSTYPE, &actual_type, &size), 0);
-    REQUIRE_EQ(actual_type, SRTT_LIVE);
+    REQUIRE_EQ(actual_type, SRTT_CONTROL);
+    const SRT_TRANSTYPE live_type = SRTT_LIVE;
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_TRANSTYPE, &live_type,
+                   static_cast<int>(sizeof(live_type))),
+        0);
     const bool rendezvous = true;
     REQUIRE_EQ(srt_setsockflag(socket, SRTO_RENDEZVOUS, &rendezvous,
                    static_cast<int>(sizeof(rendezvous))),
@@ -2918,6 +2922,213 @@ TEST(srt_compat_crypto_mode_preview_matches_upstream_option_contract)
     REQUIRE_EQ(srt_close(no_tsbpd), 0);
     REQUIRE_EQ(srt_close(socket), 0);
     REQUIRE_EQ(srt_cleanup(), 0);
+}
+
+TEST(srt_compat_gcm_control_bidirectional_rotation_and_listener_isolation)
+{
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    const auto set_integer = [](SRTSOCKET socket, SRT_SOCKOPT option,
+                                 std::int32_t value) {
+        REQUIRE_EQ(srt_setsockflag(socket, option, &value, sizeof(value)), 0);
+    };
+    const auto configure = [&](SRTSOCKET socket, bool gcm_first) {
+        if (gcm_first) {
+            set_integer(socket, SRTO_CRYPTOMODE, 2);
+        }
+        const SRT_TRANSTYPE type = SRTT_CONTROL;
+        REQUIRE_EQ(
+            srt_setsockflag(socket, SRTO_TRANSTYPE, &type, sizeof(type)), 0);
+        set_integer(socket, SRTO_CRYPTOMODE, 2);
+        constexpr char secret[] = "public-control-gcm-test-fixture";
+        REQUIRE_EQ(srt_setsockflag(
+                       socket, SRTO_PASSPHRASE, secret, sizeof(secret) - 1),
+            0);
+        set_integer(socket, SRTO_CONNTIMEO, 3'000);
+        set_integer(socket, SRTO_RCVTIMEO, 3'000);
+        set_integer(socket, SRTO_SNDTIMEO, 3'000);
+        set_integer(socket, SRTO_KMREFRESHRATE, 16);
+        set_integer(socket, SRTO_KMPREANNOUNCE, 4);
+    };
+    for (const int key_length : {16, 24, 32}) {
+        const SRTSOCKET listener = srt_create_socket();
+        REQUIRE(listener != SRT_INVALID_SOCK);
+        configure(listener, false);
+        set_integer(listener, SRTO_PBKEYLEN, key_length);
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        REQUIRE_EQ(srt_bind(listener, reinterpret_cast<sockaddr*>(&address),
+                       sizeof(address)),
+            0);
+        int size = sizeof(address);
+        REQUIRE_EQ(srt_getsockname(
+                       listener, reinterpret_cast<sockaddr*>(&address), &size),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 3), 0);
+        std::array<SRTSOCKET, 3> callers {};
+        std::array<SRTSOCKET, 3> accepted {};
+        for (std::size_t index = 0; index < callers.size(); ++index) {
+            callers[index] = srt_create_socket();
+            REQUIRE(callers[index] != SRT_INVALID_SOCK);
+            configure(callers[index], true);
+            set_integer(callers[index], SRTO_PBKEYLEN, key_length);
+            REQUIRE_EQ(srt_connect(callers[index],
+                           reinterpret_cast<const sockaddr*>(&address), size),
+                0);
+            accepted[index] = srt_accept(listener, nullptr, nullptr);
+            REQUIRE(accepted[index] != SRT_INVALID_SOCK);
+        }
+        for (int round = 0; round < 40; ++round) {
+            for (std::size_t index = 0; index < callers.size(); ++index) {
+                // Include a fragmented command as well as the consumer's 1316-byte carrier.
+                std::vector<char> command(round == 0 ? 20'000U : 1'316U);
+                for (std::size_t byte = 0; byte < command.size(); ++byte) {
+                    command[byte] = static_cast<char>(
+                        (byte + index * 71U + round * 13U) & 255U);
+                }
+                std::vector<char> received(command.size());
+                for (const bool reverse : {false, true}) {
+                    const auto sender =
+                        reverse ? accepted[index] : callers[index];
+                    const auto receiver =
+                        reverse ? callers[index] : accepted[index];
+                    SRT_MSGCTRL control = srt_msgctrl_default;
+                    if (round == 0) {
+                        control.msgttl = 1;
+                        REQUIRE_EQ(srt_sendmsg2(sender, command.data(),
+                                       command.size(), &control),
+                            SRT_ERROR);
+                        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVALMSGAPI);
+                        control.msgttl = SRT_MSGTTL_INF;
+                    }
+                    REQUIRE_EQ(srt_sendmsg2(sender, command.data(),
+                                   command.size(), &control),
+                        static_cast<int>(command.size()));
+                    REQUIRE_EQ(srt_recvmsg2(receiver, received.data(),
+                                   received.size(), nullptr),
+                        static_cast<int>(command.size()));
+                    REQUIRE_EQ(received, command);
+                }
+            }
+        }
+        for (std::size_t index = 0; index < callers.size(); ++index) {
+            for (const auto socket : {callers[index], accepted[index]}) {
+                for (const auto option :
+                    {SRTO_CRYPTOMODE, SRTO_SNDKMSTATE, SRTO_RCVKMSTATE}) {
+                    std::int32_t value = -1;
+                    int value_size = sizeof(value);
+                    REQUIRE_EQ(
+                        srt_getsockflag(socket, option, &value, &value_size),
+                        0);
+                    REQUIRE_EQ(value,
+                        option == SRTO_CRYPTOMODE
+                            ? 2
+                            : static_cast<int>(SRT_KM_S_SECURED));
+                }
+                const bool asynchronous = false;
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_RCVSYN, &asynchronous,
+                               sizeof(asynchronous)),
+                    0);
+                std::array<char, 20'000> extra {};
+                REQUIRE_EQ(
+                    srt_recvmsg(socket, extra.data(), extra.size()), SRT_ERROR);
+                REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+            }
+        }
+        for (std::size_t index = 0; index < callers.size(); ++index) {
+            REQUIRE_EQ(srt_close(callers[index]), 0);
+            REQUIRE_EQ(srt_close(accepted[index]), 0);
+        }
+        // Reconnect while the same listener and UDP port remain alive.
+        const auto reconnected = srt_create_socket();
+        REQUIRE(reconnected != SRT_INVALID_SOCK);
+        configure(reconnected, true);
+        set_integer(reconnected, SRTO_PBKEYLEN, key_length);
+        REQUIRE_EQ(srt_connect(reconnected,
+                       reinterpret_cast<const sockaddr*>(&address), size),
+            0);
+        const auto fresh = srt_accept(listener, nullptr, nullptr);
+        REQUIRE(fresh != SRT_INVALID_SOCK);
+        constexpr char fresh_command[] = "fresh-connection-command";
+        REQUIRE_EQ(srt_sendmsg(reconnected, fresh_command,
+                       sizeof(fresh_command), -1, 0),
+            static_cast<int>(sizeof(fresh_command)));
+        std::array<char, sizeof(fresh_command)> fresh_received {};
+        REQUIRE_EQ(
+            srt_recvmsg(fresh, fresh_received.data(), fresh_received.size()),
+            static_cast<int>(sizeof(fresh_command)));
+        REQUIRE(std::equal(
+            fresh_received.begin(), fresh_received.end(), fresh_command));
+        REQUIRE_EQ(srt_close(reconnected), 0);
+        REQUIRE_EQ(srt_close(fresh), 0);
+        REQUIRE_EQ(srt_close(listener), 0);
+    }
+}
+
+TEST(srt_compat_gcm_control_fails_closed_before_payload)
+{
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    for (int mismatch = 0; mismatch < 6; ++mismatch) {
+        const SRTSOCKET listener = srt_create_socket();
+        const SRTSOCKET caller = srt_create_socket();
+        REQUIRE(listener != SRT_INVALID_SOCK);
+        REQUIRE(caller != SRT_INVALID_SOCK);
+        for (const auto socket : {listener, caller}) {
+            const SRT_TRANSTYPE type =
+                socket == listener && mismatch == 3 ? SRTT_LIVE : SRTT_CONTROL;
+            REQUIRE_EQ(
+                srt_setsockflag(socket, SRTO_TRANSTYPE, &type, sizeof(type)),
+                0);
+            const std::int32_t mode = socket == listener && mismatch == 0 ? 1
+                : socket == listener && mismatch == 1                     ? 0
+                                                                          : 2;
+            REQUIRE_EQ(
+                srt_setsockflag(socket, SRTO_CRYPTOMODE, &mode, sizeof(mode)),
+                0);
+            const std::int32_t timeout = 1'500;
+            REQUIRE_EQ(srt_setsockflag(
+                           socket, SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+                0);
+            if (!(socket == listener && (mismatch == 1 || mismatch == 4))
+                && !(socket == caller && mismatch == 5)) {
+                const std::string_view secret =
+                    socket == listener && mismatch == 2
+                    ? "wrong-control-fixture-secret"
+                    : "public-control-fixture-secret";
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_PASSPHRASE,
+                               secret.data(), secret.size()),
+                    0);
+            }
+        }
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        REQUIRE_EQ(srt_bind(listener, reinterpret_cast<sockaddr*>(&address),
+                       sizeof(address)),
+            0);
+        int size = sizeof(address);
+        REQUIRE_EQ(srt_getsockname(
+                       listener, reinterpret_cast<sockaddr*>(&address), &size),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 1), 0);
+        REQUIRE_EQ(srt_connect(caller,
+                       reinterpret_cast<const sockaddr*>(&address), size),
+            SRT_ERROR);
+        REQUIRE(srt_getsockstate(caller) != SRTS_CONNECTED);
+        constexpr char command[] = "must not escape";
+        REQUIRE_EQ(
+            srt_sendmsg(caller, command, sizeof(command), -1, 0), SRT_ERROR);
+        const bool asynchronous = false;
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVSYN, &asynchronous,
+                       sizeof(asynchronous)),
+            0);
+        REQUIRE_EQ(srt_accept(listener, nullptr, nullptr), SRT_INVALID_SOCK);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+        REQUIRE_EQ(srt_close(caller), 0);
+        REQUIRE_EQ(srt_close(listener), 0);
+    }
 }
 
 TEST(srt_compat_crypto_mode_reports_auto_on_unencrypted_connections)

@@ -35,8 +35,10 @@ requires that guarantee.
   command acknowledgement before closing when execution matters.
 
 The profile has no built-in FEC filter, and `SRTO_PACKETFILTER` cannot be
-enabled while it is selected. It supports the normal AES-CTR transport; the
-optional AES-GCM preview does not currently support File/Message control mode.
+enabled while it is selected. It supports AES-CTR and, in a build with
+`ENABLE_AEAD_API_PREVIEW=ON`, explicitly selected AES-GCM. GCM uses the existing
+[authenticated DATA contract](aes-gcm-contract.md); the `control-v1` wire identity
+and delivery rules are unchanged.
 
 ## Wire identity and compatibility
 
@@ -55,3 +57,51 @@ No DATA packet layout or existing `LIVE`/`FILE` behavior changes. Switching
 the pre-bind `SRTO_TRANSTYPE` option back to `SRTT_LIVE` or `SRTT_FILE`
 restores the normal bundle. `SRTT_CONTROL` has enum value 4; `SRTT_INVALID`
 remains 2 and `SRTT_SENSOR` remains 3.
+
+## Authenticated Control configuration
+
+Use an extension-enabled installed CMake target or its matching pkg-config
+metadata. Select `SRTT_CONTROL`, set `SRTO_CRYPTOMODE` to the `int32_t` value `2`,
+and configure a passphrase before connecting. These options can be set in either
+order. Keep `SRTO_ENFORCEDENCRYPTION=true`; disabling it for Control/GCM is an
+invalid combination. Neither a missing secret nor an incompatible peer permits
+plaintext DATA. After establishment require `SRTO_CRYPTOMODE == 2`; after data
+exchange both `SRTO_SNDKMSTATE` and `SRTO_RCVKMSTATE` report `SRT_KM_S_SECURED`.
+Key confirmation may initially be pending; see [encryption startup](encryption.md#key-rotation).
+Do not export key material.
+
+A carrier of 1316 bytes fits unfiltered GCM at the default MSS of 1500 for both
+IPv4 (1440-byte plaintext ceiling per packet) and IPv6 (1420 bytes). At IPv6
+MSS 1280 the ceiling is 1200 bytes, so a 1316-byte command is fragmented.
+Control messages can span packets; unlike Live, `SRTO_PAYLOADSIZE` is a packet
+ceiling rather than a whole-message limit. The maximum locally queueable command
+is the available send-buffer packet count times its effective plaintext payload
+size. Choose command sizes that also fit the peer's negotiated receive/flow
+window; an incomplete message cannot be released to reclaim its receive slots.
+A receive buffer passed to the API must fit the whole command. Larger application
+objects should be split into bounded commands. Exact binary transfers of 1316
+and 20000 bytes are covered by the direct socket regression.
+
+`msgttl` must remain negative and the sender forces ordered delivery even with
+`inorder=0`. For nonblocking sockets, use `SRTO_SNDSYN=false` and
+`SRTO_RCVSYN=false`, retry on `SRT_EASYNCSND`/`SRT_EASYNCRCV`, and use epoll for
+readiness. Check each call: send success confirms local buffering only.
+
+The public Message demo provides a minimal bidirectional Caller/Listener:
+
+```sh
+# Both shells provide the same secret in SRT_CONTROL_SECRET.
+robotweax_srt_message_demo listener --port 9000 --profile control \
+  --crypto gcm --passphrase-env SRT_CONTROL_SECRET --nonblocking
+robotweax_srt_message_demo caller --host 127.0.0.1 --port 9000 \
+  --profile control --crypto gcm --passphrase-env SRT_CONTROL_SECRET \
+  --message command --nonblocking
+```
+
+GCM authenticates DATA containing commands and application acknowledgements.
+Transport ACK, NAK, shutdown and key-management controls are not thereby all
+authenticated; their existing validation and denial-of-service limits remain.
+Duplicate DATA within the connection does not execute an additional receive.
+Fresh sockets use fresh crypto/reliability state, with no persistent execution
+history. Applications must supply durable request identities and acknowledgements
+when they need retry safety across reconnects or process restarts.

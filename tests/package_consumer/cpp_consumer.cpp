@@ -63,6 +63,12 @@ int main()
         (void)srt_close(socket);
         return 2;
     }
+    const SRT_TRANSTYPE control = SRTT_CONTROL;
+    if (srt_setsockflag(socket, SRTO_TRANSTYPE, &control, sizeof(control))
+        == SRT_ERROR) {
+        (void)srt_close(socket);
+        return 5;
+    }
     crypto_mode = -1;
     int crypto_mode_size = static_cast<int>(sizeof(crypto_mode));
     if (srt_getsockflag(

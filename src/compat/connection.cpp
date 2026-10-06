@@ -3192,6 +3192,10 @@ int connect_socket(
                 ? SRT_ECONNSOCK
                 : SRT_EINVOP);
         }
+        if (socket->native_options.requires_authenticated_data()
+            && !socket->native_options.encryption_enabled()) {
+            return fail(SRT_ESECFAIL);
+        }
         asynchronous =
             !socket->public_options.receive_synchronous;
         rendezvous =
@@ -3741,6 +3745,13 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
             policy_rejection = SRT_REJ_FILTER;
             policy_error = SRT_ECONNREJ;
         }
+    }
+
+    if (!policy_rejected && native_options.requires_authenticated_data()
+        && !native_options.encryption_enabled()) {
+        policy_rejected = true;
+        policy_rejection = SRT_REJ_UNSECURE;
+        policy_error = SRT_ESECFAIL;
     }
 
     std::shared_ptr<CryptoSession> crypto;

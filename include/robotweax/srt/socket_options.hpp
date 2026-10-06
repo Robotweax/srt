@@ -113,6 +113,14 @@ public:
     {
         return passphrase_size_ != 0U;
     }
+    [[nodiscard]] bool requires_authenticated_data() const noexcept
+    {
+#ifdef ENABLE_AEAD_API_PREVIEW
+        return control_profile() && crypto_mode_ == CryptoMode::aes_gcm;
+#else
+        return false;
+#endif
+    }
     [[nodiscard]] bool enforced_encryption() const noexcept
     {
         return enforced_encryption_;

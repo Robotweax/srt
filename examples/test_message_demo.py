@@ -73,7 +73,7 @@ def wait_for_ready(process: subprocess.Popen[str]) -> str:
     return line
 
 
-def run_caller_listener(demo: Path, crypto: str) -> None:
+def run_caller_listener(demo: Path, crypto: str, profile: str = "live") -> None:
     port = reserve_udp_port()
     passphrase_name = "ROBOTWEAX_SRT_DEMO_TEST_PASSPHRASE"
     environment = os.environ.copy()
@@ -85,12 +85,14 @@ def run_caller_listener(demo: Path, crypto: str) -> None:
         "32",
         "--crypto",
         crypto,
-        "--packet-filter",
-        "fec,cols:10,arq:onreq",
+        "--profile",
+        profile,
         "--timeout-ms",
         "5000",
         "--nonblocking",
     ]
+    if profile == "live":
+        common.extend(["--packet-filter", "fec,cols:10,arq:onreq"])
     listener = subprocess.Popen(
         [
             str(demo),
@@ -215,9 +217,10 @@ def main() -> int:
         required=True,
     )
     parser.add_argument("--crypto", choices=("ctr", "gcm"), default="ctr")
+    parser.add_argument("--profile", choices=("live", "control"), default="live")
     arguments = parser.parse_args()
     if arguments.scenario == "caller-listener":
-        run_caller_listener(arguments.demo, arguments.crypto)
+        run_caller_listener(arguments.demo, arguments.crypto, arguments.profile)
     else:
         run_rendezvous(arguments.demo)
     return 0
