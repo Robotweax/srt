@@ -141,7 +141,13 @@ startup ordering, role resolution, and failure behavior.
 
 Live/Message mode preserves application message boundaries. Use `srt_sendmsg2`
 and `srt_recvmsg2` when you need `SRT_MSGCTRL` sequence, source-time, TTL, or
-group metadata. Initialize controls with `srt_msgctrl_init()`.
+group metadata. Initialize send controls with `srt_msgctrl_init()`. On receive,
+message-control fields are outputs: their previous values do not restrict the
+call. Group receives additionally read `grpdata` and `grpdata_size` as the
+caller-provided metadata buffer and its capacity; initialize those two fields
+before receiving from a group. Single-socket receives ignore them. Successful
+receives write `srctime`, `pktseq`, and `msgno`; group receives also report
+metadata through the documented buffer contract.
 
 File/Stream mode is an ordered byte stream. Reads and writes may be partial,
 and a zero-byte receive after buffered data is drained represents stream EOF.

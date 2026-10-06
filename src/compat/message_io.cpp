@@ -934,10 +934,6 @@ int receive_message(
     if (socket == nullptr) {
         return fail(SRT_EINVSOCK);
     }
-    if (control != nullptr
-        && !valid_single_socket_control(*control)) {
-        return fail(SRT_EINVALMSGAPI);
-    }
 
     std::shared_ptr<ConnectionRuntime> runtime;
     bool blocking = true;
@@ -1362,15 +1358,10 @@ int receive_group_message_implementation(
     if (group == nullptr) {
         return fail(SRT_EINVSOCK);
     }
-    SRT_MSGCTRL local_control = control == nullptr
-        ? srt_msgctrl_default : *control;
-    if (!valid_group_control(local_control)) {
-        return fail(SRT_EINVALMSGAPI);
-    }
     SRT_SOCKGROUPDATA* const requested_data =
-        local_control.grpdata;
+        control == nullptr ? nullptr : control->grpdata;
     const std::size_t requested_capacity =
-        local_control.grpdata_size;
+        control == nullptr ? 0U : control->grpdata_size;
 
     std::unique_lock io_lock(group->receive_mutex);
     bool blocking = true;

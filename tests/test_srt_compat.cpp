@@ -6741,3 +6741,65 @@ TEST(maxrexmitbw_public_option_validates_width_range_and_default)
     REQUIRE_EQ(srt_cleanup(), 0);
 }
 #endif
+
+TEST(srt_compat_receive_control_is_output_only)
+{
+    ScopedSrtRuntime lifecycle;
+    REQUIRE_EQ(lifecycle.startup_result, 0);
+    const auto socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    auto channel = std::make_shared<robotweax::srt::compat::DatagramChannel>();
+    constexpr std::uint32_t initial = 40'000;
+    const auto peer = robotweax::srt::IpEndpoint::loopback(9'000);
+    auto runtime = std::make_shared<robotweax::srt::compat::ConnectionRuntime>(
+        robotweax::srt::compat::ConnectionRuntime::Configuration {
+            .channel = channel,
+            .peer = peer,
+            .peer_socket_id = 77,
+            .initial_sequence = robotweax::srt::SequenceNumber {initial},
+            .peer_initial_sequence = robotweax::srt::SequenceNumber {initial},
+            .has_distinct_peer_initial_sequence = true,
+            .origin = robotweax::srt::compat::ConnectionRuntime::Clock::now(),
+        });
+    const auto record =
+        robotweax::srt::compat::SocketRegistry::instance().find(socket);
+    REQUIRE(record != nullptr);
+    {
+        std::lock_guard lock(record->mutex);
+        record->state = SRTS_CONNECTED;
+        record->channel = channel;
+        record->runtime = runtime;
+        record->public_options.tsbpd_mode = false;
+        record->public_options.receive_synchronous = false;
+    }
+    constexpr std::array<std::byte, 2> payload {
+        std::byte {'o'}, std::byte {'k'}};
+    robotweax::srt::PacketView packet;
+    packet.kind = robotweax::srt::PacketKind::data;
+    packet.data.sequence = robotweax::srt::SequenceNumber {initial};
+    packet.data.message_number = 7;
+    packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+    packet.payload = payload;
+    runtime->process_packet(packet, peer);
+    SRT_MSGCTRL control;
+    std::memset(&control, 0xa5, sizeof(control));
+    std::array<char, 8> output {};
+    REQUIRE_EQ(srt_sendmsg2(socket, output.data(), 1, &control), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVALMSGAPI);
+    REQUIRE_EQ(srt_recvmsg2(socket, output.data(), output.size(), &control), 2);
+    REQUIRE_EQ(output[0], 'o');
+    REQUIRE_EQ(output[1], 'k');
+    REQUIRE_EQ(control.pktseq, static_cast<std::int32_t>(initial));
+    REQUIRE_EQ(control.msgno, 7);
+    REQUIRE_EQ(control.srctime, 0);
+    const auto previous_sequence = control.pktseq;
+    const auto previous_message = control.msgno;
+    const auto previous_time = control.srctime;
+    REQUIRE_EQ(srt_recvmsg2(socket, output.data(), output.size(), &control),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+    REQUIRE_EQ(control.msgno, previous_message);
+    REQUIRE_EQ(control.pktseq, previous_sequence);
+    REQUIRE_EQ(control.srctime, previous_time);
+    REQUIRE_EQ(srt_close(socket), 0);
+}
