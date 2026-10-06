@@ -2899,6 +2899,118 @@ TEST(crypto_session_ignores_a_replayed_request_for_a_retired_key)
     }
 }
 
+TEST(crypto_session_recovers_legitimate_rotation_after_long_horizon_key_replay)
+{
+    for (const auto key_length : {16U, 24U, 32U}) {
+        for (const auto initial_sequence : {100U, SequenceNumber::mask - 15U}) {
+            for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+                const CryptoConfiguration configuration {
+                    .passphrase = "long horizon recovery fixture",
+                    .mode = mode,
+                    .enable_aes_gcm = true,
+                    .key_length = key_length,
+                    .refresh_rate_packets = 3,
+                    .preannouncement_packets = 1,
+                };
+                CryptoSession sender {configuration};
+                CryptoSession receiver {configuration};
+                REQUIRE_EQ(sender.start_initiator(), Error::none);
+                const auto initial_request = sender.pending_key_material();
+                const std::vector<std::byte> recorded_request {
+                    initial_request.begin(), initial_request.end()};
+                REQUIRE_EQ(receiver.accept_key_material(initial_request, false),
+                    Error::none);
+                REQUIRE_EQ(sender.acknowledge_key_material(
+                               receiver.key_material_response(), false),
+                    Error::none);
+                SequenceNumber sequence {initial_sequence};
+                std::size_t announcements = 0;
+                std::size_t packets = 0;
+                const auto announce = [&] {
+                    REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+                    const auto request = sender.pending_key_material();
+                    if (!request.empty()) {
+                        REQUIRE_EQ(receiver.accept_key_material(request, false),
+                            Error::none);
+                        REQUIRE_EQ(sender.acknowledge_key_material(
+                                       receiver.key_material_response(), false),
+                            Error::none);
+                        ++announcements;
+                    }
+                };
+                const auto exchange = [&] {
+                    REQUIRE(packets++ < 160U);
+                    const std::array<std::byte, 16> clear {
+                        std::byte {0x5a}, static_cast<std::byte>(packets)};
+                    std::array<std::byte, 16> ciphertext {}, plaintext {};
+                    std::array<std::byte, srt_gcm_authentication_tag_size>
+                        tag {};
+                    EncryptionKey selected = EncryptionKey::none;
+                    const DataHeader header {
+                        .sequence = sequence,
+                        .message_number = 1,
+                        .boundary = MessageBoundary::solo,
+                        .in_order = true,
+                        .encryption_key = sender.active_sender_key(),
+                        .timestamp = PacketTimestamp {sequence.value()},
+                        .destination_socket_id = 0x1234'5678U,
+                    };
+                    if (mode == CryptoMode::aes_gcm) {
+                        REQUIRE_EQ(sender.seal(header, clear, ciphertext, tag,
+                                       selected),
+                            Error::none);
+                        REQUIRE_EQ(
+                            receiver.open(header, ciphertext, tag, plaintext),
+                            Error::none);
+                    } else {
+                        REQUIRE_EQ(sender.encrypt(
+                                       sequence, clear, ciphertext, selected),
+                            Error::none);
+                        REQUIRE_EQ(receiver.decrypt(selected, sequence,
+                                       ciphertext, plaintext),
+                            Error::none);
+                    }
+                    REQUIRE_EQ(plaintext, clear);
+                    receiver.note_accepted_receive_sequence(sequence);
+                    REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+                    sequence = sequence.next();
+                };
+                // Thirty-two announcements age the initial material beyond both
+                // bounded histories. This is a fixture horizon, not a wire epoch.
+                do {
+                    announce();
+                    exchange();
+                } while (announcements < 32U
+                    || sender.active_sender_key() != EncryptionKey::even
+                    || sender.packets_on_active_key() == 0U);
+
+                const auto replay_result =
+                    receiver.accept_key_material(recorded_request, false);
+                // Do not require acceptance of an obsolete key: a future freshness
+                // defense may reject it. The contract tested here is recovery.
+                REQUIRE(replay_result == Error::none
+                    || replay_result == Error::invalid_key_material);
+                REQUIRE_EQ(receiver.receiver_state(), CryptoState::secured);
+
+                // Advance to preannouncement with one DATA position lost in the
+                // network. No corrupted plaintext is accepted during this gap.
+                REQUIRE_EQ(sender.packets_on_active_key(), 1U);
+                REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+                sequence = sequence.next();
+                const auto recovery_start = announcements;
+                announce();
+                REQUIRE_EQ(announcements, recovery_start + 1U);
+                exchange();
+                while (announcements < recovery_start + 4U) {
+                    announce();
+                    exchange();
+                }
+                REQUIRE_EQ(receiver.receiver_state(), CryptoState::secured);
+            }
+        }
+    }
+}
+
 TEST(crypto_session_recovers_rotation_after_foreign_key_material)
 {
     for (const CryptoMode mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {

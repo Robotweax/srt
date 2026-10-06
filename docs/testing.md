@@ -64,6 +64,16 @@ exactly once across the partitions, each retaining a 30-second process deadline.
 Run `ctest --test-dir build -R '^robotweax_srt_key_length_tests$'` to select the
 key-length partition; it is also covered by the `encryption` label.
 
+The native crypto recovery regression also drives 32 key announcements before
+replaying recorded initial KMREQ material, then requires exact DATA recovery
+through four subsequent legitimate announcements. It covers AES-128/192/256,
+CTR/GCM, and ordinary/wrapping packet sequences. The 32-announcement value is a
+fixture horizon beyond the current bounded histories, not a protocol epoch or
+a general replay-protection threshold. The test permits rejection of the old
+request so future freshness protection is not constrained to today's acceptance
+behavior. It checks recovery, not prevention of the documented long-horizon
+replay exposure; it does not qualify UDP injection, Rendezvous, or group modes.
+
 macOS CI limits compilation to three concurrent jobs. Its full static suites
 run timing-sensitive tests serially, then run the process-isolated crypto setup
 fault probes with two concurrent CTest slots. The batching helper discovers the
