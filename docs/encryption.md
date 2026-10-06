@@ -64,12 +64,28 @@ Invalid passphrase lengths are rejected before copying or deriving key
 material. A value longer than 80 bytes is never truncated into a different
 shared secret.
 
-A peer that leaves `SRTO_PBKEYLEN` at its default advertises no key length:
-the handshake encryption field is `0` ("no encryption advertised"), and the
-key material alone carries the key length. This is the reference
-implementation's default, so callers and listeners accept a `0` field and take
-the key length from the key material. A nonzero advertisement must still match
-the key material.
+Some reference peers leave the handshake encryption field at `0` when
+`SRTO_PBKEYLEN` is unset. This means no encryption length is advertised;
+the key material carries the length. Callers and listeners accept this form.
+A nonzero advertisement must match the corresponding key material.
+
+For HSv5 Caller/Listener connections, an explicit caller `SRTO_PBKEYLEN` is
+retained. A different nonzero length in the listener's INDUCTION response
+fails establishment with `SRT_ESECFAIL` and `SRT_REJ_BADSECRET`; the caller
+does not silently change its key length. An unset caller may adopt the
+listener's advertised length, with AES-128 used when neither side selects one.
+This is a deliberate stricter policy than the reference's role-dependent
+conflict resolution, which can override an explicit length. See the
+[reference option contract](https://github.com/Haivision/srt/blob/v1.5.7/docs/API/API-socket-options.md#srto_pbkeylen).
+
+A listener's `SRTO_PBKEYLEN` selects an advertised/default length, rather than
+an allowlist of permitted incoming lengths. In particular, a value set in the
+listen callback does not change the length of an already supplied, valid
+KMREQ. The final CONCLUSION response reports the accepted key length, and
+`SRTO_PBKEYLEN` on the connected socket reports that length. This option does not
+provide a per-key-length admission allowlist. Wrong passphrases and inconsistent KMREQ
+advertisements still fail under enforced encryption. These Caller/Listener
+rules do not change Rendezvous role or key-length selection.
 
 ### AES-CTR example
 
