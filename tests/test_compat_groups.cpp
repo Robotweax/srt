@@ -6335,3 +6335,55 @@ TEST(maxrexmitbw_group_mirror_retains_listener_and_updated_member_template)
     REQUIRE_EQ(srt_cleanup(), 0);
 }
 #endif
+
+TEST(compat_group_receive_control_reads_only_metadata_buffer_inputs)
+{
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        for (const std::size_t capacity : {0U, 1U, 2U}) {
+            const auto group = srt_create_group(type);
+            REQUIRE(group != SRT_INVALID_SOCK);
+            struct Cleanup {
+                SRTSOCKET group;
+                ~Cleanup()
+                {
+                    (void)srt_close(group);
+                }
+            } cleanup {group};
+            const auto record = GroupRegistry::instance().find(group);
+            REQUIRE(record != nullptr);
+            const auto socket = srt_create_socket();
+            const auto runtime =
+                attach_group_runtime(group, socket, record->initial_sequence);
+            constexpr std::array<std::byte, 1> payload {std::byte {'g'}};
+            robotweax::srt::PacketView packet;
+            packet.kind = robotweax::srt::PacketKind::data;
+            packet.data.sequence = SequenceNumber {record->initial_sequence};
+            packet.data.message_number = 1;
+            packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+            packet.payload = payload;
+            runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+            std::array<SRT_SOCKGROUPDATA, 2> metadata {};
+            SRT_MSGCTRL control;
+            std::memset(&control, 0xa5, sizeof(control));
+            control.grpdata = metadata.data();
+            control.grpdata_size = capacity;
+            std::array<char, 8> output {};
+            REQUIRE_EQ(
+                srt_sendmsg2(group, output.data(), 1, &control), SRT_ERROR);
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVALMSGAPI);
+            REQUIRE_EQ(
+                srt_recvmsg2(group, output.data(), output.size(), &control), 1);
+            REQUIRE_EQ(output[0], 'g');
+            REQUIRE_EQ(control.msgno, 1);
+            REQUIRE_EQ(control.pktseq,
+                static_cast<std::int32_t>(record->initial_sequence));
+            REQUIRE_EQ(control.grpdata_size, 1U);
+            if (capacity == 0U) {
+                REQUIRE(control.grpdata == nullptr);
+            } else {
+                REQUIRE(control.grpdata == metadata.data());
+                REQUIRE_EQ(metadata[0].id, socket);
+            }
+        }
+    }
+}
