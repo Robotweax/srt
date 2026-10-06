@@ -383,12 +383,24 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     add_test(NAME robotweax_srt_tests
         COMMAND robotweax_srt_tests --exclude compat_runtime_rotation_
             compat_group_closed_member_retains_bounded_copy key_length
-            srt_compat_gcm_)
+            srt_compat_gcm_ srt_compat_sensor_gcm_bounded_sample_stream_)
     if(ENABLE_AEAD_API_PREVIEW)
         # Paced public profile scenarios have a separate aggregate budget.
         add_test(NAME robotweax_srt_gcm_profile_tests
             COMMAND robotweax_srt_tests srt_compat_gcm_)
         set_tests_properties(robotweax_srt_gcm_profile_tests PROPERTIES
+            TIMEOUT 30 LABELS "encryption;integration;profile")
+        add_test(NAME robotweax_srt_sensor_gcm_aes128_tests
+            COMMAND robotweax_srt_tests srt_compat_sensor_gcm_bounded_sample_stream_aes128)
+        set_tests_properties(robotweax_srt_sensor_gcm_aes128_tests PROPERTIES
+            TIMEOUT 30 LABELS "encryption;integration;profile")
+        add_test(NAME robotweax_srt_sensor_gcm_aes192_tests
+            COMMAND robotweax_srt_tests srt_compat_sensor_gcm_bounded_sample_stream_aes192)
+        set_tests_properties(robotweax_srt_sensor_gcm_aes192_tests PROPERTIES
+            TIMEOUT 30 LABELS "encryption;integration;profile")
+        add_test(NAME robotweax_srt_sensor_gcm_aes256_tests
+            COMMAND robotweax_srt_tests srt_compat_sensor_gcm_bounded_sample_stream_aes256)
+        set_tests_properties(robotweax_srt_sensor_gcm_aes256_tests PROPERTIES
             TIMEOUT 30 LABELS "encryption;integration;profile")
     endif()
     add_test(NAME robotweax_srt_key_length_tests

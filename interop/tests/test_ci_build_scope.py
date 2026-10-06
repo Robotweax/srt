@@ -115,6 +115,9 @@ class CiTestRegistrationTests(unittest.TestCase):
         partitions = {
             "robotweax_srt_tests", "robotweax_srt_rotation_tests",
             "robotweax_srt_key_length_tests", "robotweax_srt_gcm_profile_tests",
+            "robotweax_srt_sensor_gcm_aes128_tests",
+            "robotweax_srt_sensor_gcm_aes192_tests",
+            "robotweax_srt_sensor_gcm_aes256_tests",
             "robotweax_srt_group_retention_prefix_tests",
             "robotweax_srt_group_retention_oversized_tests",
         }
@@ -138,21 +141,29 @@ class CiTestRegistrationTests(unittest.TestCase):
             "--exclude", "compat_runtime_rotation_",
             "compat_group_closed_member_retains_bounded_copy",
             "key_length", "srt_compat_gcm_",
+            "srt_compat_sensor_gcm_bounded_sample_stream_",
         ])
         bounded_properties = re.search(
             r"set_tests_properties\(\s*(robotweax_srt_tests.*?)\)",
             cmake, re.DOTALL,
         )
         self.assertIsNotNone(bounded_properties)
-        for name in partitions - {"robotweax_srt_gcm_profile_tests"}:
+        profile_partitions = {
+            "robotweax_srt_gcm_profile_tests",
+            "robotweax_srt_sensor_gcm_aes128_tests",
+            "robotweax_srt_sensor_gcm_aes192_tests",
+            "robotweax_srt_sensor_gcm_aes256_tests",
+        }
+        for name in partitions - profile_partitions:
             self.assertIn(name, bounded_properties.group(1))
-        profile_properties = re.search(
-            r"set_tests_properties\(robotweax_srt_gcm_profile_tests\s+PROPERTIES\s+([^)]*)\)",
-            cmake,
-        )
-        self.assertIsNotNone(profile_properties)
-        self.assertIn("TIMEOUT 30", profile_properties.group(1))
-        self.assertIn("encryption", profile_properties.group(1))
+        for name in profile_partitions:
+            profile_properties = re.search(
+                r"set_tests_properties\(" + name + r"\s+PROPERTIES\s+([^)]*)\)",
+                cmake,
+            )
+            self.assertIsNotNone(profile_properties)
+            self.assertIn("TIMEOUT 30", profile_properties.group(1))
+            self.assertIn("encryption", profile_properties.group(1))
         self.assertIn("PROPERTIES TIMEOUT 30", bounded_properties.group(1))
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         optional_step = workflow.split("- name: Test optional retransmission limit", 1)[1]
@@ -161,7 +172,8 @@ class CiTestRegistrationTests(unittest.TestCase):
         self.assertIsNotNone(selection)
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_tests"))
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_key_length_tests"))
-        self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_gcm_profile_tests"))
+        for name in profile_partitions:
+            self.assertIsNotNone(re.search(selection.group(1), name))
         target = re.search(
             r"add_executable\(robotweax_srt_tests\s+([^)]*)\)", cmake,
         )

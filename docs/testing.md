@@ -59,14 +59,17 @@ An inclusion or exclusion that selects no native cases exits with an error.
 Malformed runner arguments also fail instead of silently selecting cases.
 
 CTest runs key-length negotiation, runtime key rotation, GCM public profile
-scenarios (including the paced Sensor sample stream), and bounded closed-member
+scenarios, paced Sensor sample streams per AES key size, and bounded closed-member
 retention cases in separate native partitions. Each case runs
 exactly once across the partitions, each retaining a 30-second process deadline.
 Run `ctest --test-dir build -R '^robotweax_srt_key_length_tests$'` to select the
 key-length partition; it is also covered by the `encryption` label. In GCM builds,
 `robotweax_srt_gcm_profile_tests` selects the public profile scenarios and retains
-its own 30-second budget. The optional retransmission-limit CI configuration also
-runs this partition.
+its own 30-second budget. The three `robotweax_srt_sensor_gcm_aes*_tests`
+partitions each retain all 400 bidirectional samples for one AES key size and a
+30-second budget, allowing for platform timer coalescing without changing the
+Sensor TTL or correctness assertions. The optional retransmission-limit CI
+configuration runs all these partitions.
 
 The native crypto recovery regression also drives 32 key announcements before
 replaying recorded initial KMREQ material, then requires exact DATA recovery
