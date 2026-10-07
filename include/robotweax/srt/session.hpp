@@ -196,7 +196,7 @@ public:
     [[nodiscard]] std::optional<OutboundPacket> next_data_packet(
         std::uint64_t now_microseconds = 0) noexcept
     {
-        auto packet = send_buffer_.next_packet();
+        auto packet = send_buffer_.next_packet(false, true, now_microseconds);
         if (packet.has_value() && packet->header.retransmitted) {
             note_retransmission_sent(packet->header.sequence, now_microseconds);
         }

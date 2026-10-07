@@ -228,11 +228,13 @@ At `refresh_rate - preannouncement` transmitted packets, the sender:
 1. creates the inactive even or odd generation;
 2. sends an RFC-3394-wrapped KMREQ;
 3. retries the same KMREQ until it receives the matching KMRSP; and
-4. changes the DATA key selector only at the acknowledged refresh boundary.
+4. changes the DATA key selector only after the successor is acknowledged.
 
-If confirmation is absent at the boundary, new DATA pauses while key exchange
-continues. Already protected retransmissions remain eligible. The sender never
-silently exceeds the configured key lifetime or uses an unacknowledged key.
+If confirmation is absent at the refresh boundary, new DATA continues on the
+active key for at most one further refresh period while key exchange
+continues; after that bound, new DATA pauses. Already protected
+retransmissions remain eligible. The sender never uses an unacknowledged key,
+and the 31-bit IV space remains a hard per-key limit.
 
 Both current receive selectors and a fixed, bounded history of prior
 generations remain available for delayed packets. Delayed control duplicates

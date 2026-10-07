@@ -2408,10 +2408,15 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
             session_.note_retransmission_sent(completion.data.sequence, now);
         }
         pacer_.on_packet_sent(bytes.size(), now);
-        if (crypto_ != nullptr && !completion.data.retransmitted
-            && crypto_->note_data_packet_sent() != Error::none) {
-            break_locked(0);
-            return false;
+        if (crypto_ != nullptr && !completion.data.retransmitted) {
+            const std::uint64_t overrun_before =
+                crypto_->refresh_overrun_positions();
+            if (crypto_->note_data_packet_sent() != Error::none) {
+                break_locked(0);
+                return false;
+            }
+            statistics_.note_key_refresh_overrun(
+                crypto_->refresh_overrun_positions() - overrun_before);
         }
     } else {
         if (completion.kind == DatagramKind::filter) {
@@ -3790,8 +3795,15 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     }
     const std::size_t send_size_before_drop =
         session_.send_buffer().size();
+    // Like the reference sender, evaluate the too-late deadline while new
+    // DATA (or a prepared datagram awaiting a UDP retry) is waiting to be
+    // sent. Once the stream pauses or ends, retained copies stay available
+    // for retransmission until acknowledged.
+    const bool new_data_waiting = pending_datagram_size_ != 0U
+        || session_.send_buffer().peek_new_packet().has_value();
     if (!send_actions(session_.drop_expired_sender_message(now), now)
-        || !send_actions(session_.drop_too_late_sender(now), now)) {
+        || (new_data_waiting
+            && !send_actions(session_.drop_too_late_sender(now), now))) {
         return {};
     }
     if (session_.send_buffer().size() < send_size_before_drop) {
@@ -3945,6 +3957,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     // black hole. Flow-window waits have the same inbound-event dependency.
     const bool crypto_blocked = !retransmission && crypto_ != nullptr
         && crypto_->enabled() && !crypto_->ready_to_send_data();
+    statistics_.update_key_pause(now_microseconds(), crypto_blocked && pending);
     const bool paced_work =
         filter_pending || (pending && !flow_blocked && !crypto_blocked);
     const std::uint64_t current = now_microseconds();

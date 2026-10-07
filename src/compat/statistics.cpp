@@ -300,6 +300,30 @@ void RuntimeStatisticsState::update_send_duration(
     sender_busy_ = sender_buffer_nonempty;
 }
 
+void RuntimeStatisticsState::note_key_refresh_overrun(
+    std::uint64_t positions) noexcept
+{
+    total_.sender_key_refresh_overrun_positions =
+        saturated_add(total_.sender_key_refresh_overrun_positions, positions);
+    interval_.sender_key_refresh_overrun_positions = saturated_add(
+        interval_.sender_key_refresh_overrun_positions, positions);
+}
+
+void RuntimeStatisticsState::update_key_pause(
+    std::uint64_t now_microseconds, bool paused) noexcept
+{
+    if (key_paused_ && now_microseconds >= key_pause_update_microseconds_) {
+        const std::uint64_t elapsed =
+            now_microseconds - key_pause_update_microseconds_;
+        total_.sender_key_pause_microseconds =
+            saturated_add(total_.sender_key_pause_microseconds, elapsed);
+        interval_.sender_key_pause_microseconds =
+            saturated_add(interval_.sender_key_pause_microseconds, elapsed);
+    }
+    key_pause_update_microseconds_ = now_microseconds;
+    key_paused_ = paused;
+}
+
 void RuntimeStatisticsState::BufferMovingAverage::sample(
     std::uint64_t now_microseconds,
     std::size_t packets,

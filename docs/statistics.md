@@ -120,7 +120,8 @@ The v1.5.7 public layout has no separate fields, so `pktSndDrop*` and
 `byteSndDrop*` report their combined result.
 
 For TLPKTDROP, a sender increment means that the packet aged beyond the
-negotiated sender-drop deadline while it was still unacknowledged, so the
+negotiated sender-drop deadline, measured from its first transmission, while
+it was still unacknowledged, so the
 sender removed its retained copy from the send/retransmission buffer and will
 no longer retransmit it. The sender also emits a DROPREQ for the abandoned
 sequence range. A packet can already have been accepted by the UDP socket and

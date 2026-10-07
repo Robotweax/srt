@@ -105,9 +105,12 @@ public:
         std::uint32_t destination_socket_id,
         std::uint64_t enqueue_microseconds = 0) noexcept;
 
+    // now_microseconds records when an original packet is first selected
+    // for transmission; sender too-late drop measures age from that time.
     [[nodiscard]] std::optional<OutboundPacket> next_packet(
         bool defer_retransmission_commit = false,
-        bool allow_retransmission = true) noexcept;
+        bool allow_retransmission = true,
+        std::uint64_t now_microseconds = 0) noexcept;
     [[nodiscard]] std::optional<OutboundPacket>
     peek_retransmission_packet() noexcept;
     void requeue_prepared_retransmission(SequenceNumber sequence) noexcept;
@@ -197,6 +200,7 @@ private:
         bool has_retransmission_send_time = false;
         std::uint64_t last_retransmission_send_microseconds = 0;
         std::uint64_t enqueue_microseconds = 0;
+        std::uint64_t first_send_microseconds = 0;
         std::uint64_t expiration_microseconds = 0;
     };
 
