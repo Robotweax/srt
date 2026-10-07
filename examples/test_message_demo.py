@@ -122,7 +122,7 @@ def run_caller_listener(demo: Path, crypto: str, profile: str = "live") -> None:
             "--stream-id",
             "demo/loopback",
             "--message",
-            "caller-listener-smoke",
+            "caller-listener-smoke\nFORGED\x1b]52;c;demo\x07é",
             *common,
         ],
         capture_output=True,
@@ -144,6 +144,10 @@ def run_caller_listener(demo: Path, crypto: str, profile: str = "live") -> None:
     require_success(
         "listener", listener.returncode, listener_stdout, listener_stderr
     )
+    escaped = r"caller-listener-smoke\x0aFORGED\x1b]52;c;demo\x07\xc3\xa9"
+    for output in (caller.stdout, listener_stdout):
+        if escaped not in output or "\x1b" in output or "\x07" in output:
+            raise RuntimeError(f"unsafe or missing escaped diagnostic: {output!r}")
     if "ECHO verified" not in caller.stdout or "STATS " not in caller.stdout:
         raise RuntimeError(f"caller output was incomplete:\n{caller.stdout}")
     if "ECHOED " not in listener_stdout or "STATS " not in listener_stdout:

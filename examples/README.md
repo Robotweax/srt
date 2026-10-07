@@ -6,6 +6,11 @@ the public `RobotweaxSRT::srt` target. They are not production relay tools and
 do not replace application-specific reconnect, credential, or monitoring
 policy.
 
+The Message and File demos escape control and non-ASCII bytes in peer message
+and Stream ID diagnostics as `\xHH`. Printable ASCII remains readable. This
+changes only terminal output: echoed messages and transferred files retain
+exactly their original bytes.
+
 ## Live MPEG-TS UDP ↔ SRT bridge
 
 The [UDP/SRT bridge guide](../docs/udp-srt-bridge.md) shows how to build and run
