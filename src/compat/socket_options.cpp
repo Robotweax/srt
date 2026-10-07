@@ -489,8 +489,7 @@ int get_socket_option(
     }
 }
 
-int set_socket_option(
-    SocketRecord& socket, SRT_SOCKOPT option,
+static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     const void* value, int value_size) noexcept
 {
     if ((value == nullptr && value_size != 0)
@@ -1209,6 +1208,30 @@ int set_socket_option(
     default:
         return unsupported_option();
     }
+}
+
+int set_socket_option(SocketRecord& socket, SRT_SOCKOPT option,
+    const void* value, int value_size) noexcept
+{
+    std::lock_guard option_lock(socket.option_mutex);
+    const int result =
+        set_socket_option_value(socket, option, value, value_size);
+    if (result != 0) {
+        return result;
+    }
+    std::shared_ptr<ConnectionRuntime> runtime;
+    SocketOptions options;
+    {
+        std::lock_guard lock(socket.mutex);
+        runtime = socket.runtime;
+        options = socket.native_options;
+    }
+    // Retain option_lock through publication so an older snapshot cannot
+    // overwrite a newer setter, including updates made through a group.
+    if (runtime != nullptr) {
+        runtime->apply_options(options);
+    }
+    return 0;
 }
 
 } // namespace robotweax::srt::compat

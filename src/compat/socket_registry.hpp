@@ -30,6 +30,9 @@ struct SocketRecord {
     enum class Purpose { transport, option_template };
     explicit SocketRecord(Purpose purpose = Purpose::transport);
 
+    // Serialize option validation, mutation and runtime publication.
+    // Acquire before mutex; never hold mutex while applying runtime options.
+    mutable std::mutex option_mutex;
     mutable std::mutex mutex;
     SRT_SOCKSTATUS state = SRTS_INIT;
     PublicSocketOptions public_options;
