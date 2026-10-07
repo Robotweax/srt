@@ -438,6 +438,16 @@ available. Known key bytes must retain the same
 salt, selector, and cipher mode across both current receive slots and their
 bounded histories; relabeled material is rejected without changing the session. Stale KMRSP messages cannot
 acknowledge a newer request or roll the session back.
+New receive material is also rejected atomically if either unwrapped key
+matches an active local transmit key or one of the eight most recently replaced
+transmit keys. This comparison ignores selector, salt, and mode to prevent
+relabeling a local secret into the receive direction. Cached duplicates of the
+initial handshake remain idempotent: they return the original response without
+reinstalling material, preserving legacy bootstrap compatibility. Retired local
+key storage is fixed-size and securely erased. This bounds direction-reflection
+protection to the retained generations; it does not authenticate legacy KMREQ
+or KMRSP controls or add a connection-lifetime replay guarantee.
+
 Ciphertext outside the bounded history fails closed. Like libsrt, this side
 cannot tell a replayed announcement older than the whole history from a fresh
 key: runtime KM messages are not authenticated, so such a replay installs the
