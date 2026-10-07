@@ -196,25 +196,29 @@ void initialize_callback_thread_local(void* context, int) noexcept
 
 TEST(connect_callback_lifecycle_thread_local_destructor_can_restart_runtime)
 {
-    REQUIRE_EQ(srt_startup(), 0);
-    const auto executor =
-        robotweax::srt::compat::acquire_connect_callback_executor();
-    auto observation = std::make_shared<TlsCleanupObservation>();
-    auto context =
-        std::make_shared<std::shared_ptr<TlsCleanupObservation>>(observation);
-    REQUIRE(executor->submit({initialize_callback_thread_local, context, 0}));
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds {3};
-    while (executor->snapshot().completed != 1
-        && std::chrono::steady_clock::now() < deadline)
-        std::this_thread::yield();
-    REQUIRE_EQ(executor->snapshot().completed, 1U);
-    REQUIRE_EQ(executor->snapshot().idle, 1U);
-    REQUIRE(!observation->entered.load());
-    // Final cleanup must not join this idle worker while holding the
-    // runtime-generation mutex needed by application TLS destructors.
-    REQUIRE_EQ(srt_cleanup(), 0);
-    REQUIRE(observation->finished.load());
-    REQUIRE(observation->valid.load());
-    REQUIRE_EQ(executor->snapshot().workers, 0U);
+    // Exercise fresh generations repeatedly to cover retirement scheduling.
+    for (unsigned generation = 0; generation < 32; ++generation) {
+        REQUIRE_EQ(srt_startup(), 0);
+        const auto executor =
+            robotweax::srt::compat::acquire_connect_callback_executor();
+        auto observation = std::make_shared<TlsCleanupObservation>();
+        auto context = std::make_shared<std::shared_ptr<TlsCleanupObservation>>(
+            observation);
+        REQUIRE(
+            executor->submit({initialize_callback_thread_local, context, 0}));
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds {3};
+        while (executor->snapshot().completed != 1
+            && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        REQUIRE_EQ(executor->snapshot().completed, 1U);
+        REQUIRE_EQ(executor->snapshot().idle, 1U);
+        REQUIRE(!observation->entered.load());
+        // Final cleanup must not join this idle worker while holding the
+        // runtime-generation mutex needed by application TLS destructors.
+        REQUIRE_EQ(srt_cleanup(), 0);
+        REQUIRE(observation->finished.load());
+        REQUIRE(observation->valid.load());
+        REQUIRE_EQ(executor->snapshot().workers, 0U);
+    }
 }
