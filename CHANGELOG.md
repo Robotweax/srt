@@ -6,6 +6,12 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Measure the sender too-late packet drop deadline from a packet's first
+  transmission instead of the time it was queued, and never abandon packets
+  that were not yet sent (except the unsent tail of an abandoned message).
+  A paced backlog, for example after an application burst or with a low
+  maximum bandwidth, is now delivered in order instead of being dropped at the
+  sender, matching the observed Haivision 1.5.7 behavior.
 - Keep Live DATA flowing when a key-rotation response is late: the sender may
   continue on the active key for at most one further refresh period before new
   DATA pauses, instead of pausing at the refresh boundary. Small refresh rates

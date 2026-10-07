@@ -24,6 +24,20 @@ latency and the default zero sender-drop delay, the effective deadline is
 therefore 1,020 ms. The configured latency is not itself the minimum sender
 retention time.
 
+The deadline is measured from a packet's first transmission, not from the
+time the application queued it. A packet that waited in the send buffer
+behind a paced backlog is therefore sent in order instead of being abandoned
+before or immediately after its first transmission; the receiver applies its
+own TSBPD deadline. A packet that was never sent is never abandoned by
+TLPKTDROP, except as the unsent tail of a message whose earlier packets were
+abandoned, so the peer never receives part of a message. The deadline is
+evaluated while new DATA, or a prepared datagram awaiting a UDP retry, is
+waiting to be sent; after the stream pauses or ends, retained copies stay
+available for retransmission until acknowledged. This matches the black-box
+behavior observed with Haivision 1.5.7: no sender drops for a paced backlog,
+and drops of sent packets whose acknowledgements stay absent only while the
+stream continues.
+
 ## Qualified Linux observation
 
 An opt-in diagnostic build recorded successful UDP submissions, cumulative ACK

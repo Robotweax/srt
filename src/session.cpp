@@ -255,8 +255,8 @@ std::optional<OutboundPacket> ReliabilitySession::next_paced_data_packet(
     if (!pacer.query(now_microseconds, flow_count).ready) {
         return std::nullopt;
     }
-    auto packet =
-        send_buffer_.next_packet(defer_pacing_commit, allow_retransmission);
+    auto packet = send_buffer_.next_packet(
+        defer_pacing_commit, allow_retransmission, now_microseconds);
     if (packet.has_value()) {
         if (live_rate_controller_.has_value()) {
             live_rate_controller_->observe_payload(packet->payload.size());

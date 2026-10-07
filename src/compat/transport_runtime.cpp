@@ -3795,8 +3795,15 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     }
     const std::size_t send_size_before_drop =
         session_.send_buffer().size();
+    // Like the reference sender, evaluate the too-late deadline while new
+    // DATA (or a prepared datagram awaiting a UDP retry) is waiting to be
+    // sent. Once the stream pauses or ends, retained copies stay available
+    // for retransmission until acknowledged.
+    const bool new_data_waiting = pending_datagram_size_ != 0U
+        || session_.send_buffer().peek_new_packet().has_value();
     if (!send_actions(session_.drop_expired_sender_message(now), now)
-        || !send_actions(session_.drop_too_late_sender(now), now)) {
+        || (new_data_waiting
+            && !send_actions(session_.drop_too_late_sender(now), now))) {
         return {};
     }
     if (session_.send_buffer().size() < send_size_before_drop) {

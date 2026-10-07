@@ -641,11 +641,43 @@ TEST(send_buffer_original_order_survives_ack_retransmission_and_ring_wrap)
     REQUIRE_EQ(buffer.available(), 5U);
 }
 
+TEST(send_buffer_late_drop_keeps_packets_that_were_never_sent)
+{
+    // Too-late drop abandons only already sent packets. An old message that
+    // was never started stays queued and is still sent in order. A message
+    // whose first packet was sent is abandoned completely, never in part.
+    for (std::size_t sent = 0; sent <= 2; ++sent) {
+        SendBuffer buffer {SequenceNumber {100}, 5, 1};
+        const std::array<std::byte, 2> old_message {
+            std::byte {7}, std::byte {8}};
+        const std::array<std::byte, 1> recent_message {std::byte {42}};
+        REQUIRE_EQ(buffer.enqueue_message(
+                       old_message, 1, PacketTimestamp {1}, 99, true, 10),
+            Error::none);
+        REQUIRE_EQ(buffer.enqueue_message(
+                       recent_message, 2, PacketTimestamp {2}, 99, true, 10),
+            Error::none);
+        for (std::size_t index = 0; index < sent; ++index) {
+            REQUIRE(buffer.next_packet(false, true, 10).has_value());
+        }
+        const auto dropped = buffer.drop_messages_older_than(10);
+        REQUIRE_EQ(dropped.packets, sent == 0U ? 0U : 2U);
+        REQUIRE_EQ(
+            buffer.first_sequence(), SequenceNumber {sent == 0U ? 100U : 102U});
+        const auto packet = buffer.next_packet();
+        REQUIRE(packet.has_value());
+        REQUIRE_EQ(
+            packet->header.sequence, SequenceNumber {sent == 0U ? 100U : 102U});
+        REQUIRE_EQ(packet->payload.front(),
+            sent == 0U ? std::byte {7} : std::byte {42});
+    }
+}
+
 TEST(send_buffer_late_drop_rebases_original_selection_before_and_after_cursor)
 {
     // Exercise a removed prefix shorter than, equal to, and longer than the
-    // already selected prefix, including a completely unsent buffer.
-    for (std::size_t sent = 0; sent <= 3; ++sent) {
+    // already selected prefix. Only sent packets are abandoned.
+    for (std::size_t sent = 2; sent <= 3; ++sent) {
         SendBuffer buffer {SequenceNumber {100}, 5, 1};
         const std::array<std::byte, 2> old_message {};
         const std::array<std::byte, 1> recent_message {std::byte {42}};
@@ -656,7 +688,9 @@ TEST(send_buffer_late_drop_rebases_original_selection_before_and_after_cursor)
                        recent_message, 2, PacketTimestamp {2}, 99, true, 20),
             Error::none);
         for (std::size_t index = 0; index < sent; ++index) {
-            REQUIRE(buffer.next_packet().has_value());
+            // The two old packets are first sent at 10, the recent one at 20.
+            REQUIRE(buffer.next_packet(false, true, index < 2U ? 10U : 20U)
+                    .has_value());
         }
         REQUIRE_EQ(buffer.drop_messages_older_than(10).packets, 2U);
         REQUIRE_EQ(buffer.first_sequence(), SequenceNumber {102});

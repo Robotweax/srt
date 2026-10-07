@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cerrno>
 #include <condition_variable>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <future>
@@ -2346,10 +2347,13 @@ TEST(compat_runtime_tlpktdrop_has_a_distinct_internal_counter)
     REQUIRE_EQ(submitted_packet.packet.kind, PacketKind::data);
     REQUIRE_EQ(submitted_packet.packet.data.sequence, SequenceNumber {720});
 
+    // The deadline is evaluated while new DATA waits; queue the next message.
     now = 1'021'001;
+    REQUIRE_EQ(runtime.queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
     (void)runtime.poll();
     const auto abandonment = take_datagrams(output);
-    REQUIRE_EQ(abandonment.size(), 1U);
+    REQUIRE(!abandonment.empty());
     const auto drop_request = decode_packet(abandonment.front());
     REQUIRE(drop_request);
     REQUIRE_EQ(drop_request.packet.kind, PacketKind::control);
@@ -11344,6 +11348,105 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
 }
 
 } // namespace
+
+TEST(compat_runtime_sender_late_drop_spares_packets_that_were_never_sent)
+{
+    // The application writes a burst far beyond the paced sending rate, so
+    // queued packets wait longer than the 1,020 ms sender drop deadline before
+    // their first transmission. Too-late drop must not abandon them: every
+    // message is still sent and delivered in order.
+    const auto sender_channel = std::make_shared<DatagramChannel>();
+    const auto receiver_channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams sender_output;
+    CapturedDatagrams receiver_output;
+    sender_channel->set_send_hook_for_testing(capture_datagram, &sender_output);
+    receiver_channel->set_send_hook_for_testing(
+        capture_datagram, &receiver_output);
+    const Ipv4Endpoint sender_endpoint {
+        .address = {192, 0, 2, 95}, .port = 16'101};
+    const Ipv4Endpoint receiver_endpoint {
+        .address = {192, 0, 2, 96}, .port = 16'102};
+    constexpr std::size_t message_size = 1'316;
+    constexpr std::uint32_t messages = 3'000;
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::send_buffer_packets, 8'192), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::receive_buffer_packets, 8'192), Error::none);
+    REQUIRE_EQ(options.set(
+                   SocketOption::maximum_bandwidth_bytes_per_second, 2'000'000),
+        Error::none);
+    const SequenceNumber initial_sequence {7'000};
+    const auto origin = ConnectionRuntime::Clock::now();
+    std::uint64_t sender_now = 1'000'000;
+    std::uint64_t receiver_now = 1'000'000;
+    ConnectionRuntime sender {{
+        .channel = sender_channel,
+        .peer = receiver_endpoint,
+        .peer_socket_id = 960,
+        .initial_sequence = initial_sequence,
+        .flow_window_packets = 8'192,
+        .options = options,
+        .negotiated_options = {.too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
+            .periodic_nak = true,
+            .retransmit_flag = true},
+        .origin = origin,
+        .now_function = injected_now,
+        .now_context = &sender_now,
+    }};
+    ConnectionRuntime receiver {{
+        .channel = receiver_channel,
+        .peer = sender_endpoint,
+        .peer_socket_id = 950,
+        .initial_sequence = initial_sequence,
+        .flow_window_packets = 8'192,
+        .options = options,
+        .negotiated_options = {.too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
+            .periodic_nak = true,
+            .retransmit_flag = true},
+        .origin = origin,
+        .now_function = injected_now,
+        .now_context = &receiver_now,
+    }};
+
+    std::array<std::byte, message_size> message {};
+    for (std::uint32_t index = 0; index < messages; ++index) {
+        std::memcpy(message.data(), &index, sizeof index);
+        REQUIRE_EQ(sender.queue_message(message, 0, true, false, 0).status,
+            MessageIoStatus::success);
+    }
+    std::uint32_t delivered = 0;
+    std::array<std::byte, 1'500> received {};
+    for (unsigned step = 0; step < 4 * 4'000U && delivered < messages; ++step) {
+        (void)sender.poll();
+        deliver(sender_output, receiver, sender_endpoint);
+        (void)receiver.poll();
+        deliver(receiver_output, sender, receiver_endpoint);
+        for (;;) {
+            const auto got = receiver.receive_message(received, false, 0);
+            if (got.status != MessageIoStatus::success) {
+                break;
+            }
+            REQUIRE_EQ(got.bytes, message_size);
+            std::uint32_t index = 0;
+            std::memcpy(&index, received.data(), sizeof index);
+            REQUIRE_EQ(index, delivered);
+            ++delivered;
+        }
+        REQUIRE(!sender.broken());
+        REQUIRE(!receiver.broken());
+        sender_now += 250;
+        receiver_now += 250;
+    }
+    // At 2 MB/s the burst needs about two seconds to leave the sender.
+    REQUIRE(sender_now - 1'000'000U > 1'500'000U);
+    REQUIRE_EQ(delivered, messages);
+    REQUIRE_EQ(
+        sender.statistics(false, true).total.sender_tlpktdrop_dropped.packets,
+        0U);
+}
 
 TEST(compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late)
 {

@@ -2900,9 +2900,11 @@ TEST(session_splits_a_nak_between_stale_and_current_packets)
     REQUIRE_EQ(
         sender.queue_message(current_message, PacketTimestamp {2}, true, 3'000),
         Error::none);
-    REQUIRE(sender.next_data_packet().has_value());
-    REQUIRE(sender.next_data_packet().has_value());
-    REQUIRE(sender.next_data_packet().has_value());
+    // Each message is first sent when it is queued; the drop deadline is
+    // measured from that first transmission.
+    REQUIRE(sender.next_data_packet(1'000).has_value());
+    REQUIRE(sender.next_data_packet(1'000).has_value());
+    REQUIRE(sender.next_data_packet(3'000).has_value());
     REQUIRE_EQ(sender.drop_too_late_sender(2'501, 1'000).size, 1U);
 
     const ReliabilityAction mixed_loss {
@@ -2954,9 +2956,11 @@ TEST(session_splits_a_mixed_nak_across_sequence_rollover)
     REQUIRE_EQ(
         sender.queue_message(current_message, PacketTimestamp {2}, true, 3'000),
         Error::none);
-    REQUIRE(sender.next_data_packet().has_value());
-    REQUIRE(sender.next_data_packet().has_value());
-    REQUIRE(sender.next_data_packet().has_value());
+    // Each message is first sent when it is queued; the drop deadline is
+    // measured from that first transmission.
+    REQUIRE(sender.next_data_packet(1'000).has_value());
+    REQUIRE(sender.next_data_packet(1'000).has_value());
+    REQUIRE(sender.next_data_packet(3'000).has_value());
     REQUIRE_EQ(sender.drop_too_late_sender(2'501, 1'000).size, 1U);
     REQUIRE_EQ(sender.send_buffer().first_sequence(), SequenceNumber {0});
 
@@ -3129,6 +3133,9 @@ TEST(negotiated_live_configuration_controls_tsbpd_and_sender_drop_threshold)
     const std::array<std::byte, 1> payload{std::byte{'x'}};
     REQUIRE_EQ(session.queue_message(payload, PacketTimestamp{100'000}, true, 1),
         Error::none);
+    // Too-late drop abandons only packets that were already sent.
+    REQUIRE_EQ(session.drop_too_late_sender(1'020'001).size, 0U);
+    REQUIRE(session.next_data_packet());
     REQUIRE_EQ(session.drop_too_late_sender(1'020'000).size, 0U);
     REQUIRE_EQ(session.drop_too_late_sender(1'020'001).size, 1U);
 }
@@ -5214,6 +5221,7 @@ TEST(session_negotiates_sender_drop_from_peer_receiver_policy)
             REQUIRE_EQ(
                 session.queue_message(payload, PacketTimestamp {0}, true, 1),
                 Error::none);
+            REQUIRE(session.next_data_packet());
             REQUIRE_EQ(session.drop_too_late_sender(1'020'001).size,
                 peer_drop ? 1U : 0U);
         }
