@@ -14,6 +14,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -25,6 +26,11 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 UPLOAD_CHUNK_SIZE = 96 * 1024
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_PENDING_RESPONSES = 2
+MAX_STDERR_BYTES = 64 * 1024
+MAX_DOWNLOAD_BYTES = 1024 * 1024 * 1024
+DOWNLOAD_TIMEOUT_SECONDS = 300.0
 _NAME = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
 _SECRET_KEY = re.compile(r"(passphrase|password|secret|private.?key)", re.I)
 
@@ -276,13 +282,16 @@ class AgentClient:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
+            bufsize=-1,
         )
         if self.process.stdin is None or self.process.stdout is None:
             raise AgentError(f"failed to open SSH control streams for {node.name}")
-        self._responses: queue.Queue[str | None] = queue.Queue()
-        self._stderr: list[str] = []
+        self._responses: queue.Queue[bytes | None] = queue.Queue(
+            maxsize=MAX_PENDING_RESPONSES
+        )
+        self._stderr = b""
+        self._diagnostic_lock = threading.Lock()
+        self._reader_error: str | None = None
         self._request_id = 0
         self._request_lock = threading.Lock()
         threading.Thread(target=self._read_stdout, daemon=True).start()
@@ -314,34 +323,81 @@ class AgentClient:
         self.metadata = dict(initialized)
         self.run_directory = str(initialized["run_directory"])
 
+    def _fail_reader(self, message: str) -> None:
+        with self._diagnostic_lock:
+            if self._reader_error is None:
+                self._reader_error = message
+        try:
+            self.process.kill()
+        except OSError:
+            pass
+        try:
+            self._responses.put_nowait(None)
+        except queue.Full:
+            pass
+
+    def _diagnostics(self) -> str:
+        with self._diagnostic_lock:
+            return self._stderr.decode("utf-8", errors="replace")
+
+    def _check_reader(self) -> None:
+        with self._diagnostic_lock:
+            error = self._reader_error
+        if error is not None:
+            raise AgentError(f"SSH agent on {self.node.name}: {error}")
+
     def _read_stdout(self) -> None:
         assert self.process.stdout is not None
-        for line in self.process.stdout:
-            self._responses.put(line)
-        self._responses.put(None)
+        try:
+            while True:
+                line = self.process.stdout.readline(MAX_RESPONSE_BYTES + 1)
+                if not line:
+                    try:
+                        self._responses.put_nowait(None)
+                    except queue.Full:
+                        pass
+                    return
+                if len(line) > MAX_RESPONSE_BYTES:
+                    self._fail_reader("response exceeds byte limit")
+                    return
+                if not line.endswith(b"\n"):
+                    self._fail_reader("unterminated response")
+                    return
+                try:
+                    self._responses.put_nowait(line)
+                except queue.Full:
+                    self._fail_reader("too many pending responses")
+                    return
+        except (OSError, ValueError) as error:
+            self._fail_reader(f"response stream failed: {error}")
 
     def _read_stderr(self) -> None:
         assert self.process.stderr is not None
-        for line in self.process.stderr:
-            self._stderr.append(line)
+        try:
+            while chunk := self.process.stderr.read1(4096):
+                with self._diagnostic_lock:
+                    self._stderr = (self._stderr + chunk)[-MAX_STDERR_BYTES:]
+        except (OSError, ValueError):
+            pass
 
     def request(
         self, request: dict[str, Any], timeout: float = 10.0
     ) -> dict[str, Any]:
         with self._request_lock:
+            self._check_reader()
             self._request_id += 1
             request_id = self._request_id
             outgoing = {**request, "request_id": request_id}
             assert self.process.stdin is not None
             try:
                 self.process.stdin.write(
-                    json.dumps(outgoing, separators=(",", ":")) + "\n"
+                    (json.dumps(outgoing, separators=(",", ":")) + "\n").encode("utf-8")
                 )
                 self.process.stdin.flush()
             except BrokenPipeError as error:
                 raise AgentError(
                     f"SSH agent on {self.node.name} disconnected: "
-                    f"{''.join(self._stderr)}"
+                    f"{self._diagnostics()}"
                 ) from error
             try:
                 line = self._responses.get(timeout=timeout)
@@ -349,17 +405,20 @@ class AgentClient:
                 raise AgentError(
                     f"SSH agent on {self.node.name} did not respond"
                 ) from error
+            self._check_reader()
             if line is None:
                 raise AgentError(
                     f"SSH agent on {self.node.name} exited: "
-                    f"{''.join(self._stderr)}"
+                    f"{self._diagnostics()}"
                 )
             try:
                 response = json.loads(line)
-            except json.JSONDecodeError as error:
+            except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as error:
                 raise AgentError(
-                    f"invalid agent response from {self.node.name}: {line!r}"
+                    f"invalid agent response from {self.node.name}: {line[:256]!r}"
                 ) from error
+            if not isinstance(response, dict):
+                raise AgentError(f"invalid agent response from {self.node.name}")
             if response.get("request_id") != request_id:
                 raise AgentError(f"agent response order mismatch on {self.node.name}")
             if not response.get("ok"):
@@ -392,22 +451,46 @@ class AgentClient:
 
     def download(self, remote_name: str, local_path: Path) -> None:
         offset = 0
-        with local_path.open("wb") as stream:
-            while True:
-                result = self.request(
-                    {
-                        "op": "get_chunk",
-                        "name": remote_name,
-                        "offset": offset,
-                        "length": UPLOAD_CHUNK_SIZE,
-                    },
-                    timeout=30.0,
-                )
-                data = base64.b64decode(result["data"], validate=True)
-                stream.write(data)
-                offset += len(data)
-                if result["eof"]:
-                    break
+        deadline = time.monotonic() + DOWNLOAD_TIMEOUT_SECONDS
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=local_path.parent, prefix=f".{local_path.name}.", delete=False
+            ) as stream:
+                temporary = Path(stream.name)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise AgentError("artifact download exceeded time limit")
+                    result = self.request(
+                        {"op": "get_chunk", "name": remote_name,
+                         "offset": offset, "length": UPLOAD_CHUNK_SIZE},
+                        timeout=min(30.0, remaining),
+                    )
+                    encoded = result.get("data")
+                    eof = result.get("eof")
+                    if (not isinstance(encoded, str)
+                            or len(encoded) > 4 * ((UPLOAD_CHUNK_SIZE + 2) // 3)
+                            or not isinstance(eof, bool)):
+                        raise AgentError("invalid artifact chunk")
+                    try:
+                        data = base64.b64decode(encoded, validate=True)
+                    except ValueError as error:
+                        raise AgentError("invalid artifact encoding") from error
+                    if len(data) > UPLOAD_CHUNK_SIZE or (not data and not eof):
+                        raise AgentError("invalid artifact chunk size or progress")
+                    if offset + len(data) > MAX_DOWNLOAD_BYTES:
+                        raise AgentError("artifact exceeds download byte limit")
+                    if time.monotonic() > deadline:
+                        raise AgentError("artifact download exceeded time limit")
+                    stream.write(data)
+                    offset += len(data)
+                    if eof:
+                        break
+            temporary.replace(local_path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def start(
         self,

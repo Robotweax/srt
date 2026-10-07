@@ -222,3 +222,63 @@ TEST(connect_callback_lifecycle_thread_local_destructor_can_restart_runtime)
         REQUIRE_EQ(executor->snapshot().workers, 0U);
     }
 }
+
+TEST(connect_callback_lifecycle_overload_rejects_before_handshake)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    const auto executor =
+        robotweax::srt::compat::acquire_connect_callback_executor();
+    auto released = std::make_shared<std::atomic_bool>(false);
+    unsigned admitted = 0;
+    for (; admitted < 65; ++admitted) {
+        if (!executor->submit(
+                {[](void* context, int) noexcept {
+                     while (!static_cast<std::atomic_bool*>(context)->load())
+                         std::this_thread::yield();
+                 },
+                    released, 0}))
+            break;
+    }
+    std::atomic_uint callbacks = 0;
+    bool rejected = true;
+    for (bool rendezvous : {false, true}) {
+        const auto socket = srt_create_socket();
+        const bool synchronous = false;
+        sockaddr_in peer {};
+        peer.sin_family = AF_INET;
+        peer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        sockaddr_in local = peer;
+        peer.sin_port = htons(9);
+        const bool configured = socket != SRT_INVALID_SOCK
+            && srt_bind(socket, reinterpret_cast<const sockaddr*>(&local),
+                   sizeof(local))
+                == 0
+            && srt_setsockflag(
+                   socket, SRTO_RCVSYN, &synchronous, sizeof(synchronous))
+                == 0
+            && srt_setsockflag(
+                   socket, SRTO_RENDEZVOUS, &rendezvous, sizeof(rendezvous))
+                == 0
+            && srt_connect_callback(
+                   socket,
+                   [](void* context, SRTSOCKET, int, const sockaddr*, int) {
+                       ++*static_cast<std::atomic_uint*>(context);
+                   },
+                   &callbacks)
+                == 0;
+        const int result = configured
+            ? srt_connect(socket, reinterpret_cast<const sockaddr*>(&peer),
+                  sizeof(peer))
+            : 0;
+        rejected = rejected && configured && result == SRT_ERROR
+            && srt_getlasterror(nullptr) == SRT_ENOBUF;
+        srt_close(socket);
+    }
+    released->store(true);
+    const auto created = executor->snapshot().created;
+    REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE_EQ(admitted, 64U);
+    REQUIRE_EQ(created, 64U);
+    REQUIRE(rejected);
+    REQUIRE_EQ(callbacks.load(), 0U);
+}

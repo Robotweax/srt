@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
+import queue
+import threading
 import os
 import subprocess
 import sys
@@ -433,6 +436,91 @@ class RemoteAgentStatusTests(unittest.TestCase):
             process.poll.assert_called_once_with()
             self.assertTrue(status["running"])
             self.assertIsNone(status["exit_code"])
+
+
+class AgentResourceLimitTests(unittest.TestCase):
+    def client(self):
+        client = remote_interop.AgentClient.__new__(remote_interop.AgentClient)
+        client.node = mock.Mock(name="node")
+        client.process = mock.Mock()
+        client._responses = queue.Queue(maxsize=2)
+        client._diagnostic_lock = threading.Lock()
+        client._stderr = b""
+        client._reader_error = None
+        return client
+
+    def test_oversized_unterminated_stdout_fails_before_queueing(self):
+        client = self.client()
+        client.process.stdout = io.BytesIO(b"x" * 65)
+        with mock.patch.object(remote_interop, "MAX_RESPONSE_BYTES", 64):
+            client._read_stdout()
+        self.assertIn("byte limit", client._reader_error)
+        client.process.kill.assert_called_once()
+        self.assertIsNone(client._responses.get_nowait())
+
+    def test_stdout_flood_is_bounded_and_terminal(self):
+        client = self.client()
+        client.process.stdout = io.BytesIO(b"{}\n" * 100)
+        client._read_stdout()
+        self.assertEqual(client._responses.qsize(), 2)
+        with self.assertRaisesRegex(remote_interop.AgentError, "pending responses"):
+            client._check_reader()
+        client.process.kill.assert_called_once()
+
+    def test_stderr_without_newlines_retains_only_bounded_tail(self):
+        client = self.client()
+        client.process.stderr = io.BytesIO(b"discard" * 10000 + b"TAIL")
+        client._read_stderr()
+        self.assertEqual(len(client._stderr), remote_interop.MAX_STDERR_BYTES)
+        self.assertTrue(client._diagnostics().endswith("TAIL"))
+
+    def test_download_rejects_nonprogress_overflow_and_malformed_chunks(self):
+        cases = [
+            {"data": "", "eof": False},
+            {"data": "!!!!", "eof": True},
+            {"data": "", "eof": "yes"},
+            {"data": base64.b64encode(b"x" * 9).decode(), "eof": True},
+        ]
+        for result in cases:
+            with self.subTest(result=result), tempfile.TemporaryDirectory() as directory:
+                client = self.client()
+                client.request = mock.Mock(return_value=result)
+                target = Path(directory) / "capture"
+                target.write_bytes(b"original")
+                with mock.patch.object(remote_interop, "MAX_DOWNLOAD_BYTES", 8):
+                    with self.assertRaises(remote_interop.AgentError):
+                        client.download("capture", target)
+                self.assertEqual(target.read_bytes(), b"original")
+                self.assertEqual(list(Path(directory).iterdir()), [target])
+
+    def test_download_chunk_bound_and_endless_peer(self):
+        client = self.client()
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "capture"
+            client.request = mock.Mock(return_value={"data": "eHh4eHg=", "eof": True})
+            with mock.patch.object(remote_interop, "UPLOAD_CHUNK_SIZE", 4):
+                with self.assertRaises(remote_interop.AgentError):
+                    client.download("capture", target)
+            self.assertFalse(target.exists())
+            client.request = mock.Mock(return_value={"data": "eA==", "eof": False})
+            with mock.patch.object(remote_interop, "MAX_DOWNLOAD_BYTES", 8):
+                with self.assertRaisesRegex(remote_interop.AgentError, "byte limit"):
+                    client.download("capture", target)
+            self.assertEqual(client.request.call_count, 9)
+            self.assertFalse(target.exists())
+
+    def test_download_deadline_and_success(self):
+        client = self.client()
+        client.request = mock.Mock(return_value={"data": "eA==", "eof": True})
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "capture"
+            with mock.patch.object(remote_interop.time, "monotonic", side_effect=[0, 1, 301]):
+                with self.assertRaisesRegex(remote_interop.AgentError, "time limit"):
+                    client.download("capture", target)
+            self.assertFalse(target.exists())
+            client.download("capture", target)
+            self.assertEqual(target.read_bytes(), b"x")
+            self.assertEqual(list(Path(directory).iterdir()), [target])
 
 
 if __name__ == "__main__":

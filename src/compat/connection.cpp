@@ -1696,6 +1696,28 @@ public:
             pending_ = true;
             scheduled_ = true;
         }
+        // start() is called under the socket mutex, before scheduler admission.
+        // Reserve an actual worker now: accepted callbacks must never queue or
+        // fall back to running application code on a protocol shard.
+        if (socket_->connect_callback != nullptr) {
+            const auto executor = acquire_connect_callback_executor();
+            if (executor == nullptr
+                || !executor->submit({
+                    .function =
+                        [](void* context, int) noexcept {
+                            static_cast<AsyncCallerHandshakeActor*>(context)
+                                ->await_callback();
+                        },
+                    .context = owner,
+                })) {
+                std::lock_guard lock(state_mutex_);
+                pending_ = false;
+                scheduled_ = false;
+                completed_ = true;
+                return CallerHandshakeDispatchStatus::full;
+            }
+            callback_reserved_ = true;
+        }
         const RuntimeScheduler::SubmitStatus submitted =
             scheduler_->submit(setup_.configuration.local_socket_id,
                 {
@@ -2075,47 +2097,29 @@ private:
                 setup_.configuration.local_socket_id, inbox_);
             route_registered_ = false;
         }
-        bool callback_registered = false;
-        {
-            std::lock_guard lock(socket_->mutex);
-            callback_registered = socket_->connect_callback != nullptr;
-        }
-        if (callback_registered && start_callback_worker(error_code)) {
+        if (callback_reserved_) {
+            {
+                std::lock_guard lock(state_mutex_);
+                callback_error_ = error_code;
+                callback_ready_ = true;
+            }
+            completed_signal_.notify_all();
             return;
         }
         run_callback(error_code);
     }
 
-    [[nodiscard]] bool start_callback_worker(int error_code) noexcept
+    void await_callback() noexcept
     {
-        const auto executor = acquire_connect_callback_executor();
-        if (executor != nullptr
-            && executor->submit({
-                .function =
-                    [](void* context, int error) noexcept {
-                        static_cast<AsyncCallerHandshakeActor*>(context)
-                            ->run_callback(error);
-                    },
-                .context = shared_from_this(),
-                .error_code = error_code,
-            })) {
-            return true;
-        }
-        // Preserve the existing resource-failure path if cache submission fails.
-        std::thread worker;
-        {
-            std::lock_guard lock(socket_->mutex);
-            try {
-                worker = std::thread([owner = shared_from_this(), error_code] {
-                    mark_runtime_cleanup_worker_thread();
-                    owner->run_callback(error_code);
-                });
-            } catch (...) {
-                return false;
-            }
-            socket_->connect_worker = std::move(worker);
-        }
-        return true;
+        std::unique_lock lock(state_mutex_);
+        completed_signal_.wait(lock, [this] {
+            return callback_ready_ || completed_;
+        });
+        if (!callback_ready_)
+            return; // Scheduler admission failed; no callback was promised.
+        const int error = callback_error_;
+        lock.unlock();
+        run_callback(error);
     }
 
     void run_callback(int error_code) noexcept
@@ -2160,6 +2164,9 @@ private:
     std::condition_variable completed_signal_;
     std::thread::id active_thread_ {};
     std::thread::id callback_thread_ {};
+    bool callback_reserved_ = false;
+    bool callback_ready_ = false;
+    int callback_error_ = SRT_SUCCESS;
     bool pending_ = false;
     bool scheduled_ = false;
     bool initialized_ = false;
@@ -2796,6 +2803,28 @@ public:
             pending_ = true;
             scheduled_ = true;
         }
+        // start() is called under the socket mutex, before scheduler admission.
+        // Reserve an actual worker now: accepted callbacks must never queue or
+        // fall back to running application code on a protocol shard.
+        if (socket_->connect_callback != nullptr) {
+            const auto executor = acquire_connect_callback_executor();
+            if (executor == nullptr
+                || !executor->submit({
+                    .function =
+                        [](void* context, int) noexcept {
+                            static_cast<AsyncRendezvousHandshakeActor*>(context)
+                                ->await_callback();
+                        },
+                    .context = owner,
+                })) {
+                std::lock_guard lock(state_mutex_);
+                pending_ = false;
+                scheduled_ = false;
+                completed_ = true;
+                return CallerHandshakeDispatchStatus::full;
+            }
+            callback_reserved_ = true;
+        }
         const RuntimeScheduler::SubmitStatus submitted =
             scheduler_->submit(local_socket_id_,
                 {
@@ -3101,47 +3130,29 @@ private:
             channel_->unregister_setup_inbox(local_socket_id_, inbox_);
             route_registered_ = false;
         }
-        bool callback_registered = false;
-        {
-            std::lock_guard lock(socket_->mutex);
-            callback_registered = socket_->connect_callback != nullptr;
-        }
-        if (callback_registered && start_callback_worker(error_code)) {
+        if (callback_reserved_) {
+            {
+                std::lock_guard lock(state_mutex_);
+                callback_error_ = error_code;
+                callback_ready_ = true;
+            }
+            completed_signal_.notify_all();
             return;
         }
         run_callback(error_code);
     }
 
-    [[nodiscard]] bool start_callback_worker(int error_code) noexcept
+    void await_callback() noexcept
     {
-        const auto executor = acquire_connect_callback_executor();
-        if (executor != nullptr
-            && executor->submit({
-                .function =
-                    [](void* context, int error) noexcept {
-                        static_cast<AsyncRendezvousHandshakeActor*>(context)
-                            ->run_callback(error);
-                    },
-                .context = shared_from_this(),
-                .error_code = error_code,
-            })) {
-            return true;
-        }
-        // Preserve the existing resource-failure path if cache submission fails.
-        std::thread worker;
-        {
-            std::lock_guard lock(socket_->mutex);
-            try {
-                worker = std::thread([owner = shared_from_this(), error_code] {
-                    mark_runtime_cleanup_worker_thread();
-                    owner->run_callback(error_code);
-                });
-            } catch (...) {
-                return false;
-            }
-            socket_->connect_worker = std::move(worker);
-        }
-        return true;
+        std::unique_lock lock(state_mutex_);
+        completed_signal_.wait(lock, [this] {
+            return callback_ready_ || completed_;
+        });
+        if (!callback_ready_)
+            return; // Scheduler admission failed; no callback was promised.
+        const int error = callback_error_;
+        lock.unlock();
+        run_callback(error);
     }
 
     void run_callback(int error_code) noexcept
@@ -3185,6 +3196,9 @@ private:
     std::condition_variable completed_signal_;
     std::thread::id active_thread_ {};
     std::thread::id callback_thread_ {};
+    bool callback_reserved_ = false;
+    bool callback_ready_ = false;
+    int callback_error_ = SRT_SUCCESS;
     bool pending_ = false;
     bool scheduled_ = false;
     bool initialized_ = false;
