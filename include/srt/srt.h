@@ -159,6 +159,16 @@ typedef enum SRT_SOCKOPT {
      * False preserves the standard SRT wire protocol and option defaults.
      */
     SRTO_ROBOTWEAX_SESSIONAUTH = 0x01000003,
+    /** Proposed remote group ID (int32_t), read-only during listen callback.
+     * SRT_INVALID_SOCK for an ordinary connection. Never an authorization token.
+     */
+    SRTO_ROBOTWEAX_PEERGROUP = 0x01000004,
+    /** Application security domain (uint64_t, nonzero), set only during a
+     * group listen callback after authorizing the proposed group. Required
+     * when a callback admits group connections; subsequent joins must match.
+     * Local-only metadata: never transmitted or selected by the peer.
+     */
+    SRTO_ROBOTWEAX_GROUPDOMAIN = 0x01000005,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif

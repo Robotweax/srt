@@ -1671,3 +1671,22 @@ TEST(row_fec_validated_recovery_accepts_parity_before_source)
     REQUIRE_EQ(result.reconstructed_packet.data.sequence, SequenceNumber {101});
     REQUIRE_EQ(validations, 1U);
 }
+
+TEST(row_only_fec_rejects_oversized_geometry_before_allocation)
+{
+    auto configuration = row_configuration(128U);
+    REQUIRE(RowFecDecoder::estimate_resources(configuration, 8192, 1312));
+    for (const auto columns : {129U, 8192U, 2147483647U}) {
+        configuration.columns = columns;
+        REQUIRE(!supports_row_only_fec(configuration));
+        REQUIRE(!RowFecDecoder::estimate_resources(configuration, 8192, 1312));
+        bool rejected = false;
+        try {
+            RowFecDecoder decoder {
+                configuration, SequenceNumber {0}, 8192, 1312};
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        REQUIRE(rejected);
+    }
+}

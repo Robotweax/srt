@@ -10,6 +10,9 @@ namespace {
     std::uint32_t columns,
     std::int32_t rows) noexcept
 {
+    if (columns > 128U) {
+        return false;
+    }
     if (rows == 1) {
         return true;
     }

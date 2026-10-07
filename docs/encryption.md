@@ -436,6 +436,21 @@ old key until the peer's next rotation. Runtime KM messages are not bound to
 an established sender identity; an actor with the passphrase and the ability
 to send from the peer endpoint can still disrupt receive-key state.
 
+For this residual attack, knowing the passphrase is not necessary if an attacker
+can capture a valid KMREQ and inject it from the expected peer endpoint. Once
+both bounded histories have forgotten the material, it may be reinstalled.
+After packet sequence reuse, a captured GCM DATA packet under that same key and
+salt can also have a valid authentication tag; GCM payload authentication is
+not a connection-lifetime key-epoch replay defense.
+
+Explicitly enabling `SRTO_ROBOTWEAX_SESSIONAUTH` on both peers prevents this
+KMREQ rollback through authenticated monotonic counters, independently of the
+bounded key histories. This remains default-off for ordinary Haivision wire
+compatibility. Neither mandatory session authentication nor a new automatic
+reconnection limit is silently imposed on compatible sessions. A lifetime
+history, connection limit, or new authenticated wire epoch would need a
+separate compatibility and resource contract.
+
 ## Retransmission and reliability
 
 The first transmission replaces the send-buffer slot with its complete wire

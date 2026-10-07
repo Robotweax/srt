@@ -192,3 +192,34 @@ environment variable only when it still points to this installation.
 
 References: [Inno Setup command-line options](https://jrsoftware.org/ishelp/topic_setupcmdline.htm),
 [OpenSSL Windows build notes](https://github.com/openssl/openssl/blob/openssl-3.6.3/NOTES-WINDOWS.md).
+
+### Source provenance and tag identity
+
+Signing uses a fresh independent rebuild in the protected
+`windows-release-signing` environment. That runner checks out the exact event
+commit and pinned OpenSSL source, rebuilds all twelve backend/configuration/
+architecture variants, packages both installers, and tests the resulting pair.
+It does not download ordinary producer artifacts or use their caches. It has
+read-only repository permissions and no OIDC signing authority.
+
+The signer downloads only the immutable artifact ID output by this rebuild job
+and verifies its recorded hashes, run and source identity before Azure login.
+The original unsigned build jobs remain qualification checks; their EXEs are
+never signed. This selects independently built bytes rather than asserting
+byte-for-byte reproducibility of MSVC/OpenSSL/Inno output. Compromise of the
+protected rebuild runner or approved source is still inside the trusted
+boundary. Reviewers must approve this source/build boundary, not just filenames.
+
+The protected rebuild can take up to three hours and may require a separate
+environment approval before the signing job's existing approval. Both approvals
+use the existing environment policy; no credentials or permissions are added.
+An end-to-end Windows rebuild must be qualified before relying on release
+signing. No signing operation is performed by local regression tests.
+
+Before creating a draft and immediately before uploading its assets, the
+workflow now resolves the live release tag through the GitHub API, peels
+annotated tags and requires the exact tested commit. The second check also
+requires the same tag object. `tag-provenance.json` records both immutable IDs
+as a release asset. Keep the active `v*` update/deletion protection: these
+checks add defense in depth but cannot make a remote tag lookup and upload an
+atomic transaction. API errors or missing tags fail closed.
