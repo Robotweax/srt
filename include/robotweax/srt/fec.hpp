@@ -144,6 +144,14 @@ struct RowFecReceiveResult {
 
 using ColumnFecReceiveResult = RowFecReceiveResult;
 
+// Called before a recovered packet is marked seen or fed into another dimension.
+// Configure before the first receive(). The validator must not throw, retain
+// packet spans, or reenter the decoder.
+struct FecRecoveryValidator {
+    bool (*function)(void*, const PacketView&) noexcept = nullptr;
+    void* context = nullptr;
+};
+
 // Keeps a bounded ring of row XOR states. The ring, source duplicate cache,
 // and recovery payloads are allocated once by the constructor; receive()
 // performs no allocation and can reconstruct at most one packet per call.
@@ -151,6 +159,11 @@ using ColumnFecReceiveResult = RowFecReceiveResult;
 // throw std::bad_alloc. Instances require external serialization.
 class RowFecDecoder {
 public:
+    void set_recovery_validator(FecRecoveryValidator validator) noexcept
+    {
+        validator_ = validator;
+    }
+
     RowFecDecoder(
         const PacketFilterConfiguration& configuration,
         SequenceNumber initial_sequence,
@@ -167,6 +180,8 @@ public:
     [[nodiscard]] FecResourceUsage resource_usage() const noexcept;
 
 private:
+    FecRecoveryValidator validator_ {};
+
     struct Group {
         std::uint64_t row = 0;
         std::uint32_t collected = 0;
@@ -181,6 +196,7 @@ private:
         bool has_control = false;
         bool has_message_anchor = false;
         bool reconstructed = false;
+        bool recovery_rejected = false;
         bool in_order = false;
     };
 
@@ -188,7 +204,7 @@ private:
         bool source_packet,
         std::optional<SequenceNumber> receive_floor) noexcept;
     [[nodiscard]] Group* group_for(
-        std::uint64_t row) noexcept;
+        std::uint64_t row, bool source = true) noexcept;
     [[nodiscard]] Group* find_group(
         std::uint64_t row) noexcept;
     void reset_group(Group& group, std::uint64_t row) noexcept;
@@ -331,6 +347,11 @@ private:
 // serialization.
 class ColumnFecDecoder {
 public:
+    void set_recovery_validator(FecRecoveryValidator validator) noexcept
+    {
+        validator_ = validator;
+    }
+
     ColumnFecDecoder(
         const PacketFilterConfiguration& configuration,
         SequenceNumber initial_sequence,
@@ -346,6 +367,8 @@ public:
     [[nodiscard]] FecResourceUsage resource_usage() const noexcept;
 
 private:
+    FecRecoveryValidator validator_ {};
+
     struct Location {
         std::uint64_t series = 0;
         std::uint32_t column = 0;
@@ -369,6 +392,7 @@ private:
         bool has_control = false;
         bool has_message_anchor = false;
         bool reconstructed = false;
+        bool recovery_rejected = false;
         bool dismissed = false;
         bool in_order = false;
     };
@@ -384,7 +408,7 @@ private:
         std::uint64_t index,
         std::uint32_t column) const noexcept;
     [[nodiscard]] Group* group_for(
-        const Location& location) noexcept;
+        const Location& location, bool source = true) noexcept;
     [[nodiscard]] Group* find_group(
         std::uint64_t series,
         std::uint32_t column) noexcept;
@@ -499,6 +523,12 @@ struct MatrixFecReceiveResult {
 // instances require external serialization.
 class MatrixFecDecoder {
 public:
+    void set_recovery_validator(FecRecoveryValidator validator) noexcept
+    {
+        row_.set_recovery_validator(validator);
+        column_.set_recovery_validator(validator);
+    }
+
     MatrixFecDecoder(
         const PacketFilterConfiguration& configuration,
         SequenceNumber initial_sequence,

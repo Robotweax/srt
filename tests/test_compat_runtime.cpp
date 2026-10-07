@@ -185,6 +185,7 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         .channel = receiver_channel,
         .peer = sender_endpoint,
         .peer_socket_id = 710,
+        .peer_idle_timeout_milliseconds = 5,
         .initial_sequence = initial,
         .flow_window_packets = 256,
         .options = options,
@@ -211,6 +212,7 @@ void exercise_gcm_fec_geometry(std::string_view filter,
     }
     REQUIRE(!sender.broken());
 
+    std::vector<std::byte> last_parity;
     std::size_t source_packets = 0;
     std::size_t filter_packets = 0;
     for (const auto& datagram : take_datagrams(sender_output)) {
@@ -222,6 +224,7 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         }
         if (decoded.packet.data.message_number == 0U) {
             ++filter_packets;
+            last_parity = datagram;
         } else {
             ++source_packets;
             REQUIRE_EQ(decoded.packet.payload.size(),
@@ -296,6 +299,14 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         sensor ? 3U * (source_count - dropped_sources.size())
                 + (corrupt_parity ? 1U : 0U)
                : 0U);
+    REQUIRE(!last_parity.empty());
+    last_parity.back() ^= std::byte {1};
+    const auto replay = decode_packet(last_parity);
+    REQUIRE(replay);
+    receiver_now += 6'000;
+    receiver.process_packet(replay.packet, sender_endpoint);
+    (void)receiver.poll();
+    REQUIRE(receiver.broken());
 }
 
 } // namespace
@@ -4073,7 +4084,7 @@ TEST(compat_runtime_gcm_row_fec_authenticates_reconstructed_wire_payload)
     REQUIRE_EQ(
         options.set(SocketOption::maximum_payload_size, 16), Error::none);
     REQUIRE_EQ(
-        options.set_packet_filter("fec,cols:2,rows:1,arq:always"), Error::none);
+        options.set_packet_filter("fec,cols:2,rows:1,arq:onreq"), Error::none);
     const auto origin = ConnectionRuntime::Clock::now();
     std::uint64_t sender_now = 1'600'000;
     std::uint64_t receiver_now = 1'600'000;
@@ -4093,6 +4104,7 @@ TEST(compat_runtime_gcm_row_fec_authenticates_reconstructed_wire_payload)
         .channel = receiver_channel,
         .peer = sender_endpoint,
         .peer_socket_id = 730,
+        .peer_idle_timeout_milliseconds = 5,
         .initial_sequence = SequenceNumber {1'000},
         .flow_window_packets = 256,
         .options = options,
@@ -4214,6 +4226,12 @@ TEST(compat_runtime_gcm_row_fec_authenticates_reconstructed_wire_payload)
     REQUIRE_EQ(received[0], std::byte {'D'});
     REQUIRE_EQ(
         receiver.statistics(false, true).total.receiver_filter_supply, 1U);
+    // Replaying structurally valid but unauthenticated parity cannot keep the
+    // connection alive, even when the group has no missing source anymore.
+    receiver_now += 6'000;
+    receiver.process_packet(corrupted_packet.packet, sender_endpoint);
+    (void)receiver.poll();
+    REQUIRE(receiver.broken());
 }
 
 TEST(compat_runtime_gcm_column_fec_reconstructs_before_authentication)

@@ -1551,3 +1551,123 @@ TEST(fec_resynchronization_reports_only_losses_at_receive_floor)
     REQUIRE_EQ(advanced.irrecoverable_losses[0].first, SequenceNumber {17});
     REQUIRE_EQ(advanced.irrecoverable_losses[0].last, SequenceNumber {17});
 }
+
+TEST(fec_rejected_recovery_preserves_on_request_losses_in_all_dimensions)
+{
+    const auto exercise = [](auto& encoder, auto& decoder, unsigned count,
+                              bool late_source) {
+        unsigned validations = 0;
+        decoder.set_recovery_validator(
+            {[](void* context, const PacketView&) noexcept {
+                 ++*static_cast<unsigned*>(context);
+                 return false;
+             },
+                &validations});
+        const std::array payload {std::byte {'x'}};
+        std::vector<DataHeader> headers;
+        std::vector<std::vector<std::byte>> controls;
+        for (unsigned i = 0; i < count; ++i) {
+            const auto packet =
+                source_packet(100U + i, i, EncryptionKey::none, payload);
+            REQUIRE_EQ(encoder.feed_source(packet), Error::none);
+            while (encoder.control_packet_ready()) {
+                const auto control = encoder.control_packet();
+                REQUIRE(control.has_value());
+                headers.push_back(control->header);
+                controls.emplace_back(
+                    control->payload.begin(), control->payload.end());
+                encoder.consume_control_packet();
+            }
+            if (i != 1U)
+                REQUIRE(decoder.receive(packet));
+        }
+        // A plausible future parity group is not proof that earlier source
+        // groups have expired. It must neither report nor suppress the hole.
+        for (std::size_t i = 0; i < controls.size(); ++i) {
+            auto forged = headers[i];
+            forged.sequence = forged.sequence.advanced(count * 2U);
+            const auto result = decoder.receive({.kind = PacketKind::data,
+                .data = forged,
+                .payload = controls[i]});
+            REQUIRE(result);
+            REQUIRE(result.irrecoverable_losses.empty());
+        }
+        for (std::size_t i = 0; i < controls.size(); ++i) {
+            const auto result = decoder.receive({.kind = PacketKind::data,
+                .data = headers[i],
+                .payload = controls[i]});
+            REQUIRE(result);
+            if constexpr (requires { result.has_reconstructed_packet; })
+                REQUIRE(!result.has_reconstructed_packet);
+            else
+                REQUIRE(result.reconstructed_packets.empty());
+            REQUIRE(result.irrecoverable_losses.empty());
+        }
+        REQUIRE(validations > 0U);
+        if (late_source)
+            REQUIRE(decoder.receive(
+                source_packet(101, 1, EncryptionKey::none, payload)));
+        bool reported = false;
+        for (unsigned i = count; i < count + 30U; ++i) {
+            const auto result = decoder.receive(
+                source_packet(100U + i, i, EncryptionKey::none, payload));
+            REQUIRE(result);
+            for (const auto& range : result.irrecoverable_losses)
+                reported = reported
+                    || (SequenceNumber {101}.distance_from(range.first) >= 0
+                        && range.last.distance_from(SequenceNumber {101}) >= 0);
+        }
+        REQUIRE_EQ(reported, !late_source);
+    };
+    for (bool late_source : {false, true}) {
+        const auto row = row_configuration(3, "onreq");
+        RowFecEncoder row_encoder(row, SequenceNumber {100}, 4);
+        RowFecDecoder row_decoder(row, SequenceNumber {100}, 64, 4);
+        exercise(row_encoder, row_decoder, 3U, late_source);
+        const auto column = column_configuration(3, 2, "even", "onreq");
+        ColumnFecEncoder column_encoder(column, SequenceNumber {100}, 4);
+        ColumnFecDecoder column_decoder(column, SequenceNumber {100}, 64, 4);
+        exercise(column_encoder, column_decoder, 6U, late_source);
+        const auto matrix = matrix_configuration(3, 2, "even", "onreq");
+        MatrixFecEncoder matrix_encoder(matrix, SequenceNumber {100}, 4);
+        MatrixFecDecoder matrix_decoder(matrix, SequenceNumber {100}, 64, 4);
+        exercise(matrix_encoder, matrix_decoder, 6U, late_source);
+    }
+}
+
+TEST(row_fec_validated_recovery_accepts_parity_before_source)
+{
+    const auto config = row_configuration(3, "onreq");
+    RowFecEncoder encoder(config, SequenceNumber {100}, 4);
+    RowFecDecoder decoder(config, SequenceNumber {100}, 64, 4);
+    unsigned validations = 0;
+    decoder.set_recovery_validator(
+        {[](void* context, const PacketView& packet) noexcept {
+             ++*static_cast<unsigned*>(context);
+             return packet.data.sequence == SequenceNumber {101}
+             && packet.payload.size() == 1
+                 && packet.payload[0] == std::byte {'x'};
+         },
+            &validations});
+    const std::array payload {std::byte {'x'}};
+    for (unsigned i = 0; i < 3; ++i)
+        REQUIRE_EQ(encoder.feed_source(
+                       source_packet(100 + i, i, EncryptionKey::none, payload)),
+            Error::none);
+    const auto control = encoder.control_packet();
+    REQUIRE(control.has_value());
+    const auto parity = decoder.receive({.kind = PacketKind::data,
+        .data = control->header,
+        .payload = control->payload});
+    REQUIRE(parity);
+    REQUIRE(!parity.has_reconstructed_packet);
+    REQUIRE_EQ(validations, 0U);
+    REQUIRE(
+        decoder.receive(source_packet(100, 0, EncryptionKey::none, payload)));
+    const auto result =
+        decoder.receive(source_packet(102, 2, EncryptionKey::none, payload));
+    REQUIRE(result);
+    REQUIRE(result.has_reconstructed_packet);
+    REQUIRE_EQ(result.reconstructed_packet.data.sequence, SequenceNumber {101});
+    REQUIRE_EQ(validations, 1U);
+}
