@@ -192,3 +192,20 @@ environment variable only when it still points to this installation.
 
 References: [Inno Setup command-line options](https://jrsoftware.org/ishelp/topic_setupcmdline.htm),
 [OpenSSL Windows build notes](https://github.com/openssl/openssl/blob/openssl-3.6.3/NOTES-WINDOWS.md).
+
+### Source provenance and tag identity
+
+The installer hash record proves continuity from the tested unsigned pair to
+the signing job. It is not an independent source-to-binary attestation: a
+compromised producer could choose both candidate contents and the bytes later
+hashed by the test job. Signing approval must account for this trust boundary.
+A producer-issued attestation alone does not eliminate producer compromise;
+that requires an independently trusted build or reproducible rebuild policy.
+
+Before creating a draft and immediately before uploading its assets, the
+workflow now resolves the live release tag through the GitHub API, peels
+annotated tags and requires the exact tested commit. The second check also
+requires the same tag object. `tag-provenance.json` records both immutable IDs
+as a release asset. Keep the active `v*` update/deletion protection: these
+checks add defense in depth but cannot make a remote tag lookup and upload an
+atomic transaction. API errors or missing tags fail closed.

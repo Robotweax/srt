@@ -3568,3 +3568,29 @@ TEST(session_authentication_fails_closed_without_rng_or_hmac)
     REQUIRE(caller.handshake_proof(true, secret, proof) != Error::none);
     REQUIRE(!listener.verify_handshake(true, secret, proof));
 }
+
+TEST(session_authentication_rejects_key_replay_beyond_bounded_crypto_history)
+{
+    SessionAuthentication caller(default_crypto_provider()), listener(default_crypto_provider());
+    establish_session_auth_pair(caller, listener);
+    std::array<std::byte, 128> wire {}, first {}, response {}, first_response {};
+    std::size_t size = 0, first_size = 0, response_size = 0, first_response_size = 0;
+    std::span<const std::byte> decoded;
+    for (unsigned epoch = 0; epoch < 1024; ++epoch) {
+        const std::array material {static_cast<std::byte>(epoch >> 8), static_cast<std::byte>(epoch & 255)};
+        REQUIRE_EQ(caller.seal(false, material, wire, size), Error::none);
+        REQUIRE(listener.open(false, std::span {wire}.first(size), decoded));
+        REQUIRE_EQ(listener.seal(true, material, response, response_size), Error::none);
+        REQUIRE(caller.open(true, std::span {response}.first(response_size), decoded));
+        if (epoch == 0) {
+            first = wire;
+            first_size = size;
+            first_response = response;
+            first_response_size = response_size;
+        } else {
+            REQUIRE(!listener.open(false, std::span {first}.first(first_size), decoded));
+            REQUIRE(!caller.open(true, std::span {first_response}.first(first_response_size), decoded));
+            REQUIRE(listener.open(false, std::span {wire}.first(size), decoded));
+        }
+    }
+}

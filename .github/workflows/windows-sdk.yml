@@ -307,9 +307,12 @@ jobs:
           test -s "$openssl"
           test -s "$bcrypt"
           sha256sum --check SHA256SUMS
+          python ../tools/verify_release_tag.py --repo "$GH_REPO" --tag "$RELEASE_TAG" --commit "$GITHUB_SHA" > tag-provenance.json
+          tag_object="$(jq -r .object tag-provenance.json)"
           if gh release view "$RELEASE_TAG" --json isDraft > release.json; then
             test "$(jq -r .isDraft release.json)" = true || { echo 'Refusing to modify a published release'; exit 1; }
           else
             gh release create "$RELEASE_TAG" --verify-tag --draft --title "Robotweax SRT ${RELEASE_TAG#v}" --notes 'Windows SDK installers: OpenSSL and BCrypt. Authenticode-signed by Robotweax GmbH with trusted timestamps; review qualification and release notes before publishing.'
           fi
-          gh release upload "$RELEASE_TAG" "$openssl" "$bcrypt" SHA256SUMS
+          python ../tools/verify_release_tag.py --repo "$GH_REPO" --tag "$RELEASE_TAG" --commit "$GITHUB_SHA" --object "$tag_object" > tag-provenance.json
+          gh release upload "$RELEASE_TAG" "$openssl" "$bcrypt" SHA256SUMS tag-provenance.json
