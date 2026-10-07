@@ -197,8 +197,7 @@ public:
         SRTSOCKET group, std::uint64_t group_generation,
         SRTSOCKET socket, std::uint64_t member_generation,
         SRT_MEMBERSTATUS state, int result) noexcept;
-    [[nodiscard]] bool prepare_mirror(
-        SRTSOCKET listener, SRTSOCKET peer_group,
+    [[nodiscard]] bool prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
         SRT_GROUP_TYPE type, std::uint32_t initial_sequence,
         MirrorDescription& output, std::uint64_t admission_domain = 0) noexcept;
     void release_empty_mirror(

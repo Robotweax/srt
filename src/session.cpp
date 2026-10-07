@@ -996,7 +996,8 @@ ReliabilityProcessResult ReliabilitySession::receive(
         std::array<SequenceRange, maximum_loss_words_per_packet>
             stale_ranges {};
         std::size_t stale_range_count = 0;
-        std::array<SequenceRange, maximum_loss_words_per_packet> current_ranges {};
+        std::array<SequenceRange, maximum_loss_words_per_packet>
+            current_ranges {};
         std::size_t current_range_count = 0;
 
         // Validate and classify the complete report first. No retransmission
@@ -1042,16 +1043,21 @@ ReliabilityProcessResult ReliabilitySession::receive(
         // must not multiply slot scans or congestion-loss accounting.
         const auto first = send_buffer_.first_sequence();
         auto current = std::span {current_ranges}.first(current_range_count);
-        std::sort(current.begin(), current.end(), [first](const auto& a, const auto& b) {
-            return a.first.distance_from(first) < b.first.distance_from(first);
-        });
+        std::sort(current.begin(), current.end(),
+            [first](const auto& a, const auto& b) {
+                return a.first.distance_from(first)
+                    < b.first.distance_from(first);
+            });
         std::size_t unique_count = 0;
         for (const auto range : current) {
             if (unique_count != 0U
                 && range.first.distance_from(first)
-                    <= current_ranges[unique_count - 1U].last.distance_from(first) + 1) {
+                    <= current_ranges[unique_count - 1U].last.distance_from(
+                           first)
+                        + 1) {
                 auto& previous = current_ranges[unique_count - 1U];
-                if (range.last.distance_from(first) > previous.last.distance_from(first))
+                if (range.last.distance_from(first)
+                    > previous.last.distance_from(first))
                     previous.last = range.last;
             } else {
                 current_ranges[unique_count++] = range;
@@ -1059,7 +1065,8 @@ ReliabilityProcessResult ReliabilitySession::receive(
         }
         current = current.first(unique_count);
         for (const auto range : current) {
-            const auto error = send_buffer_.validate_retransmission_range(range);
+            const auto error =
+                send_buffer_.validate_retransmission_range(range);
             if (error != Error::none)
                 return {.error = error};
         }
@@ -1073,9 +1080,8 @@ ReliabilityProcessResult ReliabilitySession::receive(
         for (const auto range : current) {
             std::size_t newly_queued_packets = 0;
             std::size_t newly_queued_bytes = 0;
-            const Error error = send_buffer_.request_retransmission(
-                range, &newly_queued_packets, &newly_queued_bytes,
-                now_microseconds,
+            const Error error = send_buffer_.request_retransmission(range,
+                &newly_queued_packets, &newly_queued_bytes, now_microseconds,
                 efficient_retransmission_
                         && (peer_periodic_nak_
                             || live_options_.peer_periodic_nak
@@ -1088,7 +1094,9 @@ ReliabilityProcessResult ReliabilitySession::receive(
             result.sender_loss_bytes += newly_queued_bytes;
             if (!first_lost.has_value())
                 first_lost = range.first;
-            lost_packets += static_cast<std::size_t>(range.last.distance_from(range.first)) + 1U;
+            lost_packets +=
+                static_cast<std::size_t>(range.last.distance_from(range.first))
+                + 1U;
         }
         append_pending_drop_requests(result.actions);
         if (file_rate_controller_.has_value()

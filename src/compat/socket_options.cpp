@@ -381,11 +381,13 @@ int get_socket_option(
         return write_value(value, value_size,
             static_cast<std::int32_t>(socket.peer_srt_version));
     case SRTO_ROBOTWEAX_PEERGROUP:
-        return write_value(value, value_size, socket.listen_callback_active
-            ? socket.incoming_peer_group : SRT_INVALID_SOCK);
+        return write_value(value, value_size,
+            socket.listen_callback_active ? socket.incoming_peer_group
+                                          : SRT_INVALID_SOCK);
     case SRTO_ROBOTWEAX_GROUPDOMAIN:
-        return write_value(value, value_size, socket.listen_callback_active
-            ? socket.incoming_group_domain : std::uint64_t {0});
+        return write_value(value, value_size,
+            socket.listen_callback_active ? socket.incoming_group_domain
+                                          : std::uint64_t {0});
     case SRTO_GROUPTYPE:
         return write_value(value, value_size,
             static_cast<std::int32_t>(

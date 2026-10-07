@@ -42,10 +42,8 @@ struct FecResourceEstimate {
 [[nodiscard]] constexpr bool supports_row_only_fec(
     const PacketFilterConfiguration& configuration) noexcept
 {
-    return configuration.enabled
-        && configuration.columns >= 2U
-        && configuration.columns <= 128U
-        && configuration.rows == 1;
+    return configuration.enabled && configuration.columns >= 2U
+        && configuration.columns <= 128U && configuration.rows == 1;
 }
 
 [[nodiscard]] constexpr bool supports_column_only_fec(

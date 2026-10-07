@@ -209,10 +209,9 @@ struct ListenerGroupAdmission {
                 || proposed.weight != peer.weight) {
                 return false;
             }
-        } else if (!GroupRegistry::instance().prepare_mirror(
-                       listener,
-                       static_cast<SRTSOCKET>(proposed.group_id),
-                       type, initial_sequence, mirror, admission_domain)) {
+        } else if (!GroupRegistry::instance().prepare_mirror(listener,
+                       static_cast<SRTSOCKET>(proposed.group_id), type,
+                       initial_sequence, mirror, admission_domain)) {
             return false;
         } else {
             peer = proposed;

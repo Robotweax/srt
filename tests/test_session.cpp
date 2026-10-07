@@ -5464,7 +5464,8 @@ TEST(session_blackhole_sensor_full_expired_window_admits_fresh_data)
 
 TEST(session_normalizes_duplicate_overlapping_nak_ranges_across_rollover)
 {
-    for (const auto initial : {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 3U}}) {
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 3U}}) {
         for (const bool unsent_tail : {false, true}) {
             ReliabilitySession sender {{
                 .local_initial_sequence = initial,
@@ -5473,17 +5474,22 @@ TEST(session_normalizes_duplicate_overlapping_nak_ranges_across_rollover)
                 .maximum_payload_size = 1,
             }};
             const std::array<std::byte, 8> message {};
-            REQUIRE_EQ(sender.queue_message(message, PacketTimestamp {0}), Error::none);
+            REQUIRE_EQ(sender.queue_message(message, PacketTimestamp {0}),
+                Error::none);
             for (unsigned i = 0; i < (unsent_tail ? 7U : 8U); ++i)
                 REQUIRE(sender.next_data_packet().has_value());
             std::array<SequenceRange, maximum_loss_ranges_per_report> ranges {};
             for (std::size_t i = 0; i < ranges.size(); ++i)
-                ranges[i] = {initial.advanced(i % 3U), initial.advanced(7U - i % 2U)};
-            const ReliabilityAction action {.kind = ReliabilityActionKind::loss_report, .loss = ranges[0]};
+                ranges[i] = {
+                    initial.advanced(i % 3U), initial.advanced(7U - i % 2U)};
+            const ReliabilityAction action {
+                .kind = ReliabilityActionKind::loss_report, .loss = ranges[0]};
             std::array<std::byte, maximum_data_payload_size + 16U> storage {};
-            const auto encoded = encode_reliability_action(action, ranges, PacketTimestamp {0}, 1, storage);
+            const auto encoded = encode_reliability_action(
+                action, ranges, PacketTimestamp {0}, 1, storage);
             REQUIRE(encoded);
-            const auto decoded = decode_packet(std::span {storage}.first(encoded.bytes_written));
+            const auto decoded =
+                decode_packet(std::span {storage}.first(encoded.bytes_written));
             REQUIRE(decoded);
             const auto result = sender.receive(decoded.packet, 100);
             if (unsent_tail) {

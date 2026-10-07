@@ -1562,7 +1562,8 @@ TEST(row_only_fec_rejects_oversized_geometry_before_allocation)
         REQUIRE(!RowFecDecoder::estimate_resources(configuration, 8192, 1312));
         bool rejected = false;
         try {
-            RowFecDecoder decoder {configuration, SequenceNumber {0}, 8192, 1312};
+            RowFecDecoder decoder {
+                configuration, SequenceNumber {0}, 8192, 1312};
         } catch (const std::invalid_argument&) {
             rejected = true;
         }

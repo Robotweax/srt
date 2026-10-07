@@ -630,8 +630,7 @@ void GroupRegistry::note_io_result(
     }
 }
 
-bool GroupRegistry::prepare_mirror(
-    SRTSOCKET listener, SRTSOCKET peer_group,
+bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
     SRT_GROUP_TYPE type, std::uint32_t initial_sequence,
     MirrorDescription& output, std::uint64_t admission_domain) noexcept
 {
