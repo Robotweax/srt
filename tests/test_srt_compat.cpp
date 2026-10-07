@@ -7307,3 +7307,30 @@ TEST(srt_compat_concurrent_option_publication_matches_active_rate)
     REQUIRE_EQ(initial_rate, 8.0);
     REQUIRE_EQ(failures.load(), 0);
 }
+
+TEST(srt_compat_mss_overflow_is_rejected_without_state_mutation)
+{
+    for (const auto option : {SRTO_SNDBUF, SRTO_RCVBUF}) {
+        const auto socket = srt_create_socket();
+        REQUIRE(socket != SRT_INVALID_SOCK);
+        const std::int32_t small = 76, large = 1500, bytes = 100'000'000;
+        const std::int32_t flow = 3'000'000;
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_FC, &flow, sizeof(flow)), 0);
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_MSS, &small, sizeof(small)), 0);
+        REQUIRE_EQ(srt_setsockflag(socket, option, &bytes, sizeof(bytes)), 0);
+        std::int32_t before = 0;
+        int size = sizeof(before);
+        REQUIRE_EQ(srt_getsockflag(socket, option, &before, &size), 0);
+        const int result =
+            srt_setsockflag(socket, SRTO_MSS, &large, sizeof(large));
+        const int error = srt_getlasterror(nullptr);
+        std::int32_t after = 0, mss = 0;
+        REQUIRE_EQ(srt_getsockflag(socket, option, &after, &size), 0);
+        REQUIRE_EQ(srt_getsockflag(socket, SRTO_MSS, &mss, &size), 0);
+        REQUIRE_EQ(srt_close(socket), 0);
+        REQUIRE_EQ(result, SRT_ERROR);
+        REQUIRE_EQ(error, SRT_EINVPARAM);
+        REQUIRE_EQ(after, before);
+        REQUIRE_EQ(mss, small);
+    }
+}
