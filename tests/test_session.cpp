@@ -5513,3 +5513,89 @@ TEST(session_normalizes_duplicate_overlapping_nak_ranges_across_rollover)
         }
     }
 }
+
+TEST(session_large_nak_expansion_is_bounded_and_repeated_reports_make_progress)
+{
+    for (const auto capacity : {1024U, 8192U, 65536U}) {
+        const SequenceNumber initial {SequenceNumber::mask - 300U};
+        ReliabilitySession sender {{
+            .local_initial_sequence = initial,
+            .send_capacity_packets = capacity,
+            .receive_capacity_packets = 16,
+            .maximum_payload_size = 1,
+        }};
+        const std::vector<std::byte> message(capacity);
+        REQUIRE_EQ(
+            sender.queue_message(message, PacketTimestamp {0}), Error::none);
+        for (unsigned i = 0; i < capacity; ++i)
+            REQUIRE(sender.next_data_packet().has_value());
+        const ReliabilityAction action {
+            .kind = ReliabilityActionKind::loss_report,
+            .loss = {initial, initial.advanced(capacity - 1U)},
+        };
+        std::array<std::byte, 64> storage {};
+        const auto encoded =
+            encode_reliability_action(action, PacketTimestamp {0}, 1, storage);
+        REQUIRE(encoded);
+        const auto decoded =
+            decode_packet(std::span {storage}.first(encoded.bytes_written));
+        REQUIRE(decoded);
+        std::size_t total = 0;
+        for (unsigned turn = 0; turn < capacity / 256U; ++turn) {
+            // Continuously repeat the whole window while its tail is pending.
+            const auto result = sender.receive(decoded.packet, turn + 1U);
+            REQUIRE(result);
+            REQUIRE_EQ(result.sender_loss_packets, 256U);
+            total += result.sender_loss_packets;
+        }
+        REQUIRE_EQ(total, capacity);
+        // No wire repeats are needed to complete a single large announcement.
+        std::size_t drained = 0;
+        while (sender.next_data_packet().has_value())
+            ++drained;
+        REQUIRE_EQ(drained, capacity);
+    }
+}
+
+TEST(session_large_nak_finishes_without_another_report_and_survives_ack)
+{
+    const SequenceNumber initial {123};
+    ReliabilitySession sender {{
+        .local_initial_sequence = initial,
+        .send_capacity_packets = 1024,
+        .receive_capacity_packets = 16,
+        .maximum_payload_size = 1,
+    }};
+    const std::vector<std::byte> message(1024);
+    REQUIRE_EQ(sender.queue_message(message, PacketTimestamp {0}), Error::none);
+    for (unsigned i = 0; i < 1024; ++i)
+        REQUIRE(sender.next_data_packet().has_value());
+    const ReliabilityAction action {
+        .kind = ReliabilityActionKind::loss_report,
+        .loss = {initial, initial.advanced(1023)},
+    };
+    std::array<std::byte, 64> storage {};
+    const auto encoded =
+        encode_reliability_action(action, PacketTimestamp {0}, 1, storage);
+    REQUIRE(encoded);
+    const auto decoded =
+        decode_packet(std::span {storage}.first(encoded.bytes_written));
+    REQUIRE(decoded);
+    REQUIRE_EQ(sender.receive(decoded.packet, 1).sender_loss_packets, 256U);
+    const ReliabilityAction ack {
+        .kind = ReliabilityActionKind::acknowledgement,
+        .acknowledgement = {.kind = AcknowledgementKind::lite,
+            .next_sequence = initial.advanced(512)},
+    };
+    REQUIRE(sender.receive(encode_and_decode(ack, storage), 2));
+    REQUIRE_EQ(sender.service_pending_naks(2).sender_loss_packets, 256U);
+    REQUIRE_EQ(sender.service_pending_naks(3).sender_loss_packets, 256U);
+    REQUIRE_EQ(sender.service_pending_naks(4).sender_loss_packets, 0U);
+    std::size_t drained = 0;
+    while (const auto packet = sender.next_data_packet()) {
+        REQUIRE(packet->header.retransmitted);
+        REQUIRE_EQ(packet->header.sequence, initial.advanced(512U + drained));
+        ++drained;
+    }
+    REQUIRE_EQ(drained, 512U);
+}

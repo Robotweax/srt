@@ -31,7 +31,9 @@ SendBuffer& SendBuffer::operator=(const SendBuffer& other)
 
 SendBuffer::SendBuffer(SequenceNumber initial_sequence,
     std::size_t capacity_packets, std::size_t maximum_payload_size)
-    : payloads_(checked_send_capacity(capacity_packets, maximum_payload_size))
+    : dropped_counts_(
+          checked_send_capacity(capacity_packets, maximum_payload_size) + 1U)
+    , payloads_(capacity_packets)
     , slots_(capacity_packets)
     , retransmission_queue_(capacity_packets)
     , drop_request_queue_(capacity_packets)
@@ -209,6 +211,14 @@ void SendBuffer::discard_slot(
     slot.occupied = false;
     slot.dropped = retain_drop_marker;
     if (was_dropped != retain_drop_marker) {
+        const auto position = static_cast<std::size_t>(&slot - slots_.data());
+        for (auto index = position + 1U; index < dropped_counts_.size();
+            index += index & (~index + 1U)) {
+            if (retain_drop_marker)
+                ++dropped_counts_[index];
+            else
+                --dropped_counts_[index];
+        }
         if (retain_drop_marker) {
             ++retained_drop_count_;
         } else {
@@ -299,15 +309,9 @@ bool SendBuffer::queue_drop_request(SequenceNumber sequence) noexcept
     if (!candidate.dropped) {
         return false;
     }
-    while (first_offset > 0U) {
-        const auto& previous = slots_[(head_ + first_offset - 1U) % capacity()];
-        if (!previous.dropped
-            || previous.header.message_number
-                != candidate.header.message_number) {
-            break;
-        }
-        --first_offset;
-    }
+    const auto message_offset =
+        candidate.dropped_message_first.distance_from(first_sequence_);
+    first_offset = static_cast<std::size_t>(std::max(message_offset, 0));
 
     auto& first = slots_[(head_ + first_offset) % capacity()];
     if (first.drop_request_queued) {
@@ -553,6 +557,14 @@ Error SendBuffer::acknowledge_before(SequenceNumber sequence) noexcept
     return Error::none;
 }
 
+std::size_t SendBuffer::dropped_prefix(std::size_t end) const noexcept
+{
+    std::size_t result = 0;
+    for (; end != 0U; end -= end & (~end + 1U))
+        result += dropped_counts_[end];
+    return result;
+}
+
 Error SendBuffer::validate_retransmission_range(
     SequenceRange range) const noexcept
 {
@@ -565,12 +577,19 @@ Error SendBuffer::validate_retransmission_range(
         return Error::invalid_control_payload;
     }
 
-    for (std::size_t offset = static_cast<std::size_t>(first_offset);
-        offset <= static_cast<std::size_t>(last_offset); ++offset) {
-        const auto& slot = slots_[(head_ + offset) % capacity()];
-        if (!slot.dropped && (!slot.occupied || !slot.sent)) {
+    // Original DATA is emitted in order. Everything below the cursor is
+    // already sent or a tombstone. Only the unsent tail needs a drop count.
+    const auto begin =
+        std::max(static_cast<std::size_t>(first_offset), next_unsent_offset_);
+    const auto end = static_cast<std::size_t>(last_offset) + 1U;
+    if (begin < end) {
+        const auto physical = (head_ + begin) % capacity();
+        const auto count = end - begin;
+        const auto first_count = std::min(count, capacity() - physical);
+        const auto dropped = dropped_prefix(physical + first_count)
+            - dropped_prefix(physical) + dropped_prefix(count - first_count);
+        if (dropped != count)
             return Error::invalid_control_payload;
-        }
     }
     return Error::none;
 }
@@ -685,18 +704,9 @@ std::optional<SendDropResult> SendBuffer::next_pending_drop_request() noexcept
         }
         first.drop_request_queued = false;
 
-        std::size_t final_offset = first_offset;
-        std::size_t bytes = first.plaintext_size;
-        while (final_offset + 1U < sequence_span_) {
-            auto& next = slots_[(head_ + final_offset + 1U) % capacity()];
-            if (!next.dropped
-                || next.header.message_number != first.header.message_number) {
-                break;
-            }
-            next.drop_request_queued = false;
-            bytes += next.plaintext_size;
-            ++final_offset;
-        }
+        const auto final_offset = static_cast<std::size_t>(
+            first.dropped_message_last.distance_from(first_sequence_));
+        const auto bytes = first.dropped_remaining_bytes;
         return SendDropResult {
             .packets = final_offset - first_offset + 1U,
             .bytes = bytes,
@@ -952,11 +962,19 @@ SendDropResult SendBuffer::drop_expired_message(
             }
             result.bytes += slot.plaintext_size;
             discard_slot(slot, true);
+            slot.dropped_message_first = result.sequences.first;
             ++result.packets;
             ++message_offset;
         }
         result.sequences.last = result.sequences.first.advanced(
             static_cast<std::uint32_t>(result.packets - 1U));
+        std::size_t remaining_bytes = 0;
+        for (auto i = message_offset; i > offset; --i) {
+            auto& slot = slots_[(head_ + i - 1U) % capacity()];
+            remaining_bytes += slot.plaintext_size;
+            slot.dropped_message_last = result.sequences.last;
+            slot.dropped_remaining_bytes = remaining_bytes;
+        }
         refresh_buffered_enqueue_time_bounds();
         return result;
     }
