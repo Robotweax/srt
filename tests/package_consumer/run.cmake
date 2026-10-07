@@ -122,7 +122,8 @@ set(public_consumer_configure_command
     -S "${public_consumer_source_directory}"
     -B "${public_consumer_binary_directory}"
     -G "${ROBOTWEAX_SRT_GENERATOR}"
-    "-DCMAKE_PREFIX_PATH=${stage_directory}")
+    "-DCMAKE_PREFIX_PATH=${stage_directory}"
+    "-DCMAKE_CXX_COMPILER=${ROBOTWEAX_SRT_CXX_COMPILER}")
 if(NOT "${ROBOTWEAX_SRT_GENERATOR_PLATFORM}" STREQUAL "")
     list(APPEND public_consumer_configure_command
         -A "${ROBOTWEAX_SRT_GENERATOR_PLATFORM}")
@@ -198,7 +199,9 @@ set(configure_command
     -B "${consumer_binary_directory}"
     -G "${ROBOTWEAX_SRT_GENERATOR}"
     "-DCMAKE_PREFIX_PATH=${stage_directory}"
-    "-DROBOTWEAX_SRT_PACKAGE_VERSION=${ROBOTWEAX_SRT_PACKAGE_VERSION}")
+    "-DROBOTWEAX_SRT_PACKAGE_VERSION=${ROBOTWEAX_SRT_PACKAGE_VERSION}"
+    "-DCMAKE_C_COMPILER=${ROBOTWEAX_SRT_C_COMPILER}"
+    "-DCMAKE_CXX_COMPILER=${ROBOTWEAX_SRT_CXX_COMPILER}")
 if(NOT "${ROBOTWEAX_SRT_GENERATOR_PLATFORM}" STREQUAL "")
     list(APPEND configure_command
         -A "${ROBOTWEAX_SRT_GENERATOR_PLATFORM}")
