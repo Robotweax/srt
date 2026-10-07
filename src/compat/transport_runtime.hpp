@@ -671,6 +671,8 @@ private:
     fec_control_packet() const noexcept;
     void consume_fec_control() noexcept;
     [[nodiscard]] bool fec_decoder_active() const noexcept;
+    [[nodiscard]] bool authenticate_fec_recovery(
+        const PacketView& packet) noexcept;
     [[nodiscard]] FecReceiveBatch receive_fec_packet(
         const PacketView& wire_packet) noexcept;
     [[nodiscard]] bool process_reliability_packet_locked(

@@ -470,6 +470,20 @@ std::optional<std::uint64_t> RowFecDecoder::unwrap(SequenceNumber sequence,
             return std::nullopt;
         }
     }
+    if (!source_packet && validator_.function != nullptr) {
+        // Unauthenticated parity must not move the source sequence anchor.
+        const SequenceNumber anchor =
+            has_latest_ ? latest_sequence_ : initial_sequence_;
+        const auto distance = sequence.distance_from(anchor);
+        if (distance >= 0
+            && static_cast<std::size_t>(distance) >= receive_capacity_packets_)
+            return std::nullopt;
+        auto latest = latest_sequence_;
+        auto index = latest_index_;
+        auto present = has_latest_;
+        return unwrap_sequence(
+            initial_sequence_, sequence, latest, index, present);
+    }
     bool resynchronize = false;
     if (!has_latest_) {
         const std::uint32_t forward =
@@ -515,12 +529,16 @@ std::optional<std::uint64_t> RowFecDecoder::unwrap(SequenceNumber sequence,
 }
 
 RowFecDecoder::Group* RowFecDecoder::group_for(
-    std::uint64_t row) noexcept
+    std::uint64_t row, bool source) noexcept
 {
     Group& group =
         groups_[static_cast<std::size_t>(
             row % groups_.size())];
     if (!group.active || group.row != row) {
+        if (validator_.function != nullptr && group.active && !source)
+            return nullptr;
+        if (validator_.function != nullptr && source && group.collected == 0)
+            group.active = false;
         if (row < minimum_retained_row_
             || (group.active && group.row > row)) {
             return nullptr;
@@ -653,13 +671,17 @@ Error RowFecDecoder::clip_control(
 RowFecReceiveResult RowFecDecoder::try_reconstruct(
     Group& group) noexcept
 {
-    if (!group.has_control || group.reconstructed
+    if (!group.has_control || group.reconstructed || group.recovery_rejected
         || group.collected != columns_ - 1U) {
         return {};
     }
     if (group.missing_position_xor >= columns_
         || group.flags_recovery > 3U || !group.has_message_anchor
         || group.message_anchor_number == 0U) {
+        if (validator_.function != nullptr) {
+            group.recovery_rejected = true;
+            return {};
+        }
         return {.error = Error::invalid_control_payload};
     }
     if (group.length_recovery > maximum_payload_size_) {
@@ -673,16 +695,16 @@ RowFecReceiveResult RowFecDecoder::try_reconstruct(
         group.row * columns_
         + group.missing_position_xor;
     if (missing_index / columns_ != group.row) {
+        if (validator_.function != nullptr) {
+            group.recovery_rejected = true;
+            return {};
+        }
         return {.error = Error::invalid_control_payload};
     }
     const auto payload = recovery_payload(group);
     std::copy_n(
         payload.begin(), group.length_recovery,
         reconstructed_payload_.begin());
-    mark_source_seen(
-        group, group.missing_position_xor);
-    ++group.collected;
-    group.reconstructed = true;
 
     const SequenceNumber sequence =
         initial_sequence_.advanced(
@@ -692,7 +714,7 @@ RowFecReceiveResult RowFecDecoder::try_reconstruct(
     const std::uint32_t message_number =
         advance_message_number(group.message_anchor_number,
             sequence.distance_from(group.message_anchor_sequence));
-    return {
+    const RowFecReceiveResult result {
         .has_reconstructed_packet = true,
         .reconstructed_packet =
             {
@@ -712,6 +734,18 @@ RowFecReceiveResult RowFecDecoder::try_reconstruct(
                     group.length_recovery),
             },
     };
+    if (validator_.function != nullptr
+        && !validator_.function(
+            validator_.context, result.reconstructed_packet)) {
+        // Keep the hole unseen so expiry/ARQ still report it. Never propagate
+        // this candidate into a matrix's other dimension.
+        group.recovery_rejected = true;
+        return {};
+    }
+    mark_source_seen(group, group.missing_position_xor);
+    ++group.collected;
+    group.reconstructed = true;
+    return result;
 }
 
 void RowFecDecoder::append_irrecoverable_range(
@@ -862,10 +896,9 @@ RowFecReceiveResult RowFecDecoder::receive(const PacketView& wire_packet,
             };
         }
         const std::uint64_t row = *index / columns_;
-        advance_expiry(
-            row, columns_ - 1U);
-        Group* group = group_for(
-            row);
+        if (validator_.function == nullptr)
+            advance_expiry(row, columns_ - 1U);
+        Group* group = group_for(row, false);
         if (group == nullptr) {
             return finish_result({
                 .consume_control_packet = true});
@@ -1257,6 +1290,20 @@ std::optional<std::uint64_t> ColumnFecDecoder::unwrap(SequenceNumber sequence,
             return std::nullopt;
         }
     }
+    if (!source_packet && validator_.function != nullptr) {
+        // Unauthenticated parity must not move the source sequence anchor.
+        const SequenceNumber anchor =
+            has_latest_ ? latest_sequence_ : initial_sequence_;
+        const auto distance = sequence.distance_from(anchor);
+        if (distance >= 0
+            && static_cast<std::size_t>(distance) >= receive_capacity_packets_)
+            return std::nullopt;
+        auto latest = latest_sequence_;
+        auto index = latest_index_;
+        auto present = has_latest_;
+        return unwrap_sequence(
+            initial_sequence_, sequence, latest, index, present);
+    }
     bool resynchronize = false;
     if (!has_latest_) {
         const std::uint32_t forward =
@@ -1397,9 +1444,8 @@ ColumnFecDecoder::find_group(
         ? &group : nullptr;
 }
 
-ColumnFecDecoder::Group*
-ColumnFecDecoder::group_for(
-    const Location& location) noexcept
+ColumnFecDecoder::Group* ColumnFecDecoder::group_for(
+    const Location& location, bool source) noexcept
 {
     const std::uint64_t ordinal =
         location.series * columns_
@@ -1411,6 +1457,10 @@ ColumnFecDecoder::group_for(
         && group.ordinal == ordinal) {
         return &group;
     }
+    if (validator_.function != nullptr && group.active && !source)
+        return nullptr;
+    if (validator_.function != nullptr && source && group.collected == 0)
+        group.active = false;
     if (group.active
         && group.series
             >= minimum_retained_series_) {
@@ -1547,18 +1597,18 @@ ColumnFecDecoder::try_reconstruct(
     Group& group,
     const Location& location) noexcept
 {
-    if (!group.has_control
-        || group.reconstructed
-        || group.dismissed
-        || group.collected != rows_ - 1U) {
+    if (!group.has_control || group.reconstructed || group.recovery_rejected
+        || group.dismissed || group.collected != rows_ - 1U) {
         return {};
     }
     if (group.missing_position_xor >= rows_
         || group.flags_recovery > 3U || !group.has_message_anchor
         || group.message_anchor_number == 0U) {
-        return {
-            .error =
-                Error::invalid_control_payload};
+        if (validator_.function != nullptr) {
+            group.recovery_rejected = true;
+            return {};
+        }
+        return {.error = Error::invalid_control_payload};
     }
     if (group.length_recovery > maximum_payload_size_) {
         // Clipped missing packet (see RowFecDecoder::try_reconstruct).
@@ -1573,16 +1623,12 @@ ColumnFecDecoder::try_reconstruct(
     std::copy_n(
         payload.begin(), group.length_recovery,
         reconstructed_payload_.begin());
-    mark_source_seen(
-        group, group.missing_position_xor);
-    ++group.collected;
-    group.reconstructed = true;
     const SequenceNumber sequence = initial_sequence_.advanced(
         static_cast<std::uint32_t>(missing_index & SequenceNumber::mask));
     const std::uint32_t message_number =
         advance_message_number(group.message_anchor_number,
             sequence.distance_from(group.message_anchor_sequence));
-    return {
+    const RowFecReceiveResult result {
         .has_reconstructed_packet = true,
         .reconstructed_packet =
             {
@@ -1602,6 +1648,18 @@ ColumnFecDecoder::try_reconstruct(
                     group.length_recovery),
             },
     };
+    if (validator_.function != nullptr
+        && !validator_.function(
+            validator_.context, result.reconstructed_packet)) {
+        // Keep the hole unseen so expiry/ARQ still report it. Never propagate
+        // this candidate into a matrix's other dimension.
+        group.recovery_rejected = true;
+        return {};
+    }
+    mark_source_seen(group, group.missing_position_xor);
+    ++group.collected;
+    group.reconstructed = true;
+    return result;
 }
 
 void ColumnFecDecoder::append_loss_index(
@@ -1848,7 +1906,7 @@ ColumnFecReceiveResult ColumnFecDecoder::receive(const PacketView& wire_packet,
             return finish_result({
                 .consume_control_packet = true});
         }
-        Group* group = group_for(*location);
+        Group* group = group_for(*location, false);
         if (group == nullptr) {
             return finish_result({
                 .consume_control_packet = true});
@@ -1866,8 +1924,8 @@ ColumnFecReceiveResult ColumnFecDecoder::receive(const PacketView& wire_packet,
         auto result =
             try_reconstruct(*group, *location);
         result.consume_control_packet = true;
-        advance_expiry(
-            location->series, *index);
+        if (validator_.function == nullptr)
+            advance_expiry(location->series, *index);
         return finish_result(result);
     }
 

@@ -1570,6 +1570,22 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
                 receive_capacity, fec_payload_size);
         }
     }
+    if (crypto_ != nullptr && crypto_->authenticated_data_enabled()) {
+        const FecRecoveryValidator validator {
+            .function =
+                [](void* context, const PacketView& packet) noexcept {
+                    return static_cast<ConnectionRuntime*>(context)
+                        ->authenticate_fec_recovery(packet);
+                },
+            .context = this,
+        };
+        if (row_fec_decoder_)
+            row_fec_decoder_->set_recovery_validator(validator);
+        if (column_fec_decoder_)
+            column_fec_decoder_->set_recovery_validator(validator);
+        if (matrix_fec_decoder_)
+            matrix_fec_decoder_->set_recovery_validator(validator);
+    }
     session_.configure_packet_filter(
         filter, row_fec_decoder_.has_value()
             || column_fec_decoder_.has_value()
@@ -2822,6 +2838,26 @@ void ConnectionRuntime::consume_fec_control() noexcept
     }
 }
 
+bool ConnectionRuntime::authenticate_fec_recovery(
+    const PacketView& packet) noexcept
+{
+    if (crypto_ == nullptr || !crypto_->authenticated_data_enabled())
+        return false;
+    const auto protected_payload = decode_protected_payload(packet.payload,
+        options_.payload_budget(peer_.wire_family(), CryptoMode::aes_gcm));
+    std::array<std::byte, maximum_data_payload_size> plaintext {};
+    if (!protected_payload
+        || crypto_->open(packet.data, protected_payload.payload.ciphertext,
+               protected_payload.payload.authentication_tag,
+               std::span {plaintext}.first(
+                   protected_payload.payload.ciphertext.size()))
+            != Error::none) {
+        statistics_.note_receiver_undecryptable(packet.payload.size());
+        return false;
+    }
+    return true;
+}
+
 bool ConnectionRuntime::fec_decoder_active() const noexcept
 {
     return row_fec_decoder_.has_value()
@@ -3679,6 +3715,8 @@ void ConnectionRuntime::process_packet(
         const auto filtered =
             receive_fec_packet(packet);
         if (!filtered) {
+            (void)report_filter_losses_locked(
+                filtered.irrecoverable_losses, now);
             // A malformed FEC source must not hide otherwise acceptable
             // original DATA from the reliability receive window.
             if (packet.data.message_number != 0U
@@ -3688,7 +3726,10 @@ void ConnectionRuntime::process_packet(
             }
             return;
         }
-        last_peer_activity_microseconds_ = now;
+        // Bare FEC parity has no authentication tag and is not proof of liveness.
+        if (crypto_ == nullptr || !crypto_->authenticated_data_enabled()
+            || packet.data.message_number != 0U)
+            last_peer_activity_microseconds_ = now;
         const auto process_reconstructed =
             [&](std::span<const PacketView> packets)
                 noexcept {
@@ -3705,6 +3746,7 @@ void ConnectionRuntime::process_packet(
                             false)) {
                         return false;
                     }
+                    last_peer_activity_microseconds_ = now;
                 }
                 return true;
             };
