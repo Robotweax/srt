@@ -698,13 +698,14 @@ void runtime_cleanup() noexcept
         GroupRegistry::instance().clear();
         SocketRegistry::instance().clear();
         stop_runtime_work_executor();
-        retired_callbacks = retire_connect_callback_executor();
         stop_runtime_scheduler();
-        // The callback executor has been detached from the service. Its
-        // workers may run application TLS destructors that start a new
-        // generation, so finish their joins after reopening admission.
+        // Reopen admission before waking retired callback workers: their
+        // application TLS destructors may immediately start a new generation.
+        // Detach under the lifecycle lock so new entrants cannot acquire the
+        // old executor, and join only after releasing this lock.
         lifecycle_lock.lock();
         lifecycle.cleaning = false;
+        retired_callbacks = retire_connect_callback_executor();
         lifecycle_lock.unlock();
         lifecycle.changed.notify_all();
         if (retired_callbacks) {
