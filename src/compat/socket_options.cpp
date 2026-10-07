@@ -1,6 +1,7 @@
 #include "compat/socket_registry.hpp"
 
 #include "compat/error_state.hpp"
+#include "compat/buffer_size.hpp"
 #include "compat/readiness.hpp"
 
 #include <algorithm>
@@ -163,11 +164,6 @@ template <typename Value>
     return bytes / srt_buffer_unit_bytes(maximum_segment_size);
 }
 
-[[nodiscard]] constexpr std::int32_t srt_buffer_bytes_from_packets(
-    std::int32_t packets, std::int32_t maximum_segment_size) noexcept
-{
-    return packets * srt_buffer_unit_bytes(maximum_segment_size);
-}
 
 } // namespace
 
@@ -582,6 +578,12 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             || parsed > options.udp_receive_buffer_bytes) {
             return invalid_parameter();
         }
+        const auto send_bytes = checked_srt_buffer_bytes(
+            socket.native_options.send_buffer_packets(), parsed);
+        const auto receive_bytes = checked_srt_buffer_bytes(
+            socket.native_options.receive_buffer_packets(), parsed);
+        if (!send_bytes || !receive_bytes)
+            return invalid_parameter();
         if (set_native(
                 socket.native_options,
                 SocketOption::maximum_segment_size,
@@ -589,16 +591,8 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             return SRT_ERROR;
         }
         options.maximum_segment_size = parsed;
-        options.send_buffer_bytes =
-            srt_buffer_bytes_from_packets(
-                static_cast<std::int32_t>(
-                    socket.native_options.send_buffer_packets()),
-                parsed);
-        options.receive_buffer_bytes =
-            srt_buffer_bytes_from_packets(
-                static_cast<std::int32_t>(
-                    socket.native_options.receive_buffer_packets()),
-                parsed);
+        options.send_buffer_bytes = *send_bytes;
+        options.receive_buffer_bytes = *receive_bytes;
         options.maximum_payload_size =
             static_cast<std::int32_t>(
                 socket.native_options.maximum_payload_size());
@@ -620,6 +614,10 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             packets = std::min(
                 packets, options.flow_window_packets);
         }
+        const auto bytes = checked_srt_buffer_bytes(
+            static_cast<std::uint32_t>(packets), options.maximum_segment_size);
+        if (!bytes)
+            return invalid_parameter();
         if (option == SRTO_SNDBUF) {
             if (set_native(socket.native_options,
                     SocketOption::send_buffer_packets,
@@ -627,9 +625,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                 == SRT_ERROR) {
                 return SRT_ERROR;
             }
-            options.send_buffer_bytes =
-                srt_buffer_bytes_from_packets(
-                    packets, options.maximum_segment_size);
+            options.send_buffer_bytes = *bytes;
         } else {
             if (set_native(socket.native_options,
                     SocketOption::receive_buffer_packets,
@@ -637,9 +633,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                 == SRT_ERROR) {
                 return SRT_ERROR;
             }
-            options.receive_buffer_bytes =
-                srt_buffer_bytes_from_packets(
-                    packets, options.maximum_segment_size);
+            options.receive_buffer_bytes = *bytes;
         }
         return 0;
     }

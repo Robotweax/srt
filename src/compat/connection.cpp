@@ -9,6 +9,7 @@
 #include "compat/connect_handshake_operation.hpp"
 #include "compat/connect_callback_executor.hpp"
 #include "compat/error_state.hpp"
+#include "compat/buffer_size.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/listener_connection_setup.hpp"
 #include "compat/listener_connection_setup_sources.hpp"
@@ -678,34 +679,32 @@ struct ConnectedNegotiation {
         || negotiation.peer_flow_window == 0U) {
         return false;
     }
+    const std::int32_t effective_maximum_segment_size =
+        static_cast<std::int32_t>(std::min<std::uint32_t>(
+            static_cast<std::uint32_t>(
+                socket.public_options.maximum_segment_size),
+            peer_maximum_segment_size));
+    const auto send_bytes =
+        checked_srt_buffer_bytes(socket.native_options.send_buffer_packets(),
+            effective_maximum_segment_size);
+    const auto receive_bytes =
+        checked_srt_buffer_bytes(socket.native_options.receive_buffer_packets(),
+            effective_maximum_segment_size);
+    if (!send_bytes || !receive_bytes
+        || socket.native_options.set(SocketOption::maximum_segment_size,
+               effective_maximum_segment_size)
+            != Error::none)
+        return false;
     if (negotiation.has_transport_parameters) {
         socket.connection_initial_sequence =
             negotiation.initial_sequence.value();
         socket.peer_connection_initial_sequence =
             negotiation.initial_sequence.value();
     }
-    const std::int32_t effective_maximum_segment_size =
-        static_cast<std::int32_t>(std::min<std::uint32_t>(
-            static_cast<std::uint32_t>(
-                socket.public_options.maximum_segment_size),
-            peer_maximum_segment_size));
-    (void)socket.native_options.set(
-        SocketOption::maximum_segment_size,
-        effective_maximum_segment_size);
-    socket.native_options.constrain_to_address_family(
-        peer.wire_family());
-    socket.public_options.maximum_segment_size =
-        effective_maximum_segment_size;
-    const auto buffer_unit =
-        effective_maximum_segment_size - 28;
-    socket.public_options.send_buffer_bytes =
-        static_cast<std::int32_t>(
-            socket.native_options.send_buffer_packets())
-        * buffer_unit;
-    socket.public_options.receive_buffer_bytes =
-        static_cast<std::int32_t>(
-            socket.native_options.receive_buffer_packets())
-        * buffer_unit;
+    socket.native_options.constrain_to_address_family(peer.wire_family());
+    socket.public_options.maximum_segment_size = effective_maximum_segment_size;
+    socket.public_options.send_buffer_bytes = *send_bytes;
+    socket.public_options.receive_buffer_bytes = *receive_bytes;
     socket.peer_endpoint = peer;
     socket.has_peer_endpoint = true;
     socket.peer_protocol_socket_id = peer_socket_id;

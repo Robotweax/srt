@@ -71,3 +71,25 @@ function Assert-SdkChecksumManifest([string]$Manifest, [string[]]$ExpectedLines)
         throw 'Signed installer checksum manifest mismatch'
     }
 }
+
+# Job-output provenance is independent of the downloaded installer artifact.
+# Bind the tested pair to the exact workflow run and source before granting OIDC.
+function Get-SdkInstallerProvenance([string]$Directory, [string]$Version, [string]$Revision, [string]$RunId) {
+    if ($Revision -cnotmatch '^[0-9a-f]{40}$' -or $RunId -notmatch '^[0-9]+$') { throw 'Invalid provenance identity' }
+    $Entries = @(Get-SdkInstallerPair $Directory $Version | ForEach-Object {
+        [ordered]@{name=$_.Name; size=$_.Length; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
+    })
+    [ordered]@{revision=$Revision; run_id=$RunId; version=$Version; files=$Entries}
+}
+
+function Assert-SdkInstallerProvenance([string]$Directory, [string]$Version, [string]$Revision, [string]$RunId, [string]$Json) {
+    $Expected = $Json | ConvertFrom-Json -AsHashtable
+    $Actual = Get-SdkInstallerProvenance $Directory $Version $Revision $RunId
+    if ($Expected.revision -cne $Actual.revision -or $Expected.run_id -cne $Actual.run_id -or
+        $Expected.version -cne $Actual.version -or @($Expected.files).Count -ne 2) { throw 'Installer provenance identity mismatch' }
+    for ($Index = 0; $Index -lt 2; ++$Index) {
+        foreach ($Field in 'name','size','sha256') {
+            if ($Expected.files[$Index][$Field] -cne $Actual.files[$Index][$Field]) { throw 'Installer provenance bytes mismatch' }
+        }
+    }
+}
