@@ -195,7 +195,11 @@ public:
     {
         return make_crypto_payload_budget(effective_mode, maximum_segment_size_,
             packet_header_size_,
-            packet_filter_configuration_.extra_header_size());
+            packet_filter_configuration_.extra_header_size()
+                + (session_authentication_
+                            && packet_filter_configuration_.enabled
+                        ? authenticated_fec_overhead
+                        : 0U));
     }
     [[nodiscard]] std::size_t maximum_payload_size_limit(
         CryptoMode effective_mode) const noexcept
@@ -224,7 +228,12 @@ public:
             ? ipv6_srt_packet_overhead
             : ipv4_srt_packet_overhead;
         return make_crypto_payload_budget(effective_mode, maximum_segment_size_,
-            overhead, packet_filter_configuration_.extra_header_size());
+            overhead,
+            packet_filter_configuration_.extra_header_size()
+                + (session_authentication_
+                            && packet_filter_configuration_.enabled
+                        ? authenticated_fec_overhead
+                        : 0U));
     }
     [[nodiscard]] std::size_t maximum_payload_size_limit(
         IpAddressFamily family, CryptoMode effective_mode) const noexcept

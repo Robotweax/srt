@@ -171,7 +171,8 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
             if (message.has_session_authentication
                 || content.size() != session_authentication_wire_size
                 || content[0] != std::byte {0} || content[1] != std::byte {0}
-                || content[2] != std::byte {0} || content[3] != std::byte {1})
+                || content[2] != std::byte {0}
+                || content[3] != std::byte {session_authentication_version})
                 return {.error = Error::invalid_extension};
             message.has_session_authentication = true;
             std::copy_n(content.begin() + 4, 32,
@@ -376,7 +377,7 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
             == 0U)
             return {.error = Error::invalid_extension};
         std::array<std::byte, session_authentication_wire_size> content {};
-        content[3] = std::byte {1};
+        content[3] = std::byte {session_authentication_version};
         std::copy(action.session_authentication.caller_nonce.begin(),
             action.session_authentication.caller_nonce.end(),
             content.begin() + 4);

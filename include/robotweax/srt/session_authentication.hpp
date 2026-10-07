@@ -2,6 +2,7 @@
 #pragma once
 
 #include "robotweax/srt/crypto_provider.hpp"
+#include "robotweax/srt/packet.hpp"
 
 #include <array>
 #include <cstdint>
@@ -14,6 +15,8 @@ inline constexpr std::uint16_t authenticated_key_request_subtype = 0x7f03;
 inline constexpr std::uint16_t authenticated_key_response_subtype = 0x7f04;
 inline constexpr std::size_t session_authentication_wire_size = 100;
 inline constexpr std::size_t authenticated_key_overhead = 40;
+inline constexpr std::uint8_t session_authentication_version = 2;
+inline constexpr std::size_t authenticated_fec_overhead = 40;
 
 struct SessionAuthenticationParameters {
     std::array<std::byte, 32> caller_nonce {};
@@ -66,7 +69,19 @@ public:
     [[nodiscard]] bool open(bool response, std::span<const std::byte> input,
         std::span<const std::byte>& material) noexcept;
 
+    // Version 2 authenticates complete parity headers and bodies. A separate
+    // 64-packet replay window permits bounded datagram reordering.
+    [[nodiscard]] Error seal_fec(const DataHeader& header,
+        std::span<const std::byte> parity, std::span<std::byte> output,
+        std::size_t& written) noexcept;
+    [[nodiscard]] bool open_fec(const DataHeader& header,
+        std::span<const std::byte> input,
+        std::span<const std::byte>& parity) noexcept;
+
 private:
+    [[nodiscard]] Error fec_mac(bool caller, std::uint64_t counter,
+        const DataHeader& header, std::span<const std::byte> parity,
+        std::span<std::byte, 32> output) noexcept;
     [[nodiscard]] Error mac(std::uint8_t domain, bool caller,
         std::uint64_t counter, std::span<const std::byte> input,
         std::span<std::byte, 32> output) noexcept;
@@ -78,6 +93,8 @@ private:
     std::array<std::byte, 128> last_sent_ {}, last_received_ {};
     std::size_t last_sent_size_ = 0, last_received_size_ = 0;
     std::uint64_t sent_counter_ = 0, received_counter_ = 0;
+    std::uint64_t fec_sent_counter_ = 0, fec_received_counter_ = 0,
+                  fec_received_bitmap_ = 0;
     bool caller_ = false, started_ = false, ready_ = false;
 };
 

@@ -2760,6 +2760,18 @@ bool ConnectionRuntime::send_filter_control(
             crypto_->active_sender_key();
     }
     view.payload = packet->payload;
+    std::array<std::byte, maximum_data_payload_size> authenticated_parity {};
+    if (options_.session_authentication()) {
+        std::size_t written = 0;
+        if (crypto_ == nullptr || crypto_->session_authentication() == nullptr
+            || crypto_->session_authentication()->seal_fec(
+                   view.data, view.payload, authenticated_parity, written)
+                != Error::none) {
+            break_locked(0);
+            return false;
+        }
+        view.payload = std::span {authenticated_parity}.first(written);
+    }
     std::array<std::byte, 1500> datagram{};
     const auto encoded = encode_packet(view, datagram);
     if (!encoded) {
@@ -3682,6 +3694,32 @@ void ConnectionRuntime::process_packet(
         last_peer_activity_microseconds_ = now;
         notify_readiness();
         return;
+    }
+
+    // Enforce the receive policy before untrusted clear DATA can enter FEC.
+    // Explicit optional CTR fallback remains compatible until a receive key
+    // has been secured. Parity (message zero) has its own admission below.
+    if (packet.kind == PacketKind::data && packet.data.message_number != 0U
+        && packet.data.encryption_key == EncryptionKey::none
+        && crypto_ != nullptr && crypto_->enabled()
+        && (options_.enforced_encryption()
+            || crypto_->receiver_state() == CryptoState::secured
+            || crypto_->authenticated_data_enabled())) {
+        statistics_.note_receiver_undecryptable(packet.payload.size());
+        return;
+    }
+
+    if (packet.kind == PacketKind::data && packet.data.message_number == 0U
+        && options_.session_authentication()) {
+        std::span<const std::byte> parity;
+        if (!fec_decoder_active() || crypto_ == nullptr
+            || crypto_->session_authentication() == nullptr
+            || !crypto_->session_authentication()->open_fec(
+                packet.data, packet.payload, parity)) {
+            statistics_.note_receiver_undecryptable(packet.payload.size());
+            return;
+        }
+        packet.payload = parity;
     }
 
     if (packet.kind == PacketKind::data

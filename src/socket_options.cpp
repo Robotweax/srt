@@ -180,6 +180,14 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
                 default_maximum_segment_size)) {
             return Error::invalid_state;
         }
+        if (session_authentication_ && packet_filter_configuration_.enabled
+            && static_cast<std::size_t>(value) <= packet_header_size_
+                    + packet_filter_configuration_.extra_header_size()
+                    + authenticated_fec_overhead
+                    + (requires_authenticated_data()
+                            ? srt_gcm_authentication_tag_size
+                            : 0U))
+            return Error::invalid_state;
         maximum_segment_size_ = static_cast<std::size_t>(value);
         maximum_payload_size_ = std::min(
             requested_maximum_payload_size_,
@@ -256,7 +264,13 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         if (!is_boolean(value)
             || (value != 0 && (!enforced_encryption_ || rendezvous_)))
             return Error::invalid_state;
+        if (value != 0 && packet_filter_configuration_.enabled
+            && maximum_payload_size_limit() <= authenticated_fec_overhead
+            && !session_authentication_)
+            return Error::invalid_state;
         session_authentication_ = value != 0;
+        maximum_payload_size_ = std::min(
+            requested_maximum_payload_size_, maximum_payload_size_limit());
         return Error::none;
     case SocketOption::rendezvous:
         if (!is_boolean(value) || (value != 0 && session_authentication_))
@@ -390,6 +404,13 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
                 congestion_controller_, tsbpd_mode_, message_api_)) {
             return Error::invalid_state;
         }
+        if (session_authentication_ && packet_filter_configuration_.enabled
+            && maximum_payload_size_limit(
+                   value == static_cast<std::int64_t>(CryptoMode::aes_gcm)
+                       ? CryptoMode::aes_gcm
+                       : CryptoMode::aes_ctr)
+                == 0U)
+            return Error::invalid_state;
         crypto_mode_ = static_cast<CryptoMode>(value);
         maximum_payload_size_ = std::min(
             requested_maximum_payload_size_, maximum_payload_size_limit());
@@ -497,6 +518,12 @@ Error SocketOptions::set_packet_filter(
         return Error::invalid_state;
     }
 #endif
+    if (session_authentication_ && parsed.configuration.enabled) {
+        auto candidate = *this;
+        candidate.packet_filter_configuration_ = parsed.configuration;
+        if (candidate.maximum_payload_size_limit() == 0U)
+            return Error::invalid_state;
+    }
     packet_filter_configuration_ =
         parsed.configuration;
     if (packet_filter_configuration_.sensor_profile()) {

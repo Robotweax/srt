@@ -597,3 +597,64 @@ TEST(socket_options_refresh_minimum_preserves_valid_crypto_configuration)
         Error::invalid_state);
     REQUIRE_EQ(options.crypto_configuration().preannouncement_packets, 1U);
 }
+
+TEST(session_authentication_fec_budget_is_opt_in_and_order_independent)
+{
+    for (bool auth_first : {false, true}) {
+        SocketOptions options;
+        const auto ordinary = options.maximum_payload_size_limit();
+        REQUIRE(!options.session_authentication());
+        if (auth_first)
+            REQUIRE_EQ(options.set(SocketOption::session_authentication, 1),
+                Error::none);
+        REQUIRE_EQ(options.set_packet_filter("fec,cols:2,rows:1"), Error::none);
+        if (!auth_first)
+            REQUIRE_EQ(options.set(SocketOption::session_authentication, 1),
+                Error::none);
+        REQUIRE_EQ(options.maximum_payload_size_limit(),
+            ordinary - fec_filter_header_size - authenticated_fec_overhead);
+        for (auto family : {IpAddressFamily::ipv4, IpAddressFamily::ipv6}) {
+            const auto ctr =
+                options.payload_budget(family, CryptoMode::aes_ctr);
+            const auto gcm =
+                options.payload_budget(family, CryptoMode::aes_gcm);
+            REQUIRE(ctr);
+            REQUIRE(gcm);
+            REQUIRE_EQ(ctr.maximum_plaintext_payload_size,
+                gcm.maximum_plaintext_payload_size
+                    + srt_gcm_authentication_tag_size);
+            REQUIRE_EQ(gcm.maximum_plaintext_payload_size
+                    + srt_gcm_authentication_tag_size + fec_filter_header_size
+                    + authenticated_fec_overhead,
+                gcm.maximum_datagram_payload_size);
+        }
+        REQUIRE_EQ(
+            options.set(SocketOption::session_authentication, 0), Error::none);
+        REQUIRE_EQ(options.maximum_payload_size_limit(),
+            ordinary - fec_filter_header_size);
+    }
+}
+
+TEST(session_authentication_rejects_insufficient_fec_mss_without_mutation)
+{
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_segment_size, 76), Error::none);
+    REQUIRE_EQ(options.set_packet_filter("fec,cols:2,rows:1"), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::session_authentication, 1),
+        Error::invalid_state);
+    REQUIRE(!options.session_authentication());
+    REQUIRE_EQ(options.set_packet_filter(""), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::session_authentication, 1), Error::none);
+    REQUIRE_EQ(
+        options.set_packet_filter("fec,cols:2,rows:1"), Error::invalid_state);
+    REQUIRE(!options.packet_filter_configuration().enabled);
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_segment_size, 1500), Error::none);
+    REQUIRE_EQ(options.set_packet_filter("fec,cols:2,rows:1"), Error::none);
+    const auto before = options.maximum_payload_size_limit();
+    REQUIRE_EQ(options.set(SocketOption::maximum_segment_size, 76),
+        Error::invalid_state);
+    REQUIRE_EQ(options.maximum_payload_size_limit(), before);
+}

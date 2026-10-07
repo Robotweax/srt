@@ -1,5 +1,7 @@
 #include "robotweax/srt/session_authentication.hpp"
 
+#include "robotweax/srt/codec.hpp"
+
 #include <algorithm>
 #include <limits>
 
@@ -38,7 +40,7 @@ constexpr std::array<std::byte, 16> domain_label {std::byte {'R'},
     std::byte {'W'}, std::byte {'S'}, std::byte {'R'}, std::byte {'T'},
     std::byte {'-'}, std::byte {'S'}, std::byte {'E'}, std::byte {'S'},
     std::byte {'S'}, std::byte {'I'}, std::byte {'O'}, std::byte {'N'},
-    std::byte {'-'}, std::byte {'1'}, std::byte {0}};
+    std::byte {'-'}, std::byte {'2'}, std::byte {0}};
 }
 
 bool SessionAuthenticationParameters::is_offer() const noexcept
@@ -207,6 +209,93 @@ bool SessionAuthentication::open(bool response,
         received_counter_ = counter;
     }
     material = payload;
+    return true;
+}
+Error SessionAuthentication::fec_mac(bool caller, std::uint64_t counter,
+    const DataHeader& header, std::span<const std::byte> parity,
+    std::span<std::byte, 32> output) noexcept
+{
+    if (!ready_ || parity.empty()
+        || parity.size()
+            > maximum_data_payload_size - authenticated_fec_overhead
+        || header.message_number != 0U)
+        return Error::invalid_state;
+    std::array<std::byte, 28 + packet_header_size + maximum_data_payload_size>
+        bytes {};
+    std::copy(domain_label.begin(), domain_label.end(), bytes.begin());
+    bytes[16] = std::byte {4};
+    bytes[17] = static_cast<std::byte>(caller ? 1U : 2U);
+    put64(std::span {bytes}.subspan<18, 8>(), counter);
+    bytes[26] = std::byte(parity.size() >> 8U);
+    bytes[27] = std::byte(parity.size());
+    MutablePacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data = header;
+    const auto encoded = encode_packet(
+        packet, std::span {bytes}.subspan(28, packet_header_size));
+    if (!encoded)
+        return encoded.error;
+    std::copy(
+        parity.begin(), parity.end(), bytes.begin() + 28 + packet_header_size);
+    return provider_.hmac_sha256(key_,
+        std::span {bytes}.first(28 + packet_header_size + parity.size()),
+        output);
+}
+
+Error SessionAuthentication::seal_fec(const DataHeader& header,
+    std::span<const std::byte> parity, std::span<std::byte> output,
+    std::size_t& written) noexcept
+{
+    written = 0;
+    if (fec_sent_counter_ == std::numeric_limits<std::uint64_t>::max()
+        || output.size() < parity.size() + authenticated_fec_overhead)
+        return Error::invalid_state;
+    const auto counter = fec_sent_counter_ + 1;
+    std::array<std::byte, 32> tag {};
+    const auto result = fec_mac(caller_, counter, header, parity, tag);
+    if (result != Error::none)
+        return result;
+    put64(output.first<8>(), counter);
+    std::copy(parity.begin(), parity.end(), output.begin() + 8);
+    std::copy(
+        tag.begin(), tag.end(), output.subspan(8 + parity.size()).begin());
+    fec_sent_counter_ = counter;
+    written = parity.size() + authenticated_fec_overhead;
+    return Error::none;
+}
+
+bool SessionAuthentication::open_fec(const DataHeader& header,
+    std::span<const std::byte> input,
+    std::span<const std::byte>& parity) noexcept
+{
+    parity = {};
+    if (input.size() <= authenticated_fec_overhead
+        || input.size() > maximum_data_payload_size)
+        return false;
+    const auto counter = get64(input.first<8>());
+    if (counter == 0)
+        return false;
+    const auto age =
+        counter <= fec_received_counter_ ? fec_received_counter_ - counter : 0;
+    if (counter <= fec_received_counter_
+        && (age >= 64 || (fec_received_bitmap_ & (std::uint64_t {1} << age))))
+        return false;
+    const auto body =
+        input.subspan(8, input.size() - authenticated_fec_overhead);
+    std::array<std::byte, 32> tag {};
+    if (fec_mac(!caller_, counter, header, body, tag) != Error::none
+        || !equal(tag, input.last<32>()))
+        return false;
+    // Only a valid MAC may move the receive window.
+    if (counter > fec_received_counter_) {
+        const auto advance = counter - fec_received_counter_;
+        fec_received_bitmap_ =
+            advance >= 64 ? 1U : (fec_received_bitmap_ << advance) | 1U;
+        fec_received_counter_ = counter;
+    } else {
+        fec_received_bitmap_ |= std::uint64_t {1} << age;
+    }
+    parity = body;
     return true;
 }
 } // namespace robotweax::srt

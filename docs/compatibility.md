@@ -183,3 +183,15 @@ physical-network resilience, long-duration operation and quantitative A/V sync
 are not established by this matrix. Existing core support for a feature does
 not extend the application's qualification. Reconnect checks demonstrate media
 resuming, not preservation of every frame during interruption.
+
+## Post-0.2.7 optional session authentication
+
+The current development tree provides default-off
+`SRTO_ROBOTWEAX_SESSIONAUTH`. Its private version-2 protocol authenticates
+session key controls and FEC parity. Both peers must opt in and support the
+same version; version-1 peers are rejected without fallback. It is outside the
+Haivision interoperability boundary. Enabling it does not select AES-GCM;
+select GCM separately for source-DATA integrity. The standard wire format and
+optional AES-CTR clear-receive behavior remain unchanged when it is disabled.
+See [session authentication](session-authentication.md) for the wire contract,
+40-byte parity overhead, replay window, and coordinated upgrade requirement.
