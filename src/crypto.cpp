@@ -268,7 +268,7 @@ Error CryptoSession::validate_configuration() const noexcept
     if (passphrase_size_ < minimum_passphrase_size
         || passphrase_size_ > maximum_passphrase_size
         || !valid_aes_key_size(configured_key_length_)
-        || refresh_rate_packets_ < 2U
+        || refresh_rate_packets_ < 3U
         || refresh_rate_packets_ > maximum_key_refresh_rate
         || preannouncement_packets_ == 0U
         || preannouncement_packets_ > (refresh_rate_packets_ - 1U) / 2U) {

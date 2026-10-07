@@ -208,7 +208,9 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         const auto raw = static_cast<std::uint32_t>(value);
         const std::uint32_t effective_refresh =
             raw == 0U ? default_key_refresh_rate : raw;
-        if (effective_refresh < 2U) {
+        // A positive preannouncement must fit below half the refresh period.
+        // Zero is the default sentinel, not a usable clamped announcement.
+        if (effective_refresh < 3U) {
             return Error::invalid_state;
         }
         const std::uint32_t effective_preannouncement =

@@ -7154,6 +7154,30 @@ TEST(maxrexmitbw_public_option_validates_width_range_and_default)
 }
 #endif
 
+TEST(srt_compat_refresh_rejects_uninitializable_interval_without_mutation)
+{
+    const auto socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    const std::int32_t valid = 3;
+    const std::int32_t invalid = 2;
+    const int accepted =
+        srt_setsockflag(socket, SRTO_KMREFRESHRATE, &valid, sizeof(valid));
+    const int rejected =
+        srt_setsockflag(socket, SRTO_KMREFRESHRATE, &invalid, sizeof(invalid));
+    const int error = srt_getlasterror(nullptr);
+    std::int32_t stored = 0;
+    int size = sizeof(stored);
+    const int read =
+        srt_getsockflag(socket, SRTO_KMREFRESHRATE, &stored, &size);
+    (void)srt_close(socket);
+    (void)srt_cleanup();
+    REQUIRE_EQ(accepted, 0);
+    REQUIRE_EQ(rejected, SRT_ERROR);
+    REQUIRE_EQ(error, SRT_EINVPARAM);
+    REQUIRE_EQ(read, 0);
+    REQUIRE_EQ(stored, valid);
+}
+
 TEST(srt_compat_receive_control_is_output_only)
 {
     ScopedSrtRuntime lifecycle;
