@@ -359,3 +359,15 @@ TEST(sensor_profile_negotiation_is_strictly_bilateral)
     REQUIRE(!apply_packet_filter_response(
         sensor.configuration, ordinary.configuration));
 }
+
+TEST(row_only_fec_enforces_column_limit_in_parser_and_negotiation)
+{
+    const auto boundary = parse_packet_filter_configuration("fec,cols:128,rows:1");
+    REQUIRE(boundary);
+    for (const auto text : {"fec,cols:129,rows:1", "fec,cols:2147483647,rows:1"})
+        REQUIRE(!parse_packet_filter_configuration(text));
+    auto oversized = boundary.configuration;
+    oversized.columns = 129;
+    REQUIRE(!negotiate_packet_filter_configuration(boundary.configuration, oversized));
+    REQUIRE(!apply_packet_filter_response(boundary.configuration, oversized));
+}

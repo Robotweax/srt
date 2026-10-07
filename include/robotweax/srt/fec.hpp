@@ -44,6 +44,7 @@ struct FecResourceEstimate {
 {
     return configuration.enabled
         && configuration.columns >= 2U
+        && configuration.columns <= 128U
         && configuration.rows == 1;
 }
 
