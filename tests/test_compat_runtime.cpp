@@ -3171,7 +3171,8 @@ TEST(compat_runtime_live_periodic_nak_falls_back_to_sender_tail_rto)
     REQUIRE(retransmission.packet.data.retransmitted);
 }
 
-TEST(compat_runtime_row_fec_reconstructs_a_dropped_source_packet)
+namespace {
+void check_row_fec_recovery(bool inject_oversized_source)
 {
     const auto caller_channel =
         std::make_shared<DatagramChannel>();
@@ -3240,6 +3241,19 @@ TEST(compat_runtime_row_fec_reconstructs_a_dropped_source_packet)
         take_datagrams(caller_output);
     REQUIRE_EQ(outgoing.size(), 3U);
 
+    if (inject_oversized_source) {
+        std::array<std::byte, maximum_data_payload_size + 1> oversized {};
+        for (const auto& datagram : outgoing) {
+            const auto decoded = decode_packet(datagram);
+            REQUIRE(decoded);
+            if (decoded.packet.data.message_number != 0U
+                && decoded.packet.data.sequence == SequenceNumber {500}) {
+                auto invalid = decoded.packet;
+                invalid.payload = oversized;
+                listener.process_packet(invalid, caller_endpoint);
+            }
+        }
+    }
     std::size_t source_packets = 0;
     std::size_t filter_packets = 0;
     // Deliver parity before the surviving source packet. This exercises the
@@ -3321,6 +3335,17 @@ TEST(compat_runtime_row_fec_reconstructs_a_dropped_source_packet)
                 != ControlType::
                     negative_acknowledgement);
     }
+}
+} // namespace
+
+TEST(compat_runtime_row_fec_reconstructs_a_dropped_source_packet)
+{
+    check_row_fec_recovery(false);
+}
+
+TEST(compat_runtime_oversized_source_cannot_poison_fec_recovery)
+{
+    check_row_fec_recovery(true);
 }
 
 TEST(compat_runtime_onreq_fec_reports_only_expired_row_losses)

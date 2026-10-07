@@ -3415,6 +3415,10 @@ void ConnectionRuntime::process_packet(
     if (peer != peer_) {
         return;
     }
+    // Admission must precede FEC state, liveness and statistics mutations.
+    if (packet.kind == PacketKind::data
+        && packet.payload.size() > maximum_data_payload_size)
+        return;
     std::lock_guard lock(mutex_);
     if (locally_closed_ || broken_) {
         return;
