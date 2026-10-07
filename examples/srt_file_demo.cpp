@@ -2,6 +2,8 @@
 
 #include <srt/srt.h>
 
+#include "demo_text.hpp"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -472,7 +474,8 @@ void verify_stream_id(
     }
     const std::string observed {value.data(), static_cast<std::size_t>(size)};
     if (observed != *expected) {
-        throw std::runtime_error("unexpected Stream ID: " + observed);
+        throw std::runtime_error("unexpected Stream ID: "
+            + srt_demo::escape_terminal_text(observed));
     }
 }
 
@@ -730,7 +733,8 @@ int main(int argc, char* argv[])
         }
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "error: " << error.what() << '\n';
+        std::cerr << "error: " << srt_demo::escape_terminal_text(error.what())
+                  << '\n';
         return 1;
     }
 }

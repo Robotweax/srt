@@ -2,6 +2,8 @@
 
 #include <srt/srt.h>
 
+#include "demo_text.hpp"
+
 #include <array>
 #include <charconv>
 #include <chrono>
@@ -632,7 +634,8 @@ void verify_stream_id(
     }
     const std::string observed {value.data(), static_cast<std::size_t>(size)};
     if (observed != *expected) {
-        throw std::runtime_error("unexpected Stream ID: " + observed);
+        throw std::runtime_error("unexpected Stream ID: "
+            + srt_demo::escape_terminal_text(observed));
     }
 }
 
@@ -677,7 +680,8 @@ int run_listener(const Configuration& configuration)
     verify_stream_id(connected.get(), configuration.expected_stream_id);
     const std::string received =
         receive_message(connected.get(), configuration);
-    std::cout << "RECEIVED bytes=" << received.size() << " message=" << received
+    std::cout << "RECEIVED bytes=" << received.size()
+              << " message=" << srt_demo::escape_terminal_text(received)
               << '\n';
     send_message(connected.get(), received, configuration);
     std::cout << "ECHOED bytes=" << received.size() << '\n';
@@ -707,7 +711,7 @@ int run_caller(const Configuration& configuration)
         throw std::runtime_error("echo payload did not match the sent message");
     }
     std::cout << "ECHO verified bytes=" << echoed.size()
-              << " message=" << echoed << '\n';
+              << " message=" << srt_demo::escape_terminal_text(echoed) << '\n';
     print_statistics(socket.get());
     send_message(socket.get(), completion_message, configuration);
     const std::string completion = receive_message(socket.get(), configuration);
@@ -741,7 +745,8 @@ int run_rendezvous(const Configuration& configuration)
         throw std::runtime_error(
             "Rendezvous payload did not match --expect-message");
     }
-    std::cout << "RECEIVED bytes=" << received.size() << " message=" << received
+    std::cout << "RECEIVED bytes=" << received.size()
+              << " message=" << srt_demo::escape_terminal_text(received)
               << '\n';
     print_statistics(socket.get());
     send_message(socket.get(), completion_message, configuration);
@@ -774,7 +779,8 @@ int main(int argc, char* argv[])
             return run_rendezvous(configuration);
         }
     } catch (const std::exception& error) {
-        std::cerr << "error: " << error.what() << '\n';
+        std::cerr << "error: " << srt_demo::escape_terminal_text(error.what())
+                  << '\n';
         return 1;
     }
     return 1;

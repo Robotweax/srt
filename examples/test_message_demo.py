@@ -74,6 +74,8 @@ def wait_for_ready(process: subprocess.Popen[str]) -> str:
 
 
 def run_caller_listener(demo: Path, crypto: str, profile: str = "live") -> None:
+    # Keep argv fixtures ASCII: Windows narrow main uses the active code page.
+    # All 256 byte values are covered directly by test_demo_text.cpp.
     port = reserve_udp_port()
     passphrase_name = "ROBOTWEAX_SRT_DEMO_TEST_PASSPHRASE"
     environment = os.environ.copy()
@@ -122,7 +124,7 @@ def run_caller_listener(demo: Path, crypto: str, profile: str = "live") -> None:
             "--stream-id",
             "demo/loopback",
             "--message",
-            "caller-listener-smoke",
+            "caller-listener-smoke\nFORGED\x1b]52;c;demo\x07\x7f",
             *common,
         ],
         capture_output=True,
@@ -144,6 +146,10 @@ def run_caller_listener(demo: Path, crypto: str, profile: str = "live") -> None:
     require_success(
         "listener", listener.returncode, listener_stdout, listener_stderr
     )
+    escaped = r"caller-listener-smoke\x0aFORGED\x1b]52;c;demo\x07\x7f"
+    for output in (caller.stdout, listener_stdout):
+        if escaped not in output or "\x1b" in output or "\x07" in output:
+            raise RuntimeError(f"unsafe or missing escaped diagnostic: {output!r}")
     if "ECHO verified" not in caller.stdout or "STATS " not in caller.stdout:
         raise RuntimeError(f"caller output was incomplete:\n{caller.stdout}")
     if "ECHOED " not in listener_stdout or "STATS " not in listener_stdout:

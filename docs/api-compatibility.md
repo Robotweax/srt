@@ -64,8 +64,10 @@ and the compatibility forwarding header:
 ```
 
 The CMake target is `RobotweaxSRT::srt`; POSIX installations also provide
-`robotweax-srt.pc`. Static and shared artifacts use the conventional `srt`
-library name. The 0.2.7 package exports an exact, versioned 80-symbol C ABI.
+`robotweax-srt.pc`. Static and shared artifacts use the coinstallable
+`robotweax-srt` library name by default. The explicit
+`ROBOTWEAX_SRT_INSTALL_LAYOUT=legacy` build option selects the conventional
+`srt` library name and include paths. The 0.2.7 package exports an exact, versioned 80-symbol C ABI.
 The installed `<robotweax_srt.h>` header contributes the six native packet and
 option symbols in that ABI. Source-tree headers below `include/robotweax/srt/`
 are private C++ implementation interfaces and are not installed.

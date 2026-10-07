@@ -19,7 +19,7 @@ mode option bundle:
 - TSBPD disabled;
 - TLPKTDROP disabled;
 - periodic NAK reports disabled;
-- the DATA retransmission flag kept clear;
+- the DATA retransmission flag enabled and set on retransmitted DATA;
 - a maximum 1,456-byte DATA payload before other negotiated overhead; and
 - linger enabled with a default of 180 seconds.
 

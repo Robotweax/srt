@@ -332,6 +332,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_control.cpp
         tests/test_connection_group.cpp
         tests/test_connect_variants.cpp
+        tests/test_demo_text.cpp
         tests/test_crypto.cpp
         tests/test_fec.cpp
         tests/test_file.cpp
@@ -662,6 +663,13 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
 
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     if(ROBOTWEAX_SRT_BUILD_EXAMPLES)
+        add_test(NAME robotweax_srt_demo_terminal_output
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples/test_demo_terminal_output.py
+                --message-demo $<TARGET_FILE:robotweax_srt_message_demo>
+                --file-demo $<TARGET_FILE:robotweax_srt_file_demo>)
+        set_tests_properties(robotweax_srt_demo_terminal_output
+            PROPERTIES TIMEOUT 30 LABELS "example;integration;security")
         add_test(NAME robotweax_srt_udp_bridge_loopback
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/examples/test_udp_bridge.py
