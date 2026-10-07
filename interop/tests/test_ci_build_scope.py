@@ -114,6 +114,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         }
         partitions = {
             "robotweax_srt_tests", "robotweax_srt_rotation_tests",
+            "robotweax_srt_delayed_key_response_tests",
             "robotweax_srt_key_length_tests", "robotweax_srt_gcm_profile_tests",
             "robotweax_srt_sensor_gcm_aes128_tests",
             "robotweax_srt_sensor_gcm_aes192_tests",
@@ -142,6 +143,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "compat_group_closed_member_retains_bounded_copy",
             "key_length", "srt_compat_gcm_",
             "srt_compat_sensor_gcm_bounded_sample_stream_",
+            "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
         ])
         bounded_properties = re.search(
             r"set_tests_properties\(\s*(robotweax_srt_tests.*?)\)",
@@ -172,7 +174,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         self.assertIsNotNone(selection)
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_tests"))
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_key_length_tests"))
-        for name in profile_partitions:
+        for name in profile_partitions | {"robotweax_srt_delayed_key_response_tests"}:
             self.assertIsNotNone(re.search(selection.group(1), name))
         target = re.search(
             r"add_executable\(robotweax_srt_tests\s+([^)]*)\)", cmake,
