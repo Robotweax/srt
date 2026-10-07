@@ -380,20 +380,19 @@ def encrypted_matrix_scenarios(
     robotweax: Path,
     reference: Path,
 ) -> list[Scenario]:
-    wire_packets_per_group = (
-        MATRIX_COLUMNS * MATRIX_ROWS
-        + MATRIX_ROWS
-        + MATRIX_COLUMNS
-    )
+    # Fault occurrence counters and DATA sequence positions exclude parity
+    # controls. Advance by source packets, so each group loses (0,0), (0,1)
+    # and (1,1), including the final group in the longer rotation transfer.
+    source_packets_per_group = MATRIX_COLUMNS * MATRIX_ROWS
     group_fault_occurrences = (1, 2, 12)
     group_sequence_offsets = (0, 1, MATRIX_COLUMNS + 1)
     fault_occurrences = tuple(
-        group * wire_packets_per_group + occurrence
+        group * source_packets_per_group + occurrence
         for group in range(ENCRYPTED_FEC_GROUPS)
         for occurrence in group_fault_occurrences
     )
     expected_sequence_offsets = tuple(
-        group * wire_packets_per_group + offset
+        group * source_packets_per_group + offset
         for group in range(ENCRYPTED_FEC_GROUPS)
         for offset in group_sequence_offsets
     )

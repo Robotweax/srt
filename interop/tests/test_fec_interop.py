@@ -187,14 +187,21 @@ class FecInteropUnitTests(unittest.TestCase):
             self.assertEqual(scenario.expected_reconstructions, 15)
             self.assertEqual(
                 scenario.fault_occurrences,
-                (1, 2, 12, 66, 67, 77, 131, 132, 142, 196, 197, 207, 261, 262, 272),
+                (1, 2, 12, 51, 52, 62, 101, 102, 112, 151, 152, 162, 201, 202, 212),
             )
             self.assertEqual(
                 scenario.expected_sequence_offsets,
-                (0, 1, 11, 65, 66, 76, 130, 131, 141, 195, 196, 206, 260, 261, 271),
+                (0, 1, 11, 50, 51, 61, 100, 101, 111, 150, 151, 161, 200, 201, 211),
+            )
+            source_packets = scenario.source_packets_per_group * scenario.byte_count_multiplier
+            self.assertLessEqual(max(scenario.fault_occurrences), source_packets)
+            self.assertGreater(
+                source_packets,
+                2 * run_fec_interop.ENCRYPTED_FEC_KEY_REFRESH_RATE
+                * scenario.minimum_key_transitions,
             )
             self.assertEqual(
-                scenario.expected_control_packets(150), 45
+                scenario.expected_control_packets(source_packets), 75
             )
 
     def test_encrypted_matrix_command_uses_secret_environment_name(
