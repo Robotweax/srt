@@ -507,6 +507,12 @@ public:
     {
         return packets_on_active_key_;
     }
+    // Sequence positions encrypted past the refresh interval while the
+    // successor key awaited acknowledgement. Monotonic and saturating.
+    [[nodiscard]] std::uint64_t refresh_overrun_positions() const noexcept
+    {
+        return refresh_overrun_positions_;
+    }
     [[nodiscard]] bool enabled() const noexcept
     {
         return passphrase_size_ != 0U;
@@ -668,6 +674,7 @@ private:
     KeyMaterialHistory acknowledged_key_material_history_{};
     std::size_t acknowledged_key_material_history_size_ = 0;
     [[nodiscard]] std::uint64_t effective_refresh_rate() const noexcept;
+    [[nodiscard]] std::uint64_t refresh_overrun_limit() const noexcept;
     [[nodiscard]] std::uint64_t effective_preannouncement() const noexcept;
     [[nodiscard]] Error note_sequences_consumed(std::uint64_t count) noexcept;
 
@@ -675,6 +682,7 @@ private:
     // Sequence numbers consumed under the active key, including numbers that
     // were skipped without a DATA packet being sent.
     std::uint64_t packets_on_active_key_ = 0;
+    std::uint64_t refresh_overrun_positions_ = 0;
     std::uint64_t prepared_sequence_position_ = 0;
     bool prepared_sequence_position_known_ = false;
     bool prepared_packet_sent_ = false;

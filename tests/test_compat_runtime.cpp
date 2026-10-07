@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cerrno>
 #include <condition_variable>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <future>
@@ -2346,10 +2347,13 @@ TEST(compat_runtime_tlpktdrop_has_a_distinct_internal_counter)
     REQUIRE_EQ(submitted_packet.packet.kind, PacketKind::data);
     REQUIRE_EQ(submitted_packet.packet.data.sequence, SequenceNumber {720});
 
+    // The deadline is evaluated while new DATA waits; queue the next message.
     now = 1'021'001;
+    REQUIRE_EQ(runtime.queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
     (void)runtime.poll();
     const auto abandonment = take_datagrams(output);
-    REQUIRE_EQ(abandonment.size(), 1U);
+    REQUIRE(!abandonment.empty());
     const auto drop_request = decode_packet(abandonment.front());
     REQUIRE(drop_request);
     REQUIRE_EQ(drop_request.packet.kind, PacketKind::control);
@@ -4629,10 +4633,21 @@ TEST(compat_runtime_encrypts_payloads_and_exchanges_rotation_keys)
     (void)caller.poll();
     auto retry_output = take_datagrams(caller_output);
     bool saw_retry = false;
+    // The successor is still unconfirmed. The sixth message stays on the
+    // active key within the bounded refresh overrun instead of waiting.
+    bool saw_overrun_data = false;
     for (const auto& datagram : retry_output) {
         const auto decoded = decode_packet(datagram);
         REQUIRE(decoded);
-        REQUIRE(decoded.packet.kind != PacketKind::data);
+        if (decoded.packet.kind == PacketKind::data) {
+            REQUIRE(!saw_overrun_data);
+            saw_overrun_data = true;
+            REQUIRE_EQ(decoded.packet.data.sequence, expected_sequence);
+            REQUIRE_EQ(decoded.packet.data.encryption_key, EncryptionKey::odd);
+            expected_sequence = expected_sequence.next();
+            listener.process_packet(decoded.packet, caller_endpoint);
+            continue;
+        }
         if (decoded.packet.kind == PacketKind::control
             && decoded.packet.control.type
                 == ControlType::user_defined
@@ -4664,7 +4679,15 @@ TEST(compat_runtime_encrypts_payloads_and_exchanges_rotation_keys)
     for (const auto& datagram : retry_output) {
         const auto decoded = decode_packet(datagram);
         REQUIRE(decoded);
-        REQUIRE(decoded.packet.kind != PacketKind::data);
+        if (decoded.packet.kind == PacketKind::data) {
+            REQUIRE(!saw_overrun_data);
+            saw_overrun_data = true;
+            REQUIRE_EQ(decoded.packet.data.sequence, expected_sequence);
+            REQUIRE_EQ(decoded.packet.data.encryption_key, EncryptionKey::odd);
+            expected_sequence = expected_sequence.next();
+            listener.process_packet(decoded.packet, caller_endpoint);
+            continue;
+        }
         if (decoded.packet.kind == PacketKind::control
             && decoded.packet.control.type
                 == ControlType::user_defined
@@ -4676,6 +4699,7 @@ TEST(compat_runtime_encrypts_payloads_and_exchanges_rotation_keys)
         }
     }
     REQUIRE(saw_retry);
+    REQUIRE(saw_overrun_data);
 
     auto duplicate_responses = take_datagrams(listener_output);
     std::size_t response_count = 0;
@@ -4696,6 +4720,19 @@ TEST(compat_runtime_encrypts_payloads_and_exchanges_rotation_keys)
     REQUIRE(!caller.broken());
     REQUIRE(!listener.broken());
 
+    // Acknowledge the sixth message so the one-packet send buffer can
+    // accept the next message.
+    listener_now += 20'000;
+    (void)listener.poll();
+    deliver(listener_output, caller, listener_endpoint);
+    constexpr std::string_view seventh_message = "encrypted seven";
+    REQUIRE_EQ(
+        caller
+            .queue_message(std::as_bytes(std::span {
+                               seventh_message.data(), seventh_message.size()}),
+                0, true, false, -1)
+            .status,
+        MessageIoStatus::success);
     caller_now += 1'000'000;
     (void)caller.poll();
     auto resumed_output = take_datagrams(caller_output);
@@ -4714,12 +4751,12 @@ TEST(compat_runtime_encrypts_payloads_and_exchanges_rotation_keys)
     }
     REQUIRE(resumed_data);
     expected_sequence = expected_sequence.next();
-    REQUIRE_EQ(expected_sequence, SequenceNumber{3});
+    REQUIRE_EQ(expected_sequence, SequenceNumber {4});
     REQUIRE_EQ(caller_crypto->active_sender_key(),
         EncryptionKey::even);
     deliver(listener_output, caller, listener_endpoint);
 
-    for (std::size_t index = 0; index < 2U; ++index) {
+    for (std::size_t index = 0; index < 3U; ++index) {
         REQUIRE_EQ(listener.receive_message(
                        received, false, -1).status,
             MessageIoStatus::success);
@@ -5269,7 +5306,10 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
     const unsigned messages = 2U * refresh + 2U;
     const unsigned iteration_limit =
         profile == RotationProfile::steady ? 10'000U : 100'000U;
-    for (unsigned iteration = 0; iteration < iteration_limit && sent < messages;
+    // A slow confirmation may keep the first key for up to one further
+    // refresh period, so also run until both rotations have completed.
+    for (unsigned iteration = 0;
+        iteration < iteration_limit && (sent < messages || rotations < 2U);
         ++iteration) {
         const auto step = step_for(sent);
         const auto rtt = rtt_for(
@@ -5429,14 +5469,17 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
             ++stalled;
             if (!crypto->pending_key_material().empty()
                 && !crypto->ready_to_send_data()) {
+                // New DATA pauses only after the bounded overrun: one
+                // further refresh period on the active key.
+                REQUIRE_EQ(crypto->packets_on_active_key(), 2U * refresh - 1U);
                 ++budget_pauses;
             }
         }
         REQUIRE(!sender.broken());
-        REQUIRE(crypto->packets_on_active_key() <= refresh);
+        REQUIRE(crypto->packets_on_active_key() < 2U * refresh);
         now += step;
     }
-    REQUIRE_EQ(sent, messages);
+    REQUIRE(sent >= messages);
     REQUIRE_EQ(rotations, 2U);
     REQUIRE_EQ(queued, sent);
     if (profile == RotationProfile::control_blackout) {
@@ -5444,18 +5487,19 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
         REQUIRE_EQ(rtt_changes, 4U);
     }
     if (profile != RotationProfile::steady) {
-        if (profile != RotationProfile::rtt_increase || losses > 0U) {
+        if (profile == RotationProfile::control_blackout) {
             REQUIRE(budget_pauses > 0U);
         }
         return;
     }
     // The adaptive floor covers this loss horizon once a steady rate is
-    // observed. Above the half-refresh cap, DATA still pauses safely.
+    // observed; the bounded overrun adds one refresh period. Beyond both,
+    // DATA still pauses safely.
     const auto step = steady_step;
     const auto adaptive_positions =
         std::min<std::uint64_t>((34'004U + step - 1U) / step, 512U);
     const auto available_positions =
-        std::max<std::uint64_t>(preannouncement, adaptive_positions);
+        std::max<std::uint64_t>(preannouncement, adaptive_positions) + refresh;
     REQUIRE_EQ(
         stalled == 0U, available_positions * step >= 4'000U + losses * 10'000U);
 }
@@ -11129,6 +11173,316 @@ TEST(compat_runtime_backpressure_rearms_all_unsent_naks_and_bounds_eagain_flood)
     }
 }
 
+namespace {
+
+struct DelayedKeyResponseResult {
+    std::uint64_t queued = 0;
+    std::uint64_t delivered = 0;
+    std::uint64_t maximum_sender_buffer_milliseconds = 0;
+    std::uint64_t overrun_positions = 0;
+    std::uint64_t pause_microseconds = 0;
+    std::uint64_t tlpktdrop = 0;
+    std::size_t rotations = 0;
+};
+
+DelayedKeyResponseResult run_with_delayed_key_responses(
+    CryptoMode mode, std::uint64_t response_delay_microseconds)
+{
+    const auto sender_channel = std::make_shared<DatagramChannel>();
+    const auto receiver_channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams sender_output;
+    CapturedDatagrams receiver_output;
+    sender_channel->set_send_hook_for_testing(capture_datagram, &sender_output);
+    receiver_channel->set_send_hook_for_testing(
+        capture_datagram, &receiver_output);
+    const Ipv4Endpoint sender_endpoint {
+        .address = {192, 0, 2, 91}, .port = 16'001};
+    const Ipv4Endpoint receiver_endpoint {
+        .address = {192, 0, 2, 92}, .port = 16'002};
+    const CryptoConfiguration configuration {
+        .passphrase = "delayed key response fixture",
+        .mode = mode,
+        .enable_aes_gcm = true,
+        .key_length = 16,
+        .refresh_rate_packets = 200,
+        .preannouncement_packets = 80,
+    };
+    auto sender_crypto = std::make_shared<CryptoSession>(configuration);
+    auto receiver_crypto = std::make_shared<CryptoSession>(configuration);
+    REQUIRE_EQ(sender_crypto->start_initiator(), Error::none);
+    REQUIRE_EQ(receiver_crypto->accept_key_material(
+                   sender_crypto->pending_key_material(), true),
+        Error::none);
+    REQUIRE_EQ(sender_crypto->acknowledge_key_material(
+                   receiver_crypto->key_material_response(), true),
+        Error::none);
+    confirm_directional_test_keys(*sender_crypto, *receiver_crypto);
+
+    // About 6,000 live messages per second, paced at input rate + 25 %.
+    constexpr unsigned messages_per_millisecond = 6;
+    constexpr std::int64_t message_size = 1'316;
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::send_buffer_packets, 16'384), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::receive_buffer_packets, 16'384), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::input_bandwidth_bytes_per_second,
+                   messages_per_millisecond * message_size * 1'000),
+        Error::none);
+    REQUIRE_EQ(options.set(SocketOption::maximum_bandwidth_bytes_per_second, 0),
+        Error::none);
+#ifdef ENABLE_AEAD_API_PREVIEW
+    if (mode == CryptoMode::aes_gcm) {
+        REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+    }
+#endif
+    const SequenceNumber initial_sequence {5'000};
+    const auto origin = ConnectionRuntime::Clock::now();
+    std::uint64_t sender_now = 1'000'000;
+    std::uint64_t receiver_now = 1'000'000;
+    ConnectionRuntime sender {{
+        .channel = sender_channel,
+        .peer = receiver_endpoint,
+        .peer_socket_id = 920,
+        .initial_sequence = initial_sequence,
+        .flow_window_packets = 25'600,
+        .options = options,
+        .negotiated_options = {.periodic_nak = true, .retransmit_flag = true},
+        .origin = origin,
+        .crypto = sender_crypto,
+        .now_function = injected_now,
+        .now_context = &sender_now,
+    }};
+    ConnectionRuntime receiver {{
+        .channel = receiver_channel,
+        .peer = sender_endpoint,
+        .peer_socket_id = 910,
+        .initial_sequence = initial_sequence,
+        .flow_window_packets = 25'600,
+        .options = options,
+        .negotiated_options = {.periodic_nak = true, .retransmit_flag = true},
+        .origin = origin,
+        .crypto = receiver_crypto,
+        .now_function = injected_now,
+        .now_context = &receiver_now,
+    }};
+
+    struct DelayedResponse {
+        std::uint64_t due = 0;
+        std::vector<std::byte> bytes;
+    };
+    std::vector<DelayedResponse> delayed;
+    DelayedKeyResponseResult result;
+    std::array<std::byte, message_size> message {};
+    std::array<std::byte, 1'500> received {};
+    // Windows restarts a late pacing slot at the actual send time, while
+    // Linux/macOS can retain schedule credit. A 250 us simulation tick caps
+    // the former at 4,000 packets/s, below the 6,000 packets/s offered load.
+    // At 25 us both policies can service the ~140 us slots without backlog
+    // unrelated to key rotation. Keep identical assertions on every platform.
+    constexpr std::uint64_t tick_microseconds = 25;
+    constexpr std::uint64_t steps_per_millisecond = 1000 / tick_microseconds;
+    for (std::uint64_t step = 0; step < 2'000U * steps_per_millisecond;
+        ++step) {
+        if (step % steps_per_millisecond == 0U) {
+            for (unsigned index = 0; index < messages_per_millisecond;
+                ++index) {
+                if (sender.queue_message(message, 0, true, false, 0).status
+                    == MessageIoStatus::success) {
+                    ++result.queued;
+                }
+            }
+        }
+        (void)sender.poll();
+        for (const auto& datagram : take_datagrams(sender_output)) {
+            const auto decoded = decode_packet(datagram);
+            REQUIRE(decoded);
+            receiver.process_packet(decoded.packet, sender_endpoint);
+        }
+        (void)receiver.poll();
+        for (auto& datagram : take_datagrams(receiver_output)) {
+            const auto decoded = decode_packet(datagram);
+            REQUIRE(decoded);
+            if (decoded.packet.kind == PacketKind::control
+                && decoded.packet.control.type == ControlType::user_defined
+                && decoded.packet.control.subtype
+                    == key_material_response_subtype) {
+                ++result.rotations;
+                delayed.push_back({sender_now + response_delay_microseconds,
+                    std::move(datagram)});
+                continue;
+            }
+            sender.process_packet(decoded.packet, receiver_endpoint);
+        }
+        std::erase_if(delayed, [&](DelayedResponse& response) {
+            if (response.due > sender_now) {
+                return false;
+            }
+            const auto decoded = decode_packet(response.bytes);
+            REQUIRE(decoded);
+            sender.process_packet(decoded.packet, receiver_endpoint);
+            return true;
+        });
+        for (;;) {
+            const auto got = receiver.receive_message(received, false, 0);
+            if (got.status != MessageIoStatus::success) {
+                break;
+            }
+            REQUIRE_EQ(got.bytes, static_cast<std::size_t>(message_size));
+            ++result.delivered;
+        }
+        if (step % steps_per_millisecond == 0U) {
+            result.maximum_sender_buffer_milliseconds = std::max<std::uint64_t>(
+                result.maximum_sender_buffer_milliseconds,
+                sender.statistics(false, false)
+                    .instantaneous.sender_buffer_milliseconds);
+        }
+        REQUIRE(!sender.broken());
+        REQUIRE(!receiver.broken());
+        REQUIRE(sender_crypto->packets_on_active_key() < 400U);
+        sender_now += tick_microseconds;
+        receiver_now += tick_microseconds;
+    }
+    const auto totals = sender.statistics(false, true).total;
+    result.overrun_positions = totals.sender_key_refresh_overrun_positions;
+    result.pause_microseconds = totals.sender_key_pause_microseconds;
+    result.tlpktdrop = totals.sender_tlpktdrop_dropped.packets;
+    REQUIRE_EQ(
+        receiver.statistics(false, true).total.receiver_undecryptable.packets,
+        0U);
+    return result;
+}
+
+} // namespace
+
+TEST(compat_runtime_sender_late_drop_spares_packets_that_were_never_sent)
+{
+    // The application writes a burst far beyond the paced sending rate, so
+    // queued packets wait longer than the 1,020 ms sender drop deadline before
+    // their first transmission. Too-late drop must not abandon them: every
+    // message is still sent and delivered in order.
+    const auto sender_channel = std::make_shared<DatagramChannel>();
+    const auto receiver_channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams sender_output;
+    CapturedDatagrams receiver_output;
+    sender_channel->set_send_hook_for_testing(capture_datagram, &sender_output);
+    receiver_channel->set_send_hook_for_testing(
+        capture_datagram, &receiver_output);
+    const Ipv4Endpoint sender_endpoint {
+        .address = {192, 0, 2, 95}, .port = 16'101};
+    const Ipv4Endpoint receiver_endpoint {
+        .address = {192, 0, 2, 96}, .port = 16'102};
+    constexpr std::size_t message_size = 1'316;
+    constexpr std::uint32_t messages = 3'000;
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::send_buffer_packets, 8'192), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::receive_buffer_packets, 8'192), Error::none);
+    REQUIRE_EQ(options.set(
+                   SocketOption::maximum_bandwidth_bytes_per_second, 2'000'000),
+        Error::none);
+    const SequenceNumber initial_sequence {7'000};
+    const auto origin = ConnectionRuntime::Clock::now();
+    std::uint64_t sender_now = 1'000'000;
+    std::uint64_t receiver_now = 1'000'000;
+    ConnectionRuntime sender {{
+        .channel = sender_channel,
+        .peer = receiver_endpoint,
+        .peer_socket_id = 960,
+        .initial_sequence = initial_sequence,
+        .flow_window_packets = 8'192,
+        .options = options,
+        .negotiated_options = {.too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
+            .periodic_nak = true,
+            .retransmit_flag = true},
+        .origin = origin,
+        .now_function = injected_now,
+        .now_context = &sender_now,
+    }};
+    ConnectionRuntime receiver {{
+        .channel = receiver_channel,
+        .peer = sender_endpoint,
+        .peer_socket_id = 950,
+        .initial_sequence = initial_sequence,
+        .flow_window_packets = 8'192,
+        .options = options,
+        .negotiated_options = {.too_late_packet_drop = true,
+            .sender_too_late_packet_drop = true,
+            .periodic_nak = true,
+            .retransmit_flag = true},
+        .origin = origin,
+        .now_function = injected_now,
+        .now_context = &receiver_now,
+    }};
+
+    std::array<std::byte, message_size> message {};
+    for (std::uint32_t index = 0; index < messages; ++index) {
+        std::memcpy(message.data(), &index, sizeof index);
+        REQUIRE_EQ(sender.queue_message(message, 0, true, false, 0).status,
+            MessageIoStatus::success);
+    }
+    std::uint32_t delivered = 0;
+    std::array<std::byte, 1'500> received {};
+    for (unsigned step = 0; step < 4 * 4'000U && delivered < messages; ++step) {
+        (void)sender.poll();
+        deliver(sender_output, receiver, sender_endpoint);
+        (void)receiver.poll();
+        deliver(receiver_output, sender, receiver_endpoint);
+        for (;;) {
+            const auto got = receiver.receive_message(received, false, 0);
+            if (got.status != MessageIoStatus::success) {
+                break;
+            }
+            REQUIRE_EQ(got.bytes, message_size);
+            std::uint32_t index = 0;
+            std::memcpy(&index, received.data(), sizeof index);
+            REQUIRE_EQ(index, delivered);
+            ++delivered;
+        }
+        REQUIRE(!sender.broken());
+        REQUIRE(!receiver.broken());
+        sender_now += 250;
+        receiver_now += 250;
+    }
+    // At 2 MB/s the burst needs about two seconds to leave the sender.
+    REQUIRE(sender_now - 1'000'000U > 1'500'000U);
+    REQUIRE_EQ(delivered, messages);
+    REQUIRE_EQ(
+        sender.statistics(false, true).total.sender_tlpktdrop_dropped.packets,
+        0U);
+}
+
+TEST(compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late)
+{
+    for (const CryptoMode mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == CryptoMode::aes_gcm) {
+            continue;
+        }
+#endif
+        // The 30 ms response exceeds the capped announcement window
+        // (99 positions, about 17 ms) but fits within one further refresh
+        // period (200 positions, about 33 ms): DATA continues on the active
+        // key, the sender buffer stays bounded and nothing pauses.
+        const auto late = run_with_delayed_key_responses(mode, 30'000U);
+        REQUIRE(late.maximum_sender_buffer_milliseconds < 50U);
+        REQUIRE(late.delivered + 600U >= late.queued);
+        REQUIRE_EQ(late.tlpktdrop, 0U);
+        REQUIRE(late.rotations > 30U);
+        REQUIRE(late.overrun_positions > 0U);
+        REQUIRE_EQ(late.pause_microseconds, 0U);
+
+        // A 100 ms response outlasts the bounded overrun. New DATA pauses
+        // at the bound, the pause is accounted, and the key budget holds.
+        const auto later = run_with_delayed_key_responses(mode, 100'000U);
+        REQUIRE(later.rotations > 5U);
+        REQUIRE(later.overrun_positions > 0U);
+        REQUIRE(later.pause_microseconds > 0U);
+    }
+}
+
 TEST(compat_runtime_km_retry_is_bounded_by_local_idle_horizon_and_recovers)
 {
     for (const auto mode : {
@@ -11181,7 +11535,9 @@ TEST(compat_runtime_km_retry_is_bounded_by_local_idle_horizon_and_recovers)
                     std::span {ack_storage}.first(encoded.bytes_written)};
             runtime.process_packet(ack, peer);
             const std::array payload {std::byte {'x'}};
-            for (unsigned index = 0; index < 3; ++index) {
+            // Three messages reach the refresh interval; three more exhaust
+            // the bounded overrun so the sixth waits for the KMRSP.
+            for (unsigned index = 0; index < 6; ++index) {
                 REQUIRE_EQ(
                     runtime.queue_message(payload, 0, true, false, -1).status,
                     MessageIoStatus::success);
@@ -11252,7 +11608,7 @@ TEST(compat_runtime_km_retry_is_bounded_by_local_idle_horizon_and_recovers)
                           plaintext);
                 REQUIRE_EQ(error, Error::none);
                 REQUIRE_EQ(plaintext, payload);
-                if (decoded.packet.data.sequence == SequenceNumber {102}) {
+                if (decoded.packet.data.sequence == SequenceNumber {105}) {
                     ++recovered_data;
                 }
             }

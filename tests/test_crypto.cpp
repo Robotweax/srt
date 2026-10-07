@@ -818,7 +818,8 @@ TEST(crypto_session_adaptive_announcement_preserves_minimum_and_refresh_budget)
                 REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
             }
             REQUIRE_EQ(sender.packets_on_active_key(), 16U);
-            REQUIRE(!sender.ready_to_send_data());
+            // Unconfirmed successor: the bounded overrun keeps DATA flowing.
+            REQUIRE(sender.ready_to_send_data());
             const auto request = sender.pending_key_material();
             const std::vector saved(request.begin(), request.end());
             sender.set_preannouncement_floor(0U);
@@ -928,9 +929,14 @@ TEST(crypto_key_rotation_accounts_for_gaps_before_sending)
     REQUIRE_EQ(sender.prepare_data_packet(6), Error::none);
     REQUIRE_EQ(sender.packets_on_active_key(), 6U);
     // The selected candidate expires before transmission: its position still
-    // counts when the following packet becomes the new candidate.
+    // counts when the following packet becomes the new candidate. Positions
+    // past the refresh interval stay within the bounded overrun.
     REQUIRE_EQ(sender.prepare_data_packet(10), Error::none);
     REQUIRE_EQ(sender.packets_on_active_key(), 10U);
+    REQUIRE(sender.ready_to_send_data());
+    // A gap reaching the overrun bound pauses new DATA until confirmation.
+    REQUIRE_EQ(sender.prepare_data_packet(15), Error::none);
+    REQUIRE_EQ(sender.packets_on_active_key(), 15U);
     REQUIRE(!sender.ready_to_send_data());
     REQUIRE_EQ(
         receiver.accept_key_material(sender.pending_key_material(), false),
@@ -958,7 +964,9 @@ TEST(crypto_key_rotation_counts_large_gaps_without_signed_wrap)
         REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
         REQUIRE_EQ(sender.prepare_data_packet(gap), Error::none);
         REQUIRE_EQ(sender.packets_on_active_key(), gap);
-        REQUIRE(!sender.ready_to_send_data());
+        // At the 2^30 refresh cap, the overrun bound is the 31-bit IV space.
+        REQUIRE_EQ(sender.ready_to_send_data(),
+            gap + 1U < std::uint64_t {SequenceNumber::mask});
         REQUIRE_EQ(sender.sender_state(), CryptoState::securing);
     }
 }
@@ -2615,7 +2623,7 @@ TEST(crypto_session_supports_every_specified_aes_key_length)
     }
 }
 
-TEST(crypto_session_pauses_at_an_unacknowledged_refresh_boundary)
+TEST(crypto_session_pauses_after_the_bounded_refresh_overrun)
 {
     const CryptoConfiguration configuration{
         .passphrase = "correct horse battery",
@@ -2637,7 +2645,18 @@ TEST(crypto_session_pauses_at_an_unacknowledged_refresh_boundary)
     REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
     REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
     REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+    // The successor is announced but unconfirmed. The active key continues
+    // for at most one further refresh period, then new DATA pauses.
+    REQUIRE_EQ(sender.refresh_overrun_positions(), 0U);
+    for (int packet = 0; packet < 4; ++packet) {
+        REQUIRE(sender.ready_to_send_data());
+        REQUIRE_EQ(sender.active_sender_key(), EncryptionKey::even);
+        REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+    }
+    REQUIRE_EQ(sender.packets_on_active_key(), 7U);
+    REQUIRE_EQ(sender.refresh_overrun_positions(), 3U);
     REQUIRE(!sender.ready_to_send_data());
+    REQUIRE_EQ(sender.active_sender_key(), EncryptionKey::even);
     REQUIRE_EQ(receiver.accept_key_material(
                    sender.pending_key_material(), false),
         Error::none);
@@ -2989,7 +3008,9 @@ TEST(crypto_session_stale_response_cannot_release_a_pending_rotation)
                     REQUIRE(!pending.empty());
                     const auto active = sender.active_sender_key();
                     REQUIRE_EQ(sender.sender_state(), CryptoState::securing);
-                    REQUIRE(!sender.ready_to_send_data());
+                    // The unconfirmed successor does not stop DATA within the
+                    // bounded overrun; only an exact KMRSP confirms it.
+                    REQUIRE(sender.ready_to_send_data());
                     const auto stale_result = prior_rotations == 0U
                         ? Error::none
                         : Error::invalid_key_material;
@@ -2999,7 +3020,7 @@ TEST(crypto_session_stale_response_cannot_release_a_pending_rotation)
                             stale_result);
                         REQUIRE_EQ(
                             sender.sender_state(), CryptoState::securing);
-                        REQUIRE(!sender.ready_to_send_data());
+                        REQUIRE(sender.ready_to_send_data());
                         REQUIRE_EQ(sender.active_sender_key(), active);
                         REQUIRE_EQ(sender.packets_on_active_key(), 2U);
                         const auto still_pending =

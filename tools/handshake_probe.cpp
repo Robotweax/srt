@@ -153,6 +153,13 @@ int run_data_probe(UdpSocket& socket, Ipv4Endpoint peer,
             if (!outbound.has_value()) {
                 break;
             }
+            // The send-drop probe models an original DATA packet lost on
+            // the network. Select it to start its first-send age, but withhold
+            // it so the peer cannot ACK it before the sender emits DROPREQ.
+            if (request.operation == ProbeOperation::send_after_drop
+                && !replacement_queued) {
+                continue;
+            }
             const bool drop = request.drop_second_initial_packet
                 && !intentionally_dropped
                 && !outbound->header.retransmitted
@@ -225,14 +232,13 @@ int run_data_probe(UdpSocket& socket, Ipv4Endpoint peer,
         const auto queued_payload = request.operation == ProbeOperation::send_after_drop
             ? std::span<const std::byte>{expired_payload}
             : payload;
-        const auto enqueue_time = request.operation == ProbeOperation::send_after_drop
-            ? 1U : queued_at;
-        if (session.queue_message(queued_payload, timestamp_since(origin), true,
-                enqueue_time) != Error::none) {
+        if (session.queue_message(
+                queued_payload, timestamp_since(origin), true, queued_at)
+            != Error::none) {
             std::cerr << "failed to queue message\n";
             return 5;
         }
-        if (replacement_queued && !send_pending_data()) {
+        if (!send_pending_data()) {
             std::cerr << "failed to send data packet\n";
             return 5;
         }

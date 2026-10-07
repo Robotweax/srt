@@ -83,7 +83,10 @@ DROP_SOURCE_OCCURRENCE = 5
 SEQUENCE_MODULUS = 1 << 31
 SEQUENCE_MASK = SEQUENCE_MODULUS - 1
 PASSPHRASE_ENVIRONMENT = "SRT_INTEROP_PASSPHRASE"
-ENCRYPTED_FEC_GROUPS = 3
+# Each group contains 50 source packets. Five groups exceed two maximum
+# 2 * refresh (100-position) key lifetimes, even with delayed KMRSPs. Keep
+# the two-transition assertion: shortening it would stop testing key reuse.
+ENCRYPTED_FEC_GROUPS = 5
 ENCRYPTED_FEC_KEY_LENGTH = 32
 ENCRYPTED_FEC_KEY_REFRESH_RATE = 50
 ENCRYPTED_FEC_KEY_PREANNOUNCEMENT = 20
@@ -377,20 +380,19 @@ def encrypted_matrix_scenarios(
     robotweax: Path,
     reference: Path,
 ) -> list[Scenario]:
-    wire_packets_per_group = (
-        MATRIX_COLUMNS * MATRIX_ROWS
-        + MATRIX_ROWS
-        + MATRIX_COLUMNS
-    )
+    # Fault occurrence counters and DATA sequence positions exclude parity
+    # controls. Advance by source packets, so each group loses (0,0), (0,1)
+    # and (1,1), including the final group in the longer rotation transfer.
+    source_packets_per_group = MATRIX_COLUMNS * MATRIX_ROWS
     group_fault_occurrences = (1, 2, 12)
     group_sequence_offsets = (0, 1, MATRIX_COLUMNS + 1)
     fault_occurrences = tuple(
-        group * wire_packets_per_group + occurrence
+        group * source_packets_per_group + occurrence
         for group in range(ENCRYPTED_FEC_GROUPS)
         for occurrence in group_fault_occurrences
     )
     expected_sequence_offsets = tuple(
-        group * wire_packets_per_group + offset
+        group * source_packets_per_group + offset
         for group in range(ENCRYPTED_FEC_GROUPS)
         for offset in group_sequence_offsets
     )

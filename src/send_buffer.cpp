@@ -397,7 +397,8 @@ std::optional<OutboundPacket> SendBuffer::peek_new_packet() const noexcept
 }
 
 std::optional<OutboundPacket> SendBuffer::next_packet(
-    bool defer_retransmission_commit, bool allow_retransmission) noexcept
+    bool defer_retransmission_commit, bool allow_retransmission,
+    std::uint64_t now_microseconds) noexcept
 {
     while (allow_retransmission && retransmission_size_ > 0U) {
         const auto sequence = retransmission_queue_[retransmission_head_];
@@ -424,6 +425,7 @@ std::optional<OutboundPacket> SendBuffer::next_packet(
         ++next_unsent_offset_;
         if (slot.occupied && !slot.sent) {
             slot.sent = true;
+            slot.first_send_microseconds = now_microseconds;
             ++packets_in_flight_;
             return OutboundPacket {
                 .header = slot.header,
@@ -862,19 +864,39 @@ SendDropResult SendBuffer::drop_messages_older_than(
     if (sequence_span_ == 0U) {
         return result;
     }
+    // Too-late packet drop abandons retained copies of packets that stayed
+    // unacknowledged past the deadline after their first transmission. A
+    // packet that waited in the buffer before it was first sent is not
+    // abandoned for that wait: it is still sent in order, and the receiver
+    // applies its own deadline. Originals are sent in sequence order, so
+    // first-send times grow along the buffer and unsent packets follow the
+    // sent prefix.
     const auto& first = slots_[head_];
-    if (first.enqueue_microseconds > cutoff_microseconds) {
+    if (!first.sent || first.first_send_microseconds > cutoff_microseconds) {
         return result;
     }
     result.first_message_number = first.header.message_number;
     result.sequences.first = first_sequence_;
 
+    std::uint32_t last_message_number = first.header.message_number;
     while (result.packets < sequence_span_) {
         auto& slot = slots_[(head_ + result.packets) % capacity()];
-        if (!slot.occupied
-            || slot.enqueue_microseconds > cutoff_microseconds) {
+        if (!slot.occupied) {
             break;
         }
+        // Once a message is abandoned, retire its complete tail, including
+        // fragments first sent later than the cutoff and unsent fragments.
+        // Only a different message gets its own age/first-send decision.
+        const bool continues_dropped_message = result.packets != 0U
+            && slot.header.message_number == last_message_number
+            && (slot.header.boundary == MessageBoundary::subsequent
+                || slot.header.boundary == MessageBoundary::last);
+        if (!continues_dropped_message
+            && (!slot.sent
+                || slot.first_send_microseconds > cutoff_microseconds)) {
+            break;
+        }
+        last_message_number = slot.header.message_number;
         diagnostics::trace_tlpktdrop(now_microseconds, cutoff_microseconds,
             slot.header.sequence.value(), slot.enqueue_microseconds, slot.sent,
             slot.retransmission_queued, slot.plaintext_size, occupied_count_,
