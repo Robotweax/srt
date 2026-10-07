@@ -12,6 +12,7 @@ enum class CallerHandshakeEventKind : std::uint8_t {
     inbox_ready,
     retry_timer,
     key_material,
+    session_authentication,
     close,
     overall_timeout,
 };
@@ -20,6 +21,7 @@ struct CallerHandshakeEvent {
     CallerHandshakeEventKind kind = CallerHandshakeEventKind::start;
     HandshakeMessage message {};
     KeyMaterialBuffer key_material {};
+    SessionAuthenticationParameters session_authentication {};
     std::chrono::steady_clock::time_point not_after {};
     std::uint16_t encryption_field = 0;
     bool has_not_after = false;

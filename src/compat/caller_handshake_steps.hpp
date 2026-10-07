@@ -37,6 +37,11 @@ public:
     [[nodiscard]] CallerHandshakeStep receive(
         const HandshakeMessage& message) noexcept;
     [[nodiscard]] CallerHandshakeStep timeout() noexcept;
+    [[nodiscard]] Error set_session_authentication(
+        SessionAuthenticationParameters parameters) noexcept
+    {
+        return machine_.set_session_authentication(parameters);
+    }
     [[nodiscard]] Error set_key_material_request(
         const KeyMaterialBuffer& request,
         std::uint16_t encryption_field) noexcept;

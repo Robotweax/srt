@@ -91,6 +91,14 @@ for rejected KMREQs are limited to one per 100 ms per connection. AES-CTR
 still has no payload integrity guarantee; use the opt-in AES-GCM extension
 when authenticated DATA is required.
 
+### Optional session binding
+
+The explicitly enabled, default-off `SRTO_ROBOTWEAX_SESSIONAUTH` extension
+authenticates session key establishment and runtime KM controls. Both peers
+must support it; enabled sessions do not interoperate with ordinary Haivision
+peers. See the [wire contract and protection limits](docs/session-authentication.md).
+The standard compatible mode remains unchanged.
+
 ### Encrypted listener admission
 
 Each listener limits encrypted setup attempts with token buckets: a burst of
@@ -98,7 +106,8 @@ Each listener limits encrypted setup attempts with token buckets: a burst of
 with replenishment of 16 per second per source IP. Ports, cookies, salts and
 IPv4-mapped address spellings share the source budget. Failed attempts and
 retries consume it too. Each admitted setup can derive at most one receive
-and one transmit key-encryption key. The source table has 128 fixed entries
+and one transmit key-encryption key, plus one session-authentication key
+when the optional protection is enabled. The source table has 128 fixed entries
 and only reuses entries whose full burst has replenished.
 
 Excess conclusions are dropped before key derivation and normally before

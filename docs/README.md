@@ -132,3 +132,6 @@ headers and the versioned release artifacts as the integration boundary and
 open an issue with a minimal reproducer.
 
 - [Paced-poll continuation: fixed 24-case experiment](pacer-continuation-experiment.md)
+
+See [Optional session authentication](session-authentication.md) for the default-off
+`SRTO_ROBOTWEAX_SESSIONAUTH` option and its private wire contract.

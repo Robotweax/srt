@@ -536,3 +536,6 @@ reference-side Caller/Listener rotation are not claimed in 0.2.0.
 Validate passphrase policy, mode selection, MSS, latency, loss recovery,
 rotation intervals, and failover behavior under the intended deployment's
 network and workload before production use.
+
+See [Optional session authentication](session-authentication.md) for the default-off
+`SRTO_ROBOTWEAX_SESSIONAUTH` option and its private wire contract.

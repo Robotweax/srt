@@ -90,6 +90,7 @@ enum class HandshakeState : std::uint8_t {
     idle,
     awaiting_induction_response,
     awaiting_conclusion_response,
+    awaiting_authentication_confirmation,
     connected,
     rejected,
     failed,
@@ -126,6 +127,8 @@ struct HandshakeAction {
     GroupMembership group_membership{};
     std::uint32_t timeout_milliseconds = 0;
     int rejection_reason = 0;
+    bool has_session_authentication = false;
+    SessionAuthenticationParameters session_authentication {};
 };
 
 struct HandshakeActions {
@@ -166,6 +169,8 @@ struct HandshakeMessage {
     bool has_group_membership = false;
     GroupMembership group_membership{};
     bool has_unknown_extension = false;
+    bool has_session_authentication = false;
+    SessionAuthenticationParameters session_authentication {};
 };
 
 using GroupMembershipNegotiator = bool (*)(
@@ -207,6 +212,9 @@ public:
         void* group_membership_context = nullptr;
         CookieGenerator cookie_generator = nullptr;
         void* cookie_context = nullptr;
+        bool require_session_authentication = false;
+        SessionAuthenticationParameters session_authentication {};
+        SessionAuthenticationParameters session_authentication_confirmation {};
     };
 
     explicit HandshakeMachine(Configuration configuration) noexcept;
@@ -265,6 +273,12 @@ public:
     {
         return peer_group_membership_;
     }
+    [[nodiscard]] Error set_session_authentication(
+        SessionAuthenticationParameters parameters) noexcept;
+    [[nodiscard]] const HandshakeAction& session_confirmation() const noexcept
+    {
+        return session_confirmation_;
+    }
     [[nodiscard]] HandshakeActions start() noexcept;
     [[nodiscard]] Error set_key_material_request(
         const KeyMaterialBuffer& request,
@@ -282,6 +296,7 @@ private:
         int rejection_reason) noexcept;
 
     Configuration configuration_;
+    HandshakeAction session_challenge_ {}, session_confirmation_ {};
     HandshakeState state_ = HandshakeState::idle;
     std::uint32_t peer_socket_id_ = 0;
     std::uint32_t peer_flow_window_ = 0;

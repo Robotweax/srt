@@ -3447,3 +3447,124 @@ TEST(crypto_session_replayed_companion_cannot_erase_received_generations)
         }
     }
 }
+
+TEST(session_authentication_hmac_sha256_rfc4231)
+{
+    std::array<std::byte, 20> key;
+    key.fill(std::byte {0x0b});
+    constexpr std::string_view message = "Hi There";
+    std::array<std::byte, 32> tag {};
+    REQUIRE_EQ(
+        default_crypto_provider().hmac_sha256(key,
+            std::as_bytes(std::span {message.data(), message.size()}), tag),
+        Error::none);
+    REQUIRE_EQ(tag,
+        bytes_from_hex<32>("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e"
+                           "9376c2e32cff7"));
+}
+
+namespace {
+void establish_session_auth_pair(
+    SessionAuthentication& caller, SessionAuthentication& listener)
+{
+    constexpr std::string_view password = "session-test-password";
+    const auto secret =
+        std::as_bytes(std::span {password.data(), password.size()});
+    REQUIRE_EQ(caller.start(true), Error::none);
+    REQUIRE_EQ(listener.start(false), Error::none);
+    REQUIRE(caller.parameters().is_offer());
+    REQUIRE_EQ(
+        listener.establish(secret, caller.parameters(), 102, 101), Error::none);
+    REQUIRE_EQ(
+        caller.establish(secret, listener.parameters(), 101, 102), Error::none);
+}
+}
+
+TEST(session_authentication_proofs_bind_both_peers_roles_and_key_material)
+{
+    SessionAuthentication caller(default_crypto_provider()),
+        listener(default_crypto_provider());
+    establish_session_auth_pair(caller, listener);
+    const std::array material {std::byte {1}, std::byte {2}, std::byte {3}};
+    SessionAuthenticationParameters proof;
+    REQUIRE_EQ(listener.handshake_proof(false, material, proof), Error::none);
+    REQUIRE(caller.verify_handshake(false, material, proof));
+    REQUIRE(!caller.verify_handshake(true, material, proof));
+    auto changed = material;
+    changed[0] ^= std::byte {1};
+    REQUIRE(!caller.verify_handshake(false, changed, proof));
+    proof.listener_nonce[0] ^= std::byte {1};
+    REQUIRE(!caller.verify_handshake(false, material, proof));
+    REQUIRE_EQ(caller.handshake_proof(true, material, proof), Error::none);
+    REQUIRE(listener.verify_handshake(true, material, proof));
+
+    SessionAuthentication other_caller(default_crypto_provider()),
+        other_listener(default_crypto_provider());
+    establish_session_auth_pair(other_caller, other_listener);
+    REQUIRE(!other_listener.verify_handshake(true, material, proof));
+}
+
+TEST(session_authentication_rejects_cross_session_reflection_and_stale_controls)
+{
+    SessionAuthentication caller(default_crypto_provider()),
+        listener(default_crypto_provider());
+    establish_session_auth_pair(caller, listener);
+    SessionAuthentication other_caller(default_crypto_provider()),
+        other_listener(default_crypto_provider());
+    establish_session_auth_pair(other_caller, other_listener);
+    const std::array first {
+        std::byte {1}, std::byte {2}, std::byte {3}, std::byte {4}};
+    const std::array second {
+        std::byte {5}, std::byte {6}, std::byte {7}, std::byte {8}};
+    std::array<std::byte, 128> request {}, response {}, retry {}, newer {};
+    std::size_t request_size = 0, response_size = 0, retry_size = 0,
+                newer_size = 0;
+    REQUIRE_EQ(caller.seal(false, first, request, request_size), Error::none);
+    REQUIRE_EQ(caller.seal(false, first, retry, retry_size), Error::none);
+    REQUIRE_EQ(request, retry);
+    std::span<const std::byte> material;
+    const auto wire = std::span {request}.first(request_size);
+    REQUIRE(!other_listener.open(false, wire, material));
+    REQUIRE(!caller.open(false, wire, material));
+    REQUIRE(!listener.open(true, wire, material));
+    auto tampered = request;
+    tampered[8] ^= std::byte {1};
+    REQUIRE(!listener.open(
+        false, std::span {tampered}.first(request_size), material));
+    REQUIRE(listener.open(false, wire, material));
+    REQUIRE(std::equal(
+        material.begin(), material.end(), first.begin(), first.end()));
+    REQUIRE(listener.open(false, wire, material));
+    REQUIRE_EQ(
+        listener.seal(true, first, response, response_size), Error::none);
+    REQUIRE(
+        caller.open(true, std::span {response}.first(response_size), material));
+    REQUIRE_EQ(caller.seal(false, second, newer, newer_size), Error::none);
+    REQUIRE(
+        listener.open(false, std::span {newer}.first(newer_size), material));
+    REQUIRE(!listener.open(false, wire, material));
+    REQUIRE(!caller.open(
+        true, std::span {response}.first(response_size), material));
+    REQUIRE(!listener.open(false, first, material));
+}
+
+TEST(session_authentication_fails_closed_without_rng_or_hmac)
+{
+    CtrOnlyCryptoProvider failed_random;
+    failed_random.fail_random_bytes();
+    SessionAuthentication failed {failed_random};
+    REQUIRE_EQ(failed.start(true), Error::cryptographic_failure);
+    REQUIRE(!failed.ready());
+    CtrOnlyCryptoProvider no_hmac;
+    SessionAuthentication caller {no_hmac}, listener {no_hmac};
+    REQUIRE_EQ(caller.start(true), Error::none);
+    REQUIRE_EQ(listener.start(false), Error::none);
+    const std::array secret {std::byte {1}, std::byte {2}};
+    REQUIRE_EQ(
+        listener.establish(secret, caller.parameters(), 200, 100), Error::none);
+    REQUIRE_EQ(
+        caller.establish(secret, listener.parameters(), 100, 200), Error::none);
+    SessionAuthenticationParameters proof;
+    REQUIRE(caller.handshake_proof(true, secret, proof) != Error::none);
+    REQUIRE(!listener.verify_handshake(true, secret, proof));
+}

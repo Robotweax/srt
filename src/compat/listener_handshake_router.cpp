@@ -15,9 +15,9 @@ namespace {
 has_integrated_extensions(const HandshakeMessage& message) noexcept
 {
     return message.has_handshake_extension || message.has_key_material_extension
-           || message.has_stream_id_extension || message.has_congestion_extension
-           || message.has_packet_filter_extension || message.has_group_membership
-           || message.has_unknown_extension;
+        || message.has_stream_id_extension || message.has_congestion_extension
+        || message.has_packet_filter_extension || message.has_group_membership
+        || message.has_unknown_extension || message.has_session_authentication;
 }
 
 [[nodiscard]] std::uint64_t load_u64_le(const std::byte* source) noexcept

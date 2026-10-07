@@ -36,6 +36,9 @@ CallerHandshakeStep CallerHandshakeSteps::receive(
         destination_socket_id_ =
             caller_conclusion_destination(local_socket_id_, peer_socket_id_);
     }
+    if (message.packet.request == HandshakeRequest::conclusion
+        && message.has_session_authentication)
+        destination_socket_id_ = peer_socket_id_;
     return step(machine_.receive(message));
 }
 

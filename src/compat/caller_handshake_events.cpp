@@ -70,6 +70,17 @@ CallerHandshakeEventResult CallerHandshakeEventDriver::dispatch(
             }
             return result;
         }
+    case CallerHandshakeEventKind::session_authentication: {
+        if (!started_)
+            return {.outcome = CallerHandshakeEventOutcome::invalid};
+        const auto error =
+            exchange_.set_session_authentication(event.session_authentication);
+        terminal_ = error != Error::none;
+        return {.outcome = error == Error::none
+                ? CallerHandshakeEventOutcome::running
+                : CallerHandshakeEventOutcome::failed,
+            .error = error};
+    }
     case CallerHandshakeEventKind::key_material: {
         if (!started_) {
             return {.outcome = CallerHandshakeEventOutcome::invalid};

@@ -7334,3 +7334,191 @@ TEST(srt_compat_mss_overflow_is_rejected_without_state_mutation)
         REQUIRE_EQ(mss, small);
     }
 }
+
+TEST(srt_compat_session_authentication_is_explicit_and_preconnection_only)
+{
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    const auto socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    bool enabled = true;
+    int size = sizeof(enabled);
+    REQUIRE_EQ(
+        srt_getsockflag(socket, SRTO_ROBOTWEAX_SESSIONAUTH, &enabled, &size),
+        0);
+    REQUIRE(!enabled);
+    enabled = true;
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_SESSIONAUTH, &enabled,
+                   sizeof(enabled)),
+        0);
+    const bool optional = false;
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_ENFORCEDENCRYPTION, &optional,
+                   sizeof(optional)),
+        SRT_ERROR);
+    REQUIRE_EQ(
+        srt_setsockflag(socket, SRTO_RENDEZVOUS, &enabled, sizeof(enabled)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_close(socket), 0);
+}
+
+TEST(srt_compat_session_authentication_connects_and_rotates_in_both_directions)
+{
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    for (bool asynchronous : {false, true}) {
+        for (int mode : {1, 2}) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+            if (mode == 2)
+                continue;
+#endif
+            const auto listener = srt_create_socket();
+            const auto caller = srt_create_socket();
+            REQUIRE(listener != SRT_INVALID_SOCK && caller != SRT_INVALID_SOCK);
+            for (const auto socket : {listener, caller}) {
+                const bool enabled = true;
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_SESSIONAUTH,
+                               &enabled, sizeof(enabled)),
+                    0);
+                constexpr std::string_view secret = "public-session-auth-test";
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_PASSPHRASE,
+                               secret.data(), static_cast<int>(secret.size())),
+                    0);
+#ifdef ENABLE_AEAD_API_PREVIEW
+                REQUIRE_EQ(srt_setsockflag(
+                               socket, SRTO_CRYPTOMODE, &mode, sizeof(mode)),
+                    0);
+#endif
+                const int preannounce = 1, refresh = 8, timeout = 3000,
+                          latency = 0;
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_KMPREANNOUNCE,
+                               &preannounce, sizeof(preannounce)),
+                    0);
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_KMREFRESHRATE, &refresh,
+                               sizeof(refresh)),
+                    0);
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_CONNTIMEO, &timeout,
+                               sizeof(timeout)),
+                    0);
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_RCVTIMEO, &timeout,
+                               sizeof(timeout)),
+                    0);
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_SNDTIMEO, &timeout,
+                               sizeof(timeout)),
+                    0);
+                REQUIRE_EQ(srt_setsockflag(
+                               socket, SRTO_LATENCY, &latency, sizeof(latency)),
+                    0);
+            }
+            sockaddr_in address {};
+            address.sin_family = AF_INET;
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            REQUIRE_EQ(srt_bind(listener, reinterpret_cast<sockaddr*>(&address),
+                           sizeof(address)),
+                0);
+            int size = sizeof(address);
+            REQUIRE_EQ(srt_getsockname(listener,
+                           reinterpret_cast<sockaddr*>(&address), &size),
+                0);
+            REQUIRE_EQ(srt_listen(listener, 4), 0);
+            if (asynchronous) {
+                const bool synchronous = false;
+                REQUIRE_EQ(srt_setsockflag(caller, SRTO_SNDSYN, &synchronous,
+                               sizeof(synchronous)),
+                    0);
+            }
+            const auto connected = srt_connect(
+                caller, reinterpret_cast<sockaddr*>(&address), size);
+            REQUIRE_EQ(connected, 0);
+            const auto poll = srt_epoll_create();
+            REQUIRE(poll >= 0);
+            if (asynchronous) {
+                const int output = SRT_EPOLL_OUT;
+                REQUIRE_EQ(srt_epoll_add_usock(poll, caller, &output), 0);
+                SRT_EPOLL_EVENT connected_event {};
+                REQUIRE_EQ(srt_epoll_uwait(poll, &connected_event, 1, 3000), 1);
+                REQUIRE_EQ(connected_event.events, SRT_EPOLL_OUT);
+                REQUIRE_EQ(srt_epoll_remove_usock(poll, caller), 0);
+                const bool synchronous = true;
+                REQUIRE_EQ(srt_setsockflag(caller, SRTO_SNDSYN, &synchronous,
+                               sizeof(synchronous)),
+                    0);
+            }
+            const int events = SRT_EPOLL_IN;
+            REQUIRE_EQ(srt_epoll_add_usock(poll, listener, &events), 0);
+            SRT_EPOLL_EVENT ready {};
+            REQUIRE_EQ(srt_epoll_uwait(poll, &ready, 1, 3000), 1);
+            REQUIRE_EQ(srt_epoll_release(poll), 0);
+            const auto accepted = srt_accept(listener, nullptr, nullptr);
+            REQUIRE(accepted != SRT_INVALID_SOCK);
+            const bool disabled = false;
+            REQUIRE_EQ(srt_setsockflag(caller, SRTO_ROBOTWEAX_SESSIONAUTH,
+                           &disabled, sizeof(disabled)),
+                SRT_ERROR);
+            for (int i = 0; i < 40; ++i) {
+                for (const auto sender : {caller, accepted}) {
+                    const auto receiver = sender == caller ? accepted : caller;
+                    const char data = static_cast<char>(i + 1);
+                    REQUIRE_EQ(srt_sendmsg(sender, &data, 1, -1, 0), 1);
+                    std::array<char, 1500> received {};
+                    REQUIRE_EQ(srt_recvmsg(receiver, received.data(),
+                                   static_cast<int>(received.size())),
+                        1);
+                    REQUIRE_EQ(received[0], data);
+                }
+            }
+            REQUIRE_EQ(srt_close(caller), 0);
+            REQUIRE_EQ(srt_close(accepted), 0);
+            REQUIRE_EQ(srt_close(listener), 0);
+        }
+    }
+}
+
+TEST(srt_compat_session_authentication_rejects_mode_mismatch_and_wrong_secret)
+{
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    for (int variant = 0; variant < 3; ++variant) {
+        const auto listener = srt_create_socket();
+        const auto caller = srt_create_socket();
+        REQUIRE(listener != SRT_INVALID_SOCK && caller != SRT_INVALID_SOCK);
+        for (const auto socket : {listener, caller}) {
+            const bool enabled = variant == 2
+                || (variant == 0 ? socket == caller : socket == listener);
+            REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_SESSIONAUTH,
+                           &enabled, sizeof(enabled)),
+                0);
+            const std::string_view secret = variant == 2 && socket == listener
+                ? "wrong-session-auth-test"
+                : "public-session-auth-test";
+            REQUIRE_EQ(srt_setsockflag(socket, SRTO_PASSPHRASE, secret.data(),
+                           static_cast<int>(secret.size())),
+                0);
+            const int timeout = 500;
+            REQUIRE_EQ(srt_setsockflag(
+                           socket, SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+                0);
+        }
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        REQUIRE_EQ(srt_bind(listener, reinterpret_cast<sockaddr*>(&address),
+                       sizeof(address)),
+            0);
+        int size = sizeof(address);
+        REQUIRE_EQ(srt_getsockname(
+                       listener, reinterpret_cast<sockaddr*>(&address), &size),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 4), 0);
+        REQUIRE_EQ(
+            srt_connect(caller, reinterpret_cast<sockaddr*>(&address), size),
+            SRT_ERROR);
+        REQUIRE(srt_getsockstate(caller) != SRTS_CONNECTED);
+        const bool nonblocking = false;
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVSYN, &nonblocking,
+                       sizeof(nonblocking)),
+            0);
+        REQUIRE_EQ(srt_accept(listener, nullptr, nullptr), SRT_INVALID_SOCK);
+        REQUIRE_EQ(srt_close(caller), 0);
+        REQUIRE_EQ(srt_close(listener), 0);
+    }
+}

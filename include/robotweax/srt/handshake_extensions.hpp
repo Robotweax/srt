@@ -26,6 +26,7 @@ enum class HandshakeExtensionType : std::uint16_t {
     congestion = 6,
     packet_filter = 7,
     group = 8,
+    session_authentication = 0x7f10,
 };
 
 enum class CongestionController : std::uint8_t {

@@ -316,6 +316,31 @@ public:
             ? Error::none
             : Error::cryptographic_failure;
     }
+    Error hmac_sha256(std::span<const std::byte> key,
+        std::span<const std::byte> input,
+        std::span<std::byte, 32> output) noexcept override
+    {
+        if (!fits(key) || !fits(input)) {
+            erase(output);
+            return Error::cryptographic_failure;
+        }
+        Algorithm algorithm(
+            BCRYPT_SHA256_ALGORITHM, BCRYPT_ALG_HANDLE_HMAC_FLAG);
+        BCRYPT_HASH_HANDLE hash = nullptr;
+        bool success = algorithm.handle
+            && ok(BCryptCreateHash(algorithm.handle, &hash, nullptr, 0,
+                bcrypt_bytes(key), static_cast<ULONG>(key.size()), 0));
+        if (success)
+            success = ok(BCryptHashData(hash, bcrypt_bytes(input),
+                          static_cast<ULONG>(input.size()), 0))
+                && ok(BCryptFinishHash(hash, bcrypt_bytes(output), 32, 0));
+        if (hash)
+            BCryptDestroyHash(hash);
+        if (!success)
+            erase(output);
+        return success ? Error::none : Error::cryptographic_failure;
+    }
+
     Error wrap_key(std::span<const std::byte> kek,
         std::span<const std::byte> input, std::span<std::byte> output,
         std::size_t& written) noexcept override

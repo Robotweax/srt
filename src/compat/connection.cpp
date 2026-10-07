@@ -1341,6 +1341,9 @@ create_setup_inbox() noexcept
             envelope.message.packet_filter_configuration,
         .has_group_membership = envelope.message.has_group_membership,
         .group_membership = envelope.message.group_membership,
+        .has_session_authentication =
+            envelope.message.has_session_authentication,
+        .session_authentication = envelope.message.session_authentication,
     };
     std::array<std::byte, DatagramEnvelope::maximum_size> bytes {};
     const HandshakeDatagramEncodeResult encoded =
@@ -1427,6 +1430,50 @@ public:
                 }
             }
         }
+        if (setup_.options.session_authentication()) {
+            if (setup_.crypto == nullptr)
+                return fail_connect(
+                    socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_UNSECURE);
+            SessionAuthenticationParameters local_parameters;
+            if (message.packet.request == HandshakeRequest::induction) {
+                if (setup_.crypto->start_session_authentication(true)
+                    != Error::none)
+                    return fail_connect(socket_, SRT_ESECFAIL, 0, asynchronous_,
+                        SRT_REJ_BADSECRET);
+                local_parameters =
+                    setup_.crypto->session_authentication()->parameters();
+            } else if (message.packet.request == HandshakeRequest::conclusion) {
+                if (!message.has_session_authentication
+                    || !message.has_key_material_extension
+                    || setup_.crypto->establish_session_authentication(
+                           message.session_authentication,
+                           setup_.configuration.local_socket_id,
+                           message.packet.socket_id)
+                        != Error::none)
+                    return fail_connect(socket_, SRT_ESECFAIL, 0, asynchronous_,
+                        SRT_REJ_UNSECURE);
+                auto* authentication = setup_.crypto->session_authentication();
+                if (!authentication->verify_handshake(false,
+                        message.key_material.view(),
+                        message.session_authentication)
+                    || authentication->handshake_proof(
+                           true, message.key_material.view(), local_parameters)
+                        != Error::none)
+                    return fail_connect(socket_, SRT_ESECFAIL, 0, asynchronous_,
+                        SRT_REJ_BADSECRET);
+            } else {
+                return 0;
+            }
+            const auto changed = driver_.dispatch(
+                {.kind = CallerHandshakeEventKind::session_authentication,
+                    .session_authentication = local_parameters});
+            if (changed.outcome != CallerHandshakeEventOutcome::running)
+                return fail_connect(
+                    socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_BADSECRET);
+        } else if (message.has_session_authentication) {
+            return fail_connect(
+                socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_UNSECURE);
+        }
         if (message.packet.request != HandshakeRequest::conclusion) {
             return 0;
         }
@@ -1510,7 +1557,10 @@ public:
             return fail(SRT_ESCLOSED);
         }
         if (attach_runtime(socket_, setup_.channel, origin_,
-                microseconds_since(origin_), peer_handshake_timestamp, nullptr,
+                microseconds_since(origin_), peer_handshake_timestamp,
+                setup_.options.session_authentication()
+                    ? &protocol.session_confirmation()
+                    : nullptr,
                 0U, inbox_)
             == SRT_ERROR) {
             return fail_connect(socket_,
@@ -3181,7 +3231,8 @@ int connect_socket(
                 ? SRT_ECONNSOCK
                 : SRT_EINVOP);
         }
-        if (socket->native_options.requires_authenticated_data()
+        if ((socket->native_options.requires_authenticated_data()
+                || socket->native_options.session_authentication())
             && !socket->native_options.encryption_enabled()) {
             return fail(SRT_ESECFAIL);
         }
@@ -3408,6 +3459,8 @@ int connect_socket(
                     .weight = socket->group_weight,
                 },
         };
+        setup.configuration.require_session_authentication =
+            socket->native_options.session_authentication();
         setup.options = socket->native_options;
         setup.enforced_encryption =
             socket->native_options.enforced_encryption();
@@ -3754,6 +3807,18 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         policy_error = SRT_ESECFAIL;
     }
 
+    if (!policy_rejected
+        && (native_options.session_authentication()
+                != conclusion.has_session_authentication
+            || (native_options.session_authentication()
+                && (!native_options.encryption_enabled()
+                    || !conclusion.session_authentication.is_offer())))) {
+        policy_rejected = true;
+        policy_rejection = SRT_REJ_UNSECURE;
+        policy_error = SRT_ESECFAIL;
+    }
+    SessionAuthenticationParameters session_response {},
+        session_confirmation {};
     std::shared_ptr<CryptoSession> crypto;
     CryptoState receiver_key_state = CryptoState::unsecured;
     if (!policy_rejected) {
@@ -3842,6 +3907,25 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         }
     }
 
+    if (!policy_rejected && native_options.session_authentication()) {
+        if (crypto == nullptr
+            || crypto->start_session_authentication(false) != Error::none
+            || crypto->establish_session_authentication(
+                   conclusion.session_authentication,
+                   accepted->protocol_socket_id, caller_socket_id)
+                != Error::none
+            || crypto->session_authentication()->handshake_proof(
+                   false, conclusion.key_material.view(), session_response)
+                != Error::none
+            || crypto->session_authentication()->handshake_proof(
+                   true, conclusion.key_material.view(), session_confirmation)
+                != Error::none) {
+            policy_rejected = true;
+            policy_rejection = SRT_REJ_BADSECRET;
+            policy_error = SRT_ESECFAIL;
+        }
+    }
+
     setup_context->native_options = native_options;
     setup_context->crypto = crypto;
     setup_context->policy_error = policy_error;
@@ -3880,6 +3964,12 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         .cookie_generator = approved_connection_cookie,
         .cookie_context = &setup_context->cookie_context,
     };
+
+    configuration.hsv5.require_session_authentication =
+        native_options.session_authentication();
+    configuration.hsv5.session_authentication = session_response;
+    configuration.hsv5.session_authentication_confirmation =
+        session_confirmation;
 
     const auto setup_inbox = create_setup_inbox();
     if (setup_inbox == nullptr) {

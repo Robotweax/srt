@@ -44,6 +44,7 @@ bool is_group_member_option(SRT_SOCKOPT option) noexcept
     case SRTO_PBKEYLEN:
     case SRTO_KMREFRESHRATE:
     case SRTO_KMPREANNOUNCE:
+    case SRTO_ROBOTWEAX_SESSIONAUTH:
     case SRTO_ENFORCEDENCRYPTION:
 #ifdef ENABLE_AEAD_API_PREVIEW
     case SRTO_CRYPTOMODE:

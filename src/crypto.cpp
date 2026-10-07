@@ -224,6 +224,31 @@ CryptoSession::CryptoSession(
     configuration_error_ = validate_configuration();
 }
 
+Error CryptoSession::start_session_authentication(bool caller) noexcept
+{
+    if (session_authentication_ != nullptr || !enabled())
+        return Error::invalid_state;
+    auto candidate = std::unique_ptr<SessionAuthentication>(
+        new (std::nothrow) SessionAuthentication(provider_));
+    if (!candidate)
+        return Error::cryptographic_failure;
+    const auto result = candidate->start(caller);
+    if (result == Error::none)
+        session_authentication_ = std::move(candidate);
+    return result;
+}
+
+Error CryptoSession::establish_session_authentication(
+    const SessionAuthenticationParameters& peer, std::uint32_t local_socket_id,
+    std::uint32_t peer_socket_id) noexcept
+{
+    if (!session_authentication_)
+        return Error::invalid_state;
+    return session_authentication_->establish(
+        std::span {passphrase_}.first(passphrase_size_), peer, local_socket_id,
+        peer_socket_id);
+}
+
 CryptoSession::~CryptoSession()
 {
     erase_slot(transmit_even_);

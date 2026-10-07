@@ -122,7 +122,8 @@ template <typename Value>
         || option == SRTO_CRYPTOMODE
 #endif
         || option == SRTO_KMREFRESHRATE || option == SRTO_KMPREANNOUNCE
-        || option == SRTO_ENFORCEDENCRYPTION || option == SRTO_CONGESTION
+        || option == SRTO_ENFORCEDENCRYPTION
+        || option == SRTO_ROBOTWEAX_SESSIONAUTH || option == SRTO_CONGESTION
         || option == SRTO_MESSAGEAPI || option == SRTO_SENDER
         || option == SRTO_MINVERSION || option == SRTO_STREAMID
         || option == SRTO_GROUPCONNECT
@@ -477,6 +478,9 @@ int get_socket_option(
             static_cast<std::int32_t>(
                 socket.native_options.get(
                     SocketOption::key_preannouncement_packets).value));
+    case SRTO_ROBOTWEAX_SESSIONAUTH:
+        return write_value(
+            value, value_size, socket.native_options.session_authentication());
     case SRTO_ENFORCEDENCRYPTION:
         return write_value(value, value_size,
             socket.native_options.enforced_encryption());
@@ -1178,13 +1182,16 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                 : SocketOption::key_preannouncement_packets,
             parsed);
     }
+    case SRTO_ROBOTWEAX_SESSIONAUTH:
     case SRTO_ENFORCEDENCRYPTION: {
         bool parsed = false;
         if (!read_boolean(value, value_size, parsed)) {
             return invalid_parameter();
         }
         return set_native(socket.native_options,
-            SocketOption::enforced_encryption,
+            option == SRTO_ROBOTWEAX_SESSIONAUTH
+                ? SocketOption::session_authentication
+                : SocketOption::enforced_encryption,
             parsed ? 1 : 0);
     }
     case SRTO_ISN:

@@ -12070,3 +12070,89 @@ TEST(compat_setup_routes_are_bounded_and_capacity_is_reusable)
     REQUIRE(channel.register_setup_inbox(
         4097, IpEndpoint::loopback(), inbox, 4097));
 }
+
+TEST(session_authentication_runtime_drops_foreign_and_bare_key_controls)
+{
+    constexpr std::string_view secret = "public-session-runtime-test";
+    CryptoSession caller {{.passphrase = secret, .key_length = 16}};
+    auto crypto = std::make_shared<CryptoSession>(
+        CryptoConfiguration {.passphrase = secret, .key_length = 16});
+    REQUIRE_EQ(caller.start_initiator(), Error::none);
+    const auto initial = caller.pending_key_material();
+    std::vector<std::byte> material(initial.begin(), initial.end());
+    REQUIRE_EQ(crypto->accept_key_material(material, true), Error::none);
+    REQUIRE_EQ(caller.start_session_authentication(true), Error::none);
+    REQUIRE_EQ(crypto->start_session_authentication(false), Error::none);
+    REQUIRE_EQ(crypto->establish_session_authentication(
+                   caller.session_authentication()->parameters(), 200, 100),
+        Error::none);
+    REQUIRE_EQ(caller.establish_session_authentication(
+                   crypto->session_authentication()->parameters(), 100, 200),
+        Error::none);
+    CryptoSession foreign {{.passphrase = secret, .key_length = 16}};
+    CryptoSession foreign_listener {{.passphrase = secret, .key_length = 16}};
+    REQUIRE_EQ(foreign.start_session_authentication(true), Error::none);
+    REQUIRE_EQ(
+        foreign_listener.start_session_authentication(false), Error::none);
+    REQUIRE_EQ(foreign_listener.establish_session_authentication(
+                   foreign.session_authentication()->parameters(), 200, 100),
+        Error::none);
+    REQUIRE_EQ(
+        foreign.establish_session_authentication(
+            foreign_listener.session_authentication()->parameters(), 100, 200),
+        Error::none);
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {.address = {192, 0, 2, 43}, .port = 14203};
+    SocketOptions options;
+    REQUIRE_EQ(options.set_passphrase(secret), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::session_authentication, 1), Error::none);
+    std::uint64_t now = 1000000;
+    ConnectionRuntime receiver {{.channel = channel,
+        .peer = peer,
+        .peer_socket_id = 100,
+        .initial_sequence = SequenceNumber {900},
+        .flow_window_packets = 256,
+        .options = options,
+        .crypto = crypto,
+        .now_function = injected_now,
+        .now_context = &now}};
+    std::array<std::byte, 256> bytes {};
+    std::size_t size = 0;
+    REQUIRE_EQ(
+        foreign.session_authentication()->seal(false, material, bytes, size),
+        Error::none);
+    PacketView request {.kind = PacketKind::control,
+        .control = {.type = ControlType::user_defined,
+            .subtype = authenticated_key_request_subtype},
+        .payload = std::span {bytes}.first(size)};
+    receiver.process_packet(request, peer);
+    REQUIRE(take_datagrams(output).empty());
+    request.control.subtype = key_material_request_subtype;
+    request.payload = material;
+    receiver.process_packet(request, peer);
+    REQUIRE(take_datagrams(output).empty());
+    REQUIRE_EQ(
+        caller.session_authentication()->seal(false, material, bytes, size),
+        Error::none);
+    request.control.subtype = authenticated_key_request_subtype;
+    request.payload = std::span {bytes}.first(size);
+    bytes[size - 1] ^= std::byte {1};
+    receiver.process_packet(request, peer);
+    REQUIRE(take_datagrams(output).empty());
+    bytes[size - 1] ^= std::byte {1};
+    receiver.process_packet(request, peer);
+    const auto responses = take_datagrams(output);
+    REQUIRE_EQ(responses.size(), 1U);
+    const auto response = decode_packet(responses.front());
+    REQUIRE(response);
+    REQUIRE_EQ(
+        response.packet.control.subtype, authenticated_key_response_subtype);
+    std::span<const std::byte> opened;
+    REQUIRE(caller.session_authentication()->open(
+        true, response.packet.payload, opened));
+    REQUIRE(!receiver.broken());
+    REQUIRE_EQ(receiver.receiver_crypto_state(), CryptoState::secured);
+}
