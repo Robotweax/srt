@@ -380,6 +380,14 @@ int get_socket_option(
     case SRTO_PEERVERSION:
         return write_value(value, value_size,
             static_cast<std::int32_t>(socket.peer_srt_version));
+    case SRTO_ROBOTWEAX_PEERGROUP:
+        return write_value(value, value_size,
+            socket.listen_callback_active ? socket.incoming_peer_group
+                                          : SRT_INVALID_SOCK);
+    case SRTO_ROBOTWEAX_GROUPDOMAIN:
+        return write_value(value, value_size,
+            socket.listen_callback_active ? socket.incoming_group_domain
+                                          : std::uint64_t {0});
     case SRTO_GROUPTYPE:
         return write_value(value, value_size,
             static_cast<std::int32_t>(
@@ -1181,6 +1189,15 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                 ? SocketOption::key_refresh_rate_packets
                 : SocketOption::key_preannouncement_packets,
             parsed);
+    }
+    case SRTO_ROBOTWEAX_GROUPDOMAIN: {
+        std::uint64_t domain = 0;
+        if (!socket.listen_callback_active
+            || socket.incoming_group_type == SRT_GTYPE_UNDEFINED
+            || !read_value(value, value_size, domain) || domain == 0)
+            return invalid_parameter();
+        socket.incoming_group_domain = domain;
+        return 0;
     }
     case SRTO_ROBOTWEAX_SESSIONAUTH:
     case SRTO_ENFORCEDENCRYPTION: {

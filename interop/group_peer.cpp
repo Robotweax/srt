@@ -120,18 +120,28 @@ int observe_group_listener(
     std::int32_t peer_version = 0;
     std::int32_t group_type = SRT_GTYPE_UNDEFINED;
     const std::int32_t probe = 0;
-    const bool valid =
-        read_integer_option(socket, SRTO_PEERVERSION, peer_version)
+    bool valid = read_integer_option(socket, SRTO_PEERVERSION, peer_version)
         // The provisional callback socket has not completed its handshake.
         // Pinned v1.5.5 therefore exposes zero until admission succeeds.
         && peer_version == 0
         && read_integer_option(socket, SRTO_GROUPTYPE, group_type)
-        && group_type == static_cast<std::int32_t>(
-            observation.expected_group_type)
-        && srt_setsockflag(socket, SRTO_PEERVERSION,
-               &probe, static_cast<int>(sizeof(probe))) == SRT_ERROR
-        && srt_setsockflag(socket, SRTO_GROUPTYPE,
-               &probe, static_cast<int>(sizeof(probe))) == SRT_ERROR;
+        && group_type
+            == static_cast<std::int32_t>(observation.expected_group_type)
+        && srt_setsockflag(socket, SRTO_PEERVERSION, &probe,
+               static_cast<int>(sizeof(probe)))
+            == SRT_ERROR
+        && srt_setsockflag(
+               socket, SRTO_GROUPTYPE, &probe, static_cast<int>(sizeof(probe)))
+            == SRT_ERROR;
+#if defined(ROBOTWEAX_SRT_COMPAT_SRT_H)
+    // All peers in this loopback fixture belong to one application domain.
+    // Production callbacks must choose this value from their authorization.
+    const std::uint64_t domain = 1;
+    valid = valid
+        && srt_setsockflag(socket, SRTO_ROBOTWEAX_GROUPDOMAIN, &domain,
+               static_cast<int>(sizeof(domain)))
+            != SRT_ERROR;
+#endif
     {
         std::lock_guard lock(observation.mutex);
         ++observation.calls;

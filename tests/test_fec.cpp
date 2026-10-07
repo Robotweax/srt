@@ -1551,3 +1551,22 @@ TEST(fec_resynchronization_reports_only_losses_at_receive_floor)
     REQUIRE_EQ(advanced.irrecoverable_losses[0].first, SequenceNumber {17});
     REQUIRE_EQ(advanced.irrecoverable_losses[0].last, SequenceNumber {17});
 }
+
+TEST(row_only_fec_rejects_oversized_geometry_before_allocation)
+{
+    auto configuration = row_configuration(128U);
+    REQUIRE(RowFecDecoder::estimate_resources(configuration, 8192, 1312));
+    for (const auto columns : {129U, 8192U, 2147483647U}) {
+        configuration.columns = columns;
+        REQUIRE(!supports_row_only_fec(configuration));
+        REQUIRE(!RowFecDecoder::estimate_resources(configuration, 8192, 1312));
+        bool rejected = false;
+        try {
+            RowFecDecoder decoder {
+                configuration, SequenceNumber {0}, 8192, 1312};
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        REQUIRE(rejected);
+    }
+}
