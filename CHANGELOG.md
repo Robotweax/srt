@@ -6,6 +6,12 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Keep Live DATA flowing when a key-rotation response is late: the sender may
+  continue on the active key for at most one further refresh period before new
+  DATA pauses, instead of pausing at the refresh boundary. Small refresh rates
+  relative to rate × round-trip time no longer build a sender backlog that ages
+  into too-late drops. Internal runtime statistics count the overrun positions
+  and the remaining pause time.
 - Add the default-off `ENABLE_MAXREXMITBW` build profile and `SRTO_MAXREXMITBW`
   sender option, with exact protected-packet accounting, immediate zero-limit
   suppression, per-member group templates and UDP-success-only budget commits.

@@ -1176,7 +1176,18 @@ Error CryptoSession::note_sequences_consumed(std::uint64_t count) noexcept
     if (packets_on_active_key_ > maximum_sequences_per_key - count) {
         return Error::cryptographic_failure;
     }
+    const std::uint64_t refresh = effective_refresh_rate();
+    const std::uint64_t before = packets_on_active_key_;
     packets_on_active_key_ += count;
+    if (packets_on_active_key_ > refresh) {
+        const std::uint64_t overrun =
+            packets_on_active_key_ - std::max(before, refresh);
+        refresh_overrun_positions_ =
+            overrun > std::numeric_limits<std::uint64_t>::max()
+                    - refresh_overrun_positions_
+            ? std::numeric_limits<std::uint64_t>::max()
+            : refresh_overrun_positions_ + overrun;
+    }
     if (packets_on_active_key_ < effective_refresh_rate()) {
         return Error::none;
     }
@@ -1192,10 +1203,10 @@ Error CryptoSession::note_sequences_consumed(std::uint64_t count) noexcept
         return Error::none;
     }
     if (!rotation_prepared_ || !pending_acknowledged_) {
-        // A sequence gap can carry the count past the refresh point before
-        // the successor key is acknowledged. The active key still has ample
-        // IV space, so keep it; ready_to_send_data() now holds new DATA until
-        // the successor is acknowledged and the switch happens.
+        // The successor key is not acknowledged yet: a slow KMRSP or a
+        // sequence gap carried the count past the refresh point. The active
+        // key still has ample IV space, so keep it; ready_to_send_data()
+        // bounds the overrun and switches after acknowledgement.
         return Error::none;
     }
     active_sender_key_ = other_key(active_sender_key_);
@@ -1235,8 +1246,21 @@ bool CryptoSession::ready_to_send_data() const noexcept
     }
     const std::uint64_t next_packet_count =
         packets_on_active_key_ + 1U;
-    return next_packet_count < effective_refresh_rate()
-        || (rotation_prepared_ && pending_acknowledged_);
+    if (next_packet_count < effective_refresh_rate()
+        || (rotation_prepared_ && pending_acknowledged_)) {
+        return true;
+    }
+    // The successor key has been announced but not yet confirmed. Keep the
+    // active key for at most one further refresh period instead of stalling
+    // Live DATA behind the KMREQ/KMRSP round trip. The 31-bit IV space
+    // remains a hard limit; past the overrun bound, new DATA pauses.
+    return rotation_prepared_ && next_packet_count < refresh_overrun_limit();
+}
+
+std::uint64_t CryptoSession::refresh_overrun_limit() const noexcept
+{
+    return std::min<std::uint64_t>(
+        2U * effective_refresh_rate(), maximum_sequences_per_key);
 }
 
 std::size_t CryptoSession::key_length() const noexcept

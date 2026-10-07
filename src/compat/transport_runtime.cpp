@@ -2408,10 +2408,15 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
             session_.note_retransmission_sent(completion.data.sequence, now);
         }
         pacer_.on_packet_sent(bytes.size(), now);
-        if (crypto_ != nullptr && !completion.data.retransmitted
-            && crypto_->note_data_packet_sent() != Error::none) {
-            break_locked(0);
-            return false;
+        if (crypto_ != nullptr && !completion.data.retransmitted) {
+            const std::uint64_t overrun_before =
+                crypto_->refresh_overrun_positions();
+            if (crypto_->note_data_packet_sent() != Error::none) {
+                break_locked(0);
+                return false;
+            }
+            statistics_.note_key_refresh_overrun(
+                crypto_->refresh_overrun_positions() - overrun_before);
         }
     } else {
         if (completion.kind == DatagramKind::filter) {
@@ -3945,6 +3950,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     // black hole. Flow-window waits have the same inbound-event dependency.
     const bool crypto_blocked = !retransmission && crypto_ != nullptr
         && crypto_->enabled() && !crypto_->ready_to_send_data();
+    statistics_.update_key_pause(now_microseconds(), crypto_blocked && pending);
     const bool paced_work =
         filter_pending || (pending && !flow_blocked && !crypto_blocked);
     const std::uint64_t current = now_microseconds();

@@ -47,6 +47,11 @@ struct StatisticsCounters {
     std::uint64_t receiver_filter_supply = 0;
     std::uint64_t receiver_filter_loss = 0;
     std::uint64_t send_duration_microseconds = 0;
+    // New DATA encrypted past the key refresh interval while the successor
+    // key awaited acknowledgement, and time new DATA waited for that
+    // acknowledgement after the bounded overrun was exhausted.
+    std::uint64_t sender_key_refresh_overrun_positions = 0;
+    std::uint64_t sender_key_pause_microseconds = 0;
 };
 
 struct BufferStatisticsSample {
@@ -143,6 +148,8 @@ public:
     void note_control_received(ControlType type) noexcept;
     void update_send_duration(
         std::uint64_t now_microseconds, bool sender_buffer_nonempty) noexcept;
+    void note_key_refresh_overrun(std::uint64_t positions) noexcept;
+    void update_key_pause(std::uint64_t now_microseconds, bool paused) noexcept;
     void sample_buffers(
         std::uint64_t now_microseconds,
         BufferStatisticsSample sample) noexcept;
@@ -199,6 +206,7 @@ private:
     std::uint64_t start_microseconds_ = 0;
     std::uint64_t interval_start_microseconds_ = 0;
     std::uint64_t duration_update_microseconds_ = 0;
+    std::uint64_t key_pause_update_microseconds_ = 0;
     BufferMovingAverage sender_buffer_average_;
     BufferMovingAverage receiver_buffer_average_;
     std::size_t reorder_distance_packets_ = 0;
@@ -207,6 +215,7 @@ private:
     std::uint64_t packet_header_bytes_ =
         ipv4_statistics_packet_header_bytes;
     bool sender_busy_ = false;
+    bool key_paused_ = false;
 };
 
 void populate_trace_statistics(

@@ -325,7 +325,11 @@ regressions are independently authored; no upstream code or tests are copied.
 By `refresh_rate - preannouncement`, the sender creates the inactive key and
 sends a wrapped KMREQ; the adaptive window below may bring this forward. It
 retries the same request until the matching KMRSP is
-received, then changes the DATA selector at the refresh boundary. Runtime
+received, then changes the DATA selector at the refresh boundary. If the
+KMRSP has not arrived by then, new DATA continues on the active key for at
+most one further refresh period (twice the effective refresh interval in
+total, never beyond the 31-bit IV space) and switches immediately after the
+acknowledgement; only past that bound does new DATA pause. Runtime
 retries wait `max(1.5 * SRTT, 10 ms)` after successful UDP submission once
 an RTT observation is available; before that, the interval is 100 ms.
 Both intervals are capped at half the configured peer-idle timeout, with a
@@ -344,8 +348,8 @@ estimates and 10 ms of scheduling margin. Before an RTT sample, it uses 100 ms
 for the round trip and each retry. The observed peak is retained for the
 connection, so a burst can keep later announcements early. Both the configured
 and adaptive windows are capped below half the effective refresh interval.
-This changes announcement timing only: key switching and the DATA pause at an
-unconfirmed refresh boundary retain their existing sequence budget.
+This changes announcement timing only: key switching and the bounded overrun
+at an unconfirmed refresh boundary retain their sequence budget.
 
 Size this window for the highest expected rate of consumed sequence positions,
 including positions skipped by TTL or too-late packet drop. For a steady rate
@@ -364,8 +368,8 @@ The deterministic runtime tests cover both CTR and GCM across two rotations
 and sequence wrap. Besides steady rates, they exercise a fast startup before
 the first usable rate sample, a burst before the next rate sample, and an RTT
 increase from 4 ms to 50 ms, with zero or two lost requests or responses.
-These transition profiles check exact payload delivery, safe DATA pauses and
-recovery after key confirmation without exceeding the configured key budget.
+These transition profiles check exact payload delivery, the bounded overrun,
+safe DATA pauses at its limit and recovery after key confirmation.
 A further profile drops key requests or responses for two seconds during each
 rotation and changes the peer RTT from 4 ms to 50 ms and back while DATA is
 paused. It checks unchanged retry material, the current RTT retry floor, exact
@@ -377,7 +381,8 @@ For example, at 40,000 positions/second and 40-ms SRTT, the retry interval is
 60 ms. A window for two lost attempts and the successful exchange needs at
 least 6,400 positions before adding margin. The default 4,096-position window
 covers about 102 ms at that rate. Set `SRTO_KMPREANNOUNCE` before connecting;
-the library continues to pause safely if the successor key is not confirmed.
+without confirmation, the active key continues for at most one further
+refresh period before new DATA pauses safely.
 
 The DATA IV is derived from the salt and the 31-bit sequence number, so the
 key lifetime is measured in consumed sequence numbers, not in transmitted
@@ -401,8 +406,9 @@ positions and validates the prospective packet against the key budget. It
 never derives this budget from a signed modular sequence distance or waits
 until UDP submission to detect an exhausted budget.
 
-If a gap reaches the refresh boundary before the successor key is acknowledged,
-new DATA waits for KMREQ/KMRSP completion. If a jump would exhaust the remaining
+If a gap carries the count past the refresh boundary before the successor key
+is acknowledged, it consumes the bounded overrun; past that bound, new DATA
+waits for KMREQ/KMRSP completion. If a jump would exhaust the remaining
 31-bit IV space, the connection fails closed before encryption or submission.
 Already protected retransmissions retain their original ciphertext and do not
 consume another sequence position. Local UDP retries likewise reuse the
