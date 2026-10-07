@@ -710,6 +710,15 @@ TEST(crypto_session_confirms_distinct_initial_bidirectional_data_keys)
                         Error::cryptographic_failure);
                 }
 
+                // Captured outbound KMREQ must never become our receive key.
+                for (auto* session : {&caller, &listener}) {
+                    const auto& reflected =
+                        session == &caller ? caller_key : listener_key;
+                    REQUIRE_EQ(session->accept_key_material(reflected, false),
+                        Error::invalid_key_material);
+                    REQUIRE_EQ(session->receiver_state(), CryptoState::secured);
+                }
+
                 REQUIRE_EQ(listener.accept_key_material(caller_key, false),
                     Error::none);
                 REQUIRE_EQ(caller.acknowledge_key_material(
@@ -759,6 +768,17 @@ TEST(crypto_session_confirms_distinct_initial_bidirectional_data_keys)
                         Error::none);
                 }
                 REQUIRE_EQ(opened, clear);
+                if (mode == CryptoMode::aes_ctr) {
+                    // A byte-exact KMRSP can still be reflected in legacy CTR;
+                    // it must not make reflected DATA decrypt as peer data.
+                    REQUIRE_EQ(
+                        caller.acknowledge_key_material(caller_key, false),
+                        Error::none);
+                    REQUIRE_EQ(caller.decrypt(
+                                   selector, header.sequence, forward, opened),
+                        Error::none);
+                    REQUIRE(opened != clear);
+                }
                 // Equal plaintext and sequence must not expose a shared
                 // keystream in opposite directions of one connection.
                 REQUIRE(forward != reverse);
@@ -2832,6 +2852,8 @@ TEST(crypto_session_ignores_a_replayed_request_for_a_retired_key)
                             first_rotation_request.assign(
                                 request.begin(), request.end());
                         }
+                        REQUIRE_EQ(sender.accept_key_material(request, false),
+                            Error::invalid_key_material);
                         REQUIRE_EQ(receiver.accept_key_material(request, false),
                             Error::none);
                         REQUIRE_EQ(sender.acknowledge_key_material(
@@ -2877,6 +2899,11 @@ TEST(crypto_session_ignores_a_replayed_request_for_a_retired_key)
                     sequence = sequence.next();
                 }
                 REQUIRE(!first_rotation_request.empty());
+                // Both keys in this old two-key announcement have since been
+                // replaced locally, but must still not cross directions.
+                REQUIRE_EQ(
+                    sender.accept_key_material(first_rotation_request, false),
+                    Error::invalid_key_material);
 
                 // The replay is refused without touching the secured session ...
                 REQUIRE_EQ(
