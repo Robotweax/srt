@@ -881,19 +881,19 @@ SendDropResult SendBuffer::drop_messages_older_than(
     std::uint32_t last_message_number = first.header.message_number;
     while (result.packets < sequence_span_) {
         auto& slot = slots_[(head_ + result.packets) % capacity()];
-        if (!slot.occupied
-            || (slot.sent
-                && slot.first_send_microseconds > cutoff_microseconds)) {
+        if (!slot.occupied) {
             break;
         }
-        // An unsent packet is only removed as the tail of a message whose
-        // earlier packets were already sent and abandoned, so the receiver
-        // never gets a partial message after the DROPREQ.
+        // Once a message is abandoned, retire its complete tail, including
+        // fragments first sent later than the cutoff and unsent fragments.
+        // Only a different message gets its own age/first-send decision.
         const bool continues_dropped_message = result.packets != 0U
             && slot.header.message_number == last_message_number
             && (slot.header.boundary == MessageBoundary::subsequent
                 || slot.header.boundary == MessageBoundary::last);
-        if (!slot.sent && !continues_dropped_message) {
+        if (!continues_dropped_message
+            && (!slot.sent
+                || slot.first_send_microseconds > cutoff_microseconds)) {
             break;
         }
         last_message_number = slot.header.message_number;

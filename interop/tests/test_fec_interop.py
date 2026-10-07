@@ -165,7 +165,7 @@ class FecInteropUnitTests(unittest.TestCase):
             run_fec_interop.SOURCE_PACKET_SIZE,
         )
 
-    def test_encrypted_matrix_profile_spans_three_keyed_groups(
+    def test_encrypted_matrix_profile_spans_bounded_key_overruns(
         self,
     ) -> None:
         robotweax = Path("/robotweax")
@@ -182,16 +182,16 @@ class FecInteropUnitTests(unittest.TestCase):
         for scenario in scenarios:
             self.assertEqual(scenario.geometry, "encrypted-matrix")
             self.assertEqual(scenario.key_length, 32)
-            self.assertEqual(scenario.byte_count_multiplier, 3)
+            self.assertEqual(scenario.byte_count_multiplier, 5)
             self.assertEqual(scenario.minimum_key_transitions, 2)
-            self.assertEqual(scenario.expected_reconstructions, 9)
+            self.assertEqual(scenario.expected_reconstructions, 15)
             self.assertEqual(
                 scenario.fault_occurrences,
-                (1, 2, 12, 66, 67, 77, 131, 132, 142),
+                (1, 2, 12, 66, 67, 77, 131, 132, 142, 196, 197, 207, 261, 262, 272),
             )
             self.assertEqual(
                 scenario.expected_sequence_offsets,
-                (0, 1, 11, 65, 66, 76, 130, 131, 141),
+                (0, 1, 11, 65, 66, 76, 130, 131, 141, 195, 196, 206, 260, 261, 271),
             )
             self.assertEqual(
                 scenario.expected_control_packets(150), 45
@@ -284,7 +284,7 @@ class FecInteropUnitTests(unittest.TestCase):
                 f"encrypted-{geometry}-rendezvous",
             )
             self.assertEqual(profile.key_length, 32)
-            self.assertEqual(profile.byte_count_multiplier, 3)
+            self.assertEqual(profile.byte_count_multiplier, 5)
             self.assertEqual(profile.minimum_key_transitions, 2)
             burst = profile.name.endswith("-burst")
             if burst and geometry == "row":

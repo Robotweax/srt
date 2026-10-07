@@ -83,7 +83,10 @@ DROP_SOURCE_OCCURRENCE = 5
 SEQUENCE_MODULUS = 1 << 31
 SEQUENCE_MASK = SEQUENCE_MODULUS - 1
 PASSPHRASE_ENVIRONMENT = "SRT_INTEROP_PASSPHRASE"
-ENCRYPTED_FEC_GROUPS = 3
+# Each group contains 50 source packets. Five groups exceed two maximum
+# 2 * refresh (100-position) key lifetimes, even with delayed KMRSPs. Keep
+# the two-transition assertion: shortening it would stop testing key reuse.
+ENCRYPTED_FEC_GROUPS = 5
 ENCRYPTED_FEC_KEY_LENGTH = 32
 ENCRYPTED_FEC_KEY_REFRESH_RATE = 50
 ENCRYPTED_FEC_KEY_PREANNOUNCEMENT = 20

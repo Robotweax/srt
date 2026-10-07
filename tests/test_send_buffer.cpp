@@ -972,3 +972,28 @@ TEST(send_buffer_positions_keep_complete_cycles_during_empty_resynchronization)
     REQUIRE_EQ(buffer.peek_new_packet()->sequence_position,
         std::uint64_t {SequenceNumber::modulus});
 }
+
+TEST(send_buffer_late_drop_retires_later_sent_fragments_of_the_same_message)
+{
+    for (const auto sent : {2U, 3U}) {
+        SendBuffer buffer {SequenceNumber {SequenceNumber::mask - 1U}, 8, 1};
+        const std::array<std::byte, 3> message {};
+        const std::array<std::byte, 1> following {std::byte {42}};
+        REQUIRE_EQ(buffer.enqueue_message(
+                       message, 1, PacketTimestamp {1}, 99, true, 1),
+            Error::none);
+        REQUIRE_EQ(buffer.enqueue_message(
+                       following, 2, PacketTimestamp {2}, 99, true, 1),
+            Error::none);
+        for (unsigned i = 0; i < sent; ++i)
+            REQUIRE(buffer.next_packet(false, true, 10 + i * 10).has_value());
+        const auto dropped = buffer.drop_messages_older_than(10);
+        REQUIRE_EQ(dropped.packets, 3U);
+        REQUIRE_EQ(dropped.sequences.last, SequenceNumber {0});
+        REQUIRE_EQ(buffer.size(), 1U);
+        const auto next = buffer.next_packet(false, true, 40);
+        REQUIRE(next.has_value());
+        REQUIRE_EQ(next->header.message_number, 2U);
+        REQUIRE_EQ(next->payload[0], std::byte {42});
+    }
+}

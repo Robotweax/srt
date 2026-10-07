@@ -11275,7 +11275,13 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
     DelayedKeyResponseResult result;
     std::array<std::byte, message_size> message {};
     std::array<std::byte, 1'500> received {};
-    constexpr std::uint64_t steps_per_millisecond = 4;
+    // Windows restarts a late pacing slot at the actual send time, while
+    // Linux/macOS can retain schedule credit. A 250 us simulation tick caps
+    // the former at 4,000 packets/s, below the 6,000 packets/s offered load.
+    // At 25 us both policies can service the ~140 us slots without backlog
+    // unrelated to key rotation. Keep identical assertions on every platform.
+    constexpr std::uint64_t tick_microseconds = 25;
+    constexpr std::uint64_t steps_per_millisecond = 1000 / tick_microseconds;
     for (std::uint64_t step = 0; step < 2'000U * steps_per_millisecond;
         ++step) {
         if (step % steps_per_millisecond == 0U) {
@@ -11334,8 +11340,8 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
         REQUIRE(!sender.broken());
         REQUIRE(!receiver.broken());
         REQUIRE(sender_crypto->packets_on_active_key() < 400U);
-        sender_now += 250;
-        receiver_now += 250;
+        sender_now += tick_microseconds;
+        receiver_now += tick_microseconds;
     }
     const auto totals = sender.statistics(false, true).total;
     result.overrun_positions = totals.sender_key_refresh_overrun_positions;
