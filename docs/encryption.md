@@ -271,6 +271,15 @@ announcement. With AES-CTR it still delivers plaintext DATA from a peer
 without a passphrase. With AES-GCM such unauthenticated DATA is counted as
 undecryptable and never delivered.
 
+Consequently, a passphrase alone with explicitly disabled enforced encryption
+is not a requirement to receive only encrypted CTR DATA. Applications requiring
+that policy must keep `SRTO_ENFORCEDENCRYPTION=true` (the default). Optional
+CTR clear receive is intentional compatibility behavior, not an authenticated
+fallback. Once a receive key is secured, or encryption is enforced, clear
+source DATA is rejected before both FEC and reliability admission. Select GCM
+for DATA integrity and the explicit session-authentication extension for
+cross-session key-control and parity replay protection.
+
 Repeated runtime KMREQs after an optional key failure can receive the current
 failure status at most once per 100 ms without disconnecting the peer or
 resetting the local sending key. Such failures do not refresh peer liveness.
@@ -570,3 +579,8 @@ network and workload before production use.
 
 See [Optional session authentication](session-authentication.md) for the default-off
 `SRTO_ROBOTWEAX_SESSIONAUTH` option and its private wire contract.
+
+Version 2 of [optional session authentication](session-authentication.md)
+also authenticates FEC parity before decoder admission. Both peers must enable
+it explicitly and support version 2. With it disabled, the standard parity
+format and its documented residual authentication limits are unchanged.

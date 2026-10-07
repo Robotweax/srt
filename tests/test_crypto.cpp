@@ -3604,3 +3604,75 @@ TEST(session_authentication_rejects_key_replay_beyond_bounded_crypto_history)
         }
     }
 }
+
+TEST(session_authentication_parity_binds_header_session_role_and_replay_window)
+{
+    SessionAuthentication caller(default_crypto_provider()),
+        listener(default_crypto_provider()),
+        foreign_caller(default_crypto_provider()),
+        foreign_listener(default_crypto_provider());
+    establish_session_auth_pair(caller, listener);
+    establish_session_auth_pair(foreign_caller, foreign_listener);
+    DataHeader header;
+    header.sequence = SequenceNumber {10};
+    header.destination_socket_id = 102;
+    const std::array parity {std::byte {1}, std::byte {2}, std::byte {3}};
+    std::array<std::byte, 128> first {}, second {}, unseen {}, wire {};
+    std::size_t size = 0;
+    REQUIRE_EQ(caller.seal_fec(header, parity, first, size), Error::none);
+    REQUIRE_EQ(size, parity.size() + authenticated_fec_overhead);
+    const auto first_view = std::span {first}.first(size);
+    std::span<const std::byte> opened;
+    REQUIRE(!foreign_listener.open_fec(header, first_view, opened));
+    REQUIRE(!caller.open_fec(header, first_view, opened));
+    REQUIRE(!listener.open(false, first_view, opened));
+    for (unsigned field = 0; field < 6; ++field) {
+        auto changed = header;
+        switch (field) {
+        case 0:
+            changed.sequence = SequenceNumber {11};
+            break;
+        case 1:
+            changed.timestamp = PacketTimestamp {1};
+            break;
+        case 2:
+            changed.destination_socket_id = 103;
+            break;
+        case 3:
+            changed.encryption_key = EncryptionKey::odd;
+            break;
+        case 4:
+            changed.retransmitted = true;
+            break;
+        case 5:
+            changed.message_number = 1;
+            break;
+        }
+        REQUIRE(!listener.open_fec(changed, first_view, opened));
+    }
+    wire = first;
+    wire[0] =
+        std::byte {0x7f}; // A forged future counter cannot evict valid IDs.
+    REQUIRE(!listener.open_fec(header, std::span {wire}.first(size), opened));
+    wire = first;
+    wire[8] ^= std::byte {1};
+    REQUIRE(!listener.open_fec(header, std::span {wire}.first(size), opened));
+    REQUIRE_EQ(caller.seal_fec(header, parity, second, size), Error::none);
+    REQUIRE(listener.open_fec(header, std::span {second}.first(size), opened));
+    REQUIRE(
+        listener.open_fec(header, first_view, opened)); // Reordering allowed.
+    REQUIRE(
+        std::equal(opened.begin(), opened.end(), parity.begin(), parity.end()));
+    REQUIRE(!listener.open_fec(header, first_view, opened));
+    REQUIRE_EQ(caller.seal_fec(header, parity, unseen, size), Error::none);
+    for (unsigned i = 0; i < 1024; ++i) {
+        REQUIRE_EQ(caller.seal_fec(header, parity, wire, size), Error::none);
+        REQUIRE(
+            listener.open_fec(header, std::span {wire}.first(size), opened));
+        REQUIRE(!listener.open_fec(header, first_view, opened));
+    }
+    // A valid but never-seen datagram older than the window also fails closed.
+    REQUIRE(!listener.open_fec(header, std::span {unseen}.first(size), opened));
+    REQUIRE_EQ(listener.seal_fec(header, parity, wire, size), Error::none);
+    REQUIRE(caller.open_fec(header, std::span {wire}.first(size), opened));
+}

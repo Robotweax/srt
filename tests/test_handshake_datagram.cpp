@@ -752,9 +752,10 @@ TEST(
     REQUIRE(decoded.message.session_authentication.matches(
         action.session_authentication));
     constexpr auto offset = packet_header_size + handshake_size;
-    bytes[offset + extension_header_size + 3] = std::byte {2};
-    REQUIRE(!decode_handshake_datagram(wire));
     bytes[offset + extension_header_size + 3] = std::byte {1};
+    REQUIRE(!decode_handshake_datagram(wire));
+    bytes[offset + extension_header_size + 3] =
+        std::byte {session_authentication_version};
     REQUIRE(!decode_handshake_datagram(wire.first(wire.size() - 4)));
     std::copy(wire.begin() + offset, wire.end(),
         bytes.begin() + encoded.bytes_written);
