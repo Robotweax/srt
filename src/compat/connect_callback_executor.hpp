@@ -6,9 +6,9 @@
 
 namespace robotweax::srt::compat {
 
-// A direct handoff to an idle worker, or a new worker if all are occupied.
-// No callback waits behind another callback: cross-socket close may wait for
-// that callback to return. Only idle retention is bounded.
+// A bounded, direct-handoff pool. Admission fails when every worker is busy;
+// callbacks never queue behind other callbacks. Workers remain until shutdown
+// so application TLS destruction cannot escape the live-thread bound.
 class ConnectCallbackExecutor {
 public:
     struct Task {
@@ -25,7 +25,7 @@ public:
         bool stopping = false;
     };
 
-    explicit ConnectCallbackExecutor(std::size_t maximum_idle);
+    explicit ConnectCallbackExecutor(std::size_t maximum_workers);
     ~ConnectCallbackExecutor();
     ConnectCallbackExecutor(const ConnectCallbackExecutor&) = delete;
     ConnectCallbackExecutor& operator=(const ConnectCallbackExecutor&) = delete;

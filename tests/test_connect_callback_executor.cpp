@@ -102,7 +102,7 @@ TEST(connect_callback_executor_reuses_idle_worker_and_resets_error)
 
 TEST(connect_callback_executor_saturated_workers_do_not_queue_dependencies)
 {
-    ConnectCallbackExecutor executor(1);
+    ConnectCallbackExecutor executor(10);
     std::vector<std::shared_ptr<Gate>> gates;
     bool started = true;
     for (unsigned i = 0; i != 8; ++i) {
@@ -128,9 +128,9 @@ TEST(connect_callback_executor_saturated_workers_do_not_queue_dependencies)
     REQUIRE_EQ(executor.snapshot().completed, 10U);
 }
 
-TEST(connect_callback_executor_idle_retention_and_external_stop)
+TEST(connect_callback_executor_bounded_retention_and_external_stop)
 {
-    ConnectCallbackExecutor executor(2);
+    ConnectCallbackExecutor executor(8);
     std::vector<std::shared_ptr<Gate>> gates;
     bool started = true;
     for (unsigned i = 0; i != 8; ++i) {
@@ -142,8 +142,8 @@ TEST(connect_callback_executor_idle_retention_and_external_stop)
         release(gate);
     REQUIRE(started);
     REQUIRE(settled(executor, 8));
-    REQUIRE_EQ(executor.snapshot().idle, 2U);
-    REQUIRE_EQ(executor.snapshot().workers, 2U);
+    REQUIRE_EQ(executor.snapshot().idle, 8U);
+    REQUIRE_EQ(executor.snapshot().workers, 8U);
     executor.stop();
     REQUIRE_EQ(executor.snapshot().idle, 0U);
     REQUIRE_EQ(executor.snapshot().workers, 0U);
@@ -182,4 +182,31 @@ TEST(connect_callback_executor_retirement_preserves_accepted_task)
     REQUIRE_EQ(executor.snapshot().completed, 1U);
     REQUIRE_EQ(executor.snapshot().workers, 0U);
     REQUIRE_EQ(executor.snapshot().idle, 0U);
+}
+
+TEST(connect_callback_executor_rejects_overload_without_queueing)
+{
+    ConnectCallbackExecutor executor(2);
+    auto first = std::make_shared<Gate>();
+    auto second = std::make_shared<Gate>();
+    const bool a = executor.submit({block, first, 0});
+    const bool b = executor.submit({block, second, 0});
+    const bool started = a && b && entered(first) && entered(second);
+    auto excess = std::make_shared<Gate>();
+    const bool rejected = !executor.submit({block, excess, 0});
+    release(first);
+    release(second);
+    release(excess);
+    const bool finished = settled(executor, 2);
+    auto next = std::make_shared<Gate>();
+    const bool accepted = executor.submit({block, next, 0});
+    const bool ran = accepted && entered(next);
+    release(next);
+    executor.stop();
+    REQUIRE(started);
+    REQUIRE(rejected);
+    REQUIRE(finished);
+    REQUIRE(ran);
+    REQUIRE_EQ(executor.snapshot().created, 2U);
+    REQUIRE_EQ(executor.snapshot().completed, 3U);
 }

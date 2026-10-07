@@ -38,23 +38,23 @@ core.
 
 ## Completion callback workers
 
-Outgoing asynchronous caller and rendezvous completion callbacks can reuse a
-process-wide idle worker. At most four idle workers are retained. If all workers
-are occupied, another callback gets a new worker; callbacks are not queued behind
-occupied workers. This preserves progress when a callback closes another socket
-and waits for that socket's completion callback. Slow application callbacks can
-therefore still increase the number of active threads; they must return promptly.
+Outgoing asynchronous caller and rendezvous completion callbacks share a bounded
+pool of at most 64 workers per runtime generation. A connection with a callback
+reserves its worker before the asynchronous handshake is admitted. If all slots
+are occupied by pending handshakes or running callbacks, `srt_connect` returns
+`SRT_ERROR` with `SRT_ENOBUF`; no completion callback is promised for that rejected
+start. Close the failed socket and retry later with a new socket.
 
-Do not rely on a distinct thread identity for each invocation. The SRT
-thread-local last-error record is cleared before a reused worker invokes a
-callback. An external close still waits for its socket's callback to return;
-self-close and final cleanup from a callback remain supported. Final cleanup
-retires the worker cache, and a later startup obtains a fresh generation.
-The old runtime services are retired before cached workers are joined outside
-the lifecycle lock. Application thread-local destructors can therefore enter a
-new startup/cleanup scope without waiting on the thread that is joining them.
+Accepted callbacks never queue behind other callbacks and never fall back to
+running on a protocol shard or an extra unbounded thread. This preserves progress
+when a callback closes another admitted socket and waits for its callback. A
+callback that starts additional connections must handle admission failure.
+Connections without completion callbacks do not reserve a worker.
 
-Worker reuse does not change the existing resource-exhaustion fallback: if both
-cache submission and the ordinary callback-thread creation fail, the completion
-callback can still run inline. Applications must not depend on an exact thread
-identity or use indefinitely blocking callbacks.
+Workers are retained until final cleanup, including idle workers, so application
+thread-local destruction cannot bypass the thread bound. Do not rely on a distinct
+thread identity for each invocation. The SRT thread-local last-error record is
+cleared before reuse. An external close still waits for its callback; self-close
+and final cleanup from a callback remain supported. Old runtime services are
+retired before workers are joined outside the lifecycle lock, so application
+thread-local destructors can enter a fresh startup/cleanup scope.

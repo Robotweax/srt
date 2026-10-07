@@ -22,10 +22,10 @@ struct ConnectCallbackExecutor::Worker {
 
 struct ConnectCallbackExecutor::State {
     explicit State(std::size_t limit)
-        : maximum_idle(limit)
+        : maximum_workers(limit)
     {
     }
-    const std::size_t maximum_idle;
+    const std::size_t maximum_workers;
     std::mutex mutex;
     std::list<std::shared_ptr<Worker>> workers;
     std::size_t idle = 0;
@@ -35,8 +35,8 @@ struct ConnectCallbackExecutor::State {
     bool stopping = false;
 };
 
-ConnectCallbackExecutor::ConnectCallbackExecutor(std::size_t maximum_idle)
-    : state_(std::make_shared<State>(maximum_idle))
+ConnectCallbackExecutor::ConnectCallbackExecutor(std::size_t maximum_workers)
+    : state_(std::make_shared<State>(maximum_workers))
 {
 }
 
@@ -63,6 +63,8 @@ bool ConnectCallbackExecutor::submit(Task task) noexcept
         worker->ready.notify_one();
         return true;
     }
+    if (state->workers.size() >= state->maximum_workers)
+        return false;
     try {
         auto worker = std::make_shared<Worker>();
         worker->task = task;
@@ -97,7 +99,7 @@ void ConnectCallbackExecutor::run(
         task.context.reset();
         lock.lock();
         ++state->completed;
-        if (state->stopping || state->idle == state->maximum_idle)
+        if (state->stopping)
             break;
         worker->idle = true;
         ++state->idle;
@@ -173,7 +175,7 @@ public:
         std::lock_guard lock(mutex_);
         if (!executor_) {
             try {
-                executor_ = std::make_shared<ConnectCallbackExecutor>(4);
+                executor_ = std::make_shared<ConnectCallbackExecutor>(64);
             } catch (...) {
                 return {};
             }
