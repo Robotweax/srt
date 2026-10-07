@@ -3960,6 +3960,12 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     if (pending_datagram_size_ != 0U) {
         return pending_send_poll_result(now);
     }
+    const auto pending_naks = session_.service_pending_naks(now);
+    if (pending_naks.sender_loss_packets != 0U)
+        statistics_.note_sender_loss(
+            pending_naks.sender_loss_packets, pending_naks.sender_loss_bytes);
+    if (!send_actions(pending_naks.actions, now))
+        return {};
     if (!service_key_rotation(now)
         || !send_actions(session_.poll_timers(now), now)) {
         return {};

@@ -60,10 +60,10 @@ HOOKS = {
          '            decoded.acknowledgement.round_trip_time_variance_microseconds,\n'
          '            decoded.acknowledgement.available_receive_buffer_packets);\n'
          "        return result;\n    }\n    case ControlType::negative_acknowledgement: {\n"),
-        ("            std::size_t newly_queued_packets = 0;\n",
-         '            RWX_TRACE("nak", this, loss.range.first.value(), loss.range.last.value(),\n'
-         '                send_buffer_.first_sequence().value(), now_microseconds);\n'
-         "            std::size_t newly_queued_packets = 0;\n"),
+        ("        std::size_t packets = 0, bytes = 0;\n",
+         '        RWX_TRACE("nak", this, begin.value(), end.value(),\n'
+         '            send_buffer_.first_sequence().value(), now_microseconds);\n'
+         "        std::size_t packets = 0, bytes = 0;\n"),
         ("    if (!sender_retransmission_timer_.poll(\n",
          '    const auto diagnostic_deadline = sender_retransmission_timer_.next_deadline(\n'
          '        rtt_.smoothed_microseconds(), rtt_.variation_microseconds());\n'
@@ -108,6 +108,24 @@ HOOKS = {
 }
 
 
+# Keep the pinned historical A/B exports reproducible as well as the bounded
+# service path. Select explicitly by its unique source anchor, never silently.
+LEGACY_NAK_HOOK = (
+    "            std::size_t newly_queued_packets = 0;\n",
+    '            RWX_TRACE("nak", this, loss.range.first.value(), loss.range.last.value(),\n'
+    '                send_buffer_.first_sequence().value(), now_microseconds);\n'
+    "            std::size_t newly_queued_packets = 0;\n",
+)
+
+
+def hooks_for_source(relative, text):
+    hooks = HOOKS[relative]
+    if relative == "src/session.cpp" and "service_pending_naks(" not in text:
+        return [LEGACY_NAK_HOOK if "std::size_t packets = 0, bytes = 0;" in before
+                else (before, after) for before, after in hooks]
+    return hooks
+
+
 def instrument(text: str, hooks: list[tuple[str, str]]) -> str:
     if "RWX_TRACE" in text:
         raise ValueError("source already instrumented")
@@ -136,7 +154,7 @@ def export_overlay(source: Path, revision: str, destination: Path) -> dict:
         path = destination / relative
         before = sc.file_sha256(path)
         prefix = "../" if "/compat/" in relative else ""
-        text = f'#include "{prefix}diagnostic_transport_trace.hpp"\n' + instrument(path.read_text(), hooks)
+        text = f'#include "{prefix}diagnostic_transport_trace.hpp"\n' + instrument(path.read_text(), hooks_for_source(relative, path.read_text()))
         path.write_text(text)
         changes[relative] = {"original_sha256": before, "patched_sha256": sc.file_sha256(path)}
     header = ROOT / "benchmarks/diagnostics/transport_trace.hpp"

@@ -391,6 +391,10 @@ public:
                 tsbpd_clock_->delivery_time(timestamp)}
             : std::nullopt;
     }
+    // Expand at most 256 pending NAK positions per service turn. Repeated
+    // ranges merge without resetting the round-robin expansion cursor.
+    [[nodiscard]] ReliabilityProcessResult service_pending_naks(
+        std::uint64_t now_microseconds) noexcept;
     [[nodiscard]] ReliabilityActions poll_timers(
         std::uint64_t now_microseconds) noexcept;
     // Emit the pending full acknowledgement immediately, out of the 10 ms
@@ -408,7 +412,8 @@ public:
     [[nodiscard]] std::uint64_t next_control_deadline(
         std::uint64_t now) const noexcept
     {
-        return timer_scheduler_.next_deadline(now);
+        return pending_nak_count_ != 0U ? now
+                                        : timer_scheduler_.next_deadline(now);
     }
     [[nodiscard]] bool poll_sender_retransmission_timeout(
         std::uint64_t now_microseconds) noexcept;
@@ -540,6 +545,12 @@ private:
     RttEstimator rtt_;
     ControlTimerScheduler timer_scheduler_;
     SenderRetransmissionTimer sender_retransmission_timer_;
+    static constexpr std::size_t pending_nak_capacity =
+        maximum_loss_words_per_packet * 2U;
+    std::array<SequenceRange, pending_nak_capacity + 1U> pending_naks_ {};
+    std::size_t pending_nak_count_ = 0;
+    SequenceNumber pending_nak_cursor_ {};
+
     ArrivalRateEstimator arrival_rate_estimator_;
     std::optional<TsbpdClock> tsbpd_clock_;
     std::optional<LiveRateController> live_rate_controller_;

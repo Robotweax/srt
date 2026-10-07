@@ -997,3 +997,47 @@ TEST(send_buffer_late_drop_retires_later_sent_fragments_of_the_same_message)
         REQUIRE_EQ(next->payload[0], std::byte {42});
     }
 }
+
+TEST(send_buffer_validates_dropped_unsent_tail_across_ring_and_sequence_wrap)
+{
+    const SequenceNumber initial {SequenceNumber::mask - 7U};
+    SendBuffer buffer {initial, 8, 1};
+    const std::array<std::byte, 6> prefix {};
+    REQUIRE_EQ(
+        buffer.enqueue_message(prefix, 1, PacketTimestamp {0}, 9), Error::none);
+    for (unsigned i = 0; i < 6; ++i)
+        REQUIRE(buffer.next_packet());
+    REQUIRE_EQ(buffer.acknowledge_before(initial.advanced(6)), Error::none);
+    const auto first = buffer.first_sequence();
+    const std::array<std::byte, 4> expired {};
+    const std::array<std::byte, 2> waiting {};
+    REQUIRE_EQ(buffer.enqueue_message(
+                   expired, 2, PacketTimestamp {0}, 9, true, 1, 100),
+        Error::none);
+    REQUIRE_EQ(buffer.enqueue_message(waiting, 3, PacketTimestamp {0}, 9),
+        Error::none);
+    REQUIRE_EQ(buffer.enqueue_message(
+                   waiting, 4, PacketTimestamp {0}, 9, true, 1, 100),
+        Error::none);
+    REQUIRE_EQ(buffer.drop_expired_message(101).packets, 4U);
+    REQUIRE_EQ(buffer.drop_expired_message(101).packets, 2U);
+    REQUIRE_EQ(buffer.validate_retransmission_range({first, first.advanced(3)}),
+        Error::none);
+    REQUIRE_EQ(buffer.validate_retransmission_range(
+                   {first.advanced(6), first.advanced(7)}),
+        Error::none);
+    REQUIRE_EQ(buffer.validate_retransmission_range({first, first.advanced(7)}),
+        Error::invalid_control_payload);
+    REQUIRE_EQ(buffer.acknowledge_before(first.advanced(2)), Error::none);
+    REQUIRE_EQ(
+        buffer.request_retransmission({first.advanced(3), first.advanced(3)}),
+        Error::none);
+    const auto drop = buffer.next_pending_drop_request();
+    REQUIRE(drop);
+    REQUIRE_EQ(drop->sequences.first, first.advanced(2));
+    REQUIRE(buffer.next_packet());
+    REQUIRE(buffer.next_packet());
+    REQUIRE_EQ(buffer.validate_retransmission_range(
+                   {first.advanced(2), first.advanced(7)}),
+        Error::none);
+}

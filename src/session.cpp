@@ -1070,35 +1070,63 @@ ReliabilityProcessResult ReliabilitySession::receive(
             if (error != Error::none)
                 return {.error = error};
         }
+        // Preview the union transactionally. Storage is bounded independently
+        // of the peer's expanded sequence count. Old ACKed work is discarded.
+        std::array<SequenceRange,
+            pending_nak_capacity + maximum_loss_words_per_packet + 1U>
+            merged {};
+        std::size_t merged_count = 0;
+        for (std::size_t i = 0; i < pending_nak_count_; ++i) {
+            auto range = pending_naks_[i];
+            if (range.last.distance_from(first) < 0)
+                continue;
+            if (range.first.distance_from(first) < 0)
+                range.first = first;
+            merged[merged_count++] = range;
+        }
+        for (const auto range : current)
+            merged[merged_count++] = range;
+        std::sort(merged.begin(), merged.begin() + merged_count,
+            [first](const auto& a, const auto& b) {
+                return a.first.distance_from(first)
+                    < b.first.distance_from(first);
+            });
+        std::size_t kept = 0;
+        for (std::size_t i = 0; i < merged_count; ++i) {
+            const auto range = merged[i];
+            if (kept != 0U
+                && range.first.distance_from(first)
+                    <= merged[kept - 1U].last.distance_from(first) + 1) {
+                if (range.last.distance_from(first)
+                    > merged[kept - 1U].last.distance_from(first))
+                    merged[kept - 1U].last = range.last;
+            } else
+                merged[kept++] = range;
+        }
+        if (kept > pending_nak_capacity)
+            return {.error = Error::buffer_too_small};
         if (!send_buffer_.queue_range_drop_requests(
                 std::span {stale_ranges}.first(stale_range_count))) {
             return {.error = Error::buffer_too_small};
         }
+        if (pending_nak_count_ == 0U)
+            pending_nak_cursor_ = first;
+        std::copy_n(merged.begin(), kept, pending_naks_.begin());
+        pending_nak_count_ = kept;
 
         std::size_t lost_packets = 0;
         std::optional<SequenceNumber> first_lost;
         for (const auto range : current) {
-            std::size_t newly_queued_packets = 0;
-            std::size_t newly_queued_bytes = 0;
-            const Error error = send_buffer_.request_retransmission(range,
-                &newly_queued_packets, &newly_queued_bytes, now_microseconds,
-                efficient_retransmission_
-                        && (peer_periodic_nak_
-                            || live_options_.peer_periodic_nak
-                            || live_options_.periodic_nak)
-                    ? rtt_.smoothed_microseconds()
-                    : 0U);
-            if (error != Error::none)
-                return {.error = error};
-            result.sender_loss_packets += newly_queued_packets;
-            result.sender_loss_bytes += newly_queued_bytes;
             if (!first_lost.has_value())
                 first_lost = range.first;
             lost_packets +=
                 static_cast<std::size_t>(range.last.distance_from(range.first))
                 + 1U;
         }
-        append_pending_drop_requests(result.actions);
+        auto expanded = service_pending_naks(now_microseconds);
+        result.sender_loss_packets = expanded.sender_loss_packets;
+        result.sender_loss_bytes = expanded.sender_loss_bytes;
+        result.actions = expanded.actions;
         if (file_rate_controller_.has_value()
             && first_lost.has_value()) {
             file_rate_controller_->on_loss(
@@ -1875,6 +1903,78 @@ ReliabilitySession::report_filter_losses(
     }
     append_pending_loss_report(result.actions, true, now_microseconds);
     update_loss_timer(now_microseconds);
+    return result;
+}
+
+ReliabilityProcessResult ReliabilitySession::service_pending_naks(
+    std::uint64_t now_microseconds) noexcept
+{
+    ReliabilityProcessResult result;
+    const auto floor = send_buffer_.first_sequence();
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < pending_nak_count_; ++i) {
+        auto range = pending_naks_[i];
+        if (range.last.distance_from(floor) < 0)
+            continue;
+        if (range.first.distance_from(floor) < 0)
+            range.first = floor;
+        pending_naks_[kept++] = range;
+    }
+    pending_nak_count_ = kept;
+    std::size_t budget = 256;
+    while (budget != 0U && pending_nak_count_ != 0U) {
+        std::size_t index = 0;
+        if (pending_nak_cursor_.distance_from(floor) >= 0) {
+            while (index < pending_nak_count_
+                && pending_naks_[index].last.distance_from(floor)
+                    < pending_nak_cursor_.distance_from(floor))
+                ++index;
+            if (index == pending_nak_count_)
+                index = 0;
+        }
+        auto range = pending_naks_[index];
+        auto begin = range.first;
+        if (pending_nak_cursor_.distance_from(range.first) > 0
+            && range.last.distance_from(pending_nak_cursor_) >= 0)
+            begin = pending_nak_cursor_;
+        const auto count = std::min(budget,
+            static_cast<std::size_t>(range.last.distance_from(begin)) + 1U);
+        const auto end = begin.advanced(static_cast<std::uint32_t>(count - 1U));
+        std::size_t packets = 0, bytes = 0;
+        const auto error = send_buffer_.request_retransmission({begin, end},
+            &packets, &bytes, now_microseconds,
+            efficient_retransmission_
+                    && (peer_periodic_nak_ || live_options_.peer_periodic_nak
+                        || live_options_.periodic_nak)
+                ? rtt_.smoothed_microseconds()
+                : 0U);
+        if (error != Error::none) {
+            result.error = error;
+            return result;
+        }
+        result.sender_loss_packets += packets;
+        result.sender_loss_bytes += bytes;
+        budget -= count;
+        pending_nak_cursor_ = end.next();
+        // Keep both unprocessed pieces when a new report extends a partially
+        // serviced range backwards. This must not starve its remaining tail.
+        if (begin != range.first) {
+            pending_naks_[index].last = begin.advanced(SequenceNumber::mask);
+            if (end != range.last) {
+                for (auto i = pending_nak_count_; i > index + 1U; --i)
+                    pending_naks_[i] = pending_naks_[i - 1U];
+                pending_naks_[index + 1U] = {end.next(), range.last};
+                ++pending_nak_count_;
+            }
+        } else if (end != range.last) {
+            pending_naks_[index].first = end.next();
+        } else {
+            for (auto i = index + 1U; i < pending_nak_count_; ++i)
+                pending_naks_[i - 1U] = pending_naks_[i];
+            --pending_nak_count_;
+        }
+    }
+    append_pending_drop_requests(result.actions);
     return result;
 }
 
