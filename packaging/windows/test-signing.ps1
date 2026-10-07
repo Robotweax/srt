@@ -60,6 +60,16 @@ try {
     Copy-Item $Unsigned "$Pair/robotweax-srt-0.0.0-windows-sdk-openssl.exe"
     Expect-Rejection { Get-SdkInstallerPair $Pair '0.0.0' } 'exactly two'
     Copy-Item $Unsigned "$Pair/robotweax-srt-0.0.0-windows-sdk-bcrypt.exe"
+    $Revision = 'a' * 40
+    $Provenance = Get-SdkInstallerProvenance $Pair '0.0.0' $Revision '123'
+    $Json = $Provenance | ConvertTo-Json -Compress -Depth 5
+    Assert-SdkInstallerProvenance $Pair '0.0.0' $Revision '123' $Json
+    Expect-Rejection { Assert-SdkInstallerProvenance $Pair '0.0.0' ('b' * 40) '123' $Json } 'identity mismatch'
+    Expect-Rejection { Assert-SdkInstallerProvenance $Pair '0.0.0' $Revision '124' $Json } 'identity mismatch'
+    $Provenance.files[0].sha256 = '0' * 64
+    $Forged = $Provenance | ConvertTo-Json -Compress -Depth 5
+    Expect-Rejection { Assert-SdkInstallerProvenance $Pair '0.0.0' $Revision '123' $Forged } 'bytes mismatch'
+
     $Files = @(Get-SdkInstallerPair $Pair '0.0.0')
     if ($Files.Count -ne 2) { throw 'Valid installer pair rejected' }
     $Before = @(Get-SdkChecksumLines $Files)
@@ -79,6 +89,7 @@ try {
     } finally { Pop-Location }
     Assert-SdkChecksumManifest $Manifest $Before
     Copy-Item $Tampered $Files[1].FullName -Force
+    Expect-Rejection { Assert-SdkInstallerProvenance $Pair '0.0.0' $Revision '123' $Json } 'bytes mismatch'
     $After = @(Get-SdkChecksumLines $Files)
     if ($Before[1] -ceq $After[1]) { throw 'Changed installer bytes were not detected' }
     Expect-Rejection { Assert-SdkChecksumManifest $Manifest $After } 'manifest mismatch'

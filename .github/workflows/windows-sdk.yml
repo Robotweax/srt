@@ -21,7 +21,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Validate release tag
@@ -55,10 +55,10 @@ jobs:
         platform: [Win32, x64, Arm64]
         configuration: [Debug, Release]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: matrix.backend == 'openssl'
         with:
           repository: openssl/openssl
@@ -78,7 +78,7 @@ jobs:
           $pwsh = Join-Path $PSHOME 'pwsh.exe'
           & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" $arch && `"$pwsh`" -NoProfile -File `"$script`" -Platform $env:SDK_PLATFORM -Configuration $env:SDK_CONFIGURATION -CryptoBackend $env:SDK_CRYPTO_BACKEND"
           if ($LASTEXITCODE -ne 0) { throw 'SDK build failed' }
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sdk-${{ matrix.backend }}-${{ matrix.configuration }}-${{ matrix.platform }}
           path: output/sdk-${{ matrix.configuration }}-${{ matrix.platform }}/
@@ -95,10 +95,10 @@ jobs:
     env:
       SDK_BACKEND: ${{ matrix.backend }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: sdk-${{ matrix.backend }}-*
           path: variants
@@ -141,21 +141,23 @@ jobs:
           if (!(Test-Path "$other/include/srt/srt.h")) { throw 'Reinstalled headers missing' }
           $process = Start-Process -Wait -PassThru "$other/unins000.exe" -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
           if ($process.ExitCode -ne 0) { throw 'Final cleanup failed' }
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: windows-sdk-installer-${{ matrix.backend }}
           path: packaging/windows/Output/*.exe
           if-no-files-found: error
           retention-days: 7
   coexistence:
-    needs: installer
+    needs: [validate, installer]
+    outputs:
+      installer-provenance: ${{ steps.provenance.outputs.json }}
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: windows-sdk-installer-*
           path: installers
@@ -163,6 +165,15 @@ jobs:
       - name: Verify side-by-side installation and independent removal
         shell: pwsh
         run: ./packaging/windows/test-installers.ps1 -Installers installers
+      - name: Record tested unsigned installer provenance
+        id: provenance
+        shell: pwsh
+        env:
+          SDK_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          . ./packaging/windows/signing.ps1
+          $record = Get-SdkInstallerProvenance installers $env:SDK_VERSION $env:GITHUB_SHA $env:GITHUB_RUN_ID
+          "json=$($record | ConvertTo-Json -Compress -Depth 5)" >> $env:GITHUB_OUTPUT
   sign:
     if: >-
       (github.event_name == 'push' && github.ref_type == 'tag') ||
@@ -179,15 +190,16 @@ jobs:
       id-token: write
     env:
       SDK_VERSION: ${{ needs.validate.outputs.version }}
+      INSTALLER_PROVENANCE: ${{ needs.coexistence.outputs.installer-provenance }}
       SIGNING_ACCOUNT_NAME: ${{ vars.SIGNING_ACCOUNT_NAME }}
       SIGNING_CERTIFICATE_PROFILE: ${{ vars.SIGNING_CERTIFICATE_PROFILE }}
       SIGNING_ENDPOINT: ${{ vars.SIGNING_ENDPOINT }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: windows-sdk-installer-*
           path: installers
@@ -209,6 +221,7 @@ jobs:
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
           if ($LASTEXITCODE -ne 0) { throw 'Signing requires a commit on main history' }
           . ./packaging/windows/signing.ps1
+          Assert-SdkInstallerProvenance installers $env:SDK_VERSION $env:GITHUB_SHA $env:GITHUB_RUN_ID $env:INSTALLER_PROVENANCE
           foreach ($file in @(Get-SdkInstallerPair installers $env:SDK_VERSION)) {
             if ([string](Get-AuthenticodeSignature -LiteralPath $file.FullName).Status -cne 'NotSigned') {
               throw 'Expected an unsigned installer candidate before signing'
@@ -252,7 +265,7 @@ jobs:
       - name: Verify signed bytes remained unchanged after installation tests
         shell: pwsh
         run: ./packaging/windows/verify-signed-installers.ps1 -Installers installers -Version $env:SDK_VERSION -Publisher 'Robotweax GmbH' -RequireManifest
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: windows-sdk-signed-installers
           path: |
@@ -268,10 +281,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: windows-sdk-signed-installers
           path: installers
