@@ -5480,8 +5480,8 @@ TEST(session_normalizes_duplicate_overlapping_nak_ranges_across_rollover)
                 REQUIRE(sender.next_data_packet().has_value());
             std::array<SequenceRange, maximum_loss_ranges_per_report> ranges {};
             for (std::size_t i = 0; i < ranges.size(); ++i)
-                ranges[i] = {
-                    initial.advanced(i % 3U), initial.advanced(7U - i % 2U)};
+                ranges[i] = {initial.advanced(2U - i % 3U),
+                    initial.advanced(7U - i % 2U)};
             const ReliabilityAction action {
                 .kind = ReliabilityActionKind::loss_report, .loss = ranges[0]};
             std::array<std::byte, maximum_data_payload_size + 16U> storage {};

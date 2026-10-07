@@ -281,6 +281,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Require the independently rebuilt artifact identity
+        shell: pwsh
+        env:
+          REBUILD_ARTIFACT_ID: ${{ needs.rebuild.outputs.artifact-id }}
+        run: |
+          if ($env:REBUILD_ARTIFACT_ID -notmatch '^[1-9][0-9]*$') { throw 'Missing rebuilt artifact ID' }
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           artifact-ids: ${{ needs.rebuild.outputs.artifact-id }}

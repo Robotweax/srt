@@ -76,6 +76,7 @@ class WindowsSdkTests(unittest.TestCase):
         self.assertIn('overwrite: false', rebuild)
         self.assertIn('artifact-ids: ${{ needs.rebuild.outputs.artifact-id }}', signing)
         self.assertNotIn('pattern:', signing)
+        self.assertLess(signing.index('Missing rebuilt artifact ID'), signing.index('uses: actions/download-artifact@'))
         self.assertNotIn('needs.coexistence', signing)
         qualification = workflow.split('\n  rebuild-qualification:\n', 1)[1].split('\n  rebuild:\n', 1)[0]
         self.assertIn('rebuild-installers.ps1', qualification)
