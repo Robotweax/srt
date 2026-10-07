@@ -612,6 +612,30 @@ TEST(compat_listener_setup_route_uses_peer_socket_identity)
                    listener_received, std::chrono::milliseconds {0}),
         InboxPopStatus::timeout);
 
+    // Ambiguous peer identities must go to the listener, then become unique
+    // again when one route disappears. A mismatched inbox cannot remove it.
+    const auto other_setup = std::make_shared<DatagramInbox>(4);
+    REQUIRE(channel->register_setup_inbox(accepted_socket_id + 1U,
+        sender_endpoint.endpoint, other_setup, caller_socket_id));
+    REQUIRE(!channel->register_setup_inbox(accepted_socket_id + 1U,
+        sender_endpoint.endpoint, other_setup, caller_socket_id));
+    REQUIRE(sender.send_to(std::span {datagram}.first(encoded.bytes_written),
+        channel_endpoint.endpoint));
+    REQUIRE_EQ(
+        listener_inbox->pop_for(listener_received, std::chrono::seconds {2}),
+        InboxPopStatus::received);
+    channel->unregister_setup_inbox(accepted_socket_id + 1U, setup_inbox);
+    REQUIRE(sender.send_to(std::span {datagram}.first(encoded.bytes_written),
+        channel_endpoint.endpoint));
+    REQUIRE_EQ(
+        listener_inbox->pop_for(listener_received, std::chrono::seconds {2}),
+        InboxPopStatus::received);
+    channel->unregister_setup_inbox(accepted_socket_id + 1U, other_setup);
+    REQUIRE(sender.send_to(std::span {datagram}.first(encoded.bytes_written),
+        channel_endpoint.endpoint));
+    REQUIRE_EQ(setup_inbox->pop_for(routed, std::chrono::seconds {2}),
+        InboxPopStatus::received);
+
     repeated.packet.socket_id = caller_socket_id + 1U;
     encoded = encode_handshake_datagram(
         repeated, PacketTimestamp {43U}, listener_socket_id, datagram);
@@ -11675,4 +11699,18 @@ TEST(compat_runtime_sensor_blackhole_expiry_restores_writable_readiness)
     (void)runtime.poll(); // Every datagram is lost; no peer ACK exists.
     REQUIRE(runtime.writable());
     REQUIRE((runtime.readiness_snapshot(false).events & SRT_EPOLL_OUT) != 0);
+}
+
+TEST(compat_setup_routes_are_bounded_and_capacity_is_reusable)
+{
+    DatagramChannel channel;
+    const auto inbox = std::make_shared<DatagramInbox>(1);
+    for (std::uint32_t id = 1; id <= 4096; ++id)
+        REQUIRE(channel.register_setup_inbox(
+            id, IpEndpoint::loopback(), inbox, id));
+    REQUIRE(!channel.register_setup_inbox(
+        4097, IpEndpoint::loopback(), inbox, 4097));
+    channel.unregister_setup_inbox(2048, inbox);
+    REQUIRE(channel.register_setup_inbox(
+        4097, IpEndpoint::loopback(), inbox, 4097));
 }
