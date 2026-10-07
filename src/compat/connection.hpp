@@ -1,6 +1,7 @@
 #pragma once
 
 #include "compat/listener_accept_queue.hpp"
+#include "compat/listener_crypto_budget.hpp"
 #include "compat/socket_registry.hpp"
 
 #include <condition_variable>
@@ -62,6 +63,7 @@ private:
     std::weak_ptr<SocketRecord> listener_;
     ListenerAcceptQueue accepts_;
     std::mutex mutex_;
+    ListenerCryptoBudget crypto_budget_;
     std::condition_variable result_idle_;
     bool closed_ = false;
     bool result_work_scheduled_ = false;

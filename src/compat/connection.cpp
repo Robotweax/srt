@@ -3594,6 +3594,17 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         initial.message.packet.initial_sequence.value();
     const Clock::time_point origin = Clock::now();
 
+    bool crypto_budget_charged = false;
+    const auto charge_crypto_budget = [&] {
+        std::lock_guard lock(mutex_);
+        return crypto_budget_.admit(initial.peer, Clock::now());
+    };
+    if (native_options.encryption_enabled()) {
+        if (!charge_crypto_budget())
+            return fail_accept(SRT_EASYNCRCV);
+        crypto_budget_charged = true;
+    }
+
     SocketRegistry& registry = SocketRegistry::instance();
     const SRTSOCKET accepted_handle = registry.create();
     if (accepted_handle == SRT_INVALID_SOCK) {
@@ -3748,6 +3759,9 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     CryptoState receiver_key_state = CryptoState::unsecured;
     if (!policy_rejected) {
         if (native_options.encryption_enabled()) {
+            // A listen callback can enable encryption after the early gate.
+            if (!crypto_budget_charged && !charge_crypto_budget())
+                return close_with_error(SRT_EASYNCRCV);
             try {
                 crypto = std::make_shared<CryptoSession>(
                     native_options.crypto_configuration());
