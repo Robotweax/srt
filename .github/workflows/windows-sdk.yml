@@ -12,6 +12,7 @@ on:
     paths:
       - 'packaging/windows/**'
       - '.github/workflows/windows-sdk.yml'
+      - 'tools/verify_release_tag.py'
 permissions:
   contents: read
 jobs:
@@ -174,11 +175,92 @@ jobs:
           . ./packaging/windows/signing.ps1
           $record = Get-SdkInstallerProvenance installers $env:SDK_VERSION $env:GITHUB_SHA $env:GITHUB_RUN_ID
           "json=$($record | ConvertTo-Json -Compress -Depth 5)" >> $env:GITHUB_OUTPUT
-  sign:
+  rebuild-qualification:
+    # Exercise the exact rebuild recipe without approvals or signing authority.
+    if: github.event_name == 'pull_request'
+    needs: validate
+    runs-on: windows-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: openssl/openssl
+          ref: aae016bfd52fcad2bc9657c2c782cfdf73b1ed5f
+          path: openssl-source
+          persist-credentials: false
+      - name: Qualify independent rebuild without signing
+        shell: pwsh
+        env:
+          SDK_VERSION: ${{ needs.validate.outputs.version }}
+        run: ./packaging/windows/rebuild-installers.ps1 -Revision $env:GITHUB_SHA -Version $env:SDK_VERSION -Destination "$PWD/rebuilt-installers" -WorkRoot "$env:RUNNER_TEMP/sdk-rebuild"
+      - name: Test independently rebuilt installers
+        shell: pwsh
+        run: ./packaging/windows/test-installers.ps1 -Installers rebuilt-installers
+  rebuild:
+    # An ordinary producer's bytes must never become signing inputs. Rebuild
+    # from the exact source on a fresh protected runner with no OIDC authority.
     if: >-
       (github.event_name == 'push' && github.ref_type == 'tag') ||
       (github.event_name == 'workflow_dispatch' && inputs.sign && github.ref == 'refs/heads/main')
     needs: [validate, coexistence]
+    runs-on: windows-latest
+    timeout-minutes: 180
+    environment: windows-release-signing
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      installer-provenance: ${{ steps.provenance.outputs.json }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: openssl/openssl
+          ref: aae016bfd52fcad2bc9657c2c782cfdf73b1ed5f
+          path: openssl-source
+          persist-credentials: false
+      - name: Rebuild both installers from the approved source
+        shell: pwsh
+        env:
+          SDK_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Rebuild requires a commit on main history' }
+          ./packaging/windows/rebuild-installers.ps1 -Revision $env:GITHUB_SHA -Version $env:SDK_VERSION -Destination "$PWD/rebuilt-installers" -WorkRoot "$env:RUNNER_TEMP/sdk-rebuild"
+      - name: Test the rebuilt unsigned pair
+        shell: pwsh
+        run: ./packaging/windows/test-installers.ps1 -Installers rebuilt-installers
+      - name: Record independently rebuilt installer bytes
+        id: provenance
+        shell: pwsh
+        env:
+          SDK_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          . ./packaging/windows/signing.ps1
+          $record = Get-SdkInstallerProvenance rebuilt-installers $env:SDK_VERSION $env:GITHUB_SHA $env:GITHUB_RUN_ID
+          "json=$($record | ConvertTo-Json -Compress -Depth 5)" >> $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        id: upload
+        with:
+          name: windows-sdk-rebuilt-installers
+          path: rebuilt-installers/*.exe
+          overwrite: false
+          if-no-files-found: error
+          retention-days: 7
+  sign:
+    if: >-
+      (github.event_name == 'push' && github.ref_type == 'tag') ||
+      (github.event_name == 'workflow_dispatch' && inputs.sign && github.ref == 'refs/heads/main')
+    needs: [validate, rebuild]
     runs-on: windows-latest
     timeout-minutes: 20
     environment: windows-release-signing
@@ -190,7 +272,7 @@ jobs:
       id-token: write
     env:
       SDK_VERSION: ${{ needs.validate.outputs.version }}
-      INSTALLER_PROVENANCE: ${{ needs.coexistence.outputs.installer-provenance }}
+      INSTALLER_PROVENANCE: ${{ needs.rebuild.outputs.installer-provenance }}
       SIGNING_ACCOUNT_NAME: ${{ vars.SIGNING_ACCOUNT_NAME }}
       SIGNING_CERTIFICATE_PROFILE: ${{ vars.SIGNING_CERTIFICATE_PROFILE }}
       SIGNING_ENDPOINT: ${{ vars.SIGNING_ENDPOINT }}
@@ -199,9 +281,15 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Require the independently rebuilt artifact identity
+        shell: pwsh
+        env:
+          REBUILD_ARTIFACT_ID: ${{ needs.rebuild.outputs.artifact-id }}
+        run: |
+          if ($env:REBUILD_ARTIFACT_ID -notmatch '^[1-9][0-9]*$') { throw 'Missing rebuilt artifact ID' }
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: windows-sdk-installer-*
+          artifact-ids: ${{ needs.rebuild.outputs.artifact-id }}
           path: installers
           merge-multiple: true
       - name: Validate signing inputs and source ancestry
@@ -307,9 +395,12 @@ jobs:
           test -s "$openssl"
           test -s "$bcrypt"
           sha256sum --check SHA256SUMS
+          python ../tools/verify_release_tag.py --repo "$GH_REPO" --tag "$RELEASE_TAG" --commit "$GITHUB_SHA" > tag-provenance.json
+          tag_object="$(jq -r .object tag-provenance.json)"
           if gh release view "$RELEASE_TAG" --json isDraft > release.json; then
             test "$(jq -r .isDraft release.json)" = true || { echo 'Refusing to modify a published release'; exit 1; }
           else
             gh release create "$RELEASE_TAG" --verify-tag --draft --title "Robotweax SRT ${RELEASE_TAG#v}" --notes 'Windows SDK installers: OpenSSL and BCrypt. Authenticode-signed by Robotweax GmbH with trusted timestamps; review qualification and release notes before publishing.'
           fi
-          gh release upload "$RELEASE_TAG" "$openssl" "$bcrypt" SHA256SUMS
+          python ../tools/verify_release_tag.py --repo "$GH_REPO" --tag "$RELEASE_TAG" --commit "$GITHUB_SHA" --object "$tag_object" > tag-provenance.json
+          gh release upload "$RELEASE_TAG" "$openssl" "$bcrypt" SHA256SUMS tag-provenance.json

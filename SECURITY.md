@@ -76,7 +76,7 @@ and the [AES-GCM extension contract](docs/aes-gcm-contract.md).
 ### Runtime key material
 
 The compatible SRT key-material control format is not independently
-authenticated. Robotweax therefore rejects malformed, stale, inconsistent, or
+authenticated. Robotweax therefore rejects malformed, recently retired, inconsistent, or
 unwrappable KMREQ/KMRSP input without downgrading an established encrypted
 state or enabling clear payload. Authentication failures never publish
 provisional plaintext.
@@ -97,7 +97,10 @@ The explicitly enabled, default-off `SRTO_ROBOTWEAX_SESSIONAUTH` extension
 authenticates session key establishment and runtime KM controls. Both peers
 must support it; enabled sessions do not interoperate with ordinary Haivision
 peers. See the [wire contract and protection limits](docs/session-authentication.md).
-The standard compatible mode remains unchanged.
+The standard compatible mode remains unchanged. Its bounded receive-key history
+cannot reject every captured KMREQ after history eviction. GCM authenticates
+DATA but does not provide a lifetime key-epoch replay identity. See the
+[bounded-history limitations](docs/encryption.md).
 
 ### Encrypted listener admission
 

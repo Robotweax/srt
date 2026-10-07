@@ -29,6 +29,33 @@ The public `SRT_GFLAG_SYNCONMSG` bit value is preserved for ABI compatibility,
 but the v1.5.7 profile accepts only zero flags. Unsupported or unnegotiated
 group types are rejected; they are never downgraded to Broadcast or Backup.
 
+## Listener group authorization
+
+A remote group ID is a lookup key, not proof of membership. On a listener with
+an admission callback, accepting a group connection now requires the callback
+to set `SRTO_ROBOTWEAX_GROUPDOMAIN` to a nonzero `uint64_t` after application
+authentication and authorization. Merely returning zero from the callback no
+longer admits group connections. Existing group-aware callbacks must migrate.
+Ordinary non-group callbacks are unchanged.
+
+Inside the callback, `SRTO_ROBOTWEAX_PEERGROUP` returns the proposed remote
+`int32_t` group ID (`SRT_INVALID_SOCK` for a non-group connection). Use it with
+the authenticated application principal to authorize this particular join.
+Assign stable domain values from trusted application state; never derive a
+domain solely from the unauthenticated stream ID or proposed group ID. Distinct
+security domains must have distinct values, including across bonded listeners.
+
+The first member fixes the mirror group's domain. Later members presenting the
+same remote group ID on the listener/bond must match it before membership,
+replay or fan-out is installed. The domain setter is only valid inside a group
+listen callback, and zero is rejected. Both new options are local metadata;
+no extension is sent on the wire and compatible peers need no changes.
+
+Without a callback, an explicitly group-enabled listener remains one shared
+trust domain. Do not share such a listener between mutually untrusted clients.
+Session key authentication does not itself authorize group membership or
+bind the group fields; shared-passphrase holders are not distinct principals.
+
 ## Public API surface
 
 The selected API includes:
