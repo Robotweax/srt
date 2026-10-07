@@ -91,6 +91,25 @@ for rejected KMREQs are limited to one per 100 ms per connection. AES-CTR
 still has no payload integrity guarantee; use the opt-in AES-GCM extension
 when authenticated DATA is required.
 
+### Encrypted listener admission
+
+Each listener limits encrypted setup attempts with token buckets: a burst of
+128 attempts and replenishment of 64 per second overall, and a burst of 32
+with replenishment of 16 per second per source IP. Ports, cookies, salts and
+IPv4-mapped address spellings share the source budget. Failed attempts and
+retries consume it too. Each admitted setup can derive at most one receive
+and one transmit key-encryption key. The source table has 128 fixed entries
+and only reuses entries whose full burst has replenished.
+
+Excess conclusions are dropped before key derivation and normally before
+accepted-socket allocation. If a listen callback enables encryption, the same
+budget is checked after that callback and before crypto construction. Peers
+can retry within their connection timeout; clients sharing a NAT also share
+the source budget. Existing established connections and plaintext admissions
+are unaffected. These bounds contain listener-local derivation work; they do
+not guarantee admission during a distributed flood or impose a process-wide
+limit across multiple listeners.
+
 ## Secure integration guidance
 
 - Use unique, high-entropy passphrases delivered through a secure secret
