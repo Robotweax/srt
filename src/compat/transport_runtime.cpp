@@ -652,6 +652,8 @@ bool DatagramChannel::promote_setup_connection(
             return false;
         }
         const IpEndpoint peer = setup->second.peer;
+        unindex_setup_locked(protocol_socket_id, setup->second.peer,
+            setup->second.peer_socket_id);
         setup_routes_.erase(setup);
         // Keep the routing lock until the bounded setup queue has drained.
         // This preserves wire arrival order: newer datagrams cannot enter the
@@ -714,22 +716,56 @@ bool DatagramChannel::register_setup_inbox(std::uint32_t protocol_socket_id,
     IpEndpoint peer, std::shared_ptr<DatagramInbox> inbox,
     std::uint32_t peer_socket_id) noexcept
 {
-    if (protocol_socket_id == 0U || inbox == nullptr) {
+    if (protocol_socket_id == 0U || inbox == nullptr)
         return false;
-    }
+    std::lock_guard lock(routes_mutex_);
+    constexpr std::size_t maximum_setup_routes = 4096;
+    if (setup_routes_.size() >= maximum_setup_routes
+        || setup_routes_.contains(protocol_socket_id))
+        return false;
+    const HandshakeRouteKey endpoint {peer, 0};
+    const HandshakeRouteKey exact {peer, peer_socket_id};
     try {
-        std::lock_guard lock(routes_mutex_);
-        return setup_routes_
-            .emplace(protocol_socket_id,
-                SetupRoute {
-                    .peer = peer,
-                    .inbox = std::move(inbox),
-                    .peer_socket_id = peer_socket_id,
-                })
-            .second;
+        setup_index_.try_emplace(endpoint);
+        if (peer_socket_id != 0U)
+            setup_index_.try_emplace(exact);
+        setup_routes_.emplace(protocol_socket_id,
+            SetupRoute {.peer = peer,
+                .inbox = std::move(inbox),
+                .peer_socket_id = peer_socket_id});
+        const auto add = [&](const HandshakeRouteKey& key) {
+            auto& selected = setup_index_.at(key);
+            ++selected.count;
+            selected.socket_xor ^= protocol_socket_id;
+        };
+        add(endpoint);
+        if (peer_socket_id != 0U)
+            add(exact);
+        return true;
     } catch (...) {
+        for (const auto& key : {endpoint, exact}) {
+            const auto entry = setup_index_.find(key);
+            if (entry != setup_index_.end() && entry->second.count == 0U)
+                setup_index_.erase(entry);
+        }
         return false;
     }
+}
+
+void DatagramChannel::unindex_setup_locked(std::uint32_t socket_id,
+    IpEndpoint peer, std::uint32_t peer_socket_id) noexcept
+{
+    const auto remove = [&](std::uint32_t id) {
+        const auto found = setup_index_.find({peer, id});
+        if (found == setup_index_.end())
+            return;
+        found->second.socket_xor ^= socket_id;
+        if (--found->second.count == 0U)
+            setup_index_.erase(found);
+    };
+    remove(0);
+    if (peer_socket_id != 0U)
+        remove(peer_socket_id);
 }
 
 void DatagramChannel::unregister_setup_inbox(
@@ -741,6 +777,8 @@ void DatagramChannel::unregister_setup_inbox(
         setup_routes_.find(protocol_socket_id);
     if (route != setup_routes_.end()
         && route->second.inbox == inbox) {
+        unindex_setup_locked(protocol_socket_id, route->second.peer,
+            route->second.peer_socket_id);
         setup_routes_.erase(route);
     }
 }
@@ -1172,46 +1210,29 @@ void DatagramChannel::dispatch(const PacketView& packet,
                     setup_inbox = setup->second.inbox;
                 }
             }
+            const auto select = [&](std::uint32_t peer_id, bool& ambiguous) {
+                const auto found = setup_index_.find({peer, peer_id});
+                if (found == setup_index_.end())
+                    return;
+                ambiguous = found->second.count != 1U;
+                if (!ambiguous)
+                    setup_inbox =
+                        setup_routes_.at(found->second.socket_xor).inbox;
+            };
             bool exact_setup_ambiguous = false;
-            if (setup_inbox == nullptr) {
-                for (const auto& setup : setup_routes_) {
-                    if (setup.second.peer != peer
-                        || setup.second.peer_socket_id == 0U
-                        || setup.second.peer_socket_id
-                            != decoded.message.packet.socket_id) {
-                        continue;
-                    }
-                    if (setup_inbox != nullptr) {
-                        setup_inbox.reset();
-                        exact_setup_ambiguous = true;
-                        break;
-                    }
-                    setup_inbox = setup.second.inbox;
-                }
-            }
+            if (setup_inbox == nullptr
+                && decoded.message.packet.socket_id != 0U)
+                select(decoded.message.packet.socket_id, exact_setup_ambiguous);
             if (setup_inbox == nullptr && !exact_setup_ambiguous
                 && destination_socket_id == 0U) {
                 const auto matching_socket =
-                    setup_routes_.find(
-                        decoded.message.packet.socket_id);
-                if (matching_socket
-                        != setup_routes_.end()
-                    && matching_socket->second.peer
-                        == peer) {
-                    setup_inbox =
-                        matching_socket->second.inbox;
+                    setup_routes_.find(decoded.message.packet.socket_id);
+                if (matching_socket != setup_routes_.end()
+                    && matching_socket->second.peer == peer) {
+                    setup_inbox = matching_socket->second.inbox;
                 } else {
-                    for (const auto& setup : setup_routes_) {
-                        if (setup.second.peer != peer) {
-                            continue;
-                        }
-                        if (setup_inbox != nullptr) {
-                            setup_inbox.reset();
-                            break;
-                        }
-                        setup_inbox =
-                            setup.second.inbox;
-                    }
+                    bool ambiguous = false;
+                    select(0, ambiguous);
                 }
             }
             inbox = listener_inbox_.lock();

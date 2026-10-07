@@ -384,6 +384,17 @@ private:
     std::unordered_map<HandshakeRouteKey,
         std::shared_ptr<ConnectionRuntime>,
         HandshakeRouteKeyHash> handshake_routes_;
+    // Zero peer ID indexes all setups for an endpoint; nonzero IDs index
+    // exact peer identities. Count/XOR preserves ambiguity in O(1), including
+    // erasure, without traversing colliding routes.
+    struct SetupSelection {
+        std::size_t count = 0;
+        std::uint32_t socket_xor = 0;
+    };
+    std::unordered_map<HandshakeRouteKey, SetupSelection, HandshakeRouteKeyHash>
+        setup_index_;
+    void unindex_setup_locked(std::uint32_t socket_id, IpEndpoint peer,
+        std::uint32_t peer_socket_id) noexcept;
     struct SetupRoute {
         IpEndpoint peer{};
         std::shared_ptr<DatagramInbox> inbox;
