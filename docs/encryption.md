@@ -476,6 +476,22 @@ FEC operates on wire payload rather than plaintext:
   header before decryption/authentication; and
 - corrupt parity or a failed reconstructed tag publishes no plaintext.
 
+With GCM, each reconstructed packet is authenticated before the decoder marks
+its sequence as seen or feeds it into the other dimension of a Matrix filter.
+A failed candidate leaves the sequence missing for on-request ARQ; an authentic
+late source can still fill that hole. Loss reports are retained on rejection.
+Unauthenticated parity cannot advance the source sequence anchor, expire source
+groups, replace groups containing authenticated sources, or refresh peer
+liveness. Only authenticated source/reconstructed DATA provides DATA liveness.
+
+Parity itself has no independent authentication tag in the compatible wire
+format. A forged parity packet may still occupy a bounded tentative recovery
+slot and prevent recovery in that group. After a candidate fails authentication,
+that group falls back to source arrival/ARQ rather than repeatedly attempting the
+same candidate. This is not full parity authentication or protection against
+all control-packet denial of service. CTR behavior and the default-off session
+authentication option are unchanged.
+
 Row, Column, and recursive Matrix filters are supported for encrypted
 Live/Message traffic. Fragmented authenticated Message DATA is not emitted
 when the recovery header cannot reproduce all authenticated boundary fields.
