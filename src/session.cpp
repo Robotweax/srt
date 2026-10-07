@@ -996,6 +996,8 @@ ReliabilityProcessResult ReliabilitySession::receive(
         std::array<SequenceRange, maximum_loss_words_per_packet>
             stale_ranges {};
         std::size_t stale_range_count = 0;
+        std::array<SequenceRange, maximum_loss_words_per_packet> current_ranges {};
+        std::size_t current_range_count = 0;
 
         // Validate and classify the complete report first. No retransmission
         // or DROPREQ state changes until every range is known to be safe.
@@ -1010,11 +1012,10 @@ ReliabilityProcessResult ReliabilitySession::receive(
                 return {.error = slices.error};
             }
             if (slices.current.has_value()) {
-                const Error error =
-                    send_buffer_.validate_retransmission_range(*slices.current);
-                if (error != Error::none) {
-                    return {.error = error};
+                if (current_range_count == current_ranges.size()) {
+                    return {.error = Error::buffer_too_small};
                 }
+                current_ranges[current_range_count++] = *slices.current;
             }
             if (slices.stale.has_value()) {
                 auto stale = *slices.stale;
@@ -1036,6 +1037,32 @@ ReliabilityProcessResult ReliabilitySession::receive(
             validation_payload =
                 validation_payload.subspan(loss.bytes_consumed);
         }
+        // Normalize relative to the send window, not raw wire values: the
+        // window may cross sequence rollover. Duplicate/overlapping ranges
+        // must not multiply slot scans or congestion-loss accounting.
+        const auto first = send_buffer_.first_sequence();
+        auto current = std::span {current_ranges}.first(current_range_count);
+        std::sort(current.begin(), current.end(), [first](const auto& a, const auto& b) {
+            return a.first.distance_from(first) < b.first.distance_from(first);
+        });
+        std::size_t unique_count = 0;
+        for (const auto range : current) {
+            if (unique_count != 0U
+                && range.first.distance_from(first)
+                    <= current_ranges[unique_count - 1U].last.distance_from(first) + 1) {
+                auto& previous = current_ranges[unique_count - 1U];
+                if (range.last.distance_from(first) > previous.last.distance_from(first))
+                    previous.last = range.last;
+            } else {
+                current_ranges[unique_count++] = range;
+            }
+        }
+        current = current.first(unique_count);
+        for (const auto range : current) {
+            const auto error = send_buffer_.validate_retransmission_range(range);
+            if (error != Error::none)
+                return {.error = error};
+        }
         if (!send_buffer_.queue_range_drop_requests(
                 std::span {stale_ranges}.first(stale_range_count))) {
             return {.error = Error::buffer_too_small};
@@ -1043,43 +1070,25 @@ ReliabilityProcessResult ReliabilitySession::receive(
 
         std::size_t lost_packets = 0;
         std::optional<SequenceNumber> first_lost;
-        while (!payload.empty()) {
-            const auto loss = decode_loss_range(payload);
-            if (!loss) {
-                return {.error = loss.error};
-            }
-            const auto slices = split_nak_range(send_buffer_, loss.range);
-            if (!slices) {
-                return {.error = slices.error};
-            }
+        for (const auto range : current) {
             std::size_t newly_queued_packets = 0;
             std::size_t newly_queued_bytes = 0;
-            if (slices.current.has_value()) {
-                const Error error = send_buffer_.request_retransmission(
-                    *slices.current, &newly_queued_packets, &newly_queued_bytes,
-                    now_microseconds,
-                    efficient_retransmission_
-                            && (peer_periodic_nak_
-                                || live_options_.peer_periodic_nak
-                                || live_options_.periodic_nak)
-                        ? rtt_.smoothed_microseconds()
-                        : 0U);
-                if (error != Error::none) {
-                    return {.error = error};
-                }
-            }
+            const Error error = send_buffer_.request_retransmission(
+                range, &newly_queued_packets, &newly_queued_bytes,
+                now_microseconds,
+                efficient_retransmission_
+                        && (peer_periodic_nak_
+                            || live_options_.peer_periodic_nak
+                            || live_options_.periodic_nak)
+                    ? rtt_.smoothed_microseconds()
+                    : 0U);
+            if (error != Error::none)
+                return {.error = error};
             result.sender_loss_packets += newly_queued_packets;
             result.sender_loss_bytes += newly_queued_bytes;
-            if (slices.current.has_value() && !first_lost.has_value()) {
-                first_lost = slices.current->first;
-            }
-            if (slices.current.has_value()) {
-                lost_packets +=
-                    static_cast<std::size_t>(slices.current->last.distance_from(
-                        slices.current->first))
-                    + 1U;
-            }
-            payload = payload.subspan(loss.bytes_consumed);
+            if (!first_lost.has_value())
+                first_lost = range.first;
+            lost_packets += static_cast<std::size_t>(range.last.distance_from(range.first)) + 1U;
         }
         append_pending_drop_requests(result.actions);
         if (file_rate_controller_.has_value()

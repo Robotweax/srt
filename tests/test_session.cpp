@@ -5461,3 +5461,49 @@ TEST(session_blackhole_sensor_full_expired_window_admits_fresh_data)
         REQUIRE(!sender.next_sender_retirement_deadline().has_value());
     }
 }
+
+TEST(session_normalizes_duplicate_overlapping_nak_ranges_across_rollover)
+{
+    for (const auto initial : {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 3U}}) {
+        for (const bool unsent_tail : {false, true}) {
+            ReliabilitySession sender {{
+                .local_initial_sequence = initial,
+                .send_capacity_packets = 16,
+                .receive_capacity_packets = 16,
+                .maximum_payload_size = 1,
+            }};
+            const std::array<std::byte, 8> message {};
+            REQUIRE_EQ(sender.queue_message(message, PacketTimestamp {0}), Error::none);
+            for (unsigned i = 0; i < (unsent_tail ? 7U : 8U); ++i)
+                REQUIRE(sender.next_data_packet().has_value());
+            std::array<SequenceRange, maximum_loss_ranges_per_report> ranges {};
+            for (std::size_t i = 0; i < ranges.size(); ++i)
+                ranges[i] = {initial.advanced(i % 3U), initial.advanced(7U - i % 2U)};
+            const ReliabilityAction action {.kind = ReliabilityActionKind::loss_report, .loss = ranges[0]};
+            std::array<std::byte, maximum_data_payload_size + 16U> storage {};
+            const auto encoded = encode_reliability_action(action, ranges, PacketTimestamp {0}, 1, storage);
+            REQUIRE(encoded);
+            const auto decoded = decode_packet(std::span {storage}.first(encoded.bytes_written));
+            REQUIRE(decoded);
+            const auto result = sender.receive(decoded.packet, 100);
+            if (unsent_tail) {
+                REQUIRE_EQ(result.error, Error::invalid_control_payload);
+                const auto last = sender.next_data_packet();
+                REQUIRE(last.has_value());
+                REQUIRE(!last->header.retransmitted);
+                REQUIRE_EQ(last->header.sequence, initial.advanced(7));
+            } else {
+                REQUIRE(result);
+                REQUIRE_EQ(result.sender_loss_packets, 8U);
+                REQUIRE_EQ(result.sender_loss_bytes, 8U);
+                for (unsigned i = 0; i < 8; ++i) {
+                    const auto packet = sender.next_data_packet();
+                    REQUIRE(packet.has_value());
+                    REQUIRE(packet->header.retransmitted);
+                    REQUIRE_EQ(packet->header.sequence, initial.advanced(i));
+                }
+            }
+            REQUIRE(!sender.next_data_packet().has_value());
+        }
+    }
+}
