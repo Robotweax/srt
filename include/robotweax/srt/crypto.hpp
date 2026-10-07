@@ -1,5 +1,7 @@
 #pragma once
 
+#include "robotweax/srt/session_authentication.hpp"
+
 #include "robotweax/srt/crypto_provider.hpp"
 #include "robotweax/srt/packet.hpp"
 
@@ -25,6 +27,7 @@ inline constexpr std::size_t maximum_wrapped_key_size =
 inline constexpr std::size_t key_material_header_size = 16;
 inline constexpr std::size_t maximum_key_material_size =
     key_material_header_size + srt_salt_size + maximum_wrapped_key_size;
+static_assert(maximum_key_material_size <= 128);
 inline constexpr std::uint32_t srt_pbkdf2_iterations = 2'048;
 inline constexpr std::size_t maximum_passphrase_size = 80;
 inline constexpr std::size_t minimum_passphrase_size = 10;
@@ -390,6 +393,14 @@ public:
     CryptoSession& operator=(CryptoSession&&) = delete;
 
     [[nodiscard]] Error start_initiator() noexcept;
+    [[nodiscard]] Error start_session_authentication(bool caller) noexcept;
+    [[nodiscard]] Error establish_session_authentication(
+        const SessionAuthenticationParameters& peer,
+        std::uint32_t local_socket_id, std::uint32_t peer_socket_id) noexcept;
+    [[nodiscard]] SessionAuthentication* session_authentication() noexcept
+    {
+        return session_authentication_.get();
+    }
 
     // Installs a peer KMREQ and prepares the byte-identical KMRSP. During an
     // HSv5 initial exchange, clone_for_bidirectional_sender prepares an
@@ -611,6 +622,7 @@ private:
     void erase_slot(KeySlot& slot) noexcept;
 
     CryptoProvider& provider_;
+    std::unique_ptr<SessionAuthentication> session_authentication_;
     std::array<std::byte, maximum_passphrase_size> passphrase_{};
     std::size_t passphrase_size_ = 0;
     // One-entry cache of the key-encrypting key. The salt is constant across

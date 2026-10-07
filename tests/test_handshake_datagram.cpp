@@ -730,3 +730,35 @@ TEST(hsv5_handshake_chains_key_material_and_establishes_crypto)
     REQUIRE_EQ(listener_crypto.sender_state(), CryptoState::secured);
     REQUIRE_EQ(listener_crypto.receiver_state(), CryptoState::secured);
 }
+
+TEST(
+    session_authentication_datagram_rejects_unknown_version_duplicate_and_truncation)
+{
+    HandshakeAction action;
+    action.kind = HandshakeActionKind::send;
+    action.packet.version = handshake_version_5;
+    action.packet.request = HandshakeRequest::agreement;
+    action.packet.extension_field = handshake_extension_flag_config;
+    action.has_session_authentication = true;
+    action.session_authentication.caller_nonce[0] = std::byte {1};
+    std::array<std::byte, 1500> bytes {};
+    const auto encoded =
+        encode_handshake_datagram(action, PacketTimestamp {1}, 42, bytes);
+    REQUIRE(encoded);
+    auto wire = std::span {bytes}.first(encoded.bytes_written);
+    const auto decoded = decode_handshake_datagram(wire);
+    REQUIRE(decoded);
+    REQUIRE(decoded.message.has_session_authentication);
+    REQUIRE(decoded.message.session_authentication.matches(
+        action.session_authentication));
+    constexpr auto offset = packet_header_size + handshake_size;
+    bytes[offset + extension_header_size + 3] = std::byte {2};
+    REQUIRE(!decode_handshake_datagram(wire));
+    bytes[offset + extension_header_size + 3] = std::byte {1};
+    REQUIRE(!decode_handshake_datagram(wire.first(wire.size() - 4)));
+    std::copy(wire.begin() + offset, wire.end(),
+        bytes.begin() + encoded.bytes_written);
+    REQUIRE(
+        !decode_handshake_datagram(std::span {bytes}.first(encoded.bytes_written
+            + extension_header_size + session_authentication_wire_size)));
+}

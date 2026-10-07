@@ -246,13 +246,21 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
     }
     case SocketOption::enforced_encryption:
         if (!is_boolean(value)) return Error::invalid_state;
-        if (value == 0 && requires_authenticated_data()) {
+        if (value == 0
+            && (requires_authenticated_data() || session_authentication_)) {
             return Error::invalid_state;
         }
         enforced_encryption_ = value != 0;
         return Error::none;
+    case SocketOption::session_authentication:
+        if (!is_boolean(value)
+            || (value != 0 && (!enforced_encryption_ || rendezvous_)))
+            return Error::invalid_state;
+        session_authentication_ = value != 0;
+        return Error::none;
     case SocketOption::rendezvous:
-        if (!is_boolean(value)) return Error::invalid_state;
+        if (!is_boolean(value) || (value != 0 && session_authentication_))
+            return Error::invalid_state;
         rendezvous_ = value != 0;
         return Error::none;
     case SocketOption::message_api:
@@ -422,6 +430,8 @@ SocketOptionResult SocketOptions::get(SocketOption option) const noexcept
     case SocketOption::encryption_key_length: return {.value = static_cast<std::int64_t>(encryption_key_length_)};
     case SocketOption::key_refresh_rate_packets: return {.value = key_refresh_rate_packets_};
     case SocketOption::key_preannouncement_packets: return {.value = key_preannouncement_packets_};
+    case SocketOption::session_authentication:
+        return {.value = session_authentication_ ? 1 : 0};
     case SocketOption::enforced_encryption: return {.value = enforced_encryption_ ? 1 : 0};
     case SocketOption::rendezvous: return {.value = rendezvous_ ? 1 : 0};
     case SocketOption::message_api: return {.value = message_api_ ? 1 : 0};

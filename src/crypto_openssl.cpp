@@ -2,6 +2,7 @@
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <openssl/rand.h>
 
 #include <array>
@@ -389,6 +390,23 @@ public:
                        derived_key.data()))
                 == 1
             ? Error::none : Error::cryptographic_failure;
+    }
+
+    Error hmac_sha256(std::span<const std::byte> key,
+        std::span<const std::byte> input,
+        std::span<std::byte, 32> output) noexcept override
+    {
+        unsigned int size = 0;
+        if (key.size() <= static_cast<std::size_t>(INT_MAX)
+            && HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()),
+                   reinterpret_cast<const unsigned char*>(input.data()),
+                   input.size(),
+                   reinterpret_cast<unsigned char*>(output.data()), &size)
+                != nullptr
+            && size == output.size())
+            return Error::none;
+        secure_erase(output);
+        return Error::cryptographic_failure;
     }
 
     Error wrap_key(

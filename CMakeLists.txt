@@ -119,6 +119,7 @@ add_library(robotweax_srt
     src/connection_group.cpp
     src/codec.cpp
     src/crypto.cpp
+    src/session_authentication.cpp
     ${ROBOTWEAX_SRT_CRYPTO_SOURCE}
     src/fec.cpp
     src/file.cpp

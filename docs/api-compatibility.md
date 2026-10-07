@@ -267,3 +267,6 @@ Robotweax SRT 0.2.7 is not yet a link-compatible replacement for arbitrary
 See [Compatibility status](compatibility.md), [Known limitations](limitations.md),
 and [Migration from 0.1](migration-0.2.md) before replacing an existing SRT
 library.
+
+See [Optional session authentication](session-authentication.md) for the default-off
+`SRTO_ROBOTWEAX_SESSIONAUTH` option and its private wire contract.

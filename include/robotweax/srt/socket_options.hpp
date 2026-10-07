@@ -62,6 +62,7 @@ enum class SocketOption : std::uint16_t {
 #ifdef ENABLE_MAXREXMITBW
     maximum_retransmission_bandwidth_bytes_per_second,
 #endif
+    session_authentication,
 };
 
 struct SocketOptionResult {
@@ -122,6 +123,10 @@ public:
 #else
         return false;
 #endif
+    }
+    [[nodiscard]] bool session_authentication() const noexcept
+    {
+        return session_authentication_;
     }
     [[nodiscard]] bool enforced_encryption() const noexcept
     {
@@ -275,6 +280,7 @@ private:
     PacketFilterConfiguration
         packet_filter_configuration_{};
     bool enforced_encryption_ = true;
+    bool session_authentication_ = false;
     bool rendezvous_ = false;
     bool message_api_ = true;
     TransmissionType transmission_type_ = TransmissionType::live;

@@ -207,6 +207,22 @@ HandshakeActions HandshakeMachine::reject_locally(
     return actions;
 }
 
+Error HandshakeMachine::set_session_authentication(
+    SessionAuthenticationParameters parameters) noexcept
+{
+    if (!configuration_.require_session_authentication
+        || configuration_.role != ConnectionRole::caller
+        || (state_ != HandshakeState::awaiting_induction_response
+            && state_ != HandshakeState::awaiting_conclusion_response))
+        return Error::invalid_state;
+    if (state_ == HandshakeState::awaiting_induction_response
+            ? !parameters.is_offer()
+            : !parameters.is_proof())
+        return Error::invalid_key_material;
+    configuration_.session_authentication = parameters;
+    return Error::none;
+}
+
 HandshakeActions HandshakeMachine::start() noexcept
 {
     HandshakeActions actions;
@@ -309,6 +325,31 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
     }
 
     if (configuration_.role == ConnectionRole::listener) {
+        if (state_ == HandshakeState::awaiting_authentication_confirmation) {
+            if (incoming.request == HandshakeRequest::agreement
+                && incoming.version == handshake_version_5
+                && incoming.socket_id == peer_socket_id_
+                && incoming.syn_cookie == cookie_
+                && message.has_session_authentication
+                && configuration_.session_authentication_confirmation.is_proof()
+                && configuration_.session_authentication_confirmation.matches(
+                    message.session_authentication)) {
+                state_ = HandshakeState::connected;
+                // Retain the server response in the publication result for
+                // the normal runtime replay boundary.
+                actions.push(session_challenge_);
+                actions.push({.kind = HandshakeActionKind::connected});
+            } else if (incoming.request == HandshakeRequest::conclusion
+                && incoming.socket_id == peer_socket_id_
+                && incoming.syn_cookie == cookie_
+                && message.has_session_authentication
+                && message.session_authentication.is_offer()
+                && message.session_authentication.caller_nonce
+                    == configuration_.session_authentication.caller_nonce) {
+                actions.push(session_challenge_);
+            }
+            return actions;
+        }
         if (state_ == HandshakeState::idle && incoming.request == HandshakeRequest::induction) {
             if (incoming.version != handshake_version_4) {
                 state_ = HandshakeState::failed;
@@ -362,6 +403,14 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                     != HandshakeExtensionType::handshake_request) {
                 return reject(rogue_rejection_reason);
             }
+            if (message.has_session_authentication
+                    != configuration_.require_session_authentication
+                || (configuration_.require_session_authentication
+                    && (!message.session_authentication.is_offer()
+                        || message.session_authentication.caller_nonce
+                            != configuration_.session_authentication
+                                .caller_nonce)))
+                return reject(rogue_rejection_reason);
             const HandshakeExtensionParameters peer_parameters =
                 message.extension_parameters;
             {
@@ -493,7 +542,9 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 || has_local_group_response_) {
                 response.extension_field |= 4U;
             }
-            state_ = HandshakeState::connected;
+            state_ = configuration_.require_session_authentication
+                ? HandshakeState::awaiting_authentication_confirmation
+                : HandshakeState::connected;
             actions.push({
                 .kind = HandshakeActionKind::send,
                 .packet = response,
@@ -517,7 +568,21 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                     has_local_group_response_,
                 .group_membership = local_group_response_,
             });
-            actions.push({.kind = HandshakeActionKind::connected});
+            if (configuration_.require_session_authentication) {
+                auto& response_action = actions.values[0];
+                response_action.packet.extension_field |=
+                    handshake_extension_flag_config;
+                response_action.has_session_authentication = true;
+                response_action.session_authentication =
+                    configuration_.session_authentication;
+                session_challenge_ = response_action;
+                retry_count_ = 0;
+                actions.push({.kind = HandshakeActionKind::arm_timer,
+                    .timeout_milliseconds =
+                        configuration_.timeout_milliseconds});
+            } else {
+                actions.push({.kind = HandshakeActionKind::connected});
+            }
             return actions;
         }
         if (state_ == HandshakeState::connected
@@ -619,6 +684,13 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .group_membership =
                     configuration_.group_membership,
             });
+            if (configuration_.require_session_authentication) {
+                actions.values[0].packet.extension_field |=
+                    handshake_extension_flag_config;
+                actions.values[0].has_session_authentication = true;
+                actions.values[0].session_authentication =
+                    configuration_.session_authentication;
+            }
             actions.push({.kind = HandshakeActionKind::arm_timer,
                 .timeout_milliseconds = configuration_.timeout_milliseconds});
             return actions;
@@ -762,6 +834,22 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             peer_flow_window_ = incoming.flow_window;
             peer_initial_sequence_ = incoming.initial_sequence;
             retry_count_ = 0;
+            if (message.has_session_authentication
+                != configuration_.require_session_authentication)
+                return reject_locally(rogue_rejection_reason);
+            if (configuration_.require_session_authentication) {
+                if (!configuration_.session_authentication.is_proof())
+                    return reject_locally(rogue_rejection_reason);
+                session_confirmation_ = {.kind = HandshakeActionKind::send,
+                    .packet = base_packet(HandshakeRequest::agreement)};
+                session_confirmation_.packet.syn_cookie = cookie_;
+                session_confirmation_.packet.extension_field =
+                    handshake_extension_flag_config;
+                session_confirmation_.has_session_authentication = true;
+                session_confirmation_.session_authentication =
+                    configuration_.session_authentication;
+                actions.push(session_confirmation_);
+            }
             state_ = HandshakeState::connected;
             actions.push({.kind = HandshakeActionKind::connected});
             return actions;
@@ -837,6 +925,9 @@ HandshakeActions HandshakeMachine::timeout() noexcept
                 configuration_.group_membership,
         });
     } else if (configuration_.role == ConnectionRole::listener
+        && state_ == HandshakeState::awaiting_authentication_confirmation) {
+        actions.push(session_challenge_);
+    } else if (configuration_.role == ConnectionRole::listener
         && state_ == HandshakeState::awaiting_conclusion_response) {
         auto induction = base_packet(HandshakeRequest::induction);
         induction.version = handshake_version_5;
@@ -850,6 +941,16 @@ HandshakeActions HandshakeMachine::timeout() noexcept
         state_ = HandshakeState::failed;
         actions.push({.kind = HandshakeActionKind::failed});
         return actions;
+    }
+    if (configuration_.role == ConnectionRole::caller
+        && configuration_.require_session_authentication
+        && state_ == HandshakeState::awaiting_conclusion_response
+        && actions.size != 0U) {
+        actions.values[0].packet.extension_field |=
+            handshake_extension_flag_config;
+        actions.values[0].has_session_authentication = true;
+        actions.values[0].session_authentication =
+            configuration_.session_authentication;
     }
     actions.push({
         .kind = HandshakeActionKind::arm_timer,

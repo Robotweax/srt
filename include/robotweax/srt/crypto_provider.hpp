@@ -61,6 +61,15 @@ public:
         std::uint32_t iterations,
         std::span<std::byte> derived_key) noexcept = 0;
 
+    // Optional primitive for the explicitly enabled session-binding extension.
+    // Existing custom providers fail closed until they implement it.
+    [[nodiscard]] virtual Error hmac_sha256(std::span<const std::byte>,
+        std::span<const std::byte>, std::span<std::byte, 32> output) noexcept
+    {
+        secure_erase(output);
+        return Error::unsupported;
+    }
+
     [[nodiscard]] virtual Error wrap_key(
         std::span<const std::byte> key_encrypting_key,
         std::span<const std::byte> plaintext_keys,

@@ -153,6 +153,12 @@ typedef enum SRT_SOCKOPT {
      * Requires a valid socket or group, even when encryption is disabled.
      */
     SRTO_ROBOTWEAX_CRYPTO_BACKEND = 0x01000002,
+    /** Explicit opt-in to session-authenticated key management (bool, default false).
+     * Set before connect/listen on both peers. Requires a passphrase and
+     * enforced encryption. Caller/Listener only; no legacy fallback.
+     * False preserves the standard SRT wire protocol and option defaults.
+     */
+    SRTO_ROBOTWEAX_SESSIONAUTH = 0x01000003,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif

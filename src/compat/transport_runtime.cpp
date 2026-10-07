@@ -2494,7 +2494,18 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
             const auto material = crypto_ != nullptr
                 ? crypto_->pending_key_material()
                 : std::span<const std::byte> {};
-            const auto queued_material = bytes.subspan(packet_header_size);
+            auto queued_material = bytes.subspan(packet_header_size);
+            if (crypto_ != nullptr
+                && crypto_->session_authentication() != nullptr) {
+                // Locally serialized controls include the counter and tag.
+                // Compare only the KM body without advancing replay state.
+                if (queued_material.size() <= authenticated_key_overhead) {
+                    queued_material = {};
+                } else {
+                    queued_material = queued_material.subspan(
+                        8, queued_material.size() - authenticated_key_overhead);
+                }
+            }
             current = !material.empty()
                 && material.size() == queued_material.size()
                 && std::equal(
@@ -2973,6 +2984,24 @@ bool ConnectionRuntime::send_key_material(
         PacketTimestamp{static_cast<std::uint32_t>(now)};
     view.control.destination_socket_id = peer_socket_id_;
     view.payload = key_material;
+    std::array<std::byte,
+        maximum_key_material_size + authenticated_key_overhead>
+        authenticated {};
+    if (options_.session_authentication()) {
+        std::size_t authenticated_size = 0;
+        if (crypto_ == nullptr || crypto_->session_authentication() == nullptr
+            || crypto_->session_authentication()->seal(
+                   subtype == key_material_response_subtype, key_material,
+                   authenticated, authenticated_size)
+                != Error::none) {
+            break_locked(0);
+            return false;
+        }
+        view.control.subtype = subtype == key_material_request_subtype
+            ? authenticated_key_request_subtype
+            : authenticated_key_response_subtype;
+        view.payload = std::span {authenticated}.first(authenticated_size);
+    }
     std::array<std::byte, 1500> datagram{};
     const auto encoded = encode_packet(view, datagram);
     if (!encoded) {
@@ -3430,9 +3459,9 @@ bool ConnectionRuntime::report_filter_losses_locked(
 }
 
 void ConnectionRuntime::process_packet(
-    const PacketView& packet,
-    IpEndpoint peer) noexcept
+    const PacketView& incoming_packet, IpEndpoint peer) noexcept
 {
+    PacketView packet = incoming_packet;
     if (peer != peer_) {
         return;
     }
@@ -3447,6 +3476,29 @@ void ConnectionRuntime::process_packet(
     if (packet.kind == PacketKind::control
         && packet.control.type == ControlType::handshake) {
         return;
+    }
+    if (packet.kind == PacketKind::control
+        && packet.control.type == ControlType::user_defined) {
+        const bool protected_request =
+            packet.control.subtype == authenticated_key_request_subtype;
+        const bool protected_response =
+            packet.control.subtype == authenticated_key_response_subtype;
+        if (protected_request || protected_response) {
+            std::span<const std::byte> material;
+            if (!options_.session_authentication() || crypto_ == nullptr
+                || crypto_->session_authentication() == nullptr
+                || !crypto_->session_authentication()->open(
+                    protected_response, packet.payload, material))
+                return;
+            packet.payload = material;
+            packet.control.subtype = protected_request
+                ? key_material_request_subtype
+                : key_material_response_subtype;
+        } else if (options_.session_authentication()
+            && (packet.control.subtype == key_material_request_subtype
+                || packet.control.subtype == key_material_response_subtype)) {
+            return;
+        }
     }
     if (packet.kind == PacketKind::control
         && !has_valid_control_payload_shape(packet.payload)) {
@@ -3717,6 +3769,17 @@ bool ConnectionRuntime::process_handshake(
                     : handshake_replay_response_
                           .packet.syn_cookie)) {
         return false;
+    }
+
+    if (options_.session_authentication()) {
+        if (handshake_replay_response_.packet.request
+                != HandshakeRequest::agreement
+            || !message.has_session_authentication
+            || !message.has_key_material_extension || crypto_ == nullptr
+            || crypto_->session_authentication() == nullptr
+            || !crypto_->session_authentication()->verify_handshake(false,
+                message.key_material.view(), message.session_authentication))
+            return false;
     }
 
     const std::uint64_t now = now_microseconds();

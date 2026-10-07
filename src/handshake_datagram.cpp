@@ -24,6 +24,7 @@ namespace {
     case HandshakeExtensionType::stream_id:
     case HandshakeExtensionType::congestion:
     case HandshakeExtensionType::packet_filter:
+    case HandshakeExtensionType::session_authentication:
     case HandshakeExtensionType::group:
         return (flags & handshake_extension_flag_config) != 0U;
     }
@@ -164,6 +165,21 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
             }
             message.has_group_membership = true;
             message.group_membership = membership.membership;
+        } else if (decoded.extension.type
+            == HandshakeExtensionType::session_authentication) {
+            const auto content = decoded.extension.content;
+            if (message.has_session_authentication
+                || content.size() != session_authentication_wire_size
+                || content[0] != std::byte {0} || content[1] != std::byte {0}
+                || content[2] != std::byte {0} || content[3] != std::byte {1})
+                return {.error = Error::invalid_extension};
+            message.has_session_authentication = true;
+            std::copy_n(content.begin() + 4, 32,
+                message.session_authentication.caller_nonce.begin());
+            std::copy_n(content.begin() + 36, 32,
+                message.session_authentication.listener_nonce.begin());
+            std::copy_n(content.begin() + 68, 32,
+                message.session_authentication.proof.begin());
         } else {
             message.has_unknown_extension = true;
         }
@@ -223,12 +239,12 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
         ? extension_header_size + group_membership_content_size
         : 0U;
     const std::size_t required = packet_header_size + handshake_size
-        + handshake_extension_size
-        + key_material_extension_size
-        + stream_id_extension_size
-        + congestion_extension_size
-        + packet_filter_extension_size
-        + group_extension_size;
+        + handshake_extension_size + key_material_extension_size
+        + stream_id_extension_size + congestion_extension_size
+        + packet_filter_extension_size + group_extension_size
+        + (action.has_session_authentication
+                ? extension_header_size + session_authentication_wire_size
+                : 0U);
     if (destination.size() < required) {
         return {.error = Error::buffer_too_small};
     }
@@ -354,6 +370,28 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
         if (!extension) {
             return {.error = extension.error};
         }
+    }
+    if (action.has_session_authentication) {
+        if ((action.packet.extension_field & handshake_extension_flag_config)
+            == 0U)
+            return {.error = Error::invalid_extension};
+        std::array<std::byte, session_authentication_wire_size> content {};
+        content[3] = std::byte {1};
+        std::copy(action.session_authentication.caller_nonce.begin(),
+            action.session_authentication.caller_nonce.end(),
+            content.begin() + 4);
+        std::copy(action.session_authentication.listener_nonce.begin(),
+            action.session_authentication.listener_nonce.end(),
+            content.begin() + 36);
+        std::copy(action.session_authentication.proof.begin(),
+            action.session_authentication.proof.end(), content.begin() + 68);
+        const auto extension = encode_extension(
+            HandshakeExtensionType::session_authentication, content,
+            destination.subspan(
+                required - extension_header_size - content.size(),
+                extension_header_size + content.size()));
+        if (!extension)
+            return {.error = extension.error};
     }
     return {.bytes_written = required};
 }

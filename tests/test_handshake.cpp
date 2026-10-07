@@ -22,24 +22,18 @@ std::uint32_t test_cookie(const Handshake& packet, void* context) noexcept
 {
     return {
         .packet = action.packet,
-        .has_handshake_extension =
-            action.has_handshake_extension,
+        .has_handshake_extension = action.has_handshake_extension,
         .extension_type = action.extension_type,
-        .extension_parameters =
-            action.extension_parameters,
-        .has_key_material_extension =
-            action.has_key_material_extension,
-        .key_material_extension_type =
-            action.key_material_extension_type,
+        .extension_parameters = action.extension_parameters,
+        .has_key_material_extension = action.has_key_material_extension,
+        .key_material_extension_type = action.key_material_extension_type,
         .key_material = action.key_material,
-        .has_congestion_extension =
-            action.has_congestion_extension,
-        .congestion_controller =
-            action.congestion_controller,
-        .has_packet_filter_extension =
-            action.has_packet_filter_extension,
-        .packet_filter_configuration =
-            action.packet_filter_configuration,
+        .has_congestion_extension = action.has_congestion_extension,
+        .congestion_controller = action.congestion_controller,
+        .has_packet_filter_extension = action.has_packet_filter_extension,
+        .packet_filter_configuration = action.packet_filter_configuration,
+        .has_session_authentication = action.has_session_authentication,
+        .session_authentication = action.session_authentication,
     };
 }
 
@@ -1355,4 +1349,63 @@ TEST(sensor_profile_listener_rejects_a_caller_without_the_profile)
     REQUIRE_EQ(
         static_cast<std::int32_t>(rejected.values[0].packet.request), 1'014);
     REQUIRE_EQ(rejected.values[1].kind, HandshakeActionKind::rejected);
+}
+
+TEST(session_authentication_listener_requires_finish_and_retries_challenge)
+{
+    std::uint32_t salt = 123;
+    SessionAuthenticationParameters offer;
+    offer.caller_nonce[0] = std::byte {1};
+    auto challenge = offer;
+    challenge.listener_nonce[0] = std::byte {2};
+    challenge.proof[0] = std::byte {3};
+    auto finish = challenge;
+    finish.proof[0] = std::byte {4};
+    HandshakeMachine caller {{.role = ConnectionRole::caller,
+        .local_socket_id = 100,
+        .require_session_authentication = true}};
+    HandshakeMachine listener {{.role = ConnectionRole::listener,
+        .local_socket_id = 200,
+        .cookie_generator = test_cookie,
+        .cookie_context = &salt,
+        .require_session_authentication = true,
+        .session_authentication = challenge,
+        .session_authentication_confirmation = finish}};
+    const auto start = caller.start();
+    REQUIRE(!start.values[0].has_session_authentication);
+    const auto induction = listener.receive(message_from(start.values[0]));
+    REQUIRE(!induction.values[0].has_session_authentication);
+    REQUIRE_EQ(caller.set_session_authentication(challenge),
+        Error::invalid_key_material);
+    REQUIRE_EQ(caller.set_session_authentication(offer), Error::none);
+    const auto conclusion = caller.receive(message_from(induction.values[0]));
+    const auto response = listener.receive(message_from(conclusion.values[0]));
+    REQUIRE_EQ(
+        listener.state(), HandshakeState::awaiting_authentication_confirmation);
+    const auto retry = listener.timeout();
+    REQUIRE(retry.values[0].session_authentication.matches(challenge));
+    const auto duplicate = listener.receive(message_from(conclusion.values[0]));
+    REQUIRE(duplicate.values[0].session_authentication.matches(challenge));
+    REQUIRE_EQ(
+        caller.set_session_authentication(offer), Error::invalid_key_material);
+    REQUIRE_EQ(caller.set_session_authentication(finish), Error::none);
+    const auto done = caller.receive(message_from(response.values[0]));
+    auto confirmation = message_from(done.values[0]);
+    REQUIRE_EQ(confirmation.packet.request, HandshakeRequest::agreement);
+    confirmation.session_authentication.proof[0] ^= std::byte {1};
+    (void)listener.receive(confirmation);
+    REQUIRE_EQ(
+        listener.state(), HandshakeState::awaiting_authentication_confirmation);
+    confirmation = message_from(done.values[0]);
+    confirmation.session_authentication.listener_nonce[0] ^= std::byte {1};
+    (void)listener.receive(confirmation);
+    REQUIRE_EQ(
+        listener.state(), HandshakeState::awaiting_authentication_confirmation);
+    confirmation = message_from(done.values[0]);
+    confirmation.has_session_authentication = false;
+    (void)listener.receive(confirmation);
+    REQUIRE_EQ(
+        listener.state(), HandshakeState::awaiting_authentication_confirmation);
+    (void)listener.receive(message_from(done.values[0]));
+    REQUIRE_EQ(listener.state(), HandshakeState::connected);
 }
