@@ -1701,10 +1701,13 @@ public:
         // fall back to running application code on a protocol shard.
         if (socket_->connect_callback != nullptr) {
             const auto executor = acquire_connect_callback_executor();
-            if (executor == nullptr || !executor->submit({
-                    .function = [](void* context, int) noexcept {
-                        static_cast<AsyncCallerHandshakeActor*>(context)->await_callback();
-                    },
+            if (executor == nullptr
+                || !executor->submit({
+                    .function =
+                        [](void* context, int) noexcept {
+                            static_cast<AsyncCallerHandshakeActor*>(context)
+                                ->await_callback();
+                        },
                     .context = owner,
                 })) {
                 std::lock_guard lock(state_mutex_);
@@ -2805,10 +2808,13 @@ public:
         // fall back to running application code on a protocol shard.
         if (socket_->connect_callback != nullptr) {
             const auto executor = acquire_connect_callback_executor();
-            if (executor == nullptr || !executor->submit({
-                    .function = [](void* context, int) noexcept {
-                        static_cast<AsyncRendezvousHandshakeActor*>(context)->await_callback();
-                    },
+            if (executor == nullptr
+                || !executor->submit({
+                    .function =
+                        [](void* context, int) noexcept {
+                            static_cast<AsyncRendezvousHandshakeActor*>(context)
+                                ->await_callback();
+                        },
                     .context = owner,
                 })) {
                 std::lock_guard lock(state_mutex_);
