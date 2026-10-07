@@ -194,6 +194,9 @@ private:
         // Expired messages remain as lightweight sequence tombstones until
         // cumulative ACK. A repeated NAK can therefore trigger DROPREQ again.
         bool dropped = false;
+        SequenceNumber dropped_message_first {};
+        SequenceNumber dropped_message_last {};
+        std::size_t dropped_remaining_bytes = 0;
         bool drop_request_queued = false;
         bool sent = false;
         bool retransmission_queued = false;
@@ -213,6 +216,9 @@ private:
     [[nodiscard]] bool queue_drop_request(SequenceNumber sequence) noexcept;
     [[nodiscard]] bool queue_retransmission(SequenceNumber sequence) noexcept;
 
+    // Fenwick counts change only on tombstone creation/removal, not DATA sends.
+    [[nodiscard]] std::size_t dropped_prefix(std::size_t end) const noexcept;
+    std::vector<std::uint32_t> dropped_counts_;
     detail::PayloadPool payloads_;
     std::vector<Slot> slots_;
     std::vector<SequenceNumber> retransmission_queue_;

@@ -257,6 +257,10 @@ CryptoSession::~CryptoSession()
     erase_slot(receive_odd_);
     erase_receive_history(receive_even_history_);
     erase_receive_history(receive_odd_history_);
+    for (auto& retired : retired_transmit_keys_) {
+        provider_.secure_erase(retired.key);
+        retired.length = 0;
+    }
     provider_.secure_erase(passphrase_);
     for (auto& cache : kek_cache_) {
         provider_.secure_erase(cache.key);
@@ -904,7 +908,22 @@ Error CryptoSession::accept_key_material(
     const auto odd_key = std::span {plaintext}.subspan(
         material.keys == EncryptionKey::reserved ? material.key_length : 0U,
         material.key_length);
-    if ((has_even && changes_identity(EncryptionKey::even, even_key))
+    const auto reflects_transmit_key = [&](std::span<const std::byte> key) {
+        for (const auto* local : {&transmit_even_, &transmit_odd_}) {
+            if (local->ready() && local->key_length == key.size()
+                && std::equal(key.begin(), key.end(), local->key.begin()))
+                return true;
+        }
+        for (const auto& retired : retired_transmit_keys_) {
+            if (retired.length == key.size()
+                && std::equal(key.begin(), key.end(), retired.key.begin()))
+                return true;
+        }
+        return false;
+    };
+    if ((has_even && reflects_transmit_key(even_key))
+        || (has_odd && reflects_transmit_key(odd_key))
+        || (has_even && changes_identity(EncryptionKey::even, even_key))
         || (has_odd && changes_identity(EncryptionKey::odd, odd_key))
         || (has_even && has_odd
             && std::equal(even_key.begin(), even_key.end(), odd_key.begin()))) {
@@ -1064,6 +1083,14 @@ Error CryptoSession::generate_next_sender_key() noexcept
     Error result = provider_.random_bytes(
         std::span{key}.first(current->key_length));
     if (result == Error::none) {
+        if (destination->ready()) {
+            auto& retired = retired_transmit_keys_[retired_transmit_cursor_];
+            provider_.secure_erase(retired.key);
+            retired.key = destination->key;
+            retired.length = destination->key_length;
+            retired_transmit_cursor_ =
+                (retired_transmit_cursor_ + 1U) % retired_transmit_keys_.size();
+        }
         result = install_key(*destination,
             std::span {key}.first(current->key_length), current->salt,
             current->mode);

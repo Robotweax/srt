@@ -195,6 +195,26 @@ domain and can be reproduced under a virtual clock.
 SRT source time and application media clocks are distinct. See
 [Live timing](live-timing.md) for the public mapping contract.
 
+## Bounded NAK expansion
+
+Incoming NAK ranges are validated before mutation and merged into a fixed-size
+pending range set. A receive/service turn expands at most 256 positions; a
+round-robin cursor preserves progress even when a peer repeatedly reports the
+entire send window. Unprocessed ranges remain pending and keep the control
+service deadline ready. Source-tree C++ owners must call
+`service_pending_naks(now)` alongside timer polling and consume its actions and
+loss counters; the compatibility runtime does this automatically. Exhausting
+the pending range capacity returns `buffer_too_small` without partial admission.
+
+Validation uses the sequential original-send cursor and a Fenwick count of
+retained drop tombstones, avoiding scans of a whole window, including unsent
+expired tails. Tombstones retain their message bounds and remaining byte count
+so repeated drop responses do not rescan large expired messages. These indexes
+add bounded per-slot memory; DATA sends do not update the Fenwick index.
+`robotweax_srt_nak_work_benchmark` measures repeated compact full-window reports
+at 1,024, 8,192 and 65,536 slots. It is a CPU microbenchmark, not a WAN throughput
+or shared-socket fairness qualification.
+
 ## Encryption and retransmission
 
 Cipher negotiation and key installation occur before DATA publication. Each

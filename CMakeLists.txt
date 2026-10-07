@@ -849,6 +849,11 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
 endif()
 
 if(ROBOTWEAX_SRT_BUILD_BENCHMARKS)
+    add_executable(robotweax_srt_nak_work_benchmark
+        benchmarks/nak_work_benchmark.cpp)
+    target_link_libraries(robotweax_srt_nak_work_benchmark PRIVATE RobotweaxSRT::srt)
+    target_compile_features(robotweax_srt_nak_work_benchmark PRIVATE cxx_std_20)
+
     add_executable(robotweax_srt_send_buffer_benchmark
         benchmarks/send_buffer_benchmark.cpp)
     target_link_libraries(robotweax_srt_send_buffer_benchmark

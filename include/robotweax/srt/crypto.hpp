@@ -660,6 +660,15 @@ private:
     std::uint64_t preannouncement_floor_ = 0;
     KeySlot transmit_even_{};
     KeySlot transmit_odd_{};
+    // Keep retired local secrets for a bounded number of rotations. Compare
+    // key bytes independent of selector/salt so relabeling cannot bypass the
+    // direction boundary. Initial handshake clones remain receive-only.
+    struct RetiredTransmitKey {
+        std::array<std::byte, maximum_aes_key_size> key {};
+        std::size_t length = 0;
+    };
+    std::array<RetiredTransmitKey, 8> retired_transmit_keys_ {};
+    std::size_t retired_transmit_cursor_ = 0;
     KeySlot receive_even_{};
     KeySlot receive_odd_{};
     ReceiveKeyHistory receive_even_history_{};
