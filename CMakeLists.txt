@@ -1624,6 +1624,9 @@ if(ROBOTWEAX_SRT_BUILD_FUZZERS)
         message(FATAL_ERROR "Fuzz targets require Clang")
     endif()
     target_compile_options(robotweax_srt PRIVATE -fsanitize=fuzzer-no-link,address,undefined)
+    # Ordinary tests and installed consumers also link this instrumented library.
+    # Supply sanitizer runtimes without introducing libFuzzer's main function.
+    target_link_options(robotweax_srt PUBLIC -fsanitize=fuzzer-no-link,address,undefined)
     add_executable(fuzz_packet_decode fuzz/fuzz_packet_decode.cpp)
     target_link_libraries(fuzz_packet_decode PRIVATE RobotweaxSRT::srt)
     target_compile_options(fuzz_packet_decode PRIVATE -fsanitize=fuzzer,address,undefined)
@@ -1708,6 +1711,12 @@ endif()
 set(ROBOTWEAX_SRT_PC_PRIVATE_LIBS "${CMAKE_THREAD_LIBS_INIT}")
 if(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "bcrypt")
     string(APPEND ROBOTWEAX_SRT_PC_PRIVATE_LIBS " -lbcrypt")
+endif()
+set(ROBOTWEAX_SRT_PC_LINK_OPTIONS "")
+if(ROBOTWEAX_SRT_BUILD_FUZZERS)
+    # pkg-config consumers need the same runtimes as CMake consumers, including
+    # when the instrumented library is shared.
+    set(ROBOTWEAX_SRT_PC_LINK_OPTIONS " -fsanitize=fuzzer-no-link,address,undefined")
 endif()
 set(ROBOTWEAX_SRT_PC_CFLAGS "")
 if(ENABLE_AEAD_API_PREVIEW)

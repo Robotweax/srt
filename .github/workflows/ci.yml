@@ -1178,7 +1178,7 @@ jobs:
         run: >-
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Debug
-          -DROBOTWEAX_SRT_BUILD_TESTS=OFF
+          -DROBOTWEAX_SRT_BUILD_TESTS=ON
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
           -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
           -DROBOTWEAX_SRT_BUILD_FUZZERS=ON
@@ -1192,6 +1192,12 @@ jobs:
           fuzz_group_membership_decode
           fuzz_fec_control_decode
           fuzz_aead_packet_open
+          robotweax_srt_c_api_test
+          robotweax_srt_compatible_header_test
+      - name: Exercise ordinary consumers of the instrumented library
+        run: >-
+          ctest --test-dir build --output-on-failure
+          -R '^robotweax_srt_(c_api_test|compatible_header_test|package_consumer_tests)$'
       - name: Exercise packet decoder
         run: ./build/fuzz_packet_decode -runs=10000
       - name: Exercise handshake decoder

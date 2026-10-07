@@ -427,7 +427,10 @@ cmake -S . -B build-fuzz \
 cmake --build build-fuzz --parallel
 ```
 
-They require a compatible libFuzzer toolchain. Retain and minimize any failing
+They require a compatible libFuzzer toolchain, including its runtime library.
+The default test targets may remain enabled: consumers of the instrumented SRT
+library inherit sanitizer runtime link flags without inheriting libFuzzer's
+`main` function. Retain and minimize any failing
 input so the failure can become a deterministic regression test.
 
 ## Interoperability qualification
