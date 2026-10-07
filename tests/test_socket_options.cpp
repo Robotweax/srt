@@ -566,3 +566,34 @@ TEST(control_profile_selects_file_cc_with_reliable_message_defaults)
     REQUIRE_EQ(options.congestion_controller(), CongestionController::file);
     REQUIRE(!options.message_api());
 }
+
+TEST(socket_options_refresh_minimum_preserves_valid_crypto_configuration)
+{
+    SocketOptions options;
+    REQUIRE_EQ(options.set_passphrase("review rotation secret"), Error::none);
+    for (const std::int64_t valid : {0, 3, 10'000}) {
+        REQUIRE_EQ(options.set(SocketOption::key_refresh_rate_packets, valid),
+            Error::none);
+        const auto before = options.crypto_configuration();
+        for (const std::int64_t invalid : {1, 2}) {
+            REQUIRE_EQ(
+                options.set(SocketOption::key_refresh_rate_packets, invalid),
+                Error::invalid_state);
+            const auto after = options.crypto_configuration();
+            REQUIRE_EQ(after.refresh_rate_packets, before.refresh_rate_packets);
+            REQUIRE_EQ(
+                after.preannouncement_packets, before.preannouncement_packets);
+        }
+        CryptoSession crypto(options.crypto_configuration());
+        REQUIRE_EQ(crypto.start_initiator(), Error::none);
+    }
+    REQUIRE_EQ(
+        options.set(SocketOption::key_refresh_rate_packets, 3), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::key_preannouncement_packets, 1), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::key_preannouncement_packets, 0),
+        Error::invalid_state);
+    REQUIRE_EQ(options.set(SocketOption::key_preannouncement_packets, 2),
+        Error::invalid_state);
+    REQUIRE_EQ(options.crypto_configuration().preannouncement_packets, 1U);
+}

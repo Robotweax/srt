@@ -387,6 +387,8 @@ the refresh as well.
 
 `SRTO_KMREFRESHRATE` accepts values up to `2^31 - 1`, the maximum positive
 `int32_t`; the same bound applies to the internal native configuration paths.
+The smallest positive interval is 3; values 1 and 2 are rejected because no
+positive pre-announcement fits below half of those intervals.
 The effective refresh interval is capped at `2^30` sequence positions, and the
 pre-announcement at half of that interval. Larger configured values are
 accepted and reported unchanged, but rotate at the cap. Zero selects the
