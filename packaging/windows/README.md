@@ -195,12 +195,26 @@ References: [Inno Setup command-line options](https://jrsoftware.org/ishelp/topi
 
 ### Source provenance and tag identity
 
-The installer hash record proves continuity from the tested unsigned pair to
-the signing job. It is not an independent source-to-binary attestation: a
-compromised producer could choose both candidate contents and the bytes later
-hashed by the test job. Signing approval must account for this trust boundary.
-A producer-issued attestation alone does not eliminate producer compromise;
-that requires an independently trusted build or reproducible rebuild policy.
+Signing uses a fresh independent rebuild in the protected
+`windows-release-signing` environment. That runner checks out the exact event
+commit and pinned OpenSSL source, rebuilds all twelve backend/configuration/
+architecture variants, packages both installers, and tests the resulting pair.
+It does not download ordinary producer artifacts or use their caches. It has
+read-only repository permissions and no OIDC signing authority.
+
+The signer downloads only the immutable artifact ID output by this rebuild job
+and verifies its recorded hashes, run and source identity before Azure login.
+The original unsigned build jobs remain qualification checks; their EXEs are
+never signed. This selects independently built bytes rather than asserting
+byte-for-byte reproducibility of MSVC/OpenSSL/Inno output. Compromise of the
+protected rebuild runner or approved source is still inside the trusted
+boundary. Reviewers must approve this source/build boundary, not just filenames.
+
+The protected rebuild can take up to three hours and may require a separate
+environment approval before the signing job's existing approval. Both approvals
+use the existing environment policy; no credentials or permissions are added.
+An end-to-end Windows rebuild must be qualified before relying on release
+signing. No signing operation is performed by local regression tests.
 
 Before creating a draft and immediately before uploading its assets, the
 workflow now resolves the live release tag through the GitHub API, peels

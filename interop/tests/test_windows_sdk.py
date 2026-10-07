@@ -58,5 +58,26 @@ class WindowsSdkTests(unittest.TestCase):
     def test_unsigned_provenance_is_verified_before_oidc(self):
         workflow = (ROOT / '.github/workflows/windows-sdk.yml').read_text()
         signing = workflow.split('\n  sign:\n', 1)[1].split('\n  release-draft:\n', 1)[0]
-        self.assertIn('needs.coexistence.outputs.installer-provenance', signing)
+        self.assertIn('needs.rebuild.outputs.installer-provenance', signing)
         self.assertLess(signing.index('Assert-SdkInstallerProvenance'), signing.index('uses: azure/login@'))
+
+
+    def test_signer_consumes_only_independent_rebuild_artifact_id(self):
+        workflow = (ROOT / '.github/workflows/windows-sdk.yml').read_text()
+        rebuild = workflow.split('\n  rebuild:\n', 1)[1].split('\n  sign:\n', 1)[0]
+        signing = workflow.split('\n  sign:\n', 1)[1].split('\n  release-draft:\n', 1)[0]
+        self.assertIn('environment: windows-release-signing', rebuild)
+        self.assertIn('contents: read', rebuild)
+        self.assertNotIn('id-token:', rebuild)
+        self.assertNotIn('download-artifact', rebuild)
+        self.assertNotIn('actions/cache', rebuild)
+        self.assertIn('ref: ${{ github.sha }}', rebuild)
+        self.assertIn('rebuild-installers.ps1', rebuild)
+        self.assertIn('overwrite: false', rebuild)
+        self.assertIn('artifact-ids: ${{ needs.rebuild.outputs.artifact-id }}', signing)
+        self.assertNotIn('pattern:', signing)
+        self.assertNotIn('needs.coexistence', signing)
+        qualification = workflow.split('\n  rebuild-qualification:\n', 1)[1].split('\n  rebuild:\n', 1)[0]
+        self.assertIn('rebuild-installers.ps1', qualification)
+        self.assertNotIn('environment:', qualification)
+        self.assertNotIn('id-token:', qualification)
