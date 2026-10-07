@@ -21,6 +21,7 @@
 #include <cstring>
 #include <future>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -6385,5 +6386,31 @@ TEST(compat_group_receive_control_reads_only_metadata_buffer_inputs)
                 REQUIRE_EQ(metadata[0].id, socket);
             }
         }
+    }
+}
+
+TEST(compat_prepare_endpoint_rejects_short_allocations_before_reading_family)
+{
+    for (const int length : {0, 1}) {
+        // An exact one-byte allocation exposes a premature sa_family read to
+        // ASan on both sa_family_t layouts (including macOS's leading sa_len).
+        auto bytes = std::make_unique<unsigned char[]>(1);
+        const auto endpoint = srt_prepare_endpoint(
+            nullptr, reinterpret_cast<const sockaddr*>(bytes.get()), length);
+        REQUIRE_EQ(endpoint.errorcode, SRT_EINVPARAM);
+        REQUIRE_EQ(endpoint.id, SRT_INVALID_SOCK);
+    }
+    const auto ipv4 = ipv4_address(9001);
+    const auto ipv6 = ipv6_address(9001);
+    for (const auto length : {sizeof(ipv4) - 1U, sizeof(ipv6) - 1U}) {
+        auto bytes = std::make_unique<unsigned char[]>(length);
+        const void* address = length == sizeof(ipv4) - 1U
+            ? static_cast<const void*>(&ipv4)
+            : static_cast<const void*>(&ipv6);
+        std::memcpy(bytes.get(), address, length);
+        const auto endpoint = srt_prepare_endpoint(nullptr,
+            reinterpret_cast<const sockaddr*>(bytes.get()),
+            static_cast<int>(length));
+        REQUIRE_EQ(endpoint.errorcode, SRT_EINVPARAM);
     }
 }
