@@ -1,6 +1,7 @@
 #include "test.hpp"
 
 #include "compat/listener_handshake_router.hpp"
+#include "compat/listener_crypto_budget.hpp"
 
 using namespace robotweax::srt;
 using namespace robotweax::srt::compat;
@@ -338,4 +339,47 @@ TEST(caller_induction_response_classifier_is_fail_closed)
     response.packet.syn_cookie = 1U;
     REQUIRE_EQ(classify_caller_induction_response(response),
                ListenerHandshakeProtocol::invalid);
+}
+
+TEST(listener_crypto_budget_bounds_sources_and_refills)
+{
+    ListenerCryptoBudget budget;
+    const auto now = ListenerCryptoBudget::Clock::time_point {};
+    auto peer = IpEndpoint::loopback(1);
+    for (unsigned i = 0; i < ListenerCryptoBudget::source_burst; ++i) {
+        peer.port = static_cast<std::uint16_t>(i + 1);
+        REQUIRE(budget.admit(peer, now));
+    }
+    REQUIRE(!budget.admit(peer, now));
+    REQUIRE(!budget.admit(peer, now - std::chrono::seconds {1}));
+    auto mapped = IpEndpoint::ipv6_any();
+    mapped.address[10] = mapped.address[11] = 255;
+    mapped.address[12] = 127;
+    mapped.address[15] = 1;
+    REQUIRE(!budget.admit(mapped, now));
+    const auto later = now + std::chrono::seconds {1};
+    for (unsigned i = 0; i < ListenerCryptoBudget::source_per_second; ++i)
+        REQUIRE(budget.admit(peer, later));
+    REQUIRE(!budget.admit(peer, later));
+    peer.address[3] = 2;
+    REQUIRE(budget.admit(peer, later));
+}
+
+TEST(listener_crypto_budget_bounds_distributed_and_repeated_work)
+{
+    ListenerCryptoBudget budget;
+    const auto now = ListenerCryptoBudget::Clock::time_point {};
+    auto peer = IpEndpoint::loopback();
+    for (unsigned i = 0; i < ListenerCryptoBudget::global_burst; ++i) {
+        peer.address[3] = static_cast<std::uint8_t>(i);
+        REQUIRE(budget.admit(peer, now));
+    }
+    peer.address[2] = 1;
+    REQUIRE(!budget.admit(peer, now));
+    // A full table cannot evict indebted sources to grant fresh bursts.
+    REQUIRE(!budget.admit(peer, now + std::chrono::seconds {1}));
+    REQUIRE(budget.admit(peer, now + std::chrono::seconds {2}));
+    for (unsigned i = 1; i < ListenerCryptoBudget::source_burst; ++i)
+        REQUIRE(budget.admit(peer, now + std::chrono::seconds {2}));
+    REQUIRE(!budget.admit(peer, now + std::chrono::seconds {2}));
 }
