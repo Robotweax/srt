@@ -575,15 +575,6 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
             == SRT_ERROR) {
             return SRT_ERROR;
         }
-        std::shared_ptr<ConnectionRuntime> runtime;
-        SocketOptions native_options;
-        {
-            std::lock_guard member_lock(member->mutex);
-            runtime = member->runtime;
-            native_options = member->native_options;
-        }
-        if (runtime != nullptr)
-            runtime->apply_options(native_options);
     }
     {
         std::lock_guard lock(record->mutex);
