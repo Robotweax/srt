@@ -100,6 +100,7 @@ struct GroupRecord {
     SRTSOCKET mirror_listener = SRT_INVALID_SOCK;
     // Snapshot of the listener bond that owned this mirror at admission.
     std::uint64_t mirror_bond_scope = 0;
+    std::uint64_t admission_domain = 0;
     srt_connect_callback_fn* connect_callback = nullptr;
     void* connect_callback_opaque = nullptr;
     bool opened = false;
@@ -199,7 +200,7 @@ public:
     [[nodiscard]] bool prepare_mirror(
         SRTSOCKET listener, SRTSOCKET peer_group,
         SRT_GROUP_TYPE type, std::uint32_t initial_sequence,
-        MirrorDescription& output) noexcept;
+        MirrorDescription& output, std::uint64_t admission_domain = 0) noexcept;
     void release_empty_mirror(
         SRTSOCKET group, std::uint64_t generation) noexcept;
     [[nodiscard]] bool add_member(

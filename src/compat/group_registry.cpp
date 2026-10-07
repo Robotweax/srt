@@ -633,7 +633,7 @@ void GroupRegistry::note_io_result(
 bool GroupRegistry::prepare_mirror(
     SRTSOCKET listener, SRTSOCKET peer_group,
     SRT_GROUP_TYPE type, std::uint32_t initial_sequence,
-    MirrorDescription& output) noexcept
+    MirrorDescription& output, std::uint64_t admission_domain) noexcept
 {
     output = {};
     if (listener < 0 || is_group_handle(listener)
@@ -694,6 +694,10 @@ bool GroupRegistry::prepare_mirror(
                         && record->mirror_bond_scope == 0U
                         && record->mirror_listener == listener))
                 && record->peer_group == peer_group) {
+                // A peer-controlled group ID may not cross application
+                // authorization domains on the same listener or bond.
+                if (record->admission_domain != admission_domain)
+                    return false;
                 // The handshake carries the sender's next packet sequence.
                 // The mirror cursor advances when the application receives,
                 // so unread packets put it behind that handshake sequence.
@@ -740,6 +744,7 @@ bool GroupRegistry::prepare_mirror(
         prepared->peer_group = peer_group;
         prepared->mirror_listener = listener;
         prepared->mirror_bond_scope = bond_scope;
+        prepared->admission_domain = admission_domain;
         prepared->member_public_options = listener_public_options;
         prepared->member_native_options = listener_native_options;
         prepared->peer_idle_timeout_milliseconds =

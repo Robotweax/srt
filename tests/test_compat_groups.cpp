@@ -1445,7 +1445,10 @@ TEST(compat_group_connect_joins_with_unread_messages_across_rollover)
         REQUIRE_EQ(
             srt_listen_callback(
                 cleanup.listener,
-                [](void* opaque, SRTSOCKET, int, const sockaddr*, const char*) {
+                [](void* opaque, SRTSOCKET socket, int, const sockaddr*, const char*) {
+                    const std::uint64_t domain = 1;
+                    if (srt_setsockflag(socket, SRTO_ROBOTWEAX_GROUPDOMAIN, &domain, sizeof(domain)) != 0)
+                        return -1;
                     auto& gate = *static_cast<HandshakeGate*>(opaque);
                     if (++gate.calls >= 3 && !gate.delayed.exchange(true)) {
                         gate.entered.set_value();
@@ -4136,7 +4139,10 @@ TEST(compat_group_member_options_round_trip_and_reach_live_members)
     REQUIRE_EQ(
         srt_listen_callback(
             cleanup.listener,
-            [](void* context, SRTSOCKET, int, const sockaddr*, const char* id) {
+            [](void* context, SRTSOCKET socket, int, const sockaddr*, const char* id) {
+                const std::uint64_t domain = 1;
+                if (srt_setsockflag(socket, SRTO_ROBOTWEAX_GROUPDOMAIN, &domain, sizeof(domain)) != 0)
+                    return -1;
                 auto& state = *static_cast<CallbackState*>(context);
                 std::lock_guard lock(state.mutex);
                 if (id == nullptr
@@ -6412,5 +6418,84 @@ TEST(compat_prepare_endpoint_rejects_short_allocations_before_reading_family)
             reinterpret_cast<const sockaddr*>(bytes.get()),
             static_cast<int>(length));
         REQUIRE_EQ(endpoint.errorcode, SRT_EINVPARAM);
+    }
+}
+
+TEST(compat_group_mirror_rejects_a_different_application_domain)
+{
+    const auto listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    const SRTSOCKET peer = SRTGROUP_MASK | 173;
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        GroupRegistry::MirrorDescription first, other;
+        REQUIRE(GroupRegistry::instance().prepare_mirror(listener, peer, type, 100, first, 11));
+        REQUIRE(!GroupRegistry::instance().prepare_mirror(listener, peer, type, 100, other, 22));
+        REQUIRE(!GroupRegistry::instance().prepare_mirror(listener, peer, type, 100, other, 0));
+        REQUIRE(GroupRegistry::instance().prepare_mirror(listener, peer, type, 100, other, 11));
+        REQUIRE_EQ(other.group, first.group);
+        REQUIRE(!other.created);
+        REQUIRE_EQ(srt_close(first.group), 0);
+    }
+    REQUIRE_EQ(srt_close(listener), 0);
+}
+
+TEST(compat_group_callback_requires_explicit_domain_and_exposes_peer_group)
+{
+    for (const bool authorize : {false, true}) {
+        struct Cleanup {
+            SRTSOCKET listener = srt_create_socket();
+            SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+            SRTSOCKET mirror = SRT_INVALID_SOCK;
+            ~Cleanup() {
+                if (group != SRT_INVALID_SOCK) (void)srt_close(group);
+                if (mirror != SRT_INVALID_SOCK) (void)srt_close(mirror);
+                if (listener != SRT_INVALID_SOCK) (void)srt_close(listener);
+            }
+        } cleanup;
+        REQUIRE(cleanup.listener != SRT_INVALID_SOCK);
+        REQUIRE(cleanup.group != SRT_INVALID_SOCK);
+        struct Admission {
+            SRTSOCKET expected;
+            bool authorize;
+            std::atomic<bool> observed {false};
+        } admission {cleanup.group, authorize};
+        const std::uint64_t domain = 11;
+        REQUIRE_EQ(srt_setsockflag(cleanup.listener, SRTO_ROBOTWEAX_GROUPDOMAIN, &domain, sizeof(domain)), SRT_ERROR);
+        const int enabled = 1;
+        REQUIRE_EQ(srt_setsockflag(cleanup.listener, SRTO_GROUPCONNECT, &enabled, sizeof(enabled)), 0);
+        const int timeout = 1000;
+        REQUIRE_EQ(srt_setsockflag(cleanup.group, SRTO_CONNTIMEO, &timeout, sizeof(timeout)), 0);
+        REQUIRE_EQ(srt_setsockflag(cleanup.listener, SRTO_RCVTIMEO, &timeout, sizeof(timeout)), 0);
+        REQUIRE_EQ(srt_listen_callback(cleanup.listener,
+            [](void* context, SRTSOCKET socket, int, const sockaddr*, const char*) {
+                auto& admission = *static_cast<Admission*>(context);
+                SRTSOCKET peer = SRT_INVALID_SOCK;
+                int size = sizeof(peer);
+                if (srt_getsockflag(socket, SRTO_ROBOTWEAX_PEERGROUP, &peer, &size) != 0 || peer != admission.expected)
+                    return -1;
+                admission.observed = true;
+                if (!admission.authorize) return 0;
+                const std::uint64_t domain = 11;
+                return srt_setsockflag(socket, SRTO_ROBOTWEAX_GROUPDOMAIN, &domain, sizeof(domain));
+            }, &admission), 0);
+        auto address = ipv4_address(0);
+        REQUIRE_EQ(srt_bind(cleanup.listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address)), 0);
+        REQUIRE_EQ(srt_listen(cleanup.listener, 4), 0);
+        int size = sizeof(address);
+        REQUIRE_EQ(srt_getsockname(cleanup.listener, reinterpret_cast<sockaddr*>(&address), &size), 0);
+        auto endpoint = srt_prepare_endpoint(nullptr, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+        const auto result = srt_connect_group(cleanup.group, &endpoint, 1);
+        REQUIRE(admission.observed.load());
+        if (authorize) {
+            REQUIRE(result != SRT_ERROR);
+            cleanup.mirror = srt_accept(cleanup.listener, nullptr, nullptr);
+            REQUIRE(cleanup.mirror != SRT_INVALID_SOCK);
+            const auto record = GroupRegistry::instance().find(cleanup.mirror);
+            REQUIRE(record != nullptr);
+            std::lock_guard lock(record->mutex);
+            REQUIRE_EQ(record->admission_domain, 11U);
+        } else {
+            REQUIRE_EQ(result, SRT_ERROR);
+        }
     }
 }

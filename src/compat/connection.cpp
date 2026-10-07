@@ -175,6 +175,7 @@ struct ListenerGroupAdmission {
     SRTSOCKET listener = SRT_INVALID_SOCK;
     std::uint32_t initial_sequence = 0;
     bool enabled = false;
+    std::uint64_t admission_domain = 0;
     SRTSOCKET member_handle = SRT_INVALID_SOCK;
     std::shared_ptr<SocketRecord> member;
     IpEndpoint endpoint{};
@@ -211,7 +212,7 @@ struct ListenerGroupAdmission {
         } else if (!GroupRegistry::instance().prepare_mirror(
                        listener,
                        static_cast<SRTSOCKET>(proposed.group_id),
-                       type, initial_sequence, mirror)) {
+                       type, initial_sequence, mirror, admission_domain)) {
             return false;
         } else {
             peer = proposed;
@@ -3738,6 +3739,10 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         {
             std::lock_guard lock(accepted->mutex);
             accepted->listen_callback_active = true;
+            accepted->incoming_peer_group = conclusion.has_group_membership
+                ? static_cast<SRTSOCKET>(conclusion.group_membership.group_id)
+                : SRT_INVALID_SOCK;
+            accepted->incoming_group_domain = 0;
             accepted->incoming_group_type =
                 selected_protocol == ListenerHandshakeProtocol::hsv5
                     && conclusion.has_group_membership
@@ -3757,8 +3762,14 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         bool callback_socket_closed = false;
         {
             std::lock_guard lock(accepted->mutex);
+            group_admission.admission_domain = accepted->incoming_group_domain;
+            if (accepted->incoming_group_type != SRT_GTYPE_UNDEFINED
+                && group_admission.admission_domain == 0)
+                callback_result = SRT_ERROR;
             accepted->listen_callback_active = false;
             accepted->incoming_group_type = SRT_GTYPE_UNDEFINED;
+            accepted->incoming_peer_group = SRT_INVALID_SOCK;
+            accepted->incoming_group_domain = 0;
             policy_rejection = accepted->rejection_reason;
             callback_socket_closed = accepted->state == SRTS_CLOSING
                 || accepted->state == SRTS_CLOSED;
