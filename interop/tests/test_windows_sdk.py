@@ -1,5 +1,6 @@
 """Static guardrails for the Windows-only SDK build workflow."""
 from pathlib import Path
+import re
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -46,3 +47,16 @@ class WindowsSdkTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/windows-sdk.yml').read_text()
         self.assertIn("Join-Path $PSHOME 'pwsh.exe'", workflow)
         self.assertNotIn('&& powershell ', workflow)
+
+    def test_signing_workflow_uses_only_immutable_actions(self):
+        workflow = (ROOT / '.github/workflows/windows-sdk.yml').read_text()
+        references = re.findall(r'uses: ([^\s]+)', workflow)
+        self.assertTrue(references)
+        for reference in references:
+            self.assertRegex(reference, r'^[^@]+@[0-9a-f]{40}$')
+
+    def test_unsigned_provenance_is_verified_before_oidc(self):
+        workflow = (ROOT / '.github/workflows/windows-sdk.yml').read_text()
+        signing = workflow.split('\n  sign:\n', 1)[1].split('\n  release-draft:\n', 1)[0]
+        self.assertIn('needs.coexistence.outputs.installer-provenance', signing)
+        self.assertLess(signing.index('Assert-SdkInstallerProvenance'), signing.index('uses: azure/login@'))
