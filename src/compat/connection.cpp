@@ -286,16 +286,6 @@ struct ListenerGroupAdmission {
                 static_cast<int>(sizeof(minimum_input))) == SRT_ERROR) {
             return false;
         }
-        std::shared_ptr<ConnectionRuntime> runtime;
-        SocketOptions native_options;
-        {
-            std::lock_guard lock(member->mutex);
-            runtime = member->runtime;
-            native_options = member->native_options;
-        }
-        if (runtime != nullptr) {
-            runtime->apply_options(native_options);
-        }
         publish_group_member_state(*member);
         if (!first_member) {
             publish_listener_group_update(listener);

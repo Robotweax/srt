@@ -73,7 +73,8 @@ constexpr std::uint16_t maximum_group_weight = 32'767U;
 [[nodiscard]] std::size_t address_size(
     const sockaddr* address, int supplied_size) noexcept
 {
-    if (address == nullptr || supplied_size < 0) {
+    if (address == nullptr
+        || supplied_size < static_cast<int>(sizeof(sockaddr))) {
         return 0;
     }
     std::size_t required = 0;

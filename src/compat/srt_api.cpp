@@ -818,21 +818,8 @@ int srt_setsockflag(
         robotweax::srt::compat::set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
     }
-    const int result = robotweax::srt::compat::set_socket_option(
+    return robotweax::srt::compat::set_socket_option(
         *record, option, value, value_size);
-    if (result == 0) {
-        std::shared_ptr<robotweax::srt::compat::ConnectionRuntime> runtime;
-        robotweax::srt::SocketOptions options;
-        {
-            std::lock_guard lock(record->mutex);
-            runtime = record->runtime;
-            options = record->native_options;
-        }
-        if (runtime != nullptr) {
-            runtime->apply_options(options);
-        }
-    }
-    return result;
 }
 
 void srt_msgctrl_init(SRT_MSGCTRL* control)

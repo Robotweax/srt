@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <barrier>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -7154,6 +7155,30 @@ TEST(maxrexmitbw_public_option_validates_width_range_and_default)
 }
 #endif
 
+TEST(srt_compat_refresh_rejects_uninitializable_interval_without_mutation)
+{
+    const auto socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    const std::int32_t valid = 3;
+    const std::int32_t invalid = 2;
+    const int accepted =
+        srt_setsockflag(socket, SRTO_KMREFRESHRATE, &valid, sizeof(valid));
+    const int rejected =
+        srt_setsockflag(socket, SRTO_KMREFRESHRATE, &invalid, sizeof(invalid));
+    const int error = srt_getlasterror(nullptr);
+    std::int32_t stored = 0;
+    int size = sizeof(stored);
+    const int read =
+        srt_getsockflag(socket, SRTO_KMREFRESHRATE, &stored, &size);
+    (void)srt_close(socket);
+    (void)srt_cleanup();
+    REQUIRE_EQ(accepted, 0);
+    REQUIRE_EQ(rejected, SRT_ERROR);
+    REQUIRE_EQ(error, SRT_EINVPARAM);
+    REQUIRE_EQ(read, 0);
+    REQUIRE_EQ(stored, valid);
+}
+
 TEST(srt_compat_receive_control_is_output_only)
 {
     ScopedSrtRuntime lifecycle;
@@ -7214,4 +7239,71 @@ TEST(srt_compat_receive_control_is_output_only)
     REQUIRE_EQ(control.pktseq, previous_sequence);
     REQUIRE_EQ(control.srctime, previous_time);
     REQUIRE_EQ(srt_close(socket), 0);
+}
+
+TEST(srt_compat_concurrent_option_publication_matches_active_rate)
+{
+    using namespace robotweax::srt;
+    using namespace robotweax::srt::compat;
+    const auto socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    const auto record = SocketRegistry::instance().find(socket);
+    auto channel = std::make_shared<DatagramChannel>();
+    auto runtime =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
+            .channel = channel,
+            .peer = IpEndpoint::loopback(9002),
+            .peer_socket_id = 700,
+            .initial_sequence = SequenceNumber {5000},
+            .flow_window_packets = 256,
+            .options = record->native_options,
+            .origin = ConnectionRuntime::Clock::now(),
+        });
+    {
+        std::lock_guard lock(record->mutex);
+        record->runtime = runtime;
+        record->channel = channel;
+        record->state = SRTS_CONNECTED;
+    }
+    // The internal setter is also used for group member updates. It must
+    // publish before returning, without a second caller-owned snapshot.
+    const std::int64_t initial = 1'000'000;
+    const int internal =
+        set_socket_option(*record, SRTO_MAXBW, &initial, sizeof(initial));
+    const double initial_rate =
+        runtime->statistics(false, true)
+            .instantaneous.maximum_bandwidth_megabits_per_second;
+    constexpr int rounds = 2000;
+    std::barrier barrier(3);
+    std::atomic_int failures = 0;
+    const auto setter = [&](std::int64_t base) {
+        for (int i = 0; i < rounds; ++i) {
+            barrier.arrive_and_wait();
+            const std::int64_t rate = base + i;
+            if (srt_setsockflag(socket, SRTO_MAXBW, &rate, sizeof(rate)) != 0)
+                ++failures;
+            barrier.arrive_and_wait();
+        }
+    };
+    std::thread first(setter, 1'000'000), second(setter, 2'000'000);
+    for (int i = 0; i < rounds; ++i) {
+        barrier.arrive_and_wait();
+        barrier.arrive_and_wait();
+        std::int64_t stored = 0;
+        int size = sizeof(stored);
+        if (srt_getsockflag(socket, SRTO_MAXBW, &stored, &size) != 0)
+            ++failures;
+        const double active =
+            runtime->statistics(false, true)
+                .instantaneous.maximum_bandwidth_megabits_per_second;
+        if (active != static_cast<double>(stored) * 8.0 / 1'000'000.0)
+            ++failures;
+    }
+    first.join();
+    second.join();
+    (void)srt_close(socket);
+    (void)srt_cleanup();
+    REQUIRE_EQ(internal, 0);
+    REQUIRE_EQ(initial_rate, 8.0);
+    REQUIRE_EQ(failures.load(), 0);
 }
