@@ -4,6 +4,16 @@ Status: **preparation and qualification in progress; not published**.
 The development baseline is `ffa61fb912c59e0bf49c8709c4bb00fd396ea128`.
 Historical [0.2.7 acceptance](release-process-0.2.7.md) remains unchanged.
 
+## Frozen source and recipe qualification
+
+Product source: `8126e166ecd3d33987b3748e799ef40e5192d068`. Its downloaded GitHub archive
+was verified against all 587 regular files and executable bits.
+SHA-256: `f3ad362970d8b83337bd8344f796337a56ff52347c2a9e2ff18c41fd2b71422d`.
+SHA-512: `cc5d8d25f124254d6a249c515296d9b22491a29e4fc18c2db5c64379f86278c15f3ada31caec659ffaa38b3434fa59d3f280a4c57c1ce5aa3bdf0636a187f2e1`.
+The [package record](https://github.com/Robotweax/srt/blob/dev/release-0.2.8/packaging/qualification-0.2.8.md)
+tracks pending recipe/platform gates. No publication or final acceptance is
+implied by archive verification.
+
 ## Candidate contract
 
 Project version 0.2.8, C ABI line 0.2 and compatible SRT API 1.5.7 remain
