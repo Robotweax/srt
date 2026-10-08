@@ -157,6 +157,7 @@ struct BindingEntry {
     std::uint8_t bound_device_size = 0;
     bool reusable = false;
     bool acquired_reuseport = false;
+    std::uint64_t acquired_socket_cookie = 0;
     std::weak_ptr<DatagramChannel> channel;
 };
 
@@ -270,6 +271,7 @@ public:
         std::lock_guard lock(mutex_);
         remove_expired();
         bool acquired_reuseport = false;
+        std::uint64_t acquired_socket_cookie = 0;
 #if defined(__linux__)
         int enabled = 0;
         socklen_t size = sizeof(enabled);
@@ -279,6 +281,16 @@ public:
             return fail(SRT_ESOCKFAIL, errno);
         }
         acquired_reuseport = enabled != 0;
+        if (acquired_reuseport) {
+            // Descriptor numbers differ after dup(); the kernel cookie identifies
+            // the actual socket so it cannot acquire two receive owners.
+            size = sizeof(acquired_socket_cookie);
+            if (::getsockopt(static_cast<int>(channel->socket.native_handle()),
+                    SOL_SOCKET, SO_COOKIE, &acquired_socket_cookie, &size)
+                != 0) {
+                return fail(SRT_ESOCKFAIL, errno);
+            }
+        }
 #endif
         for (const BindingEntry& entry : entries_) {
             if (conflicts_with(local, effective_ipv6_only,
@@ -287,6 +299,7 @@ public:
                 // Permit only explicit Linux reuseport members on exactly the
                 // same endpoint/device, retaining distinct DatagramChannels.
                 if (acquired_reuseport && entry.acquired_reuseport
+                    && acquired_socket_cookie != entry.acquired_socket_cookie
                     && identical_binding(local, effective_ipv6_only,
                         entry.endpoint, entry.ipv6_only)
                     && socket.public_options.bound_device_size
@@ -298,8 +311,8 @@ public:
                 return fail(SRT_EBINDCONFLICT);
             }
         }
-        return remember(
-            socket, local, effective_ipv6_only, channel, acquired_reuseport);
+        return remember(socket, local, effective_ipv6_only, channel,
+            acquired_reuseport, acquired_socket_cookie);
     }
 
 private:
@@ -375,7 +388,8 @@ private:
     [[nodiscard]] int remember(const SocketRecord& socket, IpEndpoint endpoint,
         std::int32_t effective_ipv6_only,
         const std::shared_ptr<DatagramChannel>& channel,
-        bool acquired_reuseport = false) noexcept
+        bool acquired_reuseport = false,
+        std::uint64_t acquired_socket_cookie = 0) noexcept
     {
         try {
             entries_.push_back({
@@ -391,6 +405,7 @@ private:
                 .bound_device_size = socket.public_options.bound_device_size,
                 .reusable = socket.public_options.reuse_address,
                 .acquired_reuseport = acquired_reuseport,
+                .acquired_socket_cookie = acquired_socket_cookie,
                 .channel = channel,
             });
             return 0;

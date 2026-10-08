@@ -769,6 +769,26 @@ TEST(srt_compat_bind_acquire_reuseaddr_does_not_allow_distinct_channels)
 #endif
 }
 
+TEST(srt_compat_bind_acquire_reuseport_rejects_duplicate_native_socket)
+{
+#if defined(__linux__)
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    AcquiredUdpPair group;
+    group.bind(AF_INET, true);
+    const int original = group.descriptors[0];
+    REQUIRE_EQ(group.adopt(0), 0);
+    close_udp_socket(group.descriptors[1]);
+    group.descriptors[1] = ::dup(original);
+    REQUIRE(group.descriptors[1] >= 0);
+    REQUIRE_EQ(group.adopt(1), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EBINDCONFLICT);
+    REQUIRE(!udp_socket_is_closed(group.descriptors[1]));
+#else
+    SKIP_UNLESS(false, "Linux native socket identity test");
+#endif
+}
+
 static_assert(sizeof(SRTSOCKET) == sizeof(std::int32_t));
 static_assert(SRT_INVALID_SOCK == -1);
 #if defined(_WIN32)

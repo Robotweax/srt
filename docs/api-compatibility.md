@@ -232,7 +232,9 @@ On Linux, `srt_bind_acquire` also accepts distinct native UDP sockets with
 `SO_REUSEPORT` enabled on the same exact local endpoint, IPv6-only mode, and
 configured device. Each adopted socket retains its own datagram channel;
 `SRTO_REUSEADDR` and native `SO_REUSEADDR` alone do not permit this independent
-channel configuration. Overlapping wildcard or dual-stack bindings, and mixing
+channel configuration. A descriptor alias of an already adopted native socket
+is rejected rather than assigned a second independent channel. Overlapping
+wildcard or dual-stack bindings, and mixing
 ordinary `srt_bind` sockets with the native reuseport group, still fail with
 `SRT_EBINDCONFLICT`. Other platforms retain the single adopted-channel boundary.
 
