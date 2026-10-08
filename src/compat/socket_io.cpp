@@ -4,6 +4,7 @@
 #include "compat/error_state.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -17,6 +18,7 @@
 #else
 #  include <arpa/inet.h>
 #  include <netinet/in.h>
+#include <sys/socket.h>
 #endif
 
 namespace robotweax::srt::compat {
@@ -154,6 +156,7 @@ struct BindingEntry {
     std::array<char, maximum_network_device_name_size> bound_device{};
     std::uint8_t bound_device_size = 0;
     bool reusable = false;
+    bool acquired_reuseport = false;
     std::weak_ptr<DatagramChannel> channel;
 };
 
@@ -193,6 +196,11 @@ public:
                         entry.endpoint,
                         entry.ipv6_only)) {
                     continue;
+                }
+                // Native reuseport members have independent receive routes.
+                // A normal bind must not silently select one of that group.
+                if (entry.acquired_reuseport) {
+                    return fail(SRT_EBINDCONFLICT);
                 }
                 if (identical_binding(requested,
                         effective_ipv6_only,
@@ -261,14 +269,37 @@ public:
     {
         std::lock_guard lock(mutex_);
         remove_expired();
+        bool acquired_reuseport = false;
+#if defined(__linux__)
+        int enabled = 0;
+        socklen_t size = sizeof(enabled);
+        if (::getsockopt(static_cast<int>(channel->socket.native_handle()),
+                SOL_SOCKET, SO_REUSEPORT, &enabled, &size)
+            != 0) {
+            return fail(SRT_ESOCKFAIL, errno);
+        }
+        acquired_reuseport = enabled != 0;
+#endif
         for (const BindingEntry& entry : entries_) {
             if (conflicts_with(local, effective_ipv6_only,
                     entry.endpoint, entry.ipv6_only)) {
+                // The kernel has already admitted the bound native socket.
+                // Permit only explicit Linux reuseport members on exactly the
+                // same endpoint/device, retaining distinct DatagramChannels.
+                if (acquired_reuseport && entry.acquired_reuseport
+                    && identical_binding(local, effective_ipv6_only,
+                        entry.endpoint, entry.ipv6_only)
+                    && socket.public_options.bound_device_size
+                        == entry.bound_device_size
+                    && socket.public_options.bound_device
+                        == entry.bound_device) {
+                    continue;
+                }
                 return fail(SRT_EBINDCONFLICT);
             }
         }
         return remember(
-            socket, local, effective_ipv6_only, channel);
+            socket, local, effective_ipv6_only, channel, acquired_reuseport);
     }
 
 private:
@@ -341,33 +372,25 @@ private:
         return 0;
     }
 
-    [[nodiscard]] int remember(
-        const SocketRecord& socket,
-        IpEndpoint endpoint,
+    [[nodiscard]] int remember(const SocketRecord& socket, IpEndpoint endpoint,
         std::int32_t effective_ipv6_only,
-        const std::shared_ptr<DatagramChannel>& channel)
-        noexcept
+        const std::shared_ptr<DatagramChannel>& channel,
+        bool acquired_reuseport = false) noexcept
     {
         try {
             entries_.push_back({
                 .endpoint = endpoint,
                 .ipv6_only = effective_ipv6_only,
                 .udp_send_buffer_bytes =
-                    socket.public_options
-                        .udp_send_buffer_bytes,
+                    socket.public_options.udp_send_buffer_bytes,
                 .udp_receive_buffer_bytes =
-                    socket.public_options
-                        .udp_receive_buffer_bytes,
-                .ip_time_to_live =
-                    socket.public_options.ip_time_to_live,
-                .ip_type_of_service =
-                    socket.public_options.ip_type_of_service,
-                .bound_device =
-                    socket.public_options.bound_device,
-                .bound_device_size =
-                    socket.public_options.bound_device_size,
-                .reusable =
-                    socket.public_options.reuse_address,
+                    socket.public_options.udp_receive_buffer_bytes,
+                .ip_time_to_live = socket.public_options.ip_time_to_live,
+                .ip_type_of_service = socket.public_options.ip_type_of_service,
+                .bound_device = socket.public_options.bound_device,
+                .bound_device_size = socket.public_options.bound_device_size,
+                .reusable = socket.public_options.reuse_address,
+                .acquired_reuseport = acquired_reuseport,
                 .channel = channel,
             });
             return 0;

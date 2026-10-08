@@ -644,6 +644,10 @@ SRT_API int srt_bind(
  * @return 0 on success, or `SRT_ERROR` on failure.
  * @warning Ownership transfers to SRT only on success. The final SRT owner
  * closes the native socket; on failure the caller remains responsible for it.
+ * @warning On Linux, distinct native SO_REUSEPORT sockets may be adopted on
+ * the same exact endpoint and device. Bind every group member before starting
+ * traffic and keep the group fixed while connections exist. Ordinary srt_bind
+ * sockets cannot share an endpoint with this native group.
  */
 SRT_API int srt_bind_acquire(
     SRTSOCKET socket, UDPSOCKET native_socket);
