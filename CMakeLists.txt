@@ -394,7 +394,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests stale_nak)
     set_tests_properties(
         robotweax_srt_stale_drop_coverage_tests robotweax_srt_stale_nak_tests
-        PROPERTIES TIMEOUT 30 LABELS "reliability")
+        PROPERTIES TIMEOUT 30 LABELS "nak")
     if(ENABLE_AEAD_API_PREVIEW)
         # Paced public profile scenarios have a separate aggregate budget.
         add_test(NAME robotweax_srt_gcm_profile_tests

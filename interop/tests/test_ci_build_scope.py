@@ -173,7 +173,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         for name in stale_partitions:
             self.assertIn(name, stale_properties.group(1))
         self.assertIn("TIMEOUT 30", stale_properties.group(1))
-        self.assertIn("reliability", stale_properties.group(1))
+        self.assertIn('LABELS "nak"', stale_properties.group(1))
         for name in profile_partitions:
             profile_properties = re.search(
                 r"set_tests_properties\(" + name + r"\s+PROPERTIES\s+([^)]*)\)",
@@ -184,6 +184,14 @@ class CiTestRegistrationTests(unittest.TestCase):
             self.assertIn("encryption", profile_properties.group(1))
         self.assertIn("PROPERTIES TIMEOUT 30", bounded_properties.group(1))
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        native_labels = re.findall(r'LABELS\s+"([^"]+)"', stale_properties.group(1))
+        thin_consumer_labels = re.findall(r'-L "([^"]*(?:abi|package)[^"]*)"', workflow)
+        self.assertTrue(thin_consumer_labels)
+        for labels in native_labels:
+            for label in labels.split(";"):
+                for selection in thin_consumer_labels:
+                    self.assertIsNone(re.search(selection, label),
+                                      f"unbuilt native partition selected by {selection}: {label}")
         optional_step = workflow.split("- name: Test optional retransmission limit", 1)[1]
         optional_step = optional_step.split("\n  sanitizers:", 1)[0]
         selection = re.search(r'-R "([^"]+)"', optional_step)
