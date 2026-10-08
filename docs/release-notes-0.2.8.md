@@ -72,7 +72,7 @@ changes alone are not qualification of new installers.
 ## Release qualification
 
 The [release process](release-process-0.2.8.md) and
-[package record](../packaging/qualification-0.2.8.md) record successful candidate
+[package record](https://github.com/Robotweax/srt/blob/c6c5bc05c36b8184fbaa562d1b1e8a8ca13cdf36/packaging/qualification-0.2.8.md) record successful candidate
 source CI, complete FFmpeg/GStreamer/VLC/OBS integrations, OpenSSL/BCrypt and
 package-manager/Linux package checks. Final main/tag CI, signed Windows SDK
 assets and the separate tap bottle remain publication gates. Historical 0.2.7
