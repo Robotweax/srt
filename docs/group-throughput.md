@@ -46,13 +46,34 @@ before the controller releases either peer. Backup connects its preferred member
 first, then its lower-weight standbys; it does not simulate failover. Broadcast
 uses one path per member to the same mirrored receiving group.
 
-A 256-message warmup is received and every member's sending buffer drained before
-statistics are baselined on both sides. A final start barrier prevents measured
-DATA from racing those baseline snapshots. Messages use 120 ms TSBPD latency, disabled late-packet
-drop and no encryption. The sender polls member send buffers between batches of
+A 256-message warmup is received and every member's ACK cursor passes that payload
+before statistics are baselined on both sides. A final start barrier prevents measured
+DATA from racing those baseline snapshots. Messages use default Live recovery
+with periodic NAK enabled, 120 ms TSBPD latency, disabled late-packet drop and no
+encryption. The sender polls member send buffers between batches of
 at most 32 messages, keeping at most 64 pending packets on any member. This bounds
 host bursts and preserves healthy Broadcast copies. The polling is public API
 application overhead and scales with member count; the results include it.
+
+After each payload phase, the sender continues with tagged DATA at one message
+per millisecond until the controller confirms payload receipt and every member's
+ACK cursor has passed that payload. Later DATA exposes missing payload-tail
+packets as gaps under the normal Live NAK policy. The diagnostic does not require
+recovery or ACK of the last continuation packets at stream shutdown. Each phase
+allows at most 4,096 continuation messages and retains the existing time limits
+and 64-packet window. Continuations have checked lengths, timestamps and patterns;
+they are excluded from payload counts, SHA-256 and useful-byte rates.
+
+Results use `live-continuation-v2` and report queued payload and continuation
+copies separately. Transport counters include continuation traffic, including
+warmup continuations that cross the measurement boundary. The v2 measurements
+must be compared with peers using this same source and settings. Historical
+finite-burst measurements below used the earlier methodology.
+
+The CI smoke additionally drops the first copy of the final warmup and measured
+payload packet on every loopback path, then requires exact payload delivery with
+the same Live recovery settings. This verifies that continuation DATA exposes
+both gaps; it does not turn the diagnostic into File mode.
 
 Every message contains its expected sequence, a same-host monotonic microsecond
 source timestamp and deterministic bytes at every remaining position. The receiver
@@ -67,7 +88,7 @@ been collected. There is no silent data-loss or lower-member-count success.
 
 - `useful_mbps` counts each delivered application byte once, divided by the longer
   peer measurement duration. Receiver time includes initial TSBPD delay; sender
-  time includes final acknowledgements and sending-buffer drain.
+  time includes final payload acknowledgements and continuation work.
 - `delivery_span_mbps` uses bytes after the first delivered message divided by
   the interval between first and last delivery. It excludes initial TSBPD delay,
   but does not establish a sustained maximum rate. Inspect the span and increase
@@ -75,7 +96,7 @@ been collected. There is no silent data-loss or lower-member-count success.
 - Receiver latency percentiles measure same-host source-to-delivery time, including
   TSBPD. Sender percentiles measure the send call, excluding payload construction.
 - `cpu_seconds` sums process user/system CPU over the measured phases, including
-  library workers, verification, SHA-256, window queries and final sending drain.
+  library workers, verification, SHA-256, window queries and final payload acknowledgement checks.
   Setup, warmup, summary generation and teardown are excluded.
 - Per-member transport counters distinguish sent/received bytes and packets,
   unique sent packets, retransmissions and drops. Transport bytes follow the

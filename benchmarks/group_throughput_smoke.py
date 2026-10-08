@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 import group_throughput as g
+from group_tail_loss import TailLossRelay
 
 
 def main():
@@ -11,7 +12,7 @@ def main():
     parser.add_argument("--peer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    report = {"complete": False, "profile": "integrity-smoke", "cases": []}
+    report = {"complete": False, "profile": "live-continuation-v2", "cases": []}
     try:
         directory = args.output.parent / (args.output.stem + "-logs")
         directory.mkdir(parents=True, exist_ok=True)
@@ -20,6 +21,11 @@ def main():
                 result = g.case(args.peer.resolve(), mode, members, 128, 1316,
                                 directory / f"{mode}-{members}", 20)
                 report["cases"].append({"mode": mode, "members": members, **result})
+        for mode, members in (("broadcast", 2), ("backup", 1)):
+            result = g.case(args.peer.resolve(), mode, members, 128, 1316,
+                            directory / f"tail-loss-{mode}", 20,
+                            relay_factory=lambda port: TailLossRelay(port, (255, 383)))
+            report["cases"].append({"mode": mode, "members": members, **result})
         report["complete"] = True
         return 0
     finally:

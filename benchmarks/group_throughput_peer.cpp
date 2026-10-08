@@ -16,12 +16,16 @@
 
 #include <arpa/inet.h>
 #include <sys/resource.h>
+#include <poll.h>
+#include <unistd.h>
 
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr std::uint64_t warmup_messages = 256;
 constexpr std::size_t pending_limit = 64;
 constexpr int timeout_ms = 30000;
+constexpr std::uint64_t continuation_flag = 1ULL << 63;
+constexpr std::uint64_t continuation_limit = 4096;
 
 void require(bool condition, const std::string& context)
 {
@@ -45,8 +49,10 @@ template <class T> void option(SRTSOCKET socket, SRT_SOCKOPT key, T value)
 }
 void configure(SRTSOCKET socket)
 {
+    option(socket, SRTO_TRANSTYPE, SRTT_LIVE);
     option(socket, SRTO_LATENCY, 120);
     option(socket, SRTO_TLPKTDROP, false);
+    option(socket, SRTO_NAKREPORT, true);
     option(socket, SRTO_SNDTIMEO, timeout_ms);
     option(socket, SRTO_RCVTIMEO, timeout_ms);
 }
@@ -95,14 +101,6 @@ std::size_t pending(const std::vector<SRT_SOCKGROUPDATA>& data)
         maximum = std::max(maximum, blocks);
     }
     return maximum;
-}
-void drain(const std::vector<SRT_SOCKGROUPDATA>& data)
-{
-    const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
-    while (pending(data) != 0) {
-        require(Clock::now() < deadline, "send drain timeout");
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
-    }
 }
 std::vector<SRT_TRACEBSTATS> stats(const std::vector<SRT_SOCKGROUPDATA>& data)
 {
@@ -154,15 +152,34 @@ double percentile(std::vector<double> values, double fraction)
     std::sort(values.begin(), values.end());
     return values[static_cast<std::size_t>((values.size() - 1) * fraction)];
 }
-void command()
+void command(const char* expected = "go")
 {
     std::string line;
-    require(static_cast<bool>(std::getline(std::cin, line)) && line == "go",
+    require(static_cast<bool>(std::getline(std::cin, line)) && line == expected,
         "controller barrier");
 }
-std::string phase(SRTSOCKET group, const std::vector<SRT_SOCKGROUPDATA>& data,
-    bool sender, std::uint64_t first, std::uint64_t count, int size,
-    std::vector<double>& latency, std::uint64_t& first_delivery,
+struct PhaseResult {
+    std::string digest;
+    std::uint64_t continuation_messages = 0;
+    std::vector<std::uint64_t> payload_copies;
+    std::vector<std::uint64_t> continuation_copies;
+};
+
+bool stop_requested()
+{
+    pollfd descriptor {STDIN_FILENO, POLLIN, 0};
+    const int result = poll(&descriptor, 1, 0);
+    require(result >= 0, "controller poll");
+    if (result == 0) {
+        return false;
+    }
+    command("stop");
+    return true;
+}
+
+PhaseResult phase(SRTSOCKET group, const std::vector<SRT_SOCKGROUPDATA>& data,
+    bool sender, bool broadcast, std::uint64_t first, std::uint64_t count,
+    int size, std::vector<double>& latency, std::uint64_t& first_delivery,
     std::uint64_t& last_delivery)
 {
     std::vector<char> buffer(static_cast<std::size_t>(sender ? size : 1500));
@@ -172,8 +189,49 @@ std::string phase(SRTSOCKET group, const std::vector<SRT_SOCKGROUPDATA>& data,
     require(
         digest && EVP_DigestInit_ex(digest.get(), EVP_sha256(), nullptr) == 1,
         "digest initialization");
+    PhaseResult phase_result;
+    phase_result.payload_copies.resize(data.size());
+    phase_result.continuation_copies.resize(data.size());
+    std::vector<SRT_SOCKGROUPDATA> outcomes(data.size());
+    const auto send = [&](std::uint64_t index, bool continuation) {
+        encode(buffer.data(), index);
+        encode(buffer.data() + 8, now_us());
+        for (int position = 16; position < size; ++position) {
+            buffer[position] = pattern(index, position);
+        }
+        SRT_MSGCTRL control = srt_msgctrl_default;
+        control.inorder = 1;
+        control.grpdata = outcomes.data();
+        control.grpdata_size = outcomes.size();
+        const auto started = now_us();
+        const int sent = srt_sendmsg2(group, buffer.data(), size, &control);
+        const auto elapsed = now_us() - started;
+        require(sent == size, "group send");
+        require(control.grpdata == outcomes.data()
+                && control.grpdata_size == data.size(),
+            "member send outcomes");
+        for (std::size_t i = 0; i < data.size(); ++i) {
+            const auto found = std::find_if(
+                outcomes.begin(), outcomes.end(), [&](const auto& member) {
+                    return member.id == data[i].id;
+                });
+            require(found != outcomes.end(), "member send identity");
+            const bool queued = found->result == size;
+            if (broadcast) {
+                require(queued, "missing broadcast copy");
+            }
+            if (queued) {
+                auto& copies = continuation ? phase_result.continuation_copies
+                                            : phase_result.payload_copies;
+                ++copies[i];
+            }
+        }
+        if (!continuation) {
+            latency.push_back(static_cast<double>(elapsed));
+        }
+    };
     std::size_t budget = 0;
-    for (std::uint64_t index = first; index < first + count; ++index) {
+    for (std::uint64_t index = first; index < first + count;) {
         require(Clock::now() < deadline, "phase timeout");
         if (sender) {
             while (budget == 0) {
@@ -186,40 +244,67 @@ std::string phase(SRTSOCKET group, const std::vector<SRT_SOCKGROUPDATA>& data,
                 }
             }
             --budget;
-            const auto started = now_us();
-            encode(buffer.data(), index);
-            encode(buffer.data() + 8, started);
-            for (int position = 16; position < size; ++position) {
-                buffer[position] = pattern(index, position);
-            }
-            const auto call_started = now_us();
-            require(srt_sendmsg(group, buffer.data(), size, -1, 1) == size,
-                "group send");
-            latency.push_back(static_cast<double>(now_us() - call_started));
+            send(index, false);
         } else {
             const int received = srt_recvmsg(
                 group, buffer.data(), static_cast<int>(buffer.size()));
             const auto arrived = now_us();
-            if (index == first) {
-                first_delivery = arrived;
-            }
-            last_delivery = arrived;
-            require(received == size && decode(buffer.data()) == index,
-                "payload size/sequence mismatch");
+            require(received == size, "payload size mismatch");
+            const auto received_index = decode(buffer.data());
+            const bool continuation = (received_index & continuation_flag) != 0;
+            require(continuation || received_index == index,
+                "payload sequence mismatch");
             const auto sent = decode(buffer.data() + 8);
             require(sent <= arrived && arrived - sent < timeout_ms * 1000ULL,
                 "source timestamp mismatch");
             for (int position = 16; position < size; ++position) {
-                require(buffer[position] == pattern(index, position),
+                require(buffer[position] == pattern(received_index, position),
                     "payload corruption");
             }
+            if (continuation) {
+                require(++phase_result.continuation_messages
+                        <= 2 * continuation_limit,
+                    "received continuation budget");
+                continue;
+            }
+            if (index == first) {
+                first_delivery = arrived;
+            }
+            last_delivery = arrived;
             latency.push_back(static_cast<double>(arrived - sent));
         }
         require(EVP_DigestUpdate(digest.get(), buffer.data(), size) == 1,
             "digest update");
+        ++index;
     }
     if (sender) {
-        drain(data);
+        bool stop = false;
+        for (;;) {
+            require(Clock::now() < deadline, "continuation timeout");
+            stop = stop || stop_requested();
+            bool payload_pending = false;
+            for (std::size_t i = 0; i < data.size(); ++i) {
+                std::size_t blocks = 0;
+                std::size_t bytes = 0;
+                require(
+                    srt_getsndbuffer(data[i].id, &blocks, &bytes) != SRT_ERROR,
+                    "member payload progress");
+                // Cumulative ACK retirement is FIFO. Before the payload
+                // prefix is ACKed, every queued continuation is still in
+                // this buffer. The bound therefore proves prefix retirement.
+                payload_pending |= blocks > phase_result.continuation_copies[i];
+            }
+            if (stop && !payload_pending) {
+                break;
+            }
+            if (pending(data) < pending_limit) {
+                require(phase_result.continuation_messages < continuation_limit,
+                    "sent continuation budget");
+                send(continuation_flag | first, true);
+                ++phase_result.continuation_messages;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
     }
     unsigned char bytes[EVP_MAX_MD_SIZE] {};
     unsigned int length = 0;
@@ -232,7 +317,8 @@ std::string phase(SRTSOCKET group, const std::vector<SRT_SOCKGROUPDATA>& data,
         result += hex[bytes[i] >> 4];
         result += hex[bytes[i] & 15];
     }
-    return result;
+    phase_result.digest = std::move(result);
+    return phase_result;
 }
 int run(int argc, char** argv)
 {
@@ -319,8 +405,8 @@ int run(int argc, char** argv)
     latency.reserve(static_cast<std::size_t>(messages));
     std::uint64_t first_delivery = 0;
     std::uint64_t last_delivery = 0;
-    phase(group.id, data, sender, 0, warmup_messages, size, latency,
-        first_delivery, last_delivery);
+    const auto warmup = phase(group.id, data, sender, mode == "broadcast", 0,
+        warmup_messages, size, latency, first_delivery, last_delivery);
     std::cout << "{\"event\":\"warm\"}\n" << std::flush;
     command();
     latency.clear();
@@ -329,8 +415,9 @@ int run(int argc, char** argv)
     command(); // Both baselines precede the first measured DATA packet.
     const double cpu_before = cpu_seconds();
     const auto started = now_us();
-    const auto digest = phase(group.id, data, sender, warmup_messages, messages,
-        size, latency, first_delivery, last_delivery);
+    const auto digest =
+        phase(group.id, data, sender, mode == "broadcast", warmup_messages,
+            messages, size, latency, first_delivery, last_delivery);
     const double seconds = (now_us() - started) / 1000000.0;
     const double cpu = cpu_seconds() - cpu_before;
     const auto after = stats(data);
@@ -345,7 +432,10 @@ int run(int argc, char** argv)
     }
     std::cout << "{\"event\":\"result\",\"messages\":" << messages
               << ",\"useful_bytes\":" << messages * size
-              << ",\"members\":" << count << ",\"sha256\":\"" << digest << "\""
+              << ",\"members\":" << count << ",\"sha256\":\"" << digest.digest
+              << "\""
+              << ",\"stream_profile\":\"live-continuation-v2\""
+              << ",\"continuation_messages\":" << digest.continuation_messages
               << ",\"seconds\":" << seconds << ",\"cpu_seconds\":" << cpu
               << ",\"delivery_span_seconds\":"
               << (last_delivery - first_delivery) / 1000000.0
@@ -356,7 +446,11 @@ int run(int argc, char** argv)
         if (i != 0) {
             std::cout << ',';
         }
-        std::cout << "{\"sent_packets\":"
+        std::cout << "{\"payload_queued_packets\":" << digest.payload_copies[i]
+                  << ",\"continuation_queued_packets\":"
+                  << digest.continuation_copies[i]
+                  << ",\"previous_continuation_queued_packets\":"
+                  << warmup.continuation_copies[i] << ",\"sent_packets\":"
                   << after[i].pktSentTotal - before[i].pktSentTotal
                   << ",\"unique_sent_packets\":"
                   << after[i].pktSentUniqueTotal - before[i].pktSentUniqueTotal
