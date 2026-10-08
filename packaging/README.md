@@ -1,18 +1,20 @@
 # Package manager recipes
 
-## 0.2.7 release
+## 0.2.8 candidate
 
-These recipes select the immutable Robotweax SRT 0.2.7 product source
-`f254dd2c0fe084f7965238756b1d3b96665d592b`, not the current checkout. All 547 regular files and their
-executable bits were compared with Git before pinning the downloaded archive.
-Archive SHA-256: `7ba68805f66bca1da4e0d509d33aedab239a4de57ba9affb4db1481d4205c908`.
+These recipes select the immutable Robotweax SRT 0.2.8 product source
+`8126e166ecd3d33987b3748e799ef40e5192d068`, not the current checkout. All 587 regular
+files and executable bits were compared with Git before pinning the downloaded
+GitHub archive. Archive SHA-256:
+`f3ad362970d8b83337bd8344f796337a56ff52347c2a9e2ff18c41fd2b71422d`.
 
-Source/package qualification and the signed Windows SDK release are complete.
-See the [0.2.7 record](qualification-0.2.7.md) and
-[release record](../docs/release-process-0.2.7.md).
-The public [Homebrew tap](https://github.com/Robotweax/homebrew-tap)
-supplies 0.2.7 with a qualified Apple Silicon macOS 15 bottle.
-No vcpkg registry, PPA or COPR is published.
+Qualification is pending; no 0.2.8 package or installer is published.
+See the [candidate record](qualification-0.2.8.md) and
+[release process](../docs/release-process-0.2.8.md).
+The public [Homebrew tap](https://github.com/Robotweax/homebrew-tap) continues to
+supply the separately qualified 0.2.7 release/bottle until its own update and
+native qualification. [Historical 0.2.7 evidence](qualification-0.2.7.md) is
+retained. No vcpkg registry, PPA or COPR is published.
 
 ## Package contract
 
@@ -22,7 +24,7 @@ No vcpkg registry, PPA or COPR is published.
   `include/robotweax-srt`; consumers obtain include paths from package metadata.
 - Use OpenSSL from the package manager. BCrypt and AES-GCM preview are outside
   the initial recipes. Do not bundle third-party application binaries.
-- Preserve project version 0.2.7, ABI line 0.2 and compatible API 1.5.7 as separate
+- Preserve project version 0.2.8, ABI line 0.2 and compatible API 1.5.7 as separate
   version axes. Download only the exact source revision with verified hashes.
 - Installing this package does not redirect installed FFmpeg, GStreamer, VLC or
   OBS applications. Rebuild consumers explicitly with the selected provider;
@@ -34,7 +36,7 @@ No vcpkg registry, PPA or COPR is published.
 ## Linux package prototypes
 
 The [Ubuntu and Fedora recipes](linux/README.md) build DEB and RPM packages
-from the pinned 0.2.7 source archive. Separate runtime and development
+from the pinned 0.2.8 source archive. Separate runtime and development
 packages retain Robotweax-specific filenames and metadata. The Linux
 packages workflow builds and installs them on Ubuntu 24.04 and Fedora 44,
 executes installed consumers, checks coexistence with Haivision, and tests
@@ -122,7 +124,7 @@ pinned recipe version, or the recipe and fixtures must move together.
 Passing this workflow does not qualify an upgrade from an older package, binary
 bottles, all OS versions, or official distribution admission. See
 [0.2.5 qualification evidence](qualification-0.2.5.md) for historical results;
-these results do not qualify the [0.2.7 candidate](qualification-0.2.7.md).
+these results do not qualify the [0.2.8 candidate](qualification-0.2.8.md).
 
 The vcpkg qualification can also run locally using a bootstrapped checkout of
 the pinned vcpkg revision (a new work directory is required):

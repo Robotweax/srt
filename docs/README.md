@@ -135,3 +135,8 @@ open an issue with a minimal reproducer.
 
 See [Optional session authentication](session-authentication.md) for the default-off
 `SRTO_ROBOTWEAX_SESSIONAUTH` option and its private wire contract.
+
+## Next release candidate
+
+- [0.2.8 candidate release notes](release-notes-0.2.8.md)
+- [0.2.8 release process](release-process-0.2.8.md)

@@ -6,6 +6,29 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+## 0.2.8 — Release candidate, not published
+
+- Add explicitly selected Robotweax-only Control and Sensor transport profiles,
+  with versioned peer admission and documented delivery/encryption boundaries.
+- Add default-off session authentication version 2 for Caller/Listener key
+  exchange, runtime key controls and FEC parity. Both peers must enable it;
+  ordinary Haivision-compatible sessions retain their existing wire format.
+  This does not authenticate all transport controls or close the compatible
+  profile's long-horizon KMREQ replay limitation.
+- Harden listener crypto admission, buffer-size conversion, FEC input validation,
+  key direction/identity checks and handshake/profile validation. Bound NAK and
+  deferred peer-drop work across service turns without reducing receive windows.
+- Introduce bounded scheduler shards, sparse receive readiness and indexed setup
+  routing; compact sender metadata while preserving packet/window capacities.
+- Correct asynchronous connect failure diagnostics and Backup-group ACK handling,
+  callback retirement ordering, source-idle liveness and short-outage progress.
+- Harden test-fixture privacy, terminal output, immutable CI action references
+  and Windows SDK input/signing separation, including independent installer
+  reconstruction before signing.
+- Keep the public C export inventory and ABI line 0.2; SRT API target remains
+  1.5.7. Source-tree C++ consumers must rebuild against matching sources.
+
+
 - Match the Haivision 1.5.7 Live policy for peers advertising periodic NAKs:
   delayed ACKs no longer trigger blind DATA probes. NAK-driven Live recovery
   remains enabled; complete finite transfers use File mode, whose timeout
