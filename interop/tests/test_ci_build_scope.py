@@ -111,9 +111,13 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_rejects_empty_test_selection": ["robotweax_nonexistent_test_filter"],
             "robotweax_srt_rejects_empty_exclusion_selection": ["--exclude", '""'],
             "robotweax_srt_rejects_invalid_test_arguments": ["--unknown"],
+            "robotweax_srt_rejects_incomplete_include_selection": ["--include"],
+            "robotweax_srt_rejects_empty_include_exclusion_selection": [
+                "--include", "compat_runtime_", "--exclude", "compat_runtime_"],
         }
         partitions = {
-            "robotweax_srt_tests", "robotweax_srt_rotation_tests",
+            "robotweax_srt_tests", "robotweax_srt_transport_runtime_tests",
+            "robotweax_srt_rotation_tests",
             "robotweax_srt_delayed_key_response_tests",
             "robotweax_srt_key_length_tests", "robotweax_srt_gcm_profile_tests",
             "robotweax_srt_sensor_gcm_aes128_tests",
@@ -141,11 +145,16 @@ class CiTestRegistrationTests(unittest.TestCase):
             self.assertIn(name, properties.group(1))
         self.assertIn("PROPERTIES WILL_FAIL TRUE", properties.group(1))
         self.assertEqual(commands["robotweax_srt_tests"], [
-            "--exclude", "compat_runtime_rotation_",
+            "--exclude", "compat_runtime_",
             "compat_group_closed_member_retains_bounded_copy",
             "key_length", "srt_compat_gcm_",
             "srt_compat_sensor_gcm_bounded_sample_stream_",
             "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
+            "stale_drop_coverage", "stale_nak",
+        ])
+        self.assertEqual(commands["robotweax_srt_transport_runtime_tests"], [
+            "--include", "compat_runtime_", "--exclude", "compat_runtime_rotation_",
+            "key_length", "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
             "stale_drop_coverage", "stale_nak",
         ])
         bounded_properties = re.search(
@@ -197,6 +206,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         selection = re.search(r'-R "([^"]+)"', optional_step)
         self.assertIsNotNone(selection)
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_tests"))
+        self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_transport_runtime_tests"))
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_key_length_tests"))
         for name in profile_partitions | stale_partitions | {"robotweax_srt_delayed_key_response_tests"}:
             self.assertIsNotNone(re.search(selection.group(1), name))
@@ -214,14 +224,19 @@ class CiTestRegistrationTests(unittest.TestCase):
         coverage = {case: [] for case in cases}
         for name in partitions:
             arguments = commands[name]
+            included_cases = cases
+            if arguments[0] == "--include":
+                self.assertGreater(len(arguments), 2)
+                included_cases = [case for case in cases if arguments[1] in case]
+                arguments = arguments[2:]
             if arguments[0] == "--exclude":
                 self.assertGreater(len(arguments), 1)
-                selected = [case for case in cases
+                selected = [case for case in included_cases
                             if not any(value in case for value in arguments[1:])]
             else:
                 self.assertEqual(len(arguments), 1)
                 self.assertTrue(arguments[0])
-                selected = [case for case in cases if arguments[0] in case]
+                selected = [case for case in included_cases if arguments[0] in case]
             self.assertTrue(selected, f"empty native partition: {name}")
             for case in selected:
                 coverage[case].append(name)

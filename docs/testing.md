@@ -62,6 +62,13 @@ CTest runs key-length negotiation, runtime key rotation, GCM public profile
 scenarios, paced Sensor sample streams per AES key size, and bounded closed-member
 retention cases in separate native partitions. Each case runs
 exactly once across the partitions, each retaining a 30-second process deadline.
+`robotweax_srt_transport_runtime_tests` selects ordinary `compat_runtime_`
+cases while excluding the separately budgeted crypto and loss-range cases.
+The main native aggregate excludes that prefix. This avoids cumulative suite
+timeouts on Windows Debug and Linux ASan without changing individual assertions,
+traffic parameters or the 30-second limit. The Python build-scope guard checks
+every registered native case has exactly one partition, including the optional
+retransmission-limit build's selection.
 Run `ctest --test-dir build -R '^robotweax_srt_key_length_tests$'` to select the
 key-length partition; it is also covered by the `encryption` label. In GCM builds,
 `robotweax_srt_gcm_profile_tests` selects the public profile scenarios and retains
