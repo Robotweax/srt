@@ -1,6 +1,8 @@
 # Package qualification 0.2.8
 
-Status: **candidate recipes qualified; final publication gates pending**.
+Status: **qualified and published on 2026-10-08**.
+Release: [v0.2.8](https://github.com/Robotweax/srt/releases/tag/v0.2.8).
+Tag commit `09ceab33e1fc190472558fdb4d873f38b76fa320`, annotated object `890715013facb86d6425c052ca22acf73a3436af`.
 
 Product source: `8126e166ecd3d33987b3748e799ef40e5192d068`.
 Archive SHA-256: `f3ad362970d8b83337bd8344f796337a56ff52347c2a9e2ff18c41fd2b71422d`.
@@ -37,18 +39,25 @@ product tree. The following runs completed successfully at that exact head:
   `sign=false`; its protected rebuild and signing jobs were skipped. It does
   not qualify signed installers or the independent rebuild recipe.
 
-## Final publication gates
+## Final acceptance and publication
 
-Final main/tag CI, independently rebuilt and signed Windows SDK assets, exact
-signed-byte tests and downloaded draft-byte verification remain required.
-The separate tap/native bottle requires its own qualification before publication.
-Record exact tag/source identities, successful final run links and artifact
-hashes as those gates complete. Preserve original failures; exclude failed,
-cancelled and superseded attempts from accepted results.
+- [Final main CI](https://github.com/Robotweax/srt/actions/runs/37808164740) and [full tag CI](https://github.com/Robotweax/srt/actions/runs/37809908884) passed at `09ceab33e1fc190472558fdb4d873f38b76fa320`.
+- [Tag package managers](https://github.com/Robotweax/srt/actions/runs/37809908815) passed Homebrew and all six vcpkg profiles; [Linux packages](https://github.com/Robotweax/srt/actions/runs/37809908927) passed Ubuntu 24.04 and Fedora 44 builds, consumers and coexistence/removal.
+- [Final SDK workflow](https://github.com/Robotweax/srt/actions/runs/37809908833) built twelve variants, tested both installers and coexistence, independently rebuilt both installers on the approved protected runner, then signed and retested the exact pair. Downloaded executables and their manifest match the qualified signed artifact byte for byte.
+- [Native bottle qualification](https://github.com/Robotweax/homebrew-tap/actions/runs/37803883653) and [tap publication](https://github.com/Robotweax/homebrew-tap/actions/runs/37822519622) passed. Tap main `60d220b9737e65ab73674427d2b2af6fa79284f8` selects the canonical formula plus bottle metadata; the downloaded arm64_sequoia bottle matches the qualified artifact and formula hash.
+
+Post-signing installer SHA-256:
+
+- `robotweax-srt-0.2.8-windows-sdk-openssl.exe`: `dda7da8e9e212161fe87b92e7ec791aa5a08da3fae5935ad6d54b70c5c1834f4`
+- `robotweax-srt-0.2.8-windows-sdk-bcrypt.exe`: `99eb8ec845164daa5e3310fc7262aa0179682f9860969a52dfc02691de4be533`
+
+The [published arm64_sequoia bottle](https://github.com/Robotweax/homebrew-tap/releases/tag/robotweax-srt-0.2.8) has SHA-256 `1058b2cf39d26f19afff857dc5b1886f29ad7909459231c27af568274a875396`. Other bottle platforms remain unqualified.
+
+Original candidate failures remain excluded from acceptance: a relative link to noninstalled packaging documentation was corrected; one macOS OBS desktop reconnect attempt exited before decoded media. Its unchanged candidate retry and the first final-tag attempt passed. The original reconnect cause remains undetermined. Full logs/artifacts are retained; no transport or test guard was weakened. Optional live-timing/native ARM64/performance CI jobs are separate diagnostics and are not inferred from the accepted platform builds.
 
 Recipe workflows build the pinned archive, not the moving protocol checkout.
 Clean coexistence/removal checks do not establish upgrade/rollback, PPA/COPR,
 registry availability or all-platform bottles. Historical
 [0.2.7 qualification](qualification-0.2.7.md) remains unchanged.
-See [candidate release notes](../docs/release-notes-0.2.8.md) and the
+See [release notes](../docs/release-notes-0.2.8.md) and the
 [release process](../docs/release-process-0.2.8.md).

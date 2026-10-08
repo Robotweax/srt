@@ -1,6 +1,22 @@
 # Release process for Robotweax SRT 0.2.8
 
-Status: **preparation and qualification in progress; not published**.
+Status: **completed and published on 2026-10-08**.
+Release: [v0.2.8](https://github.com/Robotweax/srt/releases/tag/v0.2.8).
+Protected annotated tag object `890715013facb86d6425c052ca22acf73a3436af` selects `09ceab33e1fc190472558fdb4d873f38b76fa320`. This published tag must not be moved or recreated.
+
+## Completed acceptance record
+
+Preparation [PR #287](https://github.com/Robotweax/srt/pull/287) was normally merged after exact-head candidate qualification. The final product tree equals the independently verified frozen package source; version/API/default profiles remain unchanged.
+
+- [Final main CI](https://github.com/Robotweax/srt/actions/runs/37808164740) and [full tag CI](https://github.com/Robotweax/srt/actions/runs/37809908884) passed at `09ceab33e1fc190472558fdb4d873f38b76fa320`.
+- [Tag package managers](https://github.com/Robotweax/srt/actions/runs/37809908815) passed Homebrew and all six vcpkg profiles; [Linux packages](https://github.com/Robotweax/srt/actions/runs/37809908927) passed Ubuntu 24.04 and Fedora 44 builds, consumers and coexistence/removal.
+- [Final SDK workflow](https://github.com/Robotweax/srt/actions/runs/37809908833) built twelve variants, tested both installers and coexistence, independently rebuilt both installers on the approved protected runner, then signed and retested the exact pair. Downloaded executables and their manifest match the qualified signed artifact byte for byte.
+- [Native bottle qualification](https://github.com/Robotweax/homebrew-tap/actions/runs/37803883653) and [tap publication](https://github.com/Robotweax/homebrew-tap/actions/runs/37822519622) passed. Tap main `60d220b9737e65ab73674427d2b2af6fa79284f8` selects the canonical formula plus bottle metadata; the downloaded arm64_sequoia bottle matches the qualified artifact and formula hash.
+
+Original candidate failures remain excluded from acceptance: a relative link to noninstalled packaging documentation was corrected; one macOS OBS desktop reconnect attempt exited before decoded media. Its unchanged candidate retry and the first final-tag attempt passed. The original reconnect cause remains undetermined. Full logs/artifacts are retained; no transport or test guard was weakened. Optional live-timing/native ARM64/performance CI jobs are separate diagnostics and are not inferred from the accepted platform builds.
+
+The following procedure records the completed release. Commands creating refs or publishing artifacts are historical instructions for this version.
+
 The development baseline is `ffa61fb912c59e0bf49c8709c4bb00fd396ea128`.
 Historical [0.2.7 acceptance](release-process-0.2.7.md) remains unchanged.
 
@@ -10,9 +26,8 @@ Product source: `8126e166ecd3d33987b3748e799ef40e5192d068`. Its downloaded GitHu
 was verified against all 587 regular files and executable bits.
 SHA-256: `f3ad362970d8b83337bd8344f796337a56ff52347c2a9e2ff18c41fd2b71422d`.
 SHA-512: `cc5d8d25f124254d6a249c515296d9b22491a29e4fc18c2db5c64379f86278c15f3ada31caec659ffaa38b3434fa59d3f280a4c57c1ce5aa3bdf0636a187f2e1`.
-The [package record](https://github.com/Robotweax/srt/blob/dev/release-0.2.8/packaging/qualification-0.2.8.md)
-records successful candidate recipe/platform runs and pending final publication
-gates. Archive verification alone does not establish final acceptance.
+The [package record](https://github.com/Robotweax/srt/blob/main/packaging/qualification-0.2.8.md)
+records accepted candidate/final recipe, platform and publication evidence. Archive verification alone does not establish final acceptance.
 
 ## Candidate CI evidence
 

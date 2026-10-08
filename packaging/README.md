@@ -1,6 +1,6 @@
 # Package manager recipes
 
-## 0.2.8 candidate
+## Published 0.2.8
 
 These recipes select the immutable Robotweax SRT 0.2.8 product source
 `8126e166ecd3d33987b3748e799ef40e5192d068`, not the current checkout. All 587 regular
@@ -8,13 +8,7 @@ files and executable bits were compared with Git before pinning the downloaded
 GitHub archive. Archive SHA-256:
 `f3ad362970d8b83337bd8344f796337a56ff52347c2a9e2ff18c41fd2b71422d`.
 
-Qualification is pending; no 0.2.8 package or installer is published.
-See the [candidate record](qualification-0.2.8.md) and
-[release process](../docs/release-process-0.2.8.md).
-The public [Homebrew tap](https://github.com/Robotweax/homebrew-tap) continues to
-supply the separately qualified 0.2.7 release/bottle until its own update and
-native qualification. [Historical 0.2.7 evidence](qualification-0.2.7.md) is
-retained. No vcpkg registry, PPA or COPR is published.
+The [0.2.8 release](https://github.com/Robotweax/srt/releases/tag/v0.2.8) and separately qualified native Homebrew bottle are published. See the [qualification record](qualification-0.2.8.md) and [release process](../docs/release-process-0.2.8.md). [Historical 0.2.7 evidence](qualification-0.2.7.md) is retained. No vcpkg registry, PPA or COPR is published.
 
 ## Package contract
 
@@ -51,7 +45,7 @@ OpenSSL. Install the reviewed copy from the public tap:
 brew install robotweax/tap/robotweax-srt
 ```
 
-Homebrew may ask you to trust this external formula. The published 0.2.7 bottle is
+Homebrew may ask you to trust this external formula. The published 0.2.8 bottle is
 qualified for Apple Silicon macOS 15 (`arm64_sequoia`). Its downloaded bytes
 match the native CI artifact and the published formula's SHA-256.
 To evaluate a proposed recipe change in
@@ -66,9 +60,9 @@ brew audit --strict YOUR_USER/YOUR_TAP/robotweax-srt
 
 The formula includes a C consumer using Robotweax-specific symbols and checks
 that generic Haivision paths were not installed. Native Homebrew test-bot
-qualified the 0.2.7 bottle, including installation from the created bottle.
+qualified the 0.2.8 bottle, including installation from the created bottle.
 Other bottle platforms require their own native checks. Historical source
-installation on macOS 26 does not qualify a new 0.2.7 bottle for that platform.
+installation on macOS 26 does not qualify a new 0.2.8 bottle for that platform.
 
 ## vcpkg overlay
 
@@ -124,7 +118,7 @@ pinned recipe version, or the recipe and fixtures must move together.
 Passing this workflow does not qualify an upgrade from an older package, binary
 bottles, all OS versions, or official distribution admission. See
 [0.2.5 qualification evidence](qualification-0.2.5.md) for historical results;
-these results do not qualify the [0.2.8 candidate](qualification-0.2.8.md).
+these results do not qualify the [0.2.8 release](qualification-0.2.8.md).
 
 The vcpkg qualification can also run locally using a bootstrapped checkout of
 the pinned vcpkg revision (a new work directory is required):

@@ -6,7 +6,9 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
-## 0.2.8 — Release candidate, not published
+## 0.2.8 — Runtime, Recovery and Security Hardening — 2026-10-08
+
+Published as [v0.2.8](https://github.com/Robotweax/srt/releases/tag/v0.2.8) from tag commit `09ceab3`; immutable package product source `8126e16`. See [release notes](docs/release-notes-0.2.8.md) for the supported profiles, qualification and remaining limits.
 
 - Add explicitly selected Robotweax-only Control and Sensor transport profiles,
   with versioned peer admission and documented delivery/encryption boundaries.

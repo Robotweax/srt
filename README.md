@@ -12,18 +12,9 @@ depending on implementation-specific C++ internals.
 
 ## Release status
 
-Version **0.2.7** was published on **2026-10-02** as a pre-1.0 recovery and
-runtime hardening release. The [latest release](https://github.com/Robotweax/srt/releases/tag/v0.2.7)
-includes signed OpenSSL and BCrypt Windows SDK installers and post-signing
-checksums. See the [release notes](docs/release-notes-0.2.7.md) for changes,
-qualification evidence and remaining limits.
+Version **0.2.8** was published on **2026-10-08** as a pre-1.0 runtime, recovery and security hardening release. The [latest release](https://github.com/Robotweax/srt/releases/tag/v0.2.8) includes independently rebuilt and signed OpenSSL/BCrypt Windows SDK installers, post-signing checksums and immutable tag provenance. See the [release notes](docs/release-notes-0.2.8.md) for changes, qualification evidence and remaining limits.
 
-The development tree is preparing **0.2.8**. Its [candidate release notes](docs/release-notes-0.2.8.md)
-and [release process](docs/release-process-0.2.8.md) record the scope and pending
-qualification. Version 0.2.8 has not been published; the downloads above remain
-the qualified 0.2.7 release.
-
-| Axis | Robotweax SRT 0.2.8 candidate |
+| Axis | Robotweax SRT 0.2.8 |
 | --- | --- |
 | Project release | `0.2.8` |
 | Shared-library ABI | `0.2` |
@@ -39,7 +30,7 @@ handshake, and encryption profile are separate version axes. In particular,
 release number.
 
 Version 0.2 is a pre-1.0 release. Rebuild applications and dependencies when
-moving between ABI lines. See the [0.2.7 release notes](docs/release-notes-0.2.7.md)
+moving between ABI lines. See the [0.2.8 release notes](docs/release-notes-0.2.8.md)
 and [0.1-to-0.2 migration guide](docs/migration-0.2.md).
 
 See the [ecosystem support matrix](docs/compatibility.md#ecosystem-build-profiles)
