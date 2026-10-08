@@ -281,3 +281,57 @@ TEST(caller_handshake_source_notifies_nonblocking_actor_consumers)
     source->stop();
     scheduler.stop();
 }
+
+TEST(
+    caller_handshake_sources_completion_replaces_traffic_and_handshake_deadlines)
+{
+    for (const bool cancel : {false, true}) {
+        RuntimeScheduler scheduler({
+            .shard_count = 1,
+            .queue_capacity_per_shard = 4,
+            .timer_capacity_per_shard = 2,
+        });
+        REQUIRE(scheduler.start());
+        const auto gate = std::make_shared<Gate>();
+        GateRelease release {gate};
+        REQUIRE_EQ(
+            scheduler.submit(0U, {.function = wait_at_gate, .context = gate}),
+            RuntimeScheduler::SubmitStatus::accepted);
+        wait_until_started(gate);
+        const auto inbox = std::make_shared<DatagramInbox>(2);
+        const auto source =
+            std::make_shared<CallerHandshakeEventSource>(scheduler, 0U, inbox);
+        REQUIRE_EQ(source->start(std::chrono::steady_clock::now()
+                       + std::chrono::hours {1}),
+            CallerHandshakeDispatchStatus::completed);
+        REQUIRE_EQ(
+            source->arm_retry_at(std::chrono::steady_clock::time_point::min()),
+            CallerHandshakeDispatchStatus::completed);
+        constexpr std::array<std::byte, 1> payload {std::byte {1}};
+        REQUIRE(inbox->push(payload, Ipv4Endpoint::loopback()));
+        REQUIRE_EQ(source->arm_completion_at(
+                       std::chrono::steady_clock::time_point::min()),
+            CallerHandshakeDispatchStatus::completed);
+        REQUIRE_EQ(scheduler.snapshot().timers, 1U);
+        REQUIRE_EQ(
+            source->arm_retry(1U), CallerHandshakeDispatchStatus::stopped);
+        if (cancel) {
+            source->close();
+            REQUIRE_EQ(
+                source->wait().kind, CallerHandshakeSourceEventKind::closed);
+            REQUIRE_EQ(scheduler.snapshot().timers, 0U);
+        }
+        release_gate(gate);
+        if (!cancel) {
+            REQUIRE_EQ(source->wait().kind,
+                CallerHandshakeSourceEventKind::completion_timer);
+            CallerHandshakeSourceEvent extra;
+            REQUIRE(!source->try_pop(extra));
+            REQUIRE(inbox->push(payload, Ipv4Endpoint::loopback()));
+            REQUIRE(!source->try_pop(extra));
+        }
+        source->stop();
+        scheduler.stop();
+        REQUIRE_EQ(scheduler.snapshot().timers, 0U);
+    }
+}

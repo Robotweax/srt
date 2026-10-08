@@ -2,6 +2,7 @@
 
 #include "compat/socket_registry.hpp"
 #include "compat/connect_callback_executor.hpp"
+#include "compat/caller_rejection_completion.hpp"
 #include "srt/srt.h"
 
 #include <array>
@@ -156,6 +157,7 @@ struct RejectionObservation {
     std::atomic_uint calls = 0;
     std::atomic_bool valid = true;
     int reason = SRT_REJ_UNKNOWN;
+    std::chrono::steady_clock::time_point connect_start {};
 };
 
 void observe_rejection(
@@ -163,7 +165,9 @@ void observe_rejection(
 {
     auto& observation = *static_cast<RejectionObservation*>(opaque);
     if (error != SRT_ECONNREJ || srt_getsockstate(socket) != SRTS_BROKEN
-        || srt_getrejectreason(socket) != observation.reason) {
+        || srt_getrejectreason(socket) != observation.reason
+        || std::chrono::steady_clock::now()
+            < observation.connect_start + std::chrono::milliseconds {10}) {
         observation.valid = false;
     }
     ++observation.calls;
@@ -228,6 +232,7 @@ TEST(connect_nonblocking_repeated_rejection_preserves_completion_and_cleanup)
             REQUIRE(poll >= 0);
             const int interests = SRT_EPOLL_OUT | SRT_EPOLL_ERR;
             REQUIRE_EQ(srt_epoll_add_usock(poll, caller, &interests), 0);
+            observation.connect_start = std::chrono::steady_clock::now();
             REQUIRE_EQ(
                 srt_connect(caller, reinterpret_cast<const sockaddr*>(&address),
                     sizeof(address)),
@@ -236,6 +241,8 @@ TEST(connect_nonblocking_repeated_rejection_preserves_completion_and_cleanup)
             REQUIRE_EQ(srt_epoll_uwait(poll, &ready, 1, 5'000), 1);
             REQUIRE_EQ(ready.fd, caller);
             REQUIRE_EQ(ready.events, interests);
+            REQUIRE(std::chrono::steady_clock::now()
+                >= observation.connect_start + std::chrono::milliseconds {10});
             REQUIRE_EQ(srt_getsockstate(caller), SRTS_BROKEN);
             REQUIRE_EQ(srt_getrejectreason(caller), reason);
             ++attempts;
@@ -535,4 +542,44 @@ TEST(connect_bind_uses_the_requested_source_and_connects)
     REQUIRE_EQ(srt_close(caller), 0);
     REQUIRE_EQ(srt_close(accepted), 0);
     REQUIRE_EQ(srt_close(listener), 0);
+}
+
+TEST(connect_rejection_completion_clock_boundaries_and_first_cause)
+{
+    using namespace robotweax::srt::compat;
+    using Clock = CallerRejectionCompletion::Clock;
+    const auto start = Clock::time_point {} + std::chrono::seconds {7};
+    CallerRejectionCompletion completion {start};
+    completion.record({SRT_ESECFAIL, 23, SRT_REJ_BADSECRET});
+    REQUIRE(completion.pending());
+    REQUIRE(!completion.take_if_due(start));
+    REQUIRE(!completion.take_if_due(start + std::chrono::microseconds {9'999}));
+    // A repeated peer response must not restart the floor or replace its cause.
+    completion.record({SRT_ECONNREJ, 0, SRT_REJ_MESSAGEAPI});
+    const auto result =
+        completion.take_if_due(start + std::chrono::milliseconds {10});
+    REQUIRE(result.has_value());
+    REQUIRE_EQ(result->error, SRT_ESECFAIL);
+    REQUIRE_EQ(result->system_error, 23);
+    REQUIRE_EQ(result->reason, SRT_REJ_BADSECRET);
+    REQUIRE(!completion.pending());
+    completion.record({SRT_ECONNREJ, 0, SRT_REJ_MESSAGEAPI});
+    REQUIRE(!completion.take_if_due(start + std::chrono::seconds {1}));
+
+    CallerRejectionCompletion slow_peer {start};
+    slow_peer.record({SRT_ECONNREJ, 0, SRT_REJ_UNSECURE});
+    REQUIRE(slow_peer.take_if_due(start + std::chrono::milliseconds {40}));
+}
+
+TEST(connect_rejection_completion_cancel_invalidates_late_clock_wake)
+{
+    using namespace robotweax::srt::compat;
+    const auto start = CallerRejectionCompletion::Clock::time_point {};
+    CallerRejectionCompletion completion {start};
+    completion.record({SRT_ECONNREJ, 0, SRT_REJ_MESSAGEAPI});
+    completion.cancel();
+    completion.record({SRT_ESECFAIL, 0, SRT_REJ_BADSECRET});
+    REQUIRE(!completion.pending());
+    REQUIRE(!completion.take_if_due(start + std::chrono::milliseconds {10}));
+    REQUIRE(!completion.take_if_due(start + std::chrono::hours {1}));
 }

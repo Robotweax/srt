@@ -122,11 +122,45 @@ CallerHandshakeDispatchStatus CallerHandshakeEventSource::arm_retry(
 CallerHandshakeDispatchStatus CallerHandshakeEventSource::arm_retry_at(
     std::chrono::steady_clock::time_point deadline) noexcept
 {
+    return arm_timer_at(deadline, CallerHandshakeSourceEventKind::retry_timer);
+}
+
+CallerHandshakeDispatchStatus CallerHandshakeEventSource::arm_completion_at(
+    std::chrono::steady_clock::time_point deadline) noexcept
+{
+    RuntimeScheduler::TimerToken overall;
+    bool clear_handler = false;
+    {
+        std::lock_guard lock(mutex_);
+        if (!started_ || stopped_ || closed_) {
+            return CallerHandshakeDispatchStatus::stopped;
+        }
+        completing_ = true;
+        overall = overall_timer_;
+        overall_timer_ = {};
+        head_ = 0U;
+        size_ = 0U;
+        clear_handler = handler_registered_;
+        handler_registered_ = false;
+    }
+    if (clear_handler)
+        inbox_->clear_ready_handler();
+    cancel_timer(overall);
+    return arm_timer_at(
+        deadline, CallerHandshakeSourceEventKind::completion_timer);
+}
+
+CallerHandshakeDispatchStatus CallerHandshakeEventSource::arm_timer_at(
+    std::chrono::steady_clock::time_point deadline,
+    CallerHandshakeSourceEventKind kind) noexcept
+{
     RuntimeScheduler::TimerToken previous;
     std::uint64_t generation = 0;
     {
         std::lock_guard lock(mutex_);
-        if (!started_ || stopped_ || closed_) {
+        if (!started_ || stopped_ || closed_
+            || (completing_
+                && kind != CallerHandshakeSourceEventKind::completion_timer)) {
             return CallerHandshakeDispatchStatus::stopped;
         }
         previous = retry_timer_;
@@ -142,7 +176,7 @@ CallerHandshakeDispatchStatus CallerHandshakeEventSource::arm_retry_at(
     try {
         timer = std::make_shared<TimerContext>(TimerContext {
             .source = weak_from_this(),
-            .kind = CallerHandshakeSourceEventKind::retry_timer,
+            .kind = kind,
             .generation = generation,
         });
     } catch (...) {
@@ -216,7 +250,9 @@ CallerHandshakeSourceEvent CallerHandshakeEventSource::wait() noexcept
         const CallerHandshakeSourceEvent event = events_[head_];
         head_ = (head_ + 1U) % events_.size();
         --size_;
-        if (event.kind == CallerHandshakeSourceEventKind::retry_timer
+        if ((event.kind == CallerHandshakeSourceEventKind::retry_timer
+                || event.kind
+                    == CallerHandshakeSourceEventKind::completion_timer)
             && event.generation != retry_generation_) {
             continue;
         }
@@ -243,7 +279,9 @@ bool CallerHandshakeEventSource::try_pop(
         event = events_[head_];
         head_ = (head_ + 1U) % events_.size();
         --size_;
-        if (event.kind != CallerHandshakeSourceEventKind::retry_timer
+        if ((event.kind != CallerHandshakeSourceEventKind::retry_timer
+                && event.kind
+                    != CallerHandshakeSourceEventKind::completion_timer)
             || event.generation == retry_generation_) {
             return true;
         }
@@ -383,7 +421,7 @@ void CallerHandshakeEventSource::request_inbox() noexcept
     }
     {
         std::lock_guard lock(mutex_);
-        if (stopped_ || closed_ || inbox_pending_) {
+        if (stopped_ || closed_ || completing_ || inbox_pending_) {
             return;
         }
         inbox_pending_ = true;
@@ -400,6 +438,8 @@ void CallerHandshakeEventSource::request_inbox() noexcept
     {
         std::lock_guard lock(mutex_);
         inbox_pending_ = false;
+        if (completing_)
+            return;
     }
     fail(dispatch_status(submitted));
 }
@@ -409,7 +449,10 @@ void CallerHandshakeEventSource::enqueue(
 {
     {
         std::lock_guard lock(mutex_);
-        if (stopped_ || closed_) {
+        if (stopped_ || closed_
+            || (completing_
+                && event.kind
+                    != CallerHandshakeSourceEventKind::completion_timer)) {
             return;
         }
         if (size_ == events_.size()) {

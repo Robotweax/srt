@@ -16,6 +16,7 @@ namespace robotweax::srt::compat {
 enum class CallerHandshakeSourceEventKind : std::uint8_t {
     inbox_ready,
     retry_timer,
+    completion_timer,
     overall_timeout,
     closed,
     failure,
@@ -52,6 +53,10 @@ public:
         std::uint32_t timeout_milliseconds) noexcept;
     [[nodiscard]] CallerHandshakeDispatchStatus arm_retry_at(
         std::chrono::steady_clock::time_point deadline) noexcept;
+    // Replace handshake traffic and both deadlines with one terminal-completion
+    // deadline. Retains the ready handler and close/failure wake paths.
+    [[nodiscard]] CallerHandshakeDispatchStatus arm_completion_at(
+        std::chrono::steady_clock::time_point deadline) noexcept;
     void cancel_retry() noexcept;
     [[nodiscard]] CallerHandshakeSourceEvent wait() noexcept;
     [[nodiscard]] bool try_pop(CallerHandshakeSourceEvent& event) noexcept;
@@ -72,6 +77,9 @@ private:
     static void publish_inbox_ready(void* context) noexcept;
     static void publish_timer(void* context) noexcept;
 
+    [[nodiscard]] CallerHandshakeDispatchStatus arm_timer_at(
+        std::chrono::steady_clock::time_point deadline,
+        CallerHandshakeSourceEventKind kind) noexcept;
     void request_inbox() noexcept;
     void enqueue(CallerHandshakeSourceEvent event) noexcept;
     void fail(CallerHandshakeDispatchStatus failure) noexcept;
@@ -96,6 +104,7 @@ private:
     bool started_ = false;
     bool handler_registered_ = false;
     bool inbox_pending_ = false;
+    bool completing_ = false;
     bool closed_ = false;
     bool stopped_ = false;
 };

@@ -690,8 +690,10 @@ Retain the CSV and summary alongside full library revisions, compiler/build
 options, OS/kernel, CPU, listener command with secrets redacted, and listener
 logs. The reported campaign rate includes socket setup, close, CSV output, and
 configured retry delays; it is distinct from the per-attempt failure latency.
-An observed reference latency is version- and environment-scoped evidence, not
-a guaranteed minimum notification delay. To explain a roughly 250 ms interval,
+An observed reference latency is version- and environment-scoped evidence.
+Robotweax applies the [10 ms caller rejection floor](api-compatibility.md#error-contract)
+as an explicit compatibility policy; compare every successful rejection row
+against that floor as well as its final state and reason. To explain a roughly 250 ms interval,
 use a redacted packet capture to distinguish handshake retransmission from
 listener admission or application retry policy. Warning-rate suppression alone
 does not demonstrate network throttling. See the

@@ -8,6 +8,7 @@
 #include "compat/caller_handshake_sources.hpp"
 #include "compat/connect_handshake_operation.hpp"
 #include "compat/connect_callback_executor.hpp"
+#include "compat/caller_rejection_completion.hpp"
 #include "compat/error_state.hpp"
 #include "compat/buffer_size.hpp"
 #include "compat/group_registry.hpp"
@@ -1389,13 +1390,14 @@ public:
     CallerHsv5Establishment(SocketRecord& socket, IpEndpoint peer,
         CallerSetup& setup, std::shared_ptr<DatagramInbox> inbox,
         Clock::time_point origin, CallerHandshakeSender sender,
-        void* sender_context) noexcept
+        void* sender_context, bool defer_peer_rejection = false) noexcept
         : socket_(socket)
         , peer_(peer)
         , setup_(setup)
         , inbox_(std::move(inbox))
         , origin_(origin)
         , driver_(setup.configuration, sender, sender_context)
+        , defer_peer_rejection_(defer_peer_rejection)
     {
     }
 
@@ -1420,7 +1422,7 @@ public:
             && message.packet.syn_cookie != 0U
             && classify_caller_induction_response(message)
                 == ListenerHandshakeProtocol::unsupported_hsv4) {
-            return fail_connect(socket_, SRT_ECONNREJ, 0, SRT_REJ_VERSION);
+            return reject_peer(SRT_ECONNREJ, 0, SRT_REJ_VERSION);
         }
         return 0;
     }
@@ -1437,15 +1439,13 @@ public:
             const std::size_t peer_key_length = key_length_for_encryption_field(
                 message.packet.encryption_field);
             if (peer_key_length == 0U) {
-                return fail_connect(
-                    socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+                return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
             }
             if (peer_key_length != setup_.crypto_key_length) {
                 // An explicit application choice is a requirement, not a
                 // default that an unauthenticated advertisement may replace.
                 if (setup_.options.configured_encryption_key_length() != 0U) {
-                    return fail_connect(
-                        socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+                    return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                 }
                 const int replaced = replace_crypto(peer_key_length,
                     message.packet.encryption_field, overall_deadline);
@@ -1456,13 +1456,12 @@ public:
         }
         if (setup_.options.session_authentication()) {
             if (setup_.crypto == nullptr)
-                return fail_connect(socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
+                return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
             SessionAuthenticationParameters local_parameters;
             if (message.packet.request == HandshakeRequest::induction) {
                 if (setup_.crypto->start_session_authentication(true)
                     != Error::none)
-                    return fail_connect(
-                        socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+                    return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                 local_parameters =
                     setup_.crypto->session_authentication()->parameters();
             } else if (message.packet.request == HandshakeRequest::conclusion) {
@@ -1473,8 +1472,7 @@ public:
                            setup_.configuration.local_socket_id,
                            message.packet.socket_id)
                         != Error::none)
-                    return fail_connect(
-                        socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
+                    return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
                 auto* authentication = setup_.crypto->session_authentication();
                 if (!authentication->verify_handshake(false,
                         message.key_material.view(),
@@ -1482,8 +1480,7 @@ public:
                     || authentication->handshake_proof(
                            true, message.key_material.view(), local_parameters)
                         != Error::none)
-                    return fail_connect(
-                        socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+                    return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
             } else {
                 return 0;
             }
@@ -1491,10 +1488,9 @@ public:
                 {.kind = CallerHandshakeEventKind::session_authentication,
                     .session_authentication = local_parameters});
             if (changed.outcome != CallerHandshakeEventOutcome::running)
-                return fail_connect(
-                    socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+                return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
         } else if (message.has_session_authentication) {
-            return fail_connect(socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
+            return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
         }
         if (message.packet.request != HandshakeRequest::conclusion) {
             return 0;
@@ -1516,7 +1512,7 @@ public:
                     != Error::none) {
                 if (setup_.enforced_encryption
                     || !setup_.crypto->allows_plaintext_fallback()) {
-                    return fail_connect(socket_, SRT_ESECFAIL, 0,
+                    return reject_peer(SRT_ESECFAIL, 0,
                         crypto_rejection_reason(*setup_.crypto,
                             key_length_matches
                                     && (!has_response
@@ -1532,13 +1528,12 @@ public:
                 const CryptoState reported = setup_.crypto->sender_state();
                 if (setup_.crypto->continue_without_peer_key(reported)
                     != Error::none) {
-                    return fail_connect(
-                        socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+                    return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                 }
             }
         } else if (message.has_key_material_extension
             && setup_.enforced_encryption) {
-            return fail_connect(socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
+            return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
         }
         return 0;
     }
@@ -1560,7 +1555,7 @@ public:
                     group_generation,
                     static_cast<SRTSOCKET>(
                         protocol.peer_group_membership().group_id))) {
-                return fail_connect(socket_, SRT_ECONNREJ, 0, SRT_REJ_GROUP);
+                return reject_peer(SRT_ECONNREJ, 0, SRT_REJ_GROUP);
             }
         }
         {
@@ -1625,7 +1620,25 @@ public:
         return fail_connect(socket_, SRT_ECONNSETUP, 0);
     }
 
+    [[nodiscard]] std::optional<CallerPeerRejection>
+    take_peer_rejection() noexcept
+    {
+        auto result = peer_rejection_;
+        peer_rejection_.reset();
+        return result;
+    }
+
 private:
+    [[nodiscard]] int reject_peer(
+        SRT_ERRNO error, int system_error, int reason) noexcept
+    {
+        if (!defer_peer_rejection_) {
+            return fail_connect(socket_, error, system_error, reason);
+        }
+        peer_rejection_ = CallerPeerRejection {error, system_error, reason};
+        return fail(error, system_error);
+    }
+
     [[nodiscard]] int replace_crypto(std::size_t peer_key_length,
         std::uint16_t encryption_field,
         Clock::time_point overall_deadline) noexcept
@@ -1674,6 +1687,8 @@ private:
     std::shared_ptr<DatagramInbox> inbox_;
     Clock::time_point origin_ {};
     CallerHandshakeEventDriver driver_;
+    bool defer_peer_rejection_ = false;
+    std::optional<CallerPeerRejection> peer_rejection_;
 };
 
 // Serial, affinity-bound owner for one asynchronous HSv5 Caller handshake.
@@ -1688,12 +1703,14 @@ class AsyncCallerHandshakeActor final
 public:
     AsyncCallerHandshakeActor(std::shared_ptr<RuntimeScheduler> scheduler,
         std::shared_ptr<SocketRecord> socket, IpEndpoint peer,
-        IpEndpoint callback_peer, CallerSetup setup) noexcept
+        IpEndpoint callback_peer, CallerSetup setup,
+        Clock::time_point connect_start) noexcept
         : scheduler_(std::move(scheduler))
         , socket_(std::move(socket))
         , peer_(peer)
         , callback_peer_(callback_peer)
         , setup_(std::move(setup))
+        , rejection_completion_(connect_start)
     {
     }
 
@@ -1926,7 +1943,7 @@ private:
             .origin = origin_,
         };
         establishment_.emplace(*socket_, peer_, setup_, inbox_, origin_,
-            send_caller_handshake_action, &send_context_);
+            send_caller_handshake_action, &send_context_, true);
         try {
             source_ = std::make_shared<CallerHandshakeEventSource>(
                 *scheduler_, setup_.configuration.local_socket_id, inbox_);
@@ -1987,6 +2004,9 @@ private:
             (void)dispatch({.kind = CallerHandshakeEventKind::overall_timeout});
             finish(fail_connect(*socket_, SRT_ENOSERVER, 0));
             return false;
+        case CallerHandshakeSourceEventKind::completion_timer:
+            complete_peer_rejection();
+            return false;
         case CallerHandshakeSourceEventKind::retry_timer: {
             const CallerHandshakeEventResult result = dispatch({
                 .kind = CallerHandshakeEventKind::retry_timer,
@@ -2038,13 +2058,13 @@ private:
 
         if (establishment_->validate_peer_protocol(decoded.message)
             == SRT_ERROR) {
-            finish(SRT_ERROR);
+            finish_peer_policy_failure();
             return false;
         }
         if (establishment_->apply_crypto_policy(
                 decoded.message, overall_deadline_)
             == SRT_ERROR) {
-            finish(SRT_ERROR);
+            finish_peer_policy_failure();
             return false;
         }
 
@@ -2060,8 +2080,13 @@ private:
             return false;
         }
         if (result.outcome == CallerHandshakeEventOutcome::connected) {
-            finish(establishment_->publish_connection(
-                decoded.message, decoded.control.timestamp));
+            const int published = establishment_->publish_connection(
+                decoded.message, decoded.control.timestamp);
+            if (published == SRT_ERROR) {
+                finish_peer_policy_failure();
+            } else {
+                finish(0);
+            }
             return false;
         }
         if (result.outcome != CallerHandshakeEventOutcome::running) {
@@ -2088,7 +2113,43 @@ private:
 
     void finish_event(const CallerHandshakeEventResult& result) noexcept
     {
+        if (result.outcome == CallerHandshakeEventOutcome::rejected) {
+            defer_peer_rejection({SRT_ECONNREJ, 0, result.rejection_reason});
+            return;
+        }
         finish(establishment_->fail_event(result));
+    }
+
+    void finish_peer_policy_failure() noexcept
+    {
+        if (const auto rejection = establishment_->take_peer_rejection()) {
+            defer_peer_rejection(*rejection);
+        } else {
+            finish(SRT_ERROR);
+        }
+    }
+
+    void defer_peer_rejection(CallerPeerRejection rejection) noexcept
+    {
+        rejection_completion_.record(rejection);
+        complete_peer_rejection();
+    }
+
+    void complete_peer_rejection() noexcept
+    {
+        if (const auto rejection =
+                rejection_completion_.take_if_due(Clock::now())) {
+            finish(fail_connect(*socket_, rejection->error,
+                rejection->system_error, rejection->reason));
+            return;
+        }
+        if (!rejection_completion_.pending())
+            return;
+        const auto armed =
+            source_->arm_completion_at(rejection_completion_.deadline());
+        if (armed != CallerHandshakeDispatchStatus::completed) {
+            finish_dispatch_failure(armed);
+        }
     }
 
     void finish(int result) noexcept
@@ -2100,6 +2161,7 @@ private:
             }
             finishing_ = true;
         }
+        rejection_completion_.cancel();
         const int error_code = result == 0 ? SRT_SUCCESS : last_error().code;
         if (source_ != nullptr) {
             source_->clear_event_ready_handler();
@@ -2171,6 +2233,7 @@ private:
     IpEndpoint peer_ {};
     IpEndpoint callback_peer_ {};
     CallerSetup setup_;
+    CallerRejectionCompletion rejection_completion_;
     std::shared_ptr<DatagramInbox> inbox_;
     std::shared_ptr<CallerHandshakeEventSource> source_;
     std::optional<CallerHsv5Establishment> establishment_;
@@ -3043,6 +3106,8 @@ private:
             return false;
         }
         switch (event.kind) {
+        case CallerHandshakeSourceEventKind::completion_timer:
+            break;
         case CallerHandshakeSourceEventKind::failure:
             finish_dispatch_failure(event.failure);
             return false;
@@ -3223,6 +3288,7 @@ int connect_socket(
     int name_size,
     std::int32_t forced_initial_sequence) noexcept
 {
+    const auto connect_start = Clock::now();
     IpEndpoint peer;
     if (decode_ip_endpoint(
             name, name_size, peer, false) == SRT_ERROR) {
@@ -3535,8 +3601,8 @@ int connect_socket(
     (void)acquire_runtime_work_executor();
     std::shared_ptr<AsyncCallerHandshakeActor> actor;
     try {
-        actor = std::make_shared<AsyncCallerHandshakeActor>(
-            scheduler, socket, peer, callback_peer, std::move(setup));
+        actor = std::make_shared<AsyncCallerHandshakeActor>(scheduler, socket,
+            peer, callback_peer, std::move(setup), connect_start);
     } catch (...) {
         return fail_connect(*socket, SRT_ENOBUF, 0);
     }
