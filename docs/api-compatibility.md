@@ -247,6 +247,13 @@ thread-local last-error record. Unsupported combinations fail explicitly.
 Connection rejection reasons, asynchronous completion errors, peer errors,
 authentication failures, EOF, and local validation failures remain distinct.
 
+A nonblocking connection stays `SRTS_CONNECTING` while setup is in progress. A
+terminal timeout or peer rejection changes it to `SRTS_BROKEN` before the
+completion callback runs. Epoll then reports the requested
+`SRT_EPOLL_IN`, `SRT_EPOLL_OUT`, and `SRT_EPOLL_ERR` interests. The rejection reason
+and callback error remain available. Close the failed socket and create a new
+one for another attempt. Blocking failures use the same terminal state.
+
 Do not write application logic that depends on an undocumented error from a
 different SRT implementation. Use Robotweax's public headers, this guide, and
 the manifest as the contract.

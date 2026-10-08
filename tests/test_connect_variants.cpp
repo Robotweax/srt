@@ -95,6 +95,60 @@ void observe_connect(void* opaque, SRTSOCKET, int error,
 
 } // namespace
 
+TEST(
+    connect_nonblocking_timeout_publishes_terminal_state_for_each_epoll_interest)
+{
+    ConnectObservation observation;
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    robotweax::srt::UdpSocket sink;
+    REQUIRE(sink.valid());
+    REQUIRE_EQ(sink.bind(robotweax::srt::IpEndpoint::loopback()),
+        robotweax::srt::Error::none);
+    const auto endpoint = sink.local_endpoint();
+    REQUIRE(endpoint);
+    const auto address = loopback_address(endpoint.endpoint.port);
+    const SRTSOCKET socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    const bool synchronous = false;
+    const std::int32_t timeout = 350;
+    REQUIRE_EQ(
+        srt_setsockflag(socket, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+        0);
+    REQUIRE_EQ(
+        srt_setsockflag(socket, SRTO_CONNTIMEO, &timeout, sizeof(timeout)), 0);
+    REQUIRE_EQ(srt_connect_callback(socket, observe_connect, &observation), 0);
+    constexpr std::array<int, 4> interests {SRT_EPOLL_IN | SRT_EPOLL_ERR,
+        SRT_EPOLL_OUT | SRT_EPOLL_ERR,
+        SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR, SRT_EPOLL_ERR};
+    std::array<int, interests.size()> polls {};
+    for (std::size_t i = 0; i < polls.size(); ++i) {
+        polls[i] = srt_epoll_create();
+        REQUIRE(polls[i] >= 0);
+        REQUIRE_EQ(srt_epoll_add_usock(polls[i], socket, &interests[i]), 0);
+    }
+    REQUIRE_EQ(srt_connect(socket, reinterpret_cast<const sockaddr*>(&address),
+                   sizeof(address)),
+        0);
+    for (std::size_t i = 0; i < polls.size(); ++i) {
+        SRT_EPOLL_EVENT ready {};
+        REQUIRE_EQ(srt_epoll_uwait(polls[i], &ready, 1, 5'000), 1);
+        REQUIRE_EQ(ready.fd, socket);
+        REQUIRE_EQ(ready.events, interests[i]);
+        REQUIRE_EQ(srt_getsockstate(socket), SRTS_BROKEN);
+        REQUIRE_EQ(srt_getrejectreason(socket), SRT_REJ_TIMEOUT);
+        REQUIRE_EQ(srt_epoll_release(polls[i]), 0);
+    }
+    REQUIRE(wait_for_callback(observation));
+    REQUIRE_EQ(observation.calls.load(), 1);
+    REQUIRE_EQ(observation.error.load(), SRT_ENOSERVER);
+    REQUIRE_EQ(srt_connect(socket, reinterpret_cast<const sockaddr*>(&address),
+                   sizeof(address)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESCLOSED);
+    REQUIRE_EQ(srt_close(socket), 0);
+}
+
 TEST(connect_rejects_fec_group_larger_than_listener_receive_window)
 {
     ScopedSrtRuntime runtime;

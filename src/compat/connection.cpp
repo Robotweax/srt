@@ -19,6 +19,7 @@
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/runtime_work_executor_service.hpp"
 #include "compat/socket_io.hpp"
+#include "compat/logging.hpp"
 #include "robotweax/srt/crypto_provider.hpp"
 
 #include <algorithm>
@@ -40,6 +41,22 @@ namespace robotweax::srt::compat {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+void log_listener_rejection(SocketRecord& listener, IpEndpoint peer,
+    std::uint32_t peer_socket_id, int reason) noexcept
+{
+    std::uint32_t socket_id = 0;
+    {
+        std::lock_guard lock(listener.mutex);
+        if (listener.state != SRTS_LISTENING
+            || !admit_handshake_warning(
+                listener.next_handshake_warning, Clock::now())) {
+            return;
+        }
+        socket_id = listener.protocol_socket_id;
+    }
+    emit_handshake_rejection(true, socket_id, peer_socket_id, peer, reason);
+}
 
 [[nodiscard]] Clock::time_point group_timestamp_origin(
     const std::shared_ptr<GroupRecord>& group, Clock::time_point fallback)
@@ -947,7 +964,6 @@ void set_key_material_state_response(
     SocketRecord& socket,
     SRT_ERRNO error,
     int system_error = 0,
-    bool asynchronous = false,
     int rejection_reason = -1) noexcept
 {
     if (rejection_reason < 0) {
@@ -972,22 +988,29 @@ void set_key_material_state_response(
             break;
         }
     }
+    IpEndpoint peer;
+    std::uint32_t socket_id = 0;
+    std::uint32_t peer_socket_id = 0;
     {
         std::lock_guard lock(socket.mutex);
         if (socket.state == SRTS_CLOSING
             || socket.state == SRTS_CLOSED) {
             return fail(SRT_ESCLOSED);
         }
-        const bool group_member =
-            socket.group_id != SRT_INVALID_SOCK;
-        socket.state = asynchronous && !group_member
-            ? SRTS_CONNECTING : SRTS_BROKEN;
+        socket.state = SRTS_BROKEN;
         socket.connect_error = error;
         socket.connect_system_error = system_error;
         socket.rejection_reason = rejection_reason;
+        peer = socket.peer_endpoint;
+        socket_id = socket.protocol_socket_id;
+        peer_socket_id = socket.peer_protocol_socket_id;
     }
     publish_group_member_state(socket);
     ReadinessSignal::notify();
+    if (error != SRT_ESCLOSED) {
+        emit_handshake_rejection(
+            false, socket_id, peer_socket_id, peer, rejection_reason);
+    }
     return fail(error, system_error);
 }
 
@@ -1363,13 +1386,12 @@ public:
     CallerHsv5Establishment(SocketRecord& socket, IpEndpoint peer,
         CallerSetup& setup, std::shared_ptr<DatagramInbox> inbox,
         Clock::time_point origin, CallerHandshakeSender sender,
-        void* sender_context, bool asynchronous) noexcept
+        void* sender_context) noexcept
         : socket_(socket)
         , peer_(peer)
         , setup_(setup)
         , inbox_(std::move(inbox))
         , origin_(origin)
-        , asynchronous_(asynchronous)
         , driver_(setup.configuration, sender, sender_context)
     {
     }
@@ -1395,8 +1417,7 @@ public:
             && message.packet.syn_cookie != 0U
             && classify_caller_induction_response(message)
                 == ListenerHandshakeProtocol::unsupported_hsv4) {
-            return fail_connect(
-                socket_, SRT_ECONNREJ, 0, asynchronous_, SRT_REJ_VERSION);
+            return fail_connect(socket_, SRT_ECONNREJ, 0, SRT_REJ_VERSION);
         }
         return 0;
     }
@@ -1414,14 +1435,14 @@ public:
                 message.packet.encryption_field);
             if (peer_key_length == 0U) {
                 return fail_connect(
-                    socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_BADSECRET);
+                    socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
             }
             if (peer_key_length != setup_.crypto_key_length) {
                 // An explicit application choice is a requirement, not a
                 // default that an unauthenticated advertisement may replace.
                 if (setup_.options.configured_encryption_key_length() != 0U) {
-                    return fail_connect(socket_, SRT_ESECFAIL, 0, asynchronous_,
-                        SRT_REJ_BADSECRET);
+                    return fail_connect(
+                        socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                 }
                 const int replaced = replace_crypto(peer_key_length,
                     message.packet.encryption_field, overall_deadline);
@@ -1432,14 +1453,13 @@ public:
         }
         if (setup_.options.session_authentication()) {
             if (setup_.crypto == nullptr)
-                return fail_connect(
-                    socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_UNSECURE);
+                return fail_connect(socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
             SessionAuthenticationParameters local_parameters;
             if (message.packet.request == HandshakeRequest::induction) {
                 if (setup_.crypto->start_session_authentication(true)
                     != Error::none)
-                    return fail_connect(socket_, SRT_ESECFAIL, 0, asynchronous_,
-                        SRT_REJ_BADSECRET);
+                    return fail_connect(
+                        socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                 local_parameters =
                     setup_.crypto->session_authentication()->parameters();
             } else if (message.packet.request == HandshakeRequest::conclusion) {
@@ -1450,8 +1470,8 @@ public:
                            setup_.configuration.local_socket_id,
                            message.packet.socket_id)
                         != Error::none)
-                    return fail_connect(socket_, SRT_ESECFAIL, 0, asynchronous_,
-                        SRT_REJ_UNSECURE);
+                    return fail_connect(
+                        socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
                 auto* authentication = setup_.crypto->session_authentication();
                 if (!authentication->verify_handshake(false,
                         message.key_material.view(),
@@ -1459,8 +1479,8 @@ public:
                     || authentication->handshake_proof(
                            true, message.key_material.view(), local_parameters)
                         != Error::none)
-                    return fail_connect(socket_, SRT_ESECFAIL, 0, asynchronous_,
-                        SRT_REJ_BADSECRET);
+                    return fail_connect(
+                        socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
             } else {
                 return 0;
             }
@@ -1469,10 +1489,9 @@ public:
                     .session_authentication = local_parameters});
             if (changed.outcome != CallerHandshakeEventOutcome::running)
                 return fail_connect(
-                    socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_BADSECRET);
+                    socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
         } else if (message.has_session_authentication) {
-            return fail_connect(
-                socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_UNSECURE);
+            return fail_connect(socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
         }
         if (message.packet.request != HandshakeRequest::conclusion) {
             return 0;
@@ -1494,7 +1513,7 @@ public:
                     != Error::none) {
                 if (setup_.enforced_encryption
                     || !setup_.crypto->allows_plaintext_fallback()) {
-                    return fail_connect(socket_, SRT_ESECFAIL, 0, asynchronous_,
+                    return fail_connect(socket_, SRT_ESECFAIL, 0,
                         crypto_rejection_reason(*setup_.crypto,
                             key_length_matches
                                     && (!has_response
@@ -1510,14 +1529,13 @@ public:
                 const CryptoState reported = setup_.crypto->sender_state();
                 if (setup_.crypto->continue_without_peer_key(reported)
                     != Error::none) {
-                    return fail_connect(socket_, SRT_ESECFAIL, 0, asynchronous_,
-                        SRT_REJ_BADSECRET);
+                    return fail_connect(
+                        socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                 }
             }
         } else if (message.has_key_material_extension
             && setup_.enforced_encryption) {
-            return fail_connect(
-                socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_UNSECURE);
+            return fail_connect(socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
         }
         return 0;
     }
@@ -1539,8 +1557,7 @@ public:
                     group_generation,
                     static_cast<SRTSOCKET>(
                         protocol.peer_group_membership().group_id))) {
-                return fail_connect(
-                    socket_, SRT_ECONNREJ, 0, asynchronous_, SRT_REJ_GROUP);
+                return fail_connect(socket_, SRT_ECONNREJ, 0, SRT_REJ_GROUP);
             }
         }
         {
@@ -1565,7 +1582,7 @@ public:
             == SRT_ERROR) {
             return fail_connect(socket_,
                 static_cast<SRT_ERRNO>(last_error().code),
-                last_error().system_error, asynchronous_);
+                last_error().system_error);
         }
         return 0;
     }
@@ -1579,7 +1596,7 @@ public:
                         == CallerHandshakeDispatchStatus::allocation_failed
                 ? SRT_ENOBUF
                 : SRT_ETHREAD,
-            0, asynchronous_);
+            0);
     }
 
     [[nodiscard]] int fail_event(
@@ -1587,23 +1604,22 @@ public:
     {
         switch (result.outcome) {
         case CallerHandshakeEventOutcome::rejected:
-            return fail_connect(socket_, SRT_ECONNREJ, 0, asynchronous_,
-                result.rejection_reason);
-        case CallerHandshakeEventOutcome::failed:
-            return fail_connect(socket_, SRT_ECONNSETUP, 0, asynchronous_);
-        case CallerHandshakeEventOutcome::io_error:
             return fail_connect(
-                socket_, SRT_ESOCKFAIL, result.system_error, asynchronous_);
+                socket_, SRT_ECONNREJ, 0, result.rejection_reason);
+        case CallerHandshakeEventOutcome::failed:
+            return fail_connect(socket_, SRT_ECONNSETUP, 0);
+        case CallerHandshakeEventOutcome::io_error:
+            return fail_connect(socket_, SRT_ESOCKFAIL, result.system_error);
         case CallerHandshakeEventOutcome::closed:
-            return fail_connect(socket_, SRT_ESCLOSED, 0, asynchronous_);
+            return fail_connect(socket_, SRT_ESCLOSED, 0);
         case CallerHandshakeEventOutcome::timed_out:
-            return fail_connect(socket_, SRT_ENOSERVER, 0, asynchronous_);
+            return fail_connect(socket_, SRT_ENOSERVER, 0);
         case CallerHandshakeEventOutcome::invalid:
         case CallerHandshakeEventOutcome::connected:
         case CallerHandshakeEventOutcome::running:
-            return fail_connect(socket_, SRT_ECONNSETUP, 0, asynchronous_);
+            return fail_connect(socket_, SRT_ECONNSETUP, 0);
         }
-        return fail_connect(socket_, SRT_ECONNSETUP, 0, asynchronous_);
+        return fail_connect(socket_, SRT_ECONNSETUP, 0);
     }
 
 private:
@@ -1617,12 +1633,12 @@ private:
             configuration.key_length = peer_key_length;
             replacement = std::make_shared<CryptoSession>(configuration);
         } catch (const std::bad_alloc&) {
-            return fail_connect(socket_, SRT_ENOBUF, 0, asynchronous_);
+            return fail_connect(socket_, SRT_ENOBUF, 0);
         } catch (...) {
-            return fail_connect(socket_, SRT_ESYSOBJ, 0, asynchronous_);
+            return fail_connect(socket_, SRT_ESYSOBJ, 0);
         }
         if (replacement->start_initiator() != Error::none) {
-            return fail_connect(socket_, SRT_ESECFAIL, 0, asynchronous_,
+            return fail_connect(socket_, SRT_ESECFAIL, 0,
                 crypto_rejection_reason(*replacement, SRT_REJ_BADSECRET));
         }
         KeyMaterialBuffer request;
@@ -1637,8 +1653,7 @@ private:
             .has_not_after = true,
         });
         if (result.error != Error::none) {
-            return fail_connect(
-                socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_BADSECRET);
+            return fail_connect(socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
         }
         if (result.outcome != CallerHandshakeEventOutcome::running) {
             return fail_event(result);
@@ -1655,7 +1670,6 @@ private:
     CallerSetup& setup_;
     std::shared_ptr<DatagramInbox> inbox_;
     Clock::time_point origin_ {};
-    bool asynchronous_ = false;
     CallerHandshakeEventDriver driver_;
 };
 
@@ -1856,7 +1870,7 @@ private:
                 if (establishment_.has_value()) {
                     (void)dispatch({.kind = CallerHandshakeEventKind::close});
                 }
-                finish(fail_connect(*socket_, SRT_ESCLOSED, 0, true));
+                finish(fail_connect(*socket_, SRT_ESCLOSED, 0));
             } else if (!initialized_) {
                 initialize();
             } else {
@@ -1885,17 +1899,17 @@ private:
         }
         inbox_ = create_setup_inbox();
         if (inbox_ == nullptr) {
-            finish(fail_connect(*socket_, SRT_ENOBUF, 0, true));
+            finish(fail_connect(*socket_, SRT_ENOBUF, 0));
             return;
         }
         if (!setup_.channel->register_setup_inbox(
                 setup_.configuration.local_socket_id, peer_, inbox_)) {
-            finish(fail_connect(*socket_, SRT_ECONNSETUP, 0, true));
+            finish(fail_connect(*socket_, SRT_ECONNSETUP, 0));
             return;
         }
         route_registered_ = true;
         if (!setup_.channel->start()) {
-            finish(fail_connect(*socket_, SRT_ETHREAD, 0, true));
+            finish(fail_connect(*socket_, SRT_ETHREAD, 0));
             return;
         }
 
@@ -1909,17 +1923,17 @@ private:
             .origin = origin_,
         };
         establishment_.emplace(*socket_, peer_, setup_, inbox_, origin_,
-            send_caller_handshake_action, &send_context_, true);
+            send_caller_handshake_action, &send_context_);
         try {
             source_ = std::make_shared<CallerHandshakeEventSource>(
                 *scheduler_, setup_.configuration.local_socket_id, inbox_);
         } catch (...) {
-            finish(fail_connect(*socket_, SRT_ENOBUF, 0, true));
+            finish(fail_connect(*socket_, SRT_ENOBUF, 0));
             return;
         }
         if (!source_->set_event_ready_handler(
                 source_ready, shared_from_this())) {
-            finish(fail_connect(*socket_, SRT_ECONNSETUP, 0, true));
+            finish(fail_connect(*socket_, SRT_ECONNSETUP, 0));
             return;
         }
         const CallerHandshakeDispatchStatus started =
@@ -1964,11 +1978,11 @@ private:
             return false;
         case CallerHandshakeSourceEventKind::closed:
             (void)dispatch({.kind = CallerHandshakeEventKind::close});
-            finish(fail_connect(*socket_, SRT_ESCLOSED, 0, true));
+            finish(fail_connect(*socket_, SRT_ESCLOSED, 0));
             return false;
         case CallerHandshakeSourceEventKind::overall_timeout:
             (void)dispatch({.kind = CallerHandshakeEventKind::overall_timeout});
-            finish(fail_connect(*socket_, SRT_ENOSERVER, 0, true));
+            finish(fail_connect(*socket_, SRT_ENOSERVER, 0));
             return false;
         case CallerHandshakeSourceEventKind::retry_timer: {
             const CallerHandshakeEventResult result = dispatch({
@@ -1990,7 +2004,7 @@ private:
         case CallerHandshakeSourceEventKind::inbox_ready:
             return process_inbox();
         }
-        finish(fail_connect(*socket_, SRT_ECONNSETUP, 0, true));
+        finish(fail_connect(*socket_, SRT_ECONNSETUP, 0));
         return false;
     }
 
@@ -2007,7 +2021,7 @@ private:
         if (received == InboxPopStatus::closed) {
             source_->close();
             (void)dispatch({.kind = CallerHandshakeEventKind::close});
-            finish(fail_connect(*socket_, SRT_ESCLOSED, 0, true));
+            finish(fail_connect(*socket_, SRT_ESCLOSED, 0));
             return false;
         }
         if (!same_endpoint(envelope.peer, peer_)) {
@@ -2066,7 +2080,7 @@ private:
                         == CallerHandshakeDispatchStatus::allocation_failed
                 ? SRT_ENOBUF
                 : SRT_ETHREAD,
-            0, true));
+            0));
     }
 
     void finish_event(const CallerHandshakeEventResult& result) noexcept
@@ -2211,7 +2225,7 @@ private:
         .origin = origin,
     };
     CallerHsv5Establishment establishment {*socket, peer, setup, inbox, origin,
-        send_caller_handshake_action, &send_context, false};
+        send_caller_handshake_action, &send_context};
     const auto arm_retry = [&retry_deadline](
                                const CallerHandshakeEventResult& result) {
         if (!result.arm_retry_timer) {
@@ -2304,13 +2318,12 @@ class RendezvousHandshakeSession {
 public:
     RendezvousHandshakeSession(std::shared_ptr<SocketRecord> socket,
         IpEndpoint peer, RendezvousSetup setup,
-        std::shared_ptr<DatagramInbox> inbox, bool asynchronous) noexcept
+        std::shared_ptr<DatagramInbox> inbox) noexcept
         : socket_(std::move(socket))
         , peer_(peer)
         , setup_(std::move(setup))
         , inbox_(std::move(inbox))
         , machine_(setup_.configuration)
-        , asynchronous_(asynchronous)
         , origin_(Clock::now())
         , overall_deadline_(
               origin_ + std::chrono::milliseconds {setup_.timeout_milliseconds})
@@ -2334,8 +2347,7 @@ public:
         const ActionResult result = apply_actions(*setup_.channel, peer_, 0U,
             machine_.start(), origin_, retry_deadline_);
         if (result.outcome == ActionOutcome::io_error) {
-            return fail_connect(
-                *socket_, SRT_ESOCKFAIL, result.system_error, asynchronous_);
+            return fail_connect(*socket_, SRT_ESOCKFAIL, result.system_error);
         }
         remember_replay(result);
         return std::nullopt;
@@ -2346,11 +2358,10 @@ public:
         const ActionResult result = apply_actions(*setup_.channel, peer_,
             peer_socket_id_, machine_.timeout(), origin_, retry_deadline_);
         if (result.outcome == ActionOutcome::io_error) {
-            return fail_connect(
-                *socket_, SRT_ESOCKFAIL, result.system_error, asynchronous_);
+            return fail_connect(*socket_, SRT_ESOCKFAIL, result.system_error);
         }
         if (result.outcome == ActionOutcome::failed) {
-            return fail_connect(*socket_, SRT_ENOSERVER, 0, asynchronous_);
+            return fail_connect(*socket_, SRT_ENOSERVER, 0);
         }
         remember_replay(result);
         return std::nullopt;
@@ -2387,11 +2398,11 @@ public:
                     peer_handshake_timestamp_, &wire_packet.packet);
             }
             if (result.outcome == ActionOutcome::io_error) {
-                return fail_connect(*socket_, SRT_ESOCKFAIL,
-                    result.system_error, asynchronous_);
+                return fail_connect(
+                    *socket_, SRT_ESOCKFAIL, result.system_error);
             }
             if (result.outcome == ActionOutcome::failed) {
-                return fail_connect(*socket_, SRT_ECONNSETUP, 0, asynchronous_);
+                return fail_connect(*socket_, SRT_ECONNSETUP, 0);
             }
             return std::nullopt;
         }
@@ -2421,8 +2432,8 @@ public:
                     ? 0U
                     : key_length_for_encryption_field(advertised);
                 if (advertised != 0U && peer_key_length == 0U) {
-                    return fail_connect(*socket_, SRT_ESECFAIL, 0,
-                        asynchronous_, SRT_REJ_BADSECRET);
+                    return fail_connect(
+                        *socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                 }
                 const std::size_t selected_key_length =
                     resolved == RendezvousRole::initiator
@@ -2444,8 +2455,8 @@ public:
                             encryption_field_for_key_length(
                                 selected_key_length))
                         != Error::none) {
-                        return fail_connect(*socket_, SRT_ESECFAIL, 0,
-                            asynchronous_, SRT_REJ_BADSECRET);
+                        return fail_connect(
+                            *socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                     }
                 } else {
                     const KeyMaterialBuffer empty_request;
@@ -2453,8 +2464,8 @@ public:
                             encryption_field_for_key_length(
                                 selected_key_length))
                         != Error::none) {
-                        return fail_connect(*socket_, SRT_ESECFAIL, 0,
-                            asynchronous_, SRT_REJ_BADSECRET);
+                        return fail_connect(
+                            *socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                     }
                 }
             }
@@ -2476,22 +2487,22 @@ public:
             if (setup_.crypto == nullptr) {
                 if (valid_key_material_request) {
                     if (setup_.enforced_encryption) {
-                        return fail_connect(*socket_, SRT_ESECFAIL, 0,
-                            asynchronous_, SRT_REJ_UNSECURE);
+                        return fail_connect(
+                            *socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
                     }
                     if (set_key_material_failure(CryptoState::no_secret)
                         == SRT_ERROR) {
                         return SRT_ERROR;
                     }
                 } else if (decoded.message.has_key_material_extension) {
-                    return fail_connect(*socket_, SRT_ESECFAIL, 0,
-                        asynchronous_, SRT_REJ_BADSECRET);
+                    return fail_connect(
+                        *socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                 }
             } else if (!valid_key_material_request) {
                 if (setup_.enforced_encryption
                     || !setup_.crypto->allows_plaintext_fallback()) {
-                    return fail_connect(*socket_, SRT_ESECFAIL, 0,
-                        asynchronous_, SRT_REJ_BADSECRET);
+                    return fail_connect(
+                        *socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                 }
                 if (keep_encrypting(CryptoState::no_secret) == SRT_ERROR) {
                     return SRT_ERROR;
@@ -2518,7 +2529,6 @@ public:
                         }
                     } else {
                         return fail_connect(*socket_, SRT_ESECFAIL, 0,
-                            asynchronous_,
                             crypto_rejection_reason(
                                 *setup_.crypto, SRT_REJ_BADSECRET));
                     }
@@ -2539,7 +2549,6 @@ public:
                     if (setup_.enforced_encryption
                         || !setup_.crypto->allows_plaintext_fallback()) {
                         return fail_connect(*socket_, SRT_ESECFAIL, 0,
-                            asynchronous_,
                             crypto_rejection_reason(
                                 *setup_.crypto, SRT_REJ_BADSECRET));
                     }
@@ -2551,7 +2560,7 @@ public:
             } else if (decoded.message.has_key_material_extension
                 && setup_.enforced_encryption) {
                 return fail_connect(
-                    *socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_UNSECURE);
+                    *socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
             }
         }
 
@@ -2563,17 +2572,16 @@ public:
         case ActionOutcome::connected:
             return complete_connection(peer_handshake_timestamp_, nullptr);
         case ActionOutcome::rejected:
-            return fail_connect(*socket_, SRT_ECONNREJ, 0, asynchronous_,
-                result.rejection_reason);
-        case ActionOutcome::failed:
-            return fail_connect(*socket_, SRT_ECONNSETUP, 0, asynchronous_);
-        case ActionOutcome::io_error:
             return fail_connect(
-                *socket_, SRT_ESOCKFAIL, result.system_error, asynchronous_);
+                *socket_, SRT_ECONNREJ, 0, result.rejection_reason);
+        case ActionOutcome::failed:
+            return fail_connect(*socket_, SRT_ECONNSETUP, 0);
+        case ActionOutcome::io_error:
+            return fail_connect(*socket_, SRT_ESOCKFAIL, result.system_error);
         case ActionOutcome::running:
             return std::nullopt;
         }
-        return fail_connect(*socket_, SRT_ECONNSETUP, 0, asynchronous_);
+        return fail_connect(*socket_, SRT_ECONNSETUP, 0);
     }
 
 private:
@@ -2588,12 +2596,12 @@ private:
                 CryptoNegotiationContext::rendezvous;
             replacement = std::make_shared<CryptoSession>(configuration);
         } catch (const std::bad_alloc&) {
-            return fail_connect(*socket_, SRT_ENOBUF, 0, asynchronous_);
+            return fail_connect(*socket_, SRT_ENOBUF, 0);
         } catch (...) {
-            return fail_connect(*socket_, SRT_ESYSOBJ, 0, asynchronous_);
+            return fail_connect(*socket_, SRT_ESYSOBJ, 0);
         }
         if (start_initiator && replacement->start_initiator() != Error::none) {
-            return fail_connect(*socket_, SRT_ESECFAIL, 0, asynchronous_,
+            return fail_connect(*socket_, SRT_ESECFAIL, 0,
                 crypto_rejection_reason(*replacement, SRT_REJ_BADSECRET));
         }
         setup_.crypto = std::move(replacement);
@@ -2619,8 +2627,7 @@ private:
         if (machine_.set_key_material_request(empty_request, 0U) != Error::none
             || setup_.crypto->continue_without_peer_key(reported)
                 != Error::none) {
-            return fail_connect(
-                *socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_BADSECRET);
+            return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
         }
         return 0;
     }
@@ -2632,8 +2639,7 @@ private:
         std::copy(encoded.begin(), encoded.end(), response.bytes.begin());
         response.size = encoded.size();
         if (machine_.set_key_material_response(response) != Error::none) {
-            return fail_connect(
-                *socket_, SRT_ESECFAIL, 0, asynchronous_, SRT_REJ_BADSECRET);
+            return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
         }
         {
             std::lock_guard lock(socket_->mutex);
@@ -2679,7 +2685,7 @@ private:
             == SRT_ERROR) {
             return fail_connect(*socket_,
                 static_cast<SRT_ERRNO>(last_error().code),
-                last_error().system_error, asynchronous_);
+                last_error().system_error);
         }
         if (first_connected_packet != nullptr) {
             std::shared_ptr<ConnectionRuntime> runtime;
@@ -2699,7 +2705,6 @@ private:
     RendezvousSetup setup_;
     std::shared_ptr<DatagramInbox> inbox_;
     RendezvousHandshakeMachine machine_;
-    bool asynchronous_ = false;
     Clock::time_point origin_ {};
     Clock::time_point overall_deadline_ {};
     Clock::time_point retry_deadline_ {};
@@ -2712,15 +2717,15 @@ private:
 
 [[nodiscard]] int run_rendezvous_handshake(
     const std::shared_ptr<SocketRecord>& socket, IpEndpoint peer,
-    RendezvousSetup setup, bool asynchronous) noexcept
+    RendezvousSetup setup) noexcept
 {
     const auto inbox = create_setup_inbox();
     if (inbox == nullptr) {
-        return fail_connect(*socket, SRT_ENOBUF, 0, asynchronous);
+        return fail_connect(*socket, SRT_ENOBUF, 0);
     }
     if (!setup.channel->register_setup_inbox(
             setup.configuration.local_socket_id, peer, inbox)) {
-        return fail_connect(*socket, SRT_ECONNSETUP, 0, asynchronous);
+        return fail_connect(*socket, SRT_ECONNSETUP, 0);
     }
     SetupRouteGuard setup_route {
         setup.channel,
@@ -2728,11 +2733,10 @@ private:
         inbox,
     };
     if (!setup.channel->start()) {
-        return fail_connect(*socket, SRT_ETHREAD, 0, asynchronous);
+        return fail_connect(*socket, SRT_ETHREAD, 0);
     }
 
-    RendezvousHandshakeSession session(
-        socket, peer, std::move(setup), inbox, asynchronous);
+    RendezvousHandshakeSession session(socket, peer, std::move(setup), inbox);
     if (const std::optional<int> result = session.start(); result.has_value()) {
         return *result;
     }
@@ -2755,14 +2759,14 @@ private:
             continue;
         }
         if (received == InboxPopStatus::closed) {
-            return fail_connect(*socket, SRT_ESCLOSED, 0, asynchronous);
+            return fail_connect(*socket, SRT_ESCLOSED, 0);
         }
         if (const std::optional<int> result = session.receive(envelope);
             result.has_value()) {
             return *result;
         }
     }
-    return fail_connect(*socket, SRT_ENOSERVER, 0, asynchronous);
+    return fail_connect(*socket, SRT_ENOSERVER, 0);
 }
 
 // Serial, affinity-bound owner for one asynchronous Rendezvous handshake.
@@ -2945,7 +2949,7 @@ private:
                 close_requested = close_requested_;
             }
             if (close_requested) {
-                finish(fail_connect(*socket_, SRT_ESCLOSED, 0, true));
+                finish(fail_connect(*socket_, SRT_ESCLOSED, 0));
             } else if (!initialized_) {
                 initialize();
             } else {
@@ -2974,30 +2978,30 @@ private:
         }
         inbox_ = create_setup_inbox();
         if (inbox_ == nullptr) {
-            finish(fail_connect(*socket_, SRT_ENOBUF, 0, true));
+            finish(fail_connect(*socket_, SRT_ENOBUF, 0));
             return;
         }
         if (!channel_->register_setup_inbox(local_socket_id_, peer_, inbox_)) {
-            finish(fail_connect(*socket_, SRT_ECONNSETUP, 0, true));
+            finish(fail_connect(*socket_, SRT_ECONNSETUP, 0));
             return;
         }
         route_registered_ = true;
         if (!channel_->start()) {
-            finish(fail_connect(*socket_, SRT_ETHREAD, 0, true));
+            finish(fail_connect(*socket_, SRT_ETHREAD, 0));
             return;
         }
 
-        session_.emplace(socket_, peer_, std::move(setup_), inbox_, true);
+        session_.emplace(socket_, peer_, std::move(setup_), inbox_);
         try {
             source_ = std::make_shared<CallerHandshakeEventSource>(
                 *scheduler_, local_socket_id_, inbox_);
         } catch (...) {
-            finish(fail_connect(*socket_, SRT_ENOBUF, 0, true));
+            finish(fail_connect(*socket_, SRT_ENOBUF, 0));
             return;
         }
         if (!source_->set_event_ready_handler(
                 source_ready, shared_from_this())) {
-            finish(fail_connect(*socket_, SRT_ECONNSETUP, 0, true));
+            finish(fail_connect(*socket_, SRT_ECONNSETUP, 0));
             return;
         }
         const CallerHandshakeDispatchStatus source_started =
@@ -3032,7 +3036,7 @@ private:
         const CallerHandshakeSourceEvent& event) noexcept
     {
         if (socket_was_closed(*socket_)) {
-            finish(fail_connect(*socket_, SRT_ESCLOSED, 0, true));
+            finish(fail_connect(*socket_, SRT_ESCLOSED, 0));
             return false;
         }
         switch (event.kind) {
@@ -3040,10 +3044,10 @@ private:
             finish_dispatch_failure(event.failure);
             return false;
         case CallerHandshakeSourceEventKind::closed:
-            finish(fail_connect(*socket_, SRT_ESCLOSED, 0, true));
+            finish(fail_connect(*socket_, SRT_ESCLOSED, 0));
             return false;
         case CallerHandshakeSourceEventKind::overall_timeout:
-            finish(fail_connect(*socket_, SRT_ENOSERVER, 0, true));
+            finish(fail_connect(*socket_, SRT_ENOSERVER, 0));
             return false;
         case CallerHandshakeSourceEventKind::retry_timer:
             if (const std::optional<int> result = session_->timeout();
@@ -3055,7 +3059,7 @@ private:
         case CallerHandshakeSourceEventKind::inbox_ready:
             return process_inbox();
         }
-        finish(fail_connect(*socket_, SRT_ECONNSETUP, 0, true));
+        finish(fail_connect(*socket_, SRT_ECONNSETUP, 0));
         return false;
     }
 
@@ -3071,7 +3075,7 @@ private:
         }
         if (received == InboxPopStatus::closed) {
             source_->close();
-            finish(fail_connect(*socket_, SRT_ESCLOSED, 0, true));
+            finish(fail_connect(*socket_, SRT_ESCLOSED, 0));
             return false;
         }
         const Clock::time_point previous_deadline = session_->retry_deadline();
@@ -3105,7 +3109,7 @@ private:
                         == CallerHandshakeDispatchStatus::allocation_failed
                 ? SRT_ENOBUF
                 : SRT_ETHREAD,
-            0, true));
+            0));
     }
 
     void finish(int result) noexcept
@@ -3342,6 +3346,7 @@ int connect_socket(
                 socket->native_options
                     .enforced_encryption();
             socket->state = SRTS_CONNECTING;
+            socket->peer_endpoint = peer;
             socket->connect_error = SRT_SUCCESS;
             socket->connect_system_error = 0;
             socket->rejection_reason =
@@ -3377,14 +3382,13 @@ int connect_socket(
         }
 
         if (!asynchronous) {
-            return run_rendezvous_handshake(
-                socket, peer, std::move(setup), false);
+            return run_rendezvous_handshake(socket, peer, std::move(setup));
         }
 
         std::shared_ptr<RuntimeScheduler> scheduler =
             acquire_runtime_scheduler();
         if (scheduler == nullptr) {
-            return fail_connect(*socket, SRT_ETHREAD, 0, true);
+            return fail_connect(*socket, SRT_ETHREAD, 0);
         }
         // Prepare off-shard cleanup on the API caller, not in a later shard
         // failure path. Resource failure retains bounded synchronous cleanup.
@@ -3394,7 +3398,7 @@ int connect_socket(
             actor = std::make_shared<AsyncRendezvousHandshakeActor>(
                 scheduler, socket, peer, callback_peer, std::move(setup));
         } catch (...) {
-            return fail_connect(*socket, SRT_ENOBUF, 0, true);
+            return fail_connect(*socket, SRT_ENOBUF, 0);
         }
         CallerHandshakeDispatchStatus started =
             CallerHandshakeDispatchStatus::invalid;
@@ -3416,7 +3420,7 @@ int connect_socket(
                             == CallerHandshakeDispatchStatus::allocation_failed
                     ? SRT_ENOBUF
                     : SRT_ETHREAD,
-                0, true);
+                0);
         }
         return 0;
     }
@@ -3480,6 +3484,7 @@ int connect_socket(
             socket->native_options.enforced_encryption();
         setup.data_sender = socket->public_options.data_sender;
         socket->state = SRTS_CONNECTING;
+        socket->peer_endpoint = peer;
         socket->connect_error = SRT_SUCCESS;
         socket->connect_system_error = 0;
         socket->rejection_reason = SRT_REJ_UNKNOWN;
@@ -3496,7 +3501,7 @@ int connect_socket(
             return fail_connect(*socket, SRT_ESYSOBJ);
         }
         if (setup.crypto->start_initiator() != Error::none) {
-            return fail_connect(*socket, SRT_ESECFAIL, 0, asynchronous,
+            return fail_connect(*socket, SRT_ESECFAIL, 0,
                 crypto_rejection_reason(*setup.crypto, SRT_REJ_BADSECRET));
         }
         const auto request =
@@ -3522,7 +3527,7 @@ int connect_socket(
 
     std::shared_ptr<RuntimeScheduler> scheduler = acquire_runtime_scheduler();
     if (scheduler == nullptr) {
-        return fail_connect(*socket, SRT_ETHREAD, 0, true);
+        return fail_connect(*socket, SRT_ETHREAD, 0);
     }
     (void)acquire_runtime_work_executor();
     std::shared_ptr<AsyncCallerHandshakeActor> actor;
@@ -3530,7 +3535,7 @@ int connect_socket(
         actor = std::make_shared<AsyncCallerHandshakeActor>(
             scheduler, socket, peer, callback_peer, std::move(setup));
     } catch (...) {
-        return fail_connect(*socket, SRT_ENOBUF, 0, true);
+        return fail_connect(*socket, SRT_ENOBUF, 0);
     }
     CallerHandshakeDispatchStatus started =
         CallerHandshakeDispatchStatus::invalid;
@@ -3552,7 +3557,7 @@ int connect_socket(
                         == CallerHandshakeDispatchStatus::allocation_failed
                 ? SRT_ENOBUF
                 : SRT_ETHREAD,
-            0, true);
+            0);
     }
     return 0;
 }
@@ -4429,6 +4434,16 @@ bool ListenerRuntime::process_result(
         }
         (void)send_action(*channel, result.step.peer, result.step.response,
             result.step.destination_socket_id, Clock::now());
+        const auto request =
+            static_cast<std::uint32_t>(result.step.response.packet.request);
+        if (request >= 1000U
+            && request <= static_cast<std::uint32_t>(
+                   std::numeric_limits<int>::max())) {
+            const int reason =
+                static_cast<int>(request < 2000U ? request - 1000U : request);
+            log_listener_rejection(*listener, result.step.peer,
+                result.step.destination_socket_id, reason);
+        }
         return true;
     }
     if (result.step.kind != ListenerHandshakeAdmissionStepKind::admit) {
@@ -4554,6 +4569,8 @@ bool ListenerRuntime::process_setup_result(
         return true;
     }
     if (result.setup.outcome == ListenerConnectionSetupOutcome::rejected) {
+        log_listener_rejection(*context->listener, context->initial.peer,
+            context->caller_socket_id, result.setup.rejection_reason);
         return finish_setup_context(context, false,
             context->policy_rejected ? context->policy_error : SRT_ECONNREJ);
     }
