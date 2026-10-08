@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 namespace robotweax::srt {
@@ -186,10 +187,32 @@ public:
     buffered_span_milliseconds() const noexcept;
 
 private:
+    struct LiveMetadata {
+        std::uint64_t last_retransmission_send_microseconds = 0;
+        std::uint64_t expiration_microseconds = 0;
+    };
+    struct DropMetadata {
+        SequenceNumber message_first {};
+        SequenceNumber message_last {};
+        std::size_t remaining_bytes = 0;
+    };
+    // Dropped slots no longer need retransmission or expiration timestamps.
+    // The existing dropped flag discriminates these mutually exclusive states.
+    union SlotMetadata {
+        LiveMetadata live;
+        DropMetadata dropped;
+        SlotMetadata() noexcept
+            : live {}
+        {
+        }
+    };
     struct Slot {
         DataHeader header{};
-        std::uint64_t sequence_position = 0;
         std::uint32_t payload_index = 0;
+        std::uint64_t sequence_position = 0;
+        std::uint64_t enqueue_microseconds = 0;
+        std::uint64_t first_send_microseconds = 0;
+        SlotMetadata metadata;
         std::uint16_t payload_size = 0;
         std::uint16_t plaintext_size = 0;
         CryptoMode protection_mode = CryptoMode::automatic;
@@ -197,18 +220,13 @@ private:
         // Expired messages remain as lightweight sequence tombstones until
         // cumulative ACK. A repeated NAK can therefore trigger DROPREQ again.
         bool dropped = false;
-        SequenceNumber dropped_message_first {};
-        SequenceNumber dropped_message_last {};
-        std::size_t dropped_remaining_bytes = 0;
         bool drop_request_queued = false;
         bool sent = false;
         bool retransmission_queued = false;
         bool has_retransmission_send_time = false;
-        std::uint64_t last_retransmission_send_microseconds = 0;
-        std::uint64_t enqueue_microseconds = 0;
-        std::uint64_t first_send_microseconds = 0;
-        std::uint64_t expiration_microseconds = 0;
     };
+    static_assert(std::is_trivially_copyable_v<Slot>);
+    static_assert(sizeof(Slot) <= 80U, "sender slot metadata budget exceeded");
 
     [[nodiscard]] Slot* find(SequenceNumber sequence) noexcept;
     void discard_slot(Slot& slot, bool retain_drop_marker = false) noexcept;

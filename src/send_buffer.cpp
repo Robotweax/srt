@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <limits>
+#include <memory>
 
 namespace robotweax::srt {
 namespace {
@@ -93,6 +94,7 @@ Error SendBuffer::enqueue_message(
         const std::size_t slot_index =
             (head_ + sequence_span_) % capacity();
         auto& slot = slots_[slot_index];
+        std::construct_at(&slot.metadata.live);
         const std::size_t payload_size = std::min(
             maximum_payload_size_, message.size() - consumed);
         const bool first = packet_index == 0U;
@@ -123,10 +125,10 @@ Error SendBuffer::enqueue_message(
         slot.dropped = false;
         slot.sent = false;
         slot.has_retransmission_send_time = false;
-        slot.last_retransmission_send_microseconds = 0;
+        slot.metadata.live.last_retransmission_send_microseconds = 0;
         slot.retransmission_queued = false;
         slot.enqueue_microseconds = enqueue_microseconds;
-        slot.expiration_microseconds = expiration_microseconds;
+        slot.metadata.live.expiration_microseconds = expiration_microseconds;
         consumed += payload_size;
         if (occupied_count_ == 0U) {
             first_buffered_enqueue_microseconds_ = enqueue_microseconds;
@@ -197,7 +199,7 @@ void SendBuffer::discard_slot(
             --packets_in_flight_;
         }
         buffered_plaintext_bytes_ -= slot.plaintext_size;
-        if (slot.expiration_microseconds != 0U) {
+        if (slot.metadata.live.expiration_microseconds != 0U) {
             --expiring_packet_count_;
         }
         --occupied_count_;
@@ -227,13 +229,19 @@ void SendBuffer::discard_slot(
     slot.sent = false;
     slot.retransmission_queued = false;
     slot.has_retransmission_send_time = false;
-    slot.last_retransmission_send_microseconds = 0;
+    if (retain_drop_marker) {
+        if (!was_dropped) {
+            std::construct_at(&slot.metadata.dropped);
+        }
+    } else {
+        std::construct_at(&slot.metadata.live);
+    }
     if (!retain_drop_marker) {
         slot.payload_size = 0;
         slot.plaintext_size = 0;
         slot.protection_mode = CryptoMode::automatic;
         slot.enqueue_microseconds = 0;
-        slot.expiration_microseconds = 0;
+        slot.metadata.live.expiration_microseconds = 0;
     }
 }
 
@@ -308,7 +316,7 @@ bool SendBuffer::queue_drop_request(SequenceNumber sequence) noexcept
         return false;
     }
     const auto message_offset =
-        candidate.dropped_message_first.distance_from(first_sequence_);
+        candidate.metadata.dropped.message_first.distance_from(first_sequence_);
     first_offset = static_cast<std::size_t>(std::max(message_offset, 0));
 
     auto& first = slots_[(head_ + first_offset) % capacity()];
@@ -616,9 +624,11 @@ Error SendBuffer::request_retransmission(SequenceRange range,
         if (slot != nullptr && !slot->dropped
             && minimum_repeat_microseconds != 0U
             && slot->has_retransmission_send_time
-            && (now_microseconds < slot->last_retransmission_send_microseconds
+            && (now_microseconds
+                    < slot->metadata.live.last_retransmission_send_microseconds
                 || now_microseconds
-                        - slot->last_retransmission_send_microseconds
+                        - slot->metadata.live
+                            .last_retransmission_send_microseconds
                     < minimum_repeat_microseconds)) {
             continue;
         }
@@ -649,7 +659,8 @@ void SendBuffer::note_retransmission_sent(
     if (slot != nullptr && slot->occupied && slot->sent) {
         slot->retransmission_queued = false;
         slot->has_retransmission_send_time = true;
-        slot->last_retransmission_send_microseconds = now_microseconds;
+        slot->metadata.live.last_retransmission_send_microseconds =
+            now_microseconds;
     }
 }
 
@@ -703,8 +714,8 @@ std::optional<SendDropResult> SendBuffer::next_pending_drop_request() noexcept
         first.drop_request_queued = false;
 
         const auto final_offset = static_cast<std::size_t>(
-            first.dropped_message_last.distance_from(first_sequence_));
-        const auto bytes = first.dropped_remaining_bytes;
+            first.metadata.dropped.message_last.distance_from(first_sequence_));
+        const auto bytes = first.metadata.dropped.remaining_bytes;
         return SendDropResult {
             .packets = final_offset - first_offset + 1U,
             .bytes = bytes,
@@ -873,12 +884,13 @@ SendDropResult SendBuffer::drop_expired_message(
     std::uint64_t next_earliest = (std::numeric_limits<std::uint64_t>::max)();
     for (std::size_t offset = 0; offset < sequence_span_; ++offset) {
         auto& first = slots_[(head_ + offset) % capacity()];
-        if (!first.occupied || first.expiration_microseconds == 0U) {
+        if (!first.occupied
+            || first.metadata.live.expiration_microseconds == 0U) {
             continue;
         }
-        if (now_microseconds <= first.expiration_microseconds) {
-            next_earliest =
-                std::min(next_earliest, first.expiration_microseconds);
+        if (now_microseconds <= first.metadata.live.expiration_microseconds) {
+            next_earliest = std::min(
+                next_earliest, first.metadata.live.expiration_microseconds);
             continue;
         }
 
@@ -896,7 +908,7 @@ SendDropResult SendBuffer::drop_expired_message(
             }
             result.bytes += slot.plaintext_size;
             discard_slot(slot, true);
-            slot.dropped_message_first = result.sequences.first;
+            slot.metadata.dropped.message_first = result.sequences.first;
             ++result.packets;
             ++message_offset;
         }
@@ -906,8 +918,8 @@ SendDropResult SendBuffer::drop_expired_message(
         for (auto i = message_offset; i > offset; --i) {
             auto& slot = slots_[(head_ + i - 1U) % capacity()];
             remaining_bytes += slot.plaintext_size;
-            slot.dropped_message_last = result.sequences.last;
-            slot.dropped_remaining_bytes = remaining_bytes;
+            slot.metadata.dropped.message_last = result.sequences.last;
+            slot.metadata.dropped.remaining_bytes = remaining_bytes;
         }
         refresh_buffered_enqueue_time_bounds();
         return result;

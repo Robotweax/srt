@@ -12,6 +12,112 @@
 
 using namespace robotweax::srt;
 
+TEST(send_buffer_metadata_copy_preserves_live_clocks_and_partial_tombstones)
+{
+    const SequenceNumber initial {SequenceNumber::mask};
+    const std::array<std::byte, 3> expired {
+        std::byte {1}, std::byte {2}, std::byte {3}};
+    const std::array<std::byte, 2> live {std::byte {4}, std::byte {5}};
+    SendBuffer buffer {initial, 4, 2};
+    REQUIRE_EQ(buffer.enqueue_message(
+                   expired, 17, PacketTimestamp {}, 9, true, 10, 100),
+        Error::none);
+    REQUIRE_EQ(
+        buffer.enqueue_message(live, 18, PacketTimestamp {}, 9, true, 20, 1000),
+        Error::none);
+    for (unsigned i = 0; i < 3; ++i) {
+        REQUIRE(buffer.next_packet(false, true, 30 + i));
+    }
+    const auto live_sequence = initial.advanced(2);
+    buffer.note_retransmission_sent(live_sequence, 500);
+    REQUIRE_EQ(buffer.drop_expired_message(501).packets, 2U);
+    SendBuffer copied = buffer;
+    SendBuffer assigned {SequenceNumber {}, 1};
+    assigned = buffer;
+    SendBuffer moved = std::move(copied);
+    for (auto* independent : {&buffer, &assigned, &moved}) {
+        REQUIRE_EQ(
+            independent->acknowledge_before(initial.next()), Error::none);
+        REQUIRE_EQ(independent->request_retransmission(
+                       {initial.next(), initial.next()}),
+            Error::none);
+        const auto suffix = independent->next_pending_drop_request();
+        REQUIRE(suffix);
+        REQUIRE_EQ(suffix->packets, 1U);
+        REQUIRE_EQ(suffix->bytes, 1U);
+        REQUIRE_EQ(suffix->first_message_number, 17U);
+        REQUIRE_EQ(suffix->sequences.first, initial.next());
+        REQUIRE_EQ(suffix->sequences.last, initial.next());
+        std::size_t queued = 99;
+        REQUIRE_EQ(
+            independent->request_retransmission(
+                {live_sequence, live_sequence}, &queued, nullptr, 519, 20),
+            Error::none);
+        REQUIRE_EQ(queued, 0U);
+        REQUIRE_EQ(
+            independent->request_retransmission(
+                {live_sequence, live_sequence}, &queued, nullptr, 520, 20),
+            Error::none);
+        REQUIRE_EQ(queued, 1U);
+        const auto packet = independent->next_packet();
+        REQUIRE(packet);
+        REQUIRE_EQ(packet->header.sequence, live_sequence);
+        REQUIRE_EQ(packet->payload.size(), live.size());
+        REQUIRE(std::equal(live.begin(), live.end(), packet->payload.begin()));
+        REQUIRE(!independent->drop_expired_message(1000));
+        const auto drop = independent->drop_expired_message(1001);
+        REQUIRE_EQ(drop.packets, 1U);
+        REQUIRE_EQ(drop.bytes, live.size());
+        REQUIRE_EQ(drop.first_message_number, 18U);
+        REQUIRE_EQ(
+            independent->request_retransmission({live_sequence, live_sequence}),
+            Error::none);
+        const auto final = independent->next_pending_drop_request();
+        REQUIRE(final);
+        REQUIRE_EQ(final->bytes, live.size());
+        REQUIRE_EQ(final->sequences.first, live_sequence);
+        REQUIRE_EQ(
+            independent->acknowledge_before(independent->next_sequence()),
+            Error::none);
+        REQUIRE_EQ(independent->available(), independent->capacity());
+    }
+}
+
+TEST(send_buffer_metadata_reuse_restarts_live_clocks_after_drop_or_ack)
+{
+    SendBuffer buffer {SequenceNumber {SequenceNumber::mask}, 1, 1};
+    const std::array<std::byte, 1> payload {std::byte {0xab}};
+    for (unsigned round = 0; round < 64; ++round) {
+        const auto sequence = buffer.next_sequence();
+        const std::uint64_t now = 1000U * (round + 1U);
+        REQUIRE_EQ(buffer.enqueue_message(payload, round, PacketTimestamp {}, 7,
+                       true, now, now + 10),
+            Error::none);
+        REQUIRE(buffer.next_packet(false, true, now + 1));
+        std::size_t queued = 99;
+        REQUIRE_EQ(buffer.request_retransmission(
+                       {sequence, sequence}, &queued, nullptr, now + 2, 100000),
+            Error::none);
+        REQUIRE_EQ(queued, 1U);
+        buffer.note_retransmission_sent(sequence, now + 2);
+        REQUIRE(!buffer.drop_expired_message(now + 10));
+        if (round % 2 == 0) {
+            REQUIRE_EQ(buffer.drop_expired_message(now + 11).bytes, 1U);
+            REQUIRE_EQ(buffer.request_retransmission({sequence, sequence}),
+                Error::none);
+            const auto reply = buffer.next_pending_drop_request();
+            REQUIRE(reply);
+            REQUIRE_EQ(reply->packets, 1U);
+            REQUIRE_EQ(reply->bytes, 1U);
+            REQUIRE_EQ(reply->first_message_number, round);
+            REQUIRE_EQ(reply->sequences.first, sequence);
+        }
+        REQUIRE_EQ(buffer.acknowledge_before(sequence.next()), Error::none);
+        REQUIRE_EQ(buffer.available(), 1U);
+        REQUIRE(!buffer.next_expiration_microseconds());
+    }
+}
+
 TEST(stale_drop_coverage_coalesces_descending_reports_independently_of_window)
 {
     for (const auto capacity : {1U, 8192U, 65536U}) {
