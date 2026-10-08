@@ -1,6 +1,7 @@
 #include "robotweax/srt/receive_buffer.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <stdexcept>
 
 namespace robotweax::srt {
@@ -24,6 +25,82 @@ ReceiveBuffer::ReceiveBuffer(
     if (capacity_packets == 0U || capacity_packets >= SequenceNumber::half_range) {
         throw std::invalid_argument("invalid receive-buffer capacity");
     }
+    std::size_t words = (capacity_packets + 63U) / 64U;
+    std::size_t total_words = 0;
+    for (;;) {
+        occupied_level_offsets_[occupied_levels_++] = total_words;
+        total_words += words;
+        if (words == 1U)
+            break;
+        words = (words + 63U) / 64U;
+    }
+    occupied_index_.resize(total_words);
+}
+
+void ReceiveBuffer::index_occupied(std::size_t position, bool occupied) noexcept
+{
+    for (std::size_t level = 0; level < occupied_levels_; ++level) {
+        const auto word_position = position / 64U;
+        auto& word =
+            occupied_index_[occupied_level_offsets_[level] + word_position];
+        const bool was_nonempty = word != 0U;
+        const auto bit = std::uint64_t {1} << (position % 64U);
+        if (occupied)
+            word |= bit;
+        else
+            word &= ~bit;
+        const bool nonempty = word != 0U;
+        if (was_nonempty == nonempty)
+            break;
+        position = word_position;
+        occupied = nonempty;
+    }
+}
+
+std::optional<std::size_t> ReceiveBuffer::next_occupied_bit(std::size_t level,
+    std::size_t begin, std::size_t end, std::size_t* word_reads) const noexcept
+{
+    if (begin >= end)
+        return std::nullopt;
+    const auto word_position = begin / 64U;
+    if (word_reads != nullptr)
+        ++*word_reads;
+    const auto word =
+        occupied_index_[occupied_level_offsets_[level] + word_position]
+        & (~std::uint64_t {0} << (begin % 64U));
+    if (word != 0U) {
+        const auto found = word_position * 64U
+            + static_cast<std::size_t>(std::countr_zero(word));
+        return found < end ? std::optional {found} : std::nullopt;
+    }
+    if (level + 1U == occupied_levels_)
+        return std::nullopt;
+    const auto next_word = next_occupied_bit(
+        level + 1U, word_position + 1U, (end + 63U) / 64U, word_reads);
+    if (!next_word)
+        return std::nullopt;
+    if (word_reads != nullptr)
+        ++*word_reads;
+    const auto next =
+        occupied_index_[occupied_level_offsets_[level] + *next_word];
+    const auto found =
+        *next_word * 64U + static_cast<std::size_t>(std::countr_zero(next));
+    return found < end ? std::optional {found} : std::nullopt;
+}
+
+std::optional<std::size_t> ReceiveBuffer::next_occupied_offset(
+    std::size_t begin, std::size_t* word_reads) const noexcept
+{
+    if (begin >= capacity())
+        return std::nullopt;
+    const auto position = (head_ + begin) % capacity();
+    const auto end = std::min(capacity(), position + capacity() - begin);
+    auto found = next_occupied_bit(0, position, end, word_reads);
+    if (!found && position >= head_ && head_ != 0U)
+        found = next_occupied_bit(0, 0, head_, word_reads);
+    if (!found)
+        return std::nullopt;
+    return (*found + capacity() - head_) % capacity();
 }
 
 ReceiveBuffer::Slot* ReceiveBuffer::find(SequenceNumber sequence) noexcept
@@ -166,6 +243,8 @@ void ReceiveBuffer::trim_dropped_prefix() noexcept
                 discarding_message_.reset();
             }
         }
+        index_occupied(head_, false);
+        invalidate_delivery_queries();
         slot.rejected_payload = false;
         slot.payload_size = 0;
         slot.payload_offset = 0;
@@ -178,6 +257,12 @@ void ReceiveBuffer::trim_dropped_prefix() noexcept
 void ReceiveBuffer::discard_message_payload(SequenceNumber sequence) noexcept
 {
     if (auto* slot = find(sequence)) {
+        invalidate_delivery_queries();
+        index_occupied((head_
+                           + static_cast<std::size_t>(
+                               sequence.distance_from(first_stored_sequence_)))
+                % capacity(),
+            false);
         slot->rejected_payload = true;
         has_rejected_payload_ = true;
         trim_dropped_prefix();
@@ -205,12 +290,14 @@ ReceiveInsertResult ReceiveBuffer::insert(const PacketView& packet) noexcept
         return {.status = ReceiveStatus::duplicate};
     }
 
+    invalidate_delivery_queries();
     slot.header = packet.data;
     slot.payload_index = payloads_.acquire(packet.payload);
     slot.payload_size = static_cast<std::uint16_t>(packet.payload.size());
     slot.payload_offset = 0;
     slot.rejected_payload = false;
     slot.occupied = true;
+    index_occupied((head_ + offset) % capacity(), true);
     slot.dropped = false;
     slot.gap_deadline_microseconds = 0;
     if (occupied_ == 0U) {
@@ -397,6 +484,7 @@ ReceivedMessageResult ReceiveBuffer::pop_message(
         return {.error = Error::buffer_too_small};
     }
 
+    invalidate_delivery_queries();
     std::size_t written = 0;
     for (std::size_t index = 0; index < packet_count; ++index) {
         auto& slot = slots_[(head_ + index) % capacity()];
@@ -406,6 +494,7 @@ ReceivedMessageResult ReceiveBuffer::pop_message(
         written += slot.payload_size;
         buffered_payload_bytes_ -= slot.payload_size;
         payloads_.release(slot.payload_index);
+        index_occupied((head_ + index) % capacity(), false);
         slot.occupied = false;
         slot.dropped = false;
         slot.payload_size = 0;
@@ -448,6 +537,7 @@ ReceivedMessageResult ReceiveBuffer::pop_message_unordered(
         return {.error = Error::buffer_too_small};
     }
 
+    invalidate_delivery_queries();
     const std::size_t size = slot->payload_size;
     const std::uint32_t message_number = slot->header.message_number;
     const PacketTimestamp timestamp = slot->header.timestamp;
@@ -456,6 +546,12 @@ ReceivedMessageResult ReceiveBuffer::pop_message_unordered(
     payloads_.release(slot->payload_index);
     buffered_payload_bytes_ -= size;
     --occupied_;
+    index_occupied(
+        (head_
+            + static_cast<std::size_t>(
+                message->first_sequence.distance_from(first_stored_sequence_)))
+            % capacity(),
+        false);
     slot->occupied = false;
     // A delivered marker remains in the fixed sequence slot until the
     // cumulative frontier reaches it. It suppresses duplicates and lets ACK
@@ -516,7 +612,9 @@ ReceivedMessageResult ReceiveBuffer::pop_stream(
         if (slot->payload_offset != slot->payload_size) {
             break;
         }
+        invalidate_delivery_queries();
         payloads_.release(slot->payload_index);
+        index_occupied(head_, false);
         slot->occupied = false;
         slot->dropped = false;
         slot->payload_size = 0;
@@ -625,65 +723,90 @@ bool ReceiveBuffer::has_complete_message() const noexcept
 std::optional<BufferedMessageInfo>
 ReceiveBuffer::first_buffered_packet() const noexcept
 {
+    return query_first_buffered_packet(nullptr);
+}
+
+std::optional<BufferedMessageInfo> ReceiveBuffer::query_first_buffered_packet(
+    std::size_t* inspected) const noexcept
+{
+    if (packet_query_valid_) {
+        return packet_query_;
+    }
+    const auto remember = [this](std::optional<BufferedMessageInfo> packet) {
+        packet_query_ = packet;
+        packet_query_valid_ = true;
+        return packet;
+    };
     if (occupied_ == 0U) {
-        return std::nullopt;
+        return remember(std::nullopt);
     }
-    SequenceNumber candidate = first_stored_sequence_;
-    for (std::size_t offset = 0; offset < capacity(); ++offset) {
+    if (const auto offset = next_occupied_offset(0); offset.has_value()) {
+        const auto candidate = first_stored_sequence_.advanced(
+            static_cast<std::uint32_t>(*offset));
+        if (inspected != nullptr)
+            ++*inspected;
         const auto* slot = find(candidate);
-        if (slot != nullptr) {
-            return BufferedMessageInfo {
-                .first_sequence = candidate,
-                .last_sequence = candidate,
-                .timestamp = slot->header.timestamp,
-            };
-        }
-        candidate = candidate.next();
+        if (slot != nullptr)
+            return remember(BufferedMessageInfo {
+                candidate, candidate, slot->header.timestamp});
     }
-    return std::nullopt;
+    return remember(std::nullopt);
 }
 
 std::optional<BufferedMessageInfo>
 ReceiveBuffer::first_complete_message() const noexcept
 {
+    return query_first_complete_message(nullptr);
+}
+
+std::optional<BufferedMessageInfo> ReceiveBuffer::query_first_complete_message(
+    std::size_t* inspected) const noexcept
+{
+    if (message_query_valid_) {
+        return message_query_;
+    }
+    const auto remember = [this](std::optional<BufferedMessageInfo> message) {
+        message_query_ = message;
+        message_query_valid_ = true;
+        return message;
+    };
     // Runtime readiness also queries idle receive sides of active senders.
     // No occupied packet means no complete message, regardless of capacity.
     if (occupied_ == 0U) {
-        return std::nullopt;
+        return remember(std::nullopt);
     }
-    SequenceNumber candidate = first_stored_sequence_;
-    // Every occupied packet lies at or before the highest stored sequence.
-    // Stop once all of them have been passed instead of walking the whole
-    // capacity behind a head gap.
-    std::size_t occupied_seen = 0;
-    for (std::size_t offset = 0;
-        offset < capacity() && occupied_seen < occupied_; ++offset) {
+    // Walk retained DATA, not empty sequence positions. A new incomplete
+    // packet must not invalidate the cache into another capacity-sized gap scan.
+    for (auto offset = next_occupied_offset(0); offset.has_value();
+        offset = next_occupied_offset(*offset + 1U)) {
+        const auto candidate = first_stored_sequence_.advanced(
+            static_cast<std::uint32_t>(*offset));
+        if (inspected != nullptr)
+            ++*inspected;
         const auto* first = find(candidate);
-        if (first != nullptr) {
-            ++occupied_seen;
-        }
         if (first == nullptr
             || (first->header.boundary != MessageBoundary::solo
                 && first->header.boundary != MessageBoundary::first)) {
-            candidate = candidate.next();
             continue;
         }
 
         if (first->header.boundary == MessageBoundary::solo) {
-            return BufferedMessageInfo{
+            return remember(BufferedMessageInfo {
                 .first_sequence = candidate,
                 .last_sequence = candidate,
                 .timestamp = first->header.timestamp,
-            };
+            });
         }
 
         const std::uint32_t message_number =
             first->header.message_number;
         SequenceNumber sequence = candidate.next();
-        const std::size_t remaining = capacity() - offset - 1U;
+        const std::size_t remaining = capacity() - *offset - 1U;
         for (std::size_t fragment = 0;
              fragment < remaining;
              ++fragment) {
+            if (inspected != nullptr)
+                ++*inspected;
             const auto* slot = find(sequence);
             if (slot == nullptr
                 || slot->header.message_number != message_number
@@ -694,17 +817,16 @@ ReceiveBuffer::first_complete_message() const noexcept
                 break;
             }
             if (slot->header.boundary == MessageBoundary::last) {
-                return BufferedMessageInfo{
+                return remember(BufferedMessageInfo {
                     .first_sequence = candidate,
                     .last_sequence = sequence,
                     .timestamp = first->header.timestamp,
-                };
+                });
             }
             sequence = sequence.next();
         }
-        candidate = candidate.next();
     }
-    return std::nullopt;
+    return remember(std::nullopt);
 }
 
 Error ReceiveBuffer::discard_before(
@@ -720,6 +842,7 @@ Error ReceiveBuffer::discard_before(
         return Error::invalid_state;
     }
 
+    invalidate_delivery_queries();
     const auto count = static_cast<std::uint32_t>(distance);
     const std::size_t inspected = std::min<std::size_t>(
         count, slots_.size());
@@ -732,6 +855,7 @@ Error ReceiveBuffer::discard_before(
             payloads_.release(slot.payload_index);
             --occupied_;
         }
+        index_occupied((head_ + index) % capacity(), false);
         slot = {};
     }
     if (count >= slots_.size()) {
@@ -920,10 +1044,12 @@ Error ReceiveBuffer::drop_range_impl(SequenceRange range,
             ++*newly_dropped_packets;
         }
         if (slot.occupied) {
+            invalidate_delivery_queries();
             buffered_payload_bytes_ -=
                 static_cast<std::size_t>(slot.payload_size)
                 - static_cast<std::size_t>(slot.payload_offset);
             payloads_.release(slot.payload_index);
+            index_occupied((head_ + offset) % capacity(), false);
             slot.occupied = false;
             slot.payload_size = 0;
             slot.payload_offset = 0;
@@ -948,6 +1074,9 @@ Error ReceiveBuffer::drop_range_impl(SequenceRange range,
             target.distance_from(first_stored_sequence_));
         if (newly_dropped_packets != nullptr) {
             *newly_dropped_packets += additional_advance;
+        }
+        if (additional_advance != 0U) {
+            invalidate_delivery_queries();
         }
         head_ = (head_ + additional_advance) % capacity();
         first_stored_sequence_ = target;

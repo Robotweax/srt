@@ -9210,8 +9210,10 @@ struct FairnessFixture {
             : UdpIoResult {.bytes_transferred = bytes.size()};
     }
 
-    std::shared_ptr<ConnectionRuntime> add(
-        std::uint32_t id, std::size_t messages = 0, bool register_route = true)
+    std::shared_ptr<ConnectionRuntime> add(std::uint32_t id,
+        std::size_t messages = 0, bool register_route = true,
+        std::size_t receive_capacity = 4,
+        NegotiatedLiveOptions live_options = {})
     {
         auto clock = std::make_unique<FairnessClock>();
         clock->now = &now;
@@ -9219,8 +9221,9 @@ struct FairnessFixture {
         REQUIRE_EQ(options.set(SocketOption::send_buffer_packets,
                        messages == 0 ? 4 : 128),
             Error::none);
-        REQUIRE_EQ(
-            options.set(SocketOption::receive_buffer_packets, 4), Error::none);
+        REQUIRE_EQ(options.set(SocketOption::receive_buffer_packets,
+                       static_cast<std::int64_t>(receive_capacity)),
+            Error::none);
         REQUIRE_EQ(
             options.set(SocketOption::maximum_payload_size, 16), Error::none);
         REQUIRE_EQ(options.set(SocketOption::maximum_bandwidth_bytes_per_second,
@@ -9232,8 +9235,10 @@ struct FairnessFixture {
                 .peer = {.address = {192, 0, 2, 94}, .port = 15'094},
                 .peer_socket_id = id,
                 .initial_sequence = SequenceNumber {700},
-                .flow_window_packets = 128,
+                .flow_window_packets = static_cast<std::uint32_t>(
+                    std::max<std::size_t>(128, receive_capacity)),
                 .options = options,
+                .negotiated_options = live_options,
                 .origin = ConnectionRuntime::Clock::now(),
                 .now_function = fairness_now,
                 .now_context = clock.get(),
@@ -12313,5 +12318,71 @@ TEST(compat_runtime_ctr_clear_data_cannot_poison_secured_fec)
         const auto stats = receiver.statistics(false, true);
         REQUIRE_EQ(stats.total.receiver_undecryptable.packets, 1U);
         REQUIRE_EQ(stats.total.receiver_filter_supply, 1U);
+    }
+}
+
+TEST(compat_channel_sparse_receive_burst_preserves_healthy_delivery_and_timers)
+{
+    for (const bool timed : {false, true}) {
+        for (const std::size_t capacity : {8'192U, 65'536U}) {
+            FairnessFixture fixture;
+            const NegotiatedLiveOptions live {.receive_tsbpd = timed,
+                .too_late_packet_drop = false,
+                .receive_delay_milliseconds = 100};
+            auto sparse = fixture.add(1, 0, true, capacity, live);
+            auto healthy = fixture.add(2, 0, true, 4, live);
+            const IpEndpoint peer {.address = {192, 0, 2, 94}, .port = 15'094};
+            const std::array payload {std::byte {'h'}};
+            PacketView far;
+            far.kind = PacketKind::data;
+            far.data.sequence = SequenceNumber {700}.advanced(
+                static_cast<std::uint32_t>(capacity - 1U));
+            far.data.boundary = MessageBoundary::solo;
+            far.data.message_number = 1;
+            far.data.destination_socket_id = 1;
+            far.payload = payload;
+            sparse->process_packet(far, peer);
+            for (std::uint32_t turn = 0; turn < 3; ++turn) {
+                std::size_t received = 0;
+                auto input =
+                    [&](std::span<std::byte> destination) -> UdpIoResult {
+                    MutablePacketView packet;
+                    packet.kind = PacketKind::control;
+                    packet.control.type = ControlType::keepalive;
+                    packet.control.destination_socket_id = 1;
+                    if (received == 63U || received % 2U == 0U) {
+                        packet.kind = PacketKind::data;
+                        packet.data = far.data;
+                        packet.payload = payload;
+                        if (received == 63U) {
+                            packet.data.sequence =
+                                SequenceNumber {700}.advanced(turn);
+                            packet.data.destination_socket_id = 2;
+                            packet.data.message_number = turn + 1U;
+                        }
+                    }
+                    const auto encoded = encode_packet(packet, destination);
+                    REQUIRE(encoded);
+                    ++received;
+                    return {.bytes_transferred = encoded.bytes_written,
+                        .peer = peer};
+                };
+                REQUIRE(fixture.channel->run_once_for_testing(input)
+                        .immediate_work);
+                REQUIRE_EQ(received, 64U);
+                fixture.now += 200'000;
+                (void)fixture.poll();
+                std::array<std::byte, 1> output {};
+                const auto result = healthy->receive_message(output, false, 0);
+                REQUIRE_EQ(result.status, MessageIoStatus::success);
+                REQUIRE_EQ(output, payload);
+                REQUIRE_EQ(
+                    result.first_sequence, SequenceNumber {700}.advanced(turn));
+                REQUIRE_EQ(sparse->receive_message(output, false, 0).status,
+                    MessageIoStatus::would_block);
+                REQUIRE(!healthy->broken());
+                REQUIRE(!sparse->broken());
+            }
+        }
     }
 }

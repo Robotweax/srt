@@ -5,6 +5,7 @@
 #include "robotweax/srt/reliability.hpp"
 #include "robotweax/srt/send_buffer.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -12,6 +13,10 @@
 #include <vector>
 
 namespace robotweax::srt {
+
+namespace detail {
+struct ReceiveBufferTestAccess;
+}
 
 struct ReceiveInsertResult {
     Error error = Error::none;
@@ -61,6 +66,7 @@ struct BufferedMessageCopies {
     std::vector<BufferedMessageCopy> messages {};
 };
 
+// Calls, including cached const delivery queries, require external synchronization.
 class ReceiveBuffer {
 public:
     ReceiveBuffer(SequenceNumber initial_sequence, std::size_t capacity_packets);
@@ -152,6 +158,25 @@ public:
         std::uint64_t now_microseconds) const noexcept;
 
 private:
+    friend struct detail::ReceiveBufferTestAccess;
+    [[nodiscard]] std::optional<BufferedMessageInfo>
+    query_first_complete_message(std::size_t* inspected) const noexcept;
+    [[nodiscard]] std::optional<BufferedMessageInfo>
+    query_first_buffered_packet(std::size_t* inspected) const noexcept;
+
+    void index_occupied(std::size_t position, bool occupied) noexcept;
+    [[nodiscard]] std::optional<std::size_t> next_occupied_bit(
+        std::size_t level, std::size_t begin, std::size_t end,
+        std::size_t* word_reads) const noexcept;
+    [[nodiscard]] std::optional<std::size_t> next_occupied_offset(
+        std::size_t begin, std::size_t* word_reads = nullptr) const noexcept;
+
+    void invalidate_delivery_queries() noexcept
+    {
+        message_query_valid_ = false;
+        packet_query_valid_ = false;
+    }
+
     enum class DropPreservation {
         none,
         complete_messages,
@@ -181,10 +206,23 @@ private:
         std::uint32_t message_number, std::size_t* newly_dropped_packets,
         DropPreservation preservation) noexcept;
 
+    // Results depend only on retained DATA and the receive frontier, not on
+    // ACKs, duplicate input, gap deadlines, or the current playout clock.
+    mutable bool message_query_valid_ = false;
+    mutable bool packet_query_valid_ = false;
+    mutable std::optional<BufferedMessageInfo> message_query_;
+    mutable std::optional<BufferedMessageInfo> packet_query_;
     bool has_rejected_payload_ = false;
     std::optional<std::uint32_t> discarding_message_;
     detail::PayloadPool payloads_;
     std::vector<Slot> slots_;
+    // One leaf bit per readable DATA slot; each next level marks nonempty
+    // words below it. Physical positions keep frontier movement allocation-free.
+    // The sequence-space capacity limit needs at most five 64-way levels.
+    std::vector<std::uint64_t> occupied_index_;
+    static_assert(SequenceNumber::half_range <= (std::uint64_t {1} << 30U));
+    std::array<std::size_t, 5> occupied_level_offsets_ {};
+    std::size_t occupied_levels_ = 0;
     SequenceNumber first_stored_sequence_;
     SequenceNumber next_ack_sequence_;
     std::size_t head_ = 0;

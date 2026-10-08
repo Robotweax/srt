@@ -1,4 +1,5 @@
 #include "test.hpp"
+#include "receive_buffer_test_access.hpp"
 
 #include "robotweax/srt/receive_buffer.hpp"
 
@@ -809,4 +810,224 @@ TEST(receive_buffer_bounded_complete_copy_preserves_fragments_and_gaps)
     REQUIRE_EQ(remaining.error, Error::none);
     REQUIRE_EQ(remaining.messages.size(), 1U);
     REQUIRE_EQ(remaining.messages[0].message_number, 3U);
+}
+
+TEST(receive_buffer_sparse_readiness_work_is_independent_of_leading_gap)
+{
+    const std::array payload {std::byte {'x'}};
+    for (const std::size_t capacity : {8'192U, 65'536U}) {
+        for (const auto initial : {SequenceNumber {100},
+                 SequenceNumber {SequenceNumber::mask - 7U}}) {
+            ReceiveBuffer buffer {initial, capacity};
+            const auto far =
+                initial.advanced(static_cast<std::uint32_t>(capacity - 1U));
+            REQUIRE(buffer.insert(
+                data_packet(far, 1, MessageBoundary::solo, payload)));
+            std::size_t inspected = 0;
+            const auto message =
+                detail::ReceiveBufferTestAccess::message(buffer, inspected);
+            REQUIRE(message);
+            REQUIRE_EQ(message->first_sequence, far);
+            REQUIRE(inspected <= 1U);
+            inspected = 0;
+            const auto packet =
+                detail::ReceiveBufferTestAccess::packet(buffer, inspected);
+            REQUIRE(packet);
+            REQUIRE_EQ(packet->first_sequence, far);
+            REQUIRE(inspected <= 1U);
+            for (int query = 0; query < 64; ++query) {
+                inspected = 0;
+                REQUIRE(detail::ReceiveBufferTestAccess::message(
+                    buffer, inspected));
+                REQUIRE(
+                    detail::ReceiveBufferTestAccess::packet(buffer, inspected));
+                REQUIRE_EQ(inspected, 0U);
+                REQUIRE_EQ(buffer
+                               .insert(data_packet(
+                                   far, 1, MessageBoundary::solo, payload))
+                               .status,
+                    ReceiveStatus::duplicate);
+                REQUIRE(!buffer.has_complete_message());
+            }
+        }
+    }
+}
+
+TEST(receive_buffer_cached_queries_follow_every_receive_state_transition)
+{
+    const std::array payload {std::byte {'a'}, std::byte {'b'}};
+    for (const std::size_t capacity : {1U, 7U, 32U, 65U, 127U, 4'097U}) {
+        ReceiveBuffer buffer {
+            SequenceNumber {SequenceNumber::mask - 4U}, capacity};
+        std::uint32_t random = 17;
+        const auto check = [&] {
+            for (const auto begin :
+                {std::size_t {0}, capacity / 2U, capacity - 1U}) {
+                std::optional<std::size_t> expected;
+                for (auto offset = begin; offset < capacity; ++offset) {
+                    if (buffer.contains_data(
+                            buffer.first_stored_sequence().advanced(
+                                static_cast<std::uint32_t>(offset)))) {
+                        expected = offset;
+                        break;
+                    }
+                }
+                std::size_t words = 0;
+                REQUIRE_EQ(
+                    detail::ReceiveBufferTestAccess::next(buffer, begin, words),
+                    expected);
+                REQUIRE(words
+                    <= 4U * detail::ReceiveBufferTestAccess::levels(buffer)
+                        - 2U);
+            }
+            for (const bool messages : {false, true}) {
+                const auto expected =
+                    detail::ReceiveBufferTestAccess::reference(
+                        buffer, messages);
+                std::size_t inspected = 0;
+                const auto actual = messages
+                    ? detail::ReceiveBufferTestAccess::message(
+                          buffer, inspected)
+                    : detail::ReceiveBufferTestAccess::packet(
+                          buffer, inspected);
+                REQUIRE_EQ(actual.has_value(), expected.has_value());
+                if (actual) {
+                    REQUIRE_EQ(
+                        actual->first_sequence, expected->first_sequence);
+                    REQUIRE_EQ(actual->last_sequence, expected->last_sequence);
+                    REQUIRE_EQ(actual->timestamp, expected->timestamp);
+                }
+                inspected = 0;
+                (void)(messages ? detail::ReceiveBufferTestAccess::message(
+                                      buffer, inspected)
+                                : detail::ReceiveBufferTestAccess::packet(
+                                      buffer, inspected));
+                REQUIRE_EQ(inspected, 0U);
+            }
+        };
+        const int operations = capacity > 127U ? 128
+            : capacity > 32U                   ? 500
+                                               : 2'000;
+        for (int operation = 0; operation < operations; ++operation) {
+            check(); // Prime positive and negative answers before each mutation.
+            random = random * 1'664'525U + 1'013'904'223U;
+            const auto first = buffer.first_stored_sequence();
+            const auto sequence =
+                first.advanced(random % static_cast<std::uint32_t>(capacity));
+            std::array<std::byte, 64> output {};
+            switch ((random >> 16U) % 10U) {
+            case 0:
+            case 1:
+                REQUIRE(buffer.insert(data_packet(sequence, random % 3U,
+                    static_cast<MessageBoundary>((random >> 8U) % 4U),
+                    payload)));
+                break;
+            case 2:
+                REQUIRE_EQ(
+                    buffer.drop_range({sequence, sequence}), Error::none);
+                break;
+            case 3:
+                REQUIRE_EQ(buffer.drop_peer_requested_range({first, sequence}),
+                    Error::none);
+                break;
+            case 4:
+                REQUIRE_EQ(
+                    buffer.drop_peer_requested_stream_range({first, sequence}),
+                    Error::none);
+                break;
+            case 5:
+                buffer.discard_message_payload(sequence);
+                break;
+            case 6:
+                REQUIRE_EQ(buffer.discard_before(sequence.next()), Error::none);
+                break;
+            case 7:
+                (void)buffer.pop_message(output);
+                break;
+            case 8:
+                (void)buffer.pop_message_unordered(output);
+                break;
+            case 9:
+                (void)buffer.pop_stream(std::span {output}.first(1));
+                break;
+            }
+            check();
+            if (operation % 31 == 0) {
+                ReceiveBuffer copy {buffer};
+                ReceiveBuffer assigned {SequenceNumber {0}, capacity};
+                assigned = copy;
+                buffer = std::move(assigned);
+                check();
+            }
+        }
+    }
+}
+
+TEST(receive_buffer_cached_incomplete_message_is_invalidated_by_gap_fill)
+{
+    ReceiveBuffer buffer {SequenceNumber {SequenceNumber::mask}, 8};
+    const std::array payload {std::byte {'p'}};
+    const auto first = buffer.first_stored_sequence();
+    REQUIRE(
+        buffer.insert(data_packet(first, 1, MessageBoundary::first, payload)));
+    REQUIRE(buffer.insert(
+        data_packet(first.advanced(2), 1, MessageBoundary::last, payload)));
+    std::size_t inspected = 0;
+    REQUIRE(!detail::ReceiveBufferTestAccess::message(buffer, inspected));
+    REQUIRE(inspected > 0U);
+    for (int query = 0; query < 64; ++query) {
+        inspected = 0;
+        REQUIRE(!detail::ReceiveBufferTestAccess::message(buffer, inspected));
+        REQUIRE_EQ(inspected, 0U);
+    }
+    REQUIRE(buffer.insert(
+        data_packet(first.next(), 1, MessageBoundary::subsequent, payload)));
+    const auto complete = buffer.first_complete_message();
+    REQUIRE(complete);
+    REQUIRE_EQ(complete->first_sequence, first);
+    REQUIRE_EQ(complete->last_sequence, first.advanced(2));
+    std::array<std::byte, 3> output {};
+    REQUIRE_EQ(buffer.pop_message(output).bytes_written, 3U);
+    REQUIRE(!buffer.first_complete_message());
+}
+
+TEST(receive_buffer_changing_sparse_state_skips_empty_index_subtrees)
+{
+    const std::array payload {std::byte {'x'}};
+    for (const std::size_t capacity : {65U, 8'192U, 65'536U}) {
+        for (const std::size_t rotation : {0U, 31U, 64U}) {
+            ReceiveBuffer buffer {
+                SequenceNumber {SequenceNumber::mask - 7U}, capacity};
+            REQUIRE_EQ(
+                buffer.discard_before(buffer.first_stored_sequence().advanced(
+                    static_cast<std::uint32_t>(rotation))),
+                Error::none);
+            const auto first = buffer.first_stored_sequence();
+            const auto far =
+                first.advanced(static_cast<std::uint32_t>(capacity - 1U));
+            REQUIRE(buffer.insert(
+                data_packet(far, 2, MessageBoundary::solo, payload)));
+            for (std::uint32_t near = 1; near < 64; ++near) {
+                REQUIRE(buffer.insert(data_packet(first.advanced(near), 1,
+                    MessageBoundary::subsequent, payload)));
+                std::size_t inspected = 0;
+                const auto message =
+                    detail::ReceiveBufferTestAccess::message(buffer, inspected);
+                REQUIRE(message);
+                REQUIRE_EQ(message->first_sequence, far);
+                REQUIRE_EQ(inspected, static_cast<std::size_t>(near + 1U));
+                std::size_t words = 0;
+                const auto offset = detail::ReceiveBufferTestAccess::next(
+                    buffer, near + 1U, words);
+                REQUIRE(offset);
+                REQUIRE_EQ(*offset, capacity - 1U);
+                REQUIRE(words <= 10U);
+            }
+            REQUIRE_EQ(buffer.drop_range({first, far}), Error::none);
+            std::size_t words = 0;
+            REQUIRE(!detail::ReceiveBufferTestAccess::next(buffer, 0, words));
+            REQUIRE(words <= 10U);
+            REQUIRE(!buffer.first_complete_message());
+        }
+    }
 }
