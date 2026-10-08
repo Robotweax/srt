@@ -337,6 +337,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_fec.cpp
         tests/test_file.cpp
         tests/test_file_io.cpp
+        tests/test_private_temp_directory.cpp
         tests/test_group_replay_buffer.cpp
         tests/test_codec.cpp
         tests/test_handshake.cpp
@@ -377,6 +378,9 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         ROBOTWEAX_SRT_EXPECT_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
     target_link_libraries(robotweax_srt_tests
         PRIVATE RobotweaxSRT::srt Threads::Threads)
+    if(WIN32)
+        target_link_libraries(robotweax_srt_tests PRIVATE advapi32)
+    endif()
     target_include_directories(robotweax_srt_tests
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_features(robotweax_srt_tests PRIVATE cxx_std_20)

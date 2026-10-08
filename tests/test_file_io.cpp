@@ -1,4 +1,5 @@
 #include "test.hpp"
+#include "private_temp_directory.hpp"
 
 #include "robotweax/srt/codec.hpp"
 #include "compat/file_io.hpp"
@@ -90,29 +91,14 @@ std::uint64_t injected_now(void* context) noexcept
 
 struct TemporaryFiles {
     TemporaryFiles()
+        : source(directory.path() / "source")
+        , destination(directory.path() / "destination")
+        , source_api_path(source.string())
+        , destination_api_path(destination.string())
     {
-        const auto identifier = std::chrono::steady_clock::now()
-                                    .time_since_epoch()
-                                    .count();
-        const auto directory =
-            std::filesystem::temp_directory_path();
-        source = directory
-            / ("robotweax-srt-source-"
-                + std::to_string(identifier));
-        destination = directory
-            / ("robotweax-srt-destination-"
-                + std::to_string(identifier));
-        source_api_path = source.string();
-        destination_api_path = destination.string();
     }
 
-    ~TemporaryFiles()
-    {
-        std::error_code ignored;
-        (void)std::filesystem::remove(source, ignored);
-        (void)std::filesystem::remove(destination, ignored);
-    }
-
+    test::PrivateTemporaryDirectory directory;
     std::filesystem::path source;
     std::filesystem::path destination;
     std::string source_api_path;
