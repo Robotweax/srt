@@ -3299,6 +3299,9 @@ int connect_socket(
                     ? SRT_ESCLOSED
                     : SRT_ERDVUNBOUND);
             }
+            if (reserve_caller_channel(*socket) == SRT_ERROR) {
+                return SRT_ERROR;
+            }
             if (forced_initial_sequence != SRT_SEQNO_NONE) {
                 socket->connection_initial_sequence =
                     static_cast<std::uint32_t>(
@@ -3436,6 +3439,9 @@ int connect_socket(
             return fail(socket->state == SRTS_CLOSED
                     ? SRT_ESCLOSED
                     : SRT_EINVOP);
+        }
+        if (reserve_caller_channel(*socket) == SRT_ERROR) {
+            return SRT_ERROR;
         }
         if (forced_initial_sequence != SRT_SEQNO_NONE) {
             socket->connection_initial_sequence =

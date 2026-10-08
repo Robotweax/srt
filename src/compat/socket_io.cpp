@@ -158,6 +158,8 @@ struct BindingEntry {
     bool reusable = false;
     bool acquired_reuseport = false;
     std::uint64_t acquired_socket_cookie = 0;
+    bool listener_only = false;
+    bool caller_reserved = false;
     std::weak_ptr<DatagramChannel> channel;
 };
 
@@ -299,6 +301,7 @@ public:
                 // Permit only explicit Linux reuseport members on exactly the
                 // same endpoint/device, retaining distinct DatagramChannels.
                 if (acquired_reuseport && entry.acquired_reuseport
+                    && !entry.caller_reserved
                     && acquired_socket_cookie != entry.acquired_socket_cookie
                     && identical_binding(local, effective_ipv6_only,
                         entry.endpoint, entry.ipv6_only)
@@ -311,8 +314,52 @@ public:
                 return fail(SRT_EBINDCONFLICT);
             }
         }
-        return remember(socket, local, effective_ipv6_only, channel,
-            acquired_reuseport, acquired_socket_cookie);
+        if (remember(socket, local, effective_ipv6_only, channel,
+                acquired_reuseport, acquired_socket_cookie)
+            == SRT_ERROR) {
+            return SRT_ERROR;
+        }
+        // Publish the restriction only after successful adoption. Keep it on
+        // every surviving member even if another member is later closed.
+        if (acquired_reuseport) {
+            std::size_t members = 0;
+            for (const BindingEntry& entry : entries_) {
+                if (identical_binding(local, effective_ipv6_only,
+                        entry.endpoint, entry.ipv6_only)) {
+                    ++members;
+                }
+            }
+            if (members > 1U) {
+                for (BindingEntry& entry : entries_) {
+                    if (identical_binding(local, effective_ipv6_only,
+                            entry.endpoint, entry.ipv6_only)) {
+                        entry.listener_only = true;
+                    }
+                }
+            }
+        }
+        return 0;
+    }
+
+    [[nodiscard]] int reserve_caller(
+        const std::shared_ptr<DatagramChannel>& channel) noexcept
+    {
+        std::lock_guard lock(mutex_);
+        for (BindingEntry& entry : entries_) {
+            if (entry.channel.lock() != channel) {
+                continue;
+            }
+            if (entry.listener_only) {
+                return fail(SRT_EINVOP);
+            }
+            // Serialize caller setup with a later group adoption. A single
+            // adopted reuseport socket retains its existing caller support.
+            if (entry.acquired_reuseport) {
+                entry.caller_reserved = true;
+            }
+            return 0;
+        }
+        return fail(SRT_EINVOP);
     }
 
 private:
@@ -650,6 +697,11 @@ int bind_acquired_socket(
         return fail(SRT_EINVOP);
     }
     return adopt_endpoint(*socket, native_socket);
+}
+
+int reserve_caller_channel(SocketRecord& socket) noexcept
+{
+    return binding_registry().reserve_caller(socket.channel);
 }
 
 int bind_any_socket(

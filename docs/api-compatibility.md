@@ -232,7 +232,13 @@ On Linux, `srt_bind_acquire` also accepts distinct native UDP sockets with
 `SO_REUSEPORT` enabled on the same exact local endpoint, IPv6-only mode, and
 configured device. Each adopted socket retains its own datagram channel;
 `SRTO_REUSEADDR` and native `SO_REUSEADDR` alone do not permit this independent
-channel configuration. A descriptor alias of an already adopted native socket
+channel configuration. Multi-member native groups support listeners and their
+accepted connections only: caller and rendezvous `srt_connect` attempts fail
+immediately with `SRT_EINVOP`, including asynchronous connect. This restriction
+remains on a surviving channel after another member closes. A single adopted
+reuseport socket retains caller support; once it begins outgoing connection
+setup, adopting another socket at that endpoint fails with `SRT_EBINDCONFLICT`.
+A descriptor alias of an already adopted native socket
 is rejected rather than assigned a second independent channel. Overlapping
 wildcard or dual-stack bindings, and mixing
 ordinary `srt_bind` sockets with the native reuseport group, still fail with
