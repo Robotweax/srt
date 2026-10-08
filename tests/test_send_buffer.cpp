@@ -8,7 +8,7 @@
 #include <limits>
 #include <utility>
 #include <cstddef>
-#include <set>
+#include <bitset>
 
 using namespace robotweax::srt;
 
@@ -115,25 +115,30 @@ TEST(stale_drop_coverage_matches_independent_set_across_reuse_copy_and_rollover)
     for (const auto initial :
         {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 250U}}) {
         detail::RangeDropQueue queue;
-        std::set<std::uint32_t> expected;
+        std::bitset<1024> expected;
         std::uint32_t random = 0x13579bdfU;
         auto step = [&] {
             random = random * 1664525U + 1013904223U;
             return random;
         };
         auto remove = [&](detail::RangeDropQueue& source,
-                          std::set<std::uint32_t>& reference) {
+                          std::bitset<1024>& reference) {
             const auto next = source.next();
-            REQUIRE_EQ(next.has_value(), !reference.empty());
+            REQUIRE_EQ(next.has_value(), reference.any());
             if (!next)
                 return;
             const auto length = next->last.distance_from(next->first);
             REQUIRE(length >= 0);
             REQUIRE(length < 1024);
             for (std::uint32_t i = 0; i <= static_cast<std::uint32_t>(length);
-                ++i)
-                REQUIRE_EQ(
-                    reference.erase(next->first.advanced(i).value()), 1U);
+                ++i) {
+                const auto offset =
+                    next->first.advanced(i).distance_from(initial);
+                REQUIRE(offset >= 0);
+                REQUIRE(offset < 1024);
+                REQUIRE(reference.test(static_cast<std::size_t>(offset)));
+                reference.reset(static_cast<std::size_t>(offset));
+            }
         };
         for (unsigned turn = 0; turn < 12000U; ++turn) {
             if (step() % 4U == 0U)
@@ -146,7 +151,7 @@ TEST(stale_drop_coverage_matches_independent_set_across_reuse_copy_and_rollover)
                     range = {initial.advanced(offset),
                         initial.advanced(offset + length)};
                     for (std::uint32_t i = 0; i <= length; ++i)
-                        expected.insert(initial.advanced(offset + i).value());
+                        expected.set(offset + i);
                 }
                 std::size_t work = 0;
                 REQUIRE(queue.queue(ranges, &work));
@@ -156,7 +161,7 @@ TEST(stale_drop_coverage_matches_independent_set_across_reuse_copy_and_rollover)
                 auto copy = queue;
                 auto reference = expected;
                 auto moved = std::move(copy);
-                while (!reference.empty())
+                while (reference.any())
                     remove(moved, reference);
                 REQUIRE(moved.empty());
                 const std::array range {SequenceRange {initial, initial}};
@@ -164,7 +169,7 @@ TEST(stale_drop_coverage_matches_independent_set_across_reuse_copy_and_rollover)
                 REQUIRE(moved.next().has_value());
             }
         }
-        while (!expected.empty())
+        while (expected.any())
             remove(queue, expected);
         REQUIRE(queue.empty());
     }
