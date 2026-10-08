@@ -94,7 +94,7 @@ jobs:
       reference_matrix: ${{ steps.classify.outputs.reference_matrix }}
       full: ${{ steps.classify.outputs.full }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -103,6 +103,10 @@ jobs:
           python3 -c
           "import sys; sys.version_info >= (3, 10) or
           sys.exit('Python 3.10 or newer is required')"
+      - name: Enforce immutable action references
+        run: |
+          ruby tools/check_action_pins.rb
+          python3 -m unittest discover -s tools/tests -p 'test_action_pins.py'
       - name: Check recent full CI evidence
         if: github.event_name == 'schedule'
         id: recent_full
@@ -199,7 +203,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'pull_request'
         with:
           fetch-depth: 0
@@ -232,7 +236,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Validate public documentation
@@ -245,7 +249,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Run interoperability harness unit tests
@@ -265,7 +269,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -307,7 +311,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Configure
@@ -363,7 +367,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Configure
@@ -395,7 +399,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Configure
@@ -459,7 +463,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Configure
@@ -493,7 +497,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Configure
@@ -538,11 +542,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check out pinned FFmpeg
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: FFmpeg/FFmpeg
           ref: ${{ env.FFMPEG_COMMIT }}
@@ -593,7 +597,7 @@ jobs:
           tests/ffmpeg/run_smoke.sh ffmpeg-source/ffmpeg
       - name: Retain FFmpeg failure evidence (logs and generated media only)
         if: failure() && steps.ffmpeg_smoke.outcome == 'failure'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ffmpeg-smoke-failure
           path: |
@@ -611,22 +615,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: GStreamer/gstreamer
           ref: ${{ env.GSTREAMER_COMMIT }}
           path: gstreamer-source
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: FFmpeg/FFmpeg
           ref: ${{ env.FFMPEG_COMMIT }}
           path: ffmpeg-source
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Haivision/srt
           ref: ${{ env.REFERENCE_SRT_COMMIT }}
@@ -648,7 +652,7 @@ jobs:
           "$RUNNER_TEMP/gstreamer-qualification"
       - name: Preserve qualification diagnostics
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gstreamer-evidence
           path: |
@@ -664,34 +668,34 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: obsproject/obs-studio
           ref: ${{ env.OBS_COMMIT }}
           path: obs-source
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: obsproject/obs-studio
           ref: ${{ env.OBS_COMMIT }}
           path: obs-desktop-source
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: GStreamer/gstreamer
           ref: ${{ env.GSTREAMER_COMMIT }}
           path: gstreamer-source
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: FFmpeg/FFmpeg
           ref: ${{ env.FFMPEG_COMMIT }}
           path: ffmpeg-source
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Haivision/srt
           ref: ${{ env.REFERENCE_SRT_COMMIT }}
@@ -733,7 +737,7 @@ jobs:
             | tee "$RUNNER_TEMP/obs-desktop/evidence/results.txt"
       - name: Preserve OBS qualification diagnostics
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: obs-evidence
           path: |
@@ -755,10 +759,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: obsproject/obs-studio
           ref: ${{ env.OBS_COMMIT }}
@@ -776,7 +780,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows OBS qualification failed' }
       - name: Preserve Windows OBS qualification diagnostics
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: obs-windows-evidence
           path: |
@@ -795,16 +799,16 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: obsproject/obs-studio
           ref: ${{ env.OBS_COMMIT }}
           path: obs-source
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: FFmpeg/FFmpeg
           ref: ${{ env.FFMPEG_COMMIT }}
@@ -822,7 +826,7 @@ jobs:
             "$RUNNER_TEMP/obs-macos-qualification"
       - name: Preserve macOS OBS qualification diagnostics
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: obs-macos-evidence
           path: |
@@ -839,10 +843,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: obsproject/obs-studio
           ref: ${{ env.OBS_COMMIT }}
@@ -860,7 +864,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows OBS desktop qualification failed' }
       - name: Preserve Windows OBS desktop diagnostics
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: obs-windows-desktop-evidence
           path: |
@@ -878,16 +882,16 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: obsproject/obs-studio
           ref: ${{ env.OBS_COMMIT }}
           path: obs-desktop-source
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: FFmpeg/FFmpeg
           ref: ${{ env.FFMPEG_COMMIT }}
@@ -904,7 +908,7 @@ jobs:
             "$RUNNER_TEMP/obs-macos-desktop-qualification" desktop
       - name: Preserve macOS OBS desktop text diagnostics
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: obs-macos-desktop-evidence
           path: |
@@ -923,28 +927,28 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: videolan/vlc
           ref: ${{ env.VLC_COMMIT }}
           path: vlc-source
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: GStreamer/gstreamer
           ref: ${{ env.GSTREAMER_COMMIT }}
           path: gstreamer-source
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: FFmpeg/FFmpeg
           ref: ${{ env.FFMPEG_COMMIT }}
           path: ffmpeg-source
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Haivision/srt
           ref: ${{ env.REFERENCE_SRT_COMMIT }}
@@ -967,7 +971,7 @@ jobs:
           "$RUNNER_TEMP/vlc-qualification"
       - name: Preserve VLC qualification diagnostics
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vlc-evidence
           path: |
@@ -991,7 +995,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Configure static AES-GCM preview
@@ -1099,7 +1103,7 @@ jobs:
       LDFLAGS: -fsanitize=address,undefined
       UBSAN_OPTIONS: halt_on_error=1
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Configure
@@ -1125,7 +1129,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Configure
@@ -1168,7 +1172,7 @@ jobs:
     env:
       UBSAN_OPTIONS: halt_on_error=1
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Configure
@@ -1220,7 +1224,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Identify reference toolchain
@@ -1256,7 +1260,7 @@ jobs:
           || needs.changes.outputs.rendezvous_interop == 'true'
           || needs.changes.outputs.benchmark == 'true'
         id: reference_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1345,7 +1349,7 @@ jobs:
           || needs.changes.outputs.rendezvous_interop == 'true'
           || needs.changes.outputs.benchmark == 'true')
           && steps.reference_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1355,7 +1359,7 @@ jobs:
       - name: Restore Haivision v1.5.5 backward-compatibility build
         if: needs.changes.outputs.encrypted_interop == 'true'
         id: reference_legacy_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1388,7 +1392,7 @@ jobs:
         if: >-
           needs.changes.outputs.encrypted_interop == 'true'
           && steps.reference_legacy_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1398,7 +1402,7 @@ jobs:
       - name: Restore Haivision v1.5.6 security-profile build
         if: needs.changes.outputs.encrypted_interop == 'true'
         id: reference_security_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1431,7 +1435,7 @@ jobs:
         if: >-
           needs.changes.outputs.encrypted_interop == 'true'
           && steps.reference_security_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1443,7 +1447,7 @@ jobs:
           needs.changes.outputs.aead_interop == 'true'
           || needs.changes.outputs.aead_fec_interop == 'true'
         id: reference_aead_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1479,7 +1483,7 @@ jobs:
           (needs.changes.outputs.aead_interop == 'true'
           || needs.changes.outputs.aead_fec_interop == 'true')
           && steps.reference_aead_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1534,7 +1538,7 @@ jobs:
           tar --list --gzip \
             --file "$RUNNER_TEMP/robotweax-interop-tools.tar.gz"
       - name: Upload Robotweax interoperability tools
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: robotweax-interop-tools
           path: ${{ runner.temp }}/robotweax-interop-tools.tar.gz
@@ -1557,7 +1561,7 @@ jobs:
     env:
       LD_LIBRARY_PATH: ${{ github.workspace }}/reference-build
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Identify reference toolchain
@@ -1605,7 +1609,7 @@ jobs:
           || matrix.profile == 'rendezvous'
           || matrix.profile == 'scalability'
         id: reference_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1654,7 +1658,7 @@ jobs:
           || matrix.profile == 'rendezvous'
           || matrix.profile == 'scalability')
           && steps.reference_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1664,7 +1668,7 @@ jobs:
       - name: Restore Haivision v1.5.5 backward build locally
         if: matrix.profile == 'encrypted'
         id: reference_legacy_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1698,7 +1702,7 @@ jobs:
         if: >-
           matrix.profile == 'encrypted'
           && steps.reference_legacy_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1708,7 +1712,7 @@ jobs:
       - name: Restore Haivision v1.5.6 security build locally
         if: matrix.profile == 'encrypted'
         id: reference_security_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1742,7 +1746,7 @@ jobs:
         if: >-
           matrix.profile == 'encrypted'
           && steps.reference_security_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1757,7 +1761,7 @@ jobs:
           || matrix.profile == 'aead-file-ipv6'
           || matrix.profile == 'aead-fec'
         id: reference_aead_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1803,7 +1807,7 @@ jobs:
           || matrix.profile == 'aead-file-ipv6'
           || matrix.profile == 'aead-fec')
           && steps.reference_aead_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -1811,7 +1815,7 @@ jobs:
             reference-aead-build
           key: ${{ steps.reference_toolchain.outputs.aead_cache_key }}
       - name: Download Robotweax interoperability tools
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: robotweax-interop-tools
           path: ${{ runner.temp }}/robotweax-interop-tools
@@ -1999,7 +2003,7 @@ jobs:
         if: >-
           failure() && matrix.profile == 'aead-timing'
           && steps.aead_timing.outcome == 'failure'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: aead-timing-failure-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

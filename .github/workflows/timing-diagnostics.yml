@@ -39,12 +39,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           path: source
       - name: Fetch exact reference (runner-local only)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Haivision/srt
           ref: 899348d8318eb9a3c5a5b6ec43c4a1114288773a
@@ -112,7 +112,7 @@ jobs:
           done
       - name: Preserve text evidence including failed transfers and captures
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: throughput-${{ inputs.investigation }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -131,7 +131,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install diagnostic dependencies
@@ -169,7 +169,7 @@ jobs:
             --repetitions 10 --trace-repetitions 3
       - name: Preserve evidence, including failed measurements
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-timing-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -184,11 +184,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Fetch exact Haivision 1.5.7 reference (runner-local only)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Haivision/srt
           ref: 899348d8318eb9a3c5a5b6ec43c4a1114288773a
@@ -284,7 +284,7 @@ jobs:
             --stack-trace-comparison
       - name: Preserve logs and metadata only (no reference binaries)
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-group-receive-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -303,10 +303,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Haivision/srt
           ref: 899348d8318eb9a3c5a5b6ec43c4a1114288773a
@@ -356,7 +356,7 @@ jobs:
           test "$baseline" = 0 && test "$traced" = 0
       - name: Preserve diagnostic evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fec-nak-evidence-${{ github.run_id }}
           path: fec-nak-evidence/
