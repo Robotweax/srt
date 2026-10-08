@@ -12436,3 +12436,52 @@ TEST(compat_channel_deferred_drop_backlog_preserves_other_peer_delivery)
     REQUIRE(!busy->broken());
     REQUIRE(!healthy->broken());
 }
+
+TEST(compat_channel_stale_nak_backlog_preserves_other_peer_delivery)
+{
+    FairnessFixture fixture;
+    auto busy = fixture.add(1);
+    auto healthy = fixture.add(2, 1);
+    REQUIRE_EQ(busy->skip_group_sequences(SequenceNumber {2748}).status,
+        MessageIoStatus::success);
+    const IpEndpoint peer {.address = {192, 0, 2, 94}, .port = 15'094};
+    std::array<SequenceRange, maximum_loss_words_per_packet> losses {};
+    for (std::uint32_t i = 0; i < losses.size(); ++i) {
+        const auto sequence = SequenceNumber {700U + 2U * i};
+        losses[i] = {sequence, sequence};
+    }
+    const ReliabilityAction action {
+        .kind = ReliabilityActionKind::loss_report, .loss = losses.front()};
+    std::array<std::byte, maximum_data_payload_size + packet_header_size>
+        storage {};
+    const auto encoded = encode_reliability_action(
+        action, losses, PacketTimestamp {0}, 1, storage);
+    REQUIRE(encoded);
+    const auto decoded =
+        decode_packet(std::span {storage}.first(encoded.bytes_written));
+    REQUIRE(decoded);
+    for (unsigned report = 0; report < 32U; ++report)
+        busy->process_packet(decoded.packet, peer);
+    const std::array payload {std::byte {'h'}};
+    PacketView data;
+    data.kind = PacketKind::data;
+    data.data.sequence = SequenceNumber {700};
+    data.data.boundary = MessageBoundary::solo;
+    data.data.message_number = 1;
+    data.data.destination_socket_id = 2;
+    data.payload = payload;
+    healthy->process_packet(data, peer);
+    fixture.attempted_ids.clear();
+    (void)fixture.poll();
+    (void)fixture.poll();
+    REQUIRE(std::find(
+                fixture.attempted_ids.begin(), fixture.attempted_ids.end(), 2U)
+        != fixture.attempted_ids.end());
+    REQUIRE_EQ(healthy->statistics(false, true).total.sent_unique.packets, 1U);
+    std::array<std::byte, 1> output {};
+    REQUIRE_EQ(healthy->receive_message(output, false, 0).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(output, payload);
+    REQUIRE(!busy->broken());
+    REQUIRE(!healthy->broken());
+}

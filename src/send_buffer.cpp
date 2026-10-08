@@ -37,8 +37,6 @@ SendBuffer::SendBuffer(SequenceNumber initial_sequence,
     , slots_(capacity_packets)
     , retransmission_queue_(capacity_packets)
     , drop_request_queue_(capacity_packets)
-    , range_drop_request_queue_(
-          std::max(capacity_packets, maximum_loss_words_per_packet))
     , first_sequence_(initial_sequence)
     , maximum_payload_size_(maximum_payload_size)
 {
@@ -719,18 +717,13 @@ std::optional<SendDropResult> SendBuffer::next_pending_drop_request() noexcept
                 },
         };
     }
-    if (range_drop_request_size_ != 0U) {
-        const SequenceRange range =
-            range_drop_request_queue_[range_drop_request_head_];
-        range_drop_request_head_ =
-            (range_drop_request_head_ + 1U) % range_drop_request_queue_.size();
-        --range_drop_request_size_;
+    if (const auto range = range_drop_request_queue_.next()) {
         return SendDropResult {
-            .packets =
-                static_cast<std::size_t>(range.last.distance_from(range.first))
+            .packets = static_cast<std::size_t>(
+                           range->last.distance_from(range->first))
                 + 1U,
             .first_message_number = 0U,
-            .sequences = range,
+            .sequences = *range,
         };
     }
     return std::nullopt;
@@ -741,7 +734,7 @@ bool SendBuffer::has_pending_drop_request() noexcept
     if (drop_request_size_ != 0U) {
         compact_drop_request_queue();
     }
-    return drop_request_size_ != 0U || range_drop_request_size_ != 0U;
+    return drop_request_size_ != 0U || !range_drop_request_queue_.empty();
 }
 
 std::size_t SendBuffer::queue_retained_drop_requests() noexcept
@@ -805,66 +798,7 @@ SendBuffer::next_expiration_microseconds() const noexcept
 bool SendBuffer::queue_range_drop_requests(
     std::span<const SequenceRange> ranges) noexcept
 {
-    std::size_t additional = 0;
-    for (std::size_t incoming_index = 0; incoming_index < ranges.size();
-        ++incoming_index) {
-        const SequenceRange range = ranges[incoming_index];
-        if (range.last.distance_from(range.first) < 0) {
-            return false;
-        }
-        bool duplicate = false;
-        for (std::size_t queued_index = 0;
-            queued_index < range_drop_request_size_; ++queued_index) {
-            const auto& queued =
-                range_drop_request_queue_[(range_drop_request_head_
-                                              + queued_index)
-                    % range_drop_request_queue_.size()];
-            if (queued.first == range.first && queued.last == range.last) {
-                duplicate = true;
-                break;
-            }
-        }
-        if (!duplicate) {
-            for (std::size_t earlier = 0; earlier < incoming_index; ++earlier) {
-                if (ranges[earlier].first == range.first
-                    && ranges[earlier].last == range.last) {
-                    duplicate = true;
-                    break;
-                }
-            }
-        }
-        if (!duplicate) {
-            ++additional;
-        }
-    }
-    if (additional
-        > range_drop_request_queue_.size() - range_drop_request_size_) {
-        return false;
-    }
-
-    for (const SequenceRange range : ranges) {
-        bool duplicate = false;
-        for (std::size_t queued_index = 0;
-            queued_index < range_drop_request_size_; ++queued_index) {
-            const auto& queued =
-                range_drop_request_queue_[(range_drop_request_head_
-                                              + queued_index)
-                    % range_drop_request_queue_.size()];
-            if (queued.first == range.first && queued.last == range.last) {
-                duplicate = true;
-                break;
-            }
-        }
-        if (duplicate) {
-            continue;
-        }
-        const std::size_t tail =
-            (range_drop_request_head_ + range_drop_request_size_)
-            % range_drop_request_queue_.size();
-        range_drop_request_queue_[tail] = range;
-        ++range_drop_request_size_;
-    }
-    return true;
+    return range_drop_request_queue_.queue(ranges);
 }
 
 SendDropResult SendBuffer::drop_messages_older_than(

@@ -2880,6 +2880,189 @@ TEST(session_replies_to_a_stale_nak_with_sequence_only_dropreq)
         result.actions.values[0].drop.sequences.last, SequenceNumber {11});
 }
 
+TEST(session_stale_nak_coalesces_packet_coverage_and_preserves_current_budget)
+{
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 100U}}) {
+        ReliabilitySession sender {{.local_initial_sequence = initial,
+            .send_capacity_packets = 1024,
+            .receive_capacity_packets = 4,
+            .maximum_payload_size = 1}};
+        REQUIRE_EQ(
+            sender.skip_group_sequences(initial.advanced(8192)), Error::none);
+        REQUIRE_EQ(sender.take_pending_drop_requests().size, 1U);
+        const std::vector<std::byte> payload(1024);
+        REQUIRE_EQ(
+            sender.queue_message(payload, PacketTimestamp {0}), Error::none);
+        for (std::size_t i = 0; i < payload.size(); ++i)
+            REQUIRE(sender.next_data_packet().has_value());
+        std::array<SequenceRange, 301> losses {};
+        for (std::uint32_t i = 0; i < 300U; ++i) {
+            const auto sequence = initial.advanced(299U - i);
+            losses[i] = {sequence, sequence};
+        }
+        losses.back() = {initial.advanced(8192), initial.advanced(9215)};
+        const ReliabilityAction action {
+            .kind = ReliabilityActionKind::loss_report, .loss = losses.front()};
+        std::array<std::byte, maximum_data_payload_size + packet_header_size>
+            storage {};
+        const auto encoded = encode_reliability_action(
+            action, losses, PacketTimestamp {0}, 1, storage);
+        REQUIRE(encoded);
+        const auto decoded =
+            decode_packet(std::span {storage}.first(encoded.bytes_written));
+        REQUIRE(decoded);
+        const auto result = sender.receive(decoded.packet, 1);
+        REQUIRE(result);
+        REQUIRE_EQ(result.sender_loss_packets, 256U);
+        REQUIRE_EQ(result.actions.size, 1U);
+        REQUIRE_EQ(result.actions.values[0].drop.message_number, 0U);
+        REQUIRE_EQ(result.actions.values[0].drop.sequences.first, initial);
+        REQUIRE_EQ(result.actions.values[0].drop.sequences.last,
+            initial.advanced(299));
+        for (unsigned turn = 0; turn < 3; ++turn)
+            REQUIRE_EQ(
+                sender.service_pending_naks(turn + 2U).sender_loss_packets,
+                256U);
+        REQUIRE_EQ(sender.service_pending_naks(5).sender_loss_packets, 0U);
+    }
+}
+
+TEST(
+    session_stale_nak_backpressure_and_invalid_tail_preserve_the_whole_transaction)
+{
+    ReliabilitySession sender {{.local_initial_sequence = SequenceNumber {100},
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 4,
+        .maximum_payload_size = 1}};
+    REQUIRE_EQ(sender.skip_group_sequences(SequenceNumber {2100}), Error::none);
+    REQUIRE_EQ(sender.take_pending_drop_requests().size, 1U);
+    const std::array payload {std::byte {'x'}};
+    REQUIRE_EQ(sender.queue_message(payload, PacketTimestamp {0}), Error::none);
+    REQUIRE(sender.next_data_packet().has_value());
+    std::array<SequenceRange, maximum_loss_words_per_packet> losses {};
+    for (std::uint32_t i = 0; i < losses.size(); ++i) {
+        const auto sequence = SequenceNumber {100U + 2U * i};
+        losses[i] = {sequence, sequence};
+    }
+    std::array<std::byte, maximum_data_payload_size + packet_header_size>
+        storage {};
+    auto receive = [&](std::span<const SequenceRange> ranges) {
+        const ReliabilityAction action {
+            .kind = ReliabilityActionKind::loss_report, .loss = ranges.front()};
+        const auto encoded = encode_reliability_action(
+            action, ranges, PacketTimestamp {0}, 1, storage);
+        REQUIRE(encoded);
+        const auto decoded =
+            decode_packet(std::span {storage}.first(encoded.bytes_written));
+        REQUIRE(decoded);
+        return sender.receive(decoded.packet, 1);
+    };
+    const auto first = receive(losses);
+    REQUIRE(first);
+    REQUIRE_EQ(first.actions.size, 4U);
+    const std::array rejected {
+        SequenceRange {SequenceNumber {1100}, SequenceNumber {1100}},
+        SequenceRange {SequenceNumber {1102}, SequenceNumber {1102}},
+        SequenceRange {SequenceNumber {1104}, SequenceNumber {1104}},
+        SequenceRange {SequenceNumber {1106}, SequenceNumber {1106}},
+        SequenceRange {SequenceNumber {1108}, SequenceNumber {1108}},
+        SequenceRange {SequenceNumber {1110}, SequenceNumber {1110}},
+        SequenceRange {SequenceNumber {2100}, SequenceNumber {2100}}};
+    REQUIRE_EQ(receive(rejected).error, Error::buffer_too_small);
+    REQUIRE(!sender.next_data_packet().has_value());
+    const auto still_pending = sender.service_pending_naks(2);
+    REQUIRE_EQ(still_pending.sender_loss_packets, 0U);
+    REQUIRE_EQ(still_pending.actions.size, 4U);
+    for (std::size_t i = 0; i < still_pending.actions.size; ++i)
+        REQUIRE_EQ(still_pending.actions.values[i].drop.sequences.first,
+            SequenceNumber {108U + static_cast<std::uint32_t>(2U * i)});
+    std::size_t replies = first.actions.size + still_pending.actions.size;
+    while (sender.has_pending_drop_requests()) {
+        const auto next = sender.take_pending_drop_requests();
+        REQUIRE(next.size != 0U);
+        for (std::size_t i = 0; i < next.size; ++i) {
+            REQUIRE(next.values[i].drop.sequences.first.distance_from(
+                        SequenceNumber {1100})
+                < 0);
+            ++replies;
+        }
+    }
+    REQUIRE_EQ(replies, losses.size());
+    const std::array invalid_tail {
+        SequenceRange {SequenceNumber {1100}, SequenceNumber {1100}},
+        SequenceRange {SequenceNumber {2100}, SequenceNumber {2100}},
+        SequenceRange {SequenceNumber {2101}, SequenceNumber {2101}}};
+    REQUIRE_EQ(receive(invalid_tail).error, Error::invalid_control_payload);
+    REQUIRE(!sender.has_pending_drop_requests());
+    REQUIRE_EQ(sender.service_pending_naks(3).sender_loss_packets, 0U);
+    REQUIRE(!sender.next_data_packet().has_value());
+}
+
+TEST(
+    session_stale_nak_queued_ack_suppression_is_bounded_and_clips_partial_ranges)
+{
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 40U}}) {
+        ReliabilitySession sender {{.local_initial_sequence = initial,
+            .send_capacity_packets = 4,
+            .receive_capacity_packets = 4}};
+        REQUIRE_EQ(
+            sender.skip_group_sequences(initial.advanced(128)), Error::none);
+        REQUIRE_EQ(sender.take_pending_drop_requests().size, 1U);
+        std::array<SequenceRange, 33> losses {};
+        for (std::uint32_t i = 0; i < 32U; ++i) {
+            const auto sequence = initial.advanced(i * 2U);
+            losses[i] = {sequence, sequence};
+        }
+        losses.back() = {initial.advanced(80), initial.advanced(100)};
+        const ReliabilityAction loss {
+            .kind = ReliabilityActionKind::loss_report, .loss = losses.front()};
+        std::array<std::byte, 256> storage {};
+        const auto encoded = encode_reliability_action(
+            loss, losses, PacketTimestamp {0}, 1, storage);
+        REQUIRE(encoded);
+        const auto decoded =
+            decode_packet(std::span {storage}.first(encoded.bytes_written));
+        REQUIRE(decoded);
+        REQUIRE(sender.receive(decoded.packet, 1));
+        REQUIRE(sender.has_pending_drop_requests());
+        const ReliabilityAction ack {
+            .kind = ReliabilityActionKind::acknowledgement,
+            .acknowledgement = {.kind = AcknowledgementKind::lite,
+                .next_sequence = initial.advanced(90)}};
+        std::array<std::byte, 64> ack_storage {};
+        REQUIRE(sender.receive(encode_and_decode(ack, ack_storage), 2));
+        unsigned turns = 0;
+        unsigned emitted = 0;
+        while (sender.has_pending_drop_requests()) {
+            const auto next = sender.take_pending_drop_requests();
+            ++turns;
+            REQUIRE(turns <= 9U);
+            // Each turn inspects at most four queued ranges, including ACKed
+            // ranges. This backlog cannot be discarded in one unbounded loop.
+            if (turns == 1U)
+                REQUIRE(sender.has_pending_drop_requests());
+            for (std::size_t i = 0; i < next.size; ++i) {
+                const auto& range = next.values[i].drop.sequences;
+                REQUIRE_EQ(range.first, initial.advanced(90));
+                REQUIRE_EQ(range.last, initial.advanced(100));
+                ++emitted;
+            }
+        }
+        REQUIRE(turns > 1U);
+        REQUIRE_EQ(emitted, 1U);
+        const ReliabilityAction repeated {
+            .kind = ReliabilityActionKind::loss_report,
+            .loss = {initial, initial.advanced(89)}};
+        const auto result =
+            sender.receive(encode_and_decode(repeated, ack_storage), 3);
+        REQUIRE(result);
+        REQUIRE_EQ(result.actions.size, 0U);
+        REQUIRE(!sender.has_pending_drop_requests());
+    }
+}
+
 TEST(session_splits_a_nak_between_stale_and_current_packets)
 {
     ReliabilitySession sender {{
