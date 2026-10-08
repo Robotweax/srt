@@ -5694,6 +5694,9 @@ TEST(peer_drop_queue_balanced_admission_is_bounded_in_descending_wire_order)
 {
     for (const std::uint32_t capacity : {1U, 64U, 8192U, 65535U, 65536U}) {
         detail::PeerDropQueue queue(capacity);
+        REQUIRE_EQ(queue.initialized_slots(), 0U);
+        const auto allocation = queue.allocated_slots();
+        REQUIRE(allocation >= capacity);
         for (std::uint32_t offset = capacity; offset > 0; --offset) {
             const SequenceRange range {
                 SequenceNumber {offset}, SequenceNumber {offset}};
@@ -5702,6 +5705,8 @@ TEST(peer_drop_queue_balanced_admission_is_bounded_in_descending_wire_order)
             REQUIRE(steps <= 4U * std::bit_width(capacity));
         }
         REQUIRE(queue.full());
+        REQUIRE_EQ(queue.initialized_slots(), capacity);
+        REQUIRE_EQ(queue.allocated_slots(), allocation);
         const auto deadline = queue.next_deadline();
         for (std::uint32_t offset = 1; offset <= capacity; ++offset) {
             const SequenceRange range {
@@ -5726,6 +5731,8 @@ TEST(peer_drop_queue_balanced_admission_is_bounded_in_descending_wire_order)
             static_cast<std::size_t>(capacity)
                 * (capacity <= 65535U ? 24U : 32U));
         REQUIRE(queue.insert({SequenceNumber {0}, SequenceNumber {0}}, 0));
+        REQUIRE_EQ(queue.initialized_slots(), capacity);
+        REQUIRE_EQ(queue.allocated_slots(), allocation);
     }
 }
 
@@ -5781,6 +5788,7 @@ TEST(peer_drop_queue_matches_reference_through_reuse_wrap_and_arbitrary_erasure)
                     earliest->first);
             }
             auto copied = queue;
+            REQUIRE(copied.allocated_slots() >= capacity);
             REQUIRE_EQ(copied.size(), queue.size());
             if (!copied.empty())
                 copied.erase(copied.first_due());
@@ -5901,4 +5909,37 @@ TEST(session_deferred_drop_refreshes_timestamp_bounds_once_per_bounded_group)
     REQUIRE_EQ(receiver.receive_buffer().occupied(), 1U);
     REQUIRE_EQ(receiver.receive_buffer().buffered_payload_bytes(), 1U);
     REQUIRE_EQ(receiver.receive_buffer().buffered_span_milliseconds(), 1U);
+}
+
+TEST(peer_drop_queue_reservation_survives_copy_move_and_node_reuse)
+{
+    for (const std::uint32_t capacity : {1U, 64U, 65536U}) {
+        detail::PeerDropQueue original(capacity);
+        const SequenceRange first {SequenceNumber {0}, SequenceNumber {0}};
+        REQUIRE(original.insert(first, 1));
+        auto copied = original;
+        detail::PeerDropQueue assigned(1);
+        assigned = original;
+        auto moved = std::move(copied);
+        REQUIRE(copied.empty());
+        REQUIRE_EQ(copied.first_due(), detail::PeerDropQueue::none);
+        REQUIRE(!copied.next_deadline());
+        copied = original;
+        for (auto* queue : {&assigned, &moved, &copied}) {
+            const auto reserved = queue->allocated_slots();
+            REQUIRE(reserved >= capacity);
+            for (std::uint32_t i = 1; i < capacity; ++i) {
+                const SequenceRange range {
+                    SequenceNumber {i}, SequenceNumber {i}};
+                REQUIRE(queue->insert(range, i + 1U));
+                REQUIRE_EQ(queue->allocated_slots(), reserved);
+            }
+            REQUIRE(queue->full());
+            while (!queue->empty())
+                queue->erase(queue->first_due());
+            REQUIRE(queue->insert(first, 1));
+            REQUIRE_EQ(queue->allocated_slots(), reserved);
+            REQUIRE_EQ(queue->initialized_slots(), capacity);
+        }
+    }
 }

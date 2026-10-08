@@ -9,6 +9,7 @@
 #include <optional>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 #include <vector>
 #include <variant>
 
@@ -29,13 +30,47 @@ public:
     static constexpr Index none = std::numeric_limits<Index>::max();
 
     explicit BasicPeerDropQueue(std::size_t capacity)
-        : entries_(capacity)
     {
         if (capacity == 0 || capacity > none)
             throw std::invalid_argument("invalid peer-drop capacity");
-        for (Index i = 0; i < capacity; ++i)
-            entries_[i].left = i + 1 < capacity ? i + 1 : none;
-        free_entry_ = 0;
+        capacity_ = static_cast<Index>(capacity);
+        // Reserve without touching every entry in an idle session. New nodes
+        // initialize only their own slot; erased nodes reuse the free list.
+        entries_.reserve(capacity);
+    }
+    BasicPeerDropQueue(const BasicPeerDropQueue& other)
+        : size_(other.size_)
+        , root_(other.root_)
+        , free_entry_(other.free_entry_)
+        , cursor_(other.cursor_)
+        , capacity_(other.capacity_)
+    {
+        entries_.reserve(capacity_);
+        entries_.assign(other.entries_.begin(), other.entries_.end());
+    }
+    BasicPeerDropQueue& operator=(const BasicPeerDropQueue& other)
+    {
+        if (this != &other) {
+            BasicPeerDropQueue copy(other);
+            *this = std::move(copy);
+        }
+        return *this;
+    }
+    BasicPeerDropQueue(BasicPeerDropQueue&& other) noexcept
+    {
+        *this = std::move(other);
+    }
+    BasicPeerDropQueue& operator=(BasicPeerDropQueue&& other) noexcept
+    {
+        if (this != &other) {
+            entries_ = std::move(other.entries_);
+            size_ = std::exchange(other.size_, 0);
+            root_ = std::exchange(other.root_, none);
+            free_entry_ = std::exchange(other.free_entry_, none);
+            cursor_ = std::exchange(other.cursor_, 0);
+            capacity_ = std::exchange(other.capacity_, 0);
+        }
+        return *this;
     }
     [[nodiscard]] bool empty() const noexcept
     {
@@ -43,7 +78,7 @@ public:
     }
     [[nodiscard]] bool full() const noexcept
     {
-        return size_ == entries_.size();
+        return size_ == capacity_;
     }
     [[nodiscard]] std::size_t size() const noexcept
     {
@@ -66,6 +101,8 @@ public:
     // reclaim already-passed future entries with a fixed amount of work.
     [[nodiscard]] Index next_to_inspect() noexcept
     {
+        if (entries_.empty())
+            return none;
         const auto current = cursor_;
         cursor_ = (cursor_ + 1U) % static_cast<Index>(entries_.size());
         return entries_[current].height == 0 ? none : current;
@@ -92,9 +129,14 @@ public:
             return true; // Keep the original grace.
         if (full())
             return false;
-        const Index added = free_entry_;
-        free_entry_ = entries_[added].left;
-        entries_[added] = {{range, deadline}, none, none, added, 1};
+        Index added = free_entry_;
+        if (added == none) {
+            added = static_cast<Index>(entries_.size());
+            entries_.push_back({{range, deadline}, none, none, added, 1});
+        } else {
+            free_entry_ = entries_[added].left;
+            entries_[added] = {{range, deadline}, none, none, added, 1};
+        }
         root_ = insert_node(root_, added, steps);
         ++size_;
         return true;
@@ -107,9 +149,17 @@ public:
         free_entry_ = index;
         --size_;
     }
+    [[nodiscard]] std::size_t initialized_slots() const noexcept
+    {
+        return entries_.size();
+    }
+    [[nodiscard]] std::size_t allocated_slots() const noexcept
+    {
+        return entries_.capacity();
+    }
     [[nodiscard]] std::size_t storage_bytes() const noexcept
     {
-        return entries_.size() * sizeof(Entry);
+        return static_cast<std::size_t>(capacity_) * sizeof(Entry);
     }
 
 private:
@@ -236,6 +286,7 @@ private:
     Index root_ = none;
     Index free_entry_ = none;
     Index cursor_ = 0;
+    Index capacity_ = 0;
 };
 
 // Compact indices keep the ordinary receive windows at the previous 24 bytes
@@ -341,6 +392,22 @@ public:
             [i](auto& q) {
                 q.erase(
                     static_cast<typename std::decay_t<decltype(q)>::Index>(i));
+            },
+            storage_);
+    }
+    [[nodiscard]] std::size_t initialized_slots() const noexcept
+    {
+        return std::visit(
+            [](const auto& q) {
+                return q.initialized_slots();
+            },
+            storage_);
+    }
+    [[nodiscard]] std::size_t allocated_slots() const noexcept
+    {
+        return std::visit(
+            [](const auto& q) {
+                return q.allocated_slots();
             },
             storage_);
     }
