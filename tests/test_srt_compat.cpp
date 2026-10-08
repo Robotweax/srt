@@ -5402,13 +5402,13 @@ TEST(srt_compat_async_caller_reports_hsv4_rejection_to_epoll_and_callback)
     REQUIRE(observation.induction_received);
     REQUIRE(observation.response_sent);
     REQUIRE_EQ(ready[0].fd, caller);
-    REQUIRE_EQ(ready[0].events, SRT_EPOLL_ERR);
+    REQUIRE_EQ(ready[0].events, SRT_EPOLL_OUT | SRT_EPOLL_ERR);
     REQUIRE(wait_for_connect_callback(callback, std::chrono::seconds {5}));
     REQUIRE_EQ(callback.calls.load(), 1);
     REQUIRE_EQ(callback.socket.load(), caller);
     REQUIRE_EQ(callback.error_code.load(), SRT_ECONNREJ);
-    REQUIRE_EQ(callback.socket_state.load(), SRTS_CONNECTING);
-    REQUIRE_EQ(srt_getsockstate(caller), SRTS_CONNECTING);
+    REQUIRE_EQ(callback.socket_state.load(), SRTS_BROKEN);
+    REQUIRE_EQ(srt_getsockstate(caller), SRTS_BROKEN);
     REQUIRE_EQ(srt_getrejectreason(caller), SRT_REJ_VERSION);
 
     REQUIRE_EQ(srt_epoll_release(poll), 0);
@@ -6824,6 +6824,9 @@ TEST(srt_compat_connect_callback_reports_timeout_and_close_cancellation)
         REQUIRE_EQ(timeout_observation.peer_family.load(), AF_INET);
         REQUIRE_EQ(timeout_observation.peer_port.load(),
             ntohs(sink_address.sin_port));
+        REQUIRE_EQ(timeout_observation.socket_state.load(), SRTS_BROKEN);
+        REQUIRE_EQ(srt_getsockstate(timed_out), SRTS_BROKEN);
+        REQUIRE_EQ(srt_getrejectreason(timed_out), SRT_REJ_TIMEOUT);
         REQUIRE_EQ(timeout_observation.token.load(), -1);
         REQUIRE(!timeout_observation.peer_name_available.load());
         REQUIRE_EQ(srt_close(timed_out), 0);

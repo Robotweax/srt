@@ -37,9 +37,9 @@ caught before it can cross the C ABI or alter the result of the triggering SRT
 operation.
 
 When no handler is installed, enabled events are written to `stderr`. The
-default threshold is `LOG_WARNING`, matching v1.5.7; the currently emitted
-compatibility events are `LOG_NOTICE`, so normal applications receive no new
-output unless they explicitly increase the logging level.
+default threshold is `LOG_WARNING`, matching v1.5.7. Connection failures and
+listener rejections use this level in `SRT_LOGFA_CONN`; successful lifecycle
+events use `LOG_NOTICE`. Logging filters apply to both.
 
 ## Formatting
 
@@ -53,3 +53,22 @@ The default timestamp and thread rendering are intentionally Robotweax-owned;
 applications that require structured, stable metadata should consume the
 separate callback arguments instead of parsing a reference-library text
 prefix.
+
+## Connection diagnostics
+
+A terminal failed connection attempt emits `connection setup failed`; a listener
+that answers a rejected setup emits `handshake rejected`. Both warning messages
+include the local protocol socket ID, numeric peer address and port, peer protocol
+socket ID when known, API rejection reason, symbolic reason name, and wire code.
+For example, a bad passphrase reports `reason=10 name=BADSECRET wire=1010`;
+a missing or unexpected passphrase reports `reason=11 name=UNSECURE wire=1011`;
+and a Message API mismatch reports `reason=12 name=MESSAGEAPI wire=1012`.
+Application rejection codes keep their wire value and use the name `APPLICATION`.
+No passphrase, key material, or Stream ID appears in these messages.
+
+Each listener admits at most one rejection warning per 100 milliseconds across
+all peers, with one fixed deadline and no per-peer allocation. This limits
+formatting and callback work during a rejection flood; suppressed warnings do not
+change protocol responses. Callers emit one terminal warning per failed attempt.
+Closing an in-progress attempt locally does not emit a failure warning. Handlers
+run outside internal socket and group locks and may query socket state.
