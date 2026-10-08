@@ -254,6 +254,21 @@ completion callback runs. Epoll then reports the requested
 and callback error remain available. Close the failed socket and create a new
 one for another attempt. Blocking failures use the same terminal state.
 
+Terminal rejection can become observable almost immediately; there is no minimum
+failure-notification delay. `SRTO_CONNTIMEO` bounds a pending handshake and does
+not pace attempts after an explicit rejection. An application that immediately
+creates another socket can therefore retry much faster than with another SRT
+implementation, including an existing application linked against Robotweax.
+
+Apply a bounded reconnect policy independently of epoll and callback timing. For
+transient failures, use increasing delays with jitter, a maximum delay, and an
+attempt or elapsed-time limit. Treat `SRT_REJ_BADSECRET`, `SRT_REJ_UNSECURE`, and
+`SRT_REJ_MESSAGEAPI` as configuration failures: suspend automatic retries until
+the relevant configuration changes. Listener warning suppression limits log
+output, not connection attempts or rejection packets. See
+[rejection timing diagnostics](testing.md#rejection-timing-diagnostics) for a
+checked loopback probe.
+
 Do not write application logic that depends on an undocumented error from a
 different SRT implementation. Use Robotweax's public headers, this guide, and
 the manifest as the contract.

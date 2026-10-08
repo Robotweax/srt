@@ -234,7 +234,8 @@ Robotweax implements transport behavior; the application still owns:
 
 - endpoint discovery and authorization;
 - passphrase storage, rotation, and redaction;
-- reconnect and backoff policy;
+- reconnect and backoff policy, including
+  [rapid terminal rejection](api-compatibility.md#error-contract);
 - connection-group topology and failover policy;
 - media framing and timestamp generation;
 - resource limits and admission policy;
