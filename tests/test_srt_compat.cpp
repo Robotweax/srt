@@ -7897,3 +7897,141 @@ TEST(srt_compat_session_authentication_rejects_mode_mismatch_and_wrong_secret)
         REQUIRE_EQ(srt_close(listener), 0);
     }
 }
+
+using namespace robotweax::srt;
+using namespace robotweax::srt::compat;
+namespace {
+struct DuplicateHandoff {
+    std::shared_ptr<DatagramChannel> channel;
+    std::shared_ptr<HandshakeInbox> inbox;
+    std::mutex mutex;
+    HandshakeEnvelope conclusion;
+    bool captured = false;
+    std::atomic_size_t queued = 0;
+    std::atomic_size_t callbacks = 0;
+    ~DuplicateHandoff()
+    {
+        if (channel)
+            channel->set_send_hook_for_testing(nullptr, nullptr);
+    }
+};
+UdpIoResult capture_handoff_conclusion(
+    std::span<const std::byte> bytes, IpEndpoint peer, void* context) noexcept
+{
+    auto& test = *static_cast<DuplicateHandoff*>(context);
+    const auto decoded = decode_handshake_datagram(bytes);
+    if (decoded
+        && decoded.message.packet.request == HandshakeRequest::conclusion) {
+        const auto local = test.channel->socket.local_endpoint();
+        if (!local)
+            return {.error = Error::io_error};
+        std::lock_guard lock(test.mutex);
+        test.conclusion = {.message = decoded.message,
+            .control = decoded.control,
+            .peer = local.endpoint};
+        test.captured = true;
+    }
+    return test.channel->socket.send_to(bytes, peer);
+}
+int queue_handoff_duplicates(
+    void* context, SRTSOCKET, int, const sockaddr*, const char*)
+{
+    auto& test = *static_cast<DuplicateHandoff*>(context);
+    std::lock_guard lock(test.mutex);
+    if (!test.captured)
+        return -1;
+    if (++test.callbacks != 1U)
+        return 0;
+    // Queue the real, cookie-valid conclusion after admission, before the
+    // setup route is installed. Only the first admission gets this burst.
+    for (std::size_t i = 0; i < 4096; ++i) {
+        if (!test.inbox->push(test.conclusion))
+            break;
+        ++test.queued;
+    }
+    return 0;
+}
+}
+TEST(srt_compat_listener_handoff_survives_full_duplicate_inbox)
+{
+    DuplicateHandoff duplicates;
+    REQUIRE_EQ(srt_startup(), 0);
+    struct Cleanup {
+        SRTSOCKET listener = SRT_INVALID_SOCK, caller = SRT_INVALID_SOCK,
+                  accepted = SRT_INVALID_SOCK;
+        ~Cleanup()
+        {
+            for (auto socket : {caller, accepted, listener})
+                if (socket != SRT_INVALID_SOCK)
+                    (void)srt_close(socket);
+            (void)srt_cleanup();
+        }
+    } cleanup;
+    cleanup.listener = srt_create_socket();
+    cleanup.caller = srt_create_socket();
+    REQUIRE(cleanup.listener != SRT_INVALID_SOCK);
+    REQUIRE(cleanup.caller != SRT_INVALID_SOCK);
+    constexpr int timeout = 2000;
+    constexpr bool disabled = false;
+    for (auto socket : {cleanup.listener, cleanup.caller}) {
+        REQUIRE_EQ(
+            srt_setsockflag(socket, SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(socket, SRTO_RCVTIMEO, &timeout, sizeof(timeout)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(
+                       socket, SRTO_TSBPDMODE, &disabled, sizeof(disabled)),
+            0);
+    }
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(
+        srt_bind(cleanup.listener, reinterpret_cast<const sockaddr*>(&address),
+            sizeof(address)),
+        0);
+    REQUIRE_EQ(srt_listen_callback(
+                   cleanup.listener, queue_handoff_duplicates, &duplicates),
+        0);
+    REQUIRE_EQ(srt_listen(cleanup.listener, 4096), 0);
+    auto listener = SocketRegistry::instance().find(cleanup.listener);
+    {
+        std::lock_guard lock(listener->mutex);
+        duplicates.inbox = listener->listener_inbox;
+    }
+    REQUIRE(duplicates.inbox != nullptr);
+    int length = sizeof(address);
+    REQUIRE_EQ(srt_getsockname(cleanup.listener,
+                   reinterpret_cast<sockaddr*>(&address), &length),
+        0);
+    sockaddr_in caller_address {};
+    caller_address.sin_family = AF_INET;
+    caller_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(srt_bind(cleanup.caller,
+                   reinterpret_cast<const sockaddr*>(&caller_address),
+                   sizeof(caller_address)),
+        0);
+    auto caller = SocketRegistry::instance().find(cleanup.caller);
+    {
+        std::lock_guard lock(caller->mutex);
+        duplicates.channel = caller->channel;
+    }
+    duplicates.channel->set_send_hook_for_testing(
+        capture_handoff_conclusion, &duplicates);
+    const auto connected = srt_connect(cleanup.caller,
+        reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+    REQUIRE_EQ(duplicates.queued.load(), 4096U);
+    REQUIRE_EQ(connected, 0);
+    REQUIRE_EQ(duplicates.callbacks.load(), 1U);
+    cleanup.accepted = srt_accept(cleanup.listener, nullptr, nullptr);
+    REQUIRE(cleanup.accepted != SRT_INVALID_SOCK);
+    constexpr std::array payload {'h', 'a', 'n', 'd', 'o', 'f', 'f'};
+    REQUIRE_EQ(
+        srt_sendmsg(cleanup.caller, payload.data(), payload.size(), -1, 1),
+        static_cast<int>(payload.size()));
+    std::array<char, 32> received {};
+    REQUIRE_EQ(srt_recvmsg(cleanup.accepted, received.data(), received.size()),
+        static_cast<int>(payload.size()));
+    REQUIRE(std::equal(payload.begin(), payload.end(), received.begin()));
+}
