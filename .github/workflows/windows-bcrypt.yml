@@ -29,7 +29,7 @@ jobs:
     runs-on: windows-11-arm
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Native ARM64 Release and Debug execution
@@ -52,7 +52,7 @@ jobs:
             Run ctest @('--test-dir','failures','-C',$config,'--output-on-failure')
             Copy-Item failures/Testing/Temporary/LastTest.log "evidence/failures-$config.log"
           }
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: native-arm64-crypto-evidence
@@ -73,10 +73,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: openssl/openssl
           ref: aae016bfd52fcad2bc9657c2c782cfdf73b1ed5f
@@ -91,7 +91,7 @@ jobs:
           if ('${{ matrix.platform }}' -eq 'Arm64' -and $env:RUNNER_ARCH -ne 'ARM64') { throw 'Native ARM64 runner required' }
           & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" ${{ matrix.environment }} && `"$pwsh`" -NoProfile -File `"$script`" -Platform ${{ matrix.platform }}"
           if ($LASTEXITCODE -ne 0) { throw 'Qualification failed' }
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: windows-crypto-performance-evidence-${{ matrix.platform }}
@@ -107,10 +107,10 @@ jobs:
       matrix:
         configuration: [Release, Debug]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: matrix.configuration == 'Release'
         with:
           repository: Haivision/srt
@@ -189,7 +189,7 @@ jobs:
       matrix:
         arch: [Win32, x64, ARM64]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Configure without OpenSSL discovery

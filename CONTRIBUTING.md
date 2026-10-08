@@ -199,6 +199,21 @@ Only a successful full run that also selected all four platform jobs can provide
 the same-commit, 24-hour evidence used to omit a duplicate scheduled run. Windows
 SDK installer/signing qualification remains a separate release workflow.
 
+All external Action and reusable-workflow `uses` references must use full
+40-character commit SHAs, with a release-version comment for maintenance.
+Docker actions must use SHA-256 image digests. Local `./` references are allowed.
+Verify new pins against the Action's official repository; weekly Dependabot
+updates remain enabled. The always-run change-classification job checks tracked
+workflow files and every tracked `action.yml`/`action.yaml` manifest. YAML aliases,
+merge keys and duplicate keys are rejected to keep the policy unambiguous.
+The policy uses Ruby's bundled Psych YAML parser without loading objects or
+downloading gems; Ruby is needed only for this CI policy check:
+
+```sh
+ruby tools/check_action_pins.rb
+./tools/python -m unittest discover -s tools/tests -p 'test_action_pins.py'
+```
+
 ## Documentation changes
 
 Public documentation is for users, integrators, and external contributors. It
