@@ -159,6 +159,9 @@ public:
 
 private:
     friend struct detail::ReceiveBufferTestAccess;
+    friend class ReliabilitySession;
+    bool defer_drop_timestamp_refresh_ = false;
+    bool drop_timestamp_refresh_pending_ = false;
     [[nodiscard]] std::optional<BufferedMessageInfo>
     query_first_complete_message(std::size_t* inspected) const noexcept;
     [[nodiscard]] std::optional<BufferedMessageInfo>
@@ -196,8 +199,10 @@ private:
 
     [[nodiscard]] Slot* find(SequenceNumber sequence) noexcept;
     [[nodiscard]] const Slot* find(SequenceNumber sequence) const noexcept;
-    void refresh_first_buffered_timestamp() noexcept;
-    void refresh_buffered_timestamp_bounds() noexcept;
+    void refresh_first_buffered_timestamp(
+        std::size_t* inspected = nullptr) noexcept;
+    void refresh_buffered_timestamp_bounds(
+        std::size_t* inspected = nullptr) noexcept;
     void advance_acknowledgement() noexcept;
     void trim_dropped_prefix() noexcept;
     [[nodiscard]] std::optional<std::size_t> complete_message_last_offset(

@@ -12386,3 +12386,53 @@ TEST(compat_channel_sparse_receive_burst_preserves_healthy_delivery_and_timers)
         }
     }
 }
+
+TEST(compat_channel_deferred_drop_backlog_preserves_other_peer_delivery)
+{
+    FairnessFixture fixture;
+    const NegotiatedLiveOptions live {.receive_tsbpd = true,
+        .too_late_packet_drop = true,
+        .receive_delay_milliseconds = 100};
+    auto busy = fixture.add(1, 0, true, 8192, live);
+    auto healthy = fixture.add(2, 0, true, 4, live);
+    const IpEndpoint peer {.address = {192, 0, 2, 94}, .port = 15'094};
+    const std::array payload {std::byte {'h'}};
+    PacketView retained;
+    retained.kind = PacketKind::data;
+    retained.data.sequence = SequenceNumber {700}.advanced(8191);
+    retained.data.boundary = MessageBoundary::solo;
+    retained.data.message_number = 1;
+    retained.data.timestamp = PacketTimestamp {10'000};
+    retained.data.destination_socket_id = 1;
+    retained.payload = payload;
+    busy->process_packet(retained, peer);
+    std::array<std::byte, 64> storage {};
+    for (std::uint32_t offset = 512; offset > 0; --offset) {
+        const auto sequence = SequenceNumber {700}.advanced(offset - 1);
+        const ReliabilityAction action {
+            .kind = ReliabilityActionKind::drop_request,
+            .drop = {0, {sequence, sequence}}};
+        const auto encoded =
+            encode_reliability_action(action, PacketTimestamp {20}, 1, storage);
+        REQUIRE(encoded);
+        const auto decoded =
+            decode_packet(std::span {storage}.first(encoded.bytes_written));
+        REQUIRE(decoded);
+        busy->process_packet(decoded.packet, peer);
+    }
+    REQUIRE(!busy->broken());
+    fixture.now = 101'020;
+    retained.data.sequence = SequenceNumber {700};
+    retained.data.timestamp = PacketTimestamp {0};
+    retained.data.destination_socket_id = 2;
+    healthy->process_packet(retained, peer);
+    (void)fixture.poll();
+    REQUIRE_EQ(
+        busy->statistics(false, true).total.receiver_dropped.packets, 64U);
+    std::array<std::byte, 1> output {};
+    REQUIRE_EQ(healthy->receive_message(output, false, 0).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(output, payload);
+    REQUIRE(!busy->broken());
+    REQUIRE(!healthy->broken());
+}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "robotweax/srt/control.hpp"
+#include "robotweax/srt/detail/peer_drop_queue.hpp"
 #include "robotweax/srt/file.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
 #include "robotweax/srt/live.hpp"
@@ -18,6 +19,10 @@
 #include <vector>
 
 namespace robotweax::srt {
+
+namespace detail {
+struct SessionTestAccess;
+}
 
 enum class ReliabilityActionKind : std::uint8_t {
     acknowledgement,
@@ -369,6 +374,8 @@ public:
     // API): the unit receiver delivery and too-late drops operate on.
     [[nodiscard]] std::optional<BufferedMessageInfo>
     first_deliverable_unit() const noexcept;
+    // Retire at most 64 deferred ranges per invocation; remaining due work
+    // retains its original deadline so the runtime schedules another turn.
     [[nodiscard]] ReliabilityProcessResult
     drop_too_late_receiver(
         std::uint64_t now_microseconds) noexcept;
@@ -482,13 +489,11 @@ public:
     }
 
 private:
-    struct PendingPeerDrop {
-        SequenceRange sequences {};
-        std::uint64_t deadline_microseconds = 0;
-    };
-    [[nodiscard]] static std::uint64_t peer_drop_identity(
-        SequenceRange range) noexcept;
-    void retire_peer_drop_identity(SequenceRange range) noexcept;
+    friend struct detail::SessionTestAccess;
+    [[nodiscard]] ReliabilityProcessResult drop_too_late_receiver_impl(
+        std::uint64_t now_microseconds, std::size_t* ranges_inspected,
+        std::size_t* timestamp_slots_inspected) noexcept;
+    using PendingPeerDrop = detail::PendingPeerDrop;
     [[nodiscard]] Error apply_peer_drop_range(SequenceRange range,
         std::uint32_t message_number, bool defer_drop, std::uint64_t deadline,
         std::uint64_t now_microseconds,
@@ -523,12 +528,8 @@ private:
     // of the send buffer is not evidence that the receiver has the sources.
     SequenceNumber peer_acknowledged_sequence_;
     ReceiveBuffer receive_buffer_;
-    // Preallocated at construction so peer DROPREQs cannot allocate on the
-    // receive path. A request remains pending until its playout grace expires.
-    std::vector<PendingPeerDrop> pending_peer_drops_;
-    // Sorted exact identities give logarithmic duplicate admission without
-    // changing the grace entries' processing order or allocating on receive.
-    std::vector<std::uint64_t> pending_peer_drop_identities_;
+    // Construction-sized balanced identity index with subtree deadlines.
+    detail::PeerDropQueue pending_peer_drops_;
     // Part of a peer DROPREQ beyond the highest observed DATA sequence; it
     // is applied once later DATA proves the peer advanced that far.
     std::optional<PendingPeerDrop> peer_drop_remainder_;
