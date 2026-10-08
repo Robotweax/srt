@@ -450,6 +450,8 @@ public:
         SequenceNumber initial_sequence{};
         SequenceNumber peer_initial_sequence{};
         bool has_distinct_peer_initial_sequence = false;
+        // Preserve the negotiated inbound ISN before a group delivery rebase.
+        std::optional<SequenceNumber> peer_wire_initial_sequence;
         // SRTO_FC is the local receive window. The peer's advertised window
         // independently limits new outbound DATA. Zero keeps direct/internal
         // construction backward compatible by falling back to the local

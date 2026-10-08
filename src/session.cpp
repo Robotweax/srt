@@ -108,6 +108,11 @@ ReliabilitySession::ReliabilitySession(Configuration configuration)
     , peer_socket_id_(configuration.peer_socket_id)
 {
     filter_loss_ranges_.reserve(configuration.receive_capacity_packets);
+    if (configuration.member_receive_initial_sequence.has_value()) {
+        member_receive_horizon_ =
+            configuration.member_receive_initial_sequence->advanced(
+                SequenceNumber::mask);
+    }
 }
 
 Error ReliabilitySession::queue_message(std::span<const std::byte> message,
@@ -564,12 +569,25 @@ void ReliabilitySession::update_loss_timer(
         true);
 }
 
+SequenceNumber ReliabilitySession::limit_member_ack(
+    SequenceNumber next) const noexcept
+{
+    if (member_receive_horizon_.has_value()) {
+        const SequenceNumber boundary = member_receive_horizon_->next();
+        if (next.distance_from(boundary) > 0) {
+            return boundary;
+        }
+    }
+    return next;
+}
+
 ReliabilityAction ReliabilitySession::make_acknowledgement(
     std::uint64_t now_microseconds, AcknowledgementKind kind) noexcept
 {
     Acknowledgement acknowledgement;
     acknowledgement.kind = kind;
-    acknowledgement.next_sequence = receive_buffer_.next_ack_sequence();
+    acknowledgement.next_sequence =
+        limit_member_ack(receive_buffer_.next_ack_sequence());
     acknowledgement.round_trip_time_microseconds = rtt_.smoothed_microseconds();
     acknowledgement.round_trip_time_variance_microseconds = rtt_.variation_microseconds();
     acknowledgement.available_receive_buffer_packets =
@@ -607,6 +625,11 @@ ReliabilitySession::make_staged_receive_acknowledgement(
     std::uint64_t now_microseconds) noexcept
 {
     auto action = make_acknowledgement(now_microseconds);
+    // Staging is an explicit receipt proof from the owning transport.
+    if (member_receive_horizon_.has_value()
+        && next_sequence.distance_from(member_receive_horizon_->next()) > 0) {
+        member_receive_horizon_ = next_sequence.advanced(SequenceNumber::mask);
+    }
     action.acknowledgement.next_sequence = next_sequence;
     action.acknowledgement.available_receive_buffer_packets =
         static_cast<std::uint32_t>(std::min<std::size_t>(
@@ -756,6 +779,14 @@ ReliabilityProcessResult ReliabilitySession::receive(
             inserted.status == ReceiveStatus::accepted_in_order
             || inserted.status
                 == ReceiveStatus::accepted_out_of_order;
+        if (member_receive_horizon_.has_value()
+            && (result.receiver_packet_accepted_unique
+                || inserted.status == ReceiveStatus::duplicate
+                || inserted.status == ReceiveStatus::older_than_window)
+            && packet.data.sequence.distance_from(*member_receive_horizon_)
+                > 0) {
+            member_receive_horizon_ = packet.data.sequence;
+        }
         if (context.discard_payload && result.receiver_packet_accepted_unique
             && message_api_) {
             receive_buffer_.discard_message_payload(packet.data.sequence);
@@ -1577,6 +1608,10 @@ Error ReliabilitySession::apply_peer_drop_range(SequenceRange range,
     if (!receive_loss_list_.remove_range(range)
         || !filter_loss_list_.remove_range(range)) {
         return Error::buffer_too_small;
+    }
+    if (member_receive_horizon_.has_value()
+        && range.last.distance_from(*member_receive_horizon_) > 0) {
+        member_receive_horizon_ = range.last;
     }
     // Both immediately effective requests and observed remainders retire
     // this contiguous prefix from future DATA gap detection.

@@ -864,6 +864,8 @@ void set_key_material_state_response(
         SocketOptions runtime_options = socket.native_options;
         runtime_options.constrain_to_address_family(
             socket.peer_endpoint.wire_family());
+        const SequenceNumber peer_wire_initial_sequence {
+            socket.peer_connection_initial_sequence};
         const auto group = admitted_group
             ? admitted_group
             : GroupRegistry::instance().find(socket.group_id);
@@ -899,6 +901,7 @@ void set_key_material_state_response(
                 .has_distinct_peer_initial_sequence =
                     socket.peer_connection_initial_sequence
                     != socket.connection_initial_sequence,
+                .peer_wire_initial_sequence = peer_wire_initial_sequence,
                 .flow_window_packets = static_cast<std::uint32_t>(
                     socket.public_options.flow_window_packets),
                 .peer_flow_window_packets = socket.peer_flow_window_packets,
