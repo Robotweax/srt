@@ -142,7 +142,8 @@ bool ReceiveBuffer::is_settled(SequenceNumber sequence) const noexcept
     return slot.dropped || (slot.occupied && slot.header.sequence == sequence);
 }
 
-void ReceiveBuffer::refresh_first_buffered_timestamp() noexcept
+void ReceiveBuffer::refresh_first_buffered_timestamp(
+    std::size_t* inspected) noexcept
 {
     if (occupied_ == 0U) {
         first_buffered_sequence_ = {};
@@ -152,6 +153,8 @@ void ReceiveBuffer::refresh_first_buffered_timestamp() noexcept
         return;
     }
     for (std::size_t offset = 0; offset < capacity(); ++offset) {
+        if (inspected != nullptr)
+            ++*inspected;
         const auto& slot = slots_[(head_ + offset) % capacity()];
         if (slot.occupied) {
             first_buffered_sequence_ = slot.header.sequence;
@@ -161,13 +164,16 @@ void ReceiveBuffer::refresh_first_buffered_timestamp() noexcept
     }
 }
 
-void ReceiveBuffer::refresh_buffered_timestamp_bounds() noexcept
+void ReceiveBuffer::refresh_buffered_timestamp_bounds(
+    std::size_t* inspected) noexcept
 {
-    refresh_first_buffered_timestamp();
+    refresh_first_buffered_timestamp(inspected);
     if (occupied_ == 0U) {
         return;
     }
     for (std::size_t offset = capacity(); offset > 0U; --offset) {
+        if (inspected != nullptr)
+            ++*inspected;
         const auto& slot = slots_[(head_ + offset - 1U) % capacity()];
         if (slot.occupied) {
             last_buffered_sequence_ = slot.header.sequence;
@@ -1008,6 +1014,7 @@ Error ReceiveBuffer::drop_range_impl(SequenceRange range,
         return Error::none;
     }
 
+    const auto occupied_before = occupied_;
     const std::size_t first_offset =
         start_offset > 0 ? static_cast<std::size_t>(start_offset) : 0U;
     const std::size_t final_offset = std::min<std::size_t>(
@@ -1085,7 +1092,14 @@ Error ReceiveBuffer::drop_range_impl(SequenceRange range,
         next_ack_sequence_ = first_stored_sequence_;
         advance_acknowledgement();
     }
-    refresh_buffered_timestamp_bounds();
+    // Empty drops and frontier movement cannot alter the stored endpoints.
+    // A deferred group refreshes once, even when many ranges remove payload.
+    if (occupied_ != occupied_before) {
+        if (defer_drop_timestamp_refresh_)
+            drop_timestamp_refresh_pending_ = true;
+        else
+            refresh_buffered_timestamp_bounds();
+    }
     return Error::none;
 }
 

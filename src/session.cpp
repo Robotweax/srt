@@ -15,11 +15,6 @@ constexpr std::uint64_t sensor_retirement_repeat_interval_microseconds =
 constexpr std::uint64_t sensor_repair_deadline_microseconds = 20'000U;
 constexpr auto maximum_peer_drop_distance =
     static_cast<std::int32_t>(SequenceNumber::half_range / 2U);
-// Both wire endpoints use only 31 bits, leaving bit 63 available for an
-// in-call retirement marker. Clear all markers before returning to callers.
-constexpr std::uint64_t retired_peer_drop_identity = std::uint64_t {1} << 63U;
-static_assert(SequenceNumber::mask <= 0x7fff'ffffU);
-
 struct NakRangeSlices {
     Error error = Error::none;
     std::optional<SequenceRange> stale;
@@ -100,6 +95,7 @@ ReliabilitySession::ReliabilitySession(Configuration configuration)
     , peer_acknowledged_sequence_(configuration.local_initial_sequence)
     , receive_buffer_(configuration.peer_initial_sequence,
           configuration.receive_capacity_packets)
+    , pending_peer_drops_(configuration.receive_capacity_packets)
     , receive_loss_list_(configuration.receive_capacity_packets)
     , filter_loss_list_(configuration.receive_capacity_packets)
     , filter_loss_bitmap_(configuration.receive_capacity_packets)
@@ -111,9 +107,6 @@ ReliabilitySession::ReliabilitySession(Configuration configuration)
           configuration.peer_initial_sequence.advanced(SequenceNumber::mask))
     , peer_socket_id_(configuration.peer_socket_id)
 {
-    pending_peer_drops_.reserve(configuration.receive_capacity_packets);
-    pending_peer_drop_identities_.reserve(
-        configuration.receive_capacity_packets);
     filter_loss_ranges_.reserve(configuration.receive_capacity_packets);
 }
 
@@ -1510,13 +1503,7 @@ ReliabilitySession::next_receive_delivery_time() noexcept
     if (!tsbpd_clock_.has_value()) {
         return std::nullopt;
     }
-    std::optional<std::uint64_t> next_delivery;
-    for (const auto& pending : pending_peer_drops_) {
-        if (!next_delivery.has_value()
-            || pending.deadline_microseconds < *next_delivery) {
-            next_delivery = pending.deadline_microseconds;
-        }
-    }
+    auto next_delivery = pending_peer_drops_.next_deadline();
     const auto message = first_deliverable_unit();
     if (!message.has_value()) {
         return next_delivery;
@@ -1540,55 +1527,24 @@ ReliabilitySession::first_deliverable_unit() const noexcept
                         : receive_buffer_.first_buffered_packet();
 }
 
-std::uint64_t ReliabilitySession::peer_drop_identity(
-    SequenceRange range) noexcept
-{
-    // Numeric wire values identify the range exactly across sequence wrap;
-    // ordering here is independent of the receiver's moving sequence epoch.
-    return (static_cast<std::uint64_t>(range.first.value()) << 32U)
-        | range.last.value();
-}
-
-void ReliabilitySession::retire_peer_drop_identity(SequenceRange range) noexcept
-{
-    const auto identity = peer_drop_identity(range);
-    const auto entry = std::lower_bound(pending_peer_drop_identities_.begin(),
-        pending_peer_drop_identities_.end(), identity,
-        [](std::uint64_t indexed, std::uint64_t requested) {
-            return (indexed & ~retired_peer_drop_identity) < requested;
-        });
-    if (entry != pending_peer_drop_identities_.end()
-        && (*entry & ~retired_peer_drop_identity) == identity) {
-        *entry |= retired_peer_drop_identity;
-    }
-}
-
 Error ReliabilitySession::apply_peer_drop_range(SequenceRange range,
     std::uint32_t message_number, bool defer_drop, std::uint64_t deadline,
     std::uint64_t now_microseconds, ReliabilityProcessResult& result) noexcept
 {
-    const auto identity = peer_drop_identity(range);
-    const auto insertion =
-        std::lower_bound(pending_peer_drop_identities_.begin(),
-            pending_peer_drop_identities_.end(), identity);
-    const bool existing = defer_drop
-        && insertion != pending_peer_drop_identities_.end()
-        && *insertion == identity;
+    const bool existing = defer_drop && pending_peer_drops_.contains(range);
     const bool inside_window =
         range.last.distance_from(receive_buffer_.first_stored_sequence()) >= 0;
     // Refuse a new grace entry before advancing the timestamp clock or
     // ACK/loss state. Duplicates keep their original deadline even when
     // the preallocated queue is full. Timer expiry makes room for retry.
     if (defer_drop && !existing && inside_window
-        && pending_peer_drops_.size()
-            >= std::min(pending_peer_drops_.capacity(),
-                pending_peer_drop_identities_.capacity())) {
+        && pending_peer_drops_.full()) {
         return Error::would_block;
     }
     if (defer_drop && now_microseconds < deadline && inside_window) {
         if (!existing) {
-            pending_peer_drops_.push_back({range, deadline});
-            pending_peer_drop_identities_.insert(insertion, identity);
+            if (!pending_peer_drops_.insert(range, deadline))
+                return Error::would_block;
         }
         if (receive_buffer_.acknowledge_peer_drop_range(range)) {
             result.actions.push(make_acknowledgement(now_microseconds));
@@ -1681,6 +1637,13 @@ Error ReliabilitySession::apply_peer_drop_remainder(SequenceNumber observed,
 ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
     std::uint64_t now_microseconds) noexcept
 {
+    return drop_too_late_receiver_impl(now_microseconds, nullptr, nullptr);
+}
+
+ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver_impl(
+    std::uint64_t now_microseconds, std::size_t* ranges_inspected,
+    std::size_t* timestamp_slots_inspected) noexcept
+{
     ReliabilityProcessResult result;
     if (!tsbpd_clock_.has_value() || !live_options_.receive_tsbpd
         || !live_options_.too_late_packet_drop) {
@@ -1688,22 +1651,32 @@ ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
     }
 
     bool peer_released = false;
-    // Stable compaction preserves admission order and moves survivors once,
-    // rather than shifting both vectors after every expired/stale entry.
-    const auto retire_pending = [&](const PendingPeerDrop& pending) {
-        // A failed drop retains that entry and the untouched suffix, while
-        // completing cleanup of the successfully retired prefix.
-        if (result.error != Error::none) {
-            return false;
+    // Queue admission and deadline lookup do not walk or shift survivors.
+    // Limit both deadline retirement and stale-entry inspection per call.
+    // Due entries are selected first so unrelated future grace cannot starve them.
+    constexpr std::size_t maximum_ranges = 64;
+    receive_buffer_.defer_drop_timestamp_refresh_ = true;
+    for (std::size_t work = 0;
+        work < maximum_ranges && !pending_peer_drops_.empty(); ++work) {
+        if (ranges_inspected != nullptr)
+            ++*ranges_inspected;
+        auto index = pending_peer_drops_.first_due();
+        if (now_microseconds
+            < pending_peer_drops_.at(index).deadline_microseconds) {
+            index = pending_peer_drops_.next_to_inspect();
+            if (index == detail::PeerDropQueue::none)
+                continue;
+            if (pending_peer_drops_.at(index).sequences.last.distance_from(
+                    receive_buffer_.first_stored_sequence())
+                >= 0)
+                continue;
         }
+        const auto pending = pending_peer_drops_.at(index);
         if (pending.sequences.last.distance_from(
                 receive_buffer_.first_stored_sequence())
             < 0) {
-            retire_peer_drop_identity(pending.sequences);
-            return true;
-        }
-        if (now_microseconds < pending.deadline_microseconds) {
-            return false;
+            pending_peer_drops_.erase(index);
+            continue;
         }
         std::size_t newly_dropped = 0U;
         const Error error = message_api_
@@ -1713,39 +1686,22 @@ ReliabilityProcessResult ReliabilitySession::drop_too_late_receiver(
                   pending.sequences, 0U, &newly_dropped);
         if (error != Error::none) {
             result.error = error;
-            return false;
+            break;
         }
         if (!receive_loss_list_.remove_range(pending.sequences)
             || !filter_loss_list_.remove_range(pending.sequences)) {
             result.error = Error::buffer_too_small;
-            return false;
+            break;
         }
         result.receiver_drop_packets += newly_dropped;
         peer_released |= newly_dropped != 0U;
-        retire_peer_drop_identity(pending.sequences);
-        return true;
-    };
-    std::size_t retained = 0;
-    // Invoke the stateful processing explicitly in admission order; only the
-    // final identity compaction below uses a pure removal predicate.
-    for (std::size_t index = 0; index < pending_peer_drops_.size(); ++index) {
-        const auto pending = pending_peer_drops_[index];
-        if (!retire_pending(pending)) {
-            if (retained != index) {
-                pending_peer_drops_[retained] = pending;
-            }
-            ++retained;
-        }
+        pending_peer_drops_.erase(index);
     }
-    if (retained != pending_peer_drops_.size()) {
-        pending_peer_drops_.resize(retained);
-        const auto identities = std::remove_if(
-            pending_peer_drop_identities_.begin(),
-            pending_peer_drop_identities_.end(), [](std::uint64_t identity) {
-                return (identity & retired_peer_drop_identity) != 0U;
-            });
-        pending_peer_drop_identities_.erase(
-            identities, pending_peer_drop_identities_.end());
+    receive_buffer_.defer_drop_timestamp_refresh_ = false;
+    if (receive_buffer_.drop_timestamp_refresh_pending_) {
+        receive_buffer_.refresh_buffered_timestamp_bounds(
+            timestamp_slots_inspected);
+        receive_buffer_.drop_timestamp_refresh_pending_ = false;
     }
     if (result.error != Error::none) {
         return result;

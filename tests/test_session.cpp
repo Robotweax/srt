@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <limits>
+#include <map>
 #include <optional>
 #include <vector>
 
@@ -5684,6 +5686,260 @@ TEST(session_sparse_readiness_survives_duplicate_controls_and_clock_progress)
                 REQUIRE_EQ(output, payload);
                 REQUIRE(!receiver.data_ready_at(101'005));
             }
+        }
+    }
+}
+
+TEST(peer_drop_queue_balanced_admission_is_bounded_in_descending_wire_order)
+{
+    for (const std::uint32_t capacity : {1U, 64U, 8192U, 65535U, 65536U}) {
+        detail::PeerDropQueue queue(capacity);
+        REQUIRE_EQ(queue.initialized_slots(), 0U);
+        const auto allocation = queue.allocated_slots();
+        REQUIRE(allocation >= capacity);
+        for (std::uint32_t offset = capacity; offset > 0; --offset) {
+            const SequenceRange range {
+                SequenceNumber {offset}, SequenceNumber {offset}};
+            std::size_t steps = 0;
+            REQUIRE(queue.insert(range, offset, &steps));
+            REQUIRE(steps <= 4U * std::bit_width(capacity));
+        }
+        REQUIRE(queue.full());
+        REQUIRE_EQ(queue.initialized_slots(), capacity);
+        REQUIRE_EQ(queue.allocated_slots(), allocation);
+        const auto deadline = queue.next_deadline();
+        for (std::uint32_t offset = 1; offset <= capacity; ++offset) {
+            const SequenceRange range {
+                SequenceNumber {offset}, SequenceNumber {offset}};
+            std::size_t steps = 0;
+            REQUIRE(queue.contains(range, &steps));
+            REQUIRE(steps <= 2U * std::bit_width(capacity));
+            REQUIRE(queue.insert(range, 100'000U));
+            REQUIRE_EQ(queue.next_deadline(), deadline);
+        }
+        REQUIRE(!queue.insert({SequenceNumber {0}, SequenceNumber {0}}, 0));
+        for (std::uint32_t offset = 1; offset <= capacity; ++offset) {
+            const auto index = queue.first_due();
+            REQUIRE_EQ(
+                queue.at(index).sequences.first, SequenceNumber {offset});
+            queue.erase(index);
+        }
+        REQUIRE(queue.empty());
+        REQUIRE(!queue.next_deadline());
+        REQUIRE_EQ(queue.next_to_inspect(), detail::PeerDropQueue::none);
+        REQUIRE_EQ(queue.storage_bytes(),
+            static_cast<std::size_t>(capacity)
+                * (capacity <= 65535U ? 24U : 32U));
+        REQUIRE(queue.insert({SequenceNumber {0}, SequenceNumber {0}}, 0));
+        REQUIRE_EQ(queue.initialized_slots(), capacity);
+        REQUIRE_EQ(queue.allocated_slots(), allocation);
+    }
+}
+
+TEST(peer_drop_queue_matches_reference_through_reuse_wrap_and_arbitrary_erasure)
+{
+    for (const std::uint32_t capacity : {1U, 2U, 7U, 64U, 127U}) {
+        detail::PeerDropQueue queue(capacity);
+        std::map<std::uint64_t, std::uint64_t> expected;
+        std::uint32_t random = 0xf734ba32U;
+        const auto next = [&] {
+            random ^= random << 13U;
+            random ^= random >> 17U;
+            random ^= random << 5U;
+            return random;
+        };
+        const auto key = [](SequenceRange range) {
+            return (static_cast<std::uint64_t>(range.first.value()) << 32U)
+                | range.last.value();
+        };
+        for (unsigned iteration = 0; iteration < 5000; ++iteration) {
+            if (!queue.empty() && next() % 3U == 0U) {
+                auto index = next() % 2U == 0 ? queue.first_due()
+                                              : queue.next_to_inspect();
+                while (index == detail::PeerDropQueue::none)
+                    index = queue.next_to_inspect();
+                REQUIRE(expected.erase(key(queue.at(index).sequences)) == 1U);
+                queue.erase(index);
+            } else {
+                const auto first =
+                    SequenceNumber {next() % (capacity * 2U)}.advanced(
+                        SequenceNumber::mask - capacity);
+                const SequenceRange range {first, first.advanced(next() % 2U)};
+                const auto deadline = next() % 16U;
+                const bool duplicate = expected.contains(key(range));
+                const bool accept = duplicate || expected.size() < capacity;
+                std::size_t steps = 0;
+                REQUIRE_EQ(queue.insert(range, deadline, &steps), accept);
+                REQUIRE(steps <= 4U * std::bit_width(capacity));
+                if (accept)
+                    expected.try_emplace(key(range), deadline);
+            }
+            REQUIRE_EQ(queue.size(), expected.size());
+            REQUIRE_EQ(queue.empty(), expected.empty());
+            if (!expected.empty()) {
+                const auto earliest = std::min_element(expected.begin(),
+                    expected.end(), [](const auto& a, const auto& b) {
+                        return a.second < b.second
+                            || (a.second == b.second && a.first < b.first);
+                    });
+                REQUIRE_EQ(queue.next_deadline(),
+                    std::optional<std::uint64_t> {earliest->second});
+                REQUIRE_EQ(key(queue.at(queue.first_due()).sequences),
+                    earliest->first);
+            }
+            auto copied = queue;
+            REQUIRE(copied.allocated_slots() >= capacity);
+            REQUIRE_EQ(copied.size(), queue.size());
+            if (!copied.empty())
+                copied.erase(copied.first_due());
+            REQUIRE_EQ(queue.size(), expected.size());
+        }
+    }
+}
+
+TEST(session_deferred_drop_expiry_yields_after_64_ranges_and_keeps_due_wakeup)
+{
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 1024U}}) {
+        for (const bool message_api : {false, true}) {
+            constexpr std::uint32_t capacity = 8192;
+            ReliabilitySession receiver {{.peer_initial_sequence = initial,
+                .send_capacity_packets = 8,
+                .receive_capacity_packets = capacity}};
+            receiver.set_message_api(message_api);
+            receiver.configure_live({.receive_tsbpd = true,
+                                        .too_late_packet_drop = true,
+                                        .receive_delay_milliseconds = 100},
+                1'000, PacketTimestamp {0});
+            // The retained packet is later than these grace deadlines, so the
+            // ordinary local playout-gap drop cannot bypass deferred work.
+            const std::array payload {std::byte {'p'}};
+            PacketView data;
+            data.kind = PacketKind::data;
+            data.data.sequence = initial.advanced(capacity - 1U);
+            data.data.boundary = MessageBoundary::solo;
+            data.data.timestamp = PacketTimestamp {10'000};
+            data.payload = payload;
+            REQUIRE(receiver.receive(data, 1'001));
+            std::array<std::byte, 64> storage {};
+            for (std::uint32_t offset = 512U; offset > 0; --offset) {
+                const auto sequence = initial.advanced(offset - 1U);
+                auto packet = encode_and_decode(
+                    {.kind = ReliabilityActionKind::drop_request,
+                        .drop = {0, {sequence, sequence}}},
+                    storage);
+                packet.control.timestamp = PacketTimestamp {20};
+                REQUIRE(receiver.receive(packet, 1'030));
+            }
+            REQUIRE_EQ(
+                receiver.drop_too_late_receiver(101'019).receiver_drop_packets,
+                0U);
+            for (std::uint32_t turn = 0; turn < 8U; ++turn) {
+                const auto result = receiver.drop_too_late_receiver(101'020);
+                REQUIRE(result);
+                REQUIRE_EQ(result.receiver_drop_packets, 64U);
+                REQUIRE_EQ(receiver.receive_buffer().first_stored_sequence(),
+                    initial.advanced((turn + 1U) * 64U));
+                const auto deadline = receiver.next_receive_delivery_time();
+                REQUIRE_EQ(deadline,
+                    std::optional<std::uint64_t> {
+                        turn == 7U ? 111'000U : 101'020U});
+            }
+            REQUIRE_EQ(
+                receiver.drop_too_late_receiver(101'020).receiver_drop_packets,
+                0U);
+            REQUIRE_EQ(receiver.receive_buffer().occupied(), 1U);
+        }
+    }
+}
+
+namespace robotweax::srt::detail {
+struct SessionTestAccess {
+    static ReliabilityProcessResult expire(ReliabilitySession& session,
+        std::uint64_t now, std::size_t& ranges, std::size_t& slots) noexcept
+    {
+        return session.drop_too_late_receiver_impl(now, &ranges, &slots);
+    }
+};
+}
+
+TEST(session_deferred_drop_refreshes_timestamp_bounds_once_per_bounded_group)
+{
+    constexpr std::uint32_t capacity = 8192;
+    const SequenceNumber initial {100};
+    ReliabilitySession receiver {{.peer_initial_sequence = initial,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = capacity}};
+    receiver.configure_live({.receive_tsbpd = true,
+                                .too_late_packet_drop = true,
+                                .receive_delay_milliseconds = 100},
+        1'000, PacketTimestamp {0});
+    const std::array payload {std::byte {'p'}};
+    PacketView data;
+    data.kind = PacketKind::data;
+    data.data.sequence = initial.advanced(capacity - 1U);
+    data.data.boundary = MessageBoundary::solo;
+    data.data.message_number = 1;
+    data.data.timestamp = PacketTimestamp {10'000};
+    data.payload = payload;
+    REQUIRE(receiver.receive(data, 1'001));
+    std::array<std::byte, 64> storage {};
+    for (std::uint32_t offset = 0; offset < 64U; ++offset) {
+        data.data.sequence = initial.advanced(offset * 2U);
+        data.data.boundary = MessageBoundary::subsequent;
+        data.data.message_number = 2;
+        REQUIRE(receiver.receive(data, 1'010));
+        const auto sequence = data.data.sequence;
+        auto packet =
+            encode_and_decode({.kind = ReliabilityActionKind::drop_request,
+                                  .drop = {0, {sequence, sequence}}},
+                storage);
+        packet.control.timestamp = PacketTimestamp {20};
+        REQUIRE(receiver.receive(packet, 1'030));
+    }
+    std::size_t ranges = 0;
+    std::size_t slots = 0;
+    const auto expired =
+        detail::SessionTestAccess::expire(receiver, 101'020, ranges, slots);
+    REQUIRE(expired);
+    REQUIRE_EQ(expired.receiver_drop_packets, 64U);
+    REQUIRE_EQ(ranges, 64U);
+    REQUIRE(slots <= 2U * capacity);
+    REQUIRE(slots > capacity / 2U); // One real sparse refresh was measured.
+    REQUIRE_EQ(receiver.receive_buffer().occupied(), 1U);
+    REQUIRE_EQ(receiver.receive_buffer().buffered_payload_bytes(), 1U);
+    REQUIRE_EQ(receiver.receive_buffer().buffered_span_milliseconds(), 1U);
+}
+
+TEST(peer_drop_queue_reservation_survives_copy_move_and_node_reuse)
+{
+    for (const std::uint32_t capacity : {1U, 64U, 65536U}) {
+        detail::PeerDropQueue original(capacity);
+        const SequenceRange first {SequenceNumber {0}, SequenceNumber {0}};
+        REQUIRE(original.insert(first, 1));
+        auto copied = original;
+        detail::PeerDropQueue assigned(1);
+        assigned = original;
+        auto moved = std::move(copied);
+        REQUIRE(copied.empty());
+        REQUIRE_EQ(copied.first_due(), detail::PeerDropQueue::none);
+        REQUIRE(!copied.next_deadline());
+        copied = original;
+        for (auto* queue : {&assigned, &moved, &copied}) {
+            const auto reserved = queue->allocated_slots();
+            REQUIRE(reserved >= capacity);
+            for (std::uint32_t i = 1; i < capacity; ++i) {
+                const SequenceRange range {
+                    SequenceNumber {i}, SequenceNumber {i}};
+                REQUIRE(queue->insert(range, i + 1U));
+                REQUIRE_EQ(queue->allocated_slots(), reserved);
+            }
+            REQUIRE(queue->full());
+            while (!queue->empty())
+                queue->erase(queue->first_due());
+            REQUIRE(queue->insert(first, 1));
+            REQUIRE_EQ(queue->allocated_slots(), reserved);
+            REQUIRE_EQ(queue->initialized_slots(), capacity);
         }
     }
 }
