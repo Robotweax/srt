@@ -1,4 +1,5 @@
 #include "test.hpp"
+#include "receive_buffer_test_access.hpp"
 
 #include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/session.hpp"
@@ -5598,4 +5599,91 @@ TEST(session_large_nak_finishes_without_another_report_and_survives_ack)
         ++drained;
     }
     REQUIRE_EQ(drained, 512U);
+}
+
+TEST(session_sparse_readiness_survives_duplicate_controls_and_clock_progress)
+{
+    const std::array payload {std::byte {'s'}};
+    for (const bool timed : {false, true}) {
+        for (const bool messages : {false, true}) {
+            for (const auto initial : {SequenceNumber {100},
+                     SequenceNumber {SequenceNumber::mask - 7U}}) {
+                ReliabilitySession receiver {{.peer_initial_sequence = initial,
+                    .send_capacity_packets = 4,
+                    .receive_capacity_packets = 65'536}};
+                receiver.set_message_api(messages);
+                receiver.configure_live({.receive_tsbpd = timed,
+                                            .too_late_packet_drop = false,
+                                            .receive_delay_milliseconds = 100},
+                    1'000, PacketTimestamp {0});
+                PacketView distant_packet;
+                distant_packet.kind = PacketKind::data;
+                distant_packet.data.sequence = initial.advanced(65'535);
+                distant_packet.data.message_number = 1;
+                distant_packet.data.boundary = MessageBoundary::solo;
+                distant_packet.data.timestamp = PacketTimestamp {25};
+                distant_packet.payload = payload;
+                REQUIRE(receiver.receive(distant_packet, 1'001));
+                std::size_t inspected = 0;
+                REQUIRE(detail::ReceiveBufferTestAccess::message(
+                    receiver.receive_buffer(), inspected));
+                REQUIRE(detail::ReceiveBufferTestAccess::packet(
+                    receiver.receive_buffer(), inspected));
+                REQUIRE_EQ(inspected, 2U);
+                const std::array<std::byte, 4> zero_word {};
+                PacketView keepalive;
+                keepalive.payload = zero_word;
+                keepalive.kind = PacketKind::control;
+                keepalive.control.type = ControlType::keepalive;
+                for (int turn = 0; turn < 64; ++turn) {
+                    REQUIRE(receiver.receive(keepalive, 1'010 + turn));
+                    REQUIRE(receiver.receive(distant_packet, 1'010 + turn));
+                    REQUIRE(!receiver.data_ready_at(1'010 + turn));
+                    REQUIRE(!receiver.next_receive_delivery_time());
+                    inspected = 0;
+                    REQUIRE(detail::ReceiveBufferTestAccess::message(
+                        receiver.receive_buffer(), inspected));
+                    REQUIRE(detail::ReceiveBufferTestAccess::packet(
+                        receiver.receive_buffer(), inspected));
+                    REQUIRE_EQ(inspected, 0U);
+                }
+                auto head = distant_packet;
+                head.data.sequence = initial;
+                head.data.message_number = 2;
+                head.data.timestamp = PacketTimestamp {5};
+                REQUIRE(receiver.receive(head, 1'100));
+                inspected = 0;
+                const auto new_message =
+                    detail::ReceiveBufferTestAccess::message(
+                        receiver.receive_buffer(), inspected);
+                const auto new_packet = detail::ReceiveBufferTestAccess::packet(
+                    receiver.receive_buffer(), inspected);
+                REQUIRE(new_message);
+                REQUIRE(new_packet);
+                REQUIRE_EQ(new_message->first_sequence, initial);
+                REQUIRE_EQ(new_packet->first_sequence, initial);
+                REQUIRE_EQ(inspected, 2U);
+                REQUIRE_EQ(receiver.data_ready_at(1'100), !timed);
+                const auto deadline = receiver.next_receive_delivery_time();
+                REQUIRE_EQ(deadline.has_value(), timed);
+                if (timed) {
+                    REQUIRE_EQ(*deadline, 101'005U);
+                    REQUIRE(!receiver.data_ready_at(*deadline - 1U));
+                    REQUIRE(receiver.data_ready_at(*deadline));
+                }
+                REQUIRE(receiver.data_ready_at(101'005));
+                inspected = 0;
+                REQUIRE(detail::ReceiveBufferTestAccess::message(
+                    receiver.receive_buffer(), inspected));
+                REQUIRE_EQ(inspected, 0U);
+                std::array<std::byte, 1> output {};
+                const auto result = messages
+                    ? receiver.pop_message_at(output, 101'005)
+                    : receiver.pop_stream_at(output, 101'005);
+                REQUIRE(result);
+                REQUIRE_EQ(output, payload);
+                REQUIRE(!receiver.data_ready_at(101'005));
+            }
+        }
+    }
 }
