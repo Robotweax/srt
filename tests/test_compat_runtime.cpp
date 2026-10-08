@@ -12492,73 +12492,86 @@ TEST(compat_runtime_backup_member_ack_is_independent_of_group_retirement)
     for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
         for (const auto initial : {SequenceNumber {900},
                  SequenceNumber {SequenceNumber::mask - 2U}}) {
-            const auto group = std::make_shared<GroupRecord>();
-            group->type = type;
-            const auto channel = std::make_shared<DatagramChannel>();
-            CapturedDatagrams output;
-            channel->set_send_hook_for_testing(capture_datagram, &output);
-            SocketOptions options;
-            REQUIRE_EQ(options.set(SocketOption::receive_buffer_packets, 8),
-                Error::none);
-            std::uint64_t now = 1'000;
-            const auto peer = IpEndpoint::loopback(9'026);
-            ConnectionRuntime runtime {{.channel = channel,
-                .group = group,
-                .peer = peer,
-                .peer_socket_id = 77,
-                .initial_sequence = initial,
-                .options = options,
-                .origin = ConnectionRuntime::Clock::now(),
-                .now_function = injected_now,
-                .now_context = &now}};
-            const auto expect_ack = [&](SequenceNumber expected) {
-                now += 20'000U;
-                (void)runtime.poll();
-                std::size_t acknowledgements = 0;
-                for (const auto& bytes : take_datagrams(output)) {
-                    const auto packet = decode_packet(bytes);
-                    REQUIRE(packet);
-                    if (packet.packet.kind == PacketKind::control
-                        && packet.packet.control.type
-                            == ControlType::acknowledgement) {
-                        const auto ack = decode_acknowledgement(packet.packet);
-                        REQUIRE(ack);
-                        REQUIRE_EQ(ack.acknowledgement.next_sequence, expected);
-                        REQUIRE_EQ(
-                            packet.packet.control.destination_socket_id, 77U);
-                        ++acknowledgements;
+            for (const bool rebased : {false, true}) {
+                const auto group = std::make_shared<GroupRecord>();
+                group->type = type;
+                const auto channel = std::make_shared<DatagramChannel>();
+                CapturedDatagrams output;
+                channel->set_send_hook_for_testing(capture_datagram, &output);
+                SocketOptions options;
+                REQUIRE_EQ(options.set(SocketOption::receive_buffer_packets, 8),
+                    Error::none);
+                std::uint64_t now = 1'000;
+                const auto peer = IpEndpoint::loopback(9'026);
+                ConnectionRuntime runtime {{.channel = channel,
+                    .group = group,
+                    .peer = peer,
+                    .peer_socket_id = 77,
+                    .initial_sequence = initial,
+                    .peer_initial_sequence =
+                        rebased ? initial.advanced(60U) : initial,
+                    .has_distinct_peer_initial_sequence = rebased,
+                    .peer_wire_initial_sequence =
+                        rebased ? std::optional {initial} : std::nullopt,
+                    .options = options,
+                    .origin = ConnectionRuntime::Clock::now(),
+                    .now_function = injected_now,
+                    .now_context = &now}};
+                const auto expect_ack = [&](SequenceNumber expected) {
+                    now += 20'000U;
+                    (void)runtime.poll();
+                    std::size_t acknowledgements = 0;
+                    for (const auto& bytes : take_datagrams(output)) {
+                        const auto packet = decode_packet(bytes);
+                        REQUIRE(packet);
+                        if (packet.packet.kind == PacketKind::control
+                            && packet.packet.control.type
+                                == ControlType::acknowledgement) {
+                            const auto ack =
+                                decode_acknowledgement(packet.packet);
+                            REQUIRE(ack);
+                            REQUIRE_EQ(
+                                ack.acknowledgement.next_sequence, expected);
+                            REQUIRE_EQ(
+                                packet.packet.control.destination_socket_id,
+                                77U);
+                            ++acknowledgements;
+                        }
                     }
-                }
-                REQUIRE(acknowledgements > 0U);
-            };
-            // Retire more than the member's capacity without receiving DATA.
-            REQUIRE(runtime.discard_received_before(initial.advanced(70U)));
-            REQUIRE_EQ(runtime.receive_snapshot(initial.advanced(70U), false)
-                           .floor_sequence,
-                initial.advanced(70U));
-            expect_ack(
-                type == SRT_GTYPE_BACKUP ? initial : initial.advanced(70U));
-            const std::array payload {std::byte {'b'}};
-            PacketView data {.kind = PacketKind::data,
-                .data = {.sequence = initial.advanced(70U),
-                    .message_number = 71,
-                    .boundary = MessageBoundary::solo},
-                .payload = payload};
-            runtime.process_packet(data, peer);
-            expect_ack(initial.advanced(71U));
-            std::array<std::byte, 1> received {};
-            REQUIRE_EQ(runtime.receive_message(received, false, 0).status,
-                MessageIoStatus::success);
-            REQUIRE_EQ(received, payload);
-            REQUIRE(runtime.discard_received_before(initial.advanced(160U)));
-            expect_ack(initial.advanced(type == SRT_GTYPE_BACKUP ? 71U : 160U));
-            data.data.sequence = initial.advanced(160U);
-            data.data.message_number = 161;
-            runtime.process_packet(data, peer);
-            expect_ack(initial.advanced(161U));
-            REQUIRE_EQ(runtime.receive_message(received, false, 0).status,
-                MessageIoStatus::success);
-            REQUIRE_EQ(received, payload);
+                    REQUIRE(acknowledgements > 0U);
+                };
+                // Retire more than the member's capacity without receiving DATA.
+                REQUIRE(runtime.discard_received_before(initial.advanced(70U)));
+                REQUIRE_EQ(
+                    runtime.receive_snapshot(initial.advanced(70U), false)
+                        .floor_sequence,
+                    initial.advanced(70U));
+                expect_ack(
+                    type == SRT_GTYPE_BACKUP ? initial : initial.advanced(70U));
+                const std::array payload {std::byte {'b'}};
+                PacketView data {.kind = PacketKind::data,
+                    .data = {.sequence = initial.advanced(70U),
+                        .message_number = 71,
+                        .boundary = MessageBoundary::solo},
+                    .payload = payload};
+                runtime.process_packet(data, peer);
+                expect_ack(initial.advanced(71U));
+                std::array<std::byte, 1> received {};
+                REQUIRE_EQ(runtime.receive_message(received, false, 0).status,
+                    MessageIoStatus::success);
+                REQUIRE_EQ(received, payload);
+                REQUIRE(
+                    runtime.discard_received_before(initial.advanced(160U)));
+                expect_ack(
+                    initial.advanced(type == SRT_GTYPE_BACKUP ? 71U : 160U));
+                data.data.sequence = initial.advanced(160U);
+                data.data.message_number = 161;
+                runtime.process_packet(data, peer);
+                expect_ack(initial.advanced(161U));
+                REQUIRE_EQ(runtime.receive_message(received, false, 0).status,
+                    MessageIoStatus::success);
+                REQUIRE_EQ(received, payload);
+            }
         }
     }
 }

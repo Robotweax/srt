@@ -1431,8 +1431,14 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
           .receive_capacity_packets = effective_receive_capacity(configuration),
           .maximum_payload_size = effective_maximum_payload_size(configuration),
           .start_microseconds = elapsed_microseconds(configuration.origin),
-          .member_receive_acknowledgements = configuration.group
-              && configuration.group->type == SRT_GTYPE_BACKUP,
+          .member_receive_initial_sequence = configuration.group
+                  && configuration.group->type == SRT_GTYPE_BACKUP
+              ? std::optional {configuration.peer_wire_initial_sequence
+                        .value_or(
+                            configuration.has_distinct_peer_initial_sequence
+                                ? configuration.peer_initial_sequence
+                                : configuration.initial_sequence)}
+              : std::nullopt,
       })
     , pacer_(100'000'000U, effective_peer_flow_window(configuration))
     , options_(configuration.options)

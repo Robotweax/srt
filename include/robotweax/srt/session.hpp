@@ -172,8 +172,9 @@ public:
         std::size_t maximum_payload_size = maximum_data_payload_size;
         std::uint64_t start_microseconds = 0;
         // Group delivery may retire a prefix received on another path. Keep
-        // this member's wire ACK bounded by DATA or a validated peer drop.
-        bool member_receive_acknowledgements = false;
+        // this member's wire ACK bounded by DATA or a validated peer drop,
+        // starting at its wire ISN even if the delivery cursor was rebased.
+        std::optional<SequenceNumber> member_receive_initial_sequence;
     };
 
     explicit ReliabilitySession(Configuration configuration);

@@ -108,8 +108,10 @@ ReliabilitySession::ReliabilitySession(Configuration configuration)
     , peer_socket_id_(configuration.peer_socket_id)
 {
     filter_loss_ranges_.reserve(configuration.receive_capacity_packets);
-    if (configuration.member_receive_acknowledgements) {
-        member_receive_horizon_ = highest_received_sequence_;
+    if (configuration.member_receive_initial_sequence.has_value()) {
+        member_receive_horizon_ =
+            configuration.member_receive_initial_sequence->advanced(
+                SequenceNumber::mask);
     }
 }
 
