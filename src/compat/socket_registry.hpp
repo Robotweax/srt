@@ -65,6 +65,8 @@ struct SocketRecord {
     int connect_error = SRT_SUCCESS;
     int connect_system_error = 0;
     int rejection_reason = SRT_REJ_UNKNOWN;
+    // Shared by all remote setup attempts on this listener.
+    std::chrono::steady_clock::time_point next_handshake_warning {};
     srt_listen_callback_fn* listen_callback = nullptr;
     void* listen_callback_opaque = nullptr;
     srt_connect_callback_fn* connect_callback = nullptr;

@@ -3,8 +3,10 @@
 #include "srt/srt.h"
 #include "robotweax/srt/udp.hpp"
 #include "compat/error_state.hpp"
+#include "compat/logging.hpp"
 
 #include <array>
+#include <chrono>
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -78,6 +80,9 @@ struct LogEntry {
 struct LogObservation {
     std::mutex mutex;
     std::vector<LogEntry> entries;
+    std::condition_variable condition;
+    SRTSOCKET inspected_socket = SRT_INVALID_SOCK;
+    SRT_SOCKSTATUS inspected_state = SRTS_NONEXIST;
 };
 
 void capture_log(void* opaque, int level,
@@ -85,7 +90,12 @@ void capture_log(void* opaque, int level,
     const char* message)
 {
     auto& observation = *static_cast<LogObservation*>(opaque);
+    // A handler may inspect socket state without re-entering a socket lock.
+    const auto state = observation.inspected_socket != SRT_INVALID_SOCK
+        ? srt_getsockstate(observation.inspected_socket)
+        : SRTS_NONEXIST;
     std::lock_guard lock(observation.mutex);
+    observation.inspected_state = state;
     observation.entries.push_back({
         .level = level,
         .file = file != nullptr ? file : "",
@@ -93,6 +103,7 @@ void capture_log(void* opaque, int level,
         .area = area != nullptr ? area : "",
         .message = message != nullptr ? message : "",
     });
+    observation.condition.notify_all();
 }
 
 struct RecursiveObservation {
@@ -375,5 +386,151 @@ TEST(logging_udp_buffers_report_both_sizes_after_unlock_and_preserve_getters)
         }
         srt_setloghandler(nullptr, nullptr);
         REQUIRE_EQ(srt_close(observation.socket), 0);
+    }
+}
+
+TEST(logging_handshake_warning_budget_has_a_fixed_time_bound)
+{
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point next {};
+    const auto start = Clock::time_point {} + std::chrono::seconds {1};
+    REQUIRE(robotweax::srt::compat::admit_handshake_warning(next, start));
+    for (int i = 0; i < 1000; ++i) {
+        REQUIRE(!robotweax::srt::compat::admit_handshake_warning(next, start));
+    }
+    REQUIRE(!robotweax::srt::compat::admit_handshake_warning(
+        next, start + std::chrono::milliseconds {99}));
+    REQUIRE(robotweax::srt::compat::admit_handshake_warning(
+        next, start + std::chrono::milliseconds {100}));
+    REQUIRE(!robotweax::srt::compat::admit_handshake_warning(next, start));
+}
+
+TEST(logging_handshake_rejection_formats_numeric_peers_and_known_reasons)
+{
+    ScopedLoggingReset reset;
+    LogObservation observation;
+    srt_setloghandler(&observation, capture_log);
+    srt_setloglevel(LOG_WARNING);
+    const int area = SRT_LOGFA_CONN;
+    srt_resetlogfa(&area, 1U);
+    srt_setlogflags(deterministic_flags);
+    robotweax::srt::compat::emit_handshake_rejection(true, 17, 18,
+        robotweax::srt::IpEndpoint::loopback(9000), SRT_REJ_BADSECRET);
+    robotweax::srt::compat::emit_handshake_rejection(false, 19, 20,
+        robotweax::srt::IpEndpoint::ipv6_loopback(9001, 7), 2001);
+    srt_setloghandler(nullptr, nullptr);
+    REQUIRE_EQ(observation.entries.size(), 2U);
+    REQUIRE_EQ(observation.entries[0].level, LOG_WARNING);
+    REQUIRE_EQ(observation.entries[0].message,
+        ": handshake rejected socket=17 peer=127.0.0.1:9000 peer_socket=18 "
+        "reason=10 name=BADSECRET wire=1010");
+    REQUIRE_EQ(observation.entries[1].message,
+        ": connection setup failed socket=19 peer=[0:0:0:0:0:0:0:1%7]:9001 "
+        "peer_socket=20 reason=2001 name=APPLICATION wire=2001");
+}
+
+TEST(logging_handshake_rejections_report_both_endpoints_without_secrets)
+{
+    for (int scenario = 0; scenario < 4; ++scenario) {
+        LogObservation observation;
+        ScopedSrtRuntime runtime;
+        REQUIRE_EQ(runtime.startup_result, 0);
+        ScopedLoggingReset reset;
+        const SRTSOCKET listener = srt_create_socket();
+        const SRTSOCKET caller = srt_create_socket();
+        REQUIRE(listener != SRT_INVALID_SOCK);
+        REQUIRE(caller != SRT_INVALID_SOCK);
+        constexpr char listener_secret[] = "listener-log-fixture";
+        constexpr char caller_secret[] = "caller-log-fixture";
+        if (scenario == 0 || scenario == 1) {
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_PASSPHRASE,
+                           listener_secret, sizeof(listener_secret) - 1),
+                0);
+        }
+        if (scenario == 0 || scenario == 2) {
+            REQUIRE_EQ(srt_setsockflag(caller, SRTO_PASSPHRASE, caller_secret,
+                           sizeof(caller_secret) - 1),
+                0);
+        }
+        if (scenario == 3) {
+            const SRT_TRANSTYPE mode = SRTT_FILE;
+            REQUIRE_EQ(
+                srt_setsockflag(caller, SRTO_TRANSTYPE, &mode, sizeof(mode)),
+                0);
+        }
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        REQUIRE_EQ(
+            srt_bind(listener, reinterpret_cast<const sockaddr*>(&address),
+                sizeof(address)),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 4), 0);
+        int size = sizeof(address);
+        REQUIRE_EQ(srt_getsockname(
+                       listener, reinterpret_cast<sockaddr*>(&address), &size),
+            0);
+        const bool synchronous = false;
+        const std::int32_t timeout = 2'000;
+        REQUIRE_EQ(srt_setsockflag(
+                       caller, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(caller, SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+            0);
+        const int poll = srt_epoll_create();
+        REQUIRE(poll >= 0);
+        const int events = SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+        REQUIRE_EQ(srt_epoll_add_usock(poll, caller, &events), 0);
+        const int area = SRT_LOGFA_CONN;
+        srt_resetlogfa(&area, 1U);
+        srt_setloglevel(LOG_WARNING);
+        srt_setlogflags(deterministic_flags);
+        observation.inspected_socket = listener;
+        srt_setloghandler(&observation, capture_log);
+        REQUIRE_EQ(
+            srt_connect(caller, reinterpret_cast<const sockaddr*>(&address),
+                sizeof(address)),
+            0);
+        SRT_EPOLL_EVENT ready {};
+        REQUIRE_EQ(srt_epoll_uwait(poll, &ready, 1, 5'000), 1);
+        REQUIRE_EQ(ready.events, events);
+        REQUIRE_EQ(srt_getsockstate(caller), SRTS_BROKEN);
+        const int reason = scenario == 0 ? SRT_REJ_BADSECRET
+            : scenario == 3              ? SRT_REJ_MESSAGEAPI
+                                         : SRT_REJ_UNSECURE;
+        REQUIRE_EQ(srt_getrejectreason(caller), reason);
+        {
+            std::unique_lock lock(observation.mutex);
+            REQUIRE(observation.condition.wait_for(
+                lock, std::chrono::seconds {5}, [&] {
+                    return observation.entries.size() == 2U;
+                }));
+            REQUIRE_EQ(observation.inspected_state, SRTS_LISTENING);
+        }
+        // Close waits for the setup operation, including its final log callback.
+        REQUIRE_EQ(srt_close(caller), 0);
+        REQUIRE_EQ(srt_close(listener), 0);
+        REQUIRE_EQ(srt_epoll_release(poll), 0);
+        srt_setloghandler(nullptr, nullptr);
+        std::lock_guard lock(observation.mutex);
+        REQUIRE_EQ(observation.entries.size(), 2U);
+        bool saw_listener = false;
+        bool saw_caller = false;
+        for (const auto& entry : observation.entries) {
+            REQUIRE_EQ(entry.level, LOG_WARNING);
+            REQUIRE(entry.message.find("reason=" + std::to_string(reason))
+                != std::string::npos);
+            REQUIRE(entry.message.find("wire=" + std::to_string(1000 + reason))
+                != std::string::npos);
+            REQUIRE(entry.message.find(listener_secret) == std::string::npos);
+            REQUIRE(entry.message.find(caller_secret) == std::string::npos);
+            saw_listener |=
+                entry.message.find("handshake rejected") != std::string::npos;
+            saw_caller |= entry.message.find("connection setup failed")
+                != std::string::npos;
+        }
+        REQUIRE(saw_listener);
+        REQUIRE(saw_caller);
     }
 }

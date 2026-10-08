@@ -1,7 +1,9 @@
 #pragma once
 
 #include "srt/srt.h"
+#include "robotweax/srt/udp.hpp"
 
+#include <chrono>
 #include <cstddef>
 
 namespace robotweax::srt::compat {
@@ -13,6 +15,12 @@ void reset_log_functional_areas(
     const int* areas, std::size_t area_count) noexcept;
 void set_log_handler(void* opaque, SRT_LOG_HANDLER_FN* handler) noexcept;
 void set_log_flags(int flags) noexcept;
+
+[[nodiscard]] bool admit_handshake_warning(
+    std::chrono::steady_clock::time_point& next,
+    std::chrono::steady_clock::time_point now) noexcept;
+void emit_handshake_rejection(bool listener, std::uint32_t socket_id,
+    std::uint32_t peer_socket_id, IpEndpoint peer, int reason) noexcept;
 
 void emit_compatibility_log(
     int level,

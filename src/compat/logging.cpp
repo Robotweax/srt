@@ -227,4 +227,85 @@ void emit_compatibility_log(
     }
 }
 
+bool admit_handshake_warning(std::chrono::steady_clock::time_point& next,
+    std::chrono::steady_clock::time_point now) noexcept
+{
+    if (now < next) {
+        return false;
+    }
+    next = now + std::chrono::milliseconds {100};
+    return true;
+}
+
+void emit_handshake_rejection(bool listener, std::uint32_t socket_id,
+    std::uint32_t peer_socket_id, IpEndpoint peer, int reason) noexcept
+{
+    constexpr std::array names {
+        "UNKNOWN",
+        "SYSTEM",
+        "PEER",
+        "RESOURCE",
+        "ROGUE",
+        "BACKLOG",
+        "IPE",
+        "CLOSE",
+        "VERSION",
+        "RDVCOOKIE",
+        "BADSECRET",
+        "UNSECURE",
+        "MESSAGEAPI",
+        "CONGESTION",
+        "FILTER",
+        "GROUP",
+        "TIMEOUT",
+#ifdef ENABLE_AEAD_API_PREVIEW
+        "CRYPTO",
+#endif
+    };
+    static_assert(names.size() == SRT_REJ_E_SIZE);
+    const char* name = reason >= SRT_REJC_PREDEFINED ? "APPLICATION"
+        : reason >= 0 && static_cast<std::size_t>(reason) < names.size()
+        ? names[static_cast<std::size_t>(reason)]
+        : "UNKNOWN";
+    const int wire_reason = reason >= SRT_REJC_PREDEFINED ? reason
+        : reason >= 0 && reason < SRT_REJ_E_SIZE          ? 1000 + reason
+                                                          : 1000;
+    std::array<char, 96> endpoint {};
+    if (peer.is_ipv4()) {
+        std::snprintf(endpoint.data(), endpoint.size(), "%u.%u.%u.%u:%u",
+            static_cast<unsigned>(peer.address[0]),
+            static_cast<unsigned>(peer.address[1]),
+            static_cast<unsigned>(peer.address[2]),
+            static_cast<unsigned>(peer.address[3]),
+            static_cast<unsigned>(peer.port));
+    } else {
+        std::array<char, 40> address {};
+        std::size_t offset = 0;
+        for (std::size_t i = 0; i < 8U; ++i) {
+            const unsigned word =
+                (static_cast<unsigned>(peer.address[2U * i]) << 8U)
+                | peer.address[2U * i + 1U];
+            const int written = std::snprintf(address.data() + offset,
+                address.size() - offset, "%s%x", i == 0U ? "" : ":", word);
+            if (written < 0
+                || static_cast<std::size_t>(written)
+                    >= address.size() - offset) {
+                return;
+            }
+            offset += static_cast<std::size_t>(written);
+        }
+        std::snprintf(endpoint.data(), endpoint.size(), "[%s%%%u]:%u",
+            address.data(), static_cast<unsigned>(peer.scope_id),
+            static_cast<unsigned>(peer.port));
+    }
+    std::array<char, 256> message {};
+    std::snprintf(message.data(), message.size(),
+        "%s socket=%u peer=%s peer_socket=%u reason=%d name=%s wire=%d",
+        listener ? "handshake rejected" : "connection setup failed",
+        static_cast<unsigned>(socket_id), endpoint.data(),
+        static_cast<unsigned>(peer_socket_id), reason, name, wire_reason);
+    ROBOTWEAX_SRT_COMPAT_LOG(
+        LOG_WARNING, SRT_LOGFA_CONN, "W", "connection", message.data());
+}
+
 } // namespace robotweax::srt::compat
