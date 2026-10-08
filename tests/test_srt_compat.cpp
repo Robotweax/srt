@@ -28,6 +28,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #if !defined(_WIN32)
 #  include <fcntl.h>
@@ -546,7 +547,378 @@ bool udp_socket_is_closed(UDPSOCKET socket) noexcept
 #endif
 }
 
+#if defined(__linux__)
+struct AcquiredUdpPair {
+    std::array<int, 2> descriptors {-1, -1};
+    std::array<SRTSOCKET, 2> listeners {SRT_INVALID_SOCK, SRT_INVALID_SOCK};
+    std::vector<SRTSOCKET> connections;
+    sockaddr_storage address {};
+    socklen_t address_size = 0;
+
+    ~AcquiredUdpPair()
+    {
+        for (auto socket : connections) {
+            (void)srt_close(socket);
+        }
+        for (auto socket : listeners) {
+            if (socket != SRT_INVALID_SOCK) {
+                (void)srt_close(socket);
+            }
+        }
+        for (int descriptor : descriptors) {
+            if (descriptor >= 0) {
+                close_udp_socket(descriptor);
+            }
+        }
+    }
+
+    void bind(int family, bool reuseport)
+    {
+        address.ss_family = static_cast<sa_family_t>(family);
+        if (family == AF_INET) {
+            auto& local = reinterpret_cast<sockaddr_in&>(address);
+            local.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            address_size = sizeof(local);
+        } else {
+            auto& local = reinterpret_cast<sockaddr_in6&>(address);
+            local.sin6_addr = in6addr_loopback;
+            address_size = sizeof(local);
+        }
+        const int enabled = 1;
+        for (std::size_t i = 0; i < descriptors.size(); ++i) {
+            descriptors[i] = create_udp_socket(family);
+            REQUIRE(descriptors[i] >= 0);
+            REQUIRE_EQ(::setsockopt(descriptors[i], SOL_SOCKET, SO_REUSEADDR,
+                           &enabled, sizeof(enabled)),
+                0);
+            if (reuseport) {
+                REQUIRE_EQ(::setsockopt(descriptors[i], SOL_SOCKET,
+                               SO_REUSEPORT, &enabled, sizeof(enabled)),
+                    0);
+            }
+            REQUIRE_EQ(::bind(descriptors[i],
+                           reinterpret_cast<sockaddr*>(&address), address_size),
+                0);
+            REQUIRE_EQ(
+                ::getsockname(descriptors[i],
+                    reinterpret_cast<sockaddr*>(&address), &address_size),
+                0);
+            listeners[i] = srt_create_socket();
+            REQUIRE(listeners[i] != SRT_INVALID_SOCK);
+        }
+    }
+
+    int adopt(std::size_t index)
+    {
+        const int result =
+            srt_bind_acquire(listeners[index], descriptors[index]);
+        if (result == 0) {
+            descriptors[index] = -1;
+        }
+        return result;
+    }
+};
+
+void check_acquired_reuseport_group(int family)
+{
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    AcquiredUdpPair group;
+    group.bind(
+        family, true); // Entire kernel group exists before any listener starts.
+    constexpr int timeout = 2'000;
+    constexpr int latency = 20;
+    const bool sender = true;
+    const SRT_TRANSTYPE live = SRTT_LIVE;
+    const char secret[] = "test-only-reuseport-passphrase";
+    auto configure = [&](SRTSOCKET socket) {
+        REQUIRE_EQ(
+            srt_setsockflag(socket, SRTO_TRANSTYPE, &live, sizeof(live)), 0);
+        REQUIRE_EQ(
+            srt_setsockflag(socket, SRTO_LATENCY, &latency, sizeof(latency)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(
+                       socket, SRTO_PASSPHRASE, secret, sizeof(secret) - 1),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(socket, SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(socket, SRTO_RCVTIMEO, &timeout, sizeof(timeout)),
+            0);
+    };
+    for (auto socket : group.listeners) {
+        configure(socket);
+    }
+    REQUIRE_EQ(group.adopt(0), 0);
+    REQUIRE_EQ(group.adopt(1), 0);
+    const auto first = robotweax::srt::compat::SocketRegistry::instance().find(
+        group.listeners[0]);
+    const auto second = robotweax::srt::compat::SocketRegistry::instance().find(
+        group.listeners[1]);
+    REQUIRE(first->channel != second->channel);
+
+    // A normal srt_bind must not silently share one member of the native group.
+    const SRTSOCKET ordinary = srt_create_socket();
+    REQUIRE(ordinary != SRT_INVALID_SOCK);
+    group.connections.push_back(ordinary);
+    REQUIRE_EQ(srt_bind(ordinary, reinterpret_cast<sockaddr*>(&group.address),
+                   static_cast<int>(group.address_size)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EBINDCONFLICT);
+
+    for (auto socket : group.listeners) {
+        REQUIRE_EQ(srt_listen(socket, 64), 0);
+    }
+    std::array<unsigned, 2> accepted_per_member {};
+    for (std::uint32_t value = 0; value < 64; ++value) {
+        const SRTSOCKET caller = srt_create_socket();
+        REQUIRE(caller != SRT_INVALID_SOCK);
+        group.connections.push_back(caller);
+        configure(caller);
+        REQUIRE_EQ(
+            srt_setsockflag(caller, SRTO_SENDER, &sender, sizeof(sender)), 0);
+        REQUIRE_EQ(
+            srt_connect(caller, reinterpret_cast<sockaddr*>(&group.address),
+                static_cast<int>(group.address_size)),
+            0);
+        const SRTSOCKET accepted =
+            srt_accept_bond(group.listeners.data(), 2, timeout);
+        REQUIRE(accepted != SRT_INVALID_SOCK);
+        group.connections.push_back(accepted);
+        const auto record =
+            robotweax::srt::compat::SocketRegistry::instance().find(accepted);
+        if (record->channel == first->channel) {
+            ++accepted_per_member[0];
+        } else {
+            REQUIRE(record->channel == second->channel);
+            ++accepted_per_member[1];
+        }
+        REQUIRE_EQ(srt_sendmsg(caller, reinterpret_cast<const char*>(&value),
+                       sizeof(value), -1, 1),
+            static_cast<int>(sizeof(value)));
+        std::array<char, SRT_LIVE_MAX_PLSIZE> received_buffer {};
+        REQUIRE_EQ(srt_recvmsg(accepted, received_buffer.data(),
+                       received_buffer.size()),
+            static_cast<int>(sizeof(value)));
+        std::uint32_t received = 0;
+        std::memcpy(&received, received_buffer.data(), sizeof(received));
+        REQUIRE_EQ(received, value);
+    }
+    REQUIRE(accepted_per_member[0] > 0);
+    REQUIRE(accepted_per_member[1] > 0);
+
+    // All callers remain connected while later callers join the sealed group.
+    // Revisit every established flow after the complete set has connected.
+    for (std::uint32_t index = 0; index < 64; ++index) {
+        const SRTSOCKET caller = group.connections[1 + 2 * index];
+        const SRTSOCKET accepted = group.connections[2 + 2 * index];
+        const std::uint32_t value = index + 64;
+        REQUIRE_EQ(srt_sendmsg(caller, reinterpret_cast<const char*>(&value),
+                       sizeof(value), -1, 1),
+            static_cast<int>(sizeof(value)));
+        std::array<char, SRT_LIVE_MAX_PLSIZE> received_buffer {};
+        REQUIRE_EQ(srt_recvmsg(accepted, received_buffer.data(),
+                       received_buffer.size()),
+            static_cast<int>(sizeof(value)));
+        std::uint32_t received = 0;
+        std::memcpy(&received, received_buffer.data(), sizeof(received));
+        REQUIRE_EQ(received, value);
+        SRT_TRACEBSTATS statistics {};
+        REQUIRE_EQ(srt_bstats(accepted, &statistics, 0), 0);
+        REQUIRE_EQ(statistics.pktRcvLossTotal, 0);
+    }
+}
+
+void check_reuseport_outgoing_rejected(int family)
+{
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    AcquiredUdpPair group;
+    group.bind(family, true);
+    REQUIRE_EQ(group.adopt(0), 0);
+    REQUIRE_EQ(group.adopt(1), 0);
+    // Both callers target the same peer. Rejection precedes route creation,
+    // so neither a blocking timeout nor asynchronous setup can hide the error.
+    for (bool rendezvous : {false, true}) {
+        for (bool synchronous : {true, false}) {
+            for (auto socket : group.listeners) {
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_RENDEZVOUS, &rendezvous,
+                               sizeof(rendezvous)),
+                    0);
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_RCVSYN, &synchronous,
+                               sizeof(synchronous)),
+                    0);
+                REQUIRE_EQ(srt_connect(socket,
+                               reinterpret_cast<sockaddr*>(&group.address),
+                               static_cast<int>(group.address_size)),
+                    SRT_ERROR);
+                REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+                REQUIRE_EQ(srt_getsockstate(socket), SRTS_OPENED);
+                const auto record =
+                    robotweax::srt::compat::SocketRegistry::instance().find(
+                        socket);
+                REQUIRE(record->connect_handshake_operation == nullptr);
+                REQUIRE(record->runtime == nullptr);
+                REQUIRE(!record->channel->running());
+            }
+        }
+    }
+    // Closing a member must not turn a previously shared channel into a caller.
+    REQUIRE_EQ(srt_close(group.listeners[1]), 0);
+    group.listeners[1] = SRT_INVALID_SOCK;
+    REQUIRE_EQ(srt_connect(group.listeners[0],
+                   reinterpret_cast<sockaddr*>(&group.address),
+                   static_cast<int>(group.address_size)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    const bool rendezvous = false;
+    REQUIRE_EQ(srt_setsockflag(group.listeners[0], SRTO_RENDEZVOUS, &rendezvous,
+                   sizeof(rendezvous)),
+        0);
+    REQUIRE_EQ(srt_listen(group.listeners[0], 1), 0);
+}
+#endif
+
 } // namespace
+
+TEST(srt_compat_bind_acquire_reuseport_routes_distinct_ipv4_channels)
+{
+#if defined(__linux__)
+    check_acquired_reuseport_group(AF_INET);
+#else
+    SKIP_UNLESS(false, "Linux SO_REUSEPORT distribution test");
+#endif
+}
+
+TEST(srt_compat_bind_acquire_reuseport_routes_distinct_ipv6_channels)
+{
+#if defined(__linux__)
+    SKIP_WITHOUT_IPV6_LOOPBACK();
+    check_acquired_reuseport_group(AF_INET6);
+#else
+    SKIP_UNLESS(false, "Linux SO_REUSEPORT distribution test");
+#endif
+}
+
+TEST(srt_compat_bind_acquire_reuseaddr_does_not_allow_distinct_channels)
+{
+#if defined(__linux__)
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    AcquiredUdpPair group;
+    group.bind(AF_INET, false);
+    REQUIRE_EQ(group.adopt(0), 0);
+    REQUIRE_EQ(group.adopt(1), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EBINDCONFLICT);
+    REQUIRE(!udp_socket_is_closed(
+        group.descriptors[1])); // Failed adoption keeps caller ownership.
+#else
+    SKIP_UNLESS(false, "Linux adopted endpoint conflict test");
+#endif
+}
+
+TEST(srt_compat_bind_acquire_reuseport_rejects_duplicate_native_socket)
+{
+#if defined(__linux__)
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    AcquiredUdpPair group;
+    group.bind(AF_INET, true);
+    const int original = group.descriptors[0];
+    REQUIRE_EQ(group.adopt(0), 0);
+    close_udp_socket(group.descriptors[1]);
+    group.descriptors[1] = ::dup(original);
+    REQUIRE(group.descriptors[1] >= 0);
+    REQUIRE_EQ(group.adopt(1), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EBINDCONFLICT);
+    REQUIRE(!udp_socket_is_closed(group.descriptors[1]));
+#else
+    SKIP_UNLESS(false, "Linux native socket identity test");
+#endif
+}
+
+TEST(srt_compat_bind_acquire_reuseport_rejects_outgoing_ipv4_group)
+{
+#if defined(__linux__)
+    check_reuseport_outgoing_rejected(AF_INET);
+#else
+    SKIP_UNLESS(false, "Linux reuseport caller restriction test");
+#endif
+}
+
+TEST(srt_compat_bind_acquire_reuseport_rejects_outgoing_ipv6_group)
+{
+#if defined(__linux__)
+    SKIP_WITHOUT_IPV6_LOOPBACK();
+    check_reuseport_outgoing_rejected(AF_INET6);
+#else
+    SKIP_UNLESS(false, "Linux reuseport caller restriction test");
+#endif
+}
+
+TEST(srt_compat_bind_acquire_single_reuseport_socket_retains_caller_support)
+{
+#if defined(__linux__)
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    AcquiredUdpPair group;
+    group.bind(AF_INET, true);
+    close_udp_socket(group.descriptors[1]);
+    group.descriptors[1] = -1;
+    REQUIRE_EQ(group.adopt(0), 0);
+    sockaddr_in peer {};
+    peer.sin_family = AF_INET;
+    peer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(srt_bind(group.listeners[1], reinterpret_cast<sockaddr*>(&peer),
+                   sizeof(peer)),
+        0);
+    int size = sizeof(peer);
+    REQUIRE_EQ(srt_getsockname(group.listeners[1],
+                   reinterpret_cast<sockaddr*>(&peer), &size),
+        0);
+    REQUIRE_EQ(srt_listen(group.listeners[1], 1), 0);
+    REQUIRE_EQ(srt_connect(group.listeners[0],
+                   reinterpret_cast<sockaddr*>(&peer), size),
+        0);
+    const SRTSOCKET accepted = srt_accept(group.listeners[1], nullptr, nullptr);
+    REQUIRE(accepted != SRT_INVALID_SOCK);
+    group.connections.push_back(accepted);
+    const char payload[] = "single acquired caller";
+    REQUIRE_EQ(srt_sendmsg(group.listeners[0], payload, sizeof(payload), -1, 1),
+        static_cast<int>(sizeof(payload)));
+    std::array<char, SRT_LIVE_MAX_PLSIZE> received {};
+    REQUIRE_EQ(srt_recvmsg(accepted, received.data(), received.size()),
+        static_cast<int>(sizeof(payload)));
+    REQUIRE_EQ(std::memcmp(received.data(), payload, sizeof(payload)), 0);
+#else
+    SKIP_UNLESS(false, "Linux single reuseport caller compatibility test");
+#endif
+}
+
+TEST(srt_compat_bind_acquire_reuseport_rejects_group_after_caller_setup)
+{
+#if defined(__linux__)
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    AcquiredUdpPair group;
+    group.bind(AF_INET, true);
+    REQUIRE_EQ(group.adopt(0), 0);
+    const bool synchronous = false;
+    REQUIRE_EQ(srt_setsockflag(group.listeners[0], SRTO_RCVSYN, &synchronous,
+                   sizeof(synchronous)),
+        0);
+    REQUIRE_EQ(srt_connect(group.listeners[0],
+                   reinterpret_cast<sockaddr*>(&group.address),
+                   static_cast<int>(group.address_size)),
+        0);
+    REQUIRE_EQ(group.adopt(1), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EBINDCONFLICT);
+    REQUIRE(!udp_socket_is_closed(group.descriptors[1]));
+#else
+    SKIP_UNLESS(false, "Linux caller/adoption ordering test");
+#endif
+}
 
 static_assert(sizeof(SRTSOCKET) == sizeof(std::int32_t));
 static_assert(SRT_INVALID_SOCK == -1);
