@@ -6,26 +6,37 @@
 
 int main(int argc, char** argv)
 {
-    const bool exclude = argc > 1 && std::string_view {argv[1]} == "--exclude";
-    if ((exclude && argc < 3) || (!exclude && argc > 2)
-        || (argc > 1 && !exclude
-            && std::string_view {argv[1]}.starts_with("--"))) {
+    const bool include = argc > 1 && std::string_view {argv[1]} == "--include";
+    const int first_argument = include ? 3 : 1;
+    const bool exclude = argc > first_argument
+        && std::string_view {argv[first_argument]} == "--exclude";
+    if ((include
+            && (argc < 3 || std::string_view {argv[2]}.empty()
+                || std::string_view {argv[2]}.starts_with("--")))
+        || (exclude && argc < first_argument + 2)
+        || (!exclude && argc > first_argument + 1)
+        || (argc > first_argument && !exclude
+            && std::string_view {argv[first_argument]}.starts_with("--"))) {
         std::cerr << "usage: " << argv[0]
-                  << " --exclude substring [substring ...]\n";
+                  << " [--include substring] [--exclude substring ...]\n";
         return 2;
     }
     std::string_view filter;
-    if (argc > 1) {
-        filter = argv[exclude ? 2 : 1];
+    if (argc > first_argument) {
+        filter = argv[exclude ? first_argument + 1 : first_argument];
     }
     std::size_t failures = 0;
     std::size_t skipped = 0;
     std::size_t selected = 0;
     for (const auto& test : robotweax::srt::test::cases()) {
         const auto name = std::string_view {test.name};
+        if (include && name.find(argv[2]) == std::string_view::npos) {
+            continue;
+        }
         bool matches = name.find(filter) != std::string_view::npos;
         if (exclude) {
-            for (int index = 3; index < argc && !matches; ++index) {
+            for (int index = first_argument + 2; index < argc && !matches;
+                ++index) {
                 matches = name.find(argv[index]) != std::string_view::npos;
             }
         }

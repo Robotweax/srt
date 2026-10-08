@@ -384,12 +384,17 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     target_include_directories(robotweax_srt_tests
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_features(robotweax_srt_tests PRIVATE cxx_std_20)
-    # Keep expensive encryption and full-size retention regressions in
+    # Keep transport-runtime, expensive encryption and retention regressions in
     # separate bounded runs. Every native case runs in exactly one partition.
     add_test(NAME robotweax_srt_tests
-        COMMAND robotweax_srt_tests --exclude compat_runtime_rotation_
+        COMMAND robotweax_srt_tests --exclude compat_runtime_
             compat_group_closed_member_retains_bounded_copy key_length
             srt_compat_gcm_ srt_compat_sensor_gcm_bounded_sample_stream_
+            compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
+            stale_drop_coverage stale_nak)
+    add_test(NAME robotweax_srt_transport_runtime_tests
+        COMMAND robotweax_srt_tests --include compat_runtime_
+            --exclude compat_runtime_rotation_ key_length
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak)
     add_test(NAME robotweax_srt_stale_drop_coverage_tests
@@ -432,7 +437,8 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests
             compat_group_closed_member_retains_bounded_copy_after_oversized_message)
     set_tests_properties(
-        robotweax_srt_tests robotweax_srt_rotation_tests robotweax_srt_key_length_tests
+        robotweax_srt_tests robotweax_srt_transport_runtime_tests
+        robotweax_srt_rotation_tests robotweax_srt_key_length_tests
         robotweax_srt_delayed_key_response_tests
         robotweax_srt_group_retention_prefix_tests
         robotweax_srt_group_retention_oversized_tests PROPERTIES TIMEOUT 30)
@@ -445,9 +451,15 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests --exclude "")
     add_test(NAME robotweax_srt_rejects_invalid_test_arguments
         COMMAND robotweax_srt_tests --unknown)
+    add_test(NAME robotweax_srt_rejects_incomplete_include_selection
+        COMMAND robotweax_srt_tests --include)
+    add_test(NAME robotweax_srt_rejects_empty_include_exclusion_selection
+        COMMAND robotweax_srt_tests --include compat_runtime_ --exclude compat_runtime_)
     set_tests_properties(robotweax_srt_rejects_empty_test_selection
         robotweax_srt_rejects_empty_exclusion_selection
-        robotweax_srt_rejects_invalid_test_arguments PROPERTIES WILL_FAIL TRUE)
+        robotweax_srt_rejects_invalid_test_arguments
+        robotweax_srt_rejects_incomplete_include_selection
+        robotweax_srt_rejects_empty_include_exclusion_selection PROPERTIES WILL_FAIL TRUE)
 
 
     add_executable(robotweax_srt_scheduler_tests
@@ -984,22 +996,23 @@ if(ROBOTWEAX_SRT_BUILD_TOOLS)
 
     if(ROBOTWEAX_SRT_BUILD_TESTS AND Python3_Interpreter_FOUND AND UNIX)
         add_test(
-            NAME robotweax_srt_live_tail_recovery
+            NAME robotweax_srt_live_nak_gap_recovery
             COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_live_tail_interop.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_live_recovery_interop.py
                 --sender-peer $<TARGET_FILE:robotweax_srt_interop_peer>
-                --receiver-peer $<TARGET_FILE:robotweax_srt_interop_peer>)
-        set_tests_properties(robotweax_srt_live_tail_recovery
+                --receiver-peer $<TARGET_FILE:robotweax_srt_interop_peer>
+                --loss-packets 3)
+        set_tests_properties(robotweax_srt_live_nak_gap_recovery
             PROPERTIES TIMEOUT 40 LABELS "integration;live;reliability")
 
         add_test(
-            NAME robotweax_srt_live_tail_burst_recovery
+            NAME robotweax_srt_live_delayed_ack_no_retransmission
             COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_live_tail_interop.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_live_recovery_interop.py
                 --sender-peer $<TARGET_FILE:robotweax_srt_interop_peer>
                 --receiver-peer $<TARGET_FILE:robotweax_srt_interop_peer>
-                --tail-packets 3)
-        set_tests_properties(robotweax_srt_live_tail_burst_recovery
+                --scenario delayed-ack)
+        set_tests_properties(robotweax_srt_live_delayed_ack_no_retransmission
             PROPERTIES TIMEOUT 40 LABELS "integration;live;reliability")
 
         add_test(

@@ -62,6 +62,13 @@ CTest runs key-length negotiation, runtime key rotation, GCM public profile
 scenarios, paced Sensor sample streams per AES key size, and bounded closed-member
 retention cases in separate native partitions. Each case runs
 exactly once across the partitions, each retaining a 30-second process deadline.
+`robotweax_srt_transport_runtime_tests` selects ordinary `compat_runtime_`
+cases while excluding the separately budgeted crypto and loss-range cases.
+The main native aggregate excludes that prefix. This avoids cumulative suite
+timeouts on Windows Debug and Linux ASan without changing individual assertions,
+traffic parameters or the 30-second limit. The Python build-scope guard checks
+every registered native case has exactly one partition, including the optional
+retransmission-limit build's selection.
 Run `ctest --test-dir build -R '^robotweax_srt_key_length_tests$'` to select the
 key-length partition; it is also covered by the `encryption` label. In GCM builds,
 `robotweax_srt_gcm_profile_tests` selects the public profile scenarios and retains
@@ -593,69 +600,44 @@ With the reference-only nonblocking path, the subsequent
 passed without phase logging. This validates the harness mitigation, not a
 repair of Haivision's internal blocking implementation.
 
-### Live flight-tail recovery
+### Live and File recovery contracts
 
-The duplicate-ACK tail fix applies to Live sessions with ordinary ARQ
-(`always`). FileCC and filter-controlled `onreq`/`never` recovery retain their
-existing ACK timer behavior. In particular, an ACK stalled behind an FEC gap
-must not be treated as evidence that the flight tail is lost. This test does
-not establish tail-loss recovery for those filter-controlled modes.
+Live with a periodic-NAK peer relies on reported sequence gaps rather than
+sender-timeout probes. `live_session_periodic_nak_late_ack_does_not_duplicate_delivered_data`
+delivers all originals before delaying lite/full cumulative ACKs past RTO;
+sequence-wrap cases also require no DATA retransmission. Peer/local NAK
+asymmetry and both retransmission algorithms are covered separately. An explicit
+NAK must still recover its selected packet after an overdue sender timer.
+Live peers without periodic reports retain the existing timeout fallback.
 
-`robotweax_srt_live_tail_recovery` drops exactly the last original DATA datagram
-of a six-second, source-paced Live transfer through the existing deterministic
-UDP fault relay. The two-second TSBPD budget is shorter than the source run, so
-application reads are already freeing receive-buffer space when the flight tail
-is lost. This matters: repeated ACKs can advertise window updates without
-advancing the cumulative acknowledgement. They must not restart the sender RTO.
+The two Live integration tests use 600 source-paced messages, 1200 bytes each,
+and 2000-ms TSBPD. The sender stays connected for 2500 ms after drain so the
+last messages reach their playout time before shutdown, including a reference
+receiver. Payload length, SHA-256, successful peer exits, and complete relay
+traces remain mandatory.
 
-The test requires the tail retransmission, its cumulative ACK, complete payload
-integrity and successful peer exits. It leaves no temporary artifacts by default:
+- `robotweax_srt_live_nak_gap_recovery` drops three original packets followed
+  by a later original DATA packet. Each loss must be named by a NAK before its
+  matching retransmission, with a cumulative ACK and complete payload recovery.
+- `robotweax_srt_live_delayed_ack_no_retransmission` holds ACK feedback for
+  500 ms, beyond the initial sender RTO. It requires the delay to occur, zero
+  DATA retransmissions, no NAKs, and complete payload delivery.
 
 ```sh
-ctest --test-dir build -R '^robotweax_srt_live_tail_recovery$' --output-on-failure
-```
-
-To retain the peer logs and fault metadata, or compare a different sender build:
-
-```sh
-python3 interop/run_live_tail_interop.py \
+ctest --test-dir build -R '^robotweax_srt_live_(nak_gap_recovery|delayed_ack_no_retransmission)$' --output-on-failure
+python3 interop/run_live_recovery_interop.py \
   --sender-peer build/robotweax_srt_interop_peer \
-  --receiver-peer build/robotweax_srt_interop_peer \
-  --artifacts /path/to/new-tail-results
+  --receiver-peer /path/to/qualified-reference-peer \
+  --scenario delayed-ack --artifacts /path/to/new-results
 ```
 
-This regression preserves the retransmission timeout formula and its backoff.
-For Live sessions with ordinary ARQ, only an ACK that advances the send-buffer
-sequence restarts the timer; valid
-non-progress ACKs still participate in receive-window and RTT processing.
+A lost final Live packet without later DATA is not a lossless completion gate.
+File mode has the stronger contract: `file_session_rto_retransmits_in_flight_packets_and_exits_slow_start`
+retains every unacknowledged packet through timeout recovery, including the
+last packet and sequence rollover. The File interoperability matrix's
+`rto-flight-tail-drop` cases drop the last original packet of a two-packet
+transfer and require sender-timeout recovery, exact payload/SHA, and successful
+peer exits in both directions. These File assertions are unchanged.
 
-The periodic-NAK Live sender uses one last-sent DATA probe when its RTO expires
-without pending selective retransmissions. Replaying the whole unacknowledged
-flight during an outage caused hundreds of redundant retransmissions. The probe
-repairs a single lost tail and exposes preceding losses to the receiver's NAK
-logic. File mode, peers without periodic NAK, and filter-controlled ARQ retain
-their existing fallback behavior; timeout timing and backoff are unchanged.
-Session unit tests also check repeated probing without an ACK, termination after
-a cumulative ACK, and the unchanged full-flight fallback outside periodic-NAK
-Live ordinary ARQ. These deterministic checks do not measure outage bandwidth.
-
-`live_session_late_ack_can_probe_already_delivered_tail_without_loss` delivers
-every original packet to the receiver and application, then withholds the
-cumulative ACK past the sender RTO. It checks a single duplicate tail probe,
-no reported receive loss, no duplicate application delivery, and no further
-probe after the ACK clears the flight. Paired ACK-before-timeout controls
-produce no probe. Both lite/full ACKs and sequence rollover are covered using
-injected protocol time. This is a core-session policy regression, not a
-measurement of host scheduling delay or public statistics. The observable
-counter difference is documented in
-[Known limitations](limitations.md#live-tail-probes-and-retransmission-counters).
-
-`robotweax_srt_live_tail_burst_recovery` drops the last three original DATA
-packets and requires complete recovery and cumulative ACKs. Run both tail cases:
-
-```sh
-ctest --test-dir build -R '^robotweax_srt_live_tail.*recovery$' --repeat until-fail:3 --output-on-failure
-```
-
-The Python harness also accepts `--tail-packets 1..16` with `--artifacts` to retain
-packet traces for a larger deterministic tail burst.
+See [Live limitations](limitations.md#live-recovery-with-periodic-naks) and
+[File timeout recovery](file-mode.md#retransmission-timeout-and-recovery).

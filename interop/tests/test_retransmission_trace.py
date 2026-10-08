@@ -55,6 +55,17 @@ class RetransmissionTraceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 rt.instrument(changed, hooks)
 
+    def test_historical_session_anchors_remain_explicit_and_fail_closed(self):
+        original = (rt.ROOT / "src/session.cpp").read_text()
+        for current, legacy in rt.LEGACY_SESSION_ANCHORS.items():
+            original = original.replace(current, legacy)
+        hooks = rt.hooks_for_source("src/session.cpp", original)
+        changed = rt.instrument(original, hooks)
+        self.assertIn('RWX_TRACE("ack_state"', changed)
+        self.assertIn('RWX_TRACE("timer"', changed)
+        with self.assertRaises(ValueError):
+            rt.instrument(original + next(iter(rt.LEGACY_SESSION_ANCHORS.values())), hooks)
+
     def test_ambiguous_anchor_fails_closed(self):
         with self.assertRaises(ValueError):
             rt.instrument("x x", [("x", "y")])

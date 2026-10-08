@@ -47,10 +47,10 @@ HOOKS = {
          '        RWX_TRACE("rx_insert", this, packet.data.sequence.value(),\n'
          '            static_cast<std::uint64_t>(inserted.status),\n'
          '            static_cast<std::uint64_t>(inserted.error), packet.data.retransmitted);\n'),
-        ("        // Repeated ACKs can update the receive window while a lost flight\n",
+        ("        // Ordinary Live blind recovery (for peers without periodic NAKs)\n",
          '        RWX_TRACE("ack_state", this, decoded.acknowledgement.next_sequence.value(),\n'
          '            send_buffer_.packets_in_flight(), acknowledgement_progress > 0, now_microseconds);\n'
-         "        // Repeated ACKs can update the receive window while a lost flight\n"),
+         "        // Ordinary Live blind recovery (for peers without periodic NAKs)\n"),
         ("        return result;\n    }\n    case ControlType::negative_acknowledgement: {\n",
          '        RWX_TRACE("ack", this, decoded.acknowledgement.next_sequence.value(),\n'
          '            static_cast<std::uint64_t>(decoded.acknowledgement.kind),\n'
@@ -68,13 +68,13 @@ HOOKS = {
          '    const auto diagnostic_deadline = sender_retransmission_timer_.next_deadline(\n'
          '        rtt_.smoothed_microseconds(), rtt_.variation_microseconds());\n'
          "    if (!sender_retransmission_timer_.poll(\n"),
-        ("    // A periodic NAK can select only a gap exposed by later DATA. It cannot\n",
+        ("    // FileCC preserves a pending NAK selection; otherwise its timeout\n",
          '    RWX_TRACE("timer", this, diagnostic_deadline.value_or(0), now_microseconds,\n'
          '        rtt_.smoothed_microseconds(), rtt_.variation_microseconds());\n'
          '    RWX_TRACE("timer_state", this, send_buffer_.first_sequence().value(),\n'
          '        send_buffer_.packets_in_flight(), sender_retransmission_timer_.timeout_multiplier(),\n'
          '        periodic_nak_enabled_);\n'
-         "    // A periodic NAK can select only a gap exposed by later DATA. It cannot\n"),
+         "    // FileCC preserves a pending NAK selection; otherwise its timeout\n"),
     ],
     "src/receive_buffer.cpp": [
         ("    return {\n        .bytes_written = written,\n        .message_number = message_number,\n        .first_sequence = message_first_sequence,\n",
@@ -118,12 +118,28 @@ LEGACY_NAK_HOOK = (
 )
 
 
+LEGACY_SESSION_ANCHORS = {
+    "        // Ordinary Live blind recovery (for peers without periodic NAKs)\n":
+        "        // Repeated ACKs can update the receive window while a lost flight\n",
+    "    // FileCC preserves a pending NAK selection; otherwise its timeout\n":
+        "    // A periodic NAK can select only a gap exposed by later DATA. It cannot\n",
+}
+
+
 def hooks_for_source(relative, text):
     hooks = HOOKS[relative]
-    if relative == "src/session.cpp" and "service_pending_naks(" not in text:
-        return [LEGACY_NAK_HOOK if "std::size_t packets = 0, bytes = 0;" in before
-                else (before, after) for before, after in hooks]
-    return hooks
+    if relative != "src/session.cpp":
+        return hooks
+    selected = []
+    for before, after in hooks:
+        if "service_pending_naks(" not in text and "std::size_t packets = 0, bytes = 0;" in before:
+            selected.append(LEGACY_NAK_HOOK)
+            continue
+        legacy = LEGACY_SESSION_ANCHORS.get(before)
+        if legacy is not None and text.count(before) == 0 and text.count(legacy) == 1:
+            before, after = legacy, after.replace(before, legacy)
+        selected.append((before, after))
+    return selected
 
 
 def instrument(text: str, hooks: list[tuple[str, str]]) -> str:

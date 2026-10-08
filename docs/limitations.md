@@ -175,30 +175,30 @@ Packet filtering reduces payload capacity and changes statistics. Applications
 must validate expected loss bursts and overhead rather than enabling a filter
 without a traffic-specific geometry. See [Packet-filter FEC](packet-filter.md).
 
-## Live tail probes and retransmission counters
+## Live recovery with periodic NAKs
 
-With Live congestion control, peer periodic NAK support, and ordinary ARQ
-(`always`), Robotweax schedules one last-sent DATA probe when the sender RTO
-expires with unacknowledged packets and no pending selective retransmission.
-The probe recovers a lost final packet and exposes preceding gaps that the
-receiver could not otherwise report. It is paced and uses the existing timeout
-backoff; a cumulative ACK that clears the flight stops further probing.
+A Live sender does not schedule timer-based DATA retransmissions when its peer
+advertises periodic NAK reports. This follows the documented Haivision SRT
+v1.5.7 [Live transmission policy](https://github.com/Haivision/srt/blob/899348d8318eb9a3c5a5b6ec43c4a1114288773a/docs/API/API.md#transmission-method-live).
+The peer's receive policy controls this decision independently of local NAK
+settings and the efficient/aggressive retransmission option. NAK-selected
+retransmissions remain paced and bounded; delayed ACKs alone do not cause a
+blind DATA probe. Packet-filter loss selection and Sensor's no-ARQ contract
+remain separate policies.
 
-An ACK delayed beyond that timeout can therefore cause a probe even when all
-original DATA arrived. A nonzero `pktRetransTotal` with zero sender/receiver
-loss counters is possible on a path with no DATA loss. The receiver can observe
-an extra DATA datagram while delivering each message only once. Retransmission
-counters alone are not proof of packet loss, and clean-path monitoring should
-not assume they are always zero.
+The receiver detects a missing sequence when later DATA exposes the gap.
+Therefore a lost final Live packet, or a lost burst followed by a source pause,
+is not guaranteed to recover without subsequent DATA. Live prioritizes its
+playout deadline rather than lossless completion of a finite transfer. Sending
+file bytes through a Live socket does not give those bytes the File contract.
 
-This is a deliberate recovery-policy difference from Haivision SRT v1.5.7 at
-`899348d8318eb9a3c5a5b6ec43c4a1114288773a`. Source review of
-[`srtcore/core.cpp`, `CUDT::checkRexmitTimer`](https://github.com/Haivision/srt/blob/899348d8318eb9a3c5a5b6ec43c4a1114288773a/srtcore/core.cpp#L12219)
-confirms that its Live timer fallback is disabled when the peer advertises
-periodic NAK support. No identical recovery policy is claimed. File mode,
-peers without periodic NAK, and filter-controlled ARQ have separate fallback
-rules. See [Live flight-tail recovery](testing.md#live-flight-tail-recovery)
-for the deterministic regression and lost-tail delivery checks.
+FileCC retains NAK and sender-timeout recovery, including the final packet,
+and does not expire data at a Live playout deadline. Use `SRTT_FILE` for reliable
+file transfer; see [File recovery](file-mode.md#retransmission-timeout-and-recovery)
+and [close/drain semantics](file-mode.md#eof-shutdown-and-linger). Peers without periodic
+NAK support retain the existing Live timeout fallback. This is a version-scoped
+policy match, not complete parity with every congestion-control behavior.
+See [Recovery validation](testing.md#live-and-file-recovery-contracts).
 
 ## Timing and media scope
 
