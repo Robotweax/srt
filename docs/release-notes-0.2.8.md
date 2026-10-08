@@ -1,6 +1,6 @@
 # Robotweax SRT 0.2.8 — Runtime, Recovery and Security Hardening
 
-Status: **source and package qualification complete; publication in progress**.
+Status: **published on 2026-10-08**. Protected tag `v0.2.8` selects `09ceab33e1fc190472558fdb4d873f38b76fa320`.
 
 Project version: **0.2.8**. Shared-library C ABI line: **0.2**.
 Compatible SRT API and `srt_getversion()`: **1.5.7**. OpenSSL/AES-CTR remains
@@ -53,7 +53,7 @@ turn. Sender metadata is compacted without reducing payload capacity, window
 sizes or counter widths. These changes do not establish a universal throughput,
 CPU, connection-count or latency guarantee.
 
-The candidate includes fixes for asynchronous connect failure diagnostics,
+The release includes fixes for asynchronous connect failure diagnostics,
 Backup-group ACK handling, callback retirement, idle liveness and short-outage
 progress. Group scope and retained-data bounds remain documented in
 [connection groups](connection-groups.md). Direct source-tree C++ consumers must
@@ -61,7 +61,7 @@ rebuild; their implementation ABI is not the installed public C ABI contract.
 
 ## Input validation and build integrity
 
-The candidate hardens crypto admission budgets, checked buffer-size conversions,
+The release hardens crypto admission budgets, checked buffer-size conversions,
 FEC input validation, handshake/profile admission and receive/transmit key
 identity separation. Private temporary test directories and escaped demo
 terminal output protect local test/example use. CI actions use immutable refs.
@@ -69,15 +69,32 @@ The Windows SDK signing pipeline independently reconstructs installers from
 reviewed source before signing and verifies final signed artifacts. Pipeline
 changes alone are not qualification of new installers.
 
-## Release qualification
+## Downloads and package qualification
 
-The [release process](release-process-0.2.8.md) and
-[package record](https://github.com/Robotweax/srt/blob/c6c5bc05c36b8184fbaa562d1b1e8a8ca13cdf36/packaging/qualification-0.2.8.md) record successful candidate
-source CI, complete FFmpeg/GStreamer/VLC/OBS integrations, OpenSSL/BCrypt and
-package-manager/Linux package checks. Final main/tag CI, signed Windows SDK
-assets and the separate tap bottle remain publication gates. Historical 0.2.7
-results do not qualify this release. Preserve original test failures, including
-timing-dependent cases; a successful retry does not explain them.
+The [published release](https://github.com/Robotweax/srt/releases/tag/v0.2.8) includes both Windows SDK installers, Authenticode-signed by **Robotweax GmbH** with trusted timestamps. The protected independent rebuild and exact signed-byte installation/coexistence/removal checks passed before publication.
+
+- [robotweax-srt-0.2.8-windows-sdk-openssl.exe](https://github.com/Robotweax/srt/releases/download/v0.2.8/robotweax-srt-0.2.8-windows-sdk-openssl.exe)
+- [robotweax-srt-0.2.8-windows-sdk-bcrypt.exe](https://github.com/Robotweax/srt/releases/download/v0.2.8/robotweax-srt-0.2.8-windows-sdk-bcrypt.exe)
+- [SHA256SUMS](https://github.com/Robotweax/srt/releases/download/v0.2.8/SHA256SUMS)
+- [tag-provenance.json](https://github.com/Robotweax/srt/releases/download/v0.2.8/tag-provenance.json)
+
+Post-signing SHA-256:
+
+- `robotweax-srt-0.2.8-windows-sdk-openssl.exe`: `dda7da8e9e212161fe87b92e7ec791aa5a08da3fae5935ad6d54b70c5c1834f4`
+- `robotweax-srt-0.2.8-windows-sdk-bcrypt.exe`: `99eb8ec845164daa5e3310fc7262aa0179682f9860969a52dfc02691de4be533`
+
+The [public Homebrew tap](https://github.com/Robotweax/homebrew-tap) supplies 0.2.8 and its qualified [Apple Silicon macOS 15 bottle](https://github.com/Robotweax/homebrew-tap/releases/tag/robotweax-srt-0.2.8). Other bottle platforms require their own native qualification.
+
+```sh
+brew install robotweax/tap/robotweax-srt
+```
+
+- [Final main CI](https://github.com/Robotweax/srt/actions/runs/37808164740) and [full tag CI](https://github.com/Robotweax/srt/actions/runs/37809908884) passed at `09ceab33e1fc190472558fdb4d873f38b76fa320`.
+- [Tag package managers](https://github.com/Robotweax/srt/actions/runs/37809908815) passed Homebrew and all six vcpkg profiles; [Linux packages](https://github.com/Robotweax/srt/actions/runs/37809908927) passed Ubuntu 24.04 and Fedora 44 builds, consumers and coexistence/removal.
+- [Final SDK workflow](https://github.com/Robotweax/srt/actions/runs/37809908833) built twelve variants, tested both installers and coexistence, independently rebuilt both installers on the approved protected runner, then signed and retested the exact pair. Downloaded executables and their manifest match the qualified signed artifact byte for byte.
+- [Native bottle qualification](https://github.com/Robotweax/homebrew-tap/actions/runs/37803883653) and [tap publication](https://github.com/Robotweax/homebrew-tap/actions/runs/37822519622) passed. Tap main `60d220b9737e65ab73674427d2b2af6fa79284f8` selects the canonical formula plus bottle metadata; the downloaded arm64_sequoia bottle matches the qualified artifact and formula hash.
+
+Original candidate failures remain excluded from acceptance: a relative link to noninstalled packaging documentation was corrected; one macOS OBS desktop reconnect attempt exited before decoded media. Its unchanged candidate retry and the first final-tag attempt passed. The original reconnect cause remains undetermined. Full logs/artifacts are retained; no transport or test guard was weakened. Optional live-timing/native ARM64/performance CI jobs are separate diagnostics and are not inferred from the accepted platform builds.
 
 ## Remaining security and deployment limits
 
