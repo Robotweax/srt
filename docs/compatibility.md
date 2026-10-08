@@ -195,3 +195,13 @@ select GCM separately for source-DATA integrity. The standard wire format and
 optional AES-CTR clear-receive behavior remain unchanged when it is disabled.
 See [session authentication](session-authentication.md) for the wire contract,
 40-byte parity overhead, replay window, and coordinated upgrade requirement.
+
+### Backup member acknowledgements
+
+A Backup group's delivery cursor may retire a prefix received through another
+member. That retirement advances the local receive window without advancing the
+idle member's wire ACK. Each Backup member limits its cumulative ACK to DATA or a
+validated peer drop observed on that member. This preserves standby state for a
+Haivision 1.5.7 Backup caller when its primary path disappears. A late DATA packet
+can acknowledge only its own sequence prefix. Broadcast acknowledgement behavior
+and the common group delivery cursor remain unchanged.

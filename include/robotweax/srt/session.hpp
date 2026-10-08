@@ -171,6 +171,9 @@ public:
             default_srt_buffer_capacity_packets;
         std::size_t maximum_payload_size = maximum_data_payload_size;
         std::uint64_t start_microseconds = 0;
+        // Group delivery may retire a prefix received on another path. Keep
+        // this member's wire ACK bounded by DATA or a validated peer drop.
+        bool member_receive_acknowledgements = false;
     };
 
     explicit ReliabilitySession(Configuration configuration);
@@ -505,6 +508,8 @@ private:
         ReliabilityProcessResult& result) noexcept;
 
     friend class compat::ConnectionRuntime;
+    [[nodiscard]] SequenceNumber limit_member_ack(
+        SequenceNumber next) const noexcept;
     [[nodiscard]] ReliabilityAction make_acknowledgement(
         std::uint64_t now_microseconds,
         AcknowledgementKind kind = AcknowledgementKind::full) noexcept;
@@ -557,6 +562,7 @@ private:
     std::optional<LiveRateController> live_rate_controller_;
     std::optional<FileRateController> file_rate_controller_;
     SequenceNumber highest_received_sequence_{};
+    std::optional<SequenceNumber> member_receive_horizon_;
     // Highest DATA sequence seen on the wire, including packets rejected
     // as beyond the receive window. Bounds how far an unauthenticated
     // DROPREQ may advance acknowledgement and window.

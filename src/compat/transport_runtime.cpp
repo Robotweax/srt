@@ -1431,6 +1431,8 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
           .receive_capacity_packets = effective_receive_capacity(configuration),
           .maximum_payload_size = effective_maximum_payload_size(configuration),
           .start_microseconds = elapsed_microseconds(configuration.origin),
+          .member_receive_acknowledgements = configuration.group
+              && configuration.group->type == SRT_GTYPE_BACKUP,
       })
     , pacer_(100'000'000U, effective_peer_flow_window(configuration))
     , options_(configuration.options)

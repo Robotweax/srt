@@ -6126,3 +6126,93 @@ TEST(peer_drop_queue_reservation_survives_copy_move_and_node_reuse)
         }
     }
 }
+
+TEST(session_backup_member_ack_does_not_follow_group_retirement)
+{
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 2U}}) {
+        ReliabilitySession receiver {
+            {.local_initial_sequence = SequenceNumber {1},
+                .peer_initial_sequence = initial,
+                .send_capacity_packets = 8,
+                .receive_capacity_packets = 8,
+                .member_receive_acknowledgements = true}};
+        receiver.configure_live({}, 0, PacketTimestamp {0});
+        std::uint64_t clock = 100;
+        const std::array payload {std::byte {'x'}};
+        const auto ack = [&](SequenceNumber expected) {
+            const auto actions = receiver.poll_timers(clock += 20'000U);
+            REQUIRE_EQ(actions.size, 1U);
+            REQUIRE_EQ(
+                actions.values[0].kind, ReliabilityActionKind::acknowledgement);
+            REQUIRE_EQ(
+                actions.values[0].acknowledgement.next_sequence, expected);
+        };
+        REQUIRE_EQ(
+            receiver.discard_received_before(initial.advanced(70U), ++clock),
+            Error::none);
+        REQUIRE_EQ(receiver.receive_buffer().first_stored_sequence(),
+            initial.advanced(70U));
+        ack(initial);
+        PacketView data {.kind = PacketKind::data,
+            .data = {.sequence = initial.advanced(70U),
+                .message_number = 71,
+                .boundary = MessageBoundary::solo},
+            .payload = payload};
+        REQUIRE(receiver.receive(data, ++clock));
+        ack(initial.advanced(71U));
+        REQUIRE_EQ(
+            receiver.discard_received_before(initial.advanced(160U), ++clock),
+            Error::none);
+        ack(initial.advanced(71U));
+        // An old packet on this path proves only its own prefix, not the
+        // group's later progress through another member.
+        data.data.sequence = initial.advanced(80U);
+        data.data.message_number = 81;
+        REQUIRE(receiver.receive(data, ++clock));
+        ack(initial.advanced(81U));
+        data.data.sequence = initial.advanced(160U);
+        data.data.message_number = 161;
+        REQUIRE(receiver.receive(data, ++clock));
+        ack(initial.advanced(161U));
+        std::array<std::byte, 1> output {};
+        REQUIRE(receiver.pop_message(output));
+        REQUIRE_EQ(output[0], payload[0]);
+    }
+}
+
+TEST(session_backup_member_ack_requires_peer_drop_progress_proof)
+{
+    ReliabilitySession receiver {{.local_initial_sequence = SequenceNumber {1},
+        .peer_initial_sequence = SequenceNumber {100},
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+        .member_receive_acknowledgements = true}};
+    receiver.configure_live({}, 0, PacketTimestamp {0});
+    REQUIRE_EQ(
+        receiver.discard_received_before(SequenceNumber {170}, 1), Error::none);
+    const auto initial_ack = receiver.poll_timers(10'000);
+    REQUIRE_EQ(initial_ack.size, 1U);
+    REQUIRE_EQ(initial_ack.values[0].acknowledgement.next_sequence,
+        SequenceNumber {100});
+    std::array<std::byte, 64> storage {};
+    const auto request = encode_and_decode(
+        {.kind = ReliabilityActionKind::drop_request,
+            .drop = {0, {SequenceNumber {170}, SequenceNumber {172}}}},
+        storage);
+    const auto held = receiver.receive(request, 10'001);
+    REQUIRE(held);
+    REQUIRE_EQ(held.receiver_drop_packets, 0U);
+    REQUIRE_EQ(
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {170});
+    observe_peer_horizon(receiver, SequenceNumber {180}, 20'001);
+    REQUIRE_EQ(
+        receiver.receive_buffer().next_ack_sequence(), SequenceNumber {173});
+    const auto dropped_ack = receiver.poll_timers(30'001);
+    REQUIRE_EQ(dropped_ack.size, 1U);
+    REQUIRE_EQ(dropped_ack.values[0].acknowledgement.next_sequence,
+        SequenceNumber {173});
+    const auto staged = receiver.make_staged_receive_acknowledgement(
+        SequenceNumber {174}, 8U, 30'002);
+    REQUIRE_EQ(staged.acknowledgement.next_sequence, SequenceNumber {174});
+}
