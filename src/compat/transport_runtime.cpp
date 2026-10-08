@@ -315,6 +315,40 @@ InboxPopStatus HandshakeInbox::pop_matching(HandshakeEnvelope& envelope,
     return closed_ ? InboxPopStatus::closed : InboxPopStatus::timeout;
 }
 
+HandshakeInbox::ExtractionResult HandshakeInbox::extract_matching(
+    std::span<HandshakeEnvelope> output, IpEndpoint peer,
+    std::uint32_t peer_socket_id) noexcept
+{
+    ExtractionResult result;
+    std::unique_lock lock(mutex_);
+    std::size_t retained = 0;
+    const std::size_t original_size = size_;
+    for (std::size_t offset = 0; offset < original_size; ++offset) {
+        ++result.examined;
+        auto& entry = entries_[(head_ + offset) % entries_.size()];
+        if (entry.peer == peer
+            && entry.message.packet.socket_id == peer_socket_id) {
+            if (result.copied < output.size()) {
+                output[result.copied++] = entry;
+            } else {
+                ++result.discarded;
+            }
+            continue;
+        }
+        if (retained != offset) {
+            entries_[(head_ + retained) % entries_.size()] = std::move(entry);
+            ++result.moved;
+        }
+        ++retained;
+    }
+    size_ = retained;
+    lock.unlock();
+    if (retained != original_size) {
+        ReadinessSignal::notify_waiters();
+    }
+    return result;
+}
+
 bool HandshakeInbox::set_ready_handler(
     ReadyFunction function, std::weak_ptr<void> context) noexcept
 {
