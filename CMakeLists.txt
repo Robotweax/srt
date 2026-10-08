@@ -390,6 +390,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests --exclude compat_runtime_
             compat_group_closed_member_retains_bounded_copy key_length
             srt_compat_gcm_ srt_compat_sensor_gcm_bounded_sample_stream_
+            srt_compat_bind_acquire
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak)
     add_test(NAME robotweax_srt_transport_runtime_tests
@@ -401,6 +402,12 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests stale_drop_coverage)
     add_test(NAME robotweax_srt_stale_nak_tests
         COMMAND robotweax_srt_tests stale_nak)
+    # The 64-caller IPv4/IPv6 continuity checks include deliberate live latency.
+    # Keep their network waits outside the aggregate unit-runner deadline.
+    add_test(NAME robotweax_srt_native_reuseport_tests
+        COMMAND robotweax_srt_tests --include srt_compat_bind_acquire)
+    set_tests_properties(robotweax_srt_native_reuseport_tests PROPERTIES
+        TIMEOUT 30 LABELS "network;integration")
     set_tests_properties(
         robotweax_srt_stale_drop_coverage_tests robotweax_srt_stale_nak_tests
         PROPERTIES TIMEOUT 30 LABELS "nak")

@@ -127,6 +127,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_group_retention_oversized_tests",
             "robotweax_srt_stale_drop_coverage_tests",
             "robotweax_srt_stale_nak_tests",
+            "robotweax_srt_native_reuseport_tests",
         }
         self.assertEqual(
             len(registrations), len(partitions) + len(empty_selection_checks),
@@ -149,6 +150,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "compat_group_closed_member_retains_bounded_copy",
             "key_length", "srt_compat_gcm_",
             "srt_compat_sensor_gcm_bounded_sample_stream_",
+            "srt_compat_bind_acquire",
             "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
             "stale_drop_coverage", "stale_nak",
         ])
@@ -172,7 +174,8 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_stale_drop_coverage_tests",
             "robotweax_srt_stale_nak_tests",
         }
-        for name in partitions - profile_partitions - stale_partitions:
+        reuseport_partitions = {"robotweax_srt_native_reuseport_tests"}
+        for name in partitions - profile_partitions - stale_partitions - reuseport_partitions:
             self.assertIn(name, bounded_properties.group(1))
         stale_properties = re.search(
             r"set_tests_properties\(\s*(robotweax_srt_stale_drop_coverage_tests.*?)\)",
@@ -183,14 +186,18 @@ class CiTestRegistrationTests(unittest.TestCase):
             self.assertIn(name, stale_properties.group(1))
         self.assertIn("TIMEOUT 30", stale_properties.group(1))
         self.assertIn('LABELS "nak"', stale_properties.group(1))
-        for name in profile_partitions:
+        self.assertEqual(commands["robotweax_srt_native_reuseport_tests"],
+                         ["--include", "srt_compat_bind_acquire"])
+        for name in profile_partitions | reuseport_partitions:
             profile_properties = re.search(
                 r"set_tests_properties\(" + name + r"\s+PROPERTIES\s+([^)]*)\)",
                 cmake,
             )
             self.assertIsNotNone(profile_properties)
             self.assertIn("TIMEOUT 30", profile_properties.group(1))
-            self.assertIn("encryption", profile_properties.group(1))
+            self.assertIn("integration", profile_properties.group(1))
+            self.assertIn("network" if name in reuseport_partitions else "encryption",
+                          profile_properties.group(1))
         self.assertIn("PROPERTIES TIMEOUT 30", bounded_properties.group(1))
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         native_labels = re.findall(r'LABELS\s+"([^"]+)"', stale_properties.group(1))
@@ -226,10 +233,12 @@ class CiTestRegistrationTests(unittest.TestCase):
             arguments = commands[name]
             included_cases = cases
             if arguments[0] == "--include":
-                self.assertGreater(len(arguments), 2)
+                self.assertGreaterEqual(len(arguments), 2)
                 included_cases = [case for case in cases if arguments[1] in case]
                 arguments = arguments[2:]
-            if arguments[0] == "--exclude":
+            if not arguments:
+                selected = included_cases
+            elif arguments[0] == "--exclude":
                 self.assertGreater(len(arguments), 1)
                 selected = [case for case in included_cases
                             if not any(value in case for value in arguments[1:])]
