@@ -104,7 +104,8 @@ public:
         if (entries_.empty())
             return none;
         const auto current = cursor_;
-        cursor_ = (cursor_ + 1U) % static_cast<Index>(entries_.size());
+        cursor_ = static_cast<Index>(
+            (static_cast<std::size_t>(cursor_) + 1U) % entries_.size());
         return entries_[current].height == 0 ? none : current;
     }
     [[nodiscard]] bool contains(
