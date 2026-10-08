@@ -441,6 +441,30 @@ class EncryptedFileInteropTests(unittest.TestCase):
         )
         buffered = {**common, "caller_stderr": buffer_notice + "\n" + rejection + "\n"}
         run_encrypted_file_interop.validate_passphrase_mismatch(**buffered)
+        failure_notice = (
+            "1791459338771054/139785362261952W:connection: "
+            "connection setup failed socket=323997678 peer=127.0.0.1:58399 "
+            "peer_socket=0 reason=10 name=BADSECRET wire=1010"
+        )
+        for notices in (failure_notice, failure_notice + "\n" + buffer_notice,
+                        buffer_notice + "\n" + failure_notice,
+                        failure_notice.replace("127.0.0.1:58399", "[0:0:0:0:0:0:0:1%0]:58399")):
+            warned = {**common, "caller_stderr": notices + "\n" + rejection + "\n"}
+            run_encrypted_file_interop.validate_passphrase_mismatch(**warned)
+            for mutation in mutations:
+                with self.subTest(warning_mutation=mutation), self.assertRaises(RuntimeError):
+                    run_encrypted_file_interop.validate_passphrase_mismatch(**{**warned, **mutation})
+        for notice in (failure_notice + " extra", failure_notice + "\n" + failure_notice,
+                       failure_notice.replace("reason=10", "reason=11"),
+                       failure_notice.replace("BADSECRET", "UNSECURE"),
+                       failure_notice.replace("wire=1010", "wire=1011"),
+                       failure_notice.replace("socket=323997678", "socket=0"),
+                       failure_notice.replace("peer=127.0.0.1", "peer=999.0.0.1"),
+                       failure_notice.replace(":58399", ":65536"),
+                       failure_notice.replace("W:connection", "D:connection")):
+            with self.subTest(warning_notice=notice), self.assertRaises(RuntimeError):
+                run_encrypted_file_interop.validate_passphrase_mismatch(**{
+                    **common, "caller_stderr": notice + "\n" + rejection + "\n"})
         # A recognized diagnostic must not relax any of the negative checks.
         for mutation in mutations:
             with self.subTest(buffered_mutation=mutation), self.assertRaises(RuntimeError):

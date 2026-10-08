@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
+import re
 import os
 import secrets
 import subprocess
@@ -299,6 +301,36 @@ def passphrase_mismatch_scenario_matrix(
     ]
 
 
+PASSPHRASE_FAILURE_DIAGNOSTIC = re.compile(
+    r"[0-9]+/(?:0x)?[0-9a-fA-F]+W:connection: connection setup failed "
+    r"socket=(?P<socket>[0-9]+) "
+    r"peer=(?P<peer>[0-9.]+|\[[0-9a-fA-F:]+%[0-9]+\]):(?P<port>[0-9]+) "
+    r"peer_socket=(?P<peer_socket>[0-9]+) reason=10 name=BADSECRET wire=1010"
+)
+
+
+def valid_passphrase_failure_diagnostics(lines: list[str]) -> bool:
+    """Admit at most one exact terminal warning, plus bounded buffer notices."""
+    buffers = []
+    failures = 0
+    for line in lines:
+        match = PASSPHRASE_FAILURE_DIAGNOSTIC.fullmatch(line)
+        if match is None:
+            buffers.append(line)
+            continue
+        failures += 1
+        if (failures > 1 or not 0 < int(match['socket']) < 2**31
+                or not 0 <= int(match['peer_socket']) < 2**31
+                or not 0 < int(match['port']) <= 65535):
+            return False
+        peer = match['peer'].strip('[]')
+        try:
+            ipaddress.ip_address(peer)
+        except ValueError:
+            return False
+    return valid_buffer_diagnostics(buffers)
+
+
 def validate_passphrase_mismatch(
     scenario: Scenario,
     caller_returncode: int,
@@ -340,7 +372,7 @@ def validate_passphrase_mismatch(
             caller_is_haivision
             and not any("ERROR:BADSECRET" in line for line in lines[:-1])
         )
-        or (not caller_is_haivision and not valid_buffer_diagnostics(lines[:-1]))
+        or (not caller_is_haivision and not valid_passphrase_failure_diagnostics(lines[:-1]))
     ):
         raise RuntimeError(
             f"{scenario.name}: wrong-passphrase rejection evidence "

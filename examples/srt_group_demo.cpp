@@ -7,6 +7,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -824,10 +825,14 @@ void print_member_statistics(SRTSOCKET group)
             if (endpoint.id != SRT_INVALID_SOCK) {
                 const int reason = srt_getrejectreason(endpoint.id);
                 if (reason != SRT_REJ_UNKNOWN) {
-                    std::cerr << "ENDPOINT_REJECT token=" << endpoint.token
-                              << " reason=" << reason
-                              << " description=" << srt_rejectreason_str(reason)
-                              << '\n';
+                    const std::string diagnostic = "ENDPOINT_REJECT token="
+                        + std::to_string(endpoint.token)
+                        + " reason=" + std::to_string(reason)
+                        + " description=" + srt_rejectreason_str(reason) + "\n";
+                    // Emit one complete line under the same stdio lock as
+                    // asynchronous library diagnostics.
+                    std::fwrite(
+                        diagnostic.data(), 1, diagnostic.size(), stderr);
                 }
             }
         }
