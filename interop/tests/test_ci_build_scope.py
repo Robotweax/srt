@@ -121,6 +121,8 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_sensor_gcm_aes256_tests",
             "robotweax_srt_group_retention_prefix_tests",
             "robotweax_srt_group_retention_oversized_tests",
+            "robotweax_srt_stale_drop_coverage_tests",
+            "robotweax_srt_stale_nak_tests",
         }
         self.assertEqual(
             len(registrations), len(partitions) + len(empty_selection_checks),
@@ -144,6 +146,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "key_length", "srt_compat_gcm_",
             "srt_compat_sensor_gcm_bounded_sample_stream_",
             "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
+            "stale_drop_coverage", "stale_nak",
         ])
         bounded_properties = re.search(
             r"set_tests_properties\(\s*(robotweax_srt_tests.*?)\)",
@@ -156,8 +159,21 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_sensor_gcm_aes192_tests",
             "robotweax_srt_sensor_gcm_aes256_tests",
         }
-        for name in partitions - profile_partitions:
+        stale_partitions = {
+            "robotweax_srt_stale_drop_coverage_tests",
+            "robotweax_srt_stale_nak_tests",
+        }
+        for name in partitions - profile_partitions - stale_partitions:
             self.assertIn(name, bounded_properties.group(1))
+        stale_properties = re.search(
+            r"set_tests_properties\(\s*(robotweax_srt_stale_drop_coverage_tests.*?)\)",
+            cmake, re.DOTALL,
+        )
+        self.assertIsNotNone(stale_properties)
+        for name in stale_partitions:
+            self.assertIn(name, stale_properties.group(1))
+        self.assertIn("TIMEOUT 30", stale_properties.group(1))
+        self.assertIn("reliability", stale_properties.group(1))
         for name in profile_partitions:
             profile_properties = re.search(
                 r"set_tests_properties\(" + name + r"\s+PROPERTIES\s+([^)]*)\)",
@@ -174,7 +190,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         self.assertIsNotNone(selection)
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_tests"))
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_key_length_tests"))
-        for name in profile_partitions | {"robotweax_srt_delayed_key_response_tests"}:
+        for name in profile_partitions | stale_partitions | {"robotweax_srt_delayed_key_response_tests"}:
             self.assertIsNotNone(re.search(selection.group(1), name))
         target = re.search(
             r"add_executable\(robotweax_srt_tests\s+([^)]*)\)", cmake,
