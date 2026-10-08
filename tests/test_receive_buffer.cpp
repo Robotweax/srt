@@ -819,21 +819,21 @@ TEST(receive_buffer_sparse_readiness_work_is_independent_of_leading_gap)
         for (const auto initial : {SequenceNumber {100},
                  SequenceNumber {SequenceNumber::mask - 7U}}) {
             ReceiveBuffer buffer {initial, capacity};
-            const auto far =
+            const auto distant_sequence =
                 initial.advanced(static_cast<std::uint32_t>(capacity - 1U));
-            REQUIRE(buffer.insert(
-                data_packet(far, 1, MessageBoundary::solo, payload)));
+            REQUIRE(buffer.insert(data_packet(
+                distant_sequence, 1, MessageBoundary::solo, payload)));
             std::size_t inspected = 0;
             const auto message =
                 detail::ReceiveBufferTestAccess::message(buffer, inspected);
             REQUIRE(message);
-            REQUIRE_EQ(message->first_sequence, far);
+            REQUIRE_EQ(message->first_sequence, distant_sequence);
             REQUIRE(inspected <= 1U);
             inspected = 0;
             const auto packet =
                 detail::ReceiveBufferTestAccess::packet(buffer, inspected);
             REQUIRE(packet);
-            REQUIRE_EQ(packet->first_sequence, far);
+            REQUIRE_EQ(packet->first_sequence, distant_sequence);
             REQUIRE(inspected <= 1U);
             for (int query = 0; query < 64; ++query) {
                 inspected = 0;
@@ -843,8 +843,8 @@ TEST(receive_buffer_sparse_readiness_work_is_independent_of_leading_gap)
                     detail::ReceiveBufferTestAccess::packet(buffer, inspected));
                 REQUIRE_EQ(inspected, 0U);
                 REQUIRE_EQ(buffer
-                               .insert(data_packet(
-                                   far, 1, MessageBoundary::solo, payload))
+                               .insert(data_packet(distant_sequence, 1,
+                                   MessageBoundary::solo, payload))
                                .status,
                     ReceiveStatus::duplicate);
                 REQUIRE(!buffer.has_complete_message());
@@ -1003,27 +1003,30 @@ TEST(receive_buffer_changing_sparse_state_skips_empty_index_subtrees)
                     static_cast<std::uint32_t>(rotation))),
                 Error::none);
             const auto first = buffer.first_stored_sequence();
-            const auto far =
+            const auto distant_sequence =
                 first.advanced(static_cast<std::uint32_t>(capacity - 1U));
-            REQUIRE(buffer.insert(
-                data_packet(far, 2, MessageBoundary::solo, payload)));
-            for (std::uint32_t near = 1; near < 64; ++near) {
-                REQUIRE(buffer.insert(data_packet(first.advanced(near), 1,
-                    MessageBoundary::subsequent, payload)));
+            REQUIRE(buffer.insert(data_packet(
+                distant_sequence, 2, MessageBoundary::solo, payload)));
+            for (std::uint32_t near_offset = 1; near_offset < 64;
+                ++near_offset) {
+                REQUIRE(buffer.insert(data_packet(first.advanced(near_offset),
+                    1, MessageBoundary::subsequent, payload)));
                 std::size_t inspected = 0;
                 const auto message =
                     detail::ReceiveBufferTestAccess::message(buffer, inspected);
                 REQUIRE(message);
-                REQUIRE_EQ(message->first_sequence, far);
-                REQUIRE_EQ(inspected, static_cast<std::size_t>(near + 1U));
+                REQUIRE_EQ(message->first_sequence, distant_sequence);
+                REQUIRE_EQ(
+                    inspected, static_cast<std::size_t>(near_offset + 1U));
                 std::size_t words = 0;
                 const auto offset = detail::ReceiveBufferTestAccess::next(
-                    buffer, near + 1U, words);
+                    buffer, near_offset + 1U, words);
                 REQUIRE(offset);
                 REQUIRE_EQ(*offset, capacity - 1U);
                 REQUIRE(words <= 10U);
             }
-            REQUIRE_EQ(buffer.drop_range({first, far}), Error::none);
+            REQUIRE_EQ(
+                buffer.drop_range({first, distant_sequence}), Error::none);
             std::size_t words = 0;
             REQUIRE(!detail::ReceiveBufferTestAccess::next(buffer, 0, words));
             REQUIRE(words <= 10U);

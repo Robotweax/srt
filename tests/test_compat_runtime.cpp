@@ -12333,15 +12333,15 @@ TEST(compat_channel_sparse_receive_burst_preserves_healthy_delivery_and_timers)
             auto healthy = fixture.add(2, 0, true, 4, live);
             const IpEndpoint peer {.address = {192, 0, 2, 94}, .port = 15'094};
             const std::array payload {std::byte {'h'}};
-            PacketView far;
-            far.kind = PacketKind::data;
-            far.data.sequence = SequenceNumber {700}.advanced(
+            PacketView distant_packet;
+            distant_packet.kind = PacketKind::data;
+            distant_packet.data.sequence = SequenceNumber {700}.advanced(
                 static_cast<std::uint32_t>(capacity - 1U));
-            far.data.boundary = MessageBoundary::solo;
-            far.data.message_number = 1;
-            far.data.destination_socket_id = 1;
-            far.payload = payload;
-            sparse->process_packet(far, peer);
+            distant_packet.data.boundary = MessageBoundary::solo;
+            distant_packet.data.message_number = 1;
+            distant_packet.data.destination_socket_id = 1;
+            distant_packet.payload = payload;
+            sparse->process_packet(distant_packet, peer);
             for (std::uint32_t turn = 0; turn < 3; ++turn) {
                 std::size_t received = 0;
                 auto input =
@@ -12352,7 +12352,7 @@ TEST(compat_channel_sparse_receive_burst_preserves_healthy_delivery_and_timers)
                     packet.control.destination_socket_id = 1;
                     if (received == 63U || received % 2U == 0U) {
                         packet.kind = PacketKind::data;
-                        packet.data = far.data;
+                        packet.data = distant_packet.data;
                         packet.payload = payload;
                         if (received == 63U) {
                             packet.data.sequence =

@@ -5616,14 +5616,14 @@ TEST(session_sparse_readiness_survives_duplicate_controls_and_clock_progress)
                                             .too_late_packet_drop = false,
                                             .receive_delay_milliseconds = 100},
                     1'000, PacketTimestamp {0});
-                PacketView far;
-                far.kind = PacketKind::data;
-                far.data.sequence = initial.advanced(65'535);
-                far.data.message_number = 1;
-                far.data.boundary = MessageBoundary::solo;
-                far.data.timestamp = PacketTimestamp {25};
-                far.payload = payload;
-                REQUIRE(receiver.receive(far, 1'001));
+                PacketView distant_packet;
+                distant_packet.kind = PacketKind::data;
+                distant_packet.data.sequence = initial.advanced(65'535);
+                distant_packet.data.message_number = 1;
+                distant_packet.data.boundary = MessageBoundary::solo;
+                distant_packet.data.timestamp = PacketTimestamp {25};
+                distant_packet.payload = payload;
+                REQUIRE(receiver.receive(distant_packet, 1'001));
                 std::size_t inspected = 0;
                 REQUIRE(detail::ReceiveBufferTestAccess::message(
                     receiver.receive_buffer(), inspected));
@@ -5637,7 +5637,7 @@ TEST(session_sparse_readiness_survives_duplicate_controls_and_clock_progress)
                 keepalive.control.type = ControlType::keepalive;
                 for (int turn = 0; turn < 64; ++turn) {
                     REQUIRE(receiver.receive(keepalive, 1'010 + turn));
-                    REQUIRE(receiver.receive(far, 1'010 + turn));
+                    REQUIRE(receiver.receive(distant_packet, 1'010 + turn));
                     REQUIRE(!receiver.data_ready_at(1'010 + turn));
                     REQUIRE(!receiver.next_receive_delivery_time());
                     inspected = 0;
@@ -5647,7 +5647,7 @@ TEST(session_sparse_readiness_survives_duplicate_controls_and_clock_progress)
                         receiver.receive_buffer(), inspected));
                     REQUIRE_EQ(inspected, 0U);
                 }
-                auto head = far;
+                auto head = distant_packet;
                 head.data.sequence = initial;
                 head.data.message_number = 2;
                 head.data.timestamp = PacketTimestamp {5};
