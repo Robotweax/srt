@@ -3670,7 +3670,7 @@ TEST(file_session_sender_rto_uses_the_peer_full_ack_rtt_estimate)
     REQUIRE(sender.poll_sender_retransmission_timeout(91'000));
 }
 
-TEST(live_session_periodic_nak_retains_sender_rto_for_flight_tail_loss)
+TEST(live_session_periodic_nak_does_not_retry_unreported_flight_tail)
 {
     ReliabilitySession sender {{
         .local_initial_sequence = SequenceNumber {10},
@@ -3704,16 +3704,14 @@ TEST(live_session_periodic_nak_retains_sender_rto_for_flight_tail_loss)
     REQUIRE(sender.receive(
         encode_and_decode(acknowledgement, control_storage), 1'000));
 
-    REQUIRE(!sender.poll_sender_retransmission_timeout(330'999));
-    REQUIRE(sender.poll_sender_retransmission_timeout(331'000));
-    const auto retransmission = sender.next_data_packet();
-    REQUIRE(retransmission.has_value());
-    REQUIRE_EQ(retransmission->header.sequence, SequenceNumber {11});
-    REQUIRE(retransmission->header.retransmitted);
-    REQUIRE(!sender.next_data_packet().has_value());
+    for (const auto now : {330'999ULL, 331'000ULL, 2'000'000ULL}) {
+        REQUIRE(!sender.poll_sender_retransmission_timeout(now));
+        REQUIRE(!sender.next_data_packet().has_value());
+    }
+    REQUIRE_EQ(sender.send_buffer().packets_in_flight(), 1U);
 }
 
-TEST(live_session_duplicate_ack_does_not_starve_tail_retransmission)
+TEST(live_session_without_periodic_nak_duplicate_ack_preserves_blind_recovery)
 {
     ReliabilitySession sender {{
         .local_initial_sequence = SequenceNumber {10},
@@ -3724,7 +3722,7 @@ TEST(live_session_duplicate_ack_does_not_starve_tail_retransmission)
         .maximum_payload_size = 1,
     }};
     sender.configure_live(
-        NegotiatedLiveOptions {.periodic_nak = true}, 0, PacketTimestamp {0});
+        NegotiatedLiveOptions {.periodic_nak = false}, 0, PacketTimestamp {0});
     const std::array<std::byte, 2> input {std::byte {'x'}, std::byte {'y'}};
     for (const auto byte : input) {
         REQUIRE_EQ(
@@ -3763,7 +3761,8 @@ TEST(live_session_duplicate_ack_does_not_starve_tail_retransmission)
     REQUIRE(!sender.next_data_packet().has_value());
 }
 
-TEST(live_session_duplicate_full_ack_does_not_starve_tail_retransmission)
+TEST(
+    live_session_without_periodic_nak_duplicate_full_ack_preserves_blind_recovery)
 {
     ReliabilitySession sender {{
         .local_initial_sequence = SequenceNumber {10},
@@ -3774,7 +3773,7 @@ TEST(live_session_duplicate_full_ack_does_not_starve_tail_retransmission)
         .maximum_payload_size = 1,
     }};
     sender.configure_live(
-        NegotiatedLiveOptions {.periodic_nak = true}, 0, PacketTimestamp {0});
+        NegotiatedLiveOptions {.periodic_nak = false}, 0, PacketTimestamp {0});
     const std::array<std::byte, 2> input {std::byte {'x'}, std::byte {'y'}};
     for (const auto byte : input) {
         REQUIRE_EQ(
@@ -3917,7 +3916,7 @@ TEST(live_session_periodic_nak_preserves_selected_loss_at_sender_rto)
     };
     REQUIRE(sender.receive(encode_and_decode(loss, control_storage), 2'000));
 
-    REQUIRE(sender.poll_sender_retransmission_timeout(331'000));
+    REQUIRE(!sender.poll_sender_retransmission_timeout(331'000));
     const auto retransmission = sender.next_data_packet();
     REQUIRE(retransmission.has_value());
     REQUIRE_EQ(retransmission->header.sequence, SequenceNumber {11});
@@ -4467,9 +4466,8 @@ TEST(sender_rto_keeps_full_fallback_outside_periodic_live_arq)
         if (mode == 0) {
             sender.configure_file(true);
         } else {
-            sender.configure_live(
-                NegotiatedLiveOptions {.periodic_nak = mode != 1}, 0,
-                PacketTimestamp {0});
+            sender.configure_live(NegotiatedLiveOptions {.periodic_nak = false},
+                0, PacketTimestamp {0});
             if (mode >= 2) {
                 const auto filter = parse_packet_filter_configuration(mode == 2
                         ? "fec,cols:4,rows:1,arq:onreq"
@@ -4835,7 +4833,7 @@ TEST(sensor_profile_gap_deadlines_are_independent_and_do_not_extend)
     REQUIRE(!receiver.next_sensor_receive_gap_deadline().has_value());
 }
 
-TEST(live_session_late_ack_can_probe_already_delivered_tail_without_loss)
+TEST(live_session_periodic_nak_late_ack_does_not_duplicate_delivered_data)
 {
     for (const auto initial : {10U, SequenceNumber::mask}) {
         for (const auto kind :
@@ -4900,21 +4898,12 @@ TEST(live_session_late_ack_can_probe_already_delivered_tail_without_loss)
                 };
                 REQUIRE(!sender.poll_sender_retransmission_timeout(330'099));
                 if (late_ack) {
-                    REQUIRE(sender.poll_sender_retransmission_timeout(330'100));
-                    const auto probe = sender.next_data_packet();
-                    REQUIRE(probe.has_value());
-                    REQUIRE_EQ(probe->header.sequence, first.next());
-                    REQUIRE(probe->header.retransmitted);
-                    REQUIRE_EQ(probe->payload[0], input[1]);
+                    REQUIRE(
+                        !sender.poll_sender_retransmission_timeout(330'100));
+                    REQUIRE(
+                        !sender.poll_sender_retransmission_timeout(2'000'000));
                     REQUIRE(!sender.next_data_packet().has_value());
-                    sender.note_data_packet_sent(330'100);
-                    const auto duplicate =
-                        receiver.receive(view_of(*probe), 330'101);
-                    REQUIRE(duplicate);
-                    REQUIRE(!duplicate.receiver_packet_accepted_unique);
-                    REQUIRE_EQ(duplicate.receiver_loss_packets, 0U);
-                    std::array<std::byte, 1> output {};
-                    REQUIRE(!receiver.pop_message(output));
+                    REQUIRE_EQ(sender.send_buffer().packets_in_flight(), 2U);
                 }
                 REQUIRE(sender.receive(
                     encode_and_decode(acknowledgement, control_storage),
@@ -4927,62 +4916,53 @@ TEST(live_session_late_ack_can_probe_already_delivered_tail_without_loss)
     }
 }
 
-TEST(live_session_periodic_nak_rto_probes_only_tail_of_unacknowledged_flight)
+TEST(live_session_blind_recovery_depends_on_peer_periodic_nak)
 {
-    ReliabilitySession sender {{
-        .local_initial_sequence = SequenceNumber {10},
-        .peer_initial_sequence = SequenceNumber {100},
-        .peer_socket_id = 900,
-        .send_capacity_packets = 4,
-        .receive_capacity_packets = 4,
-        .maximum_payload_size = 1,
-    }};
-    sender.configure_live(
-        NegotiatedLiveOptions {.periodic_nak = true}, 0, PacketTimestamp {0});
-    const std::array<std::byte, 2> input {std::byte {'x'}, std::byte {'y'}};
-    for (const auto byte : input) {
-        REQUIRE_EQ(
-            sender.queue_message(std::span {&byte, 1}, PacketTimestamp {0}),
-            Error::none);
-        const auto packet = sender.next_data_packet();
-        REQUIRE(packet.has_value());
-        sender.note_data_packet_sent(100);
+    for (const bool local_reports : {false, true}) {
+        for (const bool peer_reports : {false, true}) {
+            for (const bool efficient : {false, true}) {
+                HandshakeExtensionParameters local;
+                HandshakeExtensionParameters peer;
+                const auto flag = static_cast<std::uint32_t>(
+                    HandshakeExtensionFlag::periodic_nak);
+                local.flags = local_reports ? flag : 0U;
+                peer.flags = peer_reports ? flag : 0U;
+                ReliabilitySession sender {{
+                    .local_initial_sequence = SequenceNumber {10},
+                    .peer_initial_sequence = SequenceNumber {100},
+                    .send_capacity_packets = 4,
+                    .receive_capacity_packets = 4,
+                    .maximum_payload_size = 1,
+                }};
+                sender.configure_efficient_retransmission(
+                    efficient, peer_reports);
+                sender.configure_live(negotiate_live_options(local, peer), 0,
+                    PacketTimestamp {0});
+                const std::array input {std::byte {'x'}, std::byte {'y'}};
+                for (const auto byte : input) {
+                    REQUIRE_EQ(sender.queue_message(
+                                   std::span {&byte, 1}, PacketTimestamp {0}),
+                        Error::none);
+                    REQUIRE(sender.next_data_packet().has_value());
+                    sender.note_data_packet_sent(100);
+                }
+                REQUIRE(!sender.poll_sender_retransmission_timeout(330'099));
+                REQUIRE_EQ(sender.poll_sender_retransmission_timeout(330'100),
+                    !peer_reports);
+                if (!peer_reports) {
+                    for (unsigned i = 0; i < 2; ++i) {
+                        const auto packet = sender.next_data_packet();
+                        REQUIRE(packet.has_value());
+                        REQUIRE_EQ(
+                            packet->header.sequence, SequenceNumber {10 + i});
+                        REQUIRE(packet->header.retransmitted);
+                    }
+                }
+                REQUIRE(!sender.next_data_packet().has_value());
+                REQUIRE_EQ(sender.send_buffer().packets_in_flight(), 2U);
+            }
+        }
     }
-
-    std::array<std::byte, 64> control_storage {};
-    ReliabilityAction acknowledgement {
-        .kind = ReliabilityActionKind::acknowledgement,
-        .acknowledgement =
-            {
-                .kind = AcknowledgementKind::lite,
-                .next_sequence = SequenceNumber {10},
-            },
-    };
-    REQUIRE(sender.receive(
-        encode_and_decode(acknowledgement, control_storage), 1'000));
-
-    REQUIRE(!sender.poll_sender_retransmission_timeout(330'099));
-    REQUIRE(sender.poll_sender_retransmission_timeout(330'100));
-    const auto retransmission = sender.next_data_packet();
-    REQUIRE(retransmission.has_value());
-    REQUIRE_EQ(retransmission->header.sequence, SequenceNumber {11});
-    REQUIRE(retransmission->header.retransmitted);
-    REQUIRE(!sender.next_data_packet().has_value());
-
-    // A lost probe or its ACK must leave recovery armed, but bounded to one
-    // packet. Once the cumulative ACK arrives, probing must stop.
-    sender.note_data_packet_sent(330'100);
-    REQUIRE(sender.poll_sender_retransmission_timeout(2'000'000));
-    const auto retry = sender.next_data_packet();
-    REQUIRE(retry.has_value());
-    REQUIRE_EQ(retry->header.sequence, SequenceNumber {11});
-    REQUIRE(retry->header.retransmitted);
-    REQUIRE(!sender.next_data_packet().has_value());
-    acknowledgement.acknowledgement.next_sequence = SequenceNumber {12};
-    REQUIRE(sender.receive(
-        encode_and_decode(acknowledgement, control_storage), 2'000'001));
-    REQUIRE(!sender.poll_sender_retransmission_timeout(4'000'000));
-    REQUIRE(!sender.next_data_packet().has_value());
 }
 
 TEST(

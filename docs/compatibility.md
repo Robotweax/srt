@@ -58,7 +58,7 @@ instead of causing an automatic downgrade.
 | Sequence rollover | Supported | Wrap-safe DATA, ACK, NAK, retransmission, File/Stream, encryption, and FEC behavior across the 31-bit sequence boundary |
 | IPv6 | Supported | Caller/Listener and Rendezvous, asymmetric MSS negotiation, Stream ID, statistics, Live/Message, File/Stream, encryption, and FEC |
 | TSBPD and source time | Foundation | Negotiation, source-time mapping, release scheduling, clock-skew correction, and live timing behavior |
-| LiveCC | Partial | Pacing and runtime bandwidth changes are implemented; [Live tail probes](limitations.md#live-tail-probes-and-retransmission-counters) can retransmit on a delayed ACK without DATA loss. Complete parity with every reference congestion-control behavior is not claimed |
+| LiveCC | Partial | Pacing and runtime bandwidth changes are implemented; [Live recovery](limitations.md#live-recovery-with-periodic-naks) follows the peer periodic-NAK policy without blind timeout probes. Complete parity with every reference congestion-control behavior is not claimed |
 | FileCC | Supported | Clear and AES-CTR transfer in the default compatibility profile; Robotweax-to-Robotweax AES-GCM transfer in an extension-enabled build; Caller/Listener and Rendezvous, loss recovery, delayed ACK/flow-window handling, runtime bandwidth changes, and rollover. Cross-implementation GCM File/Stream is not claimed. |
 | Packet filters and FEC | Supported | Row, Column, and recursive Matrix geometries, negotiation, recovery, rollover, clear and encrypted Live/Message operation |
 | Broadcast groups | Supported | Member admission, mirrored messages, late join, redundant receive suppression, member callbacks, and group metadata |

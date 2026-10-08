@@ -984,22 +984,23 @@ if(ROBOTWEAX_SRT_BUILD_TOOLS)
 
     if(ROBOTWEAX_SRT_BUILD_TESTS AND Python3_Interpreter_FOUND AND UNIX)
         add_test(
-            NAME robotweax_srt_live_tail_recovery
+            NAME robotweax_srt_live_nak_gap_recovery
             COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_live_tail_interop.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_live_recovery_interop.py
                 --sender-peer $<TARGET_FILE:robotweax_srt_interop_peer>
-                --receiver-peer $<TARGET_FILE:robotweax_srt_interop_peer>)
-        set_tests_properties(robotweax_srt_live_tail_recovery
+                --receiver-peer $<TARGET_FILE:robotweax_srt_interop_peer>
+                --loss-packets 3)
+        set_tests_properties(robotweax_srt_live_nak_gap_recovery
             PROPERTIES TIMEOUT 40 LABELS "integration;live;reliability")
 
         add_test(
-            NAME robotweax_srt_live_tail_burst_recovery
+            NAME robotweax_srt_live_delayed_ack_no_retransmission
             COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_live_tail_interop.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_live_recovery_interop.py
                 --sender-peer $<TARGET_FILE:robotweax_srt_interop_peer>
                 --receiver-peer $<TARGET_FILE:robotweax_srt_interop_peer>
-                --tail-packets 3)
-        set_tests_properties(robotweax_srt_live_tail_burst_recovery
+                --scenario delayed-ack)
+        set_tests_properties(robotweax_srt_live_delayed_ack_no_retransmission
             PROPERTIES TIMEOUT 40 LABELS "integration;live;reliability")
 
         add_test(

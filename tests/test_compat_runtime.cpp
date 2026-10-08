@@ -3197,15 +3197,12 @@ TEST(compat_runtime_efficient_retransmission_waits_one_rtt)
     }
 }
 
-TEST(compat_runtime_live_periodic_nak_falls_back_to_sender_tail_rto)
+TEST(compat_runtime_live_peer_periodic_nak_suppresses_blind_recovery)
 {
     const auto channel = std::make_shared<DatagramChannel>();
     CapturedDatagrams output;
     channel->set_send_hook_for_testing(capture_datagram, &output);
-    const Ipv4Endpoint peer {
-        .address = {192, 0, 2, 43},
-        .port = 16'003,
-    };
+    const Ipv4Endpoint peer {{192, 0, 2, 43}, 16'003};
     SocketOptions options;
     REQUIRE_EQ(options.set(SocketOption::maximum_payload_size, 4), Error::none);
     std::uint64_t now = 100'000;
@@ -3216,36 +3213,47 @@ TEST(compat_runtime_live_periodic_nak_falls_back_to_sender_tail_rto)
         .initial_sequence = SequenceNumber {700},
         .flow_window_packets = 256,
         .options = options,
-        .negotiated_options =
-            {
-                .periodic_nak = true,
-                .retransmit_flag = true,
-            },
+        .negotiated_options = {.periodic_nak = false,
+            .retransmit_flag = true,
+            .peer_periodic_nak = true},
         .origin = ConnectionRuntime::Clock::now(),
         .now_function = injected_now,
         .now_context = &now,
     }};
-
-    const std::array<std::byte, 4> input {
+    const std::array input {
         std::byte {'t'}, std::byte {'a'}, std::byte {'i'}, std::byte {'l'}};
     REQUIRE_EQ(runtime.queue_message(input, 0, true, false, -1).status,
         MessageIoStatus::success);
     (void)runtime.poll();
-    const auto original_datagrams = take_datagrams(output);
-    REQUIRE_EQ(original_datagrams.size(), 1U);
-    const auto original = decode_packet(original_datagrams[0]);
+    const auto originals = take_datagrams(output);
+    REQUIRE_EQ(originals.size(), 1U);
+    const auto original = decode_packet(originals[0]);
     REQUIRE(original);
     REQUIRE_EQ(original.packet.data.sequence, SequenceNumber {700});
     REQUIRE(!original.packet.data.retransmitted);
 
-    now += 329'999;
+    // The peer's report policy controls sender recovery even when the local
+    // receive direction has disabled periodic reports. Repeated overdue polls
+    // must not emit DATA, but a real NAK must still select the packet.
+    for (const auto time : {429'999ULL, 430'000ULL, 900'000ULL}) {
+        now = time;
+        (void)runtime.poll();
+        REQUIRE_EQ(take_datagrams(output).size(), 0U);
+    }
+    std::array<std::byte, 64> storage {};
+    const auto encoded = encode_reliability_action(
+        {.kind = ReliabilityActionKind::loss_report,
+            .loss = {SequenceNumber {700}, SequenceNumber {700}}},
+        PacketTimestamp {0}, 430, storage);
+    REQUIRE(encoded);
+    const auto nak =
+        decode_packet(std::span {storage}.first(encoded.bytes_written));
+    REQUIRE(nak);
+    runtime.process_packet(nak.packet, peer);
     (void)runtime.poll();
-    REQUIRE_EQ(take_datagrams(output).size(), 0U);
-    ++now;
-    (void)runtime.poll();
-    const auto timeout_datagrams = take_datagrams(output);
-    REQUIRE_EQ(timeout_datagrams.size(), 1U);
-    const auto retransmission = decode_packet(timeout_datagrams[0]);
+    const auto recovered = take_datagrams(output);
+    REQUIRE_EQ(recovered.size(), 1U);
+    const auto retransmission = decode_packet(recovered[0]);
     REQUIRE(retransmission);
     REQUIRE_EQ(retransmission.packet.data.sequence, SequenceNumber {700});
     REQUIRE(retransmission.packet.data.retransmitted);

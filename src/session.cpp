@@ -958,16 +958,14 @@ ReliabilityProcessResult ReliabilitySession::receive(
             send_buffer_.first_sequence().value(), buffered_before,
             send_buffer_.size(), in_flight_before,
             send_buffer_.packets_in_flight());
-        // Repeated ACKs can update the receive window while a lost flight
-        // tail remains unacknowledged. Resetting RTO on those non-progress
-        // ACKs can postpone recovery until the Live delivery deadline expires.
-        // Keep filter-controlled recovery and FileCC unchanged: duplicate
-        // ACKs can cover a gap that FEC is still reconstructing, not a tail.
-        const bool live_tail_recovery = live_rate_controller_.has_value()
+        // Ordinary Live blind recovery (for peers without periodic NAKs)
+        // requires ACK progress to restart RTO. Keep filter-controlled recovery
+        // and FileCC unchanged: a repeated ACK may cover a pending FEC gap.
+        const bool live_blind_recovery = live_rate_controller_.has_value()
             && packet_filter_policy_.effective_arq_level()
                 == PacketFilterArqLevel::always;
         if (acknowledgement_progress > 0
-            || (acknowledgement_is_current && !live_tail_recovery)) {
+            || (acknowledgement_is_current && !live_blind_recovery)) {
             sender_retransmission_timer_.on_acknowledgement_received(
                 now_microseconds, send_buffer_.packets_in_flight() != 0U);
         }
@@ -2084,6 +2082,14 @@ bool ReliabilitySession::poll_sender_retransmission_timeout(
         sender_retransmission_timer_.on_no_packets_in_flight();
         return false;
     }
+    // A Live peer advertising periodic reports owns loss detection. An
+    // absent ACK alone must not select DATA for retransmission. The negotiated
+    // shared flag also covers callers using the bidirectional session API.
+    if (live_rate_controller_.has_value()
+        && (peer_periodic_nak_ || live_options_.peer_periodic_nak
+            || periodic_nak_enabled_)) {
+        return false;
+    }
     if (send_buffer_.packets_in_flight() == 0U) {
         sender_retransmission_timer_.on_no_packets_in_flight();
         return false;
@@ -2096,27 +2102,12 @@ bool ReliabilitySession::poll_sender_retransmission_timeout(
         return false;
     }
 
-    // A periodic NAK can select only a gap exposed by later DATA. It cannot
-    // name a lost flight tail because the receiver has not observed that
-    // sequence yet. Preserve an already selected NAK/LATEREXMIT range, but
-    // fall back to the sender RTO for the remaining unacknowledged flight when
-    // no selective retransmission is pending. This keeps LiveCC loss recovery
-    // NAK-driven without leaving a tail loss permanently stranded.
-    const bool selective_retransmission = file_rate_controller_.has_value()
-        || (live_rate_controller_.has_value() && periodic_nak_enabled_);
-    if (!selective_retransmission
+    // FileCC preserves a pending NAK selection; otherwise its timeout
+    // recovery retries the unacknowledged flight, including its final packet.
+    // Live peers without periodic reports retain their full-flight fallback.
+    if (!file_rate_controller_.has_value()
         || !send_buffer_.has_pending_retransmission()) {
-        if (live_rate_controller_.has_value() && periodic_nak_enabled_
-            && packet_filter_policy_.effective_arq_level()
-                == PacketFilterArqLevel::always) {
-            // Probe the last sent packet: its arrival exposes older gaps to
-            // periodic NAK recovery and also repairs a lost flight tail.
-            // Replaying the whole growing flight on every RTO amplifies an
-            // outage even though the receiver can request specific losses.
-            (void)send_buffer_.request_retransmission_of_last_sent();
-        } else {
-            (void)send_buffer_.request_retransmission_of_all_sent();
-        }
+        (void)send_buffer_.request_retransmission_of_all_sent();
     }
     if (file_rate_controller_.has_value()) {
         file_rate_controller_->on_timeout(

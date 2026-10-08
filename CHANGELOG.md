@@ -6,6 +6,11 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Match the Haivision 1.5.7 Live policy for peers advertising periodic NAKs:
+  delayed ACKs no longer trigger blind DATA probes. NAK-driven Live recovery
+  remains enabled; complete finite transfers use File mode, whose timeout
+  recovery and final-packet delivery contract are unchanged.
+
 - Measure the sender too-late packet drop deadline from a packet's first
   transmission instead of the time it was queued, and never abandon packets
   that were not yet sent (except the unsent tail of an abandoned message).

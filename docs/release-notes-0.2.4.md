@@ -54,6 +54,8 @@ universal superiority over OpenSSL. See [BCrypt qualification](windows-bcrypt.md
 - Prevent repeated non-progress ACKs from starving Live tail recovery.
   Periodic-NAK timeout recovery uses bounded, paced tail probes rather than
   repeated full-flight retransmission; fallback modes retain their contracts.
+  This describes 0.2.4; current [Live recovery](limitations.md#live-recovery-with-periodic-naks)
+  relies on the peer's periodic NAKs and no longer emits these probes.
 - Install `srt/access_control.h` and compatible C++ logging level aliases.
 - Provide Robotweax version identification separately from the compatible
   Haivision API version.
