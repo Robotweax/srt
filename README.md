@@ -18,9 +18,14 @@ includes signed OpenSSL and BCrypt Windows SDK installers and post-signing
 checksums. See the [release notes](docs/release-notes-0.2.7.md) for changes,
 qualification evidence and remaining limits.
 
-| Axis | Robotweax SRT 0.2.7 |
+The development tree is preparing **0.2.8**. Its [candidate release notes](docs/release-notes-0.2.8.md)
+and [release process](docs/release-process-0.2.8.md) record the scope and pending
+qualification. Version 0.2.8 has not been published; the downloads above remain
+the qualified 0.2.7 release.
+
+| Axis | Robotweax SRT 0.2.8 candidate |
 | --- | --- |
-| Project release | `0.2.7` |
+| Project release | `0.2.8` |
 | Shared-library ABI | `0.2` |
 | Default public API target | SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
