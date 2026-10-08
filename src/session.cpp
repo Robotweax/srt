@@ -514,10 +514,21 @@ void ReliabilitySession::append_pending_drop_requests(
             ? sensor_retired_prefix_->first
             : sensor_prefix_repeat_cursor_.next();
     }
-    while (actions.size < actions.values.size()) {
+    // ACKed sequence-only replies consume an inspection just like an emitted
+    // reply. A discarded backlog must not monopolize a service invocation.
+    std::size_t budget = actions.values.size() - actions.size;
+    while (actions.size < actions.values.size() && budget != 0U) {
+        --budget;
         const auto dropped = send_buffer_.next_pending_drop_request();
         if (!dropped.has_value()) {
             break;
+        }
+        auto sequences = dropped->sequences;
+        if (dropped->first_message_number == 0U) {
+            if (sequences.last.distance_from(peer_acknowledged_sequence_) < 0)
+                continue;
+            if (sequences.first.distance_from(peer_acknowledged_sequence_) < 0)
+                sequences.first = peer_acknowledged_sequence_;
         }
         actions.push({
             .kind = ReliabilityActionKind::drop_request,
@@ -526,7 +537,7 @@ void ReliabilitySession::append_pending_drop_requests(
                     .message_number = packet_filter_policy_.sensor_profile()
                         ? 0U
                         : dropped->first_message_number,
-                    .sequences = dropped->sequences,
+                    .sequences = sequences,
                 },
         });
     }

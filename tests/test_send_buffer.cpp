@@ -8,8 +8,197 @@
 #include <limits>
 #include <utility>
 #include <cstddef>
+#include <bitset>
 
 using namespace robotweax::srt;
+
+TEST(stale_drop_coverage_coalesces_descending_reports_independently_of_window)
+{
+    for (const auto capacity : {1U, 8192U, 65536U}) {
+        SendBuffer buffer {SequenceNumber {100}, capacity, 1};
+        detail::RangeDropQueue queue;
+        for (std::uint32_t i = 8192U; i != 0U; --i) {
+            const std::array ranges {
+                SequenceRange {SequenceNumber {i}, SequenceNumber {i}}};
+            REQUIRE(buffer.queue_range_drop_requests(ranges));
+            std::size_t work = 0;
+            REQUIRE(queue.queue(ranges, &work));
+            REQUIRE(work <= 5U);
+            REQUIRE_EQ(queue.size(), 1U);
+        }
+        const auto dropped = buffer.next_pending_drop_request();
+        REQUIRE(dropped.has_value());
+        REQUIRE_EQ(dropped->packets, 8192U);
+        REQUIRE_EQ(dropped->sequences.first, SequenceNumber {1});
+        REQUIRE_EQ(dropped->sequences.last, SequenceNumber {8192});
+        REQUIRE_EQ(dropped->first_message_number, 0U);
+        REQUIRE(!buffer.next_pending_drop_request().has_value());
+    }
+}
+
+TEST(
+    stale_drop_coverage_backpressure_is_transactional_and_bridges_free_capacity)
+{
+    detail::RangeDropQueue queue;
+    for (std::uint32_t i = 0; i < detail::RangeDropQueue::capacity; ++i) {
+        const auto sequence = SequenceNumber {4U * i};
+        const std::array range {SequenceRange {sequence, sequence}};
+        REQUIRE(queue.queue(range));
+    }
+    const std::array extra {
+        SequenceRange {SequenceNumber {2000}, SequenceNumber {2000}}};
+    REQUIRE(!queue.queue(extra));
+    REQUIRE_EQ(queue.size(), detail::RangeDropQueue::capacity);
+    // Capacity is checked on the final union, not on a partial insertion.
+    const std::array bridge {
+        extra[0], SequenceRange {SequenceNumber {1}, SequenceNumber {1999}}};
+    REQUIRE(queue.queue(bridge));
+    REQUIRE_EQ(queue.size(), 1U);
+    const auto merged = queue.next();
+    REQUIRE(merged.has_value());
+    REQUIRE_EQ(merged->first, SequenceNumber {0});
+    REQUIRE_EQ(merged->last, SequenceNumber {2000});
+    REQUIRE(queue.empty());
+
+    const std::array valid {
+        SequenceRange {SequenceNumber {10}, SequenceNumber {12}}};
+    REQUIRE(queue.queue(valid));
+    const std::array invalid {
+        SequenceRange {SequenceNumber {0}, SequenceNumber {9}},
+        SequenceRange {SequenceNumber {20}, SequenceNumber {19}}};
+    REQUIRE(!queue.queue(invalid));
+    const auto unchanged = queue.next();
+    REQUIRE(unchanged.has_value());
+    REQUIRE_EQ(unchanged->first, valid[0].first);
+    REQUIRE_EQ(unchanged->last, valid[0].last);
+    const std::vector<SequenceRange> oversized(
+        detail::maximum_range_drop_terms + 1U, valid[0]);
+    REQUIRE(!queue.queue(oversized));
+    REQUIRE(queue.empty());
+}
+
+TEST(
+    stale_drop_coverage_wraps_and_splits_ambiguous_unions_without_slot_expansion)
+{
+    detail::RangeDropQueue queue;
+    const std::array wrapping {
+        SequenceRange {
+            SequenceNumber {SequenceNumber::mask - 5U}, SequenceNumber {2}},
+        SequenceRange {
+            SequenceNumber {SequenceNumber::mask - 2U}, SequenceNumber {4}},
+        SequenceRange {SequenceNumber {3}, SequenceNumber {8}}};
+    REQUIRE(queue.queue(wrapping));
+    const auto wrap = queue.next();
+    REQUIRE(wrap.has_value());
+    REQUIRE_EQ(wrap->first, wrapping[0].first);
+    REQUIRE_EQ(wrap->last, SequenceNumber {8});
+    REQUIRE(queue.empty());
+
+    const std::array whole_wire {
+        SequenceRange {SequenceNumber {0},
+            SequenceNumber {SequenceNumber::half_range - 1U}},
+        SequenceRange {SequenceNumber {SequenceNumber::half_range},
+            SequenceNumber {SequenceNumber::mask}}};
+    REQUIRE(queue.queue(whole_wire));
+    for (const auto range : whole_wire) {
+        const auto next = queue.next();
+        REQUIRE(next.has_value());
+        REQUIRE_EQ(next->first, range.first);
+        REQUIRE_EQ(next->last, range.last);
+        REQUIRE(next->last.distance_from(next->first) >= 0);
+    }
+    REQUIRE(queue.empty());
+}
+
+TEST(stale_drop_coverage_matches_independent_set_across_reuse_copy_and_rollover)
+{
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 250U}}) {
+        detail::RangeDropQueue queue;
+        std::bitset<1024> expected;
+        std::uint32_t random = 0x13579bdfU;
+        auto step = [&] {
+            random = random * 1664525U + 1013904223U;
+            return random;
+        };
+        auto remove = [&](detail::RangeDropQueue& source,
+                          std::bitset<1024>& reference) {
+            const auto next = source.next();
+            REQUIRE_EQ(next.has_value(), reference.any());
+            if (!next)
+                return;
+            const auto length = next->last.distance_from(next->first);
+            REQUIRE(length >= 0);
+            REQUIRE(length < 1024);
+            for (std::uint32_t i = 0; i <= static_cast<std::uint32_t>(length);
+                ++i) {
+                const auto offset =
+                    next->first.advanced(i).distance_from(initial);
+                REQUIRE(offset >= 0);
+                REQUIRE(offset < 1024);
+                REQUIRE(reference.test(static_cast<std::size_t>(offset)));
+                reference.reset(static_cast<std::size_t>(offset));
+            }
+        };
+        for (unsigned turn = 0; turn < 12000U; ++turn) {
+            if (step() % 4U == 0U)
+                remove(queue, expected);
+            else {
+                std::array<SequenceRange, 5> ranges {};
+                for (auto& range : ranges) {
+                    const auto offset = step() % 512U;
+                    const auto length = step() % 13U;
+                    range = {initial.advanced(offset),
+                        initial.advanced(offset + length)};
+                    for (std::uint32_t i = 0; i <= length; ++i)
+                        expected.set(offset + i);
+                }
+                std::size_t work = 0;
+                REQUIRE(queue.queue(ranges, &work));
+                REQUIRE(work <= 3U * detail::RangeDropQueue::capacity + 128U);
+            }
+            if (turn % 101U == 0U) {
+                auto copy = queue;
+                auto reference = expected;
+                auto moved = std::move(copy);
+                while (reference.any())
+                    remove(moved, reference);
+                REQUIRE(moved.empty());
+                const std::array range {SequenceRange {initial, initial}};
+                REQUIRE(moved.queue(range));
+                REQUIRE(moved.next().has_value());
+            }
+        }
+        while (expected.any())
+            remove(queue, expected);
+        REQUIRE(queue.empty());
+    }
+}
+
+TEST(stale_drop_coverage_admission_work_is_bounded_at_full_disjoint_capacity)
+{
+    detail::RangeDropQueue queue;
+    for (std::uint32_t i = 0; i < detail::RangeDropQueue::capacity; ++i) {
+        const auto sequence = SequenceNumber {i * 4U};
+        const std::array range {SequenceRange {sequence, sequence}};
+        REQUIRE(queue.queue(range));
+    }
+    std::array<SequenceRange, maximum_loss_words_per_packet> descending {};
+    for (std::size_t i = 0; i < descending.size(); ++i) {
+        const auto sequence = SequenceNumber {
+            static_cast<std::uint32_t>((descending.size() - i - 1U) * 4U)};
+        descending[i] = {sequence, sequence};
+    }
+    for (unsigned repeat = 0; repeat < 64U; ++repeat) {
+        std::size_t work = 0;
+        REQUIRE(queue.queue(descending, &work));
+        REQUIRE(work <= 64U * maximum_loss_words_per_packet);
+        REQUIRE_EQ(queue.size(), detail::RangeDropQueue::capacity);
+    }
+    while (queue.next().has_value()) {
+    }
+    REQUIRE(queue.empty());
+}
 
 TEST(send_buffer_fragments_message_without_per_packet_allocation)
 {

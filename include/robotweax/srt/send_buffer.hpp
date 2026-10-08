@@ -1,6 +1,7 @@
 #pragma once
 
 #include "robotweax/srt/crypto.hpp"
+#include "robotweax/srt/detail/range_drop_queue.hpp"
 #include "robotweax/srt/error.hpp"
 #include "robotweax/srt/packet.hpp"
 #include "robotweax/srt/payload_pool.hpp"
@@ -170,7 +171,9 @@ public:
         compact_retransmission_queue();
     }
     // Queues sequence-only DROPREQ replies for NAK ranges that predate the
-    // sender buffer. Capacity validation is transactional.
+    // sender buffer. Overlapping/adjacent coverage is coalesced, with at most
+    // one packet worth of disjoint ranges plus a rollover split. Admission
+    // validates the complete batch transactionally and never grows storage.
     [[nodiscard]] bool queue_range_drop_requests(
         std::span<const SequenceRange> ranges) noexcept;
     [[nodiscard]] SendDropResult drop_messages_older_than(
@@ -223,7 +226,7 @@ private:
     std::vector<Slot> slots_;
     std::vector<SequenceNumber> retransmission_queue_;
     std::vector<SequenceNumber> drop_request_queue_;
-    std::vector<SequenceRange> range_drop_request_queue_;
+    detail::RangeDropQueue range_drop_request_queue_;
     SequenceNumber first_sequence_;
     std::uint64_t next_sequence_position_ = 0;
     std::size_t maximum_payload_size_ = maximum_data_payload_size;
@@ -248,8 +251,6 @@ private:
     std::size_t retransmission_size_ = 0;
     std::size_t drop_request_head_ = 0;
     std::size_t drop_request_size_ = 0;
-    std::size_t range_drop_request_head_ = 0;
-    std::size_t range_drop_request_size_ = 0;
     std::size_t packets_in_flight_ = 0;
 };
 

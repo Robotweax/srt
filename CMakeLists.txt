@@ -386,7 +386,15 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests --exclude compat_runtime_rotation_
             compat_group_closed_member_retains_bounded_copy key_length
             srt_compat_gcm_ srt_compat_sensor_gcm_bounded_sample_stream_
-            compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late)
+            compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
+            stale_drop_coverage stale_nak)
+    add_test(NAME robotweax_srt_stale_drop_coverage_tests
+        COMMAND robotweax_srt_tests stale_drop_coverage)
+    add_test(NAME robotweax_srt_stale_nak_tests
+        COMMAND robotweax_srt_tests stale_nak)
+    set_tests_properties(
+        robotweax_srt_stale_drop_coverage_tests robotweax_srt_stale_nak_tests
+        PROPERTIES TIMEOUT 30 LABELS "nak")
     if(ENABLE_AEAD_API_PREVIEW)
         # Paced public profile scenarios have a separate aggregate budget.
         add_test(NAME robotweax_srt_gcm_profile_tests

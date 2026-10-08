@@ -206,6 +206,16 @@ service deadline ready. Source-tree C++ owners must call
 loss counters; the compatibility runtime does this automatically. Exhausting
 the pending range capacity returns `buffer_too_small` without partial admission.
 
+Sequence-only DROPREQ replies for abandoned, unacknowledged sources retain the
+exact union of reported coverage. Duplicate, overlapping and adjacent ranges
+coalesce without filling unreported gaps. Their queue holds at most 365 wire
+intervals, derived from the maximum 364 NAK words plus a rollover split;
+admission work and storage do not grow with the send window. Excess disjoint
+coverage rejects the complete report with `buffer_too_small`, without admitting
+its current retransmission ranges. One action batch inspects at most four
+queued replies, including replies suppressed by a newer cumulative ACK.
+Partially acknowledged sequence-only replies are clipped when selected.
+
 Validation uses the sequential original-send cursor and a Fenwick count of
 retained drop tombstones, avoiding scans of a whole window, including unsent
 expired tails. Tombstones retain their message bounds and remaining byte count
