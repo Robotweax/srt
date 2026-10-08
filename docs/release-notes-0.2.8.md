@@ -1,6 +1,6 @@
 # Robotweax SRT 0.2.8 — Runtime, Recovery and Security Hardening
 
-Status: **release candidate in preparation; not published**.
+Status: **source and package qualification complete; publication in progress**.
 
 Project version: **0.2.8**. Shared-library C ABI line: **0.2**.
 Compatible SRT API and `srt_getversion()`: **1.5.7**. OpenSSL/AES-CTR remains
@@ -71,16 +71,13 @@ changes alone are not qualification of new installers.
 
 ## Release qualification
 
-Qualification is **pending**. The [release process](release-process-0.2.8.md)
-tracks the immutable source, exact-head CI, complete FFmpeg/GStreamer/VLC/OBS
-suite, OpenSSL/BCrypt profiles, package-manager/Linux package checks and final
-signed Windows SDK assets. Historical 0.2.7 results do not qualify this candidate.
-No 0.2.8 download, installer, bottle or published tag is claimed here.
-
-The Security Cloud scan started during preparation targets the development
-baseline. Its result must be reviewed against the candidate's product changes;
-a running scan is not security acceptance. Preserve original test failures,
-including timing-dependent cases; a successful retry does not explain them.
+The [release process](release-process-0.2.8.md) and
+[package record](../packaging/qualification-0.2.8.md) record successful candidate
+source CI, complete FFmpeg/GStreamer/VLC/OBS integrations, OpenSSL/BCrypt and
+package-manager/Linux package checks. Final main/tag CI, signed Windows SDK
+assets and the separate tap bottle remain publication gates. Historical 0.2.7
+results do not qualify this release. Preserve original test failures, including
+timing-dependent cases; a successful retry does not explain them.
 
 ## Remaining security and deployment limits
 

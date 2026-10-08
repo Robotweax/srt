@@ -1,6 +1,6 @@
 # Package qualification 0.2.8
 
-Status: **qualification pending; not published**.
+Status: **candidate recipes qualified; final publication gates pending**.
 
 Product source: `8126e166ecd3d33987b3748e799ef40e5192d068`.
 Archive SHA-256: `f3ad362970d8b83337bd8344f796337a56ff52347c2a9e2ff18c41fd2b71422d`.
@@ -12,23 +12,39 @@ downloaded bytes, not a local git archive. The product source is separate from
 the recipe/evidence commit. Product changes require a new source pin and repeat
 qualification. Previous release results do not qualify this candidate.
 
-## Pending acceptance
+## Accepted candidate qualification
 
-- Exact-head source CI, C exports/installed consumers, sanitizers and reference
-  interoperability; full release integrations and experimental BCrypt profiles.
-- Homebrew source install, test/audit, standalone consumers, coexistence/removal.
-- Six vcpkg static/dynamic profiles on Linux x64, Windows x64 and macOS arm64,
-  with Debug/Release consumers, relocation, coexistence/removal.
-- Ubuntu 24.04 and Fedora 44 binary/source builds, source/license checks and
+Recipe head `240713f759d20e717ef2f855e12815d12f964b29`, reviewed in
+[PR #287](https://github.com/Robotweax/srt/pull/287), preserves the frozen
+product tree. The following runs completed successfully at that exact head:
+
+- [Source CI](https://github.com/Robotweax/srt/actions/runs/37798431450): configured
+  source, C exports/installed consumers, sanitizer, fuzz and reference gates.
+- [Complete ecosystem suite](https://github.com/Robotweax/srt/actions/runs/37798459745):
+  configured FFmpeg, GStreamer, VLC and OBS headless/desktop integrations.
+- [BCrypt qualification](https://github.com/Robotweax/srt/actions/runs/37798464386):
+  configured Windows profiles; optional native ARM64/performance diagnostics
+  were skipped and are not qualification evidence.
+- [Package managers](https://github.com/Robotweax/srt/actions/runs/37798431594):
+  Homebrew source install/test/audit, standalone consumers and coexistence/removal;
+  six vcpkg static/dynamic profiles on Linux x64, Windows x64 and macOS arm64,
+  including Debug/Release consumers, relocation and coexistence/removal.
+- [Linux packages](https://github.com/Robotweax/srt/actions/runs/37798431434):
+  Ubuntu 24.04 and Fedora 44 binary/source builds, source/license checks and
   installed-consumer/coexistence/removal qualification.
-- Final main/tag CI and independently rebuilt, signed and retested Windows SDK
-  assets, including comparison of downloaded draft bytes before publication.
-- Separate Homebrew tap/native bottle qualification before bottle advertisement.
+- [Unsigned Windows SDK](https://github.com/Robotweax/srt/actions/runs/37798468880):
+  twelve variants and installation/coexistence checks. This run selected
+  `sign=false`; its protected rebuild and signing jobs were skipped. It does
+  not qualify signed installers or the independent rebuild recipe.
 
-No run is recorded as accepted yet. Record exact source/recipe/tag commits,
-successful run links, downloaded artifact hashes and remaining limitations here
-as qualification completes. Preserve original failures and exclude failed,
-cancelled or superseded attempts from acceptance.
+## Final publication gates
+
+Final main/tag CI, independently rebuilt and signed Windows SDK assets, exact
+signed-byte tests and downloaded draft-byte verification remain required.
+The separate tap/native bottle requires its own qualification before publication.
+Record exact tag/source identities, successful final run links and artifact
+hashes as those gates complete. Preserve original failures; exclude failed,
+cancelled and superseded attempts from accepted results.
 
 Recipe workflows build the pinned archive, not the moving protocol checkout.
 Clean coexistence/removal checks do not establish upgrade/rollback, PPA/COPR,

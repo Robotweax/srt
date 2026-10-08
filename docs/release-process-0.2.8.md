@@ -11,8 +11,17 @@ was verified against all 587 regular files and executable bits.
 SHA-256: `f3ad362970d8b83337bd8344f796337a56ff52347c2a9e2ff18c41fd2b71422d`.
 SHA-512: `cc5d8d25f124254d6a249c515296d9b22491a29e4fc18c2db5c64379f86278c15f3ada31caec659ffaa38b3434fa59d3f280a4c57c1ce5aa3bdf0636a187f2e1`.
 The [package record](https://github.com/Robotweax/srt/blob/dev/release-0.2.8/packaging/qualification-0.2.8.md)
-tracks pending recipe/platform gates. No publication or final acceptance is
-implied by archive verification.
+records successful candidate recipe/platform runs and pending final publication
+gates. Archive verification alone does not establish final acceptance.
+
+## Candidate CI evidence
+
+At recipe head `240713f759d20e717ef2f855e12815d12f964b29`,
+[source CI](https://github.com/Robotweax/srt/actions/runs/37798431450) and the
+[explicit full ecosystem suite](https://github.com/Robotweax/srt/actions/runs/37798459745)
+passed both Required CI gates. The package record identifies successful
+Homebrew, vcpkg, Linux and BCrypt runs at that head. Later evidence-only commits
+preserve the product tree; affected checks still apply to their exact heads.
 
 ## Candidate contract
 
