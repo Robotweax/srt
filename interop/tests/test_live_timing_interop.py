@@ -1530,7 +1530,16 @@ class LiveTimingInteropTests(unittest.TestCase):
             observation["sender_active_transition_delay_microseconds"],
             3_750,
         )
-        self.assertEqual(observation["receiver_member_transitions"], 5)
+        self.assertIsNone(observation["receiver_member_transitions"])
+        self.assertEqual(observation["receiver_member_source_attribution"],
+                         "not-exposed-by-peer-api")
+        # Directional receive activity may remain latched on the primary after
+        # wire-proven failover; status cannot identify buffered message sources.
+        retained_activity = [{**event, "group_running_member": 20}
+                             for event in receiver]
+        timing_interop.validate_backup_group_path_outage(
+            sender, complete, retained_activity, relay, 6, 1_000_000, 1_200,
+            960_000, 4)
 
         ambiguous_receiver = [
             {
@@ -1578,14 +1587,9 @@ class LiveTimingInteropTests(unittest.TestCase):
                 ],
             ),
             (
-                "receiver returned to primary after outage",
+                "unknown running count",
                 complete,
-                [
-                    event
-                    if index != 7
-                    else {**event, "group_running_member": 20}
-                    for index, event in enumerate(receiver)
-                ],
+                [{**event, "group_running_member_count": 0} for event in receiver],
             ),
         ):
             with self.subTest(name=name):
@@ -1673,7 +1677,10 @@ class LiveTimingInteropTests(unittest.TestCase):
             {
                 "message_index": index,
                 "group_running_member": 20 if index < 3 else 21,
+                "group_running_member_count": 1,
                 "group_member_count": 2 if index < 3 else 1,
+                "packet_sequence": 100 + index,
+                "message_number": 1 + index,
             }
             for index in range(6)
         ]
@@ -1687,158 +1694,128 @@ class LiveTimingInteropTests(unittest.TestCase):
             receiver_events,
         )
 
-    def test_backup_group_timing_requires_bounded_receiver_settlement(
-        self,
-    ) -> None:
+    @staticmethod
+    def _backup_group_timing_relay():
+        class PathRelay:
+            def __init__(self, destination, indices):
+                self.packets = [
+                    {"destination_socket_id": destination,
+                     "sequence": 100 + index, "message_number": 1 + index}
+                    for index in indices
+                ]
+
+            @staticmethod
+            def error():
+                return None
+
+            def data_packet_observations(self, direction):
+                assert direction == "caller_to_listener"
+                return tuple(self.packets)
+
+        class Relay:
+            primary = PathRelay(20, range(3))
+            backup = PathRelay(21, range(3, 6))
+
+        return Relay()
+
+    def test_backup_group_timing_uses_wire_ranges_instead_of_receiver_settlement(self):
         sender, complete, receiver = self._backup_group_timing_evidence()
-        observation = timing_interop.validate_backup_group_timing(
-            sender,
-            complete,
-            receiver,
-            3,
-            1_000_000,
-            1_200,
-            960_000,
-        )
-        self.assertEqual(observation["member_transitions"], 1)
-        self.assertEqual(observation["sender_primary_member"], 10)
-        self.assertEqual(observation["receiver_primary_member"], 20)
-        self.assertNotEqual(
-            observation["sender_primary_member"],
-            observation["receiver_primary_member"],
-        )
+        relay = self._backup_group_timing_relay()
+        for members in ((20, 20, 20, 21, 21, 21), (21,) * 6, (20,) * 6,
+                        (20, 21, 20, 21, 20, 21)):
+            with self.subTest(members=members):
+                status = [{**event, "group_running_member": members[index]}
+                          for index, event in enumerate(receiver)]
+                observation = timing_interop.validate_backup_group_timing(
+                    sender, complete, status, 3, 1_000_000, 1_200, 960_000, relay=relay)
+                self.assertEqual(observation["member_transitions"], 1)
+                self.assertEqual(observation["receiver_primary_member"], 20)
+                self.assertEqual(observation["receiver_backup_member"], 21)
+                self.assertEqual(observation["receiver_member_source_attribution"],
+                                 "not-exposed-by-peer-api")
+                self.assertIsNone(observation["receiver_member_transitions"])
+                self.assertIsNone(observation["receiver_transition_after_messages"])
+                self.assertTrue(observation["wire_failover_ranges_validated"])
 
-        buffered_status_transition = [
-            {
-                **event,
-                "group_running_member": 20 if index == 0 else 21,
-            }
-            for index, event in enumerate(receiver)
-        ]
-        buffered_observation = (
-            timing_interop.validate_backup_group_timing(
-                sender,
-                complete,
-                buffered_status_transition,
-                3,
-                1_000_000,
-                1_200,
-                960_000,
-            )
-        )
-        self.assertEqual(
-            buffered_observation["receiver_transition_after_messages"], 1
-        )
+    def test_backup_group_timing_accepts_multiple_receive_paths_without_source_attribution(self):
+        sender, complete, receiver = self._backup_group_timing_evidence()
+        receiver = [{**event, "group_running_member": 0,
+                     "group_running_member_count": 2, "group_member_count": 2}
+                    for event in receiver]
+        for replay in (False, True):
+            with self.subTest(replay=replay):
+                output = sender.replace('"primary_drained": true',
+                                        '"primary_drained": false') if replay else sender
+                relay = self._backup_group_timing_relay()
+                if replay:
+                    # The last queued primary DATA may first reach UDP on Backup.
+                    relay.backup.packets.insert(0, {**relay.primary.packets.pop(),
+                                                   "destination_socket_id": 21})
+                observation = timing_interop.validate_backup_group_timing(
+                    output, {**complete, "primary_drained": not replay}, receiver,
+                    3, 1_000_000, 1_200, 960_000, unacknowledged_replay=replay,
+                    relay=relay)
+                self.assertEqual(observation["receiver_observed_members"], [20, 21])
+                self.assertEqual(observation["receiver_status_observed_members"], [])
+                self.assertEqual(observation["receiver_ambiguous_member_observations"], 6)
+                self.assertEqual(observation["receiver_member_source_attribution"],
+                                 "not-exposed-by-peer-api")
 
-        settling_status_transition = [
-            {
-                **event,
-                "group_running_member": (20, 21, 20, 21, 21, 21)[index],
-            }
-            for index, event in enumerate(receiver)
-        ]
-        settling_observation = timing_interop.validate_backup_group_timing(
-            sender,
-            complete,
-            settling_status_transition,
-            3,
-            1_000_000,
-            1_200,
-            960_000,
-        )
-        self.assertEqual(
-            settling_observation["receiver_member_transitions"], 3
-        )
-        self.assertEqual(
-            settling_observation["receiver_transition_after_messages"], 3
-        )
-
-        replay_sender = sender.replace(
-            '"primary_drained": true', '"primary_drained": false'
-        )
-        replay_complete = {**complete, "primary_drained": False}
-        replay_receiver = [
-            {**event, "group_running_member": 20 + index % 2}
-            for index, event in enumerate(receiver)
-        ]
-        replay_observation = timing_interop.validate_backup_group_timing(
-            replay_sender,
-            replay_complete,
-            replay_receiver,
-            3,
-            1_000_000,
-            1_200,
-            960_000,
-            unacknowledged_replay=True,
-        )
-        self.assertEqual(replay_observation["receiver_member_transitions"], 5)
-        self.assertEqual(
-            replay_observation["receiver_observed_members"], [20, 21]
-        )
-
-        mutations = (
-            ("missing failover", sender.rsplit("\n", 1)[0], receiver),
-            (
-                "early sender transition",
-                sender.replace(
-                    '"running_member": 10, "member_count": 2}',
-                    '"running_member": 11, "member_count": 2}',
-                    1,
-                ),
-                receiver,
-            ),
-            (
-                "no receiver transition",
-                sender,
-                [
-                    {**event, "group_running_member": 20}
-                    for event in receiver
-                ],
-            ),
-            (
-                "receiver returned to primary after failover",
-                sender,
-                [
-                    event
-                    if index != 4
-                    else {**event, "group_running_member": 20}
-                    for index, event in enumerate(receiver)
-                ],
-            ),
-            (
-                "receiver settled after failover",
-                sender,
-                [
-                    {
-                        **event,
-                        "group_running_member": 20 if index < 4 else 21,
-                    }
-                    for index, event in enumerate(receiver)
-                ],
-            ),
-            (
-                "ambiguous receiver members",
-                sender,
-                [
-                    event
-                    if index != 1
-                    else {**event, "group_member_count": 3}
-                    for index, event in enumerate(receiver)
-                ],
-            ),
-        )
-        for name, mutated_sender, mutated_receiver in mutations:
-            with self.subTest(name=name):
+    def test_backup_group_timing_rejects_inconsistent_status_and_missing_wire_evidence(self):
+        sender, complete, receiver = self._backup_group_timing_evidence()
+        for changed in (
+            {"group_running_member": 22},
+            {"group_running_member": 0},
+            {"group_running_member_count": 0},
+            {"group_running_member_count": True},
+            {"group_running_member_count": 2, "group_running_member": 20},
+            {"group_running_member_count": 2, "group_running_member": 0,
+             "group_member_count": 1},
+            {"group_member_count": 3},
+            {"packet_sequence": 200},
+            {"message_number": 0},
+        ):
+            with self.subTest(changed=changed):
                 with self.assertRaises(RuntimeError):
                     timing_interop.validate_backup_group_timing(
-                        mutated_sender,
-                        complete,
-                        mutated_receiver,
-                        3,
-                        1_000_000,
-                        1_200,
-                        960_000,
-                    )
+                        sender, complete, [{**receiver[0], **changed}, *receiver[1:]],
+                        3, 1_000_000, 1_200, 960_000,
+                        relay=self._backup_group_timing_relay())
+        for mutation in ("missing primary prefix", "missing backup suffix",
+                         "foreign member", "same member", "missing relay",
+                         "relay failure", "incomplete trace", "extra DATA"):
+            with self.subTest(mutation=mutation):
+                relay = self._backup_group_timing_relay()
+                if mutation == "missing primary prefix":
+                    relay.backup.packets.insert(0, {**relay.primary.packets.pop(),
+                                                   "destination_socket_id": 21})
+                elif mutation == "missing backup suffix":
+                    relay.backup.packets.pop()
+                elif mutation == "foreign member":
+                    relay.primary.packets[0]["destination_socket_id"] = 22
+                elif mutation == "same member":
+                    for packet in relay.backup.packets:
+                        packet["destination_socket_id"] = 20
+                elif mutation == "missing relay":
+                    relay = None
+                elif mutation == "relay failure":
+                    relay.primary.error = lambda: RuntimeError("relay failed")
+                elif mutation == "incomplete trace":
+                    relay.primary.data_packet_observations = mock.Mock(
+                        side_effect=RuntimeError("trace incomplete"))
+                else:
+                    relay.backup.packets.append({"sequence": 200, "message_number": 7,
+                                                 "destination_socket_id": 21})
+                with self.assertRaises(RuntimeError):
+                    timing_interop.validate_backup_group_timing(
+                        sender, complete, receiver, 3, 1_000_000, 1_200, 960_000,
+                        relay=relay)
+        for output in (sender.rsplit("\n", 1)[0],
+                       sender.replace('"running_member": 10', '"running_member": 11', 1)):
+            with self.assertRaises(RuntimeError):
+                timing_interop.validate_backup_group_timing(
+                    output, complete, receiver, 3, 1_000_000, 1_200, 960_000,
+                    relay=self._backup_group_timing_relay())
 
     def test_unacknowledged_group_replay_requires_exact_reencrypted_prefix(
         self,
@@ -2676,6 +2653,20 @@ class LiveTimingInteropTests(unittest.TestCase):
             timing_interop.validate_group_security_trace(
                 timing_interop.SecurityProfile(), GroupRelay()
             )
+
+        clear_relay = GroupRelay()
+        for path in (clear_relay.primary, clear_relay.backup):
+            path.trace = json.dumps({"event": "srt_data_key_transition_trace",
+                                     "key_selection": 0})
+        clear_observation = timing_interop.validate_group_security_trace(
+            timing_interop.SecurityProfile(), clear_relay)
+        self.assertIs(clear_observation["encrypted"], False)
+        self.assertEqual(clear_observation["data_key_transitions"], 0)
+        clear_relay.primary.trace = json.dumps({
+            "event": "srt_data_key_transition_trace", "key_selection": False})
+        with self.assertRaises(RuntimeError):
+            timing_interop.validate_group_security_trace(
+                timing_interop.SecurityProfile(), clear_relay)
 
     def test_rendezvous_trace_requires_roles_and_both_conclusions(self) -> None:
         class Relay:

@@ -874,8 +874,8 @@ int run(const Configuration& configuration)
                 if (running_group_member_count == 1U) {
                     running_group_member = member.id;
                 } else {
-                    // Haivision exposes every directionally RUNNING member,
-                    // but not which one supplied this receive result. Keep
+                    // RUNNING reports directional activity, not which member
+                    // supplied this receive result. Keep
                     // that limitation explicit instead of inventing source
                     // attribution from list order.
                     running_group_member = SRT_INVALID_SOCK;
