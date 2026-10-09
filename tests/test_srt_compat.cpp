@@ -2227,24 +2227,24 @@ void check_connected_local_name(
 
 } // namespace
 
-TEST(srt_compat_connected_local_name_preserves_ipv4_shared_binding)
+TEST(srt_compat_connection_local_name_preserves_ipv4_shared_binding)
 {
     check_connected_local_name(robotweax::srt::IpAddressFamily::ipv4, false);
 }
 
-TEST(srt_compat_connected_local_name_preserves_ipv6_shared_binding)
+TEST(srt_compat_connection_local_name_preserves_ipv6_shared_binding)
 {
     SKIP_WITHOUT_IPV6_LOOPBACK();
     check_connected_local_name(robotweax::srt::IpAddressFamily::ipv6, false);
 }
 
-TEST(srt_compat_connected_local_name_preserves_dual_stack_shared_binding)
+TEST(srt_compat_connection_local_name_preserves_dual_stack_shared_binding)
 {
     SKIP_WITHOUT_IPV6_LOOPBACK();
     check_connected_local_name(robotweax::srt::IpAddressFamily::ipv6, true);
 }
 
-TEST(srt_compat_connected_local_name_is_per_connection_on_dual_stack_channel)
+TEST(srt_compat_connection_local_name_is_per_connection_on_dual_stack_channel)
 {
     SKIP_WITHOUT_IPV6_LOOPBACK();
     check_connected_local_name(
@@ -2344,18 +2344,18 @@ void check_rendezvous_local_name(robotweax::srt::IpAddressFamily family)
 
 } // namespace
 
-TEST(srt_compat_rendezvous_local_name_resolves_ipv4_wildcard)
+TEST(srt_compat_connection_local_name_rendezvous_resolves_ipv4_wildcard)
 {
     check_rendezvous_local_name(robotweax::srt::IpAddressFamily::ipv4);
 }
 
-TEST(srt_compat_rendezvous_local_name_resolves_ipv6_wildcard)
+TEST(srt_compat_connection_local_name_rendezvous_resolves_ipv6_wildcard)
 {
     SKIP_WITHOUT_IPV6_LOOPBACK();
     check_rendezvous_local_name(robotweax::srt::IpAddressFamily::ipv6);
 }
 
-TEST(srt_compat_local_name_snapshot_requires_admitted_connection)
+TEST(srt_compat_connection_local_name_snapshot_requires_admitted_connection)
 {
     using namespace robotweax::srt;
     using namespace robotweax::srt::compat;

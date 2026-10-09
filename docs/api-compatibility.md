@@ -241,7 +241,10 @@ family, IPv6-only mode, traffic class and configured device. Resolution uses one
 short-lived UDP socket without sending data or connecting the shared transport
 channel. If resolution fails, `srt_getsockname` retains the bound address and the
 connection continues normally. Shared sockets retain independent snapshots and
-continue using the same original binding. A snapshot describes the outgoing
+continue using the same original binding. Retain the preconnection binding
+address when adding another socket to a shared wildcard endpoint; the connected
+route snapshot is not a replacement for that binding identity.
+A snapshot describes the outgoing
 route at setup, not a per-packet source, incoming destination, NAT-visible address,
 or persistent interface identity; it does not update after a route change.
 Applications that need to select an interface should explicitly bind it or use
