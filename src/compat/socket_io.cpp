@@ -737,7 +737,12 @@ int get_socket_name(
     if (!socket.has_local_endpoint || socket.channel == nullptr) {
         return fail(SRT_ENOCONN);
     }
-    return write_ip_endpoint(socket.local_endpoint, name, name_size);
+    const auto endpoint = socket.has_connected_local_endpoint
+            && (socket.state == SRTS_CONNECTED || socket.state == SRTS_BROKEN
+                || socket.state == SRTS_CLOSING)
+        ? socket.connected_local_endpoint
+        : socket.local_endpoint;
+    return write_ip_endpoint(endpoint, name, name_size);
 }
 
 } // namespace robotweax::srt::compat

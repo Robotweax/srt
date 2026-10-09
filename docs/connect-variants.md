@@ -11,7 +11,8 @@ addresses and their shared IPv4 or IPv6 family before changing socket state.
 For an individual socket it then performs the compatible bind-then-connect
 sequence. A zero source port asks the operating system to select the port;
 the source address, scope, native options, shared-binding rules, and resulting
-`srt_getsockname` observation use the normal binding implementation.
+`srt_getsockname` observation use the normal binding implementation and the
+[connection-local address snapshot contract](api-compatibility.md#addressing-and-udp-ownership).
 
 For a Broadcast or Backup group the same call prepares one endpoint and uses
 the regular managed-member connection path. The return value is therefore `0`

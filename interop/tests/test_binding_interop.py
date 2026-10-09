@@ -22,7 +22,7 @@ class BindingInteropUnitTests(unittest.TestCase):
             robotweax, reference
         )
 
-        self.assertEqual(len(scenarios), 6)
+        self.assertEqual(len(scenarios), 10)
         self.assertEqual(
             {scenario.caller for scenario in scenarios},
             {robotweax, reference},
@@ -55,15 +55,32 @@ class BindingInteropUnitTests(unittest.TestCase):
             robotweax, reference
         )
 
-        self.assertEqual(len(scenarios), 4)
+        self.assertEqual(len(scenarios), 10)
         self.assertEqual(
             {scenario.caller for scenario in scenarios},
             {robotweax, reference},
         )
         self.assertEqual(
             {scenario.local_host for scenario in scenarios},
-            {"127.0.0.1", "::1"},
+            {"127.0.0.1", "::1", "0.0.0.0", "::"},
         )
+
+    def test_connected_addresses_reject_invalid_values(self) -> None:
+        validate = run_binding_interop.validate_local_host
+        for actual, expected in (
+            ("127.0.0.1", "127.0.0.1"),
+            ("0:0:0:0:0:0:0:1", "::1"),
+            ("::ffff:7f00:1", "::ffff:127.0.0.1"),
+        ):
+            validate({"local_host": actual}, "local_host", expected, "peer")
+        for invalid in (
+            None, "0.0.0.0", "::", "::1", "invalid", 2130706433, True,
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(RuntimeError, "connected local address"):
+                    validate(
+                        {"local_host": invalid}, "local_host", "127.0.0.1", "ipv4"
+                    )
 
     def test_shared_command_preserves_arbitrary_and_ts_sized_chunks(
         self,

@@ -228,6 +228,35 @@ The released boundary supports:
   socket; and
 - release of the acquired native descriptor with the final SRT owner.
 
+`srt_getsockname` reports the binding before connection admission and on
+listeners. After successful caller, accepted, or rendezvous setup, a wildcard
+binding reports a connection-local outgoing-route address snapshot when the OS
+can resolve one. The original SRT port is retained, including IPv6 scope and
+IPv4-mapped IPv6 representation. Explicit non-wildcard bindings keep their
+configured address. Broken connections retain their last successful snapshot;
+closed handles fail with `SRT_EINVSOCK`.
+
+The snapshot is resolved once at connection admission with the socket's address
+family, IPv6-only mode, traffic class and configured device. Resolution uses one
+short-lived UDP socket without sending data or connecting the shared transport
+channel. If resolution fails, `srt_getsockname` retains the bound address and the
+connection continues normally. Shared sockets retain independent snapshots and
+continue using the same original binding. Retain the preconnection binding
+address when adding another socket to a shared wildcard endpoint; the connected
+route snapshot is not a replacement for that binding identity.
+A snapshot describes the outgoing
+route at setup, not a per-packet source, incoming destination, NAT-visible address,
+or persistent interface identity; it does not update after a route change.
+Applications that need to select an interface should explicitly bind it or use
+`SRTO_BINDTODEVICE` where supported.
+
+This behavior matches the concrete connection-address readback observed through
+an independently authored public-API probe against Haivision SRT 1.5.7 on IPv4,
+IPv6 and dual-stack loopback, including shared and acquired sockets. The
+[reference API documentation](https://github.com/Haivision/srt/blob/v1.5.7/docs/API/API-functions.md#srt_getsockname)
+describes the bound-address contract, so the connection-route snapshot is a
+version-scoped compatibility behavior rather than a wire requirement.
+
 On Linux, `srt_bind_acquire` also accepts distinct native UDP sockets with
 `SO_REUSEPORT` enabled on the same exact local endpoint, IPv6-only mode, and
 configured device. Each adopted socket retains its own datagram channel;

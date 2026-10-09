@@ -2062,6 +2062,343 @@ TEST(srt_compat_rejection_diagnostics_match_the_public_contract)
     REQUIRE_EQ(srt_cleanup(), 0);
 }
 
+namespace {
+
+void check_connected_local_name(
+    robotweax::srt::IpAddressFamily family, bool mapped, bool mixed = false)
+{
+    using namespace robotweax::srt;
+    using namespace robotweax::srt::compat;
+    for (const bool explicit_address : {false, true}) {
+        if ((mapped || mixed) && explicit_address)
+            continue;
+        struct OwnedSockets {
+            std::vector<SRTSOCKET> sockets;
+            ~OwnedSockets()
+            {
+                for (auto it = sockets.rbegin(); it != sockets.rend(); ++it)
+                    (void)srt_close(*it);
+                (void)srt_cleanup();
+            }
+            SRTSOCKET create()
+            {
+                const auto socket = srt_create_socket();
+                REQUIRE(socket != SRT_INVALID_SOCK);
+                sockets.push_back(socket);
+                const std::int32_t timeout = 2'000;
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_CONNTIMEO, &timeout,
+                               sizeof(timeout)),
+                    0);
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_RCVTIMEO, &timeout,
+                               sizeof(timeout)),
+                    0);
+                return socket;
+            }
+        } owned;
+        const auto listener = owned.create();
+        const auto first = owned.create();
+        auto wildcard = family == IpAddressFamily::ipv4
+            ? IpEndpoint::any()
+            : IpEndpoint::ipv6_any();
+        auto concrete = family == IpAddressFamily::ipv4
+            ? IpEndpoint::loopback()
+            : IpEndpoint::ipv6_loopback();
+        if (mapped) {
+            concrete = IpEndpoint::ipv6_any();
+            concrete.address[10] = concrete.address[11] = 0xff;
+            concrete.address[12] = 127;
+            concrete.address[15] = 1;
+        }
+        const auto bind = [&](SRTSOCKET socket, IpEndpoint address) {
+            if (family == IpAddressFamily::ipv6) {
+                const std::int32_t ipv6_only = (mapped || mixed) ? 0 : 1;
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_IPV6ONLY, &ipv6_only,
+                               sizeof(ipv6_only)),
+                    0);
+            }
+            sockaddr_storage native {};
+            int size = sizeof(native);
+            REQUIRE_EQ(write_ip_endpoint(address,
+                           reinterpret_cast<sockaddr*>(&native), &size),
+                0);
+            REQUIRE_EQ(
+                srt_bind(socket, reinterpret_cast<sockaddr*>(&native), size),
+                0);
+        };
+        const auto name = [&](SRTSOCKET socket) {
+            sockaddr_storage native {};
+            int size = sizeof(native);
+            REQUIRE_EQ(srt_getsockname(
+                           socket, reinterpret_cast<sockaddr*>(&native), &size),
+                0);
+            REQUIRE_EQ(size,
+                family == IpAddressFamily::ipv4
+                    ? static_cast<int>(sizeof(sockaddr_in))
+                    : static_cast<int>(sizeof(sockaddr_in6)));
+            IpEndpoint address;
+            REQUIRE_EQ(decode_ip_endpoint(reinterpret_cast<sockaddr*>(&native),
+                           size, address, true),
+                0);
+            return address;
+        };
+        bind(listener, wildcard);
+        REQUIRE_EQ(srt_listen(listener, 4), 0);
+        const auto listener_binding = name(listener);
+        REQUIRE(listener_binding.is_wildcard());
+        auto destination = concrete;
+        destination.port = listener_binding.port;
+        bind(first, explicit_address ? concrete : wildcard);
+        const auto binding = name(first);
+        REQUIRE_EQ(binding.is_wildcard(), !explicit_address);
+        const auto connect_and_accept = [&](SRTSOCKET caller) {
+            auto caller_destination = destination;
+            if (mixed && caller != first) {
+                caller_destination.address.fill(0);
+                caller_destination.address[10] =
+                    caller_destination.address[11] = 0xff;
+                caller_destination.address[12] = 127;
+                caller_destination.address[15] = 1;
+            }
+            sockaddr_storage native {};
+            int size = sizeof(native);
+            REQUIRE_EQ(write_ip_endpoint(caller_destination,
+                           reinterpret_cast<sockaddr*>(&native), &size),
+                0);
+            REQUIRE_EQ(
+                srt_connect(caller, reinterpret_cast<sockaddr*>(&native), size),
+                0);
+            const auto accepted = srt_accept(listener, nullptr, nullptr);
+            REQUIRE(accepted != SRT_INVALID_SOCK);
+            owned.sockets.push_back(accepted);
+            const auto local = name(caller);
+            REQUIRE_EQ(local.address, caller_destination.address);
+            REQUIRE_EQ(local.family, family);
+            REQUIRE_EQ(local.port, binding.port);
+            const auto accepted_local = name(accepted);
+            REQUIRE_EQ(accepted_local.address, caller_destination.address);
+            REQUIRE_EQ(accepted_local.port, listener_binding.port);
+            return accepted;
+        };
+        const auto first_accepted = connect_and_accept(first);
+        REQUIRE_EQ(name(listener), listener_binding);
+        // Binding again after connection publication must still find the
+        // original wildcard channel, not the connection's route snapshot.
+        const auto second = owned.create();
+        bind(second, binding);
+        REQUIRE_EQ(name(second), binding);
+        const auto first_record = SocketRegistry::instance().find(first);
+        const auto second_record = SocketRegistry::instance().find(second);
+        REQUIRE_EQ(first_record->local_endpoint, binding);
+        REQUIRE_EQ(first_record->channel, second_record->channel);
+        REQUIRE_EQ(
+            first_record->channel->socket.local_endpoint().endpoint, binding);
+        const auto second_accepted = connect_and_accept(second);
+        REQUIRE_EQ(name(first).address, concrete.address);
+        const auto second_name = name(second);
+        if (mixed)
+            REQUIRE(second_name.address != name(first).address);
+        for (const auto pair : {std::pair {first, first_accepted},
+                 std::pair {second, second_accepted}}) {
+            constexpr char payload[] = "shared local-name payload";
+            REQUIRE_EQ(srt_sendmsg(pair.first, payload, sizeof(payload), -1, 1),
+                static_cast<int>(sizeof(payload)));
+            std::array<char, 1'500> received {};
+            REQUIRE_EQ(
+                srt_recvmsg(pair.second, received.data(), received.size()),
+                static_cast<int>(sizeof(payload)));
+            REQUIRE_EQ(
+                std::memcmp(received.data(), payload, sizeof(payload)), 0);
+        }
+        REQUIRE_EQ(srt_close(first), 0);
+        REQUIRE_EQ(name(second), second_name);
+        constexpr char reverse_payload[] = "surviving reverse path";
+        REQUIRE_EQ(srt_sendmsg(second_accepted, reverse_payload,
+                       sizeof(reverse_payload), -1, 1),
+            static_cast<int>(sizeof(reverse_payload)));
+        std::array<char, 1'500> reverse_received {};
+        REQUIRE_EQ(srt_recvmsg(second, reverse_received.data(),
+                       reverse_received.size()),
+            static_cast<int>(sizeof(reverse_payload)));
+        REQUIRE_EQ(std::memcmp(reverse_received.data(), reverse_payload,
+                       sizeof(reverse_payload)),
+            0);
+    }
+}
+
+} // namespace
+
+TEST(srt_compat_connection_local_name_preserves_ipv4_shared_binding)
+{
+    check_connected_local_name(robotweax::srt::IpAddressFamily::ipv4, false);
+}
+
+TEST(srt_compat_connection_local_name_preserves_ipv6_shared_binding)
+{
+    SKIP_WITHOUT_IPV6_LOOPBACK();
+    check_connected_local_name(robotweax::srt::IpAddressFamily::ipv6, false);
+}
+
+TEST(srt_compat_connection_local_name_preserves_dual_stack_shared_binding)
+{
+    SKIP_WITHOUT_IPV6_LOOPBACK();
+    check_connected_local_name(robotweax::srt::IpAddressFamily::ipv6, true);
+}
+
+TEST(srt_compat_connection_local_name_is_per_connection_on_dual_stack_channel)
+{
+    SKIP_WITHOUT_IPV6_LOOPBACK();
+    check_connected_local_name(
+        robotweax::srt::IpAddressFamily::ipv6, false, true);
+}
+
+namespace {
+
+void check_rendezvous_local_name(robotweax::srt::IpAddressFamily family)
+{
+    using namespace robotweax::srt;
+    using namespace robotweax::srt::compat;
+    struct Owned {
+        SRTSOCKET left = srt_create_socket();
+        SRTSOCKET right = srt_create_socket();
+        ~Owned()
+        {
+            (void)srt_close(left);
+            (void)srt_close(right);
+            (void)srt_cleanup();
+        }
+    } owned;
+    REQUIRE(owned.left != SRT_INVALID_SOCK && owned.right != SRT_INVALID_SOCK);
+    std::array<sockaddr_storage, 2> destinations {};
+    std::array<int, 2> sizes {};
+    const std::array<SRTSOCKET, 2> handles {owned.left, owned.right};
+    for (std::size_t i = 0; i < handles.size(); ++i) {
+        const bool rendezvous = true;
+        const std::int32_t timeout = 200;
+        if (family == IpAddressFamily::ipv6) {
+            const std::int32_t ipv6_only = 1;
+            REQUIRE_EQ(srt_setsockflag(handles[i], SRTO_IPV6ONLY, &ipv6_only,
+                           sizeof(ipv6_only)),
+                0);
+        }
+        REQUIRE_EQ(srt_setsockflag(handles[i], SRTO_RENDEZVOUS, &rendezvous,
+                       sizeof(rendezvous)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(
+                       handles[i], SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+            0);
+        auto endpoint = family == IpAddressFamily::ipv4
+            ? IpEndpoint::any()
+            : IpEndpoint::ipv6_any();
+        sizes[i] = sizeof(sockaddr_storage);
+        REQUIRE_EQ(
+            write_ip_endpoint(endpoint,
+                reinterpret_cast<sockaddr*>(&destinations[i]), &sizes[i]),
+            0);
+        REQUIRE_EQ(srt_bind(handles[i],
+                       reinterpret_cast<sockaddr*>(&destinations[i]), sizes[i]),
+            0);
+        REQUIRE_EQ(
+            srt_getsockname(handles[i],
+                reinterpret_cast<sockaddr*>(&destinations[i]), &sizes[i]),
+            0);
+        REQUIRE_EQ(
+            decode_ip_endpoint(reinterpret_cast<sockaddr*>(&destinations[i]),
+                sizes[i], endpoint, true),
+            0);
+        auto destination = family == IpAddressFamily::ipv4
+            ? IpEndpoint::loopback(endpoint.port)
+            : IpEndpoint::ipv6_loopback(endpoint.port);
+        REQUIRE_EQ(
+            write_ip_endpoint(destination,
+                reinterpret_cast<sockaddr*>(&destinations[i]), &sizes[i]),
+            0);
+    }
+    int left_result = SRT_ERROR;
+    std::thread left([&] {
+        left_result = srt_connect(owned.left,
+            reinterpret_cast<sockaddr*>(&destinations[1]), sizes[1]);
+    });
+    const int right_result = srt_connect(
+        owned.right, reinterpret_cast<sockaddr*>(&destinations[0]), sizes[0]);
+    left.join();
+    REQUIRE_EQ(left_result, 0);
+    REQUIRE_EQ(right_result, 0);
+    for (std::size_t i = 0; i < handles.size(); ++i) {
+        sockaddr_storage name {};
+        int size = sizeof(name);
+        REQUIRE_EQ(srt_getsockname(
+                       handles[i], reinterpret_cast<sockaddr*>(&name), &size),
+            0);
+        IpEndpoint actual;
+        IpEndpoint expected;
+        REQUIRE_EQ(decode_ip_endpoint(
+                       reinterpret_cast<sockaddr*>(&name), size, actual, true),
+            0);
+        REQUIRE_EQ(
+            decode_ip_endpoint(reinterpret_cast<sockaddr*>(&destinations[i]),
+                sizes[i], expected, true),
+            0);
+        REQUIRE_EQ(actual, expected);
+    }
+}
+
+} // namespace
+
+TEST(srt_compat_connection_local_name_rendezvous_resolves_ipv4_wildcard)
+{
+    check_rendezvous_local_name(robotweax::srt::IpAddressFamily::ipv4);
+}
+
+TEST(srt_compat_connection_local_name_rendezvous_resolves_ipv6_wildcard)
+{
+    SKIP_WITHOUT_IPV6_LOOPBACK();
+    check_rendezvous_local_name(robotweax::srt::IpAddressFamily::ipv6);
+}
+
+TEST(srt_compat_connection_local_name_snapshot_requires_admitted_connection)
+{
+    using namespace robotweax::srt;
+    using namespace robotweax::srt::compat;
+    SocketRecord socket;
+    socket.channel = std::make_shared<DatagramChannel>();
+    socket.has_local_endpoint = true;
+    socket.local_endpoint = IpEndpoint::any(12'345);
+    socket.has_connected_local_endpoint = true;
+    socket.connected_local_endpoint = IpEndpoint::loopback(12'345);
+    for (const auto state : {SRTS_OPENED, SRTS_CONNECTING, SRTS_LISTENING,
+             SRTS_CONNECTED, SRTS_BROKEN, SRTS_CLOSING}) {
+        socket.state = state;
+        sockaddr_in address {};
+        int size = sizeof(address);
+        REQUIRE_EQ(get_socket_name(
+                       socket, reinterpret_cast<sockaddr*>(&address), &size),
+            0);
+        const bool admitted = state == SRTS_CONNECTED || state == SRTS_BROKEN
+            || state == SRTS_CLOSING;
+        REQUIRE_EQ(ntohl(address.sin_addr.s_addr),
+            admitted ? INADDR_LOOPBACK : INADDR_ANY);
+    }
+    socket.has_connected_local_endpoint = false;
+    socket.state = SRTS_CONNECTED;
+    sockaddr_in address {};
+    int size = sizeof(address);
+    REQUIRE_EQ(
+        get_socket_name(socket, reinterpret_cast<sockaddr*>(&address), &size),
+        0);
+    REQUIRE_EQ(ntohl(address.sin_addr.s_addr), INADDR_ANY);
+    size = 1;
+    REQUIRE_EQ(
+        get_socket_name(socket, reinterpret_cast<sockaddr*>(&address), &size),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    socket.state = SRTS_CLOSED;
+    size = sizeof(address);
+    REQUIRE_EQ(
+        get_socket_name(socket, reinterpret_cast<sockaddr*>(&address), &size),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
+}
+
 TEST(srt_compat_bind_and_local_name_follow_socket_state)
 {
     sockaddr_in address{};

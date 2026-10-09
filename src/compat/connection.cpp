@@ -1,4 +1,5 @@
 #include "compat/connection.hpp"
+#include "local_endpoint_probe.hpp"
 
 #include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/handshake.hpp"
@@ -725,6 +726,21 @@ struct ConnectedNegotiation {
     socket.public_options.receive_buffer_bytes = *receive_bytes;
     socket.peer_endpoint = peer;
     socket.has_peer_endpoint = true;
+    // Preserve the wildcard binding shared by other logical sockets. Resolve
+    // once per admitted connection, using its family and routing options.
+    if (socket.has_local_endpoint && socket.local_endpoint.is_wildcard()) {
+        const auto local = ::robotweax::srt::detail::probe_local_endpoint(peer,
+            socket.effective_ipv6_only,
+            socket.public_options.ip_type_of_service,
+            std::string_view {socket.public_options.bound_device.data(),
+                socket.public_options.bound_device_size});
+        if (local && local.endpoint.family == socket.local_endpoint.family
+            && !local.endpoint.is_wildcard()) {
+            socket.connected_local_endpoint = local.endpoint;
+            socket.connected_local_endpoint.port = socket.local_endpoint.port;
+            socket.has_connected_local_endpoint = true;
+        }
+    }
     socket.peer_protocol_socket_id = peer_socket_id;
     socket.peer_flow_window_packets = negotiation.peer_flow_window;
     socket.peer_srt_version = negotiation.peer_srt_version;
