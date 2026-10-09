@@ -39,6 +39,7 @@ def prepare(args, out):
     if platform.system() not in ("Darwin", "Linux"):
         raise ValueError("the peer currently requires POSIX/macOS")
     manifest = {"complete": False, "sources": {}, "programs": {}, "libraries": {},
+                "stream_profile": "live-continuation-v2", "periodic_nak": True,
                 "commands": [], "platform": platform.platform(), "architecture": platform.machine(),
                 "harness": identity(ROOT / "benchmarks/group_throughput_peer.cpp")}
     path = out / "build-manifest.json"
@@ -121,8 +122,8 @@ class Peer:
             raise RuntimeError(f"expected {event}, got {value}")
         return value
 
-    def go(self):
-        self.process.stdin.write("go\n")
+    def go(self, command="go"):
+        self.process.stdin.write(command + "\n")
         self.process.stdin.flush()
 
     def close(self):
@@ -154,7 +155,22 @@ def validate_result(sender, receiver, members, messages, size, mode):
                 raise ValueError("transport drop invalidates qualification")
     if sender["sha256"] != receiver["sha256"]:
         raise ValueError("sender/receiver payload SHA-256 mismatch")
-    copies = [s["unique_sent_packets"] for s in sender["member_stats"]]
+    if any(value.get("stream_profile") != "live-continuation-v2" for value in (sender, receiver)):
+        raise ValueError("unexpected stream profile")
+    for value in (sender, receiver):
+        limit = 4096 if value is sender else 8192
+        continuation = value.get("continuation_messages")
+        if not isinstance(continuation, int) or not 0 <= continuation <= limit:
+            raise ValueError("invalid continuation budget")
+    copies = []
+    for stats in sender["member_stats"]:
+        payload = stats["payload_queued_packets"]
+        continuation = stats["continuation_queued_packets"]
+        previous = stats["previous_continuation_queued_packets"]
+        if (payload > messages or continuation > sender["continuation_messages"]
+                or previous > 4096 or not payload <= stats["unique_sent_packets"] <= payload + continuation + previous):
+            raise ValueError("invalid sent copy accounting")
+        copies.append(payload)
     if sum(copies) < messages or (mode == "broadcast" and any(n != messages for n in copies)):
         raise ValueError("missing expected sent copies")
     span = receiver["delivery_span_seconds"]
@@ -169,22 +185,36 @@ def validate_result(sender, receiver, members, messages, size, mode):
             "retransmitted_packets": sum(s["retransmitted_packets"] for s in sender["member_stats"])}
 
 
-def case(program, mode, members, messages, size, log_prefix, timeout):
+def case(program, mode, members, messages, size, log_prefix, timeout, relay_factory=None):
     peers = []
+    relay = None
     deadline = time.monotonic() + timeout
     base = [mode, "0", str(members), str(messages), str(size)]
     try:
         receiver = Peer([str(program), "receive", *base], log_prefix.with_name(log_prefix.name + "-receive"))
         peers.append(receiver)
-        base[1] = str(receiver.expect("listening", deadline)["port"])
+        port = receiver.expect("listening", deadline)["port"]
+        if relay_factory is not None:
+            relay = relay_factory(port)
+            port = relay.port
+        base[1] = str(port)
         sender = Peer([str(program), "send", *base], log_prefix.with_name(log_prefix.name + "-send"))
         peers.append(sender)
-        for event in ("ready", "warm", "armed"):
-            for peer in reversed(peers):
-                peer.expect(event, deadline)
-            for peer in peers:
-                peer.go()
+        for peer in reversed(peers):
+            peer.expect("ready", deadline)
+        for peer in peers:
+            peer.go()
+        receiver.expect("warm", deadline)
+        sender.go("stop")
+        sender.expect("warm", deadline)
+        for peer in peers:
+            peer.go()
+        for peer in reversed(peers):
+            peer.expect("armed", deadline)
+        for peer in peers:
+            peer.go()
         receive_result = receiver.expect("result", deadline)
+        sender.go("stop")
         send_result = sender.expect("result", deadline)
         metrics = validate_result(send_result, receive_result, members, messages, size, mode)
         for peer in peers:
@@ -192,10 +222,15 @@ def case(program, mode, members, messages, size, log_prefix, timeout):
         for peer in peers:
             if peer.process.wait(timeout=max(0.001, deadline - time.monotonic())) != 0:
                 raise RuntimeError("peer exited unsuccessfully")
-        return {"qualified": True, "sender": send_result, "receiver": receive_result, "metrics": metrics}
+        result = {"qualified": True, "sender": send_result, "receiver": receive_result, "metrics": metrics}
+        if relay is not None:
+            result["forced_tail_losses"] = relay.validate(members)
+        return result
     finally:
         for peer in peers:
             peer.close()
+        if relay is not None:
+            relay.close()
 
 
 def summarize(cases):
@@ -240,9 +275,10 @@ def main(argv=None):
         parser.error("provide both sources or a prepared directory")
     out = args.output_directory.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    report = {"schema_version": 1, "complete": False, "cases": [], "platform": platform.platform(),
+    report = {"schema_version": 2, "complete": False, "cases": [], "platform": platform.platform(),
               "settings": {"members": counts, "sizes": sizes, "messages": args.messages, "iterations": args.iterations,
-                           "latency_ms": 120, "pending_packets_per_member": 64, "warmup_messages": 256,
+                           "stream_profile": "live-continuation-v2", "periodic_nak": True,
+                           "continuation_limit": 4096, "latency_ms": 120, "pending_packets_per_member": 64, "warmup_messages": 256,
                            "encryption": "none", "host": "loopback", "timeout_seconds": args.timeout_seconds},
               "controller": identity(Path(__file__)), "architecture": platform.machine(),
               "fd_limit": list(resource.getrlimit(resource.RLIMIT_NOFILE))}
@@ -255,6 +291,8 @@ def main(argv=None):
             raise ValueError("prepared manifest belongs to a different host platform")
         if not manifest["complete"]:
             raise ValueError("incomplete build manifest")
+        if manifest.get("stream_profile") != "live-continuation-v2" or manifest.get("periodic_nak") is not True:
+            raise ValueError("prepared manifest uses a different Live stream profile")
         if manifest["harness"]["sha256"] != identity(ROOT / "benchmarks/group_throughput_peer.cpp")["sha256"]:
             raise ValueError("prepared harness differs from current source")
         for label in ("before", "after"):
