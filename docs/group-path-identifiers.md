@@ -36,7 +36,9 @@ if (!options || srt_config_add(options, SRTO_ROBOTWEAX_PATHID,
 
 The endpoint snapshot owns its bytes. An empty value clears a label before
 setup. A missing label in required mode, or a label with required mode disabled,
-fails locally with `SRT_EINVPARAM`. Setting a label on a group handle returns
+is rejected before connecting, with `SRT_EINVPARAM` in the endpoint’s
+`errorcode`. If no member starts, the group call returns `SRT_ECONNSETUP`.
+Setting a label on a group handle returns
 `SRT_EINVOP`; it has no group-wide default. Configure endpoint labels separately.
 The required policy cannot change after the group has opened. Socket label and
 policy setters cannot change an established, connecting or retained broken
