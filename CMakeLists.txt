@@ -967,6 +967,10 @@ if(ROBOTWEAX_SRT_BUILD_TOOLS)
     target_link_libraries(robotweax_srt_handshake_probe PRIVATE RobotweaxSRT::srt)
     target_compile_features(robotweax_srt_handshake_probe PRIVATE cxx_std_20)
 
+    add_executable(robotweax_srt_rejection_probe interop/rejection_probe.cpp)
+    target_link_libraries(robotweax_srt_rejection_probe PRIVATE RobotweaxSRT::srt)
+    target_compile_features(robotweax_srt_rejection_probe PRIVATE cxx_std_20)
+
     add_executable(robotweax_srt_interop_peer interop/api_peer.cpp)
     target_link_libraries(
         robotweax_srt_interop_peer PRIVATE RobotweaxSRT::srt)

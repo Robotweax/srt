@@ -641,3 +641,60 @@ peer exits in both directions. These File assertions are unchanged.
 
 See [Live limitations](limitations.md#live-recovery-with-periodic-naks) and
 [File timeout recovery](file-mode.md#retransmission-timeout-and-recovery).
+
+## Rejection timing diagnostics
+
+Build `robotweax_srt_rejection_probe` with `ROBOTWEAX_SRT_BUILD_TOOLS=ON` in a
+static development build. The independently authored source
+`interop/rejection_probe.cpp` uses only the public SRT C API; compile the same
+source against a separately installed reference library for a black-box
+comparison:
+
+```sh
+c++ -std=c++20 interop/rejection_probe.cpp \
+  $(pkg-config --cflags --libs srt) -o reference-rejection-probe
+```
+
+Use an IPv4 loopback listener with a deliberate configuration mismatch and an
+otherwise valid live configuration. Arguments are the loopback address, listener
+port, number of attempts, expected numeric rejection reason, and delay between
+attempts. Optional arguments name a passphrase environment variable (`-` means
+no passphrase) and select the caller's message API (`0` or `1`, default `1`). The
+probe never prints the passphrase. For example, against a listener requiring a
+passphrase, check `SRT_REJ_UNSECURE` (11) with no caller secret:
+
+```sh
+build/robotweax_srt_rejection_probe 127.0.0.1 9000 30 11 100 \
+  > robotweax-attempts.csv 2> robotweax-summary.txt
+./reference-rejection-probe 127.0.0.1 9000 30 11 100 \
+  > reference-attempts.csv 2> reference-summary.txt
+```
+
+For an isolated retry-amplification experiment, explicitly set the delay to `0`.
+The count is bounded to 10,000 and the probe accepts only `127.0.0.1`. Use the same
+listener configuration, count, delay, logging level, and probe source for each
+comparison. Test wrong secrets (`SRT_REJ_BADSECRET`, 10) and message API mismatch
+(`SRT_REJ_MESSAGEAPI`, 12) separately. The handshake timeout is 3,000 ms and each
+epoll wait is bounded to 5,000 ms.
+
+Each CSV row records the connect result and error, epoll result and error,
+matching descriptor, event flags, socket state, rejection reason, and elapsed
+microseconds from connect invocation to epoll return. An attempt is valid only
+when connect starts successfully and epoll reports this socket with `ERR`, state
+`BROKEN`, and the expected reason. The probe checks option setup and resource
+release, stops on the first unexpected result, and emits a timing summary only
+after every attempt and final cleanup succeed. It does not register a completion
+callback, so callback overhead does not affect this epoll comparison.
+
+Retain the CSV and summary alongside full library revisions, compiler/build
+options, OS/kernel, CPU, listener command with secrets redacted, and listener
+logs. The reported campaign rate includes socket setup, close, CSV output, and
+configured retry delays; it is distinct from the per-attempt failure latency.
+An observed reference latency is version- and environment-scoped evidence.
+Robotweax applies the [10 ms caller rejection floor](api-compatibility.md#error-contract)
+as an explicit compatibility policy; compare every successful rejection row
+against that floor as well as its final state and reason. To explain a roughly 250 ms interval,
+use a redacted packet capture to distinguish handshake retransmission from
+listener admission or application retry policy. Warning-rate suppression alone
+does not demonstrate network throttling. See the
+[reconnect contract](api-compatibility.md#error-contract).

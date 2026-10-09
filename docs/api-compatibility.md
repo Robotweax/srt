@@ -278,6 +278,34 @@ completion callback runs. Epoll then reports the requested
 and callback error remain available. Close the failed socket and create a new
 one for another attempt. Blocking failures use the same terminal state.
 
+Nonblocking caller setup publishes a peer rejection no earlier than 10 ms from
+connect invocation, including a negative key-material response or peer
+negotiation policy failure. Until that completion deadline, the socket remains
+`SRTS_CONNECTING`. At completion, the terminal state and rejection reason are
+published before epoll notification and the completion callback. A rejection
+received after 10 ms completes immediately. Success, local validation/resource
+errors, cancellation, ordinary handshake timeout, blocking caller setup, and
+Rendezvous retain their existing timing. Close cancels deferred completion and
+preserves the callback-before-external-close-return contract.
+
+This default compatibility pacing follows black-box observations of Haivision
+SRT 1.5.7 at revision `899348d8318eb9a3c5a5b6ec43c4a1114288773a`, where a
+nonblocking rejection woke epoll after approximately 10 ms. It limits a single
+serial loop of peer-rejected nonblocking connects to roughly 100 attempts per
+second; it is not an aggregate admission limit. The runtime retains one pending result and replaces
+the handshake deadlines with one bounded scheduler timer. A completion-timer
+admission failure is reported as a resource failure. `SRTO_CONNTIMEO` governs the
+handshake timeout, not an application reconnect schedule.
+
+Apply a bounded reconnect policy independently of epoll and callback timing. For
+transient failures, use increasing delays with jitter, a maximum delay, and an
+attempt or elapsed-time limit. Treat `SRT_REJ_BADSECRET`, `SRT_REJ_UNSECURE`, and
+`SRT_REJ_MESSAGEAPI` as configuration failures: suspend automatic retries until
+the relevant configuration changes. Listener warning suppression limits log
+output, not connection attempts or rejection packets. See
+[rejection timing diagnostics](testing.md#rejection-timing-diagnostics) for a
+checked loopback probe.
+
 Do not write application logic that depends on an undocumented error from a
 different SRT implementation. Use Robotweax's public headers, this guide, and
 the manifest as the contract.
