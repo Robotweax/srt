@@ -3,21 +3,23 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import tempfile
+import socket
 import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "benchmarks"))
 import group_throughput as g
+from group_tail_loss import TailLossRelay
 
 
 class GroupThroughputTests(unittest.TestCase):
     def result(self, copies=(10, 10)):
-        return {"event": "result", "messages": 10, "members": 2,
+        return {"event": "result", "stream_profile": "live-continuation-v2", "continuation_messages": 0, "messages": 10, "members": 2,
                 "useful_bytes": 13160, "sha256": "a" * 64,
                 "seconds": 0.2, "delivery_span_seconds": 0.09,
                 "cpu_seconds": 0.01, "latency_us_p50": 120000,
                 "latency_us_p99": 121000,
-                "member_stats": [{"sent_packets": n, "unique_sent_packets": n,
+                "member_stats": [{"payload_queued_packets": n, "continuation_queued_packets": 0, "previous_continuation_queued_packets": 0, "sent_packets": n, "unique_sent_packets": n,
                                   "received_packets": 0, "sent_bytes": n * 1360,
                                   "received_bytes": 0, "retransmitted_packets": 0,
                                   "send_drops": 0, "receive_drops": 0} for n in copies]}
@@ -71,6 +73,54 @@ class GroupThroughputTests(unittest.TestCase):
         summary = g.summarize(cases)[0]
         self.assertFalse(summary["all_qualified"])
         self.assertEqual(summary["after"]["qualified_runs"], 0)
+
+    def test_continuation_packets_do_not_increase_useful_rate(self):
+        sender = self.result()
+        sender["continuation_messages"] = 3
+        for stats in sender["member_stats"]:
+            stats["continuation_queued_packets"] = 3
+            stats["unique_sent_packets"] += 3
+            stats["sent_packets"] += 3
+        self.assertAlmostEqual(self.validate(sender=sender)["useful_mbps"], 0.5264)
+        sender["member_stats"][0]["payload_queued_packets"] -= 1
+        with self.assertRaises(ValueError):
+            self.validate(sender=sender)
+
+    def test_rejects_unbounded_continuation_and_old_profiles(self):
+        for field, value in (("stream_profile", "old"), ("continuation_messages", 4097)):
+            sender = self.result()
+            sender[field] = value
+            with self.assertRaises(ValueError):
+                self.validate(sender=sender)
+        sender = self.result()
+        sender["member_stats"][0]["unique_sent_packets"] += 1
+        with self.assertRaises(ValueError):
+            self.validate(sender=sender)
+
+    def test_tail_relay_drops_once_on_each_path_and_preserves_reverse_route(self):
+        server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        server.bind(("127.0.0.1", 0))
+        server.settimeout(2)
+        relay = TailLossRelay(server.getsockname()[1], (5, 9))
+        clients = [socket.socket(socket.AF_INET, socket.SOCK_DGRAM) for _ in range(2)]
+        try:
+            for client in clients:
+                client.settimeout(2)
+                for index in (5, 9):
+                    packet = bytes(16) + index.to_bytes(8, "little")
+                    client.sendto(packet, ("127.0.0.1", relay.port))
+                    client.sendto(packet, ("127.0.0.1", relay.port))
+                    forwarded, address = server.recvfrom(100)
+                    self.assertEqual(forwarded, packet)
+                    server.sendto(b"reply", address)
+                    self.assertEqual(client.recvfrom(100)[0], b"reply")
+            self.assertEqual(relay.validate(2), 4)
+        finally:
+            relay.close()
+            server.close()
+            for client in clients:
+                client.close()
+        self.assertFalse(relay.thread.is_alive())
 
     def test_controller_reports_early_peer_exit_and_cleans_up(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -228,6 +228,30 @@ The released boundary supports:
   socket; and
 - release of the acquired native descriptor with the final SRT owner.
 
+On Linux, `srt_bind_acquire` also accepts distinct native UDP sockets with
+`SO_REUSEPORT` enabled on the same exact local endpoint, IPv6-only mode, and
+configured device. Each adopted socket retains its own datagram channel;
+`SRTO_REUSEADDR` and native `SO_REUSEADDR` alone do not permit this independent
+channel configuration. Multi-member native groups support listeners and their
+accepted connections only: caller and rendezvous `srt_connect` attempts fail
+immediately with `SRT_EINVOP`, including asynchronous connect. This restriction
+remains on a surviving channel after another member closes. A single adopted
+reuseport socket retains caller support; once it begins outgoing connection
+setup, adopting another socket at that endpoint fails with `SRT_EBINDCONFLICT`.
+A descriptor alias of an already adopted native socket
+is rejected rather than assigned a second independent channel. Overlapping
+wildcard or dual-stack bindings, and mixing
+ordinary `srt_bind` sockets with the native reuseport group, still fail with
+`SRT_EBINDCONFLICT`. Other platforms retain the single adopted-channel boundary.
+
+The application must bind every native group member before any listener starts
+accepting traffic, then keep group membership fixed until all connections have
+closed. Adding or removing a member can redirect established flows to a channel
+that does not own their connection state. Linux requires the same effective UID
+for sockets sharing a reuseport endpoint; isolate a service's UID from other
+processes that could join its group. Each channel has its own kernel buffers and
+runtime work, so increasing group size increases resource use.
+
 Rendezvous peers must use matching address families. Oversized UDP datagrams
 are consumed and discarded atomically; a truncated prefix is never parsed as
 a complete SRT packet.

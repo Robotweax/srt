@@ -81,6 +81,19 @@ public:
         std::chrono::milliseconds timeout) noexcept;
     [[nodiscard]] InboxPopStatus pop_matching(HandshakeEnvelope& envelope,
         IpEndpoint peer, std::uint32_t peer_socket_id) noexcept;
+    struct ExtractionResult {
+        std::size_t copied = 0;
+        std::size_t discarded = 0;
+        std::size_t examined = 0;
+        std::size_t moved = 0;
+    };
+
+    // Remove all matches in one stable pass. Copy only the bounded output
+    // prefix; excess matches are discarded and may be retried on the setup
+    // route. No encoding, allocation or callback runs under the inbox lock.
+    [[nodiscard]] ExtractionResult extract_matching(
+        std::span<HandshakeEnvelope> output, IpEndpoint peer,
+        std::uint32_t peer_socket_id) noexcept;
     [[nodiscard]] bool set_ready_handler(
         ReadyFunction function, std::weak_ptr<void> context) noexcept;
     void clear_ready_handler() noexcept;

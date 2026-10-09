@@ -430,6 +430,96 @@ TEST(compat_handshake_inbox_extracts_only_the_matching_connection)
     REQUIRE_EQ(received.message.packet.socket_id, 30U);
 }
 
+TEST(compat_handshake_inbox_bulk_extraction_bounds_full_duplicate_handoff)
+{
+    HandshakeInbox inbox {4096};
+    HandshakeEnvelope duplicate;
+    duplicate.peer = IpEndpoint::loopback(10'001);
+    duplicate.message.packet.socket_id = 7;
+    for (std::uint32_t index = 0; index < 4096; ++index) {
+        duplicate.message.packet.syn_cookie = index;
+        REQUIRE(inbox.push(duplicate));
+    }
+    std::vector<HandshakeEnvelope> output(256);
+    const auto result = inbox.extract_matching(output, duplicate.peer, 7);
+    REQUIRE_EQ(result.copied, 256U);
+    REQUIRE_EQ(result.discarded, 3840U);
+    REQUIRE_EQ(result.examined, 4096U);
+    REQUIRE_EQ(result.moved, 0U);
+    for (std::size_t index = 0; index < output.size(); ++index) {
+        REQUIRE_EQ(output[index].message.packet.syn_cookie, index);
+    }
+    REQUIRE(!inbox.ready());
+    REQUIRE(inbox.push(duplicate));
+}
+
+TEST(compat_handshake_inbox_bulk_extraction_preserves_wrapped_unrelated_order)
+{
+    HandshakeInbox inbox {8};
+    const auto peer = IpEndpoint::loopback(10'001);
+    HandshakeEnvelope entry;
+    entry.peer = peer;
+    entry.message.packet.socket_id = 7;
+    for (unsigned index = 0; index < 5; ++index) {
+        REQUIRE(inbox.push(entry));
+    }
+    for (unsigned index = 0; index < 5; ++index) {
+        REQUIRE_EQ(inbox.pop_for(entry, std::chrono::milliseconds {0}),
+            InboxPopStatus::received);
+    }
+    // The occupied range now crosses the ring's physical end. Endpoint and
+    // socket identity must both match; all other entries keep their order.
+    for (unsigned index = 0; index < 8; ++index) {
+        entry.peer = index % 3 == 1 ? IpEndpoint::ipv6_loopback(10'001) : peer;
+        entry.message.packet.socket_id = index % 3 == 2 ? 8 : 7;
+        entry.message.packet.syn_cookie = index;
+        REQUIRE(inbox.push(entry));
+    }
+    std::array<HandshakeEnvelope, 2> output;
+    const auto result = inbox.extract_matching(output, peer, 7);
+    REQUIRE_EQ(result.copied, 2U);
+    REQUIRE_EQ(result.discarded, 1U);
+    REQUIRE_EQ(result.examined, 8U);
+    REQUIRE_EQ(result.moved, 5U);
+    REQUIRE_EQ(output[0].message.packet.syn_cookie, 0U);
+    REQUIRE_EQ(output[1].message.packet.syn_cookie, 3U);
+    for (const auto index : {1U, 2U, 4U, 5U, 7U}) {
+        REQUIRE_EQ(inbox.pop_for(entry, std::chrono::milliseconds {0}),
+            InboxPopStatus::received);
+        REQUIRE_EQ(entry.message.packet.syn_cookie, index);
+    }
+    REQUIRE(!inbox.ready());
+    for (unsigned index = 0; index < 8; ++index) {
+        REQUIRE(inbox.push(entry));
+    }
+    REQUIRE(!inbox.push(entry));
+}
+
+TEST(compat_handshake_inbox_bulk_extraction_handles_empty_output_and_close)
+{
+    HandshakeInbox inbox {4};
+    HandshakeEnvelope entry;
+    entry.peer = IpEndpoint::loopback(10'001);
+    entry.message.packet.socket_id = 7;
+    const auto empty = inbox.extract_matching({}, entry.peer, 7);
+    REQUIRE_EQ(empty.examined, 0U);
+    REQUIRE(inbox.push(entry));
+    const auto unmatched = inbox.extract_matching({}, entry.peer, 8);
+    REQUIRE_EQ(unmatched.copied, 0U);
+    REQUIRE_EQ(unmatched.discarded, 0U);
+    REQUIRE_EQ(unmatched.examined, 1U);
+    REQUIRE_EQ(unmatched.moved, 0U);
+    REQUIRE(inbox.ready());
+    inbox.close();
+    const auto removed = inbox.extract_matching({}, entry.peer, 7);
+    REQUIRE_EQ(removed.copied, 0U);
+    REQUIRE_EQ(removed.discarded, 1U);
+    REQUIRE_EQ(removed.examined, 1U);
+    REQUIRE_EQ(inbox.pop_for(entry, std::chrono::milliseconds {0}),
+        InboxPopStatus::closed);
+    REQUIRE(!inbox.push(entry));
+}
+
 TEST(compat_datagram_setup_inbox_is_bounded_ordered_and_closeable)
 {
     DatagramInbox inbox{2};

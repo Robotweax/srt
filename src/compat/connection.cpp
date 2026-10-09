@@ -3365,6 +3365,9 @@ int connect_socket(
                     ? SRT_ESCLOSED
                     : SRT_ERDVUNBOUND);
             }
+            if (reserve_caller_channel(*socket) == SRT_ERROR) {
+                return SRT_ERROR;
+            }
             if (forced_initial_sequence != SRT_SEQNO_NONE) {
                 socket->connection_initial_sequence =
                     static_cast<std::uint32_t>(
@@ -3502,6 +3505,9 @@ int connect_socket(
             return fail(socket->state == SRTS_CLOSED
                     ? SRT_ESCLOSED
                     : SRT_EINVOP);
+        }
+        if (reserve_caller_channel(*socket) == SRT_ERROR) {
+            return SRT_ERROR;
         }
         if (forced_initial_sequence != SRT_SEQNO_NONE) {
             socket->connection_initial_sequence =
@@ -4088,16 +4094,19 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         return close_with_error(SRT_ENOBUF);
     }
 
-    HandshakeEnvelope queued_handshake;
-    for (;;) {
-        const InboxPopStatus queued = listener_inbox->pop_matching(
-            queued_handshake, initial.peer, caller_socket_id);
-        if (queued != InboxPopStatus::received) {
-            break;
-        }
-        if (!enqueue_setup_handshake(*setup_inbox, queued_handshake)) {
-            return close_with_error(SRT_ENOBUF);
-        }
+    // One bounded scratch batch avoids repeated full-inbox compaction. The
+    // route is already installed, so excess or unencodable queued duplicates
+    // can be dropped; a valid retry arrives directly in the setup inbox.
+    const auto queued_handshakes = std::unique_ptr<HandshakeEnvelope[]>(
+        new (std::nothrow) HandshakeEnvelope[setup_inbox_capacity]);
+    if (queued_handshakes == nullptr) {
+        return close_with_error(SRT_ENOBUF);
+    }
+    const auto extracted = listener_inbox->extract_matching(
+        {queued_handshakes.get(), setup_inbox_capacity}, initial.peer,
+        caller_socket_id);
+    for (std::size_t index = 0; index < extracted.copied; ++index) {
+        (void)enqueue_setup_handshake(*setup_inbox, queued_handshakes[index]);
     }
 
     const std::shared_ptr<RuntimeScheduler> scheduler =
