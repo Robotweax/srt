@@ -3375,6 +3375,11 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     if (!processed) {
         return false;
     }
+    if (packet.kind == PacketKind::data
+        && processed.receiver_packet_accepted_unique && !context.discard_payload
+        && !processed.receiver_filter_control_packet) {
+        received_data_ = true;
+    }
     if (packet.kind == PacketKind::data && crypto_ != nullptr
         && crypto_->enabled() && !crypto_->authenticated_data_enabled()
         && !consume_filter_control && processed.receiver_packet_accepted_unique
@@ -4482,6 +4487,12 @@ bool ConnectionRuntime::terminal() const noexcept
 {
     std::lock_guard lock(mutex_);
     return broken_ || peer_closed_;
+}
+
+bool ConnectionRuntime::has_received_data() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    return received_data_;
 }
 
 bool ConnectionRuntime::readable() noexcept

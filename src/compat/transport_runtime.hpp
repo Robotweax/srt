@@ -567,6 +567,7 @@ public:
     [[nodiscard]] bool broken() const noexcept;
     [[nodiscard]] bool peer_closed() const noexcept;
     [[nodiscard]] bool terminal() const noexcept;
+    [[nodiscard]] bool has_received_data() const noexcept;
     [[nodiscard]] bool readable() noexcept;
     [[nodiscard]] std::optional<Clock::time_point>
     next_readable_deadline() noexcept;
@@ -731,6 +732,10 @@ private:
 
 #endif
     [[nodiscard]] bool retransmission_ready(std::uint64_t now) noexcept;
+    // Protected by mutex_; accepted payload DATA, independent of app reads
+    // and of statistics interval resets. Control/undecryptable traffic cannot
+    // turn an otherwise unused receive path into a running group member.
+    bool received_data_ = false;
     RuntimeStatisticsState statistics_;
     Clock::time_point origin_{};
     std::int64_t origin_epoch_microseconds_ = 0;

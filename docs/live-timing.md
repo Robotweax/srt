@@ -250,6 +250,17 @@ message removal. A concurrent late join or drift update cannot rewrite the
 returned `srctime` of that message. Clock changes observed before the removal's
 readiness check apply to that check; later changes apply to subsequent checks.
 
+Controlled Backup failover measurements bind member identities and DATA ranges
+to independent wire relays. Receiver `RUNNING` states describe directional
+activity and cannot identify the path that supplied a logical message, even
+when the snapshot has only one running member. Scorecards record this as
+`receiver_member_source_attribution: not-exposed-by-peer-api` and leave
+receiver transition counts and positions unset. Sender transition, payload
+integrity, timing bounds, and member-local encryption checks remain separate.
+For a close with unacknowledged Live data, the last queued primary packet may
+first reach UDP through Backup; replay checks cover the emitted primary prefix,
+suppressed ACKs, metadata preservation, and replacement ciphertext.
+
 Earlier Robotweax builds used independent member origins and receive clock
 estimates. For Robotweax-to-Robotweax groups, update both endpoints to obtain
 the synchronized group timeline; mixed-version group timing is not qualified.

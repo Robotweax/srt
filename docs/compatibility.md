@@ -78,7 +78,7 @@ instead of causing an automatic downgrade.
 | Epoll | Partial | SRT sockets, groups, system sockets, level/edge readiness, timeouts, release wakeups, async connect/accept, message/error readiness, and group update events |
 | Listener and connect callbacks | Supported | Pre-connection admission and one-shot nonblocking completion without invoking user code while internal socket/group locks are held |
 | Logging control | Supported | Public log level, facilities, handler, stream, and flags with secret-safe cryptographic diagnostics |
-| Connection Groups API | Supported for Broadcast and Backup | Group creation, configuration, connect, accept, membership, send/receive, state, callbacks, and epoll integration |
+| Connection Groups API | Supported for Broadcast and Backup | Group creation, configuration, connect, accept, membership, send/receive, state with independent receive activity, read-only group type, callbacks, and epoll integration |
 
 Applications should treat Robotweax SRT as a capability-defined implementation,
 not infer support from the presence of a similarly named upstream function.

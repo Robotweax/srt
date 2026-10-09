@@ -33,6 +33,8 @@ class GroupReceiveRetention;
 struct GroupMemberSnapshot {
     SRT_SOCKGROUPDATA public_data{};
     std::uint64_t generation = 0;
+    // Receive activity survives send-path idling and logical deduplication.
+    bool received_data = false;
 };
 
 [[nodiscard]] std::uint64_t group_statistics_now_microseconds() noexcept;
@@ -193,6 +195,8 @@ public:
     [[nodiscard]] int set_io_option(
         SRTSOCKET group, SRT_SOCKOPT option,
         const void* value, int value_size) noexcept;
+    void note_receive_activity(SRTSOCKET group, std::uint64_t group_generation,
+        SRTSOCKET socket, std::uint64_t member_generation) noexcept;
     void note_io_result(
         SRTSOCKET group, std::uint64_t group_generation,
         SRTSOCKET socket, std::uint64_t member_generation,

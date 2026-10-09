@@ -1905,9 +1905,16 @@ def validate_group_security_trace(
 ) -> dict[str, object]:
     if not security.encrypted:
         if relay is not None:
-            raise RuntimeError(
-                "clear Backup-group timing unexpectedly used crypto relays"
-            )
+            for path in (relay.primary, relay.backup):
+                if path.error() is not None:
+                    raise RuntimeError("clear group timing wire relay failed")
+                events = _trace_events(path.render("live-timing-clear-group"))
+                if any(
+                    event.get("event") == "srt_data_key_transition_trace"
+                    and _required_integer(event, "key_selection") != 0
+                    for event in events
+                ):
+                    raise RuntimeError("clear group timing unexpectedly used encryption")
         return validate_security_trace(security, None)
     if relay is None:
         raise RuntimeError(
@@ -2747,6 +2754,7 @@ def validate_backup_group_timing(
     bytes_per_second: int,
     *,
     unacknowledged_replay: bool = False,
+    relay: GroupTimingTraceProxy | None = None,
 ) -> dict[str, object]:
     events = _trace_events(sender_output)
     connected = [
@@ -2824,56 +2832,90 @@ def validate_backup_group_timing(
                 f"{event.get('member_count')}"
             )
 
-    receiver_members: list[int] = []
+    # RUNNING is directional activity, not the source of a logical receive.
+    # Bind the two paths and their required DATA ranges to wire identities;
+    # payload integrity and timing are checked independently by the caller.
+    if relay is None or any(
+        path.error() is not None for path in (relay.primary, relay.backup)
+    ):
+        raise RuntimeError("group timing lacks healthy member wire traces")
+    logical_keys = [
+        (
+            _required_integer(event, "packet_sequence"),
+            _required_integer(event, "message_number"),
+        )
+        for event in receiver_events
+    ]
+    if (
+        len(set(logical_keys)) != len(logical_keys)
+        or any(
+            not 0 <= sequence <= 0x7FFF_FFFF
+            or not 1 <= message <= 0x03FF_FFFF
+            for sequence, message in logical_keys
+        )
+    ):
+        raise RuntimeError("group timing receiver DATA identities are invalid")
+    wire_members: list[int] = []
+    wire_keys: list[set[tuple[int, int]]] = []
+    for path in (relay.primary, relay.backup):
+        packets = path.data_packet_observations("caller_to_listener")
+        destinations = {
+            _required_integer(packet, "destination_socket_id")
+            for packet in packets
+        }
+        if len(destinations) != 1 or next(iter(destinations)) <= 0:
+            raise RuntimeError("group timing wire member identities are ambiguous")
+        wire_members.append(next(iter(destinations)))
+        wire_keys.append({
+            (
+                _required_integer(packet, "sequence"),
+                _required_integer(packet, "message_number"),
+            )
+            for packet in packets
+        })
+    primary_prefix = set(logical_keys[:failover_after])
+    primary_covered = primary_prefix.issubset(wire_keys[0])
+    if unacknowledged_replay:
+        # Close may cancel the last queued Live DATA before its first UDP send.
+        # Require the emitted contiguous prefix here; the replay validator
+        # separately proves suppressed ACKs, overlap and re-encryption.
+        primary_covered = (
+            bool(wire_keys[0])
+            and wire_keys[0] == set(logical_keys[:len(wire_keys[0])])
+        )
+    if (
+        wire_members[0] == wire_members[1]
+        or not wire_keys[0].issubset(primary_prefix)
+        or not primary_covered
+        or not set(logical_keys[failover_after:]).issubset(wire_keys[1])
+        or wire_keys[0] | wire_keys[1] != set(logical_keys)
+    ):
+        raise RuntimeError("group timing wire DATA does not cover the failover ranges")
+    receiver_primary, receiver_backup = wire_members
+    observed_receiver_members = sorted(wire_members)
+    receiver_status_members: set[int] = set()
+    ambiguous_observations = 0
     for index, event in enumerate(receiver_events):
         member = event.get("group_running_member")
         member_count = event.get("group_member_count")
+        running_count = event.get("group_running_member_count")
         if (
-            type(member) is not int
-            or member <= 0
+            event.get("message_index") != index
             or type(member_count) is not int
             or not 1 <= member_count <= 2
+            or type(running_count) is not int
+            or not 1 <= running_count <= member_count
+            or type(member) is not int
+            or (running_count == 1 and member not in wire_members)
+            or (running_count > 1 and member != 0)
         ):
             raise RuntimeError(
                 f"group timing receiver evidence is invalid at {index}"
             )
-        receiver_members.append(member)
-    receiver_primary = receiver_members[0]
-    transition_indices = [
-        index
-        for index in range(1, len(receiver_members))
-        if receiver_members[index] != receiver_members[index - 1]
-    ]
-    receiver_transition = (
-        transition_indices[-1] if transition_indices else -1
-    )
-    receiver_backup = receiver_members[-1]
-    observed_receiver_members = sorted(set(receiver_members))
-    transition_valid = (
-        len(observed_receiver_members) <= 2
-        if unacknowledged_replay
-        else (
-            len(observed_receiver_members) == 2
-            and receiver_primary != receiver_backup
-            and bool(transition_indices)
-            # grpdata is the group status at application receive time, not
-            # provenance for an already-buffered message. Concurrent member
-            # state publication may therefore alternate immediately before
-            # the controlled close, but it must settle on the backup no later
-            # than the exact sender failover boundary.
-            and receiver_transition <= failover_after
-            and not any(
-                member == receiver_primary
-                for member in receiver_members[failover_after:]
-            )
-        )
-    )
-    if not transition_valid:
-        raise RuntimeError(
-            "group timing receiver transition is invalid: "
-            f"indices={transition_indices}, sender_failover={failover_after}, "
-            f"unacknowledged_replay={unacknowledged_replay}"
-        )
+        if running_count > 1:
+            ambiguous_observations += 1
+        else:
+            receiver_status_members.add(member)
     return {
         "mode": "backup-group",
         "failure_injection": (
@@ -2888,10 +2930,12 @@ def validate_backup_group_timing(
         "receiver_backup_member": receiver_backup,
         "receiver_observed_members": observed_receiver_members,
         "member_transitions": 1,
-        "receiver_member_transitions": len(transition_indices),
-        "receiver_transition_after_messages": (
-            receiver_transition if receiver_transition >= 0 else 0
-        ),
+        "receiver_status_observed_members": sorted(receiver_status_members),
+        "receiver_member_source_attribution": "not-exposed-by-peer-api",
+        "receiver_ambiguous_member_observations": ambiguous_observations,
+        "receiver_member_transitions": None,
+        "receiver_transition_after_messages": None,
+        "wire_failover_ranges_validated": True,
     }
 
 
@@ -3122,65 +3166,15 @@ def validate_backup_group_path_outage(
         receiver_members.append(member)
         receiver_running_counts.append(running_count)
     receiver_destinations = primary_destinations | backup_destinations
-    receiver_primary = next(iter(primary_destinations))
-    receiver_backup = next(iter(backup_destinations))
-    ambiguous_receiver_membership = any(
-        count > 1 for count in receiver_running_counts
-    )
-    precise_members = [
-        member for member in receiver_members if member != 0
-    ]
-    receiver_transitions: list[int] = []
-    first_backup = -1
-    settled_transition = -1
-    if not ambiguous_receiver_membership:
-        receiver_transitions = [
-            index
-            for index in range(1, len(receiver_members))
-            if receiver_members[index] != receiver_members[index - 1]
-        ]
-        first_backup = next(
-            (
-                index
-                for index, member in enumerate(receiver_members)
-                if member == receiver_backup
-            ),
-            -1,
-        )
-        settled_transition = (
-            receiver_transitions[-1] if receiver_transitions else -1
-        )
-    precise_evidence_valid = (
-        set(precise_members).issubset(receiver_destinations)
-        and (
-            ambiguous_receiver_membership
-            or (
-                bool(receiver_transitions)
-                # grpdata is a status snapshot, not message provenance.  It
-                # may alternate while both members are being ACK-qualified,
-                # but every such transition must precede settlement at the
-                # externally injected outage boundary.
-                and all(
-                    index <= outage_after
-                    for index in receiver_transitions
-                )
-                and set(receiver_members) == receiver_destinations
-                and receiver_members[0] == receiver_primary
-                and receiver_members[-1] == receiver_backup
-                and first_backup >= 0
-                and settled_transition <= outage_after
-                and not any(
-                    member == receiver_primary
-                    for member in receiver_members[outage_after:]
-                )
-            )
-        )
-    )
-    if not precise_evidence_valid:
+    # Even a single RUNNING member is current activity, not message provenance.
+    # The outage trigger, replacement DATA and failover delay are already bound
+    # to the two wire paths above. Validate snapshot identities without deriving
+    # a receive-source transition from them.
+    precise_members = [member for member in receiver_members if member != 0]
+    if not set(precise_members).issubset(receiver_destinations):
         raise RuntimeError(
             "Backup path outage receiver status is inconsistent: "
             f"members={receiver_members}, "
-            f"transitions={receiver_transitions}, "
             f"wire_destinations={sorted(receiver_destinations)}"
         )
 
@@ -3192,25 +3186,14 @@ def validate_backup_group_path_outage(
         "sender_primary_member": primary,
         "sender_backup_member": backup,
         "receiver_observed_members": sorted(receiver_destinations),
-        "receiver_member_source_attribution": (
-            "not-exposed-by-peer-api"
-            if ambiguous_receiver_membership
-            else "exact"
-        ),
+        "receiver_status_observed_members": sorted(set(precise_members)),
+        "receiver_member_source_attribution": "not-exposed-by-peer-api",
         "receiver_ambiguous_member_observations": sum(
             count > 1 for count in receiver_running_counts
         ),
-        "receiver_member_transitions": (
-            None
-            if ambiguous_receiver_membership
-            else len(receiver_transitions)
-        ),
-        "receiver_first_backup_after_messages": (
-            None if ambiguous_receiver_membership else first_backup
-        ),
-        "receiver_transition_after_messages": (
-            None if ambiguous_receiver_membership else settled_transition
-        ),
+        "receiver_member_transitions": None,
+        "receiver_first_backup_after_messages": None,
+        "receiver_transition_after_messages": None,
         "first_backup_data_delay_microseconds": first_backup_delay,
         "sender_active_transition_delay_microseconds": (
             sender_transition_delay
@@ -3420,7 +3403,7 @@ def run_measurement(
                         host=host,
                     )
                 )
-            elif connection_mode == "backup-group" and security.encrypted:
+            elif connection_mode == "backup-group":
                 relay_context = closing(
                     GroupTimingTraceProxy(
                         srt_port,
@@ -3707,6 +3690,7 @@ def run_measurement(
             message_size,
             bitrate_bits_per_second // 8,
             unacknowledged_replay=group_unacknowledged_replay,
+            relay=relay if isinstance(relay, GroupTimingTraceProxy) else None,
         )
     else:
         connection_observation = validate_connection_trace(
