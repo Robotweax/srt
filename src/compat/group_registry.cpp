@@ -427,12 +427,12 @@ int GroupRegistry::get_io_option(
             return SRT_ERROR;
         }
         if (option == SRTO_BINDTODEVICE || option == SRTO_EVENT
-            || option == SRTO_SNDDATA || option == SRTO_RCVDATA
-            || option == SRTO_GROUPTYPE) {
+            || option == SRTO_SNDDATA || option == SRTO_RCVDATA) {
             set_last_error(SRT_EINVOP);
             return SRT_ERROR;
         }
-        if (option == SRTO_STATE || option == SRTO_GROUPMINSTABLETIMEO) {
+        if (option == SRTO_STATE || option == SRTO_GROUPMINSTABLETIMEO
+            || option == SRTO_GROUPTYPE) {
             if (option == SRTO_GROUPMINSTABLETIMEO
                 && record->type != SRT_GTYPE_BACKUP) {
                 set_last_error(SRT_EINVPARAM);
@@ -440,6 +440,8 @@ int GroupRegistry::get_io_option(
             }
             const std::int32_t result = option == SRTO_STATE
                 ? static_cast<std::int32_t>(aggregate_state(*record))
+                : option == SRTO_GROUPTYPE
+                ? static_cast<std::int32_t>(record->type)
                 : record->minimum_stability_timeout_milliseconds;
             if (*value_size < static_cast<int>(sizeof(result))) {
                 set_last_error(SRT_EINVPARAM);
@@ -605,6 +607,30 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
     return 0;
 }
 
+void GroupRegistry::note_receive_activity(SRTSOCKET group,
+    std::uint64_t group_generation, SRTSOCKET socket,
+    std::uint64_t member_generation) noexcept
+{
+    const auto record = find(group);
+    if (record == nullptr) {
+        return;
+    }
+    std::lock_guard lock(record->mutex);
+    if (record->closed || record->generation != group_generation) {
+        return;
+    }
+    const auto member = find_member(*record, socket, member_generation);
+    if (member == record->members.end()) {
+        return;
+    }
+    member->received_data = true;
+    if (member->public_data.sockstate == SRTS_CONNECTED
+        && member->public_data.memberstate != SRT_GST_RUNNING) {
+        member->public_data.memberstate = SRT_GST_RUNNING;
+        advance_version(record->snapshot_version);
+    }
+}
+
 void GroupRegistry::note_io_result(
     SRTSOCKET group, std::uint64_t group_generation,
     SRTSOCKET socket, std::uint64_t member_generation,
@@ -621,6 +647,10 @@ void GroupRegistry::note_io_result(
     const auto member = find_member(*record, socket, member_generation);
     if (member == record->members.end()) {
         return;
+    }
+    if (state == SRT_GST_IDLE && member->received_data
+        && member->public_data.sockstate == SRTS_CONNECTED) {
+        state = SRT_GST_RUNNING;
     }
     if (member->public_data.memberstate != state
         || member->public_data.result != result) {
@@ -913,7 +943,13 @@ void GroupRegistry::update_member(
         }
         if (previous_state != state || member->public_data.result != result) {
             member->public_data.sockstate = state;
-            member->public_data.memberstate = group_member_status(state);
+            member->public_data.memberstate = state == SRTS_CONNECTED
+                    && (member->received_data
+                        || (previous_state == SRTS_CONNECTED
+                            && member->public_data.memberstate
+                                == SRT_GST_RUNNING))
+                ? SRT_GST_RUNNING
+                : group_member_status(state);
             member->public_data.result = result;
             advance_version(record->snapshot_version);
             if (broken_connection && previous_state == SRTS_CONNECTED

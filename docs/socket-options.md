@@ -231,14 +231,14 @@ each connected caller or accepted socket retains the peer's `0x00XXYYZZ` SRT
 software version. On a connection group the getter derives the value from its
 first member and returns zero while the group is empty.
 
-`SRTO_GROUPTYPE` is a different, deliberately callback-scoped observation. On
-the provisional socket passed to `srt_listen_callback`, it reports the incoming
-`SRT_GTYPE_BROADCAST` or `SRT_GTYPE_BACKUP` declaration. Ordinary connections
-and calls outside the listener callback deterministically return
-`SRT_GTYPE_UNDEFINED`; group handles reject the option because the documented
-v1.5.7 API defines it as socket-only. Both options are read-only. This keeps
-incoming admission metadata separate from the accepted socket's eventual
-group membership and avoids exposing stale callback state.
+`SRTO_GROUPTYPE` is read-only and returns an `int32_t`. On a caller-created
+or accepted group handle, it reports that group's `SRT_GTYPE_BROADCAST` or
+`SRT_GTYPE_BACKUP` type, including while the group has no members. Group-handle
+readback extends the [documented v1.5.7 socket-only contract](https://github.com/Haivision/srt/blob/v1.5.7/docs/API/API-socket-options.md#srto_grouptype).
+On the provisional socket passed to `srt_listen_callback`, it reports the
+incoming group declaration. Ordinary socket calls outside that callback
+return `SRT_GTYPE_UNDEFINED`, preserving the separation between admission
+metadata and eventual group membership. Both options reject writes.
 
 `SRTO_MINVERSION` is a pre-connection `int32_t` encoded as `0x00XXYYZZ` and
 defaults to SRT 1.0.0 (`0x00010000`). An explicitly advertised lower peer

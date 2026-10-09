@@ -279,7 +279,7 @@ TEST(compat_group_bstats_requires_connection_and_uses_its_start_time)
 }
 
 TEST(
-    compat_group_peer_version_uses_the_first_member_and_group_type_is_socket_only)
+    compat_group_peer_version_uses_the_first_member_and_group_type_is_read_only)
 {
     const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
     const SRTSOCKET socket = srt_create_socket();
@@ -293,9 +293,8 @@ TEST(
     REQUIRE_EQ(value, 0);
 
     value_size = static_cast<int>(sizeof(value));
-    REQUIRE_EQ(
-        srt_getsockflag(group, SRTO_GROUPTYPE, &value, &value_size), SRT_ERROR);
-    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    REQUIRE_EQ(srt_getsockflag(group, SRTO_GROUPTYPE, &value, &value_size), 0);
+    REQUIRE_EQ(value, SRT_GTYPE_BROADCAST);
     REQUIRE_EQ(srt_setsockflag(group, SRTO_PEERVERSION,
                    &value, static_cast<int>(sizeof(value))),
         SRT_ERROR);
@@ -339,6 +338,120 @@ TEST(
 
     REQUIRE_EQ(srt_close(group), 0);
     REQUIRE_EQ(srt_close(socket), 0);
+}
+
+TEST(compat_group_type_readback_covers_created_and_mirrored_groups)
+{
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        const SRTSOCKET caller = srt_create_group(type);
+        const SRTSOCKET listener = srt_create_socket();
+        GroupRegistry::MirrorDescription mirror;
+        REQUIRE(GroupRegistry::instance().prepare_mirror(
+            listener, caller, type, 91U, mirror));
+        for (const auto group : {caller, mirror.group}) {
+            std::int32_t value = -1;
+            int size = sizeof(value) - 1;
+            REQUIRE_EQ(srt_getsockflag(group, SRTO_GROUPTYPE, &value, &size),
+                SRT_ERROR);
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+            REQUIRE_EQ(value, -1);
+            size = sizeof(value);
+            REQUIRE_EQ(srt_getsockflag(group, SRTO_GROUPTYPE, nullptr, &size),
+                SRT_ERROR);
+            REQUIRE_EQ(srt_getsockflag(group, SRTO_GROUPTYPE, &value, nullptr),
+                SRT_ERROR);
+            REQUIRE_EQ(
+                srt_getsockflag(group, SRTO_GROUPTYPE, &value, &size), 0);
+            REQUIRE_EQ(value, type);
+            REQUIRE_EQ(size, static_cast<int>(sizeof(value)));
+            REQUIRE_EQ(srt_setsockflag(group, SRTO_GROUPTYPE, &value, size),
+                SRT_ERROR);
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+            REQUIRE_EQ(srt_close(group), 0);
+            REQUIRE_EQ(srt_getsockflag(group, SRTO_GROUPTYPE, &value, &size),
+                SRT_ERROR);
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
+        }
+        REQUIRE_EQ(srt_close(listener), 0);
+    }
+}
+
+TEST(compat_group_receive_activity_is_independent_of_logical_delivery)
+{
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        const SRTSOCKET group = srt_create_group(type);
+        const SRTSOCKET first = srt_create_socket();
+        const SRTSOCKET second = srt_create_socket();
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        const auto sequence = record->initial_sequence;
+        const auto first_runtime =
+            attach_group_runtime(group, first, sequence, 10);
+        const auto second_runtime =
+            attach_group_runtime(group, second, sequence, 5);
+        std::array<SRT_SOCKGROUPDATA, 2> data {};
+        const auto check = [&](SRT_MEMBERSTATUS first_state,
+                               SRT_MEMBERSTATUS second_state) {
+            std::size_t size = data.size();
+            REQUIRE_EQ(srt_group_data(group, data.data(), &size), 2);
+            REQUIRE_EQ(data[0].id, first);
+            REQUIRE_EQ(data[1].id, second);
+            REQUIRE_EQ(data[0].memberstate, first_state);
+            REQUIRE_EQ(data[1].memberstate, second_state);
+        };
+        GroupRegistry::instance().note_receive_activity(group,
+            record->generation + 1U, first, record->members[0].generation);
+        GroupRegistry::instance().note_receive_activity(group,
+            record->generation, first, record->members[0].generation + 1U);
+        check(SRT_GST_IDLE, SRT_GST_IDLE);
+        deliver_lite_ack(first_runtime, SequenceNumber {sequence});
+        constexpr std::array<std::byte, 4> payload {
+            std::byte {'d'}, std::byte {'a'}, std::byte {'t'}, std::byte {'a'}};
+        robotweax::srt::PacketView packet;
+        packet.kind = robotweax::srt::PacketKind::data;
+        packet.data.sequence = SequenceNumber {sequence};
+        packet.data.message_number = 1;
+        packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+        packet.data.in_order = true;
+        packet.payload = payload;
+        first_runtime->process_packet(packet, IpEndpoint::loopback(9'001));
+        packet.data.encryption_key = robotweax::srt::EncryptionKey::even;
+        first_runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+        packet.data.encryption_key = robotweax::srt::EncryptionKey::none;
+        check(SRT_GST_IDLE, SRT_GST_IDLE);
+        first_runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+        check(SRT_GST_RUNNING, SRT_GST_IDLE);
+        second_runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+        check(SRT_GST_RUNNING, SRT_GST_RUNNING);
+
+        // A send coordinator may idle a path without erasing its receive activity.
+        GroupRegistry::instance().note_io_result(group, record->generation,
+            second, record->members[1].generation, SRT_GST_IDLE, SRT_SUCCESS);
+        check(SRT_GST_RUNNING, SRT_GST_RUNNING);
+        SRT_MSGCTRL control = srt_msgctrl_default;
+        control.grpdata = data.data();
+        control.grpdata_size = data.size();
+        std::array<char, 32> received {};
+        REQUIRE_EQ(
+            srt_recvmsg2(group, received.data(), received.size(), &control),
+            static_cast<int>(payload.size()));
+        REQUIRE_EQ(data[0].memberstate, SRT_GST_RUNNING);
+        REQUIRE_EQ(data[1].memberstate, SRT_GST_RUNNING);
+        const bool synchronous = false;
+        REQUIRE_EQ(srt_setsockflag(
+                       group, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+            0);
+        REQUIRE_EQ(
+            srt_recv(group, received.data(), received.size()), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+        SRT_TRACEBSTATS statistics {};
+        REQUIRE_EQ(srt_bstats(second, &statistics, 1), 0);
+        check(SRT_GST_RUNNING, SRT_GST_RUNNING);
+        first_runtime->mark_broken(0);
+        check(SRT_GST_BROKEN, SRT_GST_RUNNING);
+        REQUIRE_EQ(srt_bstats(first, &statistics, 0), 0);
+        REQUIRE_EQ(srt_close(group), 0);
+    }
 }
 
 TEST(compat_group_registry_supports_size_queries_and_generation_checked_membership)

@@ -371,6 +371,18 @@ coherent member snapshot. `SRT_MSGCTRL.grpdata` is a current status snapshot;
 it is not guaranteed to identify the exact path that delivered an already
 deduplicated logical message.
 
+On connected members, `SRT_GST_RUNNING` reports a running send path or a
+receive path that has accepted payload DATA. A redundant receive path becomes
+running even if another member delivers the logical message first. Reads,
+duplicate retirement, statistics interval resets, and Backup send-path idling
+do not erase that receive activity. A connected member without either kind of
+activity remains `SRT_GST_IDLE`; terminal socket states take precedence and
+report `SRT_GST_BROKEN`. Control packets, rejected peers, and undecryptable
+payloads do not activate the receive path. Snapshots refresh activity from
+member runtimes without requiring an application receive call. This implements
+the separate send/receive directions described by the
+[public v1.5.7 member-state contract](https://github.com/Haivision/srt/blob/v1.5.7/docs/API/API-functions.md#srt_memberstatus).
+
 ## Compatibility limits
 
 The 0.2 group profile is limited to Live-mode Caller/Listener operation.

@@ -495,6 +495,10 @@ SRT_SOCKSTATUS SocketRegistry::refresh_state(
     }
     SRT_SOCKSTATUS state = SRTS_NONEXIST;
     bool changed = false;
+    SRTSOCKET group = SRT_INVALID_SOCK;
+    SRTSOCKET socket = SRT_INVALID_SOCK;
+    std::uint64_t group_generation = 0;
+    std::uint64_t member_generation = 0;
     {
         std::lock_guard lock(record->mutex);
         if (record->state == SRTS_CONNECTED && record->runtime != nullptr
@@ -503,9 +507,22 @@ SRT_SOCKSTATUS SocketRegistry::refresh_state(
             changed = true;
         }
         state = record->state;
+        if (state == SRTS_CONNECTED && record->runtime != nullptr
+            && record->group_id != SRT_INVALID_SOCK
+            && record->runtime->has_received_data()) {
+            group = record->group_id;
+            socket = static_cast<SRTSOCKET>(record->protocol_socket_id);
+            group_generation = record->group_generation;
+            member_generation = record->member_generation;
+        }
     }
     if (changed) {
         publish_group_state(record, true);
+    }
+    // No runtime or socket lock is held while publishing group metadata.
+    if (group != SRT_INVALID_SOCK && member_generation != 0U) {
+        GroupRegistry::instance().note_receive_activity(
+            group, group_generation, socket, member_generation);
     }
     return state;
 }
