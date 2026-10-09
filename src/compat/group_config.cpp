@@ -44,6 +44,7 @@ bool is_group_member_option(SRT_SOCKOPT option) noexcept
     case SRTO_PBKEYLEN:
     case SRTO_KMREFRESHRATE:
     case SRTO_KMPREANNOUNCE:
+    case SRTO_ROBOTWEAX_PATHID:
     case SRTO_ROBOTWEAX_SESSIONAUTH:
     case SRTO_ENFORCEDENCRYPTION:
 #ifdef ENABLE_AEAD_API_PREVIEW
@@ -68,9 +69,9 @@ bool is_group_member_option(SRT_SOCKOPT option) noexcept
 bool GroupSocketConfiguration::add(
     SRT_SOCKOPT option, const void* value, int value_size) noexcept
 {
-    if (!is_group_member_option(option)
-        || value == nullptr
-        || value_size <= 0
+    if (!is_group_member_option(option) || (value == nullptr && value_size != 0)
+        || value_size < 0
+        || (value_size == 0 && option != SRTO_ROBOTWEAX_PATHID)
         || static_cast<std::size_t>(value_size) > maximum_group_option_bytes) {
         return false;
     }
@@ -86,14 +87,17 @@ bool GroupSocketConfiguration::add(
     }
 #endif
     std::lock_guard lock(mutex_);
+    if (option == SRTO_ROBOTWEAX_PATHID && value_size > 32)
+        return false;
     if (size_ >= options_.size()) {
         return false;
     }
     auto& destination = options_[size_];
     destination.option = option;
     destination.size = static_cast<std::uint16_t>(value_size);
-    std::memcpy(destination.bytes.data(), value,
-        static_cast<std::size_t>(value_size));
+    if (value_size != 0)
+        std::memcpy(destination.bytes.data(), value,
+            static_cast<std::size_t>(value_size));
     ++size_;
     return true;
 }

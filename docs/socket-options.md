@@ -555,3 +555,12 @@ accepted-group templates carry the limit; member configuration can override it.
 The configured value is a per-member budget, not an aggregate group budget.
 Disabling retransmission can prevent successful loss recovery, especially for
 File transfers; this is an explicit application policy, not a packet-drop mode.
+
+## Optional group path labels
+
+The development branch adds `SRTO_ROBOTWEAX_PATHID_REQUIRED` (`0x01000006`,
+boolean, default false) and `SRTO_ROBOTWEAX_PATHID` (`0x01000007`, 1–32 opaque
+bytes per caller endpoint). Both are pre-setup options; group-wide labels are
+rejected. See the canonical [group path identifier contract](group-path-identifiers.md)
+for two-sided configuration, unsupported combinations and the versioned getter.
+These options are absent from published v0.2.8 artifacts.

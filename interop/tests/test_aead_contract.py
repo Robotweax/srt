@@ -151,6 +151,19 @@ class AeadContractTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue((ROOT / path).is_file())
 
+    def test_development_abi_adds_only_versioned_group_path_metadata(self):
+        historical = CURRENT_ABI_PATH.read_bytes()
+        self.assertEqual(hashlib.sha256(historical).hexdigest(),
+                         "078187df2008370574a8acb7dd64c17d0abadc3ba9f8d5f45a88a15d949dda2a")
+        expected = sorted(historical.decode().splitlines()
+                          + ["robotweax_srt_group_path_data_v1"])
+        symbols = PUBLIC_SYMBOLS_PATH.read_bytes()
+        self.assertEqual(symbols.decode().splitlines(), expected)
+        self.assertEqual(symbols,
+                         (ROOT / "cmake/abi/robotweax-srt-development.txt").read_bytes())
+        cmake = CMAKE_PATH.read_text(encoding="utf-8")
+        self.assertIn("${CMAKE_CURRENT_SOURCE_DIR}/cmake/abi/robotweax-srt-development.txt)", cmake)
+
     def test_platform_abi_matrix_is_active_for_release_version(self):
         platform = self.manifest["platform_abi"]
         self.assertEqual(
@@ -206,7 +219,9 @@ class AeadContractTests(unittest.TestCase):
             },
         )
 
-        symbols = PUBLIC_SYMBOLS_PATH.read_bytes()
+        # This manifest records the published AEAD release, whose export
+        # baseline must remain immutable when development adds a symbol.
+        symbols = FROZEN_0_2_0_ABI_PATH.read_bytes()
         self.assertEqual(symbols, HISTORICAL_ABI_PATH.read_bytes())
         self.assertEqual(symbols, FROZEN_0_2_0_ABI_PATH.read_bytes())
         self.assertEqual(symbols, CURRENT_ABI_PATH.read_bytes())

@@ -3903,6 +3903,12 @@ bool ConnectionRuntime::process_handshake(
         return false;
     }
 
+    if (message.has_path_identifier
+            != handshake_replay_response_.has_path_identifier
+        || (message.has_path_identifier
+            && message.path_identifier
+                != handshake_replay_response_.path_identifier))
+        return false;
     if (options_.session_authentication()) {
         if (handshake_replay_response_.packet.request
                 != HandshakeRequest::agreement

@@ -200,6 +200,7 @@ struct ListenerGroupAdmission {
     IpEndpoint endpoint{};
     GroupRegistry::MirrorDescription mirror{};
     GroupMembership peer{};
+    PathIdentifier path_identifier {};
     std::uint64_t member_generation = 0;
     bool first_member = false;
     bool committed = false;
@@ -242,11 +243,12 @@ struct ListenerGroupAdmission {
             std::uint64_t group_generation = 0;
             if (write_ip_endpoint(endpoint,
                     reinterpret_cast<sockaddr*>(&peer_address),
-                    &peer_address_size) == SRT_ERROR
-                || !GroupRegistry::instance().add_member(
-                    mirror.group, member_handle, peer_address,
-                    peer.weight, -1, group_generation,
-                    member_generation, &first_member)
+                    &peer_address_size)
+                    == SRT_ERROR
+                || !GroupRegistry::instance().add_member(mirror.group,
+                    member_handle, peer_address, peer.weight, -1,
+                    group_generation, member_generation, &first_member,
+                    path_identifier, false)
                 || group_generation != mirror.generation) {
                 if (member_generation != 0U) {
                     GroupRegistry::instance().remove_member(
@@ -1058,6 +1060,11 @@ int listen_socket(
     std::shared_ptr<ListenerRuntime> listener_runtime;
     {
         std::lock_guard lock(socket->mutex);
+        if (socket->public_options.path_identifier.size != 0U
+            || (socket->public_options.path_identifier_required
+                && (!socket->public_options.group_connect
+                    || socket->public_options.transmission_type != SRTT_LIVE)))
+            return fail(SRT_EINVPARAM);
         if (socket->public_options.rendezvous) {
             return fail(SRT_ERDVNOSERV);
         }
@@ -1387,6 +1394,8 @@ create_setup_inbox() noexcept
         .has_session_authentication =
             envelope.message.has_session_authentication,
         .session_authentication = envelope.message.session_authentication,
+        .has_path_identifier = envelope.message.has_path_identifier,
+        .path_identifier = envelope.message.path_identifier,
     };
     std::array<std::byte, DatagramEnvelope::maximum_size> bytes {};
     const HandshakeDatagramEncodeResult encoded =
@@ -3339,6 +3348,15 @@ int connect_socket(
             && !socket->native_options.encryption_enabled()) {
             return fail(SRT_ESECFAIL);
         }
+        const auto& path_options = socket->public_options;
+        if ((path_options.path_identifier_required
+                && (socket->group_id == SRT_INVALID_SOCK
+                    || !path_options.path_identifier.valid()
+                    || path_options.rendezvous
+                    || path_options.transmission_type != SRTT_LIVE))
+            || (!path_options.path_identifier_required
+                && path_options.path_identifier.size != 0U))
+            return fail(SRT_EINVPARAM);
         asynchronous =
             !socket->public_options.receive_synchronous;
         rendezvous =
@@ -3568,6 +3586,10 @@ int connect_socket(
                     .weight = socket->group_weight,
                 },
         };
+        setup.configuration.require_path_identifier =
+            socket->public_options.path_identifier_required;
+        setup.configuration.path_identifier =
+            socket->public_options.path_identifier;
         setup.configuration.require_session_authentication =
             socket->native_options.session_authentication();
         setup.options = socket->native_options;
@@ -3805,6 +3827,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     group_admission.member = accepted;
     group_admission.endpoint = initial.peer;
     const HandshakeMessage& conclusion = admission.conclusion.message;
+    group_admission.path_identifier = conclusion.path_identifier;
     const bool has_stream_id =
         selected_protocol == ListenerHandshakeProtocol::hsv5
         && conclusion.has_stream_id_extension
@@ -3936,6 +3959,17 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         policy_rejected = true;
         policy_rejection = SRT_REJ_UNSECURE;
         policy_error = SRT_ESECFAIL;
+    }
+    if (!policy_rejected
+        && (public_options.path_identifier_required
+                != conclusion.has_path_identifier
+            || (public_options.path_identifier_required
+                && (selected_protocol != ListenerHandshakeProtocol::hsv5
+                    || !conclusion.has_group_membership
+                    || public_options.transmission_type != SRTT_LIVE)))) {
+        policy_rejected = true;
+        policy_rejection = SRT_REJ_GROUP;
+        policy_error = SRT_ECONNREJ;
     }
     SessionAuthenticationParameters session_response {},
         session_confirmation {};
@@ -4085,6 +4119,8 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         .cookie_context = &setup_context->cookie_context,
     };
 
+    configuration.hsv5.require_path_identifier =
+        public_options.path_identifier_required;
     configuration.hsv5.require_session_authentication =
         native_options.session_authentication();
     configuration.hsv5.session_authentication = session_response;

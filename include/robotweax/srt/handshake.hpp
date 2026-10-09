@@ -129,6 +129,8 @@ struct HandshakeAction {
     int rejection_reason = 0;
     bool has_session_authentication = false;
     SessionAuthenticationParameters session_authentication {};
+    bool has_path_identifier = false;
+    PathIdentifier path_identifier {};
 };
 
 struct HandshakeActions {
@@ -171,6 +173,8 @@ struct HandshakeMessage {
     bool has_unknown_extension = false;
     bool has_session_authentication = false;
     SessionAuthenticationParameters session_authentication {};
+    bool has_path_identifier = false;
+    PathIdentifier path_identifier {};
 };
 
 using GroupMembershipNegotiator = bool (*)(
@@ -215,6 +219,8 @@ public:
         bool require_session_authentication = false;
         SessionAuthenticationParameters session_authentication {};
         SessionAuthenticationParameters session_authentication_confirmation {};
+        bool require_path_identifier = false;
+        PathIdentifier path_identifier {};
     };
 
     explicit HandshakeMachine(Configuration configuration) noexcept;
@@ -312,6 +318,7 @@ private:
         negotiated_packet_filter_{};
     GroupMembership peer_group_membership_{};
     bool has_peer_group_membership_ = false;
+    PathIdentifier peer_path_identifier_ {};
     GroupMembership local_group_response_{};
     bool has_local_group_response_ = false;
     int rejection_reason_ = 0;

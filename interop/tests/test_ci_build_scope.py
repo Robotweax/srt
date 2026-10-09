@@ -129,6 +129,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_stale_nak_tests",
             "robotweax_srt_native_reuseport_tests",
             "robotweax_srt_local_address_tests",
+            "robotweax_srt_group_pathid_tests",
         }
         self.assertEqual(
             len(registrations), len(partitions) + len(empty_selection_checks),
@@ -152,6 +153,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "key_length", "srt_compat_gcm_",
             "srt_compat_sensor_gcm_bounded_sample_stream_",
             "srt_compat_bind_acquire", "srt_compat_connection_local_name_",
+            "srt_compat_group_pathid_",
             "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
             "stale_drop_coverage", "stale_nak",
         ])
@@ -177,6 +179,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         }
         network_partitions = {
             "robotweax_srt_native_reuseport_tests", "robotweax_srt_local_address_tests",
+            "robotweax_srt_group_pathid_tests",
         }
         for name in partitions - profile_partitions - stale_partitions - network_partitions:
             self.assertIn(name, bounded_properties.group(1))
@@ -193,6 +196,8 @@ class CiTestRegistrationTests(unittest.TestCase):
                          ["--include", "srt_compat_bind_acquire"])
         self.assertEqual(commands["robotweax_srt_local_address_tests"],
                          ["--include", "srt_compat_connection_local_name_"])
+        self.assertEqual(commands["robotweax_srt_group_pathid_tests"],
+                         ["--include", "srt_compat_group_pathid_"])
         for name in profile_partitions | network_partitions:
             profile_properties = re.search(
                 r"set_tests_properties\(" + name + r"\s+PROPERTIES\s+([^)]*)\)",
@@ -220,7 +225,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_tests"))
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_transport_runtime_tests"))
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_key_length_tests"))
-        for name in profile_partitions | stale_partitions | {"robotweax_srt_delayed_key_response_tests", "robotweax_srt_local_address_tests"}:
+        for name in profile_partitions | stale_partitions | {"robotweax_srt_delayed_key_response_tests", "robotweax_srt_local_address_tests", "robotweax_srt_group_pathid_tests"}:
             self.assertIsNotNone(re.search(selection.group(1), name))
         target = re.search(
             r"add_executable\(robotweax_srt_tests\s+([^)]*)\)", cmake,

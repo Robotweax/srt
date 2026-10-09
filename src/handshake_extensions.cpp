@@ -50,10 +50,45 @@ void write_u32(std::byte* bytes, std::uint32_t value) noexcept
                    <= static_cast<std::uint16_t>(HandshakeExtensionType::group))
         || type
         == static_cast<std::uint16_t>(
-            HandshakeExtensionType::session_authentication);
+            HandshakeExtensionType::session_authentication)
+        || type
+        == static_cast<std::uint16_t>(HandshakeExtensionType::path_identifier);
 }
 
 } // namespace
+
+PathIdentifierResult decode_path_identifier(
+    const HandshakeExtensionView& extension) noexcept
+{
+    if (extension.type != HandshakeExtensionType::path_identifier
+        || extension.content.size() != path_identifier_content_size
+        || read_u32(extension.content.data()) != 1U)
+        return {.error = Error::invalid_extension};
+    PathIdentifier identifier;
+    identifier.size = read_u32(extension.content.data() + 4);
+    if (!identifier.valid())
+        return {.error = Error::invalid_extension};
+    for (std::size_t index = identifier.size; index < identifier.bytes.size();
+        ++index)
+        if (extension.content[8 + index] != std::byte {})
+            return {.error = Error::invalid_extension};
+    std::copy_n(extension.content.begin() + 8, identifier.size,
+        identifier.bytes.begin());
+    return {.identifier = identifier};
+}
+
+ExtensionEncodeResult encode_path_identifier(
+    const PathIdentifier& identifier, std::span<std::byte> destination) noexcept
+{
+    if (!identifier.valid())
+        return {.error = Error::invalid_extension};
+    std::array<std::byte, path_identifier_content_size> content {};
+    write_u32(content.data(), 1U);
+    write_u32(content.data() + 4, identifier.size);
+    std::copy_n(identifier.bytes.begin(), identifier.size, content.begin() + 8);
+    return encode_extension(
+        HandshakeExtensionType::path_identifier, content, destination);
+}
 
 bool parse_congestion_controller(
     std::string_view name,

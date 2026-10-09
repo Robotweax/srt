@@ -123,6 +123,8 @@ template <typename Value>
 #endif
         || option == SRTO_KMREFRESHRATE || option == SRTO_KMPREANNOUNCE
         || option == SRTO_ENFORCEDENCRYPTION
+        || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
+        || option == SRTO_ROBOTWEAX_PATHID
         || option == SRTO_ROBOTWEAX_SESSIONAUTH || option == SRTO_CONGESTION
         || option == SRTO_MESSAGEAPI || option == SRTO_SENDER
         || option == SRTO_MINVERSION || option == SRTO_STREAMID
@@ -486,6 +488,16 @@ int get_socket_option(
             static_cast<std::int32_t>(
                 socket.native_options.get(
                     SocketOption::key_preannouncement_packets).value));
+    case SRTO_ROBOTWEAX_PATHID_REQUIRED:
+        return write_value(value, value_size, options.path_identifier_required);
+    case SRTO_ROBOTWEAX_PATHID: {
+        if (*value_size < static_cast<int>(options.path_identifier.size))
+            return invalid_parameter();
+        std::memcpy(value, options.path_identifier.bytes.data(),
+            options.path_identifier.size);
+        *value_size = static_cast<int>(options.path_identifier.size);
+        return 0;
+    }
     case SRTO_ROBOTWEAX_SESSIONAUTH:
         return write_value(
             value, value_size, socket.native_options.session_authentication());
@@ -1027,6 +1039,9 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                 && parsed != static_cast<std::int32_t>(SRTT_CONTROL))) {
             return invalid_parameter();
         }
+        if (options.path_identifier_required
+            && parsed != static_cast<std::int32_t>(SRTT_LIVE))
+            return invalid_parameter();
         SocketOptions selected = socket.native_options;
         if (selected.packet_filter_configuration().sensor_profile()
             && parsed != static_cast<std::int32_t>(SRTT_SENSOR)
@@ -1097,8 +1112,11 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         const std::string_view configuration{
             static_cast<const char*>(value),
             static_cast<std::size_t>(value_size)};
-        if (socket.native_options.packet_filter_configuration().sensor_profile()
-            && configuration != sensor_profile_filter_v1) {
+        if ((options.path_identifier_required
+                && configuration == sensor_profile_filter_v1)
+            || (socket.native_options.packet_filter_configuration()
+                    .sensor_profile()
+                && configuration != sensor_profile_filter_v1)) {
             return invalid_parameter();
         }
         if (socket.native_options.set_packet_filter(
@@ -1142,6 +1160,8 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         if (!read_boolean(value, value_size, parsed)) {
             return invalid_parameter();
         }
+        if (parsed && options.path_identifier_required)
+            return invalid_parameter();
         if (set_native(socket.native_options,
                 SocketOption::rendezvous, parsed ? 1 : 0)
             == SRT_ERROR) {
@@ -1197,6 +1217,29 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             || !read_value(value, value_size, domain) || domain == 0)
             return invalid_parameter();
         socket.incoming_group_domain = domain;
+        return 0;
+    }
+    case SRTO_ROBOTWEAX_PATHID_REQUIRED: {
+        bool parsed = false;
+        if ((socket.state != SRTS_INIT && socket.state != SRTS_OPENED)
+            || socket.listen_callback_active
+            || !read_boolean(value, value_size, parsed)
+            || (parsed
+                && (options.rendezvous
+                    || options.transmission_type != SRTT_LIVE)))
+            return invalid_parameter();
+        options.path_identifier_required = parsed;
+        return 0;
+    }
+    case SRTO_ROBOTWEAX_PATHID: {
+        if ((socket.state != SRTS_INIT && socket.state != SRTS_OPENED)
+            || socket.listen_callback_active || value_size > 32)
+            return invalid_parameter();
+        options.path_identifier = {};
+        options.path_identifier.size = static_cast<std::uint32_t>(value_size);
+        if (value_size != 0)
+            std::memcpy(options.path_identifier.bytes.data(), value,
+                static_cast<std::size_t>(value_size));
         return 0;
     }
     case SRTO_ROBOTWEAX_SESSIONAUTH:

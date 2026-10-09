@@ -35,6 +35,7 @@ struct GroupMemberSnapshot {
     std::uint64_t generation = 0;
     // Receive activity survives send-path idling and logical deduplication.
     bool received_data = false;
+    ROBOTWEAX_SRT_GROUP_PATHDATA_V1 path_data {};
 };
 
 [[nodiscard]] std::uint64_t group_statistics_now_microseconds() noexcept;
@@ -174,6 +175,9 @@ public:
     [[nodiscard]] int data(
         SRTSOCKET group, SRT_SOCKGROUPDATA* output,
         std::size_t* inout_size) noexcept;
+    [[nodiscard]] int path_data(SRTSOCKET group,
+        ROBOTWEAX_SRT_GROUP_PATHDATA_V1* output,
+        std::size_t* inout_size) noexcept;
     // srt_bistats for a group handle: SRT_EINVSOCK when the group does not
     // exist or is closed. Only the group-level counters are non-zero.
     [[nodiscard]] int trace_statistics(
@@ -206,12 +210,11 @@ public:
         MirrorDescription& output, std::uint64_t admission_domain = 0) noexcept;
     void release_empty_mirror(
         SRTSOCKET group, std::uint64_t generation) noexcept;
-    [[nodiscard]] bool add_member(
-        SRTSOCKET group, SRTSOCKET socket,
-        const sockaddr_storage& peer, std::uint16_t weight,
-        int token, std::uint64_t& group_generation,
-        std::uint64_t& member_generation,
-        bool* first_member = nullptr) noexcept;
+    [[nodiscard]] bool add_member(SRTSOCKET group, SRTSOCKET socket,
+        const sockaddr_storage& peer, std::uint16_t weight, int token,
+        std::uint64_t& group_generation, std::uint64_t& member_generation,
+        bool* first_member = nullptr, const PathIdentifier& identifier = {},
+        bool local_offer = false) noexcept;
     void mark_opened(SRTSOCKET group, std::uint64_t group_generation) noexcept;
     void update_member(SRTSOCKET group, std::uint64_t group_generation,
         SRTSOCKET socket, std::uint64_t member_generation, SRT_SOCKSTATUS state,
