@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import socket
 import subprocess
@@ -87,6 +88,8 @@ def shared_scenario_matrix(
     robotweax: Path, reference: Path
 ) -> list[SharedScenario]:
     profiles = (
+        ("ipv4-wildcard", "0.0.0.0", "0.0.0.0", "127.0.0.1", None),
+        ("ipv6-wildcard", "::", "::", "::1", 1),
         ("ipv4", "127.0.0.1", "127.0.0.1", "127.0.0.1", None),
         ("ipv6", "::1", "::1", "::1", 1),
         ("dual-stack", "::", "::", "::ffff:127.0.0.1", 0),
@@ -125,44 +128,31 @@ def shared_scenario_matrix(
 def acquired_scenario_matrix(
     robotweax: Path, reference: Path
 ) -> list[AcquiredScenario]:
-    return [
-        AcquiredScenario(
-            name="acquired-ipv4-robotweax-to-haivision",
-            caller=robotweax,
-            listener=reference,
-            local_host="127.0.0.1",
-            peer_host="127.0.0.1",
-            ipv6_only=None,
-            seed=82_000,
-        ),
-        AcquiredScenario(
-            name="acquired-ipv4-haivision-to-robotweax",
-            caller=reference,
-            listener=robotweax,
-            local_host="127.0.0.1",
-            peer_host="127.0.0.1",
-            ipv6_only=None,
-            seed=82_001,
-        ),
-        AcquiredScenario(
-            name="acquired-ipv6-robotweax-to-haivision",
-            caller=robotweax,
-            listener=reference,
-            local_host="::1",
-            peer_host="::1",
-            ipv6_only=1,
-            seed=82_002,
-        ),
-        AcquiredScenario(
-            name="acquired-ipv6-haivision-to-robotweax",
-            caller=reference,
-            listener=robotweax,
-            local_host="::1",
-            peer_host="::1",
-            ipv6_only=1,
-            seed=82_003,
-        ),
-    ]
+    profiles = (
+        ("ipv4", "127.0.0.1", "127.0.0.1", None),
+        ("ipv6", "::1", "::1", 1),
+        ("ipv4-wildcard", "0.0.0.0", "127.0.0.1", None),
+        ("ipv6-wildcard", "::", "::1", 1),
+        ("dual-stack", "::", "::ffff:127.0.0.1", 0),
+    )
+    scenarios: list[AcquiredScenario] = []
+    for index, (profile, local_host, peer_host, ipv6_only) in enumerate(profiles):
+        for direction_index, (direction, caller, listener) in enumerate((
+            ("robotweax-to-haivision", robotweax, reference),
+            ("haivision-to-robotweax", reference, robotweax),
+        )):
+            scenarios.append(
+                AcquiredScenario(
+                    name=f"acquired-{profile}-{direction}",
+                    caller=caller,
+                    listener=listener,
+                    local_host=local_host,
+                    peer_host=peer_host,
+                    ipv6_only=ipv6_only,
+                    seed=82_000 + index * 2 + direction_index,
+                )
+            )
+    return scenarios
 
 
 def listener_command(
@@ -350,6 +340,21 @@ def validate_compatibility_version(
         )
 
 
+def validate_local_host(
+    event: dict[str, object], field: str, expected: str, name: str
+) -> None:
+    value = event.get(field)
+    try:
+        actual = ipaddress.ip_address(value) if isinstance(value, str) else None
+    except ValueError:
+        actual = None
+    if actual != ipaddress.ip_address(expected):
+        raise RuntimeError(
+            f"{name}: {field} is {value!r}, "
+            f"expected connected local address {expected}"
+        )
+
+
 def valid_acquired_release_wait(event: dict[str, object]) -> bool:
     value = event.get("release_wait_us")
     return type(value) is int and 0 <= value <= 3_000_000
@@ -451,6 +456,10 @@ def run_shared_scenario(
                 caller,
                 listeners,
             )
+        for field in ("first_local_host", "second_local_host"):
+            validate_local_host(
+                caller_event, field, scenario.peer_host, scenario.name
+            )
         validate_ipv6_only(
             caller_event, scenario.ipv6_only, scenario.name
         )
@@ -465,6 +474,9 @@ def run_shared_scenario(
                 raise RuntimeError(
                     f"{scenario.name}: listener {index + 1} byte mismatch"
                 )
+            validate_local_host(
+                event, "local_host", scenario.peer_host, scenario.name
+            )
             validate_ipv6_only(event, scenario.ipv6_only, scenario.name)
             validate_compatibility_version(event, scenario.name)
         if file_sha256(first_output) != first_digest:
@@ -489,7 +501,8 @@ def run_shared_scenario(
 def run_acquired_scenario(
     scenario: AcquiredScenario, options: RunOptions, directory: Path
 ) -> None:
-    with reserved_udp_ports(1, scenario.peer_host) as ports:
+    listener_host = "::" if scenario.ipv6_only == 0 else scenario.peer_host
+    with reserved_udp_ports(1, listener_host) as ports:
         (port,) = ports
     input_path = directory / f"{scenario.name}.input"
     output_path = directory / f"{scenario.name}.output"
@@ -499,7 +512,7 @@ def run_acquired_scenario(
     listener = start_listener(
         listener_command(
             scenario.listener,
-            scenario.peer_host,
+            listener_host,
             port,
             output_path,
             options.acquired_bytes,
@@ -553,6 +566,9 @@ def run_acquired_scenario(
                 caller,
                 [listener],
             )
+        validate_local_host(
+            event, "local_host", scenario.peer_host, scenario.name
+        )
         validate_ipv6_only(event, scenario.ipv6_only, scenario.name)
         validate_compatibility_version(event, scenario.name)
         listener_stdout, _ = listener.output()
@@ -561,6 +577,9 @@ def run_acquired_scenario(
             raise RuntimeError(
                 f"{scenario.name}: listener byte counter mismatch"
             )
+        validate_local_host(
+            listener_event, "local_host", scenario.peer_host, scenario.name
+        )
         validate_compatibility_version(listener_event, scenario.name)
         if file_sha256(output_path) != digest:
             raise RuntimeError(f"{scenario.name}: SHA-256 mismatch")

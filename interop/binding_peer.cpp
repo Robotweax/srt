@@ -355,6 +355,24 @@ Endpoint srt_socket_name(SRTSOCKET socket)
     return result;
 }
 
+std::string endpoint_host(const Endpoint& endpoint)
+{
+    if (endpoint.size == 0)
+        return {};
+    std::array<char, INET6_ADDRSTRLEN> text {};
+    const void* address = endpoint.family() == AF_INET
+        ? static_cast<const void*>(
+              &reinterpret_cast<const sockaddr_in*>(&endpoint.storage)
+                  ->sin_addr)
+        : static_cast<const void*>(
+              &reinterpret_cast<const sockaddr_in6*>(&endpoint.storage)
+                  ->sin6_addr);
+    return inet_ntop(endpoint.family(), address, text.data(), text.size())
+            == nullptr
+        ? std::string {}
+        : std::string {text.data()};
+}
+
 Endpoint native_socket_name(UDPSOCKET socket)
 {
     Endpoint result;
@@ -475,6 +493,8 @@ int run_listener(const Configuration& configuration)
         return 4;
     }
 
+    const Endpoint connected_local = srt_socket_name(connected.value);
+
     std::ofstream output {
         configuration.output_path, std::ios::binary | std::ios::trunc};
     if (!output) {
@@ -506,6 +526,7 @@ int run_listener(const Configuration& configuration)
     std::cout << "{\"event\":\"complete\",\"role\":\"listener\","
                  "\"bytes\":"
               << received << ",\"local_family\":" << address.family()
+              << ",\"local_host\":\"" << endpoint_host(connected_local) << "\""
               << ",\"ipv6_only\":" << reported_ipv6_only(listener.value)
               << ",\"srt_version\":" << srt_getversion() << "}\n"
               << std::flush;
@@ -557,6 +578,15 @@ int run_shared_caller(const Configuration& configuration)
         return 4;
     }
 
+    const Endpoint first_connected = srt_socket_name(first.value);
+    const Endpoint second_connected = srt_socket_name(second.value);
+    if (first_connected.size == 0 || second_connected.size == 0
+        || first_connected.port() != first_local.port()
+        || second_connected.port() != second_local.port()) {
+        std::cerr << "shared connection changed its local port\n";
+        return 4;
+    }
+
     std::size_t first_offset = 0;
     std::size_t second_offset = 0;
     const std::size_t second_split = second_payload.size() / 2U;
@@ -585,6 +615,11 @@ int run_shared_caller(const Configuration& configuration)
     std::this_thread::sleep_for(
         std::chrono::milliseconds {receiver_delivery_grace_milliseconds});
     first.close();
+    const Endpoint surviving_local = srt_socket_name(second.value);
+    if (!same_endpoint(surviving_local, second_connected)) {
+        std::cerr << "surviving owner changed its connected local address\n";
+        return 4;
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds {25});
     while (second_offset < second_payload.size()) {
         if (!send_chunk(second.value, second_payload, second_offset,
@@ -605,6 +640,10 @@ int run_shared_caller(const Configuration& configuration)
               << first_offset << ",\"second_bytes\":" << second_offset
               << ",\"local_port\":" << first_local.port()
               << ",\"local_family\":" << first_local.family()
+              << ",\"first_local_host\":\"" << endpoint_host(first_connected)
+              << "\""
+              << ",\"second_local_host\":\"" << endpoint_host(surviving_local)
+              << "\""
               << ",\"ipv6_only\":" << reported_ipv6_only(second.value)
               << ",\"first_owner_closed\":true,\"srt_version\":"
               << srt_getversion() << "}\n"
@@ -708,6 +747,8 @@ int run_acquired_caller(const Configuration& configuration)
         return 4;
     }
 
+    const Endpoint connected_local = srt_socket_name(socket.value);
+
     std::size_t offset = 0;
     while (offset < payload.size()) {
         if (!send_chunk(socket.value, payload, offset, payload.size(),
@@ -766,6 +807,7 @@ int run_acquired_caller(const Configuration& configuration)
     std::cout << "{\"event\":\"acquired_complete\",\"bytes\":" << offset
               << ",\"local_port\":" << native_local.port()
               << ",\"local_family\":" << native_local.family()
+              << ",\"local_host\":\"" << endpoint_host(connected_local) << "\""
               << ",\"ipv6_only\":" << observed_ipv6_only
               << ",\"native_closed\":" << (native_closed ? "true" : "false")
               << ",\"port_rebound\":" << (rebound ? "true" : "false")

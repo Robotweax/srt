@@ -49,6 +49,8 @@ struct SocketRecord {
     std::thread connect_worker;
     IpEndpoint local_endpoint{};
     IpEndpoint peer_endpoint{};
+    // Connection-local route snapshot; never used for binding or packet I/O.
+    IpEndpoint connected_local_endpoint {};
     NegotiatedLiveOptions negotiated_live_options{};
     std::uint32_t protocol_socket_id = 0;
     std::uint32_t peer_protocol_socket_id = 0;
@@ -81,6 +83,7 @@ struct SocketRecord {
     // assigned by srt_accept_bond and shared by its explicit listener set.
     std::uint64_t accept_bond_scope = 0;
     bool has_local_endpoint = false;
+    bool has_connected_local_endpoint = false;
     bool has_peer_endpoint = false;
     bool listen_callback_active = false;
     // Valid only while the listener callback is running. This is deliberately

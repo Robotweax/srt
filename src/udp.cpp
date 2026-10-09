@@ -1,5 +1,6 @@
 #include "robotweax/srt/udp.hpp"
 #include "udp_buffer_policy.hpp"
+#include "local_endpoint_probe.hpp"
 
 #include "compat/platform_networking.hpp"
 
@@ -729,6 +730,38 @@ EndpointResult UdpSocket::local_endpoint() const noexcept
         };
     }
     return {.endpoint = from_sockaddr(address)};
+}
+
+EndpointResult detail::probe_local_endpoint(IpEndpoint peer,
+    std::int32_t ipv6_only, std::int32_t type_of_service,
+    std::string_view bound_device) noexcept
+{
+    UdpSocket probe {peer.family};
+    if (!probe.valid()) {
+        return {.error = Error::io_error,
+            .system_error = probe.open_system_error()};
+    }
+    if (peer.is_ipv6() && ipv6_only >= 0
+        && probe.set_ipv6_only(ipv6_only != 0) != Error::none) {
+        return {.error = Error::io_error,
+            .system_error = probe.last_system_error()};
+    }
+    const auto tos_result = probe.set_ip_type_of_service(type_of_service);
+    if (tos_result != Error::none && tos_result != Error::unsupported) {
+        return {.error = tos_result, .system_error = probe.last_system_error()};
+    }
+    if (!bound_device.empty()
+        && probe.set_bind_to_device(bound_device) != Error::none) {
+        return {.error = Error::io_error,
+            .system_error = probe.last_system_error()};
+    }
+    const SocketAddress address = to_sockaddr(peer);
+    if (::connect(to_native(probe.native_handle()),
+            reinterpret_cast<const sockaddr*>(&address.value), address.size)
+        != 0) {
+        return {.error = Error::io_error, .system_error = last_socket_error()};
+    }
+    return probe.local_endpoint();
 }
 
 UdpWaitResult UdpSocket::wait_readable(int timeout_milliseconds) noexcept
