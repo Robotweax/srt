@@ -226,7 +226,15 @@ Error HandshakeMachine::set_session_authentication(
 HandshakeActions HandshakeMachine::start() noexcept
 {
     HandshakeActions actions;
-    if (state_ != HandshakeState::idle || configuration_.role != ConnectionRole::caller) {
+    if (state_ != HandshakeState::idle
+        || configuration_.role != ConnectionRole::caller
+        || (configuration_.require_path_identifier
+            && (!configuration_.has_group_membership
+                || !configuration_.path_identifier.valid()
+                || configuration_.congestion_controller
+                    != CongestionController::live))
+        || (!configuration_.require_path_identifier
+            && configuration_.path_identifier.size != 0U)) {
         actions.push({.kind = HandshakeActionKind::failed});
         state_ = HandshakeState::failed;
         return actions;
@@ -326,6 +334,11 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
 
     if (configuration_.role == ConnectionRole::listener) {
         if (state_ == HandshakeState::awaiting_authentication_confirmation) {
+            if (message.has_path_identifier
+                    != configuration_.require_path_identifier
+                || (message.has_path_identifier
+                    && message.path_identifier != peer_path_identifier_))
+                return actions;
             if (incoming.request == HandshakeRequest::agreement
                 && incoming.version == handshake_version_5
                 && incoming.socket_id == peer_socket_id_
@@ -411,6 +424,14 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                             != configuration_.session_authentication
                                 .caller_nonce)))
                 return reject(rogue_rejection_reason);
+            if (message.has_path_identifier
+                    != configuration_.require_path_identifier
+                || (message.has_path_identifier
+                    && (!message.path_identifier.valid()
+                        || !message.has_group_membership
+                        || configuration_.congestion_controller
+                            != CongestionController::live)))
+                return reject(group_rejection_reason);
             const HandshakeExtensionParameters peer_parameters =
                 message.extension_parameters;
             {
@@ -482,6 +503,7 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 peer_stream_id_ = {};
                 has_peer_stream_id_ = false;
             }
+            peer_path_identifier_ = message.path_identifier;
             if (message.has_group_membership) {
                 if (validate_group_membership(
                         message.group_membership)
@@ -556,17 +578,15 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .key_material_extension_type =
                     HandshakeExtensionType::key_material_response,
                 .key_material = message.key_material,
-                .has_congestion_extension =
-                    has_congestion_extension,
-                .congestion_controller =
-                    configuration_.congestion_controller,
+                .has_congestion_extension = has_congestion_extension,
+                .congestion_controller = configuration_.congestion_controller,
                 .has_packet_filter_extension =
                     negotiated_packet_filter_.enabled,
-                .packet_filter_configuration =
-                    negotiated_packet_filter_,
-                .has_group_membership =
-                    has_local_group_response_,
+                .packet_filter_configuration = negotiated_packet_filter_,
+                .has_group_membership = has_local_group_response_,
                 .group_membership = local_group_response_,
+                .has_path_identifier = configuration_.require_path_identifier,
+                .path_identifier = peer_path_identifier_,
             });
             if (configuration_.require_session_authentication) {
                 auto& response_action = actions.values[0];
@@ -588,7 +608,12 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
         if (state_ == HandshakeState::connected
             && incoming.request == HandshakeRequest::conclusion
             && incoming.syn_cookie == cookie_) {
-            if (incoming.version != handshake_version_5) {
+            if (incoming.version != handshake_version_5
+                || incoming.socket_id != peer_socket_id_
+                || message.has_path_identifier
+                    != configuration_.require_path_identifier
+                || (message.has_path_identifier
+                    && message.path_identifier != peer_path_identifier_)) {
                 return actions;
             }
             auto response = base_packet(HandshakeRequest::conclusion);
@@ -613,18 +638,16 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .key_material_extension_type =
                     HandshakeExtensionType::key_material_response,
                 .key_material = message.key_material,
-                .has_congestion_extension =
-                    configuration_.congestion_controller
-                        != CongestionController::live,
-                .congestion_controller =
-                    configuration_.congestion_controller,
+                .has_congestion_extension = configuration_.congestion_controller
+                    != CongestionController::live,
+                .congestion_controller = configuration_.congestion_controller,
                 .has_packet_filter_extension =
                     negotiated_packet_filter_.enabled,
-                .packet_filter_configuration =
-                    negotiated_packet_filter_,
-                .has_group_membership =
-                    has_local_group_response_,
+                .packet_filter_configuration = negotiated_packet_filter_,
+                .has_group_membership = has_local_group_response_,
                 .group_membership = local_group_response_,
+                .has_path_identifier = configuration_.require_path_identifier,
+                .path_identifier = peer_path_identifier_,
             });
             return actions;
         }
@@ -665,24 +688,19 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .key_material_extension_type =
                     HandshakeExtensionType::key_material_request,
                 .key_material = configuration_.key_material_request,
-                .has_stream_id_extension =
-                    !configuration_.stream_id.empty(),
+                .has_stream_id_extension = !configuration_.stream_id.empty(),
                 .stream_id = configuration_.stream_id,
-                .has_congestion_extension =
-                    configuration_.congestion_controller
-                        != CongestionController::live,
-                .congestion_controller =
-                    configuration_.congestion_controller,
+                .has_congestion_extension = configuration_.congestion_controller
+                    != CongestionController::live,
+                .congestion_controller = configuration_.congestion_controller,
                 .has_packet_filter_extension =
-                    configuration_
-                        .packet_filter_configuration.enabled,
+                    configuration_.packet_filter_configuration.enabled,
                 .packet_filter_configuration =
-                    configuration_
-                        .packet_filter_configuration,
-                .has_group_membership =
-                    configuration_.has_group_membership,
-                .group_membership =
-                    configuration_.group_membership,
+                    configuration_.packet_filter_configuration,
+                .has_group_membership = configuration_.has_group_membership,
+                .group_membership = configuration_.group_membership,
+                .has_path_identifier = configuration_.require_path_identifier,
+                .path_identifier = configuration_.path_identifier,
             });
             if (configuration_.require_session_authentication) {
                 actions.values[0].packet.extension_field |=
@@ -796,6 +814,12 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 });
                 return actions;
             }
+            if (message.has_path_identifier
+                    != configuration_.require_path_identifier
+                || (message.has_path_identifier
+                    && message.path_identifier
+                        != configuration_.path_identifier))
+                return reject_locally(group_rejection_reason);
             if (configuration_.has_group_membership) {
                 if (!message.has_group_membership
                     || validate_group_membership(
@@ -848,6 +872,10 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 session_confirmation_.has_session_authentication = true;
                 session_confirmation_.session_authentication =
                     configuration_.session_authentication;
+                session_confirmation_.has_path_identifier =
+                    configuration_.require_path_identifier;
+                session_confirmation_.path_identifier =
+                    configuration_.path_identifier;
                 actions.push(session_confirmation_);
             }
             state_ = HandshakeState::connected;
@@ -905,24 +933,19 @@ HandshakeActions HandshakeMachine::timeout() noexcept
             .key_material_extension_type =
                 HandshakeExtensionType::key_material_request,
             .key_material = configuration_.key_material_request,
-            .has_stream_id_extension =
-                !configuration_.stream_id.empty(),
+            .has_stream_id_extension = !configuration_.stream_id.empty(),
             .stream_id = configuration_.stream_id,
-            .has_congestion_extension =
-                configuration_.congestion_controller
-                    != CongestionController::live,
-            .congestion_controller =
-                configuration_.congestion_controller,
+            .has_congestion_extension = configuration_.congestion_controller
+                != CongestionController::live,
+            .congestion_controller = configuration_.congestion_controller,
             .has_packet_filter_extension =
-                configuration_
-                    .packet_filter_configuration.enabled,
+                configuration_.packet_filter_configuration.enabled,
             .packet_filter_configuration =
-                configuration_
-                    .packet_filter_configuration,
-            .has_group_membership =
-                configuration_.has_group_membership,
-            .group_membership =
-                configuration_.group_membership,
+                configuration_.packet_filter_configuration,
+            .has_group_membership = configuration_.has_group_membership,
+            .group_membership = configuration_.group_membership,
+            .has_path_identifier = configuration_.require_path_identifier,
+            .path_identifier = configuration_.path_identifier,
         });
     } else if (configuration_.role == ConnectionRole::listener
         && state_ == HandshakeState::awaiting_authentication_confirmation) {

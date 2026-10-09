@@ -169,6 +169,14 @@ typedef enum SRT_SOCKOPT {
      * Local-only metadata: never transmitted or selected by the peer.
      */
     SRTO_ROBOTWEAX_GROUPDOMAIN = 0x01000005,
+    /** Default-off, bilateral group path-label negotiation (bool, PRE).
+     * Required on Caller group and Listener; no unsupported-peer fallback.
+     */
+    SRTO_ROBOTWEAX_PATHID_REQUIRED = 0x01000006,
+    /** Caller member label: 0 clears, 1-32 opaque bytes, PRE.
+     * Endpoint configuration only for groups; never an authorization token.
+     */
+    SRTO_ROBOTWEAX_PATHID = 0x01000007,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif
@@ -530,6 +538,16 @@ typedef struct SRT_SocketGroupData_ {
     int result;
     int token;
 } SRT_SOCKGROUPDATA;
+
+/** Versioned metadata record; identifier bytes are caller-supplied and untrusted. */
+typedef struct ROBOTWEAX_SRT_GroupPathDataV1_ {
+    int32_t member_id;
+    uint32_t flags;
+    uint32_t identifier_length;
+    uint8_t identifier[32];
+} ROBOTWEAX_SRT_GROUP_PATHDATA_V1;
+#define ROBOTWEAX_SRT_PATHID_LOCAL_OFFER 1U
+#define ROBOTWEAX_SRT_PATHID_NEGOTIATED 2U
 
 typedef struct SRT_SocketOptionObject SRT_SOCKOPT_CONFIG;
 
@@ -1171,6 +1189,13 @@ SRT_API SRTSOCKET srt_groupof(SRTSOCKET socket);
  */
 SRT_API int srt_group_data(
     SRTSOCKET group, SRT_SOCKGROUPDATA* output, size_t* inout_length);
+
+/** @brief Copies a coherent member-label snapshot using srt_group_data's
+ * size-query/capacity convention. Labels persist on retained BROKEN members;
+ * negotiation does not authenticate them or identify a DATA delivery path.
+ */
+SRT_API int robotweax_srt_group_path_data_v1(SRTSOCKET group,
+    ROBOTWEAX_SRT_GROUP_PATHDATA_V1* output, size_t* inout_length);
 
 /** @brief Allocates an empty bounded endpoint-option snapshot. */
 SRT_API SRT_SOCKOPT_CONFIG* srt_create_config(void);

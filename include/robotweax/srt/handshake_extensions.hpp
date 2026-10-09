@@ -27,6 +27,7 @@ enum class HandshakeExtensionType : std::uint16_t {
     packet_filter = 7,
     group = 8,
     session_authentication = 0x7f10,
+    path_identifier = 0x7f11,
 };
 
 enum class CongestionController : std::uint8_t {
@@ -78,6 +79,28 @@ enum class HandshakeExtensionFlag : std::uint32_t {
 {
     return static_cast<std::uint32_t>(left) | static_cast<std::uint32_t>(right);
 }
+
+inline constexpr std::size_t path_identifier_content_size = 40;
+
+struct PathIdentifier {
+    std::array<std::byte, 32> bytes {};
+    std::uint32_t size = 0;
+    [[nodiscard]] constexpr bool valid() const noexcept
+    {
+        return size > 0U && size <= bytes.size();
+    }
+    friend bool operator==(
+        const PathIdentifier&, const PathIdentifier&) = default;
+};
+
+struct PathIdentifierResult {
+    Error error = Error::none;
+    PathIdentifier identifier {};
+    [[nodiscard]] constexpr explicit operator bool() const noexcept
+    {
+        return error == Error::none;
+    }
+};
 
 struct HandshakeExtensionParameters {
     std::uint32_t srt_version = SRT_VERSION_VALUE;
@@ -215,6 +238,14 @@ struct StreamId {
         return {bytes.data(), size};
     }
 };
+
+/** Decodes and copies one bounded identifier without allocation. */
+[[nodiscard]] PathIdentifierResult decode_path_identifier(
+    const HandshakeExtensionView& extension) noexcept;
+
+[[nodiscard]] ExtensionEncodeResult encode_path_identifier(
+    const PathIdentifier& identifier,
+    std::span<std::byte> destination) noexcept;
 
 /**
  * Decodes one extension without allocation. The returned content aliases

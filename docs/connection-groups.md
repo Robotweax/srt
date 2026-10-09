@@ -189,6 +189,13 @@ The record is decoded as part of the transactional HSv5 extension chain. A
 response must identify a compatible mirror group. A changed mirror identity,
 type, ISN, or unsupported flag is rejected before the connection is published.
 
+## Optional receiver-side path labels
+
+The default group profile keeps application tokens local. The development branch
+adds explicitly enabled, bilateral [group path identifiers](group-path-identifiers.md)
+with a separate versioned metadata getter. This extension is absent from the
+published v0.2.8 artifacts and is not Haivision-compatible when enabled.
+
 ## Broadcast semantics
 
 A Broadcast send assigns one logical packet sequence, message number,

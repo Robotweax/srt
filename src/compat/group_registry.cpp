@@ -349,6 +349,38 @@ int GroupRegistry::data(
     return static_cast<int>(record->members.size());
 }
 
+int GroupRegistry::path_data(SRTSOCKET group,
+    ROBOTWEAX_SRT_GROUP_PATHDATA_V1* output, std::size_t* inout_size) noexcept
+{
+    if (inout_size == nullptr || !is_group_handle(group)) {
+        set_last_error(SRT_EINVPARAM);
+        return SRT_ERROR;
+    }
+    const auto record = find(group);
+    if (record == nullptr) {
+        set_last_error(SRT_EINVPARAM);
+        return SRT_ERROR;
+    }
+    std::lock_guard lock(record->mutex);
+    if (record->closed) {
+        set_last_error(SRT_EINVPARAM);
+        return SRT_ERROR;
+    }
+    const auto capacity = *inout_size;
+    *inout_size = record->members.size();
+    if (output == nullptr)
+        return 0;
+    if (capacity < record->members.size()) {
+        set_last_error(SRT_ELARGEMSG);
+        return SRT_ERROR;
+    }
+    std::transform(record->members.begin(), record->members.end(), output,
+        [](const GroupMemberSnapshot& member) {
+            return member.path_data;
+        });
+    return static_cast<int>(record->members.size());
+}
+
 bool GroupRegistry::describe_connect(
     SRTSOCKET group, ConnectDescription& output) noexcept
 {
@@ -419,15 +451,17 @@ int GroupRegistry::get_io_option(
     SocketRecord configured {SocketRecord::Purpose::option_template};
     SRTSOCKET first_member_handle = SRT_INVALID_SOCK;
     const bool group_owned = option == SRTO_SNDSYN || option == SRTO_RCVSYN
-        || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO;
+        || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO
+        || option == SRTO_ROBOTWEAX_PATHID_REQUIRED;
     {
         std::lock_guard lock(record->mutex);
         if (record->closed) {
             set_last_error(SRT_EINVSOCK);
             return SRT_ERROR;
         }
-        if (option == SRTO_BINDTODEVICE || option == SRTO_EVENT
-            || option == SRTO_SNDDATA || option == SRTO_RCVDATA) {
+        if (option == SRTO_ROBOTWEAX_PATHID || option == SRTO_BINDTODEVICE
+            || option == SRTO_EVENT || option == SRTO_SNDDATA
+            || option == SRTO_RCVDATA) {
             set_last_error(SRT_EINVOP);
             return SRT_ERROR;
         }
@@ -485,15 +519,24 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
         set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
     }
+    if (option == SRTO_ROBOTWEAX_PATHID) {
+        set_last_error(SRT_EINVOP);
+        return SRT_ERROR;
+    }
     std::lock_guard option_lock(record->option_mutex);
     SocketRecord configured {SocketRecord::Purpose::option_template};
     std::vector<std::pair<SRTSOCKET, std::shared_ptr<SocketRecord>>> members;
     const bool group_owned = option == SRTO_SNDSYN || option == SRTO_RCVSYN
-        || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO;
+        || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO
+        || option == SRTO_ROBOTWEAX_PATHID_REQUIRED;
     {
         std::lock_guard lock(record->mutex);
         if (record->closed) {
             set_last_error(SRT_EINVSOCK);
+            return SRT_ERROR;
+        }
+        if (option == SRTO_ROBOTWEAX_PATHID_REQUIRED && record->opened) {
+            set_last_error(SRT_ECONNSOCK);
             return SRT_ERROR;
         }
         if (option == SRTO_GROUPMINSTABLETIMEO) {
@@ -725,7 +768,9 @@ bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
                 && record->peer_group == peer_group) {
                 // A peer-controlled group ID may not cross application
                 // authorization domains on the same listener or bond.
-                if (record->admission_domain != admission_domain)
+                if (record->admission_domain != admission_domain
+                    || record->member_public_options.path_identifier_required
+                        != listener_public_options.path_identifier_required)
                     return false;
                 // The handshake carries the sender's next packet sequence.
                 // The mirror cursor advances when the application receives,
@@ -834,12 +879,11 @@ void GroupRegistry::release_empty_mirror(
     groups_.erase(entry);
 }
 
-bool GroupRegistry::add_member(
-    SRTSOCKET group, SRTSOCKET socket,
-    const sockaddr_storage& peer, std::uint16_t weight,
-    int token, std::uint64_t& group_generation,
-    std::uint64_t& member_generation,
-    bool* first_member) noexcept
+bool GroupRegistry::add_member(SRTSOCKET group, SRTSOCKET socket,
+    const sockaddr_storage& peer, std::uint16_t weight, int token,
+    std::uint64_t& group_generation, std::uint64_t& member_generation,
+    bool* first_member, const PathIdentifier& identifier,
+    bool local_offer) noexcept
 {
     if (first_member != nullptr) {
         *first_member = false;
@@ -868,6 +912,14 @@ bool GroupRegistry::add_member(
         member.public_data.memberstate = SRT_GST_PENDING;
         member.public_data.result = SRT_SUCCESS;
         member.public_data.token = token;
+        member.path_data.member_id = socket;
+        if (identifier.valid()) {
+            member.path_data.identifier_length = identifier.size;
+            member.path_data.flags =
+                local_offer ? ROBOTWEAX_SRT_PATHID_LOCAL_OFFER : 0U;
+            std::memcpy(member.path_data.identifier, identifier.bytes.data(),
+                identifier.size);
+        }
         const bool remains_ordered = was_empty
             || (record->member_generations_ordered
                 && record->members.back().generation < member.generation);
@@ -928,6 +980,9 @@ void GroupRegistry::update_member(
             return;
         }
         const SRT_SOCKSTATUS previous_state = member->public_data.sockstate;
+        if (state == SRTS_CONNECTED
+            && member->path_data.identifier_length != 0U)
+            member->path_data.flags |= ROBOTWEAX_SRT_PATHID_NEGOTIATED;
         if (state == SRTS_CONNECTED && !record->statistics.activated) {
             const auto start = record->timestamp_origin.value_or(
                 std::chrono::steady_clock::now());

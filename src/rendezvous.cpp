@@ -456,6 +456,8 @@ HandshakeActions RendezvousHandshakeMachine::receive(
     const HandshakeMessage& message) noexcept
 {
     const auto& incoming = message.packet;
+    if (message.has_path_identifier)
+        return fail();
     if (is_rejection(incoming.request)) {
         rejection_reason_ =
             static_cast<std::int32_t>(incoming.request) - 1'000;

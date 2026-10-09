@@ -343,6 +343,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_handshake.cpp
         tests/test_handshake_datagram.cpp
         tests/test_handshake_extensions.cpp
+        tests/test_path_identifier.cpp
         tests/test_listener_accept_queue.cpp
         tests/test_listener_connection_setup.cpp
         tests/test_listener_connection_setup_sources.cpp
@@ -391,6 +392,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             compat_group_closed_member_retains_bounded_copy key_length
             srt_compat_gcm_ srt_compat_sensor_gcm_bounded_sample_stream_
             srt_compat_bind_acquire srt_compat_connection_local_name_
+            srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak)
     add_test(NAME robotweax_srt_transport_runtime_tests
@@ -412,6 +414,10 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     # waits. Keep it outside the aggregate native-runner deadline as well.
     add_test(NAME robotweax_srt_local_address_tests
         COMMAND robotweax_srt_tests --include srt_compat_connection_local_name_)
+    add_test(NAME robotweax_srt_group_pathid_tests
+        COMMAND robotweax_srt_tests --include srt_compat_group_pathid_)
+    set_tests_properties(robotweax_srt_group_pathid_tests PROPERTIES
+        TIMEOUT 30 LABELS "network;integration")
     set_tests_properties(robotweax_srt_local_address_tests PROPERTIES
         TIMEOUT 30 LABELS "network;integration")
     set_tests_properties(
@@ -1863,11 +1869,14 @@ endif()
 
 if(ROBOTWEAX_SRT_BUILD_TESTS)
     find_program(ROBOTWEAX_SRT_PKG_CONFIG_EXECUTABLE pkg-config)
+    # Published version snapshots remain frozen. Development additions have an
+    # exact export snapshot; the contract harness verifies the historical set
+    # is retained and that only the declared versioned getter was added.
     add_test(
         NAME robotweax_srt_abi_baseline_tests
         COMMAND ${CMAKE_COMMAND} -E compare_files
             ${ROBOTWEAX_SRT_PUBLIC_SYMBOLS_FILE}
-            ${ROBOTWEAX_SRT_ABI_BASELINE_FILE})
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/abi/robotweax-srt-development.txt)
     set_tests_properties(
         robotweax_srt_abi_baseline_tests
         PROPERTIES LABELS "abi;package")

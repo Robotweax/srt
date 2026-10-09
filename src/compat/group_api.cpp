@@ -172,6 +172,15 @@ int srt_group_data(
         group, output, inout_size);
 }
 
+int robotweax_srt_group_path_data_v1(SRTSOCKET group,
+    ROBOTWEAX_SRT_GROUP_PATHDATA_V1* output, size_t* inout_size)
+{
+    if (!stateful_api_available())
+        return SRT_ERROR;
+    return robotweax::srt::compat::GroupRegistry::instance().path_data(
+        group, output, inout_size);
+}
+
 SRT_SOCKOPT_CONFIG* srt_create_config(void)
 {
     try {
@@ -314,6 +323,12 @@ int srt_connect_group(
                 }
             }
         }
+        if (configured
+            && (record->public_options.path_identifier_required
+                != record->public_options.path_identifier.valid())) {
+            endpoint.errorcode = SRT_EINVPARAM;
+            configured = false;
+        }
         if (!configured) {
             SocketRegistry::instance().close(socket);
             continue;
@@ -334,10 +349,10 @@ int srt_connect_group(
         }
         std::uint64_t group_generation = 0;
         std::uint64_t member_generation = 0;
-        if (!GroupRegistry::instance().add_member(
-                group, socket, endpoint.peeraddr,
-                endpoint.weight, endpoint.token,
-                group_generation, member_generation)) {
+        if (!GroupRegistry::instance().add_member(group, socket,
+                endpoint.peeraddr, endpoint.weight, endpoint.token,
+                group_generation, member_generation, nullptr,
+                record->public_options.path_identifier, true)) {
             endpoint.errorcode = SRT_EINVSOCK;
             SocketRegistry::instance().close(socket);
             continue;

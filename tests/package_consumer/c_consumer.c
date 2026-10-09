@@ -36,12 +36,28 @@ _Static_assert(SRTO_CRYPTOMODE == 62, "AES-GCM socket option ABI");
 _Static_assert(SRT_REJ_CRYPTO == 17, "AES-GCM rejection ABI");
 #endif
 
+_Static_assert(
+    sizeof(ROBOTWEAX_SRT_GROUP_PATHDATA_V1) == 44, "path metadata v1 stride");
+_Static_assert(offsetof(ROBOTWEAX_SRT_GROUP_PATHDATA_V1, identifier) == 12,
+    "path metadata v1 layout");
+_Static_assert(
+    SRTO_ROBOTWEAX_PATHID_REQUIRED == 0x01000006, "path policy option");
+_Static_assert(SRTO_ROBOTWEAX_PATHID == 0x01000007, "path label option");
+
 int main(void)
 {
     if (srt_startup() == SRT_ERROR) {
         return 1;
     }
 
+    const SRTSOCKET path_group = srt_create_group(SRT_GTYPE_BROADCAST);
+    size_t path_count = 123;
+    if (path_group == SRT_INVALID_SOCK
+        || robotweax_srt_group_path_data_v1(path_group, NULL, &path_count) != 0
+        || path_count != 0 || srt_close(path_group) != 0) {
+        (void)srt_cleanup();
+        return 12;
+    }
     const int version = srt_getversion();
     const SRTSOCKET socket = srt_create_socket();
     if (socket == SRT_INVALID_SOCK) {
