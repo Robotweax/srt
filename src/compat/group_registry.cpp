@@ -232,7 +232,8 @@ ROBOTWEAX_SRT_GROUP_SEND_STATE_V1 group_send_state_snapshot(
     const auto age = [now_microseconds](std::uint64_t since) {
         return now_microseconds >= since ? now_microseconds - since : 0;
     };
-    result.active_age_microseconds = group.active_send_member == SRT_INVALID_SOCK
+    result.active_age_microseconds =
+        group.active_send_member == SRT_INVALID_SOCK
         ? ROBOTWEAX_SRT_GROUP_SEND_AGE_UNAVAILABLE
         : age(group.active_send_observed_since_microseconds);
     result.probe_age_microseconds = group.probe_send_member == SRT_INVALID_SOCK

@@ -4157,7 +4157,8 @@ ROBOTWEAX_SRT_GROUP_SEND_STATE_V1 read_group_send_state(SRTSOCKET group)
     ROBOTWEAX_SRT_GROUP_SEND_STATE_V1 state {};
     state.struct_size = sizeof(state);
     state.abi_version = ROBOTWEAX_SRT_GROUP_SEND_STATE_VERSION;
-    REQUIRE_EQ(robotweax_srt_group_send_state_v1(group, &state, sizeof(state)), 0);
+    REQUIRE_EQ(
+        robotweax_srt_group_send_state_v1(group, &state, sizeof(state)), 0);
     return state;
 }
 }
@@ -4175,7 +4176,8 @@ TEST(compat_backup_send_state_validates_abi_and_lifecycle_without_writes)
     const auto saved = output;
     const auto fail = [&](SRTSOCKET id, std::size_t size, int error) {
         const auto before = output;
-        REQUIRE_EQ(robotweax_srt_group_send_state_v1(id, &output.state, size), SRT_ERROR);
+        REQUIRE_EQ(robotweax_srt_group_send_state_v1(id, &output.state, size),
+            SRT_ERROR);
         REQUIRE_EQ(srt_getlasterror(nullptr), error);
         REQUIRE_EQ(std::memcmp(&before, &output, sizeof(output)), 0);
     };
@@ -4189,7 +4191,9 @@ TEST(compat_backup_send_state_validates_abi_and_lifecycle_without_writes)
     output.state.struct_size = sizeof(output.state) - 1;
     fail(group, sizeof(output), SRT_EINVPARAM);
     output = saved;
-    REQUIRE_EQ(robotweax_srt_group_send_state_v1(group, nullptr, sizeof(output)), SRT_ERROR);
+    REQUIRE_EQ(
+        robotweax_srt_group_send_state_v1(group, nullptr, sizeof(output)),
+        SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
     const auto plain = srt_create_socket();
     fail(plain, sizeof(output), SRT_EINVSOCK);
@@ -4197,7 +4201,9 @@ TEST(compat_backup_send_state_validates_abi_and_lifecycle_without_writes)
     const auto broadcast = srt_create_group(SRT_GTYPE_BROADCAST);
     fail(broadcast, sizeof(output), SRT_EINVOP);
     REQUIRE_EQ(srt_close(broadcast), 0);
-    REQUIRE_EQ(robotweax_srt_group_send_state_v1(group, &output.state, sizeof(output)), 0);
+    REQUIRE_EQ(
+        robotweax_srt_group_send_state_v1(group, &output.state, sizeof(output)),
+        0);
     REQUIRE_EQ(output.tail, saved.tail);
     REQUIRE_EQ(output.state.struct_size, sizeof(output.state));
     REQUIRE_EQ(output.state.state, ROBOTWEAX_SRT_GROUP_SEND_UNSELECTED);
@@ -4244,7 +4250,8 @@ TEST(compat_backup_send_state_probe_recovery_is_not_an_authority_change)
     SRT_TRACEBSTATS stats {};
     REQUIRE_EQ(srt_bstats(fixture.group, &stats, 1), 0);
     REQUIRE_EQ(read_group_send_state(fixture.group).authority_revision, 1U);
-    REQUIRE_EQ(fixture.messages, 3U); // Reads/clear produced no application send.
+    REQUIRE_EQ(
+        fixture.messages, 3U); // Reads/clear produced no application send.
 }
 
 TEST(compat_backup_send_state_revision_exposes_unsampled_failover_and_failback)
@@ -4275,22 +4282,24 @@ TEST(compat_backup_send_state_revision_exposes_unsampled_failover_and_failback)
     REQUIRE_EQ(last.probe_member, SRT_INVALID_SOCK);
 }
 
-TEST(compat_backup_send_state_removal_and_reused_socket_have_distinct_generations)
+TEST(
+    compat_backup_send_state_removal_and_reused_socket_have_distinct_generations)
 {
     BackupProbeDecisionFixture fixture;
     fixture.send();
     const auto first = read_group_send_state(fixture.group);
-    GroupRegistry::instance().remove_member(fixture.group, first.group_generation,
-        fixture.original, first.active_generation + 1);
-    REQUIRE_EQ(read_group_send_state(fixture.group).authority_revision, first.authority_revision);
-    GroupRegistry::instance().remove_member(fixture.group, first.group_generation,
-        fixture.original, first.active_generation);
+    GroupRegistry::instance().remove_member(fixture.group,
+        first.group_generation, fixture.original, first.active_generation + 1);
+    REQUIRE_EQ(read_group_send_state(fixture.group).authority_revision,
+        first.authority_revision);
+    GroupRegistry::instance().remove_member(fixture.group,
+        first.group_generation, fixture.original, first.active_generation);
     const auto removed = read_group_send_state(fixture.group);
     REQUIRE_EQ(removed.state, ROBOTWEAX_SRT_GROUP_SEND_UNSELECTED);
     REQUIRE_EQ(removed.active_generation, 0U);
     REQUIRE_EQ(removed.authority_revision, first.authority_revision + 1);
-    fixture.original_runtime = attach_group_runtime(fixture.group, fixture.original,
-        fixture.initial.value(), 20, &fixture.clock);
+    fixture.original_runtime = attach_group_runtime(fixture.group,
+        fixture.original, fixture.initial.value(), 20, &fixture.clock);
     fixture.send();
     const auto reconnected = read_group_send_state(fixture.group);
     REQUIRE_EQ(reconnected.active_member, first.active_member);
@@ -4298,7 +4307,8 @@ TEST(compat_backup_send_state_removal_and_reused_socket_have_distinct_generation
     REQUIRE_EQ(reconnected.authority_revision, first.authority_revision + 2);
 }
 
-TEST(compat_backup_send_state_hard_failure_is_observed_without_probe_qualification)
+TEST(
+    compat_backup_send_state_hard_failure_is_observed_without_probe_qualification)
 {
     BackupProbeDecisionFixture fixture;
     fixture.send();
@@ -4312,7 +4322,8 @@ TEST(compat_backup_send_state_hard_failure_is_observed_without_probe_qualificati
     REQUIRE_EQ(fallback.probe_member, SRT_INVALID_SOCK);
 }
 
-TEST(compat_backup_send_state_ages_use_an_independent_monotonic_observation_clock)
+TEST(
+    compat_backup_send_state_ages_use_an_independent_monotonic_observation_clock)
 {
     robotweax::srt::compat::GroupRecord record;
     record.active_send_member = 42;
@@ -4322,10 +4333,12 @@ TEST(compat_backup_send_state_ages_use_an_independent_monotonic_observation_cloc
     record.probe_send_member = 43;
     record.probe_send_generation = 8;
     record.probe_send_observed_since_microseconds = 200;
-    const auto snapshot = robotweax::srt::compat::group_send_state_snapshot(record, 500);
+    const auto snapshot =
+        robotweax::srt::compat::group_send_state_snapshot(record, 500);
     REQUIRE_EQ(snapshot.active_age_microseconds, 400U);
     REQUIRE_EQ(snapshot.probe_age_microseconds, 300U);
-    const auto earlier = robotweax::srt::compat::group_send_state_snapshot(record, 50);
+    const auto earlier =
+        robotweax::srt::compat::group_send_state_snapshot(record, 50);
     REQUIRE_EQ(earlier.active_age_microseconds, 0U);
     REQUIRE_EQ(earlier.probe_age_microseconds, 0U);
 }

@@ -797,7 +797,8 @@ int robotweax_srt_group_send_state_v1(SRTSOCKET group,
         set_last_error(SRT_EINVOP);
         return SRT_ERROR;
     }
-    *output = group_send_state_snapshot(*record, group_statistics_now_microseconds());
+    *output =
+        group_send_state_snapshot(*record, group_statistics_now_microseconds());
     return 0;
 }
 
