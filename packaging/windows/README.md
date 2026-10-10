@@ -31,7 +31,7 @@ checking that shared headers and license files are identical. Each variant's
 files in BCrypt inventories. Distribute `srt-backend.props` alongside `srt.props`;
 it supplies the package's backend-specific link dependencies.
 
-Compile `sdk.iss` with Inno Setup, supplying `/DSdkRoot=...`,
+Compile `sdk.iss` with Inno Setup 6.4 or newer, supplying `/DSdkRoot=...`,
 `/DProductVersion=...` and `/DCryptoBackend=openssl` or `bcrypt`.
 The supplied SDK must match this backend. Do not publish until Windows install/uninstall and all
 six consumer link checks pass. Compiled candidates are unsigned until they pass

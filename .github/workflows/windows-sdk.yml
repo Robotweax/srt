@@ -45,6 +45,9 @@ jobs:
       - name: SDK upgrade preflight tests in the installed Windows PowerShell runtime
         shell: powershell
         run: ./packaging/windows/test-upgrade-check.ps1
+      - name: Native SDK installer recipe regressions
+        shell: pwsh
+        run: ./packaging/windows/test-upgrade-installers.ps1
       - name: Authenticode rejection regression tests
         shell: pwsh
         run: ./packaging/windows/test-signing.ps1
