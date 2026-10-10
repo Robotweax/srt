@@ -634,6 +634,7 @@ void clear_backup_probe(GroupRecord& group) noexcept
             return member.id == probe_id
                 && member.generation == probe_generation;
         });
+    auto candidate = members.end();
     if (probe != members.end()) {
         // A fallback probe is no longer needed after the preferred current
         // authority recovers. Cancel before qualification, including when the
@@ -699,33 +700,47 @@ void clear_backup_probe(GroupRecord& group) noexcept
             return {};
         }
 
-        probe = std::find_if(
-            members.begin(), members.end(),
-            [probe_id, probe_generation](const auto& member) {
-                return member.id == probe_id
-                    && member.generation == probe_generation;
-            });
-        if (probe != members.end() && probe != std::next(members.begin())) {
-            std::rotate(
-                std::next(members.begin()), probe, std::next(probe));
+        // A probe that cannot qualify must not monopolize recovery when
+        // another path is available. Walk priority order cyclically, skipping
+        // the current authority. A healthy authority still permits only
+        // better-priority failback candidates. ACK qualification above wins
+        // before rotation at the exact interval boundary.
+        if (elapsed) {
+            auto next = std::next(probe);
+            if (next == members.end()) {
+                next = std::next(members.begin());
+            }
+            while (next != probe) {
+                if (!responsive || preferred(*next, members.front())) {
+                    candidate = next;
+                    break;
+                }
+                if (++next == members.end()) {
+                    next = std::next(members.begin());
+                }
+            }
         }
-        return {
-            .probe_member = probe_id,
-            .probe_generation = probe_generation,
-        };
+        if (candidate == members.end()) {
+            if (probe != std::next(members.begin())) {
+                std::rotate(
+                    std::next(members.begin()), probe, std::next(probe));
+            }
+            return {
+                .probe_member = probe_id,
+                .probe_generation = probe_generation,
+            };
+        }
+    } else {
+        // A better path is first exercised in parallel while an active path
+        // is responsive. After its response deadline, exercise the best
+        // alternative, including one with a lower configured weight.
+        candidate = responsive
+            ? std::find_if(std::next(members.begin()), members.end(),
+                  [&members, &preferred](const auto& member) {
+                      return preferred(member, members.front());
+                  })
+            : std::next(members.begin());
     }
-
-    // A better path is first exercised in parallel while an active path is
-    // responsive. Once the active response deadline expires, exercise the
-    // best available alternative even when its configured weight is lower.
-    // In either case the candidate must acknowledge group DATA and remain
-    // responsive for one complete stability interval before promotion.
-    const auto candidate = responsive
-        ? std::find_if(std::next(members.begin()), members.end(),
-              [&members, &preferred](const auto& member) {
-                  return preferred(member, members.front());
-              })
-        : std::next(members.begin());
     if (candidate == members.end()) {
         std::lock_guard lock(group->mutex);
         clear_backup_probe(*group);
@@ -734,9 +749,10 @@ void clear_backup_probe(GroupRecord& group) noexcept
     const auto candidate_health = candidate->runtime->response_health();
     {
         std::lock_guard lock(group->mutex);
-        if (group->closed
-            || group->active_send_member != active_id
-            || group->active_send_generation != active_generation) {
+        if (group->closed || group->active_send_member != active_id
+            || group->active_send_generation != active_generation
+            || group->probe_send_member != probe_id
+            || group->probe_send_generation != probe_generation) {
             return {};
         }
         group->probe_send_observed_since_microseconds =

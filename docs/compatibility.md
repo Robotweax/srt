@@ -207,3 +207,13 @@ can acknowledge only its own sequence prefix. A newly attached member starts
 this ACK boundary at its negotiated wire ISN, independently of any group delivery
 rebase. Broadcast acknowledgement behavior
 and the common group delivery cursor remain unchanged.
+
+A send-side Backup probe runs alongside the current authority. After one full
+member stability interval, fresh group DATA ACK progress and a recent response
+qualify promotion. If it cannot qualify and another eligible member exists, the
+coordinator probes the next member in cyclic weight/socket-ID priority order;
+a failed preferred path cannot indefinitely block a third fallback. Each new
+attempt starts its own interval and ACK cursor. A responsive authority permits
+only better-priority failback probes and cancels a lower-priority probe on
+recovery. With no alternative candidate, the existing probe continues waiting
+for ACK qualification. Probe rotation alone does not change sender authority.
