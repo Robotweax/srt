@@ -634,6 +634,20 @@ void clear_backup_probe(GroupRecord& group) noexcept
                 && member.generation == probe_generation;
         });
     if (probe != members.end()) {
+        // A fallback probe is no longer needed after the preferred current
+        // authority recovers. Cancel before qualification, including when the
+        // candidate already has ACK progress and a complete interval. A probe
+        // toward a better-priority path still follows normal failback gating.
+        if (responsive && preferred(members.front(), *probe)) {
+            std::lock_guard lock(group->mutex);
+            if (!group->closed && group->active_send_member == active_id
+                && group->active_send_generation == active_generation
+                && group->probe_send_member == probe_id
+                && group->probe_send_generation == probe_generation) {
+                clear_backup_probe(*group);
+            }
+            return {};
+        }
         probe->response_health = probe->runtime->response_health();
         const std::uint64_t timeout =
             backup_stability_timeout(*probe, minimum_milliseconds);
