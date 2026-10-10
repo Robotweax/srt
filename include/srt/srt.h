@@ -1132,12 +1132,6 @@ SRT_API int srt_bistats(
 SRT_API int robotweax_srt_rtt_data_v1(
     SRTSOCKET socket, ROBOTWEAX_SRT_RTTDATA_V1* output, size_t output_size);
 
-/**
- * @brief Reads current sender-buffer occupancy.
- * @param[out] blocks Optional queued packet count.
- * @param[out] bytes Optional queued payload-byte count.
- * @return Buffered timestamp span in milliseconds, or `SRT_ERROR`.
- */
 /** @brief Observes the local Backup group's selected sender and pending probe.
  * Initialize struct_size and abi_version (1); both declared and supplied size
  * must cover V1. Only sizeof(V1) bytes are written. Failure leaves output intact.
@@ -1155,6 +1149,12 @@ SRT_API int robotweax_srt_rtt_data_v1(
 SRT_API int robotweax_srt_group_send_state_v1(SRTSOCKET group,
     ROBOTWEAX_SRT_GROUP_SEND_STATE_V1* output, size_t output_size);
 
+/**
+ * @brief Reads current sender-buffer occupancy.
+ * @param[out] blocks Optional queued packet count.
+ * @param[out] bytes Optional queued payload-byte count.
+ * @return Buffered timestamp span in milliseconds, or `SRT_ERROR`.
+ */
 SRT_API int srt_getsndbuffer(
     SRTSOCKET socket, size_t* blocks, size_t* bytes);
 
