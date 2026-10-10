@@ -204,6 +204,81 @@ void observe_group_connect(
 {
 }
 
+// Exercise the real group send coordinator with an injectable clock and
+// ACK/keepalive packets, without a scheduler or wall time.
+struct BackupProbeDecisionFixture {
+    TestClock clock;
+    SRTSOCKET group = srt_create_group(SRT_GTYPE_BACKUP);
+    SRTSOCKET original = srt_create_socket();
+    SRTSOCKET candidate = srt_create_socket();
+    std::shared_ptr<robotweax::srt::compat::GroupRecord> record;
+    SequenceNumber initial {};
+    std::shared_ptr<ConnectionRuntime> original_runtime;
+    std::shared_ptr<ConnectionRuntime> candidate_runtime;
+    std::uint32_t messages = 0;
+
+    explicit BackupProbeDecisionFixture(std::uint16_t original_weight = 20,
+        std::uint16_t candidate_weight = 10, bool attach_candidate = true)
+    {
+        clock.channel =
+            std::make_shared<robotweax::srt::compat::DatagramChannel>();
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        initial = SequenceNumber {record->initial_sequence};
+        original_runtime = attach_group_runtime(
+            group, original, initial.value(), original_weight, &clock);
+        if (attach_candidate) {
+            candidate_runtime = attach_group_runtime(
+                group, candidate, initial.value(), candidate_weight, &clock);
+        }
+    }
+
+    ~BackupProbeDecisionFixture()
+    {
+        (void)srt_close(group);
+        if (candidate_runtime == nullptr) {
+            (void)srt_close(candidate);
+        }
+    }
+
+    void send()
+    {
+        constexpr char payload[] = "probe decision";
+        SRT_MSGCTRL control = srt_msgctrl_default;
+        REQUIRE_EQ(srt_sendmsg2(group, payload,
+                       static_cast<int>(sizeof(payload)), &control),
+            static_cast<int>(sizeof(payload)));
+        REQUIRE_EQ(control.pktseq,
+            static_cast<std::int32_t>(initial.advanced(messages).value()));
+        ++messages;
+    }
+
+    void respond(const std::shared_ptr<ConnectionRuntime>& runtime)
+    {
+        robotweax::srt::PacketView packet;
+        packet.kind = robotweax::srt::PacketKind::control;
+        packet.control.type = robotweax::srt::ControlType::keepalive;
+        const std::array<std::byte, 4> padding {};
+        packet.payload = padding;
+        runtime->process_packet(packet, IpEndpoint::loopback(9'000));
+        REQUIRE_EQ(runtime->response_health().last_response_microseconds,
+            clock.now_microseconds);
+    }
+
+    void expect(SRTSOCKET active, SRTSOCKET probe)
+    {
+        std::lock_guard lock(record->mutex);
+        REQUIRE_EQ(record->active_send_member, active);
+        REQUIRE_EQ(record->probe_send_member, probe);
+        if (probe == SRT_INVALID_SOCK) {
+            REQUIRE_EQ(record->probe_send_generation, 0U);
+            REQUIRE_EQ(record->probe_send_since_microseconds, 0U);
+            REQUIRE_EQ(record->probe_send_start_sequence, 0U);
+        }
+    }
+};
+
 sockaddr_in ipv4_address(std::uint16_t port)
 {
     sockaddr_in result{};
@@ -3953,6 +4028,123 @@ TEST(compat_backup_group_qualifies_a_better_path_in_parallel_before_promotion)
     REQUIRE_EQ(original_runtime->sender_buffer_status().packets, 0U);
     REQUIRE_EQ(preferred_runtime->sender_buffer_status().packets, 1U);
     REQUIRE_EQ(srt_close(group), 0);
+}
+
+TEST(
+    compat_backup_probe_recovered_primary_cancels_a_qualified_lower_priority_candidate)
+{
+    // Equal weights use the stable socket-ID priority. The original is created
+    // first, so both candidates below are lower priority than the original.
+    for (const auto candidate_weight : {10U, 20U}) {
+        BackupProbeDecisionFixture fixture {
+            20, static_cast<std::uint16_t>(candidate_weight)};
+        fixture.send();
+        fixture.expect(fixture.original, SRT_INVALID_SOCK);
+        // The unchanged initial RTT/variation gives a 400 ms response window.
+        fixture.clock.now_microseconds = 400'001;
+        fixture.send();
+        fixture.expect(fixture.original, fixture.candidate);
+        deliver_lite_ack(
+            fixture.candidate_runtime, fixture.initial.advanced(2U));
+        fixture.clock.now_microseconds = 800'001;
+        // The candidate now has ACK progress, a complete interval and a recent
+        // response. Recovery of the preferred original must win this decision.
+        fixture.respond(fixture.original_runtime);
+        fixture.send();
+        fixture.expect(fixture.original, SRT_INVALID_SOCK);
+        REQUIRE_EQ(
+            fixture.original_runtime->sender_buffer_status().packets, 3U);
+        REQUIRE_EQ(
+            fixture.candidate_runtime->sender_buffer_status().packets, 0U);
+        fixture.clock.now_microseconds = 800'002;
+        fixture.send();
+        fixture.expect(fixture.original, SRT_INVALID_SOCK);
+        REQUIRE_EQ(
+            fixture.candidate_runtime->sender_buffer_status().packets, 0U);
+    }
+}
+
+TEST(compat_backup_probe_recovery_restarts_the_interval_for_a_later_outage)
+{
+    BackupProbeDecisionFixture fixture;
+    fixture.send();
+    fixture.clock.now_microseconds = 400'001;
+    fixture.send();
+    fixture.expect(fixture.original, fixture.candidate);
+    deliver_lite_ack(fixture.candidate_runtime, fixture.initial.advanced(2U));
+    fixture.clock.now_microseconds = 500'001;
+    fixture.respond(fixture.original_runtime);
+    fixture.send();
+    fixture.expect(fixture.original, SRT_INVALID_SOCK);
+
+    // A response exactly at the deadline still keeps the current authority.
+    fixture.clock.now_microseconds = 900'001;
+    fixture.send();
+    fixture.expect(fixture.original, SRT_INVALID_SOCK);
+    fixture.clock.now_microseconds = 900'002;
+    fixture.send();
+    fixture.expect(fixture.original, fixture.candidate);
+    {
+        std::lock_guard lock(fixture.record->mutex);
+        REQUIRE_EQ(fixture.record->probe_send_since_microseconds, 900'002U);
+        REQUIRE_EQ(fixture.record->probe_send_start_sequence,
+            fixture.initial.advanced(4U).value());
+    }
+    // Fresh ACK progress cannot reuse the canceled probe's elapsed interval.
+    fixture.clock.now_microseconds = 1'200'001;
+    deliver_lite_ack(fixture.candidate_runtime, fixture.initial.advanced(5U));
+    fixture.send();
+    fixture.expect(fixture.original, fixture.candidate);
+    fixture.clock.now_microseconds = 1'300'002;
+    fixture.send();
+    fixture.expect(fixture.candidate, SRT_INVALID_SOCK);
+}
+
+TEST(compat_backup_probe_continued_primary_outage_still_requires_ack_progress)
+{
+    BackupProbeDecisionFixture fixture;
+    fixture.send();
+    fixture.clock.now_microseconds = 400'000;
+    fixture.send();
+    fixture.expect(fixture.original, SRT_INVALID_SOCK);
+    fixture.clock.now_microseconds = 400'001;
+    fixture.send();
+    fixture.expect(fixture.original, fixture.candidate);
+    fixture.clock.now_microseconds = 700'001;
+    fixture.respond(fixture.candidate_runtime);
+    fixture.clock.now_microseconds = 800'001;
+    fixture.send();
+    // A full interval and keepalive response do not replace a DATA ACK.
+    fixture.expect(fixture.original, fixture.candidate);
+    deliver_lite_ack(fixture.candidate_runtime, fixture.initial.advanced(4U));
+    fixture.clock.now_microseconds = 800'002;
+    fixture.send();
+    fixture.expect(fixture.candidate, SRT_INVALID_SOCK);
+}
+
+TEST(
+    compat_backup_probe_healthy_active_still_qualifies_a_higher_priority_failback)
+{
+    BackupProbeDecisionFixture fixture {10, 20, false};
+    fixture.send();
+    fixture.expect(fixture.original, SRT_INVALID_SOCK);
+    fixture.clock.now_microseconds = 10'000;
+    fixture.candidate_runtime = attach_group_runtime(fixture.group,
+        fixture.candidate, fixture.initial.value(), 20, &fixture.clock);
+    fixture.send();
+    fixture.expect(fixture.original, fixture.candidate);
+    deliver_lite_ack(fixture.candidate_runtime, fixture.initial.advanced(2U));
+
+    fixture.clock.now_microseconds = 409'999;
+    fixture.respond(fixture.original_runtime);
+    fixture.send();
+    fixture.expect(fixture.original, fixture.candidate);
+    deliver_lite_ack(fixture.candidate_runtime, fixture.initial.advanced(3U));
+    fixture.clock.now_microseconds = 410'000;
+    fixture.send();
+    fixture.expect(fixture.candidate, SRT_INVALID_SOCK);
+    REQUIRE_EQ(fixture.original_runtime->sender_buffer_status().packets, 3U);
+    REQUIRE_EQ(fixture.candidate_runtime->sender_buffer_status().packets, 1U);
 }
 
 TEST(compat_backup_group_reuses_a_buffered_member_after_another_path_acks)

@@ -225,6 +225,18 @@ authoritative only after it acknowledges group DATA and remains responsive for
 one stability interval. Local queue acceptance alone is not proof of path
 health. The same rule controls failover and failback.
 
+On the development branch, a pending fallback probe to a lower-priority member
+is canceled at the next group send decision when the current authority becomes
+responsive again. This check precedes candidate qualification, even if the
+candidate has already completed its interval and acknowledged DATA. Priority
+uses the same weight/socket-ID order as selection. A later response timeout
+starts a new probe with a new interval and DATA boundary; the canceled probe's
+qualification time is not reused. Probes toward a higher-priority member still
+follow normal failback qualification while the current path is responsive.
+Cancellation does not retract DATA already queued on the candidate. This rule
+adds no post-outage hold-down or continuous-health guarantee; responsiveness is
+the existing recent-response test, which also accepts keepalives.
+
 `SRTO_GROUPMINSTABLETIMEO` is group-only. Its compatible default and minimum
 are 60 ms; the effective interval also respects RTT and peer-idle constraints.
 Set it on the Backup group before its first connection. Ordinary socket
