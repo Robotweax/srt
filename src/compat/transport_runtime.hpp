@@ -516,6 +516,8 @@ public:
         std::int32_t ttl_milliseconds = -1) noexcept;
     [[nodiscard]] MessageIoResult skip_group_sequences(
         SequenceNumber next_sequence) noexcept;
+    [[nodiscard]] MessageIoResult retire_group_prefix(
+        SequenceNumber confirmed_sequence) noexcept;
     [[nodiscard]] std::int64_t timestamp_origin_microseconds() const noexcept
     {
         return origin_epoch_microseconds_;

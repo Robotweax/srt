@@ -1888,6 +1888,34 @@ MessageIoResult ConnectionRuntime::skip_group_sequences(
     };
 }
 
+MessageIoResult ConnectionRuntime::retire_group_prefix(
+    SequenceNumber confirmed_sequence) noexcept
+{
+    std::unique_lock lock(mutex_);
+    if (locally_closed_) {
+        return {.status = MessageIoStatus::local_closed};
+    }
+    if (peer_closed_) {
+        return {.status = MessageIoStatus::peer_closed};
+    }
+    if (broken_) {
+        return {
+            .status = MessageIoStatus::broken, .system_error = system_error_};
+    }
+    const auto retired = session_.retire_group_prefix(confirmed_sequence);
+    if (retired == Error::buffer_too_small) {
+        return {.status = MessageIoStatus::would_block};
+    }
+    if (retired != Error::none) {
+        return {.status = MessageIoStatus::invalid_state};
+    }
+    lock.unlock();
+    notify_channel_send_work();
+    notify_readiness();
+    return {.status = MessageIoStatus::success,
+        .next_sequence = confirmed_sequence};
+}
+
 MessageIoResult ConnectionRuntime::receive_message(
     std::span<std::byte> destination,
     bool blocking,

@@ -827,6 +827,127 @@ TEST(session_group_sequence_skip_is_rollover_safe)
     REQUIRE_EQ(drops.values[0].drop.sequences.last, SequenceNumber {0});
 }
 
+TEST(session_group_confirmed_prefix_retirement_covers_buffered_and_skipped_data)
+{
+    for (const auto initial :
+        {SequenceNumber {10}, SequenceNumber {SequenceNumber::mask - 1U}}) {
+        ReliabilitySession session {{
+            .local_initial_sequence = initial,
+            .peer_initial_sequence = SequenceNumber {20},
+            .peer_socket_id = 7,
+            .send_capacity_packets = 8,
+            .receive_capacity_packets = 8,
+            .maximum_payload_size = 1,
+        }};
+        const std::array<std::byte, 2> payload {};
+        REQUIRE_EQ(
+            session.queue_message(payload, PacketTimestamp {1}), Error::none);
+        REQUIRE(session.next_data_packet().has_value());
+        const auto confirmed = initial.advanced(4U);
+        REQUIRE_EQ(session.retire_group_prefix(confirmed), Error::none);
+        REQUIRE_EQ(session.send_buffer().size(), 0U);
+        REQUIRE_EQ(session.send_buffer().packets_in_flight(), 0U);
+        REQUIRE_EQ(session.send_buffer().first_sequence(), confirmed);
+        REQUIRE_EQ(session.send_buffer().next_sequence(), confirmed);
+        REQUIRE(!session.next_data_packet().has_value());
+        const auto drops = session.take_pending_drop_requests();
+        REQUIRE_EQ(drops.size, 1U);
+        REQUIRE_EQ(drops.values[0].drop.message_number, 0U);
+        REQUIRE_EQ(drops.values[0].drop.sequences.first, initial);
+        REQUIRE_EQ(drops.values[0].drop.sequences.last, initial.advanced(3U));
+        REQUIRE_EQ(session.queue_group_message(
+                       payload, confirmed, 2, PacketTimestamp {2}),
+            Error::none);
+        const auto data = session.next_data_packet();
+        REQUIRE(data.has_value());
+        REQUIRE_EQ(data->header.sequence, confirmed);
+        REQUIRE(!data->header.retransmitted);
+    }
+}
+
+TEST(
+    session_group_confirmed_prefix_retirement_rejects_unconfirmed_or_ambiguous_data)
+{
+    const SequenceNumber initial {10};
+    ReliabilitySession session {{
+        .local_initial_sequence = initial,
+        .peer_initial_sequence = SequenceNumber {20},
+        .peer_socket_id = 7,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+        .maximum_payload_size = 1,
+    }};
+    const std::array<std::byte, 2> payload {};
+    REQUIRE_EQ(
+        session.queue_message(payload, PacketTimestamp {1}), Error::none);
+    for (const auto invalid :
+        {initial.advanced(1U), initial.advanced(SequenceNumber::mask),
+            initial.advanced(SequenceNumber::half_range / 2U + 1U),
+            initial.advanced(SequenceNumber::half_range)}) {
+        REQUIRE_EQ(session.retire_group_prefix(invalid), Error::invalid_state);
+        REQUIRE_EQ(session.send_buffer().first_sequence(), initial);
+        REQUIRE_EQ(session.send_buffer().next_sequence(), initial.advanced(2U));
+        REQUIRE_EQ(session.send_buffer().size(), 2U);
+        REQUIRE_EQ(session.take_pending_drop_requests().size, 0U);
+    }
+    // A boundary at the cursor covers the entire retained prefix.
+    REQUIRE_EQ(session.retire_group_prefix(initial.advanced(2U)), Error::none);
+    REQUIRE_EQ(session.take_pending_drop_requests().size, 1U);
+    REQUIRE_EQ(session.retire_group_prefix(initial.advanced(2U)), Error::none);
+    REQUIRE_EQ(session.take_pending_drop_requests().size, 0U);
+}
+
+TEST(
+    session_group_confirmed_prefix_retirement_backpressure_preserves_buffered_data)
+{
+    ReliabilitySession session {{
+        .local_initial_sequence = SequenceNumber {0},
+        .peer_initial_sequence = SequenceNumber {20},
+        .peer_socket_id = 7,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8,
+    }};
+    const std::array<std::byte, 1> payload {};
+    // Fill the bounded range queue with disjoint skips separated by ACKed DATA.
+    for (std::uint32_t i = 0; i < detail::RangeDropQueue::capacity; ++i) {
+        REQUIRE_EQ(session.skip_group_sequences(SequenceNumber {4U * i + 1U}),
+            Error::none);
+        REQUIRE_EQ(
+            session.queue_message(payload, PacketTimestamp {1}), Error::none);
+        std::array<std::byte, 4> acknowledgement {};
+        REQUIRE(encode_acknowledgement_payload(
+            {.kind = AcknowledgementKind::lite,
+                .next_sequence = SequenceNumber {4U * i + 2U}},
+            acknowledgement));
+        PacketView packet;
+        packet.kind = PacketKind::control;
+        packet.control.type = ControlType::acknowledgement;
+        packet.payload = acknowledgement;
+        REQUIRE(session.receive(packet, 1));
+    }
+    const auto first = session.send_buffer().next_sequence();
+    REQUIRE_EQ(
+        session.queue_message(payload, PacketTimestamp {2}), Error::none);
+    REQUIRE_EQ(session.retire_group_prefix(first.advanced(2U)),
+        Error::buffer_too_small);
+    REQUIRE_EQ(session.send_buffer().first_sequence(), first);
+    REQUIRE_EQ(session.send_buffer().next_sequence(), first.next());
+    REQUIRE_EQ(session.send_buffer().size(), 1U);
+    std::size_t drained = 0U;
+    while (session.has_pending_drop_requests()) {
+        drained += session.take_pending_drop_requests().size;
+    }
+    // The member ACKs already cover every queued skip. Draining inspects
+    // the full backlog without emitting obsolete controls.
+    REQUIRE_EQ(drained, 0U);
+    REQUIRE_EQ(session.retire_group_prefix(first.advanced(2U)), Error::none);
+    const auto drops = session.take_pending_drop_requests();
+    REQUIRE_EQ(drops.size, 1U);
+    REQUIRE_EQ(drops.values[0].drop.sequences.first, first);
+    REQUIRE_EQ(drops.values[0].drop.sequences.last, first.next());
+    REQUIRE_EQ(session.send_buffer().size(), 0U);
+}
+
 TEST(session_live_drop_request_retains_received_and_in_flight_solo_packets)
 {
     ReliabilitySession receiver {{
