@@ -4151,6 +4151,185 @@ TEST(
     REQUIRE_EQ(fixture.candidate_runtime->sender_buffer_status().packets, 1U);
 }
 
+namespace {
+ROBOTWEAX_SRT_GROUP_SEND_STATE_V1 read_group_send_state(SRTSOCKET group)
+{
+    ROBOTWEAX_SRT_GROUP_SEND_STATE_V1 state {};
+    state.struct_size = sizeof(state);
+    state.abi_version = ROBOTWEAX_SRT_GROUP_SEND_STATE_VERSION;
+    REQUIRE_EQ(robotweax_srt_group_send_state_v1(group, &state, sizeof(state)), 0);
+    return state;
+}
+}
+
+TEST(compat_backup_send_state_validates_abi_and_lifecycle_without_writes)
+{
+    const auto group = srt_create_group(SRT_GTYPE_BACKUP);
+    struct Extended {
+        ROBOTWEAX_SRT_GROUP_SEND_STATE_V1 state;
+        std::array<unsigned char, 16> tail;
+    } output;
+    std::memset(&output, 0xa5, sizeof(output));
+    output.state.struct_size = sizeof(output);
+    output.state.abi_version = ROBOTWEAX_SRT_GROUP_SEND_STATE_VERSION;
+    const auto saved = output;
+    const auto fail = [&](SRTSOCKET id, std::size_t size, int error) {
+        const auto before = output;
+        REQUIRE_EQ(robotweax_srt_group_send_state_v1(id, &output.state, size), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), error);
+        REQUIRE_EQ(std::memcmp(&before, &output, sizeof(output)), 0);
+    };
+    fail(group, sizeof(output.state) - 1, SRT_EINVPARAM);
+    output.state.abi_version = 2;
+    fail(group, sizeof(output), SRT_EINVPARAM);
+    output = saved;
+    output.state.struct_size = sizeof(output) + 1;
+    fail(group, sizeof(output), SRT_EINVPARAM);
+    output = saved;
+    output.state.struct_size = sizeof(output.state) - 1;
+    fail(group, sizeof(output), SRT_EINVPARAM);
+    output = saved;
+    REQUIRE_EQ(robotweax_srt_group_send_state_v1(group, nullptr, sizeof(output)), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    const auto plain = srt_create_socket();
+    fail(plain, sizeof(output), SRT_EINVSOCK);
+    REQUIRE_EQ(srt_close(plain), 0);
+    const auto broadcast = srt_create_group(SRT_GTYPE_BROADCAST);
+    fail(broadcast, sizeof(output), SRT_EINVOP);
+    REQUIRE_EQ(srt_close(broadcast), 0);
+    REQUIRE_EQ(robotweax_srt_group_send_state_v1(group, &output.state, sizeof(output)), 0);
+    REQUIRE_EQ(output.tail, saved.tail);
+    REQUIRE_EQ(output.state.struct_size, sizeof(output.state));
+    REQUIRE_EQ(output.state.state, ROBOTWEAX_SRT_GROUP_SEND_UNSELECTED);
+    REQUIRE_EQ(output.state.active_member, SRT_INVALID_SOCK);
+    REQUIRE_EQ(output.state.probe_member, SRT_INVALID_SOCK);
+    REQUIRE_EQ(output.state.active_age_microseconds, UINT64_MAX);
+    REQUIRE_EQ(output.state.probe_age_microseconds, UINT64_MAX);
+    REQUIRE_EQ(output.state.authority_revision, 0U);
+    REQUIRE_EQ(output.state.reserved0, 0U);
+    REQUIRE_EQ(output.state.reserved[0], 0U);
+    REQUIRE_EQ(srt_close(group), 0);
+    fail(group, sizeof(output), SRT_EINVSOCK);
+}
+
+TEST(compat_backup_send_state_probe_recovery_is_not_an_authority_change)
+{
+    BackupProbeDecisionFixture fixture;
+    const auto initial = read_group_send_state(fixture.group);
+    fixture.send();
+    const auto selected = read_group_send_state(fixture.group);
+    REQUIRE_EQ(selected.state, ROBOTWEAX_SRT_GROUP_SEND_SELECTED);
+    REQUIRE_EQ(selected.active_member, fixture.original);
+    REQUIRE(selected.active_generation != 0);
+    REQUIRE_EQ(selected.group_generation, initial.group_generation);
+    REQUIRE_EQ(selected.authority_revision, 1U);
+    fixture.clock.now_microseconds = 400'001;
+    fixture.send();
+    const auto probing = read_group_send_state(fixture.group);
+    REQUIRE_EQ(probing.active_member, fixture.original);
+    REQUIRE_EQ(probing.probe_member, fixture.candidate);
+    REQUIRE(probing.probe_generation != 0);
+    REQUIRE(probing.probe_age_microseconds != UINT64_MAX);
+    REQUIRE_EQ(probing.authority_revision, selected.authority_revision);
+    deliver_lite_ack(fixture.candidate_runtime, fixture.initial.advanced(2U));
+    fixture.clock.now_microseconds = 800'001;
+    fixture.respond(fixture.original_runtime);
+    fixture.send();
+    const auto recovered = read_group_send_state(fixture.group);
+    REQUIRE_EQ(recovered.active_generation, selected.active_generation);
+    REQUIRE_EQ(recovered.authority_revision, selected.authority_revision);
+    REQUIRE_EQ(recovered.probe_member, SRT_INVALID_SOCK);
+    REQUIRE_EQ(recovered.probe_generation, 0U);
+    REQUIRE_EQ(recovered.probe_age_microseconds, UINT64_MAX);
+    SRT_TRACEBSTATS stats {};
+    REQUIRE_EQ(srt_bstats(fixture.group, &stats, 1), 0);
+    REQUIRE_EQ(read_group_send_state(fixture.group).authority_revision, 1U);
+    REQUIRE_EQ(fixture.messages, 3U); // Reads/clear produced no application send.
+}
+
+TEST(compat_backup_send_state_revision_exposes_unsampled_failover_and_failback)
+{
+    BackupProbeDecisionFixture fixture;
+    fixture.send();
+    const auto first = read_group_send_state(fixture.group);
+    fixture.clock.now_microseconds = 400'001;
+    fixture.send();
+    deliver_lite_ack(fixture.candidate_runtime, fixture.initial.advanced(2U));
+    fixture.clock.now_microseconds = 800'001;
+    fixture.send();
+    fixture.expect(fixture.candidate, SRT_INVALID_SOCK);
+    // Deliberately omit a public read of the intermediate Secondary selection.
+    fixture.clock.now_microseconds = 800'002;
+    fixture.respond(fixture.original_runtime);
+    fixture.send();
+    fixture.expect(fixture.candidate, fixture.original);
+    deliver_lite_ack(fixture.original_runtime, fixture.initial.advanced(4U));
+    fixture.clock.now_microseconds = 1'200'002;
+    fixture.respond(fixture.candidate_runtime);
+    fixture.respond(fixture.original_runtime);
+    fixture.send();
+    const auto last = read_group_send_state(fixture.group);
+    REQUIRE_EQ(last.active_member, first.active_member);
+    REQUIRE_EQ(last.active_generation, first.active_generation);
+    REQUIRE_EQ(last.authority_revision, first.authority_revision + 2);
+    REQUIRE_EQ(last.probe_member, SRT_INVALID_SOCK);
+}
+
+TEST(compat_backup_send_state_removal_and_reused_socket_have_distinct_generations)
+{
+    BackupProbeDecisionFixture fixture;
+    fixture.send();
+    const auto first = read_group_send_state(fixture.group);
+    GroupRegistry::instance().remove_member(fixture.group, first.group_generation,
+        fixture.original, first.active_generation + 1);
+    REQUIRE_EQ(read_group_send_state(fixture.group).authority_revision, first.authority_revision);
+    GroupRegistry::instance().remove_member(fixture.group, first.group_generation,
+        fixture.original, first.active_generation);
+    const auto removed = read_group_send_state(fixture.group);
+    REQUIRE_EQ(removed.state, ROBOTWEAX_SRT_GROUP_SEND_UNSELECTED);
+    REQUIRE_EQ(removed.active_generation, 0U);
+    REQUIRE_EQ(removed.authority_revision, first.authority_revision + 1);
+    fixture.original_runtime = attach_group_runtime(fixture.group, fixture.original,
+        fixture.initial.value(), 20, &fixture.clock);
+    fixture.send();
+    const auto reconnected = read_group_send_state(fixture.group);
+    REQUIRE_EQ(reconnected.active_member, first.active_member);
+    REQUIRE(reconnected.active_generation != first.active_generation);
+    REQUIRE_EQ(reconnected.authority_revision, first.authority_revision + 2);
+}
+
+TEST(compat_backup_send_state_hard_failure_is_observed_without_probe_qualification)
+{
+    BackupProbeDecisionFixture fixture;
+    fixture.send();
+    const auto first = read_group_send_state(fixture.group);
+    fixture.original_runtime->close();
+    fixture.send();
+    const auto fallback = read_group_send_state(fixture.group);
+    REQUIRE_EQ(fallback.active_member, fixture.candidate);
+    // Removal clears the old selection before the immediate replacement.
+    REQUIRE_EQ(fallback.authority_revision, first.authority_revision + 2);
+    REQUIRE_EQ(fallback.probe_member, SRT_INVALID_SOCK);
+}
+
+TEST(compat_backup_send_state_ages_use_an_independent_monotonic_observation_clock)
+{
+    robotweax::srt::compat::GroupRecord record;
+    record.active_send_member = 42;
+    record.active_send_generation = 7;
+    record.active_send_since_microseconds = 9'000'000; // coordinator clock
+    record.active_send_observed_since_microseconds = 100;
+    record.probe_send_member = 43;
+    record.probe_send_generation = 8;
+    record.probe_send_observed_since_microseconds = 200;
+    const auto snapshot = robotweax::srt::compat::group_send_state_snapshot(record, 500);
+    REQUIRE_EQ(snapshot.active_age_microseconds, 400U);
+    REQUIRE_EQ(snapshot.probe_age_microseconds, 300U);
+    const auto earlier = robotweax::srt::compat::group_send_state_snapshot(record, 50);
+    REQUIRE_EQ(earlier.active_age_microseconds, 0U);
+    REQUIRE_EQ(earlier.probe_age_microseconds, 0U);
+}
+
 TEST(compat_backup_group_reuses_a_buffered_member_after_another_path_acks)
 {
     TestClock clock;

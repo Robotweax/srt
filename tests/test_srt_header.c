@@ -35,6 +35,9 @@ _Static_assert(sizeof(ROBOTWEAX_SRT_RTTDATA_V1) == 48, "RTT metadata ABI size");
 _Static_assert(
     offsetof(ROBOTWEAX_SRT_RTTDATA_V1, local_ackack_age_microseconds) == 24,
     "RTT metadata age offset");
+_Static_assert(sizeof(ROBOTWEAX_SRT_GROUP_SEND_STATE_V1) == 80, "group sender ABI size");
+_Static_assert(offsetof(ROBOTWEAX_SRT_GROUP_SEND_STATE_V1, authority_revision) == 48,
+    "group sender revision offset");
 _Static_assert(sizeof(SRT_TRACEBSTATS) == 496, "statistics ABI size");
 _Static_assert(
     offsetof(SRT_TRACEBSTATS, byteSentTotal) == 80,

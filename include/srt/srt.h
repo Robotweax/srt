@@ -368,6 +368,28 @@ typedef struct ROBOTWEAX_SRT_RttDataV1_ {
     uint32_t reserved[2];
 } ROBOTWEAX_SRT_RTTDATA_V1;
 
+/* Optional observation of the local Backup sender; existing ABI is unchanged. */
+#define ROBOTWEAX_SRT_GROUP_SEND_STATE_VERSION 1u
+#define ROBOTWEAX_SRT_GROUP_SEND_UNSELECTED 0u
+#define ROBOTWEAX_SRT_GROUP_SEND_SELECTED 1u
+#define ROBOTWEAX_SRT_GROUP_SEND_AGE_UNAVAILABLE UINT64_MAX
+
+typedef struct ROBOTWEAX_SRT_GroupSendStateV1_ {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t state;
+    uint32_t reserved0;
+    SRTSOCKET active_member;
+    SRTSOCKET probe_member;
+    uint64_t group_generation;
+    uint64_t active_generation;
+    uint64_t probe_generation;
+    uint64_t authority_revision;
+    uint64_t active_age_microseconds;
+    uint64_t probe_age_microseconds;
+    uint32_t reserved[2];
+} ROBOTWEAX_SRT_GROUP_SEND_STATE_V1;
+
 enum CodeMajor {
     MJ_UNKNOWN = -1,
     MJ_SUCCESS = 0,
@@ -1116,6 +1138,23 @@ SRT_API int robotweax_srt_rtt_data_v1(
  * @param[out] bytes Optional queued payload-byte count.
  * @return Buffered timestamp span in milliseconds, or `SRT_ERROR`.
  */
+/** @brief Observes the local Backup group's selected sender and pending probe.
+ * Initialize struct_size and abi_version (1); both declared and supplied size
+ * must cover V1. Only sizeof(V1) bytes are written. Failure leaves output intact.
+ * Invalid size/version/null output: EINVPARAM; invalid/closed/non-group socket:
+ * EINVSOCK; other group types: EINVOP. An open, unconnected Backup is readable.
+ * A selected sender is coordinator authority, not a current-health guarantee.
+ * Socket ID plus generation identifies a connection. Probe DATA activity is not
+ * authority. Revision advances modulo 2^64 on selection, replacement and clear,
+ * including initial selection; resets only with a new group generation. Gaps
+ * expose unsampled changes, not their intermediate identities or reasons.
+ * Ages are local monotonic elapsed time since each observed state began,
+ * UINT64_MAX when absent. Reading does not send, tick, reset or select anything.
+ * No global or remote receiver authority is implied.
+ */
+SRT_API int robotweax_srt_group_send_state_v1(SRTSOCKET group,
+    ROBOTWEAX_SRT_GROUP_SEND_STATE_V1* output, size_t output_size);
+
 SRT_API int srt_getsndbuffer(
     SRTSOCKET socket, size_t* blocks, size_t* bytes);
 

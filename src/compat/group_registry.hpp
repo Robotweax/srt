@@ -124,6 +124,11 @@ struct GroupRecord {
     // normal socket validation and normalization, without an unbounded map.
     SocketOptions member_native_options;
     PublicSocketOptions member_public_options;
+    // Observation bookkeeping uses the process monotonic clock, independently
+    // of the injectable coordinator clock. Protected by mutex, no policy use.
+    std::uint64_t send_authority_revision = 0;
+    std::uint64_t active_send_observed_since_microseconds = 0;
+    std::uint64_t probe_send_observed_since_microseconds = 0;
     SRTSOCKET active_send_member = SRT_INVALID_SOCK;
     std::uint64_t active_send_generation = 0;
     std::uint64_t active_send_since_microseconds = 0;
@@ -133,6 +138,11 @@ struct GroupRecord {
     std::uint32_t probe_send_start_sequence = 0;
     std::vector<GroupMemberSnapshot> members;
 };
+
+// Callers hold GroupRecord::mutex. Explicit now permits deterministic age tests.
+[[nodiscard]] ROBOTWEAX_SRT_GROUP_SEND_STATE_V1 group_send_state_snapshot(
+    const GroupRecord& group, std::uint64_t now_microseconds) noexcept;
+[[nodiscard]] std::uint64_t group_statistics_now_microseconds() noexcept;
 
 class GroupRegistry {
 public:
