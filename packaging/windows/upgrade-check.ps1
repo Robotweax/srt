@@ -6,6 +6,15 @@ param([string]$Root, [string]$Manifest, [AllowEmptyString()][string]$OldVersion,
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Get-SdkFileHash([string]$Path) {
+    # Setup is a 32-bit process. Use .NET rather than depend on module discovery
+    # in its Windows PowerShell child (which can inherit a pwsh module path).
+    $Stream = [IO.File]::OpenRead($Path)
+    $Hash = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($Hash.ComputeHash($Stream)).Replace('-','').ToLowerInvariant() }
+    finally { $Hash.Dispose(); $Stream.Dispose() }
+}
+
 function Assert-SdkPath([string]$Directory, [string]$Relative) {
     $Parts = $Relative -split '\\'
     if ($Relative.Length -gt 240 -or $Parts.Count -eq 0) { throw 'Invalid SDK inventory path' }
@@ -76,13 +85,18 @@ function Get-SdkUpgradePlan([string]$Directory, [string]$Incoming, [string]$Prev
         return
     }
     $Old = Read-SdkInventory (Join-Path $Directory 'checksums.json') $Directory
+    foreach ($Relative in $New.Keys) {
+        if (!$Old.ContainsKey($Relative) -and (Test-Path -LiteralPath (Assert-SdkPath $Directory $Relative))) {
+            throw "New SDK file would overwrite an untracked file; preserve it first: $Relative"
+        }
+    }
     # Verify the old backend identity from its checksummed build metadata.
     foreach ($Configuration in 'Debug','Release') {
         foreach ($Platform in 'Win32','x64','Arm64') {
             $Relative = "lib\$Configuration-$Platform\build.json"
             $Path = Assert-SdkPath $Directory $Relative
             if (!$Old.ContainsKey($Relative) -or !(Test-Path -LiteralPath $Path -PathType Leaf) -or
-                (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ne $Old[$Relative]) {
+                (Get-SdkFileHash $Path) -ne $Old[$Relative]) {
                 throw 'Existing SDK backend metadata is missing or modified; uninstall first.'
             }
             $Metadata = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
@@ -95,7 +109,7 @@ function Get-SdkUpgradePlan([string]$Directory, [string]$Incoming, [string]$Prev
         $Path = Assert-SdkPath $Directory $Relative
         if (!(Test-Path -LiteralPath $Path)) { continue }
         if (!(Test-Path -LiteralPath $Path -PathType Leaf) -or
-            (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ne $Old[$Relative]) {
+            (Get-SdkFileHash $Path) -ne $Old[$Relative]) {
             throw "Obsolete SDK file was modified; preserve it and uninstall first: $Relative"
         }
         # Fixed digest + two spaces + validated relative path, read by Setup.

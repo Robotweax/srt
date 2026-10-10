@@ -34,6 +34,7 @@ try {
     $NewHashes = $Hashes.Clone()
     $NewHashes.Remove('include\srt\obsolete.h')
     $NewHashes | ConvertTo-Json | Set-Content $Incoming
+    if ((Get-SdkFileHash "$Installed/srt.props") -ne (Get-FileHash "$Installed/srt.props").Hash) { throw 'Incorrect SDK SHA256' }
     $Plan = @(Get-SdkUpgradePlan $Installed $Incoming '0.2.7' '0.2.8' 'bcrypt')
     if ($Plan.Count -ne 1 -or $Plan[0].Substring(66) -ne 'include\srt\obsolete.h') { throw 'Incorrect obsolete-file plan' }
     if (@(Get-SdkUpgradePlan $Installed $Incoming '0.2.8' '0.2.8' 'bcrypt').Count -ne 1) { throw 'Repair rejected' }
@@ -45,6 +46,12 @@ try {
     'fixture' | Set-Content "$Installed/include/srt/obsolete.h"
     'user content' | Set-Content "$Installed/include/srt/user.h"
     if (@(Get-SdkUpgradePlan $Installed $Incoming '0.2.7' '0.2.8' 'bcrypt').Count -ne 1) { throw 'Untracked user file included' }
+    $Conflicting = $NewHashes.Clone()
+    $Conflicting['include\srt\user.h'] = 'a' * 64
+    $Conflicting | ConvertTo-Json | Set-Content $Incoming
+    Expect-Rejection { Get-SdkUpgradePlan $Installed $Incoming '0.2.7' '0.2.8' 'bcrypt' } 'overwrite an untracked file'
+    if ((Get-Content "$Installed/include/srt/user.h" -Raw).Trim() -ne 'user content') { throw 'Collision changed user file' }
+    $NewHashes | ConvertTo-Json | Set-Content $Incoming
     Remove-Item "$Installed/include/srt/obsolete.h"
     if (@(Get-SdkUpgradePlan $Installed $Incoming '0.2.7' '0.2.8' 'bcrypt').Count -ne 0) { throw 'Missing obsolete file rejected' }
     foreach ($Bad in '..\outside.txt','include\..\outside.txt','include\srt\NUL.h','C:\outside.txt','include\srt\srt.h:stream','include\srt\bad.','arbitrary.txt','include/srt/bad.h') {
