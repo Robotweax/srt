@@ -220,6 +220,10 @@ struct BackupProbeDecisionFixture {
     explicit BackupProbeDecisionFixture(std::uint16_t original_weight = 20,
         std::uint16_t candidate_weight = 10, bool attach_candidate = true)
     {
+        // Handles are a non-repeating permutation, not creation ordered.
+        if (original_weight == candidate_weight && original > candidate) {
+            std::swap(original, candidate);
+        }
         clock.channel =
             std::make_shared<robotweax::srt::compat::DatagramChannel>();
         clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
@@ -4033,8 +4037,8 @@ TEST(compat_backup_group_qualifies_a_better_path_in_parallel_before_promotion)
 TEST(
     compat_backup_probe_recovered_primary_cancels_a_qualified_lower_priority_candidate)
 {
-    // Equal weights use the stable socket-ID priority. The original is created
-    // first, so both candidates below are lower priority than the original.
+    // Equal weights use the stable socket-ID priority. The fixture gives the
+    // original the smaller ID; both candidates below have lower priority.
     for (const auto candidate_weight : {10U, 20U}) {
         BackupProbeDecisionFixture fixture {
             20, static_cast<std::uint16_t>(candidate_weight)};
