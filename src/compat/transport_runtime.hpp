@@ -585,6 +585,7 @@ public:
     [[nodiscard]] RuntimeStatisticsSnapshot statistics(
         bool clear_interval, bool instantaneous) noexcept;
     [[nodiscard]] RuntimeResponseHealth response_health() const noexcept;
+    [[nodiscard]] ROBOTWEAX_SRT_RTTDATA_V1 rtt_data() const noexcept;
     [[nodiscard]] SenderBufferStatus sender_buffer_status() noexcept;
     [[nodiscard]] RuntimeBufferPacketCounts
     buffer_packet_counts() const noexcept;

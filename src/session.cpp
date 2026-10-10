@@ -1007,11 +1007,9 @@ ReliabilityProcessResult ReliabilitySession::receive(
                     decoded.acknowledgement.available_receive_buffer_packets;
             }
             rtt_.observe_peer_estimate(
-                decoded.acknowledgement
-                    .round_trip_time_microseconds,
-                decoded.acknowledgement
-                    .round_trip_time_variance_microseconds,
-                has_received_data_);
+                decoded.acknowledgement.round_trip_time_microseconds,
+                decoded.acknowledgement.round_trip_time_variance_microseconds,
+                has_received_data_, now_microseconds);
             if (file_rate_controller_.has_value()) {
                 file_rate_controller_->on_ack(
                     decoded.acknowledgement.next_sequence,
@@ -1216,7 +1214,7 @@ ReliabilityProcessResult ReliabilitySession::receive(
         const auto sample = acknowledgement_tracker_.acknowledge(
             acknowledgement_number, now_microseconds);
         if (sample.has_value()) {
-            rtt_.observe(*sample);
+            rtt_.observe(*sample, now_microseconds);
             update_loss_timer(now_microseconds);
         }
         return result;

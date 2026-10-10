@@ -346,6 +346,28 @@ struct CBytePerfMon {
 
 typedef struct CBytePerfMon SRT_TRACEBSTATS;
 
+/* Optional Robotweax extension; SRT_TRACEBSTATS remains unchanged. */
+#define ROBOTWEAX_SRT_RTTDATA_VERSION 1u
+#define ROBOTWEAX_SRT_RTT_OBSERVED 1u
+#define ROBOTWEAX_SRT_RTT_LOCAL_ACKACK 2u
+#define ROBOTWEAX_SRT_RTT_PEER_ESTIMATE 4u
+#define ROBOTWEAX_SRT_RTT_SOURCE_NONE 0u
+#define ROBOTWEAX_SRT_RTT_SOURCE_LOCAL_ACKACK 1u
+#define ROBOTWEAX_SRT_RTT_SOURCE_PEER_ESTIMATE 2u
+#define ROBOTWEAX_SRT_RTT_AGE_UNAVAILABLE UINT64_MAX
+
+typedef struct ROBOTWEAX_SRT_RttDataV1_ {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t flags;
+    uint32_t last_update_source;
+    uint32_t smoothed_microseconds;
+    uint32_t variation_microseconds;
+    uint64_t local_ackack_age_microseconds;
+    uint64_t peer_estimate_age_microseconds;
+    uint32_t reserved[2];
+} ROBOTWEAX_SRT_RTTDATA_V1;
+
 enum CodeMajor {
     MJ_UNKNOWN = -1,
     MJ_SUCCESS = 0,
@@ -1071,6 +1093,22 @@ SRT_API int srt_bstats(
 SRT_API int srt_bistats(
     SRTSOCKET socket, SRT_TRACEBSTATS* statistics,
     int clear, int instantaneous);
+
+/** @brief Copies one coherent RTT estimate and observation-history snapshot.
+ * Initialize output.struct_size and abi_version (1). output_size and the
+ * declared size must cover V1; only sizeof(V1) bytes are written. Invalid size,
+ * version or null output fails with EINVPARAM without modifying output.
+ * Connected and retained BROKEN sockets are readable; other states fail with
+ * ENOCONN, closing with ECONNLOST, closed/invalid/group handles with EINVSOCK.
+ * Ages use local monotonic elapsed microseconds; UINT64_MAX means absent.
+ * OBSERVED means the estimator accepted an observation, not fresh accuracy.
+ * Peer age measures local acceptance, not the peer's unknown measurement age.
+ * Local and peer histories may both exist after smoothing/replacement. Reading
+ * this getter or clearing statistics does not reset them. Keepalive does not
+ * refresh them. A new connection starts with no history and default estimates.
+ */
+SRT_API int robotweax_srt_rtt_data_v1(
+    SRTSOCKET socket, ROBOTWEAX_SRT_RTTDATA_V1* output, size_t output_size);
 
 /**
  * @brief Reads current sender-buffer occupancy.

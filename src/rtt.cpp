@@ -46,11 +46,14 @@ std::optional<std::uint32_t> AcknowledgementTracker::acknowledge(
         elapsed, std::numeric_limits<std::uint32_t>::max()));
 }
 
-void RttEstimator::observe(std::uint32_t sample_microseconds) noexcept
+void RttEstimator::observe(std::uint32_t sample_microseconds,
+    std::optional<std::uint64_t> now_microseconds) noexcept
 {
     if (sample_microseconds == 0U) {
         return;
     }
+    local_observation_time_ = now_microseconds;
+    last_observation_source_ = 1;
     if (!has_sample_) {
         smoothed_microseconds_ = sample_microseconds;
         variation_microseconds_ = sample_microseconds / 2U;
@@ -66,10 +69,9 @@ void RttEstimator::observe(std::uint32_t sample_microseconds) noexcept
         (7ULL * smoothed_microseconds_ + sample_microseconds) / 8ULL);
 }
 
-void RttEstimator::observe_peer_estimate(
-    std::uint32_t smoothed_microseconds,
-    std::uint32_t variation_microseconds,
-    bool bidirectional_traffic) noexcept
+void RttEstimator::observe_peer_estimate(std::uint32_t smoothed_microseconds,
+    std::uint32_t variation_microseconds, bool bidirectional_traffic,
+    std::optional<std::uint64_t> now_microseconds) noexcept
 {
     if (smoothed_microseconds == 0U) {
         return;
@@ -83,12 +85,16 @@ void RttEstimator::observe_peer_estimate(
         if (is_initial_default) {
             return;
         }
+        peer_observation_time_ = now_microseconds;
+        last_observation_source_ = 2;
         smoothed_microseconds_ = smoothed_microseconds;
         variation_microseconds_ = variation_microseconds;
         has_sample_ = true;
         return;
     }
     if (!bidirectional_traffic) {
+        peer_observation_time_ = now_microseconds;
+        last_observation_source_ = 2;
         smoothed_microseconds_ = smoothed_microseconds;
         variation_microseconds_ = variation_microseconds;
         return;
@@ -96,6 +102,8 @@ void RttEstimator::observe_peer_estimate(
     if (is_initial_default) {
         return;
     }
+    peer_observation_time_ = now_microseconds;
+    last_observation_source_ = 2;
 
     const std::uint32_t difference =
         smoothed_microseconds_ > smoothed_microseconds

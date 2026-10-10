@@ -4772,6 +4772,31 @@ RuntimeStatisticsSnapshot ConnectionRuntime::statistics(
         now, values, clear_interval);
 }
 
+ROBOTWEAX_SRT_RTTDATA_V1 ConnectionRuntime::rtt_data() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    const auto now = now_microseconds();
+    const auto& rtt = session_.rtt();
+    ROBOTWEAX_SRT_RTTDATA_V1 result {};
+    result.struct_size = sizeof(result);
+    result.abi_version = ROBOTWEAX_SRT_RTTDATA_VERSION;
+    result.flags = rtt.has_sample() ? ROBOTWEAX_SRT_RTT_OBSERVED : 0U;
+    result.last_update_source = rtt.last_observation_source();
+    result.smoothed_microseconds = rtt.smoothed_microseconds();
+    result.variation_microseconds = rtt.variation_microseconds();
+    result.local_ackack_age_microseconds = ROBOTWEAX_SRT_RTT_AGE_UNAVAILABLE;
+    result.peer_estimate_age_microseconds = ROBOTWEAX_SRT_RTT_AGE_UNAVAILABLE;
+    if (const auto time = rtt.local_observation_time()) {
+        result.flags |= ROBOTWEAX_SRT_RTT_LOCAL_ACKACK;
+        result.local_ackack_age_microseconds = now >= *time ? now - *time : 0U;
+    }
+    if (const auto time = rtt.peer_observation_time()) {
+        result.flags |= ROBOTWEAX_SRT_RTT_PEER_ESTIMATE;
+        result.peer_estimate_age_microseconds = now >= *time ? now - *time : 0U;
+    }
+    return result;
+}
+
 RuntimeResponseHealth ConnectionRuntime::response_health() const noexcept
 {
     std::lock_guard lock(mutex_);

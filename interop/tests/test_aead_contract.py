@@ -151,12 +151,12 @@ class AeadContractTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue((ROOT / path).is_file())
 
-    def test_development_abi_adds_only_versioned_group_path_metadata(self):
+    def test_development_abi_adds_only_versioned_observation_metadata(self):
         historical = CURRENT_ABI_PATH.read_bytes()
         self.assertEqual(hashlib.sha256(historical).hexdigest(),
                          "078187df2008370574a8acb7dd64c17d0abadc3ba9f8d5f45a88a15d949dda2a")
         expected = sorted(historical.decode().splitlines()
-                          + ["robotweax_srt_group_path_data_v1"])
+                          + ["robotweax_srt_group_path_data_v1", "robotweax_srt_rtt_data_v1"])
         symbols = PUBLIC_SYMBOLS_PATH.read_bytes()
         self.assertEqual(symbols.decode().splitlines(), expected)
         self.assertEqual(symbols,
