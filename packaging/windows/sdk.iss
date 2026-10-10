@@ -62,8 +62,8 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Key, PreviousDir, PreviousVersion, Params, Detail: String;
-  ExitCode: Integer;
-  ErrorText: TArrayOfString;
+  ExitCode, I, J, Count: Integer;
+  ErrorText, Plan: TArrayOfString;
 begin
   Result := '';
   if CompareText(AddBackslash(ExpandConstant('{app}')),
@@ -123,8 +123,30 @@ begin
     Result := Detail;
     Exit;
   end;
-  if not LoadStringsFromFile(ExpandConstant('{tmp}\obsolete.txt'), Obsolete) then
+  SetArrayLength(Obsolete, 0);
+  if not LoadStringsFromFile(ExpandConstant('{tmp}\obsolete.txt'), Plan) then begin
     Result := 'Could not read the SDK upgrade plan.';
+    Exit;
+  end;
+  // A BOM-only UTF-8 file can load as one empty line. Fresh installs and
+  // repairs without obsolete files must not treat it as a file to retire.
+  for I := 0 to GetArrayLength(Plan) - 1 do begin
+    if Trim(Plan[I]) <> '' then begin
+      if (Length(Plan[I]) <= 66) or (Copy(Plan[I], 65, 2) <> '  ') then begin
+        Result := 'The SDK upgrade plan contains an invalid entry.';
+        Exit;
+      end;
+      for J := 1 to 64 do
+        if Pos(Lowercase(Plan[I][J]), '0123456789abcdef') = 0 then begin
+          Result := 'The SDK upgrade plan contains an invalid digest.';
+          Exit;
+        end;
+      Count := GetArrayLength(Obsolete);
+      SetArrayLength(Obsolete, Count + 1);
+      Obsolete[Count] := Plan[I];
+    end;
+  end;
+  Log('SDK files to retire: ' + IntToStr(GetArrayLength(Obsolete)));
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
