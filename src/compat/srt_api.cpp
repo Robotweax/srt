@@ -769,6 +769,39 @@ int robotweax_srt_rtt_data_v1(
     return 0;
 }
 
+int robotweax_srt_group_send_state_v1(SRTSOCKET group,
+    ROBOTWEAX_SRT_GROUP_SEND_STATE_V1* output, size_t output_size)
+{
+    if (!stateful_api_available()) {
+        return SRT_ERROR;
+    }
+    if (output == nullptr || output_size < sizeof(*output)
+        || output->struct_size < sizeof(*output)
+        || output->struct_size > output_size
+        || output->abi_version != ROBOTWEAX_SRT_GROUP_SEND_STATE_VERSION) {
+        robotweax::srt::compat::set_last_error(SRT_EINVPARAM);
+        return SRT_ERROR;
+    }
+    using namespace robotweax::srt::compat;
+    const auto record = GroupRegistry::instance().find(group);
+    if (record == nullptr) {
+        set_last_error(SRT_EINVSOCK);
+        return SRT_ERROR;
+    }
+    std::lock_guard lock(record->mutex);
+    if (record->closed) {
+        set_last_error(SRT_EINVSOCK);
+        return SRT_ERROR;
+    }
+    if (record->type != SRT_GTYPE_BACKUP) {
+        set_last_error(SRT_EINVOP);
+        return SRT_ERROR;
+    }
+    *output =
+        group_send_state_snapshot(*record, group_statistics_now_microseconds());
+    return 0;
+}
+
 int srt_getsndbuffer(
     SRTSOCKET socket, size_t* blocks, size_t* bytes)
 {

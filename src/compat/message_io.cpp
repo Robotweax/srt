@@ -561,6 +561,7 @@ void acknowledge_backup_replay(std::span<const GroupIoMember> members,
 
 void clear_backup_probe(GroupRecord& group) noexcept
 {
+    group.probe_send_observed_since_microseconds = 0;
     group.probe_send_member = SRT_INVALID_SOCK;
     group.probe_send_generation = 0;
     group.probe_send_since_microseconds = 0;
@@ -672,6 +673,9 @@ void clear_backup_probe(GroupRecord& group) noexcept
                     && group->active_send_generation == active_generation
                     && group->probe_send_member == promoted_id
                     && group->probe_send_generation == promoted_generation) {
+                    ++group->send_authority_revision;
+                    group->active_send_observed_since_microseconds =
+                        group_statistics_now_microseconds();
                     group->active_send_member = promoted_id;
                     group->active_send_generation = promoted_generation;
                     group->active_send_since_microseconds = probe_now;
@@ -735,6 +739,8 @@ void clear_backup_probe(GroupRecord& group) noexcept
             || group->active_send_generation != active_generation) {
             return {};
         }
+        group->probe_send_observed_since_microseconds =
+            group_statistics_now_microseconds();
         group->probe_send_member = candidate->id;
         group->probe_send_generation = candidate->generation;
         group->probe_send_since_microseconds =
@@ -1253,6 +1259,9 @@ int send_group_message_implementation(
                         group->active_send_member = successful_member;
                         group->active_send_generation = successful_generation;
                         if (changed) {
+                            ++group->send_authority_revision;
+                            group->active_send_observed_since_microseconds =
+                                group_statistics_now_microseconds();
                             group->active_send_since_microseconds =
                                 selected_now;
                             clear_backup_probe(*group);

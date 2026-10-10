@@ -214,6 +214,34 @@ std::uint64_t group_statistics_now_microseconds() noexcept
             .count());
 }
 
+ROBOTWEAX_SRT_GROUP_SEND_STATE_V1 group_send_state_snapshot(
+    const GroupRecord& group, std::uint64_t now_microseconds) noexcept
+{
+    ROBOTWEAX_SRT_GROUP_SEND_STATE_V1 result {};
+    result.struct_size = sizeof(result);
+    result.abi_version = ROBOTWEAX_SRT_GROUP_SEND_STATE_VERSION;
+    result.state = group.active_send_member == SRT_INVALID_SOCK
+        ? ROBOTWEAX_SRT_GROUP_SEND_UNSELECTED
+        : ROBOTWEAX_SRT_GROUP_SEND_SELECTED;
+    result.active_member = group.active_send_member;
+    result.probe_member = group.probe_send_member;
+    result.group_generation = group.generation;
+    result.active_generation = group.active_send_generation;
+    result.probe_generation = group.probe_send_generation;
+    result.authority_revision = group.send_authority_revision;
+    const auto age = [now_microseconds](std::uint64_t since) {
+        return now_microseconds >= since ? now_microseconds - since : 0;
+    };
+    result.active_age_microseconds =
+        group.active_send_member == SRT_INVALID_SOCK
+        ? ROBOTWEAX_SRT_GROUP_SEND_AGE_UNAVAILABLE
+        : age(group.active_send_observed_since_microseconds);
+    result.probe_age_microseconds = group.probe_send_member == SRT_INVALID_SOCK
+        ? ROBOTWEAX_SRT_GROUP_SEND_AGE_UNAVAILABLE
+        : age(group.probe_send_observed_since_microseconds);
+    return result;
+}
+
 // Callers hold group.mutex.
 void GroupRegistry::note_group_sent(
     GroupRecord& group, std::uint64_t payload_bytes) noexcept
@@ -1107,6 +1135,8 @@ void GroupRegistry::remove_member(
             if (record->active_send_member == socket
                 && record->active_send_generation
                     == member_generation) {
+                ++record->send_authority_revision;
+                record->active_send_observed_since_microseconds = 0;
                 record->active_send_member = SRT_INVALID_SOCK;
                 record->active_send_generation = 0;
                 record->active_send_since_microseconds = 0;
@@ -1114,6 +1144,7 @@ void GroupRegistry::remove_member(
             if (record->probe_send_member == socket
                 && record->probe_send_generation
                     == member_generation) {
+                record->probe_send_observed_since_microseconds = 0;
                 record->probe_send_member = SRT_INVALID_SOCK;
                 record->probe_send_generation = 0;
                 record->probe_send_since_microseconds = 0;

@@ -1,5 +1,6 @@
 robotweax_srt_error_string
 robotweax_srt_group_path_data_v1
+robotweax_srt_group_send_state_v1
 robotweax_srt_inspect_packet
 robotweax_srt_options_create
 robotweax_srt_options_destroy
