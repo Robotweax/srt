@@ -145,7 +145,10 @@ Sources: [Artifact Signing OIDC](https://github.com/Azure/artifact-signing-actio
 Interactive installation shows the installer UI. Unattended installation:
 
 ```powershell
-Start-Process -Wait -FilePath .\robotweax-srt-VERSION-windows-sdk-openssl.exe -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+$process = Start-Process -Wait -PassThru -FilePath .\robotweax-srt-VERSION-windows-sdk-openssl.exe -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="sdk-install.log"'
+if ($process.ExitCode -ne 0) {
+    throw "SDK installation failed (exit $($process.ExitCode)); see sdk-install.log"
+}
 ```
 
 Use `/DIR="C:\custom\Robotweax-SRT"` to select another directory. The installer
@@ -178,17 +181,31 @@ The installers do not set or change the legacy `ROBOTWEAX_SRT` variable.
 Existing projects may explicitly set that variable to the selected SDK root.
 This does not change the CMake default backend (OpenSSL).
 
-Upgrades currently require uninstalling the previous SDK of the same backend
-first. Legacy, backend-neutral SDK candidates must also be uninstalled first.
-The installer rejects an already registered same-backend SDK even when a
-different destination is selected. Different backends can coexist in distinct
-folders. CI tests both installation orders, rejects cross-backend overwrites,
-and verifies that removing one SDK preserves the other's files and variable.
-CI checks rejection, preservation of the existing props file, uninstall and
-reinstallation into another path. This is not an automatic in-place upgrade test.
-Do not install
-over an older SDK with a different file inventory. Uninstall removes the
-environment variable only when it still points to this installation.
+Newer SDK installers upgrade an existing installation of the same backend in
+its registered directory. Running the same version again repairs its files.
+Downgrades and changing the directory of an existing installation are rejected;
+uninstall first for either operation. Legacy backend-neutral candidates also
+require uninstalling first. Different backends coexist in separate folders;
+updating one does not change the other's files or environment variable.
+
+Upgrade preflight uses Windows PowerShell 5.1 from the Windows system directory
+and the previous SDK's `checksums.json`. It validates backend metadata and both
+file inventories before changing files. Obsolete files listed in the old
+inventory are removed only if their contents still match that inventory.
+Untracked files are preserved. A modified obsolete file, invalid or missing
+inventory, or a path through a junction/symlink blocks the upgrade with an error;
+preserve your changes and uninstall before reinstalling in that case. Obsolete
+files are backed up during installation and restored on a normal failed or
+cancelled install; this is not a transactional guarantee across process crashes
+or power loss. Do not run SDK builds concurrently with installation.
+
+Use `/LOG` and check the process exit code for unattended installs. Suppressing
+message boxes does not turn a failed install into success. Setup preflight
+rejection normally returns 7; treat any nonzero exit as failure with the options
+above. A newly opened shell observes machine environment changes. CI exercises
+real earlier-release upgrades, repair, rejection and backend coexistence, then
+builds and runs a consumer against the installed SDK. Uninstall removes the
+backend environment variable only when it still points to this installation.
 
 References: [Inno Setup command-line options](https://jrsoftware.org/ishelp/topic_setupcmdline.htm),
 [OpenSSL Windows build notes](https://github.com/openssl/openssl/blob/openssl-3.6.3/NOTES-WINDOWS.md).

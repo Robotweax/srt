@@ -42,6 +42,9 @@ jobs:
       - name: SDK platform alias path tests
         shell: pwsh
         run: ./packaging/windows/test-platform-aliases.ps1
+      - name: SDK upgrade preflight tests in the installed Windows PowerShell runtime
+        shell: powershell
+        run: ./packaging/windows/test-upgrade-check.ps1
       - name: Authenticode rejection regression tests
         shell: pwsh
         run: ./packaging/windows/test-signing.ps1
@@ -123,7 +126,7 @@ jobs:
           if ([Environment]::GetEnvironmentVariable($variable,'Machine') -ne $destination) { throw 'SDK environment variable missing' }
           $before = (Get-FileHash "$destination/srt.props").Hash
           $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$destination`""
-          if ($process.ExitCode -eq 0) { throw 'Existing installation was not rejected' }
+          if ($process.ExitCode -ne 0) { throw 'Same-version SDK repair failed' }
           $other = Join-Path $env:RUNNER_TEMP 'Robotweax SDK alternate'
           $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$other`""
           if ($process.ExitCode -eq 0) { throw 'Parallel installation was not rejected' }

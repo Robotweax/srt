@@ -22,6 +22,8 @@ AppVersion={#ProductVersion}
 AppPublisher=Robotweax GmbH
 DefaultDirName={autopf}\Robotweax-SRT-{#CryptoBackend}
 DisableProgramGroupPage=yes
+UsePreviousAppDir=yes
+UninstallLogMode=append
 PrivilegesRequired=admin
 ChangesEnvironment=yes
 OutputBaseFilename=robotweax-srt-{#ProductVersion}-windows-sdk-{#CryptoBackend}
@@ -30,17 +32,122 @@ SolidCompression=yes
 LicenseFile={#SdkRoot}\LICENSE.txt
 UninstallDisplayName=Robotweax SRT SDK ({#CryptoBackend})
 [Files]
+Source: "upgrade-check.ps1"; Flags: dontcopy
+Source: "{#SdkRoot}\checksums.json"; DestName: "incoming-checksums.json"; Flags: dontcopy
 Source: "{#SdkRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 [Registry]
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "{#BackendEnvironment}"; ValueData: "{app}"
 [Code]
+var
+  Obsolete: TArrayOfString;
+  RetiredCount: Integer;
+  InstallCompleted: Boolean;
+
+function BackupName(Index: Integer): String;
+begin
+  Result := ExpandConstant('{tmp}\obsolete-') + IntToStr(Index);
+end;
+
+procedure RestoreObsolete;
+var I: Integer; Target: String;
+begin
+  for I := 0 to RetiredCount - 1 do begin
+    Target := AddBackslash(ExpandConstant('{app}')) + Copy(Obsolete[I], 67, MaxInt);
+    if not FileExists(Target) then
+      if not CopyFile(BackupName(I), Target, True) then
+        Log('Could not restore obsolete SDK file: ' + Target);
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Key, PreviousDir, PreviousVersion, Params, Detail: String;
+  ExitCode: Integer;
+  ErrorText: TArrayOfString;
 begin
   Result := '';
-  if RegKeyExists(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\Robotweax.SRT.SDK_is1')
-     or RegKeyExists(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\Robotweax.SRT.SDK.{#CryptoBackend}_is1')
-     or FileExists(ExpandConstant('{app}\unins000.exe')) then
-    Result := 'Uninstall the previous Robotweax SRT SDK before installing this candidate.';
+  if CompareText(AddBackslash(ExpandConstant('{app}')),
+                 AddBackslash(ExtractFileDrive(ExpandConstant('{app}')))) = 0 then begin
+    Result := 'Select an SDK directory rather than a drive or share root.';
+    Exit;
+  end;
+  Key := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\Robotweax.SRT.SDK.{#CryptoBackend}_is1';
+  if RegKeyExists(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\Robotweax.SRT.SDK_is1') then begin
+    Result := 'Uninstall the legacy backend-neutral Robotweax SRT SDK first.';
+    Exit;
+  end;
+  PreviousVersion := '';
+  if RegKeyExists(HKLM, Key) then begin
+    if not RegQueryStringValue(HKLM, Key, 'InstallLocation', PreviousDir)
+       or not RegQueryStringValue(HKLM, Key, 'DisplayVersion', PreviousVersion) then begin
+      Result := 'The existing SDK registration is incomplete. Uninstall it first.';
+      Exit;
+    end;
+    if CompareText(AddBackslash(ExpandFileName(PreviousDir)),
+                   AddBackslash(ExpandFileName(ExpandConstant('{app}')))) <> 0 then begin
+      Result := 'Upgrade the SDK in its existing directory, or uninstall it before changing directories.';
+      Exit;
+    end;
+    if not FileExists(ExpandConstant('{app}\unins000.exe')) then begin
+      Result := 'The existing SDK uninstaller is missing. Repair its registration before upgrading.';
+      Exit;
+    end;
+    // Only a numeric version may enter the child process argument string.
+    if (Length(PreviousVersion) > 32) or (PreviousVersion = '') then begin
+      Result := 'The existing SDK version is invalid.';
+      Exit;
+    end;
+    for ExitCode := 1 to Length(PreviousVersion) do
+      if Pos(PreviousVersion[ExitCode], '0123456789.') = 0 then begin
+        Result := 'The existing SDK version is invalid.';
+        Exit;
+      end;
+  end else if FileExists(ExpandConstant('{app}\unins000.exe')) then begin
+    Result := 'This directory belongs to another installation. Select a separate SDK directory.';
+    Exit;
+  end;
+  ExtractTemporaryFile('upgrade-check.ps1');
+  ExtractTemporaryFile('incoming-checksums.json');
+  Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+    ExpandConstant('{tmp}\upgrade-check.ps1') + '" -Root "' +
+    RemoveBackslashUnlessRoot(ExpandConstant('{app}')) + '" -Manifest "' +
+    ExpandConstant('{tmp}\incoming-checksums.json') + '" -OldVersion "' +
+    PreviousVersion + '" -NewVersion "{#ProductVersion}" -Backend "{#CryptoBackend}" -PlanPath "' +
+    ExpandConstant('{tmp}\obsolete.txt') + '" -ErrorPath "' + ExpandConstant('{tmp}\upgrade-error.txt') + '"';
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params,
+              '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then begin
+    Detail := 'SDK upgrade validation failed. Use /LOG for details.';
+    if LoadStringsFromFile(ExpandConstant('{tmp}\upgrade-error.txt'), ErrorText) then
+      if GetArrayLength(ErrorText) > 0 then Detail := ErrorText[0];
+    Log(Detail);
+    Result := Detail;
+    Exit;
+  end;
+  if not LoadStringsFromFile(ExpandConstant('{tmp}\obsolete.txt'), Obsolete) then
+    Result := 'Could not read the SDK upgrade plan.';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var I: Integer; Target, Digest: String;
+begin
+  if CurStep = ssInstall then
+    for I := 0 to GetArrayLength(Obsolete) - 1 do begin
+      Digest := Copy(Obsolete[I], 1, 64);
+      Target := AddBackslash(ExpandConstant('{app}')) + Copy(Obsolete[I], 67, MaxInt);
+      if CompareText(GetSHA256OfFile(Target), Digest) <> 0 then
+        RaiseException('An obsolete SDK file changed after validation: ' + Target);
+      if not CopyFile(Target, BackupName(I), True) then
+        RaiseException('Could not preserve obsolete SDK file: ' + Target);
+      if not DeleteFile(Target) then
+        RaiseException('Could not remove obsolete SDK file: ' + Target);
+      RetiredCount := I + 1;
+    end;
+  if CurStep = ssDone then InstallCompleted := True;
+end;
+
+procedure DeinitializeSetup;
+begin
+  if not InstallCompleted then RestoreObsolete;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
