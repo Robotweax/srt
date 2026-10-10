@@ -39,6 +39,7 @@ using robotweax::srt::SequenceNumber;
 struct TestClock {
     std::uint64_t now_microseconds = 0;
     std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+    std::uint16_t peer_receive_delay_milliseconds = 0;
 };
 
 struct CapturedGroupDatagrams {
@@ -152,6 +153,9 @@ std::shared_ptr<ConnectionRuntime> attach_group_runtime(SRTSOCKET group,
                     .receive_tsbpd = receive_tsbpd,
                     .too_late_packet_drop = receive_too_late_packet_drop,
                     .receive_delay_milliseconds = receive_delay_milliseconds,
+                    .peer_receive_delay_milliseconds = clock == nullptr
+                        ? std::uint16_t {0}
+                        : clock->peer_receive_delay_milliseconds,
                 },
             .origin = origin,
             .handshake_arrival_microseconds =
@@ -218,12 +222,14 @@ struct BackupProbeDecisionFixture {
     std::uint32_t messages = 0;
 
     explicit BackupProbeDecisionFixture(std::uint16_t original_weight = 20,
-        std::uint16_t candidate_weight = 10, bool attach_candidate = true)
+        std::uint16_t candidate_weight = 10, bool attach_candidate = true,
+        std::uint16_t peer_receive_delay_milliseconds = 0)
     {
         // Handles are a non-repeating permutation, not creation ordered.
         if (original_weight == candidate_weight && original > candidate) {
             std::swap(original, candidate);
         }
+        clock.peer_receive_delay_milliseconds = peer_receive_delay_milliseconds;
         clock.channel =
             std::make_shared<robotweax::srt::compat::DatagramChannel>();
         clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
@@ -7131,4 +7137,128 @@ TEST(compat_group_callback_requires_explicit_domain_and_exposes_peer_group)
             REQUIRE_EQ(result, SRT_ERROR);
         }
     }
+}
+
+TEST(compat_backup_cascade_failed_failback_probe_allows_third_path)
+{
+    for (const auto latency : {60U, 2000U}) {
+        for (const auto paths : {3U, 4U}) {
+            BackupProbeDecisionFixture f {
+                20, 10, true, static_cast<std::uint16_t>(latency)};
+            const auto third = srt_create_socket();
+            auto third_runtime = attach_group_runtime(
+                f.group, third, f.initial.value(), 5, &f.clock);
+            if (paths == 4U) {
+                const auto fourth = srt_create_socket();
+                (void)attach_group_runtime(
+                    f.group, fourth, f.initial.value(), 1, &f.clock);
+            }
+            const std::uint64_t interval = latency == 60U ? 60'000 : 400'000;
+            f.send();
+            f.clock.now_microseconds = interval + 1U;
+            f.send();
+            f.expect(f.original, f.candidate);
+            deliver_lite_ack(f.candidate_runtime, f.initial.advanced(2U));
+            f.clock.now_microseconds = 2U * interval + 1U;
+            f.send();
+            f.expect(f.candidate, SRT_INVALID_SOCK);
+            // The unreachable preferred path is now being probed for failback.
+            f.clock.now_microseconds += 1U;
+            f.send();
+            f.expect(f.candidate, f.original);
+            f.clock.now_microseconds += interval + 1U;
+            f.respond(third_runtime);
+            f.send();
+            f.expect(f.candidate, third);
+            REQUIRE(third_runtime->sender_buffer_status().packets > 0U);
+            const auto revision =
+                read_group_send_state(f.group).authority_revision;
+            // Sending and keepalive alone do not grant authority. Fresh DATA
+            // ACK progress and a complete new interval are still required.
+            f.clock.now_microseconds += interval - 1U;
+            f.respond(third_runtime);
+            f.send();
+            f.expect(f.candidate, third);
+            REQUIRE_EQ(
+                read_group_send_state(f.group).authority_revision, revision);
+            deliver_lite_ack(third_runtime, f.initial.advanced(f.messages));
+            f.clock.now_microseconds += 1U;
+            f.send();
+            f.expect(third, SRT_INVALID_SOCK);
+            REQUIRE_EQ(read_group_send_state(f.group).authority_revision,
+                revision + 1U);
+        }
+    }
+}
+
+TEST(compat_backup_cascade_unacknowledged_probes_visit_every_alternative)
+{
+    for (const auto latency : {60U, 2000U}) {
+        BackupProbeDecisionFixture f {
+            20, 10, true, static_cast<std::uint16_t>(latency)};
+        const auto third = srt_create_socket();
+        const auto fourth = srt_create_socket();
+        auto third_runtime = attach_group_runtime(
+            f.group, third, f.initial.value(), 5, &f.clock);
+        auto fourth_runtime = attach_group_runtime(
+            f.group, fourth, f.initial.value(), 1, &f.clock);
+        const std::uint64_t interval = latency == 60U ? 60'000 : 400'000;
+        f.send();
+        f.clock.now_microseconds = interval + 1U;
+        f.send();
+        f.expect(f.original, f.candidate);
+        const auto revision = read_group_send_state(f.group).authority_revision;
+        // Even fresh keepalives must not hold a probe without a DATA ACK.
+        f.clock.now_microseconds += interval;
+        f.respond(f.candidate_runtime);
+        f.send();
+        f.expect(f.original, third);
+        f.clock.now_microseconds += interval;
+        f.respond(third_runtime);
+        f.send();
+        f.expect(f.original, fourth);
+        f.clock.now_microseconds += interval;
+        f.respond(fourth_runtime);
+        f.send();
+        f.expect(f.original, f.candidate);
+        REQUIRE_EQ(read_group_send_state(f.group).authority_revision, revision);
+        REQUIRE(third_runtime->sender_buffer_status().packets > 0U);
+        REQUIRE(fourth_runtime->sender_buffer_status().packets > 0U);
+        // Rotating to the same member starts a fresh interval and cursor.
+        deliver_lite_ack(f.candidate_runtime, f.initial.advanced(f.messages));
+        f.clock.now_microseconds += interval - 1U;
+        f.send();
+        f.expect(f.original, f.candidate);
+        f.clock.now_microseconds += 1U;
+        f.send();
+        f.expect(f.candidate, SRT_INVALID_SOCK);
+    }
+}
+
+TEST(compat_backup_probe_rotation_keeps_healthy_authority_and_priority)
+{
+    BackupProbeDecisionFixture f {10, 20, false};
+    f.send();
+    f.clock.now_microseconds = 10'000;
+    f.candidate_runtime = attach_group_runtime(
+        f.group, f.candidate, f.initial.value(), 20, &f.clock);
+    const auto better = srt_create_socket();
+    auto better_runtime =
+        attach_group_runtime(f.group, better, f.initial.value(), 15, &f.clock);
+    const auto lower = srt_create_socket();
+    auto lower_runtime =
+        attach_group_runtime(f.group, lower, f.initial.value(), 5, &f.clock);
+    f.send();
+    f.expect(f.original, f.candidate);
+    f.clock.now_microseconds = 410'000;
+    f.respond(f.original_runtime);
+    f.send();
+    f.expect(f.original, better);
+    REQUIRE_EQ(lower_runtime->sender_buffer_status().packets, 0U);
+    deliver_lite_ack(better_runtime, f.initial.advanced(f.messages));
+    f.clock.now_microseconds = 810'000;
+    f.respond(f.original_runtime);
+    f.send();
+    f.expect(better, SRT_INVALID_SOCK);
+    REQUIRE_EQ(lower_runtime->sender_buffer_status().packets, 0U);
 }
