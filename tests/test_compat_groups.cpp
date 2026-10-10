@@ -3955,6 +3955,100 @@ TEST(compat_backup_group_qualifies_a_better_path_in_parallel_before_promotion)
     REQUIRE_EQ(srt_close(group), 0);
 }
 
+TEST(compat_backup_group_reuses_a_buffered_member_after_another_path_acks)
+{
+    TestClock clock;
+    clock.channel = std::make_shared<robotweax::srt::compat::DatagramChannel>();
+    CapturedGroupDatagrams captured;
+    clock.channel->set_send_hook_for_testing(capture_group_datagram, &captured);
+    const SRTSOCKET group = srt_create_group(SRT_GTYPE_BACKUP);
+    const SRTSOCKET primary = srt_create_socket();
+    const SRTSOCKET backup = srt_create_socket();
+    const auto record = GroupRegistry::instance().find(group);
+    REQUIRE(record != nullptr);
+    const auto initial = SequenceNumber {record->initial_sequence};
+    const auto primary_runtime =
+        attach_group_runtime(group, primary, initial.value(), 20, &clock);
+    const auto backup_runtime =
+        attach_group_runtime(group, backup, initial.value(), 10, &clock);
+    constexpr char payload[] = "group confirmed data";
+    const auto send = [&] {
+        REQUIRE_EQ(srt_send(group, payload, static_cast<int>(sizeof(payload))),
+            static_cast<int>(sizeof(payload)));
+    };
+    send();
+    clock.now_microseconds = 400'001;
+    send();
+    deliver_lite_ack(backup_runtime, initial.advanced(2U));
+    clock.now_microseconds = 800'001;
+    send();
+    {
+        std::lock_guard lock(record->mutex);
+        REQUIRE_EQ(record->active_send_member, backup);
+    }
+    REQUIRE_EQ(primary_runtime->sender_buffer_status().packets, 2U);
+    // The replacement confirms a prefix past the inactive member's cursor.
+    // That member still retains its unacknowledged tail from the first cut.
+    // It must be able to probe again without waiting for that path's own ACK.
+    const auto response_before = primary_runtime->response_health();
+    deliver_lite_ack(backup_runtime, initial.advanced(3U));
+    clock.now_microseconds = 800'002;
+    send();
+    REQUIRE_EQ(primary_runtime->response_health().next_send_sequence,
+        initial.advanced(4U));
+    REQUIRE_EQ(primary_runtime->sender_buffer_status().packets, 1U);
+    REQUIRE_EQ(primary_runtime->response_health().last_response_microseconds,
+        response_before.last_response_microseconds);
+
+    {
+        std::lock_guard lock(record->mutex);
+        REQUIRE_EQ(
+            record->replay_acknowledged_sequence, initial.advanced(3U).value());
+        REQUIRE_EQ(record->probe_send_member, primary);
+        REQUIRE_EQ(record->active_send_member, backup);
+    }
+    (void)take_group_datagrams(captured);
+    (void)primary_runtime->poll();
+    bool saw_drop = false;
+    bool saw_data = false;
+    for (const auto& datagram : take_group_datagrams(captured)) {
+        const auto decoded = robotweax::srt::decode_packet(datagram);
+        REQUIRE(decoded);
+        if (decoded.packet.kind == robotweax::srt::PacketKind::data) {
+            REQUIRE(saw_drop);
+            REQUIRE_EQ(decoded.packet.data.sequence, initial.advanced(3U));
+            saw_data = true;
+        } else if (decoded.packet.control.type
+            == robotweax::srt::ControlType::drop_request) {
+            REQUIRE(!saw_data);
+            const auto drop =
+                robotweax::srt::decode_drop_request(decoded.packet);
+            REQUIRE(drop);
+            REQUIRE_EQ(drop.request.sequences.first, initial);
+            REQUIRE_EQ(drop.request.sequences.last, initial.advanced(2U));
+            saw_drop = true;
+        }
+    }
+    REQUIRE(saw_drop);
+    REQUIRE(saw_data);
+    // The recovered path remains a probe until it acknowledges fresh DATA.
+    clock.now_microseconds = 1'200'002;
+    send();
+    {
+        std::lock_guard lock(record->mutex);
+        REQUIRE_EQ(record->active_send_member, backup);
+    }
+    deliver_lite_ack(primary_runtime, initial.advanced(5U));
+    deliver_lite_ack(backup_runtime, initial.advanced(5U));
+    clock.now_microseconds = 1'200'003;
+    send();
+    {
+        std::lock_guard lock(record->mutex);
+        REQUIRE_EQ(record->active_send_member, primary);
+    }
+    REQUIRE_EQ(srt_close(group), 0);
+}
+
 TEST(compat_backup_group_receives_from_the_running_path)
 {
     const SRTSOCKET group = srt_create_group(SRT_GTYPE_BACKUP);

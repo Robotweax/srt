@@ -239,6 +239,16 @@ implemented profile here.
 
 ## Replay and failover
 
+An inactive member can retain an old unacknowledged tail while another member
+advances the group's replay-retirement boundary. If that boundary passes the
+inactive member's send cursor, the member retires only the group-confirmed
+prefix already retired by the group and sends an ordered sequence-only DROPREQ
+covering its old tail and
+the skipped gap. It then replays any outstanding group history before fresh
+DATA. Control-queue backpressure leaves its buffered data and cursor unchanged.
+This synchronization does not count as a member response or qualify promotion;
+the candidate must still acknowledge fresh group DATA.
+
 The group retains a bounded plaintext history for unacknowledged logical
 messages. When a replacement becomes authoritative, replay preserves the
 original sequence, message, boundary, order, TTL, and absolute application

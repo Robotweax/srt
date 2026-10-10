@@ -198,6 +198,10 @@ public:
         std::uint64_t expiration_microseconds = 0) noexcept;
     [[nodiscard]] Error skip_group_sequences(
         SequenceNumber next_sequence) noexcept;
+    // Retire a member's entire buffered prefix only after the group retires it
+    // through another path. The boundary must cover the member's send cursor.
+    [[nodiscard]] Error retire_group_prefix(
+        SequenceNumber confirmed_sequence) noexcept;
     [[nodiscard]] StreamEnqueueResult queue_stream(
         std::span<const std::byte> bytes,
         PacketTimestamp timestamp,
