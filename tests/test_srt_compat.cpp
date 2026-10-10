@@ -8372,3 +8372,103 @@ TEST(srt_compat_listener_handoff_survives_full_duplicate_inbox)
         static_cast<int>(payload.size()));
     REQUIRE(std::equal(payload.begin(), payload.end(), received.begin()));
 }
+
+TEST(compat_rtt_metadata_rejects_invalid_buffers_and_handles_without_writes)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    const auto socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    ROBOTWEAX_SRT_RTTDATA_V1 data {};
+    data.struct_size = sizeof(data);
+    data.abi_version = ROBOTWEAX_SRT_RTTDATA_VERSION;
+    data.flags = 0xdeadU;
+    const auto before = data;
+    REQUIRE_EQ(
+        robotweax_srt_rtt_data_v1(socket, &data, sizeof(data) - 1), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    REQUIRE_EQ(std::memcmp(&data, &before, sizeof(data)), 0);
+    data.abi_version = 2;
+    REQUIRE_EQ(
+        robotweax_srt_rtt_data_v1(socket, &data, sizeof(data)), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    data = before;
+    REQUIRE_EQ(
+        robotweax_srt_rtt_data_v1(socket, nullptr, sizeof(data)), SRT_ERROR);
+    REQUIRE_EQ(
+        robotweax_srt_rtt_data_v1(socket, &data, sizeof(data)), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ENOCONN);
+    REQUIRE_EQ(std::memcmp(&data, &before, sizeof(data)), 0);
+    const auto group = srt_create_group(SRT_GTYPE_BACKUP);
+    REQUIRE_EQ(
+        robotweax_srt_rtt_data_v1(group, &data, sizeof(data)), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
+    REQUIRE_EQ(srt_close(group), 0);
+    // Deterministic runtime fixture: tests the public getter and lifecycle
+    // without network or wall-clock timing assumptions.
+    std::uint64_t now = 1'000;
+    const auto record =
+        robotweax::srt::compat::SocketRegistry::instance().find(socket);
+    const auto peer = robotweax::srt::IpEndpoint::loopback(9'022);
+    auto runtime = std::make_shared<robotweax::srt::compat::ConnectionRuntime>(
+        robotweax::srt::compat::ConnectionRuntime::Configuration {
+            .channel =
+                std::make_shared<robotweax::srt::compat::DatagramChannel>(),
+            .peer = peer,
+            .peer_socket_id = 77,
+            .initial_sequence = robotweax::srt::SequenceNumber {900},
+            .origin = robotweax::srt::compat::ConnectionRuntime::Clock::now(),
+            .now_function =
+                [](void* context) noexcept {
+                    return *static_cast<std::uint64_t*>(context);
+                },
+            .now_context = &now});
+    {
+        std::lock_guard lock(record->mutex);
+        record->runtime = runtime;
+        record->state = SRTS_CONNECTED;
+    }
+    struct Larger {
+        ROBOTWEAX_SRT_RTTDATA_V1 data;
+        std::uint64_t tail;
+    } larger {before, 0x12345678U};
+    larger.data.struct_size = sizeof(larger);
+    REQUIRE_EQ(
+        robotweax_srt_rtt_data_v1(socket, &larger.data, sizeof(larger)), 0);
+    REQUIRE_EQ(larger.tail, 0x12345678U);
+    REQUIRE_EQ(larger.data.flags, 0U);
+    REQUIRE_EQ(larger.data.peer_estimate_age_microseconds,
+        ROBOTWEAX_SRT_RTT_AGE_UNAVAILABLE);
+    std::array<std::byte, 64> storage {};
+    const auto encoded = robotweax::srt::encode_acknowledgement_payload(
+        {.kind = robotweax::srt::AcknowledgementKind::full,
+            .acknowledgement_number = 1,
+            .next_sequence = robotweax::srt::SequenceNumber {900},
+            .round_trip_time_microseconds = 40'000,
+            .round_trip_time_variance_microseconds = 5'000},
+        storage);
+    REQUIRE(encoded);
+    runtime->process_packet(
+        {.kind = robotweax::srt::PacketKind::control,
+            .control = {.type = robotweax::srt::ControlType::acknowledgement,
+                .type_specific = 1},
+            .payload = std::span {storage}.first(encoded.bytes_written)},
+        peer);
+    data = before;
+    REQUIRE_EQ(robotweax_srt_rtt_data_v1(socket, &data, sizeof(data)), 0);
+    REQUIRE_EQ(data.flags,
+        ROBOTWEAX_SRT_RTT_OBSERVED | ROBOTWEAX_SRT_RTT_PEER_ESTIMATE);
+    REQUIRE_EQ(data.peer_estimate_age_microseconds, 0U);
+    runtime->mark_broken(0);
+    {
+        std::lock_guard lock(record->mutex);
+        record->state = SRTS_BROKEN;
+    }
+    now = 3'000;
+    REQUIRE_EQ(robotweax_srt_rtt_data_v1(socket, &data, sizeof(data)), 0);
+    REQUIRE_EQ(data.peer_estimate_age_microseconds, 2'000U);
+    REQUIRE_EQ(srt_close(socket), 0);
+    REQUIRE_EQ(
+        robotweax_srt_rtt_data_v1(socket, &data, sizeof(data)), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}

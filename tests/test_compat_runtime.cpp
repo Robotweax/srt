@@ -12673,3 +12673,54 @@ TEST(compat_runtime_backup_member_ack_is_independent_of_group_retirement)
         }
     }
 }
+
+TEST(compat_runtime_rtt_metadata_ages_survive_keepalive_clear_and_broken)
+{
+    std::uint64_t now = 1'000;
+    const auto peer = IpEndpoint::loopback(9'022);
+    ConnectionRuntime runtime {{.channel = std::make_shared<DatagramChannel>(),
+        .peer = peer,
+        .peer_socket_id = 77,
+        .initial_sequence = SequenceNumber {900},
+        .origin = ConnectionRuntime::Clock::now(),
+        .now_function = injected_now,
+        .now_context = &now}};
+    auto data = runtime.rtt_data();
+    REQUIRE_EQ(data.flags, 0U);
+    REQUIRE_EQ(data.smoothed_microseconds, 100'000U);
+    REQUIRE_EQ(
+        data.local_ackack_age_microseconds, ROBOTWEAX_SRT_RTT_AGE_UNAVAILABLE);
+    REQUIRE_EQ(
+        data.peer_estimate_age_microseconds, ROBOTWEAX_SRT_RTT_AGE_UNAVAILABLE);
+    std::array<std::byte, 64> storage {};
+    const Acknowledgement ack {.kind = AcknowledgementKind::full,
+        .acknowledgement_number = 1,
+        .next_sequence = SequenceNumber {900},
+        .round_trip_time_microseconds = 40'000,
+        .round_trip_time_variance_microseconds = 5'000};
+    const auto encoded = encode_acknowledgement_payload(ack, storage);
+    REQUIRE(encoded);
+    runtime.process_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::acknowledgement,
+                .type_specific = 1,
+                .destination_socket_id = 0},
+            .payload = std::span {storage}.first(encoded.bytes_written)},
+        peer);
+    data = runtime.rtt_data();
+    REQUIRE_EQ(data.flags,
+        ROBOTWEAX_SRT_RTT_OBSERVED | ROBOTWEAX_SRT_RTT_PEER_ESTIMATE);
+    REQUIRE_EQ(data.peer_estimate_age_microseconds, 0U);
+    REQUIRE_EQ(data.last_update_source, ROBOTWEAX_SRT_RTT_SOURCE_PEER_ESTIMATE);
+    now = 2'000;
+    runtime.process_packet({.kind = PacketKind::control,
+                               .control = {.type = ControlType::keepalive}},
+        peer);
+    static_cast<void>(runtime.statistics(true, true));
+    REQUIRE_EQ(runtime.rtt_data().peer_estimate_age_microseconds, 1'000U);
+    runtime.mark_broken(0);
+    now = 3'000;
+    REQUIRE_EQ(runtime.rtt_data().peer_estimate_age_microseconds, 2'000U);
+    REQUIRE_EQ(runtime.rtt_data().local_ackack_age_microseconds,
+        ROBOTWEAX_SRT_RTT_AGE_UNAVAILABLE);
+}

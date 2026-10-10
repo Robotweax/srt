@@ -1438,13 +1438,18 @@ TEST(session_ignores_unknown_and_duplicate_ackack_for_rtt)
     REQUIRE(receiver.receive(encode_and_decode(ackack, storage), 10'500U));
     REQUIRE_EQ(receiver.rtt().smoothed_microseconds(), 100'000U);
     REQUIRE_EQ(receiver.rtt().variation_microseconds(), 50'000U);
+    REQUIRE(!receiver.rtt().local_observation_time());
 
     ackack.acknowledgement_number = full_acknowledgement_number;
+    REQUIRE(receiver.receive(encode_and_decode(ackack, storage), 10'000U));
+    REQUIRE(!receiver.rtt().local_observation_time());
     REQUIRE(receiver.receive(encode_and_decode(ackack, storage), 11'000U));
     REQUIRE_EQ(receiver.rtt().smoothed_microseconds(), 1'000U);
     REQUIRE_EQ(receiver.rtt().variation_microseconds(), 500U);
 
     REQUIRE(receiver.receive(encode_and_decode(ackack, storage), 12'000U));
+    REQUIRE_EQ(receiver.rtt().local_observation_time(),
+        std::optional<std::uint64_t> {11'000U});
     REQUIRE_EQ(receiver.rtt().smoothed_microseconds(), 1'000U);
     REQUIRE_EQ(receiver.rtt().variation_microseconds(), 500U);
 }
@@ -6319,4 +6324,39 @@ TEST(session_backup_member_ack_requires_peer_drop_progress_proof)
     const auto staged = receiver.make_staged_receive_acknowledgement(
         SequenceNumber {174}, 8U, 30'002);
     REQUIRE_EQ(staged.acknowledgement.next_sequence, SequenceNumber {174});
+}
+
+TEST(rtt_metadata_records_only_accepted_observations)
+{
+    RttEstimator rtt;
+    REQUIRE(!rtt.has_sample());
+    REQUIRE(!rtt.local_observation_time());
+    REQUIRE(!rtt.peer_observation_time());
+    REQUIRE_EQ(rtt.last_observation_source(), 0U);
+    rtt.observe(0, 10);
+    rtt.observe_peer_estimate(0, 100, false, 20);
+    rtt.observe_peer_estimate(100'000, 50'000, false, 30);
+    REQUIRE(!rtt.has_sample());
+    REQUIRE(!rtt.peer_observation_time());
+    rtt.observe(100'000, 40);
+    REQUIRE(rtt.has_sample());
+    REQUIRE_EQ(rtt.local_observation_time(), std::optional<std::uint64_t> {40});
+    REQUIRE_EQ(rtt.last_observation_source(), 1U);
+    rtt.observe_peer_estimate(100'000, 50'000, true, 50);
+    REQUIRE(!rtt.peer_observation_time());
+    // The existing estimator permits this pair on later unidirectional ACKs.
+    rtt.observe_peer_estimate(100'000, 50'000, false, 60);
+    REQUIRE_EQ(rtt.peer_observation_time(), std::optional<std::uint64_t> {60});
+    REQUIRE_EQ(rtt.last_observation_source(), 2U);
+    rtt.observe_peer_estimate(80'000, 10'000, true, 70);
+    REQUIRE_EQ(rtt.smoothed_microseconds(), 97'500U);
+    REQUIRE_EQ(rtt.peer_observation_time(), std::optional<std::uint64_t> {70});
+    REQUIRE_EQ(rtt.local_observation_time(), std::optional<std::uint64_t> {40});
+    rtt.observe(40'000, 80);
+    REQUIRE_EQ(rtt.last_observation_source(), 1U);
+    REQUIRE_EQ(rtt.peer_observation_time(), std::optional<std::uint64_t> {70});
+    rtt = RttEstimator {};
+    REQUIRE(!rtt.local_observation_time());
+    REQUIRE(!rtt.peer_observation_time());
+    REQUIRE(!rtt.has_sample());
 }

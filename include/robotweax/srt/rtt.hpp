@@ -54,11 +54,27 @@ private:
 
 class RttEstimator {
 public:
-    void observe(std::uint32_t sample_microseconds) noexcept;
-    void observe_peer_estimate(
-        std::uint32_t smoothed_microseconds,
-        std::uint32_t variation_microseconds,
-        bool bidirectional_traffic) noexcept;
+    void observe(std::uint32_t sample_microseconds,
+        std::optional<std::uint64_t> now_microseconds = std::nullopt) noexcept;
+    void observe_peer_estimate(std::uint32_t smoothed_microseconds,
+        std::uint32_t variation_microseconds, bool bidirectional_traffic,
+        std::optional<std::uint64_t> now_microseconds = std::nullopt) noexcept;
+
+    [[nodiscard]] std::optional<std::uint64_t>
+    local_observation_time() const noexcept
+    {
+        return local_observation_time_;
+    }
+    [[nodiscard]] std::optional<std::uint64_t>
+    peer_observation_time() const noexcept
+    {
+        return peer_observation_time_;
+    }
+    // 0: none, 1: local tracked ACKACK, 2: accepted peer ACK estimate.
+    [[nodiscard]] std::uint32_t last_observation_source() const noexcept
+    {
+        return last_observation_source_;
+    }
 
     [[nodiscard]] bool has_sample() const noexcept
     {
@@ -79,6 +95,9 @@ private:
     std::uint32_t smoothed_microseconds_ = 100'000;
     std::uint32_t variation_microseconds_ = 50'000;
     bool has_sample_ = false;
+    std::optional<std::uint64_t> local_observation_time_;
+    std::optional<std::uint64_t> peer_observation_time_;
+    std::uint32_t last_observation_source_ = 0;
 };
 
 } // namespace robotweax::srt

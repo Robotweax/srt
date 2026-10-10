@@ -728,6 +728,47 @@ int srt_bistats(
     return 0;
 }
 
+int robotweax_srt_rtt_data_v1(
+    SRTSOCKET socket, ROBOTWEAX_SRT_RTTDATA_V1* output, size_t output_size)
+{
+    if (!stateful_api_available()) {
+        return SRT_ERROR;
+    }
+    if (output == nullptr || output_size < sizeof(*output)
+        || output->struct_size < sizeof(*output)
+        || output->struct_size > output_size
+        || output->abi_version != ROBOTWEAX_SRT_RTTDATA_VERSION) {
+        robotweax::srt::compat::set_last_error(SRT_EINVPARAM);
+        return SRT_ERROR;
+    }
+    const auto record =
+        robotweax::srt::compat::SocketRegistry::instance().find(socket);
+    if (record == nullptr) {
+        robotweax::srt::compat::set_last_error(SRT_EINVSOCK);
+        return SRT_ERROR;
+    }
+    std::shared_ptr<robotweax::srt::compat::ConnectionRuntime> runtime;
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->state == SRTS_CLOSED) {
+            robotweax::srt::compat::set_last_error(SRT_EINVSOCK);
+            return SRT_ERROR;
+        }
+        if (record->state == SRTS_CLOSING) {
+            robotweax::srt::compat::set_last_error(SRT_ECONNLOST);
+            return SRT_ERROR;
+        }
+        if ((record->state != SRTS_CONNECTED && record->state != SRTS_BROKEN)
+            || record->runtime == nullptr) {
+            robotweax::srt::compat::set_last_error(SRT_ENOCONN);
+            return SRT_ERROR;
+        }
+        runtime = record->runtime;
+    }
+    *output = runtime->rtt_data();
+    return 0;
+}
+
 int srt_getsndbuffer(
     SRTSOCKET socket, size_t* blocks, size_t* bytes)
 {

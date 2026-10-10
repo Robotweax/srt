@@ -5,6 +5,7 @@ robotweax_srt_options_create
 robotweax_srt_options_destroy
 robotweax_srt_options_get
 robotweax_srt_options_set
+robotweax_srt_rtt_data_v1
 srt_accept
 srt_accept_bond
 srt_addlogfa
