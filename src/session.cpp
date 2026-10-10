@@ -210,6 +210,38 @@ Error ReliabilitySession::skip_group_sequences(
                                                          : Error::invalid_state;
 }
 
+Error ReliabilitySession::retire_group_prefix(
+    SequenceNumber confirmed_sequence) noexcept
+{
+    const auto current = send_buffer_.next_sequence();
+    const auto first = send_buffer_.first_sequence();
+    const auto distance = confirmed_sequence.distance_from(first);
+    if (confirmed_sequence.distance_from(current) < 0 || distance < 0
+        || distance > maximum_peer_drop_distance) {
+        return Error::invalid_state;
+    }
+    if (distance == 0) {
+        return Error::none;
+    }
+    // Cover both the retained tail and the unsent gap. Advancing only from
+    // current would leave a receiver waiting for the old member's tail.
+    const std::array retired {
+        SequenceRange {
+            .first = first,
+            .last = confirmed_sequence.advanced(SequenceNumber::mask),
+        },
+    };
+    if (!send_buffer_.queue_range_drop_requests(retired)) {
+        return Error::buffer_too_small;
+    }
+    // This retires group-confirmed storage without fabricating a peer ACK or
+    // changing this member's response time, RTT or congestion feedback.
+    (void)send_buffer_.acknowledge_before(current);
+    return send_buffer_.synchronize_empty(confirmed_sequence)
+        ? Error::none
+        : Error::invalid_state;
+}
+
 StreamEnqueueResult ReliabilitySession::queue_stream(
     std::span<const std::byte> bytes,
     PacketTimestamp timestamp,

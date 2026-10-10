@@ -480,24 +480,16 @@ void acknowledge_backup_replay(std::span<const GroupIoMember> members,
     }
 
     SequenceNumber cursor = health.next_send_sequence;
-    if (health.send_buffer_empty) {
-        // A late member may already have been created at the current group
-        // sequence. Otherwise an empty sender can be safely synchronized to
-        // the oldest sequence that the group has not cumulatively retired.
-        // The member receiver has not observed the retired prefix, so advance
-        // it with an ordered DROPREQ before this path sends its first DATA.
-        const std::int32_t member_progress =
-            cursor.distance_from(acknowledged);
-        if (member_progress < 0) {
-            const auto skipped =
-                member.runtime->skip_group_sequences(acknowledged);
-            if (skipped.status != MessageIoStatus::success) {
-                return skipped;
-            }
-            cursor = skipped.next_sequence;
+    if (cursor.distance_from(acknowledged) < 0) {
+        // Another group path has advanced group retirement past every packet
+        // retained by this inactive member. Retire only that prefix, then
+        // replay the still-unacknowledged group history. The ordered DROPREQ
+        // covers the old tail as well as the gap before fresh DATA resumes.
+        const auto retired = member.runtime->retire_group_prefix(acknowledged);
+        if (retired.status != MessageIoStatus::success) {
+            return retired;
         }
-    } else if (cursor.distance_from(acknowledged) < 0) {
-        return {.status = MessageIoStatus::invalid_state};
+        cursor = retired.next_sequence;
     }
 
     if (cursor == target_sequence) {
