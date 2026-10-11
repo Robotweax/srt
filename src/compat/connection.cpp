@@ -1,4 +1,5 @@
 #include "compat/connection.hpp"
+#include "compat/random_identity.hpp"
 #include "local_endpoint_probe.hpp"
 
 #include "robotweax/srt/codec.hpp"
@@ -875,7 +876,9 @@ void set_key_material_state_response(
     const HandshakeAction* handshake_replay_response = nullptr,
     std::uint32_t handshake_replay_peer_cookie = 0U,
     const std::shared_ptr<DatagramInbox>& setup_inbox = {},
-    const std::shared_ptr<GroupRecord>& admitted_group = {}) noexcept
+    const std::shared_ptr<GroupRecord>& admitted_group = {},
+    StandbyRttIdentity standby_rtt_identity = {},
+    bool standby_rtt_caller = true) noexcept
 {
     std::shared_ptr<ConnectionRuntime> runtime;
     try {
@@ -912,6 +915,7 @@ void set_key_material_state_response(
                 .channel = channel,
                 .group = group,
                 .peer = socket.peer_endpoint,
+                .local_socket_id = socket.protocol_socket_id,
                 .peer_socket_id = socket.peer_protocol_socket_id,
                 .initial_sequence =
                     SequenceNumber {socket.connection_initial_sequence},
@@ -924,6 +928,8 @@ void set_key_material_state_response(
                 .flow_window_packets = static_cast<std::uint32_t>(
                     socket.public_options.flow_window_packets),
                 .peer_flow_window_packets = socket.peer_flow_window_packets,
+                .standby_rtt_identity = standby_rtt_identity,
+                .standby_rtt_caller = standby_rtt_caller,
                 .options = runtime_options,
                 .negotiated_options = socket.negotiated_live_options,
                 .efficient_retransmission =
@@ -1060,6 +1066,13 @@ int listen_socket(
     std::shared_ptr<ListenerRuntime> listener_runtime;
     {
         std::lock_guard lock(socket->mutex);
+        if (socket->public_options.standby_rtt_required
+            && (!socket->public_options.group_connect
+                || socket->public_options.rendezvous
+                || socket->public_options.transmission_type != SRTT_LIVE
+                || !socket->public_options.message_api
+                || !socket->public_options.tsbpd_mode))
+            return fail(SRT_EINVPARAM);
         if (socket->public_options.path_identifier.size != 0U
             || (socket->public_options.path_identifier_required
                 && (!socket->public_options.group_connect
@@ -1396,6 +1409,8 @@ create_setup_inbox() noexcept
         .session_authentication = envelope.message.session_authentication,
         .has_path_identifier = envelope.message.has_path_identifier,
         .path_identifier = envelope.message.path_identifier,
+        .has_standby_rtt = envelope.message.has_standby_rtt,
+        .standby_rtt = envelope.message.standby_rtt,
     };
     std::array<std::byte, DatagramEnvelope::maximum_size> bytes {};
     const HandshakeDatagramEncodeResult encoded =
@@ -1601,7 +1616,7 @@ public:
                 setup_.options.session_authentication()
                     ? &protocol.session_confirmation()
                     : nullptr,
-                0U, inbox_)
+                0U, inbox_, {}, protocol.standby_rtt_identity(), true)
             == SRT_ERROR) {
             return fail_connect(socket_,
                 static_cast<SRT_ERRNO>(last_error().code),
@@ -3349,6 +3364,13 @@ int connect_socket(
             return fail(SRT_ESECFAIL);
         }
         const auto& path_options = socket->public_options;
+        if (path_options.standby_rtt_required
+            && (socket->group_id == SRT_INVALID_SOCK
+                || socket->group_type != SRT_GTYPE_BACKUP
+                || path_options.transmission_type != SRTT_LIVE
+                || !path_options.message_api || !path_options.tsbpd_mode
+                || path_options.rendezvous))
+            return fail(SRT_EINVPARAM);
         if ((path_options.path_identifier_required
                 && (socket->group_id == SRT_INVALID_SOCK
                     || !path_options.path_identifier.valid()
@@ -3586,6 +3608,14 @@ int connect_socket(
                     .weight = socket->group_weight,
                 },
         };
+        setup.configuration.require_standby_rtt =
+            socket->public_options.standby_rtt_required;
+        if (setup.configuration.require_standby_rtt) {
+            const auto nonce = random_standby_rtt_nonce();
+            if (!nonce)
+                return fail(SRT_ESYSOBJ);
+            setup.configuration.standby_rtt_nonce = *nonce;
+        }
         setup.configuration.require_path_identifier =
             socket->public_options.path_identifier_required;
         setup.configuration.path_identifier =
@@ -3971,6 +4001,20 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         policy_rejection = SRT_REJ_GROUP;
         policy_error = SRT_ECONNREJ;
     }
+    if (!policy_rejected
+        && (public_options.standby_rtt_required != conclusion.has_standby_rtt
+            || (public_options.standby_rtt_required
+                && (selected_protocol != ListenerHandshakeProtocol::hsv5
+                    || !public_options.group_connect
+                    || !conclusion.has_group_membership
+                    || conclusion.group_membership.type != GroupType::backup
+                    || public_options.transmission_type != SRTT_LIVE
+                    || !public_options.message_api
+                    || !public_options.tsbpd_mode)))) {
+        policy_rejected = true;
+        policy_rejection = SRT_REJ_GROUP;
+        policy_error = SRT_ECONNREJ;
+    }
     SessionAuthenticationParameters session_response {},
         session_confirmation {};
     std::shared_ptr<CryptoSession> crypto;
@@ -4119,6 +4163,14 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         .cookie_context = &setup_context->cookie_context,
     };
 
+    configuration.hsv5.require_standby_rtt =
+        public_options.standby_rtt_required;
+    if (public_options.standby_rtt_required) {
+        const auto nonce = random_standby_rtt_nonce();
+        if (!nonce)
+            return close_with_error(SRT_ESYSOBJ);
+        configuration.hsv5.standby_rtt_nonce = *nonce;
+    }
     configuration.hsv5.require_path_identifier =
         public_options.path_identifier_required;
     configuration.hsv5.require_session_authentication =
@@ -4657,7 +4709,8 @@ bool ListenerRuntime::process_setup_result(
             if (attach_runtime(*context->accepted, context->channel,
                     context->origin, microseconds_since(context->origin),
                     result.peer_control.timestamp, replay_response, 0U,
-                    context->setup_inbox, admitted_group)
+                    context->setup_inbox, admitted_group,
+                    result.runtime.standby_rtt_identity, false)
                 == SRT_ERROR) {
                 const ErrorState error = last_error();
                 return finish_setup_context(context, false,

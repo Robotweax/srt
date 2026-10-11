@@ -9,6 +9,7 @@
 #include "compat/random_identity.hpp"
 #include "compat/readiness.hpp"
 #include "compat/runtime_scheduler_service.hpp"
+#include "compat/standby_rtt_service.hpp"
 #include "compat/runtime_work_executor_service.hpp"
 #include "robotweax/srt/crypto_provider.hpp"
 
@@ -536,6 +537,7 @@ SocketRegistry& SocketRegistry::instance() noexcept
     (void)default_crypto_provider();
     (void)prepare_random_identity();
     (void)deferred_close_manager();
+    prepare_standby_rtt_service();
     prepare_runtime_scheduler_service();
     prepare_runtime_work_executor_service();
     prepare_connect_callback_executor();
@@ -847,6 +849,7 @@ void runtime_cleanup() noexcept
         SocketRegistry::instance().clear();
         stop_runtime_work_executor();
         stop_runtime_scheduler();
+        clear_standby_rtt_service();
         // Reopen admission before waking retired callback workers: their
         // application TLS destructors may immediately start a new generation.
         // Detach under the lifecycle lock so new entrants cannot acquire the

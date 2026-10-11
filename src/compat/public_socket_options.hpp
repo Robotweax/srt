@@ -55,6 +55,7 @@ struct PublicSocketOptions {
     std::array<char, maximum_network_device_name_size> bound_device {};
     std::uint8_t bound_device_size = 0;
     StreamId stream_id {};
+    bool standby_rtt_required = false;
     bool path_identifier_required = false;
     PathIdentifier path_identifier {};
 };

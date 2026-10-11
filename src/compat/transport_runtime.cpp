@@ -567,6 +567,17 @@ UdpIoResult DatagramChannel::send_datagram(
     return socket.send_to(bytes, peer);
 }
 
+UdpIoResult DatagramChannel::try_send_monitoring_datagram(
+    std::span<const std::byte> bytes, IpEndpoint peer) noexcept
+{
+    std::unique_lock lock(send_mutex_, std::try_to_lock);
+    if (!lock.owns_lock())
+        return {.error = Error::would_block};
+    if (send_hook_ != nullptr)
+        return send_hook_(bytes, peer, send_hook_context_);
+    return socket.send_to(bytes, peer);
+}
+
 void DatagramChannel::set_send_hook_for_testing(
     SendHook hook, void* context) noexcept
 {
@@ -1212,7 +1223,8 @@ void DatagramChannel::run_scheduled(const ScheduledWorkContext* context,
 }
 
 void DatagramChannel::dispatch(const PacketView& packet,
-    std::span<const std::byte> datagram, IpEndpoint peer) noexcept
+    std::span<const std::byte> datagram, IpEndpoint peer,
+    std::chrono::steady_clock::time_point ingress) noexcept
 {
     if (packet.kind == PacketKind::control
         && packet.control.type == ControlType::handshake) {
@@ -1312,7 +1324,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
         }
     }
     if (runtime != nullptr) {
-        runtime->process_packet(packet, peer);
+        runtime->process_packet(packet, peer, ingress);
     } else if (setup_inbox != nullptr) {
         (void)setup_inbox->push(datagram, peer);
     }
@@ -1554,6 +1566,27 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
             }
         }
     }
+    standby_rtt_negotiated_ = configuration.standby_rtt_identity.is_pair();
+    if (standby_rtt_negotiated_) {
+        auto service = configuration.standby_rtt_service_for_testing
+            ? configuration.standby_rtt_service_for_testing
+            : acquire_standby_rtt_service();
+        if (const auto lease = service->admit()) {
+            try {
+                standby_rtt_ = std::make_unique<StandbyRttState>();
+            } catch (...) {
+                service->release(*lease);
+                throw;
+            }
+            standby_rtt_->service = std::move(service);
+            standby_rtt_->group = configuration.group;
+            standby_rtt_->lease = *lease;
+            standby_rtt_->local_socket_id = configuration.local_socket_id;
+            (void)standby_rtt_->measurement.configure(
+                configuration.standby_rtt_identity, lease->generation,
+                now_microseconds(), 1, configuration.standby_rtt_caller);
+        }
+    }
     const auto& filter = configuration.options
         .packet_filter_configuration();
     const bool row_only_fec =
@@ -1645,6 +1678,8 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
         session_.reorder_distance_packets(),
         session_.reorder_tolerance_packets());
 }
+
+ConnectionRuntime::~ConnectionRuntime() = default;
 
 std::uint64_t ConnectionRuntime::now_microseconds() const noexcept
 {
@@ -2469,6 +2504,11 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
     transient_send_failure_since_.reset();
     transient_send_system_error_ = 0;
     if (completion.kind == DatagramKind::data) {
+        if (standby_rtt_) {
+            standby_rtt_->last_data = now;
+            standby_rtt_->measurement.pause();
+            (void)standby_rtt_->service->request(standby_rtt_->lease, false);
+        }
         if (fec_encoder_active() && !completion.data.retransmitted) {
             const PacketView wire_packet {
                 .kind = PacketKind::data,
@@ -3407,6 +3447,11 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         && processed.receiver_packet_accepted_unique && !context.discard_payload
         && !processed.receiver_filter_control_packet) {
         received_data_ = true;
+        if (standby_rtt_) {
+            standby_rtt_->last_data = now;
+            standby_rtt_->measurement.pause();
+            (void)standby_rtt_->service->request(standby_rtt_->lease, false);
+        }
     }
     if (packet.kind == PacketKind::data && crypto_ != nullptr
         && crypto_->enabled() && !crypto_->authenticated_data_enabled()
@@ -3531,6 +3576,7 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     bool terminal_edge = false;
     if (packet.kind == PacketKind::control
         && packet.control.type == ControlType::shutdown) {
+        terminate_standby_rtt();
         peer_closed_ = true;
         broken_ = true;
         terminal_edge = true;
@@ -3538,6 +3584,7 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         send_ready_.notify_all();
     } else if (packet.kind == PacketKind::control
         && packet.control.type == ControlType::peer_error) {
+        terminate_standby_rtt();
         peer_error_pending_ = true;
         terminal_edge = true;
         send_ready_.notify_all();
@@ -3586,8 +3633,8 @@ bool ConnectionRuntime::report_filter_losses_locked(
     return true;
 }
 
-void ConnectionRuntime::process_packet(
-    const PacketView& incoming_packet, IpEndpoint peer) noexcept
+void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
+    IpEndpoint peer, std::optional<Clock::time_point> ingress) noexcept
 {
     PacketView packet = incoming_packet;
     if (peer != peer_) {
@@ -3599,6 +3646,19 @@ void ConnectionRuntime::process_packet(
         return;
     std::lock_guard lock(mutex_);
     if (locally_closed_ || broken_) {
+        return;
+    }
+    if (packet.kind == PacketKind::control
+        && packet.control.type == ControlType::user_defined
+        && packet.control.subtype == standby_rtt_subtype) {
+        // Captured immediately after native receive, before route/lock waiting.
+        const auto arrival = ingress && now_function_ == nullptr
+            ? static_cast<std::uint64_t>(std::max<std::int64_t>(0,
+                  std::chrono::duration_cast<std::chrono::microseconds>(
+                      *ingress - origin_)
+                      .count()))
+            : now_microseconds();
+        receive_standby_rtt(packet, arrival);
         return;
     }
     if (packet.kind == PacketKind::control
@@ -3931,6 +3991,14 @@ bool ConnectionRuntime::process_handshake(
         return false;
     }
 
+    const auto expected_standby = handshake_replay_response_.packet.request
+            == HandshakeRequest::conclusion
+        ? StandbyRttIdentity {.caller =
+                                  handshake_replay_response_.standby_rtt.caller}
+        : handshake_replay_response_.standby_rtt;
+    if (message.has_standby_rtt != handshake_replay_response_.has_standby_rtt
+        || (message.has_standby_rtt && message.standby_rtt != expected_standby))
+        return false;
     if (message.has_path_identifier
             != handshake_replay_response_.has_path_identifier
         || (message.has_path_identifier
@@ -3986,7 +4054,22 @@ RuntimePollResult ConnectionRuntime::poll(
 {
     std::lock_guard lock(mutex_);
     poll_send_budget_ = &remaining_send_attempts;
-    const auto result = poll_locked();
+    auto result = poll_locked();
+    if (standby_rtt_ && standby_rtt_->live && !locally_closed_ && !broken_
+        && !peer_closed_) {
+        const auto now = now_microseconds();
+        service_standby_rtt(now);
+        if (standby_rtt_eligible(now)) {
+            const auto due = standby_rtt_->measurement.next_request_time();
+            const auto delay = std::chrono::microseconds {due > now
+                    ? std::min<std::uint64_t>(due - now, 1'000'000)
+                    : 31'250U};
+            if (!result.next_work_delay || delay < *result.next_work_delay) {
+                result.next_work_delay = delay;
+                result.next_work_deadline.reset();
+            }
+        }
+    }
     poll_send_budget_ = nullptr;
     return result;
 }
@@ -4364,6 +4447,7 @@ void ConnectionRuntime::break_locked(int system_error) noexcept
     statistics_.update_send_duration(
         now, session_.send_buffer().size() != 0U);
     statistics_.update_send_duration(now, false);
+    terminate_standby_rtt();
     broken_ = true;
     pending_datagram_head_.reset();
     pending_datagram_tail_ = nullptr;
@@ -4428,6 +4512,7 @@ bool ConnectionRuntime::begin_close() noexcept
         return false;
     }
     locally_closed_ = true;
+    terminate_standby_rtt();
     receive_ready_.notify_all();
     send_ready_.notify_all();
     notify_readiness();
@@ -4895,6 +4980,154 @@ ConnectionRuntime::handshake_replay_key() const noexcept
         .peer = peer_,
         .peer_socket_id = peer_socket_id_,
     };
+}
+
+bool ConnectionRuntime::standby_rtt_eligible(std::uint64_t now) noexcept
+{
+    if (!standby_rtt_ || !standby_rtt_->live || locally_closed_ || broken_
+        || peer_closed_ || peer_error_pending_ || pending_datagram_size_ != 0
+        || session_.send_buffer().size() != 0)
+        return false;
+    if (standby_rtt_->last_data
+        && (now < *standby_rtt_->last_data
+            || now - *standby_rtt_->last_data < 1'000'000))
+        return false;
+    const auto group = standby_rtt_->group.lock();
+    if (!group)
+        return false;
+    // Other group paths may hold metadata while calling this runtime. Never
+    // wait for that lock in the opposite order, or hold it over native I/O.
+    std::unique_lock lock(group->mutex, std::try_to_lock);
+    return lock.owns_lock() && !group->closed && group->type == SRT_GTYPE_BACKUP
+        && group->active_send_member
+        != static_cast<SRTSOCKET>(standby_rtt_->local_socket_id)
+        && group->probe_send_member
+        != static_cast<SRTSOCKET>(standby_rtt_->local_socket_id);
+}
+void ConnectionRuntime::terminate_standby_rtt() noexcept
+{
+    if (standby_rtt_ && standby_rtt_->live) {
+        standby_rtt_->measurement.terminate();
+        (void)standby_rtt_->service->request(standby_rtt_->lease, false);
+        standby_rtt_->live = false;
+    }
+}
+bool ConnectionRuntime::send_standby_rtt(
+    const StandbyRttMessage& message) noexcept
+{
+    if (pending_datagram_size_ != 0
+        || (poll_send_budget_ && *poll_send_budget_ == 0))
+        return false;
+    const auto channel = channel_.lock();
+    if (!channel)
+        return false;
+    std::array<std::byte, standby_rtt_datagram_size> bytes {};
+    const auto encoded = encode_standby_rtt_datagram(message,
+        PacketTimestamp {static_cast<std::uint32_t>(now_microseconds())},
+        peer_socket_id_, bytes);
+    if (!encoded)
+        return false;
+    if (poll_send_budget_)
+        --*poll_send_budget_;
+    const auto sent = channel->try_send_monitoring_datagram(bytes, peer_);
+    // Monitoring has no retry queue or reliability/liveness/statistics update.
+    // Hard native failures still use the normal terminal connection boundary.
+    if ((!sent && sent.error != Error::would_block
+            && !(sent.error == Error::io_error
+                && UdpSocket::is_transient_send_error(sent.system_error)))
+        || (sent && sent.bytes_transferred != bytes.size())) {
+        break_locked(sent.system_error);
+        return false;
+    }
+    return static_cast<bool>(sent);
+}
+void ConnectionRuntime::service_standby_rtt(std::uint64_t now) noexcept
+{
+    auto& state = *standby_rtt_;
+    state.measurement.expire(now);
+    const bool eligible = standby_rtt_eligible(now);
+    if (!eligible)
+        state.measurement.pause();
+    const bool due = eligible && state.measurement.next_request_time() <= now
+        && !state.measurement.outstanding() && poll_send_budget_
+        && *poll_send_budget_ != 0;
+    if (!state.service->request(state.lease, due))
+        return;
+    const auto maximum = UINT64_MAX;
+    const auto idle_deadline = last_peer_activity_microseconds_
+        + std::min(peer_idle_timeout_microseconds_,
+            maximum - last_peer_activity_microseconds_);
+    const auto request = state.measurement.prepare_request(
+        now, idle_deadline, state.lease.generation, eligible);
+    if (!request)
+        return;
+    const bool sent = send_standby_rtt(*request);
+    state.measurement.finish_send(request->probe_id, state.lease.generation,
+        sent ? std::optional {now_microseconds()} : std::nullopt);
+}
+void ConnectionRuntime::receive_standby_rtt(
+    const PacketView& packet, std::uint64_t ingress) noexcept
+{
+    if (!standby_rtt_ || !standby_rtt_->live || peer_closed_
+        || peer_error_pending_
+        || packet.control.destination_socket_id
+            != standby_rtt_->local_socket_id)
+        return;
+    const auto decoded = decode_standby_rtt_packet(packet);
+    if (!decoded)
+        return;
+    auto& state = *standby_rtt_;
+    const auto now = now_microseconds();
+    if (decoded.message.kind == StandbyRttKind::echo) {
+        if (!standby_rtt_eligible(now)) {
+            state.measurement.pause();
+            (void)state.service->request(state.lease, false);
+        } else {
+            state.measurement.receive_echo(
+                decoded.message, ingress, state.lease.generation, true);
+        }
+        return;
+    }
+    if (pending_datagram_size_ != 0
+        || (now >= last_peer_activity_microseconds_
+            && now - last_peer_activity_microseconds_
+                >= peer_idle_timeout_microseconds_))
+        return;
+    // Validate correlation/direction and the per-member bound before charging
+    // the process echo budget. Budget contention drops this attempt honestly.
+    const auto echo = state.measurement.make_echo(
+        decoded.message, now, state.lease.generation, true, true);
+    if (echo && state.service->echo(state.lease))
+        (void)send_standby_rtt(*echo);
+}
+ROBOTWEAX_SRT_STANDBY_RTTDATA_V1
+ConnectionRuntime::standby_rtt_data() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    ROBOTWEAX_SRT_STANDBY_RTTDATA_V1 result {};
+    result.struct_size = sizeof(result);
+    result.abi_version = ROBOTWEAX_SRT_STANDBY_RTT_VERSION;
+    result.age_microseconds = ROBOTWEAX_SRT_RTT_AGE_UNAVAILABLE;
+    if (!standby_rtt_negotiated_)
+        return result;
+    result.flags = ROBOTWEAX_SRT_STANDBY_RTT_NEGOTIATED;
+    if (locally_closed_ || broken_ || peer_closed_ || peer_error_pending_)
+        result.flags |= ROBOTWEAX_SRT_STANDBY_RTT_TERMINAL;
+    if (!standby_rtt_) {
+        result.outcome = ROBOTWEAX_SRT_STANDBY_RTT_CAPACITY;
+        return result;
+    }
+    const auto sample = standby_rtt_->measurement.snapshot(now_microseconds());
+    result.flags |= ROBOTWEAX_SRT_STANDBY_RTT_ADMITTED;
+    if (sample.samples)
+        result.flags |= ROBOTWEAX_SRT_STANDBY_RTT_OBSERVED;
+    if (sample.fresh)
+        result.flags |= ROBOTWEAX_SRT_STANDBY_RTT_FRESH;
+    result.outcome = static_cast<std::uint32_t>(sample.outcome);
+    result.rtt_microseconds = sample.rtt_microseconds;
+    result.age_microseconds = sample.age_microseconds;
+    result.samples = sample.samples;
+    return result;
 }
 
 } // namespace robotweax::srt::compat

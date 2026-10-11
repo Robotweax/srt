@@ -430,3 +430,17 @@ performs no runtime I/O and changes no priority, qualification, timer, replay
 or wire rule. Existing public structures remain unchanged. Providers without
 this optional symbol must expose observation unavailable; integrations qualify
 and explicitly bind the getter rather than infer it from a provider name.
+
+
+## Optional standby RTT observation
+
+`robotweax_srt_standby_rtt_data_v1` is a separate optional Robotweax extension.
+Its 48-byte `ROBOTWEAX_SRT_STANDBY_RTTDATA_V1` reports negotiated/admitted status,
+sample count, round trip, monotonic age and last outcome for an explicitly
+enabled Backup member. Existing RTT V1, `msRTT` and source codes retain their
+original meanings. The getter generates no traffic; default-disabled and
+capacity-limited connections never manufacture a measurement. See the canonical
+[standby RTT contract](standby-rtt-foundation.md#native-measurement-and-snapshot)
+for the activation profile, flags, errors, lifecycle, bounds and security limits.
+Discover or inject the new symbol from the exact loaded library; older and
+reference providers do not need to export or implement it.

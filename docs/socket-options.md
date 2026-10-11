@@ -564,3 +564,15 @@ bytes per caller endpoint). Both are pre-setup options; group-wide labels are
 rejected. See the canonical [group path identifier contract](group-path-identifiers.md)
 for two-sided configuration, unsupported combinations and the versioned getter.
 These options are absent from published v0.2.8 artifacts.
+
+
+## Optional standby RTT monitoring
+
+`SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED` (`0x01000008`, bool, default false) is a
+pre-setup option for bilateral Robotweax Backup Live Message Caller/Listener
+groups with TSBPD. It requires an enabled listener group admission and fails
+unsupported or one-sided activation explicitly. It adds bounded monitoring
+traffic without changing ordinary RTT, liveness, reliability or send authority.
+See the [standby RTT contract](standby-rtt-foundation.md) for configuration,
+resource limits, unauthenticated-control scope and the separate versioned getter.
+It is absent from published v0.2.8 artifacts.

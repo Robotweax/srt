@@ -54,6 +54,8 @@ struct StandbyRttDecodeResult {
         return error == Error::none;
     }
 };
+[[nodiscard]] StandbyRttDecodeResult decode_standby_rtt_packet(
+    const PacketView&) noexcept;
 [[nodiscard]] StandbyRttDecodeResult decode_standby_rtt_datagram(
     std::span<const std::byte>) noexcept;
 [[nodiscard]] EncodeResult encode_standby_rtt_datagram(const StandbyRttMessage&,
@@ -101,6 +103,12 @@ public:
     void pause() noexcept;
     void terminate() noexcept;
     [[nodiscard]] StandbyRttSnapshot snapshot(std::uint64_t now) const noexcept;
+    [[nodiscard]] std::uint64_t next_request_time() const noexcept
+    {
+        return next_id_ == UINT64_MAX ? UINT64_MAX
+            : pending_id_ != 0        ? deadline_
+                                      : next_due_;
+    }
     [[nodiscard]] bool outstanding() const noexcept
     {
         return pending_id_ != 0;
@@ -136,6 +144,10 @@ public:
         std::uint64_t now) noexcept;
     [[nodiscard]] bool grant_echo(Lease, std::uint64_t now) noexcept;
     void clear() noexcept;
+    [[nodiscard]] bool valid_lease(Lease lease) const noexcept
+    {
+        return owns(lease);
+    }
 
 private:
     [[nodiscard]] bool owns(Lease) const noexcept;

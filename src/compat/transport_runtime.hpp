@@ -7,6 +7,7 @@
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/udp.hpp"
 #include "compat/runtime_scheduler.hpp"
+#include "compat/standby_rtt_service.hpp"
 #include "compat/readiness.hpp"
 #include "compat/socket_readiness.hpp"
 #include "compat/statistics.hpp"
@@ -219,6 +220,8 @@ public:
     [[nodiscard]] UdpIoResult send_datagram(
         std::span<const std::byte> bytes,
         IpEndpoint peer) noexcept;
+    [[nodiscard]] UdpIoResult try_send_monitoring_datagram(
+        std::span<const std::byte> bytes, IpEndpoint peer) noexcept;
     void set_send_hook_for_testing(
         SendHook hook, void* context) noexcept;
     [[nodiscard]] bool register_connection(
@@ -335,12 +338,13 @@ private:
                 mark_connections_broken(received.system_error);
                 break;
             }
+            const auto ingress = std::chrono::steady_clock::now();
             const auto decoded = decode_packet(
                 std::span {datagram}.first(received.bytes_transferred));
             if (decoded) {
                 dispatch(decoded.packet,
                     std::span {datagram}.first(received.bytes_transferred),
-                    received.peer);
+                    received.peer, ingress);
             }
         }
 
@@ -367,10 +371,9 @@ private:
     void observe_timer_wake_locked(
         std::optional<std::uint64_t> lateness_microseconds,
         std::chrono::steady_clock::time_point now) noexcept;
-    void dispatch(
-        const PacketView& packet,
-        std::span<const std::byte> datagram,
-        IpEndpoint peer) noexcept;
+    void dispatch(const PacketView& packet, std::span<const std::byte> datagram,
+        IpEndpoint peer,
+        std::chrono::steady_clock::time_point ingress) noexcept;
     void mark_connections_broken(int system_error) noexcept;
     void stop() noexcept;
     void notify_work(bool receive_release) noexcept;
@@ -459,6 +462,7 @@ public:
         std::weak_ptr<DatagramChannel> channel;
         std::shared_ptr<GroupRecord> group;
         IpEndpoint peer{};
+        std::uint32_t local_socket_id = 0;
         std::uint32_t peer_socket_id = 0;
         SequenceNumber initial_sequence{};
         SequenceNumber peer_initial_sequence{};
@@ -471,6 +475,9 @@ public:
         // value.
         std::uint32_t flow_window_packets = 25'600;
         std::uint32_t peer_flow_window_packets = 0;
+        StandbyRttIdentity standby_rtt_identity {};
+        bool standby_rtt_caller = true;
+        std::shared_ptr<StandbyRttService> standby_rtt_service_for_testing {};
         SocketOptions options{};
         NegotiatedLiveOptions negotiated_options{};
         bool efficient_retransmission = true;
@@ -499,6 +506,7 @@ public:
     };
 
     explicit ConnectionRuntime(Configuration configuration);
+    ~ConnectionRuntime();
 
     [[nodiscard]] MessageIoResult queue_message(
         std::span<const std::byte> message,
@@ -551,9 +559,8 @@ public:
         std::span<std::byte> destination,
         bool blocking,
         std::int32_t timeout_milliseconds) noexcept;
-    void process_packet(
-        const PacketView& packet,
-        IpEndpoint peer) noexcept;
+    void process_packet(const PacketView& packet, IpEndpoint peer,
+        std::optional<Clock::time_point> ingress = std::nullopt) noexcept;
     [[nodiscard]] bool process_handshake(
         const HandshakeMessage& message,
         IpEndpoint peer) noexcept;
@@ -590,6 +597,8 @@ public:
         bool clear_interval, bool instantaneous) noexcept;
     [[nodiscard]] RuntimeResponseHealth response_health() const noexcept;
     [[nodiscard]] ROBOTWEAX_SRT_RTTDATA_V1 rtt_data() const noexcept;
+    [[nodiscard]] ROBOTWEAX_SRT_STANDBY_RTTDATA_V1
+    standby_rtt_data() const noexcept;
     [[nodiscard]] SenderBufferStatus sender_buffer_status() noexcept;
     [[nodiscard]] RuntimeBufferPacketCounts
     buffer_packet_counts() const noexcept;
@@ -726,6 +735,28 @@ private:
     void break_locked(int system_error) noexcept;
     void notify_idle_expiry_locked(std::uint64_t now_microseconds) noexcept;
 
+    struct StandbyRttState {
+        StandbyRttMeasurement measurement;
+        std::shared_ptr<StandbyRttService> service;
+        std::weak_ptr<GroupRecord> group;
+        StandbyRttService::Lease lease;
+        std::optional<std::uint64_t> last_data;
+        std::uint32_t local_socket_id = 0;
+        bool live = true;
+        ~StandbyRttState()
+        {
+            if (service)
+                service->release(lease);
+        }
+    };
+    static_assert(sizeof(StandbyRttState) <= 256);
+    std::unique_ptr<StandbyRttState> standby_rtt_;
+    bool standby_rtt_negotiated_ = false;
+    [[nodiscard]] bool standby_rtt_eligible(std::uint64_t now) noexcept;
+    void terminate_standby_rtt() noexcept;
+    void service_standby_rtt(std::uint64_t now) noexcept;
+    void receive_standby_rtt(const PacketView&, std::uint64_t ingress) noexcept;
+    [[nodiscard]] bool send_standby_rtt(const StandbyRttMessage&) noexcept;
     mutable std::mutex mutex_;
     std::condition_variable receive_ready_;
     std::condition_variable send_ready_;
