@@ -492,129 +492,136 @@ sockaddr_in listen_on_loopback(PublicSockets& sockets)
     return endpoint;
 }
 }
-TEST(
-    standby_rtt_native_runtime_bilateral_plain_encrypted_and_session_authenticated_groups)
+static void exercise_native_standby_profile(int profile)
 {
-    for (int profile = 0; profile != 4; ++profile) {
-#ifndef ENABLE_AEAD_API_PREVIEW
-        if (profile == 3)
-            continue;
-#endif
-        REQUIRE_EQ(srt_startup(), 0);
-        PublicSockets sockets;
-        sockets.listener = srt_create_socket();
-        sockets.caller = srt_create_group(SRT_GTYPE_BACKUP);
-        enable_option(sockets.listener, SRTO_GROUPCONNECT);
-        for (auto socket : {sockets.caller, sockets.listener}) {
-            enable_option(socket, SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED);
-            const int timeout = 2'000;
-            REQUIRE_EQ(srt_setsockflag(
-                           socket, SRTO_RCVTIMEO, &timeout, sizeof(timeout)),
-                0);
-            if (profile != 0) {
-                constexpr char passphrase[] = "standby-rtt-test";
-                REQUIRE_EQ(srt_setsockflag(socket, SRTO_PASSPHRASE, passphrase,
-                               sizeof(passphrase) - 1),
-                    0);
-                if (profile == 2)
-                    enable_option(socket, SRTO_ROBOTWEAX_SESSIONAUTH);
-#ifdef ENABLE_AEAD_API_PREVIEW
-                if (profile == 3) {
-                    const int mode = 2;
-                    REQUIRE_EQ(srt_setsockflag(socket, SRTO_CRYPTOMODE, &mode,
-                                   sizeof(mode)),
-                        0);
-                }
-#endif
-            }
-        }
-        auto target = listen_on_loopback(sockets);
-        std::array<SRT_SOCKGROUPCONFIG, 2> endpoints;
-        for (auto& endpoint : endpoints)
-            endpoint = srt_prepare_endpoint(
-                nullptr, reinterpret_cast<sockaddr*>(&target), sizeof(target));
-        REQUIRE(srt_connect_group(
-                    sockets.caller, endpoints.data(), endpoints.size())
-            != SRT_INVALID_SOCK);
-        sockets.receiver = srt_accept(sockets.listener, nullptr, nullptr);
-        REQUIRE(sockets.receiver != SRT_INVALID_SOCK);
-        std::array<SRT_SOCKGROUPDATA, 2> caller {}, listener {};
-        // Four members share a burst-one echo budget. Allow three 2s probe
-        // attempts plus scheduling slack when admission drops a healthy echo.
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds {7};
-        bool measured = false;
-        do {
-            std::size_t local_count = caller.size(),
-                        remote_count = listener.size();
-            REQUIRE(srt_group_data(sockets.caller, caller.data(), &local_count)
-                >= 0);
-            REQUIRE(
-                srt_group_data(sockets.receiver, listener.data(), &remote_count)
-                >= 0);
-            measured = local_count == 2 && remote_count == 2;
-            if (measured)
-                for (const auto* members : {&caller, &listener})
-                    for (const auto& member : *members) {
-                        if (member.sockstate != SRTS_CONNECTED) {
-                            measured = false;
-                            continue;
-                        }
-                        ROBOTWEAX_SRT_STANDBY_RTTDATA_V1 data {};
-                        data.struct_size = sizeof(data);
-                        data.abi_version = 1;
-                        const auto result = robotweax_srt_standby_rtt_data_v1(
-                            member.id, &data, sizeof(data));
-                        if (result == SRT_ERROR) {
-                            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ENOCONN);
-                            measured = false;
-                            continue;
-                        }
-                        measured &= data.samples != 0
-                            && data.rtt_microseconds != 0
-                            && data.rtt_microseconds < 2'000'000
-                            && data.age_microseconds != UINT64_MAX;
-                        REQUIRE_EQ(
-                            (data.flags & ROBOTWEAX_SRT_STANDBY_RTT_FRESH) != 0,
-                            data.samples != 0
-                                && data.age_microseconds <= 3'000'000);
-                    }
-            if (!measured)
-                std::this_thread::sleep_for(std::chrono::milliseconds {1});
-        } while (!measured && std::chrono::steady_clock::now() < deadline);
-        REQUIRE(measured);
-        const bool disable = false;
+    REQUIRE_EQ(srt_startup(), 0);
+    PublicSockets sockets;
+    sockets.listener = srt_create_socket();
+    sockets.caller = srt_create_group(SRT_GTYPE_BACKUP);
+    enable_option(sockets.listener, SRTO_GROUPCONNECT);
+    for (auto socket : {sockets.caller, sockets.listener}) {
+        enable_option(socket, SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED);
+        const int timeout = 2'000;
         REQUIRE_EQ(
-            srt_setsockflag(sockets.caller, SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED,
-                &disable, sizeof(disable)),
-            SRT_ERROR);
-        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
-        for (const auto& member : caller) {
-            ROBOTWEAX_SRT_RTTDATA_V1 standard {};
-            standard.struct_size = sizeof(standard);
-            standard.abi_version = 1;
-            REQUIRE_EQ(robotweax_srt_rtt_data_v1(
-                           member.id, &standard, sizeof(standard)),
-                0);
-            REQUIRE_EQ(standard.flags, 0U);
-        }
-        ROBOTWEAX_SRT_GROUP_SEND_STATE_V1 authority {};
-        authority.struct_size = sizeof(authority);
-        authority.abi_version = 1;
-        REQUIRE_EQ(robotweax_srt_group_send_state_v1(
-                       sockets.caller, &authority, sizeof(authority)),
+            srt_setsockflag(socket, SRTO_RCVTIMEO, &timeout, sizeof(timeout)),
             0);
-        REQUIRE_EQ(authority.active_member, SRT_INVALID_SOCK);
-        constexpr char message[] = "standby-data";
-        REQUIRE_EQ(srt_sendmsg(sockets.caller, message, sizeof(message), -1, 1),
-            static_cast<int>(sizeof(message)));
-        std::array<char, 64> received {};
-        REQUIRE_EQ(
-            srt_recvmsg(sockets.receiver, received.data(), received.size()),
-            static_cast<int>(sizeof(message)));
-        REQUIRE_EQ(std::memcmp(received.data(), message, sizeof(message)), 0);
+        if (profile != 0) {
+            constexpr char passphrase[] = "standby-rtt-test";
+            REQUIRE_EQ(srt_setsockflag(socket, SRTO_PASSPHRASE, passphrase,
+                           sizeof(passphrase) - 1),
+                0);
+            if (profile == 2)
+                enable_option(socket, SRTO_ROBOTWEAX_SESSIONAUTH);
+#ifdef ENABLE_AEAD_API_PREVIEW
+            if (profile == 3) {
+                const int mode = 2;
+                REQUIRE_EQ(srt_setsockflag(
+                               socket, SRTO_CRYPTOMODE, &mode, sizeof(mode)),
+                    0);
+            }
+#endif
+        }
     }
+    auto target = listen_on_loopback(sockets);
+    std::array<SRT_SOCKGROUPCONFIG, 2> endpoints;
+    for (auto& endpoint : endpoints)
+        endpoint = srt_prepare_endpoint(
+            nullptr, reinterpret_cast<sockaddr*>(&target), sizeof(target));
+    REQUIRE(
+        srt_connect_group(sockets.caller, endpoints.data(), endpoints.size())
+        != SRT_INVALID_SOCK);
+    sockets.receiver = srt_accept(sockets.listener, nullptr, nullptr);
+    REQUIRE(sockets.receiver != SRT_INVALID_SOCK);
+    std::array<SRT_SOCKGROUPDATA, 2> caller {}, listener {};
+    // Four members share a burst-one echo budget. Allow three 2s probe
+    // attempts plus scheduling slack when admission drops a healthy echo.
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {7};
+    bool measured = false;
+    do {
+        std::size_t local_count = caller.size(), remote_count = listener.size();
+        REQUIRE(
+            srt_group_data(sockets.caller, caller.data(), &local_count) >= 0);
+        REQUIRE(srt_group_data(sockets.receiver, listener.data(), &remote_count)
+            >= 0);
+        measured = local_count == 2 && remote_count == 2;
+        if (measured)
+            for (const auto* members : {&caller, &listener})
+                for (const auto& member : *members) {
+                    if (member.sockstate != SRTS_CONNECTED) {
+                        measured = false;
+                        continue;
+                    }
+                    ROBOTWEAX_SRT_STANDBY_RTTDATA_V1 data {};
+                    data.struct_size = sizeof(data);
+                    data.abi_version = 1;
+                    const auto result = robotweax_srt_standby_rtt_data_v1(
+                        member.id, &data, sizeof(data));
+                    if (result == SRT_ERROR) {
+                        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ENOCONN);
+                        measured = false;
+                        continue;
+                    }
+                    measured &= data.samples != 0 && data.rtt_microseconds != 0
+                        && data.rtt_microseconds < 2'000'000
+                        && data.age_microseconds != UINT64_MAX;
+                    REQUIRE_EQ(
+                        (data.flags & ROBOTWEAX_SRT_STANDBY_RTT_FRESH) != 0,
+                        data.samples != 0
+                            && data.age_microseconds <= 3'000'000);
+                }
+        if (!measured)
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    } while (!measured && std::chrono::steady_clock::now() < deadline);
+    REQUIRE(measured);
+    const bool disable = false;
+    REQUIRE_EQ(
+        srt_setsockflag(sockets.caller, SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED,
+            &disable, sizeof(disable)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
+    for (const auto& member : caller) {
+        ROBOTWEAX_SRT_RTTDATA_V1 standard {};
+        standard.struct_size = sizeof(standard);
+        standard.abi_version = 1;
+        REQUIRE_EQ(
+            robotweax_srt_rtt_data_v1(member.id, &standard, sizeof(standard)),
+            0);
+        REQUIRE_EQ(standard.flags, 0U);
+    }
+    ROBOTWEAX_SRT_GROUP_SEND_STATE_V1 authority {};
+    authority.struct_size = sizeof(authority);
+    authority.abi_version = 1;
+    REQUIRE_EQ(robotweax_srt_group_send_state_v1(
+                   sockets.caller, &authority, sizeof(authority)),
+        0);
+    REQUIRE_EQ(authority.active_member, SRT_INVALID_SOCK);
+    constexpr char message[] = "standby-data";
+    REQUIRE_EQ(srt_sendmsg(sockets.caller, message, sizeof(message), -1, 1),
+        static_cast<int>(sizeof(message)));
+    std::array<char, 64> received {};
+    REQUIRE_EQ(srt_recvmsg(sockets.receiver, received.data(), received.size()),
+        static_cast<int>(sizeof(message)));
+    REQUIRE_EQ(std::memcmp(received.data(), message, sizeof(message)), 0);
 }
+TEST(standby_rtt_native_runtime_plain_group)
+{
+    exercise_native_standby_profile(0);
+}
+TEST(standby_rtt_native_runtime_ctr_group)
+{
+    exercise_native_standby_profile(1);
+}
+TEST(standby_rtt_native_runtime_session_auth_group)
+{
+    exercise_native_standby_profile(2);
+}
+#ifdef ENABLE_AEAD_API_PREVIEW
+TEST(standby_rtt_native_runtime_gcm_group)
+{
+    exercise_native_standby_profile(3);
+}
+#endif
 TEST(standby_rtt_native_runtime_one_sided_opt_in_rejects_without_downgrade)
 {
     for (bool listener_required : {false, true}) {
