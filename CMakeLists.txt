@@ -398,7 +398,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             srt_compat_bind_acquire srt_compat_connection_local_name_
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
-            stale_drop_coverage stale_nak standby_rtt_native_runtime_)
+            stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover)
     # Native standby profiles each retain their own bounded 7s measurement
     # window; do not charge all profiles to the existing 30s unit partition.
     add_test(NAME robotweax_srt_standby_rtt_plain_group_tests
@@ -428,6 +428,8 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         set_tests_properties(robotweax_srt_standby_rtt_gcm_group_tests
             PROPERTIES TIMEOUT 30 LABELS "network;integration;standby-rtt")
     endif()
+    add_test(NAME robotweax_srt_group_join_rollover_tests
+        COMMAND robotweax_srt_tests --include compat_group_connect_joins_with_unread_messages_across_rollover)
     add_test(NAME robotweax_srt_transport_runtime_tests
         COMMAND robotweax_srt_tests --include compat_runtime_
             --exclude compat_runtime_rotation_ key_length
@@ -490,6 +492,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             compat_group_closed_member_retains_bounded_copy_after_oversized_message)
     set_tests_properties(
         robotweax_srt_tests robotweax_srt_transport_runtime_tests
+        robotweax_srt_group_join_rollover_tests
         robotweax_srt_rotation_tests robotweax_srt_key_length_tests
         robotweax_srt_delayed_key_response_tests
         robotweax_srt_group_retention_prefix_tests
