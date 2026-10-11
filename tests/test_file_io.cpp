@@ -107,6 +107,235 @@ struct TemporaryFiles {
 
 } // namespace
 
+namespace {
+
+struct RetiringMember {
+    SRTSOCKET handle = SocketRegistry::instance().create();
+    std::shared_ptr<DatagramChannel> channel;
+    std::shared_ptr<ConnectionRuntime> runtime;
+    std::uint64_t now = 0;
+    std::uint32_t timeout_ms;
+    CapturedDatagrams output;
+
+    explicit RetiringMember(std::uint32_t timeout = 20'000,
+        std::shared_ptr<DatagramChannel> shared_channel = {})
+        : channel(shared_channel != nullptr
+                  ? std::move(shared_channel)
+                  : std::make_shared<DatagramChannel>())
+        , timeout_ms(timeout)
+    {
+        REQUIRE(handle != SRT_INVALID_SOCK);
+        channel->set_send_hook_for_testing(capture_datagram, &output);
+        runtime = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {.channel = channel,
+                .peer = Ipv4Endpoint::loopback(19000),
+                .peer_socket_id = 900,
+                .initial_sequence = SequenceNumber {100},
+                .flow_window_packets = 16,
+                .origin = ConnectionRuntime::Clock::now(),
+                .peer_idle_timeout_milliseconds = timeout_ms,
+                .now_function = injected_now,
+                .now_context = &now});
+        const auto record = SocketRegistry::instance().find(handle);
+        REQUIRE(record != nullptr);
+        record->state = SRTS_CONNECTED;
+        record->channel = channel;
+        record->runtime = runtime;
+        record->public_options.linger_enabled = false;
+        REQUIRE(channel->register_connection(
+            static_cast<std::uint32_t>(handle), runtime));
+    }
+
+    ~RetiringMember()
+    {
+        SocketRegistry::instance().close(handle);
+    }
+
+    auto expire()
+    {
+        now = static_cast<std::uint64_t>(timeout_ms) * 1000U + 1U;
+        (void)runtime->poll();
+        REQUIRE(runtime->broken());
+        const auto deadline = runtime->idle_retirement_deadline();
+        REQUIRE(deadline.has_value());
+        return *deadline;
+    }
+};
+
+} // namespace
+
+TEST(compat_udp_retirement_releases_runtime_and_discards_late_controls)
+{
+    auto& registry = SocketRegistry::instance();
+    registry.clear();
+    RetiringMember member;
+    REQUIRE_EQ(
+        member.channel->socket.bind(Ipv4Endpoint::loopback(0)), Error::none);
+    const auto endpoint = member.channel->socket.local_endpoint();
+    REQUIRE(endpoint);
+    const auto deadline = member.expire();
+    const auto weak_runtime = std::weak_ptr {member.runtime};
+    const auto weak_channel = std::weak_ptr {member.channel};
+    registry.close_failed(member.handle);
+    REQUIRE_EQ(registry.state(member.handle), SRTS_CLOSED);
+    REQUIRE(registry.find(member.handle) == nullptr);
+    member.runtime.reset();
+    REQUIRE(weak_runtime.expired());
+    member.channel.reset();
+    REQUIRE(!weak_channel.expired());
+    REQUIRE_EQ(retired_datagram_channels_for_testing(), 1U);
+    (void)take_datagrams(member.output);
+
+    // The native endpoint is still reserved and can consume the old peer's
+    // final control. With the route erased, it cannot answer or revive it.
+    auto channel = weak_channel.lock();
+    UdpSocket competitor;
+    REQUIRE(competitor.bind(endpoint.endpoint) != Error::none);
+    std::array<std::byte, packet_header_size + 4U> bytes {};
+    const auto encoded = encode_reliability_action(
+        {.kind = ReliabilityActionKind::shutdown}, {}, PacketTimestamp {0},
+        static_cast<std::uint32_t>(member.handle), bytes);
+    REQUIRE(encoded);
+    bool supplied = false;
+    auto receive = [&](std::span<std::byte> target) noexcept -> UdpIoResult {
+        if (supplied)
+            return {.error = Error::would_block};
+        supplied = true;
+        std::copy_n(bytes.begin(), encoded.bytes_written, target.begin());
+        return {.bytes_transferred = encoded.bytes_written,
+            .peer = Ipv4Endpoint::loopback(19000)};
+    };
+    (void)channel->run_once_for_testing(receive);
+    REQUIRE(take_datagrams(member.output).empty());
+    REQUIRE_EQ(registry.state(member.handle), SRTS_CLOSED);
+    channel.reset();
+    (void)service_deferred_closes(deadline - std::chrono::microseconds {1});
+    REQUIRE(!weak_channel.expired());
+    (void)service_deferred_closes(deadline);
+    REQUIRE(weak_channel.expired());
+    REQUIRE_EQ(retired_datagram_channels_for_testing(), 0U);
+    REQUIRE_EQ(competitor.bind(endpoint.endpoint), Error::none);
+    registry.clear();
+}
+
+TEST(compat_udp_retirement_preserves_shared_routes_and_cleanup_is_immediate)
+{
+    auto& registry = SocketRegistry::instance();
+    registry.clear();
+    RetiringMember failed;
+    RetiringMember healthy {20'000, failed.channel};
+    const auto deadline = failed.expire();
+    registry.close_failed(failed.handle);
+    failed.runtime.reset();
+    (void)take_datagrams(healthy.output);
+    REQUIRE_EQ(retired_datagram_channels_for_testing(), 1U);
+    std::array<std::byte, packet_header_size + 4U> bytes {};
+    const auto encoded = encode_reliability_action(
+        {.kind = ReliabilityActionKind::shutdown}, {}, PacketTimestamp {0},
+        static_cast<std::uint32_t>(failed.handle), bytes);
+    REQUIRE(encoded);
+    bool supplied = false;
+    auto receive = [&](std::span<std::byte> target) noexcept -> UdpIoResult {
+        if (supplied)
+            return {.error = Error::would_block};
+        supplied = true;
+        std::copy_n(bytes.begin(), encoded.bytes_written, target.begin());
+        return {.bytes_transferred = encoded.bytes_written,
+            .peer = Ipv4Endpoint::loopback(19000)};
+    };
+    (void)healthy.channel->run_once_for_testing(receive);
+    REQUIRE(!healthy.runtime->peer_closed());
+    REQUIRE(take_datagrams(healthy.output).empty());
+    (void)service_deferred_closes(deadline);
+    REQUIRE_EQ(retired_datagram_channels_for_testing(), 0U);
+    REQUIRE(!healthy.runtime->broken());
+    const std::array payload {std::byte {'x'}};
+    REQUIRE_EQ(
+        healthy.runtime->queue_message(payload, 0, false, false, -1).status,
+        MessageIoStatus::success);
+    (void)healthy.runtime->poll();
+    REQUIRE(!take_datagrams(healthy.output).empty());
+
+    (void)healthy.expire();
+    registry.close_failed(healthy.handle);
+    healthy.runtime.reset();
+    const auto weak_channel = std::weak_ptr {healthy.channel};
+    failed.channel.reset();
+    healthy.channel.reset();
+    REQUIRE(!weak_channel.expired());
+    registry.clear();
+    REQUIRE(weak_channel.expired());
+    REQUIRE_EQ(retired_datagram_channels_for_testing(), 0U);
+}
+
+TEST(compat_udp_retirement_has_capacity_and_time_bounds)
+{
+    auto& registry = SocketRegistry::instance();
+    registry.clear();
+    std::vector<std::weak_ptr<DatagramChannel>> channels;
+    for (unsigned i = 0; i < 257; ++i) {
+        RetiringMember member {60'000};
+        const auto before = ConnectionRuntime::Clock::now();
+        const auto deadline = member.expire();
+        const auto after = ConnectionRuntime::Clock::now();
+        REQUIRE(deadline >= before + std::chrono::seconds {30});
+        REQUIRE(deadline <= after + std::chrono::seconds {30});
+        channels.emplace_back(member.channel);
+        registry.close_failed(member.handle);
+    }
+    REQUIRE_EQ(retired_datagram_channels_for_testing(), 256U);
+    REQUIRE(!channels.front().expired());
+    REQUIRE(channels.back().expired());
+    registry.clear();
+    REQUIRE_EQ(retired_datagram_channels_for_testing(), 0U);
+    REQUIRE(
+        std::all_of(channels.begin(), channels.end(), [](const auto& channel) {
+            return channel.expired();
+        }));
+
+    // Application close and a hard failure get no extra port lifetime.
+    for (const bool hard_failure : {false, true}) {
+        RetiringMember member;
+        if (hard_failure)
+            member.runtime->mark_broken(1);
+        else
+            (void)member.expire();
+        const auto weak_channel = std::weak_ptr {member.channel};
+        if (hard_failure)
+            registry.close_failed(member.handle);
+        else
+            registry.close(member.handle);
+        member.runtime.reset();
+        member.channel.reset();
+        REQUIRE(weak_channel.expired());
+        REQUIRE_EQ(retired_datagram_channels_for_testing(), 0U);
+    }
+    registry.clear();
+}
+
+TEST(compat_udp_retirement_coalesces_shared_channel_deadlines)
+{
+    auto& registry = SocketRegistry::instance();
+    registry.clear();
+    RetiringMember first;
+    RetiringMember second {25'000, first.channel};
+    const auto first_deadline = first.expire();
+    registry.close_failed(first.handle);
+    const auto second_deadline = second.expire();
+    registry.close_failed(second.handle);
+    REQUIRE_EQ(retired_datagram_channels_for_testing(), 1U);
+    const auto weak_channel = std::weak_ptr {first.channel};
+    first.runtime.reset();
+    second.runtime.reset();
+    first.channel.reset();
+    second.channel.reset();
+    (void)service_deferred_closes(first_deadline);
+    REQUIRE(!weak_channel.expired());
+    (void)service_deferred_closes(second_deadline);
+    REQUIRE(weak_channel.expired());
+    registry.clear();
+}
+
 TEST(compat_file_api_transfers_a_fragment_and_updates_offsets)
 {
     TemporaryFiles files;

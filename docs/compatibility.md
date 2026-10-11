@@ -217,3 +217,27 @@ attempt starts its own interval and ACK cursor. A responsive authority permits
 only better-priority failback probes and cancels a lower-priority probe on
 recovery. With no alternative candidate, the existing probe continues waiting
 for ACK qualification. Probe rotation alone does not change sender authority.
+
+An established connection exceeding `SRTO_PEERIDLETIMEO` makes one best-effort
+SHUTDOWN send attempt before publishing terminal failure. Forward DATA can keep
+a Backup receiver alive while reverse control traffic is lost; the notice lets
+that receiver stop sending ACK/NAK after the local member expires. It bypasses
+obsolete queued DATA and consumes one channel send-budget slot, without retrying
+or extending the idle deadline. Other members sharing the UDP channel remain
+usable. A blocked, failed or lost notice cannot delay failure publication and
+cannot guarantee that the peer learns of the close or eliminate every late UDP
+packet.
+
+Automatic teardown of an idle-failed group member removes its protocol route
+and public socket immediately. Its UDP channel can remain reserved for one
+additional local peer-idle budget, capped at 30 seconds, to consume delayed
+control traffic when the close notice was lost during an outage. This deadline
+starts at the idle failure, not a later application close, and incoming traffic
+cannot renew it. The retirement pool holds at most 256 distinct channels, never
+the old connection runtime or crypto session; a full pool or worker failure
+falls back to immediate release. Shared channels remain usable by live routes
+and compatible reusable bindings, while a non-reusable rebind can conflict
+until the native endpoint is released. Cleanup releases all retired owners
+immediately. Application close, peer close and hard transport failure do not
+acquire this additional lifetime. This finite policy cannot guarantee zero late
+UDP for arbitrary peer idle settings or network delay.

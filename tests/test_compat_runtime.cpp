@@ -2269,7 +2269,13 @@ TEST(compat_runtime_sensor_retirement_wait_respects_peer_timeout)
         packets = take_datagrams(output);
         if (timeout_ms == 5) {
             REQUIRE(sender.broken());
-            REQUIRE(packets.empty());
+            // Idle expiry retires the member without repeating DROPREQ;
+            // its only final datagram is the best-effort close notice.
+            REQUIRE_EQ(packets.size(), 1U);
+            const auto terminal = decode_packet(packets.front());
+            REQUIRE(terminal);
+            REQUIRE_EQ(terminal.packet.control.type, ControlType::shutdown);
+            REQUIRE_EQ(terminal.packet.control.destination_socket_id, 860U);
         } else {
             REQUIRE(!sender.broken());
             REQUIRE_EQ(packets.size(), 1U);
@@ -7204,6 +7210,92 @@ TEST(compat_runtime_sends_one_shutdown_and_reports_peer_close)
     REQUIRE(take_datagrams(caller_output).empty());
 }
 
+TEST(compat_runtime_idle_expiry_notifies_peer_before_terminal_close)
+{
+    for (const bool deliver_shutdown : {true, false}) {
+        auto caller_channel = std::make_shared<DatagramChannel>();
+        auto listener_channel = std::make_shared<DatagramChannel>();
+        CapturedDatagrams caller_output;
+        CapturedDatagrams listener_output;
+        caller_channel->set_send_hook_for_testing(
+            capture_datagram, &caller_output);
+        listener_channel->set_send_hook_for_testing(
+            capture_datagram, &listener_output);
+        const Ipv4Endpoint caller_endpoint {
+            .address = {192, 0, 2, 11}, .port = 11'001};
+        const Ipv4Endpoint listener_endpoint {
+            .address = {192, 0, 2, 12}, .port = 11'002};
+        std::uint64_t caller_now = 0;
+        std::uint64_t listener_now = 0;
+        ConnectionRuntime caller {{.channel = caller_channel,
+            .peer = listener_endpoint,
+            .peer_socket_id = 200,
+            .initial_sequence = SequenceNumber {2'000},
+            .origin = ConnectionRuntime::Clock::now(),
+            .peer_idle_timeout_milliseconds = 5'000,
+            .now_function = injected_now,
+            .now_context = &caller_now}};
+        ConnectionRuntime listener {{.channel = listener_channel,
+            .peer = caller_endpoint,
+            .peer_socket_id = 100,
+            .initial_sequence = SequenceNumber {2'000},
+            .origin = ConnectionRuntime::Clock::now(),
+            .peer_idle_timeout_milliseconds = 5'000,
+            .now_function = injected_now,
+            .now_context = &listener_now}};
+        const std::array payload {std::byte {'x'}};
+        // Reverse traffic is blackholed. Forward DATA keeps the remote member
+        // alive, including when the path returns at the local idle deadline.
+        caller_now = listener_now = 5'000'000;
+        REQUIRE_EQ(caller.queue_message(payload, 0, false, false, -1).status,
+            MessageIoStatus::success);
+        (void)caller.poll();
+        REQUIRE(!caller.broken());
+        deliver(caller_output, listener, caller_endpoint);
+        REQUIRE(!listener.broken());
+        (void)take_datagrams(listener_output);
+        caller_now = listener_now = 5'000'001;
+        (void)caller.poll();
+        REQUIRE(caller.broken());
+        REQUIRE(!caller.writable());
+        listener_now += 1'000'000;
+        (void)listener.poll();
+        REQUIRE(!listener.broken());
+        REQUIRE(!take_datagrams(listener_output).empty());
+        const auto terminal = take_datagrams(caller_output);
+        REQUIRE_EQ(terminal.size(), 1U);
+        const auto shutdown = decode_packet(terminal.front());
+        REQUIRE(shutdown);
+        REQUIRE_EQ(shutdown.packet.control.type, ControlType::shutdown);
+        REQUIRE_EQ(shutdown.packet.control.destination_socket_id, 200U);
+        if (deliver_shutdown) {
+            listener.process_packet(shutdown.packet, caller_endpoint);
+            REQUIRE(listener.peer_closed());
+            listener_now += 1'000'000;
+            (void)listener.poll();
+            REQUIRE(take_datagrams(listener_output).empty());
+        } else {
+            // UDP does not guarantee delivery. A lost notice leaves the peer
+            // waiting for its own receive deadline; it cannot revive the caller.
+            REQUIRE(!listener.peer_closed());
+            listener_now += 5'000'001;
+            (void)listener.poll();
+            REQUIRE(listener.broken());
+            const auto remote_terminal = take_datagrams(listener_output);
+            REQUIRE_EQ(remote_terminal.size(), 1U);
+            const auto remote_shutdown = decode_packet(remote_terminal.front());
+            REQUIRE(remote_shutdown);
+            REQUIRE_EQ(
+                remote_shutdown.packet.control.type, ControlType::shutdown);
+            REQUIRE(caller.broken());
+        }
+        caller.close();
+        caller.close();
+        (void)caller.poll();
+        REQUIRE(take_datagrams(caller_output).empty());
+    }
+}
+
 TEST(compat_runtime_drains_tsbpd_message_after_peer_shutdown)
 {
     const auto channel = std::make_shared<DatagramChannel>();
@@ -8624,6 +8716,113 @@ constexpr int permanent_send_error = EBADF;
 #endif
 
 } // namespace
+
+TEST(compat_runtime_idle_expiry_discards_data_and_never_retries_shutdown)
+{
+    for (const bool file_mode : {false, true}) {
+        for (int outcome = 0; outcome < 3; ++outcome) {
+            BackpressureFixture fixture {false, 5'000, false, 64, file_mode};
+            fixture.enqueue();
+            (void)fixture.runtime->poll();
+            REQUIRE(!fixture.output.attempts.empty());
+            REQUIRE(take_datagrams(fixture.output.accepted).empty());
+            fixture.output.attempts.clear();
+            fixture.output.blocked = outcome != 0;
+            if (outcome == 2) {
+                fixture.output.failure = Error::io_error;
+                fixture.output.system_error = permanent_send_error;
+            }
+            fixture.now += 5'000'001;
+            std::size_t budget = 3;
+            (void)fixture.runtime->poll(budget);
+            REQUIRE(fixture.runtime->broken());
+            REQUIRE(!fixture.runtime->writable());
+            REQUIRE_EQ(budget, 2U);
+            REQUIRE_EQ(fixture.output.attempts.size(), 1U);
+            const auto shutdown =
+                decode_packet(fixture.output.attempts.front());
+            REQUIRE(shutdown);
+            REQUIRE_EQ(shutdown.packet.kind, PacketKind::control);
+            REQUIRE_EQ(shutdown.packet.control.type, ControlType::shutdown);
+            const auto accepted = take_datagrams(fixture.output.accepted);
+            REQUIRE_EQ(accepted.size(), outcome == 0 ? 1U : 0U);
+            fixture.output.blocked = false;
+            fixture.now += 5'000'001;
+            (void)fixture.runtime->poll();
+            fixture.runtime->close();
+            fixture.runtime->close();
+            REQUIRE_EQ(fixture.output.attempts.size(), 1U);
+            REQUIRE(take_datagrams(fixture.output.accepted).empty());
+        }
+    }
+}
+
+TEST(compat_runtime_idle_expiry_preserves_other_shared_channel_members)
+{
+    auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    const Ipv4Endpoint peer {.address = {192, 0, 2, 21}, .port = 12'001};
+    std::uint64_t now = 0;
+    ConnectionRuntime expired {{.channel = channel,
+        .peer = peer,
+        .peer_socket_id = 210,
+        .initial_sequence = SequenceNumber {2'000},
+        .origin = ConnectionRuntime::Clock::now(),
+        .peer_idle_timeout_milliseconds = 5'000,
+        .now_function = injected_now,
+        .now_context = &now}};
+    ConnectionRuntime healthy {{.channel = channel,
+        .peer = peer,
+        .peer_socket_id = 220,
+        .initial_sequence = SequenceNumber {3'000},
+        .origin = ConnectionRuntime::Clock::now(),
+        .peer_idle_timeout_milliseconds = 5'000,
+        .now_function = injected_now,
+        .now_context = &now}};
+    now = 4'000'000;
+    const std::array<std::byte, 4> padding {};
+    PacketView keepalive {.kind = PacketKind::control,
+        .control = {.type = ControlType::keepalive},
+        .payload = padding};
+    healthy.process_packet(keepalive, peer);
+    now = 5'000'001;
+    std::size_t budget = 1;
+    (void)expired.poll(budget);
+    REQUIRE_EQ(budget, 0U);
+    REQUIRE(expired.broken());
+    const auto shutdown = take_datagrams(output);
+    REQUIRE_EQ(shutdown.size(), 1U);
+    REQUIRE_EQ(
+        decode_packet(shutdown.front()).packet.control.destination_socket_id,
+        210U);
+    expired.process_packet(keepalive, peer);
+    REQUIRE(expired.broken());
+    expired.close();
+    REQUIRE(take_datagrams(output).empty());
+    REQUIRE(!healthy.broken());
+    const std::array payload {std::byte {'y'}};
+    REQUIRE_EQ(healthy.queue_message(payload, 0, false, false, -1).status,
+        MessageIoStatus::success);
+    (void)healthy.poll();
+    const auto sent = take_datagrams(output);
+    REQUIRE(std::any_of(sent.begin(), sent.end(), [](const auto& bytes) {
+        const auto packet = decode_packet(bytes);
+        return packet && packet.packet.kind == PacketKind::data
+            && packet.packet.data.destination_socket_id == 220U;
+    }));
+}
+
+TEST(compat_runtime_hard_failure_does_not_send_idle_shutdown)
+{
+    BackpressureFixture fixture;
+    fixture.runtime->mark_broken(permanent_send_error);
+    fixture.output.blocked = false;
+    fixture.now += 5'000'001;
+    (void)fixture.runtime->poll();
+    fixture.runtime->close();
+    REQUIRE(fixture.output.attempts.empty());
+}
 
 TEST(compat_runtime_key_material_retry_starts_after_udp_acceptance)
 {

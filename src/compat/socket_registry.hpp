@@ -167,6 +167,8 @@ void runtime_cleanup() noexcept;
 [[nodiscard]] std::size_t service_deferred_closes(
     std::chrono::steady_clock::time_point now) noexcept;
 
+[[nodiscard]] std::size_t retired_datagram_channels_for_testing() noexcept;
+
 [[nodiscard]] int get_socket_option(
     SRTSOCKET handle, SocketRecord& socket, SRT_SOCKOPT option,
     void* value, int* value_size) noexcept;
