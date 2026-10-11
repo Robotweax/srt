@@ -4003,6 +4003,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     if (now > last_peer_activity_microseconds_
         && now - last_peer_activity_microseconds_
             > peer_idle_timeout_microseconds_) {
+        notify_idle_expiry_locked(now);
         break_locked(0);
         return {};
     }
@@ -4324,6 +4325,34 @@ void ConnectionRuntime::apply_options(
     if (limit_changed)
         notify_channel_send_work();
 #endif
+}
+
+void ConnectionRuntime::notify_idle_expiry_locked(std::uint64_t now) noexcept
+{
+    // The local receive deadline can expire while our DATA still keeps the
+    // peer alive. Notify it once before becoming terminal. This bypasses
+    // obsolete queued DATA and never retries, allocates or extends the idle
+    // deadline; a lost or blocked SHUTDOWN cannot delay failure publication.
+    const auto channel = channel_.lock();
+    if (channel == nullptr) {
+        return;
+    }
+    std::array<std::byte, packet_header_size + 4U> datagram {};
+    const auto encoded =
+        encode_reliability_action({.kind = ReliabilityActionKind::shutdown}, {},
+            PacketTimestamp {static_cast<std::uint32_t>(now)}, peer_socket_id_,
+            datagram);
+    if (!encoded) {
+        return;
+    }
+    --*poll_send_budget_;
+    const auto bytes = std::span {datagram}.first(encoded.bytes_written);
+    const auto sent = channel->send_datagram(bytes, peer_);
+    if (sent && sent.bytes_transferred == bytes.size()) {
+        (void)complete_datagram(bytes,
+            {.kind = DatagramKind::control, .control = ControlType::shutdown},
+            now);
+    }
 }
 
 void ConnectionRuntime::break_locked(int system_error) noexcept

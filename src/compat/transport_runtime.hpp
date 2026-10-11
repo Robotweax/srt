@@ -720,6 +720,7 @@ private:
         std::int32_t error_code,
         std::uint64_t now_microseconds) noexcept;
     void break_locked(int system_error) noexcept;
+    void notify_idle_expiry_locked(std::uint64_t now_microseconds) noexcept;
 
     mutable std::mutex mutex_;
     std::condition_variable receive_ready_;

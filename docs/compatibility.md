@@ -217,3 +217,13 @@ attempt starts its own interval and ACK cursor. A responsive authority permits
 only better-priority failback probes and cancels a lower-priority probe on
 recovery. With no alternative candidate, the existing probe continues waiting
 for ACK qualification. Probe rotation alone does not change sender authority.
+
+An established connection exceeding `SRTO_PEERIDLETIMEO` makes one best-effort
+SHUTDOWN send attempt before publishing terminal failure. Forward DATA can keep
+a Backup receiver alive while reverse control traffic is lost; the notice lets
+that receiver stop sending ACK/NAK after the local member expires. It bypasses
+obsolete queued DATA and consumes one channel send-budget slot, without retrying
+or extending the idle deadline. Other members sharing the UDP channel remain
+usable. A blocked, failed or lost notice cannot delay failure publication and
+cannot guarantee that the peer learns of the close or eliminate every late UDP
+packet.
