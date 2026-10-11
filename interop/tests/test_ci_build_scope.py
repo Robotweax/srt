@@ -130,6 +130,11 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_native_reuseport_tests",
             "robotweax_srt_local_address_tests",
             "robotweax_srt_group_pathid_tests",
+            "robotweax_srt_standby_rtt_plain_group_tests",
+            "robotweax_srt_standby_rtt_ctr_group_tests",
+            "robotweax_srt_standby_rtt_session_auth_group_tests",
+            "robotweax_srt_standby_rtt_one_sided_opt_in_rejects_without_downgrade_tests",
+            "robotweax_srt_standby_rtt_gcm_group_tests",
         }
         self.assertEqual(
             len(registrations), len(partitions) + len(empty_selection_checks),
@@ -155,7 +160,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "srt_compat_bind_acquire", "srt_compat_connection_local_name_",
             "srt_compat_group_pathid_",
             "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
-            "stale_drop_coverage", "stale_nak",
+            "stale_drop_coverage", "stale_nak", "standby_rtt_native_runtime_",
         ])
         self.assertEqual(commands["robotweax_srt_transport_runtime_tests"], [
             "--include", "compat_runtime_", "--exclude", "compat_runtime_rotation_",
@@ -180,6 +185,11 @@ class CiTestRegistrationTests(unittest.TestCase):
         network_partitions = {
             "robotweax_srt_native_reuseport_tests", "robotweax_srt_local_address_tests",
             "robotweax_srt_group_pathid_tests",
+            "robotweax_srt_standby_rtt_plain_group_tests",
+            "robotweax_srt_standby_rtt_ctr_group_tests",
+            "robotweax_srt_standby_rtt_session_auth_group_tests",
+            "robotweax_srt_standby_rtt_one_sided_opt_in_rejects_without_downgrade_tests",
+            "robotweax_srt_standby_rtt_gcm_group_tests",
         }
         for name in partitions - profile_partitions - stale_partitions - network_partitions:
             self.assertIn(name, bounded_properties.group(1))
