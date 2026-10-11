@@ -227,3 +227,17 @@ or extending the idle deadline. Other members sharing the UDP channel remain
 usable. A blocked, failed or lost notice cannot delay failure publication and
 cannot guarantee that the peer learns of the close or eliminate every late UDP
 packet.
+
+Automatic teardown of an idle-failed group member removes its protocol route
+and public socket immediately. Its UDP channel can remain reserved for one
+additional local peer-idle budget, capped at 30 seconds, to consume delayed
+control traffic when the close notice was lost during an outage. This deadline
+starts at the idle failure, not a later application close, and incoming traffic
+cannot renew it. The retirement pool holds at most 256 distinct channels, never
+the old connection runtime or crypto session; a full pool or worker failure
+falls back to immediate release. Shared channels remain usable by live routes
+and compatible reusable bindings, while a non-reusable rebind can conflict
+until the native endpoint is released. Cleanup releases all retired owners
+immediately. Application close, peer close and hard transport failure do not
+acquire this additional lifetime. This finite policy cannot guarantee zero late
+UDP for arbitrary peer idle settings or network delay.

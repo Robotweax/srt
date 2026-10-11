@@ -569,6 +569,10 @@ public:
     [[nodiscard]] bool broken() const noexcept;
     [[nodiscard]] bool peer_closed() const noexcept;
     [[nodiscard]] bool terminal() const noexcept;
+    // Fixed at local idle failure, never renewed by late traffic. Only the
+    // automatic failed-member close uses this passive UDP retirement budget.
+    [[nodiscard]] std::optional<Clock::time_point>
+    idle_retirement_deadline() const noexcept;
     [[nodiscard]] bool has_received_data() const noexcept;
     [[nodiscard]] bool readable() noexcept;
     [[nodiscard]] std::optional<Clock::time_point>
@@ -807,6 +811,7 @@ private:
     bool peer_closed_ = false;
     bool peer_error_pending_ = false;
     bool broken_ = false;
+    std::optional<Clock::time_point> idle_retirement_deadline_;
     bool last_readable_state_ = false;
 };
 

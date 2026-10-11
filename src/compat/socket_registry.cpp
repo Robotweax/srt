@@ -13,6 +13,7 @@
 #include "robotweax/srt/crypto_provider.hpp"
 
 #include <chrono>
+#include <algorithm>
 #include <condition_variable>
 #include <limits>
 #include <new>
@@ -49,7 +50,13 @@ struct DeferredClose {
     std::shared_ptr<ConnectionRuntime> runtime;
     std::uint32_t protocol_socket_id = 0;
     std::chrono::steady_clock::time_point deadline{};
+    bool retire_idle_channel = false;
+    std::uint64_t close_generation = 0;
 };
+
+void retire_idle_channel(const std::shared_ptr<DatagramChannel>& channel,
+    std::chrono::steady_clock::time_point deadline,
+    std::uint64_t generation) noexcept;
 
 void publish_group_state(
     const std::shared_ptr<SocketRecord>& record,
@@ -94,6 +101,13 @@ void finish_close(DeferredClose close) noexcept
         && close.runtime != nullptr) {
         close.channel->unregister_connection(
             close.protocol_socket_id);
+        if (close.retire_idle_channel) {
+            if (const auto deadline =
+                    close.runtime->idle_retirement_deadline()) {
+                retire_idle_channel(
+                    close.channel, *deadline, close.close_generation);
+            }
+        }
     }
     if (close.record != nullptr) {
         std::lock_guard lock(close.record->mutex);
@@ -108,6 +122,53 @@ void finish_close(DeferredClose close) noexcept
 
 class DeferredCloseManager {
 public:
+    // Bound distinct native channels, not sockets/runtimes/crypto sessions.
+    // Resource exhaustion falls back to the existing immediate retirement.
+    static constexpr std::size_t maximum_retired_channels = 256;
+
+    [[nodiscard]] bool retain_channel(
+        const std::shared_ptr<DatagramChannel>& channel,
+        std::chrono::steady_clock::time_point deadline,
+        std::uint64_t generation) noexcept
+    {
+        std::lock_guard lock(mutex_);
+        if (!accepting_ || stopping_ || generation == 0U
+            || generation != generation_
+            || deadline <= std::chrono::steady_clock::now()) {
+            return false;
+        }
+        RetiredChannel* vacant = nullptr;
+        for (auto& entry : retired_channels_) {
+            if (entry.channel == channel) {
+                entry.deadline = std::max(entry.deadline, deadline);
+                changed_.notify_one();
+                return true;
+            }
+            if (entry.channel == nullptr && vacant == nullptr) {
+                vacant = &entry;
+            }
+        }
+        if (vacant == nullptr || !start_worker_locked()) {
+            return false;
+        }
+        *vacant = {channel, deadline};
+        ++retired_channel_count_;
+        changed_.notify_one();
+        return true;
+    }
+
+    [[nodiscard]] std::size_t retired_channel_count() noexcept
+    {
+        std::lock_guard lock(mutex_);
+        return retired_channel_count_;
+    }
+
+    [[nodiscard]] std::uint64_t admission_generation() noexcept
+    {
+        std::lock_guard lock(mutex_);
+        return accepting_ && !stopping_ ? generation_ : 0U;
+    }
+
     ~DeferredCloseManager()
     {
         {
@@ -127,16 +188,12 @@ public:
     {
         {
             std::lock_guard lock(mutex_);
-            if (!accepting_ || stopping_) {
+            if (!accepting_ || stopping_ || close.close_generation == 0U
+                || close.close_generation != generation_) {
                 return false;
             }
-            if (!worker_.joinable()) {
-                try {
-                    worker_ =
-                        std::thread([this] { run(); });
-                } catch (...) {
-                    return false;
-                }
+            if (!start_worker_locked()) {
+                return false;
             }
             try {
                 closes_.push_back(std::move(close));
@@ -152,6 +209,7 @@ public:
         std::chrono::steady_clock::time_point now) noexcept
     {
         std::lock_guard service_lock(service_mutex_);
+        release_channels(now, false);
         std::size_t completed = 0;
         for (;;) {
             DeferredClose close;
@@ -183,6 +241,7 @@ public:
     {
         std::lock_guard lock(mutex_);
         accepting_ = false;
+        ++generation_;
     }
 
     void resume() noexcept
@@ -196,6 +255,7 @@ public:
     void finish_all() noexcept
     {
         std::lock_guard service_lock(service_mutex_);
+        release_channels({}, true);
         for (;;) {
             DeferredClose close;
             {
@@ -211,15 +271,62 @@ public:
     }
 
 private:
+    struct RetiredChannel {
+        std::shared_ptr<DatagramChannel> channel;
+        std::chrono::steady_clock::time_point deadline {};
+    };
+
+    [[nodiscard]] bool start_worker_locked() noexcept
+    {
+        if (!worker_.joinable()) {
+            try {
+                worker_ = std::thread([this] {
+                    run();
+                });
+            } catch (...) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void release_channels(
+        std::chrono::steady_clock::time_point now, bool all) noexcept
+    {
+        for (std::size_t i = 0; i < retired_channels_.size(); ++i) {
+            std::shared_ptr<DatagramChannel> channel;
+            {
+                std::lock_guard lock(mutex_);
+                auto& entry = retired_channels_[i];
+                if (entry.channel != nullptr
+                    && (all || now >= entry.deadline)) {
+                    channel = std::move(entry.channel);
+                    --retired_channel_count_;
+                }
+            }
+            // Channel teardown may await scheduler work; never hold the
+            // admission mutex while dropping the final native socket owner.
+            channel.reset();
+        }
+    }
+
     void run() noexcept
     {
         std::unique_lock lock(mutex_);
         while (!stopping_) {
-            if (closes_.empty()) {
+            if (closes_.empty() && retired_channel_count_ == 0U) {
                 changed_.wait(lock, [this] {
-                    return stopping_
-                        || !closes_.empty();
+                    return stopping_ || !closes_.empty()
+                        || retired_channel_count_ != 0U;
                 });
+            } else if (closes_.empty()) {
+                auto deadline = std::chrono::steady_clock::time_point::max();
+                for (const auto& entry : retired_channels_) {
+                    if (entry.channel != nullptr) {
+                        deadline = std::min(deadline, entry.deadline);
+                    }
+                }
+                changed_.wait_until(lock, deadline);
             } else {
                 (void)changed_.wait_for(
                     lock, deferred_close_poll_interval,
@@ -239,9 +346,12 @@ private:
     std::mutex service_mutex_;
     std::condition_variable changed_;
     std::vector<DeferredClose> closes_;
+    std::array<RetiredChannel, maximum_retired_channels> retired_channels_ {};
+    std::size_t retired_channel_count_ = 0;
     std::thread worker_;
     bool accepting_ = true;
     bool stopping_ = false;
+    std::uint64_t generation_ = 1;
 };
 
 DeferredCloseManager& deferred_close_manager()
@@ -250,10 +360,22 @@ DeferredCloseManager& deferred_close_manager()
     return manager.get();
 }
 
+void retire_idle_channel(const std::shared_ptr<DatagramChannel>& channel,
+    std::chrono::steady_clock::time_point deadline,
+    std::uint64_t generation) noexcept
+{
+    (void)deferred_close_manager().retain_channel(
+        channel, deadline, generation);
+}
+
 void shutdown_record(
     const std::shared_ptr<SocketRecord>& record,
     bool honor_linger, bool broken_connection) noexcept
 {
+    // Capture before moving ownership out of the record. Cleanup invalidates
+    // this admission even if an in-flight close finishes after the next start.
+    const auto close_generation =
+        deferred_close_manager().admission_generation();
     std::shared_ptr<DatagramChannel> channel;
     std::shared_ptr<ConnectionRuntime> runtime;
     std::shared_ptr<CryptoSession> crypto;
@@ -364,13 +486,15 @@ void shutdown_record(
         && linger_seconds > 0
         && !runtime->wait_for_send_drain(
             std::chrono::milliseconds{0})) {
-        DeferredClose close{
+        DeferredClose close {
             .record = record,
             .channel = channel,
             .runtime = runtime,
             .protocol_socket_id = protocol_socket_id,
             .deadline = std::chrono::steady_clock::now()
-                + std::chrono::seconds{linger_seconds},
+                + std::chrono::seconds {linger_seconds},
+            .retire_idle_channel = broken_connection,
+            .close_generation = close_generation,
         };
         if (deferred_close_manager().schedule(close)) {
             ReadinessSignal::notify();
@@ -382,6 +506,8 @@ void shutdown_record(
         .channel = std::move(channel),
         .runtime = std::move(runtime),
         .protocol_socket_id = protocol_socket_id,
+        .retire_idle_channel = broken_connection,
+        .close_generation = close_generation,
     });
 }
 
@@ -593,6 +719,11 @@ std::size_t service_deferred_closes(
     std::chrono::steady_clock::time_point now) noexcept
 {
     return deferred_close_manager().service(now);
+}
+
+std::size_t retired_datagram_channels_for_testing() noexcept
+{
+    return deferred_close_manager().retired_channel_count();
 }
 
 RuntimeCallbackScope::RuntimeCallbackScope() noexcept

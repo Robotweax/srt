@@ -4004,6 +4004,9 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         && now - last_peer_activity_microseconds_
             > peer_idle_timeout_microseconds_) {
         notify_idle_expiry_locked(now);
+        idle_retirement_deadline_ = Clock::now()
+            + std::chrono::microseconds {std::min<std::uint64_t>(
+                peer_idle_timeout_microseconds_, 30'000'000U)};
         break_locked(0);
         return {};
     }
@@ -4550,6 +4553,13 @@ bool ConnectionRuntime::terminal() const noexcept
 {
     std::lock_guard lock(mutex_);
     return broken_ || peer_closed_;
+}
+
+std::optional<ConnectionRuntime::Clock::time_point>
+ConnectionRuntime::idle_retirement_deadline() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    return idle_retirement_deadline_;
 }
 
 bool ConnectionRuntime::has_received_data() const noexcept
