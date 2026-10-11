@@ -63,6 +63,7 @@ struct ListenerConnectionSetupRuntimeState {
     PacketFilterConfiguration packet_filter {};
     StreamId peer_stream_id {};
     GroupMembership peer_group_membership {};
+    StandbyRttIdentity standby_rtt_identity {};
     std::uint32_t peer_flow_window = 0;
     bool has_peer_extension_parameters = false;
     bool has_peer_stream_id = false;

@@ -85,7 +85,12 @@ StandbyRttDecodeResult decode_standby_rtt_datagram(
     const auto packet = decode_packet(datagram);
     if (!packet)
         return {.error = packet.error};
-    const auto& p = packet.packet;
+    return decode_standby_rtt_packet(packet.packet);
+}
+StandbyRttDecodeResult decode_standby_rtt_packet(const PacketView& p) noexcept
+{
+    if (p.payload.size() != 48)
+        return {.error = Error::invalid_control_payload};
     if (p.kind != PacketKind::control
         || p.control.type != ControlType::user_defined
         || p.control.subtype != standby_rtt_subtype

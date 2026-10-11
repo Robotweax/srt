@@ -3,6 +3,7 @@
 #pragma once
 
 #include "srt/srt.h"
+#include "robotweax/srt/standby_rtt.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -30,6 +31,8 @@ enum class HandleSpace : std::uint8_t {
 // happens there rather than on a runtime worker thread. Returns false if the
 // random source failed; a later call retries.
 bool prepare_random_identity() noexcept;
+[[nodiscard]] std::optional<StandbyRttNonce>
+random_standby_rtt_nonce() noexcept;
 
 // Returns the handle base at allocation position `index` and advances
 // `index` past it. The mapping is a keyed permutation of the 30-bit space:

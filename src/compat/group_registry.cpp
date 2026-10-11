@@ -480,6 +480,7 @@ int GroupRegistry::get_io_option(
     SRTSOCKET first_member_handle = SRT_INVALID_SOCK;
     const bool group_owned = option == SRTO_SNDSYN || option == SRTO_RCVSYN
         || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO
+        || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
         || option == SRTO_ROBOTWEAX_PATHID_REQUIRED;
     {
         std::lock_guard lock(record->mutex);
@@ -556,6 +557,7 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
     std::vector<std::pair<SRTSOCKET, std::shared_ptr<SocketRecord>>> members;
     const bool group_owned = option == SRTO_SNDSYN || option == SRTO_RCVSYN
         || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO
+        || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
         || option == SRTO_ROBOTWEAX_PATHID_REQUIRED;
     {
         std::lock_guard lock(record->mutex);
@@ -563,7 +565,14 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
             set_last_error(SRT_EINVSOCK);
             return SRT_ERROR;
         }
-        if (option == SRTO_ROBOTWEAX_PATHID_REQUIRED && record->opened) {
+        if (option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+            && record->type != SRT_GTYPE_BACKUP) {
+            set_last_error(SRT_EINVOP);
+            return SRT_ERROR;
+        }
+        if ((option == SRTO_ROBOTWEAX_PATHID_REQUIRED
+                || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED)
+            && record->opened) {
             set_last_error(SRT_ECONNSOCK);
             return SRT_ERROR;
         }
@@ -798,7 +807,9 @@ bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
                 // authorization domains on the same listener or bond.
                 if (record->admission_domain != admission_domain
                     || record->member_public_options.path_identifier_required
-                        != listener_public_options.path_identifier_required)
+                        != listener_public_options.path_identifier_required
+                    || record->member_public_options.standby_rtt_required
+                        != listener_public_options.standby_rtt_required)
                     return false;
                 // The handshake carries the sender's next packet sequence.
                 // The mirror cursor advances when the application receives,

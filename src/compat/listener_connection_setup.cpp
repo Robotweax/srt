@@ -204,6 +204,7 @@ ListenerConnectionSetupSteps::runtime_state() const noexcept
     ListenerConnectionSetupRuntimeState result {
         .error = Error::none,
         .packet_filter = hsv5_.negotiated_packet_filter(),
+        .standby_rtt_identity = hsv5_.standby_rtt_identity(),
         .peer_flow_window = hsv5_.peer_flow_window(),
         .has_peer_extension_parameters = hsv5_.has_peer_extension_parameters(),
         .has_peer_stream_id = hsv5_.has_peer_stream_id(),

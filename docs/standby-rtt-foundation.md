@@ -1,18 +1,26 @@
 # Experimental standby RTT protocol foundation
 
-This source-tree foundation contains a bilateral handshake identity, a bounded
-request/echo codec and a serialized measurement state machine. It is not an
-enabled public socket feature: there is no socket option, runtime producer,
-receive handler or public measurement getter in this stage. Ordinary compatible
-sockets keep the feature disabled and reject a required measurement offer with
-the existing Group rejection reason. The internal C++ interfaces are not
-installed or covered by the public C ABI.
+The development branch provides explicitly enabled standby RTT monitoring for
+Robotweax-to-Robotweax Backup Live Message groups using Caller/Listener with
+both TSBPD directions. The default is disabled. File, Broadcast, Rendezvous and
+Striping are unsupported. Enabled reference-provider interoperability and WAN
+behavior have not been qualified. This feature is absent from published v0.2.8
+artifacts; discover the optional C API from the exact selected library.
 
-The intended first profile is Robotweax-to-Robotweax Backup Live Caller/Listener
-with both TSBPD directions. File, Broadcast, Rendezvous and Striping are outside
-this foundation's handshake configuration. Enabled reference-provider
-interoperability has not been qualified. Existing RTT V1, `msRTT`, DATA/ACK
-cursors, RTT/NAK/RTO, KeepAlive, idle and group send authority are unchanged.
+Set `SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED` (`0x01000008`, bool) before connecting
+the caller Backup group and before listening on the listener, which also needs
+`SRTO_GROUPCONNECT=true`. Ordinary callers and listeners without group admission
+cannot enable the profile at setup. Both peers must enable it; missing or
+unsolicited support fails with `SRT_REJ_GROUP`, with no automatic discovery or
+silent downgrade. Group and endpoint templates carry the option to new members.
+It cannot change after setup or in a listen callback. Disabling TSBPD/Message
+mode or selecting a different transport/congestion profile while it is required
+fails rather than leaving an ineffective option.
+
+Existing RTT V1, `msRTT`, DATA/ACK cursors, RTT/NAK/RTO, KeepAlive, idle and group
+send authority are unchanged. The separate measurement does not establish DATA
+health, select a sender or replace the existing recovery DATA probe. Internal
+C++ interfaces remain uninstalled and outside the stable public C ABI.
 
 ## Bilateral handshake identity
 
@@ -20,8 +28,9 @@ cursors, RTT/NAK/RTO, KeepAlive, idle and group send authority are unchanged.
 Enabling it requires a nonzero local 128-bit nonce supplied by the transport
 owner from its cryptographic random source. The caller must be a Backup group;
 the listener must have a group negotiator. Both require Live Message mode and
-both TSBPD flags. The owner must generate a fresh nonce for every new member
-connection and must not reuse an identity after reconnect.
+both TSBPD flags. The native transport draws a fresh nonce for every new member from its existing
+cryptographically seeded identity generator, failing closed if randomness is
+unavailable. Reconnect does not reuse the negotiated identity.
 
 The experimental configuration extension is `0x7f12`, advertised under the
 existing configuration category bit. Its exact 40-byte content is:
@@ -102,23 +111,30 @@ read before the last sample reports unavailable age.
 `pause()` cancels an open probe when the member becomes active, a DATA probe or
 otherwise ineligible. `terminate()` stops requests and replies while retaining
 the sample for a still readable terminal handle. Reconfiguration clears the
-sample history. Runtime close/cleanup and the passive channel-retirement path
-must call the corresponding cancellation boundary when integrated later.
+sample history. The runtime cancels pending measurement at BROKEN, peer shutdown/error and
+explicit close. Passive UDP retirement owns no measurement runtime. Cleanup
+invalidates admission generations; delayed work cannot claim a replacement lease.
 
 `StandbyRttBudget` is a fixed 256-slot admission table with generation-bearing
 leases. Round-robin grants visit at most 256 slots. Request and echo grants are
 separately spaced by at least 31,250 microseconds (32/s, burst one); the member
-responder additionally permits at most one echo per second. A future runtime
-owner must maintain one serialized process-wide budget and set only due,
-eligible members ready. No grant requires allocation, new threads or catch-up
+responder additionally permits at most one echo per second. The runtime uses one serialized process-wide budget and marks only due,
+eligible members ready. The next fair lease is reserved for its polling owner;
+a delayed claim also advances the claim interval, preventing a catch-up burst. No grant requires allocation, new threads or catch-up
 work. Release/clear invalidate old leases without recycling serials or
 replenishing send tokens. Budget denial is local resource pressure, not loss.
 
 The compiled macOS arm64 layouts are 160 bytes per measurement and 2,336 bytes
 per budget. Compile-time ceilings are 256 and 4,096 bytes respectively. These
 numbers cover these objects, not total Runtime/Handshake/channel memory or
-network performance. Actual runtime fairness, flood handling and system
-cleanup still need integration qualification.
+network performance. The runtime additionally bounds each admitted member state to 256 bytes and
+the process service to 4,096 bytes, excluding allocator/ownership overhead and
+the pre-existing Runtime/Handshake/channel state. Its service is dormant until
+needed and adds no threads, queues or per-member timer owner. A retained terminal
+runtime keeps its admission slot until destruction, so terminal history cannot
+bypass the 256-state memory bound. Capacity exhaustion preserves the connection
+but disables both request and echo work; the public snapshot reports it. The
+slot becomes available after the retained handle/runtime is closed and retired.
 
 ## Evidence and integration boundary
 
@@ -132,8 +148,56 @@ Deterministic tests use serialized packet bytes, injected monotonic times and
 send outcomes. They cover malformed and duplicate extensions, negotiation
 mismatch/replay, equal IDs in both directions, fast echo/completion ordering,
 backpressure, old generations, deadline caps, retained sample age, overflow,
-responder limits and full admission/fairness/reuse. These are protocol-core
-tests, not an enabled socket, WAN, authenticated-control or reference-provider
-qualification. Follow-up work must connect this foundation to native routing,
-one process budget, unchanged KeepAlive/idle bookkeeping, cancellation and a
-separately versioned optional snapshot, then run matched Group regression.
+responder limits and full admission/fairness/reuse. The native runtime tests additionally cover the isolated receive path, endpoint
+and destination admission, native send acceptance, backpressure, DATA/authority
+pauses, request floods, process fairness/capacity, unchanged idle expiry, retained
+history and handshake replay. Checked local group connections cover bilateral
+activation and one-sided rejection; these are loopback tests, not WAN or matched
+Network Lab qualification. Encryption/session-authentication profiles do not
+turn the new control into authenticated traffic.
+
+## Native measurement and snapshot
+
+A request bypasses the production send FIFO and consumes an existing channel
+send-attempt slot. Contention on the channel send lock also skips monitoring
+without waiting for that lock. Its local timing begins immediately after successful native
+UDP acceptance, not preparation or enqueue. Backpressure or a transient native
+failure skips it without queuing/retrying; hard failures follow normal terminal
+connection handling. The receive time is captured after native UDP receive,
+before decoding, route lookup and runtime lock waiting. Both directions use
+only their own local monotonic times; packet timestamps are not RTT evidence.
+
+Requests pause for the selected sender, the pending recovery DATA probe, queued
+or unacknowledged outbound DATA, pending native FIFO work, and one second after
+accepted inbound or sent outbound DATA. Group metadata is checked with a short
+nonblocking lock attempt: contention skips/cancels monitoring rather than
+introducing a reverse lock wait or holding metadata over native I/O. Echo replies
+remain bounded independently, never enter the FIFO and stop at the unchanged
+local idle deadline or terminal boundary. Neither request, reply nor reception
+refreshes liveness, statistics, RTT estimators or group authority.
+
+Call `robotweax_srt_standby_rtt_data_v1` on a member handle with a caller-owned
+`ROBOTWEAX_SRT_STANDBY_RTTDATA_V1`. Initialize `struct_size=sizeof(snapshot)` and
+`abi_version=1`; supply the actual writable capacity. V1 is 48 bytes, reserved
+words are zero and a larger buffer's tail is untouched. Invalid size/version/
+null output fails with `SRT_EINVPARAM` without changing output. Unconnected or
+CONNECTED-before-runtime-publication states return `SRT_ENOCONN`, closing
+`SRT_ECONNLOST`, invalid/closed/group handles `SRT_EINVSOCK`. Connected and retained
+BROKEN members are readable until their public close.
+
+The flags are `NEGOTIATED`, `ADMITTED`, `OBSERVED`, `FRESH` and `TERMINAL`.
+`ADMITTED` records admission, including retained terminal state. Disabled
+connections have no flags or samples. A negotiated connection without a slot
+reports only `NEGOTIATED` (plus `TERMINAL` when applicable) and outcome `CAPACITY`.
+`rtt_microseconds` is a positive measured round trip, not a smoothed estimator;
+`samples` counts accepted correlations, saturating at `UINT64_MAX`.
+`age_microseconds=UINT64_MAX` means no usable sample age. `FRESH` means local age
+at most three seconds; it is a display freshness rule, not proof of DATA health.
+At 256 eligible members, the 32/s process budget can produce eight-second or
+longer intervals, so honest stale snapshots are expected.
+
+`outcome` reports `NONE`, `PENDING`, `MEASURED`, `TIMEOUT`, `SEND_SKIPPED`, `PAUSED`,
+`ID_EXHAUSTED` or `CAPACITY`. Loss, budget denial, cancellation and terminal
+transition retain the previous measurement and its increasing age; no zero
+measurement or freshness is fabricated. Reads and statistics resets do not
+initiate, reset or refresh probes. A new connection starts a new history.

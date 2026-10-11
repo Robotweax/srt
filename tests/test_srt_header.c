@@ -31,6 +31,11 @@ _Static_assert(SRT_LOGFA_LASTNONE == 63, "logging area bound is ABI");
 _Static_assert(sizeof(SRT_EPOLL_EVENT) == 8, "epoll event layout");
 _Static_assert(
     offsetof(SRT_EPOLL_EVENT, events) == 4, "epoll event member layout");
+_Static_assert(
+    sizeof(ROBOTWEAX_SRT_STANDBY_RTTDATA_V1) == 48, "standby RTT ABI size");
+_Static_assert(
+    offsetof(ROBOTWEAX_SRT_STANDBY_RTTDATA_V1, rtt_microseconds) == 16,
+    "standby RTT offset");
 _Static_assert(sizeof(ROBOTWEAX_SRT_RTTDATA_V1) == 48, "RTT metadata ABI size");
 _Static_assert(
     offsetof(ROBOTWEAX_SRT_RTTDATA_V1, local_ackack_age_microseconds) == 24,
@@ -192,6 +197,7 @@ int main(void)
     (void)&srt_config_add;
     (void)&srt_prepare_endpoint;
     (void)&srt_connect_group;
+    (void)&robotweax_srt_standby_rtt_data_v1;
     (void)&srt_connection_time;
     (void)&srt_setloglevel;
     (void)&srt_addlogfa;

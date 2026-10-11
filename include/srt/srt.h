@@ -177,6 +177,12 @@ typedef enum SRT_SOCKOPT {
      * Endpoint configuration only for groups; never an authorization token.
      */
     SRTO_ROBOTWEAX_PATHID = 0x01000007,
+    /** Bilateral monitoring-only standby RTT (bool, default false).
+     * Set before connect/listen on both peers. Backup Live Message groups,
+     * Caller/Listener with TSBPD only; enabled unsupported peers fail setup.
+     * Does not affect standard RTT, reliability, liveness or group selection.
+     */
+    SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED = 0x01000008,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif
@@ -367,6 +373,33 @@ typedef struct ROBOTWEAX_SRT_RttDataV1_ {
     uint64_t peer_estimate_age_microseconds;
     uint32_t reserved[2];
 } ROBOTWEAX_SRT_RTTDATA_V1;
+
+/* Separate monitoring snapshot; the existing RTT V1 ABI/source is unchanged. */
+#define ROBOTWEAX_SRT_STANDBY_RTT_VERSION 1u
+#define ROBOTWEAX_SRT_STANDBY_RTT_NEGOTIATED 1u
+#define ROBOTWEAX_SRT_STANDBY_RTT_ADMITTED 2u
+#define ROBOTWEAX_SRT_STANDBY_RTT_OBSERVED 4u
+#define ROBOTWEAX_SRT_STANDBY_RTT_FRESH 8u
+#define ROBOTWEAX_SRT_STANDBY_RTT_TERMINAL 16u
+#define ROBOTWEAX_SRT_STANDBY_RTT_NONE 0u
+#define ROBOTWEAX_SRT_STANDBY_RTT_PENDING 1u
+#define ROBOTWEAX_SRT_STANDBY_RTT_MEASURED 2u
+#define ROBOTWEAX_SRT_STANDBY_RTT_TIMEOUT 3u
+#define ROBOTWEAX_SRT_STANDBY_RTT_SEND_SKIPPED 4u
+#define ROBOTWEAX_SRT_STANDBY_RTT_PAUSED 5u
+#define ROBOTWEAX_SRT_STANDBY_RTT_ID_EXHAUSTED 6u
+#define ROBOTWEAX_SRT_STANDBY_RTT_CAPACITY 7u
+
+typedef struct ROBOTWEAX_SRT_StandbyRttDataV1_ {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t flags;
+    uint32_t outcome;
+    uint64_t rtt_microseconds;
+    uint64_t age_microseconds;
+    uint64_t samples;
+    uint32_t reserved[2];
+} ROBOTWEAX_SRT_STANDBY_RTTDATA_V1;
 
 /* Optional observation of the local Backup sender; existing ABI is unchanged. */
 #define ROBOTWEAX_SRT_GROUP_SEND_STATE_VERSION 1u
@@ -1131,6 +1164,19 @@ SRT_API int srt_bistats(
  */
 SRT_API int robotweax_srt_rtt_data_v1(
     SRTSOCKET socket, ROBOTWEAX_SRT_RTTDATA_V1* output, size_t output_size);
+
+/** @brief Copies a separate coherent standby RTT monitoring snapshot.
+ * Initialize struct_size and abi_version (1). Size/version/error rules and
+ * connected/retained BROKEN handle lifetimes match robotweax_srt_rtt_data_v1.
+ * Only sizeof(V1) bytes are written. AGE_UNAVAILABLE means no measurement.
+ * NEGOTIATED without ADMITTED reports bounded capacity exhaustion; disabled
+ * connections have neither flag. FRESH means local sample age <=3 seconds.
+ * Terminal handles retain aging samples, without sending or answering probes.
+ * This control is not authenticated by DATA encryption or session auth; a
+ * correlated echo does not prove DATA health or establish send authority.
+ */
+SRT_API int robotweax_srt_standby_rtt_data_v1(SRTSOCKET socket,
+    ROBOTWEAX_SRT_STANDBY_RTTDATA_V1* output, size_t output_size);
 
 /** @brief Observes the local Backup group's selected sender and pending probe.
  * Initialize struct_size and abi_version (1); both declared and supplied size

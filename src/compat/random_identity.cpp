@@ -177,6 +177,19 @@ private:
 
 } // namespace
 
+std::optional<StandbyRttNonce> random_standby_rtt_nonce() noexcept
+{
+    StandbyRttNonce nonce {};
+    for (std::size_t offset = 0; offset < nonce.size(); offset += 4) {
+        const auto word = IdentityGenerator::instance().next_word();
+        if (!word)
+            return {};
+        for (std::size_t i = 0; i < 4; ++i)
+            nonce[offset + i] = static_cast<std::byte>(*word >> (24 - i * 8));
+    }
+    return valid_standby_rtt_nonce(nonce) ? std::optional {nonce}
+                                          : std::nullopt;
+}
 bool prepare_random_identity() noexcept
 {
     return IdentityGenerator::instance().prepare();

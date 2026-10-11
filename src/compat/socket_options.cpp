@@ -123,6 +123,7 @@ template <typename Value>
 #endif
         || option == SRTO_KMREFRESHRATE || option == SRTO_KMPREANNOUNCE
         || option == SRTO_ENFORCEDENCRYPTION
+        || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
         || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
         || option == SRTO_ROBOTWEAX_PATHID
         || option == SRTO_ROBOTWEAX_SESSIONAUTH || option == SRTO_CONGESTION
@@ -488,6 +489,8 @@ int get_socket_option(
             static_cast<std::int32_t>(
                 socket.native_options.get(
                     SocketOption::key_preannouncement_packets).value));
+    case SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED:
+        return write_value(value, value_size, options.standby_rtt_required);
     case SRTO_ROBOTWEAX_PATHID_REQUIRED:
         return write_value(value, value_size, options.path_identifier_required);
     case SRTO_ROBOTWEAX_PATHID: {
@@ -778,7 +781,9 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     }
     case SRTO_TSBPDMODE: {
         bool parsed = false;
-        if (!read_boolean(value, value_size, parsed)) return invalid_parameter();
+        if (!read_boolean(value, value_size, parsed)
+            || (!parsed && options.standby_rtt_required))
+            return invalid_parameter();
         if (set_native(socket.native_options, SocketOption::tsbpd_mode,
                 parsed ? 1 : 0)
             == SRT_ERROR) {
@@ -986,7 +991,8 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     }
     case SRTO_MESSAGEAPI: {
         bool parsed = false;
-        if (!read_boolean(value, value_size, parsed)) {
+        if (!read_boolean(value, value_size, parsed)
+            || (!parsed && options.standby_rtt_required)) {
             return invalid_parameter();
         }
         if (set_native(socket.native_options,
@@ -1012,6 +1018,15 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         const std::string_view name{
             static_cast<const char*>(value),
             static_cast<std::size_t>(value_size)};
+        if (options.standby_rtt_required) {
+            SocketOptions selected = socket.native_options;
+            if (selected.set_congestion_controller(name) != Error::none
+                || selected.congestion_controller()
+                    != CongestionController::live)
+                return invalid_parameter();
+            socket.native_options = selected;
+            return 0;
+        }
         if (socket.native_options
                 .set_congestion_controller(name)
             != Error::none) {
@@ -1039,7 +1054,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                 && parsed != static_cast<std::int32_t>(SRTT_CONTROL))) {
             return invalid_parameter();
         }
-        if (options.path_identifier_required
+        if ((options.path_identifier_required || options.standby_rtt_required)
             && parsed != static_cast<std::int32_t>(SRTT_LIVE))
             return invalid_parameter();
         SocketOptions selected = socket.native_options;
@@ -1160,7 +1175,9 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         if (!read_boolean(value, value_size, parsed)) {
             return invalid_parameter();
         }
-        if (parsed && options.path_identifier_required)
+        if (parsed
+            && (options.path_identifier_required
+                || options.standby_rtt_required))
             return invalid_parameter();
         if (set_native(socket.native_options,
                 SocketOption::rendezvous, parsed ? 1 : 0)
@@ -1217,6 +1234,20 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             || !read_value(value, value_size, domain) || domain == 0)
             return invalid_parameter();
         socket.incoming_group_domain = domain;
+        return 0;
+    }
+    case SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED: {
+        bool parsed = false;
+        if ((socket.state != SRTS_INIT && socket.state != SRTS_OPENED)
+            || socket.listen_callback_active
+            || !read_boolean(value, value_size, parsed)
+            || (parsed
+                && (options.rendezvous || options.transmission_type != SRTT_LIVE
+                    || !options.message_api || !options.tsbpd_mode
+                    || socket.native_options.congestion_controller()
+                        != CongestionController::live)))
+            return invalid_parameter();
+        options.standby_rtt_required = parsed;
         return 0;
     }
     case SRTO_ROBOTWEAX_PATHID_REQUIRED: {

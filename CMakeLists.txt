@@ -115,6 +115,7 @@ add_library(robotweax_srt
     src/compat/statistics.cpp
     src/compat/srt_api.cpp
     src/compat/transport_runtime.cpp
+    src/compat/standby_rtt_service.cpp
     src/control.cpp
     src/connection_group.cpp
     src/codec.cpp
@@ -376,6 +377,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_compat_epoll.cpp
         tests/test_compat_groups.cpp
         tests/test_compat_runtime.cpp
+        tests/test_standby_rtt_runtime.cpp
         tests/test_compat_message_attempts.cpp)
     target_compile_definitions(robotweax_srt_tests PRIVATE
         ROBOTWEAX_SRT_EXPECT_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
