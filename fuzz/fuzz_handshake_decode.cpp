@@ -1,13 +1,20 @@
 #include "robotweax/srt/handshake.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
+#include "robotweax/srt/handshake_datagram.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
-extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
+extern "C" int LLVMFuzzerTestOneInput(
+    const std::uint8_t* data, std::size_t size)
 {
-    const auto input = std::as_bytes(std::span{data, size});
+    const auto input = std::as_bytes(std::span {data, size});
+    (void)robotweax::srt::decode_handshake_datagram(input);
+    (void)robotweax::srt::decode_standby_rtt_identity({
+        .type = robotweax::srt::HandshakeExtensionType::standby_rtt,
+        .content = input,
+    });
     const auto decoded = robotweax::srt::decode_handshake_payload(input);
     if (decoded) {
         std::byte output[robotweax::srt::handshake_size];
@@ -21,8 +28,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             if (extension.extension.type
                     == robotweax::srt::HandshakeExtensionType::handshake_request
                 || extension.extension.type
-                    == robotweax::srt::HandshakeExtensionType::handshake_response) {
-                (void)robotweax::srt::decode_handshake_parameters(extension.extension);
+                    == robotweax::srt::HandshakeExtensionType::
+                        handshake_response) {
+                (void)robotweax::srt::decode_handshake_parameters(
+                    extension.extension);
             }
             extensions = extensions.subspan(extension.bytes_consumed);
         }

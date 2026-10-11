@@ -52,7 +52,9 @@ void write_u32(std::byte* bytes, std::uint32_t value) noexcept
         == static_cast<std::uint16_t>(
             HandshakeExtensionType::session_authentication)
         || type
-        == static_cast<std::uint16_t>(HandshakeExtensionType::path_identifier);
+        == static_cast<std::uint16_t>(HandshakeExtensionType::path_identifier)
+        || type
+        == static_cast<std::uint16_t>(HandshakeExtensionType::standby_rtt);
 }
 
 } // namespace
