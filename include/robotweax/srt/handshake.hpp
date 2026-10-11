@@ -6,6 +6,7 @@
 #include "robotweax/srt/handshake_extensions.hpp"
 #include "robotweax/srt/packet_filter.hpp"
 #include "robotweax/srt/sequence.hpp"
+#include "robotweax/srt/standby_rtt.hpp"
 
 #include <array>
 #include <cstddef>
@@ -131,6 +132,8 @@ struct HandshakeAction {
     SessionAuthenticationParameters session_authentication {};
     bool has_path_identifier = false;
     PathIdentifier path_identifier {};
+    bool has_standby_rtt = false;
+    StandbyRttIdentity standby_rtt {};
 };
 
 struct HandshakeActions {
@@ -175,6 +178,8 @@ struct HandshakeMessage {
     SessionAuthenticationParameters session_authentication {};
     bool has_path_identifier = false;
     PathIdentifier path_identifier {};
+    bool has_standby_rtt = false;
+    StandbyRttIdentity standby_rtt {};
 };
 
 using GroupMembershipNegotiator = bool (*)(
@@ -221,6 +226,8 @@ public:
         SessionAuthenticationParameters session_authentication_confirmation {};
         bool require_path_identifier = false;
         PathIdentifier path_identifier {};
+        bool require_standby_rtt = false;
+        StandbyRttNonce standby_rtt_nonce {};
     };
 
     explicit HandshakeMachine(Configuration configuration) noexcept;
@@ -285,6 +292,11 @@ public:
     {
         return session_confirmation_;
     }
+    [[nodiscard]] const StandbyRttIdentity&
+    standby_rtt_identity() const noexcept
+    {
+        return standby_rtt_identity_;
+    }
     [[nodiscard]] HandshakeActions start() noexcept;
     [[nodiscard]] Error set_key_material_request(
         const KeyMaterialBuffer& request,
@@ -301,7 +313,9 @@ private:
     [[nodiscard]] HandshakeActions reject_locally(
         int rejection_reason) noexcept;
 
+    [[nodiscard]] bool valid_standby_rtt_configuration() const noexcept;
     Configuration configuration_;
+    StandbyRttIdentity standby_rtt_identity_ {};
     HandshakeAction session_challenge_ {}, session_confirmation_ {};
     HandshakeState state_ = HandshakeState::idle;
     std::uint32_t peer_socket_id_ = 0;

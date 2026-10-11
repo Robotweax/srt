@@ -68,6 +68,8 @@ and are not a source- or binary-compatibility contract.
 - [Reliable control-message profile](control-profile.md)
 - [Rendezvous](rendezvous.md)
 - [Connection groups and bonding](connection-groups.md)
+- [Experimental standby RTT foundation](standby-rtt-foundation.md) — internal
+  bilateral codec and measurement state, preceding runtime/socket activation.
 - [Optional group path identifiers](group-path-identifiers.md) — development-branch
   bilateral labels, versioned metadata and reconnect scope.
 - [Packet-filter FEC](packet-filter.md)

@@ -26,6 +26,7 @@ namespace {
     case HandshakeExtensionType::packet_filter:
     case HandshakeExtensionType::session_authentication:
     case HandshakeExtensionType::path_identifier:
+    case HandshakeExtensionType::standby_rtt:
     case HandshakeExtensionType::group:
         return (flags & handshake_extension_flag_config) != 0U;
     }
@@ -191,6 +192,16 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
                 return {.error = identifier.error};
             message.has_path_identifier = true;
             message.path_identifier = identifier.identifier;
+        } else if (decoded.extension.type
+            == HandshakeExtensionType::standby_rtt) {
+            if (message.has_standby_rtt)
+                return {.error = Error::invalid_extension};
+            const auto identity =
+                decode_standby_rtt_identity(decoded.extension);
+            if (!identity)
+                return {.error = identity.error};
+            message.has_standby_rtt = true;
+            message.standby_rtt = identity.identity;
         } else {
             message.has_unknown_extension = true;
         }
@@ -259,8 +270,12 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
         + (action.has_session_authentication
                 ? extension_header_size + session_authentication_wire_size
                 : 0U);
-    const std::size_t total_required = required + path_extension_size;
-    if (action.has_path_identifier
+    const std::size_t measurement_extension_size = action.has_standby_rtt
+        ? extension_header_size + standby_rtt_extension_size
+        : 0U;
+    const std::size_t total_required =
+        required + path_extension_size + measurement_extension_size;
+    if ((action.has_path_identifier || action.has_standby_rtt)
         && (action.packet.maximum_transmission_unit < 48U
             || total_required > action.packet.maximum_transmission_unit - 48U))
         return {.error = Error::buffer_too_small};
@@ -418,6 +433,16 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
             return {.error = Error::invalid_extension};
         const auto extension = encode_path_identifier(action.path_identifier,
             destination.subspan(required, path_extension_size));
+        if (!extension)
+            return {.error = extension.error};
+    }
+    if (action.has_standby_rtt) {
+        if ((action.packet.extension_field & handshake_extension_flag_config)
+            == 0U)
+            return {.error = Error::invalid_extension};
+        const auto extension = encode_standby_rtt_identity(action.standby_rtt,
+            destination.subspan(
+                required + path_extension_size, measurement_extension_size));
         if (!extension)
             return {.error = extension.error};
     }

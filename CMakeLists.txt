@@ -132,6 +132,7 @@ add_library(robotweax_srt
     src/reliability.cpp
     src/rendezvous.cpp
     src/rtt.cpp
+    src/standby_rtt.cpp
     src/send_buffer.cpp
     src/session.cpp
     src/socket_options.cpp
@@ -344,6 +345,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_handshake_datagram.cpp
         tests/test_handshake_extensions.cpp
         tests/test_path_identifier.cpp
+        tests/test_standby_rtt.cpp
         tests/test_listener_accept_queue.cpp
         tests/test_listener_connection_setup.cpp
         tests/test_listener_connection_setup_sources.cpp
