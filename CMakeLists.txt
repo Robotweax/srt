@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(robotweax_srt VERSION 0.2.8 LANGUAGES C CXX)
+project(robotweax_srt VERSION 0.2.9 LANGUAGES C CXX)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
@@ -1905,14 +1905,14 @@ endif()
 
 if(ROBOTWEAX_SRT_BUILD_TESTS)
     find_program(ROBOTWEAX_SRT_PKG_CONFIG_EXECUTABLE pkg-config)
-    # Published version snapshots remain frozen. Development additions have an
-    # exact export snapshot; the contract harness verifies the historical set
-    # is retained and that only the declared versioned getter was added.
+    # Published version snapshots remain frozen. The selected release snapshot
+    # verifies exact exports; the contract harness retains the historical set
+    # and permits only the declared versioned observation getters.
     add_test(
         NAME robotweax_srt_abi_baseline_tests
         COMMAND ${CMAKE_COMMAND} -E compare_files
             ${ROBOTWEAX_SRT_PUBLIC_SYMBOLS_FILE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/abi/robotweax-srt-development.txt)
+            ${ROBOTWEAX_SRT_ABI_BASELINE_FILE})
     set_tests_properties(
         robotweax_srt_abi_baseline_tests
         PROPERTIES LABELS "abi;package")
