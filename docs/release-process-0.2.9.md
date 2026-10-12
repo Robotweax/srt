@@ -24,7 +24,7 @@ Frozen product source: `80873657469344becb9c35f5306d0050ec5a566d`.
 Downloaded GitHub archive SHA-256:
 `16753663e52f77e9795b462927147b1d47ac48719d7a4d7fb10cd1db28f80c1b`.
 All 608 regular files and executable bits match Git.
-[Package acceptance record](https://github.com/Robotweax/srt/blob/dev/release-0.2.9-preparation/packaging/qualification-0.2.9.md)
+[Package acceptance record](https://github.com/Robotweax/srt/blob/f7b33bc2a9deaf69ecf4a0711608c7235ed781ae/packaging/qualification-0.2.9.md)
 separates this verified source identity from pending recipe/run acceptance.
 
 Freeze the product/version commit before recipe qualification. Download that

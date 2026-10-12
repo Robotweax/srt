@@ -18,6 +18,10 @@ changes require a new pin and repeated package qualification. Preserve
 `src`, `include`, `cmake`, `compat` and `CMakeLists.txt` relative to this source.
 Previous-release results do not qualify this candidate.
 
+Recipe commit: `f7b33bc2a9deaf69ecf4a0711608c7235ed781ae`. Later acceptance/link records preserve
+the frozen product and executable recipe inputs; exact final CI heads must
+still be recorded independently.
+
 ## Local candidate verification
 
 The frozen product passed macOS arm64 static Debug CTest **73/73** and shared
