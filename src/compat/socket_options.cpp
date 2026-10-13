@@ -383,6 +383,13 @@ int get_socket_option(
     case SRTO_PEERVERSION:
         return write_value(value, value_size,
             static_cast<std::int32_t>(socket.peer_srt_version));
+    case SRTO_ROBOTWEAX_PEER_HANDSHAKE: {
+        auto snapshot = socket.listen_callback_active
+            ? socket.incoming_peer_handshake
+            : ROBOTWEAX_SRT_PEER_HANDSHAKE_V1 {};
+        snapshot.abi_version = ROBOTWEAX_SRT_PEER_HANDSHAKE_VERSION;
+        return write_value(value, value_size, snapshot);
+    }
     case SRTO_ROBOTWEAX_PEERGROUP:
         return write_value(value, value_size,
             socket.listen_callback_active ? socket.incoming_peer_group
@@ -1293,6 +1300,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     case SRTO_VERSION:
     case SRTO_PEERVERSION:
     case SRTO_GROUPTYPE:
+    case SRTO_ROBOTWEAX_PEER_HANDSHAKE:
     case SRTO_KMSTATE:
     case SRTO_SNDKMSTATE:
     case SRTO_RCVKMSTATE:

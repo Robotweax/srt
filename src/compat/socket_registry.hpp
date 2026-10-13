@@ -86,6 +86,8 @@ struct SocketRecord {
     bool has_connected_local_endpoint = false;
     bool has_peer_endpoint = false;
     bool listen_callback_active = false;
+    // Raw HSREQ admission observation; never inherited from listener options.
+    ROBOTWEAX_SRT_PEER_HANDSHAKE_V1 incoming_peer_handshake {};
     // Valid only while the listener callback is running. This is deliberately
     // separate from group_type, which describes committed membership.
     SRT_GROUP_TYPE incoming_group_type = SRT_GTYPE_UNDEFINED;
