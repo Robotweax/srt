@@ -85,7 +85,7 @@ jobs:
           $pwsh = Join-Path $PSHOME 'pwsh.exe'
           & cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" $arch && `"$pwsh`" -NoProfile -File `"$script`" -Platform $env:SDK_PLATFORM -Configuration $env:SDK_CONFIGURATION -CryptoBackend $env:SDK_CRYPTO_BACKEND"
           if ($LASTEXITCODE -ne 0) { throw 'SDK build failed' }
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: sdk-${{ matrix.backend }}-${{ matrix.configuration }}-${{ matrix.platform }}
           path: output/sdk-${{ matrix.configuration }}-${{ matrix.platform }}/
@@ -148,7 +148,7 @@ jobs:
           if (!(Test-Path "$other/include/srt/srt.h")) { throw 'Reinstalled headers missing' }
           $process = Start-Process -Wait -PassThru "$other/unins000.exe" -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
           if ($process.ExitCode -ne 0) { throw 'Final cleanup failed' }
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-sdk-installer-${{ matrix.backend }}
           path: packaging/windows/Output/*.exe
@@ -254,7 +254,7 @@ jobs:
           . ./packaging/windows/signing.ps1
           $record = Get-SdkInstallerProvenance rebuilt-installers $env:SDK_VERSION $env:GITHUB_SHA $env:GITHUB_RUN_ID
           "json=$($record | ConvertTo-Json -Compress -Depth 5)" >> $env:GITHUB_OUTPUT
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         id: upload
         with:
           name: windows-sdk-rebuilt-installers
@@ -359,7 +359,7 @@ jobs:
       - name: Verify signed bytes remained unchanged after installation tests
         shell: pwsh
         run: ./packaging/windows/verify-signed-installers.ps1 -Installers installers -Version $env:SDK_VERSION -Publisher 'Robotweax GmbH' -RequireManifest
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-sdk-signed-installers
           path: |
