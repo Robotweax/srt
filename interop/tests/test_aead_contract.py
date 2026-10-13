@@ -90,7 +90,7 @@ class AeadContractTests(unittest.TestCase):
                 "platform_abi": True,
             },
         )
-        self.assertEqual(self.manifest["default_api_profile"], "srt-1.5.5")
+        self.assertEqual(self.manifest["default_api_profile"], "srt-1.5.7")
         self.assertFalse(
             self.manifest["public_api"]["enabled_in_default_header"]
         )
