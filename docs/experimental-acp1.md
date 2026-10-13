@@ -40,16 +40,21 @@ admission revalidates final callback settings. Required policy uses strict
 negotiation with no Prefer mode or fallback. ACTIVE remains false during setup,
 in a listener callback, on a listening socket and after failed/terminal setup.
 
-The prototype supports ordinary Caller/Listener sockets, including synchronous
-and asynchronous connection setup. Rendezvous, group handles, group member
-configurations and `SRTO_GROUPCONNECT` reject opt-in. Both setting orders reject
-conflicting Rendezvous/group configuration. ACP1 requires MSS at least 256;
+The prototype supports ordinary Caller/Listener and Rendezvous sockets,
+including synchronous and asynchronous setup. Group handles, group member
+configurations and `SRTO_GROUPCONNECT` still reject opt-in.
+For Rendezvous, enable ACP1 before enabling SESSIONAUTH on an already configured
+Rendezvous socket, or before enabling Rendezvous on a SESSIONAUTH socket.
+SESSIONAUTH alone remains incompatible with Rendezvous. Disabling ACP1 while
+both Rendezvous and SESSIONAUTH are enabled is rejected.
+ACP1 requires MSS at least 256;
 setting either MSS or ACP1 rejects an incompatible existing value. Negotiation
 cannot lower an ACP1 connection below that limit.
 
 With REQUIRED false, standard connections keep their existing API and wire
 behavior, including Haivision 1.5.7 interoperability. SESSIONAUTH alone still
-uses version 2 byte for byte. ACP1 requires version 3 on both peers: version-2
+uses version 2 byte for byte. ACP1 requires version 3 for Caller/Listener or version 4 for Rendezvous on
+both peers: version-2
 SESSIONAUTH peers and stock Haivision peers cannot establish protected
 connections. These strict failures are part of the protection contract.
 Existing exported C functions and `SRTO_E_SIZE` are unchanged. The build gate
@@ -67,9 +72,9 @@ statistics and liveness mutations. Tags do not encrypt control content.
 | ACK, ACKACK, NAK, DROPREQ | Complete original header and payload inside ACP1 envelope |
 | KEEPALIVE, SHUTDOWN, PEERERROR, congestion warning | Same envelope, including normally unused header fields/padding |
 | Runtime KMREQ/KMRSP | Existing session-bound KM counters/tag, additionally inside ACP1 |
-| FEC parity | Existing separate session-bound FEC envelope, with version-3 root/domain |
+| FEC parity | Existing separate session-bound FEC envelope, with the negotiated version-3/4 root/domain |
 | Source DATA | Existing chosen cipher; ACP1 does not change the DATA wire format |
-| Handshake | Existing nonce/socket-ID/role/initial-KM proofs, with version-3 root/domain |
+| Handshake | Existing nonce/socket-ID/role/initial-KM proofs, with the negotiated version-3/4 root/domain |
 
 Nested envelopes, unknown envelope versions and other user-defined runtime
 controls are rejected. New runtime subtypes must receive an explicit coverage
@@ -107,6 +112,27 @@ proof fields are unchanged: both 32-byte nonces, caller/listener socket IDs
 encoded as uint64, sender role, proof domain and initial KM body. An attacker
 cannot change the version to 2 while retaining a valid version-3 proof.
 
+Rendezvous selects **version 4** in the same 100-byte CONFIG record. The
+Initiator occupies the caller nonce/role position, and the Responder occupies
+the listener position; these roles do not imply application DATA direction.
+Version 4 uses `RWSRT-SESSION-4` followed by NUL in the root salt and all
+handshake/KM/FEC MAC domains. Its salt is 112 bytes: the label, the two nonces,
+Initiator and Responder socket IDs as uint64, then Initiator and Responder
+cookies as uint64. Cookies must be nonzero and different. Version 2/3 roots do
+not accept cookie arguments. Version 3 Caller/Listener wire bytes are unchanged.
+
+WAVEAHAND and empty CONCLUSION retain their normal layouts. Once roles resolve,
+the Initiator sends a version-4 nonce offer with HSREQ/KMREQ. The Responder
+returns its nonce and proof with HSRSP/KMRSP. The Initiator verifies that proof
+and sends its own proof in AGREEMENT. The Responder verifies it before becoming
+connected. Retries keep the same nonces and initial KM; modified offers, proof
+reflection, foreign-session proofs and version changes cannot complete setup.
+No DATA or runtime control, even with a valid ACP1 MAC, substitutes for the
+final handshake proof. An asynchronous ACP1 Rendezvous socket publishes
+CONNECTED only after its protected runtime is installed; ACTIVE is then true.
+Lost AGREEMENT is recovered by the Responder's authenticated HSRSP retry and
+the connected Initiator's cached authenticated AGREEMENT.
+
 The 32-byte PBKDF result is used as the pseudorandom key for two single-block
 [HKDF-Expand](https://www.rfc-editor.org/rfc/rfc5869) operations:
 
@@ -116,6 +142,7 @@ K_listener = HMAC-SHA256(root, info16 || uint8(2) || uint8(1))
 info16     = ASCII("RWSRT-ACP1-1") || four zero bytes
 ```
 
+For version 4, `K_caller` means Initiator and `K_listener` means Responder.
 The last byte is the Expand block index. No additional Extract is performed;
 review of using the PBKDF output directly as PRK is explicitly outstanding.
 The direction keys are separate from DATA keys and from the root used by
@@ -188,9 +215,12 @@ byte tampering, reflection/session/profile separation, truncation and packet
 bounds, replay-window edges, forged high counters, provider failures, strict
 legacy rejection, sync/async sockets, CTR/GCM rotations, deferred UDP bytes,
 MSS-bounded sparse NAKs, runtime state/liveness admission and KM retries.
+Rendezvous tests cover cookie binding/profile separation, final-proof loss,
+bare and signed early-packet rejection, bad proofs, both resolved roles,
+IPv4/IPv6, synchronous/asynchronous setup, rotation and unsupported peers.
 The optional fuzz target exercises raw and locally signed envelope inputs under
 ASan/UBSan. OpenSSL/Mbed TLS cross-provider peers exercise bidirectional rotation
-for 16/24/32-byte DATA keys. Windows BCrypt qualification remains CI-dependent.
+for 16/24/32-byte DATA keys in Caller/Listener and Rendezvous modes. Windows BCrypt qualification remains CI-dependent.
 
 These are implementation checks, not independent cryptographic review. Review
 must assess KDF strength/key separation, negotiation/transcript coverage,

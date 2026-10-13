@@ -9,7 +9,7 @@ version returned by `srt_getversion()`.
 - Add an unreviewed ACP1 prototype behind an explicit default-off build gate
   and strict bilateral socket opt-in. Authenticate runtime controls with
   direction-separated keys and bounded replay state; ordinary Caller/Listener
-  sockets only. Existing wire/API defaults remain unchanged. Independent
+  sockets and cookie-bound Rendezvous. Existing wire/API defaults remain unchanged. Independent
   cryptographic review and the supported-profile decision remain outstanding.
 
 - Add default-off experimental peer implementation identity, with bounded

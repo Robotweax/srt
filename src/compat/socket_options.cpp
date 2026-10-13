@@ -548,8 +548,10 @@ int get_socket_option(
                 && socket.crypto != nullptr
                 && socket.crypto->session_authentication() != nullptr
                 && socket.crypto->session_authentication()->ready()
-                && socket.crypto->session_authentication()->parameters().version
-                    == acp1_session_version);
+                && is_acp1_session_version(
+                    socket.crypto->session_authentication()
+                        ->parameters()
+                        .version));
 #else
         return unsupported_option();
 #endif
@@ -1341,7 +1343,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         bool parsed = false;
         if (!read_boolean(value, value_size, parsed)
             || (parsed
-                && (options.group_connect || options.rendezvous
+                && (options.group_connect
                     || socket.group_id != SRT_INVALID_SOCK)))
             return invalid_parameter();
         return set_native(socket.native_options,

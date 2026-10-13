@@ -467,7 +467,7 @@ See [group admission](connection-groups.md) for the complete domain contract.
 ## Experimental ACP1 prototype
 
 A separate default-off [experimental ACP1 build](experimental-acp1.md) adds
-strict session-authentication version 3 and authenticated runtime controls for
-ordinary Caller/Listener sockets. It is unreviewed and outside the supported
+strict session-authentication version 3 for Caller/Listener or version 4 for
+Rendezvous, with authenticated runtime controls. It is unreviewed and outside the supported
 security and Haivision interoperability boundary. SESSIONAUTH alone continues
 to use version 2; ordinary connections retain their existing behavior.

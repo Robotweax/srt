@@ -264,8 +264,8 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         return Error::none;
     case SocketOption::experimental_acp1:
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
-        if (!is_boolean(value)
-            || (value != 0 && (rendezvous_ || maximum_segment_size_ < 256U)))
+        if (!is_boolean(value) || (value != 0 && maximum_segment_size_ < 256U)
+            || (value == 0 && rendezvous_ && session_authentication_))
             return Error::invalid_state;
         experimental_acp1_ = value != 0;
         return Error::none;
@@ -274,7 +274,9 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
 #endif
     case SocketOption::session_authentication:
         if (!is_boolean(value)
-            || (value != 0 && (!enforced_encryption_ || rendezvous_)))
+            || (value != 0
+                && (!enforced_encryption_
+                    || (rendezvous_ && !experimental_acp1_))))
             return Error::invalid_state;
         if (value != 0 && packet_filter_configuration_.enabled
             && maximum_payload_size_limit() <= authenticated_fec_overhead
@@ -286,7 +288,7 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         return Error::none;
     case SocketOption::rendezvous:
         if (!is_boolean(value)
-            || (value != 0 && (session_authentication_ || experimental_acp1_)))
+            || (value != 0 && session_authentication_ && !experimental_acp1_))
             return Error::invalid_state;
         rendezvous_ = value != 0;
         return Error::none;

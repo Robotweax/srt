@@ -75,7 +75,7 @@ Error SessionAuthentication::start(bool caller, std::uint8_t version) noexcept
 {
     if (version != session_authentication_version
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
-        && version != acp1_session_version
+        && !is_acp1_session_version(version)
 #endif
     )
         return Error::invalid_state;
@@ -95,11 +95,16 @@ Error SessionAuthentication::start(bool caller, std::uint8_t version) noexcept
 }
 Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
     const SessionAuthenticationParameters& peer, std::uint32_t local_socket_id,
-    std::uint32_t peer_socket_id) noexcept
+    std::uint32_t peer_socket_id, std::uint32_t local_cookie,
+    std::uint32_t peer_cookie) noexcept
 {
     if (!started_ || ready_ || passphrase.empty() || !local_socket_id
         || !peer_socket_id)
         return Error::invalid_state;
+    if (parameters_.version == acp1_rendezvous_session_version
+            ? (!local_cookie || !peer_cookie || local_cookie == peer_cookie)
+            : (local_cookie != 0 || peer_cookie != 0))
+        return Error::invalid_key_material;
     if (peer.version != parameters_.version)
         return Error::invalid_key_material;
     if (caller_) {
@@ -112,7 +117,7 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
             return Error::invalid_key_material;
         parameters_.caller_nonce = peer.caller_nonce;
     }
-    std::array<std::byte, 96> salt {};
+    std::array<std::byte, 112> salt {};
     std::copy(domain_label.begin(), domain_label.end(), salt.begin());
     salt[14] =
         std::byte {static_cast<unsigned char>('0' + parameters_.version)};
@@ -124,14 +129,22 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
         caller_ ? local_socket_id : peer_socket_id);
     put64(std::span {salt}.subspan<88, 8>(),
         caller_ ? peer_socket_id : local_socket_id);
-    const auto result =
-        provider_.pbkdf2_hmac_sha1(passphrase, salt, 2048, key_);
+    const bool rendezvous =
+        parameters_.version == acp1_rendezvous_session_version;
+    if (rendezvous) {
+        put64(std::span {salt}.subspan<96, 8>(),
+            caller_ ? local_cookie : peer_cookie);
+        put64(std::span {salt}.subspan<104, 8>(),
+            caller_ ? peer_cookie : local_cookie);
+    }
+    const auto result = provider_.pbkdf2_hmac_sha1(passphrase,
+        std::span {salt}.first(rendezvous ? 112U : 96U), 2048, key_);
     if (result != Error::none) {
         provider_.secure_erase(key_);
         return result;
     }
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
-    if (parameters_.version == acp1_session_version) {
+    if (is_acp1_session_version(parameters_.version)) {
         // RFC 5869 single-block Expand, with the session root as PRK.
         std::array<std::byte, 18> info {};
         constexpr char label[] = "RWSRT-ACP1-1";
@@ -359,7 +372,7 @@ bool acp1_control(const PacketView& packet) noexcept
 Error SessionAuthentication::control_mac(bool caller,
     std::span<const std::byte> wire, std::span<std::byte, 32> tag) noexcept
 {
-    if (!ready_ || parameters_.version != acp1_session_version
+    if (!ready_ || !is_acp1_session_version(parameters_.version)
         || wire.size() > 1500U - 32U)
         return Error::invalid_state;
     // Keys already separate session, profile and direction. This domain
@@ -377,7 +390,7 @@ Error SessionAuthentication::seal_control(std::span<const std::byte> packet,
     std::span<std::byte> output, std::size_t& written) noexcept
 {
     written = 0;
-    if (!ready_ || parameters_.version != acp1_session_version
+    if (!ready_ || !is_acp1_session_version(parameters_.version)
         || packet.size() > 1500U - authenticated_control_overhead
         || output.size() < packet.size() + authenticated_control_overhead
         || control_sent_counter_ == std::numeric_limits<std::uint64_t>::max())
@@ -414,7 +427,7 @@ bool SessionAuthentication::open_control(
     const PacketView& envelope, PacketView& packet) noexcept
 {
     packet = {};
-    if (!ready_ || parameters_.version != acp1_session_version
+    if (!ready_ || !is_acp1_session_version(parameters_.version)
         || envelope.kind != PacketKind::control
         || envelope.control.type != ControlType::user_defined
         || envelope.control.subtype != authenticated_control_subtype

@@ -79,6 +79,12 @@ jobs:
           --mbedtls-peer acp1-mbedtls-peer/crypto_session_peer
           --openssl-peer acp1-openssl-peer/crypto_session_peer
           --output acp1-evidence/cross-provider.json
+      - name: ACP1 Rendezvous across providers
+        run: >-
+          python3 interop/run_mbedtls_peers.py --acp1 --rendezvous
+          --mbedtls-peer acp1-mbedtls-peer/crypto_session_peer
+          --openssl-peer acp1-openssl-peer/crypto_session_peer
+          --output acp1-evidence/rendezvous-cross-provider.json
       - name: Sanitized envelope fuzzing
         if: runner.os == 'Linux'
         run: |

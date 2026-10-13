@@ -196,9 +196,10 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
                 || content[2] != std::byte {0}
                 || (content[3] != std::byte {session_authentication_version}
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
-                    && content[3] != std::byte {acp1_session_version}
+                    && !is_acp1_session_version(
+                        std::to_integer<std::uint8_t>(content[3]))
 #endif
-                    ))
+                        ))
                 return {.error = Error::invalid_extension};
             message.has_session_authentication = true;
             message.session_authentication.version =

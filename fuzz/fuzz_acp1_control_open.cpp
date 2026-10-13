@@ -18,11 +18,16 @@ extern "C" int LLVMFuzzerTestOneInput(
         listener(default_crypto_provider());
     constexpr std::string_view secret = "synthetic-acp1-fuzz-password";
     const auto pass = std::as_bytes(std::span {secret.data(), secret.size()});
-    if (caller.start(true, 3) != Error::none
-        || listener.start(false, 3) != Error::none
-        || listener.establish(pass, caller.parameters(), 102, 101)
+    const bool rendezvous = size != 0 && (data[0] & 1U) != 0;
+    const auto version =
+        rendezvous ? acp1_rendezvous_session_version : acp1_session_version;
+    if (caller.start(true, version) != Error::none
+        || listener.start(false, version) != Error::none
+        || listener.establish(pass, caller.parameters(), 102, 101,
+               rendezvous ? 100U : 0U, rendezvous ? 200U : 0U)
             != Error::none
-        || caller.establish(pass, listener.parameters(), 101, 102)
+        || caller.establish(pass, listener.parameters(), 101, 102,
+               rendezvous ? 200U : 0U, rendezvous ? 100U : 0U)
             != Error::none)
         return 0;
     const auto input = std::as_bytes(std::span {data, size});

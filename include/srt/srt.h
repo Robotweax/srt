@@ -201,7 +201,8 @@ typedef enum SRT_SOCKOPT {
     SRTO_ROBOTWEAX_PEER_IDENTITY = 0x0100000b,
     // Unreviewed ACP1 prototype. PRE bool, default false; available only in
     // builds with ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON. Requires explicit
-    // SESSIONAUTH, passphrase and enforced encryption. Caller/Listener only.
+    // SESSIONAUTH, passphrase and enforced encryption. Caller/Listener or
+    // Rendezvous; group connections remain unsupported.
     SRTO_ROBOTWEAX_ACP1_REQUIRED = 0x0100000c,
     // Read-only bool: true only after strict ACP1 handshake completion.
     SRTO_ROBOTWEAX_ACP1_ACTIVE = 0x0100000d,

@@ -53,6 +53,9 @@ public:
         // Zero leaves capacity policy to the embedding transport.
         std::size_t receive_capacity_packets = 0;
         ImplementationIdentity implementation_identity {};
+        bool require_session_authentication = false;
+        SessionAuthenticationParameters session_authentication {};
+        SessionAuthenticationParameters session_authentication_confirmation {};
     };
 
     explicit RendezvousHandshakeMachine(
@@ -127,6 +130,9 @@ public:
         std::uint16_t encryption_field) noexcept;
     [[nodiscard]] Error set_key_material_response(
         const KeyMaterialBuffer& response) noexcept;
+    [[nodiscard]] Error set_session_authentication(
+        const SessionAuthenticationParameters& local,
+        const SessionAuthenticationParameters& expected_peer = {}) noexcept;
     [[nodiscard]] HandshakeActions receive(
         const Handshake& packet) noexcept;
     [[nodiscard]] HandshakeActions receive(

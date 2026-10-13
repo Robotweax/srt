@@ -56,13 +56,18 @@ void send(SRTSOCKET socket, unsigned message)
 int main(int argc, char** argv)
 {
     try {
-        if (argc != 6 && argc != 7)
-            throw std::runtime_error("usage: peer caller|listener port auth "
-                                     "key-bytes ctr|gcm [acp1]");
+        if (argc != 6 && argc != 7 && argc != 8)
+            throw std::runtime_error(
+                "usage: peer caller|listener port auth "
+                "key-bytes ctr|gcm [acp1 [local-rendezvous-port]]");
         check(srt_startup());
-        const bool caller = std::string(argv[1]) == "caller";
+        const std::string role = argv[1];
+        const bool rendezvous = role == "rdv-caller" || role == "rdv-listener";
+        const bool caller = role == "caller" || role == "rdv-caller";
+        if (rendezvous && argc != 8)
+            throw std::runtime_error("Rendezvous requires local port");
         const bool authenticated = std::stoi(argv[3]) != 0;
-        const bool acp1 = argc == 7 && std::stoi(argv[6]) != 0;
+        const bool acp1 = argc >= 7 && std::stoi(argv[6]) != 0;
         const bool gcm = std::string(argv[5]) == "gcm";
         const char* passphrase = std::getenv("SRT_INTEROP_PASSPHRASE");
         if (!passphrase || std::strlen(passphrase) < 10)
@@ -83,6 +88,8 @@ int main(int argc, char** argv)
             if (acp1)
                 throw std::runtime_error("ACP1 experimental build required");
 #endif
+            if (rendezvous)
+                set(socket.handle, SRTO_RENDEZVOUS, 1);
             set(socket.handle, SRTO_KMREFRESHRATE, 32);
             set(socket.handle, SRTO_KMPREANNOUNCE, 8);
             set(socket.handle, SRTO_RCVLATENCY, 0);
@@ -106,7 +113,18 @@ int main(int argc, char** argv)
                 htons(static_cast<unsigned short>(std::stoi(argv[2])));
             Socket accepted;
             SRTSOCKET transport = socket.handle;
-            if (caller) {
+            if (rendezvous) {
+                auto local = address;
+                local.sin_port =
+                    htons(static_cast<unsigned short>(std::stoi(argv[7])));
+                check(srt_bind(socket.handle,
+                    reinterpret_cast<const sockaddr*>(&local), sizeof(local)));
+                if (!caller)
+                    std::cout << "ready\n" << std::flush;
+                check(srt_connect(socket.handle,
+                    reinterpret_cast<const sockaddr*>(&address),
+                    sizeof(address)));
+            } else if (caller) {
                 check(srt_connect(socket.handle,
                     reinterpret_cast<const sockaddr*>(&address),
                     sizeof(address)));
@@ -159,6 +177,7 @@ int main(int argc, char** argv)
                       << (authenticated ? "true" : "false") << ",\"mode\":\""
                       << (gcm ? "gcm" : "ctr")
                       << "\",\"acp1\":" << (acp1 ? "true" : "false")
+                      << ",\"rendezvous\":" << (rendezvous ? "true" : "false")
                       << ",\"integrity\":true}\n";
         }
         check(srt_cleanup());

@@ -111,15 +111,21 @@ HandshakeAction
 RendezvousHandshakeMachine::conclusion_request_action() const noexcept
 {
     auto packet = base_packet(HandshakeRequest::conclusion);
-    packet.extension_field =
-        1U | (configuration_.key_material_request.size != 0U
-            ? 2U : 0U)
-        | ((configuration_.congestion_controller
-                    != CongestionController::live
-                || !configuration_.stream_id.empty()
-                || configuration_
-                    .packet_filter_configuration.enabled)
-            ? 4U : 0U);
+    packet.extension_field = 1U
+        | (configuration_.key_material_request.size != 0U ? 2U : 0U)
+        | ((configuration_.congestion_controller != CongestionController::live
+               || !configuration_.stream_id.empty()
+               || configuration_.packet_filter_configuration.enabled
+               || configuration_.require_session_authentication)
+                ? 4U
+                : 0U);
+    auto offer = configuration_.session_authentication;
+    if (configuration_.require_session_authentication) {
+        // Retries remain offers even if a valid response has already prepared
+        // our final proof while the wire state still requires another HSREQ.
+        offer.listener_nonce = {};
+        offer.proof = {};
+    }
     return {
         .kind = HandshakeActionKind::send,
         .packet = packet,
@@ -140,6 +146,9 @@ RendezvousHandshakeMachine::conclusion_request_action() const noexcept
             configuration_.packet_filter_configuration.enabled,
         .packet_filter_configuration =
             configuration_.packet_filter_configuration,
+        .has_session_authentication =
+            configuration_.require_session_authentication,
+        .session_authentication = offer,
         .implementation_identity = configuration_.implementation_identity,
     };
 }
@@ -151,12 +160,12 @@ RendezvousHandshakeMachine::conclusion_response_action() const noexcept
     const bool has_key_material =
         has_key_material_response_
         || has_peer_key_material_request_;
-    packet.extension_field =
-        1U | (has_key_material ? 2U : 0U)
-        | ((configuration_.congestion_controller
-                    != CongestionController::live
-                || negotiated_packet_filter_.enabled)
-            ? 4U : 0U);
+    packet.extension_field = 1U | (has_key_material ? 2U : 0U)
+        | ((configuration_.congestion_controller != CongestionController::live
+               || negotiated_packet_filter_.enabled
+               || configuration_.require_session_authentication)
+                ? 4U
+                : 0U);
     return {
         .kind = HandshakeActionKind::send,
         .packet = packet,
@@ -173,6 +182,9 @@ RendezvousHandshakeMachine::conclusion_response_action() const noexcept
         .congestion_controller = configuration_.congestion_controller,
         .has_packet_filter_extension = negotiated_packet_filter_.enabled,
         .packet_filter_configuration = negotiated_packet_filter_,
+        .has_session_authentication =
+            configuration_.require_session_authentication,
+        .session_authentication = configuration_.session_authentication,
         .implementation_identity = configuration_.implementation_identity,
     };
 }
@@ -190,10 +202,15 @@ HandshakeAction
 RendezvousHandshakeMachine::agreement_action() const noexcept
 {
     auto packet = base_packet(HandshakeRequest::agreement);
-    packet.extension_field = 0;
+    packet.extension_field = configuration_.require_session_authentication
+        ? handshake_extension_flag_config
+        : 0;
     return {
         .kind = HandshakeActionKind::send,
         .packet = packet,
+        .has_session_authentication =
+            configuration_.require_session_authentication,
+        .session_authentication = configuration_.session_authentication,
     };
 }
 
@@ -365,6 +382,10 @@ void RendezvousHandshakeMachine::remember_peer(
 
 HandshakeActions RendezvousHandshakeMachine::start() noexcept
 {
+#ifndef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+    if (configuration_.require_session_authentication)
+        return fail();
+#endif
     if (state_ != RendezvousState::idle
         || configuration_.local_socket_id == 0U
         || configuration_.local_cookie == 0U
@@ -436,6 +457,23 @@ Error RendezvousHandshakeMachine::set_key_material_response(
     return Error::none;
 }
 
+Error RendezvousHandshakeMachine::set_session_authentication(
+    const SessionAuthenticationParameters& local,
+    const SessionAuthenticationParameters& expected_peer) noexcept
+{
+    if (!configuration_.require_session_authentication
+        || state_ == RendezvousState::idle
+        || state_ == RendezvousState::connected
+        || state_ == RendezvousState::failed
+        || state_ == RendezvousState::rejected
+        || local.version != acp1_rendezvous_session_version
+        || (!local.is_offer() && !local.is_proof()))
+        return Error::invalid_state;
+    configuration_.session_authentication = local;
+    configuration_.session_authentication_confirmation = expected_peer;
+    return Error::none;
+}
+
 HandshakeActions RendezvousHandshakeMachine::receive(
     const Handshake& packet) noexcept
 {
@@ -504,6 +542,30 @@ HandshakeActions RendezvousHandshakeMachine::receive(
         }
     }
 
+    // The embedding crypto owner has verified/generated the proof snapshots.
+    // The wire machine independently enforces their presence, role and exact
+    // match before metadata mutation or a connected transition.
+    if (configuration_.require_session_authentication) {
+        if ((request || response
+                || incoming.request == HandshakeRequest::agreement)
+            && (!message.has_session_authentication
+                || message.session_authentication.version
+                    != acp1_rendezvous_session_version))
+            return reject_rogue_version();
+        if (request
+            && (resolved_role != RendezvousRole::responder
+                || !message.session_authentication.is_offer()
+                || message.session_authentication.caller_nonce
+                    != configuration_.session_authentication.caller_nonce))
+            return reject_rogue_version();
+        if ((response || incoming.request == HandshakeRequest::agreement)
+            && (!configuration_.session_authentication_confirmation.is_proof()
+                || !configuration_.session_authentication_confirmation.matches(
+                    message.session_authentication)))
+            return reject_rogue_version();
+    } else if (message.has_session_authentication) {
+        return reject_rogue_version();
+    }
     HandshakeActions actions;
     // The responder validates the initiator's transmission mode before
     // producing HSRSP. A successful response is authoritative and does not
@@ -733,6 +795,8 @@ HandshakeActions
 RendezvousHandshakeMachine::note_connected_packet() noexcept
 {
     HandshakeActions actions;
+    if (configuration_.require_session_authentication)
+        return actions;
     if ((state_ == RendezvousState::initiated
             || state_ == RendezvousState::fine)
         && role_ == RendezvousRole::responder) {

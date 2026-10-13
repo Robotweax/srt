@@ -185,10 +185,13 @@ TEST(acp1_build_gate_and_private_option_contract)
     REQUIRE_EQ(
         srt_setsockflag(socket, SRTO_GROUPCONNECT, &enabled, sizeof(enabled)),
         SRT_ERROR);
-    REQUIRE_EQ(
-        srt_setsockflag(socket, SRTO_RENDEZVOUS, &enabled, sizeof(enabled)),
+    set(socket, SRTO_RENDEZVOUS, 1);
+    set(socket, SRTO_ROBOTWEAX_SESSIONAUTH, 1);
+    const int disabled = 0;
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_ACP1_REQUIRED, &disabled,
+                   sizeof(disabled)),
         SRT_ERROR);
-    for (auto option : {SRTO_GROUPCONNECT, SRTO_RENDEZVOUS}) {
+    for (auto option : {SRTO_GROUPCONNECT}) {
         const auto other = sockets.create();
         set(other, option, 1);
         REQUIRE_EQ(srt_setsockflag(other, SRTO_ROBOTWEAX_ACP1_REQUIRED,
@@ -434,5 +437,60 @@ TEST(acp1_file_stream_transfer_and_authenticated_remote_close)
     std::array<char, 1> remaining {};
     REQUIRE(srt_recv(accepted, remaining.data(), remaining.size()) <= 0);
     REQUIRE(!flag(accepted, SRTO_ROBOTWEAX_ACP1_ACTIVE));
+}
+
+TEST(acp1_rendezvous_cookie_binding_known_answer_and_profile_separation)
+{
+    constexpr std::string_view secret = "acp1-test-password";
+    const auto pass = std::as_bytes(std::span {secret.data(), secret.size()});
+    Provider provider;
+    SessionAuthentication initiator(provider), responder(provider);
+    REQUIRE_EQ(initiator.start(true, 4), Error::none);
+    REQUIRE_EQ(responder.start(false, 4), Error::none);
+    REQUIRE_EQ(responder.establish(pass, initiator.parameters(), 102, 101),
+        Error::invalid_key_material);
+    REQUIRE_EQ(
+        responder.establish(pass, initiator.parameters(), 102, 101, 100, 100),
+        Error::invalid_key_material);
+    REQUIRE_EQ(
+        responder.establish(pass, initiator.parameters(), 102, 101, 100, 200),
+        Error::none);
+    REQUIRE_EQ(
+        initiator.establish(pass, responder.parameters(), 101, 102, 200, 100),
+        Error::none);
+    const auto wire = seal(initiator, control());
+    constexpr std::string_view expected_tag =
+        "86b248221679c32fa6e8b25ca2a1f99a53310181263781c9c37f5209d844ba3e";
+    constexpr char digits[] = "0123456789abcdef";
+    std::string tag;
+    for (auto byte : std::span {wire}.last(32)) {
+        tag += digits[std::to_integer<unsigned>(byte) >> 4];
+        tag += digits[std::to_integer<unsigned>(byte) & 15];
+    }
+    REQUIRE_EQ(tag, expected_tag);
+    REQUIRE(open(responder, wire));
+    REQUIRE(!open(responder, wire));
+    REQUIRE(!open(initiator, wire));
+    for (auto cookies : {std::pair {201U, 100U}, std::pair {200U, 101U}}) {
+        Provider changed;
+        SessionAuthentication other_initiator(changed),
+            other_responder(changed);
+        REQUIRE_EQ(other_initiator.start(true, 4), Error::none);
+        REQUIRE_EQ(other_responder.start(false, 4), Error::none);
+        REQUIRE_EQ(other_responder.establish(pass, other_initiator.parameters(),
+                       102, 101, cookies.second, cookies.first),
+            Error::none);
+        REQUIRE_EQ(other_initiator.establish(pass, other_responder.parameters(),
+                       101, 102, cookies.first, cookies.second),
+            Error::none);
+        REQUIRE(!open(
+            other_responder, wire)); // identical nonces/IDs, changed cookie
+    }
+    Provider legacy_provider;
+    SessionAuthentication legacy_initiator(legacy_provider),
+        legacy_responder(legacy_provider);
+    establish(
+        legacy_initiator, legacy_responder); // identical nonces/IDs, version 3
+    REQUIRE(!open(legacy_responder, wire));
 }
 #endif
