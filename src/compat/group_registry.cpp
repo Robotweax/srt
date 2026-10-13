@@ -488,7 +488,9 @@ int GroupRegistry::get_io_option(
             set_last_error(SRT_EINVSOCK);
             return SRT_ERROR;
         }
-        if (option == SRTO_ROBOTWEAX_PEER_IDENTITY
+        if (option == SRTO_ROBOTWEAX_ACP1_REQUIRED
+            || option == SRTO_ROBOTWEAX_ACP1_ACTIVE
+            || option == SRTO_ROBOTWEAX_PEER_IDENTITY
             || option == SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT
             || option == SRTO_ROBOTWEAX_PEER_HANDSHAKE
             || option == SRTO_ROBOTWEAX_PATHID || option == SRTO_BINDTODEVICE
@@ -551,7 +553,9 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
         set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
     }
-    if (option == SRTO_ROBOTWEAX_PATHID
+    if (option == SRTO_ROBOTWEAX_ACP1_REQUIRED
+        || option == SRTO_ROBOTWEAX_ACP1_ACTIVE
+        || option == SRTO_ROBOTWEAX_PATHID
         || option == SRTO_ROBOTWEAX_PEER_IDENTITY
         || option == SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT) {
         set_last_error(SRT_EINVOP);

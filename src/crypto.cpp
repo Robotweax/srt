@@ -224,7 +224,8 @@ CryptoSession::CryptoSession(
     configuration_error_ = validate_configuration();
 }
 
-Error CryptoSession::start_session_authentication(bool caller) noexcept
+Error CryptoSession::start_session_authentication(
+    bool caller, std::uint8_t version) noexcept
 {
     if (session_authentication_ != nullptr || !enabled())
         return Error::invalid_state;
@@ -232,7 +233,7 @@ Error CryptoSession::start_session_authentication(bool caller) noexcept
         new (std::nothrow) SessionAuthentication(provider_));
     if (!candidate)
         return Error::cryptographic_failure;
-    const auto result = candidate->start(caller);
+    const auto result = candidate->start(caller, version);
     if (result == Error::none)
         session_authentication_ = std::move(candidate);
     return result;

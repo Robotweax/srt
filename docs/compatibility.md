@@ -284,3 +284,11 @@ reference builds. Reference peers remain unknown; they do not advertise this
 convention. No MistServer/older-version/independent-peer deployment or shared
 allocation is qualified. See [experimental identity](implementation-identity.md).
 Published 0.2.9 artifacts do not include the identity options or wire record.
+
+## Experimental ACP1 prototype
+
+A separate default-off [experimental ACP1 build](experimental-acp1.md) adds
+strict session-authentication version 3 and authenticated runtime controls for
+ordinary Caller/Listener sockets. It is unreviewed and outside the supported
+security and Haivision interoperability boundary. SESSIONAUTH alone continues
+to use version 2; ordinary connections retain their existing behavior.

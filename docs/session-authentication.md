@@ -102,3 +102,11 @@ used as independent evidence of source-DATA liveness.
 This authenticates parity, not AES-CTR source DATA. Use AES-GCM as well when
 source integrity is required; CTR's unauthenticated DATA remains malleable.
 Without session authentication, compatible FEC parity remains unauthenticated.
+
+## Experimental ACP1 prototype
+
+A separate default-off [experimental ACP1 build](experimental-acp1.md) adds
+strict session-authentication version 3 and authenticated runtime controls for
+ordinary Caller/Listener sockets. It is unreviewed and outside the supported
+security and Haivision interoperability boundary. SESSIONAUTH alone continues
+to use version 2; ordinary connections retain their existing behavior.

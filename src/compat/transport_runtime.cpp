@@ -2418,9 +2418,46 @@ bool ConnectionRuntime::retransmission_ready(std::uint64_t now) noexcept
 #endif
 }
 
+std::span<const std::byte> ConnectionRuntime::queued_control_payload(
+    std::span<const std::byte> bytes) const noexcept
+{
+    if (options_.experimental_acp1()) {
+        constexpr auto prefix =
+            authenticated_control_inner_offset + packet_header_size;
+        if (bytes.size() < prefix + 32U)
+            return {};
+        return bytes.subspan(prefix, bytes.size() - prefix - 32U);
+    }
+    return bytes.subspan(packet_header_size);
+}
+
 bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
     DatagramCompletion completion, std::uint64_t now) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+    std::array<std::byte, DatagramEnvelope::maximum_size> protected_control {};
+    if (options_.experimental_acp1()) {
+        const auto decoded = decode_packet(bytes);
+        if (!decoded) {
+            break_locked(0);
+            return false;
+        }
+        if (decoded.packet.kind == PacketKind::control
+            && decoded.packet.control.type != ControlType::handshake) {
+            std::size_t written = 0;
+            if (crypto_ == nullptr
+                || crypto_->session_authentication() == nullptr
+                || crypto_->session_authentication()->seal_control(
+                       bytes, protected_control, written)
+                    != Error::none
+                || written > options_.maximum_segment_size() - 48U) {
+                break_locked(0);
+                return false;
+            }
+            bytes = std::span {protected_control}.first(written);
+        }
+    }
+#endif
     const auto channel = channel_.lock();
     if (channel == nullptr || bytes.empty()
         || bytes.size() > DatagramEnvelope::maximum_size) {
@@ -2461,9 +2498,8 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
                     && pending->completion.control == completion.control) {
                     if (completion.control
                         == ControlType::negative_acknowledgement) {
-                        session_.rearm_loss_report(std::span {pending->bytes}
-                                .first(pending->size)
-                                .subspan(packet_header_size));
+                        session_.rearm_loss_report(queued_control_payload(
+                            std::span {pending->bytes}.first(pending->size)));
                     }
                     std::copy(
                         bytes.begin(), bytes.end(), pending->bytes.begin());
@@ -2613,7 +2649,7 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
                 == ControlType::negative_acknowledgement) {
             // Rebuild from surviving losses in poll_timers, rather than send
             // stale bytes for DATA that arrived or was dropped during retry.
-            session_.rearm_loss_report(bytes.subspan(packet_header_size));
+            session_.rearm_loss_report(queued_control_payload(bytes));
             current = false;
         } else if (pending.completion.kind == DatagramKind::data) {
             // ACK/TTL/TLPKTDROP can retire a prepared packet during the wait.
@@ -2625,7 +2661,7 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
             const auto material = crypto_ != nullptr
                 ? crypto_->pending_key_material()
                 : std::span<const std::byte> {};
-            auto queued_material = bytes.subspan(packet_header_size);
+            auto queued_material = queued_control_payload(bytes);
             if (crypto_ != nullptr
                 && crypto_->session_authentication() != nullptr) {
                 // Locally serialized controls include the counter and tag.
@@ -2724,27 +2760,42 @@ bool ConnectionRuntime::send_actions(
         }
     }
 
+    if (options_.experimental_acp1()
+        && options_.maximum_segment_size() < 256U) {
+        break_locked(0);
+        return false;
+    }
     for (std::size_t index = 0; index < actions.size; ++index) {
-        std::array<std::byte, 1500> datagram{};
-        const auto encoded = encode_reliability_action(
-            actions.values[index],
-            actions.loss_ranges(actions.values[index]),
-            PacketTimestamp{static_cast<std::uint32_t>(now)},
-            peer_socket_id_,
-            datagram);
-        if (!encoded) {
-            break_locked(0);
-            return false;
-        }
-        const auto type = control_type(actions.values[index].kind);
-        if (!type.has_value()) {
-            break_locked(0);
-            return false;
-        }
-        if (!submit_datagram(std::span {datagram}.first(encoded.bytes_written),
-                {.kind = DatagramKind::control, .control = *type}, now)) {
-            return false;
-        }
+        const auto& action = actions.values[index];
+        auto losses = actions.loss_ranges(action);
+        const auto maximum_ranges = options_.experimental_acp1()
+            ? (options_.maximum_segment_size() - 48U
+                  - authenticated_control_overhead - packet_header_size)
+                / 8U
+            : maximum_loss_ranges_per_report;
+        do {
+            const auto count = std::min(losses.size(), maximum_ranges);
+            std::array<std::byte, 1500> datagram {};
+            const auto encoded =
+                encode_reliability_action(action, losses.first(count),
+                    PacketTimestamp {static_cast<std::uint32_t>(now)},
+                    peer_socket_id_, datagram);
+            if (!encoded) {
+                break_locked(0);
+                return false;
+            }
+            const auto type = control_type(actions.values[index].kind);
+            if (!type.has_value()) {
+                break_locked(0);
+                return false;
+            }
+            if (!submit_datagram(
+                    std::span {datagram}.first(encoded.bytes_written),
+                    {.kind = DatagramKind::control, .control = *type}, now)) {
+                return false;
+            }
+            losses = losses.subspan(count);
+        } while (!losses.empty());
     }
     return true;
 }
@@ -3648,6 +3699,15 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
     if (locally_closed_ || broken_) {
         return;
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+    if (options_.experimental_acp1() && packet.kind == PacketKind::control) {
+        PacketView opened;
+        if (crypto_ == nullptr || crypto_->session_authentication() == nullptr
+            || !crypto_->session_authentication()->open_control(packet, opened))
+            return;
+        packet = opened;
+    }
+#endif
     if (packet.kind == PacketKind::control
         && packet.control.type == ControlType::user_defined
         && packet.control.subtype == standby_rtt_subtype) {
@@ -4017,9 +4077,16 @@ bool ConnectionRuntime::process_handshake(
     }
 
     const std::uint64_t now = now_microseconds();
+    if (options_.experimental_acp1()) {
+        if (last_acp1_handshake_replay_ && now >= *last_acp1_handshake_replay_
+            && now - *last_acp1_handshake_replay_ < 100'000U)
+            return true;
+        last_acp1_handshake_replay_ = now;
+    }
     statistics_.update_send_duration(
         now, session_.send_buffer().size() != 0U);
-    last_peer_activity_microseconds_ = now;
+    if (!options_.experimental_acp1())
+        last_peer_activity_microseconds_ = now;
     const auto channel = channel_.lock();
     if (channel == nullptr) {
         break_locked(0);
@@ -4432,7 +4499,20 @@ void ConnectionRuntime::notify_idle_expiry_locked(std::uint64_t now) noexcept
         return;
     }
     --*poll_send_budget_;
-    const auto bytes = std::span {datagram}.first(encoded.bytes_written);
+    std::span<const std::byte> bytes =
+        std::span {datagram}.first(encoded.bytes_written);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+    std::array<std::byte, DatagramEnvelope::maximum_size> protected_control {};
+    if (options_.experimental_acp1()) {
+        std::size_t written = 0;
+        if (crypto_ == nullptr || crypto_->session_authentication() == nullptr
+            || crypto_->session_authentication()->seal_control(
+                   bytes, protected_control, written)
+                != Error::none)
+            return;
+        bytes = std::span {protected_control}.first(written);
+    }
+#endif
     const auto sent = channel->send_datagram(bytes, peer_);
     if (sent && sent.bytes_transferred == bytes.size()) {
         (void)complete_datagram(bytes,

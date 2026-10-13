@@ -718,6 +718,9 @@ struct ConnectedNegotiation {
             static_cast<std::uint32_t>(
                 socket.public_options.maximum_segment_size),
             peer_maximum_segment_size));
+    if (socket.native_options.experimental_acp1()
+        && effective_maximum_segment_size < 256)
+        return false;
     const auto send_bytes =
         checked_srt_buffer_bytes(socket.native_options.send_buffer_packets(),
             effective_maximum_segment_size);
@@ -1080,6 +1083,15 @@ int listen_socket(
     std::shared_ptr<ListenerRuntime> listener_runtime;
     {
         std::lock_guard lock(socket->mutex);
+        if (socket->native_options.experimental_acp1()
+            && (!socket->native_options.session_authentication()
+                || !socket->native_options.encryption_enabled()
+                || !socket->native_options.enforced_encryption()
+                || socket->public_options.group_connect
+                || socket->public_options.rendezvous
+                || socket->group_id != SRT_INVALID_SOCK
+                || socket->native_options.maximum_segment_size() < 256U))
+            return fail(SRT_ESECFAIL);
         if (socket->public_options.standby_rtt_required
             && (!socket->public_options.group_connect
                 || socket->public_options.rendezvous
@@ -1514,7 +1526,10 @@ public:
                 return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
             SessionAuthenticationParameters local_parameters;
             if (message.packet.request == HandshakeRequest::induction) {
-                if (setup_.crypto->start_session_authentication(true)
+                if (setup_.crypto->start_session_authentication(true,
+                        setup_.options.experimental_acp1()
+                            ? acp1_session_version
+                            : session_authentication_version)
                     != Error::none)
                     return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                 local_parameters =
@@ -3373,6 +3388,15 @@ int connect_socket(
                 ? SRT_ECONNSOCK
                 : SRT_EINVOP);
         }
+        if (socket->native_options.experimental_acp1()
+            && (!socket->native_options.session_authentication()
+                || !socket->native_options.encryption_enabled()
+                || !socket->native_options.enforced_encryption()
+                || socket->public_options.group_connect
+                || socket->public_options.rendezvous
+                || socket->group_id != SRT_INVALID_SOCK
+                || socket->native_options.maximum_segment_size() < 256U))
+            return fail(SRT_ESECFAIL);
         if ((socket->native_options.requires_authenticated_data()
                 || socket->native_options.session_authentication())
             && !socket->native_options.encryption_enabled()) {
@@ -4021,12 +4045,27 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         policy_error = SRT_ESECFAIL;
     }
 
+    if (!policy_rejected && native_options.experimental_acp1()
+        && (!native_options.session_authentication()
+            || !native_options.encryption_enabled()
+            || !native_options.enforced_encryption()
+            || public_options.group_connect || public_options.rendezvous
+            || conclusion.has_group_membership
+            || native_options.maximum_segment_size() < 256U)) {
+        policy_rejected = true;
+        policy_rejection = SRT_REJ_UNSECURE;
+        policy_error = SRT_ESECFAIL;
+    }
     if (!policy_rejected
         && (native_options.session_authentication()
                 != conclusion.has_session_authentication
             || (native_options.session_authentication()
                 && (!native_options.encryption_enabled()
-                    || !conclusion.session_authentication.is_offer())))) {
+                    || !conclusion.session_authentication.is_offer()
+                    || conclusion.session_authentication.version
+                        != (native_options.experimental_acp1()
+                                ? acp1_session_version
+                                : session_authentication_version))))) {
         policy_rejected = true;
         policy_rejection = SRT_REJ_UNSECURE;
         policy_error = SRT_ESECFAIL;
@@ -4148,7 +4187,11 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
 
     if (!policy_rejected && native_options.session_authentication()) {
         if (crypto == nullptr
-            || crypto->start_session_authentication(false) != Error::none
+            || crypto->start_session_authentication(false,
+                   native_options.experimental_acp1()
+                       ? acp1_session_version
+                       : session_authentication_version)
+                != Error::none
             || crypto->establish_session_authentication(
                    conclusion.session_authentication,
                    accepted->protocol_socket_id, caller_socket_id)

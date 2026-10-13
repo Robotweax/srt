@@ -1,0 +1,92 @@
+name: Experimental ACP1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'fuzz/**'
+      - 'CMakeLists.txt'
+      - 'interop/run_mbedtls_peers.py'
+      - '.github/workflows/experimental-acp1.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'fuzz/**'
+      - 'CMakeLists.txt'
+      - 'interop/run_mbedtls_peers.py'
+      - '.github/workflows/experimental-acp1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acp1-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  experimental:
+    name: ACP1 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install OpenSSL
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo apt-get update
+            sudo apt-get install -y libssl-dev pkg-config clang
+          else
+            brew install openssl@3 pkg-config
+            echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          fi
+      - name: Checksum-pinned Mbed TLS dependency
+        run: python3 tools/build_mbedtls.py --output acp1-dependency
+      - name: Both provider contracts and installed peers
+        shell: bash
+        run: |
+          for backend in openssl mbedtls; do
+            extra=()
+            if [[ "$backend" == mbedtls ]]; then
+              extra=(-DMbedTLS_ROOT="$PWD/acp1-dependency/install" -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON)
+            fi
+            cmake -S . -B "acp1-$backend" -DCMAKE_BUILD_TYPE=Debug \
+              -DROBOTWEAX_SRT_CRYPTO_BACKEND="$backend" \
+              -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON -DENABLE_AEAD_API_PREVIEW=ON \
+              -DROBOTWEAX_SRT_BUILD_TOOLS=OFF -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF "${extra[@]}"
+            cmake --build "acp1-$backend" --target robotweax_srt_tests --parallel 4
+            ctest --test-dir "acp1-$backend" -R acp1 --output-on-failure
+            cmake --install "acp1-$backend" --prefix "$PWD/acp1-$backend-stage"
+            cmake -S tests/crypto_provider_peer -B "acp1-$backend-peer" \
+              -DCMAKE_PREFIX_PATH="$PWD/acp1-$backend-stage" "${extra[@]}"
+            cmake --build "acp1-$backend-peer" --target crypto_session_peer --parallel 4
+          done
+      - name: Bidirectional CTR/GCM key rotation across providers
+        run: >-
+          python3 interop/run_mbedtls_peers.py --acp1
+          --mbedtls-peer acp1-mbedtls-peer/crypto_session_peer
+          --openssl-peer acp1-openssl-peer/crypto_session_peer
+          --output acp1-evidence/cross-provider.json
+      - name: Sanitized envelope fuzzing
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S . -B acp1-fuzz -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON -DROBOTWEAX_SRT_BUILD_FUZZERS=ON \
+            -DROBOTWEAX_SRT_BUILD_TESTS=OFF -DROBOTWEAX_SRT_BUILD_TOOLS=OFF \
+            -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          cmake --build acp1-fuzz --target fuzz_acp1_control_open --parallel 4
+          mkdir acp1-corpus
+          python3 -c "import struct; open('acp1-corpus/keepalive','wb').write(struct.pack('!IIIII',0x80010000,0,7,102,0))"
+          acp1-fuzz/fuzz_acp1_control_open acp1-corpus -runs=2000 -max_len=1500 -timeout=5

@@ -194,9 +194,15 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
                 || content.size() != session_authentication_wire_size
                 || content[0] != std::byte {0} || content[1] != std::byte {0}
                 || content[2] != std::byte {0}
-                || content[3] != std::byte {session_authentication_version})
+                || (content[3] != std::byte {session_authentication_version}
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+                    && content[3] != std::byte {acp1_session_version}
+#endif
+                    ))
                 return {.error = Error::invalid_extension};
             message.has_session_authentication = true;
+            message.session_authentication.version =
+                std::to_integer<std::uint8_t>(content[3]);
             std::copy_n(content.begin() + 4, 32,
                 message.session_authentication.caller_nonce.begin());
             std::copy_n(content.begin() + 36, 32,
@@ -446,7 +452,7 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
             == 0U)
             return {.error = Error::invalid_extension};
         std::array<std::byte, session_authentication_wire_size> content {};
-        content[3] = std::byte {session_authentication_version};
+        content[3] = std::byte {action.session_authentication.version};
         std::copy(action.session_authentication.caller_nonce.begin(),
             action.session_authentication.caller_nonce.end(),
             content.begin() + 4);

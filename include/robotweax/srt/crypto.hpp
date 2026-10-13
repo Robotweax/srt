@@ -393,7 +393,8 @@ public:
     CryptoSession& operator=(CryptoSession&&) = delete;
 
     [[nodiscard]] Error start_initiator() noexcept;
-    [[nodiscard]] Error start_session_authentication(bool caller) noexcept;
+    [[nodiscard]] Error start_session_authentication(bool caller,
+        std::uint8_t version = session_authentication_version) noexcept;
     [[nodiscard]] Error establish_session_authentication(
         const SessionAuthenticationParameters& peer,
         std::uint32_t local_socket_id, std::uint32_t peer_socket_id) noexcept;

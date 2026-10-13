@@ -1,0 +1,201 @@
+# Experimental ACP1 runtime-control authentication
+
+ACP1 is an **unreviewed, unstable prototype**, behind
+`ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON` (default `OFF`). It is not a supported
+security profile or a release compatibility promise. The wire values below
+are provisional. Independent cryptographic review and a separate go/no-go
+remain outstanding under [issue #190](https://github.com/Robotweax/srt/issues/190).
+This prototype does not close that issue or the legacy KM replay issue
+[#112](https://github.com/Robotweax/srt/issues/112).
+
+## Opt-in and compatibility
+
+Build both peers explicitly:
+
+```sh
+cmake -S . -B build-acp1 -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON
+cmake --build build-acp1 --parallel
+ctest --test-dir build-acp1 -R acp1 --output-on-failure
+```
+
+Enable both boolean options before connection setup, configure a high-entropy
+passphrase, and keep enforced encryption enabled:
+
+```c
+bool enabled = true;
+/* Check both return values; configure SRTO_PASSPHRASE securely as well. */
+srt_setsockflag(socket, SRTO_ROBOTWEAX_SESSIONAUTH, &enabled, sizeof(enabled));
+srt_setsockflag(socket, SRTO_ROBOTWEAX_ACP1_REQUIRED, &enabled, sizeof(enabled));
+```
+
+| Private option | Contract |
+| --- | --- |
+| `SRTO_ROBOTWEAX_ACP1_REQUIRED` (`0x0100000c`) | PRE boolean, default false; inherited by accepted sockets |
+| `SRTO_ROBOTWEAX_ACP1_ACTIVE` (`0x0100000d`) | Read-only boolean, true only on an established ACP1 connection |
+
+Both options return `SRT_EINVOP` in builds without the experimental gate.
+Enabling REQUIRED does not implicitly enable SESSIONAUTH, encryption or GCM;
+missing prerequisites fail connect/listen with `SRT_ESECFAIL`. Listener
+admission revalidates final callback settings. Required policy uses strict
+negotiation with no Prefer mode or fallback. ACTIVE remains false during setup,
+in a listener callback, on a listening socket and after failed/terminal setup.
+
+The prototype supports ordinary Caller/Listener sockets, including synchronous
+and asynchronous connection setup. Rendezvous, group handles, group member
+configurations and `SRTO_GROUPCONNECT` reject opt-in. Both setting orders reject
+conflicting Rendezvous/group configuration. ACP1 requires MSS at least 256;
+setting either MSS or ACP1 rejects an incompatible existing value. Negotiation
+cannot lower an ACP1 connection below that limit.
+
+With REQUIRED false, standard connections keep their existing API and wire
+behavior, including Haivision 1.5.7 interoperability. SESSIONAUTH alone still
+uses version 2 byte for byte. ACP1 requires version 3 on both peers: version-2
+SESSIONAUTH peers and stock Haivision peers cannot establish protected
+connections. These strict failures are part of the protection contract.
+Existing exported C functions and `SRTO_E_SIZE` are unchanged. The build gate
+is propagated through the installed CMake target and pkg-config Cflags.
+
+## Threat model and coverage
+
+The intended property is connection-bound integrity, sender-direction binding
+and bounded replay rejection for runtime controls against a network attacker
+without the passphrase. Authentication precedes reliability, key installation,
+statistics and liveness mutations. Tags do not encrypt control content.
+
+| Traffic | Experimental protection |
+| --- | --- |
+| ACK, ACKACK, NAK, DROPREQ | Complete original header and payload inside ACP1 envelope |
+| KEEPALIVE, SHUTDOWN, PEERERROR, congestion warning | Same envelope, including normally unused header fields/padding |
+| Runtime KMREQ/KMRSP | Existing session-bound KM counters/tag, additionally inside ACP1 |
+| FEC parity | Existing separate session-bound FEC envelope, with version-3 root/domain |
+| Source DATA | Existing chosen cipher; ACP1 does not change the DATA wire format |
+| Handshake | Existing nonce/socket-ID/role/initial-KM proofs, with version-3 root/domain |
+
+Nested envelopes, unknown envelope versions and other user-defined runtime
+controls are rejected. New runtime subtypes must receive an explicit coverage
+decision before they are enabled. Existing semantic/window validation still
+applies after successful authentication; a valid MAC is not permission to
+ignore packet bounds or sequence rules.
+
+AES-CTR source DATA remains unauthenticated and malleable. An attacker can still
+forge DATA or exploit its consequences, including eliciting authentic controls
+from a receiver. Select AES-GCM separately (`ENABLE_AEAD_API_PREVIEW=ON`,
+`SRTO_CRYPTOMODE=2`) for source-DATA integrity. ACP1 does not authenticate a
+complete handshake transcript: Stream ID, implementation identity, transport
+settings and other extension fields remain outside its proof. Neither CTR nor
+ACP1 should be described as protecting the entire transport.
+
+Other limits include denial of service, traffic analysis, packets withheld or
+reordered beyond the replay window, malicious peers/passphrase holders, weak
+passwords and compromised endpoints. Shared-secret holders can impersonate
+one another; there is no forward secrecy. The existing 2048-iteration PBKDF is
+not a password-storage recommendation. Do not use this experimental design as
+a replacement for a reviewed network security layer.
+
+## Session negotiation and key separation
+
+All integers are network order. The existing `0x7f10` CONFIG extension remains
+100 bytes: uint32 version, caller nonce[32], listener nonce[32], proof[32].
+ACP1 selects **version 3**, with the same offer/challenge/AGREEMENT ordering as
+[SESSIONAUTH version 2](session-authentication.md). Both nonces must be nonzero.
+The caller verifies the listener proof; the listener verifies the final caller
+proof before publication. Each endpoint requires its configured version.
+
+Version 3 changes the root PBKDF salt and handshake/KM/FEC MAC label to the
+16 bytes `RWSRT-SESSION-3` followed by NUL. The remaining salt inputs and
+proof fields are unchanged: both 32-byte nonces, caller/listener socket IDs
+encoded as uint64, sender role, proof domain and initial KM body. An attacker
+cannot change the version to 2 while retaining a valid version-3 proof.
+
+The 32-byte PBKDF result is used as the pseudorandom key for two single-block
+[HKDF-Expand](https://www.rfc-editor.org/rfc/rfc5869) operations:
+
+```text
+K_caller   = HMAC-SHA256(root, info16 || uint8(1) || uint8(1))
+K_listener = HMAC-SHA256(root, info16 || uint8(2) || uint8(1))
+info16     = ASCII("RWSRT-ACP1-1") || four zero bytes
+```
+
+The last byte is the Expand block index. No additional Extract is performed;
+review of using the PBKDF output directly as PRK is explicitly outstanding.
+The direction keys are separate from DATA keys and from the root used by
+handshake/KM/FEC domains. They remain fixed for the connection lifetime and are
+securely erased with the session. Each new connection derives new keys from
+fresh nonces and the socket identities.
+
+## Runtime envelope
+
+The envelope uses SRT user-defined control type `0x7fff`, provisional subtype
+`0x7f05`. Its type-specific word is zero. Timestamp and destination socket ID
+must equal those of the inner control.
+
+```text
+outer SRT control header[16]
+uint32 envelope_version = 1
+uint64 counter
+original complete SRT control packet[16 + body_length]
+HMAC-SHA256 tag[32]
+```
+
+This adds 60 bytes to the original datagram. The tag covers:
+
+```text
+ASCII("RWSRT-ACP1-MAC") || two zero bytes
+|| outer_header || envelope_version || counter || original_packet
+```
+
+The key is the sender's direction key. The body length is determined by the
+complete datagram length. Both header copies, all original payload bytes and
+the version/counter are authenticated. Receivers enforce canonical outer fields,
+header agreement, allowed inner types, packet shape and the 1500-byte global
+bound before committing replay state. There is no heap allocation in envelope
+encoding, decoding or MAC preparation.
+
+## Replay, retries and lifecycle
+
+Each direction has an independent uint64 send counter starting at one, and a
+highest received counter plus a 64-bit replay bitmap. Zero is invalid. A packet
+at most 63 positions behind the highest counter is accepted once; older packets
+and duplicates are rejected indefinitely, without retaining packet histories.
+Forged high counters and invalid tags never advance the window. Provider
+failures and sender counter exhaustion fail closed, with no bare-control
+fallback. The receiver drops a bad packet without terminating the connection.
+
+A UDP retry after EAGAIN retains the exact sealed bytes and counter. A protocol
+retry, including KM timer retries, gets a new outer counter. Inner KM counters
+still increase only when material changes; retries retain the inner ID/body,
+and responses echo that ID. This permits recovery from a lost KMRSP while
+rejecting raw recorded envelopes. The KM counter rules separately prevent an
+out-of-order old announcement inside the general replay window from rolling
+back a DATA key. Neither replay state nor control keys reset on DATA rotation.
+
+NAKs are split to reserve envelope space within the negotiated MSS and a
+conservative 48-byte IPv6 IP/UDP allowance. Deferred NAK rearming and queued KM
+comparison inspect the original inner body without opening or resealing a
+local envelope. The pending FIFO retains its existing bounded capacity.
+
+Runtime handshake retries remain outside the envelope. A connected caller
+may resend only its cached AGREEMENT for a matching authenticated response;
+ACP1 limits those replies to one per 100 ms and does not let captured handshake
+retries refresh peer liveness. Invalid, replayed and bare runtime controls do
+not refresh the idle timer. Normal close, queued close drain and the one-shot
+idle-expiry SHUTDOWN all use authenticated envelopes.
+
+## Evidence and review still required
+
+Tests cover an independently computed Python hashlib/hmac wire vector, every
+byte tampering, reflection/session/profile separation, truncation and packet
+bounds, replay-window edges, forged high counters, provider failures, strict
+legacy rejection, sync/async sockets, CTR/GCM rotations, deferred UDP bytes,
+MSS-bounded sparse NAKs, runtime state/liveness admission and KM retries.
+The optional fuzz target exercises raw and locally signed envelope inputs under
+ASan/UBSan. OpenSSL/Mbed TLS cross-provider peers exercise bidirectional rotation
+for 16/24/32-byte DATA keys. Windows BCrypt qualification remains CI-dependent.
+
+These are implementation checks, not independent cryptographic review. Review
+must assess KDF strength/key separation, negotiation/transcript coverage,
+replay/loss behavior, lifecycle ordering, coverage of future controls and
+resource/performance limits before any supported-profile decision. No upstream
+implementation source or private ACP draft was used; the code is independently
+authored from the public issue and [RFC 2104](https://www.rfc-editor.org/rfc/rfc2104)
+/[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869) primitive contracts.

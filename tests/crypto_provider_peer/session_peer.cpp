@@ -56,12 +56,13 @@ void send(SRTSOCKET socket, unsigned message)
 int main(int argc, char** argv)
 {
     try {
-        if (argc != 6)
-            throw std::runtime_error(
-                "usage: peer caller|listener port auth key-bytes ctr|gcm");
+        if (argc != 6 && argc != 7)
+            throw std::runtime_error("usage: peer caller|listener port auth "
+                                     "key-bytes ctr|gcm [acp1]");
         check(srt_startup());
         const bool caller = std::string(argv[1]) == "caller";
         const bool authenticated = std::stoi(argv[3]) != 0;
+        const bool acp1 = argc == 7 && std::stoi(argv[6]) != 0;
         const bool gcm = std::string(argv[5]) == "gcm";
         const char* passphrase = std::getenv("SRT_INTEROP_PASSPHRASE");
         if (!passphrase || std::strlen(passphrase) < 10)
@@ -76,6 +77,12 @@ int main(int argc, char** argv)
             set(socket.handle, SRTO_ENFORCEDENCRYPTION, 1);
             set(socket.handle, SRTO_ROBOTWEAX_SESSIONAUTH,
                 authenticated ? 1 : 0);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+            set(socket.handle, SRTO_ROBOTWEAX_ACP1_REQUIRED, acp1 ? 1 : 0);
+#else
+            if (acp1)
+                throw std::runtime_error("ACP1 experimental build required");
+#endif
             set(socket.handle, SRTO_KMREFRESHRATE, 32);
             set(socket.handle, SRTO_KMPREANNOUNCE, 8);
             set(socket.handle, SRTO_RCVLATENCY, 0);
@@ -113,6 +120,14 @@ int main(int argc, char** argv)
                 check(accepted.handle);
                 transport = accepted.handle;
             }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+            bool active = false;
+            int active_size = sizeof(active);
+            check(srt_getsockflag(
+                transport, SRTO_ROBOTWEAX_ACP1_ACTIVE, &active, &active_size));
+            if (active != acp1)
+                throw std::runtime_error("ACP1 activation mismatch");
+#endif
             for (unsigned n = 0; n < messages; ++n) {
                 if (caller) {
                     send(transport, n);
@@ -142,7 +157,9 @@ int main(int argc, char** argv)
             std::cout << "{\"backend\":" << backend
                       << ",\"messages\":" << messages << ",\"session_auth\":"
                       << (authenticated ? "true" : "false") << ",\"mode\":\""
-                      << (gcm ? "gcm" : "ctr") << "\",\"integrity\":true}\n";
+                      << (gcm ? "gcm" : "ctr")
+                      << "\",\"acp1\":" << (acp1 ? "true" : "false")
+                      << ",\"integrity\":true}\n";
         }
         check(srt_cleanup());
         return 0;

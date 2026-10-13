@@ -41,6 +41,8 @@ option(ROBOTWEAX_SRT_SENDER_DROP_TRACE
     "Enable the Linux sender-drop JSONL diagnostic" OFF)
 option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
     "Install opt-in srt.pc metadata for libsrt-compatible consumers" OFF)
+option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
+    "Enable unreviewed experimental authenticated runtime controls" OFF)
 option(ENABLE_MAXREXMITBW "Enable optional retransmission bandwidth limit" OFF)
 option(ENABLE_AEAD_API_PREVIEW
     "Enable the version-pinned AES-GCM extension API" OFF)
@@ -187,6 +189,9 @@ if(ROBOTWEAX_SRT_SENDER_DROP_TRACE)
 endif()
 if(ENABLE_MAXREXMITBW)
     target_compile_definitions(robotweax_srt PUBLIC ENABLE_MAXREXMITBW)
+endif()
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
+    target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_ACP1)
 endif()
 if(ENABLE_AEAD_API_PREVIEW)
     target_compile_definitions(robotweax_srt
@@ -367,6 +372,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_connect_variants.cpp
         tests/test_demo_text.cpp
         tests/test_crypto.cpp
+        tests/test_acp1.cpp
         tests/test_fec.cpp
         tests/test_file.cpp
         tests/test_file_io.cpp
@@ -425,13 +431,17 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     # Keep transport-runtime, expensive encryption and retention regressions in
     # separate bounded runs. Every native case runs in exactly one partition.
     add_test(NAME robotweax_srt_tests
-        COMMAND robotweax_srt_tests --exclude compat_runtime_
+        COMMAND robotweax_srt_tests --exclude acp1 compat_runtime_
             compat_group_closed_member_retains_bounded_copy key_length
             srt_compat_gcm_ srt_compat_sensor_gcm_bounded_sample_stream_
             srt_compat_bind_acquire srt_compat_connection_local_name_
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover)
+    add_test(NAME robotweax_srt_acp1_tests
+        COMMAND robotweax_srt_tests --include acp1)
+    set_tests_properties(robotweax_srt_acp1_tests
+        PROPERTIES TIMEOUT 30 LABELS "encryption;experimental;acp1")
     # Native standby profiles each retain their own bounded 7s measurement
     # window; do not charge all profiles to the existing 30s unit partition.
     add_test(NAME robotweax_srt_standby_rtt_plain_group_tests
@@ -1818,6 +1828,12 @@ if(ROBOTWEAX_SRT_BUILD_FUZZERS)
     target_link_options(fuzz_fec_control_decode
         PRIVATE -fsanitize=fuzzer,address,undefined)
 
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
+        add_executable(fuzz_acp1_control_open fuzz/fuzz_acp1_control_open.cpp)
+        target_link_libraries(fuzz_acp1_control_open PRIVATE RobotweaxSRT::srt)
+        target_compile_options(fuzz_acp1_control_open PRIVATE -fsanitize=fuzzer,address,undefined)
+        target_link_options(fuzz_acp1_control_open PRIVATE -fsanitize=fuzzer,address,undefined)
+    endif()
     add_executable(fuzz_aead_packet_open
         fuzz/fuzz_aead_packet_open.cpp)
     target_link_libraries(fuzz_aead_packet_open
@@ -1873,6 +1889,9 @@ if(ROBOTWEAX_SRT_BUILD_FUZZERS)
     set(ROBOTWEAX_SRT_PC_LINK_OPTIONS " -fsanitize=fuzzer-no-link,address,undefined")
 endif()
 set(ROBOTWEAX_SRT_PC_CFLAGS "")
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
+    string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DROBOTWEAX_SRT_EXPERIMENTAL_ACP1")
+endif()
 if(ENABLE_AEAD_API_PREVIEW)
     string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DENABLE_AEAD_API_PREVIEW")
 endif()

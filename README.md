@@ -246,3 +246,8 @@ issue.
 
 Third-party attributions are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
 Robotweax SRT is distributed under the terms in [LICENSE](LICENSE).
+
+The development tree also contains a default-off, unreviewed
+[experimental ACP1 prototype](docs/experimental-acp1.md) for authenticated
+runtime controls. It requires explicit build and socket opt-in on both peers
+and is outside the supported security and interoperability profiles.

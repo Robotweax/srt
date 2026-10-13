@@ -63,6 +63,7 @@ enum class SocketOption : std::uint16_t {
     maximum_retransmission_bandwidth_bytes_per_second,
 #endif
     session_authentication,
+    experimental_acp1,
 };
 
 struct SocketOptionResult {
@@ -127,6 +128,10 @@ public:
     [[nodiscard]] bool session_authentication() const noexcept
     {
         return session_authentication_;
+    }
+    [[nodiscard]] bool experimental_acp1() const noexcept
+    {
+        return experimental_acp1_;
     }
     [[nodiscard]] bool enforced_encryption() const noexcept
     {
@@ -290,6 +295,7 @@ private:
         packet_filter_configuration_{};
     bool enforced_encryption_ = true;
     bool session_authentication_ = false;
+    bool experimental_acp1_ = false;
     bool rendezvous_ = false;
     bool message_api_ = true;
     TransmissionType transmission_type_ = TransmissionType::live;

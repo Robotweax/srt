@@ -113,7 +113,7 @@ void exercise_gcm_fec_geometry(std::string_view filter,
     std::uint32_t source_count, std::span<const std::uint32_t> dropped_sources,
     std::size_t expected_filter_packets, std::size_t expected_supplied_packets,
     bool corrupt_parity = false, bool protect_parity = false,
-    bool full_payload = false)
+    bool full_payload = false, bool acp1 = false)
 {
     const auto sender_channel = std::make_shared<DatagramChannel>();
     const auto receiver_channel = std::make_shared<DatagramChannel>();
@@ -158,13 +158,20 @@ void exercise_gcm_fec_geometry(std::string_view filter,
     REQUIRE_EQ(
         options.set(SocketOption::receive_buffer_packets, 64), Error::none);
     REQUIRE_EQ(options.set_packet_filter(filter), Error::none);
+    if (acp1)
+        REQUIRE_EQ(
+            options.set(SocketOption::experimental_acp1, 1), Error::none);
     if (protect_parity) {
         REQUIRE_EQ(
             options.set(SocketOption::session_authentication, 1), Error::none);
         REQUIRE_EQ(
-            sender_crypto->start_session_authentication(true), Error::none);
+            sender_crypto->start_session_authentication(true,
+                acp1 ? acp1_session_version : session_authentication_version),
+            Error::none);
         REQUIRE_EQ(
-            receiver_crypto->start_session_authentication(false), Error::none);
+            receiver_crypto->start_session_authentication(false,
+                acp1 ? acp1_session_version : session_authentication_version),
+            Error::none);
         REQUIRE_EQ(receiver_crypto->establish_session_authentication(
                        sender_crypto->session_authentication()->parameters(),
                        720, 710),
@@ -12923,3 +12930,290 @@ TEST(compat_runtime_rtt_metadata_ages_survive_keepalive_clear_and_broken)
     REQUIRE_EQ(runtime.rtt_data().local_ackack_age_microseconds,
         ROBOTWEAX_SRT_RTT_AGE_UNAVAILABLE);
 }
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+namespace {
+struct AcpRuntimeFixture {
+    constexpr static std::string_view secret = "acp1-runtime-test-password";
+    const Ipv4Endpoint peer {.address = {192, 0, 2, 43}, .port = 14203};
+    CryptoSession caller {{.passphrase = secret, .key_length = 16}};
+    std::shared_ptr<CryptoSession> listener = std::make_shared<CryptoSession>(
+        CryptoConfiguration {.passphrase = secret, .key_length = 16});
+    std::shared_ptr<DatagramChannel> channel =
+        std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    std::vector<std::byte> initial_material;
+    std::uint64_t now = 1'000'000;
+    std::unique_ptr<ConnectionRuntime> runtime;
+    AcpRuntimeFixture(unsigned idle_ms = 5000, unsigned mss = 1500)
+    {
+        REQUIRE_EQ(caller.start_initiator(), Error::none);
+        initial_material.assign(caller.pending_key_material().begin(),
+            caller.pending_key_material().end());
+        REQUIRE_EQ(
+            listener->accept_key_material(caller.pending_key_material(), true),
+            Error::none);
+        REQUIRE_EQ(caller.acknowledge_key_material(
+                       listener->key_material_response(), true),
+            Error::none);
+        confirm_directional_test_keys(caller, *listener);
+        REQUIRE_EQ(caller.start_session_authentication(true, 3), Error::none);
+        REQUIRE_EQ(
+            listener->start_session_authentication(false, 3), Error::none);
+        REQUIRE_EQ(listener->establish_session_authentication(
+                       caller.session_authentication()->parameters(), 200, 100),
+            Error::none);
+        REQUIRE_EQ(
+            caller.establish_session_authentication(
+                listener->session_authentication()->parameters(), 100, 200),
+            Error::none);
+        channel->set_send_hook_for_testing(capture_datagram, &output);
+        SocketOptions options;
+        REQUIRE_EQ(options.set_passphrase(secret), Error::none);
+        REQUIRE_EQ(
+            options.set(SocketOption::session_authentication, 1), Error::none);
+        REQUIRE_EQ(
+            options.set(SocketOption::experimental_acp1, 1), Error::none);
+        REQUIRE_EQ(
+            options.set(SocketOption::maximum_segment_size, mss), Error::none);
+        runtime = std::make_unique<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {.channel = channel,
+                .peer = peer,
+                .local_socket_id = 200,
+                .peer_socket_id = 100,
+                .initial_sequence = SequenceNumber {900},
+                .flow_window_packets = 256,
+                .options = options,
+                .origin = ConnectionRuntime::Clock::now(),
+                .handshake_arrival_microseconds = now,
+                .peer_idle_timeout_milliseconds = idle_ms,
+                .crypto = listener,
+                .now_function = injected_now,
+                .now_context = &now});
+    }
+    std::vector<std::byte> wire(ControlType type,
+        std::span<const std::byte> payload = {}, std::uint16_t subtype = 0,
+        bool protect = true)
+    {
+        std::array<std::byte, 1500> bytes {}, sealed {};
+        const auto encoded = encode_packet(
+            {.kind = PacketKind::control,
+                .control = {.type = type,
+                    .subtype = subtype,
+                    .timestamp =
+                        PacketTimestamp {static_cast<std::uint32_t>(now)},
+                    .destination_socket_id = 200},
+                .payload = payload},
+            bytes);
+        REQUIRE(encoded);
+        std::size_t written = encoded.bytes_written;
+        if (protect) {
+            REQUIRE_EQ(caller.session_authentication()->seal_control(
+                           std::span {bytes}.first(written), sealed, written),
+                Error::none);
+            return {sealed.begin(),
+                sealed.begin() + static_cast<std::ptrdiff_t>(written)};
+        }
+        return {bytes.begin(),
+            bytes.begin() + static_cast<std::ptrdiff_t>(written)};
+    }
+    void deliver(std::span<const std::byte> bytes)
+    {
+        const auto decoded = decode_packet(bytes);
+        REQUIRE(decoded);
+        runtime->process_packet(decoded.packet, peer);
+    }
+};
+}
+TEST(acp1_runtime_rejects_bare_tampered_ack_drop_shutdown_and_peer_error)
+{
+    AcpRuntimeFixture fixture;
+    const std::array<std::byte, 4> payload {std::byte {'x'}};
+    REQUIRE_EQ(
+        fixture.runtime->queue_message(payload, 0, true, false, -1).status,
+        MessageIoStatus::success);
+    fixture.now += 1000;
+    (void)fixture.runtime->poll();
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().unacknowledged_send, 1U);
+    (void)take_datagrams(fixture.output);
+    std::array<std::byte, 64> ack {};
+    const auto encoded = encode_acknowledgement_payload(
+        {.kind = AcknowledgementKind::lite,
+            .next_sequence = SequenceNumber {901}},
+        ack);
+    REQUIRE(encoded);
+    for (auto type :
+        {ControlType::acknowledgement, ControlType::acknowledgement_of_ack,
+            ControlType::negative_acknowledgement, ControlType::drop_request,
+            ControlType::keepalive, ControlType::shutdown,
+            ControlType::peer_error}) {
+        std::array<std::byte, 8> body {};
+        const auto bytes = type == ControlType::acknowledgement
+            ? std::span<const std::byte> {ack}.first(encoded.bytes_written)
+            : std::span<const std::byte> {body}.first(
+                  type == ControlType::drop_request ? 8 : 4);
+        fixture.deliver(fixture.wire(type, bytes, 0, false));
+        auto tampered = fixture.wire(type, bytes);
+        tampered.back() ^= std::byte {1};
+        fixture.deliver(tampered);
+        REQUIRE(!fixture.runtime->broken());
+        REQUIRE_EQ(
+            fixture.runtime->buffer_packet_counts().unacknowledged_send, 1U);
+    }
+    REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                   .total.received_acknowledgements,
+        0U);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, true).total.received_loss_reports,
+        0U);
+    REQUIRE(take_datagrams(fixture.output).empty());
+    const auto valid = fixture.wire(ControlType::acknowledgement,
+        std::span {ack}.first(encoded.bytes_written));
+    fixture.deliver(valid);
+    REQUIRE_EQ(fixture.runtime->buffer_packet_counts().unacknowledged_send, 0U);
+    const auto count = fixture.runtime->statistics(false, true)
+                           .total.received_acknowledgements;
+    fixture.deliver(valid);
+    REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                   .total.received_acknowledgements,
+        count);
+    fixture.deliver(fixture.wire(ControlType::shutdown));
+    REQUIRE(fixture.runtime->broken());
+}
+TEST(acp1_runtime_replay_and_bare_controls_cannot_extend_idle_timeout)
+{
+    AcpRuntimeFixture fixture {5};
+    fixture.now += 3000;
+    const auto keepalive = fixture.wire(ControlType::keepalive);
+    fixture.deliver(keepalive);
+    fixture.now += 4000;
+    fixture.deliver(keepalive); // replayed valid control is not liveness
+    fixture.deliver(fixture.wire(ControlType::keepalive, {}, 0, false));
+    fixture.now += 2000;
+    (void)fixture.runtime->poll();
+    REQUIRE(fixture.runtime->broken());
+    const auto output = take_datagrams(fixture.output);
+    bool shutdown = false;
+    for (const auto& bytes : output) {
+        const auto outer = decode_packet(bytes);
+        REQUIRE(outer);
+        REQUIRE_EQ(outer.packet.control.subtype, authenticated_control_subtype);
+        PacketView inner;
+        REQUIRE(fixture.caller.session_authentication()->open_control(
+            outer.packet, inner));
+        shutdown |= inner.control.type == ControlType::shutdown;
+    }
+    REQUIRE(shutdown);
+}
+TEST(acp1_runtime_km_retries_use_new_envelopes_and_idempotent_inner_counters)
+{
+    AcpRuntimeFixture fixture;
+    const auto& material = fixture.initial_material;
+    std::array<std::byte, 256> km {};
+    std::size_t size = 0;
+    REQUIRE_EQ(fixture.caller.session_authentication()->seal(
+                   false, material, km, size),
+        Error::none);
+    const auto body = std::span {km}.first(size);
+    const auto first = fixture.wire(
+        ControlType::user_defined, body, authenticated_key_request_subtype);
+    const auto retry = fixture.wire(
+        ControlType::user_defined, body, authenticated_key_request_subtype);
+    REQUIRE(first != retry);
+    fixture.deliver(first);
+    fixture.deliver(retry);
+    fixture.deliver(first);
+    const auto responses = take_datagrams(fixture.output);
+    REQUIRE_EQ(responses.size(), 2U);
+    for (const auto& bytes : responses) {
+        const auto outer = decode_packet(bytes);
+        REQUIRE(outer);
+        PacketView inner;
+        REQUIRE(fixture.caller.session_authentication()->open_control(
+            outer.packet, inner));
+        REQUIRE_EQ(inner.control.subtype, authenticated_key_response_subtype);
+        std::span<const std::byte> opened;
+        REQUIRE(fixture.caller.session_authentication()->open(
+            true, inner.payload, opened));
+    }
+    REQUIRE(!fixture.runtime->broken());
+}
+TEST(acp1_runtime_deferred_control_preserves_exact_sealed_bytes)
+{
+    AcpRuntimeFixture fixture;
+    struct Attempts {
+        std::vector<std::vector<std::byte>> bytes;
+        bool blocked = true;
+    } attempts;
+    fixture.channel->set_send_hook_for_testing(
+        [](std::span<const std::byte> bytes, Ipv4Endpoint,
+            void* context) noexcept -> UdpIoResult {
+            auto& state = *static_cast<Attempts*>(context);
+            state.bytes.emplace_back(bytes.begin(), bytes.end());
+            return state.blocked
+                ? UdpIoResult {.error = Error::would_block}
+                : UdpIoResult {.bytes_transferred = bytes.size()};
+        },
+        &attempts);
+    fixture.now += 1'300'000;
+    (void)fixture.runtime->poll();
+    REQUIRE(!attempts.bytes.empty());
+    const auto first = attempts.bytes.front();
+    attempts.blocked = false;
+    fixture.now += 1000;
+    (void)fixture.runtime->poll();
+    REQUIRE(attempts.bytes.size() >= 2U);
+    REQUIRE_EQ(attempts.bytes[1], first);
+    REQUIRE_EQ(decode_packet(first).packet.control.subtype,
+        authenticated_control_subtype);
+    REQUIRE(!fixture.runtime->broken());
+}
+TEST(acp1_runtime_splits_sparse_naks_to_fit_small_mss)
+{
+    AcpRuntimeFixture fixture {5000, 256};
+    for (unsigned i = 0; i < 100; ++i) {
+        const SequenceNumber sequence {901 + 2 * i};
+        const std::array payload {std::byte {'x'}};
+        EncryptionKey key {};
+        const auto encrypted =
+            encrypt_fixture(fixture.caller, sequence, payload, key);
+        fixture.runtime->process_packet(
+            {.kind = PacketKind::data,
+                .data = {.sequence = sequence,
+                    .message_number = i + 1,
+                    .boundary = MessageBoundary::solo,
+                    .encryption_key = key},
+                .payload = encrypted},
+            fixture.peer);
+    }
+    fixture.now += 1'000'000;
+    (void)fixture.runtime->poll();
+    unsigned naks = 0;
+    for (const auto& bytes : take_datagrams(fixture.output)) {
+        REQUIRE(bytes.size() <= 256U - 48U);
+        const auto outer = decode_packet(bytes);
+        REQUIRE(outer);
+        PacketView inner;
+        // Very old reports may legitimately leave the 64-packet window.
+        if (!fixture.caller.session_authentication()->open_control(
+                outer.packet, inner))
+            continue;
+        if (inner.control.type == ControlType::negative_acknowledgement)
+            ++naks;
+    }
+    REQUIRE(naks > 1U);
+    REQUIRE(!fixture.runtime->broken());
+}
+#endif
+
+#if defined(ROBOTWEAX_SRT_EXPERIMENTAL_ACP1) && defined(ENABLE_AEAD_API_PREVIEW)
+TEST(acp1_runtime_gcm_fec_recovers_with_authenticated_parity_and_controls)
+{
+    constexpr std::array row_dropped {0U};
+    exercise_gcm_fec_geometry("fec,cols:2,rows:1,arq:onreq", 2U, row_dropped,
+        1U, 1U, false, true, true, true);
+    constexpr std::array matrix_dropped {0U, 1U, 3U, 5U, 8U};
+    exercise_gcm_fec_geometry("fec,cols:3,rows:3,layout:even,arq:onreq", 9U,
+        matrix_dropped, 6U, 5U, false, true, true, true);
+}
+#endif
