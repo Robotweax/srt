@@ -1,4 +1,5 @@
 #include "compat/connection.hpp"
+#include "compat/acp1_group_context.hpp"
 #include "compat/random_identity.hpp"
 #include "local_endpoint_probe.hpp"
 
@@ -1085,9 +1086,7 @@ int listen_socket(
             && (!socket->native_options.session_authentication()
                 || !socket->native_options.encryption_enabled()
                 || !socket->native_options.enforced_encryption()
-                || socket->public_options.group_connect
                 || socket->public_options.rendezvous
-                || socket->group_id != SRT_INVALID_SOCK
                 || socket->native_options.maximum_segment_size() < 256U))
             return fail(SRT_ESECFAIL);
         if (socket->public_options.standby_rtt_required
@@ -1526,19 +1525,32 @@ public:
             if (message.packet.request == HandshakeRequest::induction) {
                 if (setup_.crypto->start_session_authentication(true,
                         setup_.options.experimental_acp1()
-                            ? acp1_session_version
+                            ? (setup_.configuration.has_group_membership
+                                      ? acp1_group_session_version
+                                      : acp1_session_version)
                             : session_authentication_version)
                     != Error::none)
                     return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                 local_parameters =
                     setup_.crypto->session_authentication()->parameters();
             } else if (message.packet.request == HandshakeRequest::conclusion) {
+                const auto context =
+                    acp1_group_context(setup_.configuration.group_membership,
+                        message.group_membership,
+                        setup_.configuration.path_identifier,
+                        message.has_standby_rtt, message.standby_rtt);
+                const bool group_auth = setup_.options.experimental_acp1()
+                    && setup_.configuration.has_group_membership;
+                if (group_auth && !message.has_group_membership)
+                    return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_GROUP);
                 if (!message.has_session_authentication
                     || !message.has_key_material_extension
                     || setup_.crypto->establish_session_authentication(
                            message.session_authentication,
                            setup_.configuration.local_socket_id,
-                           message.packet.socket_id)
+                           message.packet.socket_id, 0, 0,
+                           group_auth ? std::span<const std::byte> {context}
+                                      : std::span<const std::byte> {})
                         != Error::none)
                     return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
                 auto* authentication = setup_.crypto->session_authentication();
@@ -1634,8 +1646,11 @@ public:
             socket_.peer_connection_initial_sequence =
                 protocol.peer_initial_sequence().value();
         }
-        finish_connect(socket_, SRTS_CONNECTED, peer_, driver_.peer_socket_id(),
-            message.packet.maximum_transmission_unit, protocol);
+        const bool staged = finish_connect(socket_, SRTS_CONNECTED, peer_,
+            driver_.peer_socket_id(), message.packet.maximum_transmission_unit,
+            protocol);
+        if (setup_.options.experimental_acp1() && !staged)
+            return fail_connect(socket_, SRT_ESECFAIL, 0);
         if (socket_was_closed(socket_)) {
             return fail(SRT_ESCLOSED);
         }
@@ -3556,10 +3571,11 @@ int connect_socket(
             && (!socket->native_options.session_authentication()
                 || !socket->native_options.encryption_enabled()
                 || !socket->native_options.enforced_encryption()
-                || socket->public_options.group_connect
-                || socket->group_id != SRT_INVALID_SOCK
                 || socket->native_options.maximum_segment_size() < 256U))
             return fail(SRT_ESECFAIL);
+        if (socket->public_options.rendezvous
+            && socket->group_id != SRT_INVALID_SOCK)
+            return fail(SRT_EINVOP);
         if ((socket->native_options.requires_authenticated_data()
                 || socket->native_options.session_authentication())
             && !socket->native_options.encryption_enabled()) {
@@ -4214,8 +4230,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         && (!native_options.session_authentication()
             || !native_options.encryption_enabled()
             || !native_options.enforced_encryption()
-            || public_options.group_connect || public_options.rendezvous
-            || conclusion.has_group_membership
+            || public_options.rendezvous
             || native_options.maximum_segment_size() < 256U)) {
         policy_rejected = true;
         policy_rejection = SRT_REJ_UNSECURE;
@@ -4229,7 +4244,9 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
                     || !conclusion.session_authentication.is_offer()
                     || conclusion.session_authentication.version
                         != (native_options.experimental_acp1()
-                                ? acp1_session_version
+                                ? (conclusion.has_group_membership
+                                          ? acp1_group_session_version
+                                          : acp1_session_version)
                                 : session_authentication_version))))) {
         policy_rejected = true;
         policy_rejection = SRT_REJ_UNSECURE;
@@ -4260,6 +4277,44 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         policy_rejection = SRT_REJ_GROUP;
         policy_error = SRT_ECONNREJ;
     }
+    GroupMembership authenticated_local_group {};
+    StandbyRttNonce authenticated_standby_nonce {};
+    if (!policy_rejected && native_options.experimental_acp1()
+        && conclusion.has_group_membership) {
+        bool listener_required = false;
+        {
+            std::lock_guard lock(listener->mutex);
+            listener_required = listener->native_options.experimental_acp1();
+        }
+        if (!listener_required
+            || !group_admission.prepare(
+                conclusion.group_membership, authenticated_local_group)) {
+            policy_rejected = true;
+            policy_rejection = SRT_REJ_GROUP;
+            policy_error = SRT_ESECFAIL;
+        }
+    }
+    // A callback cannot turn off the listener's strict policy for a group join.
+    if (!policy_rejected && conclusion.has_group_membership) {
+        std::lock_guard lock(listener->mutex);
+        if (listener->native_options.experimental_acp1()
+            != native_options.experimental_acp1()) {
+            policy_rejected = true;
+            policy_rejection = SRT_REJ_GROUP;
+            policy_error = SRT_ESECFAIL;
+        }
+    }
+    if (public_options.standby_rtt_required) {
+        const auto nonce = random_standby_rtt_nonce();
+        if (!nonce)
+            return close_with_error(SRT_ESYSOBJ);
+        authenticated_standby_nonce = *nonce;
+    }
+    const auto group_context = acp1_group_context(conclusion.group_membership,
+        authenticated_local_group, conclusion.path_identifier,
+        public_options.standby_rtt_required,
+        {.caller = conclusion.standby_rtt.caller,
+            .listener = authenticated_standby_nonce});
     SessionAuthenticationParameters session_response {},
         session_confirmation {};
     std::shared_ptr<CryptoSession> crypto;
@@ -4354,12 +4409,18 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         if (crypto == nullptr
             || crypto->start_session_authentication(false,
                    native_options.experimental_acp1()
-                       ? acp1_session_version
+                       ? (conclusion.has_group_membership
+                                 ? acp1_group_session_version
+                                 : acp1_session_version)
                        : session_authentication_version)
                 != Error::none
             || crypto->establish_session_authentication(
                    conclusion.session_authentication,
-                   accepted->protocol_socket_id, caller_socket_id)
+                   accepted->protocol_socket_id, caller_socket_id, 0, 0,
+                   native_options.experimental_acp1()
+                           && conclusion.has_group_membership
+                       ? std::span<const std::byte> {group_context}
+                       : std::span<const std::byte> {})
                 != Error::none
             || crypto->session_authentication()->handshake_proof(
                    false, conclusion.key_material.view(), session_response)
@@ -4417,10 +4478,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     configuration.hsv5.require_standby_rtt =
         public_options.standby_rtt_required;
     if (public_options.standby_rtt_required) {
-        const auto nonce = random_standby_rtt_nonce();
-        if (!nonce)
-            return close_with_error(SRT_ESYSOBJ);
-        configuration.hsv5.standby_rtt_nonce = *nonce;
+        configuration.hsv5.standby_rtt_nonce = authenticated_standby_nonce;
     }
     configuration.hsv5.require_path_identifier =
         public_options.path_identifier_required;

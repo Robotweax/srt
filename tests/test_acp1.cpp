@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "test.hpp"
+#include "compat/acp1_group_context.hpp"
 #include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/session_authentication.hpp"
 #include "srt/srt.h"
@@ -160,6 +161,12 @@ TEST(acp1_build_gate_and_private_option_contract)
                    sizeof(enabled)),
         SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    auto* config = srt_create_config();
+    REQUIRE(config != nullptr);
+    const auto added = srt_config_add(
+        config, SRTO_ROBOTWEAX_ACP1_REQUIRED, &enabled, sizeof(enabled));
+    srt_delete_config(config);
+    REQUIRE_EQ(added, SRT_ERROR);
     bool active = true;
     int size = sizeof(active);
     REQUIRE_EQ(
@@ -182,9 +189,7 @@ TEST(acp1_build_gate_and_private_option_contract)
     REQUIRE_EQ(srt_setsockflag(small_mss, SRTO_ROBOTWEAX_ACP1_REQUIRED,
                    &enabled, sizeof(enabled)),
         SRT_ERROR);
-    REQUIRE_EQ(
-        srt_setsockflag(socket, SRTO_GROUPCONNECT, &enabled, sizeof(enabled)),
-        SRT_ERROR);
+    set(socket, SRTO_GROUPCONNECT, 1);
     set(socket, SRTO_RENDEZVOUS, 1);
     set(socket, SRTO_ROBOTWEAX_SESSIONAUTH, 1);
     const int disabled = 0;
@@ -196,15 +201,16 @@ TEST(acp1_build_gate_and_private_option_contract)
         set(other, option, 1);
         REQUIRE_EQ(srt_setsockflag(other, SRTO_ROBOTWEAX_ACP1_REQUIRED,
                        &enabled, sizeof(enabled)),
-            SRT_ERROR);
+            0);
     }
     const auto group = srt_create_group(SRT_GTYPE_BROADCAST);
     REQUIRE(group != SRT_INVALID_SOCK);
     sockets.handles.push_back(group);
     REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_ACP1_REQUIRED, &enabled,
                    sizeof(enabled)),
-        SRT_ERROR);
-    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+        0);
+    REQUIRE(flag(group, SRTO_ROBOTWEAX_ACP1_REQUIRED));
+    REQUIRE(!flag(group, SRTO_ROBOTWEAX_ACP1_ACTIVE));
     REQUIRE(!flag(socket, SRTO_ROBOTWEAX_ACP1_ACTIVE));
 #endif
 }
@@ -492,5 +498,80 @@ TEST(acp1_rendezvous_cookie_binding_known_answer_and_profile_separation)
     establish(
         legacy_initiator, legacy_responder); // identical nonces/IDs, version 3
     REQUIRE(!open(legacy_responder, wire));
+}
+TEST(acp1_groups_context_known_answer_tamper_and_cross_member_replay)
+{
+    using namespace robotweax::srt::compat;
+    constexpr std::string_view secret = "acp1-test-password";
+    const auto pass = std::as_bytes(std::span {secret.data(), secret.size()});
+    PathIdentifier path {};
+    path.size = 3;
+    path.bytes[0] = std::byte {'o'};
+    path.bytes[1] = std::byte {'n'};
+    path.bytes[2] = std::byte {'e'};
+    StandbyRttIdentity standby {};
+    standby.caller.fill(std::byte {1});
+    standby.listener.fill(std::byte {2});
+    const auto context =
+        acp1_group_context({0x40000001, GroupType::backup, 0, 7},
+            {0x40000002, GroupType::backup, 0, 7}, path, true, standby);
+    Provider provider;
+    SessionAuthentication caller(provider), listener(provider);
+    REQUIRE_EQ(caller.start(true, 5), Error::none);
+    REQUIRE_EQ(listener.start(false, 5), Error::none);
+    REQUIRE_EQ(listener.establish(pass, caller.parameters(), 102, 101),
+        Error::invalid_key_material);
+    REQUIRE_EQ(
+        listener.establish(pass, caller.parameters(), 102, 101, 0, 0, context),
+        Error::none);
+    REQUIRE_EQ(
+        caller.establish(pass, listener.parameters(), 101, 102, 0, 0, context),
+        Error::none);
+    const auto wire = seal(caller, control());
+    constexpr std::string_view expected_tag =
+        "3ed2f4f8b4c00ddd5f6b1216fc112ae7529ac6ba6ec5453458f7a1a0825c4206";
+    constexpr char digits[] = "0123456789abcdef";
+    std::string tag;
+    for (const auto byte : std::span {wire}.last(32)) {
+        tag += digits[std::to_integer<unsigned>(byte) >> 4];
+        tag += digits[std::to_integer<unsigned>(byte) & 15];
+    }
+    REQUIRE_EQ(tag, expected_tag);
+    REQUIRE(open(listener, wire));
+    REQUIRE(!open(listener, wire));
+    SessionAuthenticationParameters proof;
+    constexpr std::array<std::byte, 4> initial {};
+    REQUIRE_EQ(listener.handshake_proof(false, initial, proof), Error::none);
+    REQUIRE(caller.verify_handshake(false, initial, proof));
+    for (std::size_t i = 0; i < context.size(); ++i) {
+        auto changed = context;
+        changed[i] ^= std::byte {1};
+        Provider other_provider;
+        SessionAuthentication other_caller(other_provider),
+            other_listener(other_provider);
+        REQUIRE_EQ(other_caller.start(true, 5), Error::none);
+        REQUIRE_EQ(other_listener.start(false, 5), Error::none);
+        REQUIRE_EQ(other_listener.establish(pass, other_caller.parameters(),
+                       102, 101, 0, 0, changed),
+            Error::none);
+        REQUIRE_EQ(other_caller.establish(pass, other_listener.parameters(),
+                       101, 102, 0, 0, changed),
+            Error::none);
+        REQUIRE(!open(other_listener, wire));
+        REQUIRE(!other_caller.verify_handshake(false, initial, proof));
+    }
+    Provider replacement_provider;
+    replacement_provider.next_byte = 64;
+    SessionAuthentication replacement_caller(replacement_provider),
+        replacement_listener(replacement_provider);
+    REQUIRE_EQ(replacement_caller.start(true, 5), Error::none);
+    REQUIRE_EQ(replacement_listener.start(false, 5), Error::none);
+    REQUIRE_EQ(replacement_listener.establish(pass,
+                   replacement_caller.parameters(), 102, 101, 0, 0, context),
+        Error::none);
+    REQUIRE_EQ(replacement_caller.establish(pass,
+                   replacement_listener.parameters(), 101, 102, 0, 0, context),
+        Error::none);
+    REQUIRE(!open(replacement_listener, wire));
 }
 #endif

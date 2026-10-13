@@ -85,6 +85,15 @@ jobs:
           --mbedtls-peer acp1-mbedtls-peer/crypto_session_peer
           --openssl-peer acp1-openssl-peer/crypto_session_peer
           --output acp1-evidence/rendezvous-cross-provider.json
+      - name: ACP1 Broadcast and Backup across providers
+        shell: bash
+        run: |
+          for group in broadcast backup; do
+            python3 interop/run_mbedtls_peers.py --acp1 --group "$group" \
+              --mbedtls-peer acp1-mbedtls-peer/crypto_session_peer \
+              --openssl-peer acp1-openssl-peer/crypto_session_peer \
+              --output "acp1-evidence/$group-cross-provider.json"
+          done
       - name: Sanitized envelope fuzzing
         if: runner.os == 'Linux'
         run: |

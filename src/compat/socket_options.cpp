@@ -1246,8 +1246,6 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         if (!read_boolean(value, value_size, parsed)) {
             return invalid_parameter();
         }
-        if (parsed && socket.native_options.experimental_acp1())
-            return invalid_parameter();
         options.group_connect = parsed;
         return 0;
     }
@@ -1341,10 +1339,10 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     case SRTO_ROBOTWEAX_ACP1_REQUIRED: {
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
         bool parsed = false;
-        if (!read_boolean(value, value_size, parsed)
-            || (parsed
-                && (options.group_connect
-                    || socket.group_id != SRT_INVALID_SOCK)))
+        if (!read_boolean(value, value_size, parsed))
+            return invalid_parameter();
+        if (socket.group_id != SRT_INVALID_SOCK
+            && parsed != socket.native_options.experimental_acp1())
             return invalid_parameter();
         return set_native(socket.native_options,
             SocketOption::experimental_acp1, parsed ? 1 : 0);

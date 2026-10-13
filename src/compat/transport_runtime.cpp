@@ -5109,13 +5109,28 @@ bool ConnectionRuntime::send_standby_rtt(
         return false;
     if (poll_send_budget_)
         --*poll_send_budget_;
-    const auto sent = channel->try_send_monitoring_datagram(bytes, peer_);
+    std::span<const std::byte> datagram = bytes;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+    std::array<std::byte,
+        standby_rtt_datagram_size + authenticated_control_overhead>
+        protected_bytes {};
+    if (options_.experimental_acp1()) {
+        std::size_t written = 0;
+        if (!crypto_ || !crypto_->session_authentication()
+            || crypto_->session_authentication()->seal_control(
+                   bytes, protected_bytes, written)
+                != Error::none)
+            return false;
+        datagram = std::span {protected_bytes}.first(written);
+    }
+#endif
+    const auto sent = channel->try_send_monitoring_datagram(datagram, peer_);
     // Monitoring has no retry queue or reliability/liveness/statistics update.
     // Hard native failures still use the normal terminal connection boundary.
     if ((!sent && sent.error != Error::would_block
             && !(sent.error == Error::io_error
                 && UdpSocket::is_transient_send_error(sent.system_error)))
-        || (sent && sent.bytes_transferred != bytes.size())) {
+        || (sent && sent.bytes_transferred != datagram.size())) {
         break_locked(sent.system_error);
         return false;
     }

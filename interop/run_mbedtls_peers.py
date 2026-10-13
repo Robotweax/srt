@@ -15,9 +15,12 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--acp1', action='store_true', help='Require experimental ACP1 on both peers')
     parser.add_argument('--rendezvous', action='store_true', help='Qualify ACP1 simultaneous-open peers')
+    parser.add_argument('--group', choices=['broadcast','backup'], help='Qualify ACP1 group joins and replacements')
     args=parser.parse_args()
     if args.rendezvous and not args.acp1:
         parser.error('--rendezvous requires --acp1')
+    if args.group and (not args.acp1 or args.rendezvous):
+        parser.error('--group requires --acp1 and excludes --rendezvous')
     environment=os.environ.copy()
     environment['SRT_INTEROP_PASSPHRASE']=secrets.token_hex(16)
     results=[]
@@ -34,6 +37,9 @@ def main():
                         common.append('1')
                     server_args=['listener',*common]
                     client_args=['caller',*common]
+                    if args.group:
+                        server_args=[args.group+'-listener',*common]
+                        client_args=[args.group+'-caller',*common]
                     if args.rendezvous:
                         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as left_probe, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as right_probe:
                             left_probe.bind(('127.0.0.1',0))
@@ -59,9 +65,11 @@ def main():
                             assert client_result['acp1'] and server_result['acp1']
                         if args.rendezvous:
                             assert client_result['rendezvous'] and server_result['rendezvous']
+                        if args.group:
+                            assert client_result['group']==server_result['group']==args.group
                         assert client_result['integrity'] and server_result['integrity']
                         assert {client_result['backend'],server_result['backend']}=={1,3}
-                        results.append(dict(mode=mode,session_auth=auth,acp1=args.acp1,rendezvous=args.rendezvous,key_bytes=key,
+                        results.append(dict(mode=mode,session_auth=auth,acp1=args.acp1,rendezvous=args.rendezvous,group=args.group,key_bytes=key,
                             caller_backend=client_result['backend'],listener_backend=server_result['backend'],
                             messages_each_direction=512,rotation_packets=32,integrity=True))
                     finally:

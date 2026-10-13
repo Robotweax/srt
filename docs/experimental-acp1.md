@@ -30,8 +30,8 @@ srt_setsockflag(socket, SRTO_ROBOTWEAX_ACP1_REQUIRED, &enabled, sizeof(enabled))
 
 | Private option | Contract |
 | --- | --- |
-| `SRTO_ROBOTWEAX_ACP1_REQUIRED` (`0x0100000c`) | PRE boolean, default false; inherited by accepted sockets |
-| `SRTO_ROBOTWEAX_ACP1_ACTIVE` (`0x0100000d`) | Read-only boolean, true only on an established ACP1 connection |
+| `SRTO_ROBOTWEAX_ACP1_REQUIRED` (`0x0100000c`) | PRE boolean, default false; inherited by accepted sockets and group members |
+| `SRTO_ROBOTWEAX_ACP1_ACTIVE` (`0x0100000d`) | Read-only boolean; established ACP1 connection, or required group with at least one connected member and every connected member ACTIVE |
 
 Both options return `SRT_EINVOP` in builds without the experimental gate.
 Enabling REQUIRED does not implicitly enable SESSIONAUTH, encryption or GCM;
@@ -41,8 +41,21 @@ negotiation with no Prefer mode or fallback. ACTIVE remains false during setup,
 in a listener callback, on a listening socket and after failed/terminal setup.
 
 The prototype supports ordinary Caller/Listener and Rendezvous sockets,
-including synchronous and asynchronous setup. Group handles, group member
-configurations and `SRTO_GROUPCONNECT` still reject opt-in.
+including synchronous and asynchronous setup, plus Broadcast and Backup
+Caller/Listener groups. Set REQUIRED and SESSIONAUTH on the caller group and
+GROUPCONNECT listener before opening them. Each join or replacement inherits
+that group policy; endpoint ACP1 overrides must match it. A registered member
+cannot change REQUIRED individually, and a listener callback cannot disable
+its listener's required group policy. Mirrored groups reject joins across
+ACP1 policies, including across bonded listeners. Group Rendezvous remains
+outside the existing group transport's supported modes.
+
+Group ACTIVE is false for an empty group or a group without REQUIRED. It is
+true when at least one member is connected and every connected member reports
+ACTIVE. Pending, broken and closed members do not count; surviving protected
+members can keep the group ACTIVE during join, replacement or failover.
+The query observes members individually and may conservatively return false
+during concurrent closure. It is an observation, not an authorization token.
 For Rendezvous, enable ACP1 before enabling SESSIONAUTH on an already configured
 Rendezvous socket, or before enabling Rendezvous on a SESSIONAUTH socket.
 SESSIONAUTH alone remains incompatible with Rendezvous. Disabling ACP1 while
@@ -53,8 +66,8 @@ cannot lower an ACP1 connection below that limit.
 
 With REQUIRED false, standard connections keep their existing API and wire
 behavior, including Haivision 1.5.7 interoperability. SESSIONAUTH alone still
-uses version 2 byte for byte. ACP1 requires version 3 for Caller/Listener or version 4 for Rendezvous on
-both peers: version-2
+uses version 2 byte for byte. ACP1 requires version 3 for ordinary Caller/Listener,
+version 4 for Rendezvous, or version 5 for group members on both peers: version-2
 SESSIONAUTH peers and stock Haivision peers cannot establish protected
 connections. These strict failures are part of the protection contract.
 Existing exported C functions and `SRTO_E_SIZE` are unchanged. The build gate
@@ -72,9 +85,10 @@ statistics and liveness mutations. Tags do not encrypt control content.
 | ACK, ACKACK, NAK, DROPREQ | Complete original header and payload inside ACP1 envelope |
 | KEEPALIVE, SHUTDOWN, PEERERROR, congestion warning | Same envelope, including normally unused header fields/padding |
 | Runtime KMREQ/KMRSP | Existing session-bound KM counters/tag, additionally inside ACP1 |
-| FEC parity | Existing separate session-bound FEC envelope, with the negotiated version-3/4 root/domain |
+| FEC parity | Existing separate session-bound FEC envelope, with the negotiated version-3/4/5 root/domain |
+| Backup standby RTT request/echo (`0x7f12`) | Version-5 ACP1 envelope before monitoring state; no reliability/liveness mutation |
 | Source DATA | Existing chosen cipher; ACP1 does not change the DATA wire format |
-| Handshake | Existing nonce/socket-ID/role/initial-KM proofs, with the negotiated version-3/4 root/domain |
+| Handshake | Existing nonce/socket-ID/role/initial-KM proofs, with the negotiated version-3/4/5 root/domain |
 
 Nested envelopes, unknown envelope versions and other user-defined runtime
 controls are rejected. New runtime subtypes must receive an explicit coverage
@@ -150,6 +164,43 @@ handshake/KM/FEC domains. They remain fixed for the connection lifetime and are
 securely erased with the session. Each new connection derives new keys from
 fresh nonces and the socket identities.
 
+## Group-member session binding
+
+Broadcast and Backup members select **version 5** in the same CONFIG record.
+Its root salt starts with `RWSRT-SESSION-5` and NUL, both 32-byte nonces and
+caller/listener socket IDs encoded as uint64, followed by this canonical
+88-byte group context. All integers use network order; absent fields are zero.
+
+| Offset | Bytes | Meaning |
+| --- | --- | --- |
+| 0 | 8 | Caller membership: uint32 group ID, uint8 type, uint8 flags, uint16 weight |
+| 8 | 8 | Listener membership with the same layout |
+| 16 | 4 | Path-label byte length, zero if absent |
+| 20 | 32 | Path-label bytes, padded with zeros |
+| 52 | 4 | Standby identity present: uint32 0 or 1 |
+| 56 | 16 | Caller standby nonce, zero if absent |
+| 72 | 16 | Listener standby nonce, zero if absent |
+
+The salt is 184 bytes. Handshake, KM and FEC MAC labels use version 5; directional
+control-key expansion is unchanged. Both proofs therefore bind both memberships,
+the path label and both standby identities through their member root. The
+listener reserves its mirror membership and standby nonce before computing the
+proof; rejection rolls the reservation back. The callback-only local GROUPDOMAIN
+is never serialized. Stream ID and the rest of the handshake retain the limits
+listed above.
+
+Every member owns a fresh nonce exchange, root, two control keys, KM counters,
+FEC counters and control replay window. No authentication state is shared with
+the group's DATA sequence cursor. Joining or replacing a member creates fresh
+state even when its path label and group ID are reused. DATA key rotation does
+not reset that state. Valid controls from another member fail authentication.
+
+Standby requests and echoes use the same per-member control counter/window as
+other runtime controls. The monitoring send path seals before its direct UDP
+send, preserves its skip-on-backpressure policy, and never queues probe retries.
+Skipped sends consume counters; later controls are still accepted within the
+normal bounded replay window. Versions 3 and 4 reject this group-only subtype.
+
 ## Runtime envelope
 
 The envelope uses SRT user-defined control type `0x7fff`, provisional subtype
@@ -218,6 +269,10 @@ MSS-bounded sparse NAKs, runtime state/liveness admission and KM retries.
 Rendezvous tests cover cookie binding/profile separation, final-proof loss,
 bare and signed early-packet rejection, bad proofs, both resolved roles,
 IPv4/IPv6, synchronous/asynchronous setup, rotation and unsupported peers.
+Group tests cover Broadcast/Backup, CTR/GCM rotation, late joins, replacements,
+strict policy, UDP membership/path/standby tampering, member replay isolation
+and standby authentication before monitoring mutations. Installed cross-provider
+peers additionally cover both group types with all key sizes and replacement.
 The optional fuzz target exercises raw and locally signed envelope inputs under
 ASan/UBSan. OpenSSL/Mbed TLS cross-provider peers exercise bidirectional rotation
 for 16/24/32-byte DATA keys in Caller/Listener and Rendezvous modes. Windows BCrypt qualification remains CI-dependent.

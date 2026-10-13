@@ -373,6 +373,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_demo_text.cpp
         tests/test_crypto.cpp
         tests/test_acp1.cpp
+        tests/test_acp1_groups.cpp
         tests/test_acp1_rendezvous.cpp
         tests/test_fec.cpp
         tests/test_file.cpp

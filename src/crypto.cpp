@@ -242,13 +242,14 @@ Error CryptoSession::start_session_authentication(
 Error CryptoSession::establish_session_authentication(
     const SessionAuthenticationParameters& peer, std::uint32_t local_socket_id,
     std::uint32_t peer_socket_id, std::uint32_t local_cookie,
-    std::uint32_t peer_cookie) noexcept
+    std::uint32_t peer_cookie,
+    std::span<const std::byte> group_context) noexcept
 {
     if (!session_authentication_)
         return Error::invalid_state;
     return session_authentication_->establish(
         std::span {passphrase_}.first(passphrase_size_), peer, local_socket_id,
-        peer_socket_id, local_cookie, peer_cookie);
+        peer_socket_id, local_cookie, peer_cookie, group_context);
 }
 
 CryptoSession::~CryptoSession()

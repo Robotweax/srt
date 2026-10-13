@@ -1,6 +1,7 @@
 #include "robotweax/srt/session_authentication.hpp"
 
 #include "robotweax/srt/codec.hpp"
+#include "robotweax/srt/standby_rtt.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -96,7 +97,8 @@ Error SessionAuthentication::start(bool caller, std::uint8_t version) noexcept
 Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
     const SessionAuthenticationParameters& peer, std::uint32_t local_socket_id,
     std::uint32_t peer_socket_id, std::uint32_t local_cookie,
-    std::uint32_t peer_cookie) noexcept
+    std::uint32_t peer_cookie,
+    std::span<const std::byte> group_context) noexcept
 {
     if (!started_ || ready_ || passphrase.empty() || !local_socket_id
         || !peer_socket_id)
@@ -104,6 +106,10 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
     if (parameters_.version == acp1_rendezvous_session_version
             ? (!local_cookie || !peer_cookie || local_cookie == peer_cookie)
             : (local_cookie != 0 || peer_cookie != 0))
+        return Error::invalid_key_material;
+    if (parameters_.version == acp1_group_session_version
+            ? group_context.size() != acp1_group_context_size
+            : !group_context.empty())
         return Error::invalid_key_material;
     if (peer.version != parameters_.version)
         return Error::invalid_key_material;
@@ -117,7 +123,7 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
             return Error::invalid_key_material;
         parameters_.caller_nonce = peer.caller_nonce;
     }
-    std::array<std::byte, 112> salt {};
+    std::array<std::byte, 96 + acp1_group_context_size> salt {};
     std::copy(domain_label.begin(), domain_label.end(), salt.begin());
     salt[14] =
         std::byte {static_cast<unsigned char>('0' + parameters_.version)};
@@ -137,8 +143,12 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
         put64(std::span {salt}.subspan<104, 8>(),
             caller_ ? peer_cookie : local_cookie);
     }
-    const auto result = provider_.pbkdf2_hmac_sha1(passphrase,
-        std::span {salt}.first(rendezvous ? 112U : 96U), 2048, key_);
+    std::copy(group_context.begin(), group_context.end(), salt.begin() + 96);
+    const auto salt_size = !group_context.empty() ? 96U + group_context.size()
+        : rendezvous                              ? 112U
+                                                  : 96U;
+    const auto result = provider_.pbkdf2_hmac_sha1(
+        passphrase, std::span {salt}.first(salt_size), 2048, key_);
     if (result != Error::none) {
         provider_.secure_erase(key_);
         return result;
@@ -356,7 +366,7 @@ bool SessionAuthentication::open_fec(const DataHeader& header,
 }
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
 namespace {
-bool acp1_control(const PacketView& packet) noexcept
+bool acp1_control(const PacketView& packet, std::uint8_t version) noexcept
 {
     if (packet.kind != PacketKind::control
         || !has_valid_control_payload_shape(packet.payload))
@@ -365,7 +375,9 @@ bool acp1_control(const PacketView& packet) noexcept
         return false;
     if (packet.control.type == ControlType::user_defined)
         return packet.control.subtype == authenticated_key_request_subtype
-            || packet.control.subtype == authenticated_key_response_subtype;
+            || packet.control.subtype == authenticated_key_response_subtype
+            || (version == acp1_group_session_version
+                && packet.control.subtype == standby_rtt_subtype);
     return packet.control.subtype == 0;
 }
 }
@@ -396,7 +408,7 @@ Error SessionAuthentication::seal_control(std::span<const std::byte> packet,
         || control_sent_counter_ == std::numeric_limits<std::uint64_t>::max())
         return Error::invalid_state;
     const auto decoded = decode_packet(packet);
-    if (!decoded || !acp1_control(decoded.packet))
+    if (!decoded || !acp1_control(decoded.packet, parameters_.version))
         return Error::invalid_control_type;
     const auto counter = control_sent_counter_ + 1;
     std::array<std::byte, 1500> wire {};
@@ -451,7 +463,7 @@ bool SessionAuthentication::open_control(
     const auto inner_bytes =
         envelope.payload.subspan(12, envelope.payload.size() - 44);
     const auto decoded = decode_packet(inner_bytes);
-    if (!decoded || !acp1_control(decoded.packet)
+    if (!decoded || !acp1_control(decoded.packet, parameters_.version)
         || decoded.packet.control.timestamp != envelope.control.timestamp
         || decoded.packet.control.destination_socket_id
             != envelope.control.destination_socket_id)

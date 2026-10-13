@@ -108,7 +108,7 @@ Without session authentication, compatible FEC parity remains unauthenticated.
 ## Experimental ACP1 prototype
 
 A separate default-off [experimental ACP1 build](experimental-acp1.md) adds
-strict session-authentication version 3 for Caller/Listener or version 4 for
-Rendezvous, with authenticated runtime controls. It is unreviewed and outside the supported
+strict session-authentication version 3 for Caller/Listener, version 4 for
+Rendezvous, or version 5 for Broadcast/Backup group members, with authenticated runtime controls. It is unreviewed and outside the supported
 security and Haivision interoperability boundary. SESSIONAUTH alone continues
 to use version 2; ordinary connections retain their existing behavior.

@@ -398,7 +398,8 @@ public:
     [[nodiscard]] Error establish_session_authentication(
         const SessionAuthenticationParameters& peer,
         std::uint32_t local_socket_id, std::uint32_t peer_socket_id,
-        std::uint32_t local_cookie = 0, std::uint32_t peer_cookie = 0) noexcept;
+        std::uint32_t local_cookie = 0, std::uint32_t peer_cookie = 0,
+        std::span<const std::byte> group_context = {}) noexcept;
     [[nodiscard]] SessionAuthentication* session_authentication() noexcept
     {
         return session_authentication_.get();
