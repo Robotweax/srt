@@ -1,0 +1,108 @@
+{
+  "version": "0.2.9",
+  "source": "80873657469344becb9c35f5306d0050ec5a566d",
+  "baseline": "09ceab33e1fc190472558fdb4d873f38b76fa320",
+  "resource_cases": 40,
+  "network_soaks": 2,
+  "cases_verified": 42,
+  "manifest_files": 588,
+  "thresholds": {
+    "cpu_per_gbit_increase_pct": 15,
+    "delivered_mbps_drop_pct": 10,
+    "rss_peak_increase_pct": 15
+  },
+  "paired_median_delta_pct": {
+    "single-50": {
+      "delivered_mbps": 0.0007993331390565572,
+      "cpu_s_per_gbit": 1.2649928928087917,
+      "rss_sum_mib": 0.5416666666666625
+    },
+    "multi-320": {
+      "delivered_mbps": -0.0001974178339581023,
+      "cpu_s_per_gbit": 0.31258479670330797,
+      "rss_sum_mib": 0.3779940119760461
+    },
+    "mild-320": {
+      "delivered_mbps": 0.010605095502214112,
+      "cpu_s_per_gbit": 3.190638440195337,
+      "rss_sum_mib": 0.3598645215918683
+    },
+    "gcm-fec-320": {
+      "delivered_mbps": -0.0019639300075091626,
+      "cpu_s_per_gbit": 2.0584390844789358,
+      "rss_sum_mib": 0.11296337826949276
+    }
+  },
+  "normalized_compiler_flags_equal": true,
+  "resource_thresholds_passed": true,
+  "archive_sha256": "93b5b74c3196749b02d728757596681c95f3a9e2d0d09a64b34b0047401ce6e5",
+  "declaration_sha256": "8d7470179faa431a6b113f4ff1d4c514755d67529a6531bb6b15bc7a019223da",
+  "limits": [
+    "selected loopback profiles only",
+    "separate process RSS peaks",
+    "no WAN/NIC/24h/all-platform claim",
+    "no Group-selection performance claim"
+  ],
+  "accepted": true,
+  "date": "2026-10-13",
+  "lab_revision": "1a829df546edb316bb336987c6daeed187f22f6c",
+  "host": {
+    "platform": "Linux ARM64",
+    "vcpus": 4,
+    "memory_gib": 6,
+    "swap": false,
+    "kernel": "6.8.0-138-generic",
+    "gcc": "13.3.0",
+    "cmake": "3.28.3",
+    "openssl": "3.0.13",
+    "workspace": "private 2GiB tmpfs, same for both variants"
+  },
+  "build_profile": "Release static OpenSSL; AEAD API preview ON, MAXREXMITBW default OFF",
+  "resource_method": {
+    "profiles": [
+      "1x50Mbps clean",
+      "32x10Mbps clean",
+      "32x10Mbps 20ms delay/5ms jitter/0.1% loss",
+      "32x10Mbps GCM/FEC clean"
+    ],
+    "pairs_per_profile": 5,
+    "seconds_per_case": 10,
+    "order": "five adjacent alternating baseline/candidate pairs per profile; no warm-up or failed-case replacement",
+    "rss": "sum of separate process peaks, not simultaneous system peak"
+  },
+  "soak_method": {
+    "streams": 32,
+    "mbps_per_stream": 5,
+    "seconds_per_case": 300,
+    "profiles": [
+      "CTR",
+      "GCM/FEC/SESSIONAUTH"
+    ],
+    "key_refresh": 10000,
+    "key_preannounce": 1000
+  },
+  "soak_payloads": [
+    {
+      "profile": "ctr-160",
+      "bytes": 6000033536,
+      "exact_integrity": true,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "profile": "gcm-fec-auth-160",
+      "bytes": 6000033536,
+      "exact_integrity": true,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    }
+  ],
+  "source_binding": "Frozen product matches preparation merge ce168060c241097b8af5b0cd9e8898027fb0ff09 on src/include/cmake/compat/CMakeLists.txt",
+  "verification": "All 42 original case seals and outcomes independently replayed with the pinned trusted host validator; source/archive/binary/descriptor/harness pins and equal compiler flags verified; original cases not repeated",
+  "cleanup": "Original loopback noqueue and both UDP maxima 212992 restored; own tmpfs unmounted and empty directory removed; evidence retained locally",
+  "raw_archive_publicly_uploaded": false
+}
