@@ -523,6 +523,18 @@ ListenerConnectionSetupDispatchStatus ListenerConnectionSetupActor::start(
     const ListenerConnectionSetupDispatchStatus source_status =
         source->start(overall_deadline);
     if (source_status != ListenerConnectionSetupDispatchStatus::completed) {
+        // A queued handshake can drive the actor to its terminal result on a
+        // scheduler thread before source startup returns; finishing stops the
+        // source. That result is already published to the result handler, so
+        // report a started actor instead of discarding a completed setup.
+        {
+            std::lock_guard lock(mutex_);
+            if (terminal_
+                && source_status
+                    == ListenerConnectionSetupDispatchStatus::stopped) {
+                return ListenerConnectionSetupDispatchStatus::completed;
+            }
+        }
         finish_failure(source_status);
         return source_status;
     }
