@@ -1,6 +1,6 @@
 # Public SRT API compatibility
 
-Robotweax SRT 0.2.7 provides a compatible public C boundary for the selected
+Robotweax SRT 0.2.9 provides a compatible public C boundary for the selected
 Haivision SRT v1.5.7 API profile. It is an independent implementation, not a
 source fork and not a claim of complete compatibility with every historical or
 future `libsrt` behavior.
@@ -18,9 +18,9 @@ differ, the manifest is authoritative.
 
 These values are intentionally independent:
 
-| Axis | Robotweax SRT 0.2.7 |
+| Axis | Robotweax SRT 0.2.9 |
 | --- | --- |
-| Project release | `0.2.7` |
+| Project release | `0.2.9` |
 | Shared-library ABI line | `0.2` |
 | Default compatible public API | Haivision SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -68,8 +68,8 @@ The CMake target is `RobotweaxSRT::srt`; POSIX installations also provide
 `robotweax-srt` library name by default. The explicit
 `ROBOTWEAX_SRT_INSTALL_LAYOUT=legacy` build option selects the conventional
 `srt` library name and include paths. The released 0.2.7/0.2.8 packages export an exact, versioned 80-symbol C ABI.
-The development branch adds optional group-path, RTT-history and Backup-sender
-observation entry points (83 symbols),
+Release 0.2.9 adds optional group-path, RTT-history, standby-RTT and
+Backup-sender observation entry points (84 exported symbols in total),
 with the existing structures and entry points unchanged. See
 [optional group path identifiers](group-path-identifiers.md) for its fixed v1
 layout and provider-availability rules.
@@ -125,7 +125,7 @@ released boundaries:
 | `SRTO_PACKETFILTER` | Built-in bounded `fec` grammar and documented geometries only |
 
 The default-off `SRTO_MAXREXMITBW` extension is outside the selected v1.5.7
-default profile. Development builds can enable `ENABLE_MAXREXMITBW`; see its
+default profile. Since 0.2.8 builds can opt in with `ENABLE_MAXREXMITBW`; see its
 [option contract](socket-options.md#optional-retransmission-bandwidth-limit).
 The published 0.2.7 binaries do not contain this extension. `SRTO_CRYPTOMODE` is present only in an extension build.
 `SYSSOCKET_INVALID` follows the platform's public `SYSSOCKET` representation.
@@ -346,7 +346,7 @@ the manifest as the contract.
 
 ## Compatibility limits
 
-Robotweax SRT 0.2.7 is not yet a link-compatible replacement for arbitrary
+Robotweax SRT 0.2.9 is not yet a link-compatible replacement for arbitrary
 `libsrt` applications. In particular:
 
 - HSv4 positive connection establishment is not supported in 0.2;
@@ -444,3 +444,14 @@ capacity-limited connections never manufacture a measurement. See the canonical
 for the activation profile, flags, errors, lifecycle, bounds and security limits.
 Discover or inject the new symbol from the exact loaded library; older and
 reference providers do not need to export or implement it.
+
+## Group admission callback migration (since 0.2.8)
+
+A listen callback admitting a group member must authorize it and set a nonzero
+`uint64_t` `SRTO_ROBOTWEAX_GROUPDOMAIN` on the provisional socket before
+returning success. Returning zero alone rejects the group member, unlike the
+Haivision callback contract. Use `SRTO_ROBOTWEAX_PEERGROUP` only as proposed
+peer metadata, never as proof of authorization. Later members must match the
+application's admission domain. Ordinary non-group callbacks are unaffected;
+listeners without a callback use the documented automatic group admission.
+See [group admission](connection-groups.md) for the complete domain contract.

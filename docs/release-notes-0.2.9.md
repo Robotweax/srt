@@ -124,3 +124,10 @@ runtime control remains the design-review subject of
 DATA GCM and optional session authentication do not authenticate all runtime
 controls. Consult [known limitations](limitations.md),
 [encryption](encryption.md) and [compatibility](compatibility.md).
+
+## Group callback migration reminder
+
+The 0.2.8 requirement remains in 0.2.9: a group-aware listen callback must set a
+nonzero `SRTO_ROBOTWEAX_GROUPDOMAIN` on the provisional socket after admission
+authorization. A Haivision-style callback that only returns zero rejects group
+members. See [migration guidance](api-compatibility.md#group-admission-callback-migration-since-028).

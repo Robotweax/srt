@@ -1,6 +1,6 @@
 # Optional group path identifiers
 
-This development-branch extension is absent from the published v0.2.8 artifacts.
+This extension was added in 0.2.9 and is absent from v0.2.8 artifacts.
 It adds receiver-visible caller labels to Live-mode Broadcast and Backup groups
 using Caller/Listener setup. Both peers must support and explicitly enable it;
 it is disabled by default. Enabled connections are not Haivision-compatible.

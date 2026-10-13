@@ -6,10 +6,14 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
-## 0.2.9 — Group Recovery and Observability — Candidate
+- Correct current wire/API documentation, option-reference bounds, group callback
+  migration guidance and release framing; runtime and ABI behavior are unchanged.
 
-Not published. See [candidate release notes](docs/release-notes-0.2.9.md) and
-[release acceptance](docs/release-process-0.2.9.md); 0.2.8 remains the latest release.
+## 0.2.9 — Group Recovery and Observability — 2026-10-13
+
+Published as [v0.2.9](https://github.com/Robotweax/srt/releases/tag/v0.2.9).
+See [release notes](docs/release-notes-0.2.9.md) and
+[release acceptance](docs/release-process-0.2.9.md).
 
 - Correct inactive Backup-member cursor resumption, inferior-probe cancellation,
   failed-probe progression and bounded idle-expired native-channel retirement.
@@ -30,6 +34,10 @@ Not published. See [candidate release notes](docs/release-notes-0.2.9.md) and
   hold-down, reconnect, RTT-selection, callback-metadata or mbedTLS feature.
 
 ## 0.2.8 — Runtime, Recovery and Security Hardening — 2026-10-08
+
+- Migration clarification: group-aware listen callbacks must set a nonzero
+  `SRTO_ROBOTWEAX_GROUPDOMAIN` after authorization. Returning success alone
+  rejects group members; ordinary callbacks are unchanged.
 
 Published as [v0.2.8](https://github.com/Robotweax/srt/releases/tag/v0.2.8) from tag commit `09ceab3`; immutable package product source `8126e16`. See [release notes](docs/release-notes-0.2.8.md) for the supported profiles, qualification and remaining limits.
 

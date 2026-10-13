@@ -1,6 +1,6 @@
 # Connection Groups
 
-Robotweax SRT 0.2.7 implements the Haivision SRT v1.5.7 Connection Group ABI
+Robotweax SRT 0.2.9 implements the Haivision SRT v1.5.7 Connection Group ABI
 for Live-mode Caller/Listener Broadcast and weighted Main/Backup operation.
 Groups provide one public handle over several SRT connections. Members retain
 independent crypto, transport-sequence, and congestion state.
@@ -191,7 +191,7 @@ type, ISN, or unsupported flag is rejected before the connection is published.
 
 ## Optional receiver-side path labels
 
-The default group profile keeps application tokens local. The development branch
+The default group profile keeps application tokens local. Release 0.2.9
 adds explicitly enabled, bilateral [group path identifiers](group-path-identifiers.md)
 with a separate versioned metadata getter. This extension is absent from the
 published v0.2.8 artifacts and is not Haivision-compatible when enabled.
@@ -220,12 +220,14 @@ the current logical ordering point and receives only subsequent traffic.
 Backup selects exactly one authoritative connected member using descending
 weight and a stable socket-ID tie-break. A healthy current path remains sticky.
 
-A better-weight candidate may be exercised in parallel, but it becomes
-authoritative only after it acknowledges group DATA and remains responsive for
-one stability interval. Local queue acceptance alone is not proof of path
-health. The same rule controls failover and failback.
+A better-weight candidate may be exercised in parallel. Qualification uses
+send-buffer progress plus responsiveness over a stability interval. The cursor
+comes from the first retained send sequence; local TLPKTDROP can advance it,
+so this is not proof of remote DATA acknowledgement. Hard failure can permit
+immediate fallback without completing a probe. Local queue acceptance alone
+is not proof of path health.
 
-On the development branch, a pending fallback probe to a lower-priority member
+Since 0.2.9, a pending fallback probe to a lower-priority member
 is canceled at the next group send decision when the current authority becomes
 responsive again. This check precedes candidate qualification, even if the
 candidate has already completed its interval and acknowledged DATA. Priority
@@ -238,11 +240,16 @@ adds no post-outage hold-down or continuous-health guarantee; responsiveness is
 the existing recent-response test, which also accepts keepalives.
 
 `SRTO_GROUPMINSTABLETIMEO` is group-only. Its compatible default and minimum
-are 60 ms; the effective interval also respects RTT and peer-idle constraints.
+are 60 ms, and its fixed accepted range is 60–5000 ms; the effective interval also respects RTT and peer-idle constraints.
 Set it on the Backup group before its first connection. Ordinary socket
 getters/setters return `SRT_EINVOP`. A per-endpoint override through
 `srt_config_add` is not supported and returns `SRT_EINVPARAM` immediately;
 the coordinator currently uses one group-wide minimum for all links.
+
+Listener-side configuration is unavailable: ordinary listener sockets reject
+this option and accepted mirror groups are already open. This differs from
+the reference listener inheritance and peer-idle-dependent maximum. Configure
+caller Backup groups before opening them; do not assume mirrors can be tuned.
 
 The [v1.5.7 option contract](https://github.com/Haivision/srt/blob/v1.5.7/docs/API/API-socket-options.md#SRTO_GROUPMINSTABLETIMEO)
 identifies it as a group option. The reference also exposes individual link
@@ -259,7 +266,8 @@ covering its old tail and
 the skipped gap. It then replays any outstanding group history before fresh
 DATA. Control-queue backpressure leaves its buffered data and cursor unchanged.
 This synchronization does not count as a member response or qualify promotion;
-the candidate must still acknowledge fresh group DATA.
+ordinary probe qualification still requires buffer progress and the
+responsiveness interval, subject to the hard-failure fallback above.
 
 The group retains a bounded plaintext history for unacknowledged logical
 messages. When a replacement becomes authoritative, replay preserves the
@@ -366,8 +374,10 @@ With asynchronous receive enabled on an empty connected group, receive returns
 `SRT_EASYNCRCV`. A synchronous receive uses `SRTO_RCVTIMEO` and reports
 `SRT_ETIMEOUT` when the deadline expires.
 
-`SRT_EPOLL_UPDATE` reports a nonterminal membership change, such as a later
-member joining or one path becoming broken while another remains usable.
+A later mirror-member join raises `SRT_EPOLL_UPDATE` on the accepting
+listener socket, not the group handle. A member breaking while another remains
+usable raises UPDATE on the group. Caller-side joins do not raise UPDATE;
+query `srt_group_data` when a fresh membership snapshot is required.
 Failure of the last nonterminal member exposes terminal `IN|OUT|ERR` readiness
 once the logical receive path is drained. After peer SHUTDOWN, accepted messages
 retain their TSBPD deadlines and become readable before terminal ERR is exposed.
@@ -390,7 +400,7 @@ A member configuration owns a copy of its values; it does not retain caller
 pointers. Robotweax limits one configuration to:
 
 - 32 option entries; and
-- 256 bytes per option value.
+- 512 bytes per option value.
 
 These bounds exceed the documented v1.5.7 member-option requirements. Exceeding
 them returns an error instead of growing memory without limit.

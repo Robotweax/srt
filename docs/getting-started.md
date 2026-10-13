@@ -1,7 +1,7 @@
 # Getting started
 
 This guide takes a new developer from a clean checkout to a tested Robotweax
-SRT 0.2.5 build and outlines the first application integration steps.
+SRT 0.2.9 build and outlines the first application integration steps.
 
 ## 1. Install prerequisites
 
@@ -133,8 +133,8 @@ Live/Message mode preserves message boundaries and is the normal low-latency
 transport profile. File/Stream mode provides ordered byte-stream semantics,
 partial reads and writes, zero-byte end-of-stream behavior, and file helpers.
 
-Set `SRTO_TRANSTYPE`, `SRTO_MESSAGEAPI`, congestion control, latency, and
-encryption options before connection establishment. Do not change modes on an
+Set `SRTO_TRANSTYPE` before `srt_bind`; set `SRTO_MESSAGEAPI`, congestion
+control, latency and encryption options before connection establishment. Do not change modes on an
 already connected socket.
 
 ## 8. Add the installed package to an application

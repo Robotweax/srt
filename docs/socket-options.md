@@ -174,12 +174,12 @@ profile. It is available only when Robotweax is configured with the historical
 build flag
 `-DENABLE_AEAD_API_PREVIEW=ON`, which also exports that compile definition to
 consumers of the CMake target. The pre-connection `int32_t` values are `0`
-for AUTO, `1` for AES-CTR, and `2` for AES-GCM. GCM accepts exactly two coherent
-transport bundles: Live/Message with LiveCC and TSBPD enabled, or File/Stream
-with FileCC and TSBPD disabled. Incompatible partial mutations fail with
+for AUTO, `1` for AES-CTR, and `2` for AES-GCM. GCM accepts four coherent bundles: Live/Message, File/Stream,
+Control/Message and Sensor/Message. See the [bundle table](aes-gcm-contract.md#valid-transport-bundles)
+for congestion, timing, FEC and enforced-encryption constraints. Incompatible partial mutations fail with
 `SRT_EINVPARAM`; `SRTO_TRANSTYPE` changes the complete bundle atomically in
 either option-setting order. After connection, the getter returns the effective
-concrete mode.
+mode (0 for plaintext, 1 for CTR, 2 for GCM).
 
 The released, default-off extension accepts explicit GCM with the implemented
 IPv4/IPv6 Live Message and File/Stream Caller/Listener and Rendezvous option
@@ -454,10 +454,13 @@ binding. On macOS and Windows, and on every group handle, get/set fail with
 system cannot provide. Per-member group endpoint configuration may still set
 the option for Linux member sockets.
 
-The v1.5.7-compatible `SRT_SOCKOPT_CONFIG` matrix is preserved. Robotweax also
-accepts `SRTO_PASSPHRASE`, `SRTO_PBKEYLEN`, and
-`SRTO_ENFORCEDENCRYPTION` in that opaque endpoint object as an ABI-neutral
-extension. Applications may instead set those options, together with
+The `SRT_SOCKOPT_CONFIG` matrix differs from v1.5.7: Robotweax rejects
+`SRTO_GROUPMINSTABLETIMEO` per-endpoint overrides. It additionally accepts
+`SRTO_PASSPHRASE`, `SRTO_PBKEYLEN`, `SRTO_ENFORCEDENCRYPTION`,
+`SRTO_PACKETFILTER`, `SRTO_PAYLOADSIZE`, `SRTO_ROBOTWEAX_SESSIONAUTH` and
+`SRTO_ROBOTWEAX_PATHID`, plus `SRTO_CRYPTOMODE` and `SRTO_MAXREXMITBW`
+in their enabled build profiles. These are ABI-neutral endpoint extensions. Applications may set
+`SRTO_PASSPHRASE`, `SRTO_PBKEYLEN` and `SRTO_ENFORCEDENCRYPTION`, together with
 `SRTO_KMREFRESHRATE`, `SRTO_KMPREANNOUNCE`, and `SRTO_PEERIDLETIMEO`, on an
 unopened group handle. Every future member receives one bounded copy before
 connect; later changes fail with `SRT_ECONNSOCK`, and the passphrase remains
@@ -542,7 +545,7 @@ interpreted. Unsupported types, inconsistent group metadata, and allocation
 or admission failures are rejected transactionally with the group rejection
 reason.
 
-Broadcast group handles own `SRTO_SNDSYN`, `SRTO_RCVSYN`, `SRTO_SNDTIMEO`,
+Broadcast and Backup group handles own `SRTO_SNDSYN`, `SRTO_RCVSYN`, `SRTO_SNDTIMEO`,
 and `SRTO_RCVTIMEO`. These values control the logical group operation; they do
 not mutate the independently scheduled member transports. A mirror group
 created by a listener inherits the listener's four logical I/O values before
@@ -589,8 +592,8 @@ with `SRT_EINVOP`.
 
 ## Optional retransmission bandwidth limit
 
-Development builds can enable `-DENABLE_MAXREXMITBW=ON`. This extension is
-standard-off and was not included in the published 0.2.7 binaries. It exposes
+Since 0.2.8 builds can enable `-DENABLE_MAXREXMITBW=ON`. This extension is
+default-off; default packages do not enable it. It exposes
 `SRTO_MAXREXMITBW=63` and sets `SRTO_E_SIZE=64`, independently of the AES-GCM
 build switch. Both the library and consumers must use matching feature flags;
 exported CMake targets and pkg-config metadata propagate the enabled flag.
@@ -633,12 +636,12 @@ File transfers; this is an explicit application policy, not a packet-drop mode.
 
 ## Optional group path labels
 
-The development branch adds `SRTO_ROBOTWEAX_PATHID_REQUIRED` (`0x01000006`,
+Release 0.2.9 adds `SRTO_ROBOTWEAX_PATHID_REQUIRED` (`0x01000006`,
 boolean, default false) and `SRTO_ROBOTWEAX_PATHID` (`0x01000007`, 1–32 opaque
 bytes per caller endpoint). Both are pre-setup options; group-wide labels are
 rejected. See the canonical [group path identifier contract](group-path-identifiers.md)
 for two-sided configuration, unsupported combinations and the versioned getter.
-These options are absent from published v0.2.8 artifacts.
+These options were introduced in 0.2.9 and are absent from v0.2.8 artifacts.
 
 
 ## Optional standby RTT monitoring
@@ -650,4 +653,128 @@ unsupported or one-sided activation explicitly. It adds bounded monitoring
 traffic without changing ordinary RTT, liveness, reliability or send authority.
 See the [standby RTT contract](standby-rtt-foundation.md) for configuration,
 resource limits, unauthenticated-control scope and the separate versioned getter.
-It is absent from published v0.2.8 artifacts.
+It was introduced in 0.2.9 and is absent from v0.2.8 artifacts.
+
+## Group admission callback migration (since 0.2.8)
+
+A listen callback admitting a group member must authorize it and set a nonzero
+`uint64_t` `SRTO_ROBOTWEAX_GROUPDOMAIN` on the provisional socket before
+returning success. Returning zero alone rejects the group member, unlike the
+Haivision callback contract. Use `SRTO_ROBOTWEAX_PEERGROUP` only as proposed
+peer metadata, never as proof of authorization. Later members must match the
+application's admission domain. Ordinary non-group callbacks are unaffected;
+listeners without a callback use the documented automatic group admission.
+See [group admission](connection-groups.md) for the complete domain contract.
+
+## Option inventory
+
+Generated from the corrected `compat/srt-1.5.7-api.json` inventory. Defaults
+are unconnected Live-profile defaults unless a profile map is shown. Units and
+interactions are defined in the option prose above and manifest scope fields;
+latencies/timeouts are milliseconds, bandwidths bytes/second, buffers bytes,
+FC/reorder limits packets. An omitted numeric maximum means the value type's
+limit, subject to the documented cross-option constraints; it does not mean
+an unbounded resource allocation.
+
+PRE-BIND means before explicit or implicit binding; PRE means before
+connect/listen; POST permits changes after establishment. Read-only observations
+are not configurable defaults. Boolean setters accept bool or int32 0/1;
+getters normally return bool (GROUPCONNECT also supports int32 readback).
+
+Group derivation: logical I/O belongs to the group. Other supported writable
+options form the member template before first open; only supported runtime
+options propagate afterwards. Most getters derive from the first extant
+member, or the unopened template when empty. This does not make every socket
+option meaningful for groups: see [group option and endpoint constraints](connection-groups.md)
+and the endpoint allow-list above. GROUPCONNECT is listener admission;
+GROUPMINSTABLETIMEO cannot be set on ordinary/listener sockets or endpoints.
+
+| Option | Value type | Default | Range / size | Set stage | Access | Group behavior |
+| --- | --- | --- | --- | --- | --- | --- |
+| `SRTO_MSS` | `int32_t` | 1500 | 76 … 1500 | PRE-BIND | R/W | See group derivation above |
+| `SRTO_SNDSYN` | `bool` | true | false / true | POST | R/W | Logical group I/O |
+| `SRTO_RCVSYN` | `bool` | true | false / true | POST | R/W | Logical group I/O |
+| `SRTO_ISN` | `int32_t` | Observed / see contract | Observation / see contract | read-only | R | See group derivation above |
+| `SRTO_FC` | `int32_t` | 25600 | 32 … type maximum | PRE | R/W | See group derivation above |
+| `SRTO_SNDBUF` | `int32_t` | 12058624 | positive bytes; rounded to ≥32 packet slots | PRE-BIND | R/W | See group derivation above |
+| `SRTO_RCVBUF` | `int32_t` | 12058624 | positive bytes; ≥32 slots, capped by FC | PRE-BIND | R/W | See group derivation above |
+| `SRTO_LINGER` | `linger` | {"live": {"enabled": false, "seconds": 0}, "file": {"enabled": true, "seconds": 180}} | seconds ≥ 0 | POST | R/W | See group derivation above |
+| `SRTO_UDP_SNDBUF` | `int32_t` | 65536 | 1 … type maximum | PRE-BIND | R/W | See group derivation above |
+| `SRTO_UDP_RCVBUF` | `int32_t` | 12288000 | 1 … type maximum | PRE-BIND | R/W | See group derivation above |
+| `SRTO_RENDEZVOUS` | `bool` | false | false / true | PRE | R/W | Group setter rejected |
+| `SRTO_SNDTIMEO` | `int32_t` | -1 | -1 … type maximum | POST | R/W | Logical group I/O |
+| `SRTO_RCVTIMEO` | `int32_t` | -1 | -1 … type maximum | POST | R/W | Logical group I/O |
+| `SRTO_REUSEADDR` | `bool` | true | false / true | PRE-BIND | R/W | See group derivation above |
+| `SRTO_MAXBW` | `int64_t` | -1 | -1 … type maximum | POST | R/W | See group derivation above |
+| `SRTO_STATE` | `int32_t` | Observed / see contract | Observation / see contract | read-only | R | Group observation |
+| `SRTO_EVENT` | `int32_t` | Observed / see contract | Observation / see contract | read-only | R | Socket only |
+| `SRTO_SNDDATA` | `int32_t` | Observed / see contract | Observation / see contract | read-only | R | Socket only |
+| `SRTO_RCVDATA` | `int32_t` | Observed / see contract | Observation / see contract | read-only | R | Socket only |
+| `SRTO_SENDER` | `bool` | false | false / true | PRE | R/W | See group derivation above |
+| `SRTO_TSBPDMODE` | `bool` | true | false / true | PRE | R/W | See group derivation above |
+| `SRTO_LATENCY` | `int32_t` | 120 | 0 … 65535 | PRE | R/W | See group derivation above |
+| `SRTO_INPUTBW` | `int64_t` | 0 | 0 … type maximum | POST | R/W | See group derivation above |
+| `SRTO_OHEADBW` | `int32_t` | 25 | 5 … 100 | POST | R/W | See group derivation above |
+| `SRTO_PASSPHRASE` | `byte_string` | empty | empty or 10–80 bytes | PRE | W | See group derivation above |
+| `SRTO_PBKEYLEN` | `int32_t` | 0 | 0, 16, 24, 32 | PRE | R/W | See group derivation above |
+| `SRTO_KMSTATE` | `int32_t` | Observed / see contract | Observation / see contract | read-only | R | See group derivation above |
+| `SRTO_IPTTL` | `int32_t` | 64 | 1 … 255 | PRE-BIND | R/W | See group derivation above |
+| `SRTO_IPTOS` | `int32_t` | 184 | 0 … 255 | PRE-BIND | R/W | See group derivation above |
+| `SRTO_TLPKTDROP` | `bool` | true | false / true | PRE | R/W | See group derivation above |
+| `SRTO_SNDDROPDELAY` | `int32_t` | 0 | -1 … type maximum | POST | R/W | See group derivation above |
+| `SRTO_NAKREPORT` | `bool` | true | false / true | PRE | R/W | See group derivation above |
+| `SRTO_VERSION` | `int32_t` | Observed / see contract | Observation / see contract | read-only | R | See group derivation above |
+| `SRTO_PEERVERSION` | `int32_t` | 0 | Observation / see contract | read-only | R | See group derivation above |
+| `SRTO_CONNTIMEO` | `int32_t` | 3000 | 0 … type maximum | PRE | R/W | See group derivation above |
+| `SRTO_DRIFTTRACER` | `bool` | true | false / true | POST | R/W | See group derivation above |
+| `SRTO_MININPUTBW` | `int64_t` | 0 | 0 … type maximum | POST | R/W | See group derivation above |
+| `SRTO_SNDKMSTATE` | `int32_t` | Observed / see contract | Observation / see contract | read-only | R | See group derivation above |
+| `SRTO_RCVKMSTATE` | `int32_t` | Observed / see contract | Observation / see contract | read-only | R | See group derivation above |
+| `SRTO_LOSSMAXTTL` | `int32_t` | 0 | 0 … type maximum | POST | R/W | See group derivation above |
+| `SRTO_RCVLATENCY` | `int32_t` | 120 | 0 … 65535 | PRE | R/W | See group derivation above |
+| `SRTO_PEERLATENCY` | `int32_t` | 0 | 0 … 65535 | PRE | R/W | See group derivation above |
+| `SRTO_MINVERSION` | `int32_t` | 65536 | 0 … 16777215 | PRE | R/W | See group derivation above |
+| `SRTO_STREAMID` | `string` | empty | ≤ 512 bytes | PRE | R/W | See group derivation above |
+| `SRTO_CONGESTION` | `string` | live | live, file | PRE | W | See group derivation above |
+| `SRTO_MESSAGEAPI` | `bool` | true | false / true | PRE | R/W | See group derivation above |
+| `SRTO_PAYLOADSIZE` | `int32_t` | 1316 | 0 … 1456 | PRE | R/W | See group derivation above |
+| `SRTO_TRANSTYPE` | `int32_t` | 0 | 0, 1, 3, 4 | PRE-BIND | R/W | See group derivation above |
+| `SRTO_KMREFRESHRATE` | `int32_t` | 0 | 0 … type maximum | PRE | R/W | See group derivation above |
+| `SRTO_KMPREANNOUNCE` | `int32_t` | 0 | 0 … type maximum | PRE | R/W | See group derivation above |
+| `SRTO_ENFORCEDENCRYPTION` | `bool` | true | false / true | PRE | R/W | See group derivation above |
+| `SRTO_IPV6ONLY` | `int32_t` | -1 | -1 … 1 | PRE-BIND | R/W | See group derivation above |
+| `SRTO_PEERIDLETIMEO` | `int32_t` | 5000 | 0 … type maximum | PRE | R/W | See group derivation above |
+| `SRTO_BINDTODEVICE` | `string` | empty | ≤ 15 bytes | PRE-BIND | R/W | Socket only |
+| `SRTO_GROUPCONNECT` | `int32_t` / bool | false | 0 / 1 | PRE | R/W | Listener admission; group setter rejected |
+| `SRTO_GROUPMINSTABLETIMEO` | `int32_t` | 60 | 60 … 5000 | PRE | R/W | Backup group only, before open |
+| `SRTO_GROUPTYPE` | `int32_t` | Observed / see contract | Observation / see contract | read-only | R | Group observation |
+| `SRTO_PACKETFILTER` | `string` | empty | ≤ 512 bytes | PRE | R/W | See group derivation above |
+| `SRTO_RETRANSMITALGO` | `int32_t` | 1 | 0 … 1 | PRE | R/W | See group derivation above |
+| `SRTO_CRYPTOMODE (opt-in)` | `int32_t` | 0 | 0, 1, 2 | PRE | R/W | See group derivation above |
+| `SRTO_MAXREXMITBW (opt-in)` | `int64_t` | -1 | -1 … type maximum | POST | R/W | See group derivation above |
+
+PAYLOADSIZE 0 selects `min(1316, effective payload limit)`; MSS, address family,
+GCM and FEC/session-auth overhead can lower the effective limit. The API FC
+minimum is 32, distinct from the wire handshake's minimum of 2. KMREFRESHRATE
+and KMPREANNOUNCE use 0 as the default sentinel (effective 16,777,216 and
+4,096 packets); initialization and half-refresh constraints still apply.
+PASSPHRASE accepts empty or 10–80 bytes, never a truncated secret. The
+TRANSTYPE callback exception is described above. Optional CRYPTOMODE and
+MAXREXMITBW require their respective build flags; they remain excluded from
+the default Haivision API profile.
+
+### Robotweax extension inventory
+
+These options occupy a separate namespace and do not alter the upstream
+`SRTO_E_SIZE`. Metadata is local unless the row explicitly says bilateral.
+
+| Option (suffix after `SRTO_ROBOTWEAX_`) | ID | Type / default | Range / access / stage | Group behavior |
+| --- | --- | --- | --- | --- |
+| VERSION | 0x01000001 | int32 / loaded version | Read-only, valid handle | Local group query |
+| CRYPTO_BACKEND | 0x01000002 | int32 / configured backend | Read-only: 1 OpenSSL, 2 BCrypt | Local group query |
+| SESSIONAUTH | 0x01000003 | bool / false | R/W, PRE; bilateral Caller/Listener, passphrase + enforced encryption | Member template; endpoint override accepted |
+| PEERGROUP | 0x01000004 | int32 / SRT_INVALID_SOCK for non-group | Read-only provisional listen-callback metadata | Proposed remote ID; not authorization |
+| GROUPDOMAIN | 0x01000005 | uint64 / unset (0) | Readable (0 outside callback); nonzero set only during group listen callback | Required application-authorized admission domain; local only |
+| PATHID_REQUIRED | 0x01000006 | bool / false | R/W, PRE; bilateral | Caller group and listener; no automatic fallback |
+| PATHID | 0x01000007 | bytes / empty | R/W, PRE; 0 clears, 1–32 bytes | Caller endpoint configuration; group-wide label rejected |
+| STANDBYRTT_REQUIRED | 0x01000008 | bool / false | R/W, PRE; bilateral Backup Live/Message with TSBPD | Group/listener template; endpoint configuration rejected |

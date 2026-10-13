@@ -1,6 +1,6 @@
 # Integration guide
 
-This guide describes the stable integration surface of Robotweax SRT 0.2.5.
+This guide describes the stable integration surface of Robotweax SRT 0.2.9.
 It assumes the library has been installed or provided through a package built
 as described in [Building and installing](building.md).
 
@@ -32,7 +32,7 @@ native packet/options boundary, not a replacement for the socket API.
 
 These values describe different things:
 
-- Robotweax release: 0.2.5;
+- Robotweax release: 0.2.9;
 - shared-library ABI: 0.2;
 - default compatible API and `srt_getversion()`: 1.5.7;
 - connection establishment: HSv5.
@@ -261,3 +261,14 @@ new socket rather than assuming a broken connection can be reset in place.
 8. Capture SRT errors, rejection reasons, and statistics without secrets.
 9. Validate shutdown, reconnect, and deployment packaging on every platform.
 10. Review [Known limitations](limitations.md) before production release.
+
+## Group admission callback migration (since 0.2.8)
+
+A listen callback admitting a group member must authorize it and set a nonzero
+`uint64_t` `SRTO_ROBOTWEAX_GROUPDOMAIN` on the provisional socket before
+returning success. Returning zero alone rejects the group member, unlike the
+Haivision callback contract. Use `SRTO_ROBOTWEAX_PEERGROUP` only as proposed
+peer metadata, never as proof of authorization. Later members must match the
+application's admission domain. Ordinary non-group callbacks are unaffected;
+listeners without a callback use the documented automatic group admission.
+See [group admission](connection-groups.md) for the complete domain contract.

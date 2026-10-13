@@ -76,7 +76,8 @@ internals evolve.
 
 `crypto_provider`
 : Supplies secure random generation, PBKDF2, key wrap/unwrap, secure erase,
-  prepared AES-CTR, and prepared AES-GCM primitives through OpenSSL 3.
+  prepared AES-CTR, prepared AES-GCM, and HMAC-SHA256 primitives through
+  OpenSSL 3 or the experimental Windows CNG/BCrypt backend.
 
 `crypto`
 : Owns negotiated cipher mode, directional key slots, KMREQ/KMRSP state,
