@@ -3,7 +3,7 @@
   "profile": "robotweax-srt-0.2-aead",
   "status": "released",
   "wire_output_enabled": true,
-  "default_api_profile": "srt-1.5.5",
+  "default_api_profile": "srt-1.5.7",
   "implementation": {
     "release_version": "0.2.0",
     "protected_packet_model": true,

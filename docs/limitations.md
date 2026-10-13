@@ -1,14 +1,13 @@
 # Known limitations
 
-Robotweax SRT 0.2.9 is a pre-1.0 release candidate with an explicit
-support boundary. Final 0.2.9 release acceptance is pending; 0.2.8 remains
-the latest published release. This document summarizes limits that application developers
+Robotweax SRT 0.2.9 is the latest published pre-1.0 release, with an explicit
+support boundary. This document summarizes limits that application developers
 and integrators should account for. Unsupported operations are intended to fail
 with defined errors rather than being silently approximated.
 
 ## Version and ABI boundaries
 
-- The candidate project version is 0.2.9 and the shared-library ABI line is 0.2.
+- The released project version is 0.2.9 and the shared-library ABI line is 0.2.
 - Binary compatibility with the 0.1 ABI is not promised. Rebuild applications
   and dependencies against the 0.2 package.
 - The default compatible API target and `srt_getversion()` value are 1.5.7;
@@ -77,13 +76,18 @@ and the retired-key history (four generations per key parity); relabelled
 material is rejected. Requests containing only retired keys are rejected while
 those generations remain in the history. A captured KM announcement older than
 both histories is indistinguishable from a fresh announcement and can install
-an old key, disrupting reception until the sender's next rotation. See
+an old key and disrupt reception. Recovery at the next rotation is not guaranteed. See
 [Encryption and key rotation](encryption.md) for the bounded rollback rules.
 
 Control packets, including KM, ACK, NAK, DROPREQ and KEEPALIVE, are not
 authenticated by the protocol. AES-CTR provides payload confidentiality only;
 AES-GCM additionally authenticates protected DATA packets. GCM authentication
 does not extend to these runtime control packets.
+
+Optional [session authentication](session-authentication.md) authenticates
+initial/runtime key material and FEC parity. It requires a passphrase and
+enforced encryption on both Robotweax Caller/Listener peers; Rendezvous is
+unsupported. It does not authenticate all ACK/NAK/DROPREQ/SHUTDOWN controls.
 
 File/Stream plus packet-filter FEC is not a supported combination. GCM payloads
 also reserve a 16-byte authentication tag, reducing the application payload

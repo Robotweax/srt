@@ -199,3 +199,16 @@ Statistics remain readable on a BROKEN socket while it retains its connection
 runtime, including while the application drains buffered receive messages.
 Closing the socket ends that statistics lifetime; this does not retain full
 statistics in the bounded closed-handle history.
+
+## RTT provenance and group statistics
+
+Before any RTT observation, the estimator starts at 100 ms RTT and 50 ms
+variation; `msRTT` alone cannot distinguish that initial estimate from a sample.
+Use `robotweax_srt_rtt_data_v1` for observed-state and sample provenance; see
+[API compatibility](api-compatibility.md). Optional
+[standby RTT](standby-rtt-foundation.md) is a separate monitoring snapshot and
+does not replace ordinary RTT or sender authority.
+
+`srt_bstats`/`srt_bistats` accept group handles. Their counters describe logical
+group operations rather than a sum of all member wire traffic. See
+[group statistics](connection-groups.md) for counting and availability rules.

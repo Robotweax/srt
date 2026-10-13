@@ -14,23 +14,27 @@ Light and Small ACKs use zero in the type-specific field and do not take part
 in the standard ACK/ACKACK RTT exchange.
 
 The draft does not define the arithmetic after the largest 32-bit value.
-Robotweax uses the complete non-zero field and wraps `UINT32_MAX` to 1. Zero
-remains reserved for Light and Small ACK classification. This is an explicit,
+Robotweax uses the complete non-zero field and wraps `UINT32_MAX` to 1.
+Locally generated Full ACK numbers skip zero. A received Full ACK may carry
+zero after a peer counter wraps; Robotweax accepts it and echoes ACKACK zero.
+This is an explicit,
 tested interpretation of an underspecified rollover, not a DATA-sequence
 rule.
 
 Some deployed SRT 1.5.x peers emit a numbered 16-byte Small ACK and expect an
 ACKACK. Robotweax accepts that exact shape through an isolated receive-side
-compatibility path. It continues to emit standard zero-numbered Small ACKs and
-rejects numbered Light ACKs.
+compatibility path.
+The runtime emits Full ACKs (28-byte CIF) and zero-numbered Light ACKs
+(4-byte CIF), and rejects numbered Light ACKs. Small ACKs are receive-only
+in normal runtime operation; the low-level codec can still encode them.
 
 ## Wire and runtime requirements
 
 | Requirement | Robotweax behavior |
 | --- | --- |
 | Full ACK numbering | Independent unsigned 32-bit values start at 1, use the high bit normally, skip zero, and wrap from `UINT32_MAX` to 1. |
-| Light and Small ACK numbering | Robotweax emits zero. A numbered 16-byte Small ACK is accepted only as the deployed compatibility form; a numbered Light ACK is malformed. |
-| ACKACK shape | ACKACK copies the non-zero ACK number into the type-specific header field. Its CIF is exactly one four-byte zero word (`00 00 00 00`). An empty CIF, nonzero CIF bytes, any other CIF size, or a zero ACK number is malformed. |
+| Light and Small ACK numbering | Runtime Light ACKs use zero; Small ACKs are receive-only. A numbered 16-byte Small ACK is accepted only as the deployed compatibility form; a numbered Light ACK is malformed. |
+| ACKACK shape | ACKACK copies the received ACK number, including zero, into the type-specific header field. Its CIF is exactly one four-byte zero word (`00 00 00 00`). An empty CIF, nonzero CIF bytes, or any other CIF size is malformed. |
 | RTT matching | One bounded tracker matches the complete ACK number. Slot collision evicts the older entry; unknown, evicted, duplicate, or zero ACKACK values do not update RTT. |
 | Timing sample | A match is consumed once and yields a sample only when arrival is later than departure. Values above the public 32-bit microsecond range are clamped. |
 | Field width | Full ACK parsing and encoding preserve all 32 acknowledgement-number bits and never apply DATA-sequence masking. |
@@ -40,8 +44,11 @@ rejects numbered Light ACKs.
 Since Robotweax SRT 0.2.2, the zero word is required on the wire, not optional
 padding. ACKACK therefore occupies 20 bytes: the 16-byte SRT control header
 followed by the four-byte CIF. The acknowledgement number belongs in the
-header's type-specific field, not in the CIF. A zero CIF is required; a zero
-acknowledgement number is forbidden. This also applies to the receive-side
+header's type-specific field, not in the CIF.
+A zero CIF is required. ACKACK zero is valid but gives no RTT sample, since
+Robotweax never generates Full ACK zero. Peer Full ACK counters may wrap
+to zero in a 31-bit space; the local nonzero 32-bit counter is emission policy.
+This also applies to the receive-side
 numbered Small ACK compatibility path described above.
 
 The encoder supplies the zero word when an ACKACK packet description has no
@@ -57,8 +64,8 @@ Each connection stores up to 512 outstanding Full ACK departure records.
 This increases the matching horizon but cannot guarantee that every returning
 ACKACK still has a record: higher ACK rates or longer RTTs can still cause
 eviction. At exactly one Full ACK per 10 ms the horizon is approximately
-5.12 seconds; expedited ACKs shorten it. File mode retains prompt per-packet
-Full ACKs, so its horizon depends on packet rate.
+5.12 seconds in both Live and File mode. Expedited ACKs can shorten
+retention in either mode.
 The index is derived from the acknowledgement number, but every lookup also
 compares the complete 32-bit value. Reusing a slot therefore evicts the old
 record instead of allowing a stale ACKACK to alias the new entry.

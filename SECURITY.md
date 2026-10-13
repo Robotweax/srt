@@ -62,7 +62,7 @@ not a modern password-storage recommendation.
 
 ### AES-GCM extension
 
-Robotweax SRT 0.2.0 also provides a version-pinned authenticated AES-GCM
+Since 0.2.0, Robotweax SRT also provides a version-pinned authenticated AES-GCM
 extension. It is enabled at build time with the historical flag
 `ENABLE_AEAD_API_PREVIEW=ON`; the extension itself is released, opt-in, and
 default-off. Both the library and consumer must use the matching public header
@@ -86,8 +86,9 @@ That check limits off-path injection, but it does not authenticate a packet:
 an on-path sender or someone able to spoof the peer endpoint can still submit
 runtime controls and AES-CTR DATA. A single packet that violates the negotiated
 encryption policy is counted and dropped without acknowledging it or refreshing
-peer liveness; it does not terminate the established session. Failure KMRSPs
-for rejected KMREQs are limited to one per 100 ms per connection. AES-CTR
+peer liveness; it does not terminate the established session. Rejected KMREQs that leave an already secured/securing receive state unchanged
+are silently discarded. Where a failure KMRSP is sent, responses are limited
+to one per 100 ms per connection. These bounds are not a recovery guarantee. AES-CTR
 still has no payload integrity guarantee; use the opt-in AES-GCM extension
 when authenticated DATA is required.
 
@@ -136,3 +137,10 @@ limit across multiple listeners.
   lifecycles.
 - Validate resource, latency, and failure behavior for the intended topology
   before production deployment.
+
+### Crypto backend lifecycle
+
+OpenSSL 3 is the default provider. The experimental Windows CNG/BCrypt backend
+uses the operating system's crypto provider; keep Windows security updates
+current. Backend selection does not expand the protocol's authentication scope.
+See [backend configuration](docs/windows-bcrypt.md).

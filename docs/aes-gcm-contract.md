@@ -4,12 +4,13 @@ Status: **released in Robotweax SRT 0.2.0; explicit and default-off**
 
 Profile: **`robotweax-srt-0.2-aead`**
 
-Contract date: **2026-08-27**
+Initial contract: **2026-08-27**; current contract includes the Control/Sensor
+bundles introduced in **0.2.8**.
 
 ## Scope and compatibility boundary
 
 This document is the normative AES-GCM extension contract for Robotweax SRT
-0.2.0. It defines public option values, transport bundles, negotiation,
+the 0.2 line, currently 0.2.9. It defines public option values, transport bundles, negotiation,
 key-material suites, nonce and AAD derivation, tag placement, payload budgets,
 rotation, retransmission, FEC, Connection Group behavior, and fail-closed error
 semantics.
@@ -223,7 +224,9 @@ used for local DATA must not be cloned into the opposite transmit direction.
 Later rotations are independent by direction. See the
 [initial key-state and startup-latency contract](encryption.md#key-rotation).
 
-At `refresh_rate - preannouncement` transmitted packets, the sender:
+At `refresh_rate - preannouncement` consumed sequence positions (including
+TTL/TLPKTDROP skips), or earlier under the adaptive announcement window
+described in [key rotation](encryption.md#key-rotation), the sender:
 
 1. creates the inactive even or odd generation;
 2. sends an RFC-3394-wrapped KMREQ;
@@ -339,7 +342,7 @@ described above.
 
 Positive interoperability with the pinned GCM-capable reference profile is
 limited to AES-128-GCM Live/Message. The following are intentionally not
-claimed for cross-implementation GCM use in 0.2.0:
+claimed for cross-implementation GCM use in the current 0.2.9 boundary:
 
 - File/Stream transfer;
 - AES-192/256 payload transfer;
