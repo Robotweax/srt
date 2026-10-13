@@ -12,13 +12,13 @@ depending on implementation-specific C++ internals.
 
 ## Release status
 
-Version **0.2.8** was published on **2026-10-08** as a pre-1.0 runtime, recovery and security hardening release. The [latest release](https://github.com/Robotweax/srt/releases/tag/v0.2.8) includes independently rebuilt and signed OpenSSL/BCrypt Windows SDK installers, post-signing checksums and immutable tag provenance. See the [release notes](docs/release-notes-0.2.8.md) for changes, qualification evidence and remaining limits.
+Version **0.2.9** was published on **2026-10-13** as a pre-1.0 Group recovery and observability release. The [latest release](https://github.com/Robotweax/srt/releases/tag/v0.2.9) includes independently rebuilt and signed OpenSSL/BCrypt Windows SDK installers, post-signing checksums and immutable tag provenance. See the [release notes](docs/release-notes-0.2.9.md) and [completed acceptance record](docs/release-process-0.2.9.md) for changes, successful final gates and remaining limits.
 
-The development tree is preparing **0.2.9**. Its [candidate release notes](docs/release-notes-0.2.9.md) and [acceptance process](docs/release-process-0.2.9.md) describe the new Group work and pending gates; no 0.2.9 release or installer is published yet.
+The separate Homebrew ARM64 bottle is qualified in [Tap #8](https://github.com/Robotweax/homebrew-tap/pull/8); its maintainer review and publication remain pending.
 
-| Axis | Robotweax SRT 0.2.8 |
+| Axis | Robotweax SRT 0.2.9 |
 | --- | --- |
-| Project release | `0.2.8` |
+| Project release | `0.2.9` |
 | Shared-library ABI | `0.2` |
 | Default public API target | SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -32,7 +32,7 @@ handshake, and encryption profile are separate version axes. In particular,
 release number.
 
 Version 0.2 is a pre-1.0 release. Rebuild applications and dependencies when
-moving between ABI lines. See the [0.2.8 release notes](docs/release-notes-0.2.8.md)
+moving between ABI lines. See the [0.2.9 release notes](docs/release-notes-0.2.9.md)
 and [0.1-to-0.2 migration guide](docs/migration-0.2.md).
 
 See the [ecosystem support matrix](docs/compatibility.md#ecosystem-build-profiles)

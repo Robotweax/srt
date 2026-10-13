@@ -1,8 +1,10 @@
 # Package qualification 0.2.9
 
-Status: **preparation merged; source/media/package/resource acceptance passed;
-final SDK rebuild, tag, signing and bottle publication pending**.
-Latest published release remains v0.2.8. No v0.2.9 tag has been accepted.
+Status: **qualified and published on 2026-10-13**.
+Release: [v0.2.9](https://github.com/Robotweax/srt/releases/tag/v0.2.9), published
+at 09:46:16 UTC and marked latest. Separate bottle publication remains pending.
+Tag commit `a87779d9c3d831583d32b2f61cae5b81edb05537`, protected annotated
+object `2e1055a4733c62adfe4de7369d2fb0fd17c8f450`.
 
 ## Frozen product source
 
@@ -20,8 +22,8 @@ changes require a new pin and repeated package qualification. Preserve
 Previous-release results do not qualify this candidate.
 
 Recipe commit: `f7b33bc2a9deaf69ecf4a0711608c7235ed781ae`. Later acceptance/link records preserve
-the frozen product and executable recipe inputs; exact final CI heads must
-still be recorded independently.
+the frozen product and executable recipe inputs. Final tag CI and SDK below
+select the exact tag commit, while package workflows consume the frozen archive.
 
 ## Local candidate verification
 
@@ -62,15 +64,78 @@ retained and the tree-identical signed update passes. No test gate was weakened.
 | Ubuntu 24.04 source/binary packages and coexistence/removal | Passed | [candidate Linux packages](https://github.com/Robotweax/srt/actions/runs/38352569818), [main Linux packages](https://github.com/Robotweax/srt/actions/runs/38353900613), both jobs pass |
 | Fedora 44 SRPM/binary packages and coexistence/removal | Passed | Same immutable source/recipe and Linux package runs |
 | Experimental Windows BCrypt source/crypto matrix | Passed for configured profiles | `00f8e1b`: [BCrypt](https://github.com/Robotweax/srt/actions/runs/38352569731); optional ARM64 runtime and serial-performance diagnostics remain skipped |
-| Twelve SDK variants, both installers and actual 0.2.8 upgrade | Passed; separate rebuild still pending | `00f8e1b`: [SDK candidate](https://github.com/Robotweax/srt/actions/runs/38352569751); twelve builds, two installer tests and coexistence pass |
-| Protected independent rebuild, signing and exact signed-byte tests | Pending | Not recorded |
-| Final tag source/package/SDK CI and downloaded draft comparison | Pending | No tag/draft asset accepted |
-| Separate native Homebrew bottle qualification/publication | Running separately | [Tap #8](https://github.com/Robotweax/homebrew-tap/pull/8), exact canonical formula; no 0.2.9 bottle accepted or published |
+| Twelve SDK variants, both installers and actual 0.2.8 upgrade | Passed, including separate candidate rebuild | `00f8e1b`: [SDK candidate](https://github.com/Robotweax/srt/actions/runs/38352569751); twelve builds, two installer tests and coexistence pass |
+| Protected independent rebuild, signing and exact signed-byte tests | Passed | `a87779d`: [final SDK](https://github.com/Robotweax/srt/actions/runs/38365080105), independent rebuild, signing, exact signed installation tests and draft verification all pass |
+| Final tag source/package/SDK CI and downloaded draft comparison | Passed and published | `a87779d`: [source/full media](https://github.com/Robotweax/srt/actions/runs/38365080090), [managers](https://github.com/Robotweax/srt/actions/runs/38365080086), [Linux](https://github.com/Robotweax/srt/actions/runs/38365080088), [SDK](https://github.com/Robotweax/srt/actions/runs/38365080105); exact draft and public bytes verified |
+| Separate native Homebrew bottle qualification/publication | Qualified; maintainer review/publication pending | [Tap #8](https://github.com/Robotweax/homebrew-tap/pull/8), exact head `33147063`; [native CI](https://github.com/Robotweax/homebrew-tap/actions/runs/38355338385) and downloaded bottle verified; no 0.2.9 bottle published |
 
-Update only with actual successful exact-SHA run URLs and retained evidence.
-Skipped, cancelled, superseded or failed attempts are not accepted results.
-Final tag provenance and post-signing SHA-256 values must be recorded before
-publication. Keep the release draft until final acceptance.
+Only actual successful exact-SHA runs are accepted. Skipped, cancelled,
+superseded or failed attempts remain excluded. Final tag provenance and the
+post-signing digests below were verified against downloaded draft bytes before
+publication, then rechecked against the actual public downloads.
+
+## Final tag and signed download acceptance
+
+All final source/SDK jobs select `a87779d9c3d831583d32b2f61cae5b81edb05537`.
+Source/full media CI passed 52 jobs and Required CI, with one optional
+Live-timing diagnostic skipped. The manager suite passed all seven jobs;
+Linux packages passed both Ubuntu 24.04 and Fedora 44 jobs. The SDK passed
+19 jobs: validation, twelve builds, both installers, coexistence, independent
+protected rebuild, signing and draft verification. Its unprotected candidate
+rebuild job is intentionally skipped for tag events; it does not substitute
+for the passed protected rebuild.
+
+The independently rebuilt unsigned installers were passed by exact artifact
+identity, source/run/version and pre-signing hashes to the protected signer.
+The exact signed executables passed installation, signed 0.2.8 upgrade,
+repair/rejection, coexistence and independent removal. Native verification
+confirms Robotweax GmbH as publisher, trusted timestamps and unchanged
+post-signing bytes. Draft verification independently repeats signature and
+manifest checks before release upload.
+
+Signed artifact `11801367380` contains exactly both executables and `SHA256SUMS`.
+Downloaded ZIP: 64,259,333 bytes, SHA-256
+`f4b0b54bda04ac1d71a29df93bf9c5b9ed966b540874d7bdc0f7b172ec6be05a`.
+The independently downloaded draft and public files match that artifact byte
+for byte; GitHub asset sizes/digests and the exact two-entry manifest agree.
+
+| Delivered asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `robotweax-srt-0.2.9-windows-sdk-openssl.exe` | 51,002,976 | `9cc066dfee3278319d552bbfe47d48b39c285b7512f7fd836fad00241216cdd1` |
+| `robotweax-srt-0.2.9-windows-sdk-bcrypt.exe` | 14,356,176 | `d063d68f4ae4d977b31ef129947c78bc3abc2947ae3e94a5ec28abfce0117c04` |
+| `SHA256SUMS` | 219 | `2a2d8a3dd36114fcda2d961965242f7900dacc4584a22eb252d7ad109e2f0ab7` |
+| `tag-provenance.json` | 127 | `4fecbfae7974081cc8edf3f6c147fd1b2b582d1504914997671c9b72dbdaa6d6` |
+
+Downloaded provenance equals the independently read protected annotated tag
+object and commit above. The release has exactly these four assets. Annotation
+is not a GPG signature; the accepted Windows signatures are Authenticode.
+The source-tag documentation retains its pre-publication status; this main
+record and the release page document actual publication without changing the
+published tag.
+
+The first unpublished tag/source attempt `38357547646` failed installed
+Markdown validation because #314 introduced a relative link to noninstalled
+packaging documentation. One-line #315 corrected the link and passed both
+static/shared installed checks without changing product/ABI/recipes. The old
+SDK attempt `38357547699` was cancelled before protected rebuild/signing/draft.
+With explicit maintainer approval, only unpublished `refs/tags/v0.2.9` was
+corrected under an exact old-object lease. Original active update/delete rules
+for `v*` were restored immediately, with no exclusions or bypass actors.
+Old tag object `b021060de696ad92b6eeb30b41e74098feb91db2` and failed/cancelled
+attempts remain in retained audit evidence, excluded from acceptance.
+No test guard was weakened. The published tag must never be moved or recreated.
+
+## Separate bottle qualification
+
+Tap #8 remains open at `33147063d1a17ea300f22de63fc167be0a3e4134`.
+The downloaded ARM64 bottle from artifact `11792618027` is 686,411 bytes,
+SHA-256 `eb36adf2e6440c3113385ef04e259840c4cc0ed0bba4695d338576d2245ed47c`.
+Its embedded formula/header match the canonical frozen package recipe and
+0.2.9 version; the library is ARM64 Mach-O with the exact 84 C exports.
+Native qualification uses macOS 15.7, Xcode 16.4 and OpenSSL 3.6.5.
+This qualifies the particular downloaded bottle, not other platforms.
+Maintainer review and publication through the tap's guarded process remain
+separate; no published 0.2.9 bottle is claimed.
 
 ## Selected resource and longer-running acceptance
 
@@ -107,6 +172,6 @@ digests. Recipe regression tests do not substitute for actual installed
 distribution admission, third-party application package or unqualified bottle
 is advertised.
 
-See [candidate release notes](../docs/release-notes-0.2.9.md),
+See [release notes](../docs/release-notes-0.2.9.md),
 [release process](../docs/release-process-0.2.9.md), and the unchanged historical
 [0.2.8 record](qualification-0.2.8.md).

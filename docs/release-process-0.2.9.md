@@ -1,15 +1,63 @@
 # Release process for Robotweax SRT 0.2.9
 
-Status: **preparation merged; selected candidate/main acceptance passed;
-final SDK rebuild, tag, signing and publication pending**.
+Status: **completed and published on 2026-10-13**.
+Release: [v0.2.9](https://github.com/Robotweax/srt/releases/tag/v0.2.9), published
+at 09:46:16 UTC. Protected annotated tag object
+`2e1055a4733c62adfe4de7369d2fb0fd17c8f450` selects
+`a87779d9c3d831583d32b2f61cae5b81edb05537`. This published tag must not be
+moved or recreated. The annotation is not a GPG signature; native Windows
+Authenticode acceptance is separate.
 Previous published release: [v0.2.8](https://github.com/Robotweax/srt/releases/tag/v0.2.8).
 Development baseline: `6ec3cbdb5e3151e5ca3231965613e6f2a96ac86f`.
 Historical [0.2.8 acceptance](release-process-0.2.8.md) remains unchanged.
 
 Preparation merge: `ce168060c241097b8af5b0cd9e8898027fb0ff09`, with the
 complete candidate tree and frozen product identity verified.
-[Current acceptance record](https://github.com/Robotweax/srt/blob/63da4dd1ce43c04035c0d9d738ec59027b45b100/packaging/qualification-0.2.9.md) lists the
-actual source/media/package/resource runs and remaining gates.
+[Current package record](https://github.com/Robotweax/srt/blob/main/packaging/qualification-0.2.9.md)
+lists source/media/package/resource evidence and separate bottle status.
+
+## Completed final acceptance
+
+- [Final tag source and complete media CI](https://github.com/Robotweax/srt/actions/runs/38365080090):
+  52 successful jobs including Required CI; one optional Live-timing diagnostic skipped.
+- [Tag package managers](https://github.com/Robotweax/srt/actions/runs/38365080086):
+  Homebrew source installation/test/audit and all six vcpkg profiles passed.
+  [Linux packages](https://github.com/Robotweax/srt/actions/runs/38365080088):
+  Ubuntu 24.04 and Fedora 44 passed build/consumer/coexistence/removal checks.
+- [Final SDK](https://github.com/Robotweax/srt/actions/runs/38365080105):
+  twelve variants, both installers, actual signed 0.2.8 upgrade/repair/rejection
+  and coexistence, protected independent rebuild, signing by Robotweax GmbH
+  with trusted timestamps and exact signed-executable tests passed. Rebuild
+  job `115195540761`, signing `115222550174`, draft `115227012054`.
+- Signed artifact `11801367380` has ZIP SHA-256
+  `f4b0b54bda04ac1d71a29df93bf9c5b9ed966b540874d7bdc0f7b172ec6be05a`.
+  Actual draft and public downloads of both installers and `SHA256SUMS` match
+  this artifact byte for byte. Downloaded `tag-provenance.json` equals the
+  independently rechecked annotated object and commit above. The published
+  release has exactly those four assets and is the latest stable release.
+- [Native ARM64 bottle qualification](https://github.com/Robotweax/homebrew-tap/actions/runs/38355338385)
+  passed separately. Downloaded bottle SHA-256
+  `eb36adf2e6440c3113385ef04e259840c4cc0ed0bba4695d338576d2245ed47c`
+  matches its qualified artifact, canonical formula, version and 84 exports.
+  [Tap #8](https://github.com/Robotweax/homebrew-tap/pull/8) remains with the
+  tap maintainers for review/publication; no 0.2.9 bottle is advertised as published.
+
+The original unpublished tag attempt failed the installed-documentation check:
+a relative link targeted noninstalled packaging documentation. One-line
+[PR #315](https://github.com/Robotweax/srt/pull/315) fixed that link; static
+and shared installed checks passed, with frozen product/ABI/recipes preserved.
+Explicit maintainer approval allowed an exception only for `refs/tags/v0.2.9`.
+An exact lease on old object `b021060de696ad92b6eeb30b41e74098feb91db2`
+guarded correction to the fixed commit. The complete transaction ran
+07:48:43–07:48:53 UTC; original active update/delete protections for `v*`
+were immediately restored without exclusions or bypass actors. Original
+failed source run `38357547646` and cancelled SDK run `38357547699` remain
+excluded from acceptance, with their evidence and original tag object retained.
+
+The procedure below records the completed release. Tag creation/publication
+steps are historical for this version. Selected resource and Group evidence
+retain their source/workload limits; passing final CI does not close #112/#190
+or qualify skipped optional diagnostics. Historical 0.2.8 records are unchanged.
 
 ## Release contract and scope
 
@@ -21,8 +69,8 @@ or RTT-selection policy belongs to this candidate.
 Project version **0.2.9**, C ABI line **0.2**, compatible SRT API **1.5.7**.
 Default crypto and optional feature activation remain unchanged. The new
 versioned C observations are additive; preserve all prior ABI snapshots.
-The [candidate release notes](release-notes-0.2.9.md) distinguish implemented
-behavior from pending release acceptance and retained limitations.
+The [release notes](release-notes-0.2.9.md) describe published behavior and
+retained limitations.
 
 ## Source freeze and package pin
 
@@ -31,7 +79,8 @@ Downloaded GitHub archive SHA-256:
 `16753663e52f77e9795b462927147b1d47ac48719d7a4d7fb10cd1db28f80c1b`.
 All 608 regular files and executable bits match Git.
 [Package acceptance record](https://github.com/Robotweax/srt/blob/f7b33bc2a9deaf69ecf4a0711608c7235ed781ae/packaging/qualification-0.2.9.md)
-separates this verified source identity from pending recipe/run acceptance.
+preserves the original frozen-source/recipe preparation record. Completed
+final acceptance is recorded above.
 
 Freeze the product/version commit before recipe qualification. Download that
 exact public GitHub commit archive, compare every regular file and executable
@@ -111,6 +160,6 @@ The separate Homebrew tap/bottle update needs its own native qualification and
 download/hash verification. Do not advertise an unqualified bottle. No new
 PPA/COPR, registry or third-party application distribution is implied.
 
-Complete this record with actual source/recipe/tag commits, successful run URLs,
-downloaded-byte digests, dates and retained limitations. Preparation alone is
-not release approval or publication.
+The completed record above and current package record supply the actual
+source/recipe/tag commits, successful run URLs, downloaded-byte digests, dates
+and retained limitations. Preparation alone is not release approval or publication.
