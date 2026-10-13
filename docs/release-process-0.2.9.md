@@ -1,9 +1,15 @@
 # Release process for Robotweax SRT 0.2.9
 
-Status: **preparation in progress; no tag or publication accepted**.
+Status: **preparation merged; selected candidate/main acceptance passed;
+final SDK rebuild, tag, signing and publication pending**.
 Previous published release: [v0.2.8](https://github.com/Robotweax/srt/releases/tag/v0.2.8).
 Development baseline: `6ec3cbdb5e3151e5ca3231965613e6f2a96ac86f`.
 Historical [0.2.8 acceptance](release-process-0.2.8.md) remains unchanged.
+
+Preparation merge: `ce168060c241097b8af5b0cd9e8898027fb0ff09`, with the
+complete candidate tree and frozen product identity verified.
+[Current acceptance record](../packaging/qualification-0.2.9.md) lists the
+actual source/media/package/resource runs and remaining gates.
 
 ## Release contract and scope
 

@@ -1,6 +1,7 @@
 # Package qualification 0.2.9
 
-Status: **candidate recipes prepared; qualification and publication pending**.
+Status: **preparation merged; source/media/package/resource acceptance passed;
+final SDK rebuild, tag, signing and bottle publication pending**.
 Latest published release remains v0.2.8. No v0.2.9 tag has been accepted.
 
 ## Frozen product source
@@ -40,26 +41,53 @@ checks pass. The recipe/evidence changes preserve the frozen product tree.
 These local checks do not qualify Windows, Linux package managers, full media
 integrations, performance, signing or final-tag publication.
 
+## Candidate and main acceptance
+
+Preparation [#312](https://github.com/Robotweax/srt/pull/312) merged as
+`ce168060c241097b8af5b0cd9e8898027fb0ff09` after the required gate passed on
+`00f8e1b9b36862776d522f07fc5f5239c56ccfc1`. The complete merge tree equals
+that candidate, and the product paths equal the frozen source above.
+The up-to-date branch includes only the reviewed Windows artifact-action pin
+from #309. The first update lacked its DCO trailer; that failed attempt is
+retained and the tree-identical signed update passes. No test gate was weakened.
+
 ## Acceptance inventory
 
 | Gate | Status | Accepted source/recipe SHA and run |
 | --- | --- | --- |
-| Exact-head source CI and Required CI | Pending | Not recorded |
-| Explicit complete ecosystem integrations | Pending | Not recorded |
-| Homebrew source installation/test/audit and consumers | Pending | Not recorded |
-| Six vcpkg static/shared platform profiles | Pending | Not recorded |
-| Ubuntu 24.04 source/binary packages and coexistence/removal | Pending | Not recorded |
-| Fedora 44 SRPM/binary packages and coexistence/removal | Pending | Not recorded |
-| Experimental Windows BCrypt source/crypto matrix | Pending | Not recorded |
-| Twelve SDK variants, both installers and actual 0.2.8 upgrade | Pending | Not recorded |
+| Exact-head source CI and Required CI | Passed on candidate and main | `00f8e1b`: [candidate CI](https://github.com/Robotweax/srt/actions/runs/38352569707); `ce168060`: [main CI](https://github.com/Robotweax/srt/actions/runs/38353900709), 44 success / 9 conditional skips |
+| Explicit complete ecosystem integrations | Passed | `00f8e1b`, tree-identical to merge: [complete suite](https://github.com/Robotweax/srt/actions/runs/38352598006), including both OBS desktop profiles |
+| Homebrew source installation/test/audit and consumers | Passed | Frozen product and recipe above; [candidate managers](https://github.com/Robotweax/srt/actions/runs/38352569737), [main managers](https://github.com/Robotweax/srt/actions/runs/38353900605), all seven jobs pass |
+| Six vcpkg static/shared platform profiles | Passed | Same exact source/recipe and manager runs; all six profiles pass |
+| Ubuntu 24.04 source/binary packages and coexistence/removal | Passed | [candidate Linux packages](https://github.com/Robotweax/srt/actions/runs/38352569818), [main Linux packages](https://github.com/Robotweax/srt/actions/runs/38353900613), both jobs pass |
+| Fedora 44 SRPM/binary packages and coexistence/removal | Passed | Same immutable source/recipe and Linux package runs |
+| Experimental Windows BCrypt source/crypto matrix | Passed for configured profiles | `00f8e1b`: [BCrypt](https://github.com/Robotweax/srt/actions/runs/38352569731); optional ARM64 runtime and serial-performance diagnostics remain skipped |
+| Twelve SDK variants, both installers and actual 0.2.8 upgrade | Passed; separate rebuild still pending | `00f8e1b`: [SDK candidate](https://github.com/Robotweax/srt/actions/runs/38352569751); twelve builds, two installer tests and coexistence pass |
 | Protected independent rebuild, signing and exact signed-byte tests | Pending | Not recorded |
 | Final tag source/package/SDK CI and downloaded draft comparison | Pending | No tag/draft asset accepted |
-| Separate native Homebrew bottle qualification/publication | Pending | No 0.2.9 bottle accepted |
+| Separate native Homebrew bottle qualification/publication | Running separately | [Tap #8](https://github.com/Robotweax/homebrew-tap/pull/8), exact canonical formula; no 0.2.9 bottle accepted or published |
 
 Update only with actual successful exact-SHA run URLs and retained evidence.
 Skipped, cancelled, superseded or failed attempts are not accepted results.
 Final tag provenance and post-signing SHA-256 values must be recorded before
 publication. Keep the release draft until final acceptance.
+
+## Selected resource and longer-running acceptance
+
+The frozen 0.2.9 product passed 40 prospectively fixed resource comparisons
+against published 0.2.8 and two 300-second own-provider loopback runs. All
+42 original outcomes and 588 manifest entries were independently verified.
+Each soak transfers exactly 6,000,033,536 bytes, with both peer exits zero.
+Paired median CPU/Gbit increase is at most 3.19%, summed process-peak RSS
+increase at most 0.55%, and throughput loss at most 0.002%; all satisfy the
+unchanged 15% CPU/RSS and 10% throughput limits.
+
+The [compact resource record](performance-0.2.9.json) pins the source,
+baseline, compiler, harness, declaration and private archive digest. It
+records the selected four resource profiles and CTR/GCM-FEC-SESSIONAUTH
+soaks with key rotation. These results do not qualify WAN/NIC/24-hour or
+all-platform behavior, general Group selection performance or Windows
+BCrypt performance. No raw archive was publicly uploaded.
 
 ## Contracts and limits
 
