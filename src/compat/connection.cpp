@@ -4649,10 +4649,25 @@ bool ListenerRuntime::process_result(
         return true;
     }
 
-    const SRTSOCKET accepted =
-        start_admitted_socket(listener, result.step.admission);
-    if (accepted != SRT_INVALID_SOCK) {
-        return true;
+    std::shared_ptr<DatagramChannel> channel;
+    {
+        std::lock_guard lock(listener->mutex);
+        if (listener->state != SRTS_LISTENING) {
+            return false;
+        }
+        channel = listener->channel;
+    }
+    // Dispatch can select the listener inbox before setup registration, then
+    // enqueue after the setup handoff drains it. Recheck the established route
+    // before invoking admission policy or allocating another accepted socket.
+    if (channel == nullptr
+        || !channel->replay_established_handshake(
+            result.step.admission.conclusion)) {
+        const SRTSOCKET accepted =
+            start_admitted_socket(listener, result.step.admission);
+        if (accepted != SRT_INVALID_SOCK) {
+            return true;
+        }
     }
     std::shared_ptr<ListenerHandshakeActor> actor;
     {
