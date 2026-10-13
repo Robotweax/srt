@@ -14,6 +14,8 @@ depending on implementation-specific C++ internals.
 
 Version **0.2.8** was published on **2026-10-08** as a pre-1.0 runtime, recovery and security hardening release. The [latest release](https://github.com/Robotweax/srt/releases/tag/v0.2.8) includes independently rebuilt and signed OpenSSL/BCrypt Windows SDK installers, post-signing checksums and immutable tag provenance. See the [release notes](docs/release-notes-0.2.8.md) for changes, qualification evidence and remaining limits.
 
+The development tree is preparing **0.2.9**. Its [candidate release notes](docs/release-notes-0.2.9.md) and [acceptance process](docs/release-process-0.2.9.md) describe the new Group work and pending gates; no 0.2.9 release or installer is published yet.
+
 | Axis | Robotweax SRT 0.2.8 |
 | --- | --- |
 | Project release | `0.2.8` |

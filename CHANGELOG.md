@@ -6,6 +6,29 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+## 0.2.9 — Group Recovery and Observability — Candidate
+
+Not published. See [candidate release notes](docs/release-notes-0.2.9.md) and
+[release acceptance](docs/release-process-0.2.9.md); 0.2.8 remains the latest release.
+
+- Correct inactive Backup-member cursor resumption, inferior-probe cancellation,
+  failed-probe progression and bounded idle-expired native-channel retirement.
+- Expose accepted group type, application-read-independent receiver DATA activity,
+  connection-local address snapshots and optional bilateral group path labels.
+- Add separate versioned normal-RTT provenance and local Backup sender-authority
+  observations without treating DATA counters as sender decisions.
+- Add default-off bilateral Standby RTT monitoring and its versioned snapshot,
+  with bounded service budgets and explicit lifecycle/capacity/age boundaries.
+  Monitoring does not renew idle liveness, select paths or establish DATA health.
+- Bound listener handshake handoff, permit explicit Linux reuseport listener
+  adoption and pace asynchronous rejection completion; retain bounded app retries.
+- Support same-backend Windows SDK upgrades, repair and safe inventory retirement;
+  final candidate installer/rebuild/signing qualification remains pending.
+- Freeze the additive 0.2.9 C export inventory, retain ABI line 0.2 and SRT API
+  1.5.7, and preserve prior published snapshots. Rebuild source-tree C++ consumers.
+- Preserve Live NAK/final-loss and complete File-recovery semantics. No new
+  hold-down, reconnect, RTT-selection, callback-metadata or mbedTLS feature.
+
 ## 0.2.8 — Runtime, Recovery and Security Hardening — 2026-10-08
 
 Published as [v0.2.8](https://github.com/Robotweax/srt/releases/tag/v0.2.8) from tag commit `09ceab3`; immutable package product source `8126e16`. See [release notes](docs/release-notes-0.2.8.md) for the supported profiles, qualification and remaining limits.

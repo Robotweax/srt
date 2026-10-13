@@ -1,3 +1,9 @@
+robotweax-srt (0.2.9-1) noble; urgency=medium
+
+  * Package the immutable 0.2.9 Group recovery and observability candidate.
+
+ -- Robotweax GmbH <srtpioneer@proton.me>  Mon, 12 Oct 2026 23:37:14 +0200
+
 robotweax-srt (0.2.8-1) noble; urgency=medium
 
   * Package the immutable 0.2.8 runtime, recovery and security candidate.

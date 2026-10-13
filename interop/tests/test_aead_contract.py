@@ -20,7 +20,8 @@ HISTORICAL_ABI_PATH = ROOT / "cmake" / "abi" / "robotweax-srt-0.1.0.txt"
 FROZEN_0_2_0_ABI_PATH = (
     ROOT / "cmake" / "abi" / "robotweax-srt-0.2.0.txt"
 )
-CURRENT_PROJECT_VERSION = "0.2.8"
+CURRENT_PROJECT_VERSION = "0.2.9"
+PREVIOUS_ABI_PATH = ROOT / "cmake" / "abi" / "robotweax-srt-0.2.8.txt"
 CURRENT_ABI_PATH = (
     ROOT / "cmake" / "abi" / f"robotweax-srt-{CURRENT_PROJECT_VERSION}.txt"
 )
@@ -151,8 +152,8 @@ class AeadContractTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue((ROOT / path).is_file())
 
-    def test_development_abi_adds_only_versioned_observation_metadata(self):
-        historical = CURRENT_ABI_PATH.read_bytes()
+    def test_release_abi_adds_only_versioned_observation_metadata(self):
+        historical = PREVIOUS_ABI_PATH.read_bytes()
         self.assertEqual(hashlib.sha256(historical).hexdigest(),
                          "078187df2008370574a8acb7dd64c17d0abadc3ba9f8d5f45a88a15d949dda2a")
         expected = sorted(historical.decode().splitlines()
@@ -161,8 +162,9 @@ class AeadContractTests(unittest.TestCase):
         self.assertEqual(symbols.decode().splitlines(), expected)
         self.assertEqual(symbols,
                          (ROOT / "cmake/abi/robotweax-srt-development.txt").read_bytes())
+        self.assertEqual(symbols, CURRENT_ABI_PATH.read_bytes())
         cmake = CMAKE_PATH.read_text(encoding="utf-8")
-        self.assertIn("${CMAKE_CURRENT_SOURCE_DIR}/cmake/abi/robotweax-srt-development.txt)", cmake)
+        self.assertIn("${ROBOTWEAX_SRT_ABI_BASELINE_FILE})", cmake)
 
     def test_platform_abi_matrix_is_active_for_release_version(self):
         platform = self.manifest["platform_abi"]
@@ -224,7 +226,7 @@ class AeadContractTests(unittest.TestCase):
         symbols = FROZEN_0_2_0_ABI_PATH.read_bytes()
         self.assertEqual(symbols, HISTORICAL_ABI_PATH.read_bytes())
         self.assertEqual(symbols, FROZEN_0_2_0_ABI_PATH.read_bytes())
-        self.assertEqual(symbols, CURRENT_ABI_PATH.read_bytes())
+        self.assertEqual(symbols, PREVIOUS_ABI_PATH.read_bytes())
         self.assertEqual(
             len(symbols.decode("utf-8").splitlines()),
             platform["public_symbol_count"],
