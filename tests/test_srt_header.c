@@ -4,6 +4,15 @@
 #include <stdint.h>
 #include <string.h>
 
+_Static_assert(SRTO_ROBOTWEAX_PEER_HANDSHAKE == 0x01000009,
+    "peer handshake option value is ABI");
+_Static_assert(sizeof(ROBOTWEAX_SRT_PEER_HANDSHAKE_V1) == 24,
+    "peer handshake snapshot ABI size");
+_Static_assert(offsetof(ROBOTWEAX_SRT_PEER_HANDSHAKE_V1, flags) == 12,
+    "peer handshake flags offset");
+_Static_assert(
+    offsetof(ROBOTWEAX_SRT_PEER_HANDSHAKE_V1, sender_delay_milliseconds) == 20,
+    "peer handshake sender delay offset");
 _Static_assert(sizeof(SRTSOCKET) == sizeof(int32_t), "SRTSOCKET must be 32-bit");
 _Static_assert(SRTS_INIT == 1, "socket-state values are ABI");
 _Static_assert(SRTO_REUSEADDR == 15, "reuse option value is ABI");
@@ -212,6 +221,18 @@ int main(void)
     SRTSOCKET socket = srt_create_socket();
     if (socket == SRT_INVALID_SOCK || srt_getsockstate(socket) != SRTS_INIT)
         return 2;
+
+    ROBOTWEAX_SRT_PEER_HANDSHAKE_V1 incoming;
+    int incoming_size = (int)sizeof incoming;
+    if (srt_getsockflag(
+            socket, SRTO_ROBOTWEAX_PEER_HANDSHAKE, &incoming, &incoming_size)
+            != 0
+        || incoming_size != (int)sizeof incoming
+        || incoming.abi_version != ROBOTWEAX_SRT_PEER_HANDSHAKE_VERSION
+        || incoming.available != 0 || incoming.srt_version != 0
+        || incoming.flags != 0 || incoming.receiver_delay_milliseconds != 0
+        || incoming.sender_delay_milliseconds != 0)
+        return 17;
 
     SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
     if (group == SRT_INVALID_SOCK

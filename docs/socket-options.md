@@ -231,6 +231,81 @@ each connected caller or accepted socket retains the peer's `0x00XXYYZZ` SRT
 software version. On a connection group the getter derives the value from its
 first member and returns zero while the group is empty.
 
+`SRTO_ROBOTWEAX_PEER_HANDSHAKE` (`0x01000009`) is a read-only, socket-only
+admission observation returned as `ROBOTWEAX_SRT_PEER_HANDSHAKE_V1` through
+`srt_getsockflag` or `srt_getsockopt`. Supply a buffer of at least `sizeof` the
+structure; success writes exactly that size and updates the output length.
+No input initialization is required. The output `abi_version` is always
+`ROBOTWEAX_SRT_PEER_HANDSHAKE_VERSION` (1).
+
+During `srt_listen_callback`, `available == 1` means the incoming HSv5
+CONCLUSION contained a decoded HSREQ. The snapshot contains the advertised
+`srt_version` (`0x00XXYYZZ`), the complete 32-bit `flags` word (including unknown
+bits), and both original latency fields:
+
+- `receiver_delay_milliseconds`: the peer's receive delay for data we send
+  (the peer's configured `SRTO_RCVLATENCY`).
+- `sender_delay_milliseconds`: the minimum receive delay the peer requests
+  for data it sends to us (the peer's configured `SRTO_PEERLATENCY`).
+
+These are raw advertisements, even when the corresponding TSBPD flag is clear.
+With TSBPD enabled in the relevant direction, our final receive delay is the
+maximum of our configured receive delay and the peer's sender delay; the final
+peer receive delay is the maximum of our configured peer delay and the peer's
+receiver delay. The callback may change local options without changing this
+snapshot. The callback's `handshake_version` remains the handshake protocol
+revision (5), distinct from the advertised SRT software version.
+
+The public C masks match the HSREQ word:
+
+| Mask | Value | Meaning |
+| --- | --- | --- |
+| `ROBOTWEAX_SRT_HSFLAG_TSBPD_SEND` | `0x01` | Peer can send with TSBPD |
+| `ROBOTWEAX_SRT_HSFLAG_TSBPD_RECEIVE` | `0x02` | Peer can receive with TSBPD |
+| `ROBOTWEAX_SRT_HSFLAG_CRYPT` | `0x04` | Peer advertises encryption capability |
+| `ROBOTWEAX_SRT_HSFLAG_TLPKTDROP` | `0x08` | Peer advertises too-late packet drop |
+| `ROBOTWEAX_SRT_HSFLAG_NAKREPORT` | `0x10` | Peer advertises periodic NAK |
+| `ROBOTWEAX_SRT_HSFLAG_RETRANSMIT` | `0x20` | Peer advertises retransmission marking |
+| `ROBOTWEAX_SRT_HSFLAG_STREAM` | `0x40` | Peer requests stream/buffer mode |
+| `ROBOTWEAX_SRT_HSFLAG_PACKET_FILTER` | `0x80` | Peer advertises packet-filter capability |
+
+`available == 0` and all four metadata fields zero are returned on valid sockets
+outside the callback, including listeners, callers, and accepted sockets after
+admission, and inside a callback whose CONCLUSION has no HSREQ. An HSRSP in the
+request position is unavailable as well. Missing or incoherent HSREQ still
+fails normal handshake validation; this getter does not admit it or fabricate
+default metadata. The 0.2 release line does not establish genuine HSv4 sessions
+or invoke their admission callbacks. Advertised capability bits are observations
+before final handshake validation, not proof of authentication or negotiation.
+
+The snapshot is cleared on every callback exit, including application rejection,
+exceptions, and callback-initiated close. Applications may retain their copied
+structure. Rejected/closed handles follow the usual `SRT_EINVSOCK` lifetime;
+group handles and setters return `SRT_EINVOP`. Null buffers/lengths and undersized
+buffers return `SRT_EINVPARAM`. Existing `SRTO_PEERVERSION`, `SRTO_RCVLATENCY`,
+`SRTO_PEERLATENCY`, the callback signature, and the SRT wire format are unchanged.
+
+```c
+static int admit_peer(void *opaque, SRTSOCKET socket, int handshake_version,
+                      const struct sockaddr *peer, const char *stream_id)
+{
+    ROBOTWEAX_SRT_PEER_HANDSHAKE_V1 incoming;
+    int size = sizeof incoming;
+    (void)opaque; (void)handshake_version; (void)peer; (void)stream_id;
+    if (srt_getsockflag(socket, SRTO_ROBOTWEAX_PEER_HANDSHAKE,
+                        &incoming, &size) == SRT_ERROR || !incoming.available)
+        return -1;
+    /* Example policy: require SRT 1.4.0 and peer TSBPD sending capability. */
+    if (incoming.srt_version < 0x00010400u ||
+        !(incoming.flags & ROBOTWEAX_SRT_HSFLAG_TSBPD_SEND))
+        return -1;
+    /* Both delays are the peer's advertisements in milliseconds. */
+    return 0;
+}
+/* Register on the listener before srt_listen: */
+/* srt_listen_callback(listener, admit_peer, NULL); */
+```
+
 `SRTO_GROUPTYPE` is read-only and returns an `int32_t`. On a caller-created
 or accepted group handle, it reports that group's `SRT_GTYPE_BROADCAST` or
 `SRT_GTYPE_BACKUP` type, including while the group has no members. Group-handle

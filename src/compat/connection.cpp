@@ -3901,6 +3901,22 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         {
             std::lock_guard lock(accepted->mutex);
             accepted->listen_callback_active = true;
+            accepted->incoming_peer_handshake = {};
+            if (conclusion.has_handshake_extension
+                && conclusion.extension_type
+                    == HandshakeExtensionType::handshake_request) {
+                const auto& peer = conclusion.extension_parameters;
+                accepted->incoming_peer_handshake = {
+                    .abi_version = ROBOTWEAX_SRT_PEER_HANDSHAKE_VERSION,
+                    .available = 1,
+                    .srt_version = peer.srt_version,
+                    .flags = peer.flags,
+                    .receiver_delay_milliseconds =
+                        peer.receiver_tsbpd_delay_milliseconds,
+                    .sender_delay_milliseconds =
+                        peer.sender_tsbpd_delay_milliseconds,
+                };
+            }
             accepted->incoming_peer_group = conclusion.has_group_membership
                 ? static_cast<SRTSOCKET>(conclusion.group_membership.group_id)
                 : SRT_INVALID_SOCK;
@@ -3929,6 +3945,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
                 && group_admission.admission_domain == 0)
                 callback_result = SRT_ERROR;
             accepted->listen_callback_active = false;
+            accepted->incoming_peer_handshake = {};
             accepted->incoming_group_type = SRT_GTYPE_UNDEFINED;
             accepted->incoming_peer_group = SRT_INVALID_SOCK;
             accepted->incoming_group_domain = 0;
