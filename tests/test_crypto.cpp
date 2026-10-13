@@ -461,7 +461,7 @@ TEST(crypto_mode_negotiation_matches_the_frozen_caller_and_rendezvous_tables)
         static_cast<CryptoMode>(0xffU), CryptoMode::aes_ctr));
 }
 
-TEST(openssl_provider_matches_pbkdf2_rfc6070_and_rfc3394)
+TEST(crypto_provider_matches_pbkdf2_rfc6070_and_rfc3394)
 {
     CryptoProvider& provider = default_crypto_provider();
     std::array<std::byte, 20> derived{};
@@ -495,7 +495,7 @@ TEST(openssl_provider_matches_pbkdf2_rfc6070_and_rfc3394)
     REQUIRE_EQ(unwrapped, plaintext);
 }
 
-TEST(openssl_provider_matches_the_nist_aes_ctr_vector)
+TEST(crypto_provider_matches_the_nist_aes_ctr_vector)
 {
     CryptoProvider& provider = default_crypto_provider();
     const auto key = bytes_from_hex<16>(
@@ -520,7 +520,7 @@ TEST(openssl_provider_matches_the_nist_aes_ctr_vector)
     REQUIRE_EQ(decrypted, plaintext);
 }
 
-TEST(openssl_provider_matches_the_frozen_srt_aes_gcm_fixtures)
+TEST(crypto_provider_matches_the_frozen_srt_aes_gcm_fixtures)
 {
     CryptoProvider& provider = default_crypto_provider();
     REQUIRE(provider.supports_aes_gcm());
@@ -564,7 +564,7 @@ TEST(openssl_provider_matches_the_frozen_srt_aes_gcm_fixtures)
             "d1e882ca6c0870dd38ae75b8c1323a3f"));
 }
 
-TEST(openssl_provider_rejects_invalid_aes_gcm_buffers_and_keys)
+TEST(crypto_provider_rejects_invalid_aes_gcm_buffers_and_keys)
 {
     CryptoProvider& provider = default_crypto_provider();
     std::unique_ptr<AuthenticatedPayloadCipher> cipher;
@@ -597,7 +597,7 @@ TEST(openssl_provider_rejects_invalid_aes_gcm_buffers_and_keys)
         Error::buffer_too_small);
 }
 
-TEST(openssl_provider_matches_the_nist_empty_aes_gcm_vector)
+TEST(crypto_provider_matches_the_nist_empty_aes_gcm_vector)
 {
     CryptoProvider& provider = default_crypto_provider();
     const std::array<std::byte, 16> key {};

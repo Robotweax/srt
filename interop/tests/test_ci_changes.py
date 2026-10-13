@@ -1200,7 +1200,7 @@ class CiChangeClassifierTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         # Both macOS OBS jobs upload text diagnostics only.
-        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 10)
+        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 11)
         timing_evidence = workflow.split(
             "      - name: Preserve AES-GCM timing failure diagnostics\n", 1
         )[1].split("      - name:", 1)[0]

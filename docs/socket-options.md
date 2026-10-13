@@ -8,8 +8,9 @@ post-connection, and read-only constraints are part of each option's contract.
 ## Identify the loaded crypto backend
 
 Since 0.2.4, `SRTO_ROBOTWEAX_CRYPTO_BACKEND` (`0x01000002`) returns an
-`int32_t`: `ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL` (1) or
-`ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT` (2). This read-only query identifies the
+`int32_t`: `ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL` (1),
+`ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT` (2), or the development
+`ROBOTWEAX_SRT_CRYPTO_BACKEND_MBEDTLS` (3). This read-only query identifies the
 loaded library, not the application's headers, selected cipher or remote peer.
 It works on valid sockets and groups before connecting, including unencrypted
 sockets, and never enables encryption or initializes a connection.
@@ -22,6 +23,9 @@ if (srt_getsockflag(socket, SRTO_ROBOTWEAX_CRYPTO_BACKEND,
         &backend, &length) == 0) {
     if (backend == ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL) name = "OpenSSL";
     else if (backend == ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT) name = "BCrypt";
+#ifdef ROBOTWEAX_SRT_CRYPTO_BACKEND_MBEDTLS
+    else if (backend == ROBOTWEAX_SRT_CRYPTO_BACKEND_MBEDTLS) name = "Mbed TLS";
+#endif
 }
 ```
 
@@ -771,7 +775,7 @@ These options occupy a separate namespace and do not alter the upstream
 | Option (suffix after `SRTO_ROBOTWEAX_`) | ID | Type / default | Range / access / stage | Group behavior |
 | --- | --- | --- | --- | --- |
 | VERSION | 0x01000001 | int32 / loaded version | Read-only, valid handle | Local group query |
-| CRYPTO_BACKEND | 0x01000002 | int32 / configured backend | Read-only: 1 OpenSSL, 2 BCrypt | Local group query |
+| CRYPTO_BACKEND | 0x01000002 | int32 / configured backend | Read-only: 1 OpenSSL, 2 BCrypt, 3 development Mbed TLS | Local group query |
 | SESSIONAUTH | 0x01000003 | bool / false | R/W, PRE; bilateral Caller/Listener, passphrase + enforced encryption | Member template; endpoint override accepted |
 | PEERGROUP | 0x01000004 | int32 / SRT_INVALID_SOCK for non-group | Read-only provisional listen-callback metadata | Proposed remote ID; not authorization |
 | GROUPDOMAIN | 0x01000005 | uint64 / unset (0) | Readable (0 outside callback); nonzero set only during group listen callback | Required application-authorized admission domain; local only |

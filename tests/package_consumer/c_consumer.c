@@ -72,7 +72,8 @@ int main(void)
             == SRT_ERROR
         || backend_size != (int)sizeof(backend)
         || (backend != ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL
-            && backend != ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT)) {
+            && backend != ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT
+            && backend != ROBOTWEAX_SRT_CRYPTO_BACKEND_MBEDTLS)) {
         (void)srt_close(socket);
         (void)srt_cleanup();
         return 11;
