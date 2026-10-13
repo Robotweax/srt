@@ -261,3 +261,16 @@ peer metadata, never as proof of authorization. Later members must match the
 application's admission domain. Ordinary non-group callbacks are unaffected;
 listeners without a callback use the documented automatic group admission.
 See [group admission](connection-groups.md) for the complete domain contract.
+
+## Development Mbed TLS backend
+
+The optional Mbed TLS 3.6.7+ provider preserves existing crypto/wire behavior.
+Local macOS ARM64 validation includes known-answer/failure tests, static/shared
+installed consumers, OpenSSL cross-backend CTR/GCM rotation and session
+authentication, and the established pinned Haivision CTR/GCM harnesses.
+Linux/macOS jobs are included in the required CI gate; they must pass before
+platform qualification is complete. Windows/mobile/custom hardware builds and
+application integrations are not newly qualified. See
+[Cryptographic backends](crypto-backends.md) for dependency constraints, exact
+reference pins, and performance evidence. Released 0.2.9 artifacts do not contain
+this provider.

@@ -149,7 +149,7 @@ typedef enum SRT_SOCKOPT {
      */
     SRTO_ROBOTWEAX_VERSION = 0x01000001,
     /** Loaded library's crypto backend as int32_t; read-only and local.
-     * Returns ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL or _BCRYPT.
+     * Returns ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL, _BCRYPT, or _MBEDTLS.
      * Requires a valid socket or group, even when encryption is disabled.
      */
     SRTO_ROBOTWEAX_CRYPTO_BACKEND = 0x01000002,
@@ -232,6 +232,7 @@ typedef struct ROBOTWEAX_SRT_PeerHandshakeV1_ {
 /* Values returned by SRTO_ROBOTWEAX_CRYPTO_BACKEND (not cipher modes). */
 #define ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL 1
 #define ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT 2
+#define ROBOTWEAX_SRT_CRYPTO_BACKEND_MBEDTLS 3
 
 typedef enum SRT_TRANSTYPE {
     SRTT_LIVE = 0,

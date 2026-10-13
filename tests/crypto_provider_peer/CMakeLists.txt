@@ -32,3 +32,15 @@ else()
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:RobotweaxSRT::srt> $<TARGET_FILE_DIR:crypto_peer>)
 endif()
+
+if(NOT DEFINED HAIVISION_SOURCE)
+    add_executable(crypto_session_peer session_peer.cpp)
+    target_compile_features(crypto_session_peer PRIVATE cxx_std_17)
+    target_link_libraries(crypto_session_peer PRIVATE RobotweaxSRT::srt)
+    if(WIN32)
+        target_link_libraries(crypto_session_peer PRIVATE ws2_32)
+        add_custom_command(TARGET crypto_session_peer POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:RobotweaxSRT::srt> $<TARGET_FILE_DIR:crypto_session_peer>)
+    endif()
+endif()

@@ -3,6 +3,12 @@
 include(CMakeFindDependencyMacro)
 if("@ROBOTWEAX_SRT_CRYPTO_BACKEND@" STREQUAL "openssl")
     find_dependency(OpenSSL 3.0 COMPONENTS Crypto)
+elseif("@ROBOTWEAX_SRT_CRYPTO_BACKEND@" STREQUAL "mbedtls")
+    set(_robotweax_module_path "${CMAKE_MODULE_PATH}")
+    list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")
+    find_dependency(MbedTLS 3.6.7 MODULE)
+    set(CMAKE_MODULE_PATH "${_robotweax_module_path}")
+    unset(_robotweax_module_path)
 endif()
 find_dependency(Threads)
 
