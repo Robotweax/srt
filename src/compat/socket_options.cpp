@@ -127,6 +127,7 @@ template <typename Value>
         || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
         || option == SRTO_ROBOTWEAX_PATHID
         || option == SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT
+        || option == SRTO_ROBOTWEAX_ACP1_REQUIRED
         || option == SRTO_ROBOTWEAX_SESSIONAUTH || option == SRTO_CONGESTION
         || option == SRTO_MESSAGEAPI || option == SRTO_SENDER
         || option == SRTO_MINVERSION || option == SRTO_STREAMID
@@ -531,6 +532,29 @@ int get_socket_option(
         *value_size = static_cast<int>(options.path_identifier.size);
         return 0;
     }
+    case SRTO_ROBOTWEAX_ACP1_REQUIRED:
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+        return write_value(
+            value, value_size, socket.native_options.experimental_acp1());
+#else
+        return unsupported_option();
+#endif
+    case SRTO_ROBOTWEAX_ACP1_ACTIVE:
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+        return write_value(value, value_size,
+            socket.state == SRTS_CONNECTED && socket.runtime != nullptr
+                && !socket.runtime->terminal()
+                && socket.native_options.experimental_acp1()
+                && socket.crypto != nullptr
+                && socket.crypto->session_authentication() != nullptr
+                && socket.crypto->session_authentication()->ready()
+                && is_acp1_session_version(
+                    socket.crypto->session_authentication()
+                        ->parameters()
+                        .version));
+#else
+        return unsupported_option();
+#endif
     case SRTO_ROBOTWEAX_SESSIONAUTH:
         return write_value(
             value, value_size, socket.native_options.session_authentication());
@@ -1207,7 +1231,9 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         }
         if (parsed
             && (options.path_identifier_required
-                || options.standby_rtt_required))
+                || options.standby_rtt_required)
+            && !(socket.group_id != SRT_INVALID_SOCK
+                && socket.native_options.experimental_acp1()))
             return invalid_parameter();
         if (set_native(socket.native_options,
                 SocketOption::rendezvous, parsed ? 1 : 0)
@@ -1272,7 +1298,10 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             || socket.listen_callback_active
             || !read_boolean(value, value_size, parsed)
             || (parsed
-                && (options.rendezvous || options.transmission_type != SRTT_LIVE
+                && ((options.rendezvous
+                        && !(socket.group_id != SRT_INVALID_SOCK
+                            && socket.native_options.experimental_acp1()))
+                    || options.transmission_type != SRTT_LIVE
                     || !options.message_api || !options.tsbpd_mode
                     || socket.native_options.congestion_controller()
                         != CongestionController::live)))
@@ -1286,7 +1315,9 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             || socket.listen_callback_active
             || !read_boolean(value, value_size, parsed)
             || (parsed
-                && (options.rendezvous
+                && ((options.rendezvous
+                        && !(socket.group_id != SRT_INVALID_SOCK
+                            && socket.native_options.experimental_acp1()))
                     || options.transmission_type != SRTT_LIVE)))
             return invalid_parameter();
         options.path_identifier_required = parsed;
@@ -1312,6 +1343,20 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         options.identity_advertisement = parsed;
         return 0;
     }
+    case SRTO_ROBOTWEAX_ACP1_REQUIRED: {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+        bool parsed = false;
+        if (!read_boolean(value, value_size, parsed))
+            return invalid_parameter();
+        if (socket.group_id != SRT_INVALID_SOCK
+            && parsed != socket.native_options.experimental_acp1())
+            return invalid_parameter();
+        return set_native(socket.native_options,
+            SocketOption::experimental_acp1, parsed ? 1 : 0);
+#else
+        return unsupported_option();
+#endif
+    }
     case SRTO_ROBOTWEAX_SESSIONAUTH:
     case SRTO_ENFORCEDENCRYPTION: {
         bool parsed = false;
@@ -1324,6 +1369,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                 : SocketOption::enforced_encryption,
             parsed ? 1 : 0);
     }
+    case SRTO_ROBOTWEAX_ACP1_ACTIVE:
     case SRTO_ISN:
     case SRTO_STATE:
     case SRTO_EVENT:

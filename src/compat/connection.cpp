@@ -1,4 +1,5 @@
 #include "compat/connection.hpp"
+#include "compat/acp1_group_context.hpp"
 #include "compat/random_identity.hpp"
 #include "local_endpoint_probe.hpp"
 
@@ -718,6 +719,9 @@ struct ConnectedNegotiation {
             static_cast<std::uint32_t>(
                 socket.public_options.maximum_segment_size),
             peer_maximum_segment_size));
+    if (socket.native_options.experimental_acp1()
+        && effective_maximum_segment_size < 256)
+        return false;
     const auto send_bytes =
         checked_srt_buffer_bytes(socket.native_options.send_buffer_packets(),
             effective_maximum_segment_size);
@@ -793,12 +797,8 @@ void publish_connected_state(
 }
 
 template <typename Machine>
-void finish_connect(
-    SocketRecord& socket,
-    SRT_SOCKSTATUS state,
-    IpEndpoint peer,
-    std::uint32_t peer_socket_id,
-    std::uint32_t peer_maximum_segment_size,
+bool finish_connect(SocketRecord& socket, SRT_SOCKSTATUS state, IpEndpoint peer,
+    std::uint32_t peer_socket_id, std::uint32_t peer_maximum_segment_size,
     const Machine& machine) noexcept
 {
     ConnectedNegotiation negotiation;
@@ -827,7 +827,9 @@ void finish_connect(
             peer_socket_id, peer_maximum_segment_size,
             negotiation)) {
         publish_connected_state(socket, state);
+        return true;
     }
+    return false;
 }
 
 void invoke_connect_callback(
@@ -1080,6 +1082,13 @@ int listen_socket(
     std::shared_ptr<ListenerRuntime> listener_runtime;
     {
         std::lock_guard lock(socket->mutex);
+        if (socket->native_options.experimental_acp1()
+            && (!socket->native_options.session_authentication()
+                || !socket->native_options.encryption_enabled()
+                || !socket->native_options.enforced_encryption()
+                || socket->public_options.rendezvous
+                || socket->native_options.maximum_segment_size() < 256U))
+            return fail(SRT_ESECFAIL);
         if (socket->public_options.standby_rtt_required
             && (!socket->public_options.group_connect
                 || socket->public_options.rendezvous
@@ -1514,18 +1523,34 @@ public:
                 return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
             SessionAuthenticationParameters local_parameters;
             if (message.packet.request == HandshakeRequest::induction) {
-                if (setup_.crypto->start_session_authentication(true)
+                if (setup_.crypto->start_session_authentication(true,
+                        setup_.options.experimental_acp1()
+                            ? (setup_.configuration.has_group_membership
+                                      ? acp1_group_session_version
+                                      : acp1_session_version)
+                            : session_authentication_version)
                     != Error::none)
                     return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
                 local_parameters =
                     setup_.crypto->session_authentication()->parameters();
             } else if (message.packet.request == HandshakeRequest::conclusion) {
+                const auto context =
+                    acp1_group_context(setup_.configuration.group_membership,
+                        message.group_membership,
+                        setup_.configuration.path_identifier,
+                        message.has_standby_rtt, message.standby_rtt);
+                const bool group_auth = setup_.options.experimental_acp1()
+                    && setup_.configuration.has_group_membership;
+                if (group_auth && !message.has_group_membership)
+                    return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_GROUP);
                 if (!message.has_session_authentication
                     || !message.has_key_material_extension
                     || setup_.crypto->establish_session_authentication(
                            message.session_authentication,
                            setup_.configuration.local_socket_id,
-                           message.packet.socket_id)
+                           message.packet.socket_id, 0, 0,
+                           group_auth ? std::span<const std::byte> {context}
+                                      : std::span<const std::byte> {})
                         != Error::none)
                     return reject_peer(SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
                 auto* authentication = setup_.crypto->session_authentication();
@@ -1621,8 +1646,15 @@ public:
             socket_.peer_connection_initial_sequence =
                 protocol.peer_initial_sequence().value();
         }
-        finish_connect(socket_, SRTS_CONNECTED, peer_, driver_.peer_socket_id(),
+        // ACP1 CONNECTED must imply that the protected runtime is attached.
+        // Group waits and asynchronous observers can wake at publication.
+        const bool staged = finish_connect(socket_,
+            setup_.options.experimental_acp1() ? SRTS_CONNECTING
+                                               : SRTS_CONNECTED,
+            peer_, driver_.peer_socket_id(),
             message.packet.maximum_transmission_unit, protocol);
+        if (setup_.options.experimental_acp1() && !staged)
+            return fail_connect(socket_, SRT_ESECFAIL, 0);
         if (socket_was_closed(socket_)) {
             return fail(SRT_ESCLOSED);
         }
@@ -1637,6 +1669,8 @@ public:
                 static_cast<SRT_ERRNO>(last_error().code),
                 last_error().system_error);
         }
+        if (setup_.options.experimental_acp1())
+            publish_connected_state(socket_, SRTS_CONNECTED);
         return 0;
     }
 
@@ -2445,11 +2479,11 @@ public:
         , setup_(std::move(setup))
         , inbox_(std::move(inbox))
         , machine_(setup_.configuration)
-        , origin_(Clock::now())
-        , overall_deadline_(
-              origin_ + std::chrono::milliseconds {setup_.timeout_milliseconds})
-        , retry_deadline_(
-              origin_ + std::chrono::milliseconds {retry_interval_milliseconds})
+        , origin_(socket_timestamp_origin(*socket_, Clock::now()))
+        , overall_deadline_(Clock::now()
+              + std::chrono::milliseconds {setup_.timeout_milliseconds})
+        , retry_deadline_(Clock::now()
+              + std::chrono::milliseconds {retry_interval_milliseconds})
     {
     }
 
@@ -2501,6 +2535,11 @@ public:
         }
         if (wire_packet.packet.kind != PacketKind::control
             || wire_packet.packet.control.type != ControlType::handshake) {
+            // ACP1 requires the Initiator's final handshake proof. Even a
+            // correctly encrypted DATA packet or signed runtime control is
+            // insufficient to publish a pending Responder.
+            if (setup_.options.experimental_acp1())
+                return std::nullopt;
             const std::uint32_t destination_socket_id =
                 wire_packet.packet.kind == PacketKind::data
                 ? wire_packet.packet.data.destination_socket_id
@@ -2600,6 +2639,9 @@ public:
         const bool handshake_response = decoded.message.has_handshake_extension
             && decoded.message.extension_type
                 == HandshakeExtensionType::handshake_response;
+        if (!wire_rejection
+            && prepare_authentication(decoded.message, event_role) == SRT_ERROR)
+            return SRT_ERROR;
         if (event_role == RendezvousRole::responder && handshake_request) {
             const bool valid_key_material_request =
                 decoded.message.has_key_material_extension
@@ -2706,6 +2748,215 @@ public:
     }
 
 private:
+    [[nodiscard]] int prepare_group_authentication(
+        const HandshakeMessage& message, RendezvousRole role, bool request,
+        bool response) noexcept
+    {
+        const auto& config = setup_.configuration;
+        if (!config.has_group_membership)
+            return message.has_group_membership || message.has_path_identifier
+                    || message.has_standby_rtt
+                ? fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_GROUP)
+                : 0;
+        const auto& peer = message.group_membership;
+        if (!message.has_group_membership
+            || message.packet.maximum_transmission_unit < 256U
+            || message.packet.flow_window == 0U
+            || validate_group_membership(peer)
+                != GroupMembershipValidation::compatible
+            || peer.type != config.group_membership.type || peer.flags != 0
+            || peer.weight > 32767U
+            || message.has_path_identifier != config.require_path_identifier
+            || (message.has_path_identifier
+                && message.path_identifier != config.path_identifier)
+            || message.has_standby_rtt != config.require_standby_rtt
+            || (request && role != RendezvousRole::responder)
+            || (response && role != RendezvousRole::initiator))
+            return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_GROUP);
+        const auto group = GroupRegistry::instance().find(
+            static_cast<SRTSOCKET>(config.group_membership.group_id));
+        if (!group)
+            return fail_connect(*socket_, SRT_ESCLOSED, 0);
+        bool rejected = false;
+        {
+            std::lock_guard lock(group->mutex);
+            rejected = group->closed
+                || (group->peer_group != SRT_INVALID_SOCK
+                    && group->peer_group
+                        != static_cast<SRTSOCKET>(peer.group_id));
+        }
+        if (rejected)
+            return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_GROUP);
+        StandbyRttIdentity standby {};
+        if (config.require_standby_rtt) {
+            if (request) {
+                if (!message.standby_rtt.is_offer()
+                    || message.standby_rtt.caller == config.standby_rtt_nonce)
+                    return fail_connect(
+                        *socket_, SRT_ESECFAIL, 0, SRT_REJ_GROUP);
+                standby = {.caller = message.standby_rtt.caller,
+                    .listener = config.standby_rtt_nonce};
+            } else {
+                if (!message.standby_rtt.is_pair()
+                    || (role == RendezvousRole::initiator
+                               ? message.standby_rtt.caller
+                               : message.standby_rtt.listener)
+                        != config.standby_rtt_nonce)
+                    return fail_connect(
+                        *socket_, SRT_ESECFAIL, 0, SRT_REJ_GROUP);
+                standby = message.standby_rtt;
+            }
+        }
+        const bool initiator = role == RendezvousRole::initiator;
+        const auto context = acp1_group_rendezvous_context(
+            initiator ? config.group_membership : peer,
+            initiator ? peer : config.group_membership, config.path_identifier,
+            config.require_standby_rtt, standby,
+            initiator ? config.initial_sequence
+                      : message.packet.initial_sequence,
+            initiator ? message.packet.initial_sequence
+                      : config.initial_sequence);
+        if (group_authentication_context_ready_
+            && context != group_authentication_context_)
+            return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_GROUP);
+        group_authentication_context_ = context;
+        group_authentication_context_ready_ = true;
+        return 0;
+    }
+    [[nodiscard]] int prepare_authentication(
+        const HandshakeMessage& message, RendezvousRole role) noexcept
+    {
+        const bool request = message.has_handshake_extension
+            && message.extension_type
+                == HandshakeExtensionType::handshake_request;
+        const bool response = message.has_handshake_extension
+            && message.extension_type
+                == HandshakeExtensionType::handshake_response;
+        const bool agreement =
+            message.packet.request == HandshakeRequest::agreement;
+        if (!setup_.options.experimental_acp1()) {
+            return message.has_session_authentication
+                ? fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE)
+                : 0;
+        }
+        if (!request && !response && !agreement) {
+            return message.has_session_authentication
+                ? fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE)
+                : 0;
+        }
+        if (!message.has_session_authentication
+            || message.session_authentication.version
+                != (setup_.configuration.has_group_membership
+                        ? acp1_group_rendezvous_session_version
+                        : acp1_rendezvous_session_version)
+            || setup_.crypto == nullptr
+            || setup_.crypto->session_authentication() == nullptr)
+            return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
+        if (((request || response)
+                && message.packet.request != HandshakeRequest::conclusion)
+            || (agreement && message.has_handshake_extension))
+            return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
+        if (prepare_group_authentication(message, role, request, response)
+            == SRT_ERROR)
+            return SRT_ERROR;
+        const auto group_context = setup_.configuration.has_group_membership
+            ? std::span<const std::byte> {group_authentication_context_}
+            : std::span<const std::byte> {};
+        auto* authentication = setup_.crypto->session_authentication();
+        if (role == RendezvousRole::responder && request) {
+            if (!message.session_authentication.is_offer()
+                || !message.has_key_material_extension
+                || message.key_material_extension_type
+                    != HandshakeExtensionType::key_material_request
+                || message.key_material.size == 0
+                || message.key_material.size
+                    > message.key_material.bytes.size())
+                return fail_connect(
+                    *socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
+            if (!authentication->ready()) {
+                if (setup_.crypto->establish_session_authentication(
+                        message.session_authentication,
+                        setup_.configuration.local_socket_id,
+                        message.packet.socket_id,
+                        setup_.configuration.local_cookie,
+                        message.packet.syn_cookie, group_context)
+                    != Error::none)
+                    return fail_connect(
+                        *socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+                authentication_initial_material_ = message.key_material;
+            } else if (message.session_authentication.caller_nonce
+                    != authentication->parameters().caller_nonce
+                || message.key_material.size
+                    != authentication_initial_material_.size
+                || !std::equal(message.key_material.view().begin(),
+                    message.key_material.view().end(),
+                    authentication_initial_material_.view().begin())) {
+                return fail_connect(
+                    *socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+            }
+            SessionAuthenticationParameters local, confirmation;
+            if (authentication->handshake_proof(
+                    false, authentication_initial_material_.view(), local)
+                    != Error::none
+                || authentication->handshake_proof(true,
+                       authentication_initial_material_.view(), confirmation)
+                    != Error::none
+                || machine_.set_session_authentication(local, confirmation)
+                    != Error::none)
+                return fail_connect(
+                    *socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+            return 0;
+        }
+        if (role == RendezvousRole::initiator && response) {
+            if (!message.session_authentication.is_proof()
+                || !message.has_key_material_extension
+                || message.key_material_extension_type
+                    != HandshakeExtensionType::key_material_response
+                || message.key_material.size
+                    != authentication_initial_material_.size
+                || !std::equal(message.key_material.view().begin(),
+                    message.key_material.view().end(),
+                    authentication_initial_material_.view().begin()))
+                return fail_connect(
+                    *socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
+            if (!authentication->ready()
+                && setup_.crypto->establish_session_authentication(
+                       message.session_authentication,
+                       setup_.configuration.local_socket_id,
+                       message.packet.socket_id,
+                       setup_.configuration.local_cookie,
+                       message.packet.syn_cookie, group_context)
+                    != Error::none)
+                return fail_connect(
+                    *socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+            SessionAuthenticationParameters local;
+            if (!authentication->verify_handshake(false,
+                    authentication_initial_material_.view(),
+                    message.session_authentication)
+                || authentication->handshake_proof(
+                       true, authentication_initial_material_.view(), local)
+                    != Error::none
+                || machine_.set_session_authentication(
+                       local, message.session_authentication)
+                    != Error::none)
+                return fail_connect(
+                    *socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+            peer_authenticated_ = true;
+            return 0;
+        }
+        if (role == RendezvousRole::responder && agreement) {
+            if (!authentication->ready()
+                || !authentication->verify_handshake(true,
+                    authentication_initial_material_.view(),
+                    message.session_authentication))
+                return fail_connect(
+                    *socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+            peer_authenticated_ = true;
+            return 0;
+        }
+        return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
+    }
+
     [[nodiscard]] int install_crypto(
         std::size_t key_length, bool start_initiator) noexcept
     {
@@ -2724,6 +2975,26 @@ private:
         if (start_initiator && replacement->start_initiator() != Error::none) {
             return fail_connect(*socket_, SRT_ESECFAIL, 0,
                 crypto_rejection_reason(*replacement, SRT_REJ_BADSECRET));
+        }
+        if (setup_.options.experimental_acp1()) {
+            if (replacement->start_session_authentication(start_initiator,
+                    setup_.configuration.has_group_membership
+                        ? acp1_group_rendezvous_session_version
+                        : acp1_rendezvous_session_version)
+                != Error::none)
+                return fail_connect(
+                    *socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+            if (start_initiator) {
+                const auto material = replacement->pending_key_material();
+                std::copy(material.begin(), material.end(),
+                    authentication_initial_material_.bytes.begin());
+                authentication_initial_material_.size = material.size();
+                if (machine_.set_session_authentication(
+                        replacement->session_authentication()->parameters())
+                    != Error::none)
+                    return fail_connect(
+                        *socket_, SRT_ESECFAIL, 0, SRT_REJ_BADSECRET);
+            }
         }
         setup_.crypto = std::move(replacement);
         setup_.crypto_key_length = key_length;
@@ -2786,13 +3057,38 @@ private:
     [[nodiscard]] int complete_connection(PacketTimestamp handshake_timestamp,
         const PacketView* first_connected_packet) noexcept
     {
+        if (setup_.options.experimental_acp1()
+            && (!peer_authenticated_ || setup_.crypto == nullptr
+                || setup_.crypto->session_authentication() == nullptr
+                || !setup_.crypto->session_authentication()->ready()))
+            return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
+        if (setup_.configuration.has_group_membership) {
+            SRTSOCKET group;
+            std::uint64_t generation;
+            {
+                std::lock_guard lock(socket_->mutex);
+                group = socket_->group_id;
+                generation = socket_->group_generation;
+            }
+            if (!machine_.has_peer_group_membership()
+                || !GroupRegistry::instance().set_peer_group(group, generation,
+                    static_cast<SRTSOCKET>(
+                        machine_.peer_group_membership().group_id)))
+                return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_GROUP);
+        }
         {
             std::lock_guard lock(socket_->mutex);
             socket_->peer_connection_initial_sequence =
                 machine_.peer_initial_sequence().value();
         }
-        finish_connect(*socket_, SRTS_CONNECTED, peer_, peer_socket_id_,
-            peer_maximum_segment_size_, machine_);
+        // Keep public CONNECTING until the protected runtime is installed.
+        // Async observers must never see CONNECTED with ACP1_ACTIVE false.
+        const bool staged = finish_connect(*socket_,
+            setup_.options.experimental_acp1() ? SRTS_CONNECTING
+                                               : SRTS_CONNECTED,
+            peer_, peer_socket_id_, peer_maximum_segment_size_, machine_);
+        if (setup_.options.experimental_acp1() && !staged)
+            return fail_connect(*socket_, SRT_ECONNSETUP, 0);
         if (socket_was_closed(*socket_)) {
             return fail(SRT_ESCLOSED);
         }
@@ -2802,12 +3098,16 @@ private:
             : nullptr;
         if (attach_runtime(*socket_, setup_.channel, origin_,
                 microseconds_since(origin_), handshake_timestamp, replay,
-                machine_.peer_cookie(), inbox_)
+                machine_.peer_cookie(), inbox_, {},
+                machine_.standby_rtt_identity(),
+                machine_.role() == RendezvousRole::initiator)
             == SRT_ERROR) {
             return fail_connect(*socket_,
                 static_cast<SRT_ERRNO>(last_error().code),
                 last_error().system_error);
         }
+        if (setup_.options.experimental_acp1())
+            publish_connected_state(*socket_, SRTS_CONNECTED);
         if (first_connected_packet != nullptr) {
             std::shared_ptr<ConnectionRuntime> runtime;
             {
@@ -2831,7 +3131,11 @@ private:
     Clock::time_point retry_deadline_ {};
     std::uint32_t peer_socket_id_ = 0;
     std::uint32_t peer_maximum_segment_size_ = default_maximum_segment_size;
-    bool role_prepared_ = false;
+    bool role_prepared_ = false, peer_authenticated_ = false;
+    std::array<std::byte, acp1_group_rendezvous_context_size>
+        group_authentication_context_ {};
+    bool group_authentication_context_ready_ = false;
+    KeyMaterialBuffer authentication_initial_material_ {};
     HandshakeAction replay_response_;
     PacketTimestamp peer_handshake_timestamp_ {};
 };
@@ -3373,6 +3677,16 @@ int connect_socket(
                 ? SRT_ECONNSOCK
                 : SRT_EINVOP);
         }
+        if (socket->native_options.experimental_acp1()
+            && (!socket->native_options.session_authentication()
+                || !socket->native_options.encryption_enabled()
+                || !socket->native_options.enforced_encryption()
+                || socket->native_options.maximum_segment_size() < 256U))
+            return fail(SRT_ESECFAIL);
+        if (socket->public_options.rendezvous
+            && socket->group_id != SRT_INVALID_SOCK
+            && !socket->native_options.experimental_acp1())
+            return fail(SRT_EINVOP);
         if ((socket->native_options.requires_authenticated_data()
                 || socket->native_options.session_authentication())
             && !socket->native_options.encryption_enabled()) {
@@ -3384,12 +3698,14 @@ int connect_socket(
                 || socket->group_type != SRT_GTYPE_BACKUP
                 || path_options.transmission_type != SRTT_LIVE
                 || !path_options.message_api || !path_options.tsbpd_mode
-                || path_options.rendezvous))
+                || (path_options.rendezvous
+                    && !socket->native_options.experimental_acp1())))
             return fail(SRT_EINVPARAM);
         if ((path_options.path_identifier_required
                 && (socket->group_id == SRT_INVALID_SOCK
                     || !path_options.path_identifier.valid()
-                    || path_options.rendezvous
+                    || (path_options.rendezvous
+                        && !socket->native_options.experimental_acp1())
                     || path_options.transmission_type != SRTT_LIVE))
             || (!path_options.path_identifier_required
                 && path_options.path_identifier.size != 0U))
@@ -3484,6 +3800,29 @@ int connect_socket(
                     static_cast<std::size_t>(
                         socket->public_options.flow_window_packets)),
             };
+            setup.configuration.has_group_membership =
+                socket->group_id != SRT_INVALID_SOCK;
+            setup.configuration.group_membership = {
+                .group_id = static_cast<std::uint32_t>(socket->group_id),
+                .type = socket->group_type == SRT_GTYPE_BACKUP
+                    ? GroupType::backup
+                    : GroupType::broadcast,
+                .flags = 0,
+                .weight = socket->group_weight};
+            setup.configuration.require_path_identifier =
+                socket->public_options.path_identifier_required;
+            setup.configuration.path_identifier =
+                socket->public_options.path_identifier;
+            setup.configuration.require_standby_rtt =
+                socket->public_options.standby_rtt_required;
+            if (setup.configuration.require_standby_rtt) {
+                const auto nonce = random_standby_rtt_nonce();
+                if (!nonce)
+                    return fail(SRT_ESYSOBJ);
+                setup.configuration.standby_rtt_nonce = *nonce;
+            }
+            setup.configuration.require_session_authentication =
+                socket->native_options.experimental_acp1();
             setup.configuration.implementation_identity =
                 local_implementation_identity(
                     socket->public_options.identity_advertisement);
@@ -4021,12 +4360,28 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         policy_error = SRT_ESECFAIL;
     }
 
+    if (!policy_rejected && native_options.experimental_acp1()
+        && (!native_options.session_authentication()
+            || !native_options.encryption_enabled()
+            || !native_options.enforced_encryption()
+            || public_options.rendezvous
+            || native_options.maximum_segment_size() < 256U)) {
+        policy_rejected = true;
+        policy_rejection = SRT_REJ_UNSECURE;
+        policy_error = SRT_ESECFAIL;
+    }
     if (!policy_rejected
         && (native_options.session_authentication()
                 != conclusion.has_session_authentication
             || (native_options.session_authentication()
                 && (!native_options.encryption_enabled()
-                    || !conclusion.session_authentication.is_offer())))) {
+                    || !conclusion.session_authentication.is_offer()
+                    || conclusion.session_authentication.version
+                        != (native_options.experimental_acp1()
+                                ? (conclusion.has_group_membership
+                                          ? acp1_group_session_version
+                                          : acp1_session_version)
+                                : session_authentication_version))))) {
         policy_rejected = true;
         policy_rejection = SRT_REJ_UNSECURE;
         policy_error = SRT_ESECFAIL;
@@ -4056,6 +4411,44 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         policy_rejection = SRT_REJ_GROUP;
         policy_error = SRT_ECONNREJ;
     }
+    GroupMembership authenticated_local_group {};
+    StandbyRttNonce authenticated_standby_nonce {};
+    if (!policy_rejected && native_options.experimental_acp1()
+        && conclusion.has_group_membership) {
+        bool listener_required = false;
+        {
+            std::lock_guard lock(listener->mutex);
+            listener_required = listener->native_options.experimental_acp1();
+        }
+        if (!listener_required
+            || !group_admission.prepare(
+                conclusion.group_membership, authenticated_local_group)) {
+            policy_rejected = true;
+            policy_rejection = SRT_REJ_GROUP;
+            policy_error = SRT_ESECFAIL;
+        }
+    }
+    // A callback cannot turn off the listener's strict policy for a group join.
+    if (!policy_rejected && conclusion.has_group_membership) {
+        std::lock_guard lock(listener->mutex);
+        if (listener->native_options.experimental_acp1()
+            != native_options.experimental_acp1()) {
+            policy_rejected = true;
+            policy_rejection = SRT_REJ_GROUP;
+            policy_error = SRT_ESECFAIL;
+        }
+    }
+    if (public_options.standby_rtt_required) {
+        const auto nonce = random_standby_rtt_nonce();
+        if (!nonce)
+            return close_with_error(SRT_ESYSOBJ);
+        authenticated_standby_nonce = *nonce;
+    }
+    const auto group_context = acp1_group_context(conclusion.group_membership,
+        authenticated_local_group, conclusion.path_identifier,
+        public_options.standby_rtt_required,
+        {.caller = conclusion.standby_rtt.caller,
+            .listener = authenticated_standby_nonce});
     SessionAuthenticationParameters session_response {},
         session_confirmation {};
     std::shared_ptr<CryptoSession> crypto;
@@ -4148,10 +4541,20 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
 
     if (!policy_rejected && native_options.session_authentication()) {
         if (crypto == nullptr
-            || crypto->start_session_authentication(false) != Error::none
+            || crypto->start_session_authentication(false,
+                   native_options.experimental_acp1()
+                       ? (conclusion.has_group_membership
+                                 ? acp1_group_session_version
+                                 : acp1_session_version)
+                       : session_authentication_version)
+                != Error::none
             || crypto->establish_session_authentication(
                    conclusion.session_authentication,
-                   accepted->protocol_socket_id, caller_socket_id)
+                   accepted->protocol_socket_id, caller_socket_id, 0, 0,
+                   native_options.experimental_acp1()
+                           && conclusion.has_group_membership
+                       ? std::span<const std::byte> {group_context}
+                       : std::span<const std::byte> {})
                 != Error::none
             || crypto->session_authentication()->handshake_proof(
                    false, conclusion.key_material.view(), session_response)
@@ -4209,10 +4612,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     configuration.hsv5.require_standby_rtt =
         public_options.standby_rtt_required;
     if (public_options.standby_rtt_required) {
-        const auto nonce = random_standby_rtt_nonce();
-        if (!nonce)
-            return close_with_error(SRT_ESYSOBJ);
-        configuration.hsv5.standby_rtt_nonce = *nonce;
+        configuration.hsv5.standby_rtt_nonce = authenticated_standby_nonce;
     }
     configuration.hsv5.require_path_identifier =
         public_options.path_identifier_required;

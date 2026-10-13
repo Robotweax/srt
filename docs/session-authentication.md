@@ -3,8 +3,10 @@
 `SRTO_ROBOTWEAX_SESSIONAUTH` is a Robotweax-specific boolean socket option,
 **false by default**. Enable it explicitly on both Caller and Listener before
 connection setup. It requires a passphrase and enforced encryption. Setting
-it never implicitly enables GCM. Rendezvous is not supported with this option;
-the conflicting setting is rejected in either order.
+it never implicitly enables GCM. SESSIONAUTH alone does not support Rendezvous;
+the conflicting setting is rejected in either order. The separately gated
+[experimental ACP1 profile](experimental-acp1.md) adds explicit version-4
+Rendezvous authentication when ACP1 is also required.
 
 ```c
 bool enabled = true;
@@ -102,3 +104,12 @@ used as independent evidence of source-DATA liveness.
 This authenticates parity, not AES-CTR source DATA. Use AES-GCM as well when
 source integrity is required; CTR's unauthenticated DATA remains malleable.
 Without session authentication, compatible FEC parity remains unauthenticated.
+
+## Experimental ACP1 prototype
+
+A separate default-off [experimental ACP1 build](experimental-acp1.md) adds
+strict session-authentication version 3 for Caller/Listener, version 4 for
+Rendezvous, version 5 for Broadcast/Backup Caller/Listener group members, or
+version 6 for Group Rendezvous members, with authenticated runtime controls. It is unreviewed and outside the supported
+security and Haivision interoperability boundary. SESSIONAUTH alone continues
+to use version 2; ordinary connections retain their existing behavior.

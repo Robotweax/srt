@@ -224,7 +224,8 @@ CryptoSession::CryptoSession(
     configuration_error_ = validate_configuration();
 }
 
-Error CryptoSession::start_session_authentication(bool caller) noexcept
+Error CryptoSession::start_session_authentication(
+    bool caller, std::uint8_t version) noexcept
 {
     if (session_authentication_ != nullptr || !enabled())
         return Error::invalid_state;
@@ -232,7 +233,7 @@ Error CryptoSession::start_session_authentication(bool caller) noexcept
         new (std::nothrow) SessionAuthentication(provider_));
     if (!candidate)
         return Error::cryptographic_failure;
-    const auto result = candidate->start(caller);
+    const auto result = candidate->start(caller, version);
     if (result == Error::none)
         session_authentication_ = std::move(candidate);
     return result;
@@ -240,13 +241,15 @@ Error CryptoSession::start_session_authentication(bool caller) noexcept
 
 Error CryptoSession::establish_session_authentication(
     const SessionAuthenticationParameters& peer, std::uint32_t local_socket_id,
-    std::uint32_t peer_socket_id) noexcept
+    std::uint32_t peer_socket_id, std::uint32_t local_cookie,
+    std::uint32_t peer_cookie,
+    std::span<const std::byte> group_context) noexcept
 {
     if (!session_authentication_)
         return Error::invalid_state;
     return session_authentication_->establish(
         std::span {passphrase_}.first(passphrase_size_), peer, local_socket_id,
-        peer_socket_id);
+        peer_socket_id, local_cookie, peer_cookie, group_context);
 }
 
 CryptoSession::~CryptoSession()

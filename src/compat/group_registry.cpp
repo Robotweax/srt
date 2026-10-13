@@ -474,6 +474,59 @@ int GroupRegistry::get_io_option(
         set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
     }
+    if (option == SRTO_ROBOTWEAX_ACP1_ACTIVE) {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+        std::vector<SRTSOCKET> handles;
+        bool required = false;
+        {
+            std::lock_guard lock(record->mutex);
+            if (record->closed) {
+                set_last_error(SRT_EINVSOCK);
+                return SRT_ERROR;
+            }
+            required = record->member_native_options.experimental_acp1();
+            try {
+                for (const auto& member : record->members)
+                    handles.push_back(member.public_data.id);
+            } catch (...) {
+                set_last_error(SRT_ENOBUF);
+                return SRT_ERROR;
+            }
+        }
+        bool active = false;
+        for (const auto handle : handles) {
+            const auto member = SocketRegistry::instance().find(handle);
+            if (!member)
+                continue;
+            {
+                std::lock_guard lock(member->mutex);
+                if (member->state != SRTS_CONNECTED)
+                    continue;
+            }
+            bool protected_member = false;
+            int size = sizeof(protected_member);
+            if (get_socket_option(
+                    handle, *member, option, &protected_member, &size)
+                    == SRT_ERROR
+                || !protected_member) {
+                required = false;
+                break;
+            }
+            active = true;
+        }
+        active = active && required;
+        if (*value_size < static_cast<int>(sizeof(active))) {
+            set_last_error(SRT_EINVPARAM);
+            return SRT_ERROR;
+        }
+        std::memcpy(value, &active, sizeof(active));
+        *value_size = sizeof(active);
+        return 0;
+#else
+        set_last_error(SRT_EINVOP);
+        return SRT_ERROR;
+#endif
+    }
     if (option == SRTO_STATE)
         refresh_member_states(record);
     SocketRecord configured {SocketRecord::Purpose::option_template};
@@ -481,7 +534,8 @@ int GroupRegistry::get_io_option(
     const bool group_owned = option == SRTO_SNDSYN || option == SRTO_RCVSYN
         || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO
         || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
-        || option == SRTO_ROBOTWEAX_PATHID_REQUIRED;
+        || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
+        || option == SRTO_ROBOTWEAX_ACP1_REQUIRED;
     {
         std::lock_guard lock(record->mutex);
         if (record->closed) {
@@ -551,7 +605,7 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
         set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
     }
-    if (option == SRTO_ROBOTWEAX_PATHID
+    if (option == SRTO_ROBOTWEAX_ACP1_ACTIVE || option == SRTO_ROBOTWEAX_PATHID
         || option == SRTO_ROBOTWEAX_PEER_IDENTITY
         || option == SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT) {
         set_last_error(SRT_EINVOP);
@@ -563,7 +617,8 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
     const bool group_owned = option == SRTO_SNDSYN || option == SRTO_RCVSYN
         || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO
         || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
-        || option == SRTO_ROBOTWEAX_PATHID_REQUIRED;
+        || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
+        || option == SRTO_ROBOTWEAX_ACP1_REQUIRED;
     {
         std::lock_guard lock(record->mutex);
         if (record->closed) {
@@ -575,7 +630,8 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
             set_last_error(SRT_EINVOP);
             return SRT_ERROR;
         }
-        if ((option == SRTO_ROBOTWEAX_PATHID_REQUIRED
+        if ((option == SRTO_ROBOTWEAX_ACP1_REQUIRED
+                || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
                 || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED)
             && record->opened) {
             set_last_error(SRT_ECONNSOCK);
@@ -602,7 +658,9 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
             return 0;
         }
         if (option == SRTO_BINDTODEVICE || option == SRTO_CONGESTION
-            || option == SRTO_GROUPCONNECT || option == SRTO_RENDEZVOUS
+            || option == SRTO_GROUPCONNECT
+            || (option == SRTO_RENDEZVOUS
+                && !record->member_native_options.experimental_acp1())
             || option == SRTO_GROUPTYPE) {
             set_last_error(SRT_EINVOP);
             return SRT_ERROR;
@@ -610,6 +668,11 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
         configured.public_options = record->member_public_options;
         configured.native_options = record->member_native_options;
         configured.state = record->opened ? SRTS_CONNECTED : SRTS_INIT;
+        // Group-only RDV/path combinations need the owning group identity.
+        if (option == SRTO_RENDEZVOUS
+            || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
+            || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED)
+            configured.group_id = group;
         // Use the ordinary socket rules for validation and PRE/POST stages.
         if (set_socket_option(configured, option, value, value_size)
             == SRT_ERROR) {
@@ -810,7 +873,9 @@ bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
                 && record->peer_group == peer_group) {
                 // A peer-controlled group ID may not cross application
                 // authorization domains on the same listener or bond.
-                if (record->admission_domain != admission_domain
+                if (record->member_native_options.experimental_acp1()
+                        != listener_native_options.experimental_acp1()
+                    || record->admission_domain != admission_domain
                     || record->member_public_options.path_identifier_required
                         != listener_public_options.path_identifier_required
                     || record->member_public_options.standby_rtt_required

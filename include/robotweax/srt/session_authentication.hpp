@@ -17,11 +17,29 @@ inline constexpr std::size_t session_authentication_wire_size = 100;
 inline constexpr std::size_t authenticated_key_overhead = 40;
 inline constexpr std::uint8_t session_authentication_version = 2;
 inline constexpr std::size_t authenticated_fec_overhead = 40;
+inline constexpr std::uint8_t acp1_session_version = 3;
+inline constexpr std::uint8_t acp1_rendezvous_session_version = 4;
+inline constexpr std::uint8_t acp1_group_session_version = 5;
+inline constexpr std::size_t acp1_group_context_size = 88;
+inline constexpr std::uint8_t acp1_group_rendezvous_session_version = 6;
+inline constexpr std::size_t acp1_group_rendezvous_context_size = 96;
+[[nodiscard]] constexpr bool is_acp1_session_version(
+    std::uint8_t version) noexcept
+{
+    return version == acp1_session_version
+        || version == acp1_rendezvous_session_version
+        || version == acp1_group_session_version
+        || version == acp1_group_rendezvous_session_version;
+}
+inline constexpr std::uint16_t authenticated_control_subtype = 0x7f05;
+inline constexpr std::size_t authenticated_control_overhead = 60;
+inline constexpr std::size_t authenticated_control_inner_offset = 28;
 
 struct SessionAuthenticationParameters {
     std::array<std::byte, 32> caller_nonce {};
     std::array<std::byte, 32> listener_nonce {};
     std::array<std::byte, 32> proof {};
+    std::uint8_t version = session_authentication_version;
 
     [[nodiscard]] bool is_offer() const noexcept;
     [[nodiscard]] bool is_proof() const noexcept;
@@ -42,10 +60,26 @@ public:
     SessionAuthentication(const SessionAuthentication&) = delete;
     SessionAuthentication& operator=(const SessionAuthentication&) = delete;
 
-    [[nodiscard]] Error start(bool caller) noexcept;
+    [[nodiscard]] Error start(bool caller,
+        std::uint8_t version = session_authentication_version) noexcept;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+    // Experimental Caller/Listener v3, Rendezvous v4, group member v5,
+    // or group Rendezvous member v6.
+    // Full serialized controls, bounded to 1500
+    // bytes, with independent directional keys and a 64-packet replay window.
+    [[nodiscard]] Error seal_control(std::span<const std::byte> packet,
+        std::span<std::byte> output, std::size_t& written) noexcept;
+    [[nodiscard]] bool open_control(
+        const PacketView& envelope, PacketView& packet) noexcept;
+#endif
+    // Versions 5 and 6 require canonical group contexts of 88 and 96 bytes,
+    // respectively, documented in experimental-acp1.md. Other versions reject
+    // a group context. Versions 4 and 6 also require the Rendezvous cookies.
     [[nodiscard]] Error establish(std::span<const std::byte> passphrase,
         const SessionAuthenticationParameters& peer,
-        std::uint32_t local_socket_id, std::uint32_t peer_socket_id) noexcept;
+        std::uint32_t local_socket_id, std::uint32_t peer_socket_id,
+        std::uint32_t local_cookie = 0, std::uint32_t peer_cookie = 0,
+        std::span<const std::byte> group_context = {}) noexcept;
     [[nodiscard]] Error handshake_proof(bool caller,
         std::span<const std::byte> initial_material,
         SessionAuthenticationParameters& output) noexcept;
@@ -85,6 +119,13 @@ private:
     [[nodiscard]] Error mac(std::uint8_t domain, bool caller,
         std::uint64_t counter, std::span<const std::byte> input,
         std::span<std::byte, 32> output) noexcept;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+    [[nodiscard]] Error control_mac(bool caller,
+        std::span<const std::byte> wire, std::span<std::byte, 32> tag) noexcept;
+    std::array<std::byte, 32> caller_control_key_ {}, listener_control_key_ {};
+    std::uint64_t control_sent_counter_ = 0, control_received_counter_ = 0,
+                  control_received_bitmap_ = 0;
+#endif
     CryptoProvider& provider_;
     SessionAuthenticationParameters parameters_ {};
     std::array<std::byte, 32> key_ {};

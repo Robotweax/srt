@@ -449,7 +449,9 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             if (message.has_session_authentication
                     != configuration_.require_session_authentication
                 || (configuration_.require_session_authentication
-                    && (!message.session_authentication.is_offer()
+                    && (message.session_authentication.version
+                            != configuration_.session_authentication.version
+                        || !message.session_authentication.is_offer()
                         || message.session_authentication.caller_nonce
                             != configuration_.session_authentication
                                 .caller_nonce)))

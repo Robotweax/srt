@@ -8073,7 +8073,8 @@ TEST(srt_compat_session_authentication_is_explicit_and_preconnection_only)
     REQUIRE_EQ(srt_close(socket), 0);
 }
 
-TEST(srt_compat_session_authentication_connects_and_rotates_in_both_directions)
+namespace {
+void exercise_session_authentication_connections(bool acp1)
 {
     ScopedSrtRuntime runtime;
     REQUIRE_EQ(runtime.startup_result, 0);
@@ -8087,6 +8088,24 @@ TEST(srt_compat_session_authentication_connects_and_rotates_in_both_directions)
             const auto caller = srt_create_socket();
             REQUIRE(listener != SRT_INVALID_SOCK && caller != SRT_INVALID_SOCK);
             for (const auto socket : {listener, caller}) {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+                if (acp1) {
+                    const bool required = true;
+                    REQUIRE_EQ(
+                        srt_setsockflag(socket, SRTO_ROBOTWEAX_ACP1_REQUIRED,
+                            &required, sizeof(required)),
+                        0);
+                    bool active = true;
+                    int active_size = sizeof(active);
+                    REQUIRE_EQ(
+                        srt_getsockflag(socket, SRTO_ROBOTWEAX_ACP1_ACTIVE,
+                            &active, &active_size),
+                        0);
+                    REQUIRE(!active);
+                }
+#else
+                (void)acp1;
+#endif
                 const bool enabled = true;
                 REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_SESSIONAUTH,
                                &enabled, sizeof(enabled)),
@@ -8162,6 +8181,22 @@ TEST(srt_compat_session_authentication_connects_and_rotates_in_both_directions)
             REQUIRE_EQ(srt_epoll_release(poll), 0);
             const auto accepted = srt_accept(listener, nullptr, nullptr);
             REQUIRE(accepted != SRT_INVALID_SOCK);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+            for (const auto socket : {caller, accepted}) {
+                bool active = false;
+                int active_size = sizeof(active);
+                REQUIRE_EQ(srt_getsockflag(socket, SRTO_ROBOTWEAX_ACP1_ACTIVE,
+                               &active, &active_size),
+                    0);
+                REQUIRE_EQ(active, acp1);
+                if (acp1) {
+                    REQUIRE_EQ(
+                        srt_setsockflag(socket, SRTO_ROBOTWEAX_ACP1_REQUIRED,
+                            &active, sizeof(active)),
+                        SRT_ERROR);
+                }
+            }
+#endif
             const bool disabled = false;
             REQUIRE_EQ(srt_setsockflag(caller, SRTO_ROBOTWEAX_SESSIONAUTH,
                            &disabled, sizeof(disabled)),
@@ -8184,6 +8219,18 @@ TEST(srt_compat_session_authentication_connects_and_rotates_in_both_directions)
         }
     }
 }
+
+} // namespace
+TEST(srt_compat_session_authentication_connects_and_rotates_in_both_directions)
+{
+    exercise_session_authentication_connections(false);
+}
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+TEST(acp1_public_sockets_connect_and_rotate_ctr_gcm_sync_async)
+{
+    exercise_session_authentication_connections(true);
+}
+#endif
 
 TEST(srt_compat_session_authentication_rejects_mode_mismatch_and_wrong_secret)
 {

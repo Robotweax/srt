@@ -199,6 +199,16 @@ typedef enum SRT_SOCKOPT {
      * Socket-only. Missing metadata always means unknown implementation.
      */
     SRTO_ROBOTWEAX_PEER_IDENTITY = 0x0100000b,
+    // Unreviewed ACP1 prototype. PRE bool, default false; available only in
+    // builds with ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON. Requires explicit
+    // SESSIONAUTH, passphrase and enforced encryption. Caller/Listener or
+    // Rendezvous, or Broadcast/Backup Caller/Listener or Rendezvous groups. Policy
+    // must be set before opening; endpoint overrides must match that policy.
+    SRTO_ROBOTWEAX_ACP1_REQUIRED = 0x0100000c,
+    // Read-only bool: true only after strict ACP1 handshake completion. For a
+    // required group, at least one connected member and every connected member
+    // must be ACTIVE. Pending/broken/closed members do not count.
+    SRTO_ROBOTWEAX_ACP1_ACTIVE = 0x0100000d,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif

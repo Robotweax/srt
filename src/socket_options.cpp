@@ -174,6 +174,8 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         flow_window_packets_ = static_cast<std::uint32_t>(value);
         return Error::none;
     case SocketOption::maximum_segment_size:
+        if (experimental_acp1_ && value < 256)
+            return Error::invalid_state;
         if (value < static_cast<std::int64_t>(
                 minimum_maximum_segment_size)
             || value > static_cast<std::int64_t>(
@@ -260,9 +262,21 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         }
         enforced_encryption_ = value != 0;
         return Error::none;
+    case SocketOption::experimental_acp1:
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+        if (!is_boolean(value) || (value != 0 && maximum_segment_size_ < 256U)
+            || (value == 0 && rendezvous_ && session_authentication_))
+            return Error::invalid_state;
+        experimental_acp1_ = value != 0;
+        return Error::none;
+#else
+        return Error::invalid_state;
+#endif
     case SocketOption::session_authentication:
         if (!is_boolean(value)
-            || (value != 0 && (!enforced_encryption_ || rendezvous_)))
+            || (value != 0
+                && (!enforced_encryption_
+                    || (rendezvous_ && !experimental_acp1_))))
             return Error::invalid_state;
         if (value != 0 && packet_filter_configuration_.enabled
             && maximum_payload_size_limit() <= authenticated_fec_overhead
@@ -273,7 +287,8 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
             requested_maximum_payload_size_, maximum_payload_size_limit());
         return Error::none;
     case SocketOption::rendezvous:
-        if (!is_boolean(value) || (value != 0 && session_authentication_))
+        if (!is_boolean(value)
+            || (value != 0 && session_authentication_ && !experimental_acp1_))
             return Error::invalid_state;
         rendezvous_ = value != 0;
         return Error::none;
@@ -451,6 +466,8 @@ SocketOptionResult SocketOptions::get(SocketOption option) const noexcept
     case SocketOption::encryption_key_length: return {.value = static_cast<std::int64_t>(encryption_key_length_)};
     case SocketOption::key_refresh_rate_packets: return {.value = key_refresh_rate_packets_};
     case SocketOption::key_preannouncement_packets: return {.value = key_preannouncement_packets_};
+    case SocketOption::experimental_acp1:
+        return {.value = experimental_acp1_ ? 1 : 0};
     case SocketOption::session_authentication:
         return {.value = session_authentication_ ? 1 : 0};
     case SocketOption::enforced_encryption: return {.value = enforced_encryption_ ? 1 : 0};

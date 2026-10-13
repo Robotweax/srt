@@ -111,15 +111,21 @@ HandshakeAction
 RendezvousHandshakeMachine::conclusion_request_action() const noexcept
 {
     auto packet = base_packet(HandshakeRequest::conclusion);
-    packet.extension_field =
-        1U | (configuration_.key_material_request.size != 0U
-            ? 2U : 0U)
-        | ((configuration_.congestion_controller
-                    != CongestionController::live
-                || !configuration_.stream_id.empty()
-                || configuration_
-                    .packet_filter_configuration.enabled)
-            ? 4U : 0U);
+    packet.extension_field = 1U
+        | (configuration_.key_material_request.size != 0U ? 2U : 0U)
+        | ((configuration_.congestion_controller != CongestionController::live
+               || !configuration_.stream_id.empty()
+               || configuration_.packet_filter_configuration.enabled
+               || configuration_.require_session_authentication)
+                ? 4U
+                : 0U);
+    auto offer = configuration_.session_authentication;
+    if (configuration_.require_session_authentication) {
+        // Retries remain offers even if a valid response has already prepared
+        // our final proof while the wire state still requires another HSREQ.
+        offer.listener_nonce = {};
+        offer.proof = {};
+    }
     return {
         .kind = HandshakeActionKind::send,
         .packet = packet,
@@ -140,6 +146,15 @@ RendezvousHandshakeMachine::conclusion_request_action() const noexcept
             configuration_.packet_filter_configuration.enabled,
         .packet_filter_configuration =
             configuration_.packet_filter_configuration,
+        .has_group_membership = configuration_.has_group_membership,
+        .group_membership = configuration_.group_membership,
+        .has_session_authentication =
+            configuration_.require_session_authentication,
+        .session_authentication = offer,
+        .has_path_identifier = configuration_.require_path_identifier,
+        .path_identifier = configuration_.path_identifier,
+        .has_standby_rtt = configuration_.require_standby_rtt,
+        .standby_rtt = {.caller = configuration_.standby_rtt_nonce},
         .implementation_identity = configuration_.implementation_identity,
     };
 }
@@ -151,12 +166,12 @@ RendezvousHandshakeMachine::conclusion_response_action() const noexcept
     const bool has_key_material =
         has_key_material_response_
         || has_peer_key_material_request_;
-    packet.extension_field =
-        1U | (has_key_material ? 2U : 0U)
-        | ((configuration_.congestion_controller
-                    != CongestionController::live
-                || negotiated_packet_filter_.enabled)
-            ? 4U : 0U);
+    packet.extension_field = 1U | (has_key_material ? 2U : 0U)
+        | ((configuration_.congestion_controller != CongestionController::live
+               || negotiated_packet_filter_.enabled
+               || configuration_.require_session_authentication)
+                ? 4U
+                : 0U);
     return {
         .kind = HandshakeActionKind::send,
         .packet = packet,
@@ -173,6 +188,15 @@ RendezvousHandshakeMachine::conclusion_response_action() const noexcept
         .congestion_controller = configuration_.congestion_controller,
         .has_packet_filter_extension = negotiated_packet_filter_.enabled,
         .packet_filter_configuration = negotiated_packet_filter_,
+        .has_group_membership = configuration_.has_group_membership,
+        .group_membership = configuration_.group_membership,
+        .has_session_authentication =
+            configuration_.require_session_authentication,
+        .session_authentication = configuration_.session_authentication,
+        .has_path_identifier = configuration_.require_path_identifier,
+        .path_identifier = configuration_.path_identifier,
+        .has_standby_rtt = configuration_.require_standby_rtt,
+        .standby_rtt = standby_rtt_identity_,
         .implementation_identity = configuration_.implementation_identity,
     };
 }
@@ -190,10 +214,21 @@ HandshakeAction
 RendezvousHandshakeMachine::agreement_action() const noexcept
 {
     auto packet = base_packet(HandshakeRequest::agreement);
-    packet.extension_field = 0;
+    packet.extension_field = configuration_.require_session_authentication
+        ? handshake_extension_flag_config
+        : 0;
     return {
         .kind = HandshakeActionKind::send,
         .packet = packet,
+        .has_group_membership = configuration_.has_group_membership,
+        .group_membership = configuration_.group_membership,
+        .has_session_authentication =
+            configuration_.require_session_authentication,
+        .session_authentication = configuration_.session_authentication,
+        .has_path_identifier = configuration_.require_path_identifier,
+        .path_identifier = configuration_.path_identifier,
+        .has_standby_rtt = configuration_.require_standby_rtt,
+        .standby_rtt = standby_rtt_identity_,
     };
 }
 
@@ -331,6 +366,18 @@ HandshakeActions RendezvousHandshakeMachine::fail() noexcept
     return actions;
 }
 
+HandshakeActions RendezvousHandshakeMachine::reject_group() noexcept
+{
+    rejection_reason_ = 15;
+    state_ = RendezvousState::rejected;
+    HandshakeActions actions;
+    actions.push({.kind = HandshakeActionKind::send,
+        .packet = base_packet(static_cast<HandshakeRequest>(1015))});
+    actions.push(
+        {.kind = HandshakeActionKind::rejected, .rejection_reason = 15});
+    return actions;
+}
+
 void RendezvousHandshakeMachine::remember_peer(
     const HandshakeMessage& message) noexcept
 {
@@ -341,6 +388,17 @@ void RendezvousHandshakeMachine::remember_peer(
         message.packet.encryption_field;
     peer_initial_sequence_ =
         message.packet.initial_sequence;
+    if (message.has_group_membership) {
+        has_peer_group_membership_ = true;
+        peer_group_membership_ = message.group_membership;
+        peer_group_initial_sequence_ = message.packet.initial_sequence;
+        if (configuration_.require_standby_rtt) {
+            standby_rtt_identity_ = has_handshake_request(message)
+                ? StandbyRttIdentity {.caller = message.standby_rtt.caller,
+                      .listener = configuration_.standby_rtt_nonce}
+                : message.standby_rtt;
+        }
+    }
     if (message.has_handshake_extension) {
         if (!has_peer_extension_parameters_)
             peer_identity_ = message.implementation_identity;
@@ -365,6 +423,11 @@ void RendezvousHandshakeMachine::remember_peer(
 
 HandshakeActions RendezvousHandshakeMachine::start() noexcept
 {
+#ifndef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+    if (configuration_.require_session_authentication
+        || configuration_.has_group_membership)
+        return fail();
+#endif
     if (state_ != RendezvousState::idle
         || configuration_.local_socket_id == 0U
         || configuration_.local_cookie == 0U
@@ -376,6 +439,25 @@ HandshakeActions RendezvousHandshakeMachine::start() noexcept
                 == 0U)) {
         return fail();
     }
+    if ((configuration_.has_group_membership
+            && (!configuration_.require_session_authentication
+                || validate_group_membership(configuration_.group_membership)
+                    != GroupMembershipValidation::compatible
+                || configuration_.group_membership.flags != 0
+                || configuration_.group_membership.weight > 32767U
+                || configuration_.maximum_transmission_unit < 256U
+                || configuration_.congestion_controller
+                    != CongestionController::live))
+        || (configuration_.require_path_identifier
+            && (!configuration_.has_group_membership
+                || !configuration_.path_identifier.valid()))
+        || (!configuration_.require_path_identifier
+            && configuration_.path_identifier.size != 0)
+        || (configuration_.require_standby_rtt
+            && (!configuration_.has_group_membership
+                || configuration_.group_membership.type != GroupType::backup
+                || !valid_standby_rtt_nonce(configuration_.standby_rtt_nonce))))
+        return fail();
     state_ = RendezvousState::waving;
     HandshakeActions actions;
     actions.push(wave_action());
@@ -436,6 +518,26 @@ Error RendezvousHandshakeMachine::set_key_material_response(
     return Error::none;
 }
 
+Error RendezvousHandshakeMachine::set_session_authentication(
+    const SessionAuthenticationParameters& local,
+    const SessionAuthenticationParameters& expected_peer) noexcept
+{
+    if (!configuration_.require_session_authentication
+        || state_ == RendezvousState::idle
+        || state_ == RendezvousState::connected
+        || state_ == RendezvousState::failed
+        || state_ == RendezvousState::rejected
+        || local.version
+            != (configuration_.has_group_membership
+                    ? acp1_group_rendezvous_session_version
+                    : acp1_rendezvous_session_version)
+        || (!local.is_offer() && !local.is_proof()))
+        return Error::invalid_state;
+    configuration_.session_authentication = local;
+    configuration_.session_authentication_confirmation = expected_peer;
+    return Error::none;
+}
+
 HandshakeActions RendezvousHandshakeMachine::receive(
     const Handshake& packet) noexcept
 {
@@ -446,7 +548,9 @@ HandshakeActions RendezvousHandshakeMachine::receive(
     const HandshakeMessage& message) noexcept
 {
     const auto& incoming = message.packet;
-    if (message.has_path_identifier)
+    if (!configuration_.has_group_membership
+        && (message.has_path_identifier || message.has_group_membership
+            || message.has_standby_rtt))
         return fail();
     if (is_rejection(incoming.request)) {
         rejection_reason_ =
@@ -482,6 +586,11 @@ HandshakeActions RendezvousHandshakeMachine::receive(
 
     const bool request = has_handshake_request(message);
     const bool response = has_handshake_response(message);
+    if (configuration_.has_group_membership && !request && !response
+        && incoming.request != HandshakeRequest::agreement
+        && (message.has_group_membership || message.has_path_identifier
+            || message.has_standby_rtt))
+        return reject_group();
     if (request || response) {
         const auto version_status = detail::classify_hsv5_peer_version(
             message.extension_parameters.srt_version,
@@ -504,6 +613,71 @@ HandshakeActions RendezvousHandshakeMachine::receive(
         }
     }
 
+    // The embedding crypto owner has verified/generated the proof snapshots.
+    // The wire machine independently enforces their presence, role and exact
+    // match before metadata mutation or a connected transition.
+    if (configuration_.require_session_authentication) {
+        if ((request || response
+                || incoming.request == HandshakeRequest::agreement)
+            && (!message.has_session_authentication
+                || message.session_authentication.version
+                    != (configuration_.has_group_membership
+                            ? acp1_group_rendezvous_session_version
+                            : acp1_rendezvous_session_version)))
+            return reject_rogue_version();
+        if (request
+            && (resolved_role != RendezvousRole::responder
+                || !message.session_authentication.is_offer()
+                || message.session_authentication.caller_nonce
+                    != configuration_.session_authentication.caller_nonce))
+            return reject_rogue_version();
+        if ((response || incoming.request == HandshakeRequest::agreement)
+            && (!configuration_.session_authentication_confirmation.is_proof()
+                || !configuration_.session_authentication_confirmation.matches(
+                    message.session_authentication)))
+            return reject_rogue_version();
+    } else if (message.has_session_authentication) {
+        return reject_rogue_version();
+    }
+    if (configuration_.has_group_membership
+        && (request || response
+            || incoming.request == HandshakeRequest::agreement)) {
+        const auto& membership = message.group_membership;
+        if (!message.has_group_membership
+            || validate_group_membership(membership)
+                != GroupMembershipValidation::compatible
+            || membership.type != configuration_.group_membership.type
+            || membership.flags != 0 || membership.weight > 32767U
+            || message.has_path_identifier
+                != configuration_.require_path_identifier
+            || (message.has_path_identifier
+                && message.path_identifier != configuration_.path_identifier)
+            || message.has_standby_rtt != configuration_.require_standby_rtt
+            || (has_peer_group_membership_
+                && (membership.group_id != peer_group_membership_.group_id
+                    || membership.type != peer_group_membership_.type
+                    || membership.flags != peer_group_membership_.flags
+                    || membership.weight != peer_group_membership_.weight
+                    || incoming.initial_sequence
+                        != peer_group_initial_sequence_)))
+            return reject_group();
+        if (configuration_.require_standby_rtt) {
+            if (request
+                    ? (!message.standby_rtt.is_offer()
+                          || message.standby_rtt.caller
+                              == configuration_.standby_rtt_nonce)
+                    : (!message.standby_rtt.is_pair()
+                          || (resolved_role == RendezvousRole::initiator
+                              && message.standby_rtt.caller
+                                  != configuration_.standby_rtt_nonce)
+                          || (resolved_role == RendezvousRole::responder
+                              && message.standby_rtt.listener
+                                  != configuration_.standby_rtt_nonce)
+                          || (has_peer_group_membership_
+                              && message.standby_rtt != standby_rtt_identity_)))
+                return reject_group();
+        }
+    }
     HandshakeActions actions;
     // The responder validates the initiator's transmission mode before
     // producing HSRSP. A successful response is authoritative and does not
@@ -733,6 +907,8 @@ HandshakeActions
 RendezvousHandshakeMachine::note_connected_packet() noexcept
 {
     HandshakeActions actions;
+    if (configuration_.require_session_authentication)
+        return actions;
     if ((state_ == RendezvousState::initiated
             || state_ == RendezvousState::fine)
         && role_ == RendezvousRole::responder) {

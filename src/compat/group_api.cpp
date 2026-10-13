@@ -324,6 +324,12 @@ int srt_connect_group(
             }
         }
         if (configured
+            && record->native_options.experimental_acp1()
+                != description.member_native_options.experimental_acp1()) {
+            endpoint.errorcode = SRT_EINVPARAM;
+            configured = false;
+        }
+        if (configured
             && (record->public_options.path_identifier_required
                 != record->public_options.path_identifier.valid())) {
             endpoint.errorcode = SRT_EINVPARAM;

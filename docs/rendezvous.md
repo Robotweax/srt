@@ -71,6 +71,10 @@ After one peer is locally connected, a duplicate valid CONCLUSION can trigger
 the final AGREEMENT again so the other peer can complete. A Responder waiting
 for final confirmation may also accept a valid connected-party DATA or control
 packet as evidence and process that first packet after the runtime attaches.
+The [experimental ACP1 profile](experimental-acp1.md) disables this shortcut:
+its Responder requires the authenticated final AGREEMENT proof. Each endpoint
+verifies its peer proof before publication, and ACP1 async publication waits
+until the protected runtime is attached.
 
 Malformed, cross-generation, or contradictory packets cannot partially apply
 peer metadata or crypto state.
@@ -104,6 +108,12 @@ reliability or the application.
 
 Key rotation, retransmission, duplicate suppression, and packet-sequence
 rollover use the same per-direction state as Caller/Listener connections.
+
+SESSIONAUTH version 2 alone remains unsupported. With the explicitly enabled
+experimental ACP1 build and `SRTO_ROBOTWEAX_ACP1_REQUIRED=true`, both peers can
+use cookie-bound version-4 session authentication. Enable ACP1 before combining
+SESSIONAUTH with Rendezvous. This remains unreviewed; protected connections
+require matching Robotweax support and never fall back to an unprotected peer.
 
 See [Encryption and key rotation](encryption.md).
 

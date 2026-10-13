@@ -7,6 +7,9 @@ developers and transport integrators using the installed public API.
 
 ## Start here
 
+- [Experimental ACP1](experimental-acp1.md) — unreviewed runtime-control
+  authentication, strict bilateral opt-in and provisional wire/API contract.
+
 - [Experimental remote identity](implementation-identity.md) — development-only,
   default-off peer labels, disclosure policy and qualification boundaries.
 
@@ -149,3 +152,11 @@ open an issue with a minimal reproducer.
 
 See [Optional session authentication](session-authentication.md) for the default-off
 `SRTO_ROBOTWEAX_SESSIONAUTH` option and its private wire contract.
+
+## Experimental ACP1 prototype
+
+A separate default-off [experimental ACP1 build](experimental-acp1.md) adds
+strict session-authentication version 3 for Caller/Listener or version 4 for
+Rendezvous, with authenticated runtime controls. It is unreviewed and outside the supported
+security and Haivision interoperability boundary. SESSIONAUTH alone continues
+to use version 2; ordinary connections retain their existing behavior.

@@ -657,6 +657,9 @@ private:
     // DATA/FEC preparation stops on the first deferred send. Incoming control
     // responses may still queue while it waits; overflow fails explicitly.
     static constexpr std::size_t pending_datagram_capacity = 128;
+    [[nodiscard]] std::span<const std::byte> queued_control_payload(
+        std::span<const std::byte> bytes) const noexcept;
+    std::optional<std::uint64_t> last_acp1_handshake_replay_;
     [[nodiscard]] bool submit_datagram(std::span<const std::byte> bytes,
         DatagramCompletion completion, std::uint64_t now) noexcept;
     [[nodiscard]] bool complete_datagram(std::span<const std::byte> bytes,
