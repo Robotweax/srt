@@ -35,6 +35,14 @@ not change the default v1.5.7 API claim. The upstream-preview
 `SRT_KM_S_BADCRYPTOMODE` and the `SRT_KM_S_E_SIZE = 6` sentinel are part of
 the unconditional v1.5.7 key-management enum.
 
+## Development identity API
+
+The development-only [identity experiment](implementation-identity.md) adds two
+private socket options and a fixed 132-byte C snapshot. It preserves existing
+version-option meanings, `SRTO_E_SIZE`, C layouts and exported function inventory.
+Advertisement is off by default; peer identity is always self-reported. This
+surface is absent from published 0.2.9 artifacts.
+
 ## Caller replay correction
 
 After an HSv5 caller advances to CONCLUSION, a delayed INDUCTION response is

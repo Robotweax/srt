@@ -52,6 +52,7 @@ public:
             packet_filter_configuration{};
         // Zero leaves capacity policy to the embedding transport.
         std::size_t receive_capacity_packets = 0;
+        ImplementationIdentity implementation_identity {};
     };
 
     explicit RendezvousHandshakeMachine(
@@ -97,6 +98,10 @@ public:
     [[nodiscard]] int rejection_reason() const noexcept
     {
         return rejection_reason_;
+    }
+    [[nodiscard]] const ImplementationIdentity& peer_identity() const noexcept
+    {
+        return peer_identity_;
     }
     [[nodiscard]] bool has_peer_stream_id() const noexcept
     {
@@ -162,6 +167,7 @@ private:
     std::uint32_t retry_count_ = 0;
     HandshakeExtensionParameters peer_extension_parameters_{};
     bool has_peer_extension_parameters_ = false;
+    ImplementationIdentity peer_identity_ {};
     StreamId peer_stream_id_{};
     bool has_peer_stream_id_ = false;
     PacketFilterConfiguration

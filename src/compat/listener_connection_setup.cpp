@@ -209,6 +209,7 @@ ListenerConnectionSetupSteps::runtime_state() const noexcept
         .has_peer_extension_parameters = hsv5_.has_peer_extension_parameters(),
         .has_peer_stream_id = hsv5_.has_peer_stream_id(),
         .has_peer_group_membership = hsv5_.has_peer_group_membership(),
+        .peer_identity = hsv5_.peer_identity(),
     };
     if (result.has_peer_extension_parameters) {
         result.peer_extension_parameters = hsv5_.peer_extension_parameters();

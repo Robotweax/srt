@@ -189,6 +189,16 @@ typedef enum SRT_SOCKOPT {
      * Socket-only; group handles and setters fail with SRT_EINVOP.
      */
     SRTO_ROBOTWEAX_PEER_HANDSHAKE = 0x01000009,
+    /** Provisional identity advertisement policy (int32_t, PRE, default OFF).
+     * OFF/NAME/NAME_AND_RELEASE. Socket-only; listener children inherit policy.
+     * No authentication or capability meaning; see docs/implementation-identity.md.
+     */
+    SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT = 0x0100000a,
+    /** Self-reported peer label (ROBOTWEAX_SRT_PEER_IDENTITY_V1), read-only.
+     * Admission callback and connected sockets; unavailable fields are zero.
+     * Socket-only. Missing metadata always means unknown implementation.
+     */
+    SRTO_ROBOTWEAX_PEER_IDENTITY = 0x0100000b,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif
@@ -228,6 +238,31 @@ typedef struct ROBOTWEAX_SRT_PeerHandshakeV1_ {
     uint32_t receiver_delay_milliseconds; /* Peer receive delay for our DATA. */
     uint32_t sender_delay_milliseconds; /* Minimum delay for our receiver. */
 } ROBOTWEAX_SRT_PEER_HANDSHAKE_V1;
+
+#define ROBOTWEAX_SRT_IDENTITY_OFF 0
+#define ROBOTWEAX_SRT_IDENTITY_NAME 1
+#define ROBOTWEAX_SRT_IDENTITY_NAME_AND_RELEASE 2
+#define ROBOTWEAX_SRT_PEER_IDENTITY_VERSION 1u
+#define ROBOTWEAX_SRT_PEER_IDENTITY_NAME 0x01u
+#define ROBOTWEAX_SRT_PEER_IDENTITY_RELEASE 0x02u
+
+/** Value copy: success writes exactly sizeof(V1), including zeroed reserved
+ * fields. Strings are NUL-terminated ASCII; lengths exclude the terminator.
+ * abi_version is always 1; available_fields=0 means unknown. Release can be
+ * withheld while name is available. No initialization required. Retained until
+ * close after connection; closed/invalid handles follow EINVSOCK rules.
+ * Received names/releases are diagnostic claims, never authorization evidence.
+ */
+typedef struct ROBOTWEAX_SRT_PeerIdentityV1_ {
+    uint32_t abi_version;
+    uint32_t available_fields;
+    uint32_t name_length;
+    uint32_t release_length;
+    char name[33];
+    char release[65];
+    uint8_t padding[2];
+    uint32_t reserved[4];
+} ROBOTWEAX_SRT_PEER_IDENTITY_V1;
 
 /* Values returned by SRTO_ROBOTWEAX_CRYPTO_BACKEND (not cipher modes). */
 #define ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL 1

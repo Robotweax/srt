@@ -6,6 +6,10 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add default-off experimental peer implementation identity, with bounded
+  admission/connected snapshots and provisional CONFIG record 0x7f13. Labels
+  are self-reported; compatibility version and capability negotiation are unchanged.
+
 - Correct current wire/API documentation, option-reference bounds, group callback
   migration guidance and release framing; runtime and ABI behavior are unchanged.
 

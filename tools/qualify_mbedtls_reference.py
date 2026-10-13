@@ -54,6 +54,10 @@ def main():
         harness = 'run_encrypted_interop.py' if mode == 'ctr' else 'run_aead_interop.py'
         run([sys.executable, str(repo / 'interop' / harness), '--robotweax-peer', str(args.mbedtls_peer.resolve()),
             '--reference-peer', str(peer)], root / (mode + '-interop.log'))
+        run([sys.executable, str(repo / 'interop/run_identity_interop.py'),
+            '--robotweax-peer', str(args.mbedtls_peer.resolve()), '--reference-peer', str(peer),
+            '--reference-pin', commit, '--output', str(root / (mode + '-identity-evidence'))],
+            root / (mode + '-identity-interop.log'))
         print(f'{mode} interoperability passed at {commit}', flush=True)
 
 if __name__ == '__main__':

@@ -678,6 +678,17 @@ void publish_group_member_state(SocketRecord& socket) noexcept
         state, result);
 }
 
+[[nodiscard]] ImplementationIdentity local_implementation_identity(
+    std::int32_t policy) noexcept
+{
+    if (policy == ROBOTWEAX_SRT_IDENTITY_OFF)
+        return {};
+    return make_implementation_identity("Robotweax SRT",
+        policy == ROBOTWEAX_SRT_IDENTITY_NAME_AND_RELEASE
+            ? ROBOTWEAX_SRT_VERSION_STRING
+            : "");
+}
+
 struct ConnectedNegotiation {
     std::uint32_t peer_srt_version = 0;
     NegotiatedLiveOptions live_options{};
@@ -687,6 +698,7 @@ struct ConnectedNegotiation {
     SequenceNumber initial_sequence{};
     std::uint32_t peer_flow_window = 0;
     bool has_transport_parameters = false;
+    ImplementationIdentity peer_identity {};
 };
 
 [[nodiscard]] bool stage_connected_transport(
@@ -747,6 +759,7 @@ struct ConnectedNegotiation {
     socket.peer_protocol_socket_id = peer_socket_id;
     socket.peer_flow_window_packets = negotiation.peer_flow_window;
     socket.peer_srt_version = negotiation.peer_srt_version;
+    socket.peer_identity = negotiation.peer_identity;
     socket.negotiated_live_options = negotiation.live_options;
     socket.native_options.set_effective_packet_filter(
         negotiation.packet_filter);
@@ -809,6 +822,7 @@ void finish_connect(
         negotiation.has_peer_stream_id = true;
     }
     negotiation.peer_flow_window = machine.peer_flow_window();
+    negotiation.peer_identity = machine.peer_identity();
     if (stage_connected_transport(socket, peer,
             peer_socket_id, peer_maximum_segment_size,
             negotiation)) {
@@ -1411,6 +1425,7 @@ create_setup_inbox() noexcept
         .path_identifier = envelope.message.path_identifier,
         .has_standby_rtt = envelope.message.has_standby_rtt,
         .standby_rtt = envelope.message.standby_rtt,
+        .implementation_identity = envelope.message.implementation_identity,
     };
     std::array<std::byte, DatagramEnvelope::maximum_size> bytes {};
     const HandshakeDatagramEncodeResult encoded =
@@ -3469,6 +3484,9 @@ int connect_socket(
                     static_cast<std::size_t>(
                         socket->public_options.flow_window_packets)),
             };
+            setup.configuration.implementation_identity =
+                local_implementation_identity(
+                    socket->public_options.identity_advertisement);
             setup.options = socket->native_options;
             setup.enforced_encryption =
                 socket->native_options
@@ -3608,6 +3626,9 @@ int connect_socket(
                     .weight = socket->group_weight,
                 },
         };
+        setup.configuration.implementation_identity =
+            local_implementation_identity(
+                socket->public_options.identity_advertisement);
         setup.configuration.require_standby_rtt =
             socket->public_options.standby_rtt_required;
         if (setup.configuration.require_standby_rtt) {
@@ -3902,6 +3923,8 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
             std::lock_guard lock(accepted->mutex);
             accepted->listen_callback_active = true;
             accepted->incoming_peer_handshake = {};
+            accepted->incoming_peer_identity =
+                conclusion.implementation_identity;
             if (conclusion.has_handshake_extension
                 && conclusion.extension_type
                     == HandshakeExtensionType::handshake_request) {
@@ -3946,6 +3969,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
                 callback_result = SRT_ERROR;
             accepted->listen_callback_active = false;
             accepted->incoming_peer_handshake = {};
+            accepted->incoming_peer_identity = {};
             accepted->incoming_group_type = SRT_GTYPE_UNDEFINED;
             accepted->incoming_peer_group = SRT_INVALID_SOCK;
             accepted->incoming_group_domain = 0;
@@ -4180,6 +4204,8 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         .cookie_context = &setup_context->cookie_context,
     };
 
+    configuration.hsv5.implementation_identity =
+        local_implementation_identity(public_options.identity_advertisement);
     configuration.hsv5.require_standby_rtt =
         public_options.standby_rtt_required;
     if (public_options.standby_rtt_required) {
@@ -4696,23 +4722,24 @@ bool ListenerRuntime::process_setup_result(
             || !result.has_peer_handshake) {
             return finish_setup_context(context, false, SRT_ECONNSETUP);
         }
-            const ConnectedNegotiation negotiation {
-                .peer_srt_version =
-                    result.runtime.peer_extension_parameters.srt_version,
-                .live_options = negotiate_live_options(
-                    context->native_options.handshake_parameters(),
-                    result.runtime.peer_extension_parameters),
-                .packet_filter = result.runtime.packet_filter,
-                .peer_stream_id = result.runtime.peer_stream_id,
-                .has_peer_stream_id = result.runtime.has_peer_stream_id,
-                .peer_flow_window = result.runtime.peer_flow_window,
-            };
-            if (!stage_connected_transport(*context->accepted,
-                    context->initial.peer, context->caller_socket_id,
-                    result.peer_handshake.packet.maximum_transmission_unit,
-                    negotiation)) {
-                return finish_setup_context(context, false, SRT_ESCLOSED);
-            }
+        const ConnectedNegotiation negotiation {
+            .peer_srt_version =
+                result.runtime.peer_extension_parameters.srt_version,
+            .live_options = negotiate_live_options(
+                context->native_options.handshake_parameters(),
+                result.runtime.peer_extension_parameters),
+            .packet_filter = result.runtime.packet_filter,
+            .peer_stream_id = result.runtime.peer_stream_id,
+            .has_peer_stream_id = result.runtime.has_peer_stream_id,
+            .peer_flow_window = result.runtime.peer_flow_window,
+            .peer_identity = result.runtime.peer_identity,
+        };
+        if (!stage_connected_transport(*context->accepted,
+                context->initial.peer, context->caller_socket_id,
+                result.peer_handshake.packet.maximum_transmission_unit,
+                negotiation)) {
+            return finish_setup_context(context, false, SRT_ESCLOSED);
+        }
             publish_connected_state(*context->accepted, SRTS_CONNECTED);
 
             const HandshakeAction* replay_response = nullptr;

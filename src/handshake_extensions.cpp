@@ -54,7 +54,10 @@ void write_u32(std::byte* bytes, std::uint32_t value) noexcept
         || type
         == static_cast<std::uint16_t>(HandshakeExtensionType::path_identifier)
         || type
-        == static_cast<std::uint16_t>(HandshakeExtensionType::standby_rtt);
+        == static_cast<std::uint16_t>(HandshakeExtensionType::standby_rtt)
+        || type
+        == static_cast<std::uint16_t>(
+            HandshakeExtensionType::implementation_identity);
 }
 
 } // namespace

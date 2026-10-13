@@ -2,6 +2,7 @@
 
 #include "compat/closed_handle_history.hpp"
 #include "compat/public_socket_options.hpp"
+#include "robotweax/srt/implementation_identity.hpp"
 
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
@@ -88,6 +89,8 @@ struct SocketRecord {
     bool listen_callback_active = false;
     // Raw HSREQ admission observation; never inherited from listener options.
     ROBOTWEAX_SRT_PEER_HANDSHAKE_V1 incoming_peer_handshake {};
+    ImplementationIdentity incoming_peer_identity {};
+    ImplementationIdentity peer_identity {};
     // Valid only while the listener callback is running. This is deliberately
     // separate from group_type, which describes committed membership.
     SRT_GROUP_TYPE incoming_group_type = SRT_GTYPE_UNDEFINED;

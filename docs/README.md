@@ -7,6 +7,9 @@ developers and transport integrators using the installed public API.
 
 ## Start here
 
+- [Experimental remote identity](implementation-identity.md) — development-only,
+  default-off peer labels, disclosure policy and qualification boundaries.
+
 - [Getting started](getting-started.md) — prerequisites, first build, and the
   basic socket lifecycle.
 - [Building and installing](building.md) — build profiles, CMake options,
