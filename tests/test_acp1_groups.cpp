@@ -128,6 +128,7 @@ TEST(acp1_groups_broadcast_backup_rotation_late_join_replacement_and_policy)
             REQUIRE_EQ(srt_getsockname(listener,
                            reinterpret_cast<sockaddr*>(&address), &size),
                 0);
+            bool first_join = true;
             const auto join = [&](const char* path) {
                 auto* config = srt_create_config();
                 REQUIRE(config);
@@ -141,8 +142,20 @@ TEST(acp1_groups_broadcast_backup_rotation_late_join_replacement_and_policy)
                 const auto result = srt_connect_group(group, &endpoint, 1);
                 srt_delete_config(config);
                 REQUIRE(result != SRT_ERROR);
-                (void)runtime(endpoint.id);
+                // Only the first synchronous join blocks. Later joins must
+                // wait for CONNECTED, which itself must imply an active runtime.
+                if (!first_join) {
+                    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::seconds {2};
+                    while (srt_getsockstate(endpoint.id) != SRTS_CONNECTED
+                        && std::chrono::steady_clock::now() < deadline)
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds {1});
+                }
+                first_join = false;
+                REQUIRE_EQ(srt_getsockstate(endpoint.id), SRTS_CONNECTED);
                 REQUIRE(flag(endpoint.id, SRTO_ROBOTWEAX_ACP1_ACTIVE));
+                REQUIRE(flag(group, SRTO_ROBOTWEAX_ACP1_ACTIVE));
                 return endpoint.id;
             };
             const auto first = join("path-a");

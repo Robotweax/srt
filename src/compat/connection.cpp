@@ -1646,9 +1646,13 @@ public:
             socket_.peer_connection_initial_sequence =
                 protocol.peer_initial_sequence().value();
         }
-        const bool staged = finish_connect(socket_, SRTS_CONNECTED, peer_,
-            driver_.peer_socket_id(), message.packet.maximum_transmission_unit,
-            protocol);
+        // ACP1 CONNECTED must imply that the protected runtime is attached.
+        // Group waits and asynchronous observers can wake at publication.
+        const bool staged = finish_connect(socket_,
+            setup_.options.experimental_acp1() ? SRTS_CONNECTING
+                                               : SRTS_CONNECTED,
+            peer_, driver_.peer_socket_id(),
+            message.packet.maximum_transmission_unit, protocol);
         if (setup_.options.experimental_acp1() && !staged)
             return fail_connect(socket_, SRT_ESECFAIL, 0);
         if (socket_was_closed(socket_)) {
@@ -1665,6 +1669,8 @@ public:
                 static_cast<SRT_ERRNO>(last_error().code),
                 last_error().system_error);
         }
+        if (setup_.options.experimental_acp1())
+            publish_connected_state(socket_, SRTS_CONNECTED);
         return 0;
     }
 
