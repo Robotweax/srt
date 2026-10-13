@@ -8,7 +8,7 @@ Historical [0.2.8 acceptance](release-process-0.2.8.md) remains unchanged.
 
 Preparation merge: `ce168060c241097b8af5b0cd9e8898027fb0ff09`, with the
 complete candidate tree and frozen product identity verified.
-[Current acceptance record](../packaging/qualification-0.2.9.md) lists the
+[Current acceptance record](https://github.com/Robotweax/srt/blob/63da4dd1ce43c04035c0d9d738ec59027b45b100/packaging/qualification-0.2.9.md) lists the
 actual source/media/package/resource runs and remaining gates.
 
 ## Release contract and scope
