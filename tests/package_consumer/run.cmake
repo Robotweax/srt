@@ -136,6 +136,9 @@ if(NOT "${ROBOTWEAX_SRT_BUILD_CONFIG}" STREQUAL "")
     list(APPEND public_consumer_configure_command
         "-DCMAKE_BUILD_TYPE=${ROBOTWEAX_SRT_BUILD_CONFIG}")
 endif()
+if(NOT "${ROBOTWEAX_SRT_MBEDTLS_ROOT}" STREQUAL "")
+    list(APPEND public_consumer_configure_command "-DMbedTLS_ROOT=${ROBOTWEAX_SRT_MBEDTLS_ROOT}")
+endif()
 if(NOT "${ROBOTWEAX_SRT_OPENSSL_ROOT_DIR}" STREQUAL "")
     list(APPEND public_consumer_configure_command
         "-DOPENSSL_ROOT_DIR=${ROBOTWEAX_SRT_OPENSSL_ROOT_DIR}")
@@ -214,6 +217,9 @@ if(NOT "${ROBOTWEAX_SRT_BUILD_CONFIG}" STREQUAL "")
     list(APPEND configure_command
         "-DCMAKE_BUILD_TYPE=${ROBOTWEAX_SRT_BUILD_CONFIG}")
 endif()
+if(NOT "${ROBOTWEAX_SRT_MBEDTLS_ROOT}" STREQUAL "")
+    list(APPEND configure_command "-DMbedTLS_ROOT=${ROBOTWEAX_SRT_MBEDTLS_ROOT}")
+endif()
 if(NOT "${ROBOTWEAX_SRT_OPENSSL_ROOT_DIR}" STREQUAL "")
     list(APPEND configure_command
         "-DOPENSSL_ROOT_DIR=${ROBOTWEAX_SRT_OPENSSL_ROOT_DIR}")
@@ -264,8 +270,12 @@ endif()
 if((ROBOTWEAX_SRT_SYSTEM_NAME STREQUAL "Linux" OR
         ROBOTWEAX_SRT_SYSTEM_NAME STREQUAL "Darwin") AND
         NOT "${ROBOTWEAX_SRT_PKG_CONFIG_EXECUTABLE}" STREQUAL "")
+    set(crypto_pkgconfig_path "")
+    if(NOT "${ROBOTWEAX_SRT_MBEDTLS_ROOT}" STREQUAL "")
+        set(crypto_pkgconfig_path "${ROBOTWEAX_SRT_MBEDTLS_ROOT}/lib/pkgconfig:")
+    endif()
     set(pkgconfig_environment
-        "PKG_CONFIG_PATH=${pkgconfig_directory}:$ENV{PKG_CONFIG_PATH}")
+        "PKG_CONFIG_PATH=${pkgconfig_directory}:${crypto_pkgconfig_path}$ENV{PKG_CONFIG_PATH}")
     run_checked("pkg-config metadata validation"
         "${CMAKE_COMMAND}" -E env "${pkgconfig_environment}"
         "${ROBOTWEAX_SRT_PKG_CONFIG_EXECUTABLE}"

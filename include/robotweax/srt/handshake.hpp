@@ -4,6 +4,7 @@
 #include "robotweax/srt/crypto.hpp"
 #include "robotweax/srt/connection_group.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
+#include "robotweax/srt/implementation_identity.hpp"
 #include "robotweax/srt/packet_filter.hpp"
 #include "robotweax/srt/sequence.hpp"
 #include "robotweax/srt/standby_rtt.hpp"
@@ -134,6 +135,7 @@ struct HandshakeAction {
     PathIdentifier path_identifier {};
     bool has_standby_rtt = false;
     StandbyRttIdentity standby_rtt {};
+    ImplementationIdentity implementation_identity {};
 };
 
 struct HandshakeActions {
@@ -180,6 +182,7 @@ struct HandshakeMessage {
     PathIdentifier path_identifier {};
     bool has_standby_rtt = false;
     StandbyRttIdentity standby_rtt {};
+    ImplementationIdentity implementation_identity {};
 };
 
 using GroupMembershipNegotiator = bool (*)(
@@ -228,6 +231,7 @@ public:
         PathIdentifier path_identifier {};
         bool require_standby_rtt = false;
         StandbyRttNonce standby_rtt_nonce {};
+        ImplementationIdentity implementation_identity {};
     };
 
     explicit HandshakeMachine(Configuration configuration) noexcept;
@@ -244,6 +248,10 @@ public:
     [[nodiscard]] const HandshakeExtensionParameters& peer_extension_parameters() const noexcept
     {
         return peer_extension_parameters_;
+    }
+    [[nodiscard]] const ImplementationIdentity& peer_identity() const noexcept
+    {
+        return peer_identity_;
     }
     [[nodiscard]] bool has_peer_stream_id() const noexcept
     {
@@ -326,6 +334,7 @@ private:
     SequenceNumber peer_initial_sequence_ {};
     HandshakeExtensionParameters peer_extension_parameters_{};
     bool has_peer_extension_parameters_ = false;
+    ImplementationIdentity peer_identity_ {};
     StreamId peer_stream_id_{};
     bool has_peer_stream_id_ = false;
     PacketFilterConfiguration

@@ -1,6 +1,6 @@
 # Experimental standby RTT protocol foundation
 
-The development branch provides explicitly enabled standby RTT monitoring for
+Since 0.2.9 the library provides explicitly enabled standby RTT monitoring for
 Robotweax-to-Robotweax Backup Live Message groups using Caller/Listener with
 both TSBPD directions. The default is disabled. File, Broadcast, Rendezvous and
 Striping are unsupported. Enabled reference-provider interoperability and WAN
@@ -12,7 +12,8 @@ the caller Backup group and before listening on the listener, which also needs
 `SRTO_GROUPCONNECT=true`. Ordinary callers and listeners without group admission
 cannot enable the profile at setup. Both peers must enable it; missing or
 unsolicited support fails with `SRT_REJ_GROUP`, with no automatic discovery or
-silent downgrade. Group and endpoint templates carry the option to new members.
+silent downgrade. Group and listener templates carry the option to new members. Endpoint
+configurations (`srt_config_add`) reject it with `SRT_EINVPARAM`.
 It cannot change after setup or in a listen callback. Disabling TSBPD/Message
 mode or selecting a different transport/congestion profile while it is required
 fails rather than leaving an ineffective option.

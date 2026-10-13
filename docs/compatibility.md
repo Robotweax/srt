@@ -1,7 +1,7 @@
 # Compatibility status
 
 This document describes the public compatibility boundary of Robotweax SRT
-0.2.7. A listed capability is part of the supported boundary only for the
+0.2.9. A listed capability is part of the supported boundary only for the
 roles, transport mode, address family, and encryption profile stated here.
 
 Robotweax SRT is an independent implementation. Compatibility means that the
@@ -11,9 +11,9 @@ drop-in compatibility with every `libsrt` deployment.
 
 ## Version boundary
 
-| Axis | Robotweax SRT 0.2.7 |
+| Axis | Robotweax SRT 0.2.9 |
 | --- | --- |
-| Project version | `0.2.7` |
+| Project version | `0.2.9` |
 | Shared-library ABI line | `0.2` |
 | Default public SRT API profile | Haivision SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -31,7 +31,7 @@ v1.5.7 tag at commit
 `899348d8318eb9a3c5a5b6ec43c4a1114288773a`. Focused 1.5.5 backward and 1.5.6
 security lanes remain separate evidence; they do not replace the 1.5.7 gate.
 
-Robotweax SRT 0.2.7 does not establish positive HSv4 sessions. Applications
+Robotweax SRT 0.2.9 does not establish positive HSv4 sessions. Applications
 that require genuine HSv4 must remain on the immutable 0.1 line or upgrade the
 peer. Valid unsupported legacy establishment attempts fail deterministically
 instead of causing an automatic downgrade.
@@ -49,7 +49,7 @@ instead of causing an automatic downgrade.
 
 ## Transport and protocol matrix
 
-| Capability | Status | Public scope in 0.2.7 |
+| Capability | Status | Public scope in 0.2.9 |
 | --- | --- | --- |
 | HSv5 Caller/Listener | Supported | Blocking and nonblocking establishment, admission callbacks, connection completion, Stream ID, IPv4 and IPv6 |
 | HSv5 Rendezvous | Supported | IPv4 and IPv6 simultaneous open with deterministic role resolution |
@@ -62,7 +62,7 @@ instead of causing an automatic downgrade.
 | FileCC | Supported | Clear and AES-CTR transfer in the default compatibility profile; Robotweax-to-Robotweax AES-GCM transfer in an extension-enabled build; Caller/Listener and Rendezvous, loss recovery, delayed ACK/flow-window handling, runtime bandwidth changes, and rollover. Cross-implementation GCM File/Stream is not claimed. |
 | Packet filters and FEC | Supported | Row, Column, and recursive Matrix geometries, negotiation, recovery, rollover, clear and encrypted Live/Message operation |
 | Broadcast groups | Supported | Member admission, mirrored messages, late join, redundant receive suppression, member callbacks, and group metadata |
-| Backup groups | Supported | Weighted selection, stable failover, bounded replay, path replacement, member-local timing, and member-local encryption |
+| Backup groups | Supported | Weighted selection, stable failover, bounded replay, path replacement, a shared group timestamp origin/receive clock, and member-local encryption |
 | ACK/NAK/KEEPALIVE | Supported | Periodic control, ACKACK/RTT sampling, receive-window updates, bounded loss reports, rollover-safe ranges, and stale-loss handling |
 | Per-message TTL | Foundation | Finite and infinite TTL, expiry, DROPREQ, rollover, and repeated-NAK handling |
 | TLPKTDROP/DROPREQ | Supported | Negotiated sender expiry and receiver-side gap skipping with cumulative progress |
@@ -136,7 +136,7 @@ by [Encryption and key rotation](encryption.md).
 
 ## Known limits
 
-- Robotweax SRT 0.2.7 is a pre-1.0 release and does not promise binary
+- Robotweax SRT 0.2.9 is a pre-1.0 release and does not promise binary
   compatibility with 0.1. Applications must be rebuilt against ABI line 0.2.
 - The default public header intentionally matches the SRT 1.5.7 profile;
   AES-GCM does not constitute a complete SRT 1.6 API or ABI claim.
@@ -184,9 +184,9 @@ are not established by this matrix. Existing core support for a feature does
 not extend the application's qualification. Reconnect checks demonstrate media
 resuming, not preservation of every frame during interruption.
 
-## Post-0.2.7 optional session authentication
+## Optional session authentication (since 0.2.8)
 
-The current development tree provides default-off
+Since 0.2.8 the library provides default-off
 `SRTO_ROBOTWEAX_SESSIONAUTH`. Its private version-2 protocol authenticates
 session key controls and FEC parity. Both peers must opt in and support the
 same version; version-1 peers are rejected without fallback. It is outside the
@@ -241,3 +241,46 @@ until the native endpoint is released. Cleanup releases all retired owners
 immediately. Application close, peer close and hard transport failure do not
 acquire this additional lifetime. This finite policy cannot guarantee zero late
 UDP for arbitrary peer idle settings or network delay.
+
+## Robotweax Control and Sensor profiles
+
+Since 0.2.8, Control/Message (`control-v1`) and Sensor/Message
+(`fec-sensor-v1`) are explicit Robotweax profiles. Both support the GCM bundles
+in the [AES-GCM contract](aes-gcm-contract.md#valid-transport-bundles), with a
+passphrase and enforced encryption required. They are outside ordinary
+Haivision interoperation. See [Control](control-profile.md) and
+[Sensor FEC](packet-filter.md#authenticated-sensor-samples).
+
+## Group admission callback migration (since 0.2.8)
+
+A listen callback admitting a group member must authorize it and set a nonzero
+`uint64_t` `SRTO_ROBOTWEAX_GROUPDOMAIN` on the provisional socket before
+returning success. Returning zero alone rejects the group member, unlike the
+Haivision callback contract. Use `SRTO_ROBOTWEAX_PEERGROUP` only as proposed
+peer metadata, never as proof of authorization. Later members must match the
+application's admission domain. Ordinary non-group callbacks are unaffected;
+listeners without a callback use the documented automatic group admission.
+See [group admission](connection-groups.md) for the complete domain contract.
+
+## Development Mbed TLS backend
+
+The optional Mbed TLS 3.6.7+ provider preserves existing crypto/wire behavior.
+Local macOS ARM64 validation includes known-answer/failure tests, static/shared
+installed consumers, OpenSSL cross-backend CTR/GCM rotation and session
+authentication, and the established pinned Haivision CTR/GCM harnesses.
+Linux/macOS jobs are included in the required CI gate; they must pass before
+platform qualification is complete. Windows/mobile/custom hardware builds and
+application integrations are not newly qualified. See
+[Cryptographic backends](crypto-backends.md) for dependency constraints, exact
+reference pins, and performance evidence. Released 0.2.9 artifacts do not contain
+this provider.
+
+## Development implementation identity
+
+The provisional `0x7f13` CONFIG identity record is default-off and diagnostic.
+Local real-advertisement checks cover Robotweax Caller/Listener and Rendezvous,
+CTR/GCM rotation, and ordinary connections to the pinned Haivision 1.5.7 and AEAD
+reference builds. Reference peers remain unknown; they do not advertise this
+convention. No MistServer/older-version/independent-peer deployment or shared
+allocation is qualified. See [experimental identity](implementation-identity.md).
+Published 0.2.9 artifacts do not include the identity options or wire record.

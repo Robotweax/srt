@@ -72,10 +72,33 @@ int main(void)
             == SRT_ERROR
         || backend_size != (int)sizeof(backend)
         || (backend != ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL
-            && backend != ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT)) {
+            && backend != ROBOTWEAX_SRT_CRYPTO_BACKEND_BCRYPT
+            && backend != ROBOTWEAX_SRT_CRYPTO_BACKEND_MBEDTLS)) {
         (void)srt_close(socket);
         (void)srt_cleanup();
         return 11;
+    }
+
+    ROBOTWEAX_SRT_PEER_IDENTITY_V1 peer_identity;
+    int identity_size = (int)sizeof(peer_identity);
+    int32_t identity_policy = -1;
+    int policy_size = (int)sizeof(identity_policy);
+    if (srt_getsockflag(socket, SRTO_ROBOTWEAX_PEER_IDENTITY, &peer_identity,
+            &identity_size)
+            != 0
+        || identity_size != 132
+        || peer_identity.abi_version != ROBOTWEAX_SRT_PEER_IDENTITY_VERSION
+        || peer_identity.available_fields != 0 || peer_identity.name_length != 0
+        || peer_identity.release_length != 0 || peer_identity.name[0] != 0
+        || peer_identity.release[0] != 0
+        || srt_getsockflag(socket, SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT,
+               &identity_policy, &policy_size)
+            != 0
+        || policy_size != (int)sizeof(identity_policy)
+        || identity_policy != ROBOTWEAX_SRT_IDENTITY_OFF) {
+        (void)srt_close(socket);
+        (void)srt_cleanup();
+        return 13;
     }
 
     int32_t implementation_version = 0;

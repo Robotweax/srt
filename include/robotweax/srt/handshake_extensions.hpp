@@ -29,6 +29,7 @@ enum class HandshakeExtensionType : std::uint16_t {
     session_authentication = 0x7f10,
     path_identifier = 0x7f11,
     standby_rtt = 0x7f12,
+    implementation_identity = 0x7f13,
 };
 
 enum class CongestionController : std::uint8_t {

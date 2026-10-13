@@ -1,13 +1,13 @@
 # Encryption and key rotation
 
-Robotweax SRT 0.2.0 provides two encryption profiles:
+Since 0.2.0, Robotweax SRT provides two encryption profiles:
 
 | Profile | Availability | Security property |
 | --- | --- | --- |
 | AES-CTR | Default SRT 1.5.7-compatible build | Payload confidentiality |
 | AES-GCM | Explicit `ENABLE_AEAD_API_PREVIEW` build | Payload confidentiality and authentication |
 
-The GCM build option retains its historical preview name. In 0.2.0 it selects
+The GCM build option retains its historical preview name. Since 0.2.0 it selects
 the released, default-off Robotweax extension; it does not make GCM part of the
 default SRT 1.5.7 public header or claim a complete SRT 1.6 API.
 
@@ -40,7 +40,9 @@ to consumers. The Linux pkg-config metadata includes it in `Cflags`. Library
 and consumer must use the same profile; mixing default-profile headers with an
 extension-enabled binary interface is unsupported.
 
-OpenSSL 3 is the current cryptographic provider. Key schedules and provider
+OpenSSL 3 is the default cryptographic provider. An experimental Windows
+CNG/BCrypt backend is selectable with `ROBOTWEAX_SRT_CRYPTO_BACKEND` and
+reported by `SRTO_ROBOTWEAX_CRYPTO_BACKEND`; see [Windows BCrypt](windows-bcrypt.md). Key schedules and provider
 contexts are prepared when a key is installed and reused by packet processing.
 
 ## Socket configuration
@@ -136,13 +138,21 @@ AES-GCM supports these exact transport bundles:
 | --- | --- | --- |
 | Live/Message | LiveCC, TSBPD on, Message API | Caller/Listener and Rendezvous over IPv4/IPv6 |
 | File/Stream | FileCC, TSBPD off, Stream API | Caller/Listener and Rendezvous over IPv4/IPv6 |
+| Control/Message | FileCC (`control-v1`), TSBPD off, ordered Message API | Matching Robotweax profiles |
+| Sensor/Message | LiveCC, TSBPD off, required `fec-sensor-v1` | Matching Robotweax profiles |
+
+Control/GCM and Sensor/GCM, added in 0.2.8, require a passphrase and enforced
+encryption. See the [complete bundle contract](aes-gcm-contract.md#valid-transport-bundles)
+for setup errors and role restrictions. These private profiles do not extend
+Haivision interoperability claims.
 
 Set `SRTO_TRANSTYPE=SRTT_FILE` to select the File/Stream bundle atomically.
 Incoherent partial mutations fail with `SRT_EINVPARAM` rather than leaving a
 partly changed connection profile.
 
-The built-in FEC packet filter may be combined with GCM only in Live/Message
-mode. GCM plus File/Stream plus FEC is invalid in either option-setting order.
+The ordinary `fec` filter combines with GCM in Live/Message. Sensor/GCM uses
+its required `fec-sensor-v1` filter with TSBPD disabled. GCM plus File/Stream
+plus FEC is invalid in either option-setting order; Control does not allow FEC.
 
 For Rendezvous GCM, both peers must set explicit mode `2`. AUTO/GCM and
 CTR/GCM pairs are rejected instead of being downgraded. In Caller/Listener,
@@ -451,7 +461,7 @@ or KMRSP controls or add a connection-lifetime replay guarantee.
 Ciphertext outside the bounded history fails closed. Like libsrt, this side
 cannot tell a replayed announcement older than the whole history from a fresh
 key: runtime KM messages are not authenticated, so such a replay installs the
-old key until the peer's next rotation. Runtime KM messages are not bound to
+old key and disrupt reception. Recovery at the next rotation is not guaranteed. Runtime KM messages are not bound to
 an established sender identity; an actor with the passphrase and the ability
 to send from the peer endpoint can still disrupt receive-key state.
 
@@ -464,7 +474,8 @@ not a connection-lifetime key-epoch replay defense.
 
 Explicitly enabling `SRTO_ROBOTWEAX_SESSIONAUTH` on both peers prevents this
 KMREQ rollback through authenticated monotonic counters, independently of the
-bounded key histories. This remains default-off for ordinary Haivision wire
+bounded key histories. It requires a passphrase and enforced encryption and
+supports Caller/Listener only, not Rendezvous. This remains default-off for ordinary Haivision wire
 compatibility. Neither mandatory session authentication nor a new automatic
 reconnection limit is silently imposed on compatible sessions. A lifetime
 history, connection limit, or new authenticated wire epoch would need a
@@ -581,7 +592,7 @@ profiles.
 Positive GCM interoperability with the pinned capable reference profile is
 limited to AES-128 Live/Message. Cross-implementation GCM File/Stream,
 AES-192/256 transfer, encrypted mixed-implementation groups, and
-reference-side Caller/Listener rotation are not claimed in 0.2.0.
+reference-side Caller/Listener rotation are not claimed in the current 0.2.9 boundary.
 
 Validate passphrase policy, mode selection, MSS, latency, loss recovery,
 rotation intervals, and failover behavior under the intended deployment's
@@ -594,3 +605,18 @@ Version 2 of [optional session authentication](session-authentication.md)
 also authenticates FEC parity before decoder admission. Both peers must enable
 it explicitly and support version 2. With it disabled, the standard parity
 format and its documented residual authentication limits are unchanged.
+
+## Key-option ordering and release history
+
+Set `SRTO_KMREFRESHRATE` before `SRTO_KMPREANNOUNCE`. Lowering the refresh
+interval clamps an excessive effective preannouncement to `(refresh - 1) / 2`;
+raising refresh later does not restore the former preannouncement. Setting an
+excessive preannouncement directly fails instead. Read back both options when
+configuration order matters.
+
+Version 0.2.8 corrected explicit caller-key preservation during INDUCTION and
+listener reporting of the accepted key length during CONCLUSION. The earlier
+unadvertised-length handling is already present in v0.2.7; do not treat all
+0.2.7 listeners as requiring an explicit PBKEYLEN workaround. Applications
+should use the current negotiation rules above rather than infer the selected
+key length from the listener's pre-admission default.

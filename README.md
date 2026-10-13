@@ -68,7 +68,7 @@ Requirements:
 
 - CMake 3.20 or newer;
 - a C++20 compiler;
-- OpenSSL 3.x development files;
+- OpenSSL 3.x development files, or the optional [Mbed TLS 3.6 backend](docs/crypto-backends.md);
 - Python 3.10 or newer when building the test suite.
 
 Configure, build, and test an out-of-source Release tree:

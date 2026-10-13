@@ -4,6 +4,18 @@
 #include <stdint.h>
 #include <string.h>
 
+_Static_assert(SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT == 0x0100000a,
+    "identity policy option");
+_Static_assert(
+    SRTO_ROBOTWEAX_PEER_IDENTITY == 0x0100000b, "peer identity option");
+_Static_assert(
+    sizeof(ROBOTWEAX_SRT_PEER_IDENTITY_V1) == 132, "peer identity ABI size");
+_Static_assert(offsetof(ROBOTWEAX_SRT_PEER_IDENTITY_V1, name) == 16,
+    "peer identity name offset");
+_Static_assert(offsetof(ROBOTWEAX_SRT_PEER_IDENTITY_V1, release) == 49,
+    "peer identity release offset");
+_Static_assert(offsetof(ROBOTWEAX_SRT_PEER_IDENTITY_V1, reserved) == 116,
+    "peer identity reserved offset");
 _Static_assert(SRTO_ROBOTWEAX_PEER_HANDSHAKE == 0x01000009,
     "peer handshake option value is ABI");
 _Static_assert(sizeof(ROBOTWEAX_SRT_PEER_HANDSHAKE_V1) == 24,

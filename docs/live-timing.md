@@ -223,8 +223,10 @@ is recovered or the connection terminates.
 
 ### Drift correction
 
-Clock recovery samples only unique, forward-progressing source packets
-observed directly on the wire. Retransmissions, duplicates, late originals,
+Clock recovery samples unique, forward-progressing original DATA observed
+directly on the wire and valid KEEPALIVE timestamps (epoch-neutral samples).
+`SRTO_DRIFTTRACER=false` disables correction without resetting the negotiated
+clock mapping. These sources differ from the reference ACKACK-based tracer. Retransmissions, duplicates, late originals,
 and FEC reconstructions retain their timestamps for delivery but do not steer
 the receive clock with delayed or synthetic arrival times.
 

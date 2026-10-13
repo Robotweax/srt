@@ -4,7 +4,8 @@ Robotweax SRT implements HSv5 Rendezvous as a simultaneous-open state machine
 for two peers that both bind locally and connect to each other. It follows the
 behavior described in section 4.3.2 of the
 [SRT Internet-Draft](https://datatracker.ietf.org/doc/html/draft-sharabayko-srt-01#section-4.3.2)
-and the released Robotweax compatibility contract.
+with the cookie arithmetic qualification below, and the released Robotweax
+compatibility contract.
 
 ## When to use Rendezvous
 
@@ -42,6 +43,15 @@ Both peers begin by sending WAVEAHAND. Once both cookies are known, a wrapping
 32-bit cookie comparison assigns exactly one protocol Initiator and one
 Responder. These roles are protocol-local and do not imply application sender
 or receiver direction.
+
+Role selection uses the wrapped unsigned 32-bit difference of local minus
+peer cookie: a nonzero difference below 2^31 selects Initiator, above 2^31
+selects Responder. At exactly 2^31 Robotweax uses signed-cookie ordering to
+break the tie. Equal cookies cannot resolve roles. This differs from the
+draft's literal sign-extended 64-bit comparison. The bit-31 rule follows the
+version-scoped Haivision v1.5.4 `srtcore/core.cpp` rendezvous comparison
+(commit `a8c6b65520f814c5bd8f801be48c33ceece7c4a6`); the
+half-range tie-break is Robotweax policy, not an upstream guarantee.
 
 The Initiator owns HSREQ and optional KMREQ generation. The Responder owns HSRSP
 and optional KMRSP generation. Both start orders and both resolved cookie roles
@@ -114,10 +124,11 @@ Common configuration and runtime errors include:
 
 | Condition | Result |
 | --- | --- |
-| Socket not explicitly bound | Invalid operation/parameter before handshake |
+| Socket not explicitly bound | `SRT_ERDVUNBOUND` before handshake |
 | Mixed local and peer address families | Invalid parameter |
-| Listen or accept requested | Invalid operation |
-| Identical or contradictory cookie role | Connection rejection |
+| Listen requested on a Rendezvous socket | `SRT_ERDVNOSERV`; Rendezvous uses connect, not accept |
+| Identical cookies | `SRT_REJ_RDVCOOKIE` |
+| Peer cookie or socket ID changes during setup | Attempt fails; no coded rejection is guaranteed |
 | HSv4 setup packet | `SRT_REJ_VERSION` |
 | Incoherent pre-1.3 HSv5 identity | `SRT_REJ_ROGUE` |
 | Mode, filter, congestion, or crypto mismatch | Compatible setup rejection |

@@ -28,8 +28,9 @@ requires that guarantee.
 - The sender sets the wire `inorder` bit even when the caller passes the
   default `SRT_MSGCTRL.inorder=0`. A finite `msgttl` is rejected with
   `SRT_EINVALMSGAPI`; negative values mean no expiry.
-- Periodic NAK and the DATA retransmission flag follow File-mode defaults.
-  Their disabled values do not disable NAK/ARQ or RTO recovery.
+- Periodic NAK is disabled, as in File mode. Unlike File, Control does not
+  advertise REXMITFLG. These capability defaults do not disable NAK/ARQ or
+  RTO recovery; the sender still marks retransmitted DATA on the wire.
 - The profile defaults to a 180-second linger period so synchronous close can
   wait for queued sends to drain. Applications should wait for their own
   command acknowledgement before closing when execution matters.

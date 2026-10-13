@@ -124,29 +124,23 @@ RendezvousHandshakeMachine::conclusion_request_action() const noexcept
         .kind = HandshakeActionKind::send,
         .packet = packet,
         .has_handshake_extension = true,
-        .extension_type =
-            HandshakeExtensionType::handshake_request,
-        .extension_parameters =
-            configuration_.extension_parameters,
+        .extension_type = HandshakeExtensionType::handshake_request,
+        .extension_parameters = configuration_.extension_parameters,
         .has_key_material_extension =
             configuration_.key_material_request.size != 0U,
         .key_material_extension_type =
             HandshakeExtensionType::key_material_request,
         .key_material = configuration_.key_material_request,
-        .has_stream_id_extension =
-            !configuration_.stream_id.empty(),
+        .has_stream_id_extension = !configuration_.stream_id.empty(),
         .stream_id = configuration_.stream_id,
         .has_congestion_extension =
-            configuration_.congestion_controller
-                != CongestionController::live,
-        .congestion_controller =
-            configuration_.congestion_controller,
+            configuration_.congestion_controller != CongestionController::live,
+        .congestion_controller = configuration_.congestion_controller,
         .has_packet_filter_extension =
-            configuration_
-                .packet_filter_configuration.enabled,
+            configuration_.packet_filter_configuration.enabled,
         .packet_filter_configuration =
-            configuration_
-                .packet_filter_configuration,
+            configuration_.packet_filter_configuration,
+        .implementation_identity = configuration_.implementation_identity,
     };
 }
 
@@ -167,25 +161,19 @@ RendezvousHandshakeMachine::conclusion_response_action() const noexcept
         .kind = HandshakeActionKind::send,
         .packet = packet,
         .has_handshake_extension = true,
-        .extension_type =
-            HandshakeExtensionType::handshake_response,
+        .extension_type = HandshakeExtensionType::handshake_response,
         .extension_parameters = response_extension_parameters(),
-        .has_key_material_extension =
-            has_key_material,
+        .has_key_material_extension = has_key_material,
         .key_material_extension_type =
             HandshakeExtensionType::key_material_response,
-        .key_material = has_key_material_response_
-            ? key_material_response_
-            : peer_key_material_request_,
+        .key_material = has_key_material_response_ ? key_material_response_
+                                                   : peer_key_material_request_,
         .has_congestion_extension =
-            configuration_.congestion_controller
-                != CongestionController::live,
-        .congestion_controller =
-            configuration_.congestion_controller,
-        .has_packet_filter_extension =
-            negotiated_packet_filter_.enabled,
-        .packet_filter_configuration =
-            negotiated_packet_filter_,
+            configuration_.congestion_controller != CongestionController::live,
+        .congestion_controller = configuration_.congestion_controller,
+        .has_packet_filter_extension = negotiated_packet_filter_.enabled,
+        .packet_filter_configuration = negotiated_packet_filter_,
+        .implementation_identity = configuration_.implementation_identity,
     };
 }
 
@@ -354,6 +342,8 @@ void RendezvousHandshakeMachine::remember_peer(
     peer_initial_sequence_ =
         message.packet.initial_sequence;
     if (message.has_handshake_extension) {
+        if (!has_peer_extension_parameters_)
+            peer_identity_ = message.implementation_identity;
         peer_extension_parameters_ =
             message.extension_parameters;
         has_peer_extension_parameters_ = true;

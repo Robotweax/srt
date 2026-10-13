@@ -118,3 +118,13 @@ Original candidate failures remain excluded from acceptance: a relative link to 
 
 See [known limitations](limitations.md), [compatibility](compatibility.md) and
 [testing](testing.md) for the supported contracts and qualification boundaries.
+
+## Migration clarifications (documentation correction, 2026-10-13)
+
+This release introduced explicit callback group admission: callbacks must set
+`SRTO_ROBOTWEAX_GROUPDOMAIN` after authorization; returning success alone no
+longer admits group members. See [group admission](connection-groups.md).
+
+The release also preserves an explicit caller PBKEYLEN through INDUCTION and
+reports the accepted listener key length in CONCLUSION. Earlier unadvertised
+key-length support already exists in v0.2.7; see [negotiation history](encryption.md#key-option-ordering-and-release-history).

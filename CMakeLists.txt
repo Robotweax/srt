@@ -23,6 +23,7 @@ set(ROBOTWEAX_SRT_COMPATIBLE_SRT_VERSION "1.5.7")
 set(ROBOTWEAX_SRT_INSTALL_CMAKEDIR
     "${CMAKE_INSTALL_LIBDIR}/cmake/RobotweaxSRT"
     CACHE STRING "Install directory for the Robotweax SRT CMake package")
+install(FILES cmake/FindMbedTLS.cmake DESTINATION "${ROBOTWEAX_SRT_INSTALL_CMAKEDIR}")
 
 option(ROBOTWEAX_SRT_BUILD_TESTS "Build unit tests" ON)
 set(ROBOTWEAX_SRT_NATIVE_PROGRAMS_DEFAULT ON)
@@ -60,14 +61,43 @@ if(BUILD_SHARED_LIBS AND
         "shared artifact deliberately exports only the public C ABI.")
 endif()
 
-set(ROBOTWEAX_SRT_CRYPTO_BACKEND "openssl" CACHE STRING "Crypto backend: openssl or bcrypt (experimental Windows only)")
-set_property(CACHE ROBOTWEAX_SRT_CRYPTO_BACKEND PROPERTY STRINGS openssl bcrypt)
+set(ROBOTWEAX_SRT_CRYPTO_BACKEND "openssl" CACHE STRING "Crypto backend: openssl, mbedtls (3.6.x), or bcrypt (experimental Windows only)")
+set_property(CACHE ROBOTWEAX_SRT_CRYPTO_BACKEND PROPERTY STRINGS openssl bcrypt mbedtls)
 if(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "openssl")
     set(ROBOTWEAX_SRT_CRYPTO_BACKEND_ID 1)
     find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
     set(ROBOTWEAX_SRT_CRYPTO_SOURCE src/crypto_openssl.cpp)
     set(ROBOTWEAX_SRT_CRYPTO_LIBRARY OpenSSL::Crypto)
     set(ROBOTWEAX_SRT_PC_CRYPTO_REQUIRES "libcrypto >= 3.0")
+elseif(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "mbedtls")
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+    find_package(MbedTLS 3.6.7 REQUIRED MODULE)
+    set(ROBOTWEAX_SRT_CRYPTO_BACKEND_ID 3)
+    set(ROBOTWEAX_SRT_CRYPTO_SOURCE src/crypto_mbedtls.cpp)
+    set(ROBOTWEAX_SRT_CRYPTO_LIBRARY MbedTLS::mbedcrypto)
+    set(ROBOTWEAX_SRT_PC_CRYPTO_REQUIRES "mbedcrypto >= 3.6.7")
+    include(CheckCXXSourceCompiles)
+    include(CMakePushCheckState)
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_LIBRARIES MbedTLS::mbedcrypto)
+    set(CMAKE_REQUIRED_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    check_cxx_source_compiles("#include <crypto_mbedtls_config.hpp>
+        #include <mbedtls/aes.h>
+        #include <mbedtls/gcm.h>
+        #include <mbedtls/nist_kw.h>
+        #include <mbedtls/ctr_drbg.h>
+        #include <mbedtls/pkcs5.h>
+        int main() {
+            mbedtls_aes_context aes; mbedtls_aes_init(&aes); mbedtls_aes_free(&aes);
+            mbedtls_gcm_context gcm; mbedtls_gcm_init(&gcm); mbedtls_gcm_free(&gcm);
+            mbedtls_nist_kw_context kw; mbedtls_nist_kw_init(&kw); mbedtls_nist_kw_free(&kw);
+            mbedtls_ctr_drbg_context rng; mbedtls_ctr_drbg_init(&rng); mbedtls_ctr_drbg_free(&rng);
+            return 0;
+        }" ROBOTWEAX_SRT_MBEDTLS_CONFIGURATION_SUPPORTED)
+    cmake_pop_check_state()
+    if(NOT ROBOTWEAX_SRT_MBEDTLS_CONFIGURATION_SUPPORTED)
+        message(FATAL_ERROR "Unsupported Mbed TLS configuration; see docs/crypto-backends.md for required modules")
+    endif()
 elseif(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "bcrypt" AND WIN32)
     set(ROBOTWEAX_SRT_CRYPTO_BACKEND_ID 2)
     set(ROBOTWEAX_SRT_CRYPTO_SOURCE src/crypto_bcrypt.cpp)
@@ -127,6 +157,7 @@ add_library(robotweax_srt
     src/handshake.cpp
     src/handshake_datagram.cpp
     src/handshake_extensions.cpp
+    src/implementation_identity.cpp
     src/live.cpp
     src/packet_filter.cpp
     src/receive_buffer.cpp
@@ -368,6 +399,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_acknowledged_source_drop.cpp
         tests/test_srt_compat.cpp
         tests/test_peer_handshake_metadata.cpp
+        tests/test_implementation_identity.cpp
         tests/test_compat_key_negotiation.cpp
         tests/test_profile_admission.cpp
         tests/test_socket_options.cpp
@@ -657,7 +689,8 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             PROPERTIES TIMEOUT 30)
     endif()
 
-    if(UNIX AND NOT BUILD_SHARED_LIBS AND NOT OPENSSL_USE_STATIC_LIBS
+    if(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "openssl"
+        AND UNIX AND NOT BUILD_SHARED_LIBS AND NOT OPENSSL_USE_STATIC_LIBS
         AND NOT OPENSSL_CRYPTO_LIBRARY MATCHES "\\.a$")
         # RAND_bytes interposition is confined to this separate test process.
         # RTLD_NEXT requires dynamic libcrypto; static-provider builds still
@@ -740,6 +773,14 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     add_test(
         NAME robotweax_srt_compatible_header_test
         COMMAND robotweax_srt_compatible_header_test)
+
+    if(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "mbedtls")
+        add_executable(robotweax_srt_mbedtls_provider_failures tests/mbedtls_provider_failures.cpp)
+        target_compile_features(robotweax_srt_mbedtls_provider_failures PRIVATE cxx_std_20)
+        target_include_directories(robotweax_srt_mbedtls_provider_failures PRIVATE include)
+        target_link_libraries(robotweax_srt_mbedtls_provider_failures PRIVATE MbedTLS::mbedcrypto Threads::Threads)
+        add_test(NAME robotweax_srt_mbedtls_provider_failures COMMAND robotweax_srt_mbedtls_provider_failures)
+    endif()
 
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     if(ROBOTWEAX_SRT_BUILD_EXAMPLES)
@@ -959,7 +1000,7 @@ if(ROBOTWEAX_SRT_BUILD_BENCHMARKS)
     target_compile_features(robotweax_srt_scalability_peer
         PRIVATE cxx_std_17)
 
-    if(UNIX)
+    if(UNIX AND ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "openssl")
         add_executable(robotweax_srt_group_throughput_peer
             benchmarks/group_throughput_peer.cpp)
         target_link_libraries(robotweax_srt_group_throughput_peer
@@ -977,7 +1018,8 @@ if(ROBOTWEAX_SRT_BUILD_BENCHMARKS)
     target_include_directories(robotweax_srt_timer_wake_probe
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-    if(UNIX AND ROBOTWEAX_SRT_BUILD_TESTS AND Python3_Interpreter_FOUND)
+    if(TARGET robotweax_srt_group_throughput_peer
+            AND ROBOTWEAX_SRT_BUILD_TESTS AND Python3_Interpreter_FOUND)
         add_test(
             NAME robotweax_srt_group_throughput_smoke
             COMMAND ${Python3_EXECUTABLE}
@@ -1055,6 +1097,13 @@ if(ROBOTWEAX_SRT_BUILD_TOOLS)
     target_compile_features(robotweax_srt_group_peer PRIVATE cxx_std_17)
 
     if(ROBOTWEAX_SRT_BUILD_TESTS AND Python3_Interpreter_FOUND AND UNIX)
+        add_test(NAME robotweax_srt_identity_interop
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_identity_interop.py
+                --robotweax-peer $<TARGET_FILE:robotweax_srt_interop_peer>)
+        set_tests_properties(robotweax_srt_identity_interop
+            PROPERTIES TIMEOUT 90 LABELS "integration;handshake;identity")
+
         add_test(
             NAME robotweax_srt_live_nak_gap_recovery
             COMMAND ${Python3_EXECUTABLE}
@@ -1928,6 +1977,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             -DROBOTWEAX_SRT_GENERATOR=${CMAKE_GENERATOR}
             -DROBOTWEAX_SRT_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}
             -DROBOTWEAX_SRT_GENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}
+            -DROBOTWEAX_SRT_MBEDTLS_ROOT=${MbedTLS_ROOT}
             -DROBOTWEAX_SRT_OPENSSL_ROOT_DIR=${OPENSSL_ROOT_DIR}
             -DROBOTWEAX_SRT_INSTALL_BINDIR=${CMAKE_INSTALL_BINDIR}
             -DROBOTWEAX_SRT_INSTALL_DATADIR=${CMAKE_INSTALL_DATADIR}

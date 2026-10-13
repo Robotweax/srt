@@ -278,3 +278,12 @@ See [FFmpeg integration](ffmpeg-integration.md) for the isolated shared-library
 profile required by FFmpeg's conventional libsrt discovery.
 See [OBS integration](obs-integration.md) to build OBS's native SRT output
 and FFmpeg-backed media sources against the same isolated Robotweax provider.
+
+## Mbed TLS crypto backend
+
+The development tree supports `-DROBOTWEAX_SRT_CRYPTO_BACKEND=mbedtls` with
+`-DMbedTLS_ROOT=/path/to/prefix`, without OpenSSL discovery or linkage. Support
+is limited to Mbed TLS 3.6.7+ within 3.6.x; 4.x/TF-PSA-Crypto is rejected. See
+[Cryptographic backends](crypto-backends.md) for required modules, initial
+Linux/macOS qualification targets, static/shared consumer discovery, pkg-config
+configuration, and measured performance differences. OpenSSL remains the default.

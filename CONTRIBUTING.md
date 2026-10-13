@@ -86,7 +86,7 @@ text or personal authorship metadata in individual source files.
 
 ## Development setup
 
-Robotweax SRT requires CMake 3.20 or newer, a C++20 compiler, OpenSSL 3, and
+Robotweax SRT requires CMake 3.20 or newer, a C++20 compiler, OpenSSL 3 (or the documented Mbed TLS 3.6 backend), and
 Python 3.10 or newer when tests are enabled. Start with the
 [build and installation guide](docs/building.md).
 

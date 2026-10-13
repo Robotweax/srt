@@ -150,9 +150,9 @@ when no NAK-selected retransmission is already pending. The queue is bounded
 by the preallocated send ring and deduplicates packet identities. A NAK instead
 schedules its specific missing ranges as soon as they are known.
 
-File mode keeps the DATA retransmission flag clear for wire compatibility.
-The receiver recognizes retransmission by packet identity and sequence state,
-not by that flag. Recovery and cumulative ACK processing remain wrap-safe
+File mode advertises REXMITFLG and sets the DATA retransmission bit on
+retransmitted packets. The receiver uses the negotiated capability together
+with packet identity and sequence state. Recovery and cumulative ACK processing remain wrap-safe
 across the 31-bit sequence boundary.
 
 ## Public file-helper API

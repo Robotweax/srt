@@ -7,12 +7,17 @@ developers and transport integrators using the installed public API.
 
 ## Start here
 
+- [Experimental remote identity](implementation-identity.md) — development-only,
+  default-off peer labels, disclosure policy and qualification boundaries.
+
 - [Getting started](getting-started.md) — prerequisites, first build, and the
   basic socket lifecycle.
 - [Building and installing](building.md) — build profiles, CMake options,
   installation, package discovery, and platform notes.
 - [Experimental mobile builds](mobile-building.md) — Android and iOS cross-build
   instructions, local verification evidence, and qualification boundaries.
+- [Cryptographic backends](crypto-backends.md) — OpenSSL, Mbed TLS 3.6,
+  configuration, package integration and qualification evidence.
 - [Experimental BCrypt backend](windows-bcrypt.md) — optional native Windows
   cryptography, validation plan, and remaining qualification work.
 - [Integration guide](integration.md) — public headers, endpoint roles, I/O,

@@ -42,9 +42,19 @@ filter names, incompatible peer parameters, over-capacity geometry, and option
 changes after establishment fail explicitly.
 
 A Caller request drives negotiation. A Listener validates compatible requested
-parameters but does not force an unrequested filter. Rendezvous peers require
-the same effective filter configuration. Negotiation failure uses
+parameters but does not force an unrequested filter. Rendezvous peers that both configure a filter require byte-identical
+`SRTO_PACKETFILTER` strings, including key order and explicit defaults. Negotiation failure uses
 `SRT_REJ_FILTER`.
+
+A listener-only filter is not forced onto a caller that requests none: the
+connection proceeds without that filter (the Sensor profile instead requires
+its matching bundle). Configure FEC on the caller, or on both peers. Do not
+assume another implementation's listener-only negotiation policy applies.
+
+The partial form `fec` is also valid when the peer supplies the remaining
+parameters. Partial parameter sets are merged for Caller/Listener; unresolved
+`cols < 2` fails setup. Explicitly expanded strings that mean the same thing
+still differ for Rendezvous's exact-text check.
 
 ## Geometry and recovery
 
@@ -74,7 +84,10 @@ recovery.
 
 ## Payload and encryption order
 
-FEC reserves four bytes from the maximum application payload. The sender
+FEC reserves four bytes from the maximum application payload. Optional
+session authentication v2 reserves an additional 40 bytes for authenticated
+parity; this also constrains the application payload budget. GCM reserves its
+16-byte tag separately. The sender
 encrypts or authenticates DATA before generating parity, so FEC protects the
 bytes carried on the wire. A control packet is not encrypted a second time.
 For GCM, the receiver authenticates original source DATA before admitting

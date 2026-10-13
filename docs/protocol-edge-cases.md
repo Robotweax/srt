@@ -3,7 +3,7 @@
 Robotweax SRT follows the selected
 [`draft-sharabayko-srt-01`](https://datatracker.ietf.org/doc/html/draft-sharabayko-srt-01)
 wire description and the public compatibility contract documented for release
-0.2.5. This page collects security- or interoperability-sensitive rules that
+0.2.9. This page collects security- or interoperability-sensitive rules that
 are easy to miss when integrating SRT.
 
 ## UDP datagram boundaries
@@ -33,7 +33,11 @@ Robotweax applies these receive rules transactionally:
   version, mode, crypto, congestion, filter, and group validation.
 
 Robotweax emits the stable canonical order Handshake, Key Material, Stream ID,
-Congestion, Packet Filter, and Group. Receivers must not depend on this order.
+Congestion, Packet Filter, Group, then explicitly enabled private records:
+session authentication (0x7f10), path identifiers (0x7f11) and standby RTT
+(0x7f12). These records require CONFIG and reject duplicates. Receivers must
+not depend on this order. Activation is defined in the [session-authentication](session-authentication.md),
+[path identifier](group-path-identifiers.md) and [standby RTT](standby-rtt-foundation.md) contracts.
 
 Category bits declare a record category; they do not guarantee that a usable
 record is present. Whether a state requires HSREQ or HSRSP remains a handshake
@@ -254,9 +258,10 @@ replacement member must use that origin and the established receive TSBPD
 clock, rather than installing an independent handshake-derived playout
 schedule. Raw timestamps from unrelated connections must not be substituted.
 
-Backup promotion requires evidence that a candidate member acknowledges group
-DATA and remains responsive for a stability interval. Local send-buffer
-acceptance alone is not proof that a path is healthy.
+Backup probe qualification uses send-buffer progress and responsiveness over
+a stability interval. Local TLPKTDROP can advance that cursor without a remote
+ACK; it is not a receipt proof. Hard failure can allow immediate fallback.
+Local send-buffer acceptance alone is not proof that a path is healthy.
 
 Replay is bounded. If the required history has been evicted, recovery fails
 explicitly rather than skipping a gap or publishing a discontinuous stream.
@@ -286,3 +291,28 @@ after connection. The core `NegotiatedLiveOptions::too_late_packet_drop` field
 represents receive dropping; `sender_too_late_packet_drop` represents send
 dropping. Direct core configurations must set the latter explicitly when needed.
 This follows the public [SRT socket-option contract](https://github.com/Haivision/srt/blob/master/docs/API/API-socket-options.md#SRTO_TLPKTDROP).
+
+## No-argument control encoding
+
+KEEPALIVE, CONGESTION WARNING, SHUTDOWN, ACKACK and PEERERROR must carry
+exactly one zero 32-bit word after the 16-byte header. Empty bodies, partial
+words, extra words and nonzero bytes are rejected for these controls. All
+control bodies must be nonempty and word-aligned at the codec boundary.
+
+This is a deployed interoperability encoding, distinct from the selected
+draft's descriptions of no CIF. Source inspection of Haivision 1.5.7
+(`899348d8318eb9a3c5a5b6ec43c4a1114288773a`, `srtcore/packet.cpp`,
+`CPacket::pack`, and `srtcore/core.cpp`, `CUDT::processCtrl`) establishes
+zero-word emission and rejection of empty or non-word-aligned bodies.
+It does not establish identical receive validation for every control or version.
+No upstream implementation text is incorporated here.
+
+## Listener cookie continuity
+
+The stateless listener cookie is bound to the caller endpoint (address, port
+and scope), socket ID, initial sequence number, MSS and flow window. Those
+values must remain unchanged between INDUCTION and CONCLUSION. Cookies use
+60-second windows; the current and previous windows are accepted. HSv5 and
+ambiguous discovery use separate cookie domains. This binding is stricter
+than the draft's endpoint/time description; third-party callers must retain
+their original handshake fields.

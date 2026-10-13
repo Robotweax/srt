@@ -11,6 +11,7 @@ extern "C" int LLVMFuzzerTestOneInput(
 {
     const auto input = std::as_bytes(std::span {data, size});
     (void)robotweax::srt::decode_handshake_datagram(input);
+    (void)robotweax::srt::decode_implementation_identity(input);
     (void)robotweax::srt::decode_standby_rtt_identity({
         .type = robotweax::srt::HandshakeExtensionType::standby_rtt,
         .content = input,

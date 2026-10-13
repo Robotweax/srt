@@ -2,6 +2,11 @@
 
 Release: **Robotweax SRT 0.2.0**
 
+Later-release note (2026-10-13): this page preserves the 0.2.0 migration
+baseline. Since 0.2.2 the selected compatible API is 1.5.7. For current 0.2.9
+behavior consult [API compatibility](api-compatibility.md) and
+[release notes](release-notes-0.2.9.md); the historical table below is unchanged.
+
 Historical baseline: **Robotweax SRT 0.1.0**
 
 Robotweax SRT 0.2 makes HSv5 the only supported production handshake and adds
