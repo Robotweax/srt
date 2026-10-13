@@ -1,8 +1,9 @@
 # Robotweax SRT 0.2.9 — Group Recovery and Observability
 
-Status: **release candidate; not published**. Final source, ecosystem, package
-and signed-installer acceptance is pending. Version 0.2.8 remains the latest
-published release. See the [0.2.9 release process](release-process-0.2.9.md).
+Status: **published on 2026-10-13**.
+Release and downloads: [v0.2.9](https://github.com/Robotweax/srt/releases/tag/v0.2.9).
+Final source, complete media, package and signed-installer gates passed.
+See the [completed acceptance record](release-process-0.2.9.md).
 
 Project version: **0.2.9**. Shared-library C ABI line: **0.2**.
 Compatible SRT API and `srt_getversion()`: **1.5.7**. OpenSSL/AES-CTR remains
@@ -90,8 +91,12 @@ Same-backend Windows SDK upgrades reuse the existing installation directory,
 support same-version repair and reject downgrade or relocation. A verified
 inventory protects user-owned files and removes only unchanged obsolete SDK
 files. Backend coexistence and independent rebuild-before-signing remain
-required. Final 0.2.9 installer, upgrade and signed-byte evidence is pending;
-no new download is claimed here.
+required. The final SDK workflow passed both installers, actual signed 0.2.8
+upgrade/repair/rejection/coexistence, protected independent reconstruction,
+trusted publisher/timestamp checks and tests of the exact signed executables.
+Draft and public release downloads match the qualified signed artifact byte
+for byte. The release includes the OpenSSL and BCrypt installers, post-signing
+`SHA256SUMS` and `tag-provenance.json`.
 
 ## Delivery, qualification and remaining limits
 
@@ -100,11 +105,17 @@ and permits NAK recovery; a final missing packet without a subsequent gap is
 not guaranteed to recover. Complete finite transfers use File mode and its
 timeout recovery and documented drain/error handling.
 
-Existing focused regression and scoped Group/RTT evidence does not substitute
-for acceptance of the exact final 0.2.9 candidate. Record actual successful
-platform, interoperability, ecosystem, package and installer runs before
-publication. No universal WAN, throughput, lossless abrupt-close or automatic
-hold-down guarantee follows from a fixed profile.
+The [final tag CI](https://github.com/Robotweax/srt/actions/runs/38365080090)
+passed 52 jobs including full media integrations and Required CI; one optional
+Live-timing diagnostic was skipped. Package managers, Linux packages and the
+final signed SDK passed at the same tag commit. The acceptance record links
+their exact runs, source pins and downloaded-byte digests.
+Selected resource/300-second loopback and scoped Group/RTT evidence retains
+its declared workload and source limits. No universal WAN, throughput,
+lossless abrupt-close or automatic hold-down guarantee follows from a fixed
+profile. The native Homebrew ARM64 bottle passed separate qualification in
+[Tap #8](https://github.com/Robotweax/homebrew-tap/pull/8); maintainer review
+and publication remain pending.
 
 The compatible profile's long-horizon KMREQ replay limitation remains tracked
 in [#112](https://github.com/Robotweax/srt/issues/112). Broader authenticated
