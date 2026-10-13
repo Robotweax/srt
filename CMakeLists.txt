@@ -441,10 +441,28 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover)
+    # ACP1's socket and group scenario matrices have independent wall-clock
+    # costs. Keep each mode bounded rather than charging them to one timeout.
     add_test(NAME robotweax_srt_acp1_tests
-        COMMAND robotweax_srt_tests --include acp1)
+        COMMAND robotweax_srt_tests --include acp1
+            --exclude acp1_rendezvous acp1_groups acp1_group_rendezvous)
     set_tests_properties(robotweax_srt_acp1_tests
         PROPERTIES TIMEOUT 60 LABELS "encryption;experimental;acp1")
+    # This partition also covers the Group Rendezvous gate in default builds.
+    add_test(NAME robotweax_srt_acp1_group_rendezvous_tests
+        COMMAND robotweax_srt_tests --include acp1_group_rendezvous)
+    set_tests_properties(robotweax_srt_acp1_group_rendezvous_tests
+        PROPERTIES TIMEOUT 60 LABELS "encryption;experimental;acp1")
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
+        add_test(NAME robotweax_srt_acp1_rendezvous_tests
+            COMMAND robotweax_srt_tests --include acp1_rendezvous)
+        set_tests_properties(robotweax_srt_acp1_rendezvous_tests
+            PROPERTIES TIMEOUT 60 LABELS "encryption;experimental;acp1")
+        add_test(NAME robotweax_srt_acp1_groups_tests
+            COMMAND robotweax_srt_tests --include acp1_groups)
+        set_tests_properties(robotweax_srt_acp1_groups_tests
+            PROPERTIES TIMEOUT 60 LABELS "encryption;experimental;acp1")
+    endif()
     # Native standby profiles each retain their own bounded 7s measurement
     # window; do not charge all profiles to the existing 30s unit partition.
     add_test(NAME robotweax_srt_standby_rtt_plain_group_tests

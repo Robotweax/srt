@@ -118,6 +118,9 @@ class CiTestRegistrationTests(unittest.TestCase):
         partitions = {
             "robotweax_srt_tests", "robotweax_srt_transport_runtime_tests",
             "robotweax_srt_acp1_tests",
+            "robotweax_srt_acp1_rendezvous_tests",
+            "robotweax_srt_acp1_groups_tests",
+            "robotweax_srt_acp1_group_rendezvous_tests",
             "robotweax_srt_group_join_rollover_tests",
             "robotweax_srt_rotation_tests",
             "robotweax_srt_delayed_key_response_tests",
@@ -193,15 +196,29 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_standby_rtt_one_sided_opt_in_rejects_without_downgrade_tests",
             "robotweax_srt_standby_rtt_gcm_group_tests",
         }
-        for name in partitions - profile_partitions - stale_partitions - network_partitions - {"robotweax_srt_acp1_tests"}:
+        acp1_partitions = {
+            "robotweax_srt_acp1_tests",
+            "robotweax_srt_acp1_rendezvous_tests",
+            "robotweax_srt_acp1_groups_tests",
+            "robotweax_srt_acp1_group_rendezvous_tests",
+        }
+        for name in partitions - profile_partitions - stale_partitions - network_partitions - acp1_partitions:
             self.assertIn(name, bounded_properties.group(1))
-        self.assertEqual(commands["robotweax_srt_acp1_tests"], ["--include", "acp1"])
-        acp1_properties = re.search(
-            r"set_tests_properties\(robotweax_srt_acp1_tests\s+PROPERTIES\s+([^)]*)\)", cmake,
-        )
-        self.assertIsNotNone(acp1_properties)
-        self.assertIn("TIMEOUT 60", acp1_properties.group(1))
-        self.assertIn("experimental;acp1", acp1_properties.group(1))
+        self.assertEqual(commands["robotweax_srt_acp1_tests"], [
+            "--include", "acp1", "--exclude", "acp1_rendezvous",
+            "acp1_groups", "acp1_group_rendezvous",
+        ])
+        for name in acp1_partitions:
+            if name != "robotweax_srt_acp1_tests":
+                self.assertEqual(commands[name], [
+                    "--include", name.removeprefix("robotweax_srt_").removesuffix("_tests"),
+                ])
+            acp1_properties = re.search(
+                r"set_tests_properties\(" + name + r"\s+PROPERTIES\s+([^)]*)\)", cmake,
+            )
+            self.assertIsNotNone(acp1_properties)
+            self.assertIn("TIMEOUT 60", acp1_properties.group(1))
+            self.assertIn("experimental;acp1", acp1_properties.group(1))
         stale_properties = re.search(
             r"set_tests_properties\(\s*(robotweax_srt_stale_drop_coverage_tests.*?)\)",
             cmake, re.DOTALL,
