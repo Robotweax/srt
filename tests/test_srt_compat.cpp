@@ -8240,6 +8240,9 @@ using namespace robotweax::srt::compat;
 namespace {
 struct DuplicateHandoff {
     std::shared_ptr<DatagramChannel> channel;
+    std::shared_ptr<DatagramChannel> listener_channel;
+    std::condition_variable response_ready;
+    std::size_t induction_responses = 0;
     std::shared_ptr<HandshakeInbox> inbox;
     std::mutex mutex;
     HandshakeEnvelope conclusion;
@@ -8248,6 +8251,8 @@ struct DuplicateHandoff {
     std::atomic_size_t callbacks = 0;
     ~DuplicateHandoff()
     {
+        if (listener_channel)
+            listener_channel->set_send_hook_for_testing(nullptr, nullptr);
         if (channel)
             channel->set_send_hook_for_testing(nullptr, nullptr);
     }
@@ -8270,6 +8275,27 @@ UdpIoResult capture_handoff_conclusion(
     }
     return test.channel->socket.send_to(bytes, peer);
 }
+UdpIoResult observe_handoff_response(
+    std::span<const std::byte> bytes, IpEndpoint peer, void* context) noexcept
+{
+    auto& test = *static_cast<DuplicateHandoff*>(context);
+    const auto result = test.listener_channel->socket.send_to(bytes, peer);
+    const auto decoded = decode_handshake_datagram(bytes);
+    if (decoded
+        && decoded.message.packet.request == HandshakeRequest::induction) {
+        std::lock_guard lock(test.mutex);
+        ++test.induction_responses;
+        test.response_ready.notify_all();
+    }
+    return result;
+}
+void require_single_handoff_callback(const DuplicateHandoff& test)
+{
+    const auto observed = test.callbacks.load();
+    if (observed != 1U)
+        throw std::runtime_error("expected one listener callback; observed "
+            + std::to_string(observed));
+}
 int queue_handoff_duplicates(
     void* context, SRTSOCKET, int, const sockaddr*, const char*)
 {
@@ -8288,8 +8314,7 @@ int queue_handoff_duplicates(
     }
     return 0;
 }
-}
-TEST(srt_compat_listener_handoff_survives_full_duplicate_inbox)
+void exercise_duplicate_handoff(bool late_duplicate)
 {
     DuplicateHandoff duplicates;
     REQUIRE_EQ(srt_startup(), 0);
@@ -8360,9 +8385,51 @@ TEST(srt_compat_listener_handoff_survives_full_duplicate_inbox)
         reinterpret_cast<const sockaddr*>(&address), sizeof(address));
     REQUIRE_EQ(duplicates.queued.load(), 4096U);
     REQUIRE_EQ(connected, 0);
-    REQUIRE_EQ(duplicates.callbacks.load(), 1U);
+    require_single_handoff_callback(duplicates);
     cleanup.accepted = srt_accept(cleanup.listener, nullptr, nullptr);
     REQUIRE(cleanup.accepted != SRT_INVALID_SOCK);
+    if (late_duplicate) {
+        {
+            std::lock_guard lock(listener->mutex);
+            duplicates.listener_channel = listener->channel;
+        }
+        duplicates.listener_channel->set_send_hook_for_testing(
+            observe_handoff_response, &duplicates);
+        HandshakeEnvelope conclusion;
+        {
+            std::lock_guard lock(duplicates.mutex);
+            conclusion = duplicates.conclusion;
+        }
+        // Model dispatch selecting the listener route before setup registration,
+        // then publishing its envelope after the setup inbox extraction.
+        // A following induction acts as a FIFO barrier: its response proves
+        // the duplicate admission completed and the listener was rearmed.
+        HandshakeEnvelope barrier;
+        barrier.peer = conclusion.peer;
+        barrier.message.packet = conclusion.message.packet;
+        barrier.message.packet.version = handshake_version_4;
+        barrier.message.packet.request = HandshakeRequest::induction;
+        barrier.message.packet.syn_cookie = 0;
+        barrier.message.packet.encryption_field = 0;
+        barrier.message.packet.extension_field = 0;
+        for (std::size_t iteration = 1; iteration <= 2; ++iteration) {
+            REQUIRE(duplicates.inbox->push(conclusion));
+            REQUIRE(duplicates.inbox->push(barrier));
+            std::unique_lock lock(duplicates.mutex);
+            const bool drained = duplicates.response_ready.wait_for(
+                lock, std::chrono::seconds {2}, [&] {
+                    return duplicates.induction_responses >= iteration;
+                });
+            require_single_handoff_callback(duplicates);
+            REQUIRE(drained);
+        }
+        REQUIRE_EQ(srt_setsockflag(cleanup.listener, SRTO_RCVSYN, &disabled,
+                       sizeof(disabled)),
+            0);
+        REQUIRE_EQ(
+            srt_accept(cleanup.listener, nullptr, nullptr), SRT_INVALID_SOCK);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+    }
     constexpr std::array payload {'h', 'a', 'n', 'd', 'o', 'f', 'f'};
     REQUIRE_EQ(
         srt_sendmsg(cleanup.caller, payload.data(), payload.size(), -1, 1),
@@ -8371,6 +8438,16 @@ TEST(srt_compat_listener_handoff_survives_full_duplicate_inbox)
     REQUIRE_EQ(srt_recvmsg(cleanup.accepted, received.data(), received.size()),
         static_cast<int>(payload.size()));
     REQUIRE(std::equal(payload.begin(), payload.end(), received.begin()));
+}
+
+}
+TEST(srt_compat_listener_handoff_survives_full_duplicate_inbox)
+{
+    exercise_duplicate_handoff(false);
+}
+TEST(srt_compat_listener_handoff_replays_late_queued_duplicate)
+{
+    exercise_duplicate_handoff(true);
 }
 
 TEST(compat_rtt_metadata_rejects_invalid_buffers_and_handles_without_writes)
