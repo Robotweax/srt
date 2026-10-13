@@ -47,8 +47,8 @@ GROUPCONNECT listener before opening them. Each join or replacement inherits
 that group policy; endpoint ACP1 overrides must match it. A registered member
 cannot change REQUIRED individually, and a listener callback cannot disable
 its listener's required group policy. Mirrored groups reject joins across
-ACP1 policies, including across bonded listeners. Group Rendezvous remains
-outside the existing group transport's supported modes.
+ACP1 policies, including across bonded listeners. Experimental Group Rendezvous
+is supported only with ACP1 required on both groups, as described below.
 
 Group ACTIVE is false for an empty group or a group without REQUIRED. It is
 true when at least one member is connected and every connected member reports
@@ -67,7 +67,8 @@ cannot lower an ACP1 connection below that limit.
 With REQUIRED false, standard connections keep their existing API and wire
 behavior, including Haivision 1.5.7 interoperability. SESSIONAUTH alone still
 uses version 2 byte for byte. ACP1 requires version 3 for ordinary Caller/Listener,
-version 4 for Rendezvous, or version 5 for group members on both peers: version-2
+version 4 for Rendezvous, version 5 for Caller/Listener group members, or version 6
+for Group Rendezvous members on both peers: version-2
 SESSIONAUTH peers and stock Haivision peers cannot establish protected
 connections. These strict failures are part of the protection contract.
 Existing exported C functions and `SRTO_E_SIZE` are unchanged. The build gate
@@ -85,10 +86,10 @@ statistics and liveness mutations. Tags do not encrypt control content.
 | ACK, ACKACK, NAK, DROPREQ | Complete original header and payload inside ACP1 envelope |
 | KEEPALIVE, SHUTDOWN, PEERERROR, congestion warning | Same envelope, including normally unused header fields/padding |
 | Runtime KMREQ/KMRSP | Existing session-bound KM counters/tag, additionally inside ACP1 |
-| FEC parity | Existing separate session-bound FEC envelope, with the negotiated version-3/4/5 root/domain |
+| FEC parity | Existing separate session-bound FEC envelope, with the negotiated version-3/4/5/6 root/domain |
 | Backup standby RTT request/echo (`0x7f12`) | Version-5 ACP1 envelope before monitoring state; no reliability/liveness mutation |
 | Source DATA | Existing chosen cipher; ACP1 does not change the DATA wire format |
-| Handshake | Existing nonce/socket-ID/role/initial-KM proofs, with the negotiated version-3/4/5 root/domain |
+| Handshake | Existing nonce/socket-ID/role/initial-KM proofs, with the negotiated version-3/4/5/6 root/domain |
 
 Nested envelopes, unknown envelope versions and other user-defined runtime
 controls are rejected. New runtime subtypes must receive an explicit coverage
@@ -199,7 +200,58 @@ Standby requests and echoes use the same per-member control counter/window as
 other runtime controls. The monitoring send path seals before its direct UDP
 send, preserves its skip-on-backpressure policy, and never queues probe retries.
 Skipped sends consume counters; later controls are still accepted within the
-normal bounded replay window. Versions 3 and 4 reject this group-only subtype.
+normal bounded replay window. Versions 3 and 4 reject this group-only subtype; group Rendezvous version 6 also permits it.
+
+## Group Rendezvous
+
+Experimental **version 6** combines the cookie binding of version 4
+with the member binding of version 5. Both endpoints own groups of the same type;
+each paired member resolves Initiator/Responder roles independently. The peers
+use their own directional group sequence cursors and group timestamp origins.
+The role on one member imposes no role on another member.
+
+The root salt is `RWSRT-SESSION-6` and NUL, the Initiator/Responder nonces,
+uint64 socket IDs and uint64 cookies in that order, followed by the version-5
+88-byte context in Initiator/Responder order, then uint32 Initiator and Responder
+initial sequences. This makes a 96-byte context and 208-byte salt. The KDF and
+one-block directional key expansion retain the existing experimental contracts;
+version-specific domains separate it from versions 2 through 5. Standby controls
+remain inside each member's control counter and replay window.
+
+HSREQ, HSRSP and AGREEMENT must carry matching memberships, optional path labels,
+optional standby identities and version-6 proofs. The owner validates and binds
+the canonical context before establishing keys; retries cannot replace it.
+A group member becomes usable only after authenticated peer group admission and
+runtime attachment. No DATA or runtime control can substitute for the final
+proof. Missing group metadata, mismatched paths/types, changed cookies/sequences
+or a different peer group on a later join must reject without fallback.
+
+Group Rendezvous requires explicit ACP1, SESSIONAUTH and encryption policy on
+both groups, plus an explicit local address for every paired member. The build
+gate remains off by default; existing non-ACP1 group Rendezvous remains rejected.
+The profile is unreviewed and outside the supported Haivision interoperability
+boundary. Ordinary groups retain their existing behavior.
+
+Configure both groups before opening them: REQUIRED, SESSIONAUTH, passphrase,
+then `SRTO_RENDEZVOUS=true`. Path labels and standby RTT are optional bilateral
+profiles and may be configured before or after Rendezvous. Standby RTT requires
+Backup Live Message groups. Groups with different types or path/profile settings
+reject instead of falling back. Membership weights can differ between endpoints
+and are authenticated in Initiator/Responder order.
+
+Use `srt_prepare_endpoint()` with both source and destination addresses for each
+paired path, then call `srt_connect_group()` on both peers. For a synchronous
+first join, start both calls concurrently; for asynchronous setup, set group
+RCVSYN false before starting both sides. Joining or replacing a path requires
+both applications to start the corresponding member. Per-member connect
+callbacks and group readiness use the existing API. ACTIVE keeps the group
+semantics described above while a new path connects or an old path fails.
+
+Handshake deadlines use the connection start time independently of the shared
+group timestamp origin. A late join therefore cannot inherit an expired
+handshake deadline. Publication keeps CONNECTING until runtime attachment.
+Final-proof loss recovers through the authenticated response/AGREEMENT retry;
+bare or signed controls and DATA cannot complete the pending Responder.
 
 ## Runtime envelope
 
@@ -273,9 +325,14 @@ Group tests cover Broadcast/Backup, CTR/GCM rotation, late joins, replacements,
 strict policy, UDP membership/path/standby tampering, member replay isolation
 and standby authentication before monitoring mutations. Installed cross-provider
 peers additionally cover both group types with all key sizes and replacement.
+Group Rendezvous tests cover IPv4/IPv6, CTR/GCM, synchronous/asynchronous setup,
+independent sequence origins, opposite member roles, late joins, replacement,
+clock/deadline separation, final-proof loss and real-wire tampering. The isolated
+provider matrix creates a fresh paired member during a 512-message bidirectional
+transfer and retires the original path.
 The optional fuzz target exercises raw and locally signed envelope inputs under
 ASan/UBSan. OpenSSL/Mbed TLS cross-provider peers exercise bidirectional rotation
-for 16/24/32-byte DATA keys in Caller/Listener and Rendezvous modes. Windows BCrypt qualification remains CI-dependent.
+for 16/24/32-byte DATA keys in Caller/Listener, Rendezvous and both group modes. Windows BCrypt qualification remains CI-dependent.
 
 These are implementation checks, not independent cryptographic review. Review
 must assess KDF strength/key separation, negotiation/transcript coverage,

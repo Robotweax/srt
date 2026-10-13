@@ -200,7 +200,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             r"set_tests_properties\(robotweax_srt_acp1_tests\s+PROPERTIES\s+([^)]*)\)", cmake,
         )
         self.assertIsNotNone(acp1_properties)
-        self.assertIn("TIMEOUT 30", acp1_properties.group(1))
+        self.assertIn("TIMEOUT 60", acp1_properties.group(1))
         self.assertIn("experimental;acp1", acp1_properties.group(1))
         stale_properties = re.search(
             r"set_tests_properties\(\s*(robotweax_srt_stale_drop_coverage_tests.*?)\)",

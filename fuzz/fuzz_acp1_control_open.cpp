@@ -15,17 +15,24 @@ extern "C" int LLVMFuzzerTestOneInput(
     if (size > 1500)
         return 0;
     for (const auto version : {acp1_session_version,
-             acp1_rendezvous_session_version, acp1_group_session_version}) {
+             acp1_rendezvous_session_version, acp1_group_session_version,
+             acp1_group_rendezvous_session_version}) {
         SessionAuthentication caller(default_crypto_provider()),
             listener(default_crypto_provider());
         constexpr std::string_view secret = "synthetic-acp1-fuzz-password";
         const auto pass =
             std::as_bytes(std::span {secret.data(), secret.size()});
-        const bool rendezvous = version == acp1_rendezvous_session_version;
-        const bool group = version == acp1_group_session_version;
-        std::array<std::byte, acp1_group_context_size> context {};
-        const auto binding = group ? std::span<const std::byte> {context}
-                                   : std::span<const std::byte> {};
+        const bool rendezvous = version == acp1_rendezvous_session_version
+            || version == acp1_group_rendezvous_session_version;
+        const bool group = version == acp1_group_session_version
+            || version == acp1_group_rendezvous_session_version;
+        std::array<std::byte, acp1_group_rendezvous_context_size> context {};
+        const auto binding = group
+            ? std::span<const std::byte> {context}.first(
+                  version == acp1_group_session_version
+                      ? acp1_group_context_size
+                      : acp1_group_rendezvous_context_size)
+            : std::span<const std::byte> {};
         if (caller.start(true, version) != Error::none
             || listener.start(false, version) != Error::none
             || listener.establish(pass, caller.parameters(), 102, 101,

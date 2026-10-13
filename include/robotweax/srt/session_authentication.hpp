@@ -21,12 +21,15 @@ inline constexpr std::uint8_t acp1_session_version = 3;
 inline constexpr std::uint8_t acp1_rendezvous_session_version = 4;
 inline constexpr std::uint8_t acp1_group_session_version = 5;
 inline constexpr std::size_t acp1_group_context_size = 88;
+inline constexpr std::uint8_t acp1_group_rendezvous_session_version = 6;
+inline constexpr std::size_t acp1_group_rendezvous_context_size = 96;
 [[nodiscard]] constexpr bool is_acp1_session_version(
     std::uint8_t version) noexcept
 {
     return version == acp1_session_version
         || version == acp1_rendezvous_session_version
-        || version == acp1_group_session_version;
+        || version == acp1_group_session_version
+        || version == acp1_group_rendezvous_session_version;
 }
 inline constexpr std::uint16_t authenticated_control_subtype = 0x7f05;
 inline constexpr std::size_t authenticated_control_overhead = 60;
@@ -60,7 +63,8 @@ public:
     [[nodiscard]] Error start(bool caller,
         std::uint8_t version = session_authentication_version) noexcept;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
-    // Experimental Caller/Listener v3, Rendezvous v4, or group member v5.
+    // Experimental Caller/Listener v3, Rendezvous v4, group member v5,
+    // or group Rendezvous member v6.
     // Full serialized controls, bounded to 1500
     // bytes, with independent directional keys and a 64-packet replay window.
     [[nodiscard]] Error seal_control(std::span<const std::byte> packet,
@@ -68,8 +72,9 @@ public:
     [[nodiscard]] bool open_control(
         const PacketView& envelope, PacketView& packet) noexcept;
 #endif
-    // Version 5 requires the canonical 88-byte group context documented in
-    // experimental-acp1.md; other versions reject any group context.
+    // Versions 5 and 6 require canonical group contexts of 88 and 96 bytes,
+    // respectively, documented in experimental-acp1.md. Other versions reject
+    // a group context. Versions 4 and 6 also require the Rendezvous cookies.
     [[nodiscard]] Error establish(std::span<const std::byte> passphrase,
         const SessionAuthenticationParameters& peer,
         std::uint32_t local_socket_id, std::uint32_t peer_socket_id,

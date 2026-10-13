@@ -19,8 +19,8 @@ def main():
     args=parser.parse_args()
     if args.rendezvous and not args.acp1:
         parser.error('--rendezvous requires --acp1')
-    if args.group and (not args.acp1 or args.rendezvous):
-        parser.error('--group requires --acp1 and excludes --rendezvous')
+    if args.group and not args.acp1:
+        parser.error('--group requires --acp1')
     environment=os.environ.copy()
     environment['SRT_INTEROP_PASSPHRASE']=secrets.token_hex(16)
     results=[]
@@ -46,8 +46,15 @@ def main():
                             right_probe.bind(('127.0.0.1',0))
                             left_port=left_probe.getsockname()[1]
                             right_port=right_probe.getsockname()[1]
-                        server_args=['rdv-listener',str(right_port),*common[1:],str(left_port)]
-                        client_args=['rdv-caller',str(left_port),*common[1:],str(right_port)]
+                        prefix='rdv-'+(args.group+'-' if args.group else '')
+                        server_args=[prefix+'listener',str(right_port),*common[1:],str(left_port)]
+                        client_args=[prefix+'caller',str(left_port),*common[1:],str(right_port)]
+                        if args.group:
+                            with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as left_probe, socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as right_probe:
+                                left_probe.bind(('127.0.0.1',0));right_probe.bind(('127.0.0.1',0))
+                                second_left=left_probe.getsockname()[1];second_right=right_probe.getsockname()[1]
+                            server_args.extend([str(second_right),str(second_left)])
+                            client_args.extend([str(second_left),str(second_right)])
                     server=subprocess.Popen([str(listener.resolve()),*server_args],env=environment,
                         stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
                     try:

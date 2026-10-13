@@ -658,7 +658,9 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
             return 0;
         }
         if (option == SRTO_BINDTODEVICE || option == SRTO_CONGESTION
-            || option == SRTO_GROUPCONNECT || option == SRTO_RENDEZVOUS
+            || option == SRTO_GROUPCONNECT
+            || (option == SRTO_RENDEZVOUS
+                && !record->member_native_options.experimental_acp1())
             || option == SRTO_GROUPTYPE) {
             set_last_error(SRT_EINVOP);
             return SRT_ERROR;
@@ -666,6 +668,11 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
         configured.public_options = record->member_public_options;
         configured.native_options = record->member_native_options;
         configured.state = record->opened ? SRTS_CONNECTED : SRTS_INIT;
+        // Group-only RDV/path combinations need the owning group identity.
+        if (option == SRTO_RENDEZVOUS
+            || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
+            || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED)
+            configured.group_id = group;
         // Use the ordinary socket rules for validation and PRE/POST stages.
         if (set_socket_option(configured, option, value, value_size)
             == SRT_ERROR) {

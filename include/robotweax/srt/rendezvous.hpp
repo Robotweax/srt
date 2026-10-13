@@ -56,6 +56,13 @@ public:
         bool require_session_authentication = false;
         SessionAuthenticationParameters session_authentication {};
         SessionAuthenticationParameters session_authentication_confirmation {};
+        // Experimental bilateral group Rendezvous requires ACP1 version 6.
+        bool has_group_membership = false;
+        GroupMembership group_membership {};
+        bool require_path_identifier = false;
+        PathIdentifier path_identifier {};
+        bool require_standby_rtt = false;
+        StandbyRttNonce standby_rtt_nonce {};
     };
 
     explicit RendezvousHandshakeMachine(
@@ -124,6 +131,19 @@ public:
         return negotiated_packet_filter_;
     }
 
+    [[nodiscard]] bool has_peer_group_membership() const noexcept
+    {
+        return has_peer_group_membership_;
+    }
+    [[nodiscard]] const GroupMembership& peer_group_membership() const noexcept
+    {
+        return peer_group_membership_;
+    }
+    [[nodiscard]] const StandbyRttIdentity&
+    standby_rtt_identity() const noexcept
+    {
+        return standby_rtt_identity_;
+    }
     [[nodiscard]] HandshakeActions start() noexcept;
     [[nodiscard]] Error set_key_material_request(
         const KeyMaterialBuffer& request,
@@ -158,6 +178,7 @@ private:
     reject_congestion_controller() noexcept;
     [[nodiscard]] HandshakeActions
     reject_packet_filter() noexcept;
+    [[nodiscard]] HandshakeActions reject_group() noexcept;
     [[nodiscard]] HandshakeActions fail() noexcept;
     void remember_peer(const HandshakeMessage& message) noexcept;
     void arm_timer(HandshakeActions& actions) const noexcept;
@@ -182,6 +203,10 @@ private:
     bool has_peer_key_material_request_ = false;
     KeyMaterialBuffer key_material_response_{};
     bool has_key_material_response_ = false;
+    bool has_peer_group_membership_ = false;
+    GroupMembership peer_group_membership_ {};
+    SequenceNumber peer_group_initial_sequence_ {};
+    StandbyRttIdentity standby_rtt_identity_ {};
     int rejection_reason_ = 0;
 };
 

@@ -289,6 +289,7 @@ Published 0.2.9 artifacts do not include the identity options or wire record.
 
 A separate default-off [experimental ACP1 build](experimental-acp1.md) adds
 strict session-authentication version 3 for Caller/Listener, version 4 for
-Rendezvous, or version 5 for Broadcast/Backup group members, with authenticated runtime controls. It is unreviewed and outside the supported
+Rendezvous, version 5 for Broadcast/Backup Caller/Listener group members, or
+version 6 for Group Rendezvous members, with authenticated runtime controls. It is unreviewed and outside the supported
 security and Haivision interoperability boundary. SESSIONAUTH alone continues
 to use version 2; ordinary connections retain their existing behavior.

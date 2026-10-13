@@ -1231,7 +1231,9 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         }
         if (parsed
             && (options.path_identifier_required
-                || options.standby_rtt_required))
+                || options.standby_rtt_required)
+            && !(socket.group_id != SRT_INVALID_SOCK
+                && socket.native_options.experimental_acp1()))
             return invalid_parameter();
         if (set_native(socket.native_options,
                 SocketOption::rendezvous, parsed ? 1 : 0)
@@ -1296,7 +1298,10 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             || socket.listen_callback_active
             || !read_boolean(value, value_size, parsed)
             || (parsed
-                && (options.rendezvous || options.transmission_type != SRTT_LIVE
+                && ((options.rendezvous
+                        && !(socket.group_id != SRT_INVALID_SOCK
+                            && socket.native_options.experimental_acp1()))
+                    || options.transmission_type != SRTT_LIVE
                     || !options.message_api || !options.tsbpd_mode
                     || socket.native_options.congestion_controller()
                         != CongestionController::live)))
@@ -1310,7 +1315,9 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             || socket.listen_callback_active
             || !read_boolean(value, value_size, parsed)
             || (parsed
-                && (options.rendezvous
+                && ((options.rendezvous
+                        && !(socket.group_id != SRT_INVALID_SOCK
+                            && socket.native_options.experimental_acp1()))
                     || options.transmission_type != SRTT_LIVE)))
             return invalid_parameter();
         options.path_identifier_required = parsed;

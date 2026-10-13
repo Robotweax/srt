@@ -373,6 +373,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_demo_text.cpp
         tests/test_crypto.cpp
         tests/test_acp1.cpp
+        tests/test_acp1_group_rendezvous.cpp
         tests/test_acp1_groups.cpp
         tests/test_acp1_rendezvous.cpp
         tests/test_fec.cpp
@@ -443,7 +444,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     add_test(NAME robotweax_srt_acp1_tests
         COMMAND robotweax_srt_tests --include acp1)
     set_tests_properties(robotweax_srt_acp1_tests
-        PROPERTIES TIMEOUT 30 LABELS "encryption;experimental;acp1")
+        PROPERTIES TIMEOUT 60 LABELS "encryption;experimental;acp1")
     # Native standby profiles each retain their own bounded 7s measurement
     # window; do not charge all profiles to the existing 30s unit partition.
     add_test(NAME robotweax_srt_standby_rtt_plain_group_tests

@@ -2,6 +2,8 @@
 #include <srt/srt.h>
 
 #include <array>
+#include <chrono>
+#include <thread>
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
@@ -56,19 +58,24 @@ void send(SRTSOCKET socket, unsigned message)
 int main(int argc, char** argv)
 {
     try {
-        if (argc != 6 && argc != 7 && argc != 8)
+        if (argc != 6 && argc != 7 && argc != 8 && argc != 10)
             throw std::runtime_error(
                 "usage: peer caller|listener port auth "
                 "key-bytes ctr|gcm [acp1 [local-rendezvous-port]]");
         check(srt_startup());
         const std::string role = argv[1];
-        const bool rendezvous = role == "rdv-caller" || role == "rdv-listener";
-        const bool group =
-            role.rfind("broadcast-", 0) == 0 || role.rfind("backup-", 0) == 0;
-        const bool backup = role.rfind("backup-", 0) == 0;
+        const bool group_rendezvous = role.rfind("rdv-broadcast-", 0) == 0
+            || role.rfind("rdv-backup-", 0) == 0;
+        const bool rendezvous =
+            group_rendezvous || role == "rdv-caller" || role == "rdv-listener";
+        const bool group = group_rendezvous || role.rfind("broadcast-", 0) == 0
+            || role.rfind("backup-", 0) == 0;
+        const bool backup =
+            role.rfind("backup-", 0) == 0 || role.rfind("rdv-backup-", 0) == 0;
         const bool caller = role == "caller" || role == "rdv-caller"
-            || role == "broadcast-caller" || role == "backup-caller";
-        if (rendezvous && argc != 8)
+            || role == "broadcast-caller" || role == "backup-caller"
+            || role == "rdv-broadcast-caller" || role == "rdv-backup-caller";
+        if (rendezvous && argc != (group_rendezvous ? 10 : 8))
             throw std::runtime_error("Rendezvous requires local port");
         const bool authenticated = std::stoi(argv[3]) != 0;
         const bool acp1 = argc >= 7 && std::stoi(argv[6]) != 0;
@@ -78,7 +85,7 @@ int main(int argc, char** argv)
             throw std::runtime_error(
                 "synthetic passphrase environment required");
         {
-            Socket socket {group && caller
+            Socket socket {group && (caller || rendezvous)
                     ? srt_create_group(
                           backup ? SRT_GTYPE_BACKUP : SRT_GTYPE_BROADCAST)
                     : srt_create_socket()};
@@ -96,7 +103,7 @@ int main(int argc, char** argv)
                 throw std::runtime_error("ACP1 experimental build required");
 #endif
             if (group) {
-                if (!caller)
+                if (!caller && !rendezvous)
                     set(socket.handle, SRTO_GROUPCONNECT, 1);
                 set(socket.handle, SRTO_ROBOTWEAX_PATHID_REQUIRED, 1);
                 if (backup)
@@ -130,7 +137,7 @@ int main(int argc, char** argv)
                 htons(static_cast<unsigned short>(std::stoi(argv[2])));
             Socket accepted;
             SRTSOCKET transport = socket.handle;
-            const auto join = [&](const char* path) {
+            const auto join = [&](const char* path, bool replacement = false) {
                 auto* config = srt_create_config();
                 if (!config)
                     throw std::runtime_error("group config allocation");
@@ -143,18 +150,42 @@ int main(int argc, char** argv)
                     cleanup();
                     check(added);
                 }
-                auto endpoint = srt_prepare_endpoint(nullptr,
-                    reinterpret_cast<const sockaddr*>(&address),
-                    sizeof(address));
+                auto local = address, remote = address;
+                if (group_rendezvous) {
+                    local.sin_port = htons(static_cast<unsigned short>(
+                        std::stoi(argv[replacement ? 9 : 7])));
+                    if (replacement)
+                        remote.sin_port = htons(
+                            static_cast<unsigned short>(std::stoi(argv[8])));
+                }
+                auto endpoint = srt_prepare_endpoint(group_rendezvous
+                        ? reinterpret_cast<const sockaddr*>(&local)
+                        : nullptr,
+                    reinterpret_cast<const sockaddr*>(&remote), sizeof(remote));
                 endpoint.config = config;
                 const auto connected =
                     srt_connect_group(socket.handle, &endpoint, 1);
                 cleanup();
                 check(connected);
+                if (group_rendezvous) {
+                    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::seconds {6};
+                    while (srt_getsockstate(endpoint.id) != SRTS_CONNECTED
+                        && std::chrono::steady_clock::now() < deadline)
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds {1});
+                    if (srt_getsockstate(endpoint.id) != SRTS_CONNECTED)
+                        throw std::runtime_error(
+                            "group Rendezvous member did not connect");
+                }
                 return endpoint.id;
             };
             SRTSOCKET first_member = SRT_INVALID_SOCK;
-            if (group && caller) {
+            if (group_rendezvous) {
+                if (!caller)
+                    std::cout << "ready\n" << std::flush;
+                first_member = join("provider-path-a");
+            } else if (group && caller) {
                 first_member = join("provider-path-a");
                 (void)join("provider-path-b");
             } else if (rendezvous) {
@@ -192,8 +223,12 @@ int main(int argc, char** argv)
 #endif
             for (unsigned n = 0; n < messages; ++n) {
                 try {
+                    if (group_rendezvous && n == messages / 2) {
+                        (void)join("provider-path-b", true);
+                        check(srt_close(first_member));
+                    }
                     if (caller) {
-                        if (group && n == messages / 2) {
+                        if (group && !rendezvous && n == messages / 2) {
                             check(srt_close(first_member));
                             (void)join("provider-path-a");
                         }
@@ -256,6 +291,22 @@ int main(int argc, char** argv)
                       << ",\"group\":\""
                       << (group ? backup ? "backup" : "broadcast" : "none")
                       << "\",\"integrity\":true}\n";
+            // The immediate-close group replacement fixture must keep its
+            // final reply alive until the application confirms receipt.
+            if (group) {
+                if (caller) {
+                    send(transport, messages);
+                    Payload remaining {};
+                    const auto closed = srt_recvmsg(
+                        transport, remaining.data(), remaining.size());
+                    if (closed != SRT_ERROR
+                        || srt_getlasterror(nullptr) == SRT_ETIMEOUT)
+                        throw std::runtime_error(
+                            "group completion barrier failed");
+                } else {
+                    receive(transport, messages);
+                }
+            }
         }
         check(srt_cleanup());
         return 0;

@@ -103,13 +103,19 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
     if (!started_ || ready_ || passphrase.empty() || !local_socket_id
         || !peer_socket_id)
         return Error::invalid_state;
-    if (parameters_.version == acp1_rendezvous_session_version
+    const bool rendezvous =
+        parameters_.version == acp1_rendezvous_session_version
+        || parameters_.version == acp1_group_rendezvous_session_version;
+    if (rendezvous
             ? (!local_cookie || !peer_cookie || local_cookie == peer_cookie)
             : (local_cookie != 0 || peer_cookie != 0))
         return Error::invalid_key_material;
-    if (parameters_.version == acp1_group_session_version
-            ? group_context.size() != acp1_group_context_size
-            : !group_context.empty())
+    const auto context_size = parameters_.version == acp1_group_session_version
+        ? acp1_group_context_size
+        : parameters_.version == acp1_group_rendezvous_session_version
+        ? acp1_group_rendezvous_context_size
+        : 0U;
+    if (group_context.size() != context_size)
         return Error::invalid_key_material;
     if (peer.version != parameters_.version)
         return Error::invalid_key_material;
@@ -123,7 +129,7 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
             return Error::invalid_key_material;
         parameters_.caller_nonce = peer.caller_nonce;
     }
-    std::array<std::byte, 96 + acp1_group_context_size> salt {};
+    std::array<std::byte, 112 + acp1_group_rendezvous_context_size> salt {};
     std::copy(domain_label.begin(), domain_label.end(), salt.begin());
     salt[14] =
         std::byte {static_cast<unsigned char>('0' + parameters_.version)};
@@ -135,18 +141,16 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
         caller_ ? local_socket_id : peer_socket_id);
     put64(std::span {salt}.subspan<88, 8>(),
         caller_ ? peer_socket_id : local_socket_id);
-    const bool rendezvous =
-        parameters_.version == acp1_rendezvous_session_version;
     if (rendezvous) {
         put64(std::span {salt}.subspan<96, 8>(),
             caller_ ? local_cookie : peer_cookie);
         put64(std::span {salt}.subspan<104, 8>(),
             caller_ ? peer_cookie : local_cookie);
     }
-    std::copy(group_context.begin(), group_context.end(), salt.begin() + 96);
-    const auto salt_size = !group_context.empty() ? 96U + group_context.size()
-        : rendezvous                              ? 112U
-                                                  : 96U;
+    const auto context_offset = rendezvous ? 112U : 96U;
+    std::copy(group_context.begin(), group_context.end(),
+        salt.begin() + context_offset);
+    const auto salt_size = context_offset + group_context.size();
     const auto result = provider_.pbkdf2_hmac_sha1(
         passphrase, std::span {salt}.first(salt_size), 2048, key_);
     if (result != Error::none) {
@@ -376,7 +380,8 @@ bool acp1_control(const PacketView& packet, std::uint8_t version) noexcept
     if (packet.control.type == ControlType::user_defined)
         return packet.control.subtype == authenticated_key_request_subtype
             || packet.control.subtype == authenticated_key_response_subtype
-            || (version == acp1_group_session_version
+            || ((version == acp1_group_session_version
+                    || version == acp1_group_rendezvous_session_version)
                 && packet.control.subtype == standby_rtt_subtype);
     return packet.control.subtype == 0;
 }

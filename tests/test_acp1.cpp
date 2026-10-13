@@ -215,6 +215,31 @@ TEST(acp1_build_gate_and_private_option_contract)
 #endif
 }
 
+TEST(acp1_group_rendezvous_explicit_profile_gate_and_prerequisites)
+{
+    Sockets sockets;
+    const auto group = srt_create_group(SRT_GTYPE_BROADCAST);
+    REQUIRE(group != SRT_INVALID_SOCK);
+    sockets.handles.push_back(group);
+    const int enabled = 1;
+    REQUIRE_EQ(
+        srt_setsockflag(group, SRTO_RENDEZVOUS, &enabled, sizeof(enabled)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+    set(group, SRTO_ROBOTWEAX_ACP1_REQUIRED, 1);
+    set(group, SRTO_ROBOTWEAX_SESSIONAUTH, 1);
+    set(group, SRTO_RENDEZVOUS, 1);
+    set(group, SRTO_ROBOTWEAX_PATHID_REQUIRED, 1);
+    const int disabled = 0;
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_ACP1_REQUIRED, &disabled,
+                   sizeof(disabled)),
+        SRT_ERROR);
+    REQUIRE(flag(group, SRTO_ROBOTWEAX_ACP1_REQUIRED));
+    REQUIRE(!flag(group, SRTO_ROBOTWEAX_ACP1_ACTIVE));
+#endif
+}
+
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
 TEST(acp1_wire_known_answer_and_every_byte_tamper)
 {
@@ -573,5 +598,77 @@ TEST(acp1_groups_context_known_answer_tamper_and_cross_member_replay)
                    replacement_listener.parameters(), 101, 102, 0, 0, context),
         Error::none);
     REQUIRE(!open(replacement_listener, wire));
+}
+
+TEST(acp1_group_rendezvous_cookie_context_and_sequence_binding)
+{
+    using namespace robotweax::srt::compat;
+    constexpr std::string_view secret = "acp1-test-password";
+    const auto pass = std::as_bytes(std::span {secret.data(), secret.size()});
+    PathIdentifier path {};
+    path.size = 3;
+    path.bytes[0] = std::byte {'o'};
+    path.bytes[1] = std::byte {'n'};
+    path.bytes[2] = std::byte {'e'};
+    StandbyRttIdentity standby {};
+    standby.caller.fill(std::byte {1});
+    standby.listener.fill(std::byte {2});
+    const auto group = acp1_group_context({0x40000001, GroupType::backup, 0, 7},
+        {0x40000002, GroupType::backup, 0, 9}, path, true, standby);
+    std::array<std::byte, 96> context {};
+    std::copy(group.begin(), group.end(), context.begin());
+    context[90] = std::byte {1};
+    context[91] = std::byte {244};
+    context[94] = std::byte {3};
+    context[95] = std::byte {132};
+    Provider provider;
+    SessionAuthentication initiator(provider), responder(provider);
+    REQUIRE_EQ(initiator.start(true, 6), Error::none);
+    REQUIRE_EQ(responder.start(false, 6), Error::none);
+    REQUIRE_EQ(responder.establish(
+                   pass, initiator.parameters(), 102, 101, 100, 100, context),
+        Error::invalid_key_material);
+    REQUIRE_EQ(responder.establish(
+                   pass, initiator.parameters(), 102, 101, 100, 200, group),
+        Error::invalid_key_material);
+    REQUIRE_EQ(responder.establish(
+                   pass, initiator.parameters(), 102, 101, 100, 200, context),
+        Error::none);
+    REQUIRE_EQ(initiator.establish(
+                   pass, responder.parameters(), 101, 102, 200, 100, context),
+        Error::none);
+    const auto wire = seal(initiator, control());
+    constexpr std::string_view expected_tag =
+        "e1cbc0e420692d87b49f1bd18008c9167b3f34cfb47081d4e6b01985325cc6e0";
+    constexpr char digits[] = "0123456789abcdef";
+    std::string tag;
+    for (const auto byte : std::span {wire}.last(32)) {
+        tag += digits[std::to_integer<unsigned>(byte) >> 4];
+        tag += digits[std::to_integer<unsigned>(byte) & 15];
+    }
+    REQUIRE_EQ(tag, expected_tag);
+    REQUIRE(open(responder, wire));
+    REQUIRE(!open(responder, wire));
+    REQUIRE(!open(initiator, wire));
+    SessionAuthenticationParameters proof;
+    constexpr std::array<std::byte, 4> initial {};
+    REQUIRE_EQ(responder.handshake_proof(false, initial, proof), Error::none);
+    REQUIRE(initiator.verify_handshake(false, initial, proof));
+    for (std::size_t i = 0; i < context.size(); ++i) {
+        auto altered = context;
+        altered[i] ^= std::byte {1};
+        Provider other;
+        SessionAuthentication left(other), right(other);
+        REQUIRE_EQ(left.start(true, 6), Error::none);
+        REQUIRE_EQ(right.start(false, 6), Error::none);
+        REQUIRE_EQ(right.establish(
+                       pass, left.parameters(), 102, 101, 100, 200, altered),
+            Error::none);
+        REQUIRE_EQ(left.establish(
+                       pass, right.parameters(), 101, 102, 200, 100, altered),
+            Error::none);
+        REQUIRE(!open(right, wire));
+        REQUIRE(!left.verify_handshake(false, initial, proof));
+    }
 }
 #endif

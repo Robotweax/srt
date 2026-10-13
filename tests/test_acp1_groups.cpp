@@ -504,4 +504,69 @@ TEST(acp1_groups_bonded_mirror_rejects_different_required_policies)
     REQUIRE(!GroupRegistry::instance().prepare_mirror(
         legacy_listener, 0x40000001, SRT_GTYPE_BACKUP, 900, different));
 }
+
+TEST(acp1_group_rendezvous_paired_groups_preserve_directional_sequences)
+{
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        Sockets sockets;
+        const auto left = sockets.own(srt_create_group(type));
+        const auto right = sockets.own(srt_create_group(type));
+        for (const auto group : {left, right}) {
+            configure(group);
+            set(group, SRTO_RENDEZVOUS, 1);
+            set(group, SRTO_RCVSYN, 0);
+        }
+        const auto seed = [](SRTSOCKET group, std::uint32_t seq) {
+            const auto record = GroupRegistry::instance().find(group);
+            REQUIRE(record);
+            std::lock_guard lock(record->mutex);
+            record->initial_sequence = record->next_send_sequence =
+                record->replay_acknowledged_sequence = seq;
+            record->next_receive_sequence = seq;
+        };
+        seed(left, 500);
+        seed(right, 900);
+        std::array<sockaddr_in, 4> addresses {};
+        for (auto& address : addresses) {
+            const auto socket = sockets.own(srt_create_socket());
+            address.sin_family = AF_INET;
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            REQUIRE_EQ(srt_bind(socket, reinterpret_cast<sockaddr*>(&address),
+                           sizeof(address)),
+                0);
+            int size = sizeof(address);
+            REQUIRE_EQ(srt_getsockname(socket,
+                           reinterpret_cast<sockaddr*>(&address), &size),
+                0);
+            REQUIRE_EQ(srt_close(socket), 0);
+        }
+        std::array<SRT_SOCKGROUPCONFIG, 2> a {}, b {};
+        for (unsigned i = 0; i < 2; ++i) {
+            a[i] = srt_prepare_endpoint(
+                reinterpret_cast<sockaddr*>(&addresses[2 * i]),
+                reinterpret_cast<sockaddr*>(&addresses[2 * i + 1]),
+                sizeof(sockaddr_in));
+            b[i] = srt_prepare_endpoint(
+                reinterpret_cast<sockaddr*>(&addresses[2 * i + 1]),
+                reinterpret_cast<sockaddr*>(&addresses[2 * i]),
+                sizeof(sockaddr_in));
+        }
+        REQUIRE(srt_connect_group(left, a.data(), a.size()) != SRT_ERROR);
+        REQUIRE(srt_connect_group(right, b.data(), b.size()) != SRT_ERROR);
+        for (auto& endpoint : a) {
+            (void)runtime(endpoint.id);
+            REQUIRE(flag(endpoint.id, SRTO_ROBOTWEAX_ACP1_ACTIVE));
+        }
+        for (auto& endpoint : b) {
+            (void)runtime(endpoint.id);
+            REQUIRE(flag(endpoint.id, SRTO_ROBOTWEAX_ACP1_ACTIVE));
+        }
+        REQUIRE(flag(left, SRTO_ROBOTWEAX_ACP1_ACTIVE));
+        REQUIRE(flag(right, SRTO_ROBOTWEAX_ACP1_ACTIVE));
+        set(left, SRTO_RCVSYN, 1);
+        set(right, SRTO_RCVSYN, 1);
+        transfer(left, right, 1, 16);
+        transfer(right, left, 21, 16);
+    }
+}
 #endif
