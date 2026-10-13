@@ -116,7 +116,8 @@ class CiTestRegistrationTests(unittest.TestCase):
                 "--include", "compat_runtime_", "--exclude", "compat_runtime_"],
         }
         partitions = {
-            "robotweax_srt_tests", "robotweax_srt_transport_runtime_tests",
+            "robotweax_srt_tests", "robotweax_srt_socket_api_tests",
+            "robotweax_srt_transport_runtime_tests",
             "robotweax_srt_acp1_tests",
             "robotweax_srt_acp1_rendezvous_tests",
             "robotweax_srt_acp1_groups_tests",
@@ -158,7 +159,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             self.assertIn(name, properties.group(1))
         self.assertIn("PROPERTIES WILL_FAIL TRUE", properties.group(1))
         self.assertEqual(commands["robotweax_srt_tests"], [
-            "--exclude", "acp1", "compat_runtime_",
+            "--exclude", "acp1", "srt_compat_", "compat_runtime_",
             "compat_group_closed_member_retains_bounded_copy",
             "key_length", "srt_compat_gcm_",
             "srt_compat_sensor_gcm_bounded_sample_stream_",
@@ -166,6 +167,12 @@ class CiTestRegistrationTests(unittest.TestCase):
             "srt_compat_group_pathid_",
             "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
             "stale_drop_coverage", "stale_nak", "standby_rtt_native_runtime_", "compat_group_connect_joins_with_unread_messages_across_rollover",
+        ])
+        self.assertEqual(commands["robotweax_srt_socket_api_tests"], [
+            "--include", "srt_compat_", "--exclude", "acp1", "key_length",
+            "srt_compat_gcm_", "srt_compat_sensor_gcm_bounded_sample_stream_",
+            "srt_compat_bind_acquire", "srt_compat_connection_local_name_",
+            "srt_compat_group_pathid_",
         ])
         self.assertEqual(commands["robotweax_srt_transport_runtime_tests"], [
             "--include", "compat_runtime_", "--exclude", "compat_runtime_rotation_",
@@ -259,6 +266,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         selection = re.search(r'-R "([^"]+)"', optional_step)
         self.assertIsNotNone(selection)
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_tests"))
+        self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_socket_api_tests"))
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_transport_runtime_tests"))
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_key_length_tests"))
         for name in profile_partitions | stale_partitions | {"robotweax_srt_delayed_key_response_tests", "robotweax_srt_local_address_tests", "robotweax_srt_group_pathid_tests"}:

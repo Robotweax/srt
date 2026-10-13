@@ -434,13 +434,20 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     # Keep transport-runtime, expensive encryption and retention regressions in
     # separate bounded runs. Every native case runs in exactly one partition.
     add_test(NAME robotweax_srt_tests
-        COMMAND robotweax_srt_tests --exclude acp1 compat_runtime_
+        COMMAND robotweax_srt_tests --exclude acp1 srt_compat_ compat_runtime_
             compat_group_closed_member_retains_bounded_copy key_length
             srt_compat_gcm_ srt_compat_sensor_gcm_bounded_sample_stream_
             srt_compat_bind_acquire srt_compat_connection_local_name_
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover)
+    # Public socket API integration cases have their own bounded run.
+    add_test(NAME robotweax_srt_socket_api_tests
+        COMMAND robotweax_srt_tests --include srt_compat_
+            --exclude acp1 key_length srt_compat_gcm_
+            srt_compat_sensor_gcm_bounded_sample_stream_
+            srt_compat_bind_acquire srt_compat_connection_local_name_
+            srt_compat_group_pathid_)
     # ACP1's socket and group scenario matrices have independent wall-clock
     # costs. Keep each mode bounded rather than charging them to one timeout.
     add_test(NAME robotweax_srt_acp1_tests
@@ -555,7 +562,8 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests
             compat_group_closed_member_retains_bounded_copy_after_oversized_message)
     set_tests_properties(
-        robotweax_srt_tests robotweax_srt_transport_runtime_tests
+        robotweax_srt_tests robotweax_srt_socket_api_tests
+        robotweax_srt_transport_runtime_tests
         robotweax_srt_group_join_rollover_tests
         robotweax_srt_rotation_tests robotweax_srt_key_length_tests
         robotweax_srt_delayed_key_response_tests
