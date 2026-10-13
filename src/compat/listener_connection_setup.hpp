@@ -68,6 +68,7 @@ struct ListenerConnectionSetupRuntimeState {
     bool has_peer_extension_parameters = false;
     bool has_peer_stream_id = false;
     bool has_peer_group_membership = false;
+    ImplementationIdentity peer_identity {};
 
     [[nodiscard]] constexpr explicit operator bool() const noexcept
     {

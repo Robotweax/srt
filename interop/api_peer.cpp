@@ -106,6 +106,10 @@ struct Configuration {
     bool require_connect_callback = false;
     bool receive_contract_sender = false;
     bool receive_contract_receiver = false;
+#ifdef ROBOTWEAX_SRT_PEER_IDENTITY_VERSION
+    std::int32_t identity_policy = ROBOTWEAX_SRT_IDENTITY_OFF;
+    int expected_peer_identity = -1;
+#endif
     int data_sender_override = -1;
     std::int32_t minimum_initial_sequence = -1;
     int initial_sequence_search_limit = 100'000;
@@ -234,6 +238,24 @@ bool parse_arguments(int argc, char** argv, Configuration& configuration)
     for (int index = 2; index < argc; ++index) {
         const std::string_view option{argv[index]};
         std::string_view value;
+#ifdef ROBOTWEAX_SRT_PEER_IDENTITY_VERSION
+        if (option == "--identity-policy"
+            && take_value(index, argc, argv, value)) {
+            if (!parse_integer(value, configuration.identity_policy)
+                || configuration.identity_policy < 0
+                || configuration.identity_policy > 2)
+                return false;
+            continue;
+        }
+        if (option == "--expect-peer-identity"
+            && take_value(index, argc, argv, value)) {
+            if (!parse_integer(value, configuration.expected_peer_identity)
+                || configuration.expected_peer_identity < 0
+                || configuration.expected_peer_identity > 2)
+                return false;
+            continue;
+        }
+#endif
         if (option == "--host" && take_value(index, argc, argv, value)) {
             configuration.host = value;
         } else if (option == "--local-host"
@@ -704,6 +726,14 @@ bool set_string_option(
 
 bool configure_socket(SRTSOCKET socket, const Configuration& configuration)
 {
+#ifdef ROBOTWEAX_SRT_PEER_IDENTITY_VERSION
+    if (srt_setsockflag(socket, SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT,
+            &configuration.identity_policy,
+            sizeof(configuration.identity_policy))
+        == SRT_ERROR)
+        return false;
+#endif
+
     const bool data_sender = is_sender(configuration);
     if (!set_option(socket, SRTO_TRANSTYPE, configuration.transport)
         || (configuration.message_api_override >= 0
@@ -2324,6 +2354,34 @@ int send_file_payload(
 int transfer_payload(
     SRTSOCKET socket, const Configuration& configuration, const char* role)
 {
+#ifdef ROBOTWEAX_SRT_PEER_IDENTITY_VERSION
+    if (configuration.expected_peer_identity >= 0) {
+        ROBOTWEAX_SRT_PEER_IDENTITY_V1 identity {};
+        int size = sizeof(identity);
+        const auto policy = configuration.expected_peer_identity;
+        const std::uint32_t fields = policy == 0 ? 0U
+            : policy == 1 ? ROBOTWEAX_SRT_PEER_IDENTITY_NAME
+                          : ROBOTWEAX_SRT_PEER_IDENTITY_NAME
+                | ROBOTWEAX_SRT_PEER_IDENTITY_RELEASE;
+        if (srt_getsockflag(
+                socket, SRTO_ROBOTWEAX_PEER_IDENTITY, &identity, &size)
+                == SRT_ERROR
+            || identity.abi_version != ROBOTWEAX_SRT_PEER_IDENTITY_VERSION
+            || identity.available_fields != fields
+            || std::string(identity.name)
+                != (policy == 0 ? "" : "Robotweax SRT")
+            || std::string(identity.release)
+                != (policy == 2 ? ROBOTWEAX_SRT_VERSION_STRING : "")) {
+            std::cerr << "peer identity observation mismatch\n";
+            return 7;
+        }
+        std::cout << "{\"event\":\"peer_identity\",\"role\":\"" << role
+                  << "\",\"available_fields\":" << identity.available_fields
+                  << ",\"name\":\"" << identity.name << "\",\"release\":\""
+                  << identity.release << "\"}\n"
+                  << std::flush;
+    }
+#endif
     if (configuration.receive_contract_sender
         && !wait_for_contract_barrier(
             "receive_contract_sender_ready", role, "send")) {
@@ -2612,6 +2670,9 @@ void usage()
                  " [--connect-callback] [--require-connect-callback]"
                  " [--receive-contract-sender|--receive-contract-receiver]"
                  " [--expect-connect-error N]"
+#ifdef ROBOTWEAX_SRT_PEER_IDENTITY_VERSION
+                 " [--identity-policy 0|1|2] [--expect-peer-identity 0|1|2]"
+#endif
                  " [--latency-ms N]"
                  " [--tlpktdrop on|off]"
                  " [--input-bw N] [--max-bw N] [--second-max-bw N]"

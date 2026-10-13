@@ -157,6 +157,7 @@ add_library(robotweax_srt
     src/handshake.cpp
     src/handshake_datagram.cpp
     src/handshake_extensions.cpp
+    src/implementation_identity.cpp
     src/live.cpp
     src/packet_filter.cpp
     src/receive_buffer.cpp
@@ -398,6 +399,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_acknowledged_source_drop.cpp
         tests/test_srt_compat.cpp
         tests/test_peer_handshake_metadata.cpp
+        tests/test_implementation_identity.cpp
         tests/test_compat_key_negotiation.cpp
         tests/test_profile_admission.cpp
         tests/test_socket_options.cpp
@@ -1095,6 +1097,13 @@ if(ROBOTWEAX_SRT_BUILD_TOOLS)
     target_compile_features(robotweax_srt_group_peer PRIVATE cxx_std_17)
 
     if(ROBOTWEAX_SRT_BUILD_TESTS AND Python3_Interpreter_FOUND AND UNIX)
+        add_test(NAME robotweax_srt_identity_interop
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_identity_interop.py
+                --robotweax-peer $<TARGET_FILE:robotweax_srt_interop_peer>)
+        set_tests_properties(robotweax_srt_identity_interop
+            PROPERTIES TIMEOUT 90 LABELS "integration;handshake;identity")
+
         add_test(
             NAME robotweax_srt_live_nak_gap_recovery
             COMMAND ${Python3_EXECUTABLE}

@@ -126,6 +126,7 @@ template <typename Value>
         || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
         || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
         || option == SRTO_ROBOTWEAX_PATHID
+        || option == SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT
         || option == SRTO_ROBOTWEAX_SESSIONAUTH || option == SRTO_CONGESTION
         || option == SRTO_MESSAGEAPI || option == SRTO_SENDER
         || option == SRTO_MINVERSION || option == SRTO_STREAMID
@@ -383,6 +384,28 @@ int get_socket_option(
     case SRTO_PEERVERSION:
         return write_value(value, value_size,
             static_cast<std::int32_t>(socket.peer_srt_version));
+    case SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT:
+        return write_value(value, value_size, options.identity_advertisement);
+    case SRTO_ROBOTWEAX_PEER_IDENTITY: {
+        const auto& identity = socket.listen_callback_active
+            ? socket.incoming_peer_identity
+            : socket.peer_identity;
+        ROBOTWEAX_SRT_PEER_IDENTITY_V1 snapshot {};
+        snapshot.abi_version = ROBOTWEAX_SRT_PEER_IDENTITY_VERSION;
+        if (identity.available()) {
+            snapshot.available_fields = ROBOTWEAX_SRT_PEER_IDENTITY_NAME
+                | (identity.release_size != 0
+                        ? ROBOTWEAX_SRT_PEER_IDENTITY_RELEASE
+                        : 0U);
+            snapshot.name_length = identity.name_size;
+            snapshot.release_length = identity.release_size;
+            std::copy(
+                identity.name.begin(), identity.name.end(), snapshot.name);
+            std::copy(identity.release.begin(), identity.release.end(),
+                snapshot.release);
+        }
+        return write_value(value, value_size, snapshot);
+    }
     case SRTO_ROBOTWEAX_PEER_HANDSHAKE: {
         auto snapshot = socket.listen_callback_active
             ? socket.incoming_peer_handshake
@@ -1280,6 +1303,15 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                 static_cast<std::size_t>(value_size));
         return 0;
     }
+    case SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT: {
+        std::int32_t parsed = 0;
+        if (!read_value(value, value_size, parsed)
+            || parsed < ROBOTWEAX_SRT_IDENTITY_OFF
+            || parsed > ROBOTWEAX_SRT_IDENTITY_NAME_AND_RELEASE)
+            return invalid_parameter();
+        options.identity_advertisement = parsed;
+        return 0;
+    }
     case SRTO_ROBOTWEAX_SESSIONAUTH:
     case SRTO_ENFORCEDENCRYPTION: {
         bool parsed = false;
@@ -1301,6 +1333,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     case SRTO_PEERVERSION:
     case SRTO_GROUPTYPE:
     case SRTO_ROBOTWEAX_PEER_HANDSHAKE:
+    case SRTO_ROBOTWEAX_PEER_IDENTITY:
     case SRTO_KMSTATE:
     case SRTO_SNDKMSTATE:
     case SRTO_RCVKMSTATE:

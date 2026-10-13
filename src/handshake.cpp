@@ -578,6 +578,7 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 peer_extension_parameters_ =
                     message.extension_parameters;
                 has_peer_extension_parameters_ = true;
+                peer_identity_ = message.implementation_identity;
             }
             peer_socket_id_ = incoming.socket_id;
             peer_flow_window_ = incoming.flow_window;
@@ -634,6 +635,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .path_identifier = peer_path_identifier_,
                 .has_standby_rtt = configuration_.require_standby_rtt,
                 .standby_rtt = standby_rtt_identity_,
+                .implementation_identity =
+                    configuration_.implementation_identity,
             });
             if (configuration_.require_session_authentication) {
                 auto& response_action = actions.values[0];
@@ -705,6 +708,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .path_identifier = peer_path_identifier_,
                 .has_standby_rtt = configuration_.require_standby_rtt,
                 .standby_rtt = standby_rtt_identity_,
+                .implementation_identity =
+                    configuration_.implementation_identity,
             });
             return actions;
         }
@@ -760,6 +765,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .path_identifier = configuration_.path_identifier,
                 .has_standby_rtt = configuration_.require_standby_rtt,
                 .standby_rtt = {.caller = configuration_.standby_rtt_nonce},
+                .implementation_identity =
+                    configuration_.implementation_identity,
             });
             if (configuration_.require_session_authentication) {
                 actions.values[0].packet.extension_field |=
@@ -923,6 +930,7 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 peer_extension_parameters_ =
                     message.extension_parameters;
                 has_peer_extension_parameters_ = true;
+                peer_identity_ = message.implementation_identity;
             }
             peer_socket_id_ = incoming.socket_id;
             peer_flow_window_ = incoming.flow_window;
@@ -1023,6 +1031,7 @@ HandshakeActions HandshakeMachine::timeout() noexcept
             .path_identifier = configuration_.path_identifier,
             .has_standby_rtt = configuration_.require_standby_rtt,
             .standby_rtt = {.caller = configuration_.standby_rtt_nonce},
+            .implementation_identity = configuration_.implementation_identity,
         });
     } else if (configuration_.role == ConnectionRole::listener
         && state_ == HandshakeState::awaiting_authentication_confirmation) {

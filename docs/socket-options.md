@@ -38,6 +38,18 @@ value. When compiling against older headers, guard the example with
 `#ifdef ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL`. No exported symbol, structure
 layout, upstream option value or `SRTO_E_SIZE` changes.
 
+## Experimental remote implementation identity
+
+The development tree adds socket-only
+`SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT` (`0x0100000a`, pre-connect `int32_t`,
+default 0/off) and read-only `SRTO_ROBOTWEAX_PEER_IDENTITY` (`0x0100000b`,
+`ROBOTWEAX_SRT_PEER_IDENTITY_V1`). The bounded name/release snapshot is available
+during admission and after connection. Absent/invalid metadata means unknown;
+identity is self-reported and has no authentication or capability meaning.
+See [experimental remote identity](implementation-identity.md) for policies,
+wire format, lifetime, buffer errors and interoperability limits. Released
+0.2.9 artifacts do not provide these options.
+
 ## Identify the local implementation
 
 `<srt/srt.h>` exposes `ROBOTWEAX_SRT_VERSION_MAJOR`, `_MINOR`, `_PATCH`,

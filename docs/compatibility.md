@@ -274,3 +274,13 @@ application integrations are not newly qualified. See
 [Cryptographic backends](crypto-backends.md) for dependency constraints, exact
 reference pins, and performance evidence. Released 0.2.9 artifacts do not contain
 this provider.
+
+## Development implementation identity
+
+The provisional `0x7f13` CONFIG identity record is default-off and diagnostic.
+Local real-advertisement checks cover Robotweax Caller/Listener and Rendezvous,
+CTR/GCM rotation, and ordinary connections to the pinned Haivision 1.5.7 and AEAD
+reference builds. Reference peers remain unknown; they do not advertise this
+convention. No MistServer/older-version/independent-peer deployment or shared
+allocation is qualified. See [experimental identity](implementation-identity.md).
+Published 0.2.9 artifacts do not include the identity options or wire record.

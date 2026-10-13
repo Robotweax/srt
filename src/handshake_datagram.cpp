@@ -15,6 +15,9 @@ namespace {
     std::uint16_t flags) noexcept
 {
     switch (type) {
+    case HandshakeExtensionType::implementation_identity:
+        // Diagnostic metadata has non-fatal validity rules of its own.
+        return true;
     case HandshakeExtensionType::handshake_request:
     case HandshakeExtensionType::handshake_response:
         return (flags & handshake_extension_flag_handshake) != 0U;
@@ -57,6 +60,8 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
 
     HandshakeMessage message{.packet = payload.handshake};
     auto extensions = payload.extensions;
+    bool seen_identity = false;
+    bool duplicate_identity = false;
     while (!extensions.empty()) {
         const auto decoded = decode_extension(extensions);
         if (!decoded) {
@@ -67,8 +72,24 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
                 message.packet.extension_field)) {
             return {.error = Error::invalid_extension};
         }
-        if (decoded.extension.type == HandshakeExtensionType::handshake_request
-            || decoded.extension.type == HandshakeExtensionType::handshake_response) {
+        if (static_cast<std::uint16_t>(decoded.extension.type)
+            == implementation_identity_extension_type) {
+            duplicate_identity = duplicate_identity || seen_identity;
+            seen_identity = true;
+            if (!duplicate_identity
+                && message.packet.version == handshake_version_5
+                && message.packet.request == HandshakeRequest::conclusion
+                && (message.packet.extension_field
+                       & handshake_extension_flag_config)
+                    != 0U)
+                message.implementation_identity =
+                    decode_implementation_identity(decoded.extension.content);
+            else
+                message.implementation_identity = {};
+        } else if (decoded.extension.type
+                == HandshakeExtensionType::handshake_request
+            || decoded.extension.type
+                == HandshakeExtensionType::handshake_response) {
             if (message.has_handshake_extension) {
                 return {.error = Error::invalid_extension};
             }
@@ -109,7 +130,7 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
             message.key_material.size =
                 decoded.extension.content.size();
         } else if (decoded.extension.type
-                == HandshakeExtensionType::stream_id) {
+            == HandshakeExtensionType::stream_id) {
             if (message.has_stream_id_extension) {
                 return {.error = Error::invalid_extension};
             }
@@ -121,7 +142,7 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
             }
             message.has_stream_id_extension = true;
         } else if (decoded.extension.type
-                == HandshakeExtensionType::congestion) {
+            == HandshakeExtensionType::congestion) {
             if (message.has_congestion_extension) {
                 return {.error = Error::invalid_extension};
             }
@@ -136,7 +157,7 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
             message.has_congestion_extension = true;
             message.congestion_controller = controller;
         } else if (decoded.extension.type
-                == HandshakeExtensionType::packet_filter) {
+            == HandshakeExtensionType::packet_filter) {
             if (message.has_packet_filter_extension) {
                 return {.error = Error::invalid_extension};
             }
@@ -155,8 +176,7 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
             message.has_packet_filter_extension = true;
             message.packet_filter_configuration =
                 configuration.configuration;
-        } else if (decoded.extension.type
-                == HandshakeExtensionType::group) {
+        } else if (decoded.extension.type == HandshakeExtensionType::group) {
             if (message.has_group_membership) {
                 return {.error = Error::invalid_extension};
             }
@@ -207,6 +227,8 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
         }
         extensions = extensions.subspan(decoded.bytes_consumed);
     }
+    if (!message.has_handshake_extension)
+        message.implementation_identity = {};
     return {.message = message, .control = packet.packet.control};
 }
 
@@ -283,6 +305,18 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
         return {.error = Error::buffer_too_small};
     }
 
+    std::size_t identity_size = 0;
+    if (action.packet.version == handshake_version_5
+        && action.packet.request == HandshakeRequest::conclusion
+        && action.has_handshake_extension) {
+        const auto wanted =
+            implementation_identity_record_size(action.implementation_identity);
+        const auto mss = action.packet.maximum_transmission_unit;
+        if (mss >= 48U && total_required <= mss - 48U
+            && wanted <= mss - 48U - total_required
+            && wanted <= destination.size() - total_required)
+            identity_size = wanted;
+    }
     MutablePacketView packet;
     packet.kind = PacketKind::control;
     packet.control.type = ControlType::handshake;
@@ -293,9 +327,11 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
         return {.error = packet_header.error};
     }
 
+    auto handshake = action.packet;
+    if (identity_size != 0)
+        handshake.extension_field |= handshake_extension_flag_config;
     const auto handshake_error = encode_handshake(
-        action.packet,
-        destination.subspan(packet_header_size, handshake_size));
+        handshake, destination.subspan(packet_header_size, handshake_size));
     if (handshake_error != Error::none) {
         return {.error = handshake_error};
     }
@@ -446,7 +482,14 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
         if (!extension)
             return {.error = extension.error};
     }
-    return {.bytes_written = total_required};
+    if (identity_size != 0) {
+        const auto identity =
+            encode_implementation_identity(action.implementation_identity,
+                destination.subspan(total_required, identity_size));
+        if (!identity)
+            return {.error = identity.error};
+    }
+    return {.bytes_written = total_required + identity_size};
 }
 
 } // namespace robotweax::srt
