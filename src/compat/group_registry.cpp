@@ -488,7 +488,8 @@ int GroupRegistry::get_io_option(
             set_last_error(SRT_EINVSOCK);
             return SRT_ERROR;
         }
-        if (option == SRTO_ROBOTWEAX_PATHID || option == SRTO_BINDTODEVICE
+        if (option == SRTO_ROBOTWEAX_PEER_HANDSHAKE
+            || option == SRTO_ROBOTWEAX_PATHID || option == SRTO_BINDTODEVICE
             || option == SRTO_EVENT || option == SRTO_SNDDATA
             || option == SRTO_RCVDATA) {
             set_last_error(SRT_EINVOP);

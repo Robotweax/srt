@@ -183,6 +183,12 @@ typedef enum SRT_SOCKOPT {
      * Does not affect standard RTT, reliability, liveness or group selection.
      */
     SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED = 0x01000008,
+    /** Incoming HSREQ snapshot (ROBOTWEAX_SRT_PEER_HANDSHAKE_V1), read-only.
+     * Available only during listen callback; otherwise metadata is zero.
+     * Local option changes do not alter the peer's raw advertisements.
+     * Socket-only; group handles and setters fail with SRT_EINVOP.
+     */
+    SRTO_ROBOTWEAX_PEER_HANDSHAKE = 0x01000009,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif
@@ -195,6 +201,33 @@ typedef enum SRT_SOCKOPT {
     SRTO_E_SIZE = 62
 #endif
 } SRT_SOCKOPT;
+
+/* Incoming HSREQ flags: preserve unknown bits when inspecting flags. */
+#define ROBOTWEAX_SRT_HSFLAG_TSBPD_SEND 0x00000001u
+#define ROBOTWEAX_SRT_HSFLAG_TSBPD_RECEIVE 0x00000002u
+#define ROBOTWEAX_SRT_HSFLAG_CRYPT 0x00000004u
+#define ROBOTWEAX_SRT_HSFLAG_TLPKTDROP 0x00000008u
+#define ROBOTWEAX_SRT_HSFLAG_NAKREPORT 0x00000010u
+#define ROBOTWEAX_SRT_HSFLAG_RETRANSMIT 0x00000020u
+#define ROBOTWEAX_SRT_HSFLAG_STREAM 0x00000040u
+#define ROBOTWEAX_SRT_HSFLAG_PACKET_FILTER 0x00000080u
+#define ROBOTWEAX_SRT_PEER_HANDSHAKE_VERSION 1u
+
+/** Copied by srt_getsockflag/SRTO_ROBOTWEAX_PEER_HANDSHAKE; no initialization
+ * required. Supply at least sizeof(V1); success writes exactly sizeof(V1).
+ * abi_version is always 1. available is 1 only for a decoded incoming HSREQ
+ * during listen callback; otherwise all metadata fields are zero.
+ * Observations precede final validation and are not negotiated guarantees.
+ * Copy to retain beyond callback exit. Closed handles follow EINVSOCK rules.
+ */
+typedef struct ROBOTWEAX_SRT_PeerHandshakeV1_ {
+    uint32_t abi_version;
+    uint32_t available;
+    uint32_t srt_version; /* Advertised software version, 0x00XXYYZZ. */
+    uint32_t flags; /* Complete raw HSREQ word, including unknown bits. */
+    uint32_t receiver_delay_milliseconds; /* Peer receive delay for our DATA. */
+    uint32_t sender_delay_milliseconds; /* Minimum delay for our receiver. */
+} ROBOTWEAX_SRT_PEER_HANDSHAKE_V1;
 
 /* Values returned by SRTO_ROBOTWEAX_CRYPTO_BACKEND (not cipher modes). */
 #define ROBOTWEAX_SRT_CRYPTO_BACKEND_OPENSSL 1
