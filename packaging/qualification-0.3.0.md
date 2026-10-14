@@ -1,15 +1,28 @@
 # Package qualification 0.3.0
 
-Status: **startup fallback corrected; renewed archive/qualification pending; release on hold**. Nothing is published.
+Status: **startup fallback corrected; corrected archive pinned; qualification pending; release on hold**. Nothing is published.
 Project version **0.3.0**, shared-library ABI line **0.3**, compatible SRT API
 **1.5.7**. Existing applications and dependencies must rebuild for ABI line 0.3.
 Previous [0.2.9 acceptance](qualification-0.2.9.md) remains unchanged.
 
-The startup fallback correction changes product source after the capability
-archive below. Its new archive and affected acceptance must be recorded before
-release; prior results remain attached to their original sources.
+## Current pacing-corrected product
 
-## Capability-corrected product and archive verification
+- Product commit: `607d0034b7977f1e5003c98c42cc934bbdf9d431`.
+- Downloaded public archive: `https://github.com/Robotweax/srt/archive/607d0034b7977f1e5003c98c42cc934bbdf9d431.tar.gz`.
+- Bytes: 1948295.
+- SHA-256: `6c6d19458838248a6c95153e8907334e6c16826c041d4e204f57b73a1750cb5c`.
+- SHA-512: `d7c4914b5f1fbcf0006a67f1cc7ecbdecce88f712c615c294a2d70cfb14be9fe36a6f12e1ee374335d84a325885371e04fec8fc9c69427134a4845542b4aca0f`.
+- All 643 tracked regular files and executable bits match Git.
+- All package recipe pins select this archive; no trace instrumentation is included.
+
+Static Debug CTest passed **69/69** and shared Release passed **20/20**.
+The new fallback regressions fail against the preceding controller. Changed-line
+formatting, DCO and installed documentation checks pass. Hosted CI, integrations,
+providers and packages need renewed acceptance. A new ten-case File/Stream cohort
+is prospectively declared with the original workload, 60-second deadline and
+thresholds; its outcome is pending. Earlier results below remain historical.
+
+## Previous capability-corrected product and archive verification
 
 - Product commit: `bc7e39cc942bbd129ff55b1c014edbe563be266d`.
 - Downloaded public archive: `https://github.com/Robotweax/srt/archive/bc7e39cc942bbd129ff55b1c014edbe563be266d.tar.gz`.

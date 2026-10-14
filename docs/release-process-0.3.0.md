@@ -34,11 +34,12 @@ Update Homebrew/vcpkg pins, Debian/Fedora recipes, Linux qualification scripts,
 installed-consumer versions and latest signed SDK upgrade fixtures together.
 Retain all previous qualification records and published tag identities.
 
-The post-diagnostic File/Control capability correction changes the frozen
-product. The prior CI results below apply to the earlier source only. The corrected archive is pinned to
-`bc7e39cc942bbd129ff55b1c014edbe563be266d`; repeat affected qualification
+The post-diagnostic File/Control capability and FileCC fallback corrections
+change the frozen product. The prior CI results below apply to the earlier source only. The corrected archive is pinned to
+`607d0034b7977f1e5003c98c42cc934bbdf9d431`; repeat affected qualification
 before accepting corrected source.
-Startup pacing and the failed resource gate remain unresolved.
+The captured no-feedback startup defect is corrected. Positive sparse-feedback
+sensitivity and the failed resource gate still require separate qualification.
 
 ## Previous candidate acceptance gates
 

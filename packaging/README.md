@@ -2,10 +2,10 @@
 
 ## Candidate 0.3.0
 
-These recipes select immutable product commit `bc7e39cc942bbd129ff55b1c014edbe563be266d`, not the
+These recipes select immutable product commit `607d0034b7977f1e5003c98c42cc934bbdf9d431`, not the
 moving checkout. The downloaded GitHub archive contains 643 regular files;
 all contents and executable bits match Git. Archive SHA-256:
-`2fa4db10dc3f74b6598e869907a676dbdfc13bfb0f424c8727a7cc55d693f8bd`.
+`6c6d19458838248a6c95153e8907334e6c16826c041d4e204f57b73a1750cb5c`.
 
 The [0.3.0 qualification record](qualification-0.3.0.md) and
 [release process](../docs/release-process-0.3.0.md) track pending candidate,
