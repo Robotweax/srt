@@ -2509,6 +2509,205 @@ TEST(compat_group_epoll_wakes_on_member_data_without_process_wide_rescans)
     REQUIRE_EQ(srt_close(group), 0);
 }
 
+namespace {
+struct RetransmissionRetirementFixture {
+    SRTSOCKET group = SRT_INVALID_SOCK;
+    SRTSOCKET member = SRT_INVALID_SOCK;
+    std::atomic<std::uint64_t> now {1000U};
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel =
+        std::make_shared<robotweax::srt::compat::DatagramChannel>();
+    std::shared_ptr<ConnectionRuntime> runtime;
+    RetransmissionRetirementFixture(bool synchronous)
+    {
+        REQUIRE_EQ(srt_startup(), 0);
+        group = srt_create_group(SRT_GTYPE_BROADCAST);
+        member = srt_create_socket();
+        REQUIRE(group != SRT_INVALID_SOCK);
+        REQUIRE(member != SRT_INVALID_SOCK);
+        channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        runtime = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {
+                .channel = channel,
+                .peer = IpEndpoint::loopback(9000),
+                .local_socket_id = static_cast<std::uint32_t>(member),
+                .peer_socket_id = 77,
+                .initial_sequence = SequenceNumber {100},
+                .flow_window_packets = 8,
+                .origin = ConnectionRuntime::Clock::now(),
+                .now_function =
+                    [](void* context) noexcept {
+                        return static_cast<std::atomic<std::uint64_t>*>(context)
+                            ->load();
+                    },
+                .now_context = &now,
+            });
+        const auto address = ipv4_address(9000);
+        sockaddr_storage peer {};
+        std::memcpy(&peer, &address, sizeof(address));
+        std::uint64_t generation = 0, member_generation = 0;
+        REQUIRE(GroupRegistry::instance().add_member(
+            group, member, peer, 1, 0, generation, member_generation));
+        const auto socket = SocketRegistry::instance().find(member);
+        REQUIRE(socket);
+        {
+            std::lock_guard lock(socket->mutex);
+            socket->state = SRTS_CONNECTED;
+            socket->runtime = runtime;
+            socket->channel = channel;
+            socket->group_id = group;
+            socket->group_generation = generation;
+            socket->member_generation = member_generation;
+            socket->public_options.send_synchronous = synchronous;
+            socket->public_options.linger_enabled = true;
+            socket->public_options.linger_seconds = 2;
+        }
+        GroupRegistry::instance().update_member(group, generation, member,
+            member_generation, SRTS_CONNECTED, SRT_SUCCESS);
+        const std::array payload {std::byte {1}};
+        REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, -1).status,
+            robotweax::srt::compat::MessageIoStatus::success);
+        (void)runtime->poll();
+    }
+    ~RetransmissionRetirementFixture()
+    {
+        (void)srt_close(member);
+        (void)srt_close(group);
+        (void)srt_cleanup();
+    }
+    void retransmit(std::uint64_t time)
+    {
+        now.store(time);
+        const std::array ranges {robotweax::srt::SequenceRange {
+            SequenceNumber {100}, SequenceNumber {100}}};
+        std::array<std::byte, 8> bytes {};
+        const auto encoded = robotweax::srt::encode_loss_ranges(ranges, bytes);
+        REQUIRE(encoded);
+        runtime->process_packet(
+            {.kind = robotweax::srt::PacketKind::control,
+                .control = {.type = robotweax::srt::ControlType::
+                                negative_acknowledgement},
+                .payload = std::span {bytes}.first(encoded.bytes_written)},
+            IpEndpoint::loopback(9000));
+        (void)runtime->poll();
+    }
+    void acknowledge()
+    {
+        std::array<std::byte, 4> bytes {};
+        REQUIRE(robotweax::srt::encode_acknowledgement_payload(
+            {.kind = robotweax::srt::AcknowledgementKind::lite,
+                .next_sequence = SequenceNumber {101}},
+            bytes));
+        runtime->process_packet(
+            {.kind = robotweax::srt::PacketKind::control,
+                .control = {.type =
+                                robotweax::srt::ControlType::acknowledgement},
+                .payload = bytes},
+            IpEndpoint::loopback(9000));
+    }
+    SRT_TRACEBSTATS statistics(bool clear = false)
+    {
+        SRT_TRACEBSTATS result {};
+        REQUIRE_EQ(srt_bstats(group, &result, clear ? 1 : 0), 0);
+        return result;
+    }
+};
+}
+
+TEST(compat_group_statistics_include_synchronous_and_asynchronous_linger)
+{
+    for (const bool synchronous : {false, true}) {
+        RetransmissionRetirementFixture fixture {synchronous};
+        fixture.retransmit(100001);
+        REQUIRE_EQ(fixture.statistics(true).pktRetransTotal, 1);
+        std::future<int> closing;
+        if (synchronous)
+            closing = std::async(std::launch::async, [&] {
+                return srt_close(fixture.member);
+            });
+        else
+            REQUIRE_EQ(srt_close(fixture.member), 0);
+        const auto record = GroupRegistry::instance().find(fixture.group);
+        REQUIRE(record);
+        bool removed = false;
+        const auto deadline =
+            ConnectionRuntime::Clock::now() + std::chrono::seconds {1};
+        do {
+            {
+                std::lock_guard lock(record->mutex);
+                removed = record->members.empty();
+            }
+            if (removed)
+                break;
+            std::this_thread::yield();
+        } while (ConnectionRuntime::Clock::now() < deadline);
+        REQUIRE(removed);
+        fixture.retransmit(200002);
+        REQUIRE_EQ(fixture.runtime->statistics(false, false)
+                       .total.sent_retransmitted.packets,
+            2U);
+        fixture.acknowledge();
+        if (synchronous) {
+            REQUIRE(closing.wait_for(std::chrono::seconds {3})
+                == std::future_status::ready);
+            REQUIRE_EQ(closing.get(), 0);
+        } else {
+            (void)robotweax::srt::compat::service_deferred_closes(
+                ConnectionRuntime::Clock::now() + std::chrono::seconds {10});
+        }
+        const auto result = fixture.statistics();
+        REQUIRE_EQ(result.pktRetransTotal, 2);
+        REQUIRE_EQ(result.pktRetrans, 1);
+        REQUIRE_EQ(result.byteRetransTotal, 90U);
+        REQUIRE_EQ(result.byteRetrans, 45U);
+        REQUIRE_EQ(fixture.statistics().pktRetransTotal, 2);
+        // Clearing the group interval has not cleared the member interval.
+        REQUIRE_EQ(fixture.runtime->statistics(false, false)
+                       .interval.sent_retransmitted.packets,
+            2U);
+    }
+}
+
+TEST(compat_group_statistics_capture_an_independently_closed_runtime)
+{
+    RetransmissionRetirementFixture fixture {false};
+    fixture.retransmit(100001);
+    fixture.runtime->close();
+    REQUIRE_EQ(srt_close(fixture.member), 0);
+    REQUIRE_EQ(fixture.statistics().pktRetransTotal, 1);
+    REQUIRE_EQ(fixture.statistics().pktRetrans, 1);
+}
+
+TEST(compat_group_statistics_retirement_is_once_and_generation_scoped)
+{
+    RetransmissionRetirementFixture fixture {false};
+    fixture.retransmit(100001);
+    REQUIRE_EQ(fixture.statistics(true).pktRetransTotal, 1);
+    const auto socket = SocketRegistry::instance().find(fixture.member);
+    REQUIRE(socket);
+    std::uint64_t group_generation = 0, member_generation = 0;
+    {
+        std::lock_guard lock(socket->mutex);
+        group_generation = socket->group_generation;
+        member_generation = socket->member_generation;
+    }
+    robotweax::srt::compat::RetiredGroupMemberStatistics retirement;
+    auto& registry = GroupRegistry::instance();
+    registry.remove_member(fixture.group, group_generation, fixture.member,
+        member_generation, &retirement);
+    auto stale = retirement;
+    ++stale.group_generation;
+    robotweax::srt::compat::PacketByteCounter total;
+    total.add(3, 3);
+    registry.note_retired_member_retransmitted(stale, total);
+    REQUIRE_EQ(fixture.statistics().pktRetransTotal, 1);
+    registry.note_retired_member_retransmitted(retirement, total);
+    REQUIRE_EQ(fixture.statistics().pktRetransTotal, 3);
+    REQUIRE_EQ(fixture.statistics().pktRetrans, 2);
+    total.add(2, 2);
+    registry.note_retired_member_retransmitted(retirement, total);
+    REQUIRE_EQ(fixture.statistics().pktRetransTotal, 3);
+}
+
 TEST(compat_group_statistics_fold_member_retransmissions)
 {
     // A group row reports its members' retransmissions, keeps those of

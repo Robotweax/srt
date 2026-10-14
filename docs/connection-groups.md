@@ -91,8 +91,11 @@ Unlike libsrt, a group row also reports `pktRetrans*` and `byteRetrans*`: the
 retransmissions of all its members, including members that have since closed.
 Each member's cumulative count is folded in once, when the group row is read
 and when the member closes, so the group total never decreases and a group
-`clear` does not touch member intervals. A group row does not report receive
-loss: sequences missing on one path are recovered or dropped per member, and
+`clear` does not touch member intervals. A removed member's accounting baseline
+survives linger and the final send drain; their remaining retransmissions are
+committed when runtime retirement completes. During asynchronous linger, that
+tail appears after retirement rather than through the removed member row.
+A group row does not report receive loss: sequences missing on one path are recovered or dropped per member, and
 `pktRcvDrop*` already counts those that no member delivered.
 
 Other link-level values (RTT, bandwidth, buffers, per-member loss) remain per

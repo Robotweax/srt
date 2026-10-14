@@ -318,6 +318,20 @@ void GroupRegistry::note_member_retransmitted(SRTSOCKET group,
     }
 }
 
+void GroupRegistry::note_retired_member_retransmitted(
+    RetiredGroupMemberStatistics& retirement,
+    const PacketByteCounter& total) noexcept
+{
+    auto owned = std::exchange(retirement, {});
+    const auto record = find(owned.group);
+    if (record == nullptr)
+        return;
+    std::lock_guard lock(record->mutex);
+    if (record->closed || record->generation != owned.group_generation)
+        return;
+    fold_retransmitted(record->statistics, owned.folded, total);
+}
+
 int GroupRegistry::trace_statistics(
     SRTSOCKET group, SRT_TRACEBSTATS& output, bool clear_interval) noexcept
 {
@@ -1347,10 +1361,13 @@ void GroupRegistry::retain_member_receive(SRTSOCKET group,
     ReadinessSignal::notify(*record->readiness_source);
 }
 
-void GroupRegistry::remove_member(
-    SRTSOCKET group, std::uint64_t group_generation,
-    SRTSOCKET socket, std::uint64_t member_generation) noexcept
+void GroupRegistry::remove_member(SRTSOCKET group,
+    std::uint64_t group_generation, SRTSOCKET socket,
+    std::uint64_t member_generation,
+    RetiredGroupMemberStatistics* retirement) noexcept
 {
+    if (retirement != nullptr)
+        *retirement = {};
     const auto record = find(group);
     if (record == nullptr) {
         return;
@@ -1361,6 +1378,12 @@ void GroupRegistry::remove_member(
         if (record->closed
             || record->generation != group_generation) {
             return;
+        }
+        if (retirement != nullptr) {
+            const auto member = find_member(*record, socket, member_generation);
+            if (member != record->members.end())
+                *retirement = {
+                    group, group_generation, member->retransmitted_folded};
         }
         const auto previous = record->members.size();
         record->members.erase(std::remove_if(

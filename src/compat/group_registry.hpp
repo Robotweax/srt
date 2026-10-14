@@ -260,7 +260,13 @@ public:
         SRTSOCKET socket, std::uint64_t member_generation,
         const std::shared_ptr<ConnectionRuntime>& runtime) noexcept;
     void remove_member(SRTSOCKET group, std::uint64_t group_generation,
-        SRTSOCKET socket, std::uint64_t member_generation) noexcept;
+        SRTSOCKET socket, std::uint64_t member_generation,
+        RetiredGroupMemberStatistics* retirement = nullptr) noexcept;
+    // Final accounting after the runtime's linger and close drain have ended.
+    // Consumes the transferred baseline; stale group generations are ignored.
+    void note_retired_member_retransmitted(
+        RetiredGroupMemberStatistics& retirement,
+        const PacketByteCounter& total) noexcept;
     // Folds a member's cumulative retransmissions into the group counters.
     // Values older than what was already folded are ignored.
     void note_member_retransmitted(SRTSOCKET group,
