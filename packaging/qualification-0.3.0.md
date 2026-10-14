@@ -1,6 +1,6 @@
 # Package qualification 0.3.0
 
-Status: **candidate finite transfers passed; comparative resource gate incomplete; release on hold**. Nothing is published.
+Status: **candidate finite transfers passed; comparative resource exception approved; remaining release gates pending**. Nothing is published.
 Project version **0.3.0**, shared-library ABI line **0.3**, compatible SRT API
 **1.5.7**. Existing applications and dependencies must rebuild for ABI line 0.3.
 Previous [0.2.9 acceptance](qualification-0.2.9.md) remains unchanged.
@@ -304,3 +304,32 @@ were still pending at evidence recording. Completed successful workflows were
 does not qualify intentionally skipped optional/protected profiles. Subsequent
 evidence changes preserve the frozen product; hosted final acceptance remains
 separate from these local and network results.
+
+## Release-owner resource exception — 2026-10-14
+
+The release owner approved publication without a comparative resource claim,
+provided every other required release check passes. This exception removes the
+incomplete five-pair comparison as a release blocker; it does not mark the
+resource cohort or its thresholds accepted. The candidate passed 5/5 finite
+transfers, the baseline passed 2/5, and the three baseline timeouts remain failed.
+All original evidence, deadlines and thresholds are retained. Machine-readable
+resource acceptance remains false; the two complete pairs remain diagnostic.
+No qualified CPU, memory or throughput comparison, or general finite-transfer
+deadline guarantee, is asserted. All other release gates remain required.
+
+## Final candidate CI corrections
+
+The source CI run at `fc3186f0f` failed installed package-consumer validation
+because the release-process document linked to a repository-only evidence file
+with a relative path. Commit `7253b217e` replaces that link with the immutable
+GitHub evidence URL. Both local static/shared installed-consumer checks pass.
+
+The subsequent ACP1 Linux Mbed TLS job in run `38594187364` exposed an
+asynchronous readiness race in the paired-group test: internal runtime attachment
+precedes public CONNECTED publication, while ACP1_ACTIVE requires CONNECTED.
+The helper now waits for both CONNECTED and the runtime before making the
+unchanged ACP1_ACTIVE assertions. All four ACP1 test partitions passed locally
+with each of OpenSSL and Mbed TLS, followed by ten successful paired-group
+repetitions per provider. Hosted validation of this test correction is pending.
+The failed run remains retained. Neither correction changes the frozen library
+product, package archive pins or resource evidence.

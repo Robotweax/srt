@@ -1,6 +1,6 @@
 # Release process for Robotweax SRT 0.3.0
 
-Status: **candidate finite transfers passed; comparative resource gate incomplete; signing/publication on hold**.
+Status: **candidate finite transfers passed; comparative resource exception approved; remaining release gates pending**.
 Previous release: [v0.2.9](https://github.com/Robotweax/srt/releases/tag/v0.2.9).
 Preparation baseline: `9899fd7407cd82385de6f5238fe144647f299066`, including the
 merged SSH interoperability cleanup correction.
@@ -68,7 +68,7 @@ interop cleanup finding; its source correction and regressions are included in
 the preparation baseline. That review predates this version freeze and is not
 a new passing scan of the final candidate.
 
-## Resource gate remains open
+## Resource evidence and approved release exception
 
 The original resource cohort passed 38/40 cases. Published 0.2.9 and candidate
 0.3.0 each missed one final Live payload under loss; those cases remain failed.
@@ -88,6 +88,17 @@ pairs cannot satisfy the declared five-pair resource comparison; the gate remain
 open. See [the renewed evidence](https://github.com/Robotweax/srt/blob/fc3186f0f67fd97657066aa42b3c9525206a1601/packaging/pacing-0.3.0.json). Positive but
 immature peer-rate feedback remains unchanged. No acceptance scope, deadline or
 resource threshold was relaxed.
+
+On 2026-10-14, the release owner explicitly approved proceeding without a
+comparative resource claim, conditional on all remaining required checks passing.
+This waives the five-complete-pair resource comparison as a publication blocker;
+it does not accept the incomplete comparison or change any measured result.
+The resource JSON acceptance remains false. All baseline timeouts, earlier
+failures, original thresholds and deadlines remain recorded. No CPU, memory or
+throughput regression threshold is claimed as qualified for this release.
+The five candidate completions support only the tested finite-transfer profile,
+not a general deadline guarantee. Source, integration, provider, package, SDK,
+security and protected signing/publication requirements remain in force.
 
 ## Signing, tag and publication sequence
 

@@ -80,6 +80,14 @@ Final 0.3.0 qualification is pending. Prior release or feature-PR results do not
 substitute for exact-candidate source, media, package and signed-installer gates.
 No 0.3.0 installer, package, bottle or release is accepted or published yet.
 
+The release owner approved an exception for the incomplete comparative resource
+qualification. The corrected candidate completed all five tested finite
+File/Stream transfers within the original 60-second deadline; published 0.2.9
+completed two of five. Only two comparison pairs are usable, so CPU, memory and
+throughput regression thresholds are not qualified. All failed cases remain in
+the release evidence. No general transfer-deadline guarantee is made. This
+exception does not waive the remaining release checks.
+
 Live final-loss behavior, File drain/error requirements, group callback domain
 migration, negotiated extension boundaries and crypto replay limitations remain
 as documented. No new automatic reconnect, RTT selection, universal WAN or

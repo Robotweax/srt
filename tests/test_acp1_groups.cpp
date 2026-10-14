@@ -66,7 +66,7 @@ void configure(SRTSOCKET s, bool acp = true, bool gcm = false)
     (void)gcm;
 #endif
 }
-std::shared_ptr<ConnectionRuntime> runtime(SRTSOCKET s)
+std::shared_ptr<ConnectionRuntime> connected_runtime(SRTSOCKET s)
 {
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds {2};
@@ -74,7 +74,9 @@ std::shared_ptr<ConnectionRuntime> runtime(SRTSOCKET s)
         const auto record = SocketRegistry::instance().find(s);
         if (record) {
             std::lock_guard lock(record->mutex);
-            if (record->runtime)
+            // Runtime attachment precedes public CONNECTED publication.
+            // ACP1_ACTIVE is only promised after that state transition.
+            if (record->state == SRTS_CONNECTED && record->runtime)
                 return record->runtime;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds {1});
@@ -486,7 +488,7 @@ TEST(acp1_groups_allow_members_without_optional_path_or_standby_profiles)
         auto endpoint = srt_prepare_endpoint(nullptr,
             reinterpret_cast<const sockaddr*>(&address), sizeof(address));
         REQUIRE(srt_connect_group(group, &endpoint, 1) != SRT_ERROR);
-        (void)runtime(endpoint.id);
+        (void)connected_runtime(endpoint.id);
         const auto mirror = sockets.own(srt_accept(listener, nullptr, nullptr));
         REQUIRE(flag(group, SRTO_ROBOTWEAX_ACP1_ACTIVE));
         REQUIRE(flag(mirror, SRTO_ROBOTWEAX_ACP1_ACTIVE));
@@ -563,11 +565,11 @@ TEST(acp1_group_rendezvous_paired_groups_preserve_directional_sequences)
         REQUIRE(srt_connect_group(left, a.data(), a.size()) != SRT_ERROR);
         REQUIRE(srt_connect_group(right, b.data(), b.size()) != SRT_ERROR);
         for (auto& endpoint : a) {
-            (void)runtime(endpoint.id);
+            (void)connected_runtime(endpoint.id);
             REQUIRE(flag(endpoint.id, SRTO_ROBOTWEAX_ACP1_ACTIVE));
         }
         for (auto& endpoint : b) {
-            (void)runtime(endpoint.id);
+            (void)connected_runtime(endpoint.id);
             REQUIRE(flag(endpoint.id, SRTO_ROBOTWEAX_ACP1_ACTIVE));
         }
         REQUIRE(flag(left, SRTO_ROBOTWEAX_ACP1_ACTIVE));
