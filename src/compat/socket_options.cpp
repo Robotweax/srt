@@ -124,7 +124,9 @@ template <typename Value>
         || option == SRTO_KMREFRESHRATE || option == SRTO_KMPREANNOUNCE
         || option == SRTO_ENFORCEDENCRYPTION
         || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+        || option == SRTO_ROBOTWEAX_STANDBYRTT_POLICY
         || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
+        || option == SRTO_ROBOTWEAX_PATHID_POLICY
         || option == SRTO_ROBOTWEAX_PATHID
         || option == SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT
         || option == SRTO_ROBOTWEAX_ACP1_REQUIRED
@@ -524,6 +526,14 @@ int get_socket_option(
         return write_value(value, value_size, options.standby_rtt_required);
     case SRTO_ROBOTWEAX_PATHID_REQUIRED:
         return write_value(value, value_size, options.path_identifier_required);
+    case SRTO_ROBOTWEAX_STANDBYRTT_POLICY:
+        return write_value(value, value_size,
+            extension_policy(
+                options.standby_rtt_required, options.standby_rtt_if_offered));
+    case SRTO_ROBOTWEAX_PATHID_POLICY:
+        return write_value(value, value_size,
+            extension_policy(options.path_identifier_required,
+                options.path_identifier_if_offered));
     case SRTO_ROBOTWEAX_PATHID: {
         if (*value_size < static_cast<int>(options.path_identifier.size))
             return invalid_parameter();
@@ -836,7 +846,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     case SRTO_TSBPDMODE: {
         bool parsed = false;
         if (!read_boolean(value, value_size, parsed)
-            || (!parsed && options.standby_rtt_required))
+            || (!parsed && standby_rtt_enabled(options)))
             return invalid_parameter();
         if (set_native(socket.native_options, SocketOption::tsbpd_mode,
                 parsed ? 1 : 0)
@@ -1046,7 +1056,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     case SRTO_MESSAGEAPI: {
         bool parsed = false;
         if (!read_boolean(value, value_size, parsed)
-            || (!parsed && options.standby_rtt_required)) {
+            || (!parsed && standby_rtt_enabled(options))) {
             return invalid_parameter();
         }
         if (set_native(socket.native_options,
@@ -1072,7 +1082,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         const std::string_view name{
             static_cast<const char*>(value),
             static_cast<std::size_t>(value_size)};
-        if (options.standby_rtt_required) {
+        if (standby_rtt_enabled(options)) {
             SocketOptions selected = socket.native_options;
             if (selected.set_congestion_controller(name) != Error::none
                 || selected.congestion_controller()
@@ -1108,7 +1118,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                 && parsed != static_cast<std::int32_t>(SRTT_CONTROL))) {
             return invalid_parameter();
         }
-        if ((options.path_identifier_required || options.standby_rtt_required)
+        if ((path_identifier_enabled(options) || standby_rtt_enabled(options))
             && parsed != static_cast<std::int32_t>(SRTT_LIVE))
             return invalid_parameter();
         SocketOptions selected = socket.native_options;
@@ -1181,7 +1191,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         const std::string_view configuration{
             static_cast<const char*>(value),
             static_cast<std::size_t>(value_size)};
-        if ((options.path_identifier_required
+        if ((path_identifier_enabled(options)
                 && configuration == sensor_profile_filter_v1)
             || (socket.native_options.packet_filter_configuration()
                     .sensor_profile()
@@ -1230,8 +1240,8 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             return invalid_parameter();
         }
         if (parsed
-            && (options.path_identifier_required
-                || options.standby_rtt_required)
+            && (path_identifier_enabled(options)
+                || standby_rtt_enabled(options))
             && !(socket.group_id != SRT_INVALID_SOCK
                 && socket.native_options.experimental_acp1()))
             return invalid_parameter();
@@ -1307,6 +1317,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                         != CongestionController::live)))
             return invalid_parameter();
         options.standby_rtt_required = parsed;
+        options.standby_rtt_if_offered = false;
         return 0;
     }
     case SRTO_ROBOTWEAX_PATHID_REQUIRED: {
@@ -1321,6 +1332,43 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                     || options.transmission_type != SRTT_LIVE)))
             return invalid_parameter();
         options.path_identifier_required = parsed;
+        options.path_identifier_if_offered = false;
+        return 0;
+    }
+    case SRTO_ROBOTWEAX_STANDBYRTT_POLICY:
+    case SRTO_ROBOTWEAX_PATHID_POLICY: {
+        // REQUIRED keeps the bilateral contract of the *_REQUIRED options;
+        // IF_OFFERED additionally lets a Listener admit peers without the
+        // extension. Callers reject IF_OFFERED when they connect.
+        const bool standby = option == SRTO_ROBOTWEAX_STANDBYRTT_POLICY;
+        std::int32_t parsed = 0;
+        if ((socket.state != SRTS_INIT && socket.state != SRTS_OPENED)
+            || socket.listen_callback_active
+            || !read_value(value, value_size, parsed)
+            || parsed < ROBOTWEAX_SRT_EXTENSION_OFF
+            || parsed > ROBOTWEAX_SRT_EXTENSION_IF_OFFERED)
+            return invalid_parameter();
+        if (parsed != ROBOTWEAX_SRT_EXTENSION_OFF
+            && ((options.rendezvous
+                    && !(parsed == ROBOTWEAX_SRT_EXTENSION_REQUIRED
+                        && socket.group_id != SRT_INVALID_SOCK
+                        && socket.native_options.experimental_acp1()))
+                || options.transmission_type != SRTT_LIVE
+                || (standby
+                    && (!options.message_api || !options.tsbpd_mode
+                        || socket.native_options.congestion_controller()
+                            != CongestionController::live))))
+            return invalid_parameter();
+        // A group or one of its members is always a Caller side.
+        if (parsed == ROBOTWEAX_SRT_EXTENSION_IF_OFFERED
+            && socket.group_id != SRT_INVALID_SOCK)
+            return invalid_parameter();
+        bool& required = standby ? options.standby_rtt_required
+                                 : options.path_identifier_required;
+        bool& if_offered = standby ? options.standby_rtt_if_offered
+                                   : options.path_identifier_if_offered;
+        required = parsed == ROBOTWEAX_SRT_EXTENSION_REQUIRED;
+        if_offered = parsed == ROBOTWEAX_SRT_EXTENSION_IF_OFFERED;
         return 0;
     }
     case SRTO_ROBOTWEAX_PATHID: {

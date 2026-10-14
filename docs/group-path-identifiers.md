@@ -4,15 +4,34 @@ This extension was added in 0.2.9 and is absent from v0.2.8 artifacts.
 It adds receiver-visible caller labels to Live-mode Broadcast and Backup groups
 using Caller/Listener setup. Both peers must support and explicitly enable it;
 it is disabled by default. Enabled connections are not Haivision-compatible.
-There is no automatic capability discovery or fallback to an unlabeled member.
+A caller never discovers or falls back to an unlabeled member. A listener may
+opt in to admitting both labeled and unlabeled peers, as described below.
 
 ## Configure a labeled connection
 
 Before the first caller member connects, set the boolean
 `SRTO_ROBOTWEAX_PATHID_REQUIRED` (`0x01000006`) on its group. On the listener,
 set both `SRTO_GROUPCONNECT` and `SRTO_ROBOTWEAX_PATHID_REQUIRED` before listen.
-A required listener rejects ordinary connections and unlabeled groups. Use a
-separate ordinary listener when accepting peers without this extension.
+A required listener rejects ordinary connections and unlabeled groups.
+
+To serve labeled groups and ordinary peers on one port, set the int32
+`SRTO_ROBOTWEAX_PATHID_POLICY` (`0x0100000e`) to
+`ROBOTWEAX_SRT_EXTENSION_IF_OFFERED` on the listener instead, together with
+`SRTO_GROUPCONNECT`. Each admission is then negotiated on its own: a caller that
+offers labels is handled exactly as by a required listener, and any other peer
+as by a listener with the extension off. The accepted socket or group member
+reports the result through the policy option (`REQUIRED` or `OFF`), and labeled
+members carry `ROBOTWEAX_SRT_PATHID_NEGOTIATED` in the metadata below. All
+members of one accepted group share one result; a later member whose result
+differs is rejected with `SRT_REJ_GROUP`. A labeled caller still fails against a
+listener with the extension off.
+
+`SRTO_ROBOTWEAX_PATHID_POLICY` also accepts `ROBOTWEAX_SRT_EXTENSION_OFF` and
+`_REQUIRED`, which are equivalent to the boolean option set to false or true;
+reading the boolean returns true only for `REQUIRED`. `IF_OFFERED` is a
+listener policy: groups reject it with `SRT_EINVPARAM`, and a socket that holds
+it fails `srt_connect` with `SRT_EINVPARAM`. The policy option was introduced
+after 0.2.9.
 
 Attach a distinct label to each endpoint's copied configuration using
 `SRTO_ROBOTWEAX_PATHID` (`0x01000007`). Labels are 1–32 opaque bytes; embedded NUL

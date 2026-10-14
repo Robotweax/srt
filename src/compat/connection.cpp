@@ -203,6 +203,9 @@ struct ListenerGroupAdmission {
     GroupRegistry::MirrorDescription mirror{};
     GroupMembership peer{};
     PathIdentifier path_identifier {};
+    // This connection's negotiated extensions; a mirror carries one setting.
+    bool path_identifier_required = false;
+    bool standby_rtt_required = false;
     std::uint64_t member_generation = 0;
     bool first_member = false;
     bool committed = false;
@@ -233,7 +236,10 @@ struct ListenerGroupAdmission {
             }
         } else if (!GroupRegistry::instance().prepare_mirror(listener,
                        static_cast<SRTSOCKET>(proposed.group_id), type,
-                       initial_sequence, mirror, admission_domain)) {
+                       initial_sequence, mirror, admission_domain,
+                       GroupRegistry::MirrorExtensions {
+                           .path_identifier = path_identifier_required,
+                           .standby_rtt = standby_rtt_required})) {
             return false;
         } else {
             peer = proposed;
@@ -360,6 +366,19 @@ struct ListenerGroupAdmission {
         }
     }
 };
+
+void resolve_offered_extensions(
+    PublicSocketOptions& options, const HandshakeMessage& conclusion) noexcept
+{
+    if (options.path_identifier_if_offered) {
+        options.path_identifier_required = conclusion.has_path_identifier;
+        options.path_identifier_if_offered = false;
+    }
+    if (options.standby_rtt_if_offered) {
+        options.standby_rtt_required = conclusion.has_standby_rtt;
+        options.standby_rtt_if_offered = false;
+    }
+}
 
 [[nodiscard]] bool negotiate_listener_group(
     const GroupMembership& peer, GroupMembership& local,
@@ -1108,7 +1127,9 @@ int listen_socket(
                 || socket->public_options.rendezvous
                 || socket->native_options.maximum_segment_size() < 256U))
             return fail(SRT_ESECFAIL);
-        if (socket->public_options.standby_rtt_required
+        // IF_OFFERED admits labeled or standby-RTT peers as a group member,
+        // so it needs the same listener profile as REQUIRED.
+        if (standby_rtt_enabled(socket->public_options)
             && (!socket->public_options.group_connect
                 || socket->public_options.rendezvous
                 || socket->public_options.transmission_type != SRTT_LIVE
@@ -1116,7 +1137,7 @@ int listen_socket(
                 || !socket->public_options.tsbpd_mode))
             return fail(SRT_EINVPARAM);
         if (socket->public_options.path_identifier.size != 0U
-            || (socket->public_options.path_identifier_required
+            || (path_identifier_enabled(socket->public_options)
                 && (!socket->public_options.group_connect
                     || socket->public_options.transmission_type != SRTT_LIVE)))
             return fail(SRT_EINVPARAM);
@@ -3723,6 +3744,11 @@ int connect_socket(
             return fail(SRT_ESECFAIL);
         }
         const auto& path_options = socket->public_options;
+        // A Caller states what it requires; only a Listener may accept
+        // either form of a peer.
+        if (path_options.standby_rtt_if_offered
+            || path_options.path_identifier_if_offered)
+            return fail(SRT_EINVPARAM);
         if (path_options.standby_rtt_required
             && (socket->group_id == SRT_INVALID_SOCK
                 || socket->group_type != SRT_GTYPE_BACKUP
@@ -4248,6 +4274,11 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     group_admission.endpoint = initial.peer;
     const HandshakeMessage& conclusion = admission.conclusion.message;
     group_admission.path_identifier = conclusion.path_identifier;
+    // An IF_OFFERED Listener policy becomes this connection's strict setting
+    // before the listen callback runs: REQUIRED when the caller offered the
+    // extension, OFF otherwise. The callback, every later check, the HSv5
+    // response and the accepted socket then see one bilateral decision.
+    resolve_offered_extensions(public_options, conclusion);
     const bool has_stream_id =
         selected_protocol == ListenerHandshakeProtocol::hsv5
         && conclusion.has_stream_id_extension
@@ -4364,6 +4395,9 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         timeout_milliseconds = public_options.connection_timeout_milliseconds;
     }
     group_admission.enabled = public_options.group_connect;
+    group_admission.path_identifier_required =
+        public_options.path_identifier_required;
+    group_admission.standby_rtt_required = public_options.standby_rtt_required;
 
     // The callback may change accepted-socket options. Check its final
     // receive window before constructing crypto state for this admission.

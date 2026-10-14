@@ -6,6 +6,12 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add `SRTO_ROBOTWEAX_PATHID_POLICY` and `SRTO_ROBOTWEAX_STANDBYRTT_POLICY`
+  (int32: OFF, REQUIRED, IF_OFFERED). An IF_OFFERED listener negotiates each
+  admission separately, so one port serves Robotweax peers with the extension
+  and ordinary peers without it. Callers stay strict; the boolean `*_REQUIRED`
+  options are unchanged and alias OFF/REQUIRED. No wire change.
+
 - Fix spurious `SRT_REJ_GROUP` on group members that arrive on a second bonded
   listener after an earlier member was admitted before `srt_accept_bond`. A
   caller group whose only members bound to a mirror failed before connecting no
