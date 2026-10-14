@@ -1,6 +1,6 @@
 # Package qualification 0.3.0
 
-Status: **candidate prepared; qualification pending**. Nothing is published.
+Status: **candidate CI accepted; resource gate failed; release on hold**. Nothing is published.
 Project version **0.3.0**, shared-library ABI line **0.3**, compatible SRT API
 **1.5.7**. Existing applications and dependencies must rebuild for ABI line 0.3.
 Previous [0.2.9 acceptance](qualification-0.2.9.md) remains unchanged.
@@ -27,20 +27,22 @@ archive rather than a moving branch or an uncreated release tag.
 | Gate | State | Evidence required |
 | --- | --- | --- |
 | Local static Debug and shared Release | Passed | Frozen product `1e7d7824a`: 69/69 static and 20/20 shared checks; includes exact 84 exports, installed C/C++ consumers, ABI 0.3 and installed documentation |
-| Full source CI | Pending | Exact-head Required CI and all selected full platform, sanitizer, fuzz and interoperability jobs |
-| Complete ecosystem integrations | Pending | Explicit release-integrations run including every OBS platform/desktop job |
-| Homebrew and six vcpkg profiles | Pending | Actual source install/test/audit and standalone/coexistence/relocation/removal checks |
-| Ubuntu 24.04 / Fedora 44 | Pending | Pinned-archive DEB/RPM source and installed-consumer qualification |
-| Windows SDK | Pending | Twelve variants, both installers, actual 0.2.9 upgrade, repair/rejection/coexistence and independent reconstruction |
+| Full source CI | Passed | [CI](https://github.com/Robotweax/srt/actions/runs/38565496566): 46 successful jobs on `a09b2cb30`, including Required CI, platform Debug/Release, sanitizers, fuzz, Mbed TLS and reference interoperability |
+| Complete ecosystem integrations | Passed | [Release integrations](https://github.com/Robotweax/srt/actions/runs/38565513121): every selected FFmpeg/GStreamer/VLC/OBS platform and desktop profile and Required CI passed on `a09b2cb30` |
+| Homebrew and six vcpkg profiles | Passed | [Package managers](https://github.com/Robotweax/srt/actions/runs/38565496678): all seven jobs passed on `a09b2cb30` |
+| Ubuntu 24.04 / Fedora 44 | Passed | [Linux packages](https://github.com/Robotweax/srt/actions/runs/38565496740): both pinned-source package and consumer/coexistence/removal jobs passed |
+| Windows SDK | Passed, unsigned candidate | [Windows SDK installers](https://github.com/Robotweax/srt/actions/runs/38565496487): twelve variants, both installers, real signed-0.2.9 upgrades, repair/rejection/coexistence and independent reconstruction passed; 0.3.0 signing remains separate |
 | Protected signing | Not started | Main-only approved independent rebuild, trusted publisher/timestamp and exact signed-byte tests |
 | Native Homebrew bottle | Not started | Separate tap review, native qualification and downloaded digest verification |
-| Resource and final security review | Pending | Same-product workload evidence and review of available scan findings and unresolved limits |
+| Resource acceptance | Failed; both soaks passed | Original 38/40 resource cases; additional finite File/Stream cohort also has 60-second deadline failures. All cases and original thresholds retained; no failed case replaced |
+| Available security findings | Reviewed | Prior finding corrected in frozen source; version/ABI delta reviewed; no new full Security Cloud scan or independent ACP1 review claimed |
 
-Local acceptance also passed 806 interoperability Python tests (through CTest),
+Local acceptance passed 806 interoperability Python tests through CTest; the
+subsequent full suite passed 810 after four FFmpeg linkage-guard regressions,
 17 tooling tests, six API inventory checks, AEAD contract checks, all 82 installed
 Markdown documents, pinned clang-format 22.1.8, action pin policy, shell/Ruby
 syntax and whitespace checks. These local macOS results do not replace the
-pending hosted platform/package/signing gates.
+separate protected signing and final publication gates.
 
 ## Upgrade fixture provenance
 
@@ -68,3 +70,70 @@ Its first local runs passed 67/69 static and 18/20 shared checks; installed
 consumer examples and a release-contract test still requested version 0.2.
 The corrected source pin above includes those fixture updates. Original logs
 and downloaded bytes are retained; the initial results are not passing evidence.
+
+## Accepted candidate and remaining boundaries
+
+All seven hosted workflows passed at immutable candidate
+`a09b2cb30aae91e3d95d578ccdfa1f6f176db06e`. Recipe/evidence-only changes after
+this point must preserve the frozen product identity. The full source workflow
+intentionally excludes media jobs; the separate successful release-integration
+run supplies those profiles. Optional Live-timing diagnostics were not selected.
+
+[Experimental ACP1](https://github.com/Robotweax/srt/actions/runs/38565496889) passed on Linux and macOS, including enabled
+mode partitions and cross-provider coverage. This is experimental test evidence,
+not an independent cryptographic review or a supported-security qualification.
+[Experimental BCrypt backend](https://github.com/Robotweax/srt/actions/runs/38565496716) passed its five routine jobs. Native
+ARM64 runtime and serial Windows performance diagnostics were not selected;
+ARM64 compilation does not establish native ARM64 runtime acceptance.
+
+The PR SDK workflow intentionally skipped protected rebuild/sign/draft jobs.
+Unsigned-candidate success does not qualify signed 0.3.0 installer bytes.
+
+## Available-finding security delta review
+
+The Standard Security Cloud scan at `3119aa208` had partial static coverage and
+reported one low-severity SSH interoperability descendant-cleanup finding.
+Commit `1c661e0d0` corrects it and is included in frozen source `1e7d7824a`.
+Four real-process stop/disconnect regressions cover an exited leader and a child
+ignoring SIGTERM; stale-identity, idempotence and Darwin compatibility/error
+checks also pass in local/hosted suites.
+
+Relative to that scan, `src` and `compat` are unchanged. Library-facing changes
+are the project/header release version and the unchanged 84-symbol ABI snapshot.
+The separate tooling correction retains an unreaped child identity through
+final group signals, escalates independently of leader exit and makes repeated
+stops harmless. The available reported finding is addressed. No new whole-tree
+scan is claimed. ACP1 remains unreviewed and off by default; #112/#190 remain
+open, and process groups remain unsuitable as adversarial-binary containment.
+
+## Selected resource and finite-transfer evidence
+
+The [compact resource record](performance-0.3.0.json) retains both separately
+declared protocols, source/binary/archive hashes and every failed verdict. The
+original cohort completed 40 resource cases: 38 passed, while one published
+0.2.9 case and one candidate 0.3.0 case each missed the final 1316-byte Live
+payload under loss. Live does not guarantee that final-packet recovery. The
+three clean profiles passed all five pairs and the predeclared throughput,
+CPU-per-Gbit and RSS thresholds; the lossy Live profile remains failed.
+
+Both 32-stream, 300-second encrypted soaks passed, each transferring exactly
+6,000,033,536 bytes with both peer exits zero. They cover CTR and the explicit
+GCM/FEC/SESSIONAUTH profile with key refresh 10000 / preannounce 1000.
+
+The additional File/Stream protocol preserves partial-I/O handling, full-byte
+integrity, stream identity and sequence checks. It offered 400,021,888 bytes per
+case over 32 streams, with 20ms delay / 5ms jitter / 0.1% loss, five alternating
+baseline/candidate pairs, and a fixed 60-second deadline. Four cases passed and six timed out, with three failures on each version.
+The File cohort is failed; incomplete pairs do not
+establish resource-threshold acceptance or a candidate regression. FileCC
+throughput and recovery time depend on transport feedback. The evidence does
+not yet distinguish a workload deadline problem from transport performance
+requiring correction. Further controlled diagnosis remains a release gate.
+
+All 52 original and additional case seals and outcome verdicts were independently
+replayed using the pinned trusted host validator. A successful validator exit
+confirms evidence consistency, not that its reported failed cases passed.
+Neither strict acceptance verifier was relaxed. Original failed cases were not
+retried or replaced. UDP error counters did not increase and cleanup was verified.
+Raw evidence remains local; these selected Linux loopback profiles do not qualify
+WAN/NIC/24-hour/all-platform or general Group-selection performance.

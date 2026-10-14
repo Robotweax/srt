@@ -1,6 +1,6 @@
 # Release process for Robotweax SRT 0.3.0
 
-Status: **started; candidate preparation and qualification pending**.
+Status: **candidate CI passed; resource gate failed; signing/publication on hold**.
 Previous release: [v0.2.9](https://github.com/Robotweax/srt/releases/tag/v0.2.9).
 Preparation baseline: `9899fd7407cd82385de6f5238fe144647f299066`, including the
 merged SSH interoperability cleanup correction.
@@ -36,25 +36,42 @@ Retain all previous qualification records and published tag identities.
 
 ## Candidate acceptance gates
 
-| Gate | Initial state | Acceptance required |
+| Gate | Current state | Acceptance required |
 | --- | --- | --- |
-| Source CI | Pending | Exact-head full CI and Required CI, platform Debug/Release, static/shared consumers, exports, sanitizers, fuzz and reference interoperability |
-| Complete media integrations | Pending | Explicit release-integrations run including all OBS platform/desktop jobs, FFmpeg, GStreamer and VLC |
-| Crypto providers | Pending | Mbed TLS profiles, default OpenSSL and explicit BCrypt qualification; report native/performance diagnostics separately |
-| Experimental ACP1 | Pending | Exact-source enabled mode partitions and cross-provider cases; no supported-security claim |
-| Packages | Pending | Homebrew source install/test/audit, six vcpkg profiles, Ubuntu 24.04 and Fedora 44 consumer/coexistence/removal checks |
-| Windows SDK | Pending | Twelve variants, both unsigned installers, signed 0.2.9 upgrade, repair/rejection/coexistence and independent reconstruction |
-| Resource/longer-running profiles | Pending | Source-matched host/build/workload pins, payload integrity and stated CPU/RSS/throughput limits |
-| Security review | Pending | Available scan findings reviewed against the frozen product; preserve unresolved profile limitations |
+| Source CI | Passed at `a09b2cb30` | Exact-head full CI and Required CI, platform Debug/Release, static/shared consumers, exports, sanitizers, fuzz and reference interoperability |
+| Complete media integrations | Passed at `a09b2cb30` | Explicit release-integrations run including all OBS platform/desktop jobs, FFmpeg, GStreamer and VLC |
+| Crypto providers | Routine profiles passed; optional native/performance diagnostics unselected | Mbed TLS profiles, default OpenSSL and explicit BCrypt qualification; report native/performance diagnostics separately |
+| Experimental ACP1 | Linux/macOS test matrices passed; still unreviewed | Exact-source enabled mode partitions and cross-provider cases; no supported-security claim |
+| Packages | All selected jobs passed at `a09b2cb30` | Homebrew source install/test/audit, six vcpkg profiles, Ubuntu 24.04 and Fedora 44 consumer/coexistence/removal checks |
+| Windows SDK | Unsigned candidate and upgrade/rebuild qualification passed | Twelve variants, both unsigned installers, signed 0.2.9 upgrade, repair/rejection/coexistence and independent reconstruction |
+| Resource/longer-running profiles | Failed; both encrypted soaks passed | Source-matched host/build/workload pins, payload integrity and stated CPU/RSS/throughput limits |
+| Security review | Available finding and frozen-source delta reviewed; no new full scan | Available scan findings reviewed against the frozen product; preserve unresolved profile limitations |
 | Protected signing/publication | Not started | Approved independent rebuild, publisher/timestamp checks and exact signed-byte retests |
 
 Retain failed, cancelled and superseded runs. Accept only completed passing
 results tied to immutable commits. Skips do not replace required profiles.
 
+All seven candidate workflows passed at `a09b2cb30`; the
+[package record](https://github.com/Robotweax/srt/blob/main/packaging/qualification-0.3.0.md)
+links exact runs and distinguishes routine, optional and protected stages.
+The frozen product remains `1e7d7824a`.
+
 The previous Security Cloud scan at `3119aa208` reported a low-severity remote
 interop cleanup finding; its source correction and regressions are included in
 the preparation baseline. That review predates this version freeze and is not
 a new passing scan of the final candidate.
+
+## Resource gate remains open
+
+The original resource cohort passed 38/40 cases. Published 0.2.9 and candidate
+0.3.0 each missed one final Live payload under loss; those cases remain failed.
+Both 300-second encrypted soaks passed exact-byte checks. A separately declared
+ten-case File/Stream cohort also had deadline failures on both versions at the
+fixed 60-second limit. Neither cohort is accepted as a whole. No failed case was
+repeated, replaced or marked passed, and incomplete pairs do not qualify the
+resource thresholds. The [package record](https://github.com/Robotweax/srt/blob/main/packaging/qualification-0.3.0.md)
+and compact resource evidence preserve the results. Diagnose the finite-transfer
+deadline behavior before advancing release acceptance.
 
 ## Signing, tag and publication sequence
 
