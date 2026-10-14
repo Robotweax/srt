@@ -54,6 +54,7 @@ struct DeferredClose {
     std::chrono::steady_clock::time_point deadline{};
     bool retire_idle_channel = false;
     std::uint64_t close_generation = 0;
+    RetiredGroupMemberStatistics group_statistics;
 };
 
 void retire_idle_channel(const std::shared_ptr<DatagramChannel>& channel,
@@ -97,7 +98,7 @@ void publish_group_state(
 void finish_close(DeferredClose close) noexcept
 {
     if (close.runtime != nullptr) {
-        close_connection_runtime(close.runtime);
+        close_connection_runtime(close.runtime, {}, close.group_statistics);
     }
     if (close.channel != nullptr
         && close.runtime != nullptr) {
@@ -441,9 +442,19 @@ void shutdown_record(
         group_generation = record->group_generation;
         member_generation = record->member_generation;
     }
+    RetiredGroupMemberStatistics group_statistics;
     if (group_id != SRT_INVALID_SOCK && member_generation != 0U) {
+        // Fold the current prefix, then atomically transfer its baseline
+        // when removing the member. The runtime owns final-delta accounting.
+        if (runtime != nullptr) {
+            GroupRegistry::instance().note_member_retransmitted(group_id,
+                group_generation, static_cast<SRTSOCKET>(protocol_socket_id),
+                member_generation,
+                runtime->statistics(false, false).total.sent_retransmitted);
+        }
         GroupRegistry::instance().remove_member(group_id, group_generation,
-            static_cast<SRTSOCKET>(protocol_socket_id), member_generation);
+            static_cast<SRTSOCKET>(protocol_socket_id), member_generation,
+            &group_statistics);
     }
 
     if (listener_inbox != nullptr) {
@@ -499,6 +510,7 @@ void shutdown_record(
                 + std::chrono::seconds {linger_seconds},
             .retire_idle_channel = broken_connection,
             .close_generation = close_generation,
+            .group_statistics = group_statistics,
         };
         if (deferred_close_manager().schedule(close)) {
             ReadinessSignal::notify();
@@ -512,6 +524,7 @@ void shutdown_record(
         .protocol_socket_id = protocol_socket_id,
         .retire_idle_channel = broken_connection,
         .close_generation = close_generation,
+        .group_statistics = group_statistics,
     });
 }
 

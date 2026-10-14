@@ -24,6 +24,14 @@ struct PacketByteCounter {
             ipv4_statistics_packet_header_bytes) const noexcept;
 };
 
+// Transfers a removed member's fold baseline through bounded runtime retirement.
+// Numeric group identity and generation never retain an owning group reference.
+struct RetiredGroupMemberStatistics {
+    SRTSOCKET group = SRT_INVALID_SOCK;
+    std::uint64_t group_generation = 0;
+    PacketByteCounter folded;
+};
+
 struct StatisticsCounters {
     PacketByteCounter sent;
     PacketByteCounter received;

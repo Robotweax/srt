@@ -4603,9 +4603,30 @@ bool ConnectionRuntime::begin_close() noexcept
 }
 
 void close_connection_runtime(const std::shared_ptr<ConnectionRuntime>& runtime,
-    std::shared_ptr<RuntimeWorkExecutor> executor) noexcept
+    std::shared_ptr<RuntimeWorkExecutor> executor,
+    RetiredGroupMemberStatistics retirement) noexcept
 {
-    if (runtime == nullptr || !runtime->begin_close()) {
+    if (runtime == nullptr)
+        return;
+    // Register before begin_close: finish_close may already be running on a
+    // different worker, or the runtime may have been closed independently.
+    PacketByteCounter completed_total;
+    bool already_completed = false;
+    if (retirement.group != SRT_INVALID_SOCK) {
+        std::lock_guard lock(runtime->mutex_);
+        already_completed = runtime->close_completed_;
+        if (already_completed)
+            completed_total =
+                runtime->statistics_
+                    .snapshot(runtime->now_microseconds(), {}, false)
+                    .total.sent_retransmitted;
+        else
+            runtime->retired_group_statistics_ = retirement;
+    }
+    if (already_completed)
+        GroupRegistry::instance().note_retired_member_retransmitted(
+            retirement, completed_total);
+    if (!runtime->begin_close()) {
         return;
     }
     if (RuntimeScheduler::on_worker_thread()) {
@@ -4700,9 +4721,21 @@ void ConnectionRuntime::finish_close() noexcept
     next_datagram_retry_microseconds_ = 0U;
     transient_send_failure_since_.reset();
     transient_send_system_error_ = 0;
+    close_completed_ = true;
+    auto retirement = std::exchange(retired_group_statistics_, {});
+    PacketByteCounter total;
+    if (retirement.group != SRT_INVALID_SOCK)
+        total = statistics_.snapshot(now_microseconds(), {}, false)
+                    .total.sent_retransmitted;
     receive_ready_.notify_all();
     send_ready_.notify_all();
     notify_readiness();
+    lock.unlock();
+    // No group lock is nested with the runtime mutex. The final FIFO drain
+    // cannot submit DATA after this point, including deferred close retries.
+    if (retirement.group != SRT_INVALID_SOCK)
+        GroupRegistry::instance().note_retired_member_retransmitted(
+            retirement, total);
 }
 
 bool ConnectionRuntime::broken() const noexcept

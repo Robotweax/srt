@@ -6,6 +6,7 @@
 #include "compat/error_state.hpp"
 #include "compat/readiness.hpp"
 #include "compat/socket_registry.hpp"
+#include "compat/transport_runtime.hpp"
 #include "robotweax/srt/sequence.hpp"
 
 #include <algorithm>
@@ -278,6 +279,59 @@ void GroupRegistry::note_group_dropped(
     group.statistics.interval.receiver_dropped.add(packets, packets * average);
 }
 
+namespace {
+
+// Folds the part of `total` not yet in `folded` into both group counters.
+void fold_retransmitted(GroupStatistics& statistics, PacketByteCounter& folded,
+    const PacketByteCounter& total) noexcept
+{
+    if (total.packets <= folded.packets) {
+        return;
+    }
+    const std::uint64_t packets = total.packets - folded.packets;
+    const std::uint64_t bytes = total.payload_bytes >= folded.payload_bytes
+        ? total.payload_bytes - folded.payload_bytes
+        : 0U;
+    statistics.total.sent_retransmitted.add(packets, bytes);
+    statistics.interval.sent_retransmitted.add(packets, bytes);
+    folded = total;
+}
+
+} // namespace
+
+void GroupRegistry::note_member_retransmitted(SRTSOCKET group,
+    std::uint64_t group_generation, SRTSOCKET socket,
+    std::uint64_t member_generation, const PacketByteCounter& total) noexcept
+{
+    const auto record = find(group);
+    if (record == nullptr) {
+        return;
+    }
+    std::lock_guard lock(record->mutex);
+    if (record->closed || record->generation != group_generation) {
+        return;
+    }
+    const auto member = find_member(*record, socket, member_generation);
+    if (member != record->members.end()) {
+        fold_retransmitted(
+            record->statistics, member->retransmitted_folded, total);
+    }
+}
+
+void GroupRegistry::note_retired_member_retransmitted(
+    RetiredGroupMemberStatistics& retirement,
+    const PacketByteCounter& total) noexcept
+{
+    auto owned = std::exchange(retirement, {});
+    const auto record = find(owned.group);
+    if (record == nullptr)
+        return;
+    std::lock_guard lock(record->mutex);
+    if (record->closed || record->generation != owned.group_generation)
+        return;
+    fold_retransmitted(record->statistics, owned.folded, total);
+}
+
 int GroupRegistry::trace_statistics(
     SRTSOCKET group, SRT_TRACEBSTATS& output, bool clear_interval) noexcept
 {
@@ -285,6 +339,36 @@ int GroupRegistry::trace_statistics(
     if (record == nullptr) {
         set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
+    }
+    // Read member counters without the group lock: a member runtime takes
+    // its own locks, and no member operation may run under GroupRecord::mutex.
+    std::vector<std::pair<SRTSOCKET, std::uint64_t>> members;
+    try {
+        std::lock_guard lock(record->mutex);
+        members.reserve(record->members.size());
+        for (const auto& member : record->members)
+            members.emplace_back(member.public_data.id, member.generation);
+    } catch (...) {
+        set_last_error(SRT_ENOBUF);
+        return SRT_ERROR;
+    }
+    for (const auto& [handle, member_generation] : members) {
+        const auto socket = SocketRegistry::instance().find(handle);
+        if (socket == nullptr) {
+            continue;
+        }
+        std::shared_ptr<ConnectionRuntime> runtime;
+        std::uint64_t group_generation = 0;
+        {
+            std::lock_guard lock(socket->mutex);
+            runtime = socket->runtime;
+            group_generation = socket->group_generation;
+        }
+        if (runtime != nullptr) {
+            note_member_retransmitted(group, group_generation, handle,
+                member_generation,
+                runtime->statistics(false, false).total.sent_retransmitted);
+        }
     }
     RuntimeStatisticsSnapshot snapshot;
     {
@@ -1277,10 +1361,13 @@ void GroupRegistry::retain_member_receive(SRTSOCKET group,
     ReadinessSignal::notify(*record->readiness_source);
 }
 
-void GroupRegistry::remove_member(
-    SRTSOCKET group, std::uint64_t group_generation,
-    SRTSOCKET socket, std::uint64_t member_generation) noexcept
+void GroupRegistry::remove_member(SRTSOCKET group,
+    std::uint64_t group_generation, SRTSOCKET socket,
+    std::uint64_t member_generation,
+    RetiredGroupMemberStatistics* retirement) noexcept
 {
+    if (retirement != nullptr)
+        *retirement = {};
     const auto record = find(group);
     if (record == nullptr) {
         return;
@@ -1291,6 +1378,12 @@ void GroupRegistry::remove_member(
         if (record->closed
             || record->generation != group_generation) {
             return;
+        }
+        if (retirement != nullptr) {
+            const auto member = find_member(*record, socket, member_generation);
+            if (member != record->members.end())
+                *retirement = {
+                    group, group_generation, member->retransmitted_folded};
         }
         const auto previous = record->members.size();
         record->members.erase(std::remove_if(

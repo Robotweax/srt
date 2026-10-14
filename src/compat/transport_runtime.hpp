@@ -609,7 +609,8 @@ private:
     friend struct ConnectionRuntimeTestAccess;
     friend void close_connection_runtime(
         const std::shared_ptr<ConnectionRuntime>& runtime,
-        std::shared_ptr<RuntimeWorkExecutor> executor) noexcept;
+        std::shared_ptr<RuntimeWorkExecutor> executor,
+        RetiredGroupMemberStatistics retirement) noexcept;
     [[nodiscard]] bool begin_close() noexcept;
     void finish_close() noexcept;
     // The group this member belongs to, if any: notified alongside the
@@ -844,6 +845,8 @@ private:
     std::size_t flow_window_packets_ = 1;
     int system_error_ = 0;
     bool locally_closed_ = false;
+    bool close_completed_ = false;
+    RetiredGroupMemberStatistics retired_group_statistics_;
     bool peer_closed_ = false;
     bool peer_error_pending_ = false;
     bool broken_ = false;
@@ -856,6 +859,7 @@ private:
 // runtime. Queue/resource failure preserves the synchronous bounded cleanup.
 // An explicit executor permits deterministic capacity/lifetime tests.
 void close_connection_runtime(const std::shared_ptr<ConnectionRuntime>& runtime,
-    std::shared_ptr<RuntimeWorkExecutor> executor = {}) noexcept;
+    std::shared_ptr<RuntimeWorkExecutor> executor = {},
+    RetiredGroupMemberStatistics retirement = {}) noexcept;
 
 } // namespace robotweax::srt::compat

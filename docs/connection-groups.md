@@ -86,9 +86,21 @@ gaps the group receiver skipped because every member had dropped them
 (`pktRcvDrop*`, `byteRcvDrop*`, sized with the smoothed received payload or
 the 1316-byte Live default before the first delivery). `msTimeStamp` counts
 from the first connection's start; `clear` resets the interval counters.
-Link-level values (RTT, bandwidth, buffers, per-member loss and
-retransmission) remain per member socket. A group that has not connected yet
-reports `SRT_ENOCONN`; a closed group reports `SRT_EINVSOCK`.
+
+Unlike libsrt, a group row also reports `pktRetrans*` and `byteRetrans*`: the
+retransmissions of all its members, including members that have since closed.
+Each member's cumulative count is folded in once, when the group row is read
+and when the member closes, so the group total never decreases and a group
+`clear` does not touch member intervals. A removed member's accounting baseline
+survives linger and the final send drain; their remaining retransmissions are
+committed when runtime retirement completes. During asynchronous linger, that
+tail appears after retirement rather than through the removed member row.
+A group row does not report receive loss: sequences missing on one path are recovered or dropped per member, and
+`pktRcvDrop*` already counts those that no member delivered.
+
+Other link-level values (RTT, bandwidth, buffers, per-member loss) remain per
+member socket. A group that has not connected yet reports `SRT_ENOCONN`; a
+closed group reports `SRT_EINVSOCK`.
 
 For a complete public-header-only example, see
 [`robotweax_srt_group_demo`](../examples/README.md#connection-group-api-demo).

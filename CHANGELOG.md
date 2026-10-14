@@ -6,6 +6,9 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Group handles now report `pktRetrans*`/`byteRetrans*` in `srt_bstats` and
+  `srt_bistats`: the retransmissions of all members, including members that
+  have closed. Other group fields are unchanged.
 - Add `SRTO_ROBOTWEAX_PATHID_POLICY` and `SRTO_ROBOTWEAX_STANDBYRTT_POLICY`
   (int32: OFF, REQUIRED, IF_OFFERED). An IF_OFFERED listener negotiates each
   admission separately, so one port serves Robotweax peers with the extension
