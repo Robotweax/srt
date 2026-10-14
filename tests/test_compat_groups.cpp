@@ -646,12 +646,126 @@ TEST(compat_group_registry_coordinates_member_lifecycle_without_owning_cycles)
     REQUIRE_EQ(data[0].weight, 13U);
     REQUIRE_EQ(data[0].token, 71);
 
-    REQUIRE(GroupRegistry::instance().set_peer_group(
-        group, group_generation, SRTGROUP_MASK | 99));
-    REQUIRE(!GroupRegistry::instance().set_peer_group(
-        group, group_generation, SRTGROUP_MASK | 100));
+    REQUIRE(GroupRegistry::instance().set_peer_group(group, group_generation,
+        socket, member_generation, SRTGROUP_MASK | 99));
+    REQUIRE(!GroupRegistry::instance().set_peer_group(group, group_generation,
+        socket, member_generation, SRTGROUP_MASK | 100));
     REQUIRE_EQ(srt_close(group), 0);
     REQUIRE_EQ(srt_getsockstate(socket), SRTS_CLOSED);
+}
+
+namespace {
+
+struct PeerGroupPinFixture {
+    SRTSOCKET group = SRT_INVALID_SOCK;
+    std::uint64_t group_generation = 0;
+
+    [[nodiscard]] std::uint64_t add(SRTSOCKET socket, std::uint16_t port)
+    {
+        const auto peer = ipv4_address(port);
+        sockaddr_storage storage {};
+        std::memcpy(&storage, &peer, sizeof(peer));
+        std::uint64_t member_generation = 0;
+        REQUIRE(GroupRegistry::instance().add_member(group, socket, storage, 1U,
+            0, group_generation, member_generation));
+        return member_generation;
+    }
+
+    void state(SRTSOCKET socket, std::uint64_t member_generation,
+        SRT_SOCKSTATUS status)
+    {
+        GroupRegistry::instance().update_member(group, group_generation, socket,
+            member_generation, status,
+            status == SRTS_CONNECTED ? SRT_SUCCESS : SRT_ECONNSETUP);
+    }
+
+    [[nodiscard]] bool pin(
+        SRTSOCKET socket, std::uint64_t member_generation, SRTSOCKET peer)
+    {
+        return GroupRegistry::instance().set_peer_group(
+            group, group_generation, socket, member_generation, peer);
+    }
+};
+
+} // namespace
+
+TEST(compat_group_unconfirmed_peer_group_is_replaced_after_holder_fails)
+{
+    // A member that accepted the listener's mirror and then failed before
+    // its runtime was attached must not lock the caller group to a mirror
+    // the listener may already have released.
+    PeerGroupPinFixture fixture {
+        .group = srt_create_group(SRT_GTYPE_BROADCAST)};
+    REQUIRE(fixture.group != SRT_INVALID_SOCK);
+    const SRTSOCKET first = srt_create_socket();
+    const SRTSOCKET second = srt_create_socket();
+    const SRTSOCKET third = srt_create_socket();
+    const auto first_generation = fixture.add(first, 9'101);
+    const auto second_generation = fixture.add(second, 9'102);
+    const auto third_generation = fixture.add(third, 9'103);
+
+    REQUIRE(fixture.pin(first, first_generation, SRTGROUP_MASK | 201));
+    // The holder is still in setup: a different mirror is ambiguous.
+    REQUIRE(!fixture.pin(second, second_generation, SRTGROUP_MASK | 202));
+    // The same mirror is shared by any number of members.
+    REQUIRE(fixture.pin(third, third_generation, SRTGROUP_MASK | 201));
+
+    fixture.state(first, first_generation, SRTS_BROKEN);
+    REQUIRE(!fixture.pin(second, second_generation, SRTGROUP_MASK | 202));
+    fixture.state(third, third_generation, SRTS_BROKEN);
+    REQUIRE(fixture.pin(second, second_generation, SRTGROUP_MASK | 202));
+    // The replacement is now the only acceptable peer group.
+    REQUIRE(!fixture.pin(first, first_generation, SRTGROUP_MASK | 201));
+
+    REQUIRE_EQ(srt_close(fixture.group), 0);
+    for (const SRTSOCKET socket : {first, second, third})
+        static_cast<void>(srt_close(socket));
+}
+
+TEST(compat_group_confirmed_peer_group_is_never_replaced)
+{
+    PeerGroupPinFixture fixture {.group = srt_create_group(SRT_GTYPE_BACKUP)};
+    REQUIRE(fixture.group != SRT_INVALID_SOCK);
+    const SRTSOCKET first = srt_create_socket();
+    const SRTSOCKET second = srt_create_socket();
+    const auto first_generation = fixture.add(first, 9'111);
+    const auto second_generation = fixture.add(second, 9'112);
+
+    REQUIRE(fixture.pin(first, first_generation, SRTGROUP_MASK | 211));
+    GroupRegistry::instance().confirm_peer_group(
+        fixture.group, fixture.group_generation, first, first_generation);
+    fixture.state(first, first_generation, SRTS_CONNECTED);
+    fixture.state(first, first_generation, SRTS_BROKEN);
+    // Data was exchanged with the first mirror; switching would merge two
+    // unrelated sequence spaces, so the failure stays explicit.
+    REQUIRE(!fixture.pin(second, second_generation, SRTGROUP_MASK | 212));
+    REQUIRE(fixture.pin(second, second_generation, SRTGROUP_MASK | 211));
+
+    REQUIRE_EQ(srt_close(fixture.group), 0);
+    for (const SRTSOCKET socket : {first, second})
+        static_cast<void>(srt_close(socket));
+}
+
+TEST(compat_group_confirm_requires_a_pin_holder)
+{
+    PeerGroupPinFixture fixture {
+        .group = srt_create_group(SRT_GTYPE_BROADCAST)};
+    REQUIRE(fixture.group != SRT_INVALID_SOCK);
+    const SRTSOCKET first = srt_create_socket();
+    const SRTSOCKET second = srt_create_socket();
+    const auto first_generation = fixture.add(first, 9'121);
+    const auto second_generation = fixture.add(second, 9'122);
+
+    REQUIRE(fixture.pin(first, first_generation, SRTGROUP_MASK | 221));
+    // A member that never claimed the pin cannot establish it.
+    GroupRegistry::instance().confirm_peer_group(
+        fixture.group, fixture.group_generation, second, second_generation);
+    fixture.state(first, first_generation, SRTS_BROKEN);
+    REQUIRE(fixture.pin(second, second_generation, SRTGROUP_MASK | 222));
+
+    REQUIRE_EQ(srt_close(fixture.group), 0);
+    for (const SRTSOCKET socket : {first, second})
+        static_cast<void>(srt_close(socket));
 }
 
 TEST(compat_group_connect_callback_snapshots_current_registration_for_future_members)
@@ -1384,6 +1498,145 @@ TEST(compat_group_registry_scopes_mirrors_to_an_explicit_listener_bond)
     REQUIRE_EQ(srt_close(first_listener), 0);
     REQUIRE_EQ(srt_close(second_listener), 0);
     REQUIRE_EQ(srt_close(independent_listener), 0);
+}
+
+TEST(compat_group_registry_moves_mirrors_admitted_before_the_bond)
+{
+    // A publisher may connect its first member before the application calls
+    // srt_accept_bond. Its mirror must join the bond so a member arriving on
+    // the other bonded listener is not given a second mirror.
+    const SRTSOCKET first_listener = srt_create_socket();
+    const SRTSOCKET second_listener = srt_create_socket();
+    REQUIRE(first_listener != SRT_INVALID_SOCK);
+    REQUIRE(second_listener != SRT_INVALID_SOCK);
+    const SRTSOCKET early_peer = SRTGROUP_MASK | 84;
+    const SRTSOCKET split_peer = SRTGROUP_MASK | 85;
+
+    GroupRegistry::MirrorDescription early;
+    REQUIRE(GroupRegistry::instance().prepare_mirror(
+        first_listener, early_peer, SRT_GTYPE_BROADCAST, 120U, early));
+    REQUIRE(early.created);
+    // Before the bond the second listener is its own admission scope.
+    GroupRegistry::MirrorDescription split_first;
+    REQUIRE(GroupRegistry::instance().prepare_mirror(
+        first_listener, split_peer, SRT_GTYPE_BROADCAST, 121U, split_first));
+    GroupRegistry::MirrorDescription split_second;
+    REQUIRE(GroupRegistry::instance().prepare_mirror(
+        second_listener, split_peer, SRT_GTYPE_BROADCAST, 121U, split_second));
+    REQUIRE(split_second.created);
+    REQUIRE(split_second.group != split_first.group);
+
+    REQUIRE(GroupRegistry::instance().bond_listeners(
+        {first_listener, second_listener}, 43U));
+
+    GroupRegistry::MirrorDescription late;
+    REQUIRE(GroupRegistry::instance().prepare_mirror(
+        second_listener, early_peer, SRT_GTYPE_BROADCAST, 120U, late));
+    REQUIRE(!late.created);
+    REQUIRE_EQ(late.group, early.group);
+    REQUIRE_EQ(late.generation, early.generation);
+
+    // Two mirrors that already existed for one peer group are not merged:
+    // exactly one joins the bond and every bonded listener resolves to it.
+    GroupRegistry::MirrorDescription resolved_first;
+    REQUIRE(GroupRegistry::instance().prepare_mirror(
+        first_listener, split_peer, SRT_GTYPE_BROADCAST, 121U, resolved_first));
+    GroupRegistry::MirrorDescription resolved_second;
+    REQUIRE(GroupRegistry::instance().prepare_mirror(second_listener,
+        split_peer, SRT_GTYPE_BROADCAST, 121U, resolved_second));
+    REQUIRE(!resolved_first.created);
+    REQUIRE(!resolved_second.created);
+    REQUIRE_EQ(resolved_first.group, resolved_second.group);
+
+    for (const auto& mirror : {early, split_first, split_second})
+        GroupRegistry::instance().release_empty_mirror(
+            mirror.group, mirror.generation);
+    REQUIRE_EQ(srt_close(first_listener), 0);
+    REQUIRE_EQ(srt_close(second_listener), 0);
+}
+
+TEST(compat_group_member_on_second_listener_joins_mirror_admitted_before_bond)
+{
+    // End to end: the first member is admitted before the application starts
+    // srt_accept_bond, the second arrives on the other bonded listener. Both
+    // must land in one mirror; a second mirror makes the caller reject the
+    // second member with SRT_REJ_GROUP after the listener accepted it.
+    struct Cleanup {
+        std::array<SRTSOCKET, 2> listeners {SRT_INVALID_SOCK, SRT_INVALID_SOCK};
+        SRTSOCKET group = SRT_INVALID_SOCK;
+        SRTSOCKET mirror = SRT_INVALID_SOCK;
+        ~Cleanup()
+        {
+            for (const SRTSOCKET socket :
+                {group, mirror, listeners[0], listeners[1]})
+                if (socket != SRT_INVALID_SOCK)
+                    (void)srt_close(socket);
+        }
+    } cleanup;
+    std::array<sockaddr_in, 2> addresses {};
+    const int enabled = 1;
+    for (std::size_t index = 0; index < 2; ++index) {
+        const SRTSOCKET listener = srt_create_socket();
+        REQUIRE(listener != SRT_INVALID_SOCK);
+        cleanup.listeners[index] = listener;
+        REQUIRE_EQ(srt_setsockflag(
+                       listener, SRTO_GROUPCONNECT, &enabled, sizeof(enabled)),
+            0);
+        addresses[index] = ipv4_address(0);
+        REQUIRE_EQ(srt_bind(listener,
+                       reinterpret_cast<const sockaddr*>(&addresses[index]),
+                       sizeof(addresses[index])),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 4), 0);
+        int size = sizeof(addresses[index]);
+        REQUIRE_EQ(srt_getsockname(listener,
+                       reinterpret_cast<sockaddr*>(&addresses[index]), &size),
+            0);
+    }
+    cleanup.group = srt_create_group(SRT_GTYPE_BROADCAST);
+    REQUIRE(cleanup.group != SRT_INVALID_SOCK);
+
+    auto first = srt_prepare_endpoint(nullptr,
+        reinterpret_cast<const sockaddr*>(&addresses[0]), sizeof(addresses[0]));
+    REQUIRE(srt_connect_group(cleanup.group, &first, 1) != SRT_ERROR);
+    cleanup.mirror = srt_accept_bond(cleanup.listeners.data(), 2, 2'000);
+    REQUIRE(cleanup.mirror != SRT_INVALID_SOCK);
+
+    auto second = srt_prepare_endpoint(nullptr,
+        reinterpret_cast<const sockaddr*>(&addresses[1]), sizeof(addresses[1]));
+    REQUIRE(srt_connect_group(cleanup.group, &second, 1) != SRT_ERROR);
+    // An opened group connects further members in the background.
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    while (srt_getsockstate(second.id) == SRTS_CONNECTING
+        && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    REQUIRE_EQ(srt_getsockstate(second.id), SRTS_CONNECTED);
+
+    const auto mirror_record = GroupRegistry::instance().find(cleanup.mirror);
+    REQUIRE(mirror_record != nullptr);
+    std::size_t members = 0;
+    do {
+        {
+            std::lock_guard lock(mirror_record->mutex);
+            members = mirror_record->members.size();
+        }
+        if (members == 2U)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    } while (std::chrono::steady_clock::now() < deadline);
+    REQUIRE_EQ(members, 2U);
+    // No second mirror is waiting to be accepted.
+    REQUIRE_EQ(
+        srt_accept_bond(cleanup.listeners.data(), 2, 0), SRT_INVALID_SOCK);
+
+    constexpr char payload[] = "one mirror";
+    REQUIRE_EQ(srt_sendmsg(cleanup.group, payload, sizeof(payload), -1, 1),
+        static_cast<int>(sizeof(payload)));
+    std::array<char, 64> received {};
+    REQUIRE_EQ(srt_recvmsg(cleanup.mirror, received.data(), received.size()),
+        static_cast<int>(sizeof(payload)));
+    REQUIRE_EQ(std::memcmp(received.data(), payload, sizeof(payload)), 0);
 }
 
 TEST(compat_group_registry_marks_only_the_first_mirror_member_for_accept)

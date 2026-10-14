@@ -679,6 +679,25 @@ void publish_group_member_state(SocketRecord& socket) noexcept
         state, result);
 }
 
+void confirm_peer_group(SocketRecord& socket) noexcept
+{
+    SRTSOCKET group = SRT_INVALID_SOCK;
+    SRTSOCKET handle = SRT_INVALID_SOCK;
+    std::uint64_t group_generation = 0;
+    std::uint64_t member_generation = 0;
+    {
+        std::lock_guard lock(socket.mutex);
+        group = socket.group_id;
+        group_generation = socket.group_generation;
+        member_generation = socket.member_generation;
+        handle = static_cast<SRTSOCKET>(socket.protocol_socket_id);
+    }
+    if (group == SRT_INVALID_SOCK || member_generation == 0U)
+        return;
+    GroupRegistry::instance().confirm_peer_group(
+        group, group_generation, handle, member_generation);
+}
+
 [[nodiscard]] ImplementationIdentity local_implementation_identity(
     std::int32_t policy) noexcept
 {
@@ -1625,14 +1644,18 @@ public:
         if (setup_.configuration.has_group_membership) {
             SRTSOCKET group = SRT_INVALID_SOCK;
             std::uint64_t group_generation = 0;
+            std::uint64_t member_generation = 0;
+            SRTSOCKET handle = SRT_INVALID_SOCK;
             {
                 std::lock_guard lock(socket_.mutex);
                 group = socket_.group_id;
                 group_generation = socket_.group_generation;
+                member_generation = socket_.member_generation;
+                handle = static_cast<SRTSOCKET>(socket_.protocol_socket_id);
             }
             if (!protocol.has_peer_group_membership()
                 || !GroupRegistry::instance().set_peer_group(group,
-                    group_generation,
+                    group_generation, handle, member_generation,
                     static_cast<SRTSOCKET>(
                         protocol.peer_group_membership().group_id))) {
                 return reject_peer(SRT_ECONNREJ, 0, SRT_REJ_GROUP);
@@ -1669,6 +1692,7 @@ public:
                 static_cast<SRT_ERRNO>(last_error().code),
                 last_error().system_error);
         }
+        confirm_peer_group(socket_);
         if (setup_.options.experimental_acp1())
             publish_connected_state(socket_, SRTS_CONNECTED);
         return 0;
@@ -2781,9 +2805,8 @@ private:
         {
             std::lock_guard lock(group->mutex);
             rejected = group->closed
-                || (group->peer_group != SRT_INVALID_SOCK
-                    && group->peer_group
-                        != static_cast<SRTSOCKET>(peer.group_id));
+                || !peer_group_admits(
+                    *group, static_cast<SRTSOCKET>(peer.group_id));
         }
         if (rejected)
             return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_GROUP);
@@ -3065,13 +3088,18 @@ private:
         if (setup_.configuration.has_group_membership) {
             SRTSOCKET group;
             std::uint64_t generation;
+            std::uint64_t member_generation;
+            SRTSOCKET handle;
             {
                 std::lock_guard lock(socket_->mutex);
                 group = socket_->group_id;
                 generation = socket_->group_generation;
+                member_generation = socket_->member_generation;
+                handle = static_cast<SRTSOCKET>(socket_->protocol_socket_id);
             }
             if (!machine_.has_peer_group_membership()
                 || !GroupRegistry::instance().set_peer_group(group, generation,
+                    handle, member_generation,
                     static_cast<SRTSOCKET>(
                         machine_.peer_group_membership().group_id)))
                 return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_GROUP);
@@ -3106,6 +3134,8 @@ private:
                 static_cast<SRT_ERRNO>(last_error().code),
                 last_error().system_error);
         }
+        if (setup_.configuration.has_group_membership)
+            confirm_peer_group(*socket_);
         if (setup_.options.experimental_acp1())
             publish_connected_state(*socket_, SRTS_CONNECTED);
         if (first_connected_packet != nullptr) {
@@ -5559,6 +5589,19 @@ SRTSOCKET accept_bond_sockets(
         for (const auto& listener : bonded) {
             std::lock_guard lock(listener.socket->mutex);
             listener.socket->accept_bond_scope = scope;
+        }
+        // Mirrors admitted before this call joined no bond. Move them into
+        // it so members arriving on another bonded listener share them.
+        std::vector<SRTSOCKET> handles;
+        try {
+            handles.reserve(bonded.size());
+            for (const auto& listener : bonded)
+                handles.push_back(listener.handle);
+        } catch (...) {
+            return fail_accept(SRT_ENOBUF);
+        }
+        if (!GroupRegistry::instance().bond_listeners(handles, scope)) {
+            return fail_accept(SRT_ENOBUF);
         }
     }
 

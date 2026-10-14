@@ -453,6 +453,8 @@ void shutdown_record(
     }
     if (listener_runtime != nullptr) {
         listener_runtime->close();
+        GroupRegistry::instance().forget_listener(
+            static_cast<SRTSOCKET>(protocol_socket_id));
     }
     if (connect_handshake_operation != nullptr) {
         connect_handshake_operation->close();
