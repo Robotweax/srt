@@ -1,6 +1,6 @@
 # Release process for Robotweax SRT 0.3.0
 
-Status: **startup fallback source correction; renewed qualification pending; signing/publication on hold**.
+Status: **candidate finite transfers passed; comparative resource gate incomplete; signing/publication on hold**.
 Previous release: [v0.2.9](https://github.com/Robotweax/srt/releases/tag/v0.2.9).
 Preparation baseline: `9899fd7407cd82385de6f5238fe144647f299066`, including the
 merged SSH interoperability cleanup correction.
@@ -80,9 +80,14 @@ resource thresholds. The [package record](https://github.com/Robotweax/srt/blob/
 and compact resource evidence preserve the results. The separate diagnostic
 follow-up confirms a File-mode reorder-capability initialization defect on both
 versions and identifies sensitive FileCC startup pacing. The capability
-correction is included in the corrected archive. Startup pacing remains open
-after source review; run a prospectively defined qualification against corrected
-source before advancing release acceptance.
+correction and captured no-peer-rate startup fallback correction are included
+in frozen source `607d0034b`. A new, independently validated finite cohort passed
+5/5 corrected-candidate cases and 2/5 published-baseline cases at the original
+60-second deadline. All three new baseline failures remain failed. Two complete
+pairs cannot satisfy the declared five-pair resource comparison; the gate remains
+open. See [the renewed evidence](../packaging/pacing-0.3.0.json). Positive but
+immature peer-rate feedback remains unchanged. No acceptance scope, deadline or
+resource threshold was relaxed.
 
 ## Signing, tag and publication sequence
 

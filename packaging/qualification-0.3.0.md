@@ -1,6 +1,6 @@
 # Package qualification 0.3.0
 
-Status: **startup fallback corrected; corrected archive pinned; qualification pending; release on hold**. Nothing is published.
+Status: **candidate finite transfers passed; comparative resource gate incomplete; release on hold**. Nothing is published.
 Project version **0.3.0**, shared-library ABI line **0.3**, compatible SRT API
 **1.5.7**. Existing applications and dependencies must rebuild for ABI line 0.3.
 Previous [0.2.9 acceptance](qualification-0.2.9.md) remains unchanged.
@@ -19,8 +19,11 @@ Static Debug CTest passed **69/69** and shared Release passed **20/20**.
 The new fallback regressions fail against the preceding controller. Changed-line
 formatting, DCO and installed documentation checks pass. Hosted CI, integrations,
 providers and packages need renewed acceptance. A new ten-case File/Stream cohort
-is prospectively declared with the original workload, 60-second deadline and
-thresholds; its outcome is pending. Earlier results below remain historical.
+retains the original workload, 60-second deadline and thresholds. The corrected
+candidate passed 5/5; published 0.2.9 passed 2/5. All ten cases were independently
+validated, including the three failed baseline cases. Only two pairs completed,
+so comparative resource acceptance remains **false**. Earlier results below
+remain historical. See [the pacing and qualification record](pacing-0.3.0.json).
 
 ## Previous capability-corrected product and archive verification
 
@@ -263,3 +266,41 @@ stored peer estimates and repeated congestion loss. No arbitrary minimum rate,
 new wire behavior, or increased acceptance timeout is introduced. The positive
 but immature peer-rate case remains a separate sensitivity. The corrected
 product still requires new prospective finite File/Stream qualification.
+
+## Renewed finite File/Stream cohort
+
+The newly declared five adjacent pairs used frozen product `607d0034b`, the exact
+published-0.2.9 baseline library/peer bytes, and the unchanged finite-stream peer.
+All ten workload configurations, ordering, thresholds and 60-second deadlines
+match the original File cohort; only peer descriptor paths changed.
+
+The corrected candidate passed **5/5**, each delivering exactly **400,021,888
+bytes** in **58.035632–58.913319 seconds**. Both peer exits were zero. The published
+baseline passed **2/5**; cases 04, 08 and 09 timed out and remain failed. Kernel UDP
+error counters stayed zero and cleanup checks passed in every case. All raw
+manifests, payload verdicts and process results were independently replayed using
+the pinned validator. The VM returned to its original network/buffer settings,
+and this run's processes, tmpfs and input staging were removed.
+
+The archive SHA-256 is
+`831601912d23a719a81ca36f9f9f9c5afc1ab25eb7d9bf63df0940620c0803be`;
+the prospective declaration SHA-256 is
+`da1468c377218ab80ef321bc619341892af42c354a728e91c982c8f44b8f0645`.
+Only two pairs are complete. Their metrics are diagnostic and cannot qualify
+the predeclared five-pair CPU/RSS/throughput thresholds. No failed or superseded
+case is replaced, and the original resource and diagnostic JSON records remain
+byte-for-byte unchanged. No broader deadline guarantee is inferred from five
+candidate completions. The comparative resource gate remains open.
+
+Renewed hosted checks were launched on `848fc6082` (same frozen product):
+[CI](https://github.com/Robotweax/srt/actions/runs/38590217395),
+[complete integrations](https://github.com/Robotweax/srt/actions/runs/38590272719),
+[ACP1](https://github.com/Robotweax/srt/actions/runs/38590217263), and
+[Windows SDK](https://github.com/Robotweax/srt/actions/runs/38590217443)
+were still pending at evidence recording. Completed successful workflows were
+[Linux packages](https://github.com/Robotweax/srt/actions/runs/38590217385),
+[package managers](https://github.com/Robotweax/srt/actions/runs/38590217360), and
+[BCrypt](https://github.com/Robotweax/srt/actions/runs/38590217574). Workflow success
+does not qualify intentionally skipped optional/protected profiles. Subsequent
+evidence changes preserve the frozen product; hosted final acceptance remains
+separate from these local and network results.
