@@ -204,10 +204,10 @@ message boxes does not turn a failed install into success. Setup preflight
 rejection normally returns 7; treat any nonzero exit as failure with the options
 above. A newly opened shell observes machine environment changes. CI exercises
 real earlier-release upgrades, repair, rejection and backend coexistence, then
-builds and runs a consumer against the installed SDK. For the 0.2.9 candidate,
-the earlier inputs are the published signed 0.2.8 OpenSSL/BCrypt installers,
+builds and runs a consumer against the installed SDK. For the 0.3.0 candidate,
+the earlier inputs are the published signed 0.2.9 OpenSSL/BCrypt installers,
 checked against their fixed SHA-256 values and valid Authenticode signatures.
-The actual 0.2.8-to-0.2.9 run and final signed-0.2.9 acceptance are pending;
+The actual 0.2.9-to-0.3.0 run and final signed-0.3.0 acceptance are pending;
 recipe changes alone do not qualify that upgrade. Uninstall removes the
 backend environment variable only when it still points to this installation.
 
