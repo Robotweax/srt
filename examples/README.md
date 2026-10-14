@@ -46,7 +46,7 @@ the installed public SRT interface.
 The [standalone installed consumer](installed-consumer/README.md) is a small
 downstream CMake project intended to be copied or adapted by integrators. It
 uses only `<srt/srt.h>`, discovers an already installed package with
-`find_package(RobotweaxSRT 0.2 CONFIG REQUIRED)`, and links
+`find_package(RobotweaxSRT 0.3 CONFIG REQUIRED)`, and links
 `RobotweaxSRT::srt`. The package-consumer CI test installs Robotweax SRT into
 an isolated prefix and then configures, builds, and runs this exact public
 source from the staged installation.

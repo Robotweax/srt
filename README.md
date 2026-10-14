@@ -111,7 +111,7 @@ options, platform notes, and troubleshooting.
 After installation, consume the exported package and stable public target:
 
 ```cmake
-find_package(RobotweaxSRT 0.2 CONFIG REQUIRED)
+find_package(RobotweaxSRT 0.3 CONFIG REQUIRED)
 
 add_executable(my_srt_app main.cpp)
 target_link_libraries(my_srt_app PRIVATE RobotweaxSRT::srt)
