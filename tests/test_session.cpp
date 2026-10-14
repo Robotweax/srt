@@ -914,6 +914,7 @@ TEST(
             Error::none);
         REQUIRE_EQ(
             session.queue_message(payload, PacketTimestamp {1}), Error::none);
+        REQUIRE(session.next_data_packet());
         std::array<std::byte, 4> acknowledgement {};
         REQUIRE(encode_acknowledgement_payload(
             {.kind = AcknowledgementKind::lite,

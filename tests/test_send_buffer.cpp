@@ -1336,3 +1336,25 @@ TEST(send_buffer_validates_dropped_unsent_tail_across_ring_and_sequence_wrap)
                    {first.advanced(2), first.advanced(7)}),
         Error::none);
 }
+
+TEST(send_buffer_ack_requires_submission_and_preserves_prefix_on_rejection)
+{
+    const SequenceNumber first {SequenceNumber::mask};
+    SendBuffer buffer {first, 4, 1};
+    const std::array<std::byte, 2> message {};
+    REQUIRE_EQ(buffer.enqueue_message(message, 1, PacketTimestamp {0}, 99),
+        Error::none);
+    REQUIRE_EQ(buffer.acknowledge_submitted_before(first.advanced(2)),
+        Error::invalid_control_payload);
+    REQUIRE(buffer.next_packet(true));
+    REQUIRE(buffer.next_packet(true));
+    buffer.note_packet_submitted(first);
+    REQUIRE_EQ(buffer.acknowledge_submitted_before(first.advanced(2)),
+        Error::invalid_control_payload);
+    REQUIRE_EQ(buffer.first_sequence(), first);
+    REQUIRE_EQ(buffer.size(), 2U);
+    buffer.note_packet_submitted(first.next());
+    REQUIRE_EQ(
+        buffer.acknowledge_submitted_before(first.advanced(2)), Error::none);
+    REQUIRE_EQ(buffer.size(), 0U);
+}

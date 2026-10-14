@@ -36,6 +36,14 @@ the same thread is suppressed, and a C++ exception raised by a handler is
 caught before it can cross the C ABI or alter the result of the triggering SRT
 operation.
 
+Final `srt_cleanup()` called from a log handler closes runtime admission and
+hands teardown to a bounded callback worker. It returns before teardown finishes,
+so the emitting worker can exit and other pending log deliveries can complete.
+Startup and socket creation from that handler fail while teardown is pending;
+ordinary threads wait for the next runtime generation. If no callback worker is
+available, cleanup fails with `SRT_ENOBUF` without consuming the final startup
+reference, allowing the application to retry outside the handler.
+
 When no handler is installed, enabled events are written to `stderr`. The
 default threshold is `LOG_WARNING`, matching v1.5.7. Connection failures and
 listener rejections use this level in `SRT_LOGFA_CONN`; successful lifecycle

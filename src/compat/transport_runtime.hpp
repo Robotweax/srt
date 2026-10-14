@@ -606,6 +606,7 @@ public:
         handshake_replay_key() const noexcept;
 
 private:
+    friend struct ConnectionRuntimeTestAccess;
     friend void close_connection_runtime(
         const std::shared_ptr<ConnectionRuntime>& runtime,
         std::shared_ptr<RuntimeWorkExecutor> executor) noexcept;
@@ -839,6 +840,7 @@ private:
     void* receive_pop_context_for_testing_ = nullptr;
     CloseRetryHook close_retry_hook_for_testing_ = nullptr;
     void* close_retry_context_for_testing_ = nullptr;
+    const std::size_t peer_flow_window_ceiling_;
     std::size_t flow_window_packets_ = 1;
     int system_error_ = 0;
     bool locally_closed_ = false;

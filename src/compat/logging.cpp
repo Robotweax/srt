@@ -114,6 +114,11 @@ public:
 
 } // namespace
 
+bool in_log_handler() noexcept
+{
+    return inside_log_handler;
+}
+
 void set_log_level(int level) noexcept
 {
     auto& state = logging_state();

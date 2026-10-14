@@ -4,6 +4,10 @@
 #include "robotweax/srt/udp.hpp"
 #include "compat/error_state.hpp"
 #include "compat/logging.hpp"
+#include "compat/runtime_scheduler_service.hpp"
+#include "compat/connect_callback_executor.hpp"
+#include "compat/runtime_work_executor_service.hpp"
+#include <memory>
 
 #include <array>
 #include <chrono>
@@ -533,4 +537,130 @@ TEST(logging_handshake_rejections_report_both_endpoints_without_secrets)
         REQUIRE(saw_listener);
         REQUIRE(saw_caller);
     }
+}
+
+namespace {
+struct CleanupLogObservation {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool competing = false;
+    bool returned = false;
+    bool wait_for_competing = false;
+    int cleanup_result = -1;
+    int nested_startup = 0;
+};
+void cleanup_from_log(
+    void* opaque, int, const char*, int, const char*, const char*)
+{
+    auto& state = *static_cast<CleanupLogObservation*>(opaque);
+    std::unique_lock lock(state.mutex);
+    if (state.returned)
+        return;
+    if (state.wait_for_competing)
+        state.changed.wait(lock, [&] {
+            return state.competing;
+        });
+    state.cleanup_result = srt_cleanup();
+    // This callback must not wait for cleanup to join its emitting worker.
+    state.nested_startup = srt_startup();
+    state.returned = true;
+    state.changed.notify_all();
+}
+void emit_cleanup_warning(void* context) noexcept
+{
+    auto& state = *static_cast<CleanupLogObservation*>(context);
+    robotweax::srt::compat::emit_compatibility_log(LOG_WARNING, SRT_LOGFA_CONN,
+        "W", "test", __FILE__, __LINE__, "test", "handshake rejected");
+    state.changed.notify_all();
+}
+}
+
+TEST(logging_final_cleanup_from_scheduler_worker_returns_without_self_join)
+{
+    ScopedLoggingReset reset;
+    REQUIRE_EQ(srt_startup(), 0);
+    auto state = std::make_shared<CleanupLogObservation>();
+    srt_setloghandler(state.get(), cleanup_from_log);
+    auto scheduler = robotweax::srt::compat::acquire_runtime_scheduler();
+    REQUIRE(scheduler);
+    REQUIRE_EQ(scheduler->submit(
+                   0, {.function = emit_cleanup_warning, .context = state}),
+        robotweax::srt::compat::RuntimeScheduler::SubmitStatus::accepted);
+    {
+        std::unique_lock lock(state->mutex);
+        REQUIRE(state->changed.wait_for(lock, std::chrono::seconds {3}, [&] {
+            return state->returned;
+        }));
+        REQUIRE_EQ(state->cleanup_result, 0);
+        REQUIRE_EQ(state->nested_startup, SRT_ERROR);
+    }
+    srt_setloghandler(nullptr, nullptr);
+    REQUIRE_EQ(srt_startup(), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
+
+TEST(logging_cleanup_does_not_join_worker_waiting_for_handler_lock)
+{
+    ScopedLoggingReset reset;
+    REQUIRE_EQ(srt_startup(), 0);
+    auto state = std::make_shared<CleanupLogObservation>();
+    state->wait_for_competing = true;
+    srt_setloghandler(state.get(), cleanup_from_log);
+    auto scheduler = robotweax::srt::compat::acquire_runtime_work_executor();
+    REQUIRE(scheduler);
+    REQUIRE_EQ(
+        scheduler->submit({.function = emit_cleanup_warning, .context = state}),
+        robotweax::srt::compat::RuntimeWorkExecutor::SubmitStatus::accepted);
+    // The second worker announces entry before attempting the serialized handler.
+    REQUIRE_EQ(
+        scheduler->submit({.function =
+                               [](void* context) noexcept {
+                                   auto& state =
+                                       *static_cast<CleanupLogObservation*>(
+                                           context);
+                                   {
+                                       std::lock_guard lock(state.mutex);
+                                       state.competing = true;
+                                       state.changed.notify_all();
+                                   }
+                                   emit_cleanup_warning(context);
+                               },
+            .context = state}),
+        robotweax::srt::compat::RuntimeWorkExecutor::SubmitStatus::accepted);
+    {
+        std::unique_lock lock(state->mutex);
+        REQUIRE(state->changed.wait_for(lock, std::chrono::seconds {3}, [&] {
+            return state->returned;
+        }));
+        REQUIRE_EQ(state->cleanup_result, 0);
+    }
+    srt_setloghandler(nullptr, nullptr);
+    REQUIRE_EQ(srt_startup(), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
+
+TEST(logging_cleanup_handoff_failure_preserves_final_startup_reference)
+{
+    ScopedLoggingReset reset;
+    REQUIRE_EQ(srt_startup(), 0);
+    const auto socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    const auto callbacks =
+        robotweax::srt::compat::acquire_connect_callback_executor();
+    REQUIRE(callbacks);
+    callbacks->request_stop();
+    int error = 0;
+    srt_setloghandler(&error,
+        [](void* context, int, const char*, int, const char*, const char*) {
+            const int result = srt_cleanup();
+            *static_cast<int*>(context) =
+                result == SRT_ERROR ? srt_getlasterror(nullptr) : 0;
+        });
+    robotweax::srt::compat::emit_compatibility_log(LOG_WARNING, SRT_LOGFA_CONN,
+        "W", "test", __FILE__, __LINE__, "test", "handshake rejected");
+    srt_setloghandler(nullptr, nullptr);
+    REQUIRE_EQ(error, SRT_ENOBUF);
+    REQUIRE_EQ(srt_getsockstate(socket), SRTS_INIT);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE_EQ(srt_getsockstate(socket), SRTS_NONEXIST);
 }

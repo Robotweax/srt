@@ -124,6 +124,7 @@ Error SendBuffer::enqueue_message(
         slot.occupied = true;
         slot.dropped = false;
         slot.sent = false;
+        slot.submitted = false;
         slot.has_retransmission_send_time = false;
         slot.metadata.live.last_retransmission_send_microseconds = 0;
         slot.retransmission_queued = false;
@@ -227,6 +228,7 @@ void SendBuffer::discard_slot(
     }
     slot.drop_request_queued = false;
     slot.sent = false;
+    slot.submitted = false;
     slot.retransmission_queued = false;
     slot.has_retransmission_send_time = false;
     if (retain_drop_marker) {
@@ -435,6 +437,7 @@ std::optional<OutboundPacket> SendBuffer::next_packet(
         ++next_unsent_offset_;
         if (slot.occupied && !slot.sent) {
             slot.sent = true;
+            slot.submitted = !defer_retransmission_commit;
             slot.first_send_microseconds = now_microseconds;
             ++packets_in_flight_;
             return OutboundPacket {
@@ -537,6 +540,32 @@ bool SendBuffer::has_pending_retransmission() noexcept
         }
     }
     return false;
+}
+
+void SendBuffer::note_packet_submitted(SequenceNumber sequence) noexcept
+{
+    if (auto* slot = find(sequence); slot != nullptr && slot->sent)
+        slot->submitted = true;
+}
+
+Error SendBuffer::acknowledge_submitted_before(SequenceNumber sequence) noexcept
+{
+    const std::int32_t signed_count = sequence.distance_from(first_sequence_);
+    if (signed_count < 0) {
+        return Error::none;
+    }
+    if (static_cast<std::size_t>(signed_count) > sequence_span_) {
+        return Error::invalid_control_payload;
+    }
+    const auto count = static_cast<std::size_t>(signed_count);
+    // Validate the whole prefix before retiring any data. Dropped messages
+    // remain valid cumulative ACK progress, even if never transmitted.
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto& slot = slots_[(head_ + index) % capacity()];
+        if (slot.occupied && !slot.submitted)
+            return Error::invalid_control_payload;
+    }
+    return acknowledge_before(sequence);
 }
 
 Error SendBuffer::acknowledge_before(SequenceNumber sequence) noexcept

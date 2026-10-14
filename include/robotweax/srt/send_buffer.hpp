@@ -109,6 +109,8 @@ public:
 
     // now_microseconds records when an original packet is first selected
     // for transmission; sender too-late drop measures age from that time.
+    // Deferred selection also requires note_packet_submitted after UDP
+    // acceptance before a wire ACK may retire the original packet.
     [[nodiscard]] std::optional<OutboundPacket> next_packet(
         bool defer_retransmission_commit = false,
         bool allow_retransmission = true,
@@ -132,6 +134,11 @@ public:
     [[nodiscard]] Error preserve_protected_payload(SequenceNumber sequence,
         EncryptionKey key, CryptoMode mode,
         std::span<const std::byte> protected_payload) noexcept;
+    void note_packet_submitted(SequenceNumber sequence) noexcept;
+    // Wire ACKs require successful submission; acknowledge_before is also
+    // used for trusted, locally confirmed group-prefix retirement.
+    [[nodiscard]] Error acknowledge_submitted_before(
+        SequenceNumber sequence) noexcept;
     [[nodiscard]] Error acknowledge_before(SequenceNumber sequence) noexcept;
     // Validates the complete sequence range without changing retransmission
     // or drop-request state. Every current packet must already have appeared
@@ -222,6 +229,7 @@ private:
         bool dropped = false;
         bool drop_request_queued = false;
         bool sent = false;
+        bool submitted = false;
         bool retransmission_queued = false;
         bool has_retransmission_send_time = false;
     };

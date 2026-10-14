@@ -1034,3 +1034,31 @@ TEST(receive_buffer_changing_sparse_state_skips_empty_index_subtrees)
         }
     }
 }
+
+TEST(receive_buffer_sensor_expiration_inspects_each_slot_once_across_wrap)
+{
+    for (const std::size_t capacity : {8U, 8192U}) {
+        const SequenceNumber first {SequenceNumber::mask - 2U};
+        ReceiveBuffer buffer {first, capacity};
+        const std::array<std::byte, 1> payload {};
+        REQUIRE(buffer.insert(
+            data_packet(first, 1, MessageBoundary::solo, payload)));
+        buffer.mark_gap(
+            {first.next(),
+                first.advanced(static_cast<std::uint32_t>(capacity - 1U))},
+            100U);
+        auto cursor = first;
+        auto remaining = capacity;
+        std::size_t expired = 0;
+        while (const auto sequence =
+                   buffer.next_expired_gap(100U, cursor, remaining)) {
+            REQUIRE_EQ(buffer.drop_range({*sequence, *sequence}), Error::none);
+            ++expired;
+        }
+        REQUIRE_EQ(expired, capacity - 1U);
+        REQUIRE_EQ(remaining, 0U);
+        REQUIRE_EQ(buffer.occupied(), 1U);
+        REQUIRE_EQ(buffer.first_stored_sequence(), first);
+        REQUIRE(!buffer.next_gap_deadline());
+    }
+}
