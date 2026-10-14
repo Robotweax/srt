@@ -156,6 +156,11 @@ public:
     next_gap_deadline() const noexcept;
     [[nodiscard]] std::optional<SequenceNumber> next_expired_gap(
         std::uint64_t now_microseconds) const noexcept;
+    // A forward cursor survives head trimming; the caller bounds all slot
+    // inspections across an entire expiration pass.
+    [[nodiscard]] std::optional<SequenceNumber> next_expired_gap(
+        std::uint64_t now_microseconds, SequenceNumber& cursor,
+        std::size_t& remaining_inspections) const noexcept;
 
 private:
     friend struct detail::ReceiveBufferTestAccess;

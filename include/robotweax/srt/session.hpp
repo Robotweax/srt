@@ -236,8 +236,9 @@ public:
         send_buffer_.note_retransmission_sent(sequence, now_microseconds);
     }
     // A transport that defers the pacing commit calls pacer.on_packet_sent
-    // after successful submission and note_retransmission_sent for repeated
-    // DATA. A selected retransmission stays outstanding until that commit.
+    // after successful submission, note_packet_submitted for DATA, and
+    // note_retransmission_sent for repeated DATA. A selected retransmission
+    // stays outstanding until that commit.
     [[nodiscard]] std::optional<OutboundPacket> next_paced_data_packet(
         PacketPacer& pacer, std::uint64_t now_microseconds,
         std::size_t new_packet_wire_overhead = 0U,
@@ -460,6 +461,11 @@ public:
     {
         timer_scheduler_.on_packet_sent(now_microseconds);
     }
+    void note_packet_submitted(SequenceNumber sequence) noexcept
+    {
+        send_buffer_.note_packet_submitted(sequence);
+    }
+
     void note_data_packet_sent(
         std::uint64_t now_microseconds) noexcept;
     // Produce a full ACK for bytes that an owning transport layer has already

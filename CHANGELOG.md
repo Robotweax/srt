@@ -12,6 +12,11 @@ version returned by `srt_getversion()`.
   and ordinary peers without it. Callers stay strict; the boolean `*_REQUIRED`
   options are unchanged and alias OFF/REQUIRED. No wire change.
 
+- Fix spurious `SRT_REJ_GROUP` on group members that arrive on a second bonded
+  listener after an earlier member was admitted before `srt_accept_bond`. A
+  caller group whose only members bound to a mirror failed before connecting no
+  longer rejects the replacement mirror.
+
 - Add an unreviewed ACP1 prototype behind an explicit default-off build gate
   and strict bilateral socket opt-in. Authenticate runtime controls with
   direction-separated keys and bounded replay state; ordinary Caller/Listener

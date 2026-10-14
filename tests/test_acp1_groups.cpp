@@ -503,12 +503,8 @@ TEST(acp1_groups_bonded_mirror_rejects_different_required_policies)
     const auto legacy_listener = sockets.own(srt_create_socket());
     configure(protected_listener);
     configure(legacy_listener, false);
-    for (const auto handle : {protected_listener, legacy_listener}) {
-        const auto record = SocketRegistry::instance().find(handle);
-        REQUIRE(record);
-        std::lock_guard lock(record->mutex);
-        record->accept_bond_scope = 123;
-    }
+    REQUIRE(GroupRegistry::instance().bond_listeners(
+        {protected_listener, legacy_listener}, 123U));
     GroupRegistry::MirrorDescription description;
     REQUIRE(GroupRegistry::instance().prepare_mirror(
         protected_listener, 0x40000001, SRT_GTYPE_BACKUP, 900, description));
