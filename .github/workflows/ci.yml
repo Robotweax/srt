@@ -584,8 +584,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          abi=$(pkg-config --variable=robotweax_abi \
+            "$RUNNER_TEMP/robotweax-srt/lib/pkgconfig/srt.pc")
+          [[ "$abi" =~ ^[0-9]+\.[0-9]+$ ]]
           ldd ffmpeg-source/ffmpeg | \
-            grep -F "$RUNNER_TEMP/robotweax-srt/lib/librobotweax-srt.so.0.2"
+            grep -F "$RUNNER_TEMP/robotweax-srt/lib/librobotweax-srt.so.$abi "
           ffmpeg-source/ffmpeg -hide_banner -protocols | \
             grep -Eq '^[[:space:]]+srt$'
       - name: Run FFmpeg live-transfer smoke test
