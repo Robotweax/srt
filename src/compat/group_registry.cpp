@@ -839,7 +839,6 @@ bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
         std::lock_guard lock(listener_record->mutex);
         listener_public_options = listener_record->public_options;
         listener_native_options = listener_record->native_options;
-        bond_scope = listener_record->accept_bond_scope;
         listener_send_synchronous =
             listener_record->public_options.send_synchronous;
         listener_receive_synchronous =
@@ -863,7 +862,8 @@ bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
         }
         if (const auto bonded = listener_bond_scopes_.find(listener);
             bonded != listener_bond_scopes_.end()) {
-            // The listener's own field may predate a concurrent bond.
+            // Only this registry transaction publishes an admission scope.
+            // Socket fields can be ahead of or behind mirror migration.
             bond_scope = bonded->second;
         }
         for (const auto& entry : groups_) {

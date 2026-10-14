@@ -5586,10 +5586,6 @@ SRTSOCKET accept_bond_sockets(
         if (scope == 0U) {
             scope = allocate_accept_bond_scope();
         }
-        for (const auto& listener : bonded) {
-            std::lock_guard lock(listener.socket->mutex);
-            listener.socket->accept_bond_scope = scope;
-        }
         // Mirrors admitted before this call joined no bond. Move them into
         // it so members arriving on another bonded listener share them.
         std::vector<SRTSOCKET> handles;
@@ -5602,6 +5598,12 @@ SRTSOCKET accept_bond_sockets(
         }
         if (!GroupRegistry::instance().bond_listeners(handles, scope)) {
             return fail_accept(SRT_ENOBUF);
+        }
+        // Publish coordinator metadata only after admission and migration
+        // have committed together under the registry lock.
+        for (const auto& listener : bonded) {
+            std::lock_guard lock(listener.socket->mutex);
+            listener.socket->accept_bond_scope = scope;
         }
     }
 

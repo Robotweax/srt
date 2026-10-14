@@ -1492,6 +1492,11 @@ TEST(compat_group_registry_scopes_mirrors_to_an_explicit_listener_bond)
         independent_record->accept_bond_scope = 42U;
     }
 
+    REQUIRE(GroupRegistry::instance().bond_listeners(
+        {first_listener, second_listener}, 41U));
+    REQUIRE(
+        GroupRegistry::instance().bond_listeners({independent_listener}, 42U));
+
     const SRTSOCKET peer_group = SRTGROUP_MASK | 78;
     GroupRegistry::MirrorDescription first;
     REQUIRE(GroupRegistry::instance().prepare_mirror(
@@ -1520,6 +1525,43 @@ TEST(compat_group_registry_scopes_mirrors_to_an_explicit_listener_bond)
     REQUIRE_EQ(srt_close(first_listener), 0);
     REQUIRE_EQ(srt_close(second_listener), 0);
     REQUIRE_EQ(srt_close(independent_listener), 0);
+}
+
+TEST(compat_group_registry_ignores_socket_scope_before_bond_commit)
+{
+    // Pause accept_bond after it publishes socket scopes but before it commits
+    // the registry bond. Admission on the first listener must reuse its early
+    // mirror instead of creating a prematurely scoped duplicate.
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        const auto first_listener = srt_create_socket();
+        const auto second_listener = srt_create_socket();
+        REQUIRE(first_listener != SRT_INVALID_SOCK);
+        REQUIRE(second_listener != SRT_INVALID_SOCK);
+        constexpr auto peer = SRTGROUP_MASK | 86;
+        GroupRegistry::MirrorDescription early, racing, late;
+        auto& registry = GroupRegistry::instance();
+        REQUIRE(
+            registry.prepare_mirror(first_listener, peer, type, 120U, early));
+        for (auto listener : {first_listener, second_listener}) {
+            const auto record = SocketRegistry::instance().find(listener);
+            REQUIRE(record);
+            std::lock_guard lock(record->mutex);
+            record->accept_bond_scope = 44U;
+        }
+        REQUIRE(
+            registry.prepare_mirror(first_listener, peer, type, 120U, racing));
+        REQUIRE(!racing.created);
+        REQUIRE_EQ(racing.group, early.group);
+        REQUIRE(
+            registry.bond_listeners({first_listener, second_listener}, 44U));
+        REQUIRE(
+            registry.prepare_mirror(second_listener, peer, type, 120U, late));
+        REQUIRE(!late.created);
+        REQUIRE_EQ(late.group, early.group);
+        registry.release_empty_mirror(early.group, early.generation);
+        REQUIRE_EQ(srt_close(first_listener), 0);
+        REQUIRE_EQ(srt_close(second_listener), 0);
+    }
 }
 
 TEST(compat_group_registry_moves_mirrors_admitted_before_the_bond)
