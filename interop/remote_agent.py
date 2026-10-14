@@ -3,8 +3,9 @@
 
 The controller sends this source to ``python3 -c`` over an authenticated SSH
 connection.  Commands are always argv arrays and are never evaluated by a
-shell.  Every process is placed in its own process group and is terminated when
-the controller disconnects.
+shell. Every process is placed in its own process group. Stop and disconnect
+cleanup terminate that group, including descendants that outlive the leader.
+Programs that leave the group require external containment.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -37,6 +39,8 @@ class ProcessRecord:
     stderr_path: Path
     stdout_file: BinaryIO
     stderr_file: BinaryIO
+    group_id: int
+    terminated: bool = False
 
 
 class Agent:
@@ -115,6 +119,16 @@ class Agent:
         if cwd is not None and not Path(cwd).is_dir():
             raise ValueError(f"working directory does not exist: {cwd}")
 
+        if (not callable(getattr(os, "waitid", None))
+                and sys.platform != "darwin") or not all(
+            hasattr(os, name) for name in (
+                "P_PID", "WEXITED", "WNOWAIT", "WNOHANG", "CLD_EXITED"
+            )
+        ):
+            raise RuntimeError("process cleanup requires POSIX waitid/WNOWAIT")
+        if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+            raise RuntimeError("process cleanup requires default SIGCHLD handling")
+
         stdout_path = self._artifact_path(f"{process_id}.stdout")
         stderr_path = self._artifact_path(f"{process_id}.stderr")
         stdout_file = stdout_path.open("wb")
@@ -134,7 +148,8 @@ class Agent:
             stderr_file.close()
             raise
         self.processes[process_id] = ProcessRecord(
-            process, stdout_path, stderr_path, stdout_file, stderr_file
+            process, stdout_path, stderr_path, stdout_file, stderr_file,
+            process.pid,
         )
         return {"process_id": process_id, "pid": process.pid}
 
@@ -146,7 +161,7 @@ class Agent:
         tail_bytes = int(request.get("tail_bytes", 32_768))
         if tail_bytes < 0 or tail_bytes > 1_048_576:
             raise ValueError("tail_bytes is outside the supported range")
-        exit_code = record.process.poll()
+        exit_code = self._exit_code(record)
         return {
             "process_id": process_id,
             "running": exit_code is None,
@@ -161,7 +176,7 @@ class Agent:
         if record is None:
             raise ValueError(f"unknown process {process_id!r}")
         grace_seconds = float(request.get("grace_seconds", 2.0))
-        if grace_seconds < 0.0 or grace_seconds > 30.0:
+        if not math.isfinite(grace_seconds) or not 0.0 <= grace_seconds <= 30.0:
             raise ValueError("invalid stop grace period")
         self._terminate(record, grace_seconds)
         return self.status({"process_id": process_id})
@@ -238,20 +253,98 @@ class Agent:
         return result
 
     @staticmethod
+    def _exit_code(record: ProcessRecord) -> int | None:
+        if record.terminated:
+            return record.process.returncode
+        # Do not poll/wait the Popen here: reaping would allow PID/PGID reuse
+        # before we finish signaling descendants. Only _terminate reaps it.
+        status = Agent._wait_status(record.process.pid)
+        if status is None:
+            return None
+        code, value = status
+        return value if code == os.CLD_EXITED else -value
+
+    @staticmethod
+    def _wait_status(pid: int) -> tuple[int, int] | None:
+        options = os.WEXITED | os.WNOHANG | os.WNOWAIT
+        if callable(getattr(os, "waitid", None)):
+            status = os.waitid(os.P_PID, pid, options)
+            if status is None or status.si_pid == 0:
+                return None
+            return status.si_code, status.si_status
+        if sys.platform != "darwin":
+            raise RuntimeError("process cleanup requires POSIX waitid/WNOWAIT")
+        # Older macOS Python builds omit os.waitid. Bind the same system call
+        # using the public Darwin siginfo_t layout from <sys/signal.h>.
+        import ctypes
+        class DarwinSiginfo(ctypes.Structure):
+            _fields_ = [
+                ("signo", ctypes.c_int), ("error", ctypes.c_int),
+                ("code", ctypes.c_int), ("pid", ctypes.c_int),
+                ("uid", ctypes.c_uint), ("status", ctypes.c_int),
+                ("address", ctypes.c_void_p), ("value", ctypes.c_void_p),
+                ("band", ctypes.c_long), ("reserved", ctypes.c_ulong * 7),
+            ]
+        waitid = ctypes.CDLL(None, use_errno=True).waitid
+        waitid.argtypes = [ctypes.c_uint, ctypes.c_uint,
+                           ctypes.POINTER(DarwinSiginfo), ctypes.c_int]
+        waitid.restype = ctypes.c_int
+        info = DarwinSiginfo()
+        if waitid(os.P_PID, pid, ctypes.byref(info), options) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+        return None if info.pid == 0 else (info.code, info.status)
+
+    @staticmethod
+    def _signal_group(record: ProcessRecord, sig: int) -> bool:
+        try:
+            os.killpg(record.group_id, sig)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # Darwin returns EPERM for a group containing only zombies. Do not
+            # suppress a real permission failure for any remaining live member.
+            # The unreaped leader pins the numeric identity during this probe.
+            if sys.platform != "darwin":
+                raise
+            members = subprocess.run(
+                ["ps", "-x", "-g", str(record.group_id), "-o", "pgid=,stat="],
+                check=False,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=2.0,
+            )
+            if members.returncode not in (0, 1) or (
+                members.returncode == 1 and (
+                    members.stdout.strip() or members.stderr.strip()
+                )
+            ):
+                raise RuntimeError("could not inspect the owned process group")
+            for line in members.stdout.splitlines():
+                group, state = line.split()
+                if int(group) == record.group_id and not state.startswith("Z"):
+                    raise
+            return False
+
+    @staticmethod
     def _terminate(record: ProcessRecord, grace_seconds: float) -> None:
-        if record.process.poll() is None:
-            try:
-                os.killpg(record.process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                record.process.wait(timeout=grace_seconds)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(record.process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                record.process.wait(timeout=2.0)
+        if record.terminated:
+            return
+        # Verify that the unreaped leader is still our child before signaling.
+        # A lost wait identity fails closed rather than using a stale group ID.
+        Agent._exit_code(record)
+        if Agent._signal_group(record, signal.SIGTERM):
+            deadline = time.monotonic() + grace_seconds
+            while Agent._signal_group(record, 0):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    Agent._signal_group(record, signal.SIGKILL)
+                    break
+                time.sleep(min(0.01, remaining))
+        # The leader's identity remains reserved until after the last signal.
+        # Never use this PGID again once wait() releases the identity.
+        record.process.wait(timeout=2.0)
+        record.terminated = True
         record.stdout_file.close()
         record.stderr_file.close()
 

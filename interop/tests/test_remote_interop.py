@@ -5,6 +5,8 @@ import hashlib
 import io
 import json
 import queue
+import signal
+import socket
 import threading
 import os
 import subprocess
@@ -234,13 +236,24 @@ print(json.dumps({{"event": "complete", "role": role,
                 INTEROP_DIRECTORY / "remote_agent.py"
             ).read_text(encoding="utf-8")
             try:
-                result = remote_interop.run_scenario(
-                    scenario,
-                    nodes,
-                    agent_source,
-                    root / "artifacts",
-                    keep_remote=False,
-                )
+                original_stop = remote_interop.AgentClient.stop
+                with mock.patch.object(
+                    remote_interop.AgentClient, "stop", autospec=True,
+                    side_effect=original_stop,
+                ) as stop:
+                    result = remote_interop.run_scenario(
+                        scenario,
+                        nodes,
+                        agent_source,
+                        root / "artifacts",
+                        keep_remote=False,
+                    )
+                stopped = {
+                    (call.args[0].node.name, call.args[1])
+                    for call in stop.call_args_list
+                }
+                self.assertIn(("a", "caller"), stopped)
+                self.assertIn(("b", "listener"), stopped)
             finally:
                 shared.unlink(missing_ok=True)
             self.assertEqual(result["status"], "passed", result.get("error"))
@@ -369,6 +382,92 @@ class RemoteAgentProtocolTests(unittest.TestCase):
         self.process.wait(timeout=3)
         self.assertFalse(Path(run_directory).exists())
 
+    def assert_descendant_cleanup(self, leader_exits: bool, disconnect: bool) -> None:
+        # A connection held only by the descendant provides a portable death
+        # notification, including on hosts that do not promptly reap orphans.
+        child_source = r"""
+import os, signal, socket, sys
+read_fd, write_fd = os.pipe()
+child = os.fork()
+if child == 0:
+    os.close(read_fd)
+    if sys.argv[2] == "term":
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    with socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=15) as peer:
+        os.write(write_fd, b"R")
+        os.close(write_fd)
+        peer.sendall((str(os.getpid()) + "\n").encode())
+        peer.recv(1)
+    os._exit(0)
+os.close(write_fd)
+assert os.read(read_fd, 1) == b"R"
+os.close(read_fd)
+if sys.argv[2] == "exit":
+    sys.exit(0)
+signal.alarm(15)
+signal.pause()
+"""
+        self.request({"op": "init", "run_id": "descendant-cleanup"})
+        child_pid = None
+        started = None
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            listener.settimeout(5)
+            started = self.request({
+                "op": "start", "process_id": "peer",
+                "argv": [sys.executable, "-c", child_source,
+                         str(listener.getsockname()[1]),
+                         "exit" if leader_exits else "term"],
+            })
+            try:
+                connection, _ = listener.accept()
+                with connection:
+                    connection.settimeout(5)
+                    with connection.makefile("rb") as ready:
+                        child_pid = int(ready.readline())
+                        self.assertEqual(os.getpgid(child_pid), started["pid"])
+                        if leader_exits:
+                            status = self.wait_for_exit("peer")
+                            self.assertEqual(status["exit_code"], 0)
+                        if disconnect:
+                            assert self.process.stdin is not None
+                            self.process.stdin.close()
+                            self.process.wait(timeout=3)
+                        else:
+                            status = self.request({
+                                "op": "stop", "process_id": "peer",
+                                "grace_seconds": 0.05,
+                            })
+                            self.assertFalse(status["running"])
+                            repeated = self.request({
+                                "op": "stop", "process_id": "peer",
+                                "grace_seconds": 0.0,
+                            })
+                            self.assertEqual(repeated, status)
+                        self.assertEqual(ready.read(1), b"")
+            finally:
+                # On failure, close the descendant's connection and signal only
+                # its verified test group; the child also has a 15-second bound.
+                if child_pid is not None:
+                    try:
+                        if os.getpgid(child_pid) == started["pid"]:
+                            os.killpg(started["pid"], signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_stop_terminates_descendant_after_leader_exit(self) -> None:
+        self.assert_descendant_cleanup(leader_exits=True, disconnect=False)
+
+    def test_stop_escalates_after_leader_exits_on_sigterm(self) -> None:
+        self.assert_descendant_cleanup(leader_exits=False, disconnect=False)
+
+    def test_disconnect_terminates_descendant_after_leader_exit(self) -> None:
+        self.assert_descendant_cleanup(leader_exits=True, disconnect=True)
+
+    def test_disconnect_escalates_after_leader_exits_on_sigterm(self) -> None:
+        self.assert_descendant_cleanup(leader_exits=False, disconnect=True)
+
     def test_controller_can_inject_agent_over_transport_command(self) -> None:
         node = remote_interop.Node(
             name="local",
@@ -407,35 +506,163 @@ class RemoteAgentProtocolTests(unittest.TestCase):
 
 
 class RemoteAgentStatusTests(unittest.TestCase):
-    def test_status_samples_process_state_once(self) -> None:
+    def record(self, root: Path):
+        stdout_path = root / "process.stdout"
+        stderr_path = root / "process.stderr"
+        stdout_path.write_text("stdout", encoding="utf-8")
+        stderr_path.write_text("stderr", encoding="utf-8")
+        process = mock.Mock(pid=123, returncode=None)
+        record = remote_agent.ProcessRecord(
+            process, stdout_path, stderr_path,
+            stdout_path.open("ab"), stderr_path.open("ab"), process.pid,
+        )
+        self.addCleanup(record.stdout_file.close)
+        self.addCleanup(record.stderr_file.close)
+        return record
+
+    def test_status_observes_exit_without_reaping_the_leader(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            stdout_path = root / "process.stdout"
-            stderr_path = root / "process.stderr"
-            stdout_path.write_text("stdout", encoding="utf-8")
-            stderr_path.write_text("stderr", encoding="utf-8")
+            record = self.record(Path(directory))
+            agent = remote_agent.Agent()
+            agent.processes["process"] = record
+            cases = [
+                (None, None),
+                (mock.Mock(si_pid=123, si_code=os.CLD_EXITED, si_status=7), 7),
+                (mock.Mock(si_pid=123, si_code=os.CLD_KILLED,
+                           si_status=signal.SIGTERM), -signal.SIGTERM),
+            ]
+            for info, expected in cases:
+                with self.subTest(expected=expected), mock.patch.object(
+                    remote_agent.os, "waitid", return_value=info, create=True
+                ) as waitid:
+                    status = agent.status({"process_id": "process"})
+                    self.assertEqual(status["exit_code"], expected)
+                    self.assertEqual(status["running"], expected is None)
+                    waitid.assert_called_once_with(
+                        os.P_PID, 123, os.WEXITED | os.WNOHANG | os.WNOWAIT
+                    )
+            record.process.poll.assert_not_called()
+            record.process.wait.assert_not_called()
 
-            process = mock.Mock()
-            process.poll.return_value = None
-            with stdout_path.open("ab") as stdout_file, \
-                    stderr_path.open("ab") as stderr_file:
-                agent = remote_agent.Agent()
-                agent.run_directory = root
-                agent.processes["process"] = remote_agent.ProcessRecord(
-                    process,
-                    stdout_path,
-                    stderr_path,
-                    stdout_file,
-                    stderr_file,
-                )
+    def test_retirement_escalates_before_reaping_and_cannot_reuse_pgid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record = self.record(Path(directory))
+            events = []
+            def signal_group(group, sig):
+                events.append((group, sig))
+            def reap(timeout):
+                events.append("reap")
+                record.process.returncode = 0
+                return 0
+            record.process.wait.side_effect = reap
+            with mock.patch.object(remote_agent.os, "waitid", create=True), \
+                    mock.patch.object(remote_agent.os, "killpg",
+                                      side_effect=signal_group), \
+                    mock.patch.object(remote_agent.time, "monotonic",
+                                      side_effect=[0.0, 1.0]):
+                remote_agent.Agent._terminate(record, 0.5)
+            self.assertEqual(events, [
+                (123, signal.SIGTERM), (123, 0),
+                (123, signal.SIGKILL), "reap",
+            ])
+            with mock.patch.object(remote_agent.os, "killpg") as killpg, \
+                    mock.patch.object(remote_agent.os, "waitid", create=True) as waitid:
+                remote_agent.Agent._terminate(record, 0.0)
+            killpg.assert_not_called()
+            waitid.assert_not_called()
+            self.assertTrue(record.stdout_file.closed)
+            self.assertTrue(record.stderr_file.closed)
 
-                status = agent.status(
-                    {"process_id": "process", "tail_bytes": 4096}
-                )
+    def test_disappeared_group_is_reaped_without_escalation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record = self.record(Path(directory))
+            with mock.patch.object(remote_agent.os, "waitid", create=True), \
+                    mock.patch.object(remote_agent.os, "killpg",
+                                      side_effect=ProcessLookupError) as killpg:
+                remote_agent.Agent._terminate(record, 1.0)
+            killpg.assert_called_once_with(123, signal.SIGTERM)
+            record.process.wait.assert_called_once_with(timeout=2.0)
+            self.assertTrue(record.terminated)
 
-            process.poll.assert_called_once_with()
-            self.assertTrue(status["running"])
-            self.assertIsNone(status["exit_code"])
+    def test_darwin_empty_or_zombie_group_can_retire(self):
+        record = mock.Mock(group_id=123)
+        for listing in ["", "123 Z\n456 S\n"]:
+            with self.subTest(listing=listing), \
+                    mock.patch.object(remote_agent.sys, "platform", "darwin"), \
+                    mock.patch.object(remote_agent.os, "killpg",
+                                      side_effect=PermissionError), \
+                    mock.patch.object(remote_agent.subprocess, "run",
+                                      return_value=mock.Mock(stdout=listing, stderr="", returncode=0)):
+                self.assertFalse(remote_agent.Agent._signal_group(
+                    record, signal.SIGTERM
+                ))
+
+    def test_darwin_live_member_permission_errors_are_preserved(self):
+        record = mock.Mock(group_id=123)
+        with mock.patch.object(remote_agent.sys, "platform", "darwin"), \
+                mock.patch.object(remote_agent.os, "killpg",
+                                  side_effect=PermissionError), \
+                mock.patch.object(remote_agent.subprocess, "run",
+                                  return_value=mock.Mock(stdout="123 S\n", stderr="", returncode=0)):
+            with self.assertRaises(PermissionError):
+                remote_agent.Agent._signal_group(record, signal.SIGTERM)
+
+    def test_darwin_group_probe_failure_is_not_treated_as_empty(self):
+        record = mock.Mock(group_id=123)
+        with mock.patch.object(remote_agent.sys, "platform", "darwin"), \
+                mock.patch.object(remote_agent.os, "killpg",
+                                  side_effect=PermissionError), \
+                mock.patch.object(remote_agent.subprocess, "run",
+                                  return_value=mock.Mock(stdout="", stderr="error",
+                                                         returncode=1)):
+            with self.assertRaisesRegex(RuntimeError, "inspect"):
+                remote_agent.Agent._signal_group(record, signal.SIGTERM)
+
+    def test_lost_wait_identity_never_signals_a_stale_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record = self.record(Path(directory))
+            with mock.patch.object(remote_agent.os, "waitid", create=True,
+                                   side_effect=ChildProcessError), \
+                    mock.patch.object(remote_agent.os, "killpg") as killpg:
+                with self.assertRaises(ChildProcessError):
+                    remote_agent.Agent._terminate(record, 1.0)
+            killpg.assert_not_called()
+            record.process.wait.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin native waitid binding")
+    def test_darwin_native_waitid_retains_the_wait_identity(self):
+        process = subprocess.Popen([sys.executable, "-c", "raise SystemExit(7)"])
+        try:
+            with mock.patch.object(remote_agent.os, "waitid", None, create=True):
+                deadline = time.monotonic() + 5.0
+                while True:
+                    status = remote_agent.Agent._wait_status(process.pid)
+                    if status is not None:
+                        break
+                    if time.monotonic() >= deadline:
+                        self.fail("child did not exit before readiness deadline")
+                    time.sleep(0.01)
+                self.assertEqual(status, (os.CLD_EXITED, 7))
+                self.assertEqual(remote_agent.Agent._wait_status(process.pid), status)
+            self.assertEqual(process.wait(timeout=2), 7)
+            with mock.patch.object(remote_agent.os, "waitid", None, create=True):
+                with self.assertRaises(ChildProcessError):
+                    remote_agent.Agent._wait_status(process.pid)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=2)
+
+    def test_stop_rejects_nonfinite_and_out_of_range_grace_periods(self):
+        agent = remote_agent.Agent()
+        agent.processes["process"] = mock.Mock()
+        for grace in [float("nan"), float("inf"), -0.1, 30.1]:
+            with self.subTest(grace=grace), mock.patch.object(
+                agent, "_terminate"
+            ) as terminate:
+                with self.assertRaisesRegex(ValueError, "grace"):
+                    agent.stop({"process_id": "process", "grace_seconds": grace})
+                terminate.assert_not_called()
 
 
 class AgentResourceLimitTests(unittest.TestCase):

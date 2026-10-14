@@ -818,9 +818,7 @@ def run_scenario(
             if agent is None:
                 continue
             try:
-                status = agent.status(label)
-                if status["running"]:
-                    status = agent.stop(label)
+                status = agent.stop(label)
                 if label == "listener":
                     listener_status = status
                 else:
@@ -837,9 +835,7 @@ def run_scenario(
                 )
         for agent, process_id in reversed(processes):
             try:
-                status = agent.status(process_id)
-                if status["running"]:
-                    agent.stop(process_id)
+                agent.stop(process_id)
             except AgentError:
                 pass
         for label, status in (

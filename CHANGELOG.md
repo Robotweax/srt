@@ -6,6 +6,10 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- SSH interoperability cleanup now terminates descendants that outlive their
+  process-group leader, including descendants that ignore SIGTERM. Leader
+  identities are retained until group retirement to prevent stale PGID reuse.
+
 - Group handles now report `pktRetrans*`/`byteRetrans*` in `srt_bstats` and
   `srt_bistats`: the retransmissions of all members, including members that
   have closed. Other group fields are unchanged.
