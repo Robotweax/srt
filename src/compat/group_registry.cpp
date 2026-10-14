@@ -534,7 +534,9 @@ int GroupRegistry::get_io_option(
     const bool group_owned = option == SRTO_SNDSYN || option == SRTO_RCVSYN
         || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO
         || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+        || option == SRTO_ROBOTWEAX_STANDBYRTT_POLICY
         || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
+        || option == SRTO_ROBOTWEAX_PATHID_POLICY
         || option == SRTO_ROBOTWEAX_ACP1_REQUIRED;
     {
         std::lock_guard lock(record->mutex);
@@ -617,7 +619,9 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
     const bool group_owned = option == SRTO_SNDSYN || option == SRTO_RCVSYN
         || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO
         || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+        || option == SRTO_ROBOTWEAX_STANDBYRTT_POLICY
         || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
+        || option == SRTO_ROBOTWEAX_PATHID_POLICY
         || option == SRTO_ROBOTWEAX_ACP1_REQUIRED;
     {
         std::lock_guard lock(record->mutex);
@@ -625,14 +629,17 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
             set_last_error(SRT_EINVSOCK);
             return SRT_ERROR;
         }
-        if (option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+        if ((option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+                || option == SRTO_ROBOTWEAX_STANDBYRTT_POLICY)
             && record->type != SRT_GTYPE_BACKUP) {
             set_last_error(SRT_EINVOP);
             return SRT_ERROR;
         }
         if ((option == SRTO_ROBOTWEAX_ACP1_REQUIRED
                 || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
-                || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED)
+                || option == SRTO_ROBOTWEAX_PATHID_POLICY
+                || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+                || option == SRTO_ROBOTWEAX_STANDBYRTT_POLICY)
             && record->opened) {
             set_last_error(SRT_ECONNSOCK);
             return SRT_ERROR;
@@ -671,7 +678,9 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
         // Group-only RDV/path combinations need the owning group identity.
         if (option == SRTO_RENDEZVOUS
             || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
-            || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED)
+            || option == SRTO_ROBOTWEAX_PATHID_POLICY
+            || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+            || option == SRTO_ROBOTWEAX_STANDBYRTT_POLICY)
             configured.group_id = group;
         // Use the ordinary socket rules for validation and PRE/POST stages.
         if (set_socket_option(configured, option, value, value_size)
@@ -810,7 +819,8 @@ void GroupRegistry::note_io_result(
 
 bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
     SRT_GROUP_TYPE type, std::uint32_t initial_sequence,
-    MirrorDescription& output, std::uint64_t admission_domain) noexcept
+    MirrorDescription& output, std::uint64_t admission_domain,
+    std::optional<MirrorExtensions> extensions) noexcept
 {
     output = {};
     if (listener < 0 || is_group_handle(listener)
@@ -854,6 +864,14 @@ bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
             .minimum_input_bandwidth_bytes_per_second;
         listener_minimum_peer_version = listener_record->public_options
             .minimum_peer_srt_version;
+    }
+    if (extensions.has_value()) {
+        // Without a negotiated result the listener setting is already strict.
+        listener_public_options.path_identifier_required =
+            extensions->path_identifier;
+        listener_public_options.path_identifier_if_offered = false;
+        listener_public_options.standby_rtt_required = extensions->standby_rtt;
+        listener_public_options.standby_rtt_if_offered = false;
     }
 
     try {

@@ -12,7 +12,23 @@ the caller Backup group and before listening on the listener, which also needs
 `SRTO_GROUPCONNECT=true`. Ordinary callers and listeners without group admission
 cannot enable the profile at setup. Both peers must enable it; missing or
 unsolicited support fails with `SRT_REJ_GROUP`, with no automatic discovery or
-silent downgrade. Group and listener templates carry the option to new members. Endpoint
+silent downgrade. Group and listener templates carry the option to new members.
+
+A listener may instead set the int32 `SRTO_ROBOTWEAX_STANDBYRTT_POLICY`
+(`0x0100000f`) to `ROBOTWEAX_SRT_EXTENSION_IF_OFFERED`, with the same listener
+profile. It then negotiates each admission separately: a caller that offers
+standby RTT is handled as by a required listener, and any other peer, including
+an ordinary socket, as by a listener with it off. This is a decision of the
+listening application, not a downgrade negotiated on the wire: a caller with the
+option required still fails against a listener that does not answer the offer.
+The offer is not authenticated without session authentication, so an on-path
+party able to strip it can make such a listener skip monitoring for that
+connection; the caller then rejects the connection rather than run without it.
+The accepted socket or group member reports `REQUIRED` or `OFF` through the
+policy option, and every member of one accepted group shares the same result.
+`OFF` and `REQUIRED` are equivalent to the boolean option. Groups reject
+`IF_OFFERED`, and a socket holding it fails `srt_connect` with `SRT_EINVPARAM`.
+The policy option was introduced after 0.2.9. Endpoint
 configurations (`srt_config_add`) reject it with `SRT_EINVPARAM`.
 It cannot change after setup or in a listen callback. Disabling TSBPD/Message
 mode or selecting a different transport/congestion profile while it is required

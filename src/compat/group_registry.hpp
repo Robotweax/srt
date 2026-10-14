@@ -215,9 +215,17 @@ public:
         SRTSOCKET group, std::uint64_t group_generation,
         SRTSOCKET socket, std::uint64_t member_generation,
         SRT_MEMBERSTATUS state, int result) noexcept;
+    // Bilateral extensions negotiated for the member being admitted. Every
+    // member of one mirror carries the same setting, so a listener with an
+    // IF_OFFERED policy never mixes labeled and unlabeled members.
+    struct MirrorExtensions {
+        bool path_identifier = false;
+        bool standby_rtt = false;
+    };
     [[nodiscard]] bool prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
         SRT_GROUP_TYPE type, std::uint32_t initial_sequence,
-        MirrorDescription& output, std::uint64_t admission_domain = 0) noexcept;
+        MirrorDescription& output, std::uint64_t admission_domain = 0,
+        std::optional<MirrorExtensions> extensions = std::nullopt) noexcept;
     void release_empty_mirror(
         SRTSOCKET group, std::uint64_t generation) noexcept;
     [[nodiscard]] bool add_member(SRTSOCKET group, SRTSOCKET socket,

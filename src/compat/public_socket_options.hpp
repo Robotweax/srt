@@ -56,9 +56,36 @@ struct PublicSocketOptions {
     std::uint8_t bound_device_size = 0;
     StreamId stream_id {};
     std::int32_t identity_advertisement = ROBOTWEAX_SRT_IDENTITY_OFF;
+    // `*_required` is the strict bilateral setting a connection negotiates.
+    // `*_if_offered` is a Listener policy resolved per admission: it becomes
+    // `required` when the peer offers the extension and is cleared otherwise,
+    // so accepted sockets only ever carry the strict setting.
     bool standby_rtt_required = false;
+    bool standby_rtt_if_offered = false;
     bool path_identifier_required = false;
+    bool path_identifier_if_offered = false;
     PathIdentifier path_identifier {};
 };
+
+[[nodiscard]] constexpr bool standby_rtt_enabled(
+    const PublicSocketOptions& options) noexcept
+{
+    return options.standby_rtt_required || options.standby_rtt_if_offered;
+}
+
+[[nodiscard]] constexpr bool path_identifier_enabled(
+    const PublicSocketOptions& options) noexcept
+{
+    return options.path_identifier_required
+        || options.path_identifier_if_offered;
+}
+
+[[nodiscard]] constexpr std::int32_t extension_policy(
+    bool required, bool if_offered) noexcept
+{
+    return required  ? ROBOTWEAX_SRT_EXTENSION_REQUIRED
+        : if_offered ? ROBOTWEAX_SRT_EXTENSION_IF_OFFERED
+                     : ROBOTWEAX_SRT_EXTENSION_OFF;
+}
 
 } // namespace robotweax::srt::compat

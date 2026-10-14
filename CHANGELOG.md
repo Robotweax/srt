@@ -6,6 +6,12 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add `SRTO_ROBOTWEAX_PATHID_POLICY` and `SRTO_ROBOTWEAX_STANDBYRTT_POLICY`
+  (int32: OFF, REQUIRED, IF_OFFERED). An IF_OFFERED listener negotiates each
+  admission separately, so one port serves Robotweax peers with the extension
+  and ordinary peers without it. Callers stay strict; the boolean `*_REQUIRED`
+  options are unchanged and alias OFF/REQUIRED. No wire change.
+
 - Add an unreviewed ACP1 prototype behind an explicit default-off build gate
   and strict bilateral socket opt-in. Authenticate runtime controls with
   direction-separated keys and bounded replay state; ordinary Caller/Listener
