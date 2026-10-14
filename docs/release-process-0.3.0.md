@@ -85,7 +85,7 @@ in frozen source `607d0034b`. A new, independently validated finite cohort passe
 5/5 corrected-candidate cases and 2/5 published-baseline cases at the original
 60-second deadline. All three new baseline failures remain failed. Two complete
 pairs cannot satisfy the declared five-pair resource comparison; the gate remains
-open. See [the renewed evidence](../packaging/pacing-0.3.0.json). Positive but
+open. See [the renewed evidence](https://github.com/Robotweax/srt/blob/fc3186f0f67fd97657066aa42b3c9525206a1601/packaging/pacing-0.3.0.json). Positive but
 immature peer-rate feedback remains unchanged. No acceptance scope, deadline or
 resource threshold was relaxed.
 
