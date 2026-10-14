@@ -2570,7 +2570,13 @@ struct RetransmissionRetirementFixture {
     }
     ~RetransmissionRetirementFixture()
     {
+        // The injected clock is stack-owned. Complete every deferred close
+        // using it before this fixture and its clock leave scope, even when
+        // another test still holds a startup reference.
+        runtime->close();
         (void)srt_close(member);
+        (void)robotweax::srt::compat::service_deferred_closes(
+            ConnectionRuntime::Clock::now() + std::chrono::seconds {10});
         (void)srt_close(group);
         (void)srt_cleanup();
     }
