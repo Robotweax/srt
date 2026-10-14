@@ -35,8 +35,9 @@ installed-consumer versions and latest signed SDK upgrade fixtures together.
 Retain all previous qualification records and published tag identities.
 
 The post-diagnostic File/Control capability correction changes the frozen
-product. The prior CI results below apply to the earlier source only. Refresh
-archive pins and repeat affected qualification before accepting corrected source.
+product. The prior CI results below apply to the earlier source only. The corrected archive is pinned to
+`bc7e39cc942bbd129ff55b1c014edbe563be266d`; repeat affected qualification
+before accepting corrected source.
 Startup pacing and the failed resource gate remain unresolved.
 
 ## Previous candidate acceptance gates
@@ -77,9 +78,10 @@ repeated, replaced or marked passed, and incomplete pairs do not qualify the
 resource thresholds. The [package record](https://github.com/Robotweax/srt/blob/main/packaging/qualification-0.3.0.md)
 and compact resource evidence preserve the results. The separate diagnostic
 follow-up confirms a File-mode reorder-capability initialization defect on both
-versions and identifies sensitive FileCC startup pacing. Correct capability
-propagation, review startup behavior, and run a newly frozen, prospectively
-defined qualification before advancing release acceptance.
+versions and identifies sensitive FileCC startup pacing. The capability
+correction is included in the corrected archive. Startup pacing remains open
+after source review; run a prospectively defined qualification against corrected
+source before advancing release acceptance.
 
 ## Signing, tag and publication sequence
 

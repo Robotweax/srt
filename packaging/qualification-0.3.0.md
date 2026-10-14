@@ -1,13 +1,30 @@
 # Package qualification 0.3.0
 
-Status: **post-diagnostic source correction; new freeze and qualification pending; release on hold**. Nothing is published.
+Status: **post-diagnostic source correction; new archive pinned; qualification pending; release on hold**. Nothing is published.
 Project version **0.3.0**, shared-library ABI line **0.3**, compatible SRT API
 **1.5.7**. Existing applications and dependencies must rebuild for ABI line 0.3.
 Previous [0.2.9 acceptance](qualification-0.2.9.md) remains unchanged.
 
-The File/Control capability correction changes product source after the archive
-below. Its prior results are historical evidence, not acceptance of the corrected
-source. Package pins must be refreshed before corrected-source qualification.
+## Corrected product and archive verification
+
+- Product commit: `bc7e39cc942bbd129ff55b1c014edbe563be266d`.
+- Downloaded public archive: `https://github.com/Robotweax/srt/archive/bc7e39cc942bbd129ff55b1c014edbe563be266d.tar.gz`.
+- Bytes: 1946515.
+- SHA-256: `2fa4db10dc3f74b6598e869907a676dbdfc13bfb0f424c8727a7cc55d693f8bd`.
+- SHA-512: `6c21e67b1f2dc9811d995c10f747e145f3418578abfc20c93f9293f829dae5b0363399356c4c13812f75ba8d549dec6ba3ed97a6526372ebb239e0b4aee3206f`.
+- All 643 tracked regular files and executable bits match Git.
+- Homebrew, vcpkg, Fedora and Linux qualification inputs pin this archive.
+
+Local static Debug CTest passed **69/69**, and shared Release passed **20/20**,
+including exports and installed C/C++ consumers. The three new regressions also
+reject an intentional mutation restoring discarded retransmission capability.
+Documentation (82 files), changed-line formatting and DCO checks passed.
+
+Hosted source/provider/ACP1 CI, ecosystem integrations, package qualification,
+Windows SDK and resource acceptance for this corrected product are **pending**.
+Previous results below belong to the pre-fix source and do not accept this
+archive. Signing, tagging and publication remain on hold. No claim is made
+that this opt-in reorder correction fixes default-bound startup pacing.
 
 ## Previous frozen product and archive verification
 
