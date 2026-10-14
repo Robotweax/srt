@@ -1,5 +1,6 @@
 #include "compat/socket_registry.hpp"
 #include "compat/process_owned.hpp"
+#include "compat/logging.hpp"
 #include "compat/connect_callback_executor.hpp"
 
 #include "compat/connect_handshake_operation.hpp"
@@ -761,7 +762,9 @@ bool runtime_start() noexcept
     // These owners are dormant: no socket or worker is started here.
     (void)SocketRegistry::instance();
     std::unique_lock lifecycle_lock(lifecycle.mutex);
-    if (lifecycle.cleaning && (callback_depth != 0U || cleanup_worker_thread)) {
+    if (lifecycle.cleaning
+        && (callback_depth != 0U || cleanup_worker_thread
+            || in_log_handler())) {
         return false;
     }
     lifecycle.changed.wait(lifecycle_lock, [&] {
@@ -779,7 +782,9 @@ SRTSOCKET runtime_create_socket() noexcept
     creation_blocked_by_cleanup = false;
     auto& lifecycle = runtime_lifecycle();
     std::unique_lock lifecycle_lock(lifecycle.mutex);
-    if (lifecycle.cleaning && (callback_depth != 0U || cleanup_worker_thread)) {
+    if (lifecycle.cleaning
+        && (callback_depth != 0U || cleanup_worker_thread
+            || in_log_handler())) {
         creation_blocked_by_cleanup = true;
         return SRT_INVALID_SOCK;
     }
@@ -798,7 +803,9 @@ SRTSOCKET runtime_create_group(SRT_GROUP_TYPE type) noexcept
     auto& lifecycle = runtime_lifecycle();
     (void)SocketRegistry::instance();
     std::unique_lock lifecycle_lock(lifecycle.mutex);
-    if (lifecycle.cleaning && (callback_depth != 0U || cleanup_worker_thread)) {
+    if (lifecycle.cleaning
+        && (callback_depth != 0U || cleanup_worker_thread
+            || in_log_handler())) {
         creation_blocked_by_cleanup = true;
         return SRT_INVALID_SOCK;
     }
@@ -817,7 +824,9 @@ int runtime_create_epoll() noexcept
     auto& lifecycle = runtime_lifecycle();
     (void)SocketRegistry::instance();
     std::unique_lock lifecycle_lock(lifecycle.mutex);
-    if (lifecycle.cleaning && (callback_depth != 0U || cleanup_worker_thread)) {
+    if (lifecycle.cleaning
+        && (callback_depth != 0U || cleanup_worker_thread
+            || in_log_handler())) {
         creation_blocked_by_cleanup = true;
         return SRT_ERROR;
     }
@@ -830,41 +839,65 @@ int runtime_create_epoll() noexcept
     return epoll_create();
 }
 
-void runtime_cleanup() noexcept
+namespace {
+void finish_runtime_cleanup() noexcept
 {
     auto& lifecycle = runtime_lifecycle();
-    std::shared_ptr<ConnectCallbackExecutor> retired_callbacks;
-    std::unique_lock lifecycle_lock(lifecycle.mutex);
-    if (lifecycle.cleaning) {
-        // A callback or worker retiring under final cleanup may call cleanup
-        // again. There is no generation reference left for it to release.
-        return;
+    // The handoff is published while holding this lock.
+    {
+        std::lock_guard lock(lifecycle.mutex);
     }
-    if (lifecycle.startup_count == 0U) {
-        return;
+    GroupRegistry::instance().clear();
+    SocketRegistry::instance().clear();
+    stop_runtime_work_executor();
+    stop_runtime_scheduler();
+    clear_standby_rtt_service();
+    // Retiring callback workers may enter SRT from their TLS destructors.
+    // Reopen admission and detach their executor under the lifecycle lock,
+    // then join outside it so a new generation cannot inherit the old pool.
+    std::unique_lock lock(lifecycle.mutex);
+    lifecycle.cleaning = false;
+    auto retired_callbacks = retire_connect_callback_executor();
+    lock.unlock();
+    lifecycle.changed.notify_all();
+    if (retired_callbacks)
+        retired_callbacks->stop();
+}
+} // namespace
+
+bool runtime_cleanup() noexcept
+{
+    auto& lifecycle = runtime_lifecycle();
+    std::unique_lock lock(lifecycle.mutex);
+    if (lifecycle.cleaning || lifecycle.startup_count == 0U)
+        return true;
+    if (lifecycle.startup_count > 1U) {
+        --lifecycle.startup_count;
+        return true;
     }
-    --lifecycle.startup_count;
-    if (lifecycle.startup_count == 0U) {
+    if (in_log_handler()) {
+        // Never join a protocol worker from its synchronous log handler or
+        // join a worker waiting for the handler's registration lock. Reserve
+        // a bounded callback worker before consuming the final reference.
+        const auto executor = acquire_connect_callback_executor();
+        if (!executor
+            || !executor->submit({
+                .function =
+                    [](void*, int) noexcept {
+                        finish_runtime_cleanup();
+                    },
+                .context = executor,
+            }))
+            return false;
+        lifecycle.startup_count = 0U;
         lifecycle.cleaning = true;
-        lifecycle_lock.unlock();
-        GroupRegistry::instance().clear();
-        SocketRegistry::instance().clear();
-        stop_runtime_work_executor();
-        stop_runtime_scheduler();
-        clear_standby_rtt_service();
-        // Reopen admission before waking retired callback workers: their
-        // application TLS destructors may immediately start a new generation.
-        // Detach under the lifecycle lock so new entrants cannot acquire the
-        // old executor, and join only after releasing this lock.
-        lifecycle_lock.lock();
-        lifecycle.cleaning = false;
-        retired_callbacks = retire_connect_callback_executor();
-        lifecycle_lock.unlock();
-        lifecycle.changed.notify_all();
-        if (retired_callbacks) {
-            retired_callbacks->stop();
-        }
+        return true;
     }
+    lifecycle.startup_count = 0U;
+    lifecycle.cleaning = true;
+    lock.unlock();
+    finish_runtime_cleanup();
+    return true;
 }
 
 } // namespace robotweax::srt::compat

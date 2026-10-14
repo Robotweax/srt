@@ -13217,3 +13217,41 @@ TEST(acp1_runtime_gcm_fec_recovers_with_authenticated_parity_and_controls)
         matrix_dropped, 6U, 5U, false, true, true, true);
 }
 #endif
+
+TEST(compat_runtime_rejects_ack_of_pending_udp_data_and_caps_credit)
+{
+    for (const auto kind : {AcknowledgementKind::lite,
+             AcknowledgementKind::small, AcknowledgementKind::full}) {
+        BackpressureFixture fixture;
+        fixture.enqueue();
+        (void)fixture.runtime->poll();
+        REQUIRE(!fixture.output.attempts.empty());
+        const auto original = fixture.output.attempts.front();
+        auto deliver = [&](SequenceNumber next) {
+            std::array<std::byte, 32> bytes {};
+            const Acknowledgement ack {.kind = kind,
+                .next_sequence = next,
+                .available_receive_buffer_packets = 0x7fffffffU};
+            const auto encoded = encode_acknowledgement_payload(ack, bytes);
+            REQUIRE(encoded);
+            fixture.runtime->process_packet(
+                {.kind = PacketKind::control,
+                    .control = {.type = ControlType::acknowledgement},
+                    .payload = std::span {bytes}.first(encoded.bytes_written)},
+                fixture.peer);
+        };
+        deliver(SequenceNumber {701});
+        REQUIRE_EQ(fixture.runtime->statistics(false, true)
+                       .instantaneous.flow_window_packets,
+            64U);
+        fixture.output.blocked = false;
+        fixture.now += 10'000U;
+        (void)fixture.runtime->poll();
+        const auto sent = take_datagrams(fixture.output.accepted);
+        REQUIRE(std::find(sent.begin(), sent.end(), original) != sent.end());
+        deliver(SequenceNumber {701});
+        REQUIRE(fixture.runtime->statistics(false, true)
+                    .instantaneous.flow_window_packets
+            <= 64U);
+    }
+}

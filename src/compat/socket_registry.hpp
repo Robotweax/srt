@@ -167,7 +167,7 @@ void mark_runtime_cleanup_worker_thread() noexcept;
 [[nodiscard]] SRTSOCKET runtime_create_group(
     SRT_GROUP_TYPE type) noexcept;
 [[nodiscard]] int runtime_create_epoll() noexcept;
-void runtime_cleanup() noexcept;
+[[nodiscard]] bool runtime_cleanup() noexcept;
 
 [[nodiscard]] std::size_t service_deferred_closes(
     std::chrono::steady_clock::time_point now) noexcept;

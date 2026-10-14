@@ -8,6 +8,7 @@
 
 namespace robotweax::srt::compat {
 
+[[nodiscard]] bool in_log_handler() noexcept;
 void set_log_level(int level) noexcept;
 void add_log_functional_area(int area) noexcept;
 void delete_log_functional_area(int area) noexcept;
