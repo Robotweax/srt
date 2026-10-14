@@ -111,6 +111,13 @@ NAK ranges select missing packets for retransmission and provide loss feedback
 to FileCC. Retransmissions retain priority over new DATA and remain eligible
 while new sends are stopped by peer flow control.
 
+A positive `SRTO_LOSSMAXTTL` enables adaptive reorder tolerance when both peers
+negotiate retransmission marking. Original packets arriving out of order can
+increase the tolerance up to this bound; marked retransmissions cannot. The
+initial tolerance and the default bound are zero, so initial gaps are reported
+immediately. File/Stream and Control/Message use this capability without enabling
+TSBPD, late-packet dropping, or periodic NAK reports.
+
 ## Acknowledgement cadence and close
 
 File mode coalesces Full ACKs on the 10 ms control cadence and emits Lite ACKs

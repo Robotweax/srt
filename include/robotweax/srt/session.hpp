@@ -263,9 +263,9 @@ public:
         std::uint64_t handshake_arrival_microseconds,
         PacketTimestamp peer_handshake_timestamp,
         LiveRateController::Configuration rate_configuration = {}) noexcept;
-    void configure_file(
-        bool message_api,
-        FileRateController::Configuration rate_configuration = {}) noexcept;
+    void configure_file(bool message_api,
+        FileRateController::Configuration rate_configuration = {},
+        bool negotiated_retransmit_flag = false) noexcept;
     void configure_packet_filter(
         const PacketFilterConfiguration& configuration,
         bool reconstruction_available = false) noexcept

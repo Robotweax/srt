@@ -332,15 +332,18 @@ void ReliabilitySession::configure_live(const NegotiatedLiveOptions& options,
     }
 }
 
-void ReliabilitySession::configure_file(
-    bool message_api,
-    FileRateController::Configuration rate_configuration) noexcept
+void ReliabilitySession::configure_file(bool message_api,
+    FileRateController::Configuration rate_configuration,
+    bool negotiated_retransmit_flag) noexcept
 {
     live_rate_controller_.reset();
     file_rate_controller_.emplace(
         send_buffer_.first_sequence(), rate_configuration);
     tsbpd_clock_.reset();
     live_options_ = {};
+    // Retransmission marking is negotiated independently of Live delivery.
+    // File receivers also need it to distinguish reordering from recovery.
+    live_options_.retransmit_flag = negotiated_retransmit_flag;
     sender_drop_threshold_microseconds_ = 0;
     periodic_nak_enabled_ = false;
     message_api_ = message_api;

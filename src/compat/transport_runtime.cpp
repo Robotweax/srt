@@ -1533,21 +1533,21 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
             configuration.options.congestion_controller())) {
         const auto maximum_bandwidth = configuration.options.get(
             SocketOption::maximum_bandwidth_bytes_per_second);
-        session_.configure_file(
-            configuration.options.message_api(), {
+        session_.configure_file(configuration.options.message_api(),
+            {
                 .maximum_congestion_window_packets =
                     configuration.flow_window_packets,
                 .packet_size_bytes =
                     configuration.options.maximum_segment_size(),
                 .maximum_bandwidth_bytes_per_second =
                     maximum_bandwidth.value > 0
-                    ? static_cast<std::uint64_t>(
-                          maximum_bandwidth.value)
+                    ? static_cast<std::uint64_t>(maximum_bandwidth.value)
                     : 0U,
                 .rate_control_interval_microseconds = 10'000,
-                .start_microseconds = elapsed_microseconds(
-                    configuration.origin),
-            });
+                .start_microseconds =
+                    elapsed_microseconds(configuration.origin),
+            },
+            configuration.negotiated_options.retransmit_flag);
     } else {
         session_.configure_live(
             configuration.negotiated_options,

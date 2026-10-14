@@ -2647,7 +2647,9 @@ TEST(compat_runtime_reports_physical_loss_and_reorder_distance)
     REQUIRE_EQ(public_statistics.pktReorderDistance, 1);
 }
 
-TEST(compat_runtime_applies_lossmaxttl_and_delays_initial_nak)
+namespace {
+
+void exercise_runtime_lossmaxttl(TransmissionType transmission_type)
 {
     const auto channel = std::make_shared<DatagramChannel>();
     CapturedDatagrams output;
@@ -2659,6 +2661,9 @@ TEST(compat_runtime_applies_lossmaxttl_and_delays_initial_nak)
     };
     std::uint64_t now = 1'000;
     SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(transmission_type)),
+        Error::none);
     REQUIRE_EQ(options.set(
                    SocketOption::maximum_reorder_tolerance_packets,
                    2),
@@ -2767,6 +2772,23 @@ TEST(compat_runtime_applies_lossmaxttl_and_delays_initial_nak)
     runtime.apply_options(options);
     snapshot = runtime.statistics(false, true);
     REQUIRE_EQ(snapshot.reorder_tolerance_packets, 1U);
+}
+
+} // namespace
+
+TEST(compat_runtime_applies_lossmaxttl_and_delays_initial_nak)
+{
+    exercise_runtime_lossmaxttl(TransmissionType::live);
+}
+
+TEST(compat_runtime_file_applies_lossmaxttl_and_delays_initial_nak)
+{
+    exercise_runtime_lossmaxttl(TransmissionType::file);
+}
+
+TEST(compat_runtime_control_applies_lossmaxttl_and_delays_initial_nak)
+{
+    exercise_runtime_lossmaxttl(TransmissionType::control);
 }
 
 TEST(compat_runtime_sends_disjoint_losses_in_one_nak_datagram)

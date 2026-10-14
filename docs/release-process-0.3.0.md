@@ -1,6 +1,6 @@
 # Release process for Robotweax SRT 0.3.0
 
-Status: **candidate CI passed; resource gate failed; signing/publication on hold**.
+Status: **File/Control source correction; renewed qualification pending; signing/publication on hold**.
 Previous release: [v0.2.9](https://github.com/Robotweax/srt/releases/tag/v0.2.9).
 Preparation baseline: `9899fd7407cd82385de6f5238fe144647f299066`, including the
 merged SSH interoperability cleanup correction.
@@ -34,7 +34,12 @@ Update Homebrew/vcpkg pins, Debian/Fedora recipes, Linux qualification scripts,
 installed-consumer versions and latest signed SDK upgrade fixtures together.
 Retain all previous qualification records and published tag identities.
 
-## Candidate acceptance gates
+The post-diagnostic File/Control capability correction changes the frozen
+product. The prior CI results below apply to the earlier source only. Refresh
+archive pins and repeat affected qualification before accepting corrected source.
+Startup pacing and the failed resource gate remain unresolved.
+
+## Previous candidate acceptance gates
 
 | Gate | Current state | Acceptance required |
 | --- | --- | --- |
@@ -54,7 +59,7 @@ results tied to immutable commits. Skips do not replace required profiles.
 All seven candidate workflows passed at `a09b2cb30`; the
 [package record](https://github.com/Robotweax/srt/blob/main/packaging/qualification-0.3.0.md)
 links exact runs and distinguishes routine, optional and protected stages.
-The frozen product remains `1e7d7824a`.
+Those runs tested the previous frozen product `1e7d7824a`.
 
 The previous Security Cloud scan at `3119aa208` reported a low-severity remote
 interop cleanup finding; its source correction and regressions are included in

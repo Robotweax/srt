@@ -54,6 +54,12 @@ leader exits, including children ignoring SIGTERM. It retains leader identity
 through final signaling and makes stop idempotent. This developer harness is
 not a sandbox for programs that create a different session or process group.
 
+File/Stream and Control/Message now preserve the negotiated retransmission
+marking capability used by adaptive `SRTO_LOSSMAXTTL`. Positive bounds can learn
+from reordered original packets and delay subsequent gap reports. The default
+bound remains zero; peers without the capability retain immediate reporting.
+This does not resolve the separately observed FileCC startup-pacing sensitivity.
+
 ## ACP1 remains experimental
 
 The [ACP1 prototype](experimental-acp1.md) is behind the default-off

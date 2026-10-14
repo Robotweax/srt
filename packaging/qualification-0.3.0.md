@@ -1,11 +1,15 @@
 # Package qualification 0.3.0
 
-Status: **candidate CI accepted; resource gate failed; release on hold**. Nothing is published.
+Status: **post-diagnostic source correction; new freeze and qualification pending; release on hold**. Nothing is published.
 Project version **0.3.0**, shared-library ABI line **0.3**, compatible SRT API
 **1.5.7**. Existing applications and dependencies must rebuild for ABI line 0.3.
 Previous [0.2.9 acceptance](qualification-0.2.9.md) remains unchanged.
 
-## Frozen product and archive verification
+The File/Control capability correction changes product source after the archive
+below. Its prior results are historical evidence, not acceptance of the corrected
+source. Package pins must be refreshed before corrected-source qualification.
+
+## Previous frozen product and archive verification
 
 - Product commit: `1e7d7824a0420dac8e8ccaa950668ee301f99b9f`.
 - Downloaded public archive: `https://github.com/Robotweax/srt/archive/1e7d7824a0420dac8e8ccaa950668ee301f99b9f.tar.gz`.
@@ -22,7 +26,7 @@ and `CMakeLists.txt` relative to the frozen product. Product changes require a
 new pin and repeated package qualification. Recipe inputs point to this exact
 archive rather than a moving branch or an uncreated release tag.
 
-## Candidate acceptance
+## Previous candidate acceptance (before capability correction)
 
 | Gate | State | Evidence required |
 | --- | --- | --- |
@@ -170,3 +174,32 @@ feedback on both versions. This supports a startup mechanism requiring further
 review; it is not an exact replay of every slow connection's internal feedback.
 Any runtime correction requires a new product freeze and renewed affected gates.
 All original failed verdicts and package digests remain unchanged.
+
+## File/Control capability correction and pacing review
+
+File session setup now receives the negotiated retransmission-marking bit from
+the connection runtime. It preserves that bit while clearing Live delivery
+options. The default zero reorder bound and peers without the capability retain
+immediate gap reporting. Marked retransmissions do not train reorder tolerance.
+Native coverage exercises both API modes, positive/zero bounds and both negotiated
+and legacy behavior. Runtime coverage checks actual NAK emission, gap maturation,
+public reorder statistics and dynamic-bound changes in Live, File and Control.
+All three new regressions fail when capability preservation is disabled.
+
+The startup review traced the mechanism through `ArrivalRateEstimator::rates`,
+Full ACK construction and `FileRateController::leave_slow_start`: one positive
+arrival interval can produce a nonzero rate; an early NAK leaves slow start using
+that rate or locally acknowledged progress. The local floor is capped at one
+congestion window per RTT plus the control interval. After exit, that local floor
+is no longer updated and faster ACK feedback adjusts the window, while the packet
+period recovers through additive increases. This explains the synthetic sparse
+feedback result; it is not a complete replay of the network failures.
+
+No arbitrary rate floor or longer acceptance timeout is introduced. Existing
+coverage explicitly preserves genuinely slow paths, so raising the startup rate
+without additional delivery evidence could violate congestion behavior. Startup
+pacing remains unresolved. Further work needs timestamped ACK/NAK replay and
+bounded recovery tests that also cover slow paths, ACK compression, sustained
+loss and explicit bandwidth caps. The capability fix needs new frozen-source
+qualification; previous deadline failures remain failed and are not superseded
+by the deterministic regression results.
