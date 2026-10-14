@@ -957,7 +957,7 @@ ReliabilityProcessResult ReliabilitySession::receive(
             decoded.acknowledgement.next_sequence.distance_from(
                 send_buffer_.first_sequence());
         const bool acknowledgement_is_current = acknowledgement_progress >= 0;
-        const auto error = send_buffer_.acknowledge_before(
+        const auto error = send_buffer_.acknowledge_submitted_before(
             decoded.acknowledgement.next_sequence);
         if (error != Error::none) {
             return {.error = error};
@@ -1820,8 +1820,10 @@ ReliabilityProcessResult ReliabilitySession::expire_sensor_receive_gaps(
         return result;
     }
 
-    while (const auto sequence =
-               receive_buffer_.next_expired_gap(now_microseconds)) {
+    auto cursor = receive_buffer_.first_stored_sequence();
+    auto remaining = receive_buffer_.capacity();
+    while (const auto sequence = receive_buffer_.next_expired_gap(
+               now_microseconds, cursor, remaining)) {
         std::size_t dropped = 0U;
         const Error error = receive_buffer_.drop_range(
             {.first = *sequence, .last = *sequence}, 0U, &dropped);

@@ -27,6 +27,26 @@
 #include <utility>
 #include <vector>
 
+// Decision fixtures model delivery without running transport pacing. Make
+// that simulated submission explicit before feeding an ACK into the runtime.
+namespace robotweax::srt::compat {
+struct ConnectionRuntimeTestAccess {
+    static void submit_group_data(
+        ConnectionRuntime& runtime, SequenceNumber boundary)
+    {
+        std::lock_guard lock(runtime.mutex_);
+        while (const auto next =
+                   runtime.session_.send_buffer().peek_new_packet()) {
+            if (next->header.sequence.distance_from(boundary) >= 0)
+                break;
+            const auto packet = runtime.session_.next_data_packet();
+            REQUIRE(packet);
+            runtime.session_.note_packet_submitted(packet->header.sequence);
+        }
+    }
+};
+}
+
 namespace {
 
 using robotweax::srt::compat::GroupRegistry;
@@ -88,6 +108,8 @@ void deliver_lite_ack(
     const std::shared_ptr<ConnectionRuntime>& runtime,
     SequenceNumber next_sequence)
 {
+    robotweax::srt::compat::ConnectionRuntimeTestAccess::submit_group_data(
+        *runtime, next_sequence);
     std::array<std::byte, 4> payload{};
     const auto encoded = robotweax::srt::encode_acknowledgement_payload(
         {
