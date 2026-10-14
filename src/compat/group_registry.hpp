@@ -35,6 +35,9 @@ struct GroupMemberSnapshot {
     std::uint64_t generation = 0;
     // Receive activity survives send-path idling and logical deduplication.
     bool received_data = false;
+    // This caller member accepted GroupRecord::peer_group during its own
+    // handshake. A live holder keeps the pin from being replaced.
+    bool holds_peer_group = false;
     ROBOTWEAX_SRT_GROUP_PATHDATA_V1 path_data {};
 };
 
@@ -100,6 +103,10 @@ struct GroupRecord {
     // the caller-to-listener wire ISN.
     bool receive_sequence_initialized = false;
     SRTSOCKET peer_group = SRT_INVALID_SOCK;
+    // Set once a member that holds the pin has an attached runtime. Before
+    // that, a pin whose holders all failed may be replaced by a new peer
+    // group; afterwards the peer group is fixed for the group's lifetime.
+    bool peer_group_confirmed = false;
     SRTSOCKET mirror_listener = SRT_INVALID_SOCK;
     // Snapshot of the listener bond that owned this mirror at admission.
     std::uint64_t mirror_bond_scope = 0;
@@ -220,6 +227,14 @@ public:
         MirrorDescription& output, std::uint64_t admission_domain = 0) noexcept;
     void release_empty_mirror(
         SRTSOCKET group, std::uint64_t generation) noexcept;
+    // Records the accept bond `scope` for `listeners` and moves mirrors those
+    // listeners admitted before they were bonded into the bond, so a member
+    // that arrives on another bonded listener finds the existing mirror.
+    // Mirror admission reads the bond under the same lock, so a member is
+    // either admitted before the bond and moved, or admitted into it.
+    [[nodiscard]] bool bond_listeners(
+        const std::vector<SRTSOCKET>& listeners, std::uint64_t scope) noexcept;
+    void forget_listener(SRTSOCKET listener) noexcept;
     [[nodiscard]] bool add_member(SRTSOCKET group, SRTSOCKET socket,
         const sockaddr_storage& peer, std::uint16_t weight, int token,
         std::uint64_t& group_generation, std::uint64_t& member_generation,
@@ -234,9 +249,15 @@ public:
         const std::shared_ptr<ConnectionRuntime>& runtime) noexcept;
     void remove_member(SRTSOCKET group, std::uint64_t group_generation,
         SRTSOCKET socket, std::uint64_t member_generation) noexcept;
-    [[nodiscard]] bool set_peer_group(
-        SRTSOCKET group, std::uint64_t group_generation,
-        SRTSOCKET peer_group) noexcept;
+    // Claims `peer_group` for one caller member. Fails when another peer
+    // group is confirmed or still held by a live member.
+    [[nodiscard]] bool set_peer_group(SRTSOCKET group,
+        std::uint64_t group_generation, SRTSOCKET socket,
+        std::uint64_t member_generation, SRTSOCKET peer_group) noexcept;
+    // Marks the claimed peer group as established once the member's
+    // runtime is attached.
+    void confirm_peer_group(SRTSOCKET group, std::uint64_t group_generation,
+        SRTSOCKET socket, std::uint64_t member_generation) noexcept;
     void close(SRTSOCKET group) noexcept;
     void clear() noexcept;
 
@@ -248,6 +269,8 @@ private:
 
     std::mutex mutex_;
     std::unordered_map<SRTSOCKET, std::shared_ptr<GroupRecord>> groups_;
+    // One entry per bonded open listener; removed when the listener closes.
+    std::unordered_map<SRTSOCKET, std::uint64_t> listener_bond_scopes_;
     ClosedHandleHistory closed_handles_;
     // Allocation position in the group handle permutation; never reset.
     std::uint32_t next_group_index_ = 0;
@@ -256,5 +279,8 @@ private:
 };
 
 [[nodiscard]] bool is_group_handle(SRTSOCKET handle) noexcept;
+// Whether a caller group may bind `peer_group`. Requires `group.mutex`.
+[[nodiscard]] bool peer_group_admits(
+    const GroupRecord& group, SRTSOCKET peer_group) noexcept;
 
 } // namespace robotweax::srt::compat
