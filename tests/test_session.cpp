@@ -2263,6 +2263,81 @@ TEST(session_reorder_classification_is_wrap_safe_and_negotiated)
         0U);
 }
 
+TEST(file_session_reorder_tolerance_requires_negotiated_original_packet_marking)
+{
+    for (const bool message_api : {false, true}) {
+        for (const bool retransmit_flag : {false, true}) {
+            for (const bool retransmitted : {false, true}) {
+                for (const auto bound : {0U, 64U}) {
+                    ReliabilitySession receiver {{
+                        .local_initial_sequence = SequenceNumber {100},
+                        .peer_initial_sequence = SequenceNumber {10},
+                        .send_capacity_packets = 16,
+                        .receive_capacity_packets = 16,
+                    }};
+                    receiver.configure_file(message_api, {}, retransmit_flag);
+                    SocketOptions options;
+                    REQUIRE_EQ(
+                        options.set(
+                            SocketOption::maximum_reorder_tolerance_packets,
+                            bound),
+                        Error::none);
+                    REQUIRE_EQ(
+                        receiver.apply_dynamic_options(options), Error::none);
+                    REQUIRE_EQ(receiver.reorder_tolerance_packets(), 0U);
+                    const std::array<std::byte, 1> payload {std::byte {'d'}};
+                    PacketView packet;
+                    packet.kind = PacketKind::data;
+                    packet.data.boundary = MessageBoundary::solo;
+                    packet.payload = payload;
+                    packet.data.sequence = SequenceNumber {12};
+                    packet.data.message_number = 3;
+                    const auto gap = receiver.receive(packet, 100);
+                    REQUIRE(gap);
+                    REQUIRE_EQ(gap.actions.size, 1U);
+                    packet.data.sequence = SequenceNumber {10};
+                    packet.data.message_number = 1;
+                    packet.data.retransmitted = retransmitted;
+                    const auto recovery = receiver.receive(packet, 200);
+                    REQUIRE(recovery);
+                    const bool original = retransmit_flag && !retransmitted;
+                    REQUIRE_EQ(recovery.receiver_reorder_distance_packets,
+                        original ? 2U : 0U);
+                    const bool defer = original && bound != 0U;
+                    REQUIRE_EQ(
+                        receiver.reorder_tolerance_packets(), defer ? 2U : 0U);
+                    packet.data.sequence = SequenceNumber {11};
+                    packet.data.message_number = 2;
+                    REQUIRE(receiver.receive(packet, 250));
+                    packet.data.retransmitted = false;
+                    packet.data.sequence = SequenceNumber {15};
+                    packet.data.message_number = 6;
+                    const auto second_gap = receiver.receive(packet, 300);
+                    REQUIRE(second_gap);
+                    REQUIRE_EQ(second_gap.receiver_loss_packets, 2U);
+                    REQUIRE_EQ(second_gap.actions.size, defer ? 0U : 1U);
+                    if (defer) {
+                        packet.data.sequence = SequenceNumber {13};
+                        packet.data.message_number = 4;
+                        REQUIRE(receiver.receive(packet, 350));
+                        packet.data.sequence = SequenceNumber {16};
+                        packet.data.message_number = 7;
+                        const auto matured = receiver.receive(packet, 400);
+                        REQUIRE(matured);
+                        REQUIRE_EQ(matured.actions.size, 1U);
+                        REQUIRE_EQ(matured.actions.values[0].kind,
+                            ReliabilityActionKind::loss_report);
+                        REQUIRE_EQ(matured.actions.values[0].loss.first,
+                            SequenceNumber {14});
+                        REQUIRE_EQ(matured.actions.values[0].loss.last,
+                            SequenceNumber {14});
+                    }
+                }
+            }
+        }
+    }
+}
+
 TEST(session_delays_initial_loss_report_by_dynamic_reorder_tolerance)
 {
     ReliabilitySession receiver{{

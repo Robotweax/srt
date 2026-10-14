@@ -1,7 +1,7 @@
 # Compatibility status
 
 This document describes the public compatibility boundary of Robotweax SRT
-0.2.9. A listed capability is part of the supported boundary only for the
+0.3.0 candidate. Final release qualification is pending. A listed capability is part of the supported boundary only for the
 roles, transport mode, address family, and encryption profile stated here.
 
 Robotweax SRT is an independent implementation. Compatibility means that the
@@ -9,12 +9,15 @@ documented public behavior and wire exchange have been validated against the
 stated SRT profile; it does not imply shared implementation code or universal
 drop-in compatibility with every `libsrt` deployment.
 
+Release acceptance is pending; see the [0.3.0 candidate process](release-process-0.3.0.md).
+Existing applications and dependencies must rebuild for shared-library ABI line 0.3.
+
 ## Version boundary
 
-| Axis | Robotweax SRT 0.2.9 |
+| Axis | Robotweax SRT 0.3.0 candidate |
 | --- | --- |
-| Project version | `0.2.9` |
-| Shared-library ABI line | `0.2` |
+| Project version | `0.3.0` |
+| Shared-library ABI line | `0.3` |
 | Default public SRT API profile | Haivision SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
 | Production handshake | HSv5 |
@@ -31,7 +34,7 @@ v1.5.7 tag at commit
 `899348d8318eb9a3c5a5b6ec43c4a1114288773a`. Focused 1.5.5 backward and 1.5.6
 security lanes remain separate evidence; they do not replace the 1.5.7 gate.
 
-Robotweax SRT 0.2.9 does not establish positive HSv4 sessions. Applications
+Robotweax SRT 0.3.0 does not establish positive HSv4 sessions. Applications
 that require genuine HSv4 must remain on the immutable 0.1 line or upgrade the
 peer. Valid unsupported legacy establishment attempts fail deterministically
 instead of causing an automatic downgrade.
@@ -49,7 +52,7 @@ instead of causing an automatic downgrade.
 
 ## Transport and protocol matrix
 
-| Capability | Status | Public scope in 0.2.9 |
+| Capability | Status | Public scope in 0.3.0 candidate |
 | --- | --- | --- |
 | HSv5 Caller/Listener | Supported | Blocking and nonblocking establishment, admission callbacks, connection completion, Stream ID, IPv4 and IPv6 |
 | HSv5 Rendezvous | Supported | IPv4 and IPv6 simultaneous open with deterministic role resolution |
@@ -136,11 +139,11 @@ by [Encryption and key rotation](encryption.md).
 
 ## Known limits
 
-- Robotweax SRT 0.2.9 is a pre-1.0 release and does not promise binary
+- Robotweax SRT 0.3.0 is a pre-1.0 candidate and does not promise binary
   compatibility with 0.1. Applications must be rebuilt against ABI line 0.2.
 - The default public header intentionally matches the SRT 1.5.7 profile;
   AES-GCM does not constitute a complete SRT 1.6 API or ABI claim.
-- Positive HSv4 establishment is not supported in the 0.2 release line.
+- Positive HSv4 establishment is not supported in the 0.3 candidate.
 - Complete behavioral parity for every lifecycle, epoll, statistics,
   congestion-control, and uncommon flag combination is not claimed.
 - AES-GCM combinations outside the explicit matrix above are not qualified.

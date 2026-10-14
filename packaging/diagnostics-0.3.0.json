@@ -1,0 +1,522 @@
+{
+  "version": "0.3.0",
+  "date": "2026-10-14",
+  "diagnostics_only": true,
+  "release_acceptance_changed": false,
+  "release_resource_gate": "failed; original acceptance evidence unchanged",
+  "source_pins": {
+    "main": "1e7d7824a0420dac8e8ccaa950668ee301f99b9f",
+    "release": "a87779d9c3d831583d32b2f61cae5b81edb05537"
+  },
+  "network_cases_verified": 22,
+  "network_cases_passed": 21,
+  "network_cases_failed": 1,
+  "method": {
+    "initial_matrix": "One pair per condition, alternating baseline/candidate order. Unchanged original peers: full 400,021,888-byte mild workload with diagnostic timeout 180s. Instrumented peers: clean/delay/jitter/loss controls, mild 1/8/32-stream workloads with 3s offered duration and 60s timeout; final full workload in reverse order with 180s timeout.",
+    "sampling": "Original peers retain 250ms aggregate sampling; per-socket instrumented peers sample at 1s. All retain exact payload, stream identity, sequence and partial-I/O checks.",
+    "followup": "Four one-stream 1s-offered jitter-only cases at SRTO_LOSSMAXTTL 0/64, requested 10ms public-API sampling; no configured netem loss. Sampling cadence is application-loop dependent.",
+    "libraries": "Exact original acceptance static-library bytes reused; no product modifications or library rebuilds. Same peer source linked against each version per diagnostic condition."
+  },
+  "findings": [
+    {
+      "status": "observed",
+      "finding": "All four full-workload diagnostic transfers completed with exact payloads in 57.8\u2013111.0 seconds. This demonstrates eventual completion in these cases, not reliable completion within the failed 60-second gate.",
+      "limits": "Only two full transfers per version, with different sampling; no statistical equivalence or absence-of-regression claim."
+    },
+    {
+      "status": "observed",
+      "finding": "Jitter without netem drops produced about 19.5k/21.5k retransmissions and about 21.7/21.6 seconds completion for candidate/baseline; clean controls completed in about 3 seconds. One short 32-stream candidate run still timed out; a queued connection was continuing at a small congestion window and 12\u201317ms packet spacing.",
+      "interpretation": "Evidence points to low FileCC pacing rates and sensitivity to reordered/early-loss feedback, rather than a frozen receiver in these captured cases."
+    },
+    {
+      "status": "confirmed code-path defect, present in both versions",
+      "finding": "File setup clears live_options_, including retransmit_flag. Receive-side reorder recognition and Fresh-Loss aging are gated by that flag. Setting SRTO_LOSSMAXTTL=64 cannot enable the adaptive path in File mode.",
+      "network_observation": "Both File peers retained zero reorder distance/tolerance at bounds 0 and 64 under jitter.",
+      "deterministic_reproducer": "With configured bound 64 and packet arrivals 12,10,11,15, Live with retransmit capability records tolerance/distance 2 and defers the second gap report; File records zero and reports the gap immediately. Identical on both frozen libraries.",
+      "source_references": [
+        {
+          "path": "src/session.cpp",
+          "revision": "1e7d7824a0420dac8e8ccaa950668ee301f99b9f",
+          "lines": [
+            335,
+            343,
+            713,
+            900
+          ]
+        },
+        {
+          "path": "src/compat/transport_runtime.cpp",
+          "revision": "1e7d7824a0420dac8e8ccaa950668ee301f99b9f",
+          "lines": [
+            1536,
+            1552
+          ]
+        }
+      ]
+    },
+    {
+      "status": "mechanism reproduced; full causal scope remains under investigation",
+      "finding": "Early NAKs appear while reported RTT is still the startup 100ms value, with packet intervals already about 7\u201342ms. Synthetic controller inputs with sparse first-ACK feedback produce a 103ms interval after loss and about 12ms after ten seconds of subsequent synthetic feedback. FileRateController source and probe outputs are identical across versions.",
+      "limits": "Synthetic feedback demonstrates the slow-start exit mechanism; it is not a replay of exact internal network feedback and does not prove the cause of every slow socket.",
+      "source_references": [
+        {
+          "path": "src/file.cpp",
+          "revision": "1e7d7824a0420dac8e8ccaa950668ee301f99b9f",
+          "lines": [
+            94,
+            227
+          ]
+        }
+      ]
+    }
+  ],
+  "next_work": [
+    "Preserve negotiated retransmission-bit capability when configuring a FileCC session, keeping TSBPD and dropping disabled and the default reorder bound zero. Add tests for File reordering with positive/zero bounds, capability present/absent, and public socket inheritance.",
+    "Add deterministic early-loss/sparse-feedback startup coverage and determine a bounded correction or justified qualification protocol. Do not raise the acceptance timeout solely to obtain a pass.",
+    "Any production fix requires a new frozen source/archive pin and renewed affected CI/package/resource acceptance; retain every original and diagnostic failure."
+  ],
+  "matrix": [
+    {
+      "case": "01-original-mild32-long-release",
+      "profile": "original-mild32-long",
+      "variant": "release",
+      "peer": "original",
+      "passed": true,
+      "receiver_seconds": 61.521023,
+      "sender_retransmissions": 70844,
+      "netem_drops": 746,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "02-original-mild32-long-main",
+      "profile": "original-mild32-long",
+      "variant": "main",
+      "peer": "original",
+      "passed": true,
+      "receiver_seconds": 110.979871,
+      "sender_retransmissions": 73168,
+      "netem_drops": 761,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "03-clean32-main",
+      "profile": "clean32",
+      "variant": "main",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 3.003079,
+      "sender_retransmissions": 0,
+      "netem_drops": 0,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "04-clean32-release",
+      "profile": "clean32",
+      "variant": "release",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 3.002616,
+      "sender_retransmissions": 0,
+      "netem_drops": 0,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "05-delay32-release",
+      "profile": "delay32",
+      "variant": "release",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 13.013066,
+      "sender_retransmissions": 40,
+      "netem_drops": 0,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "06-delay32-main",
+      "profile": "delay32",
+      "variant": "main",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 3.045551,
+      "sender_retransmissions": 55,
+      "netem_drops": 0,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "07-jitter32-main",
+      "profile": "jitter32",
+      "variant": "main",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 21.692429,
+      "sender_retransmissions": 19549,
+      "netem_drops": 0,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "08-jitter32-release",
+      "profile": "jitter32",
+      "variant": "release",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 21.602772,
+      "sender_retransmissions": 21485,
+      "netem_drops": 0,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "09-loss32-release",
+      "profile": "loss32",
+      "variant": "release",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 3.063608,
+      "sender_retransmissions": 155,
+      "netem_drops": 97,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "10-loss32-main",
+      "profile": "loss32",
+      "variant": "main",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 13.513343,
+      "sender_retransmissions": 2014,
+      "netem_drops": 110,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "11-mild1-main",
+      "profile": "mild1",
+      "variant": "main",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 20.712959,
+      "sender_retransmissions": 352,
+      "netem_drops": 6,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "12-mild1-release",
+      "profile": "mild1",
+      "variant": "release",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 21.665582,
+      "sender_retransmissions": 332,
+      "netem_drops": 11,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "13-mild8-release",
+      "profile": "mild8",
+      "variant": "release",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 21.677128,
+      "sender_retransmissions": 5656,
+      "netem_drops": 68,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "14-mild8-main",
+      "profile": "mild8",
+      "variant": "main",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 21.019728,
+      "sender_retransmissions": 3880,
+      "netem_drops": 63,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "15-mild32-main",
+      "profile": "mild32",
+      "variant": "main",
+      "peer": "diagnostic",
+      "passed": false,
+      "receiver_seconds": null,
+      "sender_retransmissions": null,
+      "netem_drops": 228,
+      "peer_exits": {
+        "receiver": 5,
+        "sender": 5
+      }
+    },
+    {
+      "case": "16-mild32-release",
+      "profile": "mild32",
+      "variant": "release",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 21.275349,
+      "sender_retransmissions": 21892,
+      "netem_drops": 236,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "17-instrumented-mild32-long-main",
+      "profile": "instrumented-mild32-long",
+      "variant": "main",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 58.383239,
+      "sender_retransmissions": 71581,
+      "netem_drops": 742,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    },
+    {
+      "case": "18-instrumented-mild32-long-release",
+      "profile": "instrumented-mild32-long",
+      "variant": "release",
+      "peer": "diagnostic",
+      "passed": true,
+      "receiver_seconds": 57.786775,
+      "sender_retransmissions": 70259,
+      "netem_drops": 731,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      }
+    }
+  ],
+  "startup_followup": [
+    {
+      "case": "01-startup-ttl0-main",
+      "variant": "main",
+      "lossmax_ttl": 0,
+      "receiver_seconds": 17.027405,
+      "sender_retransmissions": 11,
+      "netem_drops": 0,
+      "receiver_reorder_distance_max": 0,
+      "receiver_reorder_tolerance_max": 0,
+      "first_sender_sample": {
+        "elapsed_us": 66868,
+        "msRTT": 100,
+        "usPktSndPeriod": 41055,
+        "pktRecvNAKTotal": 4
+      }
+    },
+    {
+      "case": "02-startup-ttl0-release",
+      "variant": "release",
+      "lossmax_ttl": 0,
+      "receiver_seconds": 7.561356,
+      "sender_retransmissions": 98,
+      "netem_drops": 0,
+      "receiver_reorder_distance_max": 0,
+      "receiver_reorder_tolerance_max": 0,
+      "first_sender_sample": {
+        "elapsed_us": 66531,
+        "msRTT": 100,
+        "usPktSndPeriod": 7076.99,
+        "pktRecvNAKTotal": 3
+      }
+    },
+    {
+      "case": "03-startup-ttl64-release",
+      "variant": "release",
+      "lossmax_ttl": 64,
+      "receiver_seconds": 7.774616,
+      "sender_retransmissions": 108,
+      "netem_drops": 0,
+      "receiver_reorder_distance_max": 0,
+      "receiver_reorder_tolerance_max": 0,
+      "first_sender_sample": {
+        "elapsed_us": 66509,
+        "msRTT": 100,
+        "usPktSndPeriod": 7514,
+        "pktRecvNAKTotal": 3
+      }
+    },
+    {
+      "case": "04-startup-ttl64-main",
+      "variant": "main",
+      "lossmax_ttl": 64,
+      "receiver_seconds": 7.580038,
+      "sender_retransmissions": 114,
+      "netem_drops": 0,
+      "receiver_reorder_distance_max": 0,
+      "receiver_reorder_tolerance_max": 0,
+      "first_sender_sample": {
+        "elapsed_us": 66771,
+        "msRTT": 100,
+        "usPktSndPeriod": 7740,
+        "pktRecvNAKTotal": 4
+      }
+    }
+  ],
+  "synthetic_controller_probes": {
+    "main": [
+      {
+        "feedback_case": 0,
+        "slow_start_after_loss": false,
+        "period_after_loss_us": 7082,
+        "period_after_10s_us": 3401.82,
+        "window_after_10s": 26
+      },
+      {
+        "feedback_case": 1,
+        "slow_start_after_loss": false,
+        "period_after_loss_us": 1030,
+        "period_after_10s_us": 517.398,
+        "window_after_10s": 26
+      },
+      {
+        "feedback_case": 2,
+        "slow_start_after_loss": false,
+        "period_after_loss_us": 103000,
+        "period_after_10s_us": 12035,
+        "window_after_10s": 25
+      }
+    ],
+    "release": [
+      {
+        "feedback_case": 0,
+        "slow_start_after_loss": false,
+        "period_after_loss_us": 7082,
+        "period_after_10s_us": 3401.82,
+        "window_after_10s": 26
+      },
+      {
+        "feedback_case": 1,
+        "slow_start_after_loss": false,
+        "period_after_loss_us": 1030,
+        "period_after_10s_us": 517.398,
+        "window_after_10s": 26
+      },
+      {
+        "feedback_case": 2,
+        "slow_start_after_loss": false,
+        "period_after_loss_us": 103000,
+        "period_after_10s_us": 12035,
+        "window_after_10s": 25
+      }
+    ]
+  },
+  "native_reorder_probe": {
+    "main": [
+      {
+        "mode": "live",
+        "configured_bound": 64,
+        "reorder_distance": 2,
+        "reorder_tolerance": 2,
+        "actions_on_second_gap": 0
+      },
+      {
+        "mode": "file",
+        "configured_bound": 64,
+        "reorder_distance": 0,
+        "reorder_tolerance": 0,
+        "actions_on_second_gap": 1
+      }
+    ],
+    "release": [
+      {
+        "mode": "live",
+        "configured_bound": 64,
+        "reorder_distance": 2,
+        "reorder_tolerance": 2,
+        "actions_on_second_gap": 0
+      },
+      {
+        "mode": "file",
+        "configured_bound": 64,
+        "reorder_distance": 0,
+        "reorder_tolerance": 0,
+        "actions_on_second_gap": 1
+      }
+    ]
+  },
+  "focused_source_sha256": {
+    "src/file.cpp": {
+      "a87779d9c3d831583d32b2f61cae5b81edb05537": "7de36e2c968b9297cff6f2bb5de1a5c9a7daaa1c13a2b3b24b0ffd707d1522dc",
+      "1e7d7824a0420dac8e8ccaa950668ee301f99b9f": "7de36e2c968b9297cff6f2bb5de1a5c9a7daaa1c13a2b3b24b0ffd707d1522dc"
+    },
+    "include/robotweax/srt/file.hpp": {
+      "a87779d9c3d831583d32b2f61cae5b81edb05537": "fce6a8afa60f09e43d17b1f629df4584313048cb245e4bed65e4131fa02f0745",
+      "1e7d7824a0420dac8e8ccaa950668ee301f99b9f": "fce6a8afa60f09e43d17b1f629df4584313048cb245e4bed65e4131fa02f0745"
+    },
+    "src/session.cpp": {
+      "a87779d9c3d831583d32b2f61cae5b81edb05537": "4a29493f0851688dd6f47feabd9d1f6a490a15b47a014884ee3c2e52d7d3749d",
+      "1e7d7824a0420dac8e8ccaa950668ee301f99b9f": "c879f16c908e079dd964aeece151f7b606601b4bc9ab03e1180806d684a86a0c"
+    },
+    "src/compat/transport_runtime.cpp": {
+      "a87779d9c3d831583d32b2f61cae5b81edb05537": "a2a58ce4aeb12222ac15e6c12307854a10b91323f14c345c49af9d439cd27464",
+      "1e7d7824a0420dac8e8ccaa950668ee301f99b9f": "33a0ad70548add7f92f69eae3a8f9f77afc46404808c11bfae771f9889be13df"
+    }
+  },
+  "evidence": {
+    "matrix_archive_sha256": "946f390e14f80c0bc7b64778d28331fa9b7bd2824133946ee5910b8161ecbd10",
+    "matrix_declaration_sha256": "de27dbae9b5f0417da38cb63f1127bae545f4c6345dd29837e7a53744960e322",
+    "startup_archive_sha256": "2f57f629b8406c2cdae3619ff13d3acd2396be90b60b49cc9f95081652d8fc8f",
+    "startup_declaration_sha256": "62e5ef08aa6bed99661b7e50edb0f66c4e1ac6869106eb47f1e0f672f448da89",
+    "native_reorder_archive_sha256": "69b71e3e6a7eccefe381bc0d8cf7bd19fa9013998f5b74ad1f9bb2b426ac339d",
+    "native_reorder_source_sha256": "f9ab40cd84241a245a6fc96ff34a45c6e8bfc4fa04775395b7e0e2a2d6a471dd"
+  },
+  "verification": "All 22 network case manifests and reported verdicts independently replayed with the pinned trusted host validator; descriptor, peer, library, harness and declaration identities checked. Native reproducer source/results/binary hashes verified. Failed cases remain failed.",
+  "cleanup": {
+    "verified": true,
+    "loopback_qdisc": "qdisc noqueue 0: root refcnt 2",
+    "udp_maxima": "net.core.rmem_max = 212992\nnet.core.wmem_max = 212992",
+    "peer_processes": 0,
+    "owned_tmpfs_unmounted": true,
+    "owned_mount_directory_removed": true,
+    "owned_staging_removed": true
+  },
+  "limits": [
+    "One stochastic pair per condition; no regression/equivalence qualification",
+    "Linux ARM64 loopback only; no capacity/WAN/all-platform claim",
+    "No changed release acceptance, default options, shipped runtime or package digests",
+    "Raw archives retained locally; not publicly uploaded"
+  ]
+}

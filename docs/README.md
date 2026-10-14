@@ -115,6 +115,9 @@ named as public contracts may change between pre-1.0 releases.
 
 ## Releases and migration
 
+- [Robotweax SRT 0.3.0 candidate notes](release-notes-0.3.0.md) — proposed scope and migration.
+- [Release process for 0.3.0](release-process-0.3.0.md) — source freeze and pending qualification.
+
 - [Robotweax SRT 0.2.9 release notes](release-notes-0.2.9.md) — published changes, downloads and remaining limits.
 - [Release process for 0.2.9](release-process-0.2.9.md) — completed source/package/signing and publication acceptance.
 - [Robotweax SRT 0.2.8 release notes](release-notes-0.2.8.md) — published scope, downloads and remaining limits.

@@ -1,0 +1,453 @@
+{
+  "version": "0.3.0",
+  "date": "2026-10-14",
+  "accepted": false,
+  "status": "Release resource gate failed; signing, tag and publication on hold",
+  "source": "1e7d7824a0420dac8e8ccaa950668ee301f99b9f",
+  "baseline": "a87779d9c3d831583d32b2f61cae5b81edb05537",
+  "candidate_ci_commit": "a09b2cb30aae91e3d95d578ccdfa1f6f176db06e",
+  "thresholds": {
+    "cpu_per_gbit_increase_pct": 15,
+    "delivered_mbps_drop_pct": 10,
+    "rss_peak_increase_pct": 15
+  },
+  "cases_independently_verified": 52,
+  "original_live_cohort": {
+    "accepted": false,
+    "resource_cases": 40,
+    "passed": 38,
+    "failed": 2,
+    "network_soaks_passed": 2,
+    "archive_sha256": "de04d283f88efd0b754922d98f1846dc4d54b4901e2821dad4c269e3b72e9147",
+    "declaration_sha256": "9bf7627b5685f864be863bf555289e33d47cc2be30a627d244b9f8ea3ae83304",
+    "clean_profiles": {
+      "single-50": {
+        "cases_passed": 10,
+        "paired_median_delta_pct": {
+          "delivered_mbps": -0.0014111192247701076,
+          "cpu_s_per_gbit": 1.7963300553984762,
+          "rss_sum_mib": 0.13806433798149165
+        }
+      },
+      "multi-320": {
+        "cases_passed": 10,
+        "paired_median_delta_pct": {
+          "delivered_mbps": -0.0004343195348033291,
+          "cpu_s_per_gbit": -0.5158171249596388,
+          "rss_sum_mib": 0.18020481208986805
+        }
+      },
+      "gcm-fec-320": {
+        "cases_passed": 10,
+        "paired_median_delta_pct": {
+          "delivered_mbps": -0.0002960717204070207,
+          "cpu_s_per_gbit": -0.3906574089194814,
+          "rss_sum_mib": 0.9848415707683689
+        }
+      }
+    },
+    "lossy_live_profile": "8/10 passed; one baseline and one candidate case each lacked one final 1316-byte payload; excluded from positive threshold acceptance",
+    "failures": [
+      {
+        "case": "21-mild-320-p1-release",
+        "variant": "release",
+        "exit": 3,
+        "validation_exit": 0,
+        "verdict": "failed",
+        "expected_bytes": 400021888,
+        "peer_exits": {
+          "receiver": 5,
+          "sender": 5
+        },
+        "timeout_error": null,
+        "last_logged_progress": {
+          "sender": {
+            "event": "sample",
+            "elapsed_us": 59788375,
+            "messages": 303968,
+            "bytes": 400021888
+          },
+          "receiver": {
+            "event": "sample",
+            "elapsed_us": 60001830,
+            "messages": 303967,
+            "bytes": 400020572
+          }
+        },
+        "udp_errors": {
+          "InCsumErrors": 0,
+          "InErrors": 0,
+          "RcvbufErrors": 0,
+          "SndbufErrors": 0
+        },
+        "netem_drops": 647,
+        "cleanup_verified": true
+      },
+      {
+        "case": "22-mild-320-p1-main",
+        "variant": "main",
+        "exit": 3,
+        "validation_exit": 0,
+        "verdict": "failed",
+        "expected_bytes": 400021888,
+        "peer_exits": {
+          "receiver": 5,
+          "sender": 5
+        },
+        "timeout_error": null,
+        "last_logged_progress": {
+          "sender": {
+            "event": "sample",
+            "elapsed_us": 59772950,
+            "messages": 303968,
+            "bytes": 400021888
+          },
+          "receiver": {
+            "event": "sample",
+            "elapsed_us": 60000081,
+            "messages": 303967,
+            "bytes": 400020572
+          }
+        },
+        "udp_errors": {
+          "InCsumErrors": 0,
+          "InErrors": 0,
+          "RcvbufErrors": 0,
+          "SndbufErrors": 0
+        },
+        "netem_drops": 680,
+        "cleanup_verified": true
+      }
+    ]
+  },
+  "additional_file_cohort": {
+    "accepted": false,
+    "scope": "Separately declared finite File/Stream loss qualification; original Live results retained without replacement",
+    "resource_cases": 10,
+    "passed": 4,
+    "failed": 6,
+    "offered_mbps": 320,
+    "streams": 32,
+    "bytes_per_case": 400021888,
+    "offered_duration_seconds": 10,
+    "timeout_seconds": 60,
+    "delay_ms": 20,
+    "jitter_ms": 5,
+    "loss_pct": 0.1,
+    "pairs": 5,
+    "archive_sha256": "f7344f3fe7467507dc7bf5548d04474be4fc7a13bb0b08390fdb38d6de45c4f1",
+    "declaration_sha256": "78e65813d984048432f64ecee0b3d112a362b24990c75dfba7da5accd3ea1a50",
+    "peer_source_sha256": "98719482ca560044cff19bff7abed5e4ca7c1d0108a16eebdad56a8cf303f3e2",
+    "failures": [
+      {
+        "case": "02-file-mild-320-p1-main",
+        "variant": "main",
+        "exit": 3,
+        "validation_exit": 0,
+        "verdict": "failed",
+        "expected_bytes": 400021888,
+        "peer_exits": {
+          "receiver": 5,
+          "sender": 5
+        },
+        "timeout_error": null,
+        "last_logged_progress": {
+          "sender": {
+            "event": "sample",
+            "elapsed_us": 59905347,
+            "messages": 303968,
+            "bytes": 400021888
+          },
+          "receiver": {
+            "event": "sample",
+            "elapsed_us": 59781995,
+            "messages": 285093,
+            "bytes": 375182388
+          }
+        },
+        "udp_errors": {
+          "InCsumErrors": 0,
+          "InErrors": 0,
+          "RcvbufErrors": 0,
+          "SndbufErrors": 0
+        },
+        "netem_drops": 738,
+        "cleanup_verified": true
+      },
+      {
+        "case": "04-file-mild-320-p2-release",
+        "variant": "release",
+        "exit": 3,
+        "validation_exit": 0,
+        "verdict": "failed",
+        "expected_bytes": 400021888,
+        "peer_exits": {
+          "receiver": 5,
+          "sender": 5
+        },
+        "timeout_error": null,
+        "last_logged_progress": {
+          "sender": {
+            "event": "sample",
+            "elapsed_us": 59883498,
+            "messages": 303755,
+            "bytes": 399741580
+          },
+          "receiver": {
+            "event": "sample",
+            "elapsed_us": 59778888,
+            "messages": 287369,
+            "bytes": 378177604
+          }
+        },
+        "udp_errors": {
+          "InCsumErrors": 0,
+          "InErrors": 0,
+          "RcvbufErrors": 0,
+          "SndbufErrors": 0
+        },
+        "netem_drops": 739,
+        "cleanup_verified": true
+      },
+      {
+        "case": "06-file-mild-320-p3-main",
+        "variant": "main",
+        "exit": 3,
+        "validation_exit": 0,
+        "verdict": "failed",
+        "expected_bytes": 400021888,
+        "peer_exits": {
+          "receiver": 5,
+          "sender": 5
+        },
+        "timeout_error": null,
+        "last_logged_progress": {
+          "sender": {
+            "event": "sample",
+            "elapsed_us": 59888154,
+            "messages": 303968,
+            "bytes": 400021888
+          },
+          "receiver": {
+            "event": "sample",
+            "elapsed_us": 59807509,
+            "messages": 287926,
+            "bytes": 378910616
+          }
+        },
+        "udp_errors": {
+          "InCsumErrors": 0,
+          "InErrors": 0,
+          "RcvbufErrors": 0,
+          "SndbufErrors": 0
+        },
+        "netem_drops": 719,
+        "cleanup_verified": true
+      },
+      {
+        "case": "08-file-mild-320-p4-release",
+        "variant": "release",
+        "exit": 3,
+        "validation_exit": 0,
+        "verdict": "failed",
+        "expected_bytes": 400021888,
+        "peer_exits": {
+          "receiver": 5,
+          "sender": -15
+        },
+        "timeout_error": "TimeoutError: peer timeout",
+        "last_logged_progress": {
+          "sender": {
+            "event": "sample",
+            "elapsed_us": 61639980,
+            "messages": 303893,
+            "bytes": 399923188
+          },
+          "receiver": {
+            "event": "sample",
+            "elapsed_us": 59775266,
+            "messages": 295681,
+            "bytes": 389116196
+          }
+        },
+        "udp_errors": {
+          "InCsumErrors": 0,
+          "InErrors": 0,
+          "RcvbufErrors": 0,
+          "SndbufErrors": 0
+        },
+        "netem_drops": 729,
+        "cleanup_verified": true
+      },
+      {
+        "case": "09-file-mild-320-p5-release",
+        "variant": "release",
+        "exit": 3,
+        "validation_exit": 0,
+        "verdict": "failed",
+        "expected_bytes": 400021888,
+        "peer_exits": {
+          "receiver": 5,
+          "sender": 5
+        },
+        "timeout_error": null,
+        "last_logged_progress": {
+          "sender": {
+            "event": "sample",
+            "elapsed_us": 59888812,
+            "messages": 303968,
+            "bytes": 400021888
+          },
+          "receiver": {
+            "event": "sample",
+            "elapsed_us": 59797464,
+            "messages": 295830,
+            "bytes": 389312280
+          }
+        },
+        "udp_errors": {
+          "InCsumErrors": 0,
+          "InErrors": 0,
+          "RcvbufErrors": 0,
+          "SndbufErrors": 0
+        },
+        "netem_drops": 710,
+        "cleanup_verified": true
+      },
+      {
+        "case": "10-file-mild-320-p5-main",
+        "variant": "main",
+        "exit": 3,
+        "validation_exit": 0,
+        "verdict": "failed",
+        "expected_bytes": 400021888,
+        "peer_exits": {
+          "receiver": 5,
+          "sender": 5
+        },
+        "timeout_error": null,
+        "last_logged_progress": {
+          "sender": {
+            "event": "sample",
+            "elapsed_us": 59886339,
+            "messages": 303601,
+            "bytes": 399538916
+          },
+          "receiver": {
+            "event": "sample",
+            "elapsed_us": 59823626,
+            "messages": 295405,
+            "bytes": 388752980
+          }
+        },
+        "udp_errors": {
+          "InCsumErrors": 0,
+          "InErrors": 0,
+          "RcvbufErrors": 0,
+          "SndbufErrors": 0
+        },
+        "netem_drops": 718,
+        "cleanup_verified": true
+      }
+    ]
+  },
+  "soak_payloads": [
+    {
+      "profile": "ctr-160",
+      "bytes": 6000033536,
+      "exact_integrity": true,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      },
+      "resources": {
+        "sender": {
+          "samples": 1203,
+          "rss_peak_mib": 155.109375,
+          "rss_first_30_samples_median_mib": 155.0078125,
+          "rss_last_30_samples_median_mib": 155.046875,
+          "threads_max": 4
+        },
+        "receiver": {
+          "samples": 1204,
+          "rss_peak_mib": 164.08984375,
+          "rss_first_30_samples_median_mib": 160.9453125,
+          "rss_last_30_samples_median_mib": 163.98828125,
+          "threads_max": 8
+        }
+      }
+    },
+    {
+      "profile": "gcm-fec-auth-160",
+      "bytes": 6000033536,
+      "exact_integrity": true,
+      "peer_exits": {
+        "receiver": 0,
+        "sender": 0
+      },
+      "resources": {
+        "sender": {
+          "samples": 1204,
+          "rss_peak_mib": 232.9140625,
+          "rss_first_30_samples_median_mib": 232.765625,
+          "rss_last_30_samples_median_mib": 232.8515625,
+          "threads_max": 4
+        },
+        "receiver": {
+          "samples": 1204,
+          "rss_peak_mib": 237.65234375,
+          "rss_first_30_samples_median_mib": 234.1015625,
+          "rss_last_30_samples_median_mib": 237.5546875,
+          "threads_max": 8
+        }
+      }
+    }
+  ],
+  "host": {
+    "platform": "Linux ARM64",
+    "vcpus": 4,
+    "memory_gib": 6,
+    "swap": false,
+    "workspace": "private 2GiB tmpfs; identical for both variants"
+  },
+  "build_profile": "Release static GCC/OpenSSL; AEAD preview ON, MAXREXMITBW default OFF; identical peer source per protocol across baseline and candidate",
+  "resource_method": {
+    "pairing": "5 adjacent alternating baseline/candidate pairs per profile; no warmup, retries or failed-case replacement",
+    "rss": "sum of separate process peaks, not simultaneous system peak"
+  },
+  "soak_method": {
+    "streams": 32,
+    "mbps_per_stream": 5,
+    "seconds_per_case": 300,
+    "profiles": [
+      "CTR",
+      "GCM/FEC/SESSIONAUTH"
+    ],
+    "key_refresh": 10000,
+    "key_preannounce": 1000
+  },
+  "interpretation": "Both versions have File-mode passes and deadline failures. FileCC throughput and recovery are feedback-dependent; incomplete pairs do not establish a candidate regression or qualify resource thresholds. The 60-second workload gate is failed, not waived. No payload corruption or UDP error-counter increases observed in these cases. Further controlled diagnosis is required before finite-transfer release acceptance.",
+  "verification": "All original and additional case seals and outcome verdicts independently replayed with the pinned trusted host validator; source/archive/library/peer/descriptor/harness pins and identical normalized library compiler flags checked. Strict acceptance verifiers remain unchanged and reject both cohorts.",
+  "limits": [
+    "selected loopback profiles only",
+    "separate process RSS peaks",
+    "no WAN/NIC/24h/all-platform claim",
+    "no Group-selection performance claim"
+  ],
+  "cleanup": "Original loopback noqueue and both UDP maxima 212992 restored; owned tmpfs unmounted and empty mount directory removed; raw evidence retained locally",
+  "raw_archive_publicly_uploaded": false,
+  "peer_binary_sha256": {
+    "release-peer": "529a36787cb252b87a2d564cf0ad13693bf7135904651dad4a95fed7b3b156c0",
+    "main-peer": "f27a314e00a25720ae5ed8de082f82422b7e1498bcf0bbe9ac9ee10ba299a728",
+    "release-gcm-peer": "2a2667aa190b302f26068c7dd2ac575a73e9e1111144306e334809a62c0ecddc",
+    "main-gcm-peer": "afd4e4d89f371aaf827ca7e45ba29ada8219281f6ebe29d8635ba40940cdd14f",
+    "main-ctr-peer": "685390b28c4a5255a64343d3c2afec6ab1dd1e82e60cac901c86c0a26df89add",
+    "protected-peer": "d4835366d7279065ceb0c2d192c2938ba3366d5c544c90eb1c0b055e92c63d0a",
+    "main-file-peer": "2dbc60cc9824b3f2bb361a68ea5a56e4e9b8972187a7d1f612bf77d726898d6c",
+    "release-file-peer": "2b2cf57f0d6b4b07c8d18a89172d783bbf8a13f8d3bb37b1b9d7a6843194855e"
+  },
+  "static_library_sha256": {
+    "main": "7088e283e0bccbded08e0ecc0815a06725b1f36a4b9f9300ec5e85bd8c13e7ba",
+    "release": "f648e5436dcc25837501b85aeb915b8e05160bec836ff7c53d3e6cc602368a97"
+  }
+}

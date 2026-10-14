@@ -12,14 +12,16 @@ depending on implementation-specific C++ internals.
 
 ## Release status
 
+The development candidate is **0.3.0**; [release preparation](docs/release-process-0.3.0.md) is in progress and no 0.3.0 artifacts are published.
+
 Version **0.2.9** was published on **2026-10-13** as a pre-1.0 Group recovery and observability release. The [latest release](https://github.com/Robotweax/srt/releases/tag/v0.2.9) includes independently rebuilt and signed OpenSSL/BCrypt Windows SDK installers, post-signing checksums and immutable tag provenance. See the [release notes](docs/release-notes-0.2.9.md) and [completed acceptance record](docs/release-process-0.2.9.md) for changes, successful final gates and remaining limits.
 
 The separate Homebrew ARM64 bottle is qualified in [Tap #8](https://github.com/Robotweax/homebrew-tap/pull/8); its maintainer review and publication remain pending.
 
-| Axis | Robotweax SRT 0.2.9 |
+| Axis | Robotweax SRT 0.3.0 candidate |
 | --- | --- |
-| Project release | `0.2.9` |
-| Shared-library ABI | `0.2` |
+| Project release | `0.3.0` |
+| Shared-library ABI | `0.3` |
 | Default public API target | SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
 | Supported handshake generation | HSv5 |
@@ -31,8 +33,8 @@ handshake, and encryption profile are separate version axes. In particular,
 `srt_getversion()` reports the compatible SRT API target, not the Robotweax
 release number.
 
-Version 0.2 is a pre-1.0 release. Rebuild applications and dependencies when
-moving between ABI lines. See the [0.2.9 release notes](docs/release-notes-0.2.9.md)
+Version 0.3 is a pre-1.0 candidate. Rebuild applications and dependencies when
+moving from ABI line 0.2 to 0.3. See the [0.3.0 release notes](docs/release-notes-0.3.0.md)
 and [0.1-to-0.2 migration guide](docs/migration-0.2.md).
 
 See the [ecosystem support matrix](docs/compatibility.md#ecosystem-build-profiles)
@@ -109,7 +111,7 @@ options, platform notes, and troubleshooting.
 After installation, consume the exported package and stable public target:
 
 ```cmake
-find_package(RobotweaxSRT 0.2 CONFIG REQUIRED)
+find_package(RobotweaxSRT 0.3 CONFIG REQUIRED)
 
 add_executable(my_srt_app main.cpp)
 target_link_libraries(my_srt_app PRIVATE RobotweaxSRT::srt)

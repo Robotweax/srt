@@ -148,7 +148,7 @@ cmake --install build --prefix "$PWD/stage"
 Then use the exported target:
 
 ```cmake
-find_package(RobotweaxSRT 0.2 CONFIG REQUIRED)
+find_package(RobotweaxSRT 0.3 CONFIG REQUIRED)
 target_link_libraries(my_srt_app PRIVATE RobotweaxSRT::srt)
 ```
 

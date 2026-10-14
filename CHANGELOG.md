@@ -6,6 +6,22 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+## 0.3.0 — Crypto Providers and Admission Controls — candidate
+
+Release preparation is in progress; this version is not published. See the
+[release notes](docs/release-notes-0.3.0.md) and
+[acceptance process](docs/release-process-0.3.0.md).
+
+- Add the Mbed TLS 3.6 crypto provider for the documented Linux/macOS profiles,
+  with provider-isolated installed consumers and cross-backend qualification.
+- Expose bounded peer handshake metadata during admission and connection setup.
+- Harden callback-triggered cleanup, submitted-DATA ACK validation and bounded
+  Sensor gap expiry; preserve listener setup completion and duplicate-admission
+  replay during concurrent setup.
+- Move the project and package version to 0.3.0 and the shared-library ABI line
+  to 0.3. The public compatible SRT API remains 1.5.7. Consumers must rebuild
+  when moving from ABI line 0.2; historical C export snapshots are preserved.
+
 - SSH interoperability cleanup now terminates descendants that outlive their
   process-group leader, including descendants that ignore SIGTERM. Leader
   identities are retained until group retirement to prevent stale PGID reuse.

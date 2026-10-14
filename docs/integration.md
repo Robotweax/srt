@@ -18,7 +18,7 @@ new code so the dependency is unambiguous.
 Link through the installed target:
 
 ```cmake
-find_package(RobotweaxSRT 0.2 CONFIG REQUIRED)
+find_package(RobotweaxSRT 0.3 CONFIG REQUIRED)
 target_link_libraries(my_application PRIVATE RobotweaxSRT::srt)
 ```
 

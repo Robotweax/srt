@@ -4,7 +4,7 @@ project(robotweax_srt_installed_consumer LANGUAGES CXX)
 
 include(CTest)
 
-find_package(RobotweaxSRT 0.2 CONFIG REQUIRED)
+find_package(RobotweaxSRT 0.3 CONFIG REQUIRED)
 
 add_executable(robotweax_srt_installed_consumer main.cpp)
 target_compile_features(robotweax_srt_installed_consumer PRIVATE cxx_std_17)

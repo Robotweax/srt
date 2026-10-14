@@ -1,3 +1,10 @@
+robotweax-srt (0.3.0-1) noble; urgency=medium
+
+  * Package immutable 0.3.0 crypto-provider and admission-control candidate.
+  * Install shared-library ABI line 0.3 as librobotweax-srt0.3.
+
+ -- Robotweax GmbH <srtpioneer@proton.me>  Wed, 14 Oct 2026 12:30:00 +0000
+
 robotweax-srt (0.2.9-1) noble; urgency=medium
 
   * Package the immutable 0.2.9 Group recovery and observability candidate.

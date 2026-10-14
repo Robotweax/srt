@@ -169,7 +169,7 @@ metadata.
 cmake_minimum_required(VERSION 3.20)
 project(example LANGUAGES C CXX)
 
-find_package(RobotweaxSRT 0.2 CONFIG REQUIRED)
+find_package(RobotweaxSRT 0.3 CONFIG REQUIRED)
 
 add_executable(example main.cpp)
 target_link_libraries(example PRIVATE RobotweaxSRT::srt)

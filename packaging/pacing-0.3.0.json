@@ -1,0 +1,206 @@
+{
+  "purpose": "Startup fallback correction and separately declared finite File/Stream qualification; original negative evidence retained",
+  "product": {
+    "revision": "607d0034b7977f1e5003c98c42cc934bbdf9d431",
+    "archive_url": "https://github.com/Robotweax/srt/archive/607d0034b7977f1e5003c98c42cc934bbdf9d431.tar.gz",
+    "bytes": 1948295,
+    "sha256": "6c6d19458838248a6c95153e8907334e6c16826c041d4e204f57b73a1750cb5c",
+    "sha512": "d7c4914b5f1fbcf0006a67f1cc7ecbdecce88f712c615c294a2d70cfb14be9fe36a6f12e1ee374335d84a325885371e04fec8fc9c69427134a4845542b4aca0f",
+    "verified_regular_files": 643,
+    "file_contents_and_executable_bits_match_git": true
+  },
+  "startup_capture": {
+    "source_commit": "bc7e39cc942bbd129ff55b1c014edbe563be266d",
+    "instrumented": true,
+    "archive_sha256": "6296ab86e686460a0255e11084948922493e0f19166c9aefd60cf40554ad3047",
+    "instrumentation_sha256": "e457a1f19f824fbb4aed283bafdff75f79881481e978e8ad87a4f7b6664f320d",
+    "cases": 4,
+    "passed": 4,
+    "controller_events_replayed": 25516,
+    "replay_period_relative_tolerance": 1e-10,
+    "congestion_window_and_slow_start_exact_match": true,
+    "mismatches_before_correction": 0,
+    "changed_controllers_after_correction": 1,
+    "changed_states_after_correction": 1030,
+    "captured_transition_period_us": {
+      "before": 218647,
+      "after": 6665
+    },
+    "acceptance_evidence": false
+  },
+  "local_checks": {
+    "static_debug_ctest": {
+      "passed": 69,
+      "total": 69
+    },
+    "shared_release_ctest": {
+      "passed": 20,
+      "total": 20
+    },
+    "targeted_filecc_tests": {
+      "passed": 14,
+      "total": 14
+    },
+    "regressions_reject_old_controller": 2
+  },
+  "finite_file_qualification": {
+    "accepted": false,
+    "evidence_consistent": true,
+    "archive_sha256": "831601912d23a719a81ca36f9f9f9c5afc1ab25eb7d9bf63df0940620c0803be",
+    "declaration_sha256": "da1468c377218ab80ef321bc619341892af42c354a728e91c982c8f44b8f0645",
+    "source_pins": {
+      "main": "607d0034b7977f1e5003c98c42cc934bbdf9d431",
+      "release": "a87779d9c3d831583d32b2f61cae5b81edb05537"
+    },
+    "cases": 10,
+    "passes": 7,
+    "passes_by_variant": {
+      "main": 5,
+      "release": 2
+    },
+    "all_five_pairs_complete": false,
+    "complete_pair_count": 2,
+    "comparative_metrics_diagnostic_only": true,
+    "paired_median_delta_pct": {
+      "delivered_mbps": 0.16547623842042003,
+      "cpu_s_per_gbit": 0.6609643453760083,
+      "rss_sum_mib": -1.242378767900465
+    },
+    "thresholds": {
+      "delivered_mbps_drop_pct": 10,
+      "cpu_per_gbit_increase_pct": 15,
+      "rss_peak_increase_pct": 15
+    },
+    "observations": [
+      {
+        "case": "01-file-mild-320-p1-release",
+        "variant": "release",
+        "pair": 1,
+        "passed": true,
+        "peer_exits": {
+          "receiver": 0,
+          "sender": 0
+        },
+        "netem_drops": 745,
+        "receiver_seconds": 58.705369
+      },
+      {
+        "case": "02-file-mild-320-p1-main",
+        "variant": "main",
+        "pair": 1,
+        "passed": true,
+        "peer_exits": {
+          "receiver": 0,
+          "sender": 0
+        },
+        "netem_drops": 761,
+        "receiver_seconds": 58.913319
+      },
+      {
+        "case": "03-file-mild-320-p2-main",
+        "variant": "main",
+        "pair": 2,
+        "passed": true,
+        "peer_exits": {
+          "receiver": 0,
+          "sender": 0
+        },
+        "netem_drops": 738,
+        "receiver_seconds": 58.505801
+      },
+      {
+        "case": "04-file-mild-320-p2-release",
+        "variant": "release",
+        "pair": 2,
+        "passed": false,
+        "peer_exits": {
+          "receiver": 5,
+          "sender": -15
+        },
+        "netem_drops": 723,
+        "receiver_seconds": null
+      },
+      {
+        "case": "05-file-mild-320-p3-release",
+        "variant": "release",
+        "pair": 3,
+        "passed": true,
+        "peer_exits": {
+          "receiver": 0,
+          "sender": 0
+        },
+        "netem_drops": 746,
+        "receiver_seconds": 59.166956
+      },
+      {
+        "case": "06-file-mild-320-p3-main",
+        "variant": "main",
+        "pair": 3,
+        "passed": true,
+        "peer_exits": {
+          "receiver": 0,
+          "sender": 0
+        },
+        "netem_drops": 752,
+        "receiver_seconds": 58.765045
+      },
+      {
+        "case": "07-file-mild-320-p4-main",
+        "variant": "main",
+        "pair": 4,
+        "passed": true,
+        "peer_exits": {
+          "receiver": 0,
+          "sender": 0
+        },
+        "netem_drops": 732,
+        "receiver_seconds": 58.829065
+      },
+      {
+        "case": "08-file-mild-320-p4-release",
+        "variant": "release",
+        "pair": 4,
+        "passed": false,
+        "peer_exits": {
+          "receiver": 5,
+          "sender": 5
+        },
+        "netem_drops": 748,
+        "receiver_seconds": null
+      },
+      {
+        "case": "09-file-mild-320-p5-release",
+        "variant": "release",
+        "pair": 5,
+        "passed": false,
+        "peer_exits": {
+          "receiver": 5,
+          "sender": -15
+        },
+        "netem_drops": 747,
+        "receiver_seconds": null
+      },
+      {
+        "case": "10-file-mild-320-p5-main",
+        "variant": "main",
+        "pair": 5,
+        "passed": true,
+        "peer_exits": {
+          "receiver": 0,
+          "sender": 0
+        },
+        "netem_drops": 758,
+        "receiver_seconds": 58.035632
+      }
+    ],
+    "previous_failures_unchanged": true
+  },
+  "limits": [
+    "Trace instrumentation affects scheduling; replay is not a prediction of transfer completion.",
+    "Positive but immature peer-rate feedback is unchanged.",
+    "Published baseline and corrected candidate use the same unchanged File/Stream peer source, workload, 60-second deadline and acceptance thresholds.",
+    "Incomplete pairs cannot qualify comparative resource thresholds.",
+    "Prior resource and diagnostic records remain unchanged.",
+    "Hosted and package qualification require separate acceptance; no release or signing is authorized by this record."
+  ]
+}
