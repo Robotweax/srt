@@ -137,3 +137,36 @@ Neither strict acceptance verifier was relaxed. Original failed cases were not
 retried or replaced. UDP error counters did not increase and cleanup was verified.
 Raw evidence remains local; these selected Linux loopback profiles do not qualify
 WAN/NIC/24-hour/all-platform or general Group-selection performance.
+
+## FileCC diagnostic follow-up
+
+The [diagnostic record](diagnostics-0.3.0.json) adds 22 separately declared
+network cases and deterministic native probes, using the exact original static
+libraries. All case seals and verdicts were independently replayed: 21 network
+cases passed and one short 32-stream candidate case timed out. These are
+diagnostics, not replacement acceptance cases. The resource gate remains failed.
+
+All four full-workload diagnostic transfers completed with exact payloads in
+57.8–111.0 seconds, under a separately declared 180-second diagnostic limit.
+Jitter without configured loss produced about 19,500/21,500 retransmissions and
+21.7/21.6-second completion for candidate/baseline; clean controls took about
+3 seconds. Per-socket traces show queued data advancing through small congestion
+windows at low pacing rates. One pair per stochastic condition cannot establish
+a version regression or equivalence, and the captured eventual completions do
+not pass the original 60-second acceptance gate.
+
+A deterministic reproducer confirms an existing File-mode reorder defect on
+both versions. File session setup clears the retransmission capability flag
+used to recognize reordered originals and age Fresh-Loss gaps. Even with
+`SRTO_LOSSMAXTTL=64`, File tolerance remains zero. With the same reordered
+arrivals and bound, the Live capability control grows tolerance and defers the
+next gap report. Correct File capability propagation and add regressions before
+requalification; keep the default bound zero and respect peers without the bit.
+
+The startup traces also show early NAKs while the reported RTT remains at its
+100ms startup value and pacing has slowed to 7–42ms per packet. Synthetic
+controller probes reproduce an extreme slow-start exit after sparse initial
+feedback on both versions. This supports a startup mechanism requiring further
+review; it is not an exact replay of every slow connection's internal feedback.
+Any runtime correction requires a new product freeze and renewed affected gates.
+All original failed verdicts and package digests remain unchanged.

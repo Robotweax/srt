@@ -70,8 +70,11 @@ ten-case File/Stream cohort also had deadline failures on both versions at the
 fixed 60-second limit. Neither cohort is accepted as a whole. No failed case was
 repeated, replaced or marked passed, and incomplete pairs do not qualify the
 resource thresholds. The [package record](https://github.com/Robotweax/srt/blob/main/packaging/qualification-0.3.0.md)
-and compact resource evidence preserve the results. Diagnose the finite-transfer
-deadline behavior before advancing release acceptance.
+and compact resource evidence preserve the results. The separate diagnostic
+follow-up confirms a File-mode reorder-capability initialization defect on both
+versions and identifies sensitive FileCC startup pacing. Correct capability
+propagation, review startup behavior, and run a newly frozen, prospectively
+defined qualification before advancing release acceptance.
 
 ## Signing, tag and publication sequence
 
