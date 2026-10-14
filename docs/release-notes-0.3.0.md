@@ -58,7 +58,10 @@ File/Stream and Control/Message now preserve the negotiated retransmission
 marking capability used by adaptive `SRTO_LOSSMAXTTL`. Positive bounds can learn
 from reordered original packets and delay subsequent gap reports. The default
 bound remains zero; peers without the capability retain immediate reporting.
-This does not resolve the separately observed FileCC startup-pacing sensitivity.
+FileCC also preserves its window/RTT fallback when receiver-rate feedback is
+absent: a sparse startup ACK no longer substitutes a much slower local rate.
+This fixes a captured startup failure mechanism; it does not guarantee finite
+lossy transfers meet a deadline.
 
 ## ACP1 remains experimental
 

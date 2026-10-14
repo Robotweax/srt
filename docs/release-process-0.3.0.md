@@ -1,6 +1,6 @@
 # Release process for Robotweax SRT 0.3.0
 
-Status: **File/Control source correction; renewed qualification pending; signing/publication on hold**.
+Status: **startup fallback source correction; renewed qualification pending; signing/publication on hold**.
 Previous release: [v0.2.9](https://github.com/Robotweax/srt/releases/tag/v0.2.9).
 Preparation baseline: `9899fd7407cd82385de6f5238fe144647f299066`, including the
 merged SSH interoperability cleanup correction.

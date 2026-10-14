@@ -1,11 +1,15 @@
 # Package qualification 0.3.0
 
-Status: **post-diagnostic source correction; new archive pinned; qualification pending; release on hold**. Nothing is published.
+Status: **startup fallback corrected; renewed archive/qualification pending; release on hold**. Nothing is published.
 Project version **0.3.0**, shared-library ABI line **0.3**, compatible SRT API
 **1.5.7**. Existing applications and dependencies must rebuild for ABI line 0.3.
 Previous [0.2.9 acceptance](qualification-0.2.9.md) remains unchanged.
 
-## Corrected product and archive verification
+The startup fallback correction changes product source after the capability
+archive below. Its new archive and affected acceptance must be recorded before
+release; prior results remain attached to their original sources.
+
+## Capability-corrected product and archive verification
 
 - Product commit: `bc7e39cc942bbd129ff55b1c014edbe563be266d`.
 - Downloaded public archive: `https://github.com/Robotweax/srt/archive/bc7e39cc942bbd129ff55b1c014edbe563be266d.tar.gz`.
@@ -220,3 +224,29 @@ bounded recovery tests that also cover slow paths, ACK compression, sustained
 loss and explicit bandwidth caps. The capability fix needs new frozen-source
 qualification; previous deadline failures remain failed and are not superseded
 by the deterministic regression results.
+
+## Exact startup feedback replay and correction
+
+Four separately declared instrumented captures (three one-stream and one
+32-stream jitter case) passed their diagnostic payload checks. All **25,516**
+controller input/state records replay exactly against uninstrumented source.
+The sealed private capture archive has SHA-256
+`6296ab86e686460a0255e11084948922493e0f19166c9aefd60cf40554ad3047`.
+Instrumentation can affect scheduling; these are not resource acceptance runs.
+
+The severe captured path has no peer rate estimate: one cumulative ACK arrives
+212,278 microseconds after controller creation, then loss ends slow start. A
+local ACK floor accidentally became the selected rate even though peer feedback
+was absent, replacing the existing window/RTT fallback and producing a 218,647
+microsecond packet period. The correction keeps the fallback in this case;
+replaying the same loss input produces 6,665 microseconds including the existing
+3 percent loss backoff. Only that controller's states change in the captures;
+all three one-stream replays remain identical. Replay does not predict changed
+network feedback or transfer completion time.
+
+Two new regressions fail against the old controller and pass with the correction.
+Coverage includes captured inputs, idle time, bandwidth limits, genuinely low
+stored peer estimates and repeated congestion loss. No arbitrary minimum rate,
+new wire behavior, or increased acceptance timeout is introduced. The positive
+but immature peer-rate case remains a separate sensitivity. The corrected
+product still requires new prospective finite File/Stream qualification.

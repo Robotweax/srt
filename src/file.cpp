@@ -116,17 +116,14 @@ void FileRateController::leave_slow_start(
     // per RTT plus SYN interval so an ACK burst cannot inflate the result.
     const double acknowledgement_floor =
         std::min(acknowledged_rate_packets_per_second_, window_rate);
-    const double receiving_rate =
-        std::max(peer_rate, acknowledgement_floor);
-    if (receiving_rate > 0.0) {
-        packet_sending_period_microseconds_ =
-            1'000'000.0 / receiving_rate;
-    } else {
-        // This is the fallback formula specified by SRT FileCC and used by
-        // the reference implementation when no receiver rate is available.
-        packet_sending_period_microseconds_ =
-            1'000'000.0 / window_rate;
-    }
+    // A local ACK floor may raise a reported peer rate, but must not turn
+    // absent peer feedback into a low rate. Sparse cumulative ACK progress
+    // can reflect a startup gap or idle time rather than path capacity.
+    // Preserve FileCC's window/feedback-time fallback when no peer rate exists.
+    const double receiving_rate = peer_rate > 0.0
+        ? std::max(peer_rate, acknowledgement_floor)
+        : window_rate;
+    packet_sending_period_microseconds_ = 1'000'000.0 / receiving_rate;
     packet_sending_period_microseconds_ =
         std::max(packet_sending_period_microseconds_, 1.0);
 }

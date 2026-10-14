@@ -102,6 +102,12 @@ The controller then uses acknowledgement and loss feedback to adapt:
 - `SRTO_MAXBW` supplies a lower bound on the sending period and can be changed
   at runtime.
 
+When no peer receiving-rate estimate is available, slow-start exit uses the
+congestion window and RTT plus the control interval. Locally acknowledged
+progress may raise a reported peer rate, but sparse ACK progress does not replace
+this no-feedback fallback. Loss backoff and explicit bandwidth limits still
+apply.
+
 A current Small or Full ACK replaces the peer receive-window value with the
 ACK's Available Buffer Size. This includes a zero-window stop and a later
 reopen. Stale ACKs and Lite ACKs do not change that state. Full ACKs

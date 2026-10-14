@@ -186,3 +186,63 @@ TEST(filecc_slow_start_without_rate_uses_window_per_feedback_time)
         controller.packet_sending_period_microseconds(), 6'250.0);
     REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 240'000U);
 }
+
+TEST(filecc_sparse_ack_without_peer_rate_preserves_startup_fallback)
+{
+    // Exact inputs at slow-start exit from the 32-stream diagnostic capture:
+    // one cumulative ACK after 212278 us, with absent peer rate metrics.
+    const SequenceNumber initial {1'913'962'258};
+    FileRateController controller {initial,
+        {
+            .maximum_congestion_window_packets = 16'384,
+            .packet_size_bytes = 1'500,
+            .maximum_bandwidth_bytes_per_second = 1'250'000'000,
+            .rate_control_interval_microseconds = 10'000,
+            .start_microseconds = 96'435,
+        }};
+    controller.on_ack(initial.next(), 308'713, 0, 0, 100'000);
+    REQUIRE(controller.slow_start());
+    REQUIRE_EQ(controller.congestion_window_packets(), 17U);
+    controller.on_loss(
+        initial.advanced(8), initial.advanced(63), 2, 17, 0, 100'000);
+    REQUIRE(!controller.slow_start());
+    REQUIRE_EQ(controller.packet_sending_period_microseconds(),
+        std::ceil((110'000.0 / 17.0) * 1.03));
+}
+
+TEST(filecc_missing_rate_fallback_ignores_idle_time_and_respects_bandwidth_cap)
+{
+    for (const auto delay : {100'000ULL, 60'000'000ULL}) {
+        FileRateController controller {SequenceNumber {0},
+            {
+                .packet_size_bytes = 1'500,
+                .maximum_bandwidth_bytes_per_second = 75'000,
+            }};
+        controller.on_ack(SequenceNumber {1}, delay, 0, 0, 90'000);
+        controller.on_timeout(0, 90'000);
+        REQUIRE(!controller.slow_start());
+        REQUIRE_EQ(controller.packet_sending_period_microseconds(), 20'000.0);
+        controller.set_maximum_bandwidth(0);
+        REQUIRE_EQ(
+            controller.packet_sending_period_microseconds(), 100'000.0 / 17.0);
+    }
+}
+
+TEST(filecc_sparse_ack_with_low_peer_rate_keeps_slow_path_and_loss_response)
+{
+    for (const auto rate : {1U, 8U}) {
+        FileRateController controller {SequenceNumber {0}};
+        controller.on_ack(SequenceNumber {1}, 1'000'000, rate, rate, 90'000);
+        // on_loss has no new rate sample, but the existing low peer estimate
+        // is still valid. It must not be replaced by the no-feedback fallback.
+        controller.on_loss(
+            SequenceNumber {1}, SequenceNumber {16}, 1, 16, 0, 90'000);
+        const auto first_period = std::ceil(1'000'000.0 / rate * 1.03);
+        REQUIRE_EQ(
+            controller.packet_sending_period_microseconds(), first_period);
+        controller.on_loss(
+            SequenceNumber {17}, SequenceNumber {32}, 1, 16, 0, 90'000);
+        REQUIRE_EQ(controller.packet_sending_period_microseconds(),
+            std::ceil(first_period * 1.03));
+    }
+}
