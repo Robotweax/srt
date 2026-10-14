@@ -2192,6 +2192,63 @@ TEST(compat_group_epoll_wakes_on_member_data_without_process_wide_rescans)
     REQUIRE_EQ(srt_close(group), 0);
 }
 
+TEST(compat_group_statistics_fold_member_retransmissions)
+{
+    // A group row reports its members' retransmissions, keeps those of
+    // members that left, never counts a member twice and clears only the
+    // interval.
+    using robotweax::srt::compat::PacketByteCounter;
+    const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+    const SRTSOCKET first = srt_create_socket();
+    const SRTSOCKET second = srt_create_socket();
+    REQUIRE(group != SRT_INVALID_SOCK);
+    sockaddr_storage peer {};
+    const auto address = ipv4_address(9'131);
+    std::memcpy(&peer, &address, sizeof(address));
+    std::uint64_t group_generation = 0;
+    std::uint64_t first_generation = 0;
+    std::uint64_t second_generation = 0;
+    auto& registry = GroupRegistry::instance();
+    REQUIRE(registry.add_member(
+        group, first, peer, 1U, 0, group_generation, first_generation));
+    REQUIRE(registry.add_member(
+        group, second, peer, 1U, 0, group_generation, second_generation));
+    registry.update_member(group, group_generation, first, first_generation,
+        SRTS_CONNECTED, SRT_SUCCESS);
+    const auto counter = [](std::uint64_t packets) {
+        PacketByteCounter value;
+        value.add(packets, packets * 100U);
+        return value;
+    };
+    registry.note_member_retransmitted(
+        group, group_generation, first, first_generation, counter(5));
+    registry.note_member_retransmitted(
+        group, group_generation, second, second_generation, counter(2));
+    // An older reading of a member never moves the group backwards.
+    registry.note_member_retransmitted(
+        group, group_generation, first, first_generation, counter(3));
+
+    SRT_TRACEBSTATS statistics {};
+    REQUIRE_EQ(srt_bstats(group, &statistics, 1), 0);
+    REQUIRE_EQ(statistics.pktRetransTotal, 7);
+    REQUIRE_EQ(statistics.pktRetrans, 7);
+    REQUIRE_EQ(statistics.byteRetransTotal, 7U * (100U + 44U));
+
+    registry.note_member_retransmitted(
+        group, group_generation, first, first_generation, counter(9));
+    registry.remove_member(group, group_generation, first, first_generation);
+    // A removed member is no longer folded, but what it sent stays.
+    registry.note_member_retransmitted(
+        group, group_generation, first, first_generation, counter(20));
+    REQUIRE_EQ(srt_bstats(group, &statistics, 0), 0);
+    REQUIRE_EQ(statistics.pktRetransTotal, 11);
+    REQUIRE_EQ(statistics.pktRetrans, 4);
+
+    REQUIRE_EQ(srt_close(group), 0);
+    static_cast<void>(srt_close(first));
+    static_cast<void>(srt_close(second));
+}
+
 TEST(compat_group_receive_skips_a_gap_every_member_has_dropped)
 {
     // Receiver TLPKTDROP on the only carrying member moves its receive
@@ -2286,6 +2343,7 @@ TEST(compat_group_receive_skips_a_gap_every_member_has_dropped)
             static_cast<std::uint64_t>(SRT_LIVE_DEF_PLSIZE + 44));
         REQUIRE_EQ(statistics.pktSentUniqueTotal, 0);
         REQUIRE_EQ(statistics.pktSentTotal, 0);
+        REQUIRE_EQ(statistics.pktRetransTotal, 0);
         // The interval counters were cleared by the previous call.
         REQUIRE_EQ(srt_bstats(group, &statistics, 0), 0);
         REQUIRE_EQ(statistics.pktRecvUniqueTotal, 2);

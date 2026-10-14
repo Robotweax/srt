@@ -441,6 +441,13 @@ void shutdown_record(
         member_generation = record->member_generation;
     }
     if (group_id != SRT_INVALID_SOCK && member_generation != 0U) {
+        // Keep the leaving member's retransmissions in the group counters.
+        if (runtime != nullptr) {
+            GroupRegistry::instance().note_member_retransmitted(group_id,
+                group_generation, static_cast<SRTSOCKET>(protocol_socket_id),
+                member_generation,
+                runtime->statistics(false, false).total.sent_retransmitted);
+        }
         GroupRegistry::instance().remove_member(group_id, group_generation,
             static_cast<SRTSOCKET>(protocol_socket_id), member_generation);
     }

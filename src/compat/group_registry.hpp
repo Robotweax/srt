@@ -35,16 +35,20 @@ struct GroupMemberSnapshot {
     std::uint64_t generation = 0;
     // Receive activity survives send-path idling and logical deduplication.
     bool received_data = false;
+    // Member retransmissions already folded into the group counters.
+    PacketByteCounter retransmitted_folded;
     ROBOTWEAX_SRT_GROUP_PATHDATA_V1 path_data {};
 };
 
 [[nodiscard]] std::uint64_t group_statistics_now_microseconds() noexcept;
 
-// Group-level counters for srt_bstats on a group handle, mirroring what
-// libsrt reports there: messages sent and received through the group once
-// (not once per member) and gaps the group receiver skipped. Protected by
-// GroupRecord::mutex. Bytes are payload sizes; the trace conversion adds
-// the IPv4 wire header like the socket-level statistics do.
+// Group-level counters for srt_bstats on a group handle. Like libsrt they
+// count messages sent and received through the group once (not once per
+// member) and gaps the group receiver skipped. In addition, a group row
+// reports the retransmissions of its members, including members that have
+// since left. Protected by GroupRecord::mutex. Bytes are payload sizes; the
+// trace conversion adds the IPv4 wire header like the socket-level
+// statistics do.
 struct GroupStatistics {
     bool activated = false;
     std::uint64_t start_microseconds = 0;
@@ -234,6 +238,12 @@ public:
         const std::shared_ptr<ConnectionRuntime>& runtime) noexcept;
     void remove_member(SRTSOCKET group, std::uint64_t group_generation,
         SRTSOCKET socket, std::uint64_t member_generation) noexcept;
+    // Folds a member's cumulative retransmissions into the group counters.
+    // Values older than what was already folded are ignored.
+    void note_member_retransmitted(SRTSOCKET group,
+        std::uint64_t group_generation, SRTSOCKET socket,
+        std::uint64_t member_generation,
+        const PacketByteCounter& total) noexcept;
     [[nodiscard]] bool set_peer_group(
         SRTSOCKET group, std::uint64_t group_generation,
         SRTSOCKET peer_group) noexcept;

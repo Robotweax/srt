@@ -6,6 +6,10 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Group handles now report `pktRetrans*`/`byteRetrans*` in `srt_bstats` and
+  `srt_bistats`: the retransmissions of all members, including members that
+  have closed. Other group fields are unchanged.
+
 - Add an unreviewed ACP1 prototype behind an explicit default-off build gate
   and strict bilateral socket opt-in. Authenticate runtime controls with
   direction-separated keys and bounded replay state; ordinary Caller/Listener
