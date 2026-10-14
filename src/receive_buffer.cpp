@@ -699,14 +699,30 @@ std::optional<std::uint64_t> ReceiveBuffer::next_gap_deadline() const noexcept
 std::optional<SequenceNumber> ReceiveBuffer::next_expired_gap(
     std::uint64_t now_microseconds) const noexcept
 {
-    for (std::size_t offset = 0U; offset < capacity(); ++offset) {
-        const auto& slot = slots_[(head_ + offset) % capacity()];
+    auto cursor = first_stored_sequence_;
+    auto remaining = capacity();
+    return next_expired_gap(now_microseconds, cursor, remaining);
+}
+
+std::optional<SequenceNumber> ReceiveBuffer::next_expired_gap(
+    std::uint64_t now_microseconds, SequenceNumber& cursor,
+    std::size_t& remaining_inspections) const noexcept
+{
+    if (cursor.distance_from(first_stored_sequence_) < 0)
+        cursor = first_stored_sequence_;
+    while (remaining_inspections != 0U) {
+        const auto offset = cursor.distance_from(first_stored_sequence_);
+        if (offset < 0 || static_cast<std::size_t>(offset) >= capacity())
+            break;
+        --remaining_inspections;
+        const auto sequence = cursor;
+        cursor = cursor.next();
+        const auto& slot =
+            slots_[(head_ + static_cast<std::size_t>(offset)) % capacity()];
         if (!slot.occupied && !slot.dropped
             && slot.gap_deadline_microseconds != 0U
-            && slot.gap_deadline_microseconds <= now_microseconds) {
-            return first_stored_sequence_.advanced(
-                static_cast<std::uint32_t>(offset));
-        }
+            && slot.gap_deadline_microseconds <= now_microseconds)
+            return sequence;
     }
     return std::nullopt;
 }

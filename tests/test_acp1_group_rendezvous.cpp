@@ -52,6 +52,7 @@ void wait_connected(SRTSOCKET s)
     REQUIRE(active(s));
 }
 struct Address {
+    SRTSOCKET reservation = SRT_INVALID_SOCK;
     sockaddr_storage storage {};
     int size = 0;
 };
@@ -127,6 +128,7 @@ struct Groups {
     {
         const auto socket = own(srt_create_socket());
         Address address;
+        address.reservation = socket;
         if (ipv6) {
             set(socket, SRTO_IPV6ONLY, 1);
             sockaddr_in6 local {};
@@ -148,12 +150,24 @@ struct Groups {
             srt_getsockname(socket,
                 reinterpret_cast<sockaddr*>(&address.storage), &address.size),
             0);
-        REQUIRE_EQ(srt_close(socket), 0);
         return address;
     }
     Pair prepare(std::string label = "path-a")
     {
+        // Keep both ephemeral ports bound until allocation is complete.
+        // Releasing the first before reserving the second can make both
+        // endpoints identical, turning the test into a self-connection.
         const std::array addresses {address(), address()};
+        const auto port = [](const Address& value) {
+            return value.storage.ss_family == AF_INET6
+                ? reinterpret_cast<const sockaddr_in6*>(&value.storage)
+                      ->sin6_port
+                : reinterpret_cast<const sockaddr_in*>(&value.storage)
+                      ->sin_port;
+        };
+        REQUIRE(port(addresses[0]) != port(addresses[1]));
+        for (const auto& value : addresses)
+            REQUIRE_EQ(srt_close(value.reservation), 0);
         Pair pair;
         for (unsigned i = 0; i < 2; ++i) {
             pair.endpoints[i] = srt_prepare_endpoint(

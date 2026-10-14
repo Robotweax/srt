@@ -1514,7 +1514,8 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
     , close_retry_hook_for_testing_(configuration.close_retry_hook_for_testing)
     , close_retry_context_for_testing_(
           configuration.close_retry_context_for_testing)
-    , flow_window_packets_(effective_peer_flow_window(configuration))
+    , peer_flow_window_ceiling_(effective_peer_flow_window(configuration))
+    , flow_window_packets_(peer_flow_window_ceiling_)
 {
     // Leave three further heartbeat opportunities inside a short local idle
     // budget. The peer timeout itself is unchanged. Keep the usual one-second
@@ -2540,6 +2541,7 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
     transient_send_failure_since_.reset();
     transient_send_system_error_ = 0;
     if (completion.kind == DatagramKind::data) {
+        session_.note_packet_submitted(completion.data.sequence);
         if (standby_rtt_) {
             standby_rtt_->last_data = now;
             standby_rtt_->measurement.pause();
@@ -3516,7 +3518,8 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     }
     if (processed.peer_available_receive_buffer_packets.has_value()) {
         const std::size_t previous_flow_window = flow_window_packets_;
-        flow_window_packets_ = *processed.peer_available_receive_buffer_packets;
+        flow_window_packets_ = std::min<std::size_t>(peer_flow_window_ceiling_,
+            *processed.peer_available_receive_buffer_packets);
         pacer_.set_flow_window(flow_window_packets_);
         if (flow_window_packets_ > previous_flow_window) {
             send_ready_.notify_all();

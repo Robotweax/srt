@@ -658,6 +658,9 @@ bytes per caller endpoint). Both are pre-setup options; group-wide labels are
 rejected. See the canonical [group path identifier contract](group-path-identifiers.md)
 for two-sided configuration, unsupported combinations and the versioned getter.
 These options were introduced in 0.2.9 and are absent from v0.2.8 artifacts.
+`SRTO_ROBOTWEAX_PATHID_POLICY` (`0x0100000e`, int32, default OFF) is the same
+setting with a third, listener-only value `IF_OFFERED` that admits labeled and
+unlabeled peers on one listener; it was introduced after 0.2.9.
 
 
 ## Optional standby RTT monitoring
@@ -670,6 +673,9 @@ traffic without changing ordinary RTT, liveness, reliability or send authority.
 See the [standby RTT contract](standby-rtt-foundation.md) for configuration,
 resource limits, unauthenticated-control scope and the separate versioned getter.
 It was introduced in 0.2.9 and is absent from v0.2.8 artifacts.
+`SRTO_ROBOTWEAX_STANDBYRTT_POLICY` (`0x0100000f`, int32, default OFF) is the
+same setting with a third, listener-only value `IF_OFFERED` that admits peers
+with or without standby RTT on one listener; it was introduced after 0.2.9.
 
 ## Group admission callback migration (since 0.2.8)
 
@@ -794,3 +800,5 @@ These options occupy a separate namespace and do not alter the upstream
 | PATHID_REQUIRED | 0x01000006 | bool / false | R/W, PRE; bilateral | Caller group and listener; no automatic fallback |
 | PATHID | 0x01000007 | bytes / empty | R/W, PRE; 0 clears, 1–32 bytes | Caller endpoint configuration; group-wide label rejected |
 | STANDBYRTT_REQUIRED | 0x01000008 | bool / false | R/W, PRE; bilateral Backup Live/Message with TSBPD | Group/listener template; endpoint configuration rejected |
+| PATHID_POLICY | 0x0100000e | int32 / OFF | R/W, PRE; OFF, REQUIRED (= PATHID_REQUIRED), IF_OFFERED listener-only | Caller group OFF/REQUIRED; accepted sockets report the negotiated result |
+| STANDBYRTT_POLICY | 0x0100000f | int32 / OFF | R/W, PRE; OFF, REQUIRED (= STANDBYRTT_REQUIRED), IF_OFFERED listener-only | Backup group OFF/REQUIRED; accepted sockets report the negotiated result |

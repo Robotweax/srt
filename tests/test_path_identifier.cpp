@@ -450,6 +450,179 @@ TEST(srt_compat_group_pathid_real_connections_and_replacement_overlap)
     }
 }
 
+namespace {
+void set_pathid_policy(SRTSOCKET socket, std::int32_t policy)
+{
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_PATHID_POLICY, &policy,
+                   sizeof(policy)),
+        0);
+}
+std::int32_t pathid_policy(SRTSOCKET socket)
+{
+    std::int32_t policy = -1;
+    int size = sizeof(policy);
+    REQUIRE_EQ(
+        srt_getsockflag(socket, SRTO_ROBOTWEAX_PATHID_POLICY, &policy, &size),
+        0);
+    return policy;
+}
+} // namespace
+
+TEST(srt_compat_pathid_if_offered_listener_serves_labeled_and_plain_peers)
+{
+    // One listener port serves labeled groups, unlabeled groups and ordinary
+    // sockets; each admission is negotiated on its own.
+    for (const int caller_kind : {0, 1, 2}) {
+        REQUIRE_EQ(srt_startup(), 0);
+        Sockets sockets;
+        sockets.listener = srt_create_socket();
+        enable(sockets.listener, SRTO_GROUPCONNECT);
+        set_pathid_policy(sockets.listener, ROBOTWEAX_SRT_EXTENSION_IF_OFFERED);
+        const int timeout = 1500;
+        REQUIRE_EQ(srt_setsockflag(sockets.listener, SRTO_RCVTIMEO, &timeout,
+                       sizeof(timeout)),
+            0);
+        auto target = address();
+        REQUIRE_EQ(srt_bind(sockets.listener,
+                       reinterpret_cast<sockaddr*>(&target), sizeof(target)),
+            0);
+        REQUIRE_EQ(srt_listen(sockets.listener, 8), 0);
+        int size = sizeof(target);
+        REQUIRE_EQ(srt_getsockname(sockets.listener,
+                       reinterpret_cast<sockaddr*>(&target), &size),
+            0);
+        const bool labeled = caller_kind == 0;
+        if (caller_kind == 2) {
+            sockets.caller = srt_create_socket();
+            REQUIRE_EQ(
+                srt_connect(sockets.caller,
+                    reinterpret_cast<sockaddr*>(&target), sizeof(target)),
+                0);
+        } else {
+            sockets.caller = srt_create_group(SRT_GTYPE_BROADCAST);
+            if (labeled)
+                enable(sockets.caller, SRTO_ROBOTWEAX_PATHID_REQUIRED);
+            std::array<SRT_SOCKGROUPCONFIG, 2> endpoints {};
+            for (std::size_t i = 0; i < endpoints.size(); ++i) {
+                endpoints[i] = srt_prepare_endpoint(nullptr,
+                    reinterpret_cast<sockaddr*>(&target), sizeof(target));
+                if (labeled) {
+                    const char name[] = {'p', static_cast<char>('0' + i)};
+                    endpoints[i].config = srt_create_config();
+                    REQUIRE_EQ(srt_config_add(endpoints[i].config,
+                                   SRTO_ROBOTWEAX_PATHID, name, sizeof(name)),
+                        0);
+                }
+            }
+            const auto result = srt_connect_group(
+                sockets.caller, endpoints.data(), endpoints.size());
+            for (auto& endpoint : endpoints)
+                srt_delete_config(endpoint.config);
+            REQUIRE(result != SRT_INVALID_SOCK);
+            for (const auto& endpoint : endpoints)
+                wait_connected(endpoint.id);
+        }
+        sockets.accepted = srt_accept(sockets.listener, nullptr, nullptr);
+        REQUIRE(sockets.accepted != SRT_INVALID_SOCK);
+        REQUIRE_EQ(pathid_policy(sockets.listener),
+            ROBOTWEAX_SRT_EXTENSION_IF_OFFERED);
+        if (caller_kind == 2) {
+            REQUIRE_EQ(
+                pathid_policy(sockets.accepted), ROBOTWEAX_SRT_EXTENSION_OFF);
+        } else {
+            std::array<ROBOTWEAX_SRT_GROUP_PATHDATA_V1, 2> paths {};
+            std::size_t count = 0;
+            const auto deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds {2};
+            do {
+                count = paths.size();
+                REQUIRE(robotweax_srt_group_path_data_v1(
+                            sockets.accepted, paths.data(), &count)
+                    >= 0);
+            } while (count < 2U && std::chrono::steady_clock::now() < deadline
+                && (std::this_thread::sleep_for(std::chrono::milliseconds {1}),
+                    true));
+            REQUIRE_EQ(count, 2U);
+            for (const auto& path : paths) {
+                REQUIRE_EQ(path.identifier_length, labeled ? 2U : 0U);
+                REQUIRE_EQ((path.flags & ROBOTWEAX_SRT_PATHID_NEGOTIATED) != 0U,
+                    labeled);
+                REQUIRE_EQ(pathid_policy(path.member_id),
+                    labeled ? ROBOTWEAX_SRT_EXTENSION_REQUIRED
+                            : ROBOTWEAX_SRT_EXTENSION_OFF);
+            }
+        }
+        REQUIRE_EQ(srt_sendmsg(sockets.caller, "payload", 7, -1, 1), 7);
+        std::array<char, SRT_LIVE_MAX_PLSIZE> payload {};
+        REQUIRE_EQ(
+            srt_recvmsg(sockets.accepted, payload.data(), payload.size()), 7);
+    }
+}
+
+TEST(srt_compat_pathid_policy_option_validation)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    Sockets sockets;
+    sockets.listener = srt_create_socket();
+    sockets.caller = srt_create_group(SRT_GTYPE_BROADCAST);
+    REQUIRE_EQ(pathid_policy(sockets.listener), ROBOTWEAX_SRT_EXTENSION_OFF);
+    enable(sockets.listener, SRTO_ROBOTWEAX_PATHID_REQUIRED);
+    REQUIRE_EQ(
+        pathid_policy(sockets.listener), ROBOTWEAX_SRT_EXTENSION_REQUIRED);
+    set_pathid_policy(sockets.listener, ROBOTWEAX_SRT_EXTENSION_IF_OFFERED);
+    bool required = true;
+    int size = sizeof(required);
+    REQUIRE_EQ(srt_getsockflag(sockets.listener, SRTO_ROBOTWEAX_PATHID_REQUIRED,
+                   &required, &size),
+        0);
+    REQUIRE(!required);
+    // A labeled peer still needs a Live listener.
+    const int file = SRTT_FILE;
+    REQUIRE_EQ(
+        srt_setsockflag(sockets.listener, SRTO_TRANSTYPE, &file, sizeof(file)),
+        SRT_ERROR);
+    // A group is a Caller: it states what it requires.
+    const std::int32_t if_offered = ROBOTWEAX_SRT_EXTENSION_IF_OFFERED;
+    REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_ROBOTWEAX_PATHID_POLICY,
+                   &if_offered, sizeof(if_offered)),
+        SRT_ERROR);
+    set_pathid_policy(sockets.caller, ROBOTWEAX_SRT_EXTENSION_REQUIRED);
+    REQUIRE_EQ(pathid_policy(sockets.caller), ROBOTWEAX_SRT_EXTENSION_REQUIRED);
+}
+
+TEST(compat_group_mirror_keeps_one_negotiated_extension_set)
+{
+    // An IF_OFFERED listener resolves each member separately. A member whose
+    // negotiation differs from its mirror's would mix labeled and unlabeled
+    // or monitored and unmonitored paths, so it is refused.
+    using robotweax::srt::compat::GroupRegistry;
+    REQUIRE_EQ(srt_startup(), 0);
+    const SRTSOCKET listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    const SRTSOCKET peer = SRTGROUP_MASK | 91;
+    GroupRegistry::MirrorDescription labeled;
+    REQUIRE(GroupRegistry::instance().prepare_mirror(listener, peer,
+        SRT_GTYPE_BACKUP, 7U, labeled, 0,
+        GroupRegistry::MirrorExtensions {.path_identifier = true}));
+    REQUIRE(labeled.created);
+    GroupRegistry::MirrorDescription other;
+    REQUIRE(!GroupRegistry::instance().prepare_mirror(listener, peer,
+        SRT_GTYPE_BACKUP, 7U, other, 0, GroupRegistry::MirrorExtensions {}));
+    REQUIRE(!GroupRegistry::instance().prepare_mirror(listener, peer,
+        SRT_GTYPE_BACKUP, 7U, other, 0,
+        GroupRegistry::MirrorExtensions {
+            .path_identifier = true, .standby_rtt = true}));
+    REQUIRE(GroupRegistry::instance().prepare_mirror(listener, peer,
+        SRT_GTYPE_BACKUP, 7U, other, 0,
+        GroupRegistry::MirrorExtensions {.path_identifier = true}));
+    REQUIRE(!other.created);
+    REQUIRE_EQ(other.group, labeled.group);
+    GroupRegistry::instance().release_empty_mirror(
+        labeled.group, labeled.generation);
+    REQUIRE_EQ(srt_close(listener), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
+
 TEST(srt_compat_group_pathid_mismatch_and_configuration_fail_closed)
 {
     for (bool required_listener : {false, true}) {

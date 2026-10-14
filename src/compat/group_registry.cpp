@@ -604,7 +604,9 @@ int GroupRegistry::get_io_option(
     const bool group_owned = option == SRTO_SNDSYN || option == SRTO_RCVSYN
         || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO
         || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+        || option == SRTO_ROBOTWEAX_STANDBYRTT_POLICY
         || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
+        || option == SRTO_ROBOTWEAX_PATHID_POLICY
         || option == SRTO_ROBOTWEAX_ACP1_REQUIRED;
     {
         std::lock_guard lock(record->mutex);
@@ -687,7 +689,9 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
     const bool group_owned = option == SRTO_SNDSYN || option == SRTO_RCVSYN
         || option == SRTO_SNDTIMEO || option == SRTO_RCVTIMEO
         || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+        || option == SRTO_ROBOTWEAX_STANDBYRTT_POLICY
         || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
+        || option == SRTO_ROBOTWEAX_PATHID_POLICY
         || option == SRTO_ROBOTWEAX_ACP1_REQUIRED;
     {
         std::lock_guard lock(record->mutex);
@@ -695,14 +699,17 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
             set_last_error(SRT_EINVSOCK);
             return SRT_ERROR;
         }
-        if (option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+        if ((option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+                || option == SRTO_ROBOTWEAX_STANDBYRTT_POLICY)
             && record->type != SRT_GTYPE_BACKUP) {
             set_last_error(SRT_EINVOP);
             return SRT_ERROR;
         }
         if ((option == SRTO_ROBOTWEAX_ACP1_REQUIRED
                 || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
-                || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED)
+                || option == SRTO_ROBOTWEAX_PATHID_POLICY
+                || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+                || option == SRTO_ROBOTWEAX_STANDBYRTT_POLICY)
             && record->opened) {
             set_last_error(SRT_ECONNSOCK);
             return SRT_ERROR;
@@ -741,7 +748,9 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
         // Group-only RDV/path combinations need the owning group identity.
         if (option == SRTO_RENDEZVOUS
             || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
-            || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED)
+            || option == SRTO_ROBOTWEAX_PATHID_POLICY
+            || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
+            || option == SRTO_ROBOTWEAX_STANDBYRTT_POLICY)
             configured.group_id = group;
         // Use the ordinary socket rules for validation and PRE/POST stages.
         if (set_socket_option(configured, option, value, value_size)
@@ -880,7 +889,8 @@ void GroupRegistry::note_io_result(
 
 bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
     SRT_GROUP_TYPE type, std::uint32_t initial_sequence,
-    MirrorDescription& output, std::uint64_t admission_domain) noexcept
+    MirrorDescription& output, std::uint64_t admission_domain,
+    std::optional<MirrorExtensions> extensions) noexcept
 {
     output = {};
     if (listener < 0 || is_group_handle(listener)
@@ -909,7 +919,6 @@ bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
         std::lock_guard lock(listener_record->mutex);
         listener_public_options = listener_record->public_options;
         listener_native_options = listener_record->native_options;
-        bond_scope = listener_record->accept_bond_scope;
         listener_send_synchronous =
             listener_record->public_options.send_synchronous;
         listener_receive_synchronous =
@@ -925,11 +934,25 @@ bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
         listener_minimum_peer_version = listener_record->public_options
             .minimum_peer_srt_version;
     }
+    if (extensions.has_value()) {
+        // Without a negotiated result the listener setting is already strict.
+        listener_public_options.path_identifier_required =
+            extensions->path_identifier;
+        listener_public_options.path_identifier_if_offered = false;
+        listener_public_options.standby_rtt_required = extensions->standby_rtt;
+        listener_public_options.standby_rtt_if_offered = false;
+    }
 
     try {
         std::lock_guard registry_lock(mutex_);
         if (clearing_) {
             return false;
+        }
+        if (const auto bonded = listener_bond_scopes_.find(listener);
+            bonded != listener_bond_scopes_.end()) {
+            // Only this registry transaction publishes an admission scope.
+            // Socket fields can be ahead of or behind mirror migration.
+            bond_scope = bonded->second;
         }
         for (const auto& entry : groups_) {
             const auto& record = entry.second;
@@ -995,6 +1018,8 @@ bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
         prepared->replay_acknowledged_sequence = initial_sequence;
         prepared->next_receive_sequence = initial_sequence;
         prepared->peer_group = peer_group;
+        // A mirror is created for exactly one peer group.
+        prepared->peer_group_confirmed = true;
         prepared->mirror_listener = listener;
         prepared->mirror_bond_scope = bond_scope;
         prepared->admission_domain = admission_domain;
@@ -1037,6 +1062,69 @@ bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
     } catch (...) {
         return false;
     }
+}
+
+bool GroupRegistry::bond_listeners(
+    const std::vector<SRTSOCKET>& listeners, std::uint64_t scope) noexcept
+{
+    if (scope == 0U) {
+        return false;
+    }
+    try {
+        std::lock_guard registry_lock(mutex_);
+        if (clearing_) {
+            return false;
+        }
+        listener_bond_scopes_.reserve(
+            listener_bond_scopes_.size() + listeners.size());
+        for (const SRTSOCKET listener : listeners) {
+            listener_bond_scopes_.insert_or_assign(listener, scope);
+        }
+        const auto bonded = [&listeners](SRTSOCKET listener) {
+            return std::find(listeners.begin(), listeners.end(), listener)
+                != listeners.end();
+        };
+        // Bond membership only grows, and a listener belongs to at most one
+        // bond, so a mirror moves at most once from scope 0 into `scope`.
+        std::vector<std::shared_ptr<GroupRecord>> unscoped;
+        std::vector<SRTSOCKET> scoped_peers;
+        for (const auto& entry : groups_) {
+            const auto& record = entry.second;
+            std::lock_guard record_lock(record->mutex);
+            if (record->closed || record->mirror_listener == SRT_INVALID_SOCK)
+                continue;
+            if (record->mirror_bond_scope == scope) {
+                scoped_peers.push_back(record->peer_group);
+            } else if (record->mirror_bond_scope == 0U
+                && bonded(record->mirror_listener)) {
+                unscoped.push_back(record);
+            }
+        }
+        for (const auto& record : unscoped) {
+            std::lock_guard record_lock(record->mutex);
+            if (record->closed || record->mirror_bond_scope != 0U)
+                continue;
+            // Two listeners may each have admitted a mirror for the same
+            // peer group before the bond. Keep the first in the bond; the
+            // other stays bound to its own listener rather than making the
+            // bond's peer-group lookup ambiguous.
+            if (std::find(scoped_peers.begin(), scoped_peers.end(),
+                    record->peer_group)
+                != scoped_peers.end())
+                continue;
+            record->mirror_bond_scope = scope;
+            scoped_peers.push_back(record->peer_group);
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+void GroupRegistry::forget_listener(SRTSOCKET listener) noexcept
+{
+    std::lock_guard registry_lock(mutex_);
+    listener_bond_scopes_.erase(listener);
 }
 
 void GroupRegistry::release_empty_mirror(
@@ -1309,9 +1397,28 @@ void GroupRegistry::remove_member(
     }
 }
 
-bool GroupRegistry::set_peer_group(
-    SRTSOCKET group, std::uint64_t group_generation,
-    SRTSOCKET peer_group) noexcept
+bool peer_group_admits(const GroupRecord& group, SRTSOCKET peer_group) noexcept
+{
+    if (group.peer_group == SRT_INVALID_SOCK
+        || group.peer_group == peer_group) {
+        return true;
+    }
+    if (group.peer_group_confirmed) {
+        return false;
+    }
+    // A pin nobody established may be replaced: every member that claimed
+    // it failed before its runtime was attached, so no data was exchanged
+    // with the previous peer group.
+    return std::none_of(
+        group.members.begin(), group.members.end(), [](const auto& candidate) {
+            return candidate.holds_peer_group
+                && !terminal_member_state(candidate.public_data.sockstate);
+        });
+}
+
+bool GroupRegistry::set_peer_group(SRTSOCKET group,
+    std::uint64_t group_generation, SRTSOCKET socket,
+    std::uint64_t member_generation, SRTSOCKET peer_group) noexcept
 {
     if (!is_group_handle(peer_group)) {
         return false;
@@ -1325,12 +1432,39 @@ bool GroupRegistry::set_peer_group(
         || record->generation != group_generation) {
         return false;
     }
-    if (record->peer_group != SRT_INVALID_SOCK
-        && record->peer_group != peer_group) {
+    const auto member = find_member(*record, socket, member_generation);
+    if (member == record->members.end()) {
         return false;
     }
+    if (!peer_group_admits(*record, peer_group)) {
+        return false;
+    }
+    if (record->peer_group != peer_group) {
+        for (auto& candidate : record->members) {
+            candidate.holds_peer_group = false;
+        }
+    }
     record->peer_group = peer_group;
+    member->holds_peer_group = true;
     return true;
+}
+
+void GroupRegistry::confirm_peer_group(SRTSOCKET group,
+    std::uint64_t group_generation, SRTSOCKET socket,
+    std::uint64_t member_generation) noexcept
+{
+    const auto record = find(group);
+    if (record == nullptr) {
+        return;
+    }
+    std::lock_guard lock(record->mutex);
+    if (record->closed || record->generation != group_generation) {
+        return;
+    }
+    const auto member = find_member(*record, socket, member_generation);
+    if (member != record->members.end() && member->holds_peer_group) {
+        record->peer_group_confirmed = true;
+    }
 }
 
 void GroupRegistry::close(SRTSOCKET group) noexcept
@@ -1393,6 +1527,7 @@ void GroupRegistry::clear() noexcept
         std::lock_guard lock(mutex_);
         clearing_ = true;
         records.swap(groups_);
+        listener_bond_scopes_.clear();
         closed_handles_.clear();
     }
     for (const auto& entry : records) {

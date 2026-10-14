@@ -185,6 +185,19 @@ one peer group may then arrive through different listeners in that same domain.
 Listeners that were never bonded remain isolated. Merging two already distinct
 bond domains fails with `SRT_EINVOP`.
 
+A member may be admitted before the application first calls `srt_accept_bond`.
+The mirror it created moves into the bond when the call forms it, so later
+members of that peer group on any bonded listener join the same mirror. If two
+bonded listeners had each already created a mirror for one peer group, one of
+them joins the bond and the other stays bound to its own listener.
+
+On the caller, the first member that receives a listener response binds the
+group to that mirror identity. Later members answered by a different mirror are
+rejected with `SRT_REJ_GROUP`. The binding becomes permanent once a member's
+connection is established. Until then, if every member that observed the mirror
+has failed, the next member may bind the group to the mirror the listener
+answers with instead.
+
 ## Group Membership extension
 
 The HSv5 Group Membership record contains:

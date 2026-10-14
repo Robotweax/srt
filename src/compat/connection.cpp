@@ -203,6 +203,9 @@ struct ListenerGroupAdmission {
     GroupRegistry::MirrorDescription mirror{};
     GroupMembership peer{};
     PathIdentifier path_identifier {};
+    // This connection's negotiated extensions; a mirror carries one setting.
+    bool path_identifier_required = false;
+    bool standby_rtt_required = false;
     std::uint64_t member_generation = 0;
     bool first_member = false;
     bool committed = false;
@@ -233,7 +236,10 @@ struct ListenerGroupAdmission {
             }
         } else if (!GroupRegistry::instance().prepare_mirror(listener,
                        static_cast<SRTSOCKET>(proposed.group_id), type,
-                       initial_sequence, mirror, admission_domain)) {
+                       initial_sequence, mirror, admission_domain,
+                       GroupRegistry::MirrorExtensions {
+                           .path_identifier = path_identifier_required,
+                           .standby_rtt = standby_rtt_required})) {
             return false;
         } else {
             peer = proposed;
@@ -360,6 +366,19 @@ struct ListenerGroupAdmission {
         }
     }
 };
+
+void resolve_offered_extensions(
+    PublicSocketOptions& options, const HandshakeMessage& conclusion) noexcept
+{
+    if (options.path_identifier_if_offered) {
+        options.path_identifier_required = conclusion.has_path_identifier;
+        options.path_identifier_if_offered = false;
+    }
+    if (options.standby_rtt_if_offered) {
+        options.standby_rtt_required = conclusion.has_standby_rtt;
+        options.standby_rtt_if_offered = false;
+    }
+}
 
 [[nodiscard]] bool negotiate_listener_group(
     const GroupMembership& peer, GroupMembership& local,
@@ -677,6 +696,25 @@ void publish_group_member_state(SocketRecord& socket) noexcept
     GroupRegistry::instance().update_member(
         group, group_generation, handle, member_generation,
         state, result);
+}
+
+void confirm_peer_group(SocketRecord& socket) noexcept
+{
+    SRTSOCKET group = SRT_INVALID_SOCK;
+    SRTSOCKET handle = SRT_INVALID_SOCK;
+    std::uint64_t group_generation = 0;
+    std::uint64_t member_generation = 0;
+    {
+        std::lock_guard lock(socket.mutex);
+        group = socket.group_id;
+        group_generation = socket.group_generation;
+        member_generation = socket.member_generation;
+        handle = static_cast<SRTSOCKET>(socket.protocol_socket_id);
+    }
+    if (group == SRT_INVALID_SOCK || member_generation == 0U)
+        return;
+    GroupRegistry::instance().confirm_peer_group(
+        group, group_generation, handle, member_generation);
 }
 
 [[nodiscard]] ImplementationIdentity local_implementation_identity(
@@ -1089,7 +1127,9 @@ int listen_socket(
                 || socket->public_options.rendezvous
                 || socket->native_options.maximum_segment_size() < 256U))
             return fail(SRT_ESECFAIL);
-        if (socket->public_options.standby_rtt_required
+        // IF_OFFERED admits labeled or standby-RTT peers as a group member,
+        // so it needs the same listener profile as REQUIRED.
+        if (standby_rtt_enabled(socket->public_options)
             && (!socket->public_options.group_connect
                 || socket->public_options.rendezvous
                 || socket->public_options.transmission_type != SRTT_LIVE
@@ -1097,7 +1137,7 @@ int listen_socket(
                 || !socket->public_options.tsbpd_mode))
             return fail(SRT_EINVPARAM);
         if (socket->public_options.path_identifier.size != 0U
-            || (socket->public_options.path_identifier_required
+            || (path_identifier_enabled(socket->public_options)
                 && (!socket->public_options.group_connect
                     || socket->public_options.transmission_type != SRTT_LIVE)))
             return fail(SRT_EINVPARAM);
@@ -1625,14 +1665,18 @@ public:
         if (setup_.configuration.has_group_membership) {
             SRTSOCKET group = SRT_INVALID_SOCK;
             std::uint64_t group_generation = 0;
+            std::uint64_t member_generation = 0;
+            SRTSOCKET handle = SRT_INVALID_SOCK;
             {
                 std::lock_guard lock(socket_.mutex);
                 group = socket_.group_id;
                 group_generation = socket_.group_generation;
+                member_generation = socket_.member_generation;
+                handle = static_cast<SRTSOCKET>(socket_.protocol_socket_id);
             }
             if (!protocol.has_peer_group_membership()
                 || !GroupRegistry::instance().set_peer_group(group,
-                    group_generation,
+                    group_generation, handle, member_generation,
                     static_cast<SRTSOCKET>(
                         protocol.peer_group_membership().group_id))) {
                 return reject_peer(SRT_ECONNREJ, 0, SRT_REJ_GROUP);
@@ -1669,6 +1713,7 @@ public:
                 static_cast<SRT_ERRNO>(last_error().code),
                 last_error().system_error);
         }
+        confirm_peer_group(socket_);
         if (setup_.options.experimental_acp1())
             publish_connected_state(socket_, SRTS_CONNECTED);
         return 0;
@@ -2781,9 +2826,8 @@ private:
         {
             std::lock_guard lock(group->mutex);
             rejected = group->closed
-                || (group->peer_group != SRT_INVALID_SOCK
-                    && group->peer_group
-                        != static_cast<SRTSOCKET>(peer.group_id));
+                || !peer_group_admits(
+                    *group, static_cast<SRTSOCKET>(peer.group_id));
         }
         if (rejected)
             return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_GROUP);
@@ -3065,13 +3109,18 @@ private:
         if (setup_.configuration.has_group_membership) {
             SRTSOCKET group;
             std::uint64_t generation;
+            std::uint64_t member_generation;
+            SRTSOCKET handle;
             {
                 std::lock_guard lock(socket_->mutex);
                 group = socket_->group_id;
                 generation = socket_->group_generation;
+                member_generation = socket_->member_generation;
+                handle = static_cast<SRTSOCKET>(socket_->protocol_socket_id);
             }
             if (!machine_.has_peer_group_membership()
                 || !GroupRegistry::instance().set_peer_group(group, generation,
+                    handle, member_generation,
                     static_cast<SRTSOCKET>(
                         machine_.peer_group_membership().group_id)))
                 return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_GROUP);
@@ -3106,6 +3155,8 @@ private:
                 static_cast<SRT_ERRNO>(last_error().code),
                 last_error().system_error);
         }
+        if (setup_.configuration.has_group_membership)
+            confirm_peer_group(*socket_);
         if (setup_.options.experimental_acp1())
             publish_connected_state(*socket_, SRTS_CONNECTED);
         if (first_connected_packet != nullptr) {
@@ -3693,6 +3744,11 @@ int connect_socket(
             return fail(SRT_ESECFAIL);
         }
         const auto& path_options = socket->public_options;
+        // A Caller states what it requires; only a Listener may accept
+        // either form of a peer.
+        if (path_options.standby_rtt_if_offered
+            || path_options.path_identifier_if_offered)
+            return fail(SRT_EINVPARAM);
         if (path_options.standby_rtt_required
             && (socket->group_id == SRT_INVALID_SOCK
                 || socket->group_type != SRT_GTYPE_BACKUP
@@ -4218,6 +4274,11 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     group_admission.endpoint = initial.peer;
     const HandshakeMessage& conclusion = admission.conclusion.message;
     group_admission.path_identifier = conclusion.path_identifier;
+    // An IF_OFFERED Listener policy becomes this connection's strict setting
+    // before the listen callback runs: REQUIRED when the caller offered the
+    // extension, OFF otherwise. The callback, every later check, the HSv5
+    // response and the accepted socket then see one bilateral decision.
+    resolve_offered_extensions(public_options, conclusion);
     const bool has_stream_id =
         selected_protocol == ListenerHandshakeProtocol::hsv5
         && conclusion.has_stream_id_extension
@@ -4334,6 +4395,9 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         timeout_milliseconds = public_options.connection_timeout_milliseconds;
     }
     group_admission.enabled = public_options.group_connect;
+    group_admission.path_identifier_required =
+        public_options.path_identifier_required;
+    group_admission.standby_rtt_required = public_options.standby_rtt_required;
 
     // The callback may change accepted-socket options. Check its final
     // receive window before constructing crypto state for this admission.
@@ -5556,6 +5620,21 @@ SRTSOCKET accept_bond_sockets(
         if (scope == 0U) {
             scope = allocate_accept_bond_scope();
         }
+        // Mirrors admitted before this call joined no bond. Move them into
+        // it so members arriving on another bonded listener share them.
+        std::vector<SRTSOCKET> handles;
+        try {
+            handles.reserve(bonded.size());
+            for (const auto& listener : bonded)
+                handles.push_back(listener.handle);
+        } catch (...) {
+            return fail_accept(SRT_ENOBUF);
+        }
+        if (!GroupRegistry::instance().bond_listeners(handles, scope)) {
+            return fail_accept(SRT_ENOBUF);
+        }
+        // Publish coordinator metadata only after admission and migration
+        // have committed together under the registry lock.
         for (const auto& listener : bonded) {
             std::lock_guard lock(listener.socket->mutex);
             listener.socket->accept_bond_scope = scope;

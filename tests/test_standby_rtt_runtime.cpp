@@ -641,6 +641,180 @@ TEST(standby_rtt_native_runtime_one_sided_opt_in_rejects_without_downgrade)
         REQUIRE_EQ(srt_getrejectreason(endpoint.id), SRT_REJ_GROUP);
     }
 }
+namespace {
+void set_policy(SRTSOCKET socket, SRT_SOCKOPT option, std::int32_t policy)
+{
+    REQUIRE_EQ(srt_setsockflag(socket, option, &policy, sizeof(policy)), 0);
+}
+std::int32_t policy_of(SRTSOCKET socket, SRT_SOCKOPT option)
+{
+    std::int32_t policy = -1;
+    int size = sizeof(policy);
+    REQUIRE_EQ(srt_getsockflag(socket, option, &policy, &size), 0);
+    REQUIRE_EQ(size, static_cast<int>(sizeof(policy)));
+    return policy;
+}
+// Connected members report NEGOTIATED only when the pair was agreed.
+bool standby_negotiated(SRTSOCKET socket)
+{
+    ROBOTWEAX_SRT_STANDBY_RTTDATA_V1 data {};
+    data.struct_size = sizeof(data);
+    data.abi_version = 1;
+    // A mirror member's runtime can attach just after srt_accept returns.
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    int result = SRT_ERROR;
+    while ((result = robotweax_srt_standby_rtt_data_v1(
+                socket, &data, sizeof(data)))
+            == SRT_ERROR
+        && srt_getlasterror(nullptr) == SRT_ENOCONN
+        && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    REQUIRE_EQ(result, 0);
+    return (data.flags & ROBOTWEAX_SRT_STANDBY_RTT_NEGOTIATED) != 0U;
+}
+SRTSOCKET first_member(SRTSOCKET group)
+{
+    std::array<SRT_SOCKGROUPDATA, 1> members {};
+    std::size_t count = members.size();
+    REQUIRE(srt_group_data(group, members.data(), &count) >= 0);
+    REQUIRE_EQ(count, 1U);
+    return members[0].id;
+}
+} // namespace
+
+TEST(standby_rtt_if_offered_listener_accepts_offering_and_plain_peers)
+{
+    // One IF_OFFERED listener admits a standby-RTT Backup group, a Backup
+    // group without it and an ordinary socket. Each accepted connection
+    // carries the strict result of its own negotiation.
+    for (const int caller_kind : {0, 1, 2}) {
+        REQUIRE_EQ(srt_startup(), 0);
+        PublicSockets sockets;
+        sockets.listener = srt_create_socket();
+        enable_option(sockets.listener, SRTO_GROUPCONNECT);
+        set_policy(sockets.listener, SRTO_ROBOTWEAX_STANDBYRTT_POLICY,
+            ROBOTWEAX_SRT_EXTENSION_IF_OFFERED);
+        REQUIRE_EQ(
+            policy_of(sockets.listener, SRTO_ROBOTWEAX_STANDBYRTT_POLICY),
+            ROBOTWEAX_SRT_EXTENSION_IF_OFFERED);
+        bool required = true;
+        int size = sizeof(required);
+        REQUIRE_EQ(srt_getsockflag(sockets.listener,
+                       SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED, &required, &size),
+            0);
+        REQUIRE(!required);
+        auto target = listen_on_loopback(sockets);
+        const bool offered = caller_kind == 0;
+        if (caller_kind == 2) {
+            sockets.caller = srt_create_socket();
+            REQUIRE_EQ(
+                srt_connect(sockets.caller,
+                    reinterpret_cast<sockaddr*>(&target), sizeof(target)),
+                0);
+        } else {
+            sockets.caller = srt_create_group(SRT_GTYPE_BACKUP);
+            if (offered)
+                enable_option(
+                    sockets.caller, SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED);
+            auto endpoint = srt_prepare_endpoint(
+                nullptr, reinterpret_cast<sockaddr*>(&target), sizeof(target));
+            REQUIRE(srt_connect_group(sockets.caller, &endpoint, 1)
+                != SRT_INVALID_SOCK);
+        }
+        sockets.receiver = srt_accept(sockets.listener, nullptr, nullptr);
+        REQUIRE(sockets.receiver != SRT_INVALID_SOCK);
+        const SRTSOCKET local =
+            caller_kind == 2 ? sockets.caller : first_member(sockets.caller);
+        const SRTSOCKET remote = caller_kind == 2
+            ? sockets.receiver
+            : first_member(sockets.receiver);
+        REQUIRE_EQ(standby_negotiated(local), offered);
+        REQUIRE_EQ(standby_negotiated(remote), offered);
+        REQUIRE_EQ(policy_of(remote, SRTO_ROBOTWEAX_STANDBYRTT_POLICY),
+            offered ? ROBOTWEAX_SRT_EXTENSION_REQUIRED
+                    : ROBOTWEAX_SRT_EXTENSION_OFF);
+        // The listener keeps its policy for the next admission.
+        REQUIRE_EQ(
+            policy_of(sockets.listener, SRTO_ROBOTWEAX_STANDBYRTT_POLICY),
+            ROBOTWEAX_SRT_EXTENSION_IF_OFFERED);
+        constexpr char message[] = "either";
+        REQUIRE_EQ(srt_sendmsg(sockets.caller, message, sizeof(message), -1, 1),
+            static_cast<int>(sizeof(message)));
+        // Live sockets need a full-payload buffer; groups accept any size.
+        std::array<char, SRT_LIVE_MAX_PLSIZE> received {};
+        REQUIRE_EQ(
+            srt_recvmsg(sockets.receiver, received.data(), received.size()),
+            static_cast<int>(sizeof(message)));
+    }
+}
+
+TEST(standby_rtt_policy_option_aliases_and_rejects_if_offered_on_callers)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    PublicSockets sockets;
+    sockets.listener = srt_create_socket();
+    sockets.caller = srt_create_group(SRT_GTYPE_BACKUP);
+    REQUIRE_EQ(policy_of(sockets.listener, SRTO_ROBOTWEAX_STANDBYRTT_POLICY),
+        ROBOTWEAX_SRT_EXTENSION_OFF);
+    // The bool option and the policy option are two views of one setting.
+    enable_option(sockets.listener, SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED);
+    REQUIRE_EQ(policy_of(sockets.listener, SRTO_ROBOTWEAX_STANDBYRTT_POLICY),
+        ROBOTWEAX_SRT_EXTENSION_REQUIRED);
+    set_policy(sockets.listener, SRTO_ROBOTWEAX_STANDBYRTT_POLICY,
+        ROBOTWEAX_SRT_EXTENSION_IF_OFFERED);
+    enable_option(sockets.listener, SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED, false);
+    REQUIRE_EQ(policy_of(sockets.listener, SRTO_ROBOTWEAX_STANDBYRTT_POLICY),
+        ROBOTWEAX_SRT_EXTENSION_OFF);
+    // IF_OFFERED keeps the profile REQUIRED needs: an offering peer must be
+    // able to negotiate.
+    set_policy(sockets.listener, SRTO_ROBOTWEAX_STANDBYRTT_POLICY,
+        ROBOTWEAX_SRT_EXTENSION_IF_OFFERED);
+    const bool disable = false;
+    REQUIRE_EQ(srt_setsockflag(
+                   sockets.listener, SRTO_TSBPDMODE, &disable, sizeof(disable)),
+        SRT_ERROR);
+    // GROUPCONNECT is required to listen, as for REQUIRED.
+    sockaddr_in endpoint {};
+    endpoint.sin_family = AF_INET;
+    endpoint.sin_addr.s_addr = htonl(0x7f000001);
+    REQUIRE_EQ(srt_bind(sockets.listener,
+                   reinterpret_cast<sockaddr*>(&endpoint), sizeof(endpoint)),
+        0);
+    REQUIRE_EQ(srt_listen(sockets.listener, 8), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+
+    for (const std::int32_t invalid : {-1, 3}) {
+        REQUIRE_EQ(
+            srt_setsockflag(sockets.caller, SRTO_ROBOTWEAX_STANDBYRTT_POLICY,
+                &invalid, sizeof(invalid)),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    }
+    const std::int32_t if_offered = ROBOTWEAX_SRT_EXTENSION_IF_OFFERED;
+    REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_ROBOTWEAX_STANDBYRTT_POLICY,
+                   &if_offered, sizeof(if_offered)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    set_policy(sockets.caller, SRTO_ROBOTWEAX_STANDBYRTT_POLICY,
+        ROBOTWEAX_SRT_EXTENSION_REQUIRED);
+    REQUIRE_EQ(policy_of(sockets.caller, SRTO_ROBOTWEAX_STANDBYRTT_POLICY),
+        ROBOTWEAX_SRT_EXTENSION_REQUIRED);
+
+    // An ordinary Caller socket may hold IF_OFFERED as a listener template
+    // but connecting with it fails explicitly.
+    const SRTSOCKET caller = srt_create_socket();
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    set_policy(caller, SRTO_ROBOTWEAX_STANDBYRTT_POLICY,
+        ROBOTWEAX_SRT_EXTENSION_IF_OFFERED);
+    endpoint.sin_port = htons(9);
+    REQUIRE_EQ(srt_connect(caller, reinterpret_cast<sockaddr*>(&endpoint),
+                   sizeof(endpoint)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    REQUIRE_EQ(srt_close(caller), 0);
+}
+
 TEST(standby_rtt_public_option_profiles_and_preconnect_boundary)
 {
     REQUIRE_EQ(srt_startup(), 0);

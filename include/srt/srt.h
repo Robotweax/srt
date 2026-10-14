@@ -170,7 +170,8 @@ typedef enum SRT_SOCKOPT {
      */
     SRTO_ROBOTWEAX_GROUPDOMAIN = 0x01000005,
     /** Default-off, bilateral group path-label negotiation (bool, PRE).
-     * Required on Caller group and Listener; no unsupported-peer fallback.
+     * Required on Caller group and Listener; no Caller fallback. A Listener
+     * may admit either form with SRTO_ROBOTWEAX_PATHID_POLICY=IF_OFFERED.
      */
     SRTO_ROBOTWEAX_PATHID_REQUIRED = 0x01000006,
     /** Caller member label: 0 clears, 1-32 opaque bytes, PRE.
@@ -180,6 +181,7 @@ typedef enum SRT_SOCKOPT {
     /** Bilateral monitoring-only standby RTT (bool, default false).
      * Set before connect/listen on both peers. Backup Live Message groups,
      * Caller/Listener with TSBPD only; enabled unsupported peers fail setup.
+     * A Listener may admit either form with SRTO_ROBOTWEAX_STANDBYRTT_POLICY.
      * Does not affect standard RTT, reliability, liveness or group selection.
      */
     SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED = 0x01000008,
@@ -209,6 +211,18 @@ typedef enum SRT_SOCKOPT {
     // required group, at least one connected member and every connected member
     // must be ACTIVE. Pending/broken/closed members do not count.
     SRTO_ROBOTWEAX_ACP1_ACTIVE = 0x0100000d,
+    /** Path-label policy (int32_t, PRE, default OFF): OFF, REQUIRED or
+     * IF_OFFERED. REQUIRED equals SRTO_ROBOTWEAX_PATHID_REQUIRED=true.
+     * IF_OFFERED is Listener-only: a labeled group member is negotiated as
+     * REQUIRED, an unlabeled peer as OFF. Accepted sockets report the result.
+     */
+    SRTO_ROBOTWEAX_PATHID_POLICY = 0x0100000e,
+    /** Standby RTT policy (int32_t, PRE, default OFF): OFF, REQUIRED or
+     * IF_OFFERED. REQUIRED equals SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED=true.
+     * IF_OFFERED is Listener-only: an offering peer is negotiated as
+     * REQUIRED, any other peer as OFF. Accepted sockets report the result.
+     */
+    SRTO_ROBOTWEAX_STANDBYRTT_POLICY = 0x0100000f,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif
@@ -248,6 +262,11 @@ typedef struct ROBOTWEAX_SRT_PeerHandshakeV1_ {
     uint32_t receiver_delay_milliseconds; /* Peer receive delay for our DATA. */
     uint32_t sender_delay_milliseconds; /* Minimum delay for our receiver. */
 } ROBOTWEAX_SRT_PEER_HANDSHAKE_V1;
+
+/* Values of SRTO_ROBOTWEAX_PATHID_POLICY and SRTO_ROBOTWEAX_STANDBYRTT_POLICY. */
+#define ROBOTWEAX_SRT_EXTENSION_OFF 0
+#define ROBOTWEAX_SRT_EXTENSION_REQUIRED 1
+#define ROBOTWEAX_SRT_EXTENSION_IF_OFFERED 2
 
 #define ROBOTWEAX_SRT_IDENTITY_OFF 0
 #define ROBOTWEAX_SRT_IDENTITY_NAME 1
