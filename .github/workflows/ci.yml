@@ -358,6 +358,39 @@ jobs:
           ctest --test-dir build -C Release -L "$pattern" \
             --parallel 1 --no-tests=error --output-on-failure
 
+  gcc_release:
+    name: GCC 15 Release epoll
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: ubuntu:26.10@sha256:93e29beff5257b2cdf1c024d831f6d2997e53655a653ff76a811fc9e6564a719
+    env:
+      CC: gcc-15
+      CXX: g++-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install GCC 15 and build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends g++-15 cmake make libssl-dev python3
+          uname -m
+          g++-15 --version
+          dpkg-query -W g++-15 cmake make libssl-dev python3
+      - name: Configure Release with warnings as errors
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DROBOTWEAX_SRT_WARNINGS_AS_ERRORS=ON
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
+      - name: Build native tests
+        run: cmake --build build --parallel 2 --target robotweax_srt_tests
+      - name: Test epoll readiness and lifecycle
+        run: ./build/robotweax_srt_tests --include epoll
+
   live_timing:
     name: Live timing interoperability
     needs: changes
@@ -2281,6 +2314,7 @@ jobs:
       - python_tests
       - format_check
       - linux_release
+      - gcc_release
       - live_timing
       - portable_release
       - debug_matrix
@@ -2316,6 +2350,7 @@ jobs:
           PYTHON_TESTS: ${{ needs.python_tests.result }}
           FORMAT_CHECK: ${{ needs.format_check.result }}
           LINUX_RELEASE: ${{ needs.linux_release.result }}
+          GCC_RELEASE: ${{ needs.gcc_release.result }}
           LIVE_TIMING: ${{ needs.live_timing.result }}
           PORTABLE_RELEASE: ${{ needs.portable_release.result }}
           DEBUG_MATRIX: ${{ needs.debug_matrix.result }}
@@ -2341,6 +2376,7 @@ jobs:
           EXPECT_python_tests: ${{ needs.changes.outputs.python == 'true' }}
           EXPECT_format_check: ${{ needs.changes.outputs.format == 'true' }}
           EXPECT_linux_release: ${{ needs.changes.outputs.cpp == 'true' || needs.changes.outputs.examples == 'true' || needs.changes.outputs.package == 'true' }}
+          EXPECT_gcc_release: ${{ needs.changes.outputs.cpp == 'true' }}
           EXPECT_live_timing: ${{ needs.changes.outputs.timing == 'true' && needs.changes.outputs.core_tests != 'true' }}
           EXPECT_portable_release: ${{ needs.changes.outputs.portable == 'true' }}
           EXPECT_debug_matrix: ${{ needs.changes.outputs.debug == 'true' }}
@@ -2368,6 +2404,7 @@ jobs:
             "python-tests=$PYTHON_TESTS" \
             "format-check=$FORMAT_CHECK" \
             "linux-release=$LINUX_RELEASE" \
+            "gcc-release=$GCC_RELEASE" \
             "live-timing=$LIVE_TIMING" \
             "portable-release=$PORTABLE_RELEASE" \
             "debug-matrix=$DEBUG_MATRIX" \
