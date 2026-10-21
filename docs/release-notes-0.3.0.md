@@ -1,9 +1,9 @@
 # Robotweax SRT 0.3.0 — Crypto Providers and Admission Controls
 
-Status: **candidate preparation; not published**.
-Final candidate, package, integration and signed-installer acceptance is pending.
-The latest published release remains [v0.2.9](https://github.com/Robotweax/srt/releases/tag/v0.2.9).
-See the [0.3.0 acceptance process](release-process-0.3.0.md).
+Status: **published on 2026-10-14**.
+Download the signed OpenSSL/BCrypt Windows SDK installers, `SHA256SUMS` and
+`tag-provenance.json` from [v0.3.0](https://github.com/Robotweax/srt/releases/tag/v0.3.0).
+See the [publication record](release-process-0.3.0.md#publication-record).
 
 ## Versions and migration
 
@@ -70,15 +70,16 @@ The [ACP1 prototype](experimental-acp1.md) is behind the default-off
 It covers documented ordinary/group Caller/Listener and Rendezvous profiles.
 It is unreviewed, unstable and not a supported security profile. Independent
 cryptographic review and a separate go/no-go remain outstanding. Its inclusion
-in candidate source does not close [#190](https://github.com/Robotweax/srt/issues/190)
+in released source does not close [#190](https://github.com/Robotweax/srt/issues/190)
 or the legacy replay limitation [#112](https://github.com/Robotweax/srt/issues/112).
 Ordinary Haivision interoperability applies with ACP1 disabled, not to ACP1 peers.
 
 ## Qualification and retained limits
 
-Final 0.3.0 qualification is pending. Prior release or feature-PR results do not
-substitute for exact-candidate source, media, package and signed-installer gates.
-No 0.3.0 installer, package, bottle or release is accepted or published yet.
+The release and signed Windows installers are published. The
+[publication record](release-process-0.3.0.md#publication-record) links the final
+tag source, package and SDK runs. Publication does not qualify a separate
+Homebrew bottle, PPA, COPR or additional platform/profile.
 
 The release owner approved an exception for the incomplete comparative resource
 qualification. The corrected candidate completed all five tested finite

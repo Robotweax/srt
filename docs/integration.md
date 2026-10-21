@@ -1,6 +1,6 @@
 # Integration guide
 
-This guide describes the stable integration surface of Robotweax SRT 0.2.9.
+This guide describes the stable integration surface of Robotweax SRT 0.3.0.
 It assumes the library has been installed or provided through a package built
 as described in [Building and installing](building.md).
 
@@ -32,8 +32,8 @@ native packet/options boundary, not a replacement for the socket API.
 
 These values describe different things:
 
-- Robotweax release: 0.2.9;
-- shared-library ABI: 0.2;
+- Robotweax release: 0.3.0;
+- shared-library ABI: 0.3;
 - default compatible API and `srt_getversion()`: 1.5.7;
 - connection establishment: HSv5.
 
@@ -253,7 +253,7 @@ new socket rather than assuming a broken connection can be reset in place.
 
 1. Link through `RobotweaxSRT::srt` or the installed pkg-config file.
 2. Use `<srt/srt.h>` and avoid implementation C++ symbols in the ABI boundary.
-3. Verify the 0.2 package and matching static/shared runtime architecture.
+3. Verify the 0.3 package and matching static/shared runtime architecture.
 4. Apply every connection-stage option before bind/connect/listen.
 5. Make Message versus Stream semantics explicit.
 6. Keep the default AES-CTR and opt-in AES-GCM package variants separate.

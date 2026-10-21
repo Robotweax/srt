@@ -1,15 +1,15 @@
 # Known limitations
 
-Robotweax SRT 0.2.9 is the latest published pre-1.0 release, with an explicit
+Robotweax SRT 0.3.0 is the latest published pre-1.0 release, with an explicit
 support boundary. This document summarizes limits that application developers
 and integrators should account for. Unsupported operations are intended to fail
 with defined errors rather than being silently approximated.
 
 ## Version and ABI boundaries
 
-- The released project version is 0.2.9 and the shared-library ABI line is 0.2.
-- Binary compatibility with the 0.1 ABI is not promised. Rebuild applications
-  and dependencies against the 0.2 package.
+- The released project version is 0.3.0 and the shared-library ABI line is 0.3.
+- Binary compatibility with the 0.1 or 0.2 ABI is not promised. Rebuild applications
+  and dependencies against the 0.3 package.
 - The default compatible API target and `srt_getversion()` value are 1.5.7;
   they do not report the Robotweax release number.
 - Before 1.0, do not assume binary compatibility across minor ABI lines.

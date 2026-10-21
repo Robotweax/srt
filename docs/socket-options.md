@@ -660,7 +660,7 @@ for two-sided configuration, unsupported combinations and the versioned getter.
 These options were introduced in 0.2.9 and are absent from v0.2.8 artifacts.
 `SRTO_ROBOTWEAX_PATHID_POLICY` (`0x0100000e`, int32, default OFF) is the same
 setting with a third, listener-only value `IF_OFFERED` that admits labeled and
-unlabeled peers on one listener; it was introduced after 0.2.9.
+unlabeled peers on one listener; it was introduced in 0.3.0.
 
 
 ## Optional standby RTT monitoring
@@ -675,7 +675,7 @@ resource limits, unauthenticated-control scope and the separate versioned getter
 It was introduced in 0.2.9 and is absent from v0.2.8 artifacts.
 `SRTO_ROBOTWEAX_STANDBYRTT_POLICY` (`0x0100000f`, int32, default OFF) is the
 same setting with a third, listener-only value `IF_OFFERED` that admits peers
-with or without standby RTT on one listener; it was introduced after 0.2.9.
+with or without standby RTT on one listener; it was introduced in 0.3.0.
 
 ## Group admission callback migration (since 0.2.8)
 

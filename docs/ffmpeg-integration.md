@@ -18,7 +18,7 @@ require the conventional libsrt package identity:
 
 | Metadata | Version field | Purpose |
 | --- | --- | --- |
-| `robotweax-srt.pc` | Robotweax release, currently `0.2.5` | Canonical Robotweax package discovery |
+| `robotweax-srt.pc` | Robotweax release, currently `0.3.0` | Canonical Robotweax package discovery |
 | `srt.pc` | Compatible SRT API, currently `1.5.7` | Opt-in FFmpeg/libsrt-compatible discovery |
 
 The compatibility metadata also exposes `robotweax_release` and
@@ -93,7 +93,7 @@ After building FFmpeg, verify all three layers:
    SRT dependency to the intended Robotweax installation.
 
 Do not replace the SRT shared library underneath a prebuilt FFmpeg binary.
-Robotweax 0.2 uses its own shared-library ABI and SONAME line. Rebuild FFmpeg
+Robotweax 0.3 uses its own shared-library ABI and SONAME line. Rebuild FFmpeg
 against the matching Robotweax headers and library.
 
 ## Qualified MVP profile
