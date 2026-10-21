@@ -12,13 +12,11 @@ depending on implementation-specific C++ internals.
 
 ## Release status
 
-The development candidate is **0.3.0**; [release preparation](docs/release-process-0.3.0.md) is in progress and no 0.3.0 artifacts are published.
-
-Version **0.2.9** was published on **2026-10-13** as a pre-1.0 Group recovery and observability release. The [latest release](https://github.com/Robotweax/srt/releases/tag/v0.2.9) includes independently rebuilt and signed OpenSSL/BCrypt Windows SDK installers, post-signing checksums and immutable tag provenance. See the [release notes](docs/release-notes-0.2.9.md) and [completed acceptance record](docs/release-process-0.2.9.md) for changes, successful final gates and remaining limits.
+Version **0.3.0** was published on **2026-10-14** as a pre-1.0 crypto-provider and admission-control release. The [latest release](https://github.com/Robotweax/srt/releases/tag/v0.3.0) includes signed OpenSSL/BCrypt Windows SDK installers, post-signing checksums and tag provenance. See the [release notes](docs/release-notes-0.3.0.md) and [publication record](docs/release-process-0.3.0.md#publication-record) for changes, migration and retained qualification limits.
 
 The separate Homebrew ARM64 bottle is qualified in [Tap #8](https://github.com/Robotweax/homebrew-tap/pull/8); its maintainer review and publication remain pending.
 
-| Axis | Robotweax SRT 0.3.0 candidate |
+| Axis | Robotweax SRT 0.3.0 |
 | --- | --- |
 | Project release | `0.3.0` |
 | Shared-library ABI | `0.3` |
@@ -33,7 +31,7 @@ handshake, and encryption profile are separate version axes. In particular,
 `srt_getversion()` reports the compatible SRT API target, not the Robotweax
 release number.
 
-Version 0.3 is a pre-1.0 candidate. Rebuild applications and dependencies when
+Version 0.3 is a pre-1.0 release. Rebuild applications and dependencies when
 moving from ABI line 0.2 to 0.3. See the [0.3.0 release notes](docs/release-notes-0.3.0.md)
 and [0.1-to-0.2 migration guide](docs/migration-0.2.md).
 

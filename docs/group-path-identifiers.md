@@ -31,7 +31,7 @@ listener with the extension off.
 reading the boolean returns true only for `REQUIRED`. `IF_OFFERED` is a
 listener policy: groups reject it with `SRT_EINVPARAM`, and a socket that holds
 it fails `srt_connect` with `SRT_EINVPARAM`. The policy option was introduced
-after 0.2.9.
+in 0.3.0.
 
 Attach a distinct label to each endpoint's copied configuration using
 `SRTO_ROBOTWEAX_PATHID` (`0x01000007`). Labels are 1–32 opaque bytes; embedded NUL

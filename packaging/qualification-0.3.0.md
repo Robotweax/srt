@@ -1,6 +1,11 @@
 # Package qualification 0.3.0
 
-Status: **candidate finite transfers passed; comparative resource exception approved; remaining release gates pending**. Nothing is published.
+Status: **published on 2026-10-14; comparative resource exception retained**.
+The [publication record](../docs/release-process-0.3.0.md#publication-record)
+links the final tag, successful source/package/SDK workflows and signed release
+assets. Preparation-time pending statuses below describe historical stages;
+they do not describe current publication status. CPU, memory and throughput
+regression thresholds remain unqualified, and failed cases remain failed.
 Project version **0.3.0**, shared-library ABI line **0.3**, compatible SRT API
 **1.5.7**. Existing applications and dependencies must rebuild for ABI line 0.3.
 Previous [0.2.9 acceptance](qualification-0.2.9.md) remains unchanged.

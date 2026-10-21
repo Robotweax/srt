@@ -1,6 +1,6 @@
 # Cryptographic backends
 
-OpenSSL remains the default. The development tree also supports
+OpenSSL remains the default. Release 0.3.0 also supports
 `ROBOTWEAX_SRT_CRYPTO_BACKEND=mbedtls` and the experimental Windows `bcrypt`
 backend. Backend selection is a build-time choice; the SRT wire format, key
 derivation, key exchange, rotation and session-authentication protocol stay the

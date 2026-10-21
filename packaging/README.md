@@ -1,6 +1,6 @@
 # Package manager recipes
 
-## Candidate 0.3.0
+## Released 0.3.0
 
 These recipes select immutable product commit `607d0034b7977f1e5003c98c42cc934bbdf9d431`, not the
 moving checkout. The downloaded GitHub archive contains 643 regular files;
@@ -8,9 +8,11 @@ all contents and executable bits match Git. Archive SHA-256:
 `6c6d19458838248a6c95153e8907334e6c16826c041d4e204f57b73a1750cb5c`.
 
 The [0.3.0 qualification record](qualification-0.3.0.md) and
-[release process](../docs/release-process-0.3.0.md) track pending candidate,
-package and signing gates. No 0.3.0 package, installer or bottle is accepted
-or published yet. The [published 0.2.9 record](qualification-0.2.9.md) and
+[publication record](../docs/release-process-0.3.0.md#publication-record) record
+the October 14 release and final tag checks. Signed OpenSSL/BCrypt Windows SDK
+installers, checksums and tag provenance are available from
+[v0.3.0](https://github.com/Robotweax/srt/releases/tag/v0.3.0).
+A separate 0.3.0 Homebrew bottle is not established by these checks. The [published 0.2.9 record](qualification-0.2.9.md) and
 older release records remain unchanged. No vcpkg registry, PPA or COPR is published.
 
 ## Package contract
@@ -21,7 +23,7 @@ older release records remain unchanged. No vcpkg registry, PPA or COPR is publis
   `include/robotweax-srt`; consumers obtain include paths from package metadata.
 - Use OpenSSL from the package manager. BCrypt and AES-GCM preview are outside
   the initial recipes. Do not bundle third-party application binaries.
-- Preserve candidate project version 0.3.0, ABI line 0.3 and compatible API 1.5.7 as separate
+- Preserve project version 0.3.0, ABI line 0.3 and compatible API 1.5.7 as separate
   version axes. Download only the exact source revision with verified hashes.
 - Installing this package does not redirect installed FFmpeg, GStreamer, VLC or
   OBS applications. Rebuild consumers explicitly with the selected provider;
@@ -121,7 +123,7 @@ pinned recipe version, or the recipe and fixtures must move together.
 Passing this workflow does not qualify an upgrade from an older package, binary
 bottles, all OS versions, or official distribution admission. See
 [0.2.5 qualification evidence](qualification-0.2.5.md) for historical results;
-these results do not qualify the [0.3.0 candidate](qualification-0.3.0.md).
+these results do not qualify the [0.3.0 release](qualification-0.3.0.md).
 
 The vcpkg qualification can also run locally using a bootstrapped checkout of
 the pinned vcpkg revision (a new work directory is required):

@@ -1,16 +1,46 @@
 # Release process for Robotweax SRT 0.3.0
 
-Status: **candidate finite transfers passed; comparative resource exception approved; remaining release gates pending**.
+Status: **published on 2026-10-14; comparative resource exception retained**.
 Previous release: [v0.2.9](https://github.com/Robotweax/srt/releases/tag/v0.2.9).
 Preparation baseline: `9899fd7407cd82385de6f5238fe144647f299066`, including the
 merged SSH interoperability cleanup correction.
-No v0.3.0 tag or public release has been created by this preparation.
+
+## Publication record
+
+Published [v0.3.0](https://github.com/Robotweax/srt/releases/tag/v0.3.0) on
+**2026-10-14**, from commit `4ae6330d62f2b5030d96964bf3500283f32dd39c` and
+annotated tag object `10dc88c4e3a0a69cdf12ff89d0c90fe38762f46a`.
+The release contains separate signed OpenSSL/BCrypt Windows SDK installers,
+`SHA256SUMS` and `tag-provenance.json`.
+
+Final tag workflows completed successfully:
+
+- [CI](https://github.com/Robotweax/srt/actions/runs/38624266210).
+- [Package managers](https://github.com/Robotweax/srt/actions/runs/38624266242).
+- [Linux packages](https://github.com/Robotweax/srt/actions/runs/38624266557).
+- [Windows SDK installers](https://github.com/Robotweax/srt/actions/runs/38624266358),
+  including all twelve build variants, both installers, coexistence,
+  independent rebuild, signing and release-draft publication. The optional
+  `rebuild-qualification` job was skipped; it is not counted as a passed check.
+
+This publication follow-up supersedes preparation-time pending statuses below;
+those dated results remain evidence for their original source and stage.
+The comparative resource exception remains in force: CPU, memory and throughput
+regression thresholds are **not qualified**. Earlier failed cases remain failed.
+ACP1 is still experimental and unreviewed; replay and Live final-loss limits
+remain. This record does not claim a new security scan or qualify an additional
+Homebrew bottle, PPA, COPR or third-party application distribution.
+
+## Historical preparation and acceptance sequence
+
+The following preparation record preserves its original gates and source pins.
+Use the publication record above for final release status.
 
 ## Scope and version contract
 
 Release the integrated Mbed TLS provider, peer admission metadata, optional
 extension policies, group admission/statistics and lifecycle/resource fixes.
-The [candidate notes](release-notes-0.3.0.md) define migration and retained limits.
+The [release notes](release-notes-0.3.0.md) define migration and retained limits.
 Project version **0.3.0**, shared-library ABI line **0.3**, compatible SRT API
 **1.5.7**. Existing C exports remain available, but consumers must rebuild when
 moving from ABI line 0.2. Historical ABI and release records remain unchanged.

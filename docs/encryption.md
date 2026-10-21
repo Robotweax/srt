@@ -592,7 +592,7 @@ profiles.
 Positive GCM interoperability with the pinned capable reference profile is
 limited to AES-128 Live/Message. Cross-implementation GCM File/Stream,
 AES-192/256 transfer, encrypted mixed-implementation groups, and
-reference-side Caller/Listener rotation are not claimed in the current 0.2.9 boundary.
+reference-side Caller/Listener rotation are not claimed in the current 0.3.0 boundary.
 
 Validate passphrase policy, mode selection, MSS, latency, loss recovery,
 rotation intervals, and failover behavior under the intended deployment's

@@ -6,9 +6,9 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
-## 0.3.0 — Crypto Providers and Admission Controls — candidate
+## 0.3.0 — Crypto Providers and Admission Controls — 2026-10-14
 
-Release preparation is in progress; this version is not published. See the
+Published as [v0.3.0](https://github.com/Robotweax/srt/releases/tag/v0.3.0). See the
 [release notes](docs/release-notes-0.3.0.md) and
 [acceptance process](docs/release-process-0.3.0.md).
 

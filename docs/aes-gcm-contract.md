@@ -9,8 +9,9 @@ bundles introduced in **0.2.8**.
 
 ## Scope and compatibility boundary
 
-This document is the normative AES-GCM extension contract for Robotweax SRT
-the 0.2 line, currently 0.2.9. It defines public option values, transport bundles, negotiation,
+This document is the normative AES-GCM extension contract introduced in Robotweax
+SRT 0.2 and retained in 0.3.0 (shared-library ABI 0.3). It defines public option
+values, transport bundles, negotiation,
 key-material suites, nonce and AAD derivation, tag placement, payload budgets,
 rotation, retransmission, FEC, Connection Group behavior, and fail-closed error
 semantics.
@@ -342,7 +343,7 @@ described above.
 
 Positive interoperability with the pinned GCM-capable reference profile is
 limited to AES-128-GCM Live/Message. The following are intentionally not
-claimed for cross-implementation GCM use in the current 0.2.9 boundary:
+claimed for cross-implementation GCM use in the current 0.3.0 boundary:
 
 - File/Stream transfer;
 - AES-192/256 payload transfer;

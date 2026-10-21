@@ -28,7 +28,7 @@ The accepted socket or group member reports `REQUIRED` or `OFF` through the
 policy option, and every member of one accepted group shares the same result.
 `OFF` and `REQUIRED` are equivalent to the boolean option. Groups reject
 `IF_OFFERED`, and a socket holding it fails `srt_connect` with `SRT_EINVPARAM`.
-The policy option was introduced after 0.2.9. Endpoint
+The policy option was introduced in 0.3.0. Endpoint
 configurations (`srt_config_add`) reject it with `SRT_EINVPARAM`.
 It cannot change after setup or in a listen callback. Disabling TSBPD/Message
 mode or selecting a different transport/congestion profile while it is required
