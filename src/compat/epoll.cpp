@@ -438,10 +438,9 @@ void collect_user_events(PollRecord& record,
         } while (entry != record.ready_head && ready.size() < maximum);
     }
 }
-void consume_event(PollRecord& record, const SRT_EPOLL_EVENT& event,
-    int consumed, bool consume_updates) noexcept
+void consume_event(PollRecord& record, Subscription& subscription, int consumed,
+    bool consume_updates) noexcept
 {
-    auto& subscription = record.user_sockets.find(event.fd)->second;
     if ((subscription.events & SRT_EPOLL_ET) != 0) {
         subscription.edge_seen |=
             consumed & (SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR);
@@ -840,10 +839,15 @@ int epoll_wait(
             user_wakeup = record->next_user_wakeup;
             int total = 0;
             for (const auto& event : user_ready) {
-                if ((record->user_sockets.find(event.fd)->second.events
-                        & SRT_EPOLL_ET)
-                    != 0) {
-                    consume_event(*record, event, event.events, false);
+                const auto found = record->user_sockets.find(event.fd);
+                // Collection and consumption hold this mutex; every ready
+                // event must still have its registered subscription.
+                if (found == record->user_sockets.end()) {
+                    return fail(SRT_ESYSOBJ);
+                }
+                auto& subscription = found->second;
+                if ((subscription.events & SRT_EPOLL_ET) != 0) {
+                    consume_event(*record, subscription, event.events, false);
                 }
             }
             for (const auto& event : user_ready) {
@@ -864,8 +868,13 @@ int epoll_wait(
                     ++*write_count;
                     ++total;
                 }
-                if (consumed != 0)
-                    consume_event(*record, event, consumed, false);
+                if (consumed != 0) {
+                    const auto found = record->user_sockets.find(event.fd);
+                    if (found == record->user_sockets.end()) {
+                        return fail(SRT_ESYSOBJ);
+                    }
+                    consume_event(*record, found->second, consumed, false);
+                }
             }
             for (const auto& event : system_ready) {
                 if ((event.events & (SRT_EPOLL_IN | SRT_EPOLL_ERR)) != 0
@@ -956,8 +965,13 @@ int epoll_uwait(
                 std::copy_n(ready.begin(), written, events);
                 for (std::size_t index = 0;
                     index < static_cast<std::size_t>(written); ++index) {
+                    const auto found =
+                        record->user_sockets.find(ready[index].fd);
+                    if (found == record->user_sockets.end()) {
+                        return fail(SRT_ESYSOBJ);
+                    }
                     consume_event(
-                        *record, ready[index], ready[index].events, true);
+                        *record, found->second, ready[index].events, true);
                 }
                 return written;
             }
