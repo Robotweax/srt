@@ -275,6 +275,7 @@ set_target_properties(robotweax_srt PROPERTIES
     VISIBILITY_INLINES_HIDDEN YES)
 
 if(ROBOTWEAX_SRT_BUILD_EXAMPLES)
+    add_subdirectory(examples/applications)
     add_executable(robotweax_srt_udp_bridge examples/srt_udp_bridge.cpp)
     target_link_libraries(robotweax_srt_udp_bridge PRIVATE RobotweaxSRT::srt)
     if(WIN32)
@@ -823,6 +824,38 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
 
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     if(ROBOTWEAX_SRT_BUILD_EXAMPLES)
+        add_test(NAME robotweax_srt_application_console_api
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_console.py)
+        set_tests_properties(robotweax_srt_application_console_api
+            PROPERTIES TIMEOUT 20 LABELS "example;application;security")
+        set(ROBOTWEAX_SRT_SAMPLE_FFMPEG "" CACHE FILEPATH
+            "Optional FFmpeg executable for application media tests (requires libx264)")
+        if(ROBOTWEAX_SRT_SAMPLE_FFMPEG)
+            add_test(NAME robotweax_srt_application_media
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_media.py
+                    --binary $<TARGET_FILE:robotweax_srt_contribution>
+                    --ffmpeg ${ROBOTWEAX_SRT_SAMPLE_FFMPEG})
+            set_tests_properties(robotweax_srt_application_media
+                PROPERTIES TIMEOUT 45 LABELS "example;application;media;integration")
+        endif()
+        set(application_crypto_modes ctr)
+        if(ENABLE_AEAD_API_PREVIEW)
+            list(APPEND application_crypto_modes gcm)
+        endif()
+        foreach(application_crypto IN LISTS application_crypto_modes)
+            foreach(application_scenario IN ITEMS recovery recovery-arq recovery-fec
+                    contribution-backup contribution-broadcast device device-impaired)
+                add_test(NAME robotweax_srt_application_${application_scenario}_${application_crypto}
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_applications.py
+                        --binary-dir $<TARGET_FILE_DIR:robotweax_srt_recovery>
+                        --scenario ${application_scenario} --crypto ${application_crypto})
+                set_tests_properties(robotweax_srt_application_${application_scenario}_${application_crypto}
+                    PROPERTIES TIMEOUT 50 LABELS "example;integration;application")
+            endforeach()
+        endforeach()
         add_test(NAME robotweax_srt_demo_terminal_output
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/examples/test_demo_terminal_output.py
