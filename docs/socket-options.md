@@ -470,8 +470,10 @@ binding. On macOS and Windows, and on every group handle, get/set fail with
 system cannot provide. Per-member group endpoint configuration may still set
 the option for Linux member sockets.
 
-The `SRT_SOCKOPT_CONFIG` matrix differs from v1.5.7: Robotweax rejects
-`SRTO_GROUPMINSTABLETIMEO` per-endpoint overrides. It additionally accepts
+The `SRT_SOCKOPT_CONFIG` matrix supports `SRTO_GROUPMINSTABLETIMEO`
+per-endpoint overrides for caller Backup members (60–5000 ms, `int32_t`).
+Endpoints without an override inherit the group minimum; Broadcast endpoints
+reject the override. It additionally accepts
 `SRTO_PASSPHRASE`, `SRTO_PBKEYLEN`, `SRTO_ENFORCEDENCRYPTION`,
 `SRTO_PACKETFILTER`, `SRTO_PAYLOADSIZE`, `SRTO_ROBOTWEAX_SESSIONAUTH` and
 `SRTO_ROBOTWEAX_PATHID`, plus `SRTO_CRYPTOMODE` and `SRTO_MAXREXMITBW`
@@ -709,7 +711,8 @@ options propagate afterwards. Most getters derive from the first extant
 member, or the unopened template when empty. This does not make every socket
 option meaningful for groups: see [group option and endpoint constraints](connection-groups.md)
 and the endpoint allow-list above. GROUPCONNECT is listener admission;
-GROUPMINSTABLETIMEO cannot be set on ordinary/listener sockets or endpoints.
+GROUPMINSTABLETIMEO cannot be set on ordinary/listener sockets; caller Backup
+endpoints may override it through `srt_config_add` before connection.
 
 | Option | Value type | Default | Range / size | Set stage | Access | Group behavior |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -768,7 +771,7 @@ GROUPMINSTABLETIMEO cannot be set on ordinary/listener sockets or endpoints.
 | `SRTO_PEERIDLETIMEO` | `int32_t` | 5000 | 0 … type maximum | PRE | R/W | See group derivation above |
 | `SRTO_BINDTODEVICE` | `string` | empty | ≤ 15 bytes | PRE-BIND | R/W | Socket only |
 | `SRTO_GROUPCONNECT` | `int32_t` / bool | false | 0 / 1 | PRE | R/W | Listener admission; group setter rejected |
-| `SRTO_GROUPMINSTABLETIMEO` | `int32_t` | 60 | 60 … 5000 | PRE | R/W | Backup group only, before open |
+| `SRTO_GROUPMINSTABLETIMEO` | `int32_t` | 60 | 60 … 5000 | PRE | R/W | Backup group before open; caller member override via endpoint config |
 | `SRTO_GROUPTYPE` | `int32_t` | Observed / see contract | Observation / see contract | read-only | R | Group observation |
 | `SRTO_PACKETFILTER` | `string` | empty | ≤ 512 bytes | PRE | R/W | See group derivation above |
 | `SRTO_RETRANSMITALGO` | `int32_t` | 1 | 0 … 1 | PRE | R/W | See group derivation above |

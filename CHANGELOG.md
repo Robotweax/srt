@@ -6,6 +6,11 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Support per-member `SRTO_GROUPMINSTABLETIMEO` overrides through
+  `srt_config_add` for caller Backup groups. Each path uses its own minimum
+  for response expiry and candidate qualification; endpoints without an
+  override inherit the group default. The accepted range remains 60–5000 ms.
+
 ## 0.3.0 — Crypto Providers and Admission Controls — 2026-10-14
 
 Published as [v0.3.0](https://github.com/Robotweax/srt/releases/tag/v0.3.0). See the
