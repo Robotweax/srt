@@ -677,41 +677,34 @@ void DatagramChannel::drain_setup_inbox_locked(
     }
 }
 
-bool DatagramChannel::promote_setup_connection(
+std::shared_ptr<ConnectionRuntime> DatagramChannel::promote_setup_connection(
     std::uint32_t protocol_socket_id,
-    const std::shared_ptr<DatagramInbox>& inbox,
-    std::shared_ptr<ConnectionRuntime> runtime) noexcept
+    const std::shared_ptr<DatagramInbox>& inbox, RuntimeFactory factory,
+    void* context)
 {
-    if (protocol_socket_id == 0U
-        || inbox == nullptr
-        || runtime == nullptr) {
-        return false;
-    }
-    try {
-        std::unique_lock lock(routes_mutex_);
-        const auto setup = setup_routes_.find(protocol_socket_id);
-        if (setup == setup_routes_.end()
-            || setup->second.inbox != inbox
-            || !register_connection_locked(
-                protocol_socket_id, runtime)) {
-            return false;
-        }
-        const IpEndpoint peer = setup->second.peer;
-        unindex_setup_locked(protocol_socket_id, setup->second.peer,
-            setup->second.peer_socket_id);
-        setup_routes_.erase(setup);
-        // Keep the routing lock until the bounded setup queue has drained.
-        // This preserves wire arrival order: newer datagrams cannot enter the
-        // runtime before packets received immediately behind the handshake.
-        drain_setup_inbox_locked(inbox, runtime, peer);
-        lock.unlock();
-        notify_send_work();
-        return true;
-    } catch (const std::bad_alloc&) {
-        return false;
-    } catch (...) {
-        return false;
-    }
+    if (protocol_socket_id == 0U || inbox == nullptr || factory == nullptr)
+        return {};
+    std::unique_lock lock(routes_mutex_);
+    const auto setup = setup_routes_.find(protocol_socket_id);
+    if (setup == setup_routes_.end() || setup->second.inbox != inbox)
+        return {};
+    // Runtime allocation can outlast a peer's entire initial DATA/FEC flight.
+    // Keep ingress in the UDP queue while constructing the runtime, rather
+    // than overflowing the smaller temporary handshake inbox.
+    auto runtime = factory(context);
+    if (runtime == nullptr
+        || !register_connection_locked(protocol_socket_id, runtime))
+        return {};
+    const IpEndpoint peer = setup->second.peer;
+    unindex_setup_locked(
+        protocol_socket_id, setup->second.peer, setup->second.peer_socket_id);
+    setup_routes_.erase(setup);
+    // Keep the routing lock until the bounded setup queue has drained.
+    // Newer datagrams must not enter before the queued handshake tail.
+    drain_setup_inbox_locked(inbox, runtime, peer);
+    lock.unlock();
+    notify_send_work();
+    return runtime;
 }
 
 void DatagramChannel::unregister_connection(

@@ -227,10 +227,14 @@ public:
     [[nodiscard]] bool register_connection(
         std::uint32_t protocol_socket_id,
         std::shared_ptr<ConnectionRuntime> runtime) noexcept;
-    [[nodiscard]] bool promote_setup_connection(
+    // The factory runs under the routing lock and must not call the channel.
+    // Failure leaves the setup route and queued input available for retry.
+    using RuntimeFactory = std::shared_ptr<ConnectionRuntime> (*)(void*);
+    [[nodiscard]] std::shared_ptr<ConnectionRuntime> promote_setup_connection(
         std::uint32_t protocol_socket_id,
-        const std::shared_ptr<DatagramInbox>& inbox,
-        std::shared_ptr<ConnectionRuntime> runtime) noexcept;
+        const std::shared_ptr<DatagramInbox>& inbox, RuntimeFactory factory,
+        void* context);
+
     void unregister_connection(std::uint32_t protocol_socket_id) noexcept;
     [[nodiscard]] bool replay_established_handshake(
         const HandshakeEnvelope& envelope) noexcept;

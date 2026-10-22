@@ -935,6 +935,7 @@ void set_key_material_state_response(
     bool standby_rtt_caller = true) noexcept
 {
     std::shared_ptr<ConnectionRuntime> runtime;
+    std::optional<ConnectionRuntime::Configuration> configuration;
     try {
         std::lock_guard lock(socket.mutex);
         SocketOptions runtime_options = socket.native_options;
@@ -964,59 +965,71 @@ void set_key_material_state_response(
                 }
             }
         }
-        runtime = std::make_shared<ConnectionRuntime>(
-            ConnectionRuntime::Configuration {
-                .channel = channel,
-                .group = group,
-                .peer = socket.peer_endpoint,
-                .local_socket_id = socket.protocol_socket_id,
-                .peer_socket_id = socket.peer_protocol_socket_id,
-                .initial_sequence =
-                    SequenceNumber {socket.connection_initial_sequence},
-                .peer_initial_sequence =
-                    SequenceNumber {socket.peer_connection_initial_sequence},
-                .has_distinct_peer_initial_sequence =
-                    socket.peer_connection_initial_sequence
-                    != socket.connection_initial_sequence,
-                .peer_wire_initial_sequence = peer_wire_initial_sequence,
-                .flow_window_packets = static_cast<std::uint32_t>(
-                    socket.public_options.flow_window_packets),
-                .peer_flow_window_packets = socket.peer_flow_window_packets,
-                .standby_rtt_identity = standby_rtt_identity,
-                .standby_rtt_caller = standby_rtt_caller,
-                .options = runtime_options,
-                .negotiated_options = socket.negotiated_live_options,
-                .efficient_retransmission =
-                    socket.public_options.retransmission_algorithm == 1,
-                .origin = origin,
-                .handshake_arrival_microseconds =
-                    handshake_arrival_microseconds,
-                .peer_handshake_timestamp = peer_handshake_timestamp,
-                .peer_idle_timeout_milliseconds = static_cast<std::uint32_t>(
-                    socket.public_options.peer_idle_timeout_milliseconds),
-                .handshake_replay_response =
-                    handshake_replay_response == nullptr
-                    ? HandshakeAction {}
-                    : *handshake_replay_response,
-                .handshake_replay_enabled =
-                    handshake_replay_response != nullptr,
-                .handshake_replay_peer_cookie = handshake_replay_peer_cookie,
-                .crypto = socket.crypto,
-                .receiver_key_state = socket.receiver_key_state,
-            });
+        configuration.emplace(ConnectionRuntime::Configuration {
+            .channel = channel,
+            .group = group,
+            .peer = socket.peer_endpoint,
+            .local_socket_id = socket.protocol_socket_id,
+            .peer_socket_id = socket.peer_protocol_socket_id,
+            .initial_sequence =
+                SequenceNumber {socket.connection_initial_sequence},
+            .peer_initial_sequence =
+                SequenceNumber {socket.peer_connection_initial_sequence},
+            .has_distinct_peer_initial_sequence =
+                socket.peer_connection_initial_sequence
+                != socket.connection_initial_sequence,
+            .peer_wire_initial_sequence = peer_wire_initial_sequence,
+            .flow_window_packets = static_cast<std::uint32_t>(
+                socket.public_options.flow_window_packets),
+            .peer_flow_window_packets = socket.peer_flow_window_packets,
+            .standby_rtt_identity = standby_rtt_identity,
+            .standby_rtt_caller = standby_rtt_caller,
+            .options = runtime_options,
+            .negotiated_options = socket.negotiated_live_options,
+            .efficient_retransmission =
+                socket.public_options.retransmission_algorithm == 1,
+            .origin = origin,
+            .handshake_arrival_microseconds = handshake_arrival_microseconds,
+            .peer_handshake_timestamp = peer_handshake_timestamp,
+            .peer_idle_timeout_milliseconds = static_cast<std::uint32_t>(
+                socket.public_options.peer_idle_timeout_milliseconds),
+            .handshake_replay_response = handshake_replay_response == nullptr
+                ? HandshakeAction {}
+                : *handshake_replay_response,
+            .handshake_replay_enabled = handshake_replay_response != nullptr,
+            .handshake_replay_peer_cookie = handshake_replay_peer_cookie,
+            .crypto = socket.crypto,
+            .receiver_key_state = socket.receiver_key_state,
+        });
     } catch (const std::bad_alloc&) {
         return fail(SRT_ENOBUF);
     } catch (...) {
         return fail(SRT_ESYSOBJ);
     }
 
-    const bool route_registered = setup_inbox != nullptr
-        ? channel->promote_setup_connection(
-              socket.protocol_socket_id, setup_inbox, runtime)
-        : channel->register_connection(
-              socket.protocol_socket_id, runtime);
-    if (!route_registered) {
+    try {
+        if (setup_inbox != nullptr) {
+            runtime = channel->promote_setup_connection(
+                socket.protocol_socket_id, setup_inbox,
+                [](void* context) {
+                    return std::make_shared<ConnectionRuntime>(std::move(
+                        *static_cast<ConnectionRuntime::Configuration*>(
+                            context)));
+                },
+                &*configuration);
+            if (runtime == nullptr)
+                return fail(SRT_ENOBUF);
+        } else {
+            runtime =
+                std::make_shared<ConnectionRuntime>(std::move(*configuration));
+            if (!channel->register_connection(
+                    socket.protocol_socket_id, runtime))
+                return fail(SRT_ENOBUF);
+        }
+    } catch (const std::bad_alloc&) {
         return fail(SRT_ENOBUF);
+    } catch (...) {
+        return fail(SRT_ESYSOBJ);
     }
     if (!channel->start()) {
         channel->unregister_connection(socket.protocol_socket_id);
