@@ -109,6 +109,7 @@ struct GroupIoMember {
     SRTSOCKET id = SRT_INVALID_SOCK;
     std::uint64_t generation = 0;
     std::uint16_t weight = 0;
+    std::int32_t minimum_stability_timeout_milliseconds = 60;
     std::shared_ptr<ConnectionRuntime> runtime {};
     std::shared_ptr<GroupReceiveRetention> retained {};
     std::int32_t maximum_payload_size = 0;
@@ -231,6 +232,8 @@ private:
             identity.id = member.public_data.id;
             identity.generation = member.generation;
             identity.weight = member.public_data.weight;
+            identity.minimum_stability_timeout_milliseconds =
+                group->minimum_stability_timeout_milliseconds;
             result.push_back(std::move(identity));
         }
     }
@@ -259,6 +262,10 @@ private:
                 continue;
             }
             member.runtime = socket->runtime;
+            if (socket->group_minimum_stability_timeout_milliseconds != 0) {
+                member.minimum_stability_timeout_milliseconds =
+                    socket->group_minimum_stability_timeout_milliseconds;
+            }
             member.maximum_payload_size =
                 socket->public_options.maximum_payload_size;
             member.message_api = socket->public_options.message_api;
@@ -382,10 +389,12 @@ struct GroupReceiveDecision {
 }
 
 [[nodiscard]] std::uint64_t backup_stability_timeout(
-    const GroupIoMember& member, std::int32_t minimum_milliseconds) noexcept
+    const GroupIoMember& member) noexcept
 {
     const std::uint64_t minimum =
-        static_cast<std::uint64_t>(minimum_milliseconds) * 1'000U;
+        static_cast<std::uint64_t>(
+            member.minimum_stability_timeout_milliseconds)
+        * 1'000U;
     const std::uint64_t rtt_timeout =
         2ULL * member.response_health.smoothed_rtt_microseconds
         + 4ULL * member.response_health.rtt_variation_microseconds;
@@ -587,7 +596,6 @@ void clear_backup_probe(GroupRecord& group) noexcept
     std::uint64_t probe_generation = 0;
     std::uint64_t probe_since = 0;
     SequenceNumber probe_start{};
-    std::int32_t minimum_milliseconds = 60;
     {
         std::lock_guard lock(group->mutex);
         active_id = group->active_send_member;
@@ -598,8 +606,6 @@ void clear_backup_probe(GroupRecord& group) noexcept
         probe_since = group->probe_send_since_microseconds;
         probe_start = SequenceNumber{
             group->probe_send_start_sequence};
-        minimum_milliseconds =
-            group->minimum_stability_timeout_milliseconds;
     }
     const auto active = std::find_if(
         members.begin(), members.end(),
@@ -619,8 +625,7 @@ void clear_backup_probe(GroupRecord& group) noexcept
         active_since, active->response_health.last_response_microseconds);
     const std::uint64_t now = active->response_health.now_microseconds;
     const bool responsive = now <= last_response
-        || now - last_response
-            <= backup_stability_timeout(*active, minimum_milliseconds);
+        || now - last_response <= backup_stability_timeout(*active);
     // Keep the current authority first even after its response deadline. A
     // locally accepted send is not evidence that another path recovered, so
     // failover and failback both use the same parallel ACK-qualified probe.
@@ -651,8 +656,7 @@ void clear_backup_probe(GroupRecord& group) noexcept
             return {};
         }
         probe->response_health = probe->runtime->response_health();
-        const std::uint64_t timeout =
-            backup_stability_timeout(*probe, minimum_milliseconds);
+        const std::uint64_t timeout = backup_stability_timeout(*probe);
         const std::uint64_t probe_now = probe->response_health.now_microseconds;
         const bool elapsed =
             probe_now >= probe_since && probe_now - probe_since >= timeout;

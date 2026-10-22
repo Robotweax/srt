@@ -245,8 +245,13 @@ struct BackupProbeDecisionFixture {
 
     explicit BackupProbeDecisionFixture(std::uint16_t original_weight = 20,
         std::uint16_t candidate_weight = 10, bool attach_candidate = true,
-        std::uint16_t peer_receive_delay_milliseconds = 0)
+        std::uint16_t peer_receive_delay_milliseconds = 0,
+        std::int32_t group_minimum_milliseconds = 60)
     {
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_GROUPMINSTABLETIMEO,
+                       &group_minimum_milliseconds,
+                       sizeof(group_minimum_milliseconds)),
+            0);
         // Handles are a non-repeating permutation, not creation ordered.
         if (original_weight == candidate_weight && original > candidate) {
             std::swap(original, candidate);
@@ -308,6 +313,14 @@ struct BackupProbeDecisionFixture {
             REQUIRE_EQ(record->probe_send_since_microseconds, 0U);
             REQUIRE_EQ(record->probe_send_start_sequence, 0U);
         }
+    }
+
+    void member_minimum(SRTSOCKET member, std::int32_t milliseconds)
+    {
+        const auto socket = SocketRegistry::instance().find(member);
+        REQUIRE(socket != nullptr);
+        std::lock_guard lock(socket->mutex);
+        socket->group_minimum_stability_timeout_milliseconds = milliseconds;
     }
 };
 
@@ -5081,12 +5094,516 @@ TEST(compat_backup_group_receives_from_the_running_path)
     REQUIRE_EQ(srt_close(group), 0);
 }
 
+TEST(compat_backup_group_member_stability_controls_failover_and_qualification)
+{
+    // Exercise inheritance and an override smaller/larger than the default.
+    for (const bool override_active : {false, true}) {
+        TestClock clock;
+        clock.channel =
+            std::make_shared<robotweax::srt::compat::DatagramChannel>();
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        const SRTSOCKET group = srt_create_group(SRT_GTYPE_BACKUP);
+        const SRTSOCKET active = srt_create_socket();
+        const SRTSOCKET backup = srt_create_socket();
+        const auto group_record = GroupRegistry::instance().find(group);
+        REQUIRE(group_record != nullptr);
+        const std::int32_t group_minimum = override_active ? 1'600 : 800;
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_GROUPMINSTABLETIMEO,
+                       &group_minimum, sizeof(group_minimum)),
+            0);
+        const auto initial = group_record->initial_sequence;
+        const auto active_runtime =
+            attach_group_runtime(group, active, initial, 20, &clock);
+        const auto backup_runtime =
+            attach_group_runtime(group, backup, initial, 10, &clock);
+        {
+            const auto record = SocketRegistry::instance().find(active);
+            std::lock_guard lock(record->mutex);
+            record->group_minimum_stability_timeout_milliseconds =
+                override_active ? 800 : 0;
+        }
+        {
+            const auto record = SocketRegistry::instance().find(backup);
+            std::lock_guard lock(record->mutex);
+            record->group_minimum_stability_timeout_milliseconds = 1'200;
+        }
+        constexpr char payload[] = "member stability";
+        const auto send = [&] {
+            REQUIRE_EQ(
+                srt_send(group, payload, sizeof(payload)), sizeof(payload));
+        };
+        send();
+        clock.now_microseconds = 800'000;
+        send();
+        REQUIRE_EQ(backup_runtime->sender_buffer_status().packets, 0U);
+        clock.now_microseconds = 800'001;
+        send();
+        {
+            std::lock_guard lock(group_record->mutex);
+            REQUIRE_EQ(group_record->active_send_member, active);
+            REQUIRE_EQ(group_record->probe_send_member, backup);
+        }
+        deliver_lite_ack(backup_runtime, SequenceNumber {initial}.advanced(3U));
+        clock.now_microseconds = 2'000'000;
+        deliver_lite_ack(backup_runtime, SequenceNumber {initial}.advanced(3U));
+        send();
+        {
+            std::lock_guard lock(group_record->mutex);
+            REQUIRE_EQ(group_record->active_send_member, active);
+        }
+        clock.now_microseconds = 2'000'001;
+        send();
+        {
+            std::lock_guard lock(group_record->mutex);
+            REQUIRE_EQ(group_record->active_send_member, backup);
+            REQUIRE_EQ(group_record->probe_send_member, SRT_INVALID_SOCK);
+        }
+        REQUIRE_EQ(srt_close(group), 0);
+    }
+}
+
+TEST(compat_backup_group_member_stability_keeps_peer_latency_and_ack_bounds)
+{
+    BackupProbeDecisionFixture fixture {5, 15, false, 300};
+    fixture.send();
+    fixture.clock.now_microseconds = 10'000;
+    fixture.candidate_runtime = attach_group_runtime(fixture.group,
+        fixture.candidate, fixture.initial.value(), 15, &fixture.clock);
+    {
+        const auto candidate =
+            SocketRegistry::instance().find(fixture.candidate);
+        std::lock_guard lock(candidate->mutex);
+        candidate->group_minimum_stability_timeout_milliseconds = 5'000;
+    }
+    fixture.send();
+    fixture.expect(fixture.original, fixture.candidate);
+    // Even a 5000 ms override remains bounded by the negotiated 300 ms delay.
+    fixture.clock.now_microseconds = 309'999;
+    fixture.respond(fixture.original_runtime);
+    fixture.respond(fixture.candidate_runtime);
+    fixture.send();
+    fixture.expect(fixture.original, fixture.candidate);
+    fixture.clock.now_microseconds = 310'000;
+    fixture.send();
+    fixture.expect(fixture.original, fixture.candidate);
+    // Elapsed time and keepalives do not replace DATA acknowledgement.
+    deliver_lite_ack(
+        fixture.candidate_runtime, fixture.initial.advanced(fixture.messages));
+    fixture.send();
+    fixture.expect(fixture.candidate, SRT_INVALID_SOCK);
+}
+
+TEST(compat_backup_group_member_stability_recovery_restarts_mixed_intervals)
+{
+    BackupProbeDecisionFixture f;
+    f.member_minimum(f.original, 600);
+    f.member_minimum(f.candidate, 1'200);
+    f.send();
+    f.clock.now_microseconds = 600'000;
+    f.send();
+    f.expect(f.original, SRT_INVALID_SOCK);
+    f.clock.now_microseconds = 600'001;
+    f.send();
+    f.expect(f.original, f.candidate);
+    deliver_lite_ack(f.candidate_runtime, f.initial.advanced(f.messages));
+
+    // Recovery wins even when the longer candidate interval has completed.
+    f.clock.now_microseconds = 1'800'001;
+    f.respond(f.original_runtime);
+    f.send();
+    f.expect(f.original, SRT_INVALID_SOCK);
+    f.clock.now_microseconds = 2'400'001;
+    f.send();
+    f.expect(f.original, SRT_INVALID_SOCK);
+    f.clock.now_microseconds = 2'400'002;
+    f.send();
+    f.expect(f.original, f.candidate);
+    // Keepalives and the first outage's ACK cannot qualify the new boundary.
+    f.clock.now_microseconds = 3'600'001;
+    f.respond(f.candidate_runtime);
+    f.send();
+    f.expect(f.original, f.candidate);
+    f.clock.now_microseconds = 3'600'002;
+    f.send();
+    f.expect(f.original, f.candidate);
+    deliver_lite_ack(f.candidate_runtime, f.initial.advanced(f.messages));
+    f.send();
+    f.expect(f.candidate, SRT_INVALID_SOCK);
+}
+
+TEST(compat_backup_group_member_stability_rotation_uses_each_candidate_interval)
+{
+    BackupProbeDecisionFixture f;
+    f.member_minimum(f.original, 600);
+    f.member_minimum(f.candidate, 800);
+    const auto third = srt_create_socket();
+    const auto third_runtime =
+        attach_group_runtime(f.group, third, f.initial.value(), 5, &f.clock);
+    f.member_minimum(third, 1'200);
+    f.send();
+    f.clock.now_microseconds = 600'001;
+    f.send();
+    f.expect(f.original, f.candidate);
+    f.clock.now_microseconds = 1'400'000;
+    f.respond(f.candidate_runtime);
+    f.send();
+    f.expect(f.original, f.candidate);
+    f.clock.now_microseconds = 1'400'001;
+    f.send();
+    f.expect(f.original, third);
+    deliver_lite_ack(third_runtime, f.initial.advanced(f.messages));
+    // Neither the prior candidate's 800 ms nor the active path's 600 ms
+    // interval applies to this 1200 ms candidate.
+    f.clock.now_microseconds = 2'200'001;
+    f.respond(third_runtime);
+    f.send();
+    f.expect(f.original, third);
+    f.clock.now_microseconds = 2'600'000;
+    f.send();
+    f.expect(f.original, third);
+    f.clock.now_microseconds = 2'600'001;
+    f.send();
+    f.expect(third, SRT_INVALID_SOCK);
+}
+
+TEST(compat_backup_group_member_stability_rejoin_discards_old_qualification)
+{
+    BackupProbeDecisionFixture f;
+    f.member_minimum(f.original, 800);
+    f.member_minimum(f.candidate, 600);
+    f.send();
+    f.clock.now_microseconds = 800'001;
+    f.send();
+    deliver_lite_ack(f.candidate_runtime, f.initial.advanced(f.messages));
+    f.clock.now_microseconds = 1'400'001;
+    f.send();
+    f.expect(f.candidate, SRT_INVALID_SOCK);
+    deliver_lite_ack(f.candidate_runtime, f.initial.advanced(f.messages));
+    f.clock.now_microseconds = 1'400'002;
+    f.send();
+    f.expect(f.candidate, f.original);
+    deliver_lite_ack(f.original_runtime, f.initial.advanced(f.messages));
+    const auto old = read_group_send_state(f.group);
+    const auto old_runtime = f.original_runtime;
+    GroupRegistry::instance().remove_member(
+        f.group, old.group_generation, f.original, old.probe_generation);
+    f.original_runtime = attach_group_runtime(
+        f.group, f.original, f.initial.value(), 20, &f.clock);
+    f.member_minimum(f.original, 1'200);
+
+    // Reusing the socket ID does not reuse its generation, ACK or probe age.
+    f.clock.now_microseconds = 2'200'002;
+    f.respond(f.candidate_runtime);
+    f.send();
+    f.expect(f.candidate, f.original);
+    const auto rejoined = read_group_send_state(f.group);
+    REQUIRE(rejoined.probe_generation != old.probe_generation);
+    f.clock.now_microseconds = 3'400'001;
+    f.respond(f.candidate_runtime);
+    f.respond(old_runtime);
+    f.send();
+    f.expect(f.candidate, f.original);
+    deliver_lite_ack(f.original_runtime, f.initial.advanced(f.messages));
+    f.clock.now_microseconds = 3'400'002;
+    f.send();
+    f.expect(f.original, SRT_INVALID_SOCK);
+}
+
+TEST(
+    compat_backup_group_member_stability_is_isolated_between_interleaved_groups)
+{
+    std::array<std::unique_ptr<BackupProbeDecisionFixture>, 16> groups;
+    for (std::size_t i = 0; i < groups.size(); ++i) {
+        const auto minimum = static_cast<std::int32_t>(900 + 10 * i);
+        groups[i] = std::make_unique<BackupProbeDecisionFixture>(
+            20, 10, true, 0, minimum);
+        auto& f = *groups[i];
+        // Alternate inheritance and an override shorter than the group value.
+        if (i % 2 == 0) {
+            f.member_minimum(f.original, 600 + static_cast<std::int32_t>(i));
+        }
+        f.member_minimum(f.candidate, 1'200 + static_cast<std::int32_t>(i));
+        f.send();
+    }
+    for (std::size_t i = groups.size(); i-- > 0;) {
+        auto& f = *groups[i];
+        const std::uint64_t active_ms = i % 2 == 0 ? 600 + i : 900 + 10 * i;
+        f.clock.now_microseconds = active_ms * 1'000;
+        f.send();
+        f.expect(f.original, SRT_INVALID_SOCK);
+        ++f.clock.now_microseconds;
+        f.send();
+        f.expect(f.original, f.candidate);
+        deliver_lite_ack(f.candidate_runtime, f.initial.advanced(f.messages));
+    }
+    for (std::size_t i = 0; i < groups.size(); ++i) {
+        auto& f = *groups[i];
+        f.clock.now_microseconds += (1'200 + i) * 1'000 - 1;
+        f.respond(f.candidate_runtime);
+        f.send();
+        f.expect(f.original, f.candidate);
+        ++f.clock.now_microseconds;
+        f.send();
+        f.expect(f.candidate, SRT_INVALID_SOCK);
+    }
+}
+
+TEST(compat_backup_group_member_stability_replay_preserves_ordered_payload)
+{
+    // Closing the fixture can emit shutdown datagrams through this hook.
+    CapturedGroupDatagrams captured;
+    BackupProbeDecisionFixture f;
+    f.member_minimum(f.original, 600);
+    f.member_minimum(f.candidate, 1'200);
+    f.clock.channel->set_send_hook_for_testing(
+        capture_group_datagram, &captured);
+    const auto receiver = srt_create_group(SRT_GTYPE_BACKUP);
+    const auto record = GroupRegistry::instance().find(receiver);
+    REQUIRE(record != nullptr);
+    {
+        std::lock_guard lock(record->mutex);
+        record->initial_sequence = f.initial.value();
+        record->next_receive_sequence = f.initial.value();
+    }
+    const auto receive_primary = attach_group_runtime(
+        receiver, srt_create_socket(), f.initial.value(), 20);
+    const auto receive_backup = attach_group_runtime(
+        receiver, srt_create_socket(), f.initial.value(), 10);
+    const bool synchronous = false;
+    REQUIRE_EQ(srt_setsockflag(
+                   receiver, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+        0);
+    std::vector<char> sent;
+    const auto send = [&] {
+        const char value = static_cast<char>('a' + sent.size());
+        REQUIRE_EQ(srt_send(f.group, &value, 1), 1);
+        sent.push_back(value);
+    };
+    std::size_t delivered = 0;
+    const auto transfer = [&](const std::shared_ptr<ConnectionRuntime>& from,
+                              const std::shared_ptr<ConnectionRuntime>& to,
+                              std::size_t packets) {
+        std::size_t forwarded = 0;
+        for (std::size_t i = 0; i < 32 && forwarded < packets; ++i) {
+            (void)from->poll();
+            for (const auto& bytes : take_group_datagrams(captured)) {
+                const auto decoded = robotweax::srt::decode_packet(bytes);
+                REQUIRE(decoded);
+                if (decoded.packet.kind == robotweax::srt::PacketKind::data) {
+                    to->process_packet(
+                        decoded.packet, IpEndpoint::loopback(9'000));
+                    ++forwarded;
+                }
+            }
+            f.clock.now_microseconds += 10'000;
+        }
+        REQUIRE_EQ(forwarded, packets);
+        char value = 0;
+        SRT_MSGCTRL control = srt_msgctrl_default;
+        while (srt_recvmsg2(receiver, &value, 1, &control) == 1) {
+            REQUIRE(delivered < sent.size());
+            REQUIRE_EQ(value, sent[delivered]);
+            REQUIRE_EQ(control.pktseq,
+                static_cast<std::int32_t>(
+                    f.initial.advanced(delivered).value()));
+            ++delivered;
+        }
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+    };
+
+    // The primary accepts DATA locally but delivers none. The probe must
+    // replay the missing prefix before promotion and subsequent live DATA.
+    send();
+    f.clock.now_microseconds = 600'001;
+    send();
+    f.expect(f.original, f.candidate);
+    transfer(f.candidate_runtime, receive_backup, 2);
+    REQUIRE_EQ(delivered, 2U);
+    deliver_lite_ack(f.candidate_runtime, f.initial.advanced(2U));
+    f.clock.now_microseconds = 1'800'001;
+    f.respond(f.candidate_runtime);
+    send();
+    f.expect(f.candidate, SRT_INVALID_SOCK);
+    transfer(f.candidate_runtime, receive_backup, 1);
+    REQUIRE_EQ(delivered, 3U);
+    // Late originals from the old path cannot publish a second copy.
+    transfer(f.original_runtime, receive_primary, 2);
+    REQUIRE_EQ(delivered, 3U);
+    REQUIRE_EQ(srt_close(receiver), 0);
+}
+
+TEST(
+    compat_backup_group_member_stability_retired_path_history_is_not_group_loss)
+{
+    // A late probe can retire a member-local prefix already ACKed on another
+    // path, while those messages still await the group's TSBPD deadline.
+    for (const auto start : {100U, SequenceNumber::mask - 1U}) {
+        const auto group = srt_create_group(SRT_GTYPE_BACKUP);
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        const SequenceNumber initial {start};
+        {
+            std::lock_guard lock(record->mutex);
+            record->initial_sequence = initial.value();
+            record->next_receive_sequence = initial.value();
+        }
+        TestClock clock;
+        clock.channel =
+            std::make_shared<robotweax::srt::compat::DatagramChannel>();
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        const auto primary = srt_create_socket();
+        const auto alternate = srt_create_socket();
+        const auto origin = ConnectionRuntime::Clock::now();
+        const auto primary_runtime = attach_group_runtime(
+            group, primary, initial.value(), 20, &clock, 0, true, 500, origin);
+        const auto alternate_runtime = attach_group_runtime(group, alternate,
+            initial.value(), 10, &clock, 0, true, 500, origin);
+        const bool synchronous = false;
+        REQUIRE_EQ(srt_setsockflag(
+                       group, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+            0);
+        for (std::uint32_t i = 0; i < 4; ++i) {
+            const std::array<std::byte, 1> payload {
+                static_cast<std::byte>('a' + i)};
+            robotweax::srt::PacketView packet;
+            packet.kind = robotweax::srt::PacketKind::data;
+            packet.data.sequence = initial.advanced(i);
+            packet.data.message_number = i + 1;
+            packet.data.boundary = robotweax::srt::MessageBoundary::solo;
+            packet.data.in_order = true;
+            packet.payload = payload;
+            (i < 3 ? primary_runtime : alternate_runtime)
+                ->process_packet(packet, IpEndpoint::loopback(9'000));
+        }
+        std::array<std::byte, 8> bytes {};
+        const auto encoded = robotweax::srt::encode_drop_request_payload(
+            {.message_number = 0, .sequences = {initial, initial.advanced(2U)}},
+            bytes);
+        REQUIRE(encoded);
+        robotweax::srt::PacketView drop;
+        drop.kind = robotweax::srt::PacketKind::control;
+        drop.control.type = robotweax::srt::ControlType::drop_request;
+        drop.payload = bytes;
+        alternate_runtime->process_packet(drop, IpEndpoint::loopback(9'000));
+        SRT_TRACEBSTATS statistics {};
+        REQUIRE_EQ(srt_bstats(alternate, &statistics, 0), 0);
+        REQUIRE_EQ(statistics.pktRcvDropTotal, 3);
+
+        char value = 0;
+        REQUIRE_EQ(srt_recvmsg(group, &value, 1), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+        clock.now_microseconds = 500'000;
+        for (std::uint32_t i = 0; i < 4; ++i) {
+            SRT_MSGCTRL control = srt_msgctrl_default;
+            REQUIRE_EQ(srt_recvmsg2(group, &value, 1, &control), 1);
+            REQUIRE_EQ(value, static_cast<char>('a' + i));
+            REQUIRE_EQ(control.pktseq,
+                static_cast<std::int32_t>(initial.advanced(i).value()));
+        }
+        REQUIRE_EQ(srt_recvmsg(group, &value, 1), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+        REQUIRE_EQ(srt_bstats(group, &statistics, 0), 0);
+        REQUIRE_EQ(statistics.pktRecvUniqueTotal, 4);
+        REQUIRE_EQ(statistics.pktRcvDropTotal, 0);
+        REQUIRE_EQ(srt_close(group), 0);
+    }
+}
+
+TEST(compat_group_config_validates_member_stability_before_storage)
+{
+    auto* config = srt_create_config();
+    REQUIRE(config != nullptr);
+    for (const std::int32_t value :
+        {-1, 0, 59, 5'001, std::numeric_limits<std::int32_t>::max()}) {
+        REQUIRE_EQ(srt_config_add(
+                       config, SRTO_GROUPMINSTABLETIMEO, &value, sizeof(value)),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    }
+    const std::int64_t oversized = 100;
+    REQUIRE_EQ(srt_config_add(config, SRTO_GROUPMINSTABLETIMEO, &oversized,
+                   sizeof(oversized)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_config_add(config, SRTO_GROUPMINSTABLETIMEO, &oversized, 1),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_config_add(config, SRTO_GROUPMINSTABLETIMEO, nullptr,
+                   sizeof(std::int32_t)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_config_add(config, SRTO_GROUPMINSTABLETIMEO, nullptr, 0),
+        SRT_ERROR);
+    REQUIRE_EQ(config->storage.snapshot().size, 0U);
+    for (const std::int32_t value : {60, 5'000}) {
+        REQUIRE_EQ(srt_config_add(
+                       config, SRTO_GROUPMINSTABLETIMEO, &value, sizeof(value)),
+            0);
+    }
+    REQUIRE_EQ(config->storage.snapshot().size, 2U);
+    srt_delete_config(config);
+}
+
+TEST(
+    compat_group_connect_copies_member_stability_and_rejects_broadcast_override)
+{
+    auto* config = srt_create_config();
+    REQUIRE(config != nullptr);
+    std::int32_t minimum = 900;
+    REQUIRE_EQ(srt_config_add(
+                   config, SRTO_GROUPMINSTABLETIMEO, &minimum, sizeof(minimum)),
+        0);
+    // Configuration owns a copy, independent of caller storage.
+    minimum = 60;
+    for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
+        const SRTSOCKET group = srt_create_group(type);
+        const bool synchronous = false;
+        REQUIRE_EQ(srt_setsockflag(
+                       group, SRTO_SNDSYN, &synchronous, sizeof(synchronous)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(
+                       group, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+            0);
+        const auto peer = ipv4_address(9'000);
+        auto endpoint = srt_prepare_endpoint(
+            nullptr, reinterpret_cast<const sockaddr*>(&peer), sizeof(peer));
+        endpoint.config = config;
+        const auto before = SocketRegistry::instance().size();
+        const auto result = srt_connect_group(group, &endpoint, 1);
+        if (type == SRT_GTYPE_BROADCAST) {
+            REQUIRE_EQ(result, SRT_ERROR);
+            REQUIRE_EQ(endpoint.errorcode, SRT_EINVPARAM);
+            REQUIRE_EQ(SocketRegistry::instance().size(), before);
+        } else {
+            REQUIRE(result != SRT_ERROR);
+            const auto record = SocketRegistry::instance().find(endpoint.id);
+            REQUIRE(record != nullptr);
+            {
+                std::lock_guard lock(record->mutex);
+                REQUIRE_EQ(
+                    record->group_minimum_stability_timeout_milliseconds, 900);
+            }
+            // Adding a later endpoint without an override keeps inheritance.
+            endpoint = srt_prepare_endpoint(nullptr,
+                reinterpret_cast<const sockaddr*>(&peer), sizeof(peer));
+            REQUIRE(srt_connect_group(group, &endpoint, 1) != SRT_ERROR);
+            const auto inherited = SocketRegistry::instance().find(endpoint.id);
+            REQUIRE(inherited != nullptr);
+            {
+                std::lock_guard lock(inherited->mutex);
+                REQUIRE_EQ(
+                    inherited->group_minimum_stability_timeout_milliseconds, 0);
+            }
+        }
+        REQUIRE_EQ(srt_close(group), 0);
+    }
+    srt_delete_config(config);
+}
+
 TEST(compat_group_config_accepts_supported_member_options)
 {
     std::vector<SRT_SOCKOPT> allowed = {
         SRTO_BINDTODEVICE,
         SRTO_CONNTIMEO,
         SRTO_DRIFTTRACER,
+        SRTO_GROUPMINSTABLETIMEO,
         SRTO_IPTOS,
         SRTO_IPTTL,
         SRTO_KMREFRESHRATE,
@@ -5113,13 +5630,6 @@ TEST(compat_group_config_accepts_supported_member_options)
                        static_cast<int>(sizeof(value))),
             0);
     }
-    // Stability currently belongs to the Backup coordinator. Reject an
-    // unsupported link override here, before it can fail a later connect.
-    const std::int32_t stability = 175;
-    REQUIRE_EQ(srt_config_add(config, SRTO_GROUPMINSTABLETIMEO, &stability,
-                   static_cast<int>(sizeof(stability))),
-        SRT_ERROR);
-    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
     std::int32_t rejected = 1;
     REQUIRE_EQ(srt_config_add(config, SRTO_RENDEZVOUS, &rejected,
                    static_cast<int>(sizeof(rejected))),
