@@ -12,6 +12,9 @@ namespace robotweax::srt {
 
 inline constexpr std::size_t maximum_packet_filter_configuration_size = 512;
 inline constexpr std::size_t fec_filter_header_size = 4;
+// Current experimental individual-member wire adapter: nested DATA header,
+// framing word and at most three alignment bytes. Not a generic filter limit.
+inline constexpr std::size_t experimental_member_filter_overhead = 23;
 inline constexpr std::string_view sensor_profile_filter_v1 =
     "fec-sensor-v1,cols:4,rows:1,arq:never";
 
@@ -83,9 +86,20 @@ struct PacketFilterConfiguration {
         return view().starts_with("fec-sensor-v1,");
     }
 
+    [[nodiscard]] constexpr bool experimental() const noexcept
+    {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+        return enabled && view().starts_with("rwx-");
+#else
+        return false;
+#endif
+    }
+
     [[nodiscard]] constexpr std::size_t extra_header_size() const noexcept
     {
-        return enabled ? fec_filter_header_size : 0U;
+        return experimental() ? experimental_member_filter_overhead
+            : enabled         ? fec_filter_header_size
+                              : 0U;
     }
 };
 
@@ -182,7 +196,7 @@ public:
     [[nodiscard]] constexpr PacketFilterReceiveDisposition
     inspect(const PacketView& packet) const noexcept
     {
-        if (!configuration_.enabled
+        if (!configuration_.enabled || configuration_.experimental()
             || packet.kind != PacketKind::data
             || packet.data.message_number != 0U) {
             return PacketFilterReceiveDisposition::

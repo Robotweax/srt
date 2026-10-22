@@ -112,6 +112,8 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         return Error::none;
     case SocketOption::tsbpd_mode:
         if (!is_boolean(value)) return Error::invalid_state;
+        if (packet_filter_configuration_.experimental() && value == 0)
+            return Error::invalid_state;
         if ((packet_filter_configuration_.sensor_profile() || control_profile())
             && value != 0) {
             return Error::invalid_state;
@@ -273,6 +275,8 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         return Error::invalid_state;
 #endif
     case SocketOption::session_authentication:
+        if (value != 0 && packet_filter_configuration_.experimental())
+            return Error::invalid_state;
         if (!is_boolean(value)
             || (value != 0
                 && (!enforced_encryption_
@@ -288,12 +292,15 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         return Error::none;
     case SocketOption::rendezvous:
         if (!is_boolean(value)
+            || (value != 0 && packet_filter_configuration_.experimental())
             || (value != 0 && session_authentication_ && !experimental_acp1_))
             return Error::invalid_state;
         rendezvous_ = value != 0;
         return Error::none;
     case SocketOption::message_api:
         if (!is_boolean(value)) return Error::invalid_state;
+        if (packet_filter_configuration_.experimental() && value == 0)
+            return Error::invalid_state;
         if ((packet_filter_configuration_.sensor_profile() || control_profile())
             && value == 0) {
             return Error::invalid_state;
@@ -329,7 +336,8 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
             return Error::none;
         }
         if (value == static_cast<std::int64_t>(TransmissionType::file)) {
-            if (packet_filter_configuration_.sensor_profile()) {
+            if (packet_filter_configuration_.sensor_profile()
+                || packet_filter_configuration_.experimental()) {
                 return Error::invalid_state;
             }
 #ifdef ENABLE_AEAD_API_PREVIEW
@@ -387,7 +395,8 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
                 CongestionController::live)
             || value == static_cast<std::int64_t>(
                 CongestionController::file)) {
-            if (packet_filter_configuration_.sensor_profile()
+            if ((packet_filter_configuration_.sensor_profile()
+                    || packet_filter_configuration_.experimental())
                 && value
                     != static_cast<std::int64_t>(CongestionController::live)) {
                 return Error::invalid_state;
@@ -410,6 +419,9 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         return Error::invalid_state;
 #ifdef ENABLE_AEAD_API_PREVIEW
     case SocketOption::crypto_mode:
+        if (value == static_cast<std::int64_t>(CryptoMode::aes_gcm)
+            && packet_filter_configuration_.experimental())
+            return Error::invalid_state;
         if (value < static_cast<std::int64_t>(CryptoMode::automatic)
             || value > static_cast<std::int64_t>(CryptoMode::aes_gcm)) {
             return Error::invalid_state;
@@ -489,6 +501,8 @@ SocketOptionResult SocketOptions::get(SocketOption option) const noexcept
 Error SocketOptions::set_passphrase(
     std::string_view passphrase) noexcept
 {
+    if (!passphrase.empty() && packet_filter_configuration_.experimental())
+        return Error::invalid_state;
     if (!passphrase.empty()
         && (passphrase.size() < minimum_passphrase_size
             || passphrase.size() > maximum_passphrase_size)) {
@@ -516,6 +530,16 @@ Error SocketOptions::set_packet_filter(
     if (!parsed) {
         return parsed.error;
     }
+    if (parsed.configuration.experimental()
+        && (transmission_type_ != TransmissionType::live
+            || congestion_controller_ != CongestionController::live
+            || !message_api_ || !tsbpd_mode_ || rendezvous_
+            || session_authentication_ || encryption_enabled()
+#ifdef ENABLE_AEAD_API_PREVIEW
+            || crypto_mode_ == CryptoMode::aes_gcm
+#endif
+            ))
+        return Error::invalid_state;
     if (parsed.configuration.sensor_profile()
         && (transmission_type_ != TransmissionType::live
             || congestion_controller_ != CongestionController::live
@@ -564,6 +588,9 @@ Error SocketOptions::set_congestion_controller(
         && parsed != CongestionController::live) {
         return Error::invalid_state;
     }
+    if (packet_filter_configuration_.experimental()
+        && parsed != CongestionController::live)
+        return Error::invalid_state;
     if (control_profile() || parsed == CongestionController::control) {
         return Error::invalid_state;
     }

@@ -1,9 +1,12 @@
 # Packet-filter extension contracts
 
 Private, source-tree-only contracts for future packet-filter bindings. This
-component defines no wire format, provider registry, socket option, recovery
-algorithm or transport scheduler. It is independent of congestion controllers.
-It is not linked into `robotweax_srt` or installed.
+contract component defines no wire format, provider registry, socket option,
+recovery algorithm or transport scheduler. The separate default-off
+[member binding](../../docs/experimental-filters.md) supplies a bounded registry
+and individual-socket runtime adapter. It is independent of congestion controllers.
+The standalone contract target is not linked into `robotweax_srt` or installed.
+The optional member binding compiles the contracts into the transport library.
 
 Build with the separate default-off `ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS` flag:
 

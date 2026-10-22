@@ -45,6 +45,11 @@ option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
     "Enable unreviewed experimental authenticated runtime controls" OFF)
 option(ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS
     "Build private packet-filter contracts and tests (no transport integration)" OFF)
+option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS
+    "Enable bilateral experimental cleartext member filters" OFF)
+set(ROBOTWEAX_SRT_FILTER_PROVIDER
+    "${CMAKE_CURRENT_SOURCE_DIR}/experimental/packet_filters/duplicate_filter.cpp"
+    CACHE FILEPATH "Compiled packet-filter provider source (trusted local C++ code)")
 option(ENABLE_MAXREXMITBW "Enable optional retransmission bandwidth limit" OFF)
 option(ENABLE_AEAD_API_PREVIEW
     "Enable the version-pinned AES-GCM extension API" OFF)
@@ -178,6 +183,22 @@ add_library(robotweax_srt
     src/c_api.cpp)
 add_library(RobotweaxSRT::srt ALIAS robotweax_srt)
 
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
+    get_filename_component(ROBOTWEAX_SRT_FILTER_PROVIDER_SOURCE
+        "${ROBOTWEAX_SRT_FILTER_PROVIDER}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(NOT EXISTS "${ROBOTWEAX_SRT_FILTER_PROVIDER_SOURCE}")
+        message(FATAL_ERROR "Compiled packet-filter provider source does not exist")
+    endif()
+    target_sources(robotweax_srt PRIVATE
+        experimental/packet_filters/filter.cpp
+        experimental/packet_filters/filter_dispatch.cpp
+        experimental/packet_filters/compiled_filter.cpp
+        experimental/packet_filters/member_filter.cpp
+        "${ROBOTWEAX_SRT_FILTER_PROVIDER_SOURCE}")
+    target_include_directories(robotweax_srt PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/experimental/packet_filters")
+    target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS)
+endif()
 target_compile_definitions(robotweax_srt PRIVATE ROBOTWEAX_SRT_BUILDING)
 target_compile_definitions(robotweax_srt PRIVATE
     ROBOTWEAX_SRT_COMPILED_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
@@ -331,7 +352,7 @@ else()
 endif()
 
 include(CTest)
-if(ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS)
+if(ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS OR ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
     add_subdirectory(experimental/packet_filters)
 endif()
 if(ROBOTWEAX_SRT_BUILD_TESTS)
@@ -436,6 +457,24 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     endif()
     target_include_directories(robotweax_srt_tests
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
+        target_sources(robotweax_srt_tests PRIVATE
+            experimental/packet_filters/test_member_filter.cpp
+            experimental/packet_filters/test_socket_filter.cpp)
+        target_include_directories(robotweax_srt_tests PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+            "${CMAKE_CURRENT_SOURCE_DIR}/experimental/packet_filters")
+        add_executable(robotweax_srt_extension_filter_mutations
+            fuzz/extension_mutation_driver.cpp fuzz/fuzz_extension_filter.cpp)
+        target_compile_features(robotweax_srt_extension_filter_mutations PRIVATE cxx_std_20)
+        target_include_directories(robotweax_srt_extension_filter_mutations PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/experimental/packet_filters")
+        target_link_libraries(robotweax_srt_extension_filter_mutations PRIVATE RobotweaxSRT::srt)
+        add_test(NAME robotweax_srt_extension_filter_mutations
+            COMMAND robotweax_srt_extension_filter_mutations --runs 1000 --seed 1)
+        set_tests_properties(robotweax_srt_extension_filter_mutations PROPERTIES
+            TIMEOUT 30 LABELS "experimental;extensions;mutation")
+    endif()
     target_compile_features(robotweax_srt_tests PRIVATE cxx_std_20)
     # Keep transport-runtime, expensive encryption and retention regressions in
     # separate bounded runs. Every native case runs in exactly one partition.
@@ -1912,6 +1951,14 @@ if(ROBOTWEAX_SRT_BUILD_FUZZERS)
     target_link_options(fuzz_fec_control_decode
         PRIVATE -fsanitize=fuzzer,address,undefined)
 
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
+        add_executable(fuzz_extension_filter fuzz/fuzz_extension_filter.cpp)
+        target_include_directories(fuzz_extension_filter PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/experimental/packet_filters")
+        target_link_libraries(fuzz_extension_filter PRIVATE RobotweaxSRT::srt)
+        target_compile_options(fuzz_extension_filter PRIVATE -fsanitize=fuzzer,address,undefined)
+        target_link_options(fuzz_extension_filter PRIVATE -fsanitize=fuzzer,address,undefined)
+    endif()
     if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
         add_executable(fuzz_acp1_control_open fuzz/fuzz_acp1_control_open.cpp)
         target_link_libraries(fuzz_acp1_control_open PRIVATE RobotweaxSRT::srt)

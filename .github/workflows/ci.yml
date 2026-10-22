@@ -319,6 +319,7 @@ jobs:
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Release
           -DROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS=ON
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=${{ needs.changes.outputs.benchmark }}
           -DROBOTWEAX_SRT_BUILD_EXAMPLES=${{ needs.changes.outputs.examples }}
           -DROBOTWEAX_SRT_BUILD_TOOLS=${{ needs.changes.outputs.core_tests }}
@@ -441,6 +442,7 @@ jobs:
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Release
           -DROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS=ON
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
           -DROBOTWEAX_SRT_BUILD_EXAMPLES=${{ needs.changes.outputs.examples }}
           -DROBOTWEAX_SRT_BUILD_TOOLS=${{ needs.changes.outputs.core_tests }}
@@ -1149,6 +1151,7 @@ jobs:
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Debug
           -DROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS=ON
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
           -DENABLE_AEAD_API_PREVIEW=ON
           -DENABLE_MAXREXMITBW=ON
@@ -1228,6 +1231,7 @@ jobs:
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
           -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
           -DROBOTWEAX_SRT_BUILD_FUZZERS=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS=ON
           -DENABLE_AEAD_API_PREVIEW=ON
       - name: Build
         run: >-
@@ -1238,6 +1242,7 @@ jobs:
           fuzz_group_membership_decode
           fuzz_fec_control_decode
           fuzz_aead_packet_open
+          fuzz_extension_filter
           robotweax_srt_c_api_test
           robotweax_srt_compatible_header_test
       - name: Exercise ordinary consumers of the instrumented library
@@ -1256,6 +1261,9 @@ jobs:
         run: ./build/fuzz_fec_control_decode -runs=10000
       - name: Exercise authenticated DATA open path
         run: ./build/fuzz_aead_packet_open -runs=10000
+      - name: Exercise experimental member-filter repair path
+        run: ./build/fuzz_extension_filter -runs=10000
+
 
   reference_interop_prepare:
     name: Prepare reference interoperability
