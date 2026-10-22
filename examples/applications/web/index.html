@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Robotweax · SRT Lab</title><link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header><div class="brand"><span class="mark">R</span><div>ROBOTWEAX <span class="muted">/ SRT LAB</span></div></div><span id="connection" class="badge">CONNECTING</span></header>
+  <main>
+    <div class="heading"><div><p class="eyebrow">TRANSPORT WORKBENCH</p><h1>See what arrives.</h1><p class="intro">Real video, independent paths, and recovery you can inspect.</p></div><div class="local"><span class="dot"></span> Local session <small>Physical network validation deferred</small></div></div>
+    <nav aria-label="Application"><button data-kind="media" class="selected" aria-pressed="true">01 <strong>Video contribution</strong></button><button data-kind="recovery" aria-pressed="false">02 <strong>Recovery lab</strong></button><button data-kind="device" aria-pressed="false">03 <strong>Device simulator</strong></button></nav>
+    <div class="workspace">
+      <aside class="panel"><div class="panel-title"><h2>Run configuration</h2><span id="run-state" class="badge">IDLE</span></div>
+        <form id="controls">
+          <label>Duration <span class="unit">seconds</span><input id="duration" type="number" min="10" max="120" value="18" required></label>
+          <label>SRT latency <span class="unit">ms</span><input id="latency" type="number" min="60" max="1000" value="120" required></label>
+          <div data-section="media"><label>Source<select id="source"><option value="testcard">Encoded test card + tone</option value="file" disabled>Configured media file</option></select></label><label>Path policy<select id="policy"><option value="backup">Weighted Backup</option><option value="broadcast">Broadcast redundancy</option></select></label></div>
+          <div data-section="recovery" hidden><label>Recovery strategy<select id="filter"><option value="arq">ARQ only</option><option value="row">Row FEC · no ARQ</option><option value="column">Column FEC · no ARQ</option><option value="matrix">Matrix FEC + ARQ on request</option></select></label></div>
+          <div class="divider"></div><p class="eyebrow">CONTROLLED IMPAIRMENT</p>
+          <label>Drop period <span class="unit">0 = off</span><input id="drop-every" type="number" min="0" max="10000" value="0" required></label>
+          <label>Burst size <span class="unit">packets</span><input id="burst" type="number" min="1" max="100" value="1" required></label>
+          <p class="hint">Original DATA only. Parity and retransmissions pass through. Local runs use unencrypted transport.</p>
+          <button class="primary" id="start" type="submit">Start run <span>↗</span></button><button id="stop" type="button" disabled>Stop run</button>
+        </form>
+        <p id="error" role="alert"></p>
+      </aside>
+      <section class="main-panel">
+        <div class="panel viewer"><div class="panel-title"><h2 id="viewer-title">Receiver preview</h2><span id="media-status" class="muted">AWAITING STREAM</span></div>
+          <div id="screen"><div id="placeholder"><span class="screen-icon">▷</span><h3 id="placeholder-title">Your received stream, live.</h3><p id="placeholder-text">Start a run to encode video, send it through SRT,<br>and decode the received MPEG-TS.</p></div><img id="preview" alt="Live decoded video from the SRT receiver" hidden><video id="playback" controls playsinline preload="metadata" hidden></video></div>
+          <div class="viewer-footer"><span id="flow">FFmpeg → UDP → SRT group → UDP → decoder</span><span id="decoded">0 decoded preview frames</span></div>
+        </div>
+        <div class="metrics"><div class="panel"><span id="received-label">Delivered datagrams</span><strong id="received">—</strong></div><div class="panel"><span>Retransmissions</span><strong id="retransmitted">—</strong></div><div class="panel"><span>FEC recovered</span><strong id="fec">—</strong></div><div class="panel"><span>Latest socket RTT</span><strong id="rtt">—</strong></div></div>
+        <div class="panel graph"><div class="panel-title"><h2>Receive activity</h2><span class="muted">PACKETS / SECOND · LOCAL OBSERVATION</span></div><svg viewBox="0 0 800 110" role="img" aria-label="Received packet rate over time" preserveAspectRatio="none"><path d="M0 25H800M0 55H800M0 85H800" class="gridlines"/><polyline id="trace" points="0,100 800,100"/></svg></div>
+        <div id="paths" class="paths"><div class="panel path"><span class="eyebrow">RELAY 01 · WEIGHT 100</span><strong id="path-0-state">Awaiting connection</strong><button class="path-control" data-index="0" disabled>Pause relay 1</button></div><div class="panel path"><span class="eyebrow">RELAY 02 · WEIGHT 50</span><strong id="path-1-state">Awaiting connection</strong><button class="path-control" data-index="1" disabled>Pause relay 2</button></div></div>
+        <p class="hint" id="path-hint">Relay pauses simulate an outage on this host. They do not validate physical link diversity. Resuming a relay does not automatically reconnect a broken member.</p>
+      </section>
+    </div>
+    <section class="panel evidence"><div class="panel-title"><h2>Session evidence</h2><span id="evidence-count" class="muted">NO EVENTS YET</span></div><pre id="events" aria-label="Recent transport events">Run a sample to see delivery, recovery, path and command events.</pre><p id="output-path" class="hint"></p></section>
+    <footer><span>Robotweax SRT · public C API samples</span><span>Live preview is silent · completed MP4 includes available audio</span></footer>
+  </main><script src="/app.js"></script>
+</body></html>

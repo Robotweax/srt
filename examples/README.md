@@ -1,5 +1,9 @@
 # Public API examples
 
+For sustained workflows, see the [application samples](applications/README.md):
+multi-path contribution with member replacement, controlled recovery comparison,
+and a concurrent Live/Sensor/Control device simulator with JSONL observations.
+
 The examples in this directory are small, inspectable demonstrations of the
 installed Robotweax SRT C API. They include only `<srt/srt.h>` and link through
 the public `RobotweaxSRT::srt` target. They are not production relay tools and
@@ -22,8 +26,8 @@ statistics and opt-in reconnect. It does not transcode or promise lossless resta
 
 ## Build the networked examples
 
-The four networked example executables are opt-in and are not installed with
-the library. The standalone consumer source described below is installed as
+The four basic networked examples and three application samples are opt-in and
+are not installed with the library. The standalone consumer source below is installed as
 part of the public documentation package.
 
 ```sh

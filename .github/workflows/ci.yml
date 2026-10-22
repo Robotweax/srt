@@ -333,7 +333,7 @@ jobs:
           set -euo pipefail
           targets=(robotweax_srt)
           if [[ "$EXAMPLES" == "true" ]]; then
-            targets+=(robotweax_srt_message_demo robotweax_srt_file_demo robotweax_srt_group_demo robotweax_srt_udp_bridge)
+            targets+=(robotweax_srt_message_demo robotweax_srt_file_demo robotweax_srt_group_demo robotweax_srt_udp_bridge robotweax_srt_contribution robotweax_srt_recovery robotweax_srt_device)
           fi
           cmake --build build --config Release --parallel --target "${targets[@]}"
       - name: Test
@@ -454,7 +454,7 @@ jobs:
           set -euo pipefail
           targets=(robotweax_srt)
           if [[ "$EXAMPLES" == "true" ]]; then
-            targets+=(robotweax_srt_message_demo robotweax_srt_file_demo robotweax_srt_group_demo robotweax_srt_udp_bridge)
+            targets+=(robotweax_srt_message_demo robotweax_srt_file_demo robotweax_srt_group_demo robotweax_srt_udp_bridge robotweax_srt_contribution robotweax_srt_recovery robotweax_srt_device)
           fi
           cmake --build build --config Release --parallel --target "${targets[@]}"
       - name: Test
@@ -1054,7 +1054,7 @@ jobs:
           cmake --build build-aead-static
           --config Release
           --parallel ${{ runner.os == 'macOS' && '3' || '' }}
-          --target robotweax_srt_message_demo robotweax_srt_file_demo robotweax_srt_group_demo robotweax_srt_udp_bridge
+          --target robotweax_srt_message_demo robotweax_srt_file_demo robotweax_srt_group_demo robotweax_srt_udp_bridge robotweax_srt_contribution robotweax_srt_recovery robotweax_srt_device
       - name: Test explicit CTR and GCM demo modes
         if: needs.changes.outputs.examples == 'true'
         run: >-
