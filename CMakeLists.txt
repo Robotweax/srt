@@ -43,6 +43,8 @@ option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
     "Install opt-in srt.pc metadata for libsrt-compatible consumers" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
     "Enable unreviewed experimental authenticated runtime controls" OFF)
+option(ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS
+    "Build private packet-filter contracts and tests (no transport integration)" OFF)
 option(ENABLE_MAXREXMITBW "Enable optional retransmission bandwidth limit" OFF)
 option(ENABLE_AEAD_API_PREVIEW
     "Enable the version-pinned AES-GCM extension API" OFF)
@@ -329,6 +331,9 @@ else()
 endif()
 
 include(CTest)
+if(ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS)
+    add_subdirectory(experimental/packet_filters)
+endif()
 if(ROBOTWEAX_SRT_BUILD_TESTS)
     # Deterministic ownership model only; excluded from the runtime and install.
     add_executable(robotweax_srt_connection_affinity_model_tests

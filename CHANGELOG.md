@@ -6,6 +6,14 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add default-off, source-tree-only packet-filter contracts with independent
+  logical/member sequence domains, path and receiver generations, optional
+  feedback, protection contexts and bounded owner-provided storage. Validate
+  whole callback batches and contain terminal provider failures without binding
+  the interface to a group mode or changing transport behavior. These private
+  contracts are not a public plugin ABI or an implemented aggregation/multicast
+  runtime.
+
 ## 0.3.0 — Crypto Providers and Admission Controls — 2026-10-14
 
 Published as [v0.3.0](https://github.com/Robotweax/srt/releases/tag/v0.3.0). See the
