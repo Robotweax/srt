@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import secrets
 import socket
 import subprocess
 import threading
@@ -68,16 +69,16 @@ class Process:
 
 
 def ports(count=1):
+    if not 1 <= count <= 64:
+        raise ValueError("sample port count must be 1..64")
     for _ in range(100):
         sockets = []
         try:
-            first = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sockets.append(first)
-            first.bind(("127.0.0.1", 0))
-            base = first.getsockname()[1]
-            if base + count > 65536:
-                continue
-            for offset in range(1, count):
+            # Keep planned listeners below the usual dynamic-port ranges.
+            # In particular, Windows can assign the next ephemeral port to
+            # a peer or relay back socket before its sibling listener binds.
+            base = 10000 + secrets.randbelow(20000)
+            for offset in range(count):
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 sockets.append(sock)
                 sock.bind(("127.0.0.1", base + offset))
