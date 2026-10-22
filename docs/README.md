@@ -7,6 +7,9 @@ developers and transport integrators using the installed public API.
 
 ## Start here
 
+- [Experimental compiled controllers](experimental-controllers.md) — default-off
+  controller providers, strict selection and runtime qualification boundary.
+
 - [Experimental ACP1](experimental-acp1.md) — unreviewed runtime-control
   authentication, strict bilateral opt-in and provisional wire/API contract.
 

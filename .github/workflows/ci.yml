@@ -319,6 +319,8 @@ jobs:
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Release
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=${{ needs.changes.outputs.benchmark }}
+          -DROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS=ON
           -DROBOTWEAX_SRT_BUILD_EXAMPLES=${{ needs.changes.outputs.examples }}
           -DROBOTWEAX_SRT_BUILD_TOOLS=${{ needs.changes.outputs.core_tests }}
       - name: Build
@@ -439,6 +441,7 @@ jobs:
         run: >-
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Release
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS=ON
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
           -DROBOTWEAX_SRT_BUILD_EXAMPLES=${{ needs.changes.outputs.examples }}
           -DROBOTWEAX_SRT_BUILD_TOOLS=${{ needs.changes.outputs.core_tests }}
@@ -1149,6 +1152,8 @@ jobs:
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
           -DENABLE_AEAD_API_PREVIEW=ON
           -DENABLE_MAXREXMITBW=ON
+          -DROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS=ON
       - name: Verify fatal UBSan enforcement
         run: |
           cmake --build build --target robotweax_srt_ubsan_canary
@@ -1179,6 +1184,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Debug
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
           -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
+          -DROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES=ON
       - name: Build lifecycle stress suite
         run: >-
           cmake --build build --parallel
@@ -1188,6 +1194,7 @@ jobs:
           robotweax_srt_scheduler_tests
           robotweax_srt_scheduler_service_tests
           robotweax_srt_connection_affinity_model_tests
+          robotweax_srt_extension_contract_tests
       - name: Run lifecycle stress suite
         env:
           TSAN_OPTIONS: halt_on_error=1
@@ -1198,6 +1205,7 @@ jobs:
           && ./build/robotweax_srt_scheduler_tests
           && ./build/robotweax_srt_scheduler_service_tests
           && ./build/robotweax_srt_connection_affinity_model_tests
+          && ./build/experimental/transport_extensions/robotweax_srt_extension_contract_tests
 
   fuzz_smoke:
     name: Fuzz smoke
@@ -1222,6 +1230,7 @@ jobs:
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
           -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
           -DROBOTWEAX_SRT_BUILD_FUZZERS=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS=ON
           -DENABLE_AEAD_API_PREVIEW=ON
       - name: Build
         run: >-
@@ -1231,6 +1240,7 @@ jobs:
           fuzz_key_material_decode
           fuzz_group_membership_decode
           fuzz_fec_control_decode
+          fuzz_extension_controller
           fuzz_aead_packet_open
           robotweax_srt_c_api_test
           robotweax_srt_compatible_header_test
@@ -1248,8 +1258,20 @@ jobs:
         run: ./build/fuzz_group_membership_decode -runs=10000
       - name: Exercise FEC control decoder
         run: ./build/fuzz_fec_control_decode -runs=10000
+      - name: Exercise experimental controller boundary
+        run: ./build/fuzz_extension_controller -runs=10000
       - name: Exercise authenticated DATA open path
         run: ./build/fuzz_aead_packet_open -runs=10000
+      - name: Retain fuzz failure inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-failure-corpus-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: |
+            crash-*
+            timeout-*
+            leak-*
 
   reference_interop_prepare:
     name: Prepare reference interoperability

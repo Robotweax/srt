@@ -1199,8 +1199,9 @@ class CiChangeClassifierTests(unittest.TestCase):
             INTEROP_DIRECTORY.parent / ".github/workflows/ci.yml"
         ).read_text(encoding="utf-8")
 
-        # Both macOS OBS jobs upload text diagnostics only.
-        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 11)
+        # Both macOS OBS jobs upload text diagnostics only; fuzz smoke also
+        # preserves generated failure inputs.
+        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 12)
         timing_evidence = workflow.split(
             "      - name: Preserve AES-GCM timing failure diagnostics\n", 1
         )[1].split("      - name:", 1)[0]

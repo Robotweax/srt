@@ -1082,6 +1082,11 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         const std::string_view name{
             static_cast<const char*>(value),
             static_cast<std::size_t>(value_size)};
+        CongestionController selected_controller {};
+        if (options.group_connect
+            && parse_congestion_controller(name, selected_controller)
+            && is_experimental_congestion_controller(selected_controller))
+            return invalid_parameter();
         if (standby_rtt_enabled(options)) {
             SocketOptions selected = socket.native_options;
             if (selected.set_congestion_controller(name) != Error::none
@@ -1255,7 +1260,10 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     }
     case SRTO_GROUPCONNECT: {
         bool parsed = false;
-        if (!read_boolean(value, value_size, parsed)) {
+        if (!read_boolean(value, value_size, parsed)
+            || (parsed
+                && is_experimental_congestion_controller(
+                    socket.native_options.congestion_controller()))) {
             return invalid_parameter();
         }
         options.group_connect = parsed;

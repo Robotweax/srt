@@ -56,6 +56,8 @@ internals evolve.
 `session` / `control` / `reliability`
 : Maintain sequence space, receive windows, ACK/ACKACK, compressed multi-range
   NAK, loss aging, retransmission, DROPREQ, and recovery actions.
+  The transport profile owns ACK timing and timeout-recovery policy independently
+  of the object that calculates the sending rate or congestion window.
 
 `send_buffer` / `receive_buffer`
 : Preallocate packet rings for fragmentation, reassembly, stream notches, and

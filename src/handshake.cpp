@@ -508,8 +508,10 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             }
             const bool negotiate_filter =
                 message.has_packet_filter_extension;
-            if (configuration_.congestion_controller
-                    == CongestionController::control
+            if ((configuration_.congestion_controller
+                        == CongestionController::control
+                    || is_experimental_congestion_controller(
+                        configuration_.congestion_controller))
                 && negotiate_filter) {
                 return reject(packet_filter_rejection_reason);
             }
@@ -819,8 +821,10 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             // If it does include one, it must still match the proposal.
             // control-v1 is a versioned delivery contract, so unlike FileCC
             // its response must explicitly confirm the profile identity.
-            if (configuration_.congestion_controller
-                    == CongestionController::control
+            if ((configuration_.congestion_controller
+                        == CongestionController::control
+                    || is_experimental_congestion_controller(
+                        configuration_.congestion_controller))
                 && (!message.has_congestion_extension
                     || !message.has_handshake_extension)) {
                 return reject_locally(congestion_rejection_reason);
@@ -839,8 +843,10 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 });
                 return actions;
             }
-            if (configuration_.congestion_controller
-                    == CongestionController::control
+            if ((configuration_.congestion_controller
+                        == CongestionController::control
+                    || is_experimental_congestion_controller(
+                        configuration_.congestion_controller))
                 && message.has_packet_filter_extension) {
                 return reject_locally(packet_filter_rejection_reason);
             }

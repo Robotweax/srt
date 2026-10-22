@@ -1,4 +1,8 @@
 #include "robotweax/srt/session.hpp"
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+#include "compiled_congestion.hpp"
+#include <new>
+#endif
 
 #include "sender_drop_trace.hpp"
 
@@ -8,6 +12,78 @@
 #include <limits>
 
 namespace robotweax::srt {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+void extensions::SessionControllerDeleter::operator()(
+    ControllerInstance* instance) const noexcept
+{
+    delete instance;
+}
+
+Error ReliabilitySession::configure_experimental_controller(
+    CongestionController controller, std::uint64_t maximum_rate,
+    std::uint32_t maximum_window, std::uint64_t now) noexcept
+{
+    const auto* descriptor = extensions::compiled_controller(controller);
+    return descriptor == nullptr
+        ? Error::unsupported
+        : configure_experimental_controller(
+              *descriptor, maximum_rate, maximum_window, now);
+}
+
+Error ReliabilitySession::configure_experimental_controller(
+    const extensions::ControllerDescriptor& descriptor,
+    std::uint64_t maximum_rate, std::uint32_t maximum_window,
+    std::uint64_t now) noexcept
+{
+    if (reliability_mode_ != ReliabilityMode::live || experimental_controller_
+        || packet_filter_policy_.enabled())
+        return Error::invalid_state;
+    decltype(experimental_controller_) selected {
+        new (std::nothrow) extensions::ControllerInstance};
+    if (!selected)
+        return Error::io_error;
+    const auto initialized =
+        selected->start(descriptor, {maximum_rate, maximum_window});
+    if (initialized != Error::none)
+        return initialized;
+    const auto initial = selected->dispatch({.now_microseconds = now});
+    if (initial.error != Error::none)
+        return initial.error;
+    experimental_rate_ = initial.decision.rate_bytes_per_second;
+    experimental_window_ = initial.decision.window_packets;
+    experimental_window_ceiling_ = maximum_window;
+    experimental_controller_ = std::move(selected);
+    live_rate_controller_.reset();
+    return Error::none;
+}
+
+Error ReliabilitySession::experimental_feedback(
+    extensions::ControllerEventKind kind, std::uint64_t now,
+    std::uint64_t acknowledged_bytes, std::uint32_t lost_packets) noexcept
+{
+    if (!experimental_controller_)
+        return Error::none;
+    if (experimental_error_ != Error::none)
+        return experimental_error_;
+    const auto result = experimental_controller_->dispatch({.kind = kind,
+        .now_microseconds = now,
+        .acknowledged_bytes = acknowledged_bytes,
+        .lost_packets = lost_packets,
+        .round_trip_time_microseconds = rtt_.smoothed_microseconds()});
+    experimental_error_ = result.error;
+    if (result.error == Error::none) {
+        experimental_rate_ = result.decision.rate_bytes_per_second;
+        experimental_window_ = result.decision.window_packets;
+    }
+    return experimental_error_;
+}
+
+Error ReliabilitySession::poll_experimental_controller(
+    std::uint64_t now) noexcept
+{
+    return experimental_feedback(extensions::ControllerEventKind::tick, now);
+}
+#endif
 namespace {
 
 constexpr std::uint64_t sensor_retirement_repeat_interval_microseconds =
@@ -120,6 +196,10 @@ Error ReliabilitySession::queue_message(std::span<const std::byte> message,
     std::uint64_t enqueue_microseconds,
     std::uint64_t expiration_microseconds) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (experimental_error_ != Error::none)
+        return experimental_error_;
+#endif
     if (message.empty())
         return Error::invalid_state;
     if (packet_filter_policy_.sensor_profile()
@@ -151,6 +231,10 @@ Error ReliabilitySession::queue_group_message(
     std::uint64_t enqueue_microseconds,
     std::uint64_t expiration_microseconds) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (experimental_error_ != Error::none)
+        return experimental_error_;
+#endif
     if (packet_filter_policy_.sensor_profile()
         && message.size() > send_buffer_.maximum_payload_size()) {
         return Error::invalid_payload_size;
@@ -247,6 +331,10 @@ StreamEnqueueResult ReliabilitySession::queue_stream(
     PacketTimestamp timestamp,
     std::uint64_t enqueue_microseconds) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (experimental_error_ != Error::none)
+        return {.error = experimental_error_};
+#endif
     auto result = send_buffer_.enqueue_stream(bytes,
         next_message_number_, timestamp, peer_socket_id_,
         enqueue_microseconds);
@@ -269,7 +357,15 @@ std::optional<OutboundPacket> ReliabilitySession::next_paced_data_packet(
     std::size_t new_packet_wire_overhead, bool defer_pacing_commit,
     bool allow_retransmission) noexcept
 {
-    if (live_rate_controller_.has_value()) {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (experimental_controller_) {
+        if (poll_experimental_controller(now_microseconds) != Error::none)
+            return std::nullopt;
+        pacer.set_rate(experimental_rate_);
+        pacer.set_flow_window(experimental_window_);
+    } else
+#endif
+        if (live_rate_controller_.has_value()) {
         pacer.set_rate(live_rate_controller_->pacing_rate_bytes_per_second());
     } else if (file_rate_controller_.has_value()) {
         pacer.set_rate(file_rate_controller_
@@ -312,6 +408,13 @@ void ReliabilitySession::configure_live(const NegotiatedLiveOptions& options,
     LiveRateController::Configuration rate_configuration) noexcept
 {
     file_rate_controller_.reset();
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    experimental_controller_.reset();
+    experimental_error_ = Error::none;
+    experimental_rate_ = 0;
+    experimental_window_ = 0;
+#endif
+    reliability_mode_ = ReliabilityMode::live;
     live_options_ = options;
     periodic_nak_enabled_ = options.periodic_nak;
     if (options.receive_tsbpd) {
@@ -337,6 +440,13 @@ void ReliabilitySession::configure_file(bool message_api,
     bool negotiated_retransmit_flag) noexcept
 {
     live_rate_controller_.reset();
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    experimental_controller_.reset();
+    experimental_error_ = Error::none;
+    experimental_rate_ = 0;
+    experimental_window_ = 0;
+#endif
+    reliability_mode_ = ReliabilityMode::file;
     file_rate_controller_.emplace(
         send_buffer_.first_sequence(), rate_configuration);
     tsbpd_clock_.reset();
@@ -378,7 +488,12 @@ Error ReliabilitySession::apply_dynamic_options(const SocketOptions& options) no
             : 0U);
         return Error::none;
     }
-    if (!live_rate_controller_.has_value()) {
+    bool has_live_calculator = live_rate_controller_.has_value();
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    has_live_calculator =
+        has_live_calculator || experimental_controller_ != nullptr;
+#endif
+    if (!has_live_calculator) {
         return Error::invalid_state;
     }
     const auto input = options.get(SocketOption::input_bandwidth_bytes_per_second);
@@ -387,14 +502,25 @@ Error ReliabilitySession::apply_dynamic_options(const SocketOptions& options) no
     const auto maximum = options.get(SocketOption::maximum_bandwidth_bytes_per_second);
     const auto overhead = options.get(SocketOption::overhead_bandwidth_percent);
     const auto drop_delay = options.get(SocketOption::sender_drop_delay_milliseconds);
-    live_rate_controller_->set_input_bandwidth(
-        static_cast<std::uint64_t>(input.value));
-    live_rate_controller_->set_minimum_input_bandwidth(
-        static_cast<std::uint64_t>(minimum_input.value));
-    live_rate_controller_->set_maximum_bandwidth(
-        maximum.value);
-    live_rate_controller_->set_overhead_percent(
-        static_cast<std::uint32_t>(overhead.value));
+    if (live_rate_controller_) {
+        live_rate_controller_->set_input_bandwidth(
+            static_cast<std::uint64_t>(input.value));
+        live_rate_controller_->set_minimum_input_bandwidth(
+            static_cast<std::uint64_t>(minimum_input.value));
+        live_rate_controller_->set_maximum_bandwidth(maximum.value);
+        live_rate_controller_->set_overhead_percent(
+            static_cast<std::uint32_t>(overhead.value));
+    }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (experimental_controller_) {
+        const auto cap = maximum.value > 0
+            ? static_cast<std::uint64_t>(maximum.value)
+            : (std::numeric_limits<std::uint64_t>::max)();
+        experimental_error_ = experimental_controller_->set_limits(
+            {cap, experimental_window_ceiling_});
+        experimental_rate_ = std::min(experimental_rate_, cap);
+    }
+#endif
     const auto drift_tracer = options.get(
         SocketOption::drift_tracer);
     drift_tracer_enabled_ = drift_tracer.value != 0;
@@ -680,6 +806,10 @@ ReliabilityProcessResult ReliabilitySession::receive(
     std::uint64_t now_microseconds,
     ReliabilityReceiveContext context) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (experimental_error_ != Error::none)
+        return {.error = experimental_error_};
+#endif
     ReliabilityProcessResult result;
     if (packet.kind == PacketKind::data) {
         if (packet_filter_policy_.sensor_profile()) {
@@ -935,8 +1065,8 @@ ReliabilityProcessResult ReliabilitySession::receive(
         // Live and file mode use the control scheduler's 10 ms full-ACK
         // and packet-counted lite-ACK cadence. Unconfigured sessions retain
         // immediate acknowledgements for their synchronous flow.
-        if (!context.defer_feedback && !live_rate_controller_.has_value()
-            && !file_rate_controller_.has_value()) {
+        if (!context.defer_feedback
+            && reliability_mode_ == ReliabilityMode::unconfigured) {
             result.actions.push(
                 make_acknowledgement(now_microseconds));
         }
@@ -955,6 +1085,11 @@ ReliabilityProcessResult ReliabilitySession::receive(
         }
         const auto first_before = send_buffer_.first_sequence();
         const auto buffered_before = send_buffer_.size();
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+        const auto bytes_before = experimental_controller_
+            ? send_buffer_.buffered_payload_bytes()
+            : 0U;
+#endif
         const auto in_flight_before = send_buffer_.packets_in_flight();
         const auto acknowledgement_progress =
             decoded.acknowledgement.next_sequence.distance_from(
@@ -996,7 +1131,8 @@ ReliabilityProcessResult ReliabilitySession::receive(
         // Ordinary Live blind recovery (for peers without periodic NAKs)
         // requires ACK progress to restart RTO. Keep filter-controlled recovery
         // and FileCC unchanged: a repeated ACK may cover a pending FEC gap.
-        const bool live_blind_recovery = live_rate_controller_.has_value()
+        const bool live_blind_recovery =
+            reliability_mode_ == ReliabilityMode::live
             && packet_filter_policy_.effective_arq_level()
                 == PacketFilterArqLevel::always;
         if (acknowledgement_progress > 0
@@ -1039,6 +1175,16 @@ ReliabilityProcessResult ReliabilitySession::receive(
                 });
             }
         }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+        if (experimental_feedback(
+                extensions::ControllerEventKind::acknowledgement,
+                now_microseconds,
+                experimental_controller_
+                    ? bytes_before - send_buffer_.buffered_payload_bytes()
+                    : 0U)
+            != Error::none)
+            return {.error = experimental_error_};
+#endif
         return result;
     }
     case ControlType::negative_acknowledgement: {
@@ -1193,6 +1339,14 @@ ReliabilityProcessResult ReliabilitySession::receive(
         result.sender_loss_packets = expanded.sender_loss_packets;
         result.sender_loss_bytes = expanded.sender_loss_bytes;
         result.actions = expanded.actions;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+        if (experimental_feedback(extensions::ControllerEventKind::loss,
+                now_microseconds, 0,
+                static_cast<std::uint32_t>(
+                    std::min<std::size_t>(lost_packets, UINT32_MAX)))
+            != Error::none)
+            return {.error = experimental_error_};
+#endif
         if (file_rate_controller_.has_value()
             && first_lost.has_value()) {
             file_rate_controller_->on_loss(
@@ -2120,7 +2274,7 @@ bool ReliabilitySession::poll_sender_retransmission_timeout(
     // A Live peer advertising periodic reports owns loss detection. An
     // absent ACK alone must not select DATA for retransmission. The negotiated
     // shared flag also covers callers using the bidirectional session API.
-    if (live_rate_controller_.has_value()
+    if (reliability_mode_ == ReliabilityMode::live
         && (peer_periodic_nak_ || live_options_.peer_periodic_nak
             || periodic_nak_enabled_)) {
         return false;
@@ -2136,11 +2290,17 @@ bool ReliabilitySession::poll_sender_retransmission_timeout(
             rtt_.variation_microseconds())) {
         return false;
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (experimental_feedback(
+            extensions::ControllerEventKind::timeout, now_microseconds)
+        != Error::none)
+        return false;
+#endif
 
     // FileCC preserves a pending NAK selection; otherwise its timeout
     // recovery retries the unacknowledged flight, including its final packet.
     // Live peers without periodic reports retain their full-flight fallback.
-    if (!file_rate_controller_.has_value()
+    if (reliability_mode_ != ReliabilityMode::file
         || !send_buffer_.has_pending_retransmission()) {
         (void)send_buffer_.request_retransmission_of_all_sent();
     }

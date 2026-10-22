@@ -13,6 +13,7 @@
 #include <atomic>
 #include <limits>
 #include <new>
+#include <stdexcept>
 #include <thread>
 
 namespace robotweax::srt::compat {
@@ -1660,6 +1661,34 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
             || column_fec_decoder_.has_value()
             || matrix_fec_decoder_.has_value());
     (void)session_.apply_dynamic_options(configuration.options);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (is_experimental_congestion_controller(
+            configuration.options.congestion_controller())) {
+        if (configuration.group || configuration.options.rendezvous()
+            || (crypto_ != nullptr && crypto_->authenticated_data_enabled())
+            || configuration.options.transmission_type()
+                != TransmissionType::live
+            || !configuration.options.message_api()
+            || configuration.options.get(SocketOption::tsbpd_mode).value == 0
+            || configuration.options.packet_filter_configuration().enabled)
+            throw std::runtime_error(
+                "unsupported experimental controller profile");
+        const auto maximum =
+            configuration.options
+                .get(SocketOption::maximum_bandwidth_bytes_per_second)
+                .value;
+        const auto cap = maximum > 0
+            ? static_cast<std::uint64_t>(maximum)
+            : (std::numeric_limits<std::uint64_t>::max)();
+        if (session_.configure_experimental_controller(
+                configuration.options.congestion_controller(), cap,
+                static_cast<std::uint32_t>(std::min<std::size_t>(
+                    configuration.flow_window_packets, UINT32_MAX)),
+                now_microseconds())
+            != Error::none)
+            throw std::runtime_error("experimental controller setup failed");
+    }
+#endif
 #ifdef ENABLE_MAXREXMITBW
     retransmission_budget_.configure(
         configuration.options
@@ -3486,6 +3515,12 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         session_.send_buffer().first_sequence();
     const auto processed = session_.receive(
         clear_packet, now, context);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (session_.experimental_controller_error() != Error::none) {
+        break_locked(0);
+        return false;
+    }
+#endif
     if (!processed) {
         return false;
     }
@@ -4146,6 +4181,13 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         return {.immediate_work = true};
     }
     const std::uint64_t now = now_microseconds();
+    // Extension failures are local terminal errors, not malformed peer packets.
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (session_.poll_experimental_controller(now) != Error::none) {
+        break_locked(0);
+        return {};
+    }
+#endif
     if (now > last_peer_activity_microseconds_
         && now - last_peer_activity_microseconds_
             > peer_idle_timeout_microseconds_) {
@@ -4221,6 +4263,12 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         now, session_.send_buffer().size() != 0U);
     sample_receiver_buffer_statistics(now);
     (void)session_.poll_sender_retransmission_timeout(now);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (session_.experimental_controller_error() != Error::none) {
+        break_locked(0);
+        return {};
+    }
+#endif
 
     for (std::size_t index = 0;
         index < maximum_send_batch && *poll_send_budget_ != 0U; ++index) {
@@ -4302,6 +4350,12 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             : 0U;
         const auto packet = session_.next_paced_data_packet(pacer_, packet_time,
             new_packet_wire_overhead, true, retransmission);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+        if (session_.experimental_controller_error() != Error::none) {
+            break_locked(0);
+            return {};
+        }
+#endif
         if (!packet.has_value()) {
             break;
         }
@@ -4318,11 +4372,15 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     }
     const bool retransmission = retransmission_ready(now_microseconds());
     const bool pending = session_.has_pending_send_work();
+    std::size_t effective_window = flow_window_packets_;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (session_.experimental_window_packets() != 0)
+        effective_window = std::min<std::size_t>(
+            effective_window, session_.experimental_window_packets());
+#endif
     const bool flow_blocked = !retransmission
-        && session_.send_buffer().packets_in_flight()
-            >= flow_window_packets_;
-    const bool filter_pending =
-        fec_control_ready();
+        && session_.send_buffer().packets_in_flight() >= effective_window;
+    const bool filter_pending = fec_control_ready();
     if (session_.has_pending_drop_requests()) {
         return {
             .immediate_work = true,
@@ -4465,13 +4523,26 @@ void ConnectionRuntime::apply_options(
     retransmission_budget_.configure(limit, now_microseconds());
 #endif
     (void)session_.apply_dynamic_options(options_);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (session_.experimental_controller_error() != Error::none)
+        break_locked(0);
+#endif
     statistics_.update_reorder_state(
         session_.reorder_distance_packets(),
         session_.reorder_tolerance_packets());
     notify_readiness();
+#if defined(ENABLE_MAXREXMITBW)                                                \
+    || defined(ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS)
+    bool wake_sender = false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    wake_sender =
+        is_experimental_congestion_controller(options_.congestion_controller());
+#endif
 #ifdef ENABLE_MAXREXMITBW
+    wake_sender = wake_sender || limit_changed;
+#endif
     lock.unlock();
-    if (limit_changed)
+    if (wake_sender)
         notify_channel_send_work();
 #endif
 }
@@ -4946,49 +5017,42 @@ RuntimeStatisticsSnapshot ConnectionRuntime::statistics(
         uses_file_congestion_control(options_.congestion_controller())
         ? session_.file_pacing_rate_bytes_per_second()
         : session_.live_pacing_rate_bytes_per_second();
-    const std::size_t file_congestion_window =
-        session_.file_congestion_window_packets();
+    std::size_t congestion_window = session_.file_congestion_window_packets();
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    if (session_.experimental_window_packets() != 0)
+        congestion_window = session_.experimental_window_packets();
+#endif
     const auto& live_options = session_.live_options();
 
-    RuntimeStatisticsInstantaneous values{
+    RuntimeStatisticsInstantaneous values {
         .packet_send_period_microseconds =
             session_.packet_sending_period_microseconds(),
         .flow_window_packets = flow_window_packets_,
         .congestion_window_packets =
-            file_congestion_window != 0U
-            ? file_congestion_window : flow_window_packets_,
-        .packets_in_flight =
-            send_buffer.packets_in_flight(),
+            congestion_window != 0U ? congestion_window : flow_window_packets_,
+        .packets_in_flight = send_buffer.packets_in_flight(),
         .round_trip_time_milliseconds =
-            static_cast<double>(
-                session_.rtt().smoothed_microseconds())
+            static_cast<double>(session_.rtt().smoothed_microseconds())
             / 1'000.0,
         .bandwidth_megabits_per_second = bandwidth,
         .maximum_bandwidth_megabits_per_second =
-            static_cast<double>(pacing_rate) * 8.0
-            / 1'000'000.0,
+            static_cast<double>(pacing_rate) * 8.0 / 1'000'000.0,
         .maximum_segment_size_bytes = maximum_segment,
         .sender_buffer_packets = sender_packets,
-        .sender_buffer_bytes = saturated_add(
-            send_buffer.buffered_payload_bytes(),
-            saturated_multiply(sender_packets,
-                packet_header_bytes)),
-        .sender_buffer_milliseconds =
-            send_buffer.buffered_span_milliseconds(),
-        .sender_buffer_available_bytes =
-            saturated_multiply(
-                send_buffer.capacity() - sender_packets,
-                maximum_segment),
+        .sender_buffer_bytes =
+            saturated_add(send_buffer.buffered_payload_bytes(),
+                saturated_multiply(sender_packets, packet_header_bytes)),
+        .sender_buffer_milliseconds = send_buffer.buffered_span_milliseconds(),
+        .sender_buffer_available_bytes = saturated_multiply(
+            send_buffer.capacity() - sender_packets, maximum_segment),
         .sender_tsbpd_delay_milliseconds =
             live_options.peer_receive_delay_milliseconds,
         .receiver_buffer_packets = receiver_packets,
-        .receiver_buffer_bytes =
-            receive_buffer.buffered_payload_bytes(),
+        .receiver_buffer_bytes = receive_buffer.buffered_payload_bytes(),
         .receiver_buffer_milliseconds =
             receive_buffer.buffered_span_milliseconds(),
         .receiver_buffer_available_bytes =
-            saturated_multiply(
-                receive_buffer.available(), maximum_segment),
+            saturated_multiply(receive_buffer.available(), maximum_segment),
         .receiver_tsbpd_delay_milliseconds =
             live_options.receive_delay_milliseconds,
     };

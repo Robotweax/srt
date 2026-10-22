@@ -1,4 +1,7 @@
 #include "robotweax/srt/handshake_extensions.hpp"
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+#include "compiled_congestion.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -111,7 +114,11 @@ bool parse_congestion_controller(
         controller = CongestionController::control;
         return true;
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    return extensions::parse_compiled_controller(name, controller);
+#else
     return false;
+#endif
 }
 
 NegotiatedLiveOptions negotiate_live_options(

@@ -15,10 +15,22 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <memory>
 #include <span>
 #include <vector>
 
 namespace robotweax::srt {
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+namespace extensions {
+class ControllerInstance;
+struct ControllerDescriptor;
+enum class ControllerEventKind : std::uint8_t;
+struct SessionControllerDeleter {
+    void operator()(ControllerInstance*) const noexcept;
+};
+}
+#endif
 
 namespace detail {
 struct SessionTestAccess;
@@ -209,6 +221,10 @@ public:
     [[nodiscard]] std::optional<OutboundPacket> next_data_packet(
         std::uint64_t now_microseconds = 0) noexcept
     {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+        if (experimental_error_ != Error::none)
+            return std::nullopt;
+#endif
         auto packet = send_buffer_.next_packet(false, true, now_microseconds);
         if (packet.has_value() && packet->header.retransmitted) {
             note_retransmission_sent(packet->header.sequence, now_microseconds);
@@ -284,8 +300,31 @@ public:
     }
     [[nodiscard]] Error apply_dynamic_options(
         const SocketOptions& options) noexcept;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    [[nodiscard]] Error configure_experimental_controller(
+        CongestionController controller, std::uint64_t maximum_rate,
+        std::uint32_t maximum_window, std::uint64_t now) noexcept;
+    [[nodiscard]] Error configure_experimental_controller(
+        const extensions::ControllerDescriptor& descriptor,
+        std::uint64_t maximum_rate, std::uint32_t maximum_window,
+        std::uint64_t now) noexcept;
+    [[nodiscard]] Error poll_experimental_controller(
+        std::uint64_t now) noexcept;
+    [[nodiscard]] Error experimental_controller_error() const noexcept
+    {
+        return experimental_error_;
+    }
+    [[nodiscard]] std::uint32_t experimental_window_packets() const noexcept
+    {
+        return experimental_window_;
+    }
+#endif
     [[nodiscard]] std::uint64_t live_pacing_rate_bytes_per_second() const noexcept
     {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+        if (experimental_controller_)
+            return experimental_rate_;
+#endif
         return live_rate_controller_.has_value()
             ? live_rate_controller_->pacing_rate_bytes_per_second() : 0U;
     }
@@ -308,6 +347,14 @@ public:
     }
     [[nodiscard]] double packet_sending_period_microseconds() const noexcept
     {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+        if (experimental_controller_)
+            return experimental_rate_ == 0
+                ? 0.0
+                : static_cast<double>(
+                      send_buffer_.maximum_payload_size() + packet_header_size)
+                    * 1'000'000.0 / static_cast<double>(experimental_rate_);
+#endif
         if (file_rate_controller_.has_value()) {
             return file_rate_controller_
                 ->packet_sending_period_microseconds();
@@ -570,6 +617,23 @@ private:
 
     ArrivalRateEstimator arrival_rate_estimator_;
     std::optional<TsbpdClock> tsbpd_clock_;
+    // Reliability policy belongs to the transport profile, independently of
+    // which built-in or extension implementation calculates its sending rate.
+    enum class ReliabilityMode : std::uint8_t { unconfigured, live, file };
+    ReliabilityMode reliability_mode_ = ReliabilityMode::unconfigured;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    std::unique_ptr<extensions::ControllerInstance,
+        extensions::SessionControllerDeleter>
+        experimental_controller_;
+    Error experimental_error_ = Error::none;
+    std::uint64_t experimental_rate_ = 0;
+    std::uint32_t experimental_window_ = 0;
+    std::uint32_t experimental_window_ceiling_ = 0;
+    [[nodiscard]] Error experimental_feedback(
+        extensions::ControllerEventKind kind, std::uint64_t now,
+        std::uint64_t acknowledged_bytes = 0,
+        std::uint32_t lost_packets = 0) noexcept;
+#endif
     std::optional<LiveRateController> live_rate_controller_;
     std::optional<FileRateController> file_rate_controller_;
     SequenceNumber highest_received_sequence_{};

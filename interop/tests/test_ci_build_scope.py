@@ -26,6 +26,44 @@ def preparation_script() -> str:
 @unittest.skipUnless(os.name == "posix" and shutil.which("bash"),
                      "reference preparation runs in POSIX bash")
 class CiBuildScopeTests(unittest.TestCase):
+    def test_provider_execution_contracts_run_in_thread_sanitizer_job(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        body = workflow.split("  thread_sanitizer:\n", 1)[1]
+        body = re.split(r"\n  [a-z_]+:\n", body, maxsplit=1)[0]
+        self.assertIn("-DROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES=ON", body)
+        self.assertIn("          robotweax_srt_extension_contract_tests\n", body)
+        self.assertIn(
+            "&& ./build/experimental/transport_extensions/robotweax_srt_extension_contract_tests",
+            body,
+        )
+        self.assertIn("TSAN_OPTIONS: halt_on_error=1", body)
+
+    def test_extension_fuzzers_are_built_and_run_in_required_fuzz_job(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        body = workflow.split("  fuzz_smoke:\n", 1)[1]
+        body = re.split(r"\n  [a-z_]+:\n", body, maxsplit=1)[0]
+        for flag in ("CONTROLLERS",):
+            self.assertIn(f"-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_{flag}=ON", body)
+        for target in ("fuzz_extension_controller",):
+            self.assertIn(f"          {target}\n", body)
+            self.assertIn(f"./build/{target} -runs=10000", body)
+        self.assertIn("name: Retain fuzz failure inputs", body)
+        self.assertIn("if: failure()", body)
+        self.assertIn("crash-*", body)
+
+    def test_default_off_extensions_are_exercised_by_required_ci_jobs(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        flag = "-DROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES=ON"
+        for job in ("linux_release", "portable_release", "sanitizers"):
+            with self.subTest(job=job):
+                body = workflow.split(f"  {job}:\n", 1)[1]
+                body = re.split(r"\n  [a-z_]+:\n", body, maxsplit=1)[0]
+                if job != "portable_release":
+                    self.assertIn(flag, body)
+                self.assertIn("-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS=ON", body)
+                self.assertIn("ctest --test-dir build", body)
+                self.assertIn("cmake --build build", body)
+
     def test_group_receive_workaround_is_reference_only(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         macro = "-DROBOTWEAX_SRT_REFERENCE_GROUP_RECEIVE=1"

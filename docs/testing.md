@@ -440,6 +440,26 @@ library inherit sanitizer runtime link flags without inheriting libFuzzer's
 `main` function. Retain and minimize any failing
 input so the failure can become a deterministic regression test.
 
+For experimental congestion-controller builds, enable
+`ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS=ON` in a fresh build directory.
+CTest adds bounded contract tests and a 1000-input deterministic mutation smoke
+test. The runtime tests cover bilateral cleartext/CTR delivery and failure
+handling alongside the ordinary transport regressions. To run a larger
+deterministic campaign:
+
+```sh
+build/robotweax_srt_extension_controller_mutations --runs 200000 --seed 21
+```
+
+Configure a separate Clang build with `ROBOTWEAX_SRT_BUILD_FUZZERS=ON` and the
+controller flag to build `fuzz_extension_controller`. Run it with `-runs=10000`;
+retain and minimize any failing input. This target mutates descriptor admission,
+configuration names and bounded event sequences. Mutation tests lack coverage
+feedback; neither approach qualifies an external native provider or establishes
+network performance. Run providers with ASan/UBSan and exercise concurrent
+instances under ThreadSanitizer. See the
+[provider contract](experimental-controllers.md) for lifecycle and trust rules.
+
 ## Interoperability qualification
 
 Robotweax-to-Robotweax loopback proves self-consistency, not compatibility

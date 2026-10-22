@@ -112,6 +112,9 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         return Error::none;
     case SocketOption::tsbpd_mode:
         if (!is_boolean(value)) return Error::invalid_state;
+        if (is_experimental_congestion_controller(congestion_controller_)
+            && value == 0)
+            return Error::invalid_state;
         if ((packet_filter_configuration_.sensor_profile() || control_profile())
             && value != 0) {
             return Error::invalid_state;
@@ -288,12 +291,18 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         return Error::none;
     case SocketOption::rendezvous:
         if (!is_boolean(value)
+            || (value != 0
+                && is_experimental_congestion_controller(
+                    congestion_controller_))
             || (value != 0 && session_authentication_ && !experimental_acp1_))
             return Error::invalid_state;
         rendezvous_ = value != 0;
         return Error::none;
     case SocketOption::message_api:
         if (!is_boolean(value)) return Error::invalid_state;
+        if (is_experimental_congestion_controller(congestion_controller_)
+            && value == 0)
+            return Error::invalid_state;
         if ((packet_filter_configuration_.sensor_profile() || control_profile())
             && value == 0) {
             return Error::invalid_state;
@@ -507,7 +516,9 @@ Error SocketOptions::set_passphrase(
 Error SocketOptions::set_packet_filter(
     std::string_view configuration) noexcept
 {
-    if (control_profile() && !configuration.empty()) {
+    if ((control_profile()
+            || is_experimental_congestion_controller(congestion_controller_))
+        && !configuration.empty()) {
         return Error::invalid_state;
     }
     const auto parsed =
@@ -560,6 +571,11 @@ Error SocketOptions::set_congestion_controller(
     if (!parse_congestion_controller(name, parsed)) {
         return Error::invalid_state;
     }
+    if (is_experimental_congestion_controller(parsed)
+        && (transmission_type_ != TransmissionType::live || !tsbpd_mode_
+            || !message_api_ || rendezvous_
+            || packet_filter_configuration_.enabled))
+        return Error::invalid_state;
     if (packet_filter_configuration_.sensor_profile()
         && parsed != CongestionController::live) {
         return Error::invalid_state;

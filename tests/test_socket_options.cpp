@@ -4,6 +4,33 @@
 
 using namespace robotweax::srt;
 
+TEST(socket_options_experimental_controller_is_explicit_build_opt_in)
+{
+    SocketOptions options;
+#ifndef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    REQUIRE_EQ(options.set_congestion_controller("rwx-fixed-v1"),
+        Error::invalid_state);
+    CongestionController selected {};
+    REQUIRE(!parse_congestion_controller("rwx-fixed-v1", selected));
+#else
+    CongestionController selected {};
+    if (parse_congestion_controller("rwx-fixed-v1", selected)) {
+        REQUIRE_EQ(
+            options.set_congestion_controller("rwx-fixed-v1"), Error::none);
+        REQUIRE(is_experimental_congestion_controller(
+            options.congestion_controller()));
+        // A transport preset is a bundle: select the provider after applying it.
+        REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                       static_cast<std::int64_t>(TransmissionType::live)),
+            Error::none);
+        REQUIRE_EQ(options.congestion_controller(), CongestionController::live);
+        REQUIRE_EQ(
+            options.set_congestion_controller("rwx-fixed-v1"), Error::none);
+        REQUIRE_EQ(options.congestion_controller(), selected);
+    }
+#endif
+}
+
 TEST(socket_options_use_reference_srt_buffer_capacities)
 {
     const SocketOptions options;

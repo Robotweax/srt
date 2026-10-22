@@ -6,6 +6,14 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add default-off compiled congestion-controller providers selected through
+  `SRTO_CONGESTION`, with strict bilateral confirmation, bounded private state,
+  core rate/window caps and terminal callback-failure handling. The initial
+  profile is Live Message Caller/Listener with cleartext or AES-CTR; the bundled
+  fixed-rate provider is a demonstration. Keep ACK and retransmission policy
+  independent of rate-calculator lifetime. The provider interface is private
+  and is not an installed plugin ABI.
+
 ## 0.3.0 — Crypto Providers and Admission Controls — 2026-10-14
 
 Published as [v0.3.0](https://github.com/Robotweax/srt/releases/tag/v0.3.0). See the
