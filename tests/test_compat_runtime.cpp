@@ -23,6 +23,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <span>
 #include <string_view>
 #include <thread>
@@ -635,7 +636,7 @@ TEST(compat_datagram_inbox_reports_existing_readiness_when_subscribed)
     REQUIRE_EQ(observer->notifications, 1U);
 }
 
-TEST(compat_setup_route_promotion_preserves_queued_data_order)
+TEST(compat_setup_route_factory_failure_preserves_queued_data_order)
 {
     constexpr std::uint32_t local_socket_id = 100;
     const Ipv4Endpoint peer{
@@ -675,21 +676,60 @@ TEST(compat_setup_route_promotion_preserves_queued_data_order)
     queue_packet(SequenceNumber{501}, 2, second_payload);
 
     SocketOptions options;
-    const auto runtime = std::make_shared<ConnectionRuntime>(
-        ConnectionRuntime::Configuration{
-            .channel = channel,
-            .peer = peer,
-            .peer_socket_id = 200,
-            .initial_sequence = SequenceNumber{700},
-            .peer_initial_sequence = SequenceNumber{500},
-            .has_distinct_peer_initial_sequence = true,
-            .flow_window_packets = 256,
-            .options = options,
-            .origin = ConnectionRuntime::Clock::now(),
-        });
+    ConnectionRuntime::Configuration configuration {
+        .channel = channel,
+        .peer = peer,
+        .peer_socket_id = 200,
+        .initial_sequence = SequenceNumber {700},
+        .peer_initial_sequence = SequenceNumber {500},
+        .has_distinct_peer_initial_sequence = true,
+        .flow_window_packets = 256,
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now(),
+    };
 
+    bool factory_called = false;
+    const auto empty_factory =
+        [](void* context) -> std::shared_ptr<ConnectionRuntime> {
+        *static_cast<bool*>(context) = true;
+        return {};
+    };
     REQUIRE(channel->promote_setup_connection(
-        local_socket_id, inbox, runtime));
+                local_socket_id + 1, inbox, empty_factory, &factory_called)
+        == nullptr);
+    REQUIRE(
+        channel->promote_setup_connection(local_socket_id,
+            std::make_shared<DatagramInbox>(1), empty_factory, &factory_called)
+        == nullptr);
+    REQUIRE(!factory_called);
+    REQUIRE(channel->promote_setup_connection(
+                local_socket_id, inbox, nullptr, nullptr)
+        == nullptr);
+    REQUIRE(channel->promote_setup_connection(
+                local_socket_id, inbox, empty_factory, &factory_called)
+        == nullptr);
+    REQUIRE(factory_called);
+
+    bool allocation_failed = false;
+    try {
+        (void)channel->promote_setup_connection(
+            local_socket_id, inbox,
+            [](void*) -> std::shared_ptr<ConnectionRuntime> {
+                throw std::bad_alloc {};
+            },
+            nullptr);
+    } catch (const std::bad_alloc&) {
+        allocation_failed = true;
+    }
+    REQUIRE(allocation_failed);
+    const auto runtime = channel->promote_setup_connection(
+        local_socket_id, inbox,
+        [](void* context) {
+            return std::make_shared<ConnectionRuntime>(std::move(
+                *static_cast<ConnectionRuntime::Configuration*>(context)));
+        },
+        &configuration);
+    REQUIRE(runtime != nullptr);
     DatagramEnvelope leftover;
     REQUIRE_EQ(inbox->pop_for(
                    leftover, std::chrono::milliseconds{0}),
