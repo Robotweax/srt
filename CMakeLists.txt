@@ -2010,6 +2010,8 @@ install(FILES examples/ios/README.md
     DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/ios)
 install(FILES examples/README.md
     DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples)
+install(FILES examples/applications/README.md
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/applications)
 install(FILES
     examples/installed-consumer/CMakeLists.txt
     examples/installed-consumer/main.cpp
