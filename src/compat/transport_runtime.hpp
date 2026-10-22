@@ -29,6 +29,10 @@
 #include <unordered_map>
 #include <vector>
 
+namespace robotweax::srt::extensions {
+class MemberFilterRuntime;
+}
+
 namespace robotweax::srt::compat {
 
 class ConnectionRuntime;
@@ -644,6 +648,7 @@ private:
         filter,
         control,
         key_request,
+        experimental_filter,
     };
 
     struct DatagramCompletion {
@@ -720,6 +725,10 @@ private:
         const PacketView& packet, std::uint64_t now_microseconds,
         ReliabilityReceiveContext context = {}, bool wire_received = true,
         std::span<const std::byte> authenticated_plaintext = {}) noexcept;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+    void process_experimental_filter_locked(
+        const PacketView& packet, std::uint64_t now) noexcept;
+#endif
     [[nodiscard]] bool report_filter_losses_locked(
         std::span<const SequenceRange> losses,
         std::uint64_t now_microseconds) noexcept;
@@ -803,6 +812,9 @@ private:
     std::optional<std::uint64_t> transient_send_failure_since_;
     int transient_send_system_error_ = 0;
     std::optional<RowFecEncoder> row_fec_encoder_;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+    std::unique_ptr<extensions::MemberFilterRuntime> experimental_filter_;
+#endif
     std::optional<RowFecDecoder> row_fec_decoder_;
     std::optional<ColumnFecEncoder> column_fec_encoder_;
     std::optional<ColumnFecDecoder> column_fec_decoder_;

@@ -530,6 +530,9 @@ private:
         std::size_t distance_packets,
         std::uint32_t remaining_ttl) noexcept;
     void note_ordered_packet() noexcept;
+    [[nodiscard]] bool add_unsettled_receive_losses(SequenceRange range,
+        std::uint32_t initial_ttl, std::size_t& added_packets,
+        std::size_t* inspected = nullptr) noexcept;
     void append_pending_loss_report(ReliabilityActions& actions,
         bool action_slot_available, std::uint64_t now_microseconds) noexcept;
     void append_pending_drop_requests(ReliabilityActions& actions) noexcept;
@@ -551,8 +554,8 @@ private:
     std::optional<PendingPeerDrop> peer_drop_remainder_;
     ReceiveLossList receive_loss_list_;
     ReceiveLossList filter_loss_list_;
-    // Scratch space for receive-window clipping and deduplication of filter
-    // reports. Both are allocated at construction, never on the packet path.
+    // Scratch space for receive-window clipping and deduplication of physical
+    // and filter loss reports. Allocated at construction, never on the packet path.
     std::vector<std::uint8_t> filter_loss_bitmap_;
     std::vector<SequenceRange> filter_loss_ranges_;
     // Bounded Full-ACK history. Sustained high ACK rates or long RTTs can

@@ -138,16 +138,19 @@ Error validate_filter_input(const FilterDescriptor& descriptor,
             && !active_receiver(input.receiver, environment))
         || (!absent(owner.receiver) && input.receiver != owner.receiver))
         return Error::invalid_state;
-    if (!absent(input.origin)
-        && !protection_matches(
-            *active_path(input.origin, environment), input.context))
-        return Error::invalid_state;
+    if (!absent(input.origin)) {
+        const auto* path = active_path(input.origin, environment);
+        if (path == nullptr || !protection_matches(*path, input.context))
+            return Error::invalid_state;
+    }
     if (!absent(input.receiver)
         && input.context.payload_domain
-            == FilterPayloadDomain::protected_symbols
-        && active_receiver(input.receiver, environment)->protection
-            != input.context.protection)
-        return Error::invalid_state;
+            == FilterPayloadDomain::protected_symbols) {
+        const auto* receiver = active_receiver(input.receiver, environment);
+        if (receiver == nullptr
+            || receiver->protection != input.context.protection)
+            return Error::invalid_state;
+    }
     return Error::none;
 }
 
@@ -179,10 +182,13 @@ Error validate_filter_outputs(const FilterDescriptor& descriptor,
             return Error::invalid_state;
         if (!absent(output.receiver)
             && output.context.payload_domain
-                == FilterPayloadDomain::protected_symbols
-            && active_receiver(output.receiver, environment)->protection
-                != output.context.protection)
-            return Error::invalid_state;
+                == FilterPayloadDomain::protected_symbols) {
+            const auto* receiver =
+                active_receiver(output.receiver, environment);
+            if (receiver == nullptr
+                || receiver->protection != output.context.protection)
+                return Error::invalid_state;
+        }
         if (!absent(output.destination)) {
             const auto* path = active_path(output.destination, environment);
             if (path == nullptr || !protection_matches(*path, output.context)

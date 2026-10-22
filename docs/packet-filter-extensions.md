@@ -4,7 +4,9 @@ The optional source-tree component in `experimental/packet_filters` defines
 private C++ contracts for future custom packet filters. Enable it with
 `ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS=ON`; the default is OFF. It is not installed
 or linked into the transport library and changes no socket or wire behavior.
-It is independent of congestion-controller selection.
+It is independent of congestion-controller selection. A separate default-off
+[individual-socket binding](experimental-filters.md) can link these contracts
+into the transport with `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS=ON`.
 
 The processing scope is a logical stream or a member transport. Receiver
 ownership is separate from processing scope: shared encoder/source state and
@@ -43,4 +45,5 @@ and receiver churn, optional/absent feedback, recovery with no live paths, stale
 contexts, protection domains, storage overlap, overflow, atomic output validation,
 terminal callback failures and concurrent decoder handoff. The prototype's
 64-path/256-receiver snapshot ceilings are storage bounds, not wire limits or
-stable ABI commitments. No public provider API or new runtime filter is enabled.
+stable ABI commitments. No public provider API is added, and default builds do
+not enable a runtime filter.

@@ -7,6 +7,9 @@ developers and transport integrators using the installed public API.
 
 ## Start here
 
+- [Experimental compiled packet filters](experimental-filters.md) — default-off
+  bilateral member binding, provider lifecycle, wire format and resource limits.
+
 - [Packet-filter extension contracts](packet-filter-extensions.md) — private,
   group-independent ownership, lifecycle and resource boundaries.
 

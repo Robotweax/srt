@@ -6220,12 +6220,216 @@ TEST(session_deferred_drop_expiry_yields_after_64_ranges_and_keeps_due_wakeup)
 
 namespace robotweax::srt::detail {
 struct SessionTestAccess {
+    static std::size_t classify_window(ReliabilitySession& session) noexcept
+    {
+        const auto first = session.receive_buffer_.first_stored_sequence();
+        std::size_t added = 0, inspected = 0;
+        const auto last = first.advanced(
+            static_cast<std::uint32_t>(session.receive_buffer_.capacity() - 1));
+        if (!session.add_unsettled_receive_losses(
+                {first, last}, 0, added, &inspected))
+            return std::numeric_limits<std::size_t>::max();
+        return inspected;
+    }
+
     static ReliabilityProcessResult expire(ReliabilitySession& session,
         std::uint64_t now, std::size_t& ranges, std::size_t& slots) noexcept
     {
         return session.drop_too_late_receiver_impl(now, &ranges, &slots);
     }
 };
+}
+
+TEST(session_filter_repairs_are_excluded_from_later_physical_loss_reports)
+{
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 1U}}) {
+        for (const bool consume : {false, true}) {
+            for (const bool late_original : {false, true}) {
+                ReliabilitySession receiver {{.peer_initial_sequence = initial,
+                    .send_capacity_packets = 8,
+                    .receive_capacity_packets = 8}};
+                receiver.configure_live(
+                    {.periodic_nak = true}, 0, PacketTimestamp {0});
+                const std::array payload {std::byte {'r'}};
+                PacketView packet {.kind = PacketKind::data,
+                    .data = {.sequence = initial,
+                        .message_number = 1,
+                        .boundary = MessageBoundary::solo},
+                    .payload = payload};
+                const auto repair =
+                    receiver.receive(packet, 100, {.filter_supplied = true});
+                REQUIRE(repair);
+                REQUIRE(repair.receiver_packet_accepted_unique);
+                if (consume) {
+                    std::array<std::byte, 1> out {};
+                    REQUIRE(receiver.pop_message_at(out, 101));
+                    REQUIRE_EQ(out, payload);
+                }
+                if (late_original) {
+                    const auto original = receiver.receive(packet, 102);
+                    REQUIRE(original);
+                    REQUIRE(!original.receiver_packet_accepted_unique);
+                }
+                packet.data.sequence = initial.next();
+                packet.data.message_number = 2;
+                const auto next = receiver.receive(packet, 103);
+                REQUIRE(next);
+                REQUIRE(next.receiver_packet_accepted_unique);
+                REQUIRE_EQ(next.receiver_loss_packets, 0U);
+                const auto no_losses = [](const ReliabilityActions& actions) {
+                    for (std::size_t i = 0; i < actions.size; ++i)
+                        REQUIRE(actions.values[i].kind
+                            != ReliabilityActionKind::loss_report);
+                };
+                no_losses(next.actions);
+                no_losses(receiver.poll_timers(100'000));
+            }
+        }
+    }
+}
+
+TEST(session_physical_gaps_request_only_unsettled_receive_window_sequences)
+{
+    for (const auto initial :
+        {SequenceNumber {100}, SequenceNumber {SequenceNumber::mask - 2U}}) {
+        for (const bool beyond_window : {false, true}) {
+            ReliabilitySession receiver {{.peer_initial_sequence = initial,
+                .send_capacity_packets = 8,
+                .receive_capacity_packets = 8}};
+            receiver.configure_live(
+                {.periodic_nak = true}, 0, PacketTimestamp {0});
+            const std::array payload {std::byte {'r'}};
+            PacketView packet {.kind = PacketKind::data,
+                .data = {.sequence = initial.next(),
+                    .message_number = 2,
+                    .boundary = MessageBoundary::solo},
+                .payload = payload};
+            REQUIRE(receiver.receive(packet, 100, {.filter_supplied = true}));
+            packet.data.sequence = initial.advanced(beyond_window ? 8 : 3);
+            packet.data.message_number = 4;
+            const auto next = receiver.receive(packet, 101);
+            REQUIRE(next);
+            const auto check = [&](const ReliabilityActions& actions) {
+                std::array<bool, 8> missing {};
+                for (std::size_t i = 0; i < actions.size; ++i) {
+                    if (actions.values[i].kind
+                        != ReliabilityActionKind::loss_report)
+                        continue;
+                    for (const auto range :
+                        actions.loss_ranges(actions.values[i])) {
+                        const auto first = range.first.distance_from(initial);
+                        const auto last = range.last.distance_from(initial);
+                        REQUIRE(first >= 0 && last < 8);
+                        for (auto offset = first; offset <= last; ++offset)
+                            missing[static_cast<std::size_t>(offset)] = true;
+                    }
+                }
+                for (std::size_t i = 0; i < missing.size(); ++i)
+                    REQUIRE_EQ(missing[i], i != 1 && (beyond_window || i < 3));
+            };
+            check(next.actions);
+            // Repeated far-ahead probes must preserve existing loss TTL/retry
+            // state rather than fail when the same gap is already tracked.
+            REQUIRE(receiver.receive(packet, 102));
+            check(receiver.poll_timers(1'000'000));
+            for (std::uint32_t offset = 0; offset < 8; ++offset) {
+                if (offset == 1 || (!beyond_window && offset == 3))
+                    continue;
+                packet.data.sequence = initial.advanced(offset);
+                packet.data.message_number = offset + 1;
+                const auto filled =
+                    receiver.receive(packet, 1'000'001 + offset);
+                REQUIRE(filled);
+                REQUIRE(filled.receiver_packet_accepted_unique);
+                REQUIRE_EQ(filled.receiver_loss_packets, 0U);
+            }
+            const auto settled = receiver.poll_timers(2'000'000);
+            for (std::size_t i = 0; i < settled.size; ++i)
+                REQUIRE(settled.values[i].kind
+                    != ReliabilityActionKind::loss_report);
+        }
+    }
+}
+
+TEST(session_loss_classification_does_not_rescan_unchanged_sparse_windows)
+{
+    for (const std::size_t capacity : {8192U, 65536U}) {
+        ReliabilitySession receiver {
+            {.peer_initial_sequence = SequenceNumber {SequenceNumber::mask - 2},
+                .send_capacity_packets = 8,
+                .receive_capacity_packets = capacity}};
+        receiver.configure_live({.periodic_nak = true}, 0, PacketTimestamp {});
+        const std::array payload {std::byte {1}};
+        PacketView packet {.kind = PacketKind::data,
+            .data = {.sequence = SequenceNumber {SequenceNumber::mask - 1},
+                .message_number = 1,
+                .boundary = MessageBoundary::solo},
+            .payload = payload};
+        // Every other source is already reconstructed before physical DATA
+        // proves the window. Keep the leading gap so application reads stall.
+        for (std::size_t i = 1; i < capacity; i += 2) {
+            packet.data.sequence =
+                receiver.receive_buffer().first_stored_sequence().advanced(
+                    static_cast<std::uint32_t>(i));
+            REQUIRE(receiver.receive(packet, 100, {.filter_supplied = true}));
+        }
+        REQUIRE_EQ(
+            detail::SessionTestAccess::classify_window(receiver), capacity);
+        for (unsigned repeat = 0; repeat < 100; ++repeat) {
+            // Duplicate repairs do not create new unresolved slots.
+            REQUIRE(receiver.receive(packet, 101, {.filter_supplied = true}));
+            REQUIRE_EQ(
+                detail::SessionTestAccess::classify_window(receiver), 0U);
+        }
+    }
+}
+
+TEST(session_loss_classification_tracks_frontier_release_and_rollover)
+{
+    for (const bool stream : {false, true}) {
+        const SequenceNumber initial {SequenceNumber::mask - 2};
+        ReliabilitySession receiver {{.peer_initial_sequence = initial,
+            .send_capacity_packets = 8,
+            .receive_capacity_packets = 8}};
+        receiver.configure_live({.periodic_nak = true}, 0, PacketTimestamp {});
+        receiver.set_message_api(!stream);
+        REQUIRE_EQ(detail::SessionTestAccess::classify_window(receiver), 8U);
+        const std::array payload {std::byte {1}, std::byte {2}};
+        PacketView packet {.kind = PacketKind::data,
+            .data = {.sequence = initial,
+                .message_number = 1,
+                .boundary = MessageBoundary::solo},
+            .payload = payload};
+        std::array<std::byte, 2> output {};
+        for (unsigned i = 0; i < 12; ++i) {
+            packet.data.sequence = initial.advanced(i);
+            REQUIRE(receiver.receive(packet, 100 + i));
+            if (stream) {
+                REQUIRE(receiver.pop_stream(std::span {output}.first(1)));
+                REQUIRE_EQ(
+                    detail::SessionTestAccess::classify_window(receiver), 0U);
+                REQUIRE(receiver.pop_stream(std::span {output}.last(1)));
+            } else {
+                REQUIRE(receiver.pop_message(output));
+            }
+            REQUIRE_EQ(
+                detail::SessionTestAccess::classify_window(receiver), 1U);
+            REQUIRE_EQ(
+                detail::SessionTestAccess::classify_window(receiver), 0U);
+        }
+        // Large explicit discards may cross an entire sequence epoch over
+        // several calls; physical slot advancement must retire cached coverage.
+        for (unsigned i = 0; i < 5; ++i) {
+            const auto next =
+                receiver.receive_buffer().first_stored_sequence().advanced(
+                    SequenceNumber::half_range - 1);
+            REQUIRE_EQ(
+                receiver.discard_received_before(next, 1000 + i), Error::none);
+            REQUIRE_EQ(
+                detail::SessionTestAccess::classify_window(receiver), 8U);
+        }
+    }
 }
 
 TEST(session_deferred_drop_refreshes_timestamp_bounds_once_per_bounded_group)
