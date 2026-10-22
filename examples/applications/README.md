@@ -70,7 +70,10 @@ Choose Backup or Broadcast, duration, latency, and loss parameters before Start.
 Pause/Resume relay controls drop all packets on a logical path, including control
 traffic. They simulate outages; they do not disable a network interface. A broken
 SRT member may need a new run after a long outage; resuming a relay is not an
-automatic SRT reconnect. Recovery offers ARQ, Row, Column, and Matrix FEC. Device
+automatic SRT reconnect. Path labels use complete `path_snapshot` membership
+reports and distinguish broken sockets from idle members. Rebuild the contribution
+binary with the console; older binaries without snapshots show an awaiting-status
+label rather than a cached connection claim. Recovery offers ARQ, Row, Column, and Matrix FEC. Device
 shows synthetic Live/Sensor traffic and command execution acknowledgements.
 
 Stop terminates the run's child processes. Completed runs retain `received.ts`,

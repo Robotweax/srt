@@ -78,6 +78,12 @@ def run(binary_dir: Path, scenario: str, crypto="ctr"):
             # Replacement must actually reach CONNECTED, not merely be requested.
             paths = [e for e in sent if e.get("event") == "path" and e["socket_state"] == 5]
             assert len({e["member"] for e in paths}) >= 3, paths
+            snapshots = [e for e in sent if e.get("event") == "path_snapshot"]
+            assert any(len(e["members"]) == 1 for e in snapshots), snapshots
+            rejoin = next(i for i, e in enumerate(sent) if e.get("event") == "path_rejoining")
+            restored = next(e for e in sent[rejoin + 1:] if e.get("event") == "path_snapshot")
+            assert len(restored["members"]) == 2, restored
+            assert {m["token"] for m in restored["members"]} == {1, 2}, restored
         if scenario == "recovery-fec":
             assert max(e.get("fec_supplied", 0) for e in received) > 0
         if scenario == "recovery-arq":
