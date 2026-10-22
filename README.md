@@ -14,7 +14,9 @@ depending on implementation-specific C++ internals.
 
 Version **0.3.0** was published on **2026-10-14** as a pre-1.0 crypto-provider and admission-control release. The [latest release](https://github.com/Robotweax/srt/releases/tag/v0.3.0) includes signed OpenSSL/BCrypt Windows SDK installers, post-signing checksums and tag provenance. See the [release notes](docs/release-notes-0.3.0.md) and [publication record](docs/release-process-0.3.0.md#publication-record) for changes, migration and retained qualification limits.
 
-The separate Homebrew ARM64 bottle is qualified in [Tap #8](https://github.com/Robotweax/homebrew-tap/pull/8); its maintainer review and publication remain pending.
+The separate Homebrew 0.3.0 ARM64 bottle for macOS 15 (`arm64_sequoia`)
+was published on 22 October 2026; see the [tap publication record](https://github.com/Robotweax/homebrew-tap/blob/8490b0b7d6eda295207b180fb2704de1878d8908/README.md).
+Other bottle platforms require their own qualification.
 
 | Axis | Robotweax SRT 0.3.0 |
 | --- | --- |

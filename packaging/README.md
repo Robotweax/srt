@@ -12,7 +12,8 @@ The [0.3.0 qualification record](qualification-0.3.0.md) and
 the October 14 release and final tag checks. Signed OpenSSL/BCrypt Windows SDK
 installers, checksums and tag provenance are available from
 [v0.3.0](https://github.com/Robotweax/srt/releases/tag/v0.3.0).
-A separate 0.3.0 Homebrew bottle is not established by these checks. The [published 0.2.9 record](qualification-0.2.9.md) and
+The separate [0.3.0 Homebrew bottle publication](https://github.com/Robotweax/homebrew-tap/blob/8490b0b7d6eda295207b180fb2704de1878d8908/README.md)
+was completed on 22 October 2026 for `arm64_sequoia`. The [published 0.2.9 record](qualification-0.2.9.md) and
 older release records remain unchanged. No vcpkg registry, PPA or COPR is published.
 
 ## Package contract
@@ -50,7 +51,7 @@ OpenSSL. Install the reviewed copy from the public tap:
 brew install robotweax/tap/robotweax-srt
 ```
 
-Homebrew may ask you to trust this external formula. The published 0.2.8 bottle is
+Homebrew may ask you to trust this external formula. The published 0.3.0 bottle is
 qualified for Apple Silicon macOS 15 (`arm64_sequoia`). Its downloaded bytes
 match the native CI artifact and the published formula's SHA-256.
 To evaluate a proposed recipe change in
@@ -65,9 +66,9 @@ brew audit --strict YOUR_USER/YOUR_TAP/robotweax-srt
 
 The formula includes a C consumer using Robotweax-specific symbols and checks
 that generic Haivision paths were not installed. Native Homebrew test-bot
-qualified the 0.2.8 bottle, including installation from the created bottle.
+qualified the 0.3.0 bottle, including installation from the created bottle.
 Other bottle platforms require their own native checks. Historical source
-installation on macOS 26 does not qualify a new 0.2.8 bottle for that platform.
+installation on macOS 26 does not qualify a new bottle for that platform.
 
 ## vcpkg overlay
 

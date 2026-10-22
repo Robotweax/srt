@@ -270,6 +270,11 @@ Cancellation does not retract DATA already queued on the candidate. This rule
 adds no post-outage hold-down or continuous-health guarantee; responsiveness is
 the existing recent-response test, which also accepts keepalives.
 
+**Release boundary:** The per-endpoint `SRTO_GROUPMINSTABLETIMEO` override
+described below is unreleased (`main` only). Published v0.3.0 supports the
+group-wide minimum and rejects this endpoint override with `SRT_EINVPARAM`.
+See [Unreleased changes](../CHANGELOG.md#unreleased).
+
 `SRTO_GROUPMINSTABLETIMEO` is group-only. Its compatible default and minimum
 are 60 ms, and its fixed accepted range is 60–5000 ms; the effective interval also respects RTT and peer-idle constraints.
 Set it on the Backup group before its first connection. Ordinary socket
