@@ -10,6 +10,12 @@ developers and transport integrators using the installed public API.
 - [Experimental compiled controllers](experimental-controllers.md) — default-off
   controller providers, strict selection and runtime qualification boundary.
 
+- [Experimental compiled packet filters](experimental-filters.md) — default-off
+  bilateral member binding, provider lifecycle, wire format and resource limits.
+
+- [Packet-filter extension contracts](packet-filter-extensions.md) — private,
+  group-independent ownership, lifecycle and resource boundaries.
+
 - [Experimental ACP1](experimental-acp1.md) — unreviewed runtime-control
   authentication, strict bilateral opt-in and provisional wire/API contract.
 

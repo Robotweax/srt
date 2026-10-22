@@ -1,4 +1,7 @@
 #include "robotweax/srt/packet_filter.hpp"
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+#include "compiled_filter.hpp"
+#endif
 
 #include <charconv>
 #include <limits>
@@ -154,6 +157,12 @@ resolve_effective_configuration(
     if (!local.enabled && !peer.enabled) {
         return {};
     }
+    if (local.experimental() || peer.experimental()) {
+        if (!local.experimental() || !peer.experimental()
+            || local.view() != peer.view())
+            return {.error = Error::invalid_state};
+        return {.configuration = local};
+    }
     // The sensor profile changes delivery and retransmission semantics, so it
     // may only be selected when both endpoints explicitly name it.
     const bool sensor_profile = local.sensor_profile();
@@ -229,6 +238,8 @@ bool fec_geometry_fits_receive_capacity(
     if (!configuration.enabled) {
         return true;
     }
+    if (configuration.experimental())
+        return receive_capacity_packets != 0;
     if (receive_capacity_packets == 0U || configuration.columns < 2U
         || configuration.rows == 0 || configuration.rows == -1) {
         return false;
@@ -310,6 +321,15 @@ parse_packet_filter_configuration(
     if (!store_text(configuration, text)) {
         return {.error = Error::invalid_state};
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+    if (text.starts_with("rwx-")) {
+        if (extensions::compiled_filter(text) == nullptr)
+            return {.error = Error::unsupported};
+        configuration.enabled = true;
+        configuration.arq = PacketFilterArqLevel::always;
+        return {.configuration = configuration};
+    }
+#endif
 
     const std::size_t first_comma = text.find(',');
     const std::string_view type = text.substr(
@@ -436,6 +456,8 @@ negotiate_packet_filter_configuration(
         && local.view() != peer.view()) {
         return {.error = Error::invalid_state};
     }
+    if (rendezvous && (local.experimental() || peer.experimental()))
+        return {.error = Error::unsupported};
 
     auto resolved = resolve_effective_configuration(
         local, peer, false);

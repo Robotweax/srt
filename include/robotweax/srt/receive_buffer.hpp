@@ -173,6 +173,7 @@ private:
     query_first_buffered_packet(std::size_t* inspected) const noexcept;
 
     void index_occupied(std::size_t position, bool occupied) noexcept;
+    void advance_frontier(std::size_t packets) noexcept;
     [[nodiscard]] std::optional<std::size_t> next_occupied_bit(
         std::size_t level, std::size_t begin, std::size_t end,
         std::size_t* word_reads) const noexcept;
@@ -236,6 +237,10 @@ private:
     SequenceNumber first_stored_sequence_;
     SequenceNumber next_ack_sequence_;
     std::size_t head_ = 0;
+    // ReliabilitySession has classified every slot below this offset as
+    // settled or tracked loss. Settling a slot cannot invalidate classification;
+    // moving the frontier retires the corresponding prefix without rescanning.
+    std::size_t classified_loss_prefix_ = 0;
     std::size_t occupied_ = 0;
     std::size_t buffered_payload_bytes_ = 0;
     SequenceNumber first_buffered_sequence_ {};

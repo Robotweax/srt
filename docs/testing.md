@@ -460,6 +460,19 @@ network performance. Run providers with ASan/UBSan and exercise concurrent
 instances under ThreadSanitizer. See the
 [provider contract](experimental-controllers.md) for lifecycle and trust rules.
 
+Build the private packet-filter contract tests separately with
+`ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS=ON`, then run
+`ctest --test-dir build -R filter_contract --output-on-failure`.
+These deterministic tests exercise scope, generations, protection, bounded
+storage and lifecycle without transport I/O. Repeat them under ASan/UBSan and
+ThreadSanitizer. See [the contract boundary](packet-filter-extensions.md).
+They do not establish runtime, wire interoperability or network performance.
+
+Both runtime build flags may be enabled together to test their separate socket
+profiles in one build. A socket cannot combine a compiled controller and a
+compiled filter in the initial bindings; regressions check rejection in both
+option orders and preserve the previously accepted configuration.
+
 ## Interoperability qualification
 
 Robotweax-to-Robotweax loopback proves self-consistency, not compatibility

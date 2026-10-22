@@ -618,6 +618,56 @@ void ReliabilitySession::rearm_loss_report(
     }
 }
 
+bool ReliabilitySession::add_unsettled_receive_losses(SequenceRange range,
+    std::uint32_t initial_ttl, std::size_t& added_packets,
+    std::size_t* inspected) noexcept
+{
+    // A physical gap can contain sources already reconstructed by a filter,
+    // delivered to the application, or deliberately dropped. Only unresolved
+    // slots inside the current receive window may become retransmission work.
+    const auto floor = receive_buffer_.first_stored_sequence();
+    const auto capacity = static_cast<std::int32_t>(receive_buffer_.capacity());
+    // Classification is monotonic within a receive window: receiving, repairing
+    // or dropping a source only settles it. A repeated physical horizon cannot
+    // reveal new holes in that prefix. Frontier movement retires the prefix in
+    // ReceiveBuffer itself, including pops, partial streams and large discards.
+    const auto begin = std::max(range.first.distance_from(floor),
+        static_cast<std::int32_t>(receive_buffer_.classified_loss_prefix_));
+    const auto end = std::min(range.last.distance_from(floor), capacity - 1);
+    receive_loss_list_.remove_through(floor.advanced(SequenceNumber::mask));
+    filter_loss_ranges_.clear();
+    bool in_range = false;
+    std::size_t count = 0;
+    for (auto offset = begin; offset <= end; ++offset) {
+        if (inspected != nullptr)
+            ++*inspected;
+        const auto sequence =
+            floor.advanced(static_cast<std::uint32_t>(offset));
+        const bool missing = !receive_buffer_.is_settled(sequence)
+            && !receive_loss_list_.contains(sequence);
+        if (missing && !in_range)
+            filter_loss_ranges_.push_back({sequence, sequence});
+        else if (missing)
+            filter_loss_ranges_.back().last = sequence;
+        in_range = missing;
+        count += missing ? 1U : 0U;
+    }
+    // Forward gaps normally append. A beyond-window observation can have
+    // recorded later losses already; insert into that list without resetting
+    // the TTL or retry cadence of any existing loss.
+    if (!receive_loss_list_.add_all(filter_loss_ranges_, initial_ttl)) {
+        if (!receive_loss_list_.can_insert_all_sorted(filter_loss_ranges_))
+            return false;
+        for (const auto& loss : filter_loss_ranges_)
+            (void)receive_loss_list_.insert_sorted(loss, initial_ttl);
+    }
+    added_packets += count;
+    if (end >= begin)
+        receive_buffer_.classified_loss_prefix_ =
+            static_cast<std::size_t>(end) + 1;
+    return true;
+}
+
 void ReliabilitySession::append_pending_loss_report(ReliabilityActions& actions,
     bool action_slot_available, std::uint64_t now_microseconds) noexcept
 {
@@ -927,8 +977,10 @@ ReliabilityProcessResult ReliabilitySession::receive(
                 : receive_buffer_.first_stored_sequence();
             const auto last = receive_buffer_.first_stored_sequence().advanced(
                 static_cast<std::uint32_t>(receive_buffer_.capacity() - 1U));
+            std::size_t added_packets = 0;
             if (last.distance_from(first) >= 0
-                && !receive_loss_list_.add({first, last}, 0U))
+                && !add_unsettled_receive_losses(
+                    {first, last}, 0U, added_packets))
                 return {.error = Error::buffer_too_small};
         }
         if (packet_filter_policy_.sensor_profile() && inserted.has_gap) {
@@ -1000,35 +1052,24 @@ ReliabilityProcessResult ReliabilitySession::receive(
             if (removed_filter.capacity_exhausted) {
                 return {.error = Error::buffer_too_small};
             }
-        }
-        if (result.receiver_packet_accepted_unique) {
-            if (context.filter_supplied) {
-                recovered_loss = receive_loss_list_.remove(
-                    packet.data.sequence);
-            } else if (physical_distance > 0) {
-                if (physical_distance > 1) {
-                    result.receiver_loss_packets =
-                        static_cast<std::size_t>(
-                            physical_distance - 1);
-                    const SequenceRange gap{
-                        .first =
-                            highest_received_sequence_.next(),
-                        .last = packet.data.sequence.advanced(
-                            SequenceNumber::mask),
-                    };
-                    if (!receive_loss_list_.add(gap, initial_loss_ttl)) {
-                        return {.error = Error::buffer_too_small};
-                    }
-                }
-                highest_received_sequence_ =
-                    packet.data.sequence;
-            } else {
-                recovered_loss = receive_loss_list_.remove(
-                    packet.data.sequence);
-            }
-            if (recovered_loss.capacity_exhausted) {
+            recovered_loss = receive_loss_list_.remove(packet.data.sequence);
+            if (recovered_loss.capacity_exhausted)
                 return {.error = Error::buffer_too_small};
+        }
+        if (!context.filter_supplied && physical_distance > 0
+            && (result.receiver_packet_accepted_unique
+                || inserted.status == ReceiveStatus::duplicate
+                || inserted.status == ReceiveStatus::older_than_window)) {
+            if (physical_distance > 1) {
+                const SequenceRange gap {highest_received_sequence_.next(),
+                    packet.data.sequence.advanced(SequenceNumber::mask)};
+                if (!add_unsettled_receive_losses(
+                        gap, initial_loss_ttl, result.receiver_loss_packets))
+                    return {.error = Error::buffer_too_small};
             }
+            // A late original of a reconstructed source is still a physical
+            // observation, even when its payload is now a duplicate/retired.
+            highest_received_sequence_ = packet.data.sequence;
         }
         const bool reordered =
             !context.filter_supplied

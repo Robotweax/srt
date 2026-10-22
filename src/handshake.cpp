@@ -508,6 +508,11 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             }
             const bool negotiate_filter =
                 message.has_packet_filter_extension;
+            if (negotiate_filter
+                && (configuration_.packet_filter_configuration.experimental()
+                    || message.packet_filter_configuration.experimental())
+                && !message.has_handshake_extension)
+                return reject(packet_filter_rejection_reason);
             if ((configuration_.congestion_controller
                         == CongestionController::control
                     || is_experimental_congestion_controller(
@@ -533,10 +538,10 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 negotiated_packet_filter_ =
                     filter.configuration;
             } else if (configuration_.packet_filter_configuration
-                           .sensor_profile()) {
-                // The experimental sensor contract changes delivery and ACK
-                // semantics, so a configured listener cannot silently accept
-                // a caller that did not offer the exact profile.
+                           .sensor_profile()
+                || configuration_.packet_filter_configuration.experimental()) {
+                // Sensor delivery and compiled filter framing are bilateral
+                // contracts; the listener requires an explicit exact offer.
                 return reject(packet_filter_rejection_reason);
             }
             if (message.has_stream_id_extension
@@ -850,6 +855,9 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 && message.has_packet_filter_extension) {
                 return reject_locally(packet_filter_rejection_reason);
             }
+            if (configuration_.packet_filter_configuration.experimental()
+                && !message.has_handshake_extension)
+                return reject_locally(packet_filter_rejection_reason);
             if (message.has_packet_filter_extension) {
                 const auto filter =
                     apply_packet_filter_response(

@@ -759,8 +759,8 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
         configured.public_options = record->member_public_options;
         configured.native_options = record->member_native_options;
         configured.state = record->opened ? SRTS_CONNECTED : SRTS_INIT;
-        // Group-only RDV/path combinations need the owning group identity.
-        if (option == SRTO_RENDEZVOUS
+        // Group-only combinations and member-filter rejection need the owner.
+        if (option == SRTO_PACKETFILTER || option == SRTO_RENDEZVOUS
             || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
             || option == SRTO_ROBOTWEAX_PATHID_POLICY
             || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED

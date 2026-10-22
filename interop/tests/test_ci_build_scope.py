@@ -64,6 +64,33 @@ class CiBuildScopeTests(unittest.TestCase):
                 self.assertIn("ctest --test-dir build", body)
                 self.assertIn("cmake --build build", body)
 
+    def test_filter_contracts_run_in_required_platform_and_sanitizer_jobs(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for job in ("linux_release", "portable_release", "sanitizers", "thread_sanitizer"):
+            with self.subTest(job=job):
+                body = workflow.split(f"  {job}:\n", 1)[1]
+                body = re.split(r"\n  [a-z_]+:\n", body, maxsplit=1)[0]
+                self.assertIn("-DROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS=ON", body)
+                if job == "thread_sanitizer":
+                    self.assertIn("          robotweax_srt_filter_contract_tests\n", body)
+                    self.assertIn("&& ./build/experimental/packet_filters/robotweax_srt_filter_contract_tests", body)
+                    self.assertIn("TSAN_OPTIONS: halt_on_error=1", body)
+                else:
+                    self.assertIn("ctest --test-dir build", body)
+
+    def test_filter_runtime_runs_in_required_release_sanitizer_and_fuzz_jobs(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for job in ("linux_release", "portable_release", "sanitizers", "fuzz_smoke"):
+            with self.subTest(job=job):
+                body = workflow.split(f"  {job}:\n", 1)[1]
+                body = re.split(r"\n  [a-z_]+:\n", body, maxsplit=1)[0]
+                self.assertIn("-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS=ON", body)
+                if job == "fuzz_smoke":
+                    self.assertIn("          fuzz_extension_filter\n", body)
+                    self.assertIn("./build/fuzz_extension_filter -runs=10000", body)
+                else:
+                    self.assertIn("ctest --test-dir build", body)
+
     def test_group_receive_workaround_is_reference_only(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         macro = "-DROBOTWEAX_SRT_REFERENCE_GROUP_RECEIVE=1"

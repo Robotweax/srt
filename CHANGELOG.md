@@ -14,6 +14,24 @@ version returned by `srt_getversion()`.
   independent of rate-calculator lifetime. The provider interface is private
   and is not an installed plugin ABI.
 
+- Add a separate default-off compiled packet-filter socket binding with strict
+  bilateral selection, bounded repair credit/queues, shared pacing and core
+  recovery validation. The initial profile supports individual cleartext Live
+  Message Caller/Listener sockets. Keep logical/group/receiver contracts separate
+  for future aggregation and multicast coordinators.
+- Exclude recovered and retired sources from later physical loss reports while
+  retaining genuinely unresolved holes, including sequence rollover and late
+  original packets. Cache bounded receive-window classification so repeated
+  horizons do not rescan settled slots.
+
+- Add default-off, source-tree-only packet-filter contracts with independent
+  logical/member sequence domains, path and receiver generations, optional
+  feedback, protection contexts and bounded owner-provided storage. Validate
+  whole callback batches and contain terminal provider failures without binding
+  the interface to a group mode or changing transport behavior. These private
+  contracts are not a public plugin ABI or an implemented aggregation/multicast
+  runtime.
+
 - Support per-member `SRTO_GROUPMINSTABLETIMEO` overrides through
   `srt_config_add` for caller Backup groups. Each path uses its own minimum
   for response expiry and candidate qualification; endpoints without an

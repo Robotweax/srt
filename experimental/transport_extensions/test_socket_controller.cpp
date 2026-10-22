@@ -231,3 +231,89 @@ TEST(
         SRT_ERROR);
 #endif
 }
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+TEST(
+    srt_compat_experimental_controller_and_filter_remain_exclusive_in_both_orders)
+{
+    require_bundled_provider();
+    SocketOptions probe;
+    SKIP_UNLESS(probe.set_packet_filter("rwx-repeat-v1") == Error::none,
+        "test uses the bundled filter");
+    constexpr char filter[] = "rwx-repeat-v1";
+    constexpr char controller[] = "rwx-fixed-v1";
+    for (const bool controller_first : {false, true}) {
+        SocketOptions options;
+        if (controller_first) {
+            REQUIRE_EQ(
+                options.set_congestion_controller(controller), Error::none);
+            REQUIRE_EQ(options.set_packet_filter(filter), Error::invalid_state);
+            REQUIRE_EQ(
+                congestion_controller_name(options.congestion_controller()),
+                controller);
+            REQUIRE(!options.packet_filter_configuration().enabled);
+            REQUIRE_EQ(options.set_congestion_controller("live"), Error::none);
+            REQUIRE_EQ(options.set_packet_filter(filter), Error::none);
+        } else {
+            REQUIRE_EQ(options.set_packet_filter(filter), Error::none);
+            REQUIRE_EQ(options.set_congestion_controller(controller),
+                Error::invalid_state);
+            REQUIRE_EQ(
+                options.congestion_controller(), CongestionController::live);
+            REQUIRE_EQ(options.packet_filter_configuration().view(), filter);
+            REQUIRE_EQ(options.set_packet_filter(""), Error::none);
+            REQUIRE_EQ(
+                options.set_congestion_controller(controller), Error::none);
+        }
+        Sockets sockets;
+        const auto first =
+            controller_first ? SRTO_CONGESTION : SRTO_PACKETFILTER;
+        const auto second =
+            controller_first ? SRTO_PACKETFILTER : SRTO_CONGESTION;
+        const auto selected = controller_first ? std::string_view {controller}
+                                               : std::string_view {filter};
+        const auto rejected = controller_first ? std::string_view {filter}
+                                               : std::string_view {controller};
+        REQUIRE_EQ(srt_setsockflag(sockets.caller, first, selected.data(),
+                       static_cast<int>(selected.size())),
+            0);
+        REQUIRE_EQ(srt_setsockflag(sockets.caller, second, rejected.data(),
+                       static_cast<int>(rejected.size())),
+            SRT_ERROR);
+        const auto retained =
+            compat::SocketRegistry::instance().find(sockets.caller);
+        REQUIRE(retained != nullptr);
+        {
+            std::lock_guard lock(retained->mutex);
+            if (controller_first) {
+                REQUIRE_EQ(
+                    congestion_controller_name(
+                        retained->native_options.congestion_controller()),
+                    selected);
+                REQUIRE(!retained->native_options.packet_filter_configuration()
+                        .enabled);
+            } else {
+                REQUIRE_EQ(
+                    retained->native_options.packet_filter_configuration()
+                        .view(),
+                    selected);
+                REQUIRE_EQ(retained->native_options.congestion_controller(),
+                    CongestionController::live);
+            }
+        }
+        if (controller_first) {
+            constexpr char live[] = "live";
+            REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_CONGESTION, live,
+                           sizeof(live) - 1),
+                0);
+            REQUIRE_EQ(srt_setsockflag(sockets.caller, second, rejected.data(),
+                           static_cast<int>(rejected.size())),
+                0);
+        } else {
+            REQUIRE_EQ(srt_setsockflag(sockets.caller, first, selected.data(),
+                           static_cast<int>(selected.size())),
+                0);
+        }
+    }
+}
+#endif

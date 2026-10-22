@@ -8,6 +8,9 @@
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/runtime_work_executor_service.hpp"
 #include "sender_drop_trace.hpp"
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+#include "member_filter.hpp"
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -1660,6 +1663,34 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
         filter, row_fec_decoder_.has_value()
             || column_fec_decoder_.has_value()
             || matrix_fec_decoder_.has_value());
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+    if (filter.experimental()) {
+        const auto* selected = extensions::compiled_filter(filter.view());
+        if (!selected || configuration.group
+            || configuration.options.rendezvous()
+            || configuration.options.transmission_type()
+                != TransmissionType::live
+            || configuration.options.congestion_controller()
+                != CongestionController::live
+            || !configuration.options.message_api()
+            || configuration.options.get(SocketOption::tsbpd_mode).value == 0
+            || configuration.options.encryption_enabled()
+            || configuration.options.requires_authenticated_data()
+            || configuration.options.session_authentication()
+            || (crypto_ && crypto_->enabled()))
+            throw std::runtime_error("unsupported experimental filter profile");
+        experimental_filter_ =
+            std::make_unique<extensions::MemberFilterRuntime>();
+        if (experimental_filter_->start(*selected,
+                configuration.local_socket_id, configuration.peer_socket_id,
+                configuration.initial_sequence, peer_initial_sequence,
+                session_.send_buffer().capacity(), receive_capacity,
+                configuration.options.maximum_payload_size_limit(
+                    configuration.peer.wire_family()))
+            != Error::none)
+            throw std::runtime_error("experimental filter setup failed");
+    }
+#endif
     (void)session_.apply_dynamic_options(configuration.options);
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
     if (is_experimental_congestion_controller(
@@ -2580,6 +2611,18 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
                 return false;
             }
         }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+        if (experimental_filter_ && !completion.data.retransmitted
+            && experimental_filter_->source_sent(
+                   {.kind = PacketKind::data,
+                       .data = completion.data,
+                       .payload = bytes.subspan(packet_header_size)},
+                   session_.send_buffer().first_sequence(), now)
+                != Error::none) {
+            break_locked(0);
+            return false;
+        }
+#endif
         statistics_.note_data_sent(
             completion.payload_size, completion.data.retransmitted);
         diagnostics::trace_udp_submit(now, completion.data.sequence.value(),
@@ -2609,7 +2652,15 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
             statistics_.note_sender_filter_extra(completion.payload_size);
             consume_fec_control();
             pacer_.on_packet_sent(bytes.size(), now);
-        } else if (completion.kind == DatagramKind::control) {
+        }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+        else if (completion.kind == DatagramKind::experimental_filter) {
+            statistics_.note_sender_filter_extra(completion.payload_size);
+            experimental_filter_->consume();
+            pacer_.on_packet_sent(bytes.size(), now);
+        }
+#endif
+        else if (completion.kind == DatagramKind::control) {
             statistics_.note_control_sent(completion.control);
         } else if (completion.kind == DatagramKind::key_request) {
             last_key_material_send_microseconds_ = now;
@@ -3715,6 +3766,41 @@ bool ConnectionRuntime::report_filter_losses_locked(
     return true;
 }
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+void ConnectionRuntime::process_experimental_filter_locked(
+    const PacketView& packet, std::uint64_t now) noexcept
+{
+    const auto first = session_.receive_buffer().first_stored_sequence();
+    const auto result = packet.kind == PacketKind::data
+        ? experimental_filter_->receive_source(packet, first, now)
+        : experimental_filter_->receive_repair(packet, first, now);
+    if (result.error != Error::none) {
+        break_locked(0);
+        return;
+    }
+    if (packet.kind == PacketKind::data) {
+        if (packet.data.encryption_key != EncryptionKey::none)
+            return;
+        if (!process_reliability_packet_locked(packet, now))
+            return;
+        last_peer_activity_microseconds_ = now;
+    } else {
+        if (!result.admitted)
+            return;
+        statistics_.note_data_received(packet.payload.size(), false, false);
+        statistics_.note_receiver_filter_extra();
+    }
+    // All candidate headers/sizes/destinations/sequence identities were checked
+    // before the batch became visible. Core receive windows still own acceptance,
+    // duplicate suppression, message metadata, feedback and application release.
+    for (const auto& candidate : result.recovered) {
+        if (process_reliability_packet_locked(
+                candidate, now, {.filter_supplied = true}, false))
+            last_peer_activity_microseconds_ = now;
+    }
+}
+#endif
+
 void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
     IpEndpoint peer, std::optional<Clock::time_point> ingress) noexcept
 {
@@ -3795,6 +3881,16 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
     const std::uint64_t now = now_microseconds();
     statistics_.update_send_duration(
         now, session_.send_buffer().size() != 0U);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+    if (experimental_filter_
+        && (packet.kind == PacketKind::data
+            || (packet.control.type == ControlType::user_defined
+                && packet.control.subtype
+                    == extensions::member_filter_subtype))) {
+        process_experimental_filter_locked(packet, now);
+        return;
+    }
+#endif
     if (packet.kind == PacketKind::control
         && packet.control.type == ControlType::user_defined
         && (packet.control.subtype == key_material_request_subtype
@@ -4270,6 +4366,17 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     }
 #endif
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+    // A deferred original may earn credit when it is finally submitted. Drain
+    // that transport work before ticking a provider that can queue more repair.
+    if (experimental_filter_
+        && experimental_filter_->poll_sender(
+               session_.send_buffer().first_sequence(), now)
+            != Error::none) {
+        break_locked(0);
+        return {};
+    }
+#endif
     for (std::size_t index = 0;
         index < maximum_send_batch && *poll_send_budget_ != 0U; ++index) {
         const std::uint64_t packet_time = now_microseconds();
@@ -4313,6 +4420,24 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             }
             continue;
         }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+        if (experimental_filter_ && !retransmission_ready(now_microseconds())) {
+            if (const auto repair = experimental_filter_->pending()) {
+                pacer_.set_rate(session_.live_pacing_rate_bytes_per_second());
+                if (!pacer_.query(packet_time, 0).ready)
+                    break;
+                if (!submit_datagram(*repair,
+                        {.kind = DatagramKind::experimental_filter,
+                            .payload_size =
+                                repair->size() - packet_header_size},
+                        packet_time))
+                    return {};
+                if (pending_datagram_size_ != 0)
+                    break;
+                continue;
+            }
+        }
+#endif
         if (crypto_ != nullptr && crypto_->enabled()
             && !retransmission_ready(now_microseconds())) {
             const auto candidate = session_.send_buffer().peek_new_packet();
@@ -4380,7 +4505,12 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
 #endif
     const bool flow_blocked = !retransmission
         && session_.send_buffer().packets_in_flight() >= effective_window;
-    const bool filter_pending = fec_control_ready();
+    bool filter_pending = fec_control_ready();
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+    filter_pending = filter_pending
+        || (experimental_filter_
+            && experimental_filter_->pending().has_value());
+#endif
     if (session_.has_pending_drop_requests()) {
         return {
             .immediate_work = true,

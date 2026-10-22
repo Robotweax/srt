@@ -1196,6 +1196,9 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         const std::string_view configuration{
             static_cast<const char*>(value),
             static_cast<std::size_t>(value_size)};
+        if (configuration.starts_with("rwx-")
+            && (options.group_connect || socket.group_id != SRT_INVALID_SOCK))
+            return invalid_parameter();
         if ((path_identifier_enabled(options)
                 && configuration == sensor_profile_filter_v1)
             || (socket.native_options.packet_filter_configuration()
@@ -1262,8 +1265,10 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         bool parsed = false;
         if (!read_boolean(value, value_size, parsed)
             || (parsed
-                && is_experimental_congestion_controller(
-                    socket.native_options.congestion_controller()))) {
+                && (is_experimental_congestion_controller(
+                        socket.native_options.congestion_controller())
+                    || socket.native_options.packet_filter_configuration()
+                        .experimental()))) {
             return invalid_parameter();
         }
         options.group_connect = parsed;
