@@ -43,6 +43,13 @@ option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
     "Install opt-in srt.pc metadata for libsrt-compatible consumers" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
     "Enable unreviewed experimental authenticated runtime controls" OFF)
+option(ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES
+    "Build private controller components and contract tests (no socket integration)" OFF)
+option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS
+    "Enable bilateral experimental Live controller selection" OFF)
+set(ROBOTWEAX_SRT_CONTROLLER_PROVIDER
+    "${CMAKE_CURRENT_SOURCE_DIR}/experimental/transport_extensions/fixed_controller.cpp"
+    CACHE FILEPATH "Compiled controller provider source (trusted local C++ code)")
 option(ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS
     "Build private packet-filter contracts and tests (no transport integration)" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS
@@ -182,6 +189,21 @@ add_library(robotweax_srt
     src/udp.cpp
     src/c_api.cpp)
 add_library(RobotweaxSRT::srt ALIAS robotweax_srt)
+
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS)
+    get_filename_component(ROBOTWEAX_SRT_CONTROLLER_PROVIDER_SOURCE
+        "${ROBOTWEAX_SRT_CONTROLLER_PROVIDER}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(NOT EXISTS "${ROBOTWEAX_SRT_CONTROLLER_PROVIDER_SOURCE}")
+        message(FATAL_ERROR "Compiled controller provider source does not exist")
+    endif()
+    target_sources(robotweax_srt PRIVATE
+        experimental/transport_extensions/congestion.cpp
+        experimental/transport_extensions/compiled_congestion.cpp
+        "${ROBOTWEAX_SRT_CONTROLLER_PROVIDER_SOURCE}")
+    target_include_directories(robotweax_srt PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/experimental/transport_extensions")
+    target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS)
+endif()
 
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
     get_filename_component(ROBOTWEAX_SRT_FILTER_PROVIDER_SOURCE
@@ -352,6 +374,9 @@ else()
 endif()
 
 include(CTest)
+if(ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES OR ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS)
+    add_subdirectory(experimental/transport_extensions)
+endif()
 if(ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS OR ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
     add_subdirectory(experimental/packet_filters)
 endif()
@@ -457,6 +482,14 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     endif()
     target_include_directories(robotweax_srt_tests
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS)
+        target_sources(robotweax_srt_tests PRIVATE
+            experimental/transport_extensions/test_session_controller.cpp
+            experimental/transport_extensions/test_socket_controller.cpp)
+        target_include_directories(robotweax_srt_tests PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+            "${CMAKE_CURRENT_SOURCE_DIR}/experimental/transport_extensions")
+    endif()
     if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
         target_sources(robotweax_srt_tests PRIVATE
             experimental/packet_filters/test_member_filter.cpp
@@ -476,6 +509,18 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             TIMEOUT 30 LABELS "experimental;extensions;mutation")
     endif()
     target_compile_features(robotweax_srt_tests PRIVATE cxx_std_20)
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS)
+        add_executable(robotweax_srt_extension_controller_mutations
+            fuzz/extension_mutation_driver.cpp fuzz/fuzz_extension_controller.cpp)
+        target_compile_features(robotweax_srt_extension_controller_mutations PRIVATE cxx_std_20)
+        target_include_directories(robotweax_srt_extension_controller_mutations PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/experimental/transport_extensions")
+        target_link_libraries(robotweax_srt_extension_controller_mutations PRIVATE RobotweaxSRT::srt)
+        add_test(NAME robotweax_srt_extension_controller_mutations
+            COMMAND robotweax_srt_extension_controller_mutations --runs 1000 --seed 1)
+        set_tests_properties(robotweax_srt_extension_controller_mutations
+            PROPERTIES TIMEOUT 30 LABELS "experimental;extensions;mutation")
+    endif()
     # Keep transport-runtime, expensive encryption and retention regressions in
     # separate bounded runs. Every native case runs in exactly one partition.
     add_test(NAME robotweax_srt_tests
@@ -1951,6 +1996,14 @@ if(ROBOTWEAX_SRT_BUILD_FUZZERS)
     target_link_options(fuzz_fec_control_decode
         PRIVATE -fsanitize=fuzzer,address,undefined)
 
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS)
+        add_executable(fuzz_extension_controller fuzz/fuzz_extension_controller.cpp)
+        target_include_directories(fuzz_extension_controller PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/experimental/transport_extensions")
+        target_link_libraries(fuzz_extension_controller PRIVATE RobotweaxSRT::srt)
+        target_compile_options(fuzz_extension_controller PRIVATE -fsanitize=fuzzer,address,undefined)
+        target_link_options(fuzz_extension_controller PRIVATE -fsanitize=fuzzer,address,undefined)
+    endif()
     if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
         add_executable(fuzz_extension_filter fuzz/fuzz_extension_filter.cpp)
         target_include_directories(fuzz_extension_filter PRIVATE

@@ -1593,7 +1593,8 @@ TEST(compat_runtime_advertises_receive_window_after_application_read)
     REQUIRE(saw_reopened_window);
 }
 
-TEST(compat_runtime_honors_peer_receive_window_from_full_ack)
+namespace {
+void exercise_full_ack_receive_window(std::string_view controller)
 {
     const auto channel = std::make_shared<DatagramChannel>();
     CapturedDatagrams output;
@@ -1603,6 +1604,7 @@ TEST(compat_runtime_honors_peer_receive_window_from_full_ack)
         .port = 12'031,
     };
     SocketOptions options;
+    REQUIRE_EQ(options.set_congestion_controller(controller), Error::none);
     REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 8), Error::none);
     std::uint64_t now = 1'000;
     ConnectionRuntime runtime {{
@@ -1716,6 +1718,23 @@ TEST(compat_runtime_honors_peer_receive_window_from_full_ack)
     REQUIRE_EQ(decoded.packet.data.sequence, SequenceNumber {701});
 }
 
+} // namespace
+
+TEST(compat_runtime_honors_peer_receive_window_from_full_ack)
+{
+    exercise_full_ack_receive_window("live");
+}
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+TEST(compat_runtime_experimental_controller_honors_full_ack_peer_window)
+{
+    CongestionController selected {};
+    SKIP_UNLESS(parse_congestion_controller("rwx-fixed-v1", selected),
+        "test uses the bundled provider");
+    exercise_full_ack_receive_window("rwx-fixed-v1");
+}
+#endif
+
 namespace {
 
 void exercise_lite_ack_receive_window(
@@ -1731,7 +1750,7 @@ void exercise_lite_ack_receive_window(
     SocketOptions options;
     REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 8), Error::none);
     REQUIRE_EQ(options.set_congestion_controller(
-                   controller == CongestionController::file ? "file" : "live"),
+                   congestion_controller_name(controller)),
         Error::none);
     std::uint64_t now = 1'000;
     ConnectionRuntime runtime {{
@@ -1868,6 +1887,18 @@ TEST(compat_runtime_lite_ack_receive_window_handles_file_sequence_rollover)
     exercise_lite_ack_receive_window(
         SequenceNumber {SequenceNumber::mask - 1}, CongestionController::file);
 }
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+TEST(compat_runtime_experimental_controller_honors_lite_ack_window_and_rollover)
+{
+    CongestionController selected {};
+    SKIP_UNLESS(parse_congestion_controller("rwx-fixed-v1", selected),
+        "test uses the bundled provider");
+    exercise_lite_ack_receive_window(SequenceNumber {700}, selected);
+    exercise_lite_ack_receive_window(
+        SequenceNumber {SequenceNumber::mask - 1}, selected);
+}
+#endif
 
 TEST(compat_runtime_initializes_sender_window_from_peer_handshake)
 {

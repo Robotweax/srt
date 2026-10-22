@@ -440,6 +440,26 @@ library inherit sanitizer runtime link flags without inheriting libFuzzer's
 `main` function. Retain and minimize any failing
 input so the failure can become a deterministic regression test.
 
+For experimental congestion-controller builds, enable
+`ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS=ON` in a fresh build directory.
+CTest adds bounded contract tests and a 1000-input deterministic mutation smoke
+test. The runtime tests cover bilateral cleartext/CTR delivery and failure
+handling alongside the ordinary transport regressions. To run a larger
+deterministic campaign:
+
+```sh
+build/robotweax_srt_extension_controller_mutations --runs 200000 --seed 21
+```
+
+Configure a separate Clang build with `ROBOTWEAX_SRT_BUILD_FUZZERS=ON` and the
+controller flag to build `fuzz_extension_controller`. Run it with `-runs=10000`;
+retain and minimize any failing input. This target mutates descriptor admission,
+configuration names and bounded event sequences. Mutation tests lack coverage
+feedback; neither approach qualifies an external native provider or establishes
+network performance. Run providers with ASan/UBSan and exercise concurrent
+instances under ThreadSanitizer. See the
+[provider contract](experimental-controllers.md) for lifecycle and trust rules.
+
 Build the private packet-filter contract tests separately with
 `ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS=ON`, then run
 `ctest --test-dir build -R filter_contract --output-on-failure`.
@@ -447,6 +467,11 @@ These deterministic tests exercise scope, generations, protection, bounded
 storage and lifecycle without transport I/O. Repeat them under ASan/UBSan and
 ThreadSanitizer. See [the contract boundary](packet-filter-extensions.md).
 They do not establish runtime, wire interoperability or network performance.
+
+Both runtime build flags may be enabled together to test their separate socket
+profiles in one build. A socket cannot combine a compiled controller and a
+compiled filter in the initial bindings; regressions check rejection in both
+option orders and preserve the previously accepted configuration.
 
 ## Interoperability qualification
 

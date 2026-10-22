@@ -7,6 +7,9 @@ developers and transport integrators using the installed public API.
 
 ## Start here
 
+- [Experimental compiled controllers](experimental-controllers.md) — default-off
+  controller providers, strict selection and runtime qualification boundary.
+
 - [Experimental compiled packet filters](experimental-filters.md) — default-off
   bilateral member binding, provider lifecycle, wire format and resource limits.
 

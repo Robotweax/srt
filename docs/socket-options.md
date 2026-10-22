@@ -525,8 +525,10 @@ documented Live/Message combinations. File/Stream plus FEC, arbitrary filter
 plugins, and unbounded geometry are not supported. See
 [Packet filters and FEC](packet-filter.md).
 
-`SRTO_CONGESTION` is a pre-connection, write-only string option. It accepts
-exactly `"live"` or `"file"` without the terminating NUL byte. Directly
+`SRTO_CONGESTION` is a pre-connection, write-only string option. The default build accepts
+exactly `"live"` or `"file"` without the terminating NUL byte. Opt-in
+[experimental controller builds](experimental-controllers.md) also accept
+locally compiled names and require explicit bilateral confirmation. Directly
 setting it changes only the congestion controller; `SRTO_TRANSTYPE` remains
 the recommended way to select the complete live/file option bundle. FileCC is
 advertised with the optional HSv5 type-6 CONFIG extension. An absent request

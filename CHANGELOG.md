@@ -6,6 +6,14 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add default-off compiled congestion-controller providers selected through
+  `SRTO_CONGESTION`, with strict bilateral confirmation, bounded private state,
+  core rate/window caps and terminal callback-failure handling. The initial
+  profile is Live Message Caller/Listener with cleartext or AES-CTR; the bundled
+  fixed-rate provider is a demonstration. Keep ACK and retransmission policy
+  independent of rate-calculator lifetime. The provider interface is private
+  and is not an installed plugin ABI.
+
 - Add a separate default-off compiled packet-filter socket binding with strict
   bilateral selection, bounded repair credit/queues, shared pacing and core
   recovery validation. The initial profile supports individual cleartext Live

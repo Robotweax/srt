@@ -6220,6 +6220,12 @@ TEST(session_deferred_drop_expiry_yields_after_64_ranges_and_keeps_due_wakeup)
 
 namespace robotweax::srt::detail {
 struct SessionTestAccess {
+    static void remove_rate_calculators(ReliabilitySession& session) noexcept
+    {
+        session.live_rate_controller_.reset();
+        session.file_rate_controller_.reset();
+    }
+
     static std::size_t classify_window(ReliabilitySession& session) noexcept
     {
         const auto first = session.receive_buffer_.first_stored_sequence();
@@ -6238,6 +6244,77 @@ struct SessionTestAccess {
         return session.drop_too_late_receiver_impl(now, &ranges, &slots);
     }
 };
+}
+
+TEST(session_reliability_policy_does_not_depend_on_rate_calculator_lifetime)
+{
+    for (const bool file : {false, true}) {
+        ReliabilitySession receiver {
+            {.peer_initial_sequence = SequenceNumber {10},
+                .send_capacity_packets = 8,
+                .receive_capacity_packets = 8}};
+        if (file)
+            receiver.configure_file(true);
+        else
+            receiver.configure_live({}, 0, PacketTimestamp {});
+        detail::SessionTestAccess::remove_rate_calculators(receiver);
+        const std::array payload {std::byte {'p'}};
+        PacketView packet;
+        packet.kind = PacketKind::data;
+        packet.data.sequence = SequenceNumber {10};
+        packet.data.message_number = 1;
+        packet.data.boundary = MessageBoundary::solo;
+        packet.payload = payload;
+        const auto result = receiver.receive(packet, 100);
+        REQUIRE(result);
+        // Removing a calculator must not switch back to immediate ACKs.
+        for (std::size_t index = 0; index < result.actions.size; ++index)
+            REQUIRE(result.actions.values[index].kind
+                != ReliabilityActionKind::acknowledgement);
+        REQUIRE_EQ(receiver.flush_acknowledgement(200).size, 1U);
+    }
+}
+
+TEST(session_live_retransmission_policy_survives_rate_calculator_replacement)
+{
+    ReliabilitySession sender {{.local_initial_sequence = SequenceNumber {10},
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8}};
+    sender.configure_live({.peer_periodic_nak = true}, 0, PacketTimestamp {});
+    detail::SessionTestAccess::remove_rate_calculators(sender);
+    const std::array payload {std::byte {'p'}};
+    REQUIRE_EQ(sender.queue_message(payload, PacketTimestamp {}), Error::none);
+    REQUIRE(sender.next_data_packet());
+    sender.note_data_packet_sent(100);
+    REQUIRE(!sender.poll_sender_retransmission_timeout(1'000'000));
+    REQUIRE(!sender.next_data_packet());
+}
+
+TEST(session_file_retransmission_selection_survives_rate_calculator_replacement)
+{
+    ReliabilitySession sender {{.local_initial_sequence = SequenceNumber {10},
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 8}};
+    sender.configure_file(true);
+    detail::SessionTestAccess::remove_rate_calculators(sender);
+    const std::array payload {std::byte {'p'}};
+    for (unsigned index = 0; index < 3; ++index) {
+        REQUIRE_EQ(
+            sender.queue_message(payload, PacketTimestamp {}), Error::none);
+        REQUIRE(sender.next_data_packet());
+        sender.note_data_packet_sent(100);
+    }
+    std::array<std::byte, 64> storage {};
+    const auto loss = encode_and_decode(
+        {.kind = ReliabilityActionKind::loss_report,
+            .loss = {SequenceNumber {11}, SequenceNumber {11}}},
+        storage);
+    REQUIRE(sender.receive(loss, 200));
+    REQUIRE(sender.poll_sender_retransmission_timeout(1'000'000));
+    const auto selected = sender.next_data_packet();
+    REQUIRE(selected);
+    REQUIRE_EQ(selected->header.sequence, SequenceNumber {11});
+    REQUIRE(!sender.next_data_packet());
 }
 
 TEST(session_filter_repairs_are_excluded_from_later_physical_loss_reports)

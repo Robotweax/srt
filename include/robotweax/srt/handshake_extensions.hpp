@@ -39,6 +39,19 @@ enum class CongestionController : std::uint8_t {
     control = 2,
 };
 
+[[nodiscard]] constexpr bool is_experimental_congestion_controller(
+    CongestionController controller) noexcept
+{
+    return static_cast<std::uint8_t>(controller) >= 128;
+}
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+namespace controller_extension_detail {
+[[nodiscard]] std::string_view experimental_congestion_controller_name(
+    CongestionController controller) noexcept;
+}
+#endif
+
 [[nodiscard]] constexpr bool uses_file_congestion_control(
     CongestionController controller) noexcept
 {
@@ -57,7 +70,12 @@ enum class CongestionController : std::uint8_t {
     case CongestionController::control:
         return "control-v1";
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    return controller_extension_detail::experimental_congestion_controller_name(
+        controller);
+#else
     return {};
+#endif
 }
 
 [[nodiscard]] bool parse_congestion_controller(
