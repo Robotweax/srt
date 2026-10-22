@@ -345,6 +345,34 @@ TEST(extension_filter_protection_context_cannot_cross_member_or_receiver_keys)
     output.receiver = receiver_a;
     output.context.protection.generation = 2;
     REQUIRE_EQ(fixture.validate(output), Error::invalid_state);
+    // Protected inputs and outputs both require a current receiver identity
+    // and a matching key context; shared source state may omit the receiver.
+    FilterInput input {.context = fixture.environment.context,
+        .domain = SequenceDomain::logical_stream,
+        .sequence = 100,
+        .origin = path_a,
+        .receiver = receiver_a,
+        .payload = fixture.payload};
+    for (const auto receiver :
+        std::array {Identity {}, receiver_a, receiver_b, Identity {999, 1},
+            Identity {receiver_a.value, 2}, Identity {receiver_a.value, 0}}) {
+        const auto expected = receiver == Identity {} || receiver == receiver_a
+            ? Error::none
+            : Error::invalid_state;
+        input.receiver = receiver;
+        REQUIRE_EQ(validate_filter_input(fixture.descriptor, fixture.limits,
+                       fixture.owner, fixture.environment, input),
+            expected);
+        auto candidate = fixture.output();
+        candidate.destination = path_a;
+        candidate.receiver = receiver;
+        REQUIRE_EQ(fixture.validate(candidate), expected);
+    }
+    input.receiver = receiver_a;
+    input.origin = path_b;
+    REQUIRE_EQ(validate_filter_input(fixture.descriptor, fixture.limits,
+                   fixture.owner, fixture.environment, input),
+        Error::invalid_state);
     // A core-admitted shared protection context can span several paths/peers.
     fixture.paths[1].protection = {77, 1};
     fixture.receivers[1].protection = {77, 1};
