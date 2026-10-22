@@ -102,6 +102,12 @@ Other link-level values (RTT, bandwidth, buffers, per-member loss) remain per
 member socket. A group that has not connected yet reports `SRT_ENOCONN`; a
 closed group reports `SRT_EINVSOCK`.
 
+A Backup member's `pktRcvDrop*` can increase when an ordered DROPREQ retires
+history already confirmed on another path. Other members may still hold those
+messages for group delivery at their TSBPD deadline. Inspect group delivery
+and group drop counters alongside member counters when diagnosing failover;
+a member-local retirement count does not by itself establish group payload loss.
+
 For a complete public-header-only example, see
 [`robotweax_srt_group_demo`](../examples/README.md#connection-group-api-demo).
 It covers endpoint configuration, Broadcast delivery, weighted Backup,
@@ -267,9 +273,16 @@ the existing recent-response test, which also accepts keepalives.
 `SRTO_GROUPMINSTABLETIMEO` is group-only. Its compatible default and minimum
 are 60 ms, and its fixed accepted range is 60–5000 ms; the effective interval also respects RTT and peer-idle constraints.
 Set it on the Backup group before its first connection. Ordinary socket
-getters/setters return `SRT_EINVOP`. A per-endpoint override through
-`srt_config_add` is not supported and returns `SRT_EINVPARAM` immediately;
-the coordinator currently uses one group-wide minimum for all links.
+getters/setters return `SRT_EINVOP`. For a caller Backup member, add an
+`int32_t` `SRTO_GROUPMINSTABLETIMEO` to its endpoint's `SRT_SOCKOPT_CONFIG`
+with `srt_config_add` before `srt_connect_group`. The endpoint value replaces
+the group minimum for that member; endpoints without it inherit the group
+minimum, including later additions. The value is copied at connection setup.
+It controls both active-path response expiry and candidate qualification,
+subject to the same RTT, peer-latency and peer-idle bounds. Invalid sizes or
+values outside 60–5000 ms fail immediately with `SRT_EINVPARAM`.
+Applying this override to a Broadcast endpoint fails that endpoint with
+`SRT_EINVPARAM`; it does not create a member.
 
 Listener-side configuration is unavailable: ordinary listener sockets reject
 this option and accepted mirror groups are already open. This differs from
@@ -277,9 +290,9 @@ the reference listener inheritance and peer-idle-dependent maximum. Configure
 caller Backup groups before opening them; do not assume mirrors can be tuned.
 
 The [v1.5.7 option contract](https://github.com/Haivision/srt/blob/v1.5.7/docs/API/API-socket-options.md#SRTO_GROUPMINSTABLETIMEO)
-identifies it as a group option. The reference also exposes individual link
-configuration through `srt_config_add`; that override remains outside the
-implemented profile here.
+identifies it as a group option and exposes individual link configuration
+through `srt_config_add`. Robotweax retains its fixed range and caller-side
+configuration boundary; this change does not claim complete option parity.
 
 ## Replay and failover
 

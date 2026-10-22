@@ -314,6 +314,17 @@ int srt_connect_group(
             for (std::size_t option_index = 0;
                  option_index < config.size; ++option_index) {
                 const auto& option = config.options[option_index];
+                if (option.option == SRTO_GROUPMINSTABLETIMEO) {
+                    if (description.type != SRT_GTYPE_BACKUP) {
+                        endpoint.errorcode = SRT_EINVPARAM;
+                        configured = false;
+                        break;
+                    }
+                    std::memcpy(
+                        &record->group_minimum_stability_timeout_milliseconds,
+                        option.bytes.data(), sizeof(std::int32_t));
+                    continue;
+                }
                 if (set_socket_option(*record, option.option,
                         option.bytes.data(), option.size)
                     == SRT_ERROR) {
