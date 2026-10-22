@@ -837,8 +837,10 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         add_test(NAME robotweax_srt_application_process_support
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_process_support.py)
+        # Allow interpreter startup/imports on loaded hosted Windows runners;
+        # the mocked port-planning assertions and retry bounds remain unchanged.
         set_tests_properties(robotweax_srt_application_process_support
-            PROPERTIES TIMEOUT 5 LABELS "example;application")
+            PROPERTIES TIMEOUT 20 LABELS "example;application")
         add_test(NAME robotweax_srt_application_console_api
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_console.py)
