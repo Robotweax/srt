@@ -440,6 +440,14 @@ library inherit sanitizer runtime link flags without inheriting libFuzzer's
 `main` function. Retain and minimize any failing
 input so the failure can become a deterministic regression test.
 
+Build the private packet-filter contract tests separately with
+`ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS=ON`, then run
+`ctest --test-dir build -R filter_contract --output-on-failure`.
+These deterministic tests exercise scope, generations, protection, bounded
+storage and lifecycle without transport I/O. Repeat them under ASan/UBSan and
+ThreadSanitizer. See [the contract boundary](packet-filter-extensions.md).
+They do not establish runtime, wire interoperability or network performance.
+
 ## Interoperability qualification
 
 Robotweax-to-Robotweax loopback proves self-consistency, not compatibility

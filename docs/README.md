@@ -7,6 +7,9 @@ developers and transport integrators using the installed public API.
 
 ## Start here
 
+- [Packet-filter extension contracts](packet-filter-extensions.md) — private,
+  group-independent ownership, lifecycle and resource boundaries.
+
 - [Experimental ACP1](experimental-acp1.md) — unreviewed runtime-control
   authentication, strict bilateral opt-in and provisional wire/API contract.
 

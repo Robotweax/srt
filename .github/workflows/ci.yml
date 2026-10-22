@@ -318,6 +318,7 @@ jobs:
         run: >-
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Release
+          -DROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS=ON
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=${{ needs.changes.outputs.benchmark }}
           -DROBOTWEAX_SRT_BUILD_EXAMPLES=${{ needs.changes.outputs.examples }}
           -DROBOTWEAX_SRT_BUILD_TOOLS=${{ needs.changes.outputs.core_tests }}
@@ -439,6 +440,7 @@ jobs:
         run: >-
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Release
+          -DROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS=ON
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
           -DROBOTWEAX_SRT_BUILD_EXAMPLES=${{ needs.changes.outputs.examples }}
           -DROBOTWEAX_SRT_BUILD_TOOLS=${{ needs.changes.outputs.core_tests }}
@@ -1146,6 +1148,7 @@ jobs:
         run: >-
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Debug
+          -DROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS=ON
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
           -DENABLE_AEAD_API_PREVIEW=ON
           -DENABLE_MAXREXMITBW=ON
@@ -1177,6 +1180,7 @@ jobs:
         run: >-
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Debug
+          -DROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS=ON
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
           -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
       - name: Build lifecycle stress suite
@@ -1188,6 +1192,7 @@ jobs:
           robotweax_srt_scheduler_tests
           robotweax_srt_scheduler_service_tests
           robotweax_srt_connection_affinity_model_tests
+          robotweax_srt_filter_contract_tests
       - name: Run lifecycle stress suite
         env:
           TSAN_OPTIONS: halt_on_error=1
@@ -1198,6 +1203,7 @@ jobs:
           && ./build/robotweax_srt_scheduler_tests
           && ./build/robotweax_srt_scheduler_service_tests
           && ./build/robotweax_srt_connection_affinity_model_tests
+          && ./build/experimental/packet_filters/robotweax_srt_filter_contract_tests
 
   fuzz_smoke:
     name: Fuzz smoke

@@ -6,6 +6,14 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add default-off, source-tree-only packet-filter contracts with independent
+  logical/member sequence domains, path and receiver generations, optional
+  feedback, protection contexts and bounded owner-provided storage. Validate
+  whole callback batches and contain terminal provider failures without binding
+  the interface to a group mode or changing transport behavior. These private
+  contracts are not a public plugin ABI or an implemented aggregation/multicast
+  runtime.
+
 - Support per-member `SRTO_GROUPMINSTABLETIMEO` overrides through
   `srt_config_add` for caller Backup groups. Each path uses its own minimum
   for response expiry and candidate qualification; endpoints without an
