@@ -103,6 +103,8 @@ struct SocketRecord {
     std::uint64_t member_generation = 0;
     SRT_GROUP_TYPE group_type = SRT_GTYPE_UNDEFINED;
     std::uint16_t group_weight = 0;
+    // Endpoint-only Backup override; zero inherits the group's minimum.
+    std::int32_t group_minimum_stability_timeout_milliseconds = 0;
     bool group_accept_result = false;
 };
 

@@ -38,6 +38,7 @@ bool is_group_member_option(SRT_SOCKOPT option) noexcept
     case SRTO_BINDTODEVICE:
     case SRTO_CONNTIMEO:
     case SRTO_DRIFTTRACER:
+    case SRTO_GROUPMINSTABLETIMEO:
     case SRTO_IPTOS:
     case SRTO_IPTTL:
     case SRTO_PASSPHRASE:
@@ -89,6 +90,14 @@ bool GroupSocketConfiguration::add(
             return false;
     }
 #endif
+    if (option == SRTO_GROUPMINSTABLETIMEO) {
+        std::int32_t minimum = 0;
+        if (value_size != static_cast<int>(sizeof(minimum)))
+            return false;
+        std::memcpy(&minimum, value, sizeof(minimum));
+        if (minimum < 60 || minimum > 5'000)
+            return false;
+    }
     std::lock_guard lock(mutex_);
     if (option == SRTO_ROBOTWEAX_PATHID && value_size > 32)
         return false;
