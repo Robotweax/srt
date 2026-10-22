@@ -79,8 +79,7 @@ async function poll() {
     $("evidence-count").textContent=`${events.length} RECENT EVENTS`;
     $("output-path").textContent=state.directory ? `Local evidence: ${state.directory}` : "";
     for(let i=0;i<2;i++) {
-      const path=(state.latest_events||events).filter(e=>e.event==="path" && e.process==="sender" && e.token===i+1).at(-1);
-      $( `path-${i}-state`).textContent=state.state==="complete" ? "Session closed after run" : state.paused?.[i] ? "Relay paused · simulated outage" : path ? `Member ${path.member} · ${["pending","idle","running","broken"][path.member_state]||"connecting"}` : "Awaiting connection";
+      $( `path-${i}-state`).textContent=state.path_labels?.[i]||"Awaiting path snapshot";
       const button=document.querySelector(`.path-control[data-index="${i}"]`);
       button.disabled=state.state!=="running" || state.config?.kind!=="media";
       button.textContent=`${state.paused?.[i] ? "Resume" : "Pause"} relay ${i+1}`;
