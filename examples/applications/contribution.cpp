@@ -30,7 +30,7 @@ void paths(SRTSOCKET group)
             + ",\"socket_state\":" + std::to_string(member.sockstate)
             + ",\"member_state\":" + std::to_string(member.memberstate));
         if (member.sockstate == SRTS_CONNECTED)
-            stats(member.id, "path");
+            stats(member.id, "path", true);
     }
 }
 

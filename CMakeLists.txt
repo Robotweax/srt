@@ -824,6 +824,16 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
 
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     if(ROBOTWEAX_SRT_BUILD_EXAMPLES)
+        add_executable(robotweax_srt_application_statistics_tests
+            examples/applications/test_statistics.cpp)
+        target_compile_features(robotweax_srt_application_statistics_tests PRIVATE cxx_std_20)
+        target_include_directories(robotweax_srt_application_statistics_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        add_dependencies(robotweax_srt_contribution robotweax_srt_application_statistics_tests)
+        add_test(NAME robotweax_srt_application_statistics
+            COMMAND robotweax_srt_application_statistics_tests)
+        set_tests_properties(robotweax_srt_application_statistics
+            PROPERTIES TIMEOUT 5 LABELS "example;application")
         add_test(NAME robotweax_srt_application_console_api
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_console.py)

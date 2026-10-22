@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+from socketserver import TCPServer
 import subprocess
 import sys
 import tempfile
@@ -268,6 +269,13 @@ class Console:
             self.job.thread.start()
 
 
+class ConsoleServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # The numeric loopback endpoint needs no potentially blocking reverse DNS.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "SRTSampleConsole/1"
 
@@ -416,7 +424,7 @@ def main():
     if args.ffmpeg:
         args.ffmpeg = str(Path(args.ffmpeg).resolve(strict=True))
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server = ConsoleServer(("127.0.0.1", args.port), Handler)
     server.console = Console(args)
     print(f"http://127.0.0.1:{server.server_port}/#{server.console.token}", flush=True)
     try:

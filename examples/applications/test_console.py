@@ -8,15 +8,17 @@ import tempfile
 import threading
 import types
 import unittest
+from unittest.mock import patch
 
-from console import Console, Handler, ThreadingHTTPServer, configuration
+from console import Console, ConsoleServer, Handler, configuration
 
 
 class ConsoleTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         args = argparse.Namespace(output_dir=Path(self.temp.name), binary_dir=Path(self.temp.name), ffmpeg=None, media=None)
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        with patch("socket.getfqdn", side_effect=AssertionError("loopback startup must not use DNS")):
+            self.server = ConsoleServer(("127.0.0.1", 0), Handler)
         self.server.console = Console(args)
         self.thread = threading.Thread(target=self.server.serve_forever)
         self.thread.start()

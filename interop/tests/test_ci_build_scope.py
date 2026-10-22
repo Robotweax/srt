@@ -367,7 +367,9 @@ class CiConsumerScopeTests(unittest.TestCase):
                     targets = ["robotweax_srt"]
                     if examples:
                         targets += ["robotweax_srt_message_demo", "robotweax_srt_file_demo",
-                                    "robotweax_srt_group_demo", "robotweax_srt_udp_bridge"]
+                                    "robotweax_srt_group_demo", "robotweax_srt_udp_bridge",
+                                    "robotweax_srt_contribution", "robotweax_srt_recovery",
+                                    "robotweax_srt_device"]
                     self.assertEqual(calls, [["--build", "build", "--config", "Release",
                                              "--parallel", "--target"] + targets])
                     test = self.step(job, "Test selected public consumers")

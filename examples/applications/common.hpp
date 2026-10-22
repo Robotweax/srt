@@ -252,11 +252,24 @@ inline Socket connect(const std::string& endpoint, const Settings& settings,
     return peer;
 }
 
-inline void stats(SRTSOCKET s, const std::string& channel)
+inline void stats(SRTSOCKET s, const std::string& channel,
+    bool allow_member_transition = false)
 {
     SRT_TRACEBSTATS b {};
-    if (srt_bistats(s, &b, 0, 1) == SRT_ERROR)
+    if (srt_bistats(s, &b, 0, 1) == SRT_ERROR) {
+        const auto error = srt_getlasterror(nullptr);
+        if (allow_member_transition
+            && (error == SRT_ENOCONN || error == SRT_EINVSOCK
+                || error == SRT_ECONNLOST)) {
+            // A group snapshot does not pin a member's socket lifecycle.
+            event("\"event\":\"stats_unavailable\",\"channel\":\"" + channel
+                + "\",\"socket\":" + std::to_string(s)
+                + ",\"error_code\":" + std::to_string(error)
+                + ",\"socket_state\":" + std::to_string(srt_getsockstate(s)));
+            return;
+        }
         fail("statistics");
+    }
     event("\"event\":\"stats\",\"channel\":\"" + channel + "\",\"socket\":"
         + std::to_string(s) + ",\"sent\":" + std::to_string(b.pktSentTotal)
         + ",\"received\":" + std::to_string(b.pktRecvTotal)

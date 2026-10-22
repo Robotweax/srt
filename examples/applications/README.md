@@ -246,6 +246,11 @@ non-destructive `srt_bistats(..., 0, 1)` snapshots. A group snapshot describes
 logical group activity; member snapshots describe individual paths. Do not sum
 group and member counters as if they were disjoint traffic. `rtt_ms` may be an
 initial estimate; the optional RTT-provenance API is not integrated yet.
+Members can change lifecycle state between a group snapshot and their statistics
+query. Contribution reports `stats_unavailable` with the socket, error code and
+current socket state for that observation; it does not invent zero counters.
+Transport failures, payload validation and unexpected statistics errors remain
+fatal.
 
 Outside raw media mode, the sample wire protocol has a fixed frame size, marker, 32-bit source sequence,
 and deterministic body. Receivers bound their sequence history to the configured
