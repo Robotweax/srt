@@ -1,8 +1,7 @@
 # Packet-filter extension contracts
 
-The optional source-tree component in
-[`experimental/packet_filters`](../experimental/packet_filters/README.md)
-defines private C++ contracts for future custom packet filters. Enable it with
+The optional source-tree component in `experimental/packet_filters` defines
+private C++ contracts for future custom packet filters. Enable it with
 `ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS=ON`; the default is OFF. It is not installed
 or linked into the transport library and changes no socket or wire behavior.
 It is independent of congestion-controller selection.
