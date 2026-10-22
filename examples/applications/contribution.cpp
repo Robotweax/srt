@@ -23,15 +23,23 @@ std::vector<SRT_SOCKGROUPDATA> members(SRTSOCKET group)
 
 void paths(SRTSOCKET group)
 {
-    for (const auto& member : members(group)) {
-        event("\"event\":\"path\",\"member\":" + std::to_string(member.id)
+    const auto current = members(group);
+    std::string snapshot;
+    for (const auto& member : current) {
+        const auto fields = "\"member\":" + std::to_string(member.id)
             + ",\"token\":" + std::to_string(member.token)
             + ",\"weight\":" + std::to_string(member.weight)
             + ",\"socket_state\":" + std::to_string(member.sockstate)
-            + ",\"member_state\":" + std::to_string(member.memberstate));
+            + ",\"member_state\":" + std::to_string(member.memberstate);
+        if (!snapshot.empty())
+            snapshot += ",";
+        snapshot += "{" + fields + "}";
+        event("\"event\":\"path\"," + fields);
         if (member.sockstate == SRTS_CONNECTED)
             stats(member.id, "path", true);
     }
+    // One enumeration also represents removed members and an empty group.
+    event("\"event\":\"path_snapshot\",\"members\":[" + snapshot + "]");
 }
 
 Path parse_path(const std::string& value)

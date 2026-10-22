@@ -47,6 +47,32 @@ def configuration(data):
     return result
 
 
+def path_labels(events, state, paused):
+    snapshot = next((e for e in reversed(events)
+                     if e.get("event") == "path_snapshot" and e.get("process") == "sender"), None)
+    labels = []
+    for index in range(2):
+        if state in ("complete", "stopped", "failed"):
+            labels.append({"complete": "Session closed after run", "stopped": "Session stopped", "failed": "Session failed"}[state])
+        elif paused[index]:
+            labels.append("Relay paused · simulated outage")
+        elif snapshot is None:
+            labels.append("Awaiting path snapshot")
+        else:
+            member = next((m for m in snapshot.get("members", []) if m.get("token") == index + 1), None)
+            if member is None:
+                labels.append("Path unavailable · member removed")
+                continue
+            socket_state = member.get("socket_state")
+            if socket_state == 5:
+                status = {0: "pending", 1: "idle", 2: "running", 3: "broken"}.get(member.get("member_state"), "unknown")
+            else:
+                status = {1: "initializing", 2: "opened", 3: "listening", 4: "connecting",
+                          6: "broken", 7: "closing", 8: "closed", 9: "unavailable"}.get(socket_state, "unknown")
+            labels.append(f"Member {member.get('member', '?')} · {status}")
+    return labels
+
+
 class Job:
     def __init__(self, args, config):
         self.args, self.config = args, config
@@ -236,6 +262,7 @@ class Job:
         with self.lock:
             children = list(self.children)
             frames = self.decoded_frames
+            state, error = self.state, self.error
         for name, process in children:
             for timestamp, line in list(process.observations):
                 try:
@@ -248,10 +275,12 @@ class Job:
                 except json.JSONDecodeError:
                     pass
         observations.sort(key=lambda item: item[0])
-        return {"state": self.state, "error": self.error, "config": self.config, "events": [value for _, value in observations[-200:]],
-                "latest_events": list(latest.values()),
-                "decoded_frames": frames, "playback": self.state == "complete" and (self.directory / "playback.mp4").exists(),
-                "paused": [p.exists() for p in self.markers], "directory": str(self.directory)}
+        latest_events = list(latest.values())
+        paused = [p.exists() for p in self.markers]
+        return {"state": state, "error": error, "config": self.config, "events": [value for _, value in observations[-200:]],
+                "latest_events": latest_events, "path_labels": path_labels(latest_events, state, paused),
+                "decoded_frames": frames, "playback": state == "complete" and (self.directory / "playback.mp4").exists(),
+                "paused": paused, "directory": str(self.directory)}
 
 
 class Console:

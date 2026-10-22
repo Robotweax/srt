@@ -10,7 +10,46 @@ import types
 import unittest
 from unittest.mock import patch
 
-from console import Console, ConsoleServer, Handler, configuration
+from console import Console, ConsoleServer, Handler, Job, configuration, path_labels
+
+
+class PathStatusTests(unittest.TestCase):
+    def test_broken_idle_socket_and_removed_member_replace_cached_paths(self):
+        events = [{"event": "path", "process": "sender", "member": 10, "token": 1,
+                   "socket_state": 5, "member_state": 2},
+                  {"event": "path_snapshot", "process": "sender", "members": [
+                      {"member": 20, "token": 2, "socket_state": 6, "member_state": 1}]}]
+        self.assertEqual(path_labels(events, "running", [False, False]),
+                         ["Path unavailable · member removed", "Member 20 · broken"])
+
+    def test_empty_snapshot_and_replacement_are_authoritative(self):
+        events = [{"event": "path_snapshot", "process": "sender", "members": []}]
+        self.assertEqual(path_labels(events, "running", [False, False]), ["Path unavailable · member removed"] * 2)
+        events.append({"event": "path_snapshot", "process": "sender", "members": [
+            {"member": 30, "token": 1, "socket_state": 4, "member_state": 1}]})
+        events.append({"event": "path_snapshot", "process": "receiver", "members": []})
+        self.assertEqual(path_labels(events, "running", [False, False]),
+                         ["Member 30 · connecting", "Path unavailable · member removed"])
+
+    def test_waiting_paused_and_terminal_states(self):
+        self.assertEqual(path_labels([], "starting", [False, False]), ["Awaiting path snapshot"] * 2)
+        self.assertEqual(path_labels([], "running", [True, False]),
+                         ["Relay paused · simulated outage", "Awaiting path snapshot"])
+        self.assertEqual(path_labels([], "failed", [True, True]), ["Session failed"] * 2)
+        self.assertEqual(path_labels([], "complete", [False, False]), ["Session closed after run"] * 2)
+
+    def test_job_snapshot_uses_latest_membership_without_discarding_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = argparse.Namespace(output_dir=Path(directory))
+            job = Job(args, configuration({}))
+            job.state = "running"
+            old = {"event": "path_snapshot", "members": [{"member": 1, "token": 1, "socket_state": 5, "member_state": 2}]}
+            new = {"event": "path_snapshot", "members": []}
+            job.children = [("sender", types.SimpleNamespace(observations=[(1, json.dumps(old)), (2, json.dumps(new))]))]
+            snapshot = job.snapshot()
+            self.assertEqual(snapshot["path_labels"], ["Path unavailable · member removed"] * 2)
+            self.assertEqual(len(snapshot["events"]), 2)
+            self.assertEqual(len(snapshot["latest_events"]), 1)
 
 
 class ConsoleTests(unittest.TestCase):
