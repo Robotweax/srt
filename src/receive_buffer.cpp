@@ -57,6 +57,14 @@ void ReceiveBuffer::index_occupied(std::size_t position, bool occupied) noexcept
     }
 }
 
+void ReceiveBuffer::advance_frontier(std::size_t packets) noexcept
+{
+    head_ = (head_ + packets) % capacity();
+    first_stored_sequence_ =
+        first_stored_sequence_.advanced(static_cast<std::uint32_t>(packets));
+    classified_loss_prefix_ -= std::min(packets, classified_loss_prefix_);
+}
+
 std::optional<std::size_t> ReceiveBuffer::next_occupied_bit(std::size_t level,
     std::size_t begin, std::size_t end, std::size_t* word_reads) const noexcept
 {
@@ -255,8 +263,7 @@ void ReceiveBuffer::trim_dropped_prefix() noexcept
         slot.payload_size = 0;
         slot.payload_offset = 0;
         slot.gap_deadline_microseconds = 0;
-        head_ = (head_ + 1U) % capacity();
-        first_stored_sequence_ = first_stored_sequence_.next();
+        advance_frontier(1);
     }
 }
 
@@ -507,10 +514,8 @@ ReceivedMessageResult ReceiveBuffer::pop_message(
         slot.payload_offset = 0;
         slot.gap_deadline_microseconds = 0;
     }
-    head_ = (head_ + packet_count) % capacity();
+    advance_frontier(packet_count);
     occupied_ -= packet_count;
-    first_stored_sequence_ = first_stored_sequence_.advanced(
-        static_cast<std::uint32_t>(packet_count));
     trim_dropped_prefix();
     refresh_first_buffered_timestamp();
     return {
@@ -626,11 +631,9 @@ ReceivedMessageResult ReceiveBuffer::pop_stream(
         slot->payload_size = 0;
         slot->payload_offset = 0;
         slot->gap_deadline_microseconds = 0;
-        head_ = (head_ + 1U) % capacity();
+        advance_frontier(1);
         --occupied_;
         removed_packet = true;
-        first_stored_sequence_ =
-            first_stored_sequence_.next();
         trim_dropped_prefix();
     }
     if (removed_packet) {
@@ -887,8 +890,7 @@ Error ReceiveBuffer::discard_before(
         occupied_ = 0U;
         buffered_payload_bytes_ = 0U;
     }
-    head_ = (head_ + (count % capacity())) % capacity();
-    first_stored_sequence_ = next_sequence;
+    advance_frontier(count);
     if (next_ack_sequence_.distance_from(next_sequence) < 0) {
         next_ack_sequence_ = next_sequence;
     }
@@ -1101,8 +1103,7 @@ Error ReceiveBuffer::drop_range_impl(SequenceRange range,
         if (additional_advance != 0U) {
             invalidate_delivery_queries();
         }
-        head_ = (head_ + additional_advance) % capacity();
-        first_stored_sequence_ = target;
+        advance_frontier(additional_advance);
     }
     if (first_stored_sequence_.distance_from(next_ack_sequence_) > 0) {
         next_ack_sequence_ = first_stored_sequence_;
