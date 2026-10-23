@@ -10,6 +10,12 @@ function New-TestSdk([string]$Directory, [string]$Backend, [string]$Version, [bo
     New-Item -ItemType Directory "$Directory/include/srt" -Force | Out-Null
     foreach ($File in 'LICENSE.txt','srt.props','include/srt/srt.h') { $Version | Set-Content "$Directory/$File" }
     '<Project />' | Set-Content "$Directory/srt-backend.props"
+    # Model the first SDK release that introduces the full documentation tree.
+    if ([version]$Version -ge [version]'0.0.2') {
+        New-Item -ItemType Directory "$Directory/share/doc/robotweax_srt/docs" -Force | Out-Null
+        $Version | Set-Content "$Directory/share/doc/robotweax_srt/README.md"
+        $Version | Set-Content "$Directory/share/doc/robotweax_srt/docs/release-notes-$Version.md"
+    }
     if ($Obsolete) {
         'obsolete fixture' | Set-Content "$Directory/include/srt/a-retired.h","$Directory/include/srt/b-retired.h"
     }
@@ -75,6 +81,11 @@ try {
         } finally { $Handle.Dispose() }
         if ((Get-FileHash "$Destination/lib/Release-x64/robotweax-srt.lib").Hash -ne $LibraryHash) { throw 'Retirement failure changed SDK' }
         Run-Setup $Second
+        foreach ($Document in @('README.md','docs/release-notes-0.0.2.md')) {
+            $Relative = "share/doc/robotweax_srt/$Document"
+            if (!(Test-Path "$Destination/$Relative") -or
+                (Get-FileHash "$Destination/$Relative").Hash -ne (Get-FileHash "$Stage2/$Relative").Hash) { throw 'Documentation was not installed by upgrade' }
+        }
         if ((Test-Path $Retired) -or (Test-Path $Locked)) { throw 'Obsolete files remain after upgrade' }
         if ((Get-FileHash "$Destination/lib/Release-x64/robotweax-srt.lib").Hash -ne (Get-FileHash "$Stage2/lib/Release-x64/robotweax-srt.lib").Hash) { throw 'Payload was not upgraded' }
         $Key = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Robotweax.SRT.SDK.${Backend}_is1"

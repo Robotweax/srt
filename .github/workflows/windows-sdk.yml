@@ -129,9 +129,13 @@ jobs:
         run: |
           $installer = (Get-ChildItem packaging/windows/Output/*.exe).FullName
           $destination = Join-Path $env:RUNNER_TEMP 'Robotweax SDK test'
+          $installLog = Join-Path $env:RUNNER_TEMP "sdk-$env:SDK_BACKEND-install-first.log"
           $variable = 'ROBOTWEAX_SRT_' + $env:SDK_BACKEND.ToUpperInvariant()
-          $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$destination`""
-          if ($process.ExitCode -ne 0) { throw 'Installation failed' }
+          $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=`"$installLog`" /DIR=`"$destination`""
+          if ($process.ExitCode -ne 0) {
+            if (Test-Path $installLog) { Get-Content $installLog -Tail 80 | Out-Host }
+            throw "Installation failed with exit $($process.ExitCode)"
+          }
           if ([Environment]::GetEnvironmentVariable($variable,'Machine') -ne $destination) { throw 'SDK environment variable missing' }
           $before = (Get-FileHash "$destination/srt.props").Hash
           $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$destination`""
@@ -154,6 +158,13 @@ jobs:
           if (!(Test-Path "$other/include/srt/srt.h")) { throw 'Reinstalled headers missing' }
           $process = Start-Process -Wait -PassThru "$other/unins000.exe" -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
           if ($process.ExitCode -ne 0) { throw 'Final cleanup failed' }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: windows-sdk-install-log-${{ matrix.backend }}
+          path: ${{ runner.temp }}/sdk-${{ matrix.backend }}-install-first.log
+          if-no-files-found: warn
+          retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-sdk-installer-${{ matrix.backend }}

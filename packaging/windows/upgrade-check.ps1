@@ -25,7 +25,7 @@ function Assert-SdkPath([string]$Directory, [string]$Relative) {
         }
     }
     if ($Relative -notmatch '^(?i:LICENSE\.txt|OpenSSL-LICENSE\.txt|THIRD_PARTY\.md|README\.md|srt\.props|srt-backend\.props)$' -and
-        $Relative -notmatch '^(?i:include\\|lib\\(?:Debug|Release)-(?:Win32|x64|Arm64)\\)') {
+        $Relative -notmatch '^(?i:include\\|lib\\(?:Debug|Release)-(?:Win32|x64|Arm64)\\|share\\doc\\robotweax_srt\\)') {
         throw "Path outside the SDK payload: $Relative"
     }
     # Reject junctions/symlinks in the root, its ancestors and the payload path.

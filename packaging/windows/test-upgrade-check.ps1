@@ -38,6 +38,23 @@ try {
     $Plan = @(Get-SdkUpgradePlan $Installed $Incoming '0.2.7' '0.2.8' 'bcrypt')
     if ($Plan.Count -ne 1 -or $Plan[0].Substring(66) -ne 'include\srt\obsolete.h') { throw 'Incorrect obsolete-file plan' }
     if (@(Get-SdkUpgradePlan $Installed $Incoming '0.2.8' '0.2.8' 'bcrypt').Count -ne 1) { throw 'Repair rejected' }
+    # New public documentation is valid for a fresh install and an upgrade
+    # from the released SDK, whose inventory did not contain documentation.
+    $Documentation = 'share\doc\robotweax_srt\docs\release-notes-0.3.1.md'
+    $WithDocumentation = $NewHashes.Clone()
+    $WithDocumentation[$Documentation] = 'a' * 64
+    $WithDocumentation | ConvertTo-Json | Set-Content $Incoming
+    $Fresh = Join-Path $TestRoot 'fresh'
+    New-Item -ItemType Directory $Fresh | Out-Null
+    if (@(Get-SdkUpgradePlan $Fresh $Incoming '' '0.3.1' 'bcrypt').Count -ne 0) { throw 'Fresh documentation install rejected' }
+    if (@(Get-SdkUpgradePlan $Installed $Incoming '0.3.0' '0.3.1' 'bcrypt').Count -ne 1) { throw 'Documentation upgrade rejected' }
+    $DocumentPath = Join-Path $Installed $Documentation
+    New-Item -ItemType Directory (Split-Path $DocumentPath) -Force | Out-Null
+    'user document' | Set-Content $DocumentPath
+    Expect-Rejection { Get-SdkUpgradePlan $Installed $Incoming '0.3.0' '0.3.1' 'bcrypt' } 'overwrite an untracked file'
+    if ((Get-Content $DocumentPath -Raw).Trim() -ne 'user document') { throw 'Collision changed user documentation' }
+    Remove-Item $DocumentPath
+    $NewHashes | ConvertTo-Json | Set-Content $Incoming
     Expect-Rejection { Get-SdkUpgradePlan $Installed $Incoming '0.2.9' '0.2.8' 'bcrypt' } 'downgrade'
     Expect-Rejection { Get-SdkUpgradePlan $Installed $Incoming 'broken' '0.2.8' 'bcrypt' } 'version'
     Expect-Rejection { Get-SdkUpgradePlan $Installed $Incoming '0.2.7' '0.2.8' 'openssl' } 'backend metadata mismatch'
@@ -54,7 +71,7 @@ try {
     $NewHashes | ConvertTo-Json | Set-Content $Incoming
     Remove-Item "$Installed/include/srt/obsolete.h"
     if (@(Get-SdkUpgradePlan $Installed $Incoming '0.2.7' '0.2.8' 'bcrypt').Count -ne 0) { throw 'Missing obsolete file rejected' }
-    foreach ($Bad in '..\outside.txt','include\..\outside.txt','include\srt\NUL.h','C:\outside.txt','include\srt\srt.h:stream','include\srt\bad.','arbitrary.txt','include/srt/bad.h') {
+    foreach ($Bad in '..\outside.txt','include\..\outside.txt','include\srt\NUL.h','C:\outside.txt','include\srt\srt.h:stream','include\srt\bad.','arbitrary.txt','include/srt/bad.h','share\doc\other\README.md','share\doc\robotweax_srt-other\README.md','share\doc\robotweax_srt\..\outside.md') {
         $Malformed = $NewHashes.Clone()
         $Malformed[$Bad] = 'a' * 64
         $Malformed | ConvertTo-Json | Set-Content $Incoming
@@ -67,11 +84,15 @@ try {
     New-Item -ItemType Junction -Path "$Installed/include/redirect" -Target $Outside | Out-Null
     Expect-Rejection { Assert-SdkPath $Installed 'include\redirect\file.h' } 'reparse point'
     Remove-Item "$Installed/include/redirect" -Force
+    New-Item -ItemType Junction -Path "$Installed/share/doc/robotweax_srt/redirect" -Target $Outside | Out-Null
+    Expect-Rejection { Assert-SdkPath $Installed 'share\doc\robotweax_srt\redirect\file.md' } 'reparse point'
+    Remove-Item "$Installed/share/doc/robotweax_srt/redirect" -Force
     $NewHashes['srt.props'] = 'not-a-digest'
     $NewHashes | ConvertTo-Json | Set-Content $Incoming
     Expect-Rejection { Read-SdkInventory $Incoming $Installed } 'inventory entry'
     Write-Output 'SDK upgrade preflight negative tests passed'
 } finally {
     if (Test-Path "$Installed/include/redirect") { Remove-Item "$Installed/include/redirect" -Force }
+    if (Test-Path "$Installed/share/doc/robotweax_srt/redirect") { Remove-Item "$Installed/share/doc/robotweax_srt/redirect" -Force }
     Remove-Item -Recurse -Force $TestRoot
 }
