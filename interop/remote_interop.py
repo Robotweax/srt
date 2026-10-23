@@ -497,12 +497,15 @@ class AgentClient:
         process_id: str,
         argv: list[str],
         environment: dict[str, str] | None = None,
+        *, capture: bool = False,
     ) -> None:
         request: dict[str, Any] = {
             "op": "start",
             "process_id": process_id,
             "argv": argv,
         }
+        if capture:
+            request["capture"] = True
         if self.node.workspace is not None:
             request["cwd"] = self.node.workspace
         if environment:
@@ -519,8 +522,11 @@ class AgentClient:
             {"op": "stop", "process_id": process_id, "grace_seconds": 2.0}
         )
 
-    def close(self) -> None:
+    def close(self) -> list[str]:
+        errors: list[str] = []
         if self.process.poll() is not None:
+            if self.process.returncode != 0:
+                errors.append(f"SSH agent on {self.node.name} exited with {self.process.returncode}")
             for stream in (
                 self.process.stdin,
                 self.process.stdout,
@@ -528,14 +534,15 @@ class AgentClient:
             ):
                 if stream is not None:
                     stream.close()
-            return
+            return errors
         try:
-            self.request({"op": "shutdown"}, timeout=5.0)
-        except AgentError:
-            pass
+            self.request({"op": "shutdown"}, timeout=30.0)
+        except AgentError as error:
+            errors.append(str(error))
         try:
             self.process.wait(timeout=5.0)
         except subprocess.TimeoutExpired:
+            errors.append(f"SSH agent on {self.node.name} did not exit after shutdown")
             self.process.terminate()
             try:
                 self.process.wait(timeout=2.0)
@@ -549,6 +556,9 @@ class AgentClient:
         ):
             if stream is not None:
                 stream.close()
+        if self.process.returncode != 0 and not errors:
+            errors.append(f"SSH agent on {self.node.name} exited with {self.process.returncode}")
+        return errors
 
 
 def wait_for_ready(
@@ -579,11 +589,23 @@ def wait_for_exit(
     raise TimeoutError(f"{process_id} exceeded the scenario timeout")
 
 
-def capture_argv(node: Node, port: int, pcap_path: str) -> list[str] | None:
+def capture_argv(node: Node, port: int, pcap_path: str,
+                 capture_user: str | None = None) -> list[str] | None:
     if node.capture_command is None:
         return None
-    replacements = {"{port}": str(port), "{pcap}": pcap_path}
-    return [replacements.get(item, item) for item in node.capture_command]
+    if (len(node.capture_command) != 1
+            or Path(node.capture_command[0]).name != "tcpdump"):
+        raise ConfigurationError(
+            "capture_command must name only a direct tcpdump executable; "
+            "privilege-changing launchers and custom capture argv are unsupported"
+        )
+    # Classic pcap: 24-byte header and at most 100000 * (192 + 16) bytes.
+    # No rotation, subprocess hooks, privilege launcher, or unbounded -w.
+    argv = [node.capture_command[0], "-U", "-n", "-i", "any",
+            "-s", "192", "-c", "100000"]
+    if capture_user is not None:
+        argv += ["-Z", capture_user]
+    return argv + ["-w", pcap_path, "udp", "port", str(port)]
 
 
 def build_peer_argv(
@@ -722,14 +744,15 @@ def run_scenario(
             ):
                 pcap_name = f"{label}.pcap"
                 pcap_remote = f"{agent.run_directory}/{pcap_name}"
-                argv = capture_argv(node, scenario["port"], pcap_remote)
+                argv = capture_argv(node, scenario["port"], pcap_remote,
+                                    agent.metadata.get("capture_user"))
                 if argv is None:
                     raise ConfigurationError(
                         f"{node.name} has no capture_command for a "
                         "capture-enabled scenario"
                     )
                 process_id = f"capture-{label}"
-                agent.start(process_id, argv)
+                agent.start(process_id, argv, capture=True)
                 processes.append((agent, process_id))
                 time.sleep(0.05)
                 capture_status = agent.status(process_id)
@@ -823,21 +846,24 @@ def run_scenario(
                     listener_status = status
                 else:
                     caller_status = status
-            except AgentError:
-                pass
+            except AgentError as error:
+                result["status"] = "failed"
+                result.setdefault("cleanup_errors", []).append(redact_text(str(error), secrets))
         for agent, process_id, pcap_name, local_path in captures:
             try:
                 agent.stop(process_id)
                 agent.download(pcap_name, local_path)
             except (AgentError, OSError) as error:
+                result["status"] = "failed"
                 result.setdefault("artifact_errors", []).append(
                     redact_text(str(error), secrets)
                 )
         for agent, process_id in reversed(processes):
             try:
                 agent.stop(process_id)
-            except AgentError:
-                pass
+            except AgentError as error:
+                result["status"] = "failed"
+                result.setdefault("cleanup_errors", []).append(redact_text(str(error), secrets))
         for label, status in (
             ("listener", listener_status),
             ("caller", caller_status),
@@ -856,7 +882,11 @@ def run_scenario(
                 if events:
                     result[label + "_events"] = events
         for agent in agents.values():
-            agent.close()
+            errors = agent.close()
+            if errors:
+                result["status"] = "failed"
+                result.setdefault("cleanup_errors", []).extend(
+                    redact_text(error, secrets) for error in errors)
         try:
             payload_path.unlink()
         except OSError:

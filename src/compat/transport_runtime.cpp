@@ -5058,6 +5058,17 @@ bool ConnectionRuntime::writable() const noexcept
             || session_.send_buffer().available() != 0U);
 }
 
+std::size_t ConnectionRuntime::retained_payload_capacity() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    const auto packets = session_.send_buffer().capacity()
+        + session_.receive_buffer().capacity();
+    if (packets
+        > std::numeric_limits<std::size_t>::max() / maximum_data_payload_size)
+        return std::numeric_limits<std::size_t>::max();
+    return packets * maximum_data_payload_size;
+}
+
 bool ConnectionRuntime::wait_for_send_drain(
     std::chrono::milliseconds timeout) noexcept
 {

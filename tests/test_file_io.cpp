@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -556,7 +557,7 @@ TEST(compat_file_api_reports_argument_mode_and_file_errors)
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EWRPERM);
 }
 
-TEST(compat_public_file_api_opens_paths_before_validating_the_socket)
+TEST(compat_public_file_api_preserves_receive_paths_on_invalid_socket)
 {
     TemporaryFiles files;
     {
@@ -590,7 +591,7 @@ TEST(compat_public_file_api_opens_paths_before_validating_the_socket)
                    &offset, 1, 1),
         SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
-    REQUIRE(std::filesystem::exists(files.destination));
+    REQUIRE(!std::filesystem::exists(files.destination));
 }
 
 TEST(compat_recvfile_write_failure_signals_peer_error_to_the_sender)
@@ -942,4 +943,133 @@ TEST(compat_async_linger_closes_after_drain_or_deadline)
         REQUIRE_EQ(cleanup_record->state, SRTS_CLOSED);
     }
     REQUIRE_EQ(registry.state(cleanup_handle), SRTS_NONEXIST);
+}
+
+TEST(compat_async_linger_bounds_count_and_payload_storage_and_releases_terminal)
+{
+    auto& registry = SocketRegistry::instance();
+    registry.clear();
+    struct Limits {
+        ~Limits()
+        {
+            SocketRegistry::instance().clear();
+            (void)set_deferred_close_limits_for_testing(
+                256, 256U * 1024U * 1024U);
+        }
+    } reset;
+    auto close_pending = [&](RetiringMember& member) {
+        const auto record = registry.find(member.handle);
+        REQUIRE(record != nullptr);
+        record->public_options.send_synchronous = false;
+        record->public_options.linger_enabled = true;
+        record->public_options.linger_seconds = 3600;
+        const std::array payload {std::byte {'x'}};
+        REQUIRE_EQ(
+            member.runtime->queue_message(payload, 0, false, false, -1).status,
+            MessageIoStatus::success);
+        registry.close(member.handle);
+    };
+    REQUIRE(set_deferred_close_limits_for_testing(1, 256U * 1024U * 1024U));
+    RetiringMember first;
+    close_pending(first);
+    REQUIRE_EQ(registry.state(first.handle), SRTS_CLOSING);
+    const auto charge = first.runtime->retained_payload_capacity();
+    REQUIRE_EQ(deferred_close_usage_for_testing()[1], charge);
+    RetiringMember excess;
+    close_pending(excess);
+    REQUIRE_EQ(registry.state(excess.handle), SRTS_CLOSED);
+    REQUIRE_EQ(deferred_close_usage_for_testing()[0], 1U);
+    first.runtime->mark_broken(0);
+    (void)service_deferred_closes(std::chrono::steady_clock::now());
+    REQUIRE_EQ(registry.state(first.handle), SRTS_CLOSED);
+    REQUIRE_EQ(deferred_close_usage_for_testing()[1], 0U);
+    REQUIRE(set_deferred_close_limits_for_testing(256, charge - 1U));
+    RetiringMember oversized;
+    close_pending(oversized);
+    REQUIRE_EQ(registry.state(oversized.handle), SRTS_CLOSED);
+    REQUIRE_EQ(deferred_close_usage_for_testing()[0], 0U);
+    REQUIRE_EQ(deferred_close_usage_for_testing()[1], 0U);
+    REQUIRE(set_deferred_close_limits_for_testing(256, 2U * charge - 1U));
+    RetiringMember kept;
+    RetiringMember overflow;
+    close_pending(kept);
+    close_pending(overflow);
+    REQUIRE_EQ(registry.state(kept.handle), SRTS_CLOSING);
+    REQUIRE_EQ(registry.state(overflow.handle), SRTS_CLOSED);
+    REQUIRE_EQ(deferred_close_usage_for_testing()[1], charge);
+    registry.clear();
+    REQUIRE_EQ(deferred_close_usage_for_testing()[1], 0U);
+}
+
+TEST(compat_recvfile_preserves_existing_data_before_delivery_and_outside_range)
+{
+    TemporaryFiles files;
+    auto write_existing = [&] {
+        std::ofstream output(files.destination, std::ios::binary);
+        output << "prefix-SUFFIX";
+    };
+    auto contents = [&] {
+        std::ifstream input(files.destination, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input), {});
+    };
+    write_existing();
+    std::int64_t offset = 0;
+    REQUIRE_EQ(receive_file(
+                   nullptr, files.destination_api_path.c_str(), &offset, 1, 1),
+        SRT_ERROR);
+    REQUIRE_EQ(contents(), "prefix-SUFFIX");
+    RetiringMember member;
+    const auto record = SocketRegistry::instance().find(member.handle);
+    REQUIRE_EQ(receive_file(record.get(), files.destination_api_path.c_str(),
+                   &offset, 1, 1),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVALBUFFERAPI);
+    REQUIRE_EQ(contents(), "prefix-SUFFIX");
+    record->public_options.transmission_type = SRTT_FILE;
+    record->public_options.message_api = false;
+    record->public_options.tsbpd_mode = false;
+    offset = -1;
+    REQUIRE_EQ(receive_file(record.get(), files.destination_api_path.c_str(),
+                   &offset, 1, 1),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVWROFF);
+    REQUIRE_EQ(contents(), "prefix-SUFFIX");
+    offset = std::numeric_limits<std::int64_t>::max();
+    REQUIRE_EQ(receive_file(record.get(), files.destination_api_path.c_str(),
+                   &offset, 2, 1),
+        SRT_ERROR);
+    REQUIRE_EQ(contents(), "prefix-SUFFIX");
+    // DATA insertion is independent of the message/stream receive API option.
+    const std::array payload {std::byte {'x'}, std::byte {'y'}};
+    PacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.sequence = SequenceNumber {100};
+    packet.data.message_number = 1;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.payload = payload;
+    member.runtime->process_packet(packet, Ipv4Endpoint::loopback(19000));
+    offset = 7;
+    REQUIRE_EQ(receive_file(record.get(), files.destination_api_path.c_str(),
+                   &offset, 2, 2),
+        2);
+    REQUIRE_EQ(offset, 9);
+    REQUIRE_EQ(contents(), "prefix-xyFFIX");
+    // Zero-offset replacement still truncates the old suffix after delivery.
+    packet.data.sequence = SequenceNumber {101};
+    packet.data.message_number = 2;
+    member.runtime->process_packet(packet, Ipv4Endpoint::loopback(19000));
+    offset = 0;
+    REQUIRE_EQ(receive_file(record.get(), files.destination_api_path.c_str(),
+                   &offset, 2, 2),
+        2);
+    REQUIRE_EQ(offset, 2);
+    REQUIRE_EQ(contents(), "xy");
+    // A terminal peer before the next payload cannot truncate the old file.
+    member.runtime->mark_broken(0);
+    offset = 0;
+    REQUIRE_EQ(receive_file(record.get(), files.destination_api_path.c_str(),
+                   &offset, 2, 2),
+        SRT_ERROR);
+    REQUIRE_EQ(offset, 0);
+    REQUIRE_EQ(contents(), "xy");
 }

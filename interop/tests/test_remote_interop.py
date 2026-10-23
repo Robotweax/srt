@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import queue
+import resource
 import signal
 import socket
 import threading
@@ -165,6 +166,18 @@ class RemoteInteropUnitTests(unittest.TestCase):
             self.assertEqual(root.attrib["failures"], "1")
             self.assertIsNotNone(root.find("./testcase/failure"))
 
+    def test_capture_argv_rejects_privilege_launchers_and_fixes_bounds(self):
+        values = self.inventory()["nodes"]["a"]
+        for command in (["sudo", "-n", "tcpdump"], ["tcpdump", "-w", "{pcap}"]):
+            node = remote_interop.Node.from_inventory("a", {**values, "capture_command": command})
+            with self.assertRaisesRegex(remote_interop.ConfigurationError, "direct tcpdump"):
+                remote_interop.capture_argv(node, 9000, "/tmp/capture.pcap")
+        node = remote_interop.Node.from_inventory("a", {**values, "capture_command": ["/usr/sbin/tcpdump"]})
+        argv = remote_interop.capture_argv(node, 9000, "/tmp/capture.pcap", "interop")
+        self.assertEqual(argv, ["/usr/sbin/tcpdump", "-U", "-n", "-i", "any",
+                               "-s", "192", "-c", "100000", "-Z", "interop",
+                               "-w", "/tmp/capture.pcap", "udp", "port", "9000"])
+
     def test_complete_controller_flow_with_two_local_agents(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -254,6 +267,12 @@ print(json.dumps({{"event": "complete", "role": role,
                 }
                 self.assertIn(("a", "caller"), stopped)
                 self.assertIn(("b", "listener"), stopped)
+                with mock.patch.object(remote_interop.AgentClient, "stop",
+                                       side_effect=remote_interop.AgentError("EPERM test")):
+                    failed_cleanup = remote_interop.run_scenario(
+                        scenario, nodes, agent_source, root / "cleanup-failure", keep_remote=False)
+                self.assertEqual(failed_cleanup["status"], "failed")
+                self.assertIn("EPERM test", " ".join(failed_cleanup["cleanup_errors"]))
             finally:
                 shared.unlink(missing_ok=True)
             self.assertEqual(result["status"], "passed", result.get("error"))
@@ -268,6 +287,58 @@ print(json.dumps({{"event": "complete", "role": role,
 
 
 class RemoteAgentProtocolTests(unittest.TestCase):
+    def test_capture_inherits_hard_file_limit_and_refuses_set_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "tcpdump"
+            executable.write_text(
+                f"#!{sys.executable}\nimport resource, sys\n"
+                "from pathlib import Path\n"
+                "limit = resource.getrlimit(resource.RLIMIT_FSIZE)\n"
+                "print(limit, flush=True)\n"
+                "with open(sys.argv[1], 'wb') as output:\n"
+                "    output.write(b'x' * (33 * 1024 * 1024))\n")
+            executable.chmod(0o755)
+            agent = remote_agent.Agent()
+            initialized = agent.initialize({"run_id": "bounded-capture"})
+            target = Path(initialized["run_directory"]) / "capture.pcap"
+            try:
+                agent.start({"process_id": "capture", "capture": True,
+                             "argv": [str(executable), str(target)]})
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    status = agent.status({"process_id": "capture"})
+                    if not status["running"]:
+                        break
+                    time.sleep(0.01)
+                self.assertFalse(status["running"])
+                hard = resource.getrlimit(resource.RLIMIT_FSIZE)[1]
+                expected = 32 * 1024 * 1024 if hard == resource.RLIM_INFINITY else min(hard, 32 * 1024 * 1024)
+                self.assertLessEqual(target.stat().st_size, expected)
+                self.assertIn(f"({expected}, {expected})", status["stdout_tail"])
+                executable.chmod(0o4755)
+                with self.assertRaisesRegex(ValueError, "non-set-id"):
+                    agent.start({"process_id": "unsafe", "capture": True,
+                                 "argv": [str(executable), str(target)]})
+            finally:
+                agent.cleanup()
+
+    def test_cleanup_attempts_all_groups_and_shutdown_reports_failure(self):
+        agent = remote_agent.Agent()
+        agent.initialize({"run_id": "cleanup-failure"})
+        first, second = object(), object()
+        agent.processes = {"denied": first, "other": second}
+        try:
+            with mock.patch.object(agent, "_terminate", side_effect=[PermissionError("EPERM"), None]) as stop:
+                with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+                    agent.dispatch({"op": "shutdown"})
+                self.assertEqual(stop.call_count, 2)
+            self.assertEqual(agent.processes, {"denied": first})
+            self.assertTrue(agent.run_directory.exists())
+        finally:
+            agent.processes.clear()
+            agent.cleanup()
+
+
     def setUp(self) -> None:
         self.process = subprocess.Popen(
             [sys.executable, "-u", str(INTEROP_DIRECTORY / "remote_agent.py")],

@@ -184,6 +184,14 @@ the file. Applications that require cancellation, event-loop integration, or
 custom storage should implement a partial-I/O loop with the Stream send and
 receive APIs instead of using the blocking helpers.
 
+For `srt_recvfile`, a positive offset overwrites only the received range and
+preserves the existing prefix and suffix. Offset zero replaces the file only
+once the first payload arrives. Invalid socket/mode/offset arguments and failure
+before payload delivery leave an existing file unchanged. A missing destination
+may be created empty while waiting. File access requires read/write permission.
+Later failures can leave partial writes; use a temporary file and application
+level replacement when transactional storage is required.
+
 ## EOF, shutdown, and linger
 
 Receiving peer SHUTDOWN does not discard already buffered stream bytes. Reads
@@ -200,6 +208,13 @@ the send buffer or the configured linger deadline expires. With
 `SRTO_SNDSYN=false`, close may return while the socket is `SRTS_CLOSING`.
 Robotweax retains the runtime through a shared deferred-close worker, then
 sends SHUTDOWN and releases the channel when drain or timeout completes.
+A terminal connection releases its retained ownership without waiting for
+unacknowledged data. Process-wide admission permits at most 256 deferred sockets
+and 256 MiB of combined configured send/receive payload capacity. This byte
+charge is a buffer budget, not a process-memory measurement; the socket count
+also bounds metadata and crypto owners. When either budget is exhausted, close
+falls back to immediate teardown, so outstanding data may be abandoned. These
+limits do not change synchronous linger or the public ABI.
 
 ## PEERERROR
 

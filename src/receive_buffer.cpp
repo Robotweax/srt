@@ -35,10 +35,24 @@ ReceiveBuffer::ReceiveBuffer(
         words = (words + 63U) / 64U;
     }
     occupied_index_.resize(total_words);
+    storage_index_.resize(total_words);
+    rejected_messages_.resize(capacity_packets * 2U);
+    for (std::size_t i = 0; i < rejected_messages_.size(); ++i)
+        rejected_messages_[i].children[0] = i + 1U < rejected_messages_.size()
+            ? static_cast<std::uint32_t>(i + 1U)
+            : no_rejected_node;
 }
 
-void ReceiveBuffer::index_occupied(std::size_t position, bool occupied) noexcept
+void ReceiveBuffer::index_occupied(
+    std::size_t position, bool occupied, bool storage) noexcept
 {
+    if (storage) {
+        // Update both hierarchies on insertion/removal. Payload rejection only
+        // removes readability; the reliability slot stays occupied.
+        occupied_index_.swap(storage_index_);
+        index_occupied(position, occupied, false);
+        occupied_index_.swap(storage_index_);
+    }
     for (std::size_t level = 0; level < occupied_levels_; ++level) {
         const auto word_position = position / 64U;
         auto& word =
@@ -66,15 +80,16 @@ void ReceiveBuffer::advance_frontier(std::size_t packets) noexcept
 }
 
 std::optional<std::size_t> ReceiveBuffer::next_occupied_bit(std::size_t level,
-    std::size_t begin, std::size_t end, std::size_t* word_reads) const noexcept
+    std::size_t begin, std::size_t end, std::size_t* word_reads,
+    bool storage) const noexcept
 {
     if (begin >= end)
         return std::nullopt;
     const auto word_position = begin / 64U;
     if (word_reads != nullptr)
         ++*word_reads;
-    const auto word =
-        occupied_index_[occupied_level_offsets_[level] + word_position]
+    const auto& index = storage ? storage_index_ : occupied_index_;
+    const auto word = index[occupied_level_offsets_[level] + word_position]
         & (~std::uint64_t {0} << (begin % 64U));
     if (word != 0U) {
         const auto found = word_position * 64U
@@ -84,13 +99,12 @@ std::optional<std::size_t> ReceiveBuffer::next_occupied_bit(std::size_t level,
     if (level + 1U == occupied_levels_)
         return std::nullopt;
     const auto next_word = next_occupied_bit(
-        level + 1U, word_position + 1U, (end + 63U) / 64U, word_reads);
+        level + 1U, word_position + 1U, (end + 63U) / 64U, word_reads, storage);
     if (!next_word)
         return std::nullopt;
     if (word_reads != nullptr)
         ++*word_reads;
-    const auto next =
-        occupied_index_[occupied_level_offsets_[level] + *next_word];
+    const auto next = index[occupied_level_offsets_[level] + *next_word];
     const auto found =
         *next_word * 64U + static_cast<std::size_t>(std::countr_zero(next));
     return found < end ? std::optional {found} : std::nullopt;
@@ -150,6 +164,37 @@ bool ReceiveBuffer::is_settled(SequenceNumber sequence) const noexcept
     return slot.dropped || (slot.occupied && slot.header.sequence == sequence);
 }
 
+std::optional<std::size_t> ReceiveBuffer::previous_storage_bit(
+    std::size_t level, std::size_t begin, std::size_t end,
+    std::size_t* word_reads) const noexcept
+{
+    if (begin >= end)
+        return std::nullopt;
+    const auto position = (end - 1U) / 64U;
+    if (word_reads != nullptr)
+        ++*word_reads;
+    const auto word = storage_index_[occupied_level_offsets_[level] + position]
+        & (~std::uint64_t {0} >> (63U - ((end - 1U) % 64U)));
+    if (word != 0U) {
+        const auto found = position * 64U + 63U
+            - static_cast<std::size_t>(std::countl_zero(word));
+        return found >= begin ? std::optional {found} : std::nullopt;
+    }
+    if (level + 1U == occupied_levels_)
+        return std::nullopt;
+    const auto previous =
+        previous_storage_bit(level + 1U, begin / 64U, position, word_reads);
+    if (!previous)
+        return std::nullopt;
+    if (word_reads != nullptr)
+        ++*word_reads;
+    const auto next =
+        storage_index_[occupied_level_offsets_[level] + *previous];
+    const auto found = *previous * 64U + 63U
+        - static_cast<std::size_t>(std::countl_zero(next));
+    return found >= begin ? std::optional {found} : std::nullopt;
+}
+
 void ReceiveBuffer::refresh_first_buffered_timestamp(
     std::size_t* inspected) noexcept
 {
@@ -160,15 +205,12 @@ void ReceiveBuffer::refresh_first_buffered_timestamp(
         last_buffered_timestamp_ = {};
         return;
     }
-    for (std::size_t offset = 0; offset < capacity(); ++offset) {
-        if (inspected != nullptr)
-            ++*inspected;
-        const auto& slot = slots_[(head_ + offset) % capacity()];
-        if (slot.occupied) {
-            first_buffered_sequence_ = slot.header.sequence;
-            first_buffered_timestamp_ = slot.header.timestamp;
-            return;
-        }
+    auto found = next_occupied_bit(0, head_, capacity(), inspected, true);
+    if (!found)
+        found = next_occupied_bit(0, 0, head_, inspected, true);
+    if (found) {
+        first_buffered_sequence_ = slots_[*found].header.sequence;
+        first_buffered_timestamp_ = slots_[*found].header.timestamp;
     }
 }
 
@@ -176,19 +218,98 @@ void ReceiveBuffer::refresh_buffered_timestamp_bounds(
     std::size_t* inspected) noexcept
 {
     refresh_first_buffered_timestamp(inspected);
-    if (occupied_ == 0U) {
+    if (occupied_ == 0U)
         return;
+    auto found = previous_storage_bit(0, 0, head_, inspected);
+    if (!found)
+        found = previous_storage_bit(0, head_, capacity(), inspected);
+    if (found) {
+        last_buffered_sequence_ = slots_[*found].header.sequence;
+        last_buffered_timestamp_ = slots_[*found].header.timestamp;
     }
-    for (std::size_t offset = capacity(); offset > 0U; --offset) {
+}
+
+bool ReceiveBuffer::message_rejected(
+    std::uint32_t message, std::size_t* inspected) const noexcept
+{
+    auto node = rejected_root_;
+    while (node != no_rejected_node) {
         if (inspected != nullptr)
             ++*inspected;
-        const auto& slot = slots_[(head_ + offset - 1U) % capacity()];
-        if (slot.occupied) {
-            last_buffered_sequence_ = slot.header.sequence;
-            last_buffered_timestamp_ = slot.header.timestamp;
-            return;
-        }
+        const auto& entry = rejected_messages_[node];
+        if (entry.bit == 32U)
+            return entry.message == message;
+        node = entry.children[(message >> entry.bit) & 1U];
     }
+    return false;
+}
+
+void ReceiveBuffer::add_rejected_message(std::uint32_t message) noexcept
+{
+    auto node = rejected_root_;
+    while (node != no_rejected_node && rejected_messages_[node].bit != 32U) {
+        const auto& entry = rejected_messages_[node];
+        node = entry.children[(message >> entry.bit) & 1U];
+    }
+    if (node != no_rejected_node
+        && rejected_messages_[node].message == message) {
+        ++rejected_messages_[node].count;
+        return;
+    }
+    const auto leaf = rejected_free_;
+    rejected_free_ = rejected_messages_[leaf].children[0];
+    rejected_messages_[leaf] = {.message = message, .count = 1};
+    if (node == no_rejected_node) {
+        rejected_root_ = leaf;
+        return;
+    }
+    const auto bit = 31U
+        - static_cast<unsigned>(
+            std::countl_zero(message ^ rejected_messages_[node].message));
+    auto* link = &rejected_root_;
+    while (rejected_messages_[*link].bit != 32U
+        && rejected_messages_[*link].bit > bit) {
+        auto& entry = rejected_messages_[*link];
+        link = &entry.children[(message >> entry.bit) & 1U];
+    }
+    const auto branch = rejected_free_;
+    rejected_free_ = rejected_messages_[branch].children[0];
+    auto& entry = rejected_messages_[branch];
+    entry = {.bit = bit};
+    const auto direction = (message >> bit) & 1U;
+    entry.children[direction] = leaf;
+    entry.children[direction ^ 1U] = *link;
+    *link = branch;
+}
+
+void ReceiveBuffer::remove_rejected_message(Slot& slot) noexcept
+{
+    if (!slot.rejected_payload)
+        return;
+    slot.rejected_payload = false;
+    auto* link = &rejected_root_;
+    std::uint32_t parent = no_rejected_node;
+    std::uint32_t* parent_link = nullptr;
+    unsigned direction = 0;
+    while (rejected_messages_[*link].bit != 32U) {
+        parent_link = link;
+        parent = *link;
+        auto& entry = rejected_messages_[parent];
+        direction = (slot.header.message_number >> entry.bit) & 1U;
+        link = &entry.children[direction];
+    }
+    const auto leaf = *link;
+    if (--rejected_messages_[leaf].count != 0U)
+        return;
+    if (parent_link == nullptr)
+        rejected_root_ = no_rejected_node;
+    else {
+        *parent_link = rejected_messages_[parent].children[direction ^ 1U];
+        rejected_messages_[parent].children[0] = rejected_free_;
+        rejected_free_ = parent;
+    }
+    rejected_messages_[leaf].children[0] = rejected_free_;
+    rejected_free_ = leaf;
 }
 
 void ReceiveBuffer::advance_acknowledgement() noexcept
@@ -231,19 +352,9 @@ void ReceiveBuffer::trim_dropped_prefix() noexcept
                 && slot.header.message_number != *discarding_message_) {
                 discarding_message_.reset();
             }
-            if (!discarding_message_.has_value() && has_rejected_payload_) {
-                bool any_rejected = false;
-                for (const auto& candidate : slots_) {
-                    if (candidate.occupied && candidate.rejected_payload) {
-                        any_rejected = true;
-                        if (candidate.header.message_number
-                            == slot.header.message_number) {
-                            discarding_message_ = slot.header.message_number;
-                            break;
-                        }
-                    }
-                }
-                has_rejected_payload_ = any_rejected;
+            if (!discarding_message_.has_value()
+                && message_rejected(slot.header.message_number)) {
+                discarding_message_ = slot.header.message_number;
             }
             if (!discarding_message_.has_value()) {
                 return;
@@ -259,7 +370,7 @@ void ReceiveBuffer::trim_dropped_prefix() noexcept
         }
         index_occupied(head_, false);
         invalidate_delivery_queries();
-        slot.rejected_payload = false;
+        remove_rejected_message(slot);
         slot.payload_size = 0;
         slot.payload_offset = 0;
         slot.gap_deadline_microseconds = 0;
@@ -275,9 +386,9 @@ void ReceiveBuffer::discard_message_payload(SequenceNumber sequence) noexcept
                            + static_cast<std::size_t>(
                                sequence.distance_from(first_stored_sequence_)))
                 % capacity(),
-            false);
+            false, false);
         slot->rejected_payload = true;
-        has_rejected_payload_ = true;
+        add_rejected_message(slot->header.message_number);
         trim_dropped_prefix();
         refresh_buffered_timestamp_bounds();
     }
@@ -349,7 +460,7 @@ ReceiveInsertResult ReceiveBuffer::insert(const PacketView& packet) noexcept
         next_ack_sequence_.distance_from(previous_ack);
     result.contiguous_advance = ack_advance > 0
         ? static_cast<std::uint32_t>(ack_advance) : 0U;
-    if (has_rejected_payload_ || discarding_message_.has_value()) {
+    if (rejected_root_ != no_rejected_node || discarding_message_.has_value()) {
         trim_dropped_prefix();
         refresh_buffered_timestamp_bounds();
     }
@@ -881,6 +992,7 @@ Error ReceiveBuffer::discard_before(
             --occupied_;
         }
         index_occupied((head_ + index) % capacity(), false);
+        remove_rejected_message(slot);
         slot = {};
     }
     if (count >= slots_.size()) {
@@ -1075,6 +1187,7 @@ Error ReceiveBuffer::drop_range_impl(SequenceRange range,
                 - static_cast<std::size_t>(slot.payload_offset);
             payloads_.release(slot.payload_index);
             index_occupied((head_ + offset) % capacity(), false);
+            remove_rejected_message(slot);
             slot.occupied = false;
             slot.payload_size = 0;
             slot.payload_offset = 0;

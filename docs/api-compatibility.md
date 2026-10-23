@@ -170,7 +170,9 @@ timeout per connection.
 
 After shutdown completes, the registry releases the full socket or group
 record. Operations that already acquired shared ownership may finish safely;
-asynchronous linger retains the closing socket until drain or timeout.
+asynchronous linger retains the closing socket until drain, timeout, or a
+terminal connection state. Its process-wide count and payload-capacity budgets
+and immediate-close fallback are described in [File mode](file-mode.md#eof-shutdown-and-linger).
 Configured passphrases are erased after setup cancellation, without waiting
 for final process cleanup or asynchronous linger completion.
 

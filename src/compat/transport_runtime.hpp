@@ -593,6 +593,7 @@ public:
     [[nodiscard]] std::optional<Clock::time_point>
     next_readable_deadline() noexcept;
     [[nodiscard]] bool writable() const noexcept;
+    [[nodiscard]] std::size_t retained_payload_capacity() const noexcept;
     [[nodiscard]] bool wait_for_send_drain(
         std::chrono::milliseconds timeout) noexcept;
     [[nodiscard]] CryptoState sender_crypto_state() const noexcept;

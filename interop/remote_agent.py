@@ -15,6 +15,9 @@ import hashlib
 import json
 import math
 import os
+import pwd
+import resource
+import stat
 import re
 import shutil
 import signal
@@ -86,6 +89,9 @@ class Agent:
             "pid": os.getpid(),
             "python": sys.version.split()[0],
             "run_directory": str(self.run_directory),
+            # Linux tcpdump may otherwise drop to a different account, which
+            # would remove this agent's authority to terminate the capture.
+            "capture_user": pwd.getpwuid(os.geteuid()).pw_name if sys.platform.startswith("linux") else None,
         }
 
     def start(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -129,6 +135,24 @@ class Agent:
         if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
             raise RuntimeError("process cleanup requires default SIGCHLD handling")
 
+        capture = request.get("capture", False)
+        if not isinstance(capture, bool):
+            raise ValueError("capture must be a boolean")
+        if capture:
+            executable = shutil.which(argv_value[0])
+            if (executable is None or Path(executable).name != "tcpdump"
+                    or os.stat(executable).st_mode & (stat.S_ISUID | stat.S_ISGID)):
+                raise ValueError("capture requires direct, non-set-id tcpdump")
+
+        def capture_limits() -> None:
+            # The agent is single-threaded. The hard inherited limit also
+            # bounds output if the controller disconnects or stop fails.
+            limit = 32 * 1024 * 1024
+            _, inherited_hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+            if inherited_hard != resource.RLIM_INFINITY:
+                limit = min(limit, inherited_hard)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+
         stdout_path = self._artifact_path(f"{process_id}.stdout")
         stderr_path = self._artifact_path(f"{process_id}.stderr")
         stdout_file = stdout_path.open("wb")
@@ -142,6 +166,7 @@ class Agent:
                 stdout=stdout_file,
                 stderr=stderr_file,
                 start_new_session=True,
+                preexec_fn=capture_limits if capture else None,
             )
         except BaseException:
             stdout_file.close()
@@ -349,9 +374,15 @@ class Agent:
         record.stderr_file.close()
 
     def cleanup(self) -> None:
-        for record in self.processes.values():
-            self._terminate(record, 1.0)
-        self.processes.clear()
+        errors: list[str] = []
+        for process_id, record in list(self.processes.items()):
+            try:
+                self._terminate(record, 1.0)
+                del self.processes[process_id]
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                errors.append(f"{process_id}: {error}")
+        if errors:
+            raise RuntimeError("process cleanup failed: " + "; ".join(errors))
         if (
             self.run_directory is not None
             and not self.keep_directory
@@ -380,6 +411,7 @@ class Agent:
         if operation == "binary_info":
             return self.binary_info(request)
         if operation == "shutdown":
+            self.cleanup()
             return {"shutdown": True}
         raise ValueError(f"unsupported operation: {operation!r}")
 

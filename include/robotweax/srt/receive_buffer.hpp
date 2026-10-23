@@ -172,11 +172,12 @@ private:
     [[nodiscard]] std::optional<BufferedMessageInfo>
     query_first_buffered_packet(std::size_t* inspected) const noexcept;
 
-    void index_occupied(std::size_t position, bool occupied) noexcept;
+    void index_occupied(
+        std::size_t position, bool occupied, bool storage = true) noexcept;
     void advance_frontier(std::size_t packets) noexcept;
     [[nodiscard]] std::optional<std::size_t> next_occupied_bit(
         std::size_t level, std::size_t begin, std::size_t end,
-        std::size_t* word_reads) const noexcept;
+        std::size_t* word_reads, bool storage = false) const noexcept;
     [[nodiscard]] std::optional<std::size_t> next_occupied_offset(
         std::size_t begin, std::size_t* word_reads = nullptr) const noexcept;
 
@@ -223,7 +224,22 @@ private:
     mutable bool packet_query_valid_ = false;
     mutable std::optional<BufferedMessageInfo> message_query_;
     mutable std::optional<BufferedMessageInfo> packet_query_;
-    bool has_rejected_payload_ = false;
+    // A compressed binary trie bounds rejected-message membership to 32 key
+    // bits. Nodes are allocated with the ring, never on the receive path.
+    struct RejectedMessageNode {
+        std::array<std::uint32_t, 2> children {};
+        std::uint32_t message = 0;
+        std::uint32_t count = 0;
+        unsigned bit = 32;
+    };
+    static constexpr std::uint32_t no_rejected_node = UINT32_MAX;
+    std::vector<RejectedMessageNode> rejected_messages_;
+    std::uint32_t rejected_root_ = no_rejected_node;
+    std::uint32_t rejected_free_ = 0;
+    [[nodiscard]] bool message_rejected(
+        std::uint32_t message, std::size_t* inspected = nullptr) const noexcept;
+    void add_rejected_message(std::uint32_t message) noexcept;
+    void remove_rejected_message(Slot& slot) noexcept;
     std::optional<std::uint32_t> discarding_message_;
     detail::PayloadPool payloads_;
     std::vector<Slot> slots_;
@@ -231,6 +247,11 @@ private:
     // words below it. Physical positions keep frontier movement allocation-free.
     // The sequence-space capacity limit needs at most five 64-way levels.
     std::vector<std::uint64_t> occupied_index_;
+    // Includes rejected slots, which still retain reliability state.
+    std::vector<std::uint64_t> storage_index_;
+    [[nodiscard]] std::optional<std::size_t> previous_storage_bit(
+        std::size_t level, std::size_t begin, std::size_t end,
+        std::size_t* word_reads) const noexcept;
     static_assert(SequenceNumber::half_range <= (std::uint64_t {1} << 30U));
     std::array<std::size_t, 5> occupied_level_offsets_ {};
     std::size_t occupied_levels_ = 0;

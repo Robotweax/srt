@@ -175,6 +175,10 @@ void mark_runtime_cleanup_worker_thread() noexcept;
     std::chrono::steady_clock::time_point now) noexcept;
 
 [[nodiscard]] std::size_t retired_datagram_channels_for_testing() noexcept;
+[[nodiscard]] bool set_deferred_close_limits_for_testing(
+    std::size_t count, std::size_t bytes) noexcept;
+[[nodiscard]] std::array<std::size_t, 2>
+deferred_close_usage_for_testing() noexcept;
 
 [[nodiscard]] int get_socket_option(
     SRTSOCKET handle, SocketRecord& socket, SRT_SOCKOPT option,

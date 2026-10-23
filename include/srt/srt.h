@@ -1214,6 +1214,11 @@ SRT_API int64_t srt_sendfile(
 
 /**
  * @brief Receives file bytes through Stream mode.
+ * A positive offset overwrites only the received range, preserving other bytes.
+ * Offset zero replaces the destination after the first payload arrives.
+ * Invalid arguments and failure before payload delivery do not truncate an
+ * existing destination. Later failures may leave a partially written file;
+ * this helper is not transactional.
  * @param path NUL-terminated destination path borrowed for this call.
  * @param[in,out] offset File offset advanced only by transferred bytes.
  * @param size Maximum bytes to receive.
