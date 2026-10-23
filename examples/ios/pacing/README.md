@@ -151,3 +151,93 @@ iPhone workload. Android physical-device qualification, encrypted performance,
 background behavior, network migration and long-running battery measurements
 remain separate work. Keep the mobile option off by default until evidence
 supports a platform-specific decision.
+
+
+## Initial physical iPhone results — 2026-10-23
+
+The timer candidate reduced CPU per delivered bit and met its scoped throughput
+and CPU gates on one iPhone. It substantially increased wake-ups for 188-byte
+messages. This is **not a full mobile qualification pass or a battery-life
+result**: the original protocol's baseline throughput gates failed for the
+5/8 Mbit/s controls, and one baseline connection failure remains unexplained.
+Keep `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING=OFF` by default.
+
+Tested source: `fcead32652951dccdb550863ac527bb76c80c819`. Both installed app
+variants were Release builds from that source, differing in the mobile pacing
+option, with the corrected 4096-packet application window and 4 MiB SRT send
+buffer. Toolchain: Xcode 26.6 (17F113), iOS SDK 26.5, ARM64 deployment target 17.0;
+OpenSSL 3.6.3 at `aae016bfd52fcad2bc9657c2c782cfdf73b1ed5f`.
+The device was an iPhone 14 Pro (`iPhone15,2`) on iOS 27.0.1, foreground on the
+same IPv4 Wi-Fi, USB connected to the desktop. Every completed scored run
+reported nominal thermal state before/after and Low Power Mode off. This setup
+did not measure energy or control ambient radio traffic.
+
+The table contains per-profile medians of two runs per variant from six complete
+ABBA blocks (24 successful transfers, requested duration 30 seconds each).
+Arrows mean **legacy baseline → timer candidate**. CPU seconds per useful Gbit
+normalizes for delivered payload; CPU percentage alone is misleading when the
+legacy variant misses the requested rate.
+
+| Target Mbit/s | Payload bytes | Delivered Mbit/s | CPU seconds / useful Gbit | CPU reduction | Interrupt wake-ups / second |
+| --- | --- | --- | --- | --- | --- |
+| 2 | 188 | 1.995 → 1.989 | 499.15 → 88.71 | 82.2% | 69 → 1370 |
+| 2 | 1316 | 1.978 → 1.994 | 35.86 → 28.69 | 20.0% | 764 → 814 |
+| 5 | 188 | 4.941 → 4.968 | 200.20 → 63.52 | 68.3% | 35 → 3210 |
+| 5 | 1316 | 3.962 → 4.971 | 17.02 → 15.80 | 7.2% | 536 → 631 |
+| 8 | 188 | 7.960 → 7.995 | 125.48 → 13.64 | 89.1% | 27 → 5275 |
+| 8 | 1316 | 6.218 → 7.954 | 17.09 → 14.15 | 17.2% | 692 → 853 |
+
+All 12 candidate runs delivered at least 99.3% of their requested payload rate,
+with exact sender/receiver counts and payload integrity. The three 188-byte
+profiles met the predeclared 10% median CPU reduction gate; all 1316-byte controls
+met the no-more-than-10% CPU regression gate. Four baseline control runs missed
+the 95% throughput gate. Therefore the protocol's requirement that *every scored
+run* meet that rate gate did not pass, even though every candidate run did.
+
+Wake-ups are not energy measurements. At 188 bytes the candidate replaces a
+nearly continuously busy transport worker with roughly one timer wake per
+packet, increasing interrupt wake-up rates to about 1370/3210/5275 per second at
+2/5/8 Mbit/s. For the 5/8 Mbit/s controls, wake-ups per second increase while
+total interrupt wake-ups per fixed payload decrease by about 6%/3%, because the
+candidate finishes sooner. Timer-bin and platform-idle counts are retained in
+the private per-run reports; the categories overlap and must not be summed.
+Apple's [timer energy guidance](https://developer.apple.com/library/archive/documentation/Performance/Conceptual/EnergyGuide-iOS/MinimizeTimerUse.html)
+recommends minimizing wake-ups and batching timers where timing permits. These
+results support investigating bounded timer coalescing and measuring energy;
+they do not establish a battery benefit from CPU savings alone.
+
+### Failures and limits retained in the result
+
+There were 28 scored attempts with the corrected harness: 27 complete transfers
+and one failed baseline attempt. In the first 5 Mbit/s/1316-byte block, the last
+baseline connection broke after 19.36 seconds; sender and receiver exited 5 with
+incomplete delivery. The app remained foreground at nominal thermal state, and
+the operator reported no network changes. The desktop address was unchanged;
+checking the Mac power log did not identify a sleep/wake event in that window.
+The cause is unknown. A separate instrumented baseline repeat succeeded; its
+observer overhead excludes it from performance results. The entire affected
+ABBA block was then repeated with complete data delivery. The original failed attempt and the
+three successful runs in its incomplete block remain in the evidence and are
+not silently replaced by a qualification pass.
+
+Recovered loss/retransmission counts varied across the Wi-Fi runs. For the
+188-byte profiles, baseline retransmission pairs were 2/2, 169/0 and 0/1123;
+candidate pairs were 0/0, 0/0 and 2/0. For the complete 1316-byte blocks they
+were baseline 0/0, 0/0 and 0/15, versus candidate 1/0, 0/0 and 0/0.
+Every complete transfer retained exact application data. At 5/8 Mbit/s, comparing
+the zero-loss baseline and candidate runs still shows the large small-packet CPU
+benefit. This does not establish a loss-rate improvement or explain the isolated
+connection break; stability investigation remains required.
+
+The original 64-packet harness runs are separate exploratory evidence. They
+exposed application-window polling and saturation problems and do not qualify
+transport wake-ups or throughput. Neither those runs nor the instrumented repeat
+are included in the table. The source revision, app binary hashes, every attempt,
+resource JSON, sender/receiver logs, profile medians and comparison scripts are
+retained in private qualification evidence; device identifiers and personal
+network details are not published.
+
+Before default enablement: investigate the baseline connection failure, assess
+timer coalescing with bounded burst/latency behavior, and perform longer device
+energy/resource checks. Android physical devices, encrypted performance,
+background execution, connection groups and network migration remain unqualified.
