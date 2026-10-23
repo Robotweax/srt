@@ -210,9 +210,9 @@ real earlier-release upgrades, repair, rejection and backend coexistence, then
 builds and runs a consumer against the installed SDK. For 0.3.1,
 the earlier inputs are the published signed 0.3.0 OpenSSL/BCrypt installers,
 checked against their fixed SHA-256 values and valid Authenticode signatures.
-The [final tag SDK run](https://github.com/Robotweax/srt/actions/runs/38624266358)
-passed installer, coexistence, independent-rebuild and signing checks; see the
-[publication record](../../docs/release-process-0.3.0.md#publication-record). Uninstall removes the
+The historical [0.3.0 final tag SDK run](https://github.com/Robotweax/srt/actions/runs/38624266358)
+passed installer, coexistence, independent-rebuild and signing checks for 0.3.0;
+see its [publication record](../../docs/release-process-0.3.0.md#publication-record). Uninstall removes the
 backend environment variable only when it still points to this installation.
 
 References: [Inno Setup command-line options](https://jrsoftware.org/ishelp/topic_setupcmdline.htm),
