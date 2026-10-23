@@ -212,7 +212,11 @@ power or battery improvement is claimed without physical-device measurements.
 The [iOS pacing measurement app](../examples/ios/pacing/README.md) supplies
 separate baseline/candidate bundles, CPU and Mach wake-up counters, and a
 predeclared same-phone comparison protocol at 2–8 Mbit/s. Android has no
-physical-device qualification from this iOS experiment.
+physical-device qualification from this iOS experiment. The initial physical iPhone
+comparison is recorded in that app's results section: the candidate met its
+scoped CPU/rate gates, but wake-ups increased and an isolated baseline connection
+failure remains unexplained. The mobile option remains off by default; no
+battery-life or general mobile qualification is claimed.
 
 Android consumers must package the matching shared C++ runtime and link Crypto
 and all transitive dependencies. iOS consumers must link matching target libraries;
