@@ -159,6 +159,26 @@ normal per-packet requirement in the transport core.
 
 ## Scheduling and threading
 
+On Linux and macOS, library-owned threads receive diagnostic names at thread
+start. Names fit Linux's 15-byte visible limit:
+
+| Name | Work |
+| --- | --- |
+| `rwx-shard-<k>` | Scheduler shard `k`, including its protocol and timer work |
+| `rwx-worker-<k>` | Bounded runtime work-pool worker `k` |
+| `rwx-readiness` | Native socket-readiness watcher |
+| `rwx-callback` | Connection-completion callback worker |
+| `rwx-close` | Deferred socket/channel close worker |
+
+Indices start at zero and identify workers within their pool, not sockets.
+Production scheduler shard count follows `ROBOTWEAX_SRT_SCHEDULER_SHARDS`.
+There is no separate transport or timer thread per connection. Linux host tools
+can attribute shard CPU through `/proc/<pid>/task/<tid>/comm` or the name in
+`stat`. Pool restarts can reuse names; they are diagnostic labels, not persistent
+thread identities or public ABI. Naming is best effort: an operating-system
+failure does not change startup or transport behavior. Other platforms retain
+their existing thread names.
+
 Protocol work is scheduled by affinity so that one logical connection's state
 machine is not mutated concurrently. A bounded process-wide execution model
 services connection, listener, Rendezvous, UDP, callback-completion, and linger
