@@ -8,12 +8,12 @@ adds direct group adoption. Source-tree C++ consumers must rebuild.
 
 ## Immutable product archive
 
-- Product commit: `e4afb700aca52fdf1853c89edfb96116d5bc2d55`.
-- Public archive: `https://github.com/Robotweax/srt/archive/e4afb700aca52fdf1853c89edfb96116d5bc2d55.tar.gz`.
-- Bytes: 2109210.
-- SHA-256: `8b243765192a552ec26627b2243ef8ab4cd517b9e213d1624c4334e7597cad80`.
-- SHA-512: `17569c8f89b8300b3acfca94258babce3c2870aeda40cde8eb6f61d9f6873bf6af717691e07bf87274e9e47fdd70c64252a49607ef8c994eba2eb3953072a4bc`.
-- All 717 tracked regular file bytes and executable bits matched Git.
+- Product commit: `003a5f8046000c4801b2695f8b316ce05976bbbb`.
+- Public archive: `https://github.com/Robotweax/srt/archive/003a5f8046000c4801b2695f8b316ce05976bbbb.tar.gz`.
+- Bytes: 2111096.
+- SHA-256: `d9ac2ed863adbc0c7accb112ad7dcd8ccf15c6a72f2a5f9fd324a863df77a222`.
+- SHA-512: `c143231c9370d6af2838e5cdba0f1e52aefdb79156924fae642ad15a0a190523eb647d37f36ed56c8ca8fa651f9c73a7c2e0bc37b5eaad1dc6883072cce90e02`.
+- All 719 tracked regular file bytes and executable bits matched Git.
 - Machine-readable identity and protected product paths: [source-0.3.1.json](source-0.3.1.json).
 
 Homebrew, vcpkg, DEB/RPM and Linux test scripts select this archive, not a moving
@@ -22,7 +22,7 @@ product path, including installed documentation and Windows build/signing recipe
 Verify this before accepting their results:
 
 ```sh
-git diff --exit-code e4afb700aca52fdf1853c89edfb96116d5bc2d55 HEAD -- src include cmake compat CMakeLists.txt docs README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md THIRD_PARTY.md LICENSE examples experimental fuzz benchmarks tools tests interop .github/workflows/windows-sdk.yml packaging/windows
+git diff --exit-code 003a5f8046000c4801b2695f8b316ce05976bbbb HEAD -- src include cmake compat CMakeLists.txt docs README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md THIRD_PARTY.md LICENSE examples experimental fuzz benchmarks tools tests interop .github/workflows/windows-sdk.yml packaging/windows
 ```
 
 ## Finished documentation and upgrade inputs

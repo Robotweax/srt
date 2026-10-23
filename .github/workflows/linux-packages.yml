@@ -48,8 +48,8 @@ jobs:
         run: |
           set -euo pipefail
           curl -fL --retry 3 --output "$RUNNER_TEMP/source.tar.gz" \
-            https://github.com/Robotweax/srt/archive/e4afb700aca52fdf1853c89edfb96116d5bc2d55.tar.gz
-          echo "8b243765192a552ec26627b2243ef8ab4cd517b9e213d1624c4334e7597cad80  $RUNNER_TEMP/source.tar.gz" |
+            https://github.com/Robotweax/srt/archive/003a5f8046000c4801b2695f8b316ce05976bbbb.tar.gz
+          echo "d9ac2ed863adbc0c7accb112ad7dcd8ccf15c6a72f2a5f9fd324a863df77a222  $RUNNER_TEMP/source.tar.gz" |
             sha256sum --check -
       - name: Build, install, test coexistence and removal
         shell: bash
