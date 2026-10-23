@@ -24,18 +24,7 @@
         "haivision": "/opt/robotweax-srt/reference-build/haivision_srt_interop_peer"
       },
       "capture_command": [
-        "sudo",
-        "-n",
-        "tcpdump",
-        "-U",
-        "-n",
-        "-i",
-        "any",
-        "-w",
-        "{pcap}",
-        "udp",
-        "port",
-        "{port}"
+        "tcpdump"
       ]
     },
     "node_b": {
@@ -61,18 +50,7 @@
         "haivision": "/opt/robotweax-srt/reference-build/haivision_srt_interop_peer"
       },
       "capture_command": [
-        "sudo",
-        "-n",
-        "tcpdump",
-        "-U",
-        "-n",
-        "-i",
-        "any",
-        "-w",
-        "{pcap}",
-        "udp",
-        "port",
-        "{port}"
+        "tcpdump"
       ]
     }
   }

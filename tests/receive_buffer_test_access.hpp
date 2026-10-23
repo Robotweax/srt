@@ -18,6 +18,21 @@ struct ReceiveBufferTestAccess {
         return buffer.occupied_index_.size() * sizeof(std::uint64_t);
     }
 
+    static bool rejected(const ReceiveBuffer& buffer, std::uint32_t message,
+        std::size_t& inspected) noexcept
+    {
+        return buffer.message_rejected(message, &inspected);
+    }
+    static bool rejections_empty(const ReceiveBuffer& buffer) noexcept
+    {
+        return buffer.rejected_root_ == ReceiveBuffer::no_rejected_node;
+    }
+    static void timestamp_bounds(
+        ReceiveBuffer& buffer, std::size_t& inspected) noexcept
+    {
+        buffer.refresh_buffered_timestamp_bounds(&inspected);
+    }
+
     // Independent, uncached reconstruction over the logical receive window.
     // This deliberately ignores the optimized bounds and cached answers.
     static std::optional<BufferedMessageInfo> reference(

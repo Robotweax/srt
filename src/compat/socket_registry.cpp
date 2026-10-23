@@ -56,6 +56,7 @@ struct DeferredClose {
     bool retire_idle_channel = false;
     std::uint64_t close_generation = 0;
     RetiredGroupMemberStatistics group_statistics;
+    std::size_t payload_capacity = 0;
 };
 
 void retire_idle_channel(const std::shared_ptr<DatagramChannel>& channel,
@@ -126,6 +127,13 @@ void finish_close(DeferredClose close) noexcept
 
 class DeferredCloseManager {
 public:
+    // Bound asynchronous ownership separately from passive channel retirement.
+    // The byte charge is configured payload storage, not a process RSS metric;
+    // the count limit also bounds per-runtime metadata and crypto ownership.
+    static constexpr std::size_t maximum_deferred_closes = 256;
+    static constexpr std::size_t maximum_payload_capacity =
+        256U * 1024U * 1024U;
+
     // Bound distinct native channels, not sockets/runtimes/crypto sessions.
     // Resource exhaustion falls back to the existing immediate retirement.
     static constexpr std::size_t maximum_retired_channels = 256;
@@ -190,9 +198,14 @@ public:
     [[nodiscard]] bool schedule(
         DeferredClose& close) noexcept
     {
+        close.payload_capacity = close.runtime != nullptr
+            ? close.runtime->retained_payload_capacity()
+            : 0U;
         {
             std::lock_guard lock(mutex_);
-            if (!accepting_ || stopping_ || close.close_generation == 0U
+            if (closes_.size() >= close_limit_
+                || close.payload_capacity > payload_limit_ - payload_capacity_
+                || !accepting_ || stopping_ || close.close_generation == 0U
                 || close.close_generation != generation_) {
                 return false;
             }
@@ -201,6 +214,7 @@ public:
             }
             try {
                 closes_.push_back(std::move(close));
+                payload_capacity_ += closes_.back().payload_capacity;
             } catch (...) {
                 return false;
             }
@@ -222,10 +236,11 @@ public:
                 std::lock_guard lock(mutex_);
                 for (auto entry = closes_.begin();
                      entry != closes_.end(); ++entry) {
-                    if (now >= entry->deadline
-                        || entry->runtime == nullptr
+                    if (now >= entry->deadline || entry->runtime == nullptr
+                        || entry->runtime->terminal()
                         || entry->runtime->wait_for_send_drain(
-                            std::chrono::milliseconds{0})) {
+                            std::chrono::milliseconds {0})) {
+                        payload_capacity_ -= entry->payload_capacity;
                         close = std::move(*entry);
                         closes_.erase(entry);
                         found = true;
@@ -267,11 +282,29 @@ public:
                 if (closes_.empty()) {
                     return;
                 }
+                payload_capacity_ -= closes_.back().payload_capacity;
                 close = std::move(closes_.back());
                 closes_.pop_back();
             }
             finish_close(std::move(close));
         }
+    }
+
+    [[nodiscard]] bool set_limits_for_testing(
+        std::size_t count, std::size_t bytes) noexcept
+    {
+        std::lock_guard lock(mutex_);
+        if (!closes_.empty())
+            return false;
+        close_limit_ = count;
+        payload_limit_ = bytes;
+        return true;
+    }
+
+    [[nodiscard]] std::array<std::size_t, 2> usage_for_testing() noexcept
+    {
+        std::lock_guard lock(mutex_);
+        return {closes_.size(), payload_capacity_};
     }
 
 private:
@@ -351,6 +384,9 @@ private:
     std::mutex service_mutex_;
     std::condition_variable changed_;
     std::vector<DeferredClose> closes_;
+    std::size_t payload_capacity_ = 0;
+    std::size_t close_limit_ = maximum_deferred_closes;
+    std::size_t payload_limit_ = maximum_payload_capacity;
     std::array<RetiredChannel, maximum_retired_channels> retired_channels_ {};
     std::size_t retired_channel_count_ = 0;
     std::thread worker_;
@@ -497,12 +533,9 @@ void shutdown_record(
         (void)runtime->wait_for_send_drain(
             std::chrono::seconds{linger_seconds});
     }
-    if (honor_linger
-        && runtime != nullptr
-        && asynchronous_linger
-        && linger_seconds > 0
-        && !runtime->wait_for_send_drain(
-            std::chrono::milliseconds{0})) {
+    if (honor_linger && runtime != nullptr && asynchronous_linger
+        && !runtime->terminal() && linger_seconds > 0
+        && !runtime->wait_for_send_drain(std::chrono::milliseconds {0})) {
         DeferredClose close {
             .record = record,
             .channel = channel,
@@ -531,6 +564,17 @@ void shutdown_record(
 }
 
 } // namespace
+
+bool set_deferred_close_limits_for_testing(
+    std::size_t count, std::size_t bytes) noexcept
+{
+    return deferred_close_manager().set_limits_for_testing(count, bytes);
+}
+
+std::array<std::size_t, 2> deferred_close_usage_for_testing() noexcept
+{
+    return deferred_close_manager().usage_for_testing();
+}
 
 SocketRecord::SocketRecord(Purpose purpose)
     : readiness_source(purpose == Purpose::transport

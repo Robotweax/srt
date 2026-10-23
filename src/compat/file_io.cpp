@@ -230,6 +230,11 @@ std::int64_t send_file(
     }
 }
 
+static std::int64_t receive_file_impl(SocketRecord* socket,
+    std::ostream& output, std::int64_t* offset, std::int64_t size,
+    int block_size, std::ofstream* destination = nullptr,
+    const char* path = nullptr) noexcept;
+
 std::int64_t receive_file(
     SocketRecord* socket,
     const char* path,
@@ -242,13 +247,9 @@ std::int64_t receive_file(
     }
 
     try {
-        std::ofstream output(
-            path, std::ios::binary | std::ios::out);
-        if (!output.is_open()) {
-            return fail(SRT_EWRPERM);
-        }
-        return receive_file_stream(
-            socket, output, offset, size, block_size);
+        std::ofstream output;
+        return receive_file_impl(
+            socket, output, offset, size, block_size, &output, path);
     } catch (const std::bad_alloc&) {
         return fail(SRT_ENOBUF);
     } catch (...) {
@@ -256,12 +257,9 @@ std::int64_t receive_file(
     }
 }
 
-std::int64_t receive_file_stream(
-    SocketRecord* socket,
-    std::ostream& output,
-    std::int64_t* offset,
-    std::int64_t size,
-    int block_size) noexcept
+static std::int64_t receive_file_impl(SocketRecord* socket,
+    std::ostream& output, std::int64_t* offset, std::int64_t size,
+    int block_size, std::ofstream* destination, const char* path) noexcept
 {
     if (offset == nullptr || block_size <= 0) {
         return fail(SRT_EINVPARAM);
@@ -281,12 +279,33 @@ std::int64_t receive_file_stream(
         if (*offset < 0) {
             return fail(SRT_EINVWROFF);
         }
-        if (size > std::numeric_limits<std::int64_t>::max()
-                - *offset
-            || static_cast<std::uint64_t>(*offset)
+        if (size > std::numeric_limits<std::int64_t>::max() - *offset
+            || static_cast<std::uint64_t>(*offset) > static_cast<std::uint64_t>(
+                   std::numeric_limits<std::streamoff>::max())
+            || static_cast<std::uint64_t>(*offset + size)
                 > static_cast<std::uint64_t>(
                     std::numeric_limits<std::streamoff>::max())) {
             return fail(SRT_EINVWROFF);
+        }
+        if (destination != nullptr) {
+            // Validate before touching the path. Opening with in|out preserves
+            // an existing destination, including for a zero-offset transfer.
+            destination->open(
+                path, std::ios::binary | std::ios::in | std::ios::out);
+            if (!destination->is_open()) {
+                destination->clear();
+                // app creates a missing file without truncating an existing
+                // one if the first open failed for a different reason.
+                destination->open(path, std::ios::binary | std::ios::app);
+                if (!destination->is_open())
+                    return fail(SRT_EWRPERM);
+                destination->close();
+                destination->clear();
+                destination->open(
+                    path, std::ios::binary | std::ios::in | std::ios::out);
+            }
+            if (!destination->is_open())
+                return fail(SRT_EWRPERM);
         }
         if (*offset > 0) {
             try {
@@ -324,6 +343,14 @@ std::int64_t receive_file_stream(
                 break;
             }
 
+            if (destination != nullptr && transferred == 0 && *offset == 0) {
+                // Whole-file replacement begins only after the first payload
+                // arrives. A peer abort before delivery preserves prior data.
+                destination->close();
+                destination->open(path, std::ios::binary | std::ios::out);
+                if (!destination->is_open())
+                    return file_write_failure(context.runtime);
+            }
             try {
                 output.write(
                     reinterpret_cast<const char*>(buffer.data()),
@@ -355,6 +382,12 @@ std::int64_t receive_file_stream(
     } catch (...) {
         return fail(SRT_EFILE);
     }
+}
+
+std::int64_t receive_file_stream(SocketRecord* socket, std::ostream& output,
+    std::int64_t* offset, std::int64_t size, int block_size) noexcept
+{
+    return receive_file_impl(socket, output, offset, size, block_size);
 }
 
 } // namespace robotweax::srt::compat

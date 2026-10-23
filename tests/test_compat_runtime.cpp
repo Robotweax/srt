@@ -13371,3 +13371,102 @@ TEST(compat_runtime_rejects_ack_of_pending_udp_data_and_caps_credit)
             <= 64U);
     }
 }
+
+TEST(
+    compat_channel_optional_encryption_discards_full_ring_without_starving_peer)
+{
+    for (const bool local_secret : {false, true}) {
+        FairnessFixture fixture;
+        CapturedDatagrams captured;
+        fixture.channel->set_send_hook_for_testing(capture_datagram, &captured);
+        SocketOptions options;
+        REQUIRE_EQ(
+            options.set(SocketOption::enforced_encryption, 0), Error::none);
+        REQUIRE_EQ(
+            options.set(SocketOption::send_buffer_packets, 4), Error::none);
+        REQUIRE_EQ(options.set(SocketOption::receive_buffer_packets, 8192),
+            Error::none);
+        std::shared_ptr<CryptoSession> crypto;
+        if (local_secret) {
+            crypto = std::make_shared<CryptoSession>(CryptoConfiguration {
+                .passphrase = "synthetic missing peer key", .key_length = 16});
+        }
+        const IpEndpoint peer {.address = {192, 0, 2, 94}, .port = 15'094};
+        auto rejected = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {.channel = fixture.channel,
+                .peer = peer,
+                .peer_socket_id = 1,
+                .initial_sequence = SequenceNumber {700},
+                .flow_window_packets = 8192,
+                .options = options,
+                .origin = ConnectionRuntime::Clock::now(),
+                .crypto = crypto,
+                .now_function = injected_now,
+                .now_context = &fixture.now});
+        REQUIRE(fixture.channel->register_connection(1, rejected));
+        auto healthy = fixture.add(2);
+        std::uint32_t discarded = 0;
+        std::uint32_t turns = 0;
+        const std::array payload {std::byte {'h'}};
+        while (discarded < 8192) {
+            unsigned received = 0;
+            bool delivered_healthy = false;
+            auto input =
+                [&](std::span<std::byte> storage) noexcept -> UdpIoResult {
+                if (delivered_healthy)
+                    return {.error = Error::would_block};
+                MutablePacketView packet;
+                packet.kind = PacketKind::data;
+                auto& header = packet.data;
+                header.boundary = MessageBoundary::solo;
+                if (received < 63 && discarded < 8192) {
+                    header.sequence = SequenceNumber {700}.advanced(discarded);
+                    header.message_number = ++discarded;
+                    header.encryption_key = EncryptionKey::even;
+                    header.destination_socket_id = 1;
+                    ++received;
+                    const auto encoded = encode_packet(packet, storage);
+                    return {.bytes_transferred = encoded.bytes_written,
+                        .peer = peer};
+                }
+                delivered_healthy = true;
+                header.sequence = SequenceNumber {700}.advanced(turns);
+                header.message_number = turns + 1;
+                header.destination_socket_id = 2;
+                packet.payload = payload;
+                const auto encoded = encode_packet(packet, storage);
+                return {
+                    .bytes_transferred = encoded.bytes_written, .peer = peer};
+            };
+            (void)fixture.channel->run_once_for_testing(input);
+            fixture.now += 11'000;
+            (void)fixture.poll();
+            std::array<std::byte, 1> output {};
+            REQUIRE_EQ(healthy->receive_message(output, false, 0).status,
+                MessageIoStatus::success);
+            REQUIRE_EQ(output, payload);
+            REQUIRE_EQ(rejected->receive_message(output, false, 0).status,
+                MessageIoStatus::would_block);
+            REQUIRE(!healthy->broken());
+            REQUIRE(!rejected->broken());
+            ++turns;
+        }
+        REQUIRE_EQ(rejected->statistics(false, true)
+                       .total.receiver_undecryptable.packets,
+            8192U);
+        bool acknowledged_cycle = false;
+        for (const auto& datagram : take_datagrams(captured)) {
+            const auto packet = decode_packet(datagram);
+            REQUIRE(packet);
+            if (packet.packet.kind == PacketKind::control
+                && packet.packet.control.destination_socket_id == 1
+                && packet.packet.control.type == ControlType::acknowledgement) {
+                const auto ack = decode_acknowledgement(packet.packet);
+                REQUIRE(ack);
+                acknowledged_cycle |=
+                    ack.acknowledgement.next_sequence == SequenceNumber {8892};
+            }
+        }
+        REQUIRE(acknowledged_cycle);
+    }
+}

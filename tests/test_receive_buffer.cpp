@@ -1062,3 +1062,72 @@ TEST(receive_buffer_sensor_expiration_inspects_each_slot_once_across_wrap)
         REQUIRE(!buffer.next_gap_deadline());
     }
 }
+
+TEST(receive_buffer_rejected_solo_cycle_has_no_stale_message_state)
+{
+    ReceiveBuffer buffer {SequenceNumber {SequenceNumber::mask - 100U}, 8192};
+    for (std::uint32_t i = 0; i < 16384; ++i) {
+        const auto sequence = buffer.first_stored_sequence();
+        REQUIRE(
+            buffer.insert(data_packet(sequence, i, MessageBoundary::solo, {})));
+        buffer.discard_message_payload(sequence);
+        REQUIRE_EQ(buffer.occupied(), 0U);
+        REQUIRE_EQ(buffer.first_stored_sequence(), sequence.next());
+        REQUIRE(detail::ReceiveBufferTestAccess::rejections_empty(buffer));
+    }
+}
+
+TEST(receive_buffer_rejected_message_index_is_bounded_and_recycles_across_gaps)
+{
+    ReceiveBuffer buffer {SequenceNumber {100}, 1024};
+    // Every other slot has a different rejected message. Distinct keys also
+    // exercise long common prefixes, both trie branches, and duplicate counts.
+    for (std::uint32_t i = 1; i < 1024; ++i) {
+        const auto message = (i / 2U) * 2654435761U;
+        REQUIRE(buffer.insert(data_packet(
+            SequenceNumber {100U + i}, message, MessageBoundary::solo, {})));
+        buffer.discard_message_payload(SequenceNumber {100U + i});
+    }
+    for (std::uint32_t i = 0; i < 1024; ++i) {
+        std::size_t inspected = 0;
+        REQUIRE_EQ(detail::ReceiveBufferTestAccess::rejected(
+                       buffer, i * 2654435761U, inspected),
+            i < 512U);
+        REQUIRE(inspected <= 33U);
+    }
+    auto copy = buffer;
+    REQUIRE_EQ(buffer.drop_range({SequenceNumber {100}, SequenceNumber {1123}}),
+        Error::none);
+    REQUIRE(detail::ReceiveBufferTestAccess::rejections_empty(buffer));
+    REQUIRE(!detail::ReceiveBufferTestAccess::rejections_empty(copy));
+    for (std::uint32_t i = 0; i < 2048; ++i) {
+        const auto sequence = buffer.first_stored_sequence();
+        REQUIRE(
+            buffer.insert(data_packet(sequence, i, MessageBoundary::solo, {})));
+        buffer.discard_message_payload(sequence);
+        REQUIRE(detail::ReceiveBufferTestAccess::rejections_empty(buffer));
+    }
+    REQUIRE(copy.insert(data_packet(
+        SequenceNumber {100}, 9000000U, MessageBoundary::solo, {})));
+    std::array<std::byte, 1> output {};
+    REQUIRE(copy.pop_message(output));
+    REQUIRE_EQ(copy.occupied(), 0U);
+    REQUIRE(detail::ReceiveBufferTestAccess::rejections_empty(copy));
+}
+
+TEST(receive_buffer_rejection_timestamp_refresh_skips_sparse_ring_gaps)
+{
+    ReceiveBuffer buffer {SequenceNumber {100}, 8192};
+    REQUIRE(buffer.insert(
+        data_packet(SequenceNumber {8291}, 2, MessageBoundary::solo, {})));
+    for (std::uint32_t i = 0; i < 8191; ++i) {
+        REQUIRE(buffer.insert(data_packet(
+            SequenceNumber {100 + i}, 1, MessageBoundary::solo, {})));
+        buffer.discard_message_payload(SequenceNumber {100 + i});
+        std::size_t inspected = 0;
+        detail::ReceiveBufferTestAccess::timestamp_bounds(buffer, inspected);
+        REQUIRE(inspected <= 20U);
+    }
+    REQUIRE_EQ(buffer.occupied(), 1U);
+    REQUIRE(buffer.has_complete_message());
+}

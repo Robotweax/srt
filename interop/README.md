@@ -34,3 +34,24 @@ This handles descendants that stay in the launched group. A program that creates
 another session or process group can escape it. Use external containment such as
 a cgroup or systemd scope, with appropriate account permissions and host quotas,
 when running potentially adversarial executables.
+
+## Bounded packet capture
+
+`capture_command` now accepts only a single direct `tcpdump` executable (an
+absolute path is also accepted). Existing custom argv and `sudo` launchers must
+be replaced. Configure capture permissions for the SSH account outside this
+harness, for example with narrowly scoped Linux capture capabilities. Do not use
+a set-user-ID or set-group-ID binary. Linux captures explicitly retain the SSH
+account with `-Z`, so the agent can signal the entire process group.
+
+The controller fixes the capture options: 192-byte snapshots, at most 100,000
+packets, and one output file. Each capture inherits a hard 32 MiB per-file limit
+for the pcap and process logs. This is a diagnostic header capture, not a full
+payload archive. A capture that reaches its packet limit before the scenario
+starts fails setup. A cleanup or artifact error fails the run even when the
+payload transfer succeeded. Shutdown acknowledges only after process cleanup;
+cleanup attempts all owned groups and retains the remote directory on failure.
+
+Arbitrary privileged capture wrappers are unsupported. General peer commands
+remain operator-controlled and require external containment when adversarial;
+these capture limits are not a host-wide disk quota or a sandbox for peer code.

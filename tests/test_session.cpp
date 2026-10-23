@@ -6550,8 +6550,9 @@ TEST(session_deferred_drop_refreshes_timestamp_bounds_once_per_bounded_group)
     REQUIRE(expired);
     REQUIRE_EQ(expired.receiver_drop_packets, 64U);
     REQUIRE_EQ(ranges, 64U);
-    REQUIRE(slots <= 2U * capacity);
-    REQUIRE(slots > capacity / 2U); // One real sparse refresh was measured.
+    // The one sparse refresh reads bitmap hierarchy words, not empty slots.
+    REQUIRE(slots > 0U);
+    REQUIRE(slots <= 20U);
     REQUIRE_EQ(receiver.receive_buffer().occupied(), 1U);
     REQUIRE_EQ(receiver.receive_buffer().buffered_payload_bytes(), 1U);
     REQUIRE_EQ(receiver.receive_buffer().buffered_span_milliseconds(), 1U);
