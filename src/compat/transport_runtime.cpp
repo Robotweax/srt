@@ -1428,9 +1428,9 @@ RuntimePollResult DatagramChannel::poll_connections(
     // 1316-byte payloads) is normally a timer wait: resubmitting until the
     // slot arrived kept a shard busy with an empty recvmsg and a route
     // sweep per pass. The pacer's schedule credit absorbs the timer's
-    // wake-up latency. Only when the host's timer wake-ups have proven
-    // coarser than that credit does the channel resubmit as before, so a
-    // coarse timer never lowers the send rate.
+    // wake-up latency. On desktop, when timer wakes have proven coarser
+    // than that credit, the channel resubmits as before to preserve rate.
+    // The experimental mobile policy below keeps waiting instead.
 #if !ROBOTWEAX_SRT_MOBILE_TIMER_PACING
     if (coarse_timer_mode_.load(std::memory_order_relaxed)
         && delay < std::chrono::milliseconds {1}) {

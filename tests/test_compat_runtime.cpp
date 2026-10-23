@@ -9755,7 +9755,9 @@ TEST(compat_channel_fairness_preserves_deadlines_across_continuations)
     REQUIRE(fixture.channel->coarse_timer_mode_for_testing());
     fixture.now = 1'600;
 #if ROBOTWEAX_SRT_MOBILE_TIMER_PACING
-    // A coarse clock must not restore pacing spin on an opted-in phone.
+    // A new 65-route sweep first needs its bounded 64-route continuation.
+    REQUIRE(fixture.poll(std::chrono::microseconds {600}).immediate_work);
+    // Once real work is drained, a coarse clock must not restore pacing spin.
     const auto coarse = fixture.poll(std::chrono::microseconds {600});
     REQUIRE(!coarse.immediate_work);
     REQUIRE(coarse.next_work_delay.has_value());
@@ -9769,6 +9771,9 @@ TEST(compat_channel_fairness_preserves_deadlines_across_continuations)
     }
     REQUIRE(!fixture.channel->coarse_timer_mode_for_testing());
     fixture.now = 1'700;
+#if ROBOTWEAX_SRT_MOBILE_TIMER_PACING
+    REQUIRE(fixture.poll(std::chrono::microseconds {700}).immediate_work);
+#endif
 #if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
     REQUIRE(!fixture.poll(std::chrono::microseconds {700}).immediate_work);
 #else
