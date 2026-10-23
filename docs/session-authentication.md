@@ -1,8 +1,8 @@
 # Optional session authentication
 
 `SRTO_ROBOTWEAX_SESSIONAUTH` is a Robotweax-specific boolean socket option,
-**false by default**. Enable it explicitly on both Caller and Listener before
-connection setup. It requires a passphrase and enforced encryption. Setting
+**false by default**. Enable it explicitly on the Caller before connection setup
+and on the Listener before listen, or on its provisional child during admission. It requires a passphrase and enforced encryption. Setting
 it never implicitly enables GCM. SESSIONAUTH alone does not support Rendezvous;
 the conflicting setting is rejected in either order. The separately gated
 [experimental ACP1 profile](experimental-acp1.md) adds explicit version-4
@@ -22,6 +22,37 @@ a mismatched passphrase, or missing authentication causes setup to fail. There
 is no automatic fallback. This private extension is not Haivision-compatible
 when enabled. With the option disabled, ordinary SRT handshake and key-control
 formats remain unchanged and no session-authentication KDF is performed.
+
+## Per-child selection on a shared listener
+
+Since v0.3.0, `SRTO_ROBOTWEAX_SESSIONAUTH` and `SRTO_ENFORCEDENCRYPTION` are
+pre-connection options that a listen callback may override on its provisional
+child. They are not pre-bind options. One listener can therefore admit ordinary
+Live/File children alongside session-authenticated Control/Sensor children.
+The listener's value is only the inherited default: the callback can enable
+or disable session authentication for that child without changing the listener
+or other accepted connections.
+
+For individual connections, select `SRTO_TRANSTYPE` first, then configure the
+child's security options. Set `SRTO_ENFORCEDENCRYPTION=true` before enabling
+session authentication, and supply a passphrase before returning successfully.
+To admit an ordinary child with optional encryption, disable session
+authentication before setting enforced encryption to false. AES-GCM still
+requires enforced encryption; an invalid setting fails without changing the
+previous value. See [shared-listener profile selection](socket-options.md#per-connection-profile-selection-on-a-shared-listener).
+
+The final child configuration is read after the callback and before crypto
+construction and authentication proofs. The caller's explicit offer must match
+that configuration in both directions: an authenticated caller cannot connect
+to an ordinary child, and an ordinary caller cannot connect to a child requiring
+authentication. Rejected, closed or failed children are not accepted and do not
+change the next child's inherited defaults. Connected sockets reject later
+changes. Existing group admission and ACP1 rules are unchanged.
+
+Stream ID can select a server policy, but is unauthenticated routing input, not
+proof of a peer's identity or authorization. Returning success from the callback
+only selects the policy; setup must still complete its checks before application
+I/O. Keep this configuration work bounded and return promptly.
 
 ## Protection and limits
 
