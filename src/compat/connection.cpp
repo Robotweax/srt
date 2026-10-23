@@ -1703,15 +1703,16 @@ public:
             socket_.peer_connection_initial_sequence =
                 protocol.peer_initial_sequence().value();
         }
-        // ACP1 CONNECTED must imply that the protected runtime is attached.
-        // Group waits and asynchronous observers can wake at publication.
-        const bool staged = finish_connect(socket_,
-            setup_.options.experimental_acp1() ? SRTS_CONNECTING
-                                               : SRTS_CONNECTED,
-            peer_, driver_.peer_socket_id(),
-            message.packet.maximum_transmission_unit, protocol);
-        if (setup_.options.experimental_acp1() && !staged)
-            return fail_connect(socket_, SRT_ESECFAIL, 0);
+        // CONNECTED wakes group waits and asynchronous senders. Keep every
+        // profile CONNECTING until its usable runtime has been installed.
+        const bool staged = finish_connect(socket_, SRTS_CONNECTING, peer_,
+            driver_.peer_socket_id(), message.packet.maximum_transmission_unit,
+            protocol);
+        if (!staged)
+            return fail_connect(socket_,
+                setup_.options.experimental_acp1() ? SRT_ESECFAIL
+                                                   : SRT_ECONNSETUP,
+                0);
         if (socket_was_closed(socket_)) {
             return fail(SRT_ESCLOSED);
         }
@@ -1727,8 +1728,7 @@ public:
                 last_error().system_error);
         }
         confirm_peer_group(socket_);
-        if (setup_.options.experimental_acp1())
-            publish_connected_state(socket_, SRTS_CONNECTED);
+        publish_connected_state(socket_, SRTS_CONNECTED);
         return 0;
     }
 
@@ -3143,13 +3143,11 @@ private:
             socket_->peer_connection_initial_sequence =
                 machine_.peer_initial_sequence().value();
         }
-        // Keep public CONNECTING until the protected runtime is installed.
-        // Async observers must never see CONNECTED with ACP1_ACTIVE false.
-        const bool staged = finish_connect(*socket_,
-            setup_.options.experimental_acp1() ? SRTS_CONNECTING
-                                               : SRTS_CONNECTED,
-            peer_, peer_socket_id_, peer_maximum_segment_size_, machine_);
-        if (setup_.options.experimental_acp1() && !staged)
+        // Runtime installation precedes CONNECTED for every profile, so an
+        // asynchronous observer can immediately use the connected transport.
+        const bool staged = finish_connect(*socket_, SRTS_CONNECTING, peer_,
+            peer_socket_id_, peer_maximum_segment_size_, machine_);
+        if (!staged)
             return fail_connect(*socket_, SRT_ECONNSETUP, 0);
         if (socket_was_closed(*socket_)) {
             return fail(SRT_ESCLOSED);
@@ -3170,8 +3168,7 @@ private:
         }
         if (setup_.configuration.has_group_membership)
             confirm_peer_group(*socket_);
-        if (setup_.options.experimental_acp1())
-            publish_connected_state(*socket_, SRTS_CONNECTED);
+        publish_connected_state(*socket_, SRTS_CONNECTED);
         if (first_connected_packet != nullptr) {
             std::shared_ptr<ConnectionRuntime> runtime;
             {
@@ -5232,41 +5229,39 @@ bool ListenerRuntime::process_setup_result(
                 negotiation)) {
             return finish_setup_context(context, false, SRT_ESCLOSED);
         }
-            publish_connected_state(*context->accepted, SRTS_CONNECTED);
-
-            const HandshakeAction* replay_response = nullptr;
-            for (std::size_t index = 0; index < result.setup.hsv5_actions.size;
-                ++index) {
-                if (result.setup.hsv5_actions.values[index].kind
-                    == HandshakeActionKind::send) {
-                    replay_response = &result.setup.hsv5_actions.values[index];
-                }
+        const HandshakeAction* replay_response = nullptr;
+        for (std::size_t index = 0; index < result.setup.hsv5_actions.size;
+            ++index) {
+            if (result.setup.hsv5_actions.values[index].kind
+                == HandshakeActionKind::send) {
+                replay_response = &result.setup.hsv5_actions.values[index];
             }
-            if (attach_runtime(*context->accepted, context->channel,
-                    context->origin, microseconds_since(context->origin),
-                    result.peer_control.timestamp, replay_response, 0U,
-                    context->setup_inbox, admitted_group,
-                    result.runtime.standby_rtt_identity, false)
-                == SRT_ERROR) {
-                const ErrorState error = last_error();
-                return finish_setup_context(context, false,
-                    static_cast<SRT_ERRNO>(error.code), error.system_error);
-            }
-            if (result.runtime.has_peer_group_membership
-                && !context->group_admission.activate()) {
-                return finish_setup_context(context, false, SRT_ESCLOSED);
-            }
-            const ActionResult actions =
-                apply_actions(*context->channel, context->initial.peer,
-                    context->caller_socket_id, result.setup.hsv5_actions,
-                    context->origin, ignored_retry_deadline);
-            if (actions.outcome == ActionOutcome::io_error) {
-                return finish_setup_context(
-                    context, false, SRT_ESOCKFAIL, actions.system_error);
-            }
-            if (actions.outcome != ActionOutcome::connected) {
-                return finish_setup_context(context, false, SRT_ECONNSETUP);
-            }
+        }
+        if (attach_runtime(*context->accepted, context->channel,
+                context->origin, microseconds_since(context->origin),
+                result.peer_control.timestamp, replay_response, 0U,
+                context->setup_inbox, admitted_group,
+                result.runtime.standby_rtt_identity, false)
+            == SRT_ERROR) {
+            const ErrorState error = last_error();
+            return finish_setup_context(context, false,
+                static_cast<SRT_ERRNO>(error.code), error.system_error);
+        }
+        publish_connected_state(*context->accepted, SRTS_CONNECTED);
+        if (result.runtime.has_peer_group_membership
+            && !context->group_admission.activate()) {
+            return finish_setup_context(context, false, SRT_ESCLOSED);
+        }
+        const ActionResult actions = apply_actions(*context->channel,
+            context->initial.peer, context->caller_socket_id,
+            result.setup.hsv5_actions, context->origin, ignored_retry_deadline);
+        if (actions.outcome == ActionOutcome::io_error) {
+            return finish_setup_context(
+                context, false, SRT_ESOCKFAIL, actions.system_error);
+        }
+        if (actions.outcome != ActionOutcome::connected) {
+            return finish_setup_context(context, false, SRT_ECONNSETUP);
+        }
         return finish_setup_context(context, true);
     }
 

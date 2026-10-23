@@ -431,6 +431,18 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             PROPERTIES TIMEOUT 10 LABELS "memory;allocation")
     endif()
     if(NOT BUILD_SHARED_LIBS)
+    # Allocation gates must not interpose on the general transport tests.
+    add_executable(robotweax_srt_connection_publication_tests
+        tests/test_main.cpp tests/test_connection_publication.cpp)
+    target_compile_features(robotweax_srt_connection_publication_tests PRIVATE cxx_std_20)
+    target_include_directories(robotweax_srt_connection_publication_tests
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(robotweax_srt_connection_publication_tests
+        PRIVATE RobotweaxSRT::srt Threads::Threads)
+    add_test(NAME robotweax_srt_connection_publication_tests
+        COMMAND robotweax_srt_connection_publication_tests)
+    set_tests_properties(robotweax_srt_connection_publication_tests PROPERTIES
+        TIMEOUT 30 LABELS "connection;lifecycle;allocation")
     add_executable(robotweax_srt_tests
         tests/test_main.cpp
         tests/test_caller_handshake_events.cpp
