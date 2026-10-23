@@ -37,6 +37,8 @@ option(ROBOTWEAX_SRT_BUILD_TOOLS "Build protocol development tools"
     ${ROBOTWEAX_SRT_NATIVE_PROGRAMS_DEFAULT})
 option(ROBOTWEAX_SRT_BUILD_EXAMPLES "Build public API examples" OFF)
 option(ROBOTWEAX_SRT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
+option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING
+    "Enable unqualified timer pacing without coarse-timer spinning on Android/iOS" OFF)
 option(ROBOTWEAX_SRT_SENDER_DROP_TRACE
     "Enable the Linux sender-drop JSONL diagnostic" OFF)
 option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
@@ -223,6 +225,10 @@ if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
     target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS)
 endif()
 target_compile_definitions(robotweax_srt PRIVATE ROBOTWEAX_SRT_BUILDING)
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING)
+    target_compile_definitions(robotweax_srt
+        PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_MOBILE_PACING)
+endif()
 target_compile_definitions(robotweax_srt PRIVATE
     ROBOTWEAX_SRT_COMPILED_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
 if(ROBOTWEAX_SRT_SENDER_DROP_TRACE)
@@ -2187,6 +2193,8 @@ install(DIRECTORY docs/
     FILES_MATCHING PATTERN "*.md")
 install(FILES examples/ios/README.md
     DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/ios)
+install(FILES examples/ios/pacing/README.md
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/ios/pacing)
 install(FILES examples/README.md
     DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples)
 install(FILES examples/applications/README.md

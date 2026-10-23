@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>SRTMobilePacing</string>
+<key>CFBundleIdentifier</key><string>ai.robotweax.srt.pacing.@PACING_VARIANT@</string>
+<key>CFBundleName</key><string>SRT Pacing @PACING_VARIANT@</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>0.1</string>
+<key>LSRequiresIPhoneOS</key><true/>
+<key>UILaunchScreen</key><dict/>
+<key>NSLocalNetworkUsageDescription</key><string>Send synthetic traffic to your desktop SRT measurement peer.</string>
+<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
+</dict></plist>

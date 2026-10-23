@@ -21,6 +21,8 @@ def parser():
     result.add_argument("--ndk", type=Path, help="Exact Android NDK installation")
     result.add_argument("--deployment-target", required=True,
                         help="Android API level (e.g. 28) or iOS version (e.g. 15.0); not a support claim")
+    result.add_argument("--experimental-mobile-pacing", action="store_true",
+                        help="Opt in to unqualified mobile timer pacing; requires device qualification")
     result.add_argument("--plan", action="store_true",
                         help="Print configuration without checking/installing SDKs or creating files")
     return result
@@ -51,6 +53,8 @@ def command(args):
                "-DOPENSSL_USE_STATIC_LIBS=TRUE",
                f"-DOPENSSL_INCLUDE_DIR={root / 'include'}",
                f"-DOPENSSL_CRYPTO_LIBRARY={root / 'lib/libcrypto.a'}"]
+    if args.experimental_mobile_pacing:
+        options += ["-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING=ON"]
     if android:
         options += [f"-DCMAKE_TOOLCHAIN_FILE={args.ndk.resolve() / 'build/cmake/android.toolchain.cmake'}",
                     "-DANDROID_ABI=arm64-v8a", f"-DANDROID_PLATFORM=android-{args.deployment_target}",
