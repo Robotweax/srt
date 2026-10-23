@@ -21,7 +21,8 @@ struct MemberFilterReceiveResult {
 class MemberFilterRuntime {
 public:
     static constexpr std::size_t maximum_outputs = 4;
-    static constexpr std::size_t maximum_state = 4096;
+    static constexpr std::size_t inline_state = 4096;
+    static constexpr std::size_t maximum_state = 128 * 1024;
     static constexpr std::size_t maximum_symbol =
         packet_header_size + maximum_data_payload_size;
     static constexpr std::size_t maximum_datagram = 1500;
@@ -46,7 +47,8 @@ public:
 
 private:
     struct Direction {
-        alignas(std::max_align_t) std::array<std::byte, maximum_state> state {};
+        alignas(std::max_align_t) std::array<std::byte, inline_state> state {};
+        std::unique_ptr<std::byte[]> expanded_state;
         std::array<FilterOutput, maximum_outputs> outputs {};
         std::array<std::byte, maximum_outputs * maximum_symbol> bytes {};
         std::array<PathBudget, 1> paths {};

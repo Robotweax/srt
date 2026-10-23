@@ -20,7 +20,8 @@ cmake --build build-filters --parallel
 ctest --test-dir build-filters --output-on-failure
 ```
 
-The bundled provider exposes `rwx-repeat-v1`. It sends a complete copy of each
+The bundled source exposes two independently selected providers. `rwx-repeat-v1`
+sends a complete copy of each
 original DATA packet as repair and recovers a missing original from that copy.
 This deliberately simple example exercises the extension boundary; it adds
 approximately 100% repair traffic plus framing, and is not an efficient FEC
@@ -29,7 +30,7 @@ algorithm or a performance recommendation.
 Set the exact same name on caller and listener before connect/listen:
 
 ```c
-const char filter[] = "rwx-repeat-v1";
+const char filter[] = "rwx-xor8-v1";
 if (srt_setsockflag(socket, SRTO_PACKETFILTER, filter,
         sizeof(filter) - 1) == SRT_ERROR) {
     /* Report the configuration error. */
@@ -50,6 +51,39 @@ remain unchanged when they fit. Sender `SRTO_PAYLOADSIZE` settings can differ;
 receive admission uses the negotiated path capacity rather than the local
 sender's payload preference.
 
+## XOR eight-packet provider
+
+`rwx-xor8-v1` emits one XOR repair for each complete block of eight original
+member DATA sequences aligned to a multiple of eight. With equal source sizes,
+repair payload overhead is 12.5%, plus the existing envelope and control framing.
+A single missing source can be reconstructed from the repair and the other seven
+sources. More losses require ordinary ARQ; receiving an ARQ source may then make
+the remaining erasure recoverable. Initial and final partial blocks have no
+repair. A source is protected only when its complete block was submitted.
+
+The receiver caches 64 blocks per direction. Reordering, duplicate sources,
+repair-first arrival, variable packet lengths, retransmission flags and sequence
+rollover are supported within this bounded cache and the core receive window.
+Older colliding blocks are discarded and rely on ARQ. The cache is a packet-count
+bound, not a guaranteed time interval; at higher rates it covers less time.
+
+Each instance declares 64 accumulators and bounded metadata, less than 128 KiB.
+There are no event-path allocations, feedback messages or background threads.
+The provider emits at most one symbol per callback and fits the existing source
+payload budget, including at maximum MSS. Both endpoints must select the same
+versioned name. This is a private experimental algorithm and wire format, not
+Haivision FEC interoperability or production performance qualification.
+
+The provider repair symbol is the XOR of encoded DATA bytes after the sequence
+word, zero-extended to the longest source. Its first four bytes contain `0x58`,
+version `1`, and the XOR of the eight encoded source lengths as a 16-bit network
+byte-order value. The member envelope identifies the block's final sequence.
+The missing sequence is reconstructed from that aligned block; the recovered
+length, header, destination and payload are validated before candidate admission.
+Retransmission flags are normalized before accumulation. XOR provides erasure
+recovery, not authentication or corruption detection. Malformed or unusable
+repair may leave a block to ARQ and cannot authorize application delivery.
+
 ## Compiled providers and lifecycle
 
 Set `ROBOTWEAX_SRT_FILTER_PROVIDER=/absolute/path/provider.cpp` to replace the
@@ -62,7 +96,11 @@ instance's lifetime. This is a private experimental C++ interface, not an
 installed or runtime-loaded plugin ABI.
 
 The current member binding creates independent sender and receiver instances.
-Each uses at most 4096 bytes of provider state, with up to four outputs and
+Each uses at most 128 KiB of declared provider state. Up to 4096 bytes use
+inline storage; larger declarations reserve exactly their declared byte count
+at setup, with checked alignment. State allocation failure rejects setup. Storage
+outlives provider destruction; event callbacks do not resize it. Each instance
+has up to four outputs and
 5888 output bytes per callback. This binding admits member-transport scope,
 no feedback, and no per-receiver state. Sender ticks and window changes are
 delivered as lifecycle events; receiver callbacks run on source/repair input

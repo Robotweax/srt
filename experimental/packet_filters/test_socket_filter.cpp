@@ -25,11 +25,10 @@ void bundled()
     SKIP_UNLESS(options.set_packet_filter("rwx-repeat-v1") == Error::none,
         "test uses bundled provider");
 }
-void select_filter(SRTSOCKET socket)
+void select_filter(SRTSOCKET socket, std::string_view filter = "rwx-repeat-v1")
 {
-    constexpr char filter[] = "rwx-repeat-v1";
-    REQUIRE_EQ(
-        srt_setsockflag(socket, SRTO_PACKETFILTER, filter, sizeof(filter) - 1),
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_PACKETFILTER, filter.data(),
+                   static_cast<int>(filter.size())),
         0);
     const int timeout = 2000;
     REQUIRE_EQ(
@@ -52,13 +51,15 @@ sockaddr_in listen_filter(SRTSOCKET socket)
 }
 }
 
-TEST(
-    srt_compat_experimental_filter_negotiates_and_delivers_bidirectionally_without_duplicates)
+namespace {
+void bidirectional(std::string_view filter)
 {
-    bundled();
+    SocketOptions selection;
+    SKIP_UNLESS(selection.set_packet_filter(filter) == Error::none,
+        "test uses bundled provider");
     Sockets sockets;
-    select_filter(sockets.listener);
-    select_filter(sockets.caller);
+    select_filter(sockets.listener, filter);
+    select_filter(sockets.caller, filter);
     const int sender_payload = 1433;
     REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_PAYLOADSIZE,
                    &sender_payload, sizeof(sender_payload)),
@@ -75,7 +76,7 @@ TEST(
     REQUIRE_EQ(srt_getsockflag(
                    sockets.accepted, SRTO_PACKETFILTER, name.data(), &size),
         0);
-    REQUIRE_EQ(std::string_view(name.data()), "rwx-repeat-v1");
+    REQUIRE_EQ(std::string_view(name.data()), filter);
     std::array<char, 1433> payload {};
     std::array<char, 1500> received {};
     for (const auto pair : {std::pair {sockets.caller, sockets.accepted},
@@ -101,6 +102,39 @@ TEST(
     REQUIRE_EQ(srt_bstats(sockets.caller, &statistics, 0), 0);
     REQUIRE(statistics.pktSndFilterExtraTotal > 0);
     REQUIRE(statistics.pktRcvFilterExtraTotal > 0);
+}
+}
+
+TEST(
+    srt_compat_experimental_filter_negotiates_and_delivers_bidirectionally_without_duplicates)
+{
+    bidirectional("rwx-repeat-v1");
+}
+
+TEST(
+    srt_compat_experimental_xor8_negotiates_and_delivers_bidirectionally_without_duplicates)
+{
+    bidirectional("rwx-xor8-v1");
+}
+
+TEST(srt_compat_experimental_xor8_rejects_different_provider_names)
+{
+    bundled();
+    SocketOptions selection;
+    SKIP_UNLESS(selection.set_packet_filter("rwx-xor8-v1") == Error::none,
+        "test uses bundled XOR provider");
+    for (const bool reverse : {false, true}) {
+        Sockets sockets;
+        select_filter(
+            sockets.listener, reverse ? "rwx-xor8-v1" : "rwx-repeat-v1");
+        select_filter(
+            sockets.caller, reverse ? "rwx-repeat-v1" : "rwx-xor8-v1");
+        const auto address = listen_filter(sockets.listener);
+        REQUIRE_EQ(
+            srt_connect(sockets.caller,
+                reinterpret_cast<const sockaddr*>(&address), sizeof(address)),
+            SRT_ERROR);
+    }
 }
 
 TEST(srt_compat_experimental_filter_rejects_one_sided_selection)

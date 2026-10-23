@@ -34,6 +34,93 @@ void check(const MemberFilterReceiveResult& result, SequenceNumber first,
             std::abort();
     }
 }
+void fuzz_xor(std::span<const std::uint8_t> bytes)
+{
+    const auto* filter = compiled_filter("rwx-xor8-v1");
+    if (!filter)
+        return;
+    const SequenceNumber first {
+        byte(bytes, 0) & 1U ? SequenceNumber::mask - 7U : 0U};
+    const std::size_t maximum_payload = 1U + byte(bytes, 1) * 5U;
+    std::array<std::byte, 1433> payload {};
+    std::copy_n(std::as_bytes(bytes).begin(),
+        std::min(bytes.size(), payload.size()), payload.begin());
+    MemberFilterRuntime sender;
+    MemberFilterRuntime mutated;
+    MemberFilterRuntime oracle;
+    for (auto* runtime : {&sender, &mutated, &oracle})
+        if (runtime->start(*filter, runtime == &sender ? 11U : 22U,
+                runtime == &sender ? 22U : 11U, first, first, 32, 32,
+                maximum_payload)
+            != Error::none)
+            std::abort();
+    for (std::uint32_t block = 0; block < 2; ++block) {
+        std::array<PacketView, 8> sources {};
+        for (std::uint32_t i = 0; i < 8; ++i) {
+            const auto offset = block * 8 + i;
+            sources[i] = {.kind = PacketKind::data,
+                .data = {.sequence = first.advanced(offset),
+                    .message_number = offset + 1,
+                    .boundary = MessageBoundary::solo,
+                    .destination_socket_id = 22},
+                .payload = std::span {payload}.first(
+                    1U + byte(bytes, i + 2) % maximum_payload)};
+            if (sender.source_sent(sources[i], first, block * 100 + i)
+                != Error::none)
+                std::abort();
+        }
+        const auto repair = sender.pending();
+        if (!repair)
+            std::abort();
+        const auto valid = decode_packet(*repair);
+        if (!valid)
+            std::abort();
+        const auto lost = byte(bytes, 3) % 8U;
+        for (std::uint32_t i = 0; i < 8; ++i)
+            if (i != lost) {
+                check(mutated.receive_source(
+                          sources[i], first, block * 100 + 10 + i),
+                    first, 32, maximum_payload);
+                check(oracle.receive_source(
+                          sources[i], first, block * 100 + 10 + i),
+                    first, 32, maximum_payload);
+            }
+        std::array<std::byte, 1500> changed;
+        std::copy(repair->begin(), repair->end(), changed.begin());
+        const auto position =
+            ((std::size_t {byte(bytes, 4)} << 8U) | byte(bytes, 5))
+            % repair->size();
+        changed[position] ^= static_cast<std::byte>(byte(bytes, 6));
+        if (const auto decoded =
+                decode_packet(std::span {changed}.first(repair->size()));
+            decoded)
+            check(
+                mutated.receive_repair(decoded.packet, first, block * 100 + 20),
+                first, 32, maximum_payload);
+        auto opaque = valid.packet;
+        opaque.payload = std::as_bytes(bytes).first(
+            std::min<std::size_t>(bytes.size(), 1500));
+        check(mutated.receive_repair(opaque, first, block * 100 + 21), first,
+            32, maximum_payload);
+        check(mutated.receive_repair(valid.packet, first, block * 100 + 22),
+            first, 32, maximum_payload);
+        const auto recovered =
+            oracle.receive_repair(valid.packet, first, block * 100 + 20);
+        check(recovered, first, 32, maximum_payload);
+        if (recovered.recovered.size() != 1
+            || recovered.recovered[0].data.sequence
+                != sources[lost].data.sequence
+            || !std::equal(sources[lost].payload.begin(),
+                sources[lost].payload.end(),
+                recovered.recovered[0].payload.begin(),
+                recovered.recovered[0].payload.end()))
+            std::abort();
+        if (!oracle.receive_repair(valid.packet, first, block * 100 + 21)
+                .recovered.empty())
+            std::abort();
+        sender.consume();
+    }
+}
 }
 
 extern "C" int LLVMFuzzerTestOneInput(
@@ -46,6 +133,7 @@ extern "C" int LLVMFuzzerTestOneInput(
         (void)options.set_packet_filter(
             {reinterpret_cast<const char*>(data), size});
     }
+    fuzz_xor(bytes);
     const auto* filter = compiled_filter("rwx-repeat-v1");
     if (!filter)
         return 0; // Other trusted provider builds need their own symbol oracle.
