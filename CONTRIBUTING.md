@@ -188,6 +188,16 @@ select their corresponding build, regression and interoperability checks.
 Unknown inputs and build/workflow changes conservatively select broad coverage.
 Linux OBS remains part of the selected integration coverage.
 
+Linux Mbed TLS qualification remains selected for C++ and package changes.
+The macOS backend suite also runs for production source, public headers, crypto
+or backend fixtures, dependency/build/package inputs and unknown paths. Known
+non-crypto test, experimental-provider, fuzz, benchmark and example changes use
+Linux backend coverage alone. Changes to the Mbed TLS dependency/configuration
+and cross-backend/reference runners explicitly select both platforms, including
+Python-only runner changes. Documentation-only changes select neither backend
+job. Explicit full, scheduled full and release-tag runs retain both platforms.
+Selected backend jobs remain required by the final gate.
+
 The four OBS Windows/macOS module and desktop jobs run only in an explicit full
 run: manually dispatch the `CI` workflow, push a `v*` release tag, or use the
 weekly full-validation schedule. They do not run on ordinary PR/main changes,
