@@ -1,5 +1,11 @@
 # Throughput profiling (diagnostic branch)
 
+The historical empty-receive report is stored in a release asset. Its link
+below opens the archive inventory. In an authorized Network Lab checkout, run
+`python scripts/evidence_assets.py fetch results/2026-09-11-empty-receive-ab`
+to restore and verify `report-de.md`; see the
+[archive retrieval guide](https://github.com/Robotweax/srt_network_lab/blob/main/docs/evidence-storage.md).
+
 This diagnostic branch includes an **experimental empty-receive-buffer
 fast path and Lite-ACK receive-window credit correction**, not a complete transport
 qualification or a released throughput claim. Public API, locking and transport
@@ -361,7 +367,7 @@ Acceptance requires correct payloads, no regression of the existing contracts,
 repeatable throughput gain beyond host drift, and reduced work in the measured
 receive scan. This experiment does not establish WAN/media-deadline behavior,
 multi-connection scaling, encrypted throughput or superiority to Haivision.
-The completed [Linux ARM64 A/B report](https://github.com/Robotweax/srt_network_lab/blob/main/results/2026-09-11-empty-receive-ab/report-de.md)
+The completed [Linux ARM64 A/B report](https://github.com/Robotweax/srt_network_lab/blob/main/results/_pointers/2026-09-11-empty-receive-ab.json)
 (private lab evidence) confirms the receive-scan and throughput improvement.
 It also records additional candidate retransmissions: 0.51–1.84% relative to
 original packets in the unpaced plain measurements. These are **not measured

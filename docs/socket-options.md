@@ -470,6 +470,11 @@ binding. On macOS and Windows, and on every group handle, get/set fail with
 system cannot provide. Per-member group endpoint configuration may still set
 the option for Linux member sockets.
 
+**Release boundary:** The per-endpoint `SRTO_GROUPMINSTABLETIMEO` override
+described below is unreleased (`main` only). Published v0.3.0 supports the
+group-wide minimum and rejects this endpoint override with `SRT_EINVPARAM`.
+See [Unreleased changes](../CHANGELOG.md#unreleased).
+
 The `SRT_SOCKOPT_CONFIG` matrix supports `SRTO_GROUPMINSTABLETIMEO`
 per-endpoint overrides for caller Backup members (60–5000 ms, `int32_t`).
 Endpoints without an override inherit the group minimum; Broadcast endpoints
