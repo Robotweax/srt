@@ -55,6 +55,8 @@ jobs:
       cpp: ${{ steps.classify.outputs.cpp }}
       core_tests: ${{ steps.classify.outputs.core_tests }}
       package: ${{ steps.classify.outputs.package }}
+      mbedtls: ${{ steps.classify.outputs.mbedtls }}
+      mbedtls_platforms: ${{ steps.classify.outputs.mbedtls_platforms }}
       python: ${{ steps.classify.outputs.python }}
       examples: ${{ steps.classify.outputs.examples }}
       format: ${{ steps.classify.outputs.format }}
@@ -2247,11 +2249,11 @@ jobs:
   mbedtls_backend:
     name: Mbed TLS 3.6 (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.cpp == 'true' || needs.changes.outputs.package == 'true'
+    if: needs.changes.outputs.mbedtls == 'true'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(needs.changes.outputs.mbedtls_platforms) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
@@ -2405,7 +2407,7 @@ jobs:
           FUZZ_SMOKE: ${{ needs.fuzz_smoke.result }}
           REFERENCE_INTEROP: ${{ needs.reference_interop.result }}
           MBEDTLS_BACKEND: ${{ needs.mbedtls_backend.result }}
-          EXPECT_mbedtls_backend: ${{ needs.changes.outputs.cpp == 'true' || needs.changes.outputs.package == 'true' }}
+          EXPECT_mbedtls_backend: ${{ needs.changes.outputs.mbedtls == 'true' }}
           EXPECT_changes: 'true'
           EXPECT_dco: 'true'
           EXPECT_documentation: ${{ needs.changes.outputs.documentation == 'true' }}

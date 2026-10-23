@@ -87,7 +87,9 @@ The required CI gate includes Linux/macOS Mbed TLS jobs: unit/known-answer tests
 provider dependency faults, static/shared installed consumers, configuration
 rejections, OpenSSL differential comparisons, isolated cross-backend encrypted
 rotation/session-authentication, and pinned Haivision CTR/GCM interoperability.
-These jobs must run on the feature PR before platform qualification is complete.
+Both platform jobs must run on backend feature PRs before platform qualification
+is complete. The [CI selection policy](../CONTRIBUTING.md#ci-selection) describes
+which unrelated changes need only the Linux backend suite.
 
 For allocation instrumentation, build the dependency with
 `tools/build_mbedtls.py --allocation-hooks`. The provider failure executable

@@ -17,6 +17,96 @@ import ci_changes  # noqa: E402
 
 
 class CiChangeClassifierTests(unittest.TestCase):
+    def mbedtls_platforms(self, result: ci_changes.ChangeSet) -> list[str]:
+        output = dict(line.split("=", 1) for line in result.output_lines())
+        return json.loads(output["mbedtls_platforms"])
+
+    def test_mbedtls_test_only_changes_keep_linux_backend_coverage(self) -> None:
+        for path in (
+            "tests/test_receive_buffer.cpp",
+            "experimental/packet_filters/test_socket_filter.cpp",
+            "experimental/packet_filters/member_filter.hpp",
+            "fuzz/fuzz_extension_filter.cpp",
+            "benchmarks/scalability_peer.cpp",
+            "examples/srt_hello.cpp",
+            "interop/api_peer.cpp",
+        ):
+            with self.subTest(path=path):
+                result = ci_changes.classify([path])
+                self.assertTrue(result.cpp)
+                self.assertTrue(result.mbedtls)
+                self.assertFalse(result.mbedtls_macos)
+                self.assertEqual(self.mbedtls_platforms(result), ["ubuntu-latest"])
+
+    def test_mbedtls_production_crypto_and_package_changes_keep_both(self) -> None:
+        for path in (
+            "src/receive_buffer.cpp", "src/compat/transport_runtime.cpp",
+            "include/srt/srt.h", "src/crypto_mbedtls.cpp",
+            "tests/test_crypto.cpp", "tests/test_aead.cpp", "tests/test_gcm.cpp",
+            "tests/test_ctr.cpp", "tests/test_authentication.cpp",
+            "tests/mbedtls_provider_failures.cpp",
+            "compat/robotweax-0.2-aead.json",
+            "tests/mbedtls_qualification/main.cpp",
+            "experimental/new_crypto/provider.cpp",
+            "tests/package_consumer/c_consumer.c",
+            "cmake/RobotweaxSRTConfig.cmake.in", "cmake/FindMbedTLS.cmake",
+            "CMakeLists.txt", ".github/workflows/ci.yml",
+            "new_cpp_root/provider.cpp", "unknown-future-input",
+        ):
+            with self.subTest(path=path):
+                result = ci_changes.classify([path])
+                self.assertTrue(result.mbedtls)
+                self.assertTrue(result.mbedtls_macos)
+                self.assertEqual(self.mbedtls_platforms(result),
+                                 ["ubuntu-latest", "macos-latest"])
+
+    def test_mbedtls_python_runners_select_their_backend_jobs(self) -> None:
+        for path in ci_changes.MBEDTLS_TOOLING_FILES:
+            with self.subTest(path=path):
+                result = ci_changes.classify([path])
+                self.assertTrue(result.python)
+                self.assertTrue(result.mbedtls)
+                self.assertTrue(result.mbedtls_macos)
+                self.assertFalse(result.cpp)
+                self.assertFalse(result.interop)
+                self.assertFalse(result.full)
+
+    def test_mbedtls_documentation_tooling_and_empty_changes_skip_backend(self) -> None:
+        for paths in ([], ["docs/crypto-backends.md"], ["tools/python"],
+                      ["packaging/homebrew/robotweax-srt.rb"]):
+            with self.subTest(paths=paths):
+                result = ci_changes.classify(paths)
+                self.assertFalse(result.mbedtls)
+                self.assertFalse(result.mbedtls_macos)
+                # A skipped job still receives a valid nonempty matrix.
+                self.assertEqual(self.mbedtls_platforms(result), ["ubuntu-latest"])
+        result = ci_changes.classify([], force_full=True)
+        self.assertTrue(result.mbedtls)
+        self.assertEqual(self.mbedtls_platforms(result),
+                         ["ubuntu-latest", "macos-latest"])
+
+    def test_mbedtls_mixed_changes_cannot_narrow_crypto_coverage(self) -> None:
+        narrow = "experimental/packet_filters/test_socket_filter.cpp"
+        for broad in ("src/crypto_mbedtls.cpp", "src/receive_buffer.cpp",
+                      "tools/qualify_mbedtls_reference.py", "unknown-future-input"):
+            for paths in ([narrow, broad], [broad, narrow]):
+                with self.subTest(paths=paths):
+                    result = ci_changes.classify(paths)
+                    self.assertTrue(result.mbedtls)
+                    self.assertEqual(self.mbedtls_platforms(result),
+                                     ["ubuntu-latest", "macos-latest"])
+
+    def test_mbedtls_workflow_consumes_selected_platforms(self) -> None:
+        workflow = (INTEROP_DIRECTORY.parent / ".github/workflows/ci.yml").read_text()
+        self.assertIn("mbedtls: ${{ steps.classify.outputs.mbedtls }}", workflow)
+        self.assertIn("mbedtls_platforms: ${{ steps.classify.outputs.mbedtls_platforms }}",
+                      workflow)
+        job = workflow.split("\n  mbedtls_backend:\n", 1)[1].split("\n  ci_gate:\n", 1)[0]
+        self.assertIn("if: needs.changes.outputs.mbedtls == 'true'", job)
+        self.assertIn("os: ${{ fromJSON(needs.changes.outputs.mbedtls_platforms) }}", job)
+        self.assertIn("EXPECT_mbedtls_backend: ${{ needs.changes.outputs.mbedtls == 'true' }}",
+                      workflow)
+
     def test_package_manager_recipes_do_not_select_application_builds(self) -> None:
         for path in ("packaging/homebrew/robotweax-srt.rb",
                      "packaging/vcpkg/ports/robotweax-srt/portfile.cmake",

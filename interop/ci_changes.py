@@ -35,6 +35,12 @@ PYTHON_TOOLING_FILES = {
     "interop/tests/test_ci_artifact_license.py",
     "interop/tests/test_ci_build_scope.py",
 }
+MBEDTLS_TOOLING_FILES = {
+    "tools/build_mbedtls.py",
+    "tools/qualify_mbedtls_reference.py",
+    "interop/run_mbedtls_peers.py",
+    "tests/test_mbedtls_configuration.py",
+}
 DOCUMENTATION_TOOLING_FILES = {
     "tests/package_consumer/check_documentation.py",
 }
@@ -136,6 +142,8 @@ class ChangeSet:
     cpp: bool = False
     core_tests: bool = False
     package: bool = False
+    mbedtls: bool = False
+    mbedtls_macos: bool = False
     python: bool = False
     examples: bool = False
     format: bool = False
@@ -229,6 +237,14 @@ class ChangeSet:
                 separators=(",", ":"),
             )
         )
+        lines.append(
+            "mbedtls_platforms="
+            + json.dumps(
+                ["ubuntu-latest", "macos-latest"]
+                if self.mbedtls_macos else ["ubuntu-latest"],
+                separators=(",", ":"),
+            )
+        )
         return lines
 
     def reference_profiles(self) -> tuple[str, ...]:
@@ -273,7 +289,24 @@ def is_full_validation_path(path: str) -> bool:
     )
 
 
+def enable_mbedtls(change_set: ChangeSet, path: str) -> None:
+    change_set.mbedtls = True
+    # Keep Linux backend coverage for all C++ changes. Only known test/demo
+    # roots may omit the second platform; production and unknown roots retain
+    # both, as do crypto/backend fixtures within otherwise narrow roots.
+    test_or_demo = path.startswith(
+        ("tests/", "experimental/", "fuzz/", "benchmarks/", "examples/", "interop/")
+    )
+    if not test_or_demo or any(
+        token in path.lower() for token in
+        ("crypto", "encrypt", "key_material", "mbedtls", "openssl",
+         "aead", "aes", "gcm", "ctr", "authentication", "passphrase")
+    ):
+        change_set.mbedtls_macos = True
+
+
 def enable_cpp(change_set: ChangeSet, path: str) -> None:
+    enable_mbedtls(change_set, path)
     change_set.code = True
     change_set.cpp = True
     change_set.core_tests = True
@@ -539,6 +572,8 @@ def classify(
             change_set.documentation = True
             change_set.code = True
             change_set.python = True
+            change_set.mbedtls = True
+            change_set.mbedtls_macos = True
             change_set.interop = True
             change_set.aead_interop = True
             change_set.aead_fec_interop = True
@@ -555,6 +590,12 @@ def classify(
         if path in PYTHON_TOOLING_FILES:
             change_set.code = True
             change_set.python = True
+            continue
+        if path in MBEDTLS_TOOLING_FILES:
+            change_set.code = True
+            change_set.python = True
+            change_set.mbedtls = True
+            change_set.mbedtls_macos = True
             continue
         if path in DOCUMENTATION_TOOLING_FILES:
             change_set.code = True
@@ -574,6 +615,8 @@ def classify(
         if path in PACKAGE_FILES:
             change_set.code = True
             change_set.package = True
+            change_set.mbedtls = True
+            change_set.mbedtls_macos = True
             change_set.portable = True
             change_set.shared = True
             change_set.aead_platform = True
@@ -647,6 +690,7 @@ def classify(
             change_set.portable = True
             if suffix in CPP_SUFFIXES:
                 change_set.cpp = True
+                enable_mbedtls(change_set, path)
                 change_set.format = True
             elif suffix == ".py":
                 change_set.python = True
