@@ -1,4 +1,5 @@
 #include "compat/runtime_work_executor.hpp"
+#include "compat/thread_name.hpp"
 #include "compat/socket_registry.hpp"
 
 #include <condition_variable>
@@ -67,7 +68,8 @@ bool RuntimeWorkExecutor::start() noexcept
     try {
         for (std::size_t index = 0; index < state->configuration.worker_count;
             ++index) {
-            state->workers.emplace_back([state] {
+            state->workers.emplace_back([state, index] {
+                name_current_thread("rwx-worker-", index);
                 mark_runtime_cleanup_worker_thread();
                 run(state);
             });
