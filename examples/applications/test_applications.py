@@ -13,6 +13,29 @@ import sys
 from process_support import Process, ports
 
 
+def validate_summaries(scenario: str, summaries: list[dict], events: list[dict]):
+    for summary in summaries:
+        expected, unique = summary["expected"], summary["unique"]
+        assert expected > 0 and 0 < unique <= expected, summary
+        assert summary["missing"] == expected - unique, summary
+        assert unique - 1 <= summary["highest_sequence"] < expected, summary
+        assert summary["duplicates"] == 0, summary
+        if scenario.startswith("device") and summary["channel"] == "sensor":
+            # Sensor has a 100-ms TTL, a 20-ms gap deadline and no ARQ.
+            # These are stream-health checks, not a loss-free delivery promise;
+            # match the bounded Sensor socket test's majority/freshness checks.
+            assert unique > expected // 2, summary
+            assert summary["highest_sequence"] >= expected - max(4, expected // 8), summary
+            if scenario == "device-impaired":
+                assert unique < expected, summary
+        else:
+            assert unique == expected, summary
+    if scenario.startswith("device"):
+        sensor_stats = [e for e in events if e.get("event") == "stats" and e["channel"] == "sensor"]
+        assert sensor_stats, events
+        assert all(e["retransmitted"] == 0 for e in sensor_stats), sensor_stats
+
+
 def run(binary_dir: Path, scenario: str, crypto="ctr"):
     suffix = ".exe" if os.name == "nt" else ""
     name = "contribution" if scenario.startswith("contribution") else "device" if scenario.startswith("device") else "recovery"
@@ -62,12 +85,7 @@ def run(binary_dir: Path, scenario: str, crypto="ctr"):
         received = receiver.finish()
         summaries = [e for e in sent + received if e.get("event") == "summary"]
         assert len(summaries) == (3 if name == "device" else 1), summaries
-        for summary in summaries:
-            if scenario == "device-impaired" and summary["channel"] == "sensor":
-                assert 0 < summary["unique"] < summary["expected"], summary
-            else:
-                assert summary["unique"] == summary["expected"], summary
-            assert summary["duplicates"] == 0, summary
+        validate_summaries(scenario, summaries, sent + received)
         if name == "device":
             control = next(e for e in summaries if e["channel"] == "control")
             assert control["executed"] == 8, control
@@ -89,6 +107,11 @@ def run(binary_dir: Path, scenario: str, crypto="ctr"):
         if scenario == "recovery-arq":
             assert max(e.get("retransmitted", 0) for e in sent) > 0
         print(json.dumps({"scenario": scenario, "crypto": crypto, "summaries": summaries}))
+    except Exception:
+        # Keep transport counters available when an acceptance assertion fails.
+        for process in processes:
+            print(process.output(), file=sys.stderr)
+        raise
     finally:
         for process in processes:
             process.close()

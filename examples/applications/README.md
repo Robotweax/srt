@@ -243,6 +243,15 @@ sample does not move the latest reading backward. Two losses in a four-source
 Sensor row can lose samples while Control commands still recover. The automated
 `device-impaired` scenario injects that condition through three separate relays.
 
+The device checks require every Live frame and Control command, with no duplicate
+application delivery. Sensor checks require a majority of samples and a newest
+sequence within the final eighth of the stream (at least four sample positions),
+plus zero retransmissions. Even the loopback case can lose Sensor samples when
+scheduling or network delay exceeds its TTL or receive-gap deadline. The impaired
+case additionally requires observed Sensor loss. These are bounded stream-health
+checks, not a Sensor delivery guarantee; payload integrity is checked on every
+received frame.
+
 Request history is bounded and connection-local. Durable command identities,
 cross-reconnect deduplication, real actuators, and camera encoding remain
 follow-on work. The console controls and observes this synthetic device workflow. The Sensor channel must not be used for command execution ACKs.
