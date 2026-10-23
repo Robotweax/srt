@@ -5,8 +5,9 @@ below; device interoperability and a supported minimum OS are not yet establishe
 The desktop build matrix remains the qualified platform set.
 
 The required macOS Release CI job also compiles `src/timing.cpp` for iOS ARM64
-device and simulator targets with warnings treated as errors. This exercises the
-mobile pacing path without target OpenSSL dependencies. It is a translation-unit
+device and simulator targets, with both legacy and experimental mobile pacing
+and warnings treated as errors. This exercises the pacing translation unit
+without target OpenSSL dependencies. It is a translation-unit
 compile check, not a full mobile build/link, runtime or timing qualification.
 
 ## Initial compile/link evidence (2026-09-09)
@@ -193,6 +194,25 @@ The helper never installs SDKs, deletes caches, changes Xcode selection or accep
 licenses. Normal configuration requires an empty build directory and explicit
 target dependencies. It builds Release/PIC/static with AES-GCM enabled, and disables
 host tests/tools/examples. Existing desktop defaults are unchanged.
+
+## Experimental mobile timer pacing
+
+Mobile pacing retains its legacy behavior by default. To exercise the unqualified
+timer-wait policy for issue #353, add `--experimental-mobile-pacing` to the
+configure helper, or set
+`-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING=ON` directly in CMake.
+It applies to Android and iOS device/simulator targets, excluding Mac Catalyst;
+other platforms retain their existing pacing policy. Use a fresh build directory
+for each variant.
+
+This candidate uses the existing 1 ms pacing credit and does not restore busy
+pacing resubmission when mobile timers are coarse. That avoids one source of
+idle CPU consumption but can reduce throughput on coarse timers. No performance,
+power or battery improvement is claimed without physical-device measurements.
+The [iOS pacing measurement app](../examples/ios/pacing/README.md) supplies
+separate baseline/candidate bundles, CPU and Mach wake-up counters, and a
+predeclared same-phone comparison protocol at 2–8 Mbit/s. Android has no
+physical-device qualification from this iOS experiment.
 
 Android consumers must package the matching shared C++ runtime and link Crypto
 and all transitive dependencies. iOS consumers must link matching target libraries;

@@ -451,10 +451,16 @@ jobs:
           for sdk in iphoneos iphonesimulator; do
             target=arm64-apple-ios17.0
             if [[ "$sdk" == iphonesimulator ]]; then target+=-simulator; fi
-            xcrun --sdk "$sdk" clang++ -std=c++20 -target "$target" \
-              -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Werror \
-              -Iinclude -Isrc -c src/timing.cpp \
-              -o "$RUNNER_TEMP/srt-timing-$sdk.o"
+            for pacing in legacy timer; do
+              pacing_flag=-UROBOTWEAX_SRT_EXPERIMENTAL_MOBILE_PACING
+              if [[ "$pacing" == timer ]]; then
+                pacing_flag=-DROBOTWEAX_SRT_EXPERIMENTAL_MOBILE_PACING=1
+              fi
+              xcrun --sdk "$sdk" clang++ -std=c++20 -target "$target" \
+                -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Werror \
+                "$pacing_flag" -Iinclude -Isrc -c src/timing.cpp \
+                -o "$RUNNER_TEMP/srt-timing-$sdk-$pacing.o"
+            done
           done
       - name: Configure
         run: >-

@@ -7,7 +7,8 @@
 #define ROBOTWEAX_SRT_MOBILE_PACING_PLATFORM 1
 #elif defined(__APPLE__)
 #include <TargetConditionals.h>
-#define ROBOTWEAX_SRT_MOBILE_PACING_PLATFORM TARGET_OS_IOS
+#define ROBOTWEAX_SRT_MOBILE_PACING_PLATFORM                                   \
+    (TARGET_OS_IOS && !TARGET_OS_MACCATALYST)
 #else
 #define ROBOTWEAX_SRT_MOBILE_PACING_PLATFORM 0
 #endif

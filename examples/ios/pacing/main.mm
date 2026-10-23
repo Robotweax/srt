@@ -123,6 +123,7 @@ struct Streams {
     const BOOL previousIdle = UIApplication.sharedApplication.idleTimerDisabled;
     UIApplication.sharedApplication.idleTimerDisabled = YES;
     const auto thermalBefore = NSProcessInfo.processInfo.thermalState;
+    const BOOL lowPowerBefore = NSProcessInfo.processInfo.lowPowerModeEnabled;
     NSString *run = NSUUID.UUID.UUIDString;
     NSString *directory = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     NSString *logPath = [directory stringByAppendingPathComponent:[run stringByAppendingString:@".jsonl"]];
@@ -142,7 +143,11 @@ struct Streams {
         const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
         Resources after;
         log.close();
-        const BOOL powerValid = before.powerError == KERN_SUCCESS && after.powerError == KERN_SUCCESS;
+        const BOOL powerValid = before.powerError == KERN_SUCCESS && after.powerError == KERN_SUCCESS
+            && after.power.task_interrupt_wakeups >= before.power.task_interrupt_wakeups
+            && after.power.task_platform_idle_wakeups >= before.power.task_platform_idle_wakeups
+            && after.power.task_timer_wakeups_bin_1 >= before.power.task_timer_wakeups_bin_1
+            && after.power.task_timer_wakeups_bin_2 >= before.power.task_timer_wakeups_bin_2;
         struct utsname system {}; uname(&system);
         NSMutableDictionary *report = [@{@"schema": @1, @"run": run,
             @"variant": ROBOTWEAX_SRT_MOBILE_TIMER_PACING ? @"timer-no-spin" : @"legacy",
@@ -152,7 +157,11 @@ struct Streams {
             @"max_bandwidth_bytes_per_second": @(bandwidth), @"elapsed_seconds": @(elapsed),
             @"peer_exit_code": @(result), @"thermal_before": @(thermalBefore),
             @"thermal_after": @(NSProcessInfo.processInfo.thermalState),
-            @"task_power_info_available": @(powerValid), @"task_power_error": @(after.powerError),
+            @"low_power_before": @(lowPowerBefore),
+            @"low_power_after": @(NSProcessInfo.processInfo.lowPowerModeEnabled),
+            @"task_power_info_available": @(powerValid),
+            @"task_power_before_error": @(before.powerError),
+            @"task_power_after_error": @(after.powerError),
             @"peer_log": logPath.lastPathComponent,
             @"cpu_seconds": before.cpuValid && after.cpuValid ? @(after.cpuSeconds() - before.cpuSeconds()) : NSNull.null,
             @"interrupt_wakeups": powerValid ? @(after.power.task_interrupt_wakeups - before.power.task_interrupt_wakeups) : NSNull.null,
