@@ -513,10 +513,23 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
         target_sources(robotweax_srt_tests PRIVATE
             experimental/packet_filters/test_member_filter.cpp
+            experimental/packet_filters/test_xor_filter.cpp
             experimental/packet_filters/test_socket_filter.cpp)
         target_include_directories(robotweax_srt_tests PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/tests"
             "${CMAKE_CURRENT_SOURCE_DIR}/experimental/packet_filters")
+        # Keep allocation interposition out of transport/sanitizer test binaries.
+        add_executable(robotweax_srt_filter_allocation_tests
+            tests/test_main.cpp experimental/packet_filters/test_filter_allocations.cpp)
+        target_compile_features(robotweax_srt_filter_allocation_tests PRIVATE cxx_std_20)
+        target_include_directories(robotweax_srt_filter_allocation_tests PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+            "${CMAKE_CURRENT_SOURCE_DIR}/experimental/packet_filters")
+        target_link_libraries(robotweax_srt_filter_allocation_tests PRIVATE RobotweaxSRT::srt)
+        add_test(NAME robotweax_srt_filter_allocation_tests
+            COMMAND robotweax_srt_filter_allocation_tests)
+        set_tests_properties(robotweax_srt_filter_allocation_tests PROPERTIES
+            TIMEOUT 30 LABELS "experimental;extensions;allocation")
         add_executable(robotweax_srt_extension_filter_mutations
             fuzz/extension_mutation_driver.cpp fuzz/fuzz_extension_filter.cpp)
         target_compile_features(robotweax_srt_extension_filter_mutations PRIVATE cxx_std_20)
