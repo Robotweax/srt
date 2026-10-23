@@ -4,6 +4,11 @@ Mobile support is under development. Initial compile/link checks pass as recorde
 below; device interoperability and a supported minimum OS are not yet established.
 The desktop build matrix remains the qualified platform set.
 
+The required macOS Release CI job also compiles `src/timing.cpp` for iOS ARM64
+device and simulator targets with warnings treated as errors. This exercises the
+mobile pacing path without target OpenSSL dependencies. It is a translation-unit
+compile check, not a full mobile build/link, runtime or timing qualification.
+
 ## Initial compile/link evidence (2026-09-09)
 
 All three targets built the Release static SRT library with AES-GCM enabled and
