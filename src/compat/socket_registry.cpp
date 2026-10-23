@@ -1,4 +1,5 @@
 #include "compat/socket_registry.hpp"
+#include "compat/thread_name.hpp"
 #include "compat/process_owned.hpp"
 #include "compat/logging.hpp"
 #include "compat/connect_callback_executor.hpp"
@@ -284,6 +285,7 @@ private:
         if (!worker_.joinable()) {
             try {
                 worker_ = std::thread([this] {
+                    name_current_thread("rwx-close");
                     run();
                 });
             } catch (...) {

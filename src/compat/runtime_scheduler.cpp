@@ -1,4 +1,5 @@
 #include "compat/runtime_scheduler.hpp"
+#include "compat/thread_name.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/socket_readiness.hpp"
 
@@ -224,6 +225,7 @@ bool RuntimeScheduler::start() noexcept
     try {
         for (std::size_t index = 0; index < shards_.size(); ++index) {
             shards_[index]->worker = std::thread([this, index] {
+                name_current_thread("rwx-shard-", index);
                 mark_runtime_cleanup_worker_thread();
                 run(index);
             });

@@ -1,4 +1,5 @@
 #include "compat/socket_readiness.hpp"
+#include "compat/thread_name.hpp"
 #include "robotweax/srt/udp.hpp"
 
 #include <algorithm>
@@ -517,6 +518,7 @@ SocketReadiness::Snapshot SocketReadiness::snapshot() const noexcept
 #if defined(ROBOTWEAX_READINESS_POLL)
 void SocketReadiness::run(std::shared_ptr<State> state) noexcept
 {
+    name_current_thread("rwx-readiness");
     for (;;) {
         state->descriptors.clear();
         state->tokens.clear();
@@ -603,6 +605,7 @@ void SocketReadiness::run(std::shared_ptr<State> state) noexcept
 #else
 void SocketReadiness::run(std::shared_ptr<State> state) noexcept
 {
+    name_current_thread("rwx-readiness");
     for (;;) {
         state->ready.clear();
         state->callbacks.clear();

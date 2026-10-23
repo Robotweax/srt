@@ -483,6 +483,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_rendezvous.cpp
         tests/test_socket_readiness.cpp
         tests/test_runtime_scheduler.cpp
+        tests/test_thread_names.cpp
         tests/test_connect_callback_executor.cpp
         tests/test_connect_callback_lifecycle.cpp
         tests/test_runtime_work_executor.cpp
@@ -736,6 +737,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_listener_connection_setup_sources.cpp
         tests/test_listener_handshake_sources.cpp
         tests/test_runtime_scheduler.cpp
+        tests/test_thread_names.cpp
         tests/test_runtime_work_executor.cpp)
     target_link_libraries(robotweax_srt_scheduler_tests
         PRIVATE RobotweaxSRT::srt Threads::Threads)
