@@ -203,7 +203,12 @@ leaves, preserving shared source state as optional feedback becomes unavailable.
 Tests cover strict selection, cleartext bidirectional transfer, actual recovery
 through the runtime, TSBPD/deduplication, sequence rollover, malformed framing
 and symbols, invalid candidate batches, resource/credit exhaustion and rejected
-profile combinations. Separate contract tests exercise group/receiver churn.
+profile combinations. A real UDP fault relay erases each of the eight XOR block
+positions, blocks retransmitted DATA, and requires eight filter recoveries with
+exact unique delivery despite repair replays, while the erased originals remain
+absent. Physical DATA counts distinguish recovery from duplicate candidates. A complementary
+case drops every repair and requires ordinary ARQ to recover the same erasures.
+Separate contract tests exercise group/receiver churn.
 The deterministic mutation target and coverage-guided `fuzz_extension_filter`
 exercise framing, malformed symbols and rollover. Contract tests also exercise
 concurrent receiver instances and synchronized thread handoffs. The checks cover their documented fixtures;
