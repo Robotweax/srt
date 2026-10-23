@@ -143,6 +143,16 @@ bounded runtime queue or replay history produces an explicit error or terminal
 connection outcome; Robotweax does not grow without limit or silently skip a
 required protocol transition.
 
+Payload pools reserve their full capacity at setup and recycle released payload
+indices, touching only stored bytes. On Linux, reservations of at least 128 KiB
+prefer dedicated anonymous mappings with `MADV_NOHUGEPAGE`. This avoids making
+unused capacity resident through transparent huge-page promotion. The policy
+applies only to those mappings; it does not change process or system settings.
+If mapping or advice is unavailable, allocation falls back to the ordinary
+allocator, as on other platforms. RSS can then depend on the allocator and
+kernel policy. Dense workloads may trade huge-page TLB benefits for more
+predictable residency; measure the application's active working set and rate.
+
 Heap allocation may occur during setup, option changes allowed by the public
 contract, application-facing helper construction, and teardown. It is not a
 normal per-packet requirement in the transport core.

@@ -16,13 +16,22 @@
 
 namespace robotweax::srt::detail {
 
+// Own large sparse payload reservations independently of the general allocator.
+// The byte count is nonzero only for a dedicated OS mapping.
+struct PayloadStorageDeleter {
+    std::size_t mapped_bytes = 0;
+    void operator()(std::byte* memory) const noexcept;
+};
+using PayloadStorage = std::unique_ptr<std::byte[], PayloadStorageDeleter>;
+[[nodiscard]] PayloadStorage allocate_payload_storage(std::size_t bytes);
+
 // Fixed-capacity backing store. Reserve all payload bytes at construction, but
 // initialize only bytes supplied by the caller. Reuse payload indices independently
 // of the sequence ring so low occupancy does not touch the entire arena over time.
 class PayloadPool {
 public:
     explicit PayloadPool(std::size_t capacity)
-        : payload_(new std::byte[checked_bytes(capacity)])
+        : payload_(allocate_payload_storage(checked_bytes(capacity)))
         , sizes_(capacity)
         , free_indices_(capacity)
     {
@@ -102,7 +111,7 @@ private:
         return payload_.get() + index * maximum_data_payload_size;
     }
 
-    std::unique_ptr<std::byte[]> payload_;
+    PayloadStorage payload_;
     std::vector<std::uint16_t> sizes_;
     std::vector<std::uint32_t> free_indices_;
     std::uint32_t next_unused_ = 0;

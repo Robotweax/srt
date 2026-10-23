@@ -176,6 +176,7 @@ add_library(robotweax_srt
     src/implementation_identity.cpp
     src/live.cpp
     src/packet_filter.cpp
+    src/payload_pool.cpp
     src/receive_buffer.cpp
     src/reliability.cpp
     src/rendezvous.cpp
@@ -411,6 +412,24 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     # flags, but is not built by default, installed, or registered with CTest.
     add_executable(robotweax_srt_ubsan_canary EXCLUDE_FROM_ALL
         tests/sanitizers/ubsan_canary.cpp)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # Isolate syscall-failure injection from the transport and sanitizer
+        # allocation interceptors. Exercise portable fallbacks without changing
+        # process-wide VM policy or exhausting the host's address space.
+        add_executable(robotweax_srt_payload_storage_fallback_tests
+            tests/test_main.cpp tests/test_payload_storage_fallback.cpp
+            src/payload_pool.cpp)
+        target_include_directories(robotweax_srt_payload_storage_fallback_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        target_compile_features(robotweax_srt_payload_storage_fallback_tests
+            PRIVATE cxx_std_20)
+        target_link_options(robotweax_srt_payload_storage_fallback_tests PRIVATE
+            "LINKER:--wrap=mmap" "LINKER:--wrap=madvise" "LINKER:--wrap=munmap")
+        add_test(NAME robotweax_srt_payload_storage_fallback_tests
+            COMMAND robotweax_srt_payload_storage_fallback_tests)
+        set_tests_properties(robotweax_srt_payload_storage_fallback_tests
+            PROPERTIES TIMEOUT 10 LABELS "memory;allocation")
+    endif()
     if(NOT BUILD_SHARED_LIBS)
     add_executable(robotweax_srt_tests
         tests/test_main.cpp
@@ -456,6 +475,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_connect_callback_lifecycle.cpp
         tests/test_runtime_work_executor.cpp
         tests/test_send_buffer.cpp
+        tests/test_payload_pool.cpp
         tests/test_session.cpp
         tests/test_acknowledged_source_drop.cpp
         tests/test_srt_compat.cpp
