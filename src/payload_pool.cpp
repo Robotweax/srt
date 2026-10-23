@@ -1,5 +1,7 @@
 #include "robotweax/srt/payload_pool.hpp"
 
+#include <new>
+
 #if defined(__linux__)
 #include <sys/mman.h>
 #endif
@@ -19,8 +21,9 @@ PayloadStorage allocate_payload_storage(std::size_t bytes)
             // Advise only pages owned by this reservation, never shared heap
             // pages. Unmap on rejection before falling back to ordinary storage.
             if (::madvise(memory, bytes, MADV_NOHUGEPAGE) == 0) {
+                // Begin the byte-array lifetime without initializing its pages.
                 return PayloadStorage {
-                    static_cast<std::byte*>(memory), {bytes}};
+                    ::new (memory) std::byte[bytes], {bytes}};
             }
             (void)::munmap(memory, bytes);
         }
