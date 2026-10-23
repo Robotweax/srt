@@ -975,6 +975,11 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         # the mocked port-planning assertions and retry bounds remain unchanged.
         set_tests_properties(robotweax_srt_application_process_support
             PROPERTIES TIMEOUT 20 LABELS "example;application")
+        add_test(NAME robotweax_srt_application_delivery_contracts
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_delivery_contracts.py)
+        set_tests_properties(robotweax_srt_application_delivery_contracts
+            PROPERTIES TIMEOUT 20 LABELS "example;application")
         add_test(NAME robotweax_srt_application_console_api
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_console.py)
