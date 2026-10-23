@@ -8,11 +8,11 @@ adds direct group adoption. Source-tree C++ consumers must rebuild.
 
 ## Immutable product archive
 
-- Product commit: `003a5f8046000c4801b2695f8b316ce05976bbbb`.
-- Public archive: `https://github.com/Robotweax/srt/archive/003a5f8046000c4801b2695f8b316ce05976bbbb.tar.gz`.
-- Bytes: 2111096.
-- SHA-256: `d9ac2ed863adbc0c7accb112ad7dcd8ccf15c6a72f2a5f9fd324a863df77a222`.
-- SHA-512: `c143231c9370d6af2838e5cdba0f1e52aefdb79156924fae642ad15a0a190523eb647d37f36ed56c8ca8fa651f9c73a7c2e0bc37b5eaad1dc6883072cce90e02`.
+- Product commit: `ae5750ab75a40d48dff5647231ba20af5cb39c13`.
+- Public archive: `https://github.com/Robotweax/srt/archive/ae5750ab75a40d48dff5647231ba20af5cb39c13.tar.gz`.
+- Bytes: 2111789.
+- SHA-256: `7c6c8130e19b88c72c101ebf8289066774943b2f54971185c368fda5fa63b731`.
+- SHA-512: `db9f980e90329c1a3343c97c915c4b5818c36d0f5b52eb0507e1279313edcd1645e232ae313eb33d88ae78f54969530ad473c5eaf67a49d7334dcbdb6ce6429f`.
 - All 719 tracked regular file bytes and executable bits matched Git.
 - Machine-readable identity and protected product paths: [source-0.3.1.json](source-0.3.1.json).
 
@@ -22,7 +22,7 @@ product path, including installed documentation and Windows build/signing recipe
 Verify this before accepting their results:
 
 ```sh
-git diff --exit-code 003a5f8046000c4801b2695f8b316ce05976bbbb HEAD -- src include cmake compat CMakeLists.txt docs README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md THIRD_PARTY.md LICENSE examples experimental fuzz benchmarks tools tests interop .github/workflows/windows-sdk.yml packaging/windows
+git diff --exit-code ae5750ab75a40d48dff5647231ba20af5cb39c13 HEAD -- src include cmake compat CMakeLists.txt docs README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md THIRD_PARTY.md LICENSE examples experimental fuzz benchmarks tools tests interop .github/workflows/windows-sdk.yml packaging/windows
 ```
 
 ## Finished documentation and upgrade inputs
@@ -64,3 +64,15 @@ workflow, tag provenance and downloaded signed-byte checks pass. Record those
 final identities with release assets rather than editing installed documentation
 after the expensive rebuild. Preserve all failed/skipped results and historical
 resource limits; no new general performance, bottle, PPA or COPR claim is implied.
+
+## Installer preflight correction
+
+The first ordinary SDK installer check at PR head `7ba422fe3` failed for both
+backends: its payload guard did not admit the newly installed documentation
+subtree. The original [failed run](https://github.com/Robotweax/srt/actions/runs/40029913259)
+is retained and is not acceptance evidence. No protected independent rebuild ran.
+The corrected product permits only `share\doc\robotweax_srt\` in addition to
+the existing payload roots. Traversal, reserved-name, untracked-file and reparse
+point rejection remain required. Preflight and small native installer fixtures
+now exercise documentation introduction before the ordinary full variant builds.
+First-install logs are retained for subsequent diagnostic failures.

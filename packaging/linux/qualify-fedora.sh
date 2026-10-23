@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
-echo "d9ac2ed863adbc0c7accb112ad7dcd8ccf15c6a72f2a5f9fd324a863df77a222  /source.tar.gz" | sha256sum --check -
+echo "7c6c8130e19b88c72c101ebf8289066774943b2f54971185c368fda5fa63b731  /source.tar.gz" | sha256sum --check -
 
 dnf install -y rpm-build cmake gcc-c++ openssl-devel pkgconf-pkg-config cpio
 mkdir -p /build/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS} /out
-cp /source.tar.gz /build/rpmbuild/SOURCES/003a5f8046000c4801b2695f8b316ce05976bbbb.tar.gz
+cp /source.tar.gz /build/rpmbuild/SOURCES/ae5750ab75a40d48dff5647231ba20af5cb39c13.tar.gz
 rpmbuild --define '_topdir /build/rpmbuild' -bs /work/packaging/fedora/robotweax-srt.spec
 test "$(rpm -qp --qf '%{LICENSE}' /build/rpmbuild/SRPMS/*.src.rpm)" = MIT
 mkdir -p /build/source-reextract
 cd /build/source-reextract
 rpm2cpio /build/rpmbuild/SRPMS/*.src.rpm | cpio -id
-cmp 003a5f8046000c4801b2695f8b316ce05976bbbb.tar.gz /source.tar.gz
+cmp ae5750ab75a40d48dff5647231ba20af5cb39c13.tar.gz /source.tar.gz
 cp /build/rpmbuild/SRPMS/*.src.rpm /out/
 rpmbuild --define '_topdir /build/rpmbuild' -bb /work/packaging/fedora/robotweax-srt.spec
 cp /build/rpmbuild/RPMS/*/*.rpm /out/

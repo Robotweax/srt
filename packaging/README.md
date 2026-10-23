@@ -2,9 +2,9 @@
 
 ## Version 0.3.1 source recipes
 
-The current recipes select immutable product commit `003a5f8046000c4801b2695f8b316ce05976bbbb`. The
+The current recipes select immutable product commit `ae5750ab75a40d48dff5647231ba20af5cb39c13`. The
 public archive has 719 regular files; every byte and executable bit was
-verified against Git. SHA-256: `d9ac2ed863adbc0c7accb112ad7dcd8ccf15c6a72f2a5f9fd324a863df77a222`.
+verified against Git. SHA-256: `7c6c8130e19b88c72c101ebf8289066774943b2f54971185c368fda5fa63b731`.
 See the [0.3.1 input record](qualification-0.3.1.md),
 [release notes](../docs/release-notes-0.3.1.md) and
 [release contract](../docs/release-process-0.3.1.md).
