@@ -183,6 +183,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         partitions = {
             "robotweax_srt_tests", "robotweax_srt_socket_api_tests",
             "robotweax_srt_transport_runtime_tests",
+            "robotweax_srt_session_auth_admission_tests",
             "robotweax_srt_acp1_tests",
             "robotweax_srt_acp1_rendezvous_tests",
             "robotweax_srt_acp1_groups_tests",
@@ -235,9 +236,13 @@ class CiTestRegistrationTests(unittest.TestCase):
         ])
         self.assertEqual(commands["robotweax_srt_socket_api_tests"], [
             "--include", "srt_compat_", "--exclude", "acp1", "key_length",
-            "srt_compat_gcm_", "srt_compat_sensor_gcm_bounded_sample_stream_",
+            "srt_compat_gcm_", "srt_compat_session_auth_admission_",
+            "srt_compat_sensor_gcm_bounded_sample_stream_",
             "srt_compat_bind_acquire", "srt_compat_connection_local_name_",
             "srt_compat_group_pathid_",
+        ])
+        self.assertEqual(commands["robotweax_srt_session_auth_admission_tests"], [
+            "--include", "srt_compat_session_auth_admission_",
         ])
         self.assertEqual(commands["robotweax_srt_transport_runtime_tests"], [
             "--include", "compat_runtime_", "--exclude", "compat_runtime_rotation_",
@@ -250,6 +255,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         )
         self.assertIsNotNone(bounded_properties)
         profile_partitions = {
+            "robotweax_srt_session_auth_admission_tests",
             "robotweax_srt_gcm_profile_tests",
             "robotweax_srt_sensor_gcm_aes128_tests",
             "robotweax_srt_sensor_gcm_aes192_tests",

@@ -489,6 +489,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_rendezvous.cpp
         tests/test_socket_readiness.cpp
         tests/test_runtime_scheduler.cpp
+        tests/test_thread_names.cpp
         tests/test_connect_callback_executor.cpp
         tests/test_connect_callback_lifecycle.cpp
         tests/test_runtime_work_executor.cpp
@@ -501,6 +502,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_implementation_identity.cpp
         tests/test_compat_key_negotiation.cpp
         tests/test_profile_admission.cpp
+        tests/test_session_authentication_admission.cpp
         tests/test_socket_options.cpp
         tests/test_simulation.cpp
         tests/test_statistics.cpp
@@ -585,10 +587,14 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     # Public socket API integration cases have their own bounded run.
     add_test(NAME robotweax_srt_socket_api_tests
         COMMAND robotweax_srt_tests --include srt_compat_
-            --exclude acp1 key_length srt_compat_gcm_
+            --exclude acp1 key_length srt_compat_gcm_ srt_compat_session_auth_admission_
             srt_compat_sensor_gcm_bounded_sample_stream_
             srt_compat_bind_acquire srt_compat_connection_local_name_
             srt_compat_group_pathid_)
+    add_test(NAME robotweax_srt_session_auth_admission_tests
+        COMMAND robotweax_srt_tests --include srt_compat_session_auth_admission_)
+    set_tests_properties(robotweax_srt_session_auth_admission_tests PROPERTIES
+        TIMEOUT 30 LABELS "encryption;integration;admission")
     # ACP1's socket and group scenario matrices have independent wall-clock
     # costs. Keep each mode bounded rather than charging them to one timeout.
     add_test(NAME robotweax_srt_acp1_tests
@@ -737,6 +743,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_listener_connection_setup_sources.cpp
         tests/test_listener_handshake_sources.cpp
         tests/test_runtime_scheduler.cpp
+        tests/test_thread_names.cpp
         tests/test_runtime_work_executor.cpp)
     target_link_libraries(robotweax_srt_scheduler_tests
         PRIVATE RobotweaxSRT::srt Threads::Threads)

@@ -183,6 +183,16 @@ Callbacks must return promptly. Do not retain the provisional handle as an
 accepted connection: rejection, closure or handshake failure can invalidate it.
 Only a successfully accepted connection may be used for application I/O.
 
+`SRTO_ROBOTWEAX_SESSIONAUTH` and `SRTO_ENFORCEDENCRYPTION` are pre-connection
+options, not pre-bind options, and may also be overridden on the provisional
+child during the callback. Select the profile first. Enable enforced encryption
+before enabling session authentication; disable session authentication before
+requesting optional encryption. Passphrase, AES-GCM and bilateral authentication
+requirements remain mandatory. The final child settings are checked before
+crypto setup and do not change the listener's defaults. See
+[per-child session authentication](session-authentication.md#per-child-selection-on-a-shared-listener)
+for ordering, rejection and security details. This behavior is present in v0.3.0.
+
 ## AES-GCM extension option
 
 `SRTO_CRYPTOMODE` is deliberately absent from the default SRT v1.5.7 public
