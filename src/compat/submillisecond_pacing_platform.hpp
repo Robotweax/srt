@@ -12,14 +12,14 @@
 #define ROBOTWEAX_SRT_MOBILE_PACING_PLATFORM 0
 #endif
 
-#if ROBOTWEAX_SRT_MOBILE_PACING_PLATFORM \
+#if ROBOTWEAX_SRT_MOBILE_PACING_PLATFORM                                       \
     && defined(ROBOTWEAX_SRT_EXPERIMENTAL_MOBILE_PACING)
 #define ROBOTWEAX_SRT_MOBILE_TIMER_PACING 1
 #else
 #define ROBOTWEAX_SRT_MOBILE_TIMER_PACING 0
 #endif
 
-#if ROBOTWEAX_SRT_MOBILE_TIMER_PACING \
+#if ROBOTWEAX_SRT_MOBILE_TIMER_PACING                                          \
     || (defined(__linux__) && !defined(__ANDROID__))
 #define ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING 1
 #elif defined(__APPLE__)
