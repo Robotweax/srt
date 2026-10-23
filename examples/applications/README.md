@@ -2,7 +2,9 @@
 
 These opt-in executables demonstrate sustained public-C-API workflows. They
 share a small binary sample protocol, bounded configuration, exact payload
-validation, and JSONL observations. They do not use private SRT headers.
+validation, and JSONL observations. They do not use private SRT headers. All
+three build and run from this repository without SRT Network Lab, Docker, or a
+cloud account.
 
 Contribution supports real MPEG-TS ingress, recording, and UDP playback output.
 Its default mode, plus recovery and device workloads, uses synthetic 1,316-byte
@@ -13,11 +15,16 @@ process exit status. Control requires every command to execute in order.
 
 ## Build
 
+Use the [normal library build dependencies](../../docs/building.md). Python
+3.10+ is needed for the helpers and tests; FFmpeg is needed only for the media
+checks and console. The three C++ executables do not require either at runtime.
+
 From the repository root:
 
 ```sh
 cmake -S . -B build-applications -DCMAKE_BUILD_TYPE=Release \
   -DROBOTWEAX_SRT_BUILD_EXAMPLES=ON \
+  -DROBOTWEAX_SRT_BUILD_TESTS=OFF \
   -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF \
   -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
 cmake --build build-applications --parallel \
@@ -263,39 +270,69 @@ Repeated end markers accommodate finite Live/Sensor tail loss, but no sample
 claims reliable loss-free completion of arbitrary Live traffic. The maximum
 gap uses only the receiver's local monotonic clock; it is not one-way latency.
 
-With tests enabled:
+## Validation and limits
+
+Use a separate build directory to enable the automated checks. The optional
+FFmpeg setting adds byte-preservation, decoding and malformed-TS checks;
+omit that setting if FFmpeg is unavailable.
 
 ```sh
-ctest --test-dir build-applications -L application --output-on-failure
+cmake -S . -B build-applications-check -DCMAKE_BUILD_TYPE=Debug \
+  -DROBOTWEAX_SRT_BUILD_EXAMPLES=ON \
+  -DROBOTWEAX_SRT_BUILD_TESTS=ON \
+  -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF \
+  -DROBOTWEAX_SRT_BUILD_TOOLS=OFF \
+  -DENABLE_AEAD_API_PREVIEW=ON \
+  -DROBOTWEAX_SRT_SAMPLE_FFMPEG=/absolute/path/to/ffmpeg
+cmake --build build-applications-check --parallel
+ctest --test-dir build-applications-check -L application --output-on-failure
 ```
 
+Multi-config generators also require `--config Debug` for the build and
+`-C Debug` for CTest. On POSIX, select the intended Python interpreter with
+`-DPython3_EXECUTABLE="$(./tools/python -c 'import sys; print(sys.executable)')"`
+when configuring; on Windows, pass the selected interpreter's absolute path.
+
 Seven integration scenarios run in CTR builds, with seven additional GCM cases
-in extension-enabled builds. Checks require exact baseline payloads, FEC/ARQ
-activity under injected loss, connected replacement members, no duplicate
+when the AEAD preview is enabled. Three further checks cover statistics,
+process support and console controls. With FFmpeg configured, the application
+suite therefore contains 18 checks. Checks require exact baseline payloads,
+FEC/ARQ activity under injected loss, connected replacement members, no duplicate
 delivery, complete ordered command execution, and deliberate Sensor loss in the
-impaired device case. These tests cover loopback, not hardware path diversity.
-The comparison launcher separately exercises Column/Matrix, delay and reordering.
+impaired device case. The comparison launcher separately exercises Column,
+Matrix, delay and reordering.
 
-Initial local verification on macOS ARM64: all seven normal Release scenarios
-and all fourteen Debug CTR/GCM scenarios passed. The wider Debug CTest run
-passed 114 of 115 checks; its remaining remote-harness check passed after
-selecting native ARM Python instead of the automatically discovered Intel
-interpreter. The standalone interoperability harness passed all 794 tests.
-The five-case comparison completed with loss, 2-ms delay and periodic 30-ms
-reordering; it preserved the measured unrecovered Row-FEC loss in its result.
-Windows/Linux builds and independent physical-path runs remain unverified for
-these new applications.
+The sample build and automated checks have been exercised on macOS ARM64,
+Linux ARM64 and hosted Windows. This does not qualify every media codec,
+browser, platform/crypto combination or external SRT provider. The media test
+checks byte-identical MPEG-TS delivery and decoding for Backup and Broadcast
+with explicit member closure and replacement. FFmpeg encodes and decodes over
+UDP here; these checks do not exercise FFmpeg's SRT protocol implementation.
 
-The console API tests run without FFmpeg. To add the real-media integration
-check, configure with
-`-DROBOTWEAX_SRT_SAMPLE_FFMPEG=/absolute/path/to/ffmpeg`. It verifies byte-identical
-MPEG-TS delivery and successful decoding for Backup and Broadcast with member
-closure and replacement. The extended Debug application suite has 16 checks.
-Browser validation also exercised playback and a simulated relay outage: the
-received recording remained byte-identical to the source in that local run.
+A separate [Linux two-host contribution baseline](https://github.com/Robotweax/srt_network_lab/actions/runs/39920332950)
+at SRT revision
+`f3b1e22b95b26e2f88632b32aee82be2922d74c2` delivered all 10,998 datagrams
+across six Backup/Broadcast cases. Each received recording decoded to the same
+600 video and 1,126 audio frames as its source. The largest receiver-local gap
+was 13.993090 ms.
 
-Physical multi-network validation is deferred until a machine with two independent
-links is available. Windows/Linux application builds remain unverified. Further
-work includes automatic path recovery, transmitted path labels, and RTT provenance
-in the shared observer. This sample set does not claim bandwidth aggregation or
-add new transport functionality.
+At the same revision, a separate [path-outage run](https://github.com/Robotweax/srt_network_lab/actions/runs/39936957533)
+measured one baseline and each path interrupted/restored under each policy.
+The four faults each dropped both directions for approximately three seconds;
+queue readbacks and captures established the interruption and restoration.
+All 10,998 datagrams arrived without duplication, and all received recordings
+decoded to the source frame counts. The largest receiver-local gap was
+14.459375 ms among the four outage cases and 16.732118 ms across all six cases.
+
+These are measurements for those fixed workloads, not acceptance limits or
+latency guarantees; receive-gap and missing-frame thresholds remain unset.
+Both runs used two logical paths sharing a WAN underlay. Independent physical
+links, automatic member reconnection and uninterrupted player playback remain
+unqualified.
+
+The console and recovery relay provide bounded local demonstrations. The
+console launches its peers on loopback; use the CLI for separate hosts.
+Long-outage member reconnection, durable command identity across reconnects,
+real camera/actuator integration, transmitted path labels and RTT provenance
+are outside these samples' current scope. This set does not claim bandwidth
+aggregation or add new transport functionality.
