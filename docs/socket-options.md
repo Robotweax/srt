@@ -481,9 +481,9 @@ system cannot provide. Per-member group endpoint configuration may still set
 the option for Linux member sockets.
 
 **Release boundary:** The per-endpoint `SRTO_GROUPMINSTABLETIMEO` override
-described below is unreleased (`main` only). Published v0.3.0 supports the
+described below is available from 0.3.1. Published v0.3.0 supports only the
 group-wide minimum and rejects this endpoint override with `SRT_EINVPARAM`.
-See [Unreleased changes](../CHANGELOG.md#unreleased).
+See the [0.3.1 release notes](release-notes-0.3.1.md).
 
 The `SRT_SOCKOPT_CONFIG` matrix supports `SRTO_GROUPMINSTABLETIMEO`
 per-endpoint overrides for caller Backup members (60–5000 ms, `int32_t`).

@@ -20,7 +20,8 @@ HISTORICAL_ABI_PATH = ROOT / "cmake" / "abi" / "robotweax-srt-0.1.0.txt"
 FROZEN_0_2_0_ABI_PATH = (
     ROOT / "cmake" / "abi" / "robotweax-srt-0.2.0.txt"
 )
-CURRENT_PROJECT_VERSION = "0.3.0"
+CURRENT_PROJECT_VERSION = "0.3.1"
+FROZEN_0_3_0_ABI_PATH = ROOT / "cmake/abi/robotweax-srt-0.3.0.txt"
 PREVIOUS_ABI_PATH = ROOT / "cmake" / "abi" / "robotweax-srt-0.2.8.txt"
 CURRENT_ABI_PATH = (
     ROOT / "cmake" / "abi" / f"robotweax-srt-{CURRENT_PROJECT_VERSION}.txt"
@@ -159,13 +160,14 @@ class AeadContractTests(unittest.TestCase):
         expected = sorted(historical.decode().splitlines()
                           + ["robotweax_srt_group_path_data_v1", "robotweax_srt_rtt_data_v1", "robotweax_srt_group_send_state_v1", "robotweax_srt_standby_rtt_data_v1"])
         # The published release remains frozen when development adds an API.
-        self.assertEqual(CURRENT_ABI_PATH.read_text().splitlines(), expected)
+        self.assertEqual(FROZEN_0_3_0_ABI_PATH.read_text().splitlines(), expected)
 
-    def test_development_abi_adds_only_direct_group_udp_adoption(self):
-        released = CURRENT_ABI_PATH.read_text().splitlines()
+    def test_release_0_3_1_adds_only_direct_group_udp_adoption(self):
+        released = FROZEN_0_3_0_ABI_PATH.read_text().splitlines()
         expected = sorted(released + ["robotweax_srt_connect_group_acquire"])
         symbols = PUBLIC_SYMBOLS_PATH.read_bytes()
         self.assertEqual(symbols.decode().splitlines(), expected)
+        self.assertEqual(CURRENT_ABI_PATH.read_bytes(), symbols)
         self.assertEqual(symbols,
                          (ROOT / "cmake/abi/robotweax-srt-development.txt").read_bytes())
         cmake = CMAKE_PATH.read_text(encoding="utf-8")

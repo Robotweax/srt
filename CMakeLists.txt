@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(robotweax_srt VERSION 0.3.0 LANGUAGES C CXX)
+project(robotweax_srt VERSION 0.3.1 LANGUAGES C CXX)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
@@ -2195,26 +2195,34 @@ install(FILES
     CONTRIBUTING.md
     SECURITY.md
     THIRD_PARTY.md
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt)
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt
+    COMPONENT documentation)
 install(DIRECTORY docs/
     DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/docs
+    COMPONENT documentation
     FILES_MATCHING PATTERN "*.md")
 install(FILES examples/ios/README.md
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/ios)
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/ios
+    COMPONENT documentation)
 install(FILES examples/ios/pacing/README.md
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/ios/pacing)
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/ios/pacing
+    COMPONENT documentation)
 install(FILES examples/README.md
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples)
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples
+    COMPONENT documentation)
 install(FILES examples/applications/README.md
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/applications)
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/applications
+    COMPONENT documentation)
 install(FILES
     examples/installed-consumer/CMakeLists.txt
     examples/installed-consumer/main.cpp
     examples/installed-consumer/README.md
     DESTINATION
-        ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/installed-consumer)
+        ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/examples/installed-consumer
+    COMPONENT documentation)
 install(FILES ${ROBOTWEAX_SRT_PUBLIC_COMPATIBILITY_MANIFESTS}
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/compat)
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/compat
+    COMPONENT documentation)
 install(FILES ${ROBOTWEAX_SRT_ABI_BASELINE_FILE}
     ${ROBOTWEAX_SRT_RELEASE_ABI_BASELINE_FILE}
     DESTINATION ${CMAKE_INSTALL_DATADIR}/robotweax_srt/abi)

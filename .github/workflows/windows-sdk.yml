@@ -6,6 +6,10 @@ on:
         description: 'Sign and test both installers (main only; requires release approval)'
         type: boolean
         default: false
+      qualify_rebuild:
+        description: 'Run the expensive unsigned rebuild recipe explicitly (not needed before the final tag rebuild)'
+        type: boolean
+        default: false
   push:
     tags: ['v*']
   pull_request:
@@ -30,10 +34,12 @@ jobs:
         shell: pwsh
         env:
           SIGN_REQUESTED: ${{ inputs.sign }}
+          QUALIFY_REBUILD: ${{ inputs.qualify_rebuild }}
         run: |
           $version = [regex]::Match((Get-Content CMakeLists.txt -Raw), 'project\(robotweax_srt VERSION ([0-9.]+)').Groups[1].Value
           if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid CMake project version' }
           if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne "v$version") { throw 'Tag must match the CMake project version exactly' }
+          if ($env:SIGN_REQUESTED -eq 'true' -and $env:QUALIFY_REBUILD -eq 'true') { throw 'Choose either unsigned recipe qualification or protected signing' }
           if ($env:SIGN_REQUESTED -eq 'true' -and $env:GITHUB_REF -cne 'refs/heads/main') { throw 'Manual signing requires main' }
           "version=$version" >> $env:GITHUB_OUTPUT
       - name: Package validation regression tests
@@ -182,8 +188,9 @@ jobs:
           $record = Get-SdkInstallerProvenance installers $env:SDK_VERSION $env:GITHUB_SHA $env:GITHUB_RUN_ID
           "json=$($record | ConvertTo-Json -Compress -Depth 5)" >> $env:GITHUB_OUTPUT
   rebuild-qualification:
-    # Exercise the exact rebuild recipe without approvals or signing authority.
-    if: github.event_name == 'pull_request'
+    # Optional recipe diagnostics. Release qualification uses the one protected
+    # rebuild below on the final tag, after source and documentation are frozen.
+    if: github.event_name == 'workflow_dispatch' && inputs.qualify_rebuild && !inputs.sign
     needs: validate
     runs-on: windows-latest
     timeout-minutes: 180

@@ -82,7 +82,7 @@ tag source, package and SDK runs. Publication does not qualify a separate
 Homebrew bottle, PPA, COPR or additional platform/profile.
 
 The release owner approved an exception for the incomplete comparative resource
-qualification. The corrected candidate completed all five tested finite
+qualification. During pre-publication qualification, the corrected product completed all five finite
 File/Stream transfers within the original 60-second deadline; published 0.2.9
 completed two of five. Only two comparison pairs are usable, so CPU, memory and
 throughput regression thresholds are not qualified. All failed cases remain in

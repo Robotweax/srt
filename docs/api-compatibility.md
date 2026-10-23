@@ -1,6 +1,6 @@
 # Public SRT API compatibility
 
-Robotweax SRT 0.3.0 provides a compatible public C boundary for the selected
+Robotweax SRT 0.3.1 provides a compatible public C boundary for the selected
 Haivision SRT v1.5.7 API profile. It is an independent implementation, not a
 source fork and not a claim of complete compatibility with every historical or
 future `libsrt` behavior.
@@ -14,16 +14,17 @@ selected function, public type, socket option, constant group, ABI check, and
 its exact implemented or partial scope. When this overview and the manifest
 differ, the manifest is authoritative.
 
-Published on 2026-10-14; see the [0.3.0 publication record](release-process-0.3.0.md#publication-record).
-Existing applications and dependencies must rebuild for shared-library ABI line 0.3.
+See the [0.3.1 release notes](release-notes-0.3.1.md) for changes and migration.
+Applications linked to ABI line 0.2 must rebuild for 0.3. Existing 0.3.0 C
+exports and layouts are preserved; source-tree C++ consumers must rebuild.
 
 ## Version axes
 
 These values are intentionally independent:
 
-| Axis | Robotweax SRT 0.3.0 |
+| Axis | Robotweax SRT 0.3.1 |
 | --- | --- |
-| Project release | `0.3.0` |
+| Project release | `0.3.1` |
 | Shared-library ABI line | `0.3` |
 | Default compatible public API | Haivision SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -246,7 +247,7 @@ The released boundary supports:
   socket; and
 - release of the acquired native descriptor with the final SRT owner.
 
-Unreleased development builds also provide the Robotweax-only
+Version 0.3.1 also provides the Robotweax-only
 `robotweax_srt_connect_group_acquire` extension for direct per-member adoption of
 app-bound UDP sockets. Its writable descriptor array reports ownership transfer
 for each endpoint, including partial and later setup failures. See the
@@ -366,7 +367,7 @@ the manifest as the contract.
 
 ## Compatibility limits
 
-Robotweax SRT 0.3.0 is not yet a link-compatible replacement for arbitrary
+Robotweax SRT 0.3.1 is not yet a link-compatible replacement for arbitrary
 `libsrt` applications. In particular:
 
 - HSv4 positive connection establishment is not supported in 0.2;

@@ -124,9 +124,31 @@ def validate(root: Path) -> list[str]:
     return errors
 
 
+def validate_release(root: Path, version: str) -> list[str]:
+    errors: list[str] = []
+    if re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
+        return ["invalid documentation product version"]
+    notes = root / "docs" / f"release-notes-{version}.md"
+    if not notes.is_file():
+        return [f"missing release notes for {version}"]
+    if not (root / "README.md").is_file():
+        return ["missing release README"]
+    content = notes.read_text(encoding="utf-8")
+    if not content.startswith(f"# Robotweax SRT {version} "):
+        errors.append("release-note title differs from product version")
+    for path in (root / "README.md", notes):
+        text = path.read_text(encoding="utf-8")
+        if re.search(r"\brelease[- ]candidate\b|\bStatus:\s*(?:draft|preparation|unreleased)", text, re.I):
+            errors.append(f"unfinished release framing in {path.name}")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    if f"| Project release | `{version}` |" not in readme:
+        errors.append("README project release differs from product version")
+    return errors
+
+
 def main() -> int:
-    if len(sys.argv) != 2:
-        print(f"usage: {Path(sys.argv[0]).name} DOCUMENTATION_ROOT", file=sys.stderr)
+    if len(sys.argv) not in (2, 3):
+        print(f"usage: {Path(sys.argv[0]).name} DOCUMENTATION_ROOT [VERSION]", file=sys.stderr)
         return 2
 
     root = Path(sys.argv[1])
@@ -135,6 +157,13 @@ def main() -> int:
         return 1
 
     errors = validate(root)
+    version = sys.argv[2] if len(sys.argv) == 3 else None
+    if version is None and (root / "CMakeLists.txt").is_file():
+        match = re.search(r"project\(robotweax_srt VERSION ([0-9.]+)",
+                          (root / "CMakeLists.txt").read_text())
+        version = match.group(1) if match else None
+    if version is not None:
+        errors.extend(validate_release(root, version))
     if errors:
         print("installed documentation validation failed:", file=sys.stderr)
         for error in errors:
