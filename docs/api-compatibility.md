@@ -244,6 +244,13 @@ The released boundary supports:
   socket; and
 - release of the acquired native descriptor with the final SRT owner.
 
+Unreleased development builds also provide the Robotweax-only
+`robotweax_srt_connect_group_acquire` extension for direct per-member adoption of
+app-bound UDP sockets. Its writable descriptor array reports ownership transfer
+for each endpoint, including partial and later setup failures. See the
+[direct group-adoption contract](connection-groups.md#direct-adoption-of-app-bound-udp-sockets).
+The published 0.3.0 export inventory and existing C layouts remain unchanged.
+
 `srt_getsockname` reports the binding before connection admission and on
 listeners. After successful caller, accepted, or rendezvous setup, a wildcard
 binding reports a connection-local outgoing-route address snapshot when the OS

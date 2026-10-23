@@ -50,6 +50,11 @@ int main(void)
         return 1;
     }
 
+    if (robotweax_srt_connect_group_acquire(SRT_INVALID_SOCK, NULL, NULL, 0)
+        != SRT_ERROR) {
+        return 18;
+    }
+
     const SRTSOCKET path_group = srt_create_group(SRT_GTYPE_BROADCAST);
     size_t path_count = 123;
     if (path_group == SRT_INVALID_SOCK
