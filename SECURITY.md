@@ -3,15 +3,16 @@
 ## Supported versions
 
 Robotweax SRT is a pre-1.0 project. Security fixes are provided for the current
-`main` branch and the latest `0.2.x` release line.
+`main` branch and the latest `0.3.x` release line.
 
 | Version | Security support |
 | --- | --- |
 | `main` | Active development |
-| `0.2.x` | Supported |
+| `0.3.x` | Supported |
+| `0.2.x` | Historical; upgrade required |
 | `0.1.x` | Historical; upgrade required |
 
-The supported 0.2.x series consists of development releases. Security support
+The supported 0.3.x series consists of development releases. Security support
 is not a claim of universal production readiness or drop-in suitability for
 every `libsrt` deployment. Evaluate the documented [compatibility](docs/compatibility.md),
 [limitations](docs/limitations.md), and deployment threat model before use.
