@@ -2,8 +2,9 @@
 
 `SRTO_ROBOTWEAX_SESSIONAUTH` is a Robotweax-specific boolean socket option,
 **false by default**. Enable it explicitly on the Caller before connection setup
-and on the Listener before listen, or on its provisional child during admission. It requires a passphrase and enforced encryption. Setting
-it never implicitly enables GCM. SESSIONAUTH alone does not support Rendezvous;
+and on the Listener before listen, or on its provisional child during admission.
+It requires a passphrase and enforced encryption. Setting it never implicitly
+enables GCM. SESSIONAUTH alone does not support Rendezvous;
 the conflicting setting is rejected in either order. The separately gated
 [experimental ACP1 profile](experimental-acp1.md) adds explicit version-4
 Rendezvous authentication when ACP1 is also required.
