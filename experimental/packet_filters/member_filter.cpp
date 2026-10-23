@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <new>
 
 namespace robotweax::srt::extensions {
 
@@ -25,7 +26,9 @@ Error MemberFilterRuntime::start(const CompiledFilter& filter,
         || !receive_capacity || receive_capacity >= SequenceNumber::half_range
         || descriptor.scope != FilterScope::member_transport
         || descriptor.feedback != FeedbackRequirement::none
-        || descriptor.state_bytes_per_receiver != 0)
+        || descriptor.state_bytes_per_receiver != 0
+        || descriptor.state_bytes > maximum_state
+        || filter.implementation.state_alignment > alignof(std::max_align_t))
         return failure_ = Error::unsupported;
     const FilterLimits limits {.maximum_members = 1,
         .maximum_receivers = 0,
@@ -48,9 +51,20 @@ Error MemberFilterRuntime::start(const CompiledFilter& filter,
                 + (sending ? send_capacity : receive_capacity),
             .maximum_recovered_payload_bytes =
                 maximum_payload + packet_header_size};
+        std::span<std::byte> state = direction->state;
+        if (descriptor.state_bytes > state.size()) {
+            try {
+                direction->expanded_state =
+                    std::make_unique<std::byte[]>(descriptor.state_bytes);
+                state = {
+                    direction->expanded_state.get(), descriptor.state_bytes};
+            } catch (const std::bad_alloc&) {
+                return failure_ = Error::buffer_too_small;
+            }
+        }
         failure_ = direction->instance.start(filter.implementation, limits,
             {.scope = FilterScope::member_transport, .member = {1, 1}},
-            direction->environment, direction->state, direction->outputs,
+            direction->environment, state, direction->outputs,
             direction->bytes);
         if (failure_ != Error::none)
             return failure_;
