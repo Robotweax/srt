@@ -1,9 +1,15 @@
 #include "test.hpp"
+#include "member_filter.hpp"
+#include "robotweax/srt/udp.hpp"
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 #include "srt/srt.h"
 
+#include <algorithm>
 #include <array>
+#include <atomic>
+#include <optional>
+#include <thread>
 #include <cstring>
 
 using namespace robotweax::srt;
@@ -260,4 +266,221 @@ TEST(
         (void)caller.receive(reply);
         REQUIRE_EQ(caller.state(), HandshakeState::rejected);
     }
+}
+
+namespace {
+// Bounded real-UDP impairment fixture. Choose erasures by wire sequence so
+// random initial sequences and partial first blocks cannot change the plan.
+class XorLossRelay {
+public:
+    explicit XorLossRelay(IpEndpoint listener, bool use_repairs)
+        : listener_(listener)
+        , use_repairs_(use_repairs)
+    {
+        REQUIRE(socket_.valid());
+        REQUIRE_EQ(socket_.bind(IpEndpoint::loopback()), Error::none);
+        const auto local = socket_.local_endpoint();
+        REQUIRE(local);
+        endpoint = local.endpoint;
+        worker_ = std::jthread([this](std::stop_token stop) {
+            run(stop);
+        });
+    }
+    void stop()
+    {
+        worker_.request_stop();
+        worker_.join();
+    }
+    IpEndpoint endpoint;
+    std::atomic<unsigned> sources {0};
+    std::atomic<unsigned> erasures {0};
+    std::atomic<unsigned> repairs {0};
+    std::atomic<unsigned> retransmissions {0};
+    std::atomic<unsigned> late_originals {0};
+    std::atomic<unsigned> errors {0};
+
+private:
+    void forward(std::span<const std::byte> bytes, IpEndpoint destination)
+    {
+        const auto sent = socket_.send_to(bytes, destination);
+        if (!sent || sent.bytes_transferred != bytes.size())
+            ++errors;
+    }
+    void run(std::stop_token stop)
+    {
+        std::array<std::byte, 65536> datagram;
+        std::array<std::array<std::byte, 1500>, 8> held;
+        std::array<std::size_t, 8> held_sizes {};
+        std::optional<SequenceNumber> first_block;
+        std::optional<IpEndpoint> caller;
+        const auto block_index = [&](SequenceNumber sequence) -> int {
+            if (!first_block)
+                return -1;
+            const auto offset = sequence.distance_from(*first_block);
+            return offset >= 0 && offset < 64 ? offset / 8 : -1;
+        };
+        while (!stop.stop_requested()) {
+            const auto ready = socket_.wait_readable(10);
+            if (!ready) {
+                ++errors;
+                break;
+            }
+            if (!ready.ready)
+                continue;
+            const auto received = socket_.receive_from(datagram);
+            if (!received) {
+                ++errors;
+                continue;
+            }
+            const auto bytes = std::span<const std::byte> {datagram}.first(
+                received.bytes_transferred);
+            if (received.peer == listener_) {
+                if (caller)
+                    forward(bytes, *caller);
+                else
+                    ++errors;
+                continue;
+            }
+            caller = received.peer;
+            const auto decoded = decode_packet(bytes);
+            if (decoded && decoded.packet.kind == PacketKind::data) {
+                const auto& header = decoded.packet.data;
+                if (header.retransmitted) {
+                    ++retransmissions;
+                    if (!use_repairs_)
+                        forward(bytes, listener_);
+                    continue;
+                }
+                ++sources;
+                if (!first_block && (header.sequence.value() & 7U) == 0)
+                    first_block = header.sequence;
+                const auto block = block_index(header.sequence);
+                if (block >= 0
+                    && (header.sequence.value() & 7U)
+                        == static_cast<unsigned>(block)) {
+                    if (bytes.size() > held[block].size()) {
+                        ++errors;
+                        continue;
+                    }
+                    std::copy(bytes.begin(), bytes.end(), held[block].begin());
+                    held_sizes[block] = bytes.size();
+                    ++erasures;
+                    continue;
+                }
+            } else if (decoded && decoded.packet.kind == PacketKind::control
+                && decoded.packet.control.type == ControlType::user_defined
+                && decoded.packet.control.subtype
+                    == extensions::member_filter_subtype) {
+                ++repairs;
+                if (!use_repairs_)
+                    continue;
+                // Replay repairs, then the original erasure, after the repair.
+                // Filter supply and unique-delivery counts prove those replays
+                // cannot conceal a failed reconstruction or deliver duplicates.
+                forward(bytes, listener_);
+                forward(bytes, listener_);
+                const auto block = block_index(
+                    SequenceNumber {decoded.packet.control.type_specific});
+                if (block >= 0 && held_sizes[block] != 0) {
+                    forward(std::span<const std::byte> {held[block]}.first(
+                                held_sizes[block]),
+                        listener_);
+                    held_sizes[block] = 0;
+                    ++late_originals;
+                }
+                continue;
+            }
+            forward(bytes, listener_);
+        }
+    }
+    UdpSocket socket_;
+    IpEndpoint listener_;
+    bool use_repairs_;
+    std::jthread
+        worker_; // Join before any storage borrowed by the worker dies.
+};
+
+void xor_udp_recovery(bool use_repairs)
+{
+    SocketOptions selection;
+    SKIP_UNLESS(selection.set_packet_filter("rwx-xor8-v1") == Error::none,
+        "test uses bundled XOR provider");
+    Sockets sockets;
+    select_filter(sockets.listener, "rwx-xor8-v1");
+    select_filter(sockets.caller, "rwx-xor8-v1");
+    const int payload_limit = 1433;
+    REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_PAYLOADSIZE, &payload_limit,
+                   sizeof(payload_limit)),
+        0);
+    const auto listener = listen_filter(sockets.listener);
+    XorLossRelay relay(
+        IpEndpoint::loopback(ntohs(listener.sin_port)), use_repairs);
+    auto address = listener;
+    address.sin_port = htons(relay.endpoint.port);
+    REQUIRE_EQ(
+        srt_connect(sockets.caller, reinterpret_cast<const sockaddr*>(&address),
+            sizeof(address)),
+        0);
+    sockets.accepted = srt_accept(sockets.listener, nullptr, nullptr);
+    REQUIRE(sockets.accepted != SRT_INVALID_SOCK);
+    constexpr unsigned messages = 80; // Eight complete blocks after any prefix.
+    const auto payload = [](unsigned message) {
+        std::array<char, 1433> bytes;
+        for (std::size_t i = 0; i < bytes.size(); ++i)
+            bytes[i] = static_cast<char>((message * 37U + i) & 255U);
+        return bytes;
+    };
+    const auto size = [](unsigned message) -> int {
+        return message % 3 == 2 ? 1433 : 1 + message % 31;
+    };
+    for (unsigned i = 0; i < messages; ++i) {
+        const auto bytes = payload(i);
+        REQUIRE_EQ(
+            srt_sendmsg(sockets.caller, bytes.data(), size(i), -1, 1), size(i));
+    }
+    std::array<char, 1500> received;
+    for (unsigned i = 0; i < messages; ++i) {
+        REQUIRE_EQ(
+            srt_recvmsg(sockets.accepted, received.data(), received.size()),
+            size(i));
+        const auto expected = payload(i);
+        REQUIRE_EQ(std::memcmp(received.data(), expected.data(), size(i)), 0);
+    }
+    relay.stop();
+    REQUIRE_EQ(relay.errors.load(), 0U);
+    REQUIRE_EQ(relay.sources.load(), messages);
+    REQUIRE_EQ(relay.erasures.load(), 8U);
+    REQUIRE(relay.repairs.load() >= 9U);
+    SRT_TRACEBSTATS sender {};
+    SRT_TRACEBSTATS receiver {};
+    REQUIRE_EQ(srt_bstats(sockets.caller, &sender, 0), 0);
+    REQUIRE_EQ(srt_bstats(sockets.accepted, &receiver, 0), 0);
+    REQUIRE_EQ(sender.pktSentUniqueTotal, messages);
+    REQUIRE_EQ(receiver.pktRecvUniqueTotal, messages);
+    REQUIRE_EQ(receiver.pktRcvFilterSupplyTotal, use_repairs ? 8 : 0);
+    if (use_repairs) {
+        REQUIRE_EQ(relay.late_originals.load(), 8U);
+    } else {
+        REQUIRE_EQ(relay.late_originals.load(), 0U);
+        REQUIRE(relay.retransmissions.load() >= 8U);
+        REQUIRE(sender.pktRetransTotal >= 8);
+    }
+    const bool synchronous = false;
+    REQUIRE_EQ(srt_setsockflag(sockets.accepted, SRTO_RCVSYN, &synchronous,
+                   sizeof(synchronous)),
+        0);
+    REQUIRE_EQ(srt_recvmsg(sockets.accepted, received.data(), received.size()),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+}
+}
+
+TEST(srt_compat_experimental_xor8_udp_recovers_each_erasure_with_arq_blocked)
+{
+    xor_udp_recovery(true);
+}
+
+TEST(srt_compat_experimental_xor8_udp_falls_back_to_arq_when_repairs_are_lost)
+{
+    xor_udp_recovery(false);
 }
