@@ -296,7 +296,6 @@ public:
     std::atomic<unsigned> erasures {0};
     std::atomic<unsigned> repairs {0};
     std::atomic<unsigned> retransmissions {0};
-    std::atomic<unsigned> late_originals {0};
     std::atomic<unsigned> errors {0};
 
 private:
@@ -309,8 +308,6 @@ private:
     void run(std::stop_token stop)
     {
         std::array<std::byte, 65536> datagram;
-        std::array<std::array<std::byte, 1500>, 8> held;
-        std::array<std::size_t, 8> held_sizes {};
         std::optional<SequenceNumber> first_block;
         std::optional<IpEndpoint> caller;
         const auto block_index = [&](SequenceNumber sequence) -> int {
@@ -358,12 +355,6 @@ private:
                 if (block >= 0
                     && (header.sequence.value() & 7U)
                         == static_cast<unsigned>(block)) {
-                    if (bytes.size() > held[block].size()) {
-                        ++errors;
-                        continue;
-                    }
-                    std::copy(bytes.begin(), bytes.end(), held[block].begin());
-                    held_sizes[block] = bytes.size();
                     ++erasures;
                     continue;
                 }
@@ -374,20 +365,10 @@ private:
                 ++repairs;
                 if (!use_repairs_)
                     continue;
-                // Replay repairs, then the original erasure, after the repair.
-                // Filter supply and unique-delivery counts prove those replays
-                // cannot conceal a failed reconstruction or deliver duplicates.
+                // Originals remain erased for the entire transfer. Replaying
+                // repair cannot substitute physical DATA for a reconstruction.
                 forward(bytes, listener_);
                 forward(bytes, listener_);
-                const auto block = block_index(
-                    SequenceNumber {decoded.packet.control.type_specific});
-                if (block >= 0 && held_sizes[block] != 0) {
-                    forward(std::span<const std::byte> {held[block]}.first(
-                                held_sizes[block]),
-                        listener_);
-                    held_sizes[block] = 0;
-                    ++late_originals;
-                }
                 continue;
             }
             forward(bytes, listener_);
@@ -459,9 +440,11 @@ void xor_udp_recovery(bool use_repairs)
     REQUIRE_EQ(receiver.pktRecvUniqueTotal, messages);
     REQUIRE_EQ(receiver.pktRcvFilterSupplyTotal, use_repairs ? 8 : 0);
     if (use_repairs) {
-        REQUIRE_EQ(relay.late_originals.load(), 8U);
+        // Filter supply counts candidates, including duplicates. The physical
+        // DATA deficit and complete unique delivery prove accepted recovery.
+        REQUIRE_EQ(receiver.pktRecvTotal - receiver.pktRcvFilterExtraTotal,
+            messages - 8);
     } else {
-        REQUIRE_EQ(relay.late_originals.load(), 0U);
         REQUIRE(relay.retransmissions.load() >= 8U);
         REQUIRE(sender.pktRetransTotal >= 8);
     }
