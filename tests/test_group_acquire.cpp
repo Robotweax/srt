@@ -25,15 +25,19 @@ constexpr UDPSOCKET invalid_udp = static_cast<UDPSOCKET>(-1);
 
 bool descriptor_open(UDPSOCKET descriptor)
 {
-    sockaddr_storage address {};
+    // Winsock getsockname rejects a valid socket before bind. Query its type
+    // so ownership checks also cover descriptors whose adoption was rejected
+    // specifically because the application left them unbound.
+    int type = 0;
 #if defined(_WIN32)
-    int size = sizeof(address);
-#else
-    socklen_t size = sizeof(address);
-#endif
-    return ::getsockname(
-               descriptor, reinterpret_cast<sockaddr*>(&address), &size)
+    int size = sizeof(type);
+    return ::getsockopt(descriptor, SOL_SOCKET, SO_TYPE,
+               reinterpret_cast<char*>(&type), &size)
         == 0;
+#else
+    socklen_t size = sizeof(type);
+    return ::getsockopt(descriptor, SOL_SOCKET, SO_TYPE, &type, &size) == 0;
+#endif
 }
 
 struct Fixture {

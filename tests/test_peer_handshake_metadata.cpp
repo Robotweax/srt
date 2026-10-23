@@ -1,11 +1,13 @@
 #include "test.hpp"
 
 #include "compat/socket_registry.hpp"
+#include "compat/readiness.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 #include "srt/srt.h"
 #include "srt/access_control.h"
 
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -185,6 +187,31 @@ sockaddr_in listen(SRTSOCKET socket, Observation& observation)
         0);
     REQUIRE_EQ(srt_listen(socket, 4), 0);
     return address;
+}
+
+void wait_for_rejected_child_retirement(SRTSOCKET socket)
+{
+    // Receiving a rejection completes the caller before the listener has
+    // necessarily retired its child. Throughout that interval, the callback
+    // snapshot must already be unavailable; the child must then close.
+    const auto deadline =
+        compat::ReadinessSignal::Clock::now() + std::chrono::milliseconds {500};
+    for (;;) {
+        const auto generation = compat::ReadinessSignal::generation();
+        Snapshot value {};
+        int size = sizeof(value);
+        const int result = srt_getsockflag(
+            socket, SRTO_ROBOTWEAX_PEER_HANDSHAKE, &value, &size);
+        if (result == SRT_ERROR) {
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
+            return;
+        }
+        REQUIRE_EQ(result, 0);
+        REQUIRE_EQ(size, static_cast<int>(sizeof(value)));
+        unavailable(value);
+        REQUIRE(compat::ReadinessSignal::Clock::now() < deadline);
+        compat::ReadinessSignal::wait_until(generation, deadline);
+    }
 }
 
 void cleared(const Observation& observation)
@@ -375,6 +402,7 @@ TEST(peer_handshake_metadata_rejection_and_missing_extensions_clear_every_exit)
         cleared(observation);
         if (variant != 4)
             unavailable(snapshot(listener));
+        wait_for_rejected_child_retirement(observation.handle);
         int size = sizeof(Snapshot);
         Snapshot value {};
         REQUIRE_EQ(srt_getsockflag(observation.handle,
