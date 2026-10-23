@@ -217,10 +217,11 @@ struct ReleaseAllocation {
 void publication_waits_for_runtime(unsigned allocation)
 {
     REQUIRE_EQ(srt_startup(), 0);
-    Sockets sockets;
-    ReleaseAllocation
-        release; // Release before socket cleanup on assertion failure.
+    // Callback context outlives socket cleanup, including assertion failure.
     std::atomic<SRTSOCKET> incoming {SRT_INVALID_SOCK};
+    Sockets sockets;
+    // Release the paused allocation before socket cleanup on failure.
+    ReleaseAllocation release;
     REQUIRE_EQ(srt_listen_callback(
                    sockets.listener,
                    [](void* context, SRTSOCKET socket, int, const sockaddr*,
