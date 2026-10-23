@@ -9754,7 +9754,15 @@ TEST(compat_channel_fairness_preserves_deadlines_across_continuations)
     }
     REQUIRE(fixture.channel->coarse_timer_mode_for_testing());
     fixture.now = 1'600;
+#if ROBOTWEAX_SRT_MOBILE_TIMER_PACING
+    // A coarse clock must not restore pacing spin on an opted-in phone.
+    const auto coarse = fixture.poll(std::chrono::microseconds {600});
+    REQUIRE(!coarse.immediate_work);
+    REQUIRE(coarse.next_work_delay.has_value());
+    REQUIRE(*coarse.next_work_delay > std::chrono::microseconds {0});
+#else
     REQUIRE(fixture.poll(std::chrono::microseconds {600}).immediate_work);
+#endif
     for (unsigned punctual = 0;
         punctual < TimerWakeMonitor::punctual_streak_to_leave; ++punctual) {
         fixture.channel->observe_timer_wake_for_testing(50);
@@ -9790,6 +9798,7 @@ TEST(compat_channel_busy_timer_dispatch_leaves_coarse_fallback)
     REQUIRE(channel.coarse_timer_mode_for_testing());
 }
 
+#if !ROBOTWEAX_SRT_MOBILE_TIMER_PACING
 TEST(compat_channel_coarse_timer_probes_under_sustained_paced_send)
 {
     auto scheduler = std::make_shared<RuntimeScheduler>(
@@ -9860,6 +9869,7 @@ TEST(compat_channel_coarse_timer_probes_under_sustained_paced_send)
     REQUIRE(probes >= TimerWakeMonitor::punctual_streak_to_leave || recovered);
     REQUIRE(healthy);
 }
+#endif
 #endif
 
 #if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
