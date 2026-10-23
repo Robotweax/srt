@@ -9925,6 +9925,14 @@ TEST(compat_channel_resubmits_sub_millisecond_pacing_slots)
     REQUIRE(!first.next_work_delay.has_value());
 #endif
 
+#if ROBOTWEAX_SRT_MOBILE_TIMER_PACING
+    for (unsigned late_wake = 0;
+        late_wake < TimerWakeMonitor::late_streak_to_enter; ++late_wake) {
+        channel->observe_timer_wake_for_testing(2'500);
+    }
+    REQUIRE(channel->coarse_timer_mode_for_testing());
+#endif
+
     // Poll 300 us after the missed slot. Linux/macOS retain the ideal pacer
     // schedule; Windows and other platforms resume immediately as before.
     now = 1'000 + 500 + 300;
