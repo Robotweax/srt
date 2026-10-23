@@ -158,11 +158,16 @@ class AeadContractTests(unittest.TestCase):
                          "078187df2008370574a8acb7dd64c17d0abadc3ba9f8d5f45a88a15d949dda2a")
         expected = sorted(historical.decode().splitlines()
                           + ["robotweax_srt_group_path_data_v1", "robotweax_srt_rtt_data_v1", "robotweax_srt_group_send_state_v1", "robotweax_srt_standby_rtt_data_v1"])
+        # The published release remains frozen when development adds an API.
+        self.assertEqual(CURRENT_ABI_PATH.read_text().splitlines(), expected)
+
+    def test_development_abi_adds_only_direct_group_udp_adoption(self):
+        released = CURRENT_ABI_PATH.read_text().splitlines()
+        expected = sorted(released + ["robotweax_srt_connect_group_acquire"])
         symbols = PUBLIC_SYMBOLS_PATH.read_bytes()
         self.assertEqual(symbols.decode().splitlines(), expected)
         self.assertEqual(symbols,
                          (ROOT / "cmake/abi/robotweax-srt-development.txt").read_bytes())
-        self.assertEqual(symbols, CURRENT_ABI_PATH.read_bytes())
         cmake = CMAKE_PATH.read_text(encoding="utf-8")
         self.assertIn("${ROBOTWEAX_SRT_ABI_BASELINE_FILE})", cmake)
 

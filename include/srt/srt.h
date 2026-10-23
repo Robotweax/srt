@@ -1459,6 +1459,29 @@ SRT_API SRT_SOCKGROUPCONFIG srt_prepare_endpoint(
 SRT_API int srt_connect_group(
     SRTSOCKET group, SRT_SOCKGROUPCONFIG endpoints[], int endpoint_count);
 
+/**
+ * @brief Robotweax extension: adopts one UDP socket per new group member.
+ * @param group Group receiving the new members.
+ * @param[in,out] endpoints Same options, weights, tokens, IDs and errors as
+ * srt_connect_group(). Prepare with a null source: the native binding supplies
+ * the local endpoint. Explicit source addresses or ports are rejected.
+ * @param[in,out] native_sockets Array of endpoint_count already-bound,
+ * unconnected UDP sockets, exclusively owned by the caller on entry. Each
+ * successful adoption replaces its slot with `(UDPSOCKET)-1` immediately.
+ * Unchanged slots remain caller-owned. Inspect every slot even on SRT_ERROR:
+ * a later setup failure closes an adopted socket without returning ownership.
+ * @param endpoint_count Number of records in both arrays.
+ * @return Same started/connected-member result as srt_connect_group().
+ * @note Adoption follows srt_bind_acquire(), including native option updates
+ * and platform restrictions. Apply OS network/interface selection beforehand.
+ * Distinct native sockets are required; do not pass descriptor aliases or
+ * descriptors already owned by SRT. Never use or close a transferred socket.
+ * This call preserves the existing endpoint ABI and makes no wire change.
+ */
+SRT_API int robotweax_srt_connect_group_acquire(SRTSOCKET group,
+    SRT_SOCKGROUPCONFIG endpoints[], UDPSOCKET native_sockets[],
+    int endpoint_count);
+
 /** @} */
 
 #if defined(__cplusplus)

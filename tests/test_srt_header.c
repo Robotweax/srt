@@ -218,6 +218,9 @@ int main(void)
     (void)&srt_config_add;
     (void)&srt_prepare_endpoint;
     (void)&srt_connect_group;
+    int (*connect_group_acquire_fn)(SRTSOCKET, SRT_SOCKGROUPCONFIG*, UDPSOCKET*,
+        int) = robotweax_srt_connect_group_acquire;
+    (void)connect_group_acquire_fn;
     (void)&robotweax_srt_standby_rtt_data_v1;
     (void)&srt_connection_time;
     (void)&srt_setloglevel;

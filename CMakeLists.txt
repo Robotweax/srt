@@ -273,7 +273,10 @@ target_include_directories(robotweax_srt
 
 set(ROBOTWEAX_SRT_PUBLIC_SYMBOLS_FILE
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/public-symbols.txt")
+# Development can add C entry points without rewriting a published snapshot.
 set(ROBOTWEAX_SRT_ABI_BASELINE_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/abi/robotweax-srt-development.txt")
+set(ROBOTWEAX_SRT_RELEASE_ABI_BASELINE_FILE
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/abi/robotweax-srt-${PROJECT_VERSION}.txt")
 file(STRINGS
     "${ROBOTWEAX_SRT_PUBLIC_SYMBOLS_FILE}"
@@ -509,6 +512,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_timing.cpp
         tests/test_udp.cpp
         tests/test_compat_epoll.cpp
+        tests/test_group_acquire.cpp
         tests/test_compat_groups.cpp
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp
@@ -580,7 +584,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests --exclude acp1 srt_compat_ compat_runtime_
             compat_group_closed_member_retains_bounded_copy key_length
             srt_compat_gcm_ srt_compat_sensor_gcm_bounded_sample_stream_
-            srt_compat_bind_acquire srt_compat_connection_local_name_
+            srt_compat_bind_acquire srt_compat_group_acquire_ srt_compat_connection_local_name_
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover)
@@ -589,7 +593,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests --include srt_compat_
             --exclude acp1 key_length srt_compat_gcm_ srt_compat_session_auth_admission_
             srt_compat_sensor_gcm_bounded_sample_stream_
-            srt_compat_bind_acquire srt_compat_connection_local_name_
+            srt_compat_bind_acquire srt_compat_group_acquire_ srt_compat_connection_local_name_
             srt_compat_group_pathid_)
     add_test(NAME robotweax_srt_session_auth_admission_tests
         COMMAND robotweax_srt_tests --include srt_compat_session_auth_admission_)
@@ -663,6 +667,10 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests --include srt_compat_bind_acquire)
     set_tests_properties(robotweax_srt_native_reuseport_tests PROPERTIES
         TIMEOUT 30 LABELS "network;integration")
+    add_test(NAME robotweax_srt_group_acquire_tests
+        COMMAND robotweax_srt_tests --include srt_compat_group_acquire_)
+    set_tests_properties(robotweax_srt_group_acquire_tests PROPERTIES
+        TIMEOUT 30 LABELS "network;integration;group")
     # Address qualification opens several real connections with live delivery
     # waits. Keep it outside the aggregate native-runner deadline as well.
     add_test(NAME robotweax_srt_local_address_tests
@@ -2208,6 +2216,7 @@ install(FILES
 install(FILES ${ROBOTWEAX_SRT_PUBLIC_COMPATIBILITY_MANIFESTS}
     DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/robotweax_srt/compat)
 install(FILES ${ROBOTWEAX_SRT_ABI_BASELINE_FILE}
+    ${ROBOTWEAX_SRT_RELEASE_ABI_BASELINE_FILE}
     DESTINATION ${CMAKE_INSTALL_DATADIR}/robotweax_srt/abi)
 install(EXPORT RobotweaxSRTTargets
     NAMESPACE RobotweaxSRT::
@@ -2225,9 +2234,9 @@ endif()
 
 if(ROBOTWEAX_SRT_BUILD_TESTS)
     find_program(ROBOTWEAX_SRT_PKG_CONFIG_EXECUTABLE pkg-config)
-    # Published version snapshots remain frozen. The selected release snapshot
-    # verifies exact exports; the contract harness retains the historical set
-    # and permits only the declared versioned observation getters.
+    # Published version snapshots remain frozen. Development exports must match
+    # the current inventory exactly; the contract harness separately preserves
+    # the released inventory and checks the declared additive extension.
     add_test(
         NAME robotweax_srt_abi_baseline_tests
         COMMAND ${CMAKE_COMMAND} -E compare_files

@@ -93,6 +93,13 @@ using namespace std::chrono_literals;
     if (srt_getversion() != SRT_VERSION_VALUE) {
         _exit(26);
     }
+    UDPSOCKET descriptor = static_cast<UDPSOCKET>(7);
+    SRT_SOCKGROUPCONFIG endpoint {};
+    if (!rejected_with_fork_error(robotweax_srt_connect_group_acquire(
+            inherited_socket, &endpoint, &descriptor, 1))
+        || descriptor != static_cast<UDPSOCKET>(7)) {
+        _exit(27);
+    }
     if (run_destructors) {
         // Deliberately exercise inherited static teardown. exec/_exit remain
         // the supported child path; this is a defensive cleanup regression.

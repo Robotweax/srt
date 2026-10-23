@@ -4,6 +4,13 @@ Mobile support is under development. Initial compile/link checks pass as recorde
 below; device interoperability and a supported minimum OS are not yet established.
 The desktop build matrix remains the qualified platform set.
 
+For separately app-bound network paths, development builds expose
+[direct group-member UDP adoption](connection-groups.md#direct-adoption-of-app-bound-udp-sockets)
+through `robotweax_srt_connect_group_acquire`. Apply platform network selection
+to each bound, unconnected native socket before passing it to the group. This
+removes the anchor-socket workaround; it does not qualify simultaneous mobile
+Wi-Fi/cellular operation or background execution.
+
 The required macOS Release CI job also compiles `src/timing.cpp` for iOS ARM64
 device and simulator targets, with both legacy and experimental mobile pacing
 and warnings treated as errors. This exercises the pacing translation unit

@@ -241,8 +241,8 @@ SRT_SOCKGROUPCONFIG srt_prepare_endpoint(
     return endpoint;
 }
 
-int srt_connect_group(
-    SRTSOCKET group, SRT_SOCKGROUPCONFIG endpoints[], int endpoint_count)
+static int connect_group_impl(SRTSOCKET group, SRT_SOCKGROUPCONFIG endpoints[],
+    UDPSOCKET native_sockets[], int endpoint_count)
 {
     using namespace robotweax::srt::compat;
     if (!stateful_api_available()) {
@@ -272,14 +272,33 @@ int srt_connect_group(
         set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
     }
+    // Reject repeated descriptor values before any ownership transfer. Copy
+    // only on the explicit adoption path; the address-only API is unchanged.
+    if (native_sockets != nullptr) {
+        try {
+            std::vector<UDPSOCKET> ordered(
+                native_sockets, native_sockets + endpoint_count);
+            std::sort(ordered.begin(), ordered.end());
+            if (std::adjacent_find(ordered.begin(), ordered.end())
+                != ordered.end()) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+        } catch (...) {
+            set_last_error(SRT_ENOBUF);
+            return SRT_ERROR;
+        }
+    }
     for (int index = 0; index < endpoint_count; ++index) {
         auto& endpoint = endpoints[index];
         endpoint.id = SRT_INVALID_SOCK;
         endpoint.errorcode = SRT_SUCCESS;
         if (storage_size(endpoint.peeraddr.ss_family) == 0
-            || endpoint.srcaddr.ss_family
-                != endpoint.peeraddr.ss_family
-            || endpoint.weight > maximum_group_weight) {
+            || endpoint.srcaddr.ss_family != endpoint.peeraddr.ss_family
+            || endpoint.weight > maximum_group_weight
+            || (native_sockets != nullptr
+                && (native_sockets[index] == static_cast<UDPSOCKET>(-1)
+                    || source_address_present(endpoint.srcaddr)))) {
             endpoint.errorcode = SRT_EINVPARAM;
             set_last_error(SRT_EINVPARAM);
             return SRT_ERROR;
@@ -350,11 +369,20 @@ int srt_connect_group(
             SocketRegistry::instance().close(socket);
             continue;
         }
-        if (source_address_present(endpoint.srcaddr)
+        if (native_sockets != nullptr) {
+            if (bind_acquired_socket(record.get(), native_sockets[index])
+                == SRT_ERROR) {
+                endpoint.errorcode = last_error().code;
+                SocketRegistry::instance().close(socket);
+                continue;
+            }
+            // Adoption is the ownership boundary, even if enrollment or
+            // connection setup subsequently fails and closes this member.
+            native_sockets[index] = static_cast<UDPSOCKET>(-1);
+        } else if (source_address_present(endpoint.srcaddr)
             && bind_socket(record.get(),
-                reinterpret_cast<const sockaddr*>(
-                    &endpoint.srcaddr),
-                storage_size(endpoint.srcaddr.ss_family))
+                   reinterpret_cast<const sockaddr*>(&endpoint.srcaddr),
+                   storage_size(endpoint.srcaddr.ss_family))
                 == SRT_ERROR) {
             endpoint.errorcode = last_error().code;
             SocketRegistry::instance().close(socket);
@@ -464,6 +492,25 @@ int srt_connect_group(
         }
         ReadinessSignal::wait_until(observed, deadline);
     }
+}
+
+int srt_connect_group(
+    SRTSOCKET group, SRT_SOCKGROUPCONFIG endpoints[], int endpoint_count)
+{
+    return connect_group_impl(group, endpoints, nullptr, endpoint_count);
+}
+
+int robotweax_srt_connect_group_acquire(SRTSOCKET group,
+    SRT_SOCKGROUPCONFIG endpoints[], UDPSOCKET native_sockets[],
+    int endpoint_count)
+{
+    if (!stateful_api_available())
+        return SRT_ERROR;
+    if (native_sockets == nullptr) {
+        robotweax::srt::compat::set_last_error(SRT_EINVPARAM);
+        return SRT_ERROR;
+    }
+    return connect_group_impl(group, endpoints, native_sockets, endpoint_count);
 }
 
 } // extern "C"

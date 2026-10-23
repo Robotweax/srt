@@ -6,6 +6,10 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add `robotweax_srt_connect_group_acquire` for direct adoption of separately
+  app-bound UDP sockets into group members, with per-descriptor ownership
+  results and the existing endpoint ABI, scheduling and wire behavior.
+
 - Add default-off compiled congestion-controller providers selected through
   `SRTO_CONGESTION`, with strict bilateral confirmation, bounded private state,
   core rate/window caps and terminal callback-failure handling. The initial

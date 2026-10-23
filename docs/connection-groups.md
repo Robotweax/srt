@@ -114,6 +114,63 @@ It covers endpoint configuration, Broadcast delivery, weighted Backup,
 `SRT_MSGCTRL.grpdata`, `srt_group_data`, per-member statistics, and a
 controlled failover observed through `SRT_EPOLL_UPDATE`.
 
+## Direct adoption of app-bound UDP sockets
+
+Unreleased development builds add the Robotweax-only
+`robotweax_srt_connect_group_acquire` function. It accepts the usual endpoint
+records plus a matching, writable array of native UDP sockets. Every descriptor
+must already be bound to a nonzero local port and remain unconnected. Configure
+the platform's network/interface selection before the call. Each new member
+adopts its corresponding descriptor through the same path as `srt_bind_acquire`;
+there is no anchor SRT socket, address-based channel lookup, descriptor duplication
+or replacement UDP socket. Existing group modes, scheduling and wire negotiation
+are unchanged.
+
+Prepare each endpoint with a null source; the adopted socket supplies the actual
+local binding. Explicit source addresses or ports are rejected before adoption.
+The usual group defaults and endpoint overrides apply before adoption, including
+UDP buffers, TTL/TOS and supported device settings. As with `srt_bind_acquire`,
+these SRT options can update the native socket. Platform interface selection
+outside those options is retained on the original descriptor.
+
+```c
+/* wifi_fd and cellular_fd are separately created, network-selected, bound,
+   unconnected UDP sockets. remote is a populated sockaddr_in. */
+SRT_SOCKGROUPCONFIG endpoints[2];
+UDPSOCKET sockets[2] = {wifi_fd, cellular_fd};
+for (int i = 0; i < 2; ++i)
+    endpoints[i] = srt_prepare_endpoint(NULL,
+        (const struct sockaddr*)&remote, sizeof(remote));
+
+int result = robotweax_srt_connect_group_acquire(group, endpoints, sockets, 2);
+/* Inspect every slot regardless of result. A slot set to (UDPSOCKET)-1
+   transferred to SRT; the application must never use or close that descriptor.
+   An unchanged slot remains application-owned and must be closed or retried
+   by the application. endpoints[i].errorcode describes that member's result. */
+```
+
+Ownership transfers at successful adoption, before group enrollment and
+connection setup. A later failure closes that member's descriptor and leaves
+its array slot invalid; failure does not return ownership. A failed adoption
+leaves the slot unchanged. Endpoint validation failures take no descriptors.
+A blocking call can time out after starting members, just as `srt_connect_group`
+can; use the returned member IDs to inspect or close pending connections.
+Endpoint option snapshots remain caller-owned and may be deleted after return.
+Closing a member or group releases its adopted channel under the normal
+[UDP ownership contract](api-compatibility.md#addressing-and-udp-ownership).
+
+Pass distinct, exclusively application-owned native sockets. Repeated descriptor
+values are rejected before adoption. Descriptor aliases and sockets already
+owned by SRT are not valid inputs. Existing Linux native reuseport restrictions
+remain in force; direct adoption does not turn a listener-only channel into an
+outgoing path. A subsequent call must contain fresh valid descriptor slots;
+do not resubmit the invalidated slots from an earlier call.
+
+The extension adds one C symbol without changing `SRT_SOCKGROUPCONFIG` or other
+existing public layouts. It does not expand the supported group-mode profile.
+Simultaneous Wi-Fi/cellular routing, mobile background execution and network
+migration still require platform/device qualification.
+
 ## Endpoint preparation and connection
 
 `srt_prepare_endpoint` accepts IPv4 or IPv6 destination and optional source
