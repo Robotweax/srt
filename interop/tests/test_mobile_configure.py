@@ -33,6 +33,13 @@ class MobileConfigureTests(unittest.TestCase):
             self.assertIn("-DCMAKE_SYSTEM_NAME=iOS", command)
             self.assertFalse(any("ANDROID" in part for part in command))
 
+    def test_mobile_pacing_requires_explicit_opt_in(self):
+        flag = "-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING=ON"
+        for target in ("android-arm64", "ios-arm64", "ios-simulator-arm64"):
+            self.assertNotIn(flag, mobile.command(self.args(target)))
+            self.assertIn(flag, mobile.command(self.args(
+                target, ["--experimental-mobile-pacing"])))
+
     def test_invalid_deployment_target(self):
         for value in ("20", "28;other", "28.0"):
             with self.assertRaises(ValueError):

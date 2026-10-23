@@ -1431,6 +1431,7 @@ RuntimePollResult DatagramChannel::poll_connections(
     // wake-up latency. Only when the host's timer wake-ups have proven
     // coarser than that credit does the channel resubmit as before, so a
     // coarse timer never lowers the send rate.
+#if !ROBOTWEAX_SRT_MOBILE_TIMER_PACING
     if (coarse_timer_mode_.load(std::memory_order_relaxed)
         && delay < std::chrono::milliseconds {1}) {
         const auto now = std::chrono::steady_clock::now();
@@ -1444,6 +1445,10 @@ RuntimePollResult DatagramChannel::poll_connections(
             .coarse_timer_probe = true,
             .next_work_deadline = poll_round_deadline_};
     }
+#endif
+    // Mobile's opt-in mode accepts coarse wake-up latency rather than
+    // reverting to an empty immediate-resubmission loop. Ready work and
+    // already-due deadlines still use the bounded immediate continuation.
     return {.next_work_delay = delay,
         .receive_wait_safe = can_wait,
         .next_work_deadline = poll_round_deadline_};

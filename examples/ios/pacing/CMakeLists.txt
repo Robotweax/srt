@@ -1,0 +1,37 @@
+cmake_minimum_required(VERSION 3.20)
+project(SRTMobilePacing LANGUAGES C CXX OBJCXX)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    message(FATAL_ERROR "This measurement app requires an iOS device/simulator SDK")
+endif()
+if(NOT EXISTS "${OPENSSL_INCLUDE_DIR}/openssl/opensslv.h" OR
+        NOT EXISTS "${OPENSSL_CRYPTO_LIBRARY}")
+    message(FATAL_ERROR "Provide explicit matching target OpenSSL include/archive paths")
+endif()
+get_filename_component(SRT_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
+set(ROBOTWEAX_SRT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ROBOTWEAX_SRT_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(ROBOTWEAX_SRT_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(ROBOTWEAX_SRT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory("${SRT_SOURCE}" srt)
+find_package(Threads REQUIRED)
+add_library(pacing_peer OBJECT "${SRT_SOURCE}/benchmarks/scalability_peer.cpp")
+target_compile_features(pacing_peer PRIVATE cxx_std_20)
+target_compile_definitions(pacing_peer PRIVATE main=rwx_mobile_pacing_peer_main)
+target_link_libraries(pacing_peer PRIVATE RobotweaxSRT::srt)
+add_executable(SRTMobilePacing MACOSX_BUNDLE main.mm $<TARGET_OBJECTS:pacing_peer>)
+target_compile_features(SRTMobilePacing PRIVATE cxx_std_20)
+target_include_directories(SRTMobilePacing PRIVATE "${SRT_SOURCE}/src")
+target_compile_options(SRTMobilePacing PRIVATE -fobjc-arc)
+target_link_libraries(SRTMobilePacing PRIVATE RobotweaxSRT::srt Threads::Threads
+    "-framework UIKit" "-framework Foundation")
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING)
+    set(PACING_VARIANT candidate)
+else()
+    set(PACING_VARIANT baseline)
+endif()
+configure_file(Info.plist.in Info.plist @ONLY)
+set_target_properties(SRTMobilePacing PROPERTIES
+    OBJCXX_STANDARD 20
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "ai.robotweax.srt.pacing.${PACING_VARIANT}"
+    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "ai.robotweax.srt.pacing.${PACING_VARIANT}")
