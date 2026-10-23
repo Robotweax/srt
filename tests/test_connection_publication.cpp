@@ -131,6 +131,61 @@ void operator delete[](
     ::operator delete(memory, alignment);
 }
 
+// Runtime buffers also use nothrow allocation. Route every standard form
+// through the same allocator so ASan sees matching allocation/deallocation.
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept
+{
+    try {
+        return ::operator new(size);
+    } catch (...) {
+        return nullptr;
+    }
+}
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept
+{
+    try {
+        return ::operator new[](size);
+    } catch (...) {
+        return nullptr;
+    }
+}
+void operator delete(void* memory, const std::nothrow_t&) noexcept
+{
+    ::operator delete(memory);
+}
+void operator delete[](void* memory, const std::nothrow_t&) noexcept
+{
+    ::operator delete[](memory);
+}
+void* operator new(std::size_t size, std::align_val_t alignment,
+    const std::nothrow_t&) noexcept
+{
+    try {
+        return ::operator new(size, alignment);
+    } catch (...) {
+        return nullptr;
+    }
+}
+void* operator new[](std::size_t size, std::align_val_t alignment,
+    const std::nothrow_t&) noexcept
+{
+    try {
+        return ::operator new[](size, alignment);
+    } catch (...) {
+        return nullptr;
+    }
+}
+void operator delete(
+    void* memory, std::align_val_t alignment, const std::nothrow_t&) noexcept
+{
+    ::operator delete(memory, alignment);
+}
+void operator delete[](
+    void* memory, std::align_val_t alignment, const std::nothrow_t&) noexcept
+{
+    ::operator delete[](memory, alignment);
+}
+
 namespace {
 using namespace robotweax::srt;
 using namespace robotweax::srt::compat;
