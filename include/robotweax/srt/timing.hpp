@@ -165,7 +165,7 @@ private:
     std::uint64_t next_send_microseconds_ = 0;
     std::uint64_t schedule_credit_microseconds_ =
         default_schedule_credit_microseconds;
-    bool has_schedule_ = false;
+    [[maybe_unused]] bool has_schedule_ = false;
 };
 
 // Watches how late timer-driven wake-ups arrive. When wake-ups are

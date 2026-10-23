@@ -9754,13 +9754,26 @@ TEST(compat_channel_fairness_preserves_deadlines_across_continuations)
     }
     REQUIRE(fixture.channel->coarse_timer_mode_for_testing());
     fixture.now = 1'600;
+#if ROBOTWEAX_SRT_MOBILE_TIMER_PACING
+    // A new 65-route sweep first needs its bounded 64-route continuation.
     REQUIRE(fixture.poll(std::chrono::microseconds {600}).immediate_work);
+    // Once real work is drained, a coarse clock must not restore pacing spin.
+    const auto coarse = fixture.poll(std::chrono::microseconds {600});
+    REQUIRE(!coarse.immediate_work);
+    REQUIRE(coarse.next_work_delay.has_value());
+    REQUIRE(*coarse.next_work_delay > std::chrono::microseconds {0});
+#else
+    REQUIRE(fixture.poll(std::chrono::microseconds {600}).immediate_work);
+#endif
     for (unsigned punctual = 0;
         punctual < TimerWakeMonitor::punctual_streak_to_leave; ++punctual) {
         fixture.channel->observe_timer_wake_for_testing(50);
     }
     REQUIRE(!fixture.channel->coarse_timer_mode_for_testing());
     fixture.now = 1'700;
+#if ROBOTWEAX_SRT_MOBILE_TIMER_PACING
+    REQUIRE(fixture.poll(std::chrono::microseconds {700}).immediate_work);
+#endif
 #if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
     REQUIRE(!fixture.poll(std::chrono::microseconds {700}).immediate_work);
 #else
@@ -9790,6 +9803,7 @@ TEST(compat_channel_busy_timer_dispatch_leaves_coarse_fallback)
     REQUIRE(channel.coarse_timer_mode_for_testing());
 }
 
+#if !ROBOTWEAX_SRT_MOBILE_TIMER_PACING
 TEST(compat_channel_coarse_timer_probes_under_sustained_paced_send)
 {
     auto scheduler = std::make_shared<RuntimeScheduler>(
@@ -9861,6 +9875,7 @@ TEST(compat_channel_coarse_timer_probes_under_sustained_paced_send)
     REQUIRE(healthy);
 }
 #endif
+#endif
 
 #if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
 TEST(compat_channel_waits_for_sub_millisecond_pacing_slots_with_a_timer)
@@ -9913,6 +9928,14 @@ TEST(compat_channel_resubmits_sub_millisecond_pacing_slots)
 #else
     REQUIRE(first.immediate_work);
     REQUIRE(!first.next_work_delay.has_value());
+#endif
+
+#if ROBOTWEAX_SRT_MOBILE_TIMER_PACING
+    for (unsigned late_wake = 0;
+        late_wake < TimerWakeMonitor::late_streak_to_enter; ++late_wake) {
+        channel->observe_timer_wake_for_testing(2'500);
+    }
+    REQUIRE(channel->coarse_timer_mode_for_testing());
 #endif
 
     // Poll 300 us after the missed slot. Linux/macOS retain the ideal pacer
