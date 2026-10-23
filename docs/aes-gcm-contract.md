@@ -343,7 +343,7 @@ described above.
 
 Positive interoperability with the pinned GCM-capable reference profile is
 limited to AES-128-GCM Live/Message. The following are intentionally not
-claimed for cross-implementation GCM use in the current 0.3.0 boundary:
+claimed for cross-implementation GCM use in the current 0.3.1 boundary:
 
 - File/Stream transfer;
 - AES-192/256 payload transfer;

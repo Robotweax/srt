@@ -175,8 +175,10 @@ Release tags now trigger the core CI matrix as well as the separate SDK workflow
 
 ### Separate pre-release integration suite
 
-Run **Release integrations** (`release-integrations.yml`) manually before
-publishing a release. Select the candidate branch or tag in GitHub Actions:
+A full `CI` run already includes FFmpeg, GStreamer, VLC and all OBS profiles.
+Do not also dispatch **Release integrations** for the same release merely to
+repeat that coverage. Use `release-integrations.yml` when only the complete
+ecosystem suite is needed, selecting the exact source ref:
 
 ```sh
 gh workflow run release-integrations.yml --ref <candidate-branch-or-tag>

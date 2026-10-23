@@ -6,6 +6,10 @@ on:
         description: 'Sign and test both installers (main only; requires release approval)'
         type: boolean
         default: false
+      qualify_rebuild:
+        description: 'Run the expensive unsigned rebuild recipe explicitly (not needed before the final tag rebuild)'
+        type: boolean
+        default: false
   push:
     tags: ['v*']
   pull_request:
@@ -30,10 +34,12 @@ jobs:
         shell: pwsh
         env:
           SIGN_REQUESTED: ${{ inputs.sign }}
+          QUALIFY_REBUILD: ${{ inputs.qualify_rebuild }}
         run: |
           $version = [regex]::Match((Get-Content CMakeLists.txt -Raw), 'project\(robotweax_srt VERSION ([0-9.]+)').Groups[1].Value
           if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid CMake project version' }
           if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne "v$version") { throw 'Tag must match the CMake project version exactly' }
+          if ($env:SIGN_REQUESTED -eq 'true' -and $env:QUALIFY_REBUILD -eq 'true') { throw 'Choose either unsigned recipe qualification or protected signing' }
           if ($env:SIGN_REQUESTED -eq 'true' -and $env:GITHUB_REF -cne 'refs/heads/main') { throw 'Manual signing requires main' }
           "version=$version" >> $env:GITHUB_OUTPUT
       - name: Package validation regression tests
@@ -123,9 +129,13 @@ jobs:
         run: |
           $installer = (Get-ChildItem packaging/windows/Output/*.exe).FullName
           $destination = Join-Path $env:RUNNER_TEMP 'Robotweax SDK test'
+          $installLog = Join-Path $env:RUNNER_TEMP "sdk-$env:SDK_BACKEND-install-first.log"
           $variable = 'ROBOTWEAX_SRT_' + $env:SDK_BACKEND.ToUpperInvariant()
-          $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$destination`""
-          if ($process.ExitCode -ne 0) { throw 'Installation failed' }
+          $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=`"$installLog`" /DIR=`"$destination`""
+          if ($process.ExitCode -ne 0) {
+            if (Test-Path $installLog) { Get-Content $installLog -Tail 80 | Out-Host }
+            throw "Installation failed with exit $($process.ExitCode)"
+          }
           if ([Environment]::GetEnvironmentVariable($variable,'Machine') -ne $destination) { throw 'SDK environment variable missing' }
           $before = (Get-FileHash "$destination/srt.props").Hash
           $process = Start-Process -Wait -PassThru $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$destination`""
@@ -148,6 +158,13 @@ jobs:
           if (!(Test-Path "$other/include/srt/srt.h")) { throw 'Reinstalled headers missing' }
           $process = Start-Process -Wait -PassThru "$other/unins000.exe" -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
           if ($process.ExitCode -ne 0) { throw 'Final cleanup failed' }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: windows-sdk-install-log-${{ matrix.backend }}
+          path: ${{ runner.temp }}/sdk-${{ matrix.backend }}-install-first.log
+          if-no-files-found: warn
+          retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-sdk-installer-${{ matrix.backend }}
@@ -182,8 +199,9 @@ jobs:
           $record = Get-SdkInstallerProvenance installers $env:SDK_VERSION $env:GITHUB_SHA $env:GITHUB_RUN_ID
           "json=$($record | ConvertTo-Json -Compress -Depth 5)" >> $env:GITHUB_OUTPUT
   rebuild-qualification:
-    # Exercise the exact rebuild recipe without approvals or signing authority.
-    if: github.event_name == 'pull_request'
+    # Optional recipe diagnostics. Release qualification uses the one protected
+    # rebuild below on the final tag, after source and documentation are frozen.
+    if: github.event_name == 'workflow_dispatch' && inputs.qualify_rebuild && !inputs.sign
     needs: validate
     runs-on: windows-latest
     timeout-minutes: 180

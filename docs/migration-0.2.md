@@ -3,9 +3,9 @@
 Release: **Robotweax SRT 0.2.0**
 
 Later-release note (2026-10-21): this page preserves the 0.2.0 migration
-baseline. Since 0.2.2 the selected compatible API is 1.5.7. For current 0.3.0
+baseline. Since 0.2.2 the selected compatible API is 1.5.7. For current 0.3.1
 behavior consult [API compatibility](api-compatibility.md) and
-[release notes](release-notes-0.3.0.md); the historical table below is unchanged.
+[release notes](release-notes-0.3.1.md); the historical table below is unchanged.
 
 Historical baseline: **Robotweax SRT 0.1.0**
 

@@ -1,6 +1,6 @@
 # Connection Groups
 
-Robotweax SRT 0.3.0 implements the Haivision SRT v1.5.7 Connection Group ABI
+Robotweax SRT 0.3.1 implements the Haivision SRT v1.5.7 Connection Group ABI
 for Live-mode Caller/Listener Broadcast and weighted Main/Backup operation.
 Groups provide one public handle over several SRT connections. Members retain
 independent crypto, transport-sequence, and congestion state.
@@ -116,7 +116,7 @@ controlled failover observed through `SRT_EPOLL_UPDATE`.
 
 ## Direct adoption of app-bound UDP sockets
 
-Unreleased development builds add the Robotweax-only
+Version 0.3.1 adds the Robotweax-only
 `robotweax_srt_connect_group_acquire` function. It accepts the usual endpoint
 records plus a matching, writable array of native UDP sockets. Every descriptor
 must already be bound to a nonzero local port and remain unconnected. Configure
@@ -328,9 +328,9 @@ adds no post-outage hold-down or continuous-health guarantee; responsiveness is
 the existing recent-response test, which also accepts keepalives.
 
 **Release boundary:** The per-endpoint `SRTO_GROUPMINSTABLETIMEO` override
-described below is unreleased (`main` only). Published v0.3.0 supports the
+described below is available from 0.3.1. Published v0.3.0 supports only the
 group-wide minimum and rejects this endpoint override with `SRT_EINVPARAM`.
-See [Unreleased changes](../CHANGELOG.md#unreleased).
+See the [0.3.1 release notes](release-notes-0.3.1.md).
 
 `SRTO_GROUPMINSTABLETIMEO` is group-only. Its compatible default and minimum
 are 60 ms, and its fixed accepted range is 60–5000 ms; the effective interval also respects RTT and peer-idle constraints.

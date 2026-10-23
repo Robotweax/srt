@@ -111,7 +111,7 @@ set(documentation_directory
 run_checked("installed documentation validation"
     "${ROBOTWEAX_SRT_PYTHON_EXECUTABLE}"
     "${ROBOTWEAX_SRT_CONSUMER_SOURCE_DIR}/check_documentation.py"
-    "${documentation_directory}")
+    "${documentation_directory}" "${ROBOTWEAX_SRT_PACKAGE_VERSION}")
 
 set(public_consumer_source_directory
     "${documentation_directory}/examples/installed-consumer")

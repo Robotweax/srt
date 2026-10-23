@@ -6,6 +6,31 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+No additional changes are recorded after the 0.3.1 scope below.
+
+## 0.3.1 — Integrated Runtime and Resource Hardening
+
+See the [release notes](docs/release-notes-0.3.1.md) for upgrade behavior and limits.
+
+- Publish CONNECTED only after transport runtime installation for Caller,
+  Rendezvous and accepted sockets; synchronize rejected-child metadata checks
+  with retirement while requiring cleared metadata throughout (#360).
+- Bound rejected-message lookup and sparse timestamp refresh; retain shared-channel
+  progress. Bound asynchronous linger ownership and release terminal runtimes.
+- Preserve receive-file destinations before payload delivery and bytes outside a
+  positive-offset range; bound remote captures and fail on cleanup errors (#361).
+- Serialize setup runtime construction with route promotion and validate epoll
+  subscriptions before consuming readiness events.
+- Reduce sparse payload-pool memory growth and expose library worker names for
+  host attribution without a general CPU/RSS/throughput claim.
+- Add contribution, recovery and device application samples; verify per-child
+  session authentication during admission.
+- Include default-off mobile timer pacing and an iPhone measurement harness;
+  retain the documented experimental and device-qualification limits.
+- Include the complete version-matched public documentation in Windows SDKs,
+  verify signed-0.3.0 upgrades, and perform the protected independent rebuild
+  once on the final release tag.
+
 - Add `robotweax_srt_connect_group_acquire` for direct adoption of separately
   app-bound UDP sockets into group members, with per-descriptor ownership
   results and the existing endpoint ABI, scheduling and wire behavior.
@@ -106,7 +131,7 @@ See [release notes](docs/release-notes-0.2.9.md) and
 - Bound listener handshake handoff, permit explicit Linux reuseport listener
   adoption and pace asynchronous rejection completion; retain bounded app retries.
 - Support same-backend Windows SDK upgrades, repair and safe inventory retirement;
-  final candidate installer/rebuild/signing qualification remains pending.
+  final installer/rebuild/signing evidence is recorded with the release.
 - Freeze the additive 0.2.9 C export inventory, retain ABI line 0.2 and SRT API
   1.5.7, and preserve prior published snapshots. Rebuild source-tree C++ consumers.
 - Preserve Live NAK/final-loss and complete File-recovery semantics. No new

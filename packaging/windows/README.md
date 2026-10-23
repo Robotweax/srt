@@ -1,17 +1,18 @@
-# Windows SDK installer (experimental)
+# Windows SDK installers — Robotweax SRT 0.3.1
 
-This is an SDK for application developers, not a standalone streaming app.
-It implements the packaging work requested in
-[issue #12](https://github.com/Robotweax/srt/issues/12).
-Two separate installers offer OpenSSL and the
-[experimental BCrypt backend](../../docs/windows-bcrypt.md).
-Manual target-machine acceptance remains pending. Release signing uses
-Microsoft Artifact Signing as described below. The signed 0.3.0 pair is
-published; see the [final tag SDK evidence](../qualification-0.3.0.md).
-The intended bundle contains static Robotweax SRT for
-Debug/Release × Win32/x64/Arm64. Consumers use `/MDd` for Debug and `/MD` for
-Release. Debug binaries are development-only; applications must deploy the
-appropriate Microsoft runtime for Release. AES-GCM preview is not enabled.
+This SDK is for application developers. Separate OpenSSL and
+[experimental BCrypt](../../docs/windows-bcrypt.md) installers contain static
+Robotweax SRT for Debug/Release × Win32/x64/Arm64. Consumers use `/MDd` for Debug
+and `/MD` for Release. Debug binaries are development-only; applications must
+deploy the appropriate Microsoft runtime for Release. AES-GCM preview is disabled.
+The library's complete public documentation, including the 0.3.1 release notes,
+is installed under `share/doc/robotweax_srt/` and included in payload checksums.
+
+Published downloads and their qualification evidence are available from
+[GitHub releases](https://github.com/Robotweax/srt/releases). Release installers
+are Authenticode-signed by Robotweax GmbH using Microsoft Artifact Signing and
+trusted timestamps. Qualify your application's deployment on its target Windows
+machines; CI installation checks are not universal target-machine acceptance.
 
 Build each variant using `build-sdk.ps1` in the corresponding Visual Studio
 developer environment. The default `-CryptoBackend openssl` requires
@@ -57,10 +58,12 @@ installation tests on those exact signed bytes. Only the verified signed pair
 and its checksums can be attached to a draft release. Publishing remains a manual review step;
 an existing published release is never modified. Re-running an upload with
 existing asset names fails rather than replacing them. Manual runs only produce
-CI artifacts and are the qualification path before tagging. Select `main` and
-set the manual `sign` input to true to request signed qualification artifacts;
-this waits for approval of the signing environment and never creates a release.
-The default manual run and every PR run produce unsigned candidates. Historical
+CI artifacts. For the normal 0.3.1 release sequence, perform protected signing
+once from the final tag, after pre-tag checks; do not request a second signed
+qualification run beforehand. The alternative manual `sign=true` path remains
+main-only for deliberately requested diagnostics, requires the existing signing
+environment approval and never creates a release.
+The default manual run and packaging PR runs produce unsigned installers. Historical
 v0.2.4 release assets remain unsigned and unchanged.
 
 ## Signing configuration and operations
@@ -172,7 +175,7 @@ static link dependency. Applications with another OpenSSL dependency must resolv
 version/link compatibility; static linkage does not remove symbol conflicts.
 BCrypt packages instead link the Windows `bcrypt.lib` system import library.
 
-The candidate workflow also builds the public C consumer through
+The SDK workflow also builds the public C consumer through
 `consumer/consumer.vcxproj`, importing the staged `srt.props` for all six
 combinations. It executes Win32/x64 consumers and deliberately checks that a
 static-CRT profile is rejected. ARM64 remains compile/link-only on this runner.
@@ -204,12 +207,12 @@ message boxes does not turn a failed install into success. Setup preflight
 rejection normally returns 7; treat any nonzero exit as failure with the options
 above. A newly opened shell observes machine environment changes. CI exercises
 real earlier-release upgrades, repair, rejection and backend coexistence, then
-builds and runs a consumer against the installed SDK. For 0.3.0,
-the earlier inputs are the published signed 0.2.9 OpenSSL/BCrypt installers,
+builds and runs a consumer against the installed SDK. For 0.3.1,
+the earlier inputs are the published signed 0.3.0 OpenSSL/BCrypt installers,
 checked against their fixed SHA-256 values and valid Authenticode signatures.
-The [final tag SDK run](https://github.com/Robotweax/srt/actions/runs/38624266358)
-passed installer, coexistence, independent-rebuild and signing checks; see the
-[publication record](../../docs/release-process-0.3.0.md#publication-record). Uninstall removes the
+The historical [0.3.0 final tag SDK run](https://github.com/Robotweax/srt/actions/runs/38624266358)
+passed installer, coexistence, independent-rebuild and signing checks for 0.3.0;
+see its [publication record](../../docs/release-process-0.3.0.md#publication-record). Uninstall removes the
 backend environment variable only when it still points to this installation.
 
 References: [Inno Setup command-line options](https://jrsoftware.org/ishelp/topic_setupcmdline.htm),
@@ -245,3 +248,20 @@ requires the same tag object. `tag-provenance.json` records both immutable IDs
 as a release asset. Keep the active `v*` update/deletion protection: these
 checks add defense in depth but cannot make a remote tag lookup and upload an
 atomic transaction. API errors or missing tags fail closed.
+
+### One independent rebuild per release
+
+Complete source, version, documentation, package inputs and upgrade fixtures
+before the final tag. For the normal release path, do not dispatch `sign=true`
+on main beforehand: pushing the final tag performs the one protected independent
+rebuild, tests it, signs its exact artifact ID and uploads the tested signed bytes
+to a draft. PRs retain the ordinary twelve-variant build and installer checks;
+they do not automatically repeat the independent recipe rebuild.
+
+The manual `qualify_rebuild=true` input is reserved for explicitly requested
+unsigned recipe diagnostics. It cannot be combined with `sign=true`. Neither its
+artifacts nor ordinary producer artifacts can become signing inputs. The existing
+protected environment approvals, fresh source/OpenSSL build, no-cache/no-OIDC
+rebuild, source/run/hash binding and signed-byte retests remain required. If the
+frozen product changes or the rebuild fails, the previous result cannot qualify
+the new product; retain the failure and reassess before another full run.

@@ -36,7 +36,7 @@ Homebrew bottle, PPA, COPR or third-party application distribution.
 The following preparation record preserves its original gates and source pins.
 Use the publication record above for final release status.
 
-## Scope and version contract
+## Historical scope and version contract
 
 Release the integrated Mbed TLS provider, peer admission metadata, optional
 extension policies, group admission/statistics and lifecycle/resource fixes.
@@ -130,7 +130,7 @@ The five candidate completions support only the tested finite-transfer profile,
 not a general deadline guarantee. Source, integration, provider, package, SDK,
 security and protected signing/publication requirements remain in force.
 
-## Signing, tag and publication sequence
+## Historical signing, tag and publication sequence
 
 After candidate review and gates, merge preparation with an expected-head guard.
 Reconfirm main CI, frozen product identity, version axes and recipe inputs.

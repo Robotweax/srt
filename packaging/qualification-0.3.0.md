@@ -10,7 +10,13 @@ Project version **0.3.0**, shared-library ABI line **0.3**, compatible SRT API
 **1.5.7**. Existing applications and dependencies must rebuild for ABI line 0.3.
 Previous [0.2.9 acceptance](qualification-0.2.9.md) remains unchanged.
 
-## Current pacing-corrected product
+## Historical preparation records
+
+The following frozen-source stages and pending statuses are pre-publication
+history. The publication record above is authoritative for the released 0.3.0
+artifacts; no pending stage below describes a new release blocker.
+
+### Pacing-corrected product
 
 - Product commit: `607d0034b7977f1e5003c98c42cc934bbdf9d431`.
 - Downloaded public archive: `https://github.com/Robotweax/srt/archive/607d0034b7977f1e5003c98c42cc934bbdf9d431.tar.gz`.

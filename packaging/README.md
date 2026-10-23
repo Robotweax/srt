@@ -1,8 +1,20 @@
 # Package manager recipes
 
-## Released 0.3.0
+## Version 0.3.1 source recipes
 
-These recipes select immutable product commit `607d0034b7977f1e5003c98c42cc934bbdf9d431`, not the
+The current recipes select immutable product commit `ae5750ab75a40d48dff5647231ba20af5cb39c13`. The
+public archive has 719 regular files; every byte and executable bit was
+verified against Git. SHA-256: `7c6c8130e19b88c72c101ebf8289066774943b2f54971185c368fda5fa63b731`.
+See the [0.3.1 input record](qualification-0.3.1.md),
+[release notes](../docs/release-notes-0.3.1.md) and
+[release contract](../docs/release-process-0.3.1.md).
+Published binaries, signatures and exact qualification evidence are distributed
+through [GitHub releases](https://github.com/Robotweax/srt/releases).
+The historical 0.3.0 bottle does not qualify a new 0.3.1 bottle or another platform.
+
+## Historical 0.3.0 publication
+
+The 0.3.0 recipes selected immutable product commit `607d0034b7977f1e5003c98c42cc934bbdf9d431`, not the
 moving checkout. The downloaded GitHub archive contains 643 regular files;
 all contents and executable bits match Git. Archive SHA-256:
 `6c6d19458838248a6c95153e8907334e6c16826c041d4e204f57b73a1750cb5c`.
@@ -24,7 +36,7 @@ older release records remain unchanged. No vcpkg registry, PPA or COPR is publis
   `include/robotweax-srt`; consumers obtain include paths from package metadata.
 - Use OpenSSL from the package manager. BCrypt and AES-GCM preview are outside
   the initial recipes. Do not bundle third-party application binaries.
-- Preserve project version 0.3.0, ABI line 0.3 and compatible API 1.5.7 as separate
+- Preserve project version 0.3.1, ABI line 0.3 and compatible API 1.5.7 as separate
   version axes. Download only the exact source revision with verified hashes.
 - Installing this package does not redirect installed FFmpeg, GStreamer, VLC or
   OBS applications. Rebuild consumers explicitly with the selected provider;
@@ -36,7 +48,7 @@ older release records remain unchanged. No vcpkg registry, PPA or COPR is publis
 ## Linux package prototypes
 
 The [Ubuntu and Fedora recipes](linux/README.md) build DEB and RPM packages
-from the pinned 0.3.0 source archive. Separate runtime and development
+from the pinned 0.3.1 source archive. Separate runtime and development
 packages retain Robotweax-specific filenames and metadata. The Linux
 packages workflow builds and installs them on Ubuntu 24.04 and Fedora 44,
 executes installed consumers, checks coexistence with Haivision, and tests

@@ -82,3 +82,22 @@ class WindowsSdkTests(unittest.TestCase):
         self.assertIn('rebuild-installers.ps1', qualification)
         self.assertNotIn('environment:', qualification)
         self.assertNotIn('id-token:', qualification)
+
+
+    def test_independent_recipe_rebuild_requires_explicit_unsigned_dispatch(self):
+        workflow = (ROOT / '.github/workflows/windows-sdk.yml').read_text()
+        qualification = workflow.split('\n  rebuild-qualification:\n', 1)[1].split('\n  rebuild:\n', 1)[0]
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.qualify_rebuild && !inputs.sign", qualification)
+        self.assertNotIn("github.event_name == 'pull_request'", qualification)
+        self.assertIn("if ($env:SIGN_REQUESTED -eq 'true' -and $env:QUALIFY_REBUILD -eq 'true')", workflow)
+        rebuild = workflow.split('\n  rebuild:\n', 1)[1].split('\n  sign:\n', 1)[0]
+        self.assertIn("github.event_name == 'push' && github.ref_type == 'tag'", rebuild)
+        self.assertIn('Test the rebuilt unsigned pair', rebuild)
+
+    def test_sdk_stages_and_validates_the_public_documentation_component(self):
+        script = (ROOT / 'packaging/windows/build-sdk.ps1').read_text()
+        self.assertIn("'--component','documentation'", script)
+        self.assertIn('check_documentation.py', script)
+        installed = (ROOT / 'packaging/windows/test-installers.ps1').read_text()
+        self.assertIn('docs/release-notes-$Version.md', installed)
+        self.assertIn('share/doc/robotweax_srt/$Document', installed)

@@ -112,7 +112,7 @@ cmake --build build-shared --parallel
 ctest --test-dir build-shared --output-on-failure
 ```
 
-Robotweax SRT 0.3.0 uses shared-library ABI line 0.3. Rebuild applications
+Robotweax SRT 0.3.1 uses shared-library ABI line 0.3. Rebuild applications
 and dependencies when moving from ABI line 0.2 to 0.3. The shared artifact
 exports the supported public C ABI; source-tree C++ implementation symbols are
 not a stable binary interface.

@@ -1,3 +1,10 @@
+robotweax-srt (0.3.1-1) noble; urgency=medium
+
+  * Package integrated 0.3.1 runtime and resource hardening.
+  * Preserve shared-library ABI 0.3 and include finished public documentation.
+
+ -- Robotweax GmbH <srtpioneer@proton.me>  Fri, 23 Oct 2026 21:00:00 +0000
+
 robotweax-srt (0.3.0-1) noble; urgency=medium
 
   * Package immutable 0.3.0 crypto-provider and admission-control candidate.

@@ -59,6 +59,10 @@ Copy-Item "$Source/LICENSE" "$Stage/LICENSE.txt"
 Copy-Item "$Source/THIRD_PARTY.md" "$Stage/THIRD_PARTY.md"
 Copy-Item "$PSScriptRoot/srt.props" "$Stage/srt.props"
 Copy-Item "$PSScriptRoot/README.md" "$Stage/README.md"
+# Install the exact public documentation from this source, including release notes.
+Invoke-Checked cmake @('--install',$Build,'--prefix',$Stage,'--component','documentation')
+$Version = [regex]::Match((Get-Content "$Source/CMakeLists.txt" -Raw), 'project\(robotweax_srt VERSION ([0-9.]+)').Groups[1].Value
+Invoke-Checked python @("$Source/tests/package_consumer/check_documentation.py","$Stage/share/doc/robotweax_srt",$Version)
 # The producer must supply the exact dependency license next to its build.
 if ($Crypto) { Copy-Item "$OpenSSLRoot/LICENSE.txt" "$Stage/OpenSSL-LICENSE.txt" }
 $Dependencies = if ($CryptoBackend -eq 'openssl') { 'libcrypto.lib;crypt32.lib;advapi32.lib;user32.lib;bcrypt.lib' } else { 'bcrypt.lib' }
