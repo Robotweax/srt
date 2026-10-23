@@ -113,10 +113,16 @@ struct Streams {
     // MAXBW paces encoded SRT datagram bytes, including its 16-byte header.
     const auto bandwidth = (bps * (bytes + 16) + bytes * 8 - 1) / (bytes * 8);
     const auto timeout = seconds * 3'000 + 5'000;
+    // The peer's 64-packet application window can starve a Wi-Fi sender and
+    // polls every 100 us. Keep it above this profile's bounded SRT send queue
+    // (4 MiB / 1472 bytes = 2849 slots), so SRT epoll provides backpressure.
+    const std::uint64_t pendingPackets = 4096;
+    const std::uint64_t sendBufferBytes = 4 * 1024 * 1024;
     const std::string host(self.host.text.UTF8String);
     std::vector<std::string> arguments {"pacing", "caller", "--host", host,
         "--port", std::to_string(port), "--connections", "1", "--messages", std::to_string(messages),
         "--message-size", std::to_string(bytes), "--max-bandwidth", std::to_string(bandwidth),
+        "--pending-packets", std::to_string(pendingPackets), "--send-buffer", std::to_string(sendBufferBytes),
         "--latency-ms", "120", "--timeout-ms", std::to_string(timeout), "--shutdown-grace-ms", "300"};
     self.command.text = [NSString stringWithFormat:@"Desktop receiver:\nrobotweax_srt_scalability_peer listener --host 0.0.0.0 --port %ld --connections 1 --messages %llu --message-size %llu --latency-ms 120 --timeout-ms %llu", (long)port, (unsigned long long)messages, (unsigned long long)bytes, (unsigned long long)timeout];
     self.running = YES; self.backgrounded = NO; self.startButton.enabled = NO;
@@ -155,6 +161,7 @@ struct Streams {
             @"os_version": UIDevice.currentDevice.systemVersion,
             @"target_payload_bps": @(bps), @"payload_bytes": @(bytes), @"messages": @(messages),
             @"max_bandwidth_bytes_per_second": @(bandwidth), @"elapsed_seconds": @(elapsed),
+            @"pending_packets": @(pendingPackets), @"send_buffer_bytes": @(sendBufferBytes),
             @"peer_exit_code": @(result), @"thermal_before": @(thermalBefore),
             @"thermal_after": @(NSProcessInfo.processInfo.thermalState),
             @"low_power_before": @(lowPowerBefore),

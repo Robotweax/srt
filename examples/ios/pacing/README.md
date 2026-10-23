@@ -129,7 +129,14 @@ No device identifier or personal network address belongs in a public result.
 188-byte messages exercise sub-millisecond pacing at these rates; 1316-byte
 messages are the control (their interval exceeds 1 ms even at 8 Mbit/s). The app
 adjusts `SRTO_MAXBW` for the 16-byte SRT data header and keeps the library
-backlogged; it does not add application rate sleeps.
+backlogged; it does not add application rate sleeps. The app explicitly uses a
+4 MiB SRT send buffer and a 4096-packet application window. At MSS 1500 the send
+queue has 2849 slots, so it fills before the application window: backpressure
+uses SRT epoll rather than the benchmark's 100-microsecond window polling loop.
+The transport flow window remains 1024 packets. Queue storage remains bounded.
+The original 64-packet harness runs are retained as exploratory results; they do
+not qualify transport wake-ups or saturation throughput. Use identical corrected
+harness settings for both variants and restart the full ABBA matrix.
 
 CPU is the whole app process's `getrusage` delta around the peer run, including
 startup and shutdown. Wake-up deltas come from Mach `TASK_POWER_INFO` interrupt,
