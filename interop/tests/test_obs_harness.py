@@ -161,6 +161,20 @@ class ObsHarnessTests(unittest.TestCase):
                 )
             decoded.assert_called_once()
 
+    def test_macos_desktop_failure_records_both_endpoint_statuses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child = SimpleNamespace(pid=123, poll=lambda: -11)
+            receiver = SimpleNamespace(pid=456, poll=lambda: None)
+            with self.assertRaisesRegex(RuntimeError, "desktop_exit=-11, receiver_exit=None"):
+                macos_desktop.wait_decoded(child, receiver, root / "ffmpeg", root / "capture.ts", root, "reconnected")
+            status = json.loads((root / "reconnected-endpoint-status.json").read_text())
+            self.assertEqual(status["desktop_pid"], 123)
+            self.assertEqual(status["receiver_pid"], 456)
+            self.assertEqual(status["desktop_exit"], -11)
+            self.assertIsNone(status["receiver_exit"])
+            self.assertEqual(status["capture_bytes"], 0)
+
     def test_macos_desktop_window_requires_initialized_scenes(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory)

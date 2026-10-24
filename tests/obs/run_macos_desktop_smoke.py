@@ -410,8 +410,24 @@ def wait_decoded(
     error = "no media yet"
     deadline = time.monotonic() + 40
     while time.monotonic() < deadline:
-        if child.poll() is not None or receiver.poll() is not None:
-            raise RuntimeError(f"{label}: endpoint exited before decoded media")
+        desktop_status = child.poll()
+        receiver_status = receiver.poll()
+        if desktop_status is not None or receiver_status is not None:
+            status = {
+                "label": label, "observed_at": time.time(),
+                "desktop_pid": child.pid, "desktop_exit": desktop_status,
+                "receiver_pid": receiver.pid, "receiver_exit": receiver_status,
+                "capture_bytes": capture.stat().st_size if capture.is_file() else 0,
+            }
+            (artifacts / f"{label}-endpoint-status.json").write_text(
+                json.dumps(status, indent=2) + "\n"
+            )
+            if desktop_status is None:
+                module.sample_process(child, artifacts / f"{label}-live-desktop-stacks.txt")
+            raise RuntimeError(
+                f"{label}: endpoint exited before decoded media: "
+                f"desktop_exit={desktop_status}, receiver_exit={receiver_status}"
+            )
         if capture.is_file() and capture.stat().st_size >= 500000:
             with capture.open("rb") as stream:
                 size = capture.stat().st_size
