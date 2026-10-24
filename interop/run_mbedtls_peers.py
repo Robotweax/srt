@@ -8,6 +8,8 @@ import secrets
 import socket
 import subprocess
 
+from interop_common import reserved_udp_ports
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--mbedtls-peer', type=Path, required=True)
@@ -41,18 +43,17 @@ def main():
                         server_args=[args.group+'-listener',*common]
                         client_args=[args.group+'-caller',*common]
                     if args.rendezvous:
-                        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as left_probe, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as right_probe:
-                            left_probe.bind(('127.0.0.1',0))
-                            right_probe.bind(('127.0.0.1',0))
-                            left_port=left_probe.getsockname()[1]
-                            right_port=right_probe.getsockname()[1]
+                        # Keep the first path reserved while choosing replacement
+                        # endpoints: a later ephemeral allocation may reuse a
+                        # released first-path port, including the opposite peer's.
+                        with reserved_udp_ports(4 if args.group else 2) as ports:
+                            left_port,right_port=ports[:2]
+                            if args.group:
+                                second_left,second_right=ports[2:]
                         prefix='rdv-'+(args.group+'-' if args.group else '')
                         server_args=[prefix+'listener',str(right_port),*common[1:],str(left_port)]
                         client_args=[prefix+'caller',str(left_port),*common[1:],str(right_port)]
                         if args.group:
-                            with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as left_probe, socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as right_probe:
-                                left_probe.bind(('127.0.0.1',0));right_probe.bind(('127.0.0.1',0))
-                                second_left=left_probe.getsockname()[1];second_right=right_probe.getsockname()[1]
                             server_args.extend([str(second_right),str(second_left)])
                             client_args.extend([str(second_left),str(second_right)])
                     server=subprocess.Popen([str(listener.resolve()),*server_args],env=environment,
@@ -65,7 +66,7 @@ def main():
                             stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=40)
                         output,error=server.communicate(timeout=40)
                         if client.returncode or server.returncode:
-                            raise RuntimeError(f'backend transfer failed: {client.stdout}\n{client.stderr}\n{output}\n{error}')
+                            raise RuntimeError(f'backend transfer failed: caller_exit={client.returncode} listener_exit={server.returncode} caller_args={client_args} listener_args={server_args}\n{client.stdout}\n{client.stderr}\n{output}\n{error}')
                         client_result=json.loads(client.stdout.strip().splitlines()[-1])
                         server_result=json.loads(output.strip().splitlines()[-1])
                         if args.acp1:
