@@ -8,12 +8,12 @@ adds direct group adoption. Source-tree C++ consumers must rebuild.
 
 ## Immutable product archive
 
-- Product commit: `ae5750ab75a40d48dff5647231ba20af5cb39c13`.
-- Public archive: `https://github.com/Robotweax/srt/archive/ae5750ab75a40d48dff5647231ba20af5cb39c13.tar.gz`.
-- Bytes: 2111789.
-- SHA-256: `7c6c8130e19b88c72c101ebf8289066774943b2f54971185c368fda5fa63b731`.
-- SHA-512: `db9f980e90329c1a3343c97c915c4b5818c36d0f5b52eb0507e1279313edcd1645e232ae313eb33d88ae78f54969530ad473c5eaf67a49d7334dcbdb6ce6429f`.
-- All 719 tracked regular file bytes and executable bits matched Git.
+- Product commit: `adbf8a7a161f59aa56a2f15482173dd635cc3a09`.
+- Public archive: `https://github.com/Robotweax/srt/archive/adbf8a7a161f59aa56a2f15482173dd635cc3a09.tar.gz`.
+- Bytes: 2114163.
+- SHA-256: `5a3095e4093982f3a890590c2a8ef9d2b073fb4c8c846181102e8e7ba087faa9`.
+- SHA-512: `d98fd980ff183986df0bd7ad1e7347dae8b59c02956f31de4be10932861ee3ba33d3cb3c6feb46ce61d621ec606c298e2c5d28cc8fae489c3683acaffcb19da8`.
+- All 721 tracked regular file bytes and executable bits matched Git.
 - Machine-readable identity and protected product paths: [source-0.3.1.json](source-0.3.1.json).
 
 Homebrew, vcpkg, DEB/RPM and Linux test scripts select this archive, not a moving
@@ -22,7 +22,7 @@ product path, including installed documentation and Windows build/signing recipe
 Verify this before accepting their results:
 
 ```sh
-git diff --exit-code ae5750ab75a40d48dff5647231ba20af5cb39c13 HEAD -- src include cmake compat CMakeLists.txt docs README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md THIRD_PARTY.md LICENSE examples experimental fuzz benchmarks tools tests interop .github/workflows/windows-sdk.yml packaging/windows
+git diff --exit-code adbf8a7a161f59aa56a2f15482173dd635cc3a09 HEAD -- src include cmake compat CMakeLists.txt docs README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md THIRD_PARTY.md LICENSE examples experimental fuzz benchmarks tools tests interop .github/workflows/windows-sdk.yml packaging/windows
 ```
 
 ## Finished documentation and upgrade inputs
@@ -76,3 +76,42 @@ the existing payload roots. Traversal, reserved-name, untracked-file and reparse
 point rejection remain required. Preflight and small native installer fixtures
 now exercise documentation introduction before the ordinary full variant builds.
 First-install logs are retained for subsequent diagnostic failures.
+
+## Preserved full-source qualification outcomes
+
+At integrated main `1637651b4757d81e32627f7fe32f51159e992cc2`, the first
+[full CI attempt](https://github.com/Robotweax/srt/actions/runs/40034733105/attempts/1)
+failed during macOS OBS desktop automatic encrypted reconnect: an endpoint exited
+before decoded media. The saved logs did not identify which endpoint or its exit
+code. The first [ACP1 attempt](https://github.com/Robotweax/srt/actions/runs/40034682845/attempts/1)
+failed in Linux Backup Group Rendezvous during second-member replacement with
+CTR/192. Its first 256 bidirectional messages were uncorrupted; replacement did
+not connect within the original deadline. Both original failures remain failed.
+Subsequent attempts initiated outside this release agent passed on unchanged
+source; they do not establish the causes of the first failures.
+
+A [focused OBS diagnostic run](https://github.com/Robotweax/srt/actions/runs/40069921017)
+then failed the unchanged idle allocation bound (2 versus 1) before streaming.
+That failure remains retained. A [second diagnostic cohort](https://github.com/Robotweax/srt/actions/runs/40071109903)
+passed three strict fresh-profile OBS desktop runs, including encrypted A/V,
+automatic reconnect, source forwarding and normal shutdown. Its isolated ACP1
+job passed 25 repetitions of the preserved CTR/192 Backup Rendezvous replacement
+case, recording four distinct UDP endpoints. Production library sources were
+unchanged in these diagnostic branches. Diagnostic-only job selection is not
+full-CI acceptance and is excluded from the frozen product.
+
+The final harness correction reserves all four group Rendezvous endpoints during
+selection. Previously the first pair was released before selecting replacements,
+so a legal ephemeral-port allocator could reuse an endpoint. A deterministic
+adversarial-allocator regression rejects that old code. Historical ports were
+not recorded, so this is a proven harness flaw, not a proven explanation of the
+first ACP1 failure. Failure logs now retain caller/listener exits and arguments.
+macOS OBS failures also retain endpoint PIDs/exits and bounded PID-matched text
+crash reports. No transfer, media, reconnect, shutdown, allocation or deadline
+assertion was relaxed. All original CI gates remain present.
+
+These corrections change qualification tooling only. Library, installed public
+documentation, ABI/version headers and Windows SDK build/signing recipes are
+unchanged from the prior integrated product. Affected checks and final-source
+acceptance remain required. No new production OBS application or supported ACP1
+security claim is introduced.
