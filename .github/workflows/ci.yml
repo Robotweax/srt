@@ -972,6 +972,9 @@ jobs:
             "$GITHUB_WORKSPACE/obs-desktop-source" \
             "$GITHUB_WORKSPACE/ffmpeg-source" \
             "$RUNNER_TEMP/obs-macos-desktop-qualification" desktop
+      - name: Collect failed endpoint crash reports
+        if: failure()
+        run: python3 tests/obs/collect_macos_failure.py "$RUNNER_TEMP/obs-macos-desktop-qualification/evidence/desktop"
       - name: Preserve macOS OBS desktop text diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -983,6 +986,8 @@ jobs:
             ${{ runner.temp }}/obs-macos-desktop-qualification/evidence/desktop/*.log
             ${{ runner.temp }}/obs-macos-desktop-qualification/evidence/desktop/*.txt
             ${{ runner.temp }}/obs-macos-desktop-qualification/evidence/desktop/*.frames
+            ${{ runner.temp }}/obs-macos-desktop-qualification/evidence/desktop/*.json
+            ${{ runner.temp }}/obs-macos-desktop-qualification/evidence/desktop/*.ips
             ${{ runner.temp }}/obs-macos-desktop-qualification/obs-build/CMakeCache.txt
           retention-days: 7
 
