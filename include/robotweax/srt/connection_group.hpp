@@ -47,18 +47,38 @@ enum class GroupMembershipValidation : std::uint8_t {
     unsupported_type,
 };
 
+// Which group categories the validating endpoint admits. The v1.5.7 profile
+// is bonding only. A multicast dispatch group is a Robotweax extension and
+// is admitted only where the local endpoint explicitly offers it: a Listener
+// configured as a dispatch sender, or a Caller that created a dispatch group.
+struct GroupMembershipPolicy {
+    bool admit_multicast_dispatch = false;
+};
+
 [[nodiscard]] constexpr GroupMembershipValidation
 validate_group_membership(
-    const GroupMembership& membership) noexcept
+    const GroupMembership& membership,
+    GroupMembershipPolicy policy = {}) noexcept
 {
     if ((membership.group_id & group_handle_mask) == 0U) {
         return GroupMembershipValidation::invalid_group_id;
     }
-    if (membership.type != GroupType::broadcast
-        && membership.type != GroupType::backup) {
+    switch (membership.type) {
+    case GroupType::broadcast:
+    case GroupType::backup:
+        return GroupMembershipValidation::compatible;
+    case GroupType::multicast:
+        // Dispatch groups carry no weight and no flags on the wire.
+        if (policy.admit_multicast_dispatch && membership.flags == 0U
+            && membership.weight == 0U) {
+            return GroupMembershipValidation::compatible;
+        }
+        return GroupMembershipValidation::unsupported_type;
+    case GroupType::undefined:
+    case GroupType::balancing:
+    default:
         return GroupMembershipValidation::unsupported_type;
     }
-    return GroupMembershipValidation::compatible;
 }
 
 // Decoding is structural and preserves draft-reserved or unknown type/flag

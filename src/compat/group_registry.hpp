@@ -8,6 +8,7 @@
 #include "compat/statistics.hpp"
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
+#include "robotweax/srt/udp.hpp"
 #include "srt/srt.h"
 
 #include <cstdint>
@@ -15,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -63,8 +65,62 @@ struct GroupStatistics {
     bool received_payload_sample = false;
 };
 
+// Bonding groups (Broadcast, Backup) send one signal between two endpoints
+// over several links and pin exactly one peer group. A dispatch group
+// (multicast) has one Listener-side sender and any number of Caller
+// receivers that never see each other; payload travels once on a multicast
+// socket and only control traffic uses the member connections. The category
+// decides which registry rules apply; it never changes after creation.
+enum class GroupCategory : std::uint8_t {
+    bonding,
+    dispatch,
+};
+
+[[nodiscard]] constexpr GroupCategory group_category_of(
+    SRT_GROUP_TYPE type) noexcept
+{
+    return static_cast<int>(type) == ROBOTWEAX_SRT_GTYPE_MULTICAST
+        ? GroupCategory::dispatch
+        : GroupCategory::bonding;
+}
+
+// Whether `type` names a group this build can create. Balancing (3) and
+// every undefined value stay rejected; they are never downgraded.
+[[nodiscard]] constexpr bool creatable_group_type(SRT_GROUP_TYPE type) noexcept
+{
+    return type == SRT_GTYPE_BROADCAST || type == SRT_GTYPE_BACKUP
+        || static_cast<int>(type) == ROBOTWEAX_SRT_GTYPE_MULTICAST;
+}
+
+// Dispatch-group state that bonding records never use. Kept in one block so
+// the bonding fields of GroupRecord stay untouched.
+struct DispatchGroupState {
+    // Listener side: the admission key the listen callback set through
+    // SRTO_ROBOTWEAX_MULTICAST. One dispatch group per (bond, key, domain).
+    std::string admission_key;
+    // Multicast group the sender transmits to and receivers join.
+    IpEndpoint multicast_group{};
+    // Local interface selector: IPv4 address or IPv6 scope_id; unspecified
+    // lets the operating system choose.
+    IpEndpoint multicast_interface{};
+    std::int32_t multicast_time_to_live = 1;
+    // Whether this record is the sending (Listener) side. The Caller side
+    // has exactly one member and a multicast receive socket.
+    bool sender = false;
+    // Listener side only: the one extra socket that sends payload to the
+    // group. Opened when the first member is admitted.
+    UdpSocket transmit_socket;
+    // Caller side only: the socket joined to the group for payload ingress.
+    UdpSocket receive_socket;
+    bool joined = false;
+};
+
 struct GroupRecord {
     mutable std::mutex mutex;
+    GroupCategory category = GroupCategory::bonding;
+    // Present exactly when category == dispatch; a bonding record never
+    // allocates it.
+    std::unique_ptr<DispatchGroupState> dispatch;
     GroupStatistics statistics;
     // Bound by epoll watches on the group handle; members notify it with
     // their own readiness, membership changes notify it from the registry.

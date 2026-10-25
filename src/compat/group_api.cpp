@@ -115,7 +115,7 @@ SRTSOCKET srt_create_group(SRT_GROUP_TYPE type)
     if (!stateful_api_available()) {
         return SRT_INVALID_SOCK;
     }
-    if (type != SRT_GTYPE_BROADCAST && type != SRT_GTYPE_BACKUP) {
+    if (!robotweax::srt::compat::creatable_group_type(type)) {
         robotweax::srt::compat::set_last_error(SRT_EINVPARAM);
         return SRT_INVALID_SOCK;
     }
@@ -270,6 +270,14 @@ static int connect_group_impl(SRTSOCKET group, SRT_SOCKGROUPCONFIG endpoints[],
     if (!GroupRegistry::instance().describe_connect(
             group, description)) {
         set_last_error(SRT_EINVSOCK);
+        return SRT_ERROR;
+    }
+    // Dispatch (multicast) groups are created and their options configured,
+    // but the connecting receiver side is not implemented yet. Fail here
+    // with a defined error instead of letting a type-4 membership extension
+    // be rejected deep inside the handshake encoder.
+    if (group_category_of(description.type) == GroupCategory::dispatch) {
+        set_last_error(SRT_EINVOP);
         return SRT_ERROR;
     }
     // Reject repeated descriptor values before any ownership transfer. Copy

@@ -460,6 +460,73 @@ TEST(
     REQUIRE_EQ(srt_close(socket), 0);
 }
 
+TEST(compat_multicast_dispatch_group_is_created_but_not_yet_connectable)
+{
+    const auto multicast =
+        static_cast<SRT_GROUP_TYPE>(ROBOTWEAX_SRT_GTYPE_MULTICAST);
+    // The public enum stays byte-identical to the reference ABI.
+    REQUIRE_EQ(static_cast<int>(SRT_GTYPE_E_END), 3);
+    REQUIRE_EQ(ROBOTWEAX_SRT_GTYPE_MULTICAST, 4);
+
+    const SRTSOCKET group = srt_create_group(multicast);
+    REQUIRE(group != SRT_INVALID_SOCK);
+    REQUIRE((group & SRTGROUP_MASK) != 0);
+    // A fresh dispatch group that has not opened reports the same observable
+    // state as any empty group; the sender-side "stays connected" rule
+    // applies only once it has opened as a sender.
+    REQUIRE_EQ(srt_getsockstate(group), SRTS_BROKEN);
+    std::int32_t type = -1;
+    int size = sizeof(type);
+    REQUIRE_EQ(srt_getsockflag(group, SRTO_GROUPTYPE, &type, &size), 0);
+    REQUIRE_EQ(type, ROBOTWEAX_SRT_GTYPE_MULTICAST);
+
+    const auto record = GroupRegistry::instance().find(group);
+    REQUIRE(record != nullptr);
+    {
+        std::lock_guard lock(record->mutex);
+        REQUIRE(record->category == robotweax::srt::compat::GroupCategory::dispatch);
+        REQUIRE(record->dispatch != nullptr);
+        REQUIRE(!record->dispatch->sender);
+    }
+
+    // The receiving side of a dispatch group is not implemented yet:
+    // connecting fails with a defined error before any member is created.
+    const sockaddr_in peer = ipv4_address(9'000);
+    SRT_SOCKGROUPCONFIG endpoint = srt_prepare_endpoint(nullptr,
+        reinterpret_cast<const sockaddr*>(&peer), sizeof(peer));
+    REQUIRE_EQ(srt_connect_group(group, &endpoint, 1), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    size_t members = 0;
+    REQUIRE_EQ(srt_group_data(group, nullptr, &members), 0);
+    REQUIRE_EQ(members, 0U);
+
+    // Balancing (3) and values past the draft stay rejected, unchanged.
+    for (const int rejected : {3, 5, 255}) {
+        REQUIRE_EQ(srt_create_group(static_cast<SRT_GROUP_TYPE>(rejected)),
+            SRT_INVALID_SOCK);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    }
+    // A Listener never mirrors a dispatch group; mirrors are bonding only.
+    const SRTSOCKET listener = srt_create_socket();
+    GroupRegistry::MirrorDescription mirror;
+    REQUIRE(!GroupRegistry::instance().prepare_mirror(
+        listener, group, multicast, 91U, mirror));
+    REQUIRE_EQ(srt_close(listener), 0);
+
+    // Bonding records never allocate dispatch state.
+    const SRTSOCKET bonding = srt_create_group(SRT_GTYPE_BROADCAST);
+    const auto bonding_record = GroupRegistry::instance().find(bonding);
+    REQUIRE(bonding_record != nullptr);
+    {
+        std::lock_guard lock(bonding_record->mutex);
+        REQUIRE(bonding_record->category == robotweax::srt::compat::GroupCategory::bonding);
+        REQUIRE(bonding_record->dispatch == nullptr);
+    }
+    REQUIRE_EQ(srt_close(bonding), 0);
+    REQUIRE_EQ(srt_close(group), 0);
+    REQUIRE_EQ(srt_getsockstate(group), SRTS_CLOSED);
+}
+
 TEST(compat_group_type_readback_covers_created_and_mirrored_groups)
 {
     for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {

@@ -1,6 +1,7 @@
 #include "test.hpp"
 
 #include "robotweax/srt/connection_group.hpp"
+#include "srt/srt.h"
 
 #include <array>
 #include <cstddef>
@@ -46,6 +47,43 @@ TEST(group_membership_has_exact_hsv5_wire_layout)
     REQUIRE_EQ(decoded.membership.weight, membership.weight);
     REQUIRE_EQ(validate_group_membership(decoded.membership),
         GroupMembershipValidation::compatible);
+}
+
+TEST(group_membership_admits_multicast_dispatch_only_by_policy)
+{
+    const GroupMembership dispatch{
+        .group_id = group_handle_mask | 7U,
+        .type = GroupType::multicast,
+        .flags = 0U,
+        .weight = 0U,
+    };
+    // The v1.5.7 default policy never admits type 4.
+    REQUIRE_EQ(validate_group_membership(dispatch),
+        GroupMembershipValidation::unsupported_type);
+    // An endpoint that offers dispatch groups admits a clean type 4.
+    const GroupMembershipPolicy offering{.admit_multicast_dispatch = true};
+    REQUIRE_EQ(validate_group_membership(dispatch, offering),
+        GroupMembershipValidation::compatible);
+    // Flags or a weight on a dispatch membership are not negotiable.
+    GroupMembership flagged = dispatch;
+    flagged.flags = 1U;
+    REQUIRE_EQ(validate_group_membership(flagged, offering),
+        GroupMembershipValidation::unsupported_type);
+    GroupMembership weighted = dispatch;
+    weighted.weight = 1U;
+    REQUIRE_EQ(validate_group_membership(weighted, offering),
+        GroupMembershipValidation::unsupported_type);
+    // The policy does not widen anything else.
+    GroupMembership balancing = dispatch;
+    balancing.type = GroupType::balancing;
+    REQUIRE_EQ(validate_group_membership(balancing, offering),
+        GroupMembershipValidation::unsupported_type);
+    GroupMembership unmasked = dispatch;
+    unmasked.group_id = 7U;
+    REQUIRE_EQ(validate_group_membership(unmasked, offering),
+        GroupMembershipValidation::invalid_group_id);
+    REQUIRE_EQ(static_cast<int>(GroupType::multicast),
+        ROBOTWEAX_SRT_GTYPE_MULTICAST);
 }
 
 TEST(group_membership_preserves_reserved_and_unknown_types)
