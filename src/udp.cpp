@@ -643,6 +643,278 @@ UdpIntegerOptionResult UdpSocket::ip_type_of_service() const noexcept
     return {.value = value};
 }
 
+namespace {
+
+// setsockopt/getsockopt with the platform's pointer type and length type.
+[[nodiscard]] int set_option(NativeSocket socket, int level, int option,
+    const void* value, std::size_t size) noexcept
+{
+#if defined(_WIN32)
+    return ::setsockopt(socket, level, option,
+        static_cast<const char*>(value), static_cast<int>(size));
+#else
+    return ::setsockopt(socket, level, option, value,
+        static_cast<SocketLength>(size));
+#endif
+}
+
+[[nodiscard]] int get_option(NativeSocket socket, int level, int option,
+    void* value, SocketLength& size) noexcept
+{
+#if defined(_WIN32)
+    return ::getsockopt(socket, level, option,
+        static_cast<char*>(value), &size);
+#else
+    return ::getsockopt(socket, level, option, value, &size);
+#endif
+}
+
+// Validates a (group, interface) pair for membership operations on a socket
+// of `family`. An unspecified interface is always acceptable.
+[[nodiscard]] bool multicast_arguments_valid(IpAddressFamily family,
+    const IpEndpoint& group, const IpEndpoint& interface) noexcept
+{
+    if (group.family != family || !group.is_multicast()) {
+        return false;
+    }
+    if (family == IpAddressFamily::ipv4) {
+        // The interface is an IPv4 unicast address or unspecified.
+        return interface.family == IpAddressFamily::ipv4
+            && !interface.is_multicast();
+    }
+    // IPv6 selects the interface by scope_id; the address bytes are ignored
+    // but must not carry an IPv4 selector by mistake.
+    return interface.family == IpAddressFamily::ipv6
+        || interface == IpEndpoint{};
+}
+
+} // namespace
+
+Error UdpSocket::set_reuse_address(bool enabled) noexcept
+{
+    if (!valid()) {
+        last_system_error_ = open_system_error_;
+        return Error::io_error;
+    }
+    int value = enabled ? 1 : 0;
+    int result = set_option(to_native(native_), SOL_SOCKET, SO_REUSEADDR,
+        &value, sizeof(value));
+#if defined(SO_REUSEPORT) && !defined(__linux__)
+    // BSD-derived stacks (macOS included) need SO_REUSEPORT as well before
+    // several sockets may bind one multicast port. Linux SO_REUSEPORT has
+    // load-balancing semantics and is deliberately not set.
+    if (result == 0) {
+        result = set_option(to_native(native_), SOL_SOCKET, SO_REUSEPORT,
+            &value, sizeof(value));
+    }
+#endif
+    last_system_error_ = result == 0 ? 0 : last_socket_error();
+    return result == 0 ? Error::none : Error::io_error;
+}
+
+Error UdpSocket::join_multicast(
+    IpEndpoint group, IpEndpoint interface) noexcept
+{
+    if (!valid()) {
+        last_system_error_ = open_system_error_;
+        return Error::io_error;
+    }
+    if (!multicast_arguments_valid(family_, group, interface)) {
+        last_system_error_ = 0;
+        return Error::invalid_state;
+    }
+    int result = 0;
+    if (family_ == IpAddressFamily::ipv4) {
+#if defined(IP_MULTICAST_ALL)
+        // Linux delivers every group any local socket joined to a socket
+        // bound to INADDR_ANY unless this is cleared. A receiver must see
+        // only the groups it joined itself; best effort, older kernels
+        // without the option already behave that way.
+        const int only_joined = 0;
+        (void)set_option(to_native(native_), IPPROTO_IP, IP_MULTICAST_ALL,
+            &only_joined, sizeof(only_joined));
+#endif
+        ip_mreq request{};
+        std::memcpy(&request.imr_multiaddr, group.address.data(), 4U);
+        std::memcpy(&request.imr_interface, interface.address.data(), 4U);
+        result = set_option(to_native(native_), IPPROTO_IP,
+            IP_ADD_MEMBERSHIP, &request, sizeof(request));
+    } else {
+#if defined(IPV6_MULTICAST_ALL)
+        const int only_joined = 0;
+        (void)set_option(to_native(native_), IPPROTO_IPV6,
+            IPV6_MULTICAST_ALL, &only_joined, sizeof(only_joined));
+#endif
+        ipv6_mreq request{};
+        std::memcpy(&request.ipv6mr_multiaddr, group.address.data(), 16U);
+        request.ipv6mr_interface = interface.scope_id;
+        result = set_option(to_native(native_), IPPROTO_IPV6,
+            IPV6_JOIN_GROUP, &request, sizeof(request));
+    }
+    last_system_error_ = result == 0 ? 0 : last_socket_error();
+    return result == 0 ? Error::none : Error::io_error;
+}
+
+Error UdpSocket::leave_multicast(
+    IpEndpoint group, IpEndpoint interface) noexcept
+{
+    if (!valid()) {
+        last_system_error_ = open_system_error_;
+        return Error::io_error;
+    }
+    if (!multicast_arguments_valid(family_, group, interface)) {
+        last_system_error_ = 0;
+        return Error::invalid_state;
+    }
+    int result = 0;
+    if (family_ == IpAddressFamily::ipv4) {
+        ip_mreq request{};
+        std::memcpy(&request.imr_multiaddr, group.address.data(), 4U);
+        std::memcpy(&request.imr_interface, interface.address.data(), 4U);
+        result = set_option(to_native(native_), IPPROTO_IP,
+            IP_DROP_MEMBERSHIP, &request, sizeof(request));
+    } else {
+        ipv6_mreq request{};
+        std::memcpy(&request.ipv6mr_multiaddr, group.address.data(), 16U);
+        request.ipv6mr_interface = interface.scope_id;
+        result = set_option(to_native(native_), IPPROTO_IPV6,
+            IPV6_LEAVE_GROUP, &request, sizeof(request));
+    }
+    last_system_error_ = result == 0 ? 0 : last_socket_error();
+    return result == 0 ? Error::none : Error::io_error;
+}
+
+Error UdpSocket::set_multicast_interface(IpEndpoint interface) noexcept
+{
+    if (!valid()) {
+        last_system_error_ = open_system_error_;
+        return Error::io_error;
+    }
+    if (interface.family != family_ || interface.is_multicast()) {
+        last_system_error_ = 0;
+        return Error::invalid_state;
+    }
+    int result = 0;
+    if (family_ == IpAddressFamily::ipv4) {
+        in_addr address{};
+        std::memcpy(&address, interface.address.data(), 4U);
+        result = set_option(to_native(native_), IPPROTO_IP, IP_MULTICAST_IF,
+            &address, sizeof(address));
+    } else {
+        unsigned int index = interface.scope_id;
+        result = set_option(to_native(native_), IPPROTO_IPV6,
+            IPV6_MULTICAST_IF, &index, sizeof(index));
+    }
+    last_system_error_ = result == 0 ? 0 : last_socket_error();
+    return result == 0 ? Error::none : Error::io_error;
+}
+
+Error UdpSocket::set_multicast_time_to_live(std::int32_t value) noexcept
+{
+    if (!valid()) {
+        last_system_error_ = open_system_error_;
+        return Error::io_error;
+    }
+    if (value < 0 || value > 255) {
+        last_system_error_ = 0;
+        return Error::invalid_state;
+    }
+    int result = 0;
+    if (family_ == IpAddressFamily::ipv4) {
+        // IPv4 takes a byte on POSIX; Windows and Linux also accept an int,
+        // but a byte is portable for setting.
+        const unsigned char ttl = static_cast<unsigned char>(value);
+        result = set_option(to_native(native_), IPPROTO_IP, IP_MULTICAST_TTL,
+            &ttl, sizeof(ttl));
+#if !defined(_WIN32)
+        if (result != 0 && last_socket_error() == EINVAL) {
+            const int wide = value;
+            result = set_option(to_native(native_), IPPROTO_IP,
+                IP_MULTICAST_TTL, &wide, sizeof(wide));
+        }
+#endif
+    } else {
+        const int hops = value;
+        result = set_option(to_native(native_), IPPROTO_IPV6,
+            IPV6_MULTICAST_HOPS, &hops, sizeof(hops));
+    }
+    last_system_error_ = result == 0 ? 0 : last_socket_error();
+    return result == 0 ? Error::none : Error::io_error;
+}
+
+UdpIntegerOptionResult UdpSocket::multicast_time_to_live() const noexcept
+{
+    if (!valid()) {
+        return {.error = Error::io_error, .system_error = open_system_error_};
+    }
+    // Read into an int-sized buffer; stacks that store a byte fill the low
+    // byte and report a shorter length.
+    int value = 0;
+    SocketLength size = static_cast<SocketLength>(sizeof(value));
+    const int level = family_ == IpAddressFamily::ipv4
+        ? IPPROTO_IP : IPPROTO_IPV6;
+    const int option = family_ == IpAddressFamily::ipv4
+        ? IP_MULTICAST_TTL : IPV6_MULTICAST_HOPS;
+    if (get_option(to_native(native_), level, option, &value, size) != 0) {
+        return {.error = Error::io_error, .system_error = last_socket_error()};
+    }
+    if (size == 1) {
+        unsigned char byte = 0;
+        std::memcpy(&byte, &value, 1U);
+        value = byte;
+    }
+    return {.value = value};
+}
+
+Error UdpSocket::set_multicast_loopback(bool enabled) noexcept
+{
+    if (!valid()) {
+        last_system_error_ = open_system_error_;
+        return Error::io_error;
+    }
+    int result = 0;
+    if (family_ == IpAddressFamily::ipv4) {
+        const unsigned char flag = enabled ? 1U : 0U;
+        result = set_option(to_native(native_), IPPROTO_IP, IP_MULTICAST_LOOP,
+            &flag, sizeof(flag));
+#if !defined(_WIN32)
+        if (result != 0 && last_socket_error() == EINVAL) {
+            const int wide = enabled ? 1 : 0;
+            result = set_option(to_native(native_), IPPROTO_IP,
+                IP_MULTICAST_LOOP, &wide, sizeof(wide));
+        }
+#endif
+    } else {
+        const unsigned int flag = enabled ? 1U : 0U;
+        result = set_option(to_native(native_), IPPROTO_IPV6,
+            IPV6_MULTICAST_LOOP, &flag, sizeof(flag));
+    }
+    last_system_error_ = result == 0 ? 0 : last_socket_error();
+    return result == 0 ? Error::none : Error::io_error;
+}
+
+UdpIntegerOptionResult UdpSocket::multicast_loopback() const noexcept
+{
+    if (!valid()) {
+        return {.error = Error::io_error, .system_error = open_system_error_};
+    }
+    int value = 0;
+    SocketLength size = static_cast<SocketLength>(sizeof(value));
+    const int level = family_ == IpAddressFamily::ipv4
+        ? IPPROTO_IP : IPPROTO_IPV6;
+    const int option = family_ == IpAddressFamily::ipv4
+        ? IP_MULTICAST_LOOP : IPV6_MULTICAST_LOOP;
+    if (get_option(to_native(native_), level, option, &value, size) != 0) {
+        return {.error = Error::io_error, .system_error = last_socket_error()};
+    }
+    if (size == 1) {
+        unsigned char byte = 0;
+        std::memcpy(&byte, &value, 1U);
+        value = byte;
+    }
+    return {.value = value != 0 ? 1 : 0};
+}
+
 Error UdpSocket::set_bind_to_device(std::string_view name) noexcept
 {
 #if defined(__linux__) && defined(SO_BINDTODEVICE)

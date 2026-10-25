@@ -63,6 +63,13 @@ struct IpEndpoint {
         return family == IpAddressFamily::ipv6;
     }
 
+    /** IPv4 224.0.0.0/4 or IPv6 ff00::/8 group address. */
+    [[nodiscard]] constexpr bool is_multicast() const noexcept
+    {
+        return is_ipv4() ? (address[0] & 0xf0U) == 0xe0U
+                         : address[0] == 0xffU;
+    }
+
     [[nodiscard]] constexpr bool is_ipv4_mapped_ipv6() const noexcept
     {
         if (!is_ipv6() || address[10] != 0xffU
@@ -225,6 +232,36 @@ public:
     [[nodiscard]] UdpDeviceOptionResult bound_device() const noexcept;
     [[nodiscard]] Error bind(IpEndpoint endpoint) noexcept;
     [[nodiscard]] EndpointResult local_endpoint() const noexcept;
+
+    // Multicast group membership and transmit options. The group address
+    // must be a multicast address of the socket's own family; `interface`
+    // selects the local interface by IPv4 address or, for IPv6, by its
+    // scope_id, and an unspecified interface lets the operating system
+    // choose. Failures report Error::invalid_state for argument errors and
+    // Error::io_error with last_system_error() for native failures; nothing
+    // is applied silently.
+    //
+    // Receivers that share one host and one group port should set
+    // set_reuse_address(true) before bind(). Memberships end when the socket
+    // closes; leave_multicast() ends one earlier.
+    [[nodiscard]] Error set_reuse_address(bool enabled) noexcept;
+    [[nodiscard]] Error join_multicast(
+        IpEndpoint group, IpEndpoint interface = {}) noexcept;
+    [[nodiscard]] Error leave_multicast(
+        IpEndpoint group, IpEndpoint interface = {}) noexcept;
+    /** Outgoing multicast interface: IPv4 address or IPv6 scope_id. */
+    [[nodiscard]] Error set_multicast_interface(IpEndpoint interface) noexcept;
+    /** Hop limit for outgoing multicast datagrams, 0..255. */
+    [[nodiscard]] Error set_multicast_time_to_live(std::int32_t value) noexcept;
+    [[nodiscard]] UdpIntegerOptionResult multicast_time_to_live() const noexcept;
+    /**
+     * Whether datagrams this socket sends to a group are delivered to local
+     * receivers of that group. POSIX applies this to the sending socket;
+     * Windows applies it to receiving sockets. Both are exposed as the same
+     * option and the difference is documented rather than hidden.
+     */
+    [[nodiscard]] Error set_multicast_loopback(bool enabled) noexcept;
+    [[nodiscard]] UdpIntegerOptionResult multicast_loopback() const noexcept;
     /** Waits for readability; negative timeouts wait indefinitely. */
     [[nodiscard]] UdpWaitResult wait_readable(int timeout_milliseconds) noexcept;
     [[nodiscard]] UdpIoResult send_to(
