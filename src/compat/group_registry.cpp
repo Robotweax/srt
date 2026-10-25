@@ -38,6 +38,15 @@ namespace {
             pending = member.public_data.sockstate;
         }
     }
+    if (pending == SRTS_NONEXIST && group.category == GroupCategory::dispatch
+        && group.dispatch != nullptr && group.dispatch->sender
+        && group.opened) {
+        // A dispatch sender keeps transmitting between receivers: "join at
+        // any time" requires the group to outlive its last member. This is
+        // the defining difference from bonding, where no member means no
+        // peer.
+        return SRTS_CONNECTED;
+    }
     // This is the observable v1.5.7 result for a newly created empty group.
     return pending == SRTS_NONEXIST ? SRTS_BROKEN : pending;
 }
@@ -166,12 +175,16 @@ namespace {
 
 SRTSOCKET GroupRegistry::create(SRT_GROUP_TYPE type) noexcept
 {
-    if (type != SRT_GTYPE_BROADCAST && type != SRT_GTYPE_BACKUP) {
+    if (!creatable_group_type(type)) {
         return SRT_INVALID_SOCK;
     }
 
     try {
         auto record = std::make_shared<GroupRecord>();
+        record->category = group_category_of(type);
+        if (record->category == GroupCategory::dispatch) {
+            record->dispatch = std::make_unique<DispatchGroupState>();
+        }
         (void)record->member_native_options.set(
             SocketOption::maximum_payload_size, SRT_LIVE_DEF_PLSIZE);
         std::lock_guard lock(mutex_);
