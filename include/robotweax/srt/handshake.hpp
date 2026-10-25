@@ -133,6 +133,9 @@ struct HandshakeAction {
     SessionAuthenticationParameters session_authentication {};
     bool has_path_identifier = false;
     PathIdentifier path_identifier {};
+    // Listener -> Caller announcement of a multicast dispatch group.
+    bool has_multicast_dispatch = false;
+    MulticastDispatch multicast_dispatch {};
     bool has_standby_rtt = false;
     StandbyRttIdentity standby_rtt {};
     ImplementationIdentity implementation_identity {};
@@ -180,6 +183,8 @@ struct HandshakeMessage {
     SessionAuthenticationParameters session_authentication {};
     bool has_path_identifier = false;
     PathIdentifier path_identifier {};
+    bool has_multicast_dispatch = false;
+    MulticastDispatch multicast_dispatch {};
     bool has_standby_rtt = false;
     StandbyRttIdentity standby_rtt {};
     ImplementationIdentity implementation_identity {};
@@ -188,6 +193,13 @@ struct HandshakeMessage {
 using GroupMembershipNegotiator = bool (*)(
     const GroupMembership& peer,
     GroupMembership& local,
+    void* context) noexcept;
+
+// A Listener that admitted a multicast dispatch membership supplies the
+// announcement for the conclusion response. Returning false rejects the
+// connection with the group rejection reason.
+using MulticastDispatchProvider = bool (*)(
+    MulticastDispatch& dispatch,
     void* context) noexcept;
 
 /**
@@ -222,6 +234,12 @@ public:
         GroupMembership group_membership{};
         GroupMembershipNegotiator group_membership_negotiator = nullptr;
         void* group_membership_context = nullptr;
+        // Which group categories this endpoint admits on the wire. The
+        // default is the v1.5.7 bonding-only profile.
+        GroupMembershipPolicy group_membership_policy {};
+        // Listener only; required when the policy admits dispatch groups.
+        MulticastDispatchProvider multicast_dispatch_provider = nullptr;
+        void* multicast_dispatch_context = nullptr;
         CookieGenerator cookie_generator = nullptr;
         void* cookie_context = nullptr;
         bool require_session_authentication = false;
@@ -294,6 +312,17 @@ public:
     {
         return peer_group_membership_;
     }
+    // Caller side: the Listener's dispatch announcement, present only when
+    // the negotiated membership is a multicast dispatch group.
+    [[nodiscard]] bool has_peer_multicast_dispatch() const noexcept
+    {
+        return has_peer_multicast_dispatch_;
+    }
+    [[nodiscard]] const MulticastDispatch&
+    peer_multicast_dispatch() const noexcept
+    {
+        return peer_multicast_dispatch_;
+    }
     [[nodiscard]] Error set_session_authentication(
         SessionAuthenticationParameters parameters) noexcept;
     [[nodiscard]] const HandshakeAction& session_confirmation() const noexcept
@@ -344,6 +373,10 @@ private:
     PathIdentifier peer_path_identifier_ {};
     GroupMembership local_group_response_{};
     bool has_local_group_response_ = false;
+    MulticastDispatch local_multicast_dispatch_{};
+    bool has_local_multicast_dispatch_ = false;
+    MulticastDispatch peer_multicast_dispatch_{};
+    bool has_peer_multicast_dispatch_ = false;
     int rejection_reason_ = 0;
 };
 
