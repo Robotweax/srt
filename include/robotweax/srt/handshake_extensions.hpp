@@ -30,6 +30,8 @@ enum class HandshakeExtensionType : std::uint16_t {
     path_identifier = 0x7f11,
     standby_rtt = 0x7f12,
     implementation_identity = 0x7f13,
+    // Listener -> Caller announcement of a multicast dispatch group.
+    multicast_dispatch = 0x7f14,
 };
 
 enum class CongestionController : std::uint8_t {
