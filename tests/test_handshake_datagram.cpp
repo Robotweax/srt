@@ -499,6 +499,258 @@ TEST(hsv5_group_membership_negotiates_distinct_mirror_identity)
         group_handle_mask | mirror_base);
 }
 
+namespace {
+
+struct DispatchProviderContext {
+    std::uint32_t mirror_base = 0;
+    bool fail = false;
+    bool wrong_id = false;
+    int calls = 0;
+};
+
+bool provide_test_dispatch(MulticastDispatch& dispatch, void* context) noexcept
+{
+    auto& provider = *static_cast<DispatchProviderContext*>(context);
+    ++provider.calls;
+    if (provider.fail) {
+        return false;
+    }
+    dispatch = MulticastDispatch{
+        .group_id = group_handle_mask
+            | (provider.wrong_id ? provider.mirror_base + 1U
+                                 : provider.mirror_base),
+        .multicast_group = {.address = {239, 255, 133, 10}, .port = 5'999},
+        .has_interface_hint = false,
+        .interface_hint = {},
+        .initial_sequence = 8'000U,
+        .timestamp_origin_delta_microseconds = -250,
+        .time_to_live = 1,
+    };
+    return true;
+}
+
+[[nodiscard]] HandshakeMachine::Configuration dispatch_caller_configuration(
+    std::uint32_t caller_group)
+{
+    return {
+        .role = ConnectionRole::caller,
+        .local_socket_id = 401U,
+        .initial_sequence = SequenceNumber{8'000U},
+        .has_group_membership = true,
+        .group_membership =
+            {
+                .group_id = group_handle_mask | caller_group,
+                .type = GroupType::multicast,
+                .flags = 0U,
+                .weight = 0U,
+            },
+        .group_membership_policy = {.admit_multicast_dispatch = true},
+    };
+}
+
+} // namespace
+
+TEST(hsv5_multicast_dispatch_negotiation_announces_the_group)
+{
+    std::uint32_t cookie_secret = 0x51a2'51c3U;
+    std::uint32_t mirror_base = 93U;
+    DispatchProviderContext provider{.mirror_base = mirror_base};
+    HandshakeMachine caller{dispatch_caller_configuration(43U)};
+    HandshakeMachine listener{{
+        .role = ConnectionRole::listener,
+        .local_socket_id = 402U,
+        .initial_sequence = SequenceNumber{8'000U},
+        .group_membership_negotiator = negotiate_test_group,
+        .group_membership_context = &mirror_base,
+        .group_membership_policy = {.admit_multicast_dispatch = true},
+        .multicast_dispatch_provider = provide_test_dispatch,
+        .multicast_dispatch_context = &provider,
+        .cookie_generator = datagram_test_cookie,
+        .cookie_context = &cookie_secret,
+    }};
+
+    const auto induction = encode_then_decode(caller.start().values[0], 0U);
+    REQUIRE(induction);
+    const auto induction_response = encode_then_decode(
+        listener.receive(induction.message).values[0], 401U);
+    REQUIRE(induction_response);
+    const auto conclusion = caller.receive(induction_response.message);
+    REQUIRE(conclusion.values[0].has_group_membership);
+    REQUIRE_EQ(conclusion.values[0].group_membership.type,
+        GroupType::multicast);
+    // The Caller never announces a multicast group itself.
+    REQUIRE(!conclusion.values[0].has_multicast_dispatch);
+
+    const auto request = encode_then_decode(conclusion.values[0], 402U);
+    REQUIRE(request);
+    REQUIRE(!request.message.has_multicast_dispatch);
+    const auto response = listener.receive(request.message);
+    REQUIRE_EQ(provider.calls, 1);
+    REQUIRE(response.values[0].has_group_membership);
+    REQUIRE(response.values[0].has_multicast_dispatch);
+    REQUIRE_EQ(response.values[0].multicast_dispatch.group_id,
+        group_handle_mask | mirror_base);
+    REQUIRE_EQ(response.values[0].multicast_dispatch.multicast_group.port,
+        5'999U);
+    REQUIRE((response.values[0].packet.extension_field
+                & handshake_extension_flag_config)
+        != 0U);
+
+    const auto response_message = encode_then_decode(response.values[0], 401U);
+    REQUIRE(response_message);
+    REQUIRE(response_message.message.has_multicast_dispatch);
+    const auto connected = caller.receive(response_message.message);
+    REQUIRE_EQ(connected.values[0].kind, HandshakeActionKind::connected);
+    REQUIRE(caller.has_peer_group_membership());
+    REQUIRE(caller.has_peer_multicast_dispatch());
+    REQUIRE(caller.peer_multicast_dispatch()
+        == response.values[0].multicast_dispatch);
+    REQUIRE_EQ(caller.peer_multicast_dispatch().group_id,
+        caller.peer_group_membership().group_id);
+}
+
+TEST(hsv5_multicast_dispatch_is_rejected_without_policy_or_announcement)
+{
+    // 1. A v1.5.7-profile Listener (default policy) rejects type 4 even
+    //    with a group negotiator installed.
+    {
+        std::uint32_t cookie_secret = 0x61a2'51c3U;
+        std::uint32_t mirror_base = 94U;
+        HandshakeMachine caller{dispatch_caller_configuration(44U)};
+        HandshakeMachine listener{{
+            .role = ConnectionRole::listener,
+            .local_socket_id = 412U,
+            .initial_sequence = SequenceNumber{8'000U},
+            .group_membership_negotiator = negotiate_test_group,
+            .group_membership_context = &mirror_base,
+            .cookie_generator = datagram_test_cookie,
+            .cookie_context = &cookie_secret,
+        }};
+        const auto induction = encode_then_decode(caller.start().values[0], 0U);
+        const auto induction_response = encode_then_decode(
+            listener.receive(induction.message).values[0], 411U);
+        const auto conclusion = caller.receive(induction_response.message);
+        const auto request = encode_then_decode(conclusion.values[0], 412U);
+        REQUIRE(request);
+        const auto response = listener.receive(request.message);
+        REQUIRE_EQ(response.size, 2U);
+        REQUIRE_EQ(response.values[1].kind, HandshakeActionKind::rejected);
+        REQUIRE_EQ(response.values[1].rejection_reason, 15);
+        REQUIRE_EQ(listener.state(), HandshakeState::rejected);
+    }
+    // 2. A dispatch-admitting Listener without a provider, with a failing
+    //    provider, or with an announcement naming another group rejects.
+    for (const int variant : {0, 1, 2}) {
+        std::uint32_t cookie_secret = 0x71a2'51c3U;
+        std::uint32_t mirror_base = 95U;
+        DispatchProviderContext provider{
+            .mirror_base = mirror_base,
+            .fail = variant == 1,
+            .wrong_id = variant == 2,
+        };
+        HandshakeMachine caller{dispatch_caller_configuration(45U)};
+        HandshakeMachine listener{{
+            .role = ConnectionRole::listener,
+            .local_socket_id = 422U,
+            .initial_sequence = SequenceNumber{8'000U},
+            .group_membership_negotiator = negotiate_test_group,
+            .group_membership_context = &mirror_base,
+            .group_membership_policy = {.admit_multicast_dispatch = true},
+            .multicast_dispatch_provider =
+                variant == 0 ? nullptr : provide_test_dispatch,
+            .multicast_dispatch_context = &provider,
+            .cookie_generator = datagram_test_cookie,
+            .cookie_context = &cookie_secret,
+        }};
+        const auto induction = encode_then_decode(caller.start().values[0], 0U);
+        const auto induction_response = encode_then_decode(
+            listener.receive(induction.message).values[0], 421U);
+        const auto conclusion = caller.receive(induction_response.message);
+        const auto request = encode_then_decode(conclusion.values[0], 422U);
+        REQUIRE(request);
+        const auto response = listener.receive(request.message);
+        REQUIRE_EQ(response.size, 2U);
+        REQUIRE_EQ(response.values[1].kind, HandshakeActionKind::rejected);
+        REQUIRE_EQ(response.values[1].rejection_reason, 15);
+    }
+    // 3. A dispatch Caller rejects a conclusion response that carries the
+    //    membership but no announcement.
+    {
+        std::uint32_t cookie_secret = 0x81a2'51c3U;
+        std::uint32_t mirror_base = 96U;
+        DispatchProviderContext provider{.mirror_base = mirror_base};
+        HandshakeMachine caller{dispatch_caller_configuration(46U)};
+        HandshakeMachine listener{{
+            .role = ConnectionRole::listener,
+            .local_socket_id = 432U,
+            .initial_sequence = SequenceNumber{8'000U},
+            .group_membership_negotiator = negotiate_test_group,
+            .group_membership_context = &mirror_base,
+            .group_membership_policy = {.admit_multicast_dispatch = true},
+            .multicast_dispatch_provider = provide_test_dispatch,
+            .multicast_dispatch_context = &provider,
+            .cookie_generator = datagram_test_cookie,
+            .cookie_context = &cookie_secret,
+        }};
+        const auto induction = encode_then_decode(caller.start().values[0], 0U);
+        const auto induction_response = encode_then_decode(
+            listener.receive(induction.message).values[0], 431U);
+        const auto conclusion = caller.receive(induction_response.message);
+        const auto request = encode_then_decode(conclusion.values[0], 432U);
+        auto response = listener.receive(request.message);
+        REQUIRE(response.values[0].has_multicast_dispatch);
+        response.values[0].has_multicast_dispatch = false;
+        const auto stripped = encode_then_decode(response.values[0], 431U);
+        REQUIRE(stripped);
+        const auto result = caller.receive(stripped.message);
+        REQUIRE_EQ(result.values[0].kind, HandshakeActionKind::rejected);
+        REQUIRE(!caller.has_peer_multicast_dispatch());
+    }
+    // 4. A bonding Caller rejects an unexpected announcement.
+    {
+        std::uint32_t cookie_secret = 0x91a2'51c3U;
+        std::uint32_t mirror_base = 97U;
+        DispatchProviderContext provider{.mirror_base = mirror_base};
+        HandshakeMachine caller{{
+            .role = ConnectionRole::caller,
+            .local_socket_id = 441U,
+            .initial_sequence = SequenceNumber{8'000U},
+            .has_group_membership = true,
+            .group_membership =
+                {
+                    .group_id = group_handle_mask | 47U,
+                    .type = GroupType::broadcast,
+                    .flags = 0U,
+                    .weight = 1U,
+                },
+        }};
+        HandshakeMachine listener{{
+            .role = ConnectionRole::listener,
+            .local_socket_id = 442U,
+            .initial_sequence = SequenceNumber{8'000U},
+            .group_membership_negotiator = negotiate_test_group,
+            .group_membership_context = &mirror_base,
+            .cookie_generator = datagram_test_cookie,
+            .cookie_context = &cookie_secret,
+        }};
+        const auto induction = encode_then_decode(caller.start().values[0], 0U);
+        const auto induction_response = encode_then_decode(
+            listener.receive(induction.message).values[0], 441U);
+        const auto conclusion = caller.receive(induction_response.message);
+        const auto request = encode_then_decode(conclusion.values[0], 442U);
+        auto response = listener.receive(request.message);
+        REQUIRE(response.values[0].has_group_membership);
+        REQUIRE(!response.values[0].has_multicast_dispatch);
+        response.values[0].has_multicast_dispatch = true;
+        REQUIRE(provide_test_dispatch(
+            response.values[0].multicast_dispatch, &provider));
+        const auto injected = encode_then_decode(response.values[0], 441U);
+        REQUIRE(injected);
+        const auto result = caller.receive(injected.message);
+        REQUIRE_EQ(result.values[0].kind, HandshakeActionKind::rejected);
+    }
+}
+
 TEST(hsv5_listener_rejects_group_membership_without_admission_policy)
 {
     std::uint32_t cookie_secret = 0x41a2'51c3U;
