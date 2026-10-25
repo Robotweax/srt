@@ -83,7 +83,7 @@ TEST(group_membership_admits_multicast_dispatch_only_by_policy)
     REQUIRE_EQ(validate_group_membership(unmasked, offering),
         GroupMembershipValidation::invalid_group_id);
     REQUIRE_EQ(static_cast<int>(GroupType::multicast),
-        ROBOTWEAX_SRT_GTYPE_MULTICAST);
+        static_cast<int>(ROBOTWEAX_SRT_GTYPE_MULTICAST));
 }
 
 TEST(group_membership_preserves_reserved_and_unknown_types)

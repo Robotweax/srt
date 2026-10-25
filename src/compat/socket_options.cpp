@@ -3,6 +3,7 @@
 #include "compat/error_state.hpp"
 #include "compat/buffer_size.hpp"
 #include "compat/readiness.hpp"
+#include "compat/socket_io.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -130,6 +131,9 @@ template <typename Value>
         || option == SRTO_ROBOTWEAX_PATHID
         || option == SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT
         || option == SRTO_ROBOTWEAX_ACP1_REQUIRED
+        || option == SRTO_ROBOTWEAX_MCAST_GROUP
+        || option == SRTO_ROBOTWEAX_MCAST_IFACE
+        || option == SRTO_ROBOTWEAX_MCAST_TTL
         || option == SRTO_ROBOTWEAX_SESSIONAUTH || option == SRTO_CONGESTION
         || option == SRTO_MESSAGEAPI || option == SRTO_SENDER
         || option == SRTO_MINVERSION || option == SRTO_STREAMID
@@ -534,6 +538,28 @@ int get_socket_option(
         return write_value(value, value_size,
             extension_policy(options.path_identifier_required,
                 options.path_identifier_if_offered));
+    case SRTO_ROBOTWEAX_MULTICAST: {
+        if (!socket.listen_callback_active
+            || *value_size
+                < static_cast<int>(socket.incoming_multicast_key_size))
+            return invalid_parameter();
+        std::memcpy(value, socket.incoming_multicast_key.data(),
+            socket.incoming_multicast_key_size);
+        *value_size = static_cast<int>(socket.incoming_multicast_key_size);
+        return 0;
+    }
+    case SRTO_ROBOTWEAX_MCAST_GROUP:
+    case SRTO_ROBOTWEAX_MCAST_IFACE: {
+        const bool group = option == SRTO_ROBOTWEAX_MCAST_GROUP;
+        if (group ? !options.multicast_group_set
+                  : !options.multicast_interface_set)
+            return invalid_parameter();
+        return write_ip_endpoint(
+            group ? options.multicast_group : options.multicast_interface,
+            static_cast<sockaddr*>(value), value_size);
+    }
+    case SRTO_ROBOTWEAX_MCAST_TTL:
+        return write_value(value, value_size, options.multicast_time_to_live);
     case SRTO_ROBOTWEAX_PATHID: {
         if (*value_size < static_cast<int>(options.path_identifier.size))
             return invalid_parameter();
@@ -1313,6 +1339,53 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             || !read_value(value, value_size, domain) || domain == 0)
             return invalid_parameter();
         socket.incoming_group_domain = domain;
+        return 0;
+    }
+    case SRTO_ROBOTWEAX_MULTICAST: {
+        if (!socket.listen_callback_active
+            || socket.incoming_group_type != ROBOTWEAX_SRT_GTYPE_MULTICAST
+            || value == nullptr || value_size <= 0
+            || value_size > static_cast<int>(
+                   socket.incoming_multicast_key.size()))
+            return invalid_parameter();
+        std::memcpy(socket.incoming_multicast_key.data(), value,
+            static_cast<std::size_t>(value_size));
+        socket.incoming_multicast_key_size =
+            static_cast<std::size_t>(value_size);
+        return 0;
+    }
+    case SRTO_ROBOTWEAX_MCAST_GROUP:
+    case SRTO_ROBOTWEAX_MCAST_IFACE: {
+        const bool group = option == SRTO_ROBOTWEAX_MCAST_GROUP;
+        IpEndpoint endpoint;
+        if ((socket.state != SRTS_INIT && socket.state != SRTS_OPENED)
+            || socket.listen_callback_active
+            || decode_ip_endpoint(static_cast<const sockaddr*>(value),
+                   value_size, endpoint, !group)
+                == SRT_ERROR
+            || (group
+                && (!endpoint.is_multicast() || endpoint.port == 0U
+                    || options.rendezvous
+                    || options.transmission_type != SRTT_LIVE))
+            || (!group && endpoint.is_multicast()))
+            return invalid_parameter();
+        if (group) {
+            options.multicast_group = endpoint;
+            options.multicast_group_set = true;
+        } else {
+            options.multicast_interface = endpoint;
+            options.multicast_interface_set = true;
+        }
+        return 0;
+    }
+    case SRTO_ROBOTWEAX_MCAST_TTL: {
+        std::int32_t parsed = 0;
+        if ((socket.state != SRTS_INIT && socket.state != SRTS_OPENED)
+            || socket.listen_callback_active
+            || !read_value(value, value_size, parsed) || parsed < 0
+            || parsed > 255)
+            return invalid_parameter();
+        options.multicast_time_to_live = parsed;
         return 0;
     }
     case SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED: {

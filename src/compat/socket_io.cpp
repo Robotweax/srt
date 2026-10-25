@@ -47,6 +47,25 @@ namespace {
     if (tos_result != Error::none) {
         return fail(SRT_ESOCKFAIL, socket.last_system_error());
     }
+    // Multicast dispatch transmits from this same socket, so its multicast
+    // hop limit, outgoing interface and loopback are configured here. The
+    // options are harmless on sockets that never send to a group address.
+    if (options.multicast_group_set) {
+        if (options.multicast_group.family != socket.family()) {
+            return fail(SRT_EINVPARAM);
+        }
+        if (socket.set_multicast_time_to_live(options.multicast_time_to_live)
+                != Error::none
+            || socket.set_multicast_loopback(true) != Error::none) {
+            return fail(SRT_ESOCKFAIL, socket.last_system_error());
+        }
+    }
+    if (options.multicast_interface_set
+        && options.multicast_interface.family == socket.family()
+        && socket.set_multicast_interface(options.multicast_interface)
+            != Error::none) {
+        return fail(SRT_ESOCKFAIL, socket.last_system_error());
+    }
     return 0;
 }
 

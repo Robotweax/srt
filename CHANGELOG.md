@@ -6,7 +6,16 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
-No additional changes are recorded after the 0.3.1 scope below.
+- Add experimental multicast dispatch groups (`ROBOTWEAX_SRT_GTYPE_MULTICAST`,
+  wire type 4): one Listener sender, any number of Caller receivers, control
+  per receiver over unicast, payload once over UDP multicast. New options
+  `SRTO_ROBOTWEAX_MULTICAST`, `SRTO_ROBOTWEAX_MCAST_GROUP`,
+  `SRTO_ROBOTWEAX_MCAST_IFACE`, `SRTO_ROBOTWEAX_MCAST_TTL`; new handshake
+  extension `multicast_dispatch` (`0x7f14`); `UdpSocket` multicast
+  membership, interface, hop-limit and loopback primitives. Unencrypted,
+  Robotweax-to-Robotweax, Live Caller/Listener only; encryption and FEC are
+  refused at admission. `SRT_GROUP_TYPE` keeps every v1.5.7 value and
+  `SRT_GTYPE_E_END`.
 
 ## 0.3.1 — Integrated Runtime and Resource Hardening
 

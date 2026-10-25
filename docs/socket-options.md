@@ -700,6 +700,22 @@ It was introduced in 0.2.9 and is absent from v0.2.8 artifacts.
 same setting with a third, listener-only value `IF_OFFERED` that admits peers
 with or without standby RTT on one listener; it was introduced in 0.3.0.
 
+`SRTO_ROBOTWEAX_MCAST_GROUP` (`0x01000011`, `sockaddr_in`/`sockaddr_in6`,
+PRE-BIND, listener) names the UDP multicast group and port a multicast
+dispatch sender transmits to and enables dispatch admission on that listener.
+The address must be multicast with a nonzero port and the same family as the
+listener binding. `SRTO_ROBOTWEAX_MCAST_IFACE` (`0x01000012`, `sockaddr`, PRE,
+both sides) selects the local multicast interface, by address for IPv4 and by
+`sin6_scope_id` for IPv6; the listener announces it as a hint and a receiver's
+own value takes precedence. `SRTO_ROBOTWEAX_MCAST_TTL` (`0x01000013`, int32
+0..255, default 1, PRE, listener) is the multicast hop limit.
+`SRTO_ROBOTWEAX_MULTICAST` (`0x01000010`, char[1..512], listen callback only)
+is the per-join admission key a callback sets, together with
+`SRTO_ROBOTWEAX_GROUPDOMAIN`, to admit a `ROBOTWEAX_SRT_GTYPE_MULTICAST`
+proposal; it is readable inside the callback and rejected anywhere else.
+All four are experimental and absent from v0.3.1 artifacts. See
+[multicast dispatch groups](connection-groups.md#multicast-dispatch-groups).
+
 ## Group admission callback migration (since 0.2.8)
 
 A listen callback admitting a group member must authorize it and set a nonzero

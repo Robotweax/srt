@@ -7,6 +7,7 @@
 #include "compat/readiness.hpp"
 #include "compat/statistics.hpp"
 #include "robotweax/srt/socket_options.hpp"
+#include "robotweax/srt/connection_group.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
 #include "robotweax/srt/udp.hpp"
 #include "srt/srt.h"
@@ -17,6 +18,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -27,6 +29,7 @@ namespace robotweax::srt::compat {
 
 template <typename T> class ProcessOwned;
 class ConnectionRuntime;
+class DatagramChannel;
 class GroupReceiveRetention;
 
 // Numeric identities plus generations deliberately replace reciprocal owning
@@ -79,7 +82,7 @@ enum class GroupCategory : std::uint8_t {
 [[nodiscard]] constexpr GroupCategory group_category_of(
     SRT_GROUP_TYPE type) noexcept
 {
-    return static_cast<int>(type) == ROBOTWEAX_SRT_GTYPE_MULTICAST
+    return type == ROBOTWEAX_SRT_GTYPE_MULTICAST
         ? GroupCategory::dispatch
         : GroupCategory::bonding;
 }
@@ -89,7 +92,7 @@ enum class GroupCategory : std::uint8_t {
 [[nodiscard]] constexpr bool creatable_group_type(SRT_GROUP_TYPE type) noexcept
 {
     return type == SRT_GTYPE_BROADCAST || type == SRT_GTYPE_BACKUP
-        || static_cast<int>(type) == ROBOTWEAX_SRT_GTYPE_MULTICAST;
+        || type == ROBOTWEAX_SRT_GTYPE_MULTICAST;
 }
 
 // Dispatch-group state that bonding records never use. Kept in one block so
@@ -105,13 +108,15 @@ struct DispatchGroupState {
     IpEndpoint multicast_interface{};
     std::int32_t multicast_time_to_live = 1;
     // Whether this record is the sending (Listener) side. The Caller side
-    // has exactly one member and a multicast receive socket.
+    // has exactly one member and a multicast receive channel. The sender
+    // transmits from the Listener's own channel socket, so no extra socket
+    // is held here.
     bool sender = false;
-    // Listener side only: the one extra socket that sends payload to the
-    // group. Opened when the first member is admitted.
-    UdpSocket transmit_socket;
-    // Caller side only: the socket joined to the group for payload ingress.
-    UdpSocket receive_socket;
+    // Caller side only: the channel over the socket joined to the group,
+    // routing datagrams addressed to `ingress_group_id` (the Listener's
+    // dispatch group handle) into the member session.
+    std::shared_ptr<DatagramChannel> receive_channel;
+    std::uint32_t ingress_group_id = 0;
     bool joined = false;
 };
 
@@ -289,6 +294,25 @@ public:
         bool path_identifier = false;
         bool standby_rtt = false;
     };
+    // Finds or creates the dispatch sender group a Listener admits a
+    // multicast Caller into. One record exists per (listener or bond,
+    // admission key, admission domain); the key never crosses a domain.
+    // `announcement` is filled for the conclusion handshake: the record's
+    // handle as group ID, its multicast endpoint, and its current send
+    // sequence. The transmit side uses the Listener's own channel socket,
+    // so payload datagrams carry the Listener's address as their source.
+    struct DispatchDescription {
+        SRTSOCKET group = SRT_INVALID_SOCK;
+        std::uint64_t generation = 0;
+        bool created = false;
+        MulticastDispatch announcement {};
+        bool drift_tracer = true;
+        std::int64_t minimum_input_bandwidth_bytes_per_second = 0;
+        std::int32_t minimum_peer_srt_version = 0x0001'0000;
+    };
+    [[nodiscard]] bool prepare_dispatch(SRTSOCKET listener,
+        std::string_view admission_key, std::uint64_t admission_domain,
+        std::uint32_t initial_sequence, DispatchDescription& output) noexcept;
     [[nodiscard]] bool prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
         SRT_GROUP_TYPE type, std::uint32_t initial_sequence,
         MirrorDescription& output, std::uint64_t admission_domain = 0,
