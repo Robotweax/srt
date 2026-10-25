@@ -558,6 +558,9 @@ Sender (Listener):
 - The dispatch group stays `SRTS_CONNECTED` with zero members while the
   listener is open; this is the defining difference from bonding, where an
   empty group is `SRTS_BROKEN`.
+- Every DATA packet of a dispatch member, original or repeat, carries the
+  dispatch group handle as destination socket ID; receivers route that ID
+  on their multicast socket and on their control link.
 
 Receiver (Caller):
 
@@ -573,14 +576,23 @@ Receiver (Caller):
   decoding. `srt_recv*` reads that member; `srt_send*` is `SRT_EINVOP`;
 - closing the group leaves the multicast group before the control link ends.
 
+Encryption: set `SRTO_PASSPHRASE` (and optionally `SRTO_CRYPTOMODE`,
+`SRTO_KMREFRESHRATE`, `SRTO_KMPREANNOUNCE`) on the dispatch listener and the
+same passphrase on every receiver. The sender uses one traffic key and salt
+for the whole group and rotates by group sequence; each receiver still gets
+the key through its own unicast KM exchange, and a receiver without the
+passphrase, or with another mode or key length, is refused at admission. A
+member's `SRTO_SNDKMSTATE` reports `SRT_KM_S_SECURED` once its receiver
+holds the group key; DATA to that member is recorded only from then on. See
+[one traffic key per group](encryption.md#multicast-dispatch-groups-one-traffic-key-per-group)
+for the mechanism, the nonce argument and the trust boundary.
+
 Not supported in this release, and refused at admission rather than
-half-working: encryption (`SRTO_PASSPHRASE` on the dispatch listener; one
-shared copy needs one group key), packet-filter FEC on the dispatch
-listener, Rendezvous, File/Stream mode, FileCC, several endpoints on a
-receiver, and interoperability with Haivision libsrt, which has no
-implementation of this type. Multicast retransmission (one repeat for
-several NAKs) is not implemented; every retransmission is unicast to the
-NAKing receiver.
+half-working: packet-filter FEC on the dispatch listener, Rendezvous,
+File/Stream mode, FileCC, several endpoints on a receiver, and
+interoperability with Haivision libsrt, which has no implementation of this
+type. Multicast retransmission (one repeat for several NAKs) is not
+implemented; every retransmission is unicast to the NAKing receiver.
 
 ## Compatibility limits
 

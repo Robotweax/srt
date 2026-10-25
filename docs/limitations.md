@@ -131,9 +131,10 @@ Live Caller/Listener use cases. The following are not supported compatibility
 profiles in 0.2:
 
 - balancing group policies;
-- multicast dispatch groups with encryption, packet-filter FEC, Rendezvous,
-  File/Stream mode or a Haivision peer (the experimental unencrypted
-  Robotweax-to-Robotweax profile is described in
+- multicast dispatch groups with packet-filter FEC, Rendezvous, File/Stream
+  mode or a Haivision peer (the experimental Robotweax-to-Robotweax profile,
+  including its one-key-per-group encryption that has not been part of an
+  independent cryptographic review, is described in
   [Connection groups](connection-groups.md#multicast-dispatch-groups));
 - group Rendezvous;
 - group File/Stream or FileCC;

@@ -8,6 +8,7 @@
 #include "compat/statistics.hpp"
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/connection_group.hpp"
+#include "robotweax/srt/crypto.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
 #include "robotweax/srt/udp.hpp"
 #include "srt/srt.h"
@@ -116,8 +117,14 @@ struct DispatchGroupState {
     // routing datagrams addressed to `ingress_group_id` (the Listener's
     // dispatch group handle) into the member session.
     std::shared_ptr<DatagramChannel> receive_channel;
+    // Caller side only: the control link's channel, which also routes the
+    // dispatch group ID so unicast retransmissions reach the member.
+    std::weak_ptr<DatagramChannel> control_channel;
     std::uint32_t ingress_group_id = 0;
     bool joined = false;
+    // Listener side only, when the listener encrypts: the one traffic-key
+    // schedule every member session of this sender draws from.
+    std::shared_ptr<SharedTransmitKeySchedule> key_schedule;
 };
 
 struct GroupRecord {
@@ -309,6 +316,8 @@ public:
         bool drift_tracer = true;
         std::int64_t minimum_input_bandwidth_bytes_per_second = 0;
         std::int32_t minimum_peer_srt_version = 0x0001'0000;
+        // Null when the listener does not encrypt.
+        std::shared_ptr<SharedTransmitKeySchedule> key_schedule;
     };
     [[nodiscard]] bool prepare_dispatch(SRTSOCKET listener,
         std::string_view admission_key, std::uint64_t admission_domain,

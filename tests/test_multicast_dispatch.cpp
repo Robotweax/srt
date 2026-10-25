@@ -140,6 +140,7 @@ int admit_dispatch_plain(void*, SRTSOCKET socket, int, const sockaddr*,
 
 // A member is usable once its socket is CONNECTED and its runtime attached.
 [[nodiscard]] bool wait_for_members(SRTSOCKET group, std::size_t expected,
+    bool keyed = false,
     std::chrono::milliseconds budget = std::chrono::seconds {5})
 {
     const auto record = GroupRegistry::instance().find(group);
@@ -166,10 +167,26 @@ int admit_dispatch_plain(void*, SRTSOCKET socket, int, const sockaddr*,
             if (socket == nullptr) {
                 continue;
             }
-            std::lock_guard lock(socket->mutex);
-            if (socket->state == SRTS_CONNECTED && socket->runtime != nullptr) {
-                ++ready;
+            bool attached = false;
+            {
+                std::lock_guard lock(socket->mutex);
+                attached = socket->state == SRTS_CONNECTED
+                    && socket->runtime != nullptr;
             }
+            if (!attached) {
+                continue;
+            }
+            if (keyed) {
+                // A sender member is usable once its receiver acknowledged
+                // the group key; before that its DATA would be unreadable.
+                std::int32_t state = -1;
+                int size = sizeof(state);
+                if (srt_getsockflag(member, SRTO_SNDKMSTATE, &state, &size) != 0
+                    || state != SRT_KM_S_SECURED) {
+                    continue;
+                }
+            }
+            ++ready;
         }
         if (ready == expected && connected.size() == expected) {
             return true;
@@ -181,11 +198,28 @@ int admit_dispatch_plain(void*, SRTSOCKET socket, int, const sockaddr*,
     }
 }
 
-[[nodiscard]] SRTSOCKET make_receiver(Peers& peers, const sockaddr_in& listener)
+constexpr const char group_passphrase[] = "sixteen-char-key";
+
+[[nodiscard]] SRTSOCKET make_receiver(Peers& peers, const sockaddr_in& listener,
+    bool encrypted = false, bool aes_gcm = false)
 {
     const SRTSOCKET group =
         peers.keep(srt_create_group(ROBOTWEAX_SRT_GTYPE_MULTICAST));
     REQUIRE(group != SRT_INVALID_SOCK);
+    if (encrypted) {
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_PASSPHRASE, group_passphrase,
+                       static_cast<int>(sizeof(group_passphrase) - 1U)),
+            0);
+    }
+#ifdef ENABLE_AEAD_API_PREVIEW
+    if (aes_gcm) {
+        const std::int32_t gcm = 2;
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_CRYPTOMODE, &gcm, sizeof(gcm)),
+            0);
+    }
+#else
+    (void)aes_gcm;
+#endif
     const std::int32_t receive_timeout = 3'000;
     REQUIRE_EQ(srt_setsockflag(group, SRTO_RCVTIMEO, &receive_timeout,
                    sizeof(receive_timeout)),
@@ -220,10 +254,25 @@ void expect_messages(SRTSOCKET receiver, int first, int count)
 
 } // namespace
 
-TEST(multicast_dispatch_group_delivers_one_stream_to_several_receivers)
+struct StreamScenario {
+    bool encrypted = false;
+    // Messages per batch; the encrypted run uses a refresh rate small
+    // enough that several key generations pass inside one batch.
+    int first_batch = 20;
+    int second_batch = 10;
+    int third_batch = 10;
+    std::int32_t refresh_rate = 0;
+    std::int32_t preannouncement = 0;
+    // Gap between sends. A key generation is selected by group position, so
+    // the pre-announcement window must cover the KMREQ/KMRSP round trip at
+    // the stream's packet rate; a wire-speed burst defeats a 16-packet
+    // window even on loopback, as it would for any SRT receiver.
+    std::chrono::microseconds send_gap {0};
+    bool aes_gcm = false;
+};
+
+void run_dispatch_stream(const StreamScenario& scenario)
 {
-    SKIP_UNLESS(loopback_multicast_available(),
-        "no loopback multicast on this host");
     Peers peers;
     AdmissionLog admissions;
 
@@ -234,6 +283,29 @@ TEST(multicast_dispatch_group_delivers_one_stream_to_several_receivers)
         ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
     const sockaddr_in interface = ipv4_sockaddr({127, 0, 0, 1}, 0);
     const std::int32_t hops = 0;
+    if (scenario.encrypted) {
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_PASSPHRASE, group_passphrase,
+                       static_cast<int>(sizeof(group_passphrase) - 1U)),
+            0);
+#ifdef ENABLE_AEAD_API_PREVIEW
+        if (scenario.aes_gcm) {
+            const std::int32_t gcm = 2;
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_CRYPTOMODE, &gcm,
+                           sizeof(gcm)),
+                0);
+        }
+#endif
+        if (scenario.refresh_rate != 0) {
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_KMPREANNOUNCE,
+                           &scenario.preannouncement,
+                           sizeof(scenario.preannouncement)),
+                0);
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_KMREFRESHRATE,
+                           &scenario.refresh_rate,
+                           sizeof(scenario.refresh_rate)),
+                0);
+        }
+    }
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP,
                    &group_address, sizeof(group_address)),
         0);
@@ -261,13 +333,13 @@ TEST(multicast_dispatch_group_delivers_one_stream_to_several_receivers)
         0);
 
     // Three receivers join; srt_accept yields the sender group once.
-    const SRTSOCKET receiver_a = make_receiver(peers, bound);
+    const SRTSOCKET receiver_a = make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
     const SRTSOCKET sender = peers.keep(srt_accept(listener, nullptr, nullptr));
     REQUIRE(sender != SRT_INVALID_SOCK);
     REQUIRE((sender & SRTGROUP_MASK) != 0);
-    const SRTSOCKET receiver_b = make_receiver(peers, bound);
-    const SRTSOCKET receiver_c = make_receiver(peers, bound);
-    REQUIRE(wait_for_members(sender, 3));
+    const SRTSOCKET receiver_b = make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+    const SRTSOCKET receiver_c = make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+    REQUIRE(wait_for_members(sender, 3, scenario.encrypted));
     REQUIRE_EQ(admissions.multicast_proposals.load(), 3);
     for (const SRTSOCKET receiver : {receiver_a, receiver_b, receiver_c}) {
         REQUIRE(wait_for_members(receiver, 1));
@@ -293,6 +365,8 @@ TEST(multicast_dispatch_group_delivers_one_stream_to_several_receivers)
         REQUIRE_EQ(record->dispatch->admission_key, std::string {"camera-1"});
         REQUIRE_EQ(record->members.size(), 3U);
         REQUIRE_EQ(record->admission_domain, 7U);
+        REQUIRE_EQ(record->dispatch->key_schedule != nullptr,
+            scenario.encrypted);
     }
     // The sender does not receive; a receiver does not send.
     std::array<char, 16> scratch {};
@@ -302,12 +376,15 @@ TEST(multicast_dispatch_group_delivers_one_stream_to_several_receivers)
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
 
     // One send, three deliveries, in order.
-    constexpr int first_batch = 20;
+    const int first_batch = scenario.first_batch;
     for (int index = 0; index < first_batch; ++index) {
         const std::string payload = message(index);
         REQUIRE_EQ(srt_sendmsg(sender, payload.data(),
                        static_cast<int>(payload.size()), -1, 1),
             static_cast<int>(payload.size()));
+        if (scenario.send_gap.count() != 0) {
+            std::this_thread::sleep_for(scenario.send_gap);
+        }
     }
     for (const SRTSOCKET receiver : {receiver_a, receiver_b, receiver_c}) {
         expect_messages(receiver, 0, first_batch);
@@ -355,30 +432,38 @@ TEST(multicast_dispatch_group_delivers_one_stream_to_several_receivers)
     // A receiver leaves: the sender stays connected, the others continue,
     // and a late joiner picks up the live stream.
     peers.drop(receiver_a);
-    REQUIRE(wait_for_members(sender, 2));
+    REQUIRE(wait_for_members(sender, 2, scenario.encrypted));
     REQUIRE_EQ(srt_getsockstate(sender), SRTS_CONNECTED);
-    constexpr int second_batch = 10;
+    const int second_batch = scenario.second_batch;
     for (int index = first_batch; index < first_batch + second_batch; ++index) {
         const std::string payload = message(index);
         REQUIRE_EQ(srt_sendmsg(sender, payload.data(),
                        static_cast<int>(payload.size()), -1, 1),
             static_cast<int>(payload.size()));
+        if (scenario.send_gap.count() != 0) {
+            std::this_thread::sleep_for(scenario.send_gap);
+        }
     }
     expect_messages(receiver_b, first_batch, second_batch);
     expect_messages(receiver_c, first_batch, second_batch);
 
-    const SRTSOCKET receiver_d = make_receiver(peers, bound);
-    REQUIRE(wait_for_members(sender, 3));
+    const SRTSOCKET receiver_d = make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+    REQUIRE(wait_for_members(sender, 3, scenario.encrypted));
     REQUIRE(wait_for_members(receiver_d, 1));
-    // Let the joiner's TSBPD clock settle before the first live packet.
-    std::this_thread::sleep_for(std::chrono::milliseconds {50});
-    constexpr int third_batch = 10;
+    // Let the joiner's TSBPD clock settle (and, encrypted, its initial key
+    // exchange complete) before the first live packet.
+    std::this_thread::sleep_for(std::chrono::milliseconds {
+        scenario.encrypted ? 200 : 50});
+    const int third_batch = scenario.third_batch;
     const int third_first = first_batch + second_batch;
     for (int index = third_first; index < third_first + third_batch; ++index) {
         const std::string payload = message(index);
         REQUIRE_EQ(srt_sendmsg(sender, payload.data(),
                        static_cast<int>(payload.size()), -1, 1),
             static_cast<int>(payload.size()));
+        if (scenario.send_gap.count() != 0) {
+            std::this_thread::sleep_for(scenario.send_gap);
+        }
     }
     expect_messages(receiver_b, third_first, third_batch);
     expect_messages(receiver_c, third_first, third_batch);
@@ -395,6 +480,52 @@ TEST(multicast_dispatch_group_delivers_one_stream_to_several_receivers)
     REQUIRE_EQ(
         srt_sendmsg(sender, idle.data(), static_cast<int>(idle.size()), -1, 1),
         static_cast<int>(idle.size()));
+}
+
+TEST(multicast_dispatch_group_delivers_one_stream_to_several_receivers)
+{
+    SKIP_UNLESS(loopback_multicast_available(),
+        "no loopback multicast on this host");
+    run_dispatch_stream({});
+}
+
+#ifdef ENABLE_AEAD_API_PREVIEW
+TEST(multicast_dispatch_group_authenticates_with_aes_gcm_group_key)
+{
+    SKIP_UNLESS(loopback_multicast_available(),
+        "no loopback multicast on this host");
+    // Every DATA packet of a dispatch member names the group as its
+    // destination, so the authenticated header is identical on the
+    // multicast copy and on a unicast repeat.
+    run_dispatch_stream({
+        .encrypted = true,
+        .first_batch = 120,
+        .second_batch = 20,
+        .third_batch = 20,
+        .refresh_rate = 64,
+        .preannouncement = 24,
+        .send_gap = std::chrono::microseconds {500},
+        .aes_gcm = true,
+    });
+}
+#endif
+
+TEST(multicast_dispatch_group_encrypts_with_one_group_key_across_rotations)
+{
+    SKIP_UNLESS(loopback_multicast_available(),
+        "no loopback multicast on this host");
+    // Refresh every 64 group positions, announce 16 ahead: the first batch
+    // crosses three key generations, the late joiner arrives after them and
+    // must still read the live generation it is handed at its own exchange.
+    run_dispatch_stream({
+        .encrypted = true,
+        .first_batch = 200,
+        .second_batch = 40,
+        .third_batch = 40,
+        .refresh_rate = 64,
+        .preannouncement = 24,
+        .send_gap = std::chrono::microseconds {500},
+    });
 }
 
 TEST(multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding)
@@ -457,8 +588,8 @@ TEST(multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding)
             reinterpret_cast<const sockaddr*>(&bound), sizeof(bound));
         REQUIRE_EQ(srt_connect_group(bonding, &endpoint, 1), SRT_ERROR);
     }
-    // An encrypted dispatch listener is refused at admission: one shared
-    // multicast copy needs one group key, which this release does not have.
+    // Encryption is all-or-nothing per dispatch group: a receiver without
+    // the passphrase is refused by an encrypted sender.
     {
         const SRTSOCKET encrypted = peers.keep(srt_create_socket());
         REQUIRE_EQ(srt_setsockflag(encrypted, SRTO_ROBOTWEAX_MCAST_GROUP,
@@ -467,9 +598,8 @@ TEST(multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding)
         REQUIRE_EQ(srt_setsockflag(encrypted, SRTO_ROBOTWEAX_MCAST_IFACE,
                        &interface, sizeof(interface)),
             0);
-        const char passphrase[] = "sixteen-char-key";
-        REQUIRE_EQ(srt_setsockflag(encrypted, SRTO_PASSPHRASE, passphrase,
-                       static_cast<int>(sizeof(passphrase) - 1U)),
+        REQUIRE_EQ(srt_setsockflag(encrypted, SRTO_PASSPHRASE, group_passphrase,
+                       static_cast<int>(sizeof(group_passphrase) - 1U)),
             0);
         REQUIRE_EQ(srt_listen_callback(encrypted, admit_dispatch_plain, nullptr),
             0);
@@ -486,9 +616,6 @@ TEST(multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding)
             0);
         const SRTSOCKET receiver =
             peers.keep(srt_create_group(ROBOTWEAX_SRT_GTYPE_MULTICAST));
-        REQUIRE_EQ(srt_setsockflag(receiver, SRTO_PASSPHRASE, passphrase,
-                       static_cast<int>(sizeof(passphrase) - 1U)),
-            0);
         REQUIRE_EQ(srt_setsockflag(receiver, SRTO_CONNTIMEO, &connect_timeout,
                        sizeof(connect_timeout)),
             0);

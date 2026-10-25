@@ -12,10 +12,17 @@ version returned by `srt_getversion()`.
   `SRTO_ROBOTWEAX_MULTICAST`, `SRTO_ROBOTWEAX_MCAST_GROUP`,
   `SRTO_ROBOTWEAX_MCAST_IFACE`, `SRTO_ROBOTWEAX_MCAST_TTL`; new handshake
   extension `multicast_dispatch` (`0x7f14`); `UdpSocket` multicast
-  membership, interface, hop-limit and loopback primitives. Unencrypted,
-  Robotweax-to-Robotweax, Live Caller/Listener only; encryption and FEC are
-  refused at admission. `SRT_GROUP_TYPE` keeps every v1.5.7 value and
+  membership, interface, hop-limit and loopback primitives.
+  Robotweax-to-Robotweax, Live Caller/Listener only; FEC is refused at
+  admission. `SRT_GROUP_TYPE` keeps every v1.5.7 value and
   `SRT_GTYPE_E_END`.
+- Encrypt multicast dispatch groups with one traffic key and salt per
+  sender (`SharedTransmitKeySchedule`): members keep their own KM exchange
+  and KEK, rotation is positional by group sequence, announcements leave
+  immediately, and every dispatch DATA packet names the group as
+  destination so AES-GCM headers match on the multicast copy and the unicast
+  repeat. A dispatch receiver does not retain the HSv5 handshake key clone.
+  Not yet covered by the independent cryptographic review.
 
 ## 0.3.1 — Integrated Runtime and Resource Hardening
 
