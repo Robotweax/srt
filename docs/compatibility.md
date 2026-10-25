@@ -200,6 +200,16 @@ optional AES-CTR clear-receive behavior remain unchanged when it is disabled.
 See [session authentication](session-authentication.md) for the wire contract,
 40-byte parity overhead, replay window, and coordinated upgrade requirement.
 
+## Established endpoints and NAT rebinding
+
+An established 0.3.1 connection retains its peer IP address and UDP port.
+Packets from another endpoint cannot migrate it or refresh its idle timer,
+including when their destination socket ID matches. Applications recover through
+a new handshake or replacement group member after ordinary transport failure.
+This behavior also applies with AES-GCM and optional session authentication.
+See the canonical [peer endpoint and NAT-rebinding contract](connect-variants.md#established-peer-endpoint-and-nat-rebinding)
+for liveness, admission and application-recovery timing.
+
 ## Backup member acknowledgements
 
 A Backup group's delivery cursor may retire a prefix received through another

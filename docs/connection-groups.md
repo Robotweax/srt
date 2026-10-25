@@ -420,6 +420,15 @@ already received locally; it cannot recover incomplete messages or packets
 that reached no member.
 Terminal members do not mask a pending replacement's CONNECTING state.
 
+A member retains the peer endpoint established by its own handshake.
+[NAT rebinding](connect-variants.md#established-peer-endpoint-and-nat-rebinding)
+does not transfer an existing member to a new address or port. The application
+may add a fresh member through `srt_connect_group` or direct socket adoption,
+subject to normal listener admission and group authorization. The library does
+not supervise or automatically re-add lost members. A replacement's protocol
+connection is distinct even if the application uses the same local token or
+negotiated path label.
+
 ## Source time and TSBPD
 
 The shared-clock behavior in this section is the 0.2.3 correction noted above,
