@@ -23,6 +23,11 @@ version returned by `srt_getversion()`.
   destination so AES-GCM headers match on the multicast copy and the unicast
   repeat. A dispatch receiver does not retain the HSv5 handshake key clone.
   Not yet covered by the independent cryptographic review.
+- Add `SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD`: once that many receivers ask
+  for a repeat of one packet within a couple of round trips, a dispatch
+  sender repeats it once on the multicast path; and read-only
+  `SRTO_ROBOTWEAX_MCAST_STATS` (`ROBOTWEAX_SRT_MCAST_STATS_V1`) with the
+  multicast-path counters on sender and receiver.
 
 ## 0.3.1 — Integrated Runtime and Resource Hardening
 

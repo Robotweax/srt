@@ -1346,9 +1346,12 @@ void DatagramChannel::dispatch(const PacketView& packet,
         }
     }
     if (runtime != nullptr) {
+        routed_datagrams_.fetch_add(1U, std::memory_order_relaxed);
         runtime->process_packet(packet, peer, ingress);
     } else if (setup_inbox != nullptr) {
         (void)setup_inbox->push(datagram, peer);
+    } else {
+        unrouted_datagrams_.fetch_add(1U, std::memory_order_relaxed);
     }
 }
 
@@ -3031,8 +3034,34 @@ bool ConnectionRuntime::send_data(
     const DatagramCompletion completion {.kind = DatagramKind::data,
         .data = view.data,
         .payload_size = application_payload_size};
-    if (!packet.header.retransmitted
-        && group_data_egress_.mode == GroupDataEgress::Mode::redirect) {
+    bool multicast_path =
+        !packet.header.retransmitted
+        && group_data_egress_.mode == GroupDataEgress::Mode::redirect;
+    if (packet.header.retransmitted
+        && group_data_egress_.mode != GroupDataEgress::Mode::normal
+        && group_data_egress_.transmit != nullptr
+        && group_data_egress_.repeat_threshold != 0U) {
+        // Several receivers lost the same packet: repeat it once to all of
+        // them instead of once per receiver. The window is a couple of this
+        // link's round trips, since the receivers' NAKs arrive within that.
+        const auto& rtt = session_.rtt();
+        const std::uint64_t window = std::clamp<std::uint64_t>(
+            rtt.has_sample() ? 2ULL * rtt.smoothed_microseconds() : 100'000U,
+            10'000U, 1'000'000U);
+        const auto decision = group_data_egress_.transmit->note_repeat(
+            packet.header.sequence, group_data_egress_.member_id, now,
+            group_data_egress_.repeat_threshold, window);
+        if (decision.skip) {
+            // Already repeated to the group by another member: account for
+            // the repeat on this session without a datagram.
+            group_data_egress_.transmit->note_unicast_repeat_skipped();
+            session_.note_packet_submitted(packet.header.sequence);
+            session_.note_retransmission_sent(packet.header.sequence, now);
+            return true;
+        }
+        multicast_path = decision.multicast;
+    }
+    if (multicast_path) {
         // One copy for every receiver: the datagram leaves on this member's
         // channel socket towards the multicast group, so its source address
         // is the one the receivers' control links know.
@@ -3045,15 +3074,22 @@ bool ConnectionRuntime::send_data(
         const auto sent =
             channel->send_datagram(bytes, group_data_egress_.destination);
         if (sent && sent.bytes_transferred == bytes.size()) {
+            if (group_data_egress_.transmit != nullptr) {
+                group_data_egress_.transmit->note_multicast_sent(
+                    bytes.size(), packet.header.retransmitted);
+            }
             return complete_datagram(bytes, completion, now);
         }
         if (!sent && !UdpSocket::is_transient_send_error(sent.system_error)) {
             break_locked(sent.system_error);
             return false;
         }
-        // A transient multicast send failure drops this original for every
+        // A transient multicast send failure drops this copy for every
         // receiver; each one recovers it by NAK over its own link.
         session_.note_packet_submitted(packet.header.sequence);
+        if (packet.header.retransmitted) {
+            session_.note_retransmission_sent(packet.header.sequence, now);
+        }
         return true;
     }
     return submit_datagram(
@@ -3898,6 +3934,7 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
 {
     PacketView packet = incoming_packet;
     if (peer != peer_) {
+        foreign_peer_packets_.fetch_add(1U, std::memory_order_relaxed);
         return;
     }
     // Admission must precede FEC state, liveness and statistics mutations.

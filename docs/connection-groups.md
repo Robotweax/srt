@@ -596,12 +596,34 @@ holds the group key; DATA to that member is recorded only from then on. See
 [one traffic key per group](encryption.md#multicast-dispatch-groups-one-traffic-key-per-group)
 for the mechanism, the nonce argument and the trust boundary.
 
+Repeats, pacing and readiness:
+
+- every repeat is unicast to the receiver that asked, from that member's
+  own buffer. With `SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD` set to *n* (1..16,
+  POST on the sender group, default 0) the sender keeps a bounded tally of
+  repeats per sequence: once *n* distinct receivers asked for the same packet
+  within a couple of round trips, the member reaching *n* repeats it once on
+  the multicast path and later requests inside that window send nothing;
+  receivers that asked earlier already got their unicast repeat;
+- `SRTO_MAXBW` set on the sender group reaches every member, so it caps the
+  transmitting member's pacer and with it the multicast path, as well as each
+  member's unicast repeats. There is no separate aggregate cap;
+- `SRT_EPOLL_OUT` on the sender group follows member readiness as for
+  Broadcast: a send succeeds while at least one member accepts the payload,
+  which in practice is the transmitting member's pacing;
+- `SRTO_ROBOTWEAX_MCAST_STATS` (read-only, `ROBOTWEAX_SRT_MCAST_STATS_V1`)
+  reports on the sender the packets and bytes sent on the multicast path, the
+  repeats among them, the unicast repeats skipped and the live receiver
+  count; on a receiver the datagrams its multicast socket received and those
+  dropped before decoding because they did not carry the dispatch ID from the
+  announced sender. The libsrt-shaped group row (`srt_bstats`) keeps its
+  documented meaning and counts each message once.
+
 Not supported in this release, and refused at admission rather than
 half-working: packet-filter FEC on the dispatch listener, Rendezvous,
 File/Stream mode, FileCC, several endpoints on a receiver, and
 interoperability with Haivision libsrt, which has no implementation of this
-type. Multicast retransmission (one repeat for several NAKs) is not
-implemented; every retransmission is unicast to the NAKing receiver.
+type.
 
 ## Compatibility limits
 

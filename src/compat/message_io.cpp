@@ -1049,6 +1049,7 @@ int send_group_message_implementation(
     SRT_GROUP_TYPE group_type = SRT_GTYPE_UNDEFINED;
     bool dispatch_sender = false;
     IpEndpoint dispatch_destination {};
+    std::shared_ptr<DispatchTransmitState> dispatch_transmit;
     {
         std::lock_guard lock(group->mutex);
         if (group->closed) {
@@ -1068,6 +1069,7 @@ int send_group_message_implementation(
         generation = group->generation;
         if (dispatch_sender) {
             dispatch_destination = group->dispatch->multicast_group;
+            dispatch_transmit = group->dispatch->transmit;
         }
     }
     const auto deadline = io_deadline(timeout);
@@ -1120,24 +1122,33 @@ int send_group_message_implementation(
             // every other member only records the packets as sent. New
             // members start suppressed and take over only when they become
             // first, so one receiver's departure re-elects deterministically.
+            std::uint32_t repeat_threshold = 0;
+            {
+                std::lock_guard lock(group->mutex);
+                if (group->dispatch != nullptr) {
+                    repeat_threshold = group->dispatch->repeat_threshold;
+                }
+            }
             bool elected = false;
             for (const auto& member : members) {
                 if (member.runtime == nullptr) {
                     continue;
                 }
                 using Egress = ConnectionRuntime::GroupDataEgress;
+                Egress egress {
+                    .mode = Egress::Mode::suppress,
+                    .destination = dispatch_destination,
+                    .destination_socket_id =
+                        static_cast<std::uint32_t>(group->handle),
+                    .transmit = dispatch_transmit,
+                    .repeat_threshold = repeat_threshold,
+                    .member_id = member.id,
+                };
                 if (!elected && !member.terminal) {
-                    member.runtime->set_group_data_egress(Egress {
-                        .mode = Egress::Mode::redirect,
-                        .destination = dispatch_destination,
-                        .destination_socket_id =
-                            static_cast<std::uint32_t>(group->handle),
-                    });
+                    egress.mode = Egress::Mode::redirect;
                     elected = true;
-                } else {
-                    member.runtime->set_group_data_egress(
-                        Egress {.mode = Egress::Mode::suppress});
                 }
+                member.runtime->set_group_data_egress(egress);
             }
         }
         if (group_type == SRT_GTYPE_BACKUP) {

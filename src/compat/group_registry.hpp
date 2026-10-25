@@ -1,6 +1,7 @@
 #pragma once
 
 #include "compat/closed_handle_history.hpp"
+#include "compat/dispatch_transmit_state.hpp"
 #include "compat/public_socket_options.hpp"
 
 #include "compat/group_replay_buffer.hpp"
@@ -125,6 +126,10 @@ struct DispatchGroupState {
     // Listener side only, when the listener encrypts: the one traffic-key
     // schedule every member session of this sender draws from.
     std::shared_ptr<SharedTransmitKeySchedule> key_schedule;
+    // Listener side only: repeat tally and multicast-path counters.
+    std::shared_ptr<DispatchTransmitState> transmit;
+    // SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD; 0 keeps every repeat unicast.
+    std::uint32_t repeat_threshold = 0;
 };
 
 struct GroupRecord {

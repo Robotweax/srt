@@ -7,6 +7,7 @@
 #include "compat/group_registry.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/transport_runtime.hpp"
+#include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/udp.hpp"
 #include "srt/srt.h"
 
@@ -480,6 +481,218 @@ void run_dispatch_stream(const StreamScenario& scenario)
     REQUIRE_EQ(
         srt_sendmsg(sender, idle.data(), static_cast<int>(idle.size()), -1, 1),
         static_cast<int>(idle.size()));
+}
+
+namespace {
+
+// Drops the multicast original of one group sequence so every receiver
+// loses the same packet, then forwards everything else unchanged.
+struct DropOneOriginal {
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+    IpEndpoint multicast {};
+    std::atomic<std::int32_t> drop_sequence {-1};
+    std::atomic<int> dropped {0};
+    std::atomic<int> multicast_data {0};
+    std::atomic<int> multicast_repeats {0};
+};
+
+UdpIoResult drop_one_original(std::span<const std::byte> bytes,
+    IpEndpoint peer, void* context) noexcept
+{
+    auto& hook = *static_cast<DropOneOriginal*>(context);
+    if (peer == hook.multicast) {
+        const auto packet = decode_packet(bytes);
+        if (packet && packet.packet.kind == PacketKind::data) {
+            ++hook.multicast_data;
+            if (packet.packet.data.retransmitted) {
+                ++hook.multicast_repeats;
+            } else if (hook.drop_sequence.load() >= 0
+                && packet.packet.data.sequence.value()
+                    == static_cast<std::uint32_t>(hook.drop_sequence.load())) {
+                ++hook.dropped;
+                return {.bytes_transferred = bytes.size()};
+            }
+        }
+    }
+    return hook.channel->socket.send_to(bytes, peer);
+}
+
+} // namespace
+
+TEST(multicast_dispatch_group_repeats_a_shared_loss_once_over_multicast)
+{
+    SKIP_UNLESS(loopback_multicast_available(),
+        "no loopback multicast on this host");
+    Peers peers;
+    AdmissionLog admissions;
+    const SRTSOCKET listener = peers.keep(srt_create_socket());
+    const sockaddr_in group_address =
+        ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
+    const sockaddr_in interface = ipv4_sockaddr({127, 0, 0, 1}, 0);
+    const std::int32_t hops = 0;
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP,
+                   &group_address, sizeof(group_address)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE,
+                   &interface, sizeof(interface)),
+        0);
+    REQUIRE_EQ(
+        srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_TTL, &hops, sizeof(hops)),
+        0);
+    REQUIRE_EQ(srt_listen_callback(listener, admit_dispatch, &admissions), 0);
+    sockaddr_in bound = ipv4_sockaddr({127, 0, 0, 1}, 0);
+    REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&bound),
+                   sizeof(bound)),
+        0);
+    REQUIRE_EQ(srt_listen(listener, 8), 0);
+    int bound_size = sizeof(bound);
+    REQUIRE_EQ(srt_getsockname(listener, reinterpret_cast<sockaddr*>(&bound),
+                   &bound_size),
+        0);
+    DropOneOriginal hook;
+    {
+        const auto record = SocketRegistry::instance().find(listener);
+        REQUIRE(record != nullptr);
+        std::lock_guard lock(record->mutex);
+        hook.channel = record->channel;
+    }
+    REQUIRE(hook.channel != nullptr);
+    hook.multicast = {.address = {239, 255, 133, 11}, .port = multicast_port};
+    hook.channel->set_send_hook_for_testing(drop_one_original, &hook);
+    struct UnhookOnExit {
+        DropOneOriginal& hook;
+        ~UnhookOnExit() { hook.channel->set_send_hook_for_testing(nullptr, nullptr); }
+    } unhook {hook};
+
+    const SRTSOCKET receiver_a = make_receiver(peers, bound);
+    const SRTSOCKET sender = peers.keep(srt_accept(listener, nullptr, nullptr));
+    REQUIRE(sender != SRT_INVALID_SOCK);
+    const SRTSOCKET receiver_b = make_receiver(peers, bound);
+    const SRTSOCKET receiver_c = make_receiver(peers, bound);
+    REQUIRE(wait_for_members(sender, 3));
+    for (const SRTSOCKET receiver : {receiver_a, receiver_b, receiver_c}) {
+        REQUIRE(wait_for_members(receiver, 1));
+    }
+
+    // The option belongs to the dispatch sender only.
+    std::int32_t threshold = 2;
+    REQUIRE_EQ(srt_setsockflag(receiver_a, SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD,
+                   &threshold, sizeof(threshold)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    const std::int32_t too_many = 17;
+    REQUIRE_EQ(srt_setsockflag(sender, SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD,
+                   &too_many, sizeof(too_many)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_setsockflag(sender, SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD,
+                   &threshold, sizeof(threshold)),
+        0);
+    std::int32_t readback = -1;
+    int readback_size = sizeof(readback);
+    REQUIRE_EQ(srt_getsockflag(sender, SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD,
+                   &readback, &readback_size),
+        0);
+    REQUIRE_EQ(readback, 2);
+
+    // Drop the fifth packet's multicast original for everyone.
+    {
+        const auto record = GroupRegistry::instance().find(sender);
+        std::lock_guard lock(record->mutex);
+        hook.drop_sequence = static_cast<std::int32_t>(
+            SequenceNumber {record->next_send_sequence}.advanced(4U).value());
+    }
+    constexpr int count = 12;
+    for (int index = 0; index < count; ++index) {
+        const std::string payload = message(index);
+        REQUIRE_EQ(srt_sendmsg(sender, payload.data(),
+                       static_cast<int>(payload.size()), -1, 1),
+            static_cast<int>(payload.size()));
+        std::this_thread::sleep_for(std::chrono::milliseconds {2});
+    }
+    for (const SRTSOCKET receiver : {receiver_a, receiver_b, receiver_c}) {
+        expect_messages(receiver, 0, count);
+    }
+    REQUIRE_EQ(hook.dropped.load(), 1);
+    // Three receivers requested the same repeat: the first was answered on
+    // its unicast link, the second reached the threshold and was answered
+    // once on the multicast path, the third was already covered.
+    std::shared_ptr<robotweax::srt::compat::DispatchTransmitState> transmit;
+    {
+        const auto record = GroupRegistry::instance().find(sender);
+        std::lock_guard lock(record->mutex);
+        transmit = record->dispatch->transmit;
+    }
+    REQUIRE(transmit != nullptr);
+    REQUIRE_EQ(transmit->multicast_repeats(), 1U);
+    REQUIRE_EQ(hook.multicast_repeats.load(), 1);
+    REQUIRE_EQ(transmit->skipped_repeats(), 1U);
+    REQUIRE_EQ(transmit->multicast_packets(), static_cast<std::uint64_t>(count + 1));
+    REQUIRE_EQ(hook.multicast_data.load(), count + 1);
+
+    // The same counters through the public read-only option, on the sender
+    // and on a receiver. A stray datagram on the group port that does not
+    // carry the dispatch ID is counted as filtered, never delivered.
+    ROBOTWEAX_SRT_MCAST_STATS_V1 stats {};
+    int stats_size = sizeof(stats);
+    REQUIRE_EQ(
+        srt_getsockflag(sender, SRTO_ROBOTWEAX_MCAST_STATS, &stats, &stats_size),
+        0);
+    REQUIRE_EQ(stats.abi_version, ROBOTWEAX_SRT_MCAST_STATS_VERSION);
+    REQUIRE_EQ(stats.member_count, 3U);
+    REQUIRE_EQ(stats.mcast_pkt_sent, static_cast<std::uint64_t>(count + 1));
+    REQUIRE_EQ(stats.mcast_pkt_rexmit, 1U);
+    REQUIRE_EQ(stats.unicast_rexmit_skipped, 1U);
+    REQUIRE(stats.mcast_byte_sent > 0U);
+    REQUIRE_EQ(stats.mcast_pkt_received, 0U);
+    // Read-only, and absent on bonding groups.
+    REQUIRE_EQ(
+        srt_setsockflag(sender, SRTO_ROBOTWEAX_MCAST_STATS, &stats, stats_size),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    {
+        const SRTSOCKET bonding = peers.keep(srt_create_group(SRT_GTYPE_BROADCAST));
+        stats_size = sizeof(stats);
+        REQUIRE_EQ(srt_getsockflag(bonding, SRTO_ROBOTWEAX_MCAST_STATS, &stats,
+                       &stats_size),
+            SRT_ERROR);
+    }
+    {
+        UdpSocket stray;
+        REQUIRE(stray.valid());
+        REQUIRE_EQ(stray.set_multicast_interface(IpEndpoint::loopback()),
+            Error::none);
+        REQUIRE_EQ(stray.set_multicast_time_to_live(0), Error::none);
+        // A well-formed DATA header addressed to socket 0x1234, from a
+        // foreign source: no route, so it is filtered before decoding.
+        std::array<std::byte, 20> datagram {};
+        datagram[15] = std::byte {0x34};
+        datagram[14] = std::byte {0x12};
+        REQUIRE(stray.send_to(datagram, hook.multicast));
+        std::this_thread::sleep_for(std::chrono::milliseconds {50});
+    }
+    const auto receiver_stats = [&](SRTSOCKET receiver) {
+        ROBOTWEAX_SRT_MCAST_STATS_V1 result {};
+        int size = sizeof(result);
+        REQUIRE_EQ(srt_getsockflag(receiver, SRTO_ROBOTWEAX_MCAST_STATS,
+                       &result, &size),
+            0);
+        return result;
+    };
+    const auto a = receiver_stats(receiver_a);
+    REQUIRE_EQ(a.member_count, 1U);
+    REQUIRE_EQ(a.mcast_pkt_sent, 0U);
+    // count originals minus the dropped one, plus the multicast repeat and
+    // the stray datagram.
+    REQUIRE_EQ(a.mcast_pkt_received, static_cast<std::uint64_t>(count + 1));
+    REQUIRE_EQ(a.mcast_pkt_filtered, 1U);
+    // The stray datagram never reached the application.
+    std::array<char, 64> none {};
+    const std::int32_t short_timeout = 150;
+    REQUIRE_EQ(srt_setsockflag(receiver_a, SRTO_RCVTIMEO, &short_timeout,
+                   sizeof(short_timeout)),
+        0);
+    REQUIRE_EQ(srt_recvmsg(receiver_a, none.data(), none.size()), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ETIMEOUT);
 }
 
 TEST(multicast_dispatch_group_delivers_one_stream_to_several_receivers)

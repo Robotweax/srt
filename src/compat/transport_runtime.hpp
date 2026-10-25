@@ -6,6 +6,7 @@
 #include "robotweax/srt/session.hpp"
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/udp.hpp"
+#include "compat/dispatch_transmit_state.hpp"
 #include "compat/runtime_scheduler.hpp"
 #include "compat/standby_rtt_service.hpp"
 #include "compat/readiness.hpp"
@@ -36,6 +37,7 @@ class MemberFilterRuntime;
 namespace robotweax::srt::compat {
 
 class ConnectionRuntime;
+class DispatchTransmitState;
 class RuntimeWorkExecutor;
 struct GroupRecord;
 struct RetainedGroupReceiveBatch;
@@ -303,6 +305,17 @@ public:
     {
         return running_.load(std::memory_order_acquire);
     }
+    // Datagrams that decoded as a packet and found no route, setup inbox or
+    // listener; a dispatch receiver's multicast socket reports them as
+    // filtered. Also the total decoded datagrams, for the same report.
+    [[nodiscard]] std::uint64_t unrouted_datagrams() const noexcept
+    {
+        return unrouted_datagrams_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::uint64_t routed_datagrams() const noexcept
+    {
+        return routed_datagrams_.load(std::memory_order_relaxed);
+    }
 
 private:
     struct ScheduledWorkContext {
@@ -406,6 +419,8 @@ private:
         ConnectionRoute* next = nullptr;
     };
     std::unordered_map<std::uint32_t, ConnectionRoute> routes_;
+    std::atomic<std::uint64_t> unrouted_datagrams_ {0};
+    std::atomic<std::uint64_t> routed_datagrams_ {0};
     // unordered_map rehash preserves element addresses. Erasure unlinks the
     // node and advances this cursor under routes_mutex_.
     ConnectionRoute* next_poll_route_ = nullptr;
@@ -560,9 +575,24 @@ public:
         Mode mode = Mode::normal;
         IpEndpoint destination {};
         std::uint32_t destination_socket_id = 0;
+        // Shared by every member of one dispatch sender: the repeat tally
+        // and the multicast-path counters. Null for bonding members.
+        std::shared_ptr<DispatchTransmitState> transmit;
+        // Distinct receivers that must repeat one sequence before it is
+        // repeated once on the multicast path instead; 0 keeps every
+        // repeat unicast.
+        std::uint32_t repeat_threshold = 0;
+        std::int32_t member_id = -1;
     };
     void set_group_data_egress(const GroupDataEgress& egress) noexcept;
     [[nodiscard]] GroupDataEgress group_data_egress() const noexcept;
+    // Packets routed to this runtime from an address other than its peer's
+    // and dropped before any processing; a dispatch receiver reports them
+    // with its multicast-path filter count.
+    [[nodiscard]] std::uint64_t foreign_peer_packets() const noexcept
+    {
+        return foreign_peer_packets_.load(std::memory_order_relaxed);
+    }
     [[nodiscard]] MessageIoResult queue_stream(
         std::span<const std::byte> bytes,
         bool blocking,
@@ -807,6 +837,7 @@ private:
     std::weak_ptr<DatagramChannel> channel_;
     GroupDataEgress group_data_egress_ {};
     std::uint64_t last_key_material_revision_sent_ = 0;
+    std::atomic<std::uint64_t> foreign_peer_packets_ {0};
     IpEndpoint peer_{};
     std::uint32_t peer_socket_id_ = 0;
     ReliabilitySession session_;

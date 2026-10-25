@@ -635,6 +635,64 @@ int GroupRegistry::get_io_option(
         || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
         || option == SRTO_ROBOTWEAX_PATHID_POLICY
         || option == SRTO_ROBOTWEAX_ACP1_REQUIRED;
+    if (option == SRTO_ROBOTWEAX_MCAST_STATS) {
+        ROBOTWEAX_SRT_MCAST_STATS_V1 stats {};
+        SRTSOCKET receiver_member = SRT_INVALID_SOCK;
+        {
+            std::lock_guard lock(record->mutex);
+            if (record->closed) {
+                set_last_error(SRT_EINVSOCK);
+                return SRT_ERROR;
+            }
+            if (record->dispatch == nullptr) {
+                set_last_error(SRT_EINVOP);
+                return SRT_ERROR;
+            }
+            if (value == nullptr
+                || *value_size < static_cast<int>(sizeof(stats))) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            stats.abi_version = ROBOTWEAX_SRT_MCAST_STATS_VERSION;
+            for (const auto& member : record->members) {
+                if (member.public_data.sockstate == SRTS_CONNECTED) {
+                    ++stats.member_count;
+                }
+            }
+            if (record->dispatch->sender
+                && record->dispatch->transmit != nullptr) {
+                const auto& transmit = *record->dispatch->transmit;
+                stats.mcast_pkt_sent = transmit.multicast_packets();
+                stats.mcast_byte_sent = transmit.multicast_bytes();
+                stats.mcast_pkt_rexmit = transmit.multicast_repeats();
+                stats.unicast_rexmit_skipped = transmit.skipped_repeats();
+            } else if (record->dispatch->receive_channel != nullptr) {
+                const auto& channel = *record->dispatch->receive_channel;
+                stats.mcast_pkt_filtered = channel.unrouted_datagrams();
+                stats.mcast_pkt_received =
+                    channel.routed_datagrams() + channel.unrouted_datagrams();
+                if (!record->members.empty()) {
+                    receiver_member = record->members.front().public_data.id;
+                }
+            }
+        }
+        // Source-address drops live on the member runtime; its socket mutex
+        // is taken after the group mutex is released, since attach_runtime
+        // orders socket before group.
+        if (receiver_member != SRT_INVALID_SOCK) {
+            const auto member = SocketRegistry::instance().find(receiver_member);
+            if (member != nullptr) {
+                std::lock_guard member_lock(member->mutex);
+                if (member->runtime != nullptr) {
+                    stats.mcast_pkt_filtered +=
+                        member->runtime->foreign_peer_packets();
+                }
+            }
+        }
+        std::memcpy(value, &stats, sizeof(stats));
+        *value_size = static_cast<int>(sizeof(stats));
+        return 0;
+    }
     {
         std::lock_guard lock(record->mutex);
         if (record->closed) {
@@ -651,16 +709,24 @@ int GroupRegistry::get_io_option(
             return SRT_ERROR;
         }
         if (option == SRTO_STATE || option == SRTO_GROUPMINSTABLETIMEO
-            || option == SRTO_GROUPTYPE) {
+            || option == SRTO_GROUPTYPE
+            || option == SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD) {
             if (option == SRTO_GROUPMINSTABLETIMEO
                 && record->type != SRT_GTYPE_BACKUP) {
                 set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            if (option == SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD
+                && (record->dispatch == nullptr || !record->dispatch->sender)) {
+                set_last_error(SRT_EINVOP);
                 return SRT_ERROR;
             }
             const std::int32_t result = option == SRTO_STATE
                 ? static_cast<std::int32_t>(aggregate_state(*record))
                 : option == SRTO_GROUPTYPE
                 ? static_cast<std::int32_t>(record->type)
+                : option == SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD
+                ? static_cast<std::int32_t>(record->dispatch->repeat_threshold)
                 : record->minimum_stability_timeout_milliseconds;
             if (*value_size < static_cast<int>(sizeof(result))) {
                 set_last_error(SRT_EINVPARAM);
@@ -759,6 +825,32 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
                 return SRT_ERROR;
             }
             record->minimum_stability_timeout_milliseconds = parsed;
+            return 0;
+        }
+        if (option == SRTO_ROBOTWEAX_MCAST_STATS) {
+            set_last_error(SRT_EINVOP);
+            return SRT_ERROR;
+        }
+        if (option == SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD) {
+            // POST option of a dispatch sender; takes effect on the next
+            // repeat decision. Receivers and bonding groups have no use for it.
+            std::int32_t parsed = 0;
+            if (value == nullptr
+                || value_size != static_cast<int>(sizeof(parsed))) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            std::memcpy(&parsed, value, sizeof(parsed));
+            if (record->dispatch == nullptr || !record->dispatch->sender) {
+                set_last_error(SRT_EINVOP);
+                return SRT_ERROR;
+            }
+            if (parsed < 0 || parsed > 16) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            record->dispatch->repeat_threshold =
+                static_cast<std::uint32_t>(parsed);
             return 0;
         }
         if (option == SRTO_BINDTODEVICE || option == SRTO_CONGESTION
@@ -1194,6 +1286,7 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
         prepared->category = GroupCategory::dispatch;
         prepared->dispatch = std::make_unique<DispatchGroupState>();
         prepared->dispatch->sender = true;
+        prepared->dispatch->transmit = std::make_shared<DispatchTransmitState>();
         prepared->dispatch->admission_key = std::string(admission_key);
         prepared->dispatch->multicast_group =
             listener_public_options.multicast_group;
