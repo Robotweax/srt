@@ -31,6 +31,7 @@ namespace {
     case HandshakeExtensionType::path_identifier:
     case HandshakeExtensionType::standby_rtt:
     case HandshakeExtensionType::group:
+    case HandshakeExtensionType::multicast_dispatch:
         return (flags & handshake_extension_flag_config) != 0U;
     }
 
