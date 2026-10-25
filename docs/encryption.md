@@ -542,6 +542,72 @@ then encrypts it through the replacement member. If required replay history is
 no longer available, failover fails closed rather than emitting an incomplete
 or unauthenticated prefix.
 
+### Multicast dispatch groups: one traffic key per group
+
+A [multicast dispatch group](connection-groups.md#multicast-dispatch-groups)
+sends one copy of every DATA packet to all receivers, so the rule above does
+not hold for it: **member sessions keep independent key-encrypting keys and
+independent KMREQ/KMRSP exchanges, but the traffic key (SEK) and salt are
+one per dispatch sender.** This is experimental and Robotweax-to-Robotweax.
+
+Mechanism. When the first receiver is admitted, the dispatch sender creates
+a `SharedTransmitKeySchedule` from the listener's crypto configuration: one
+random salt, the configured key length and mode, and the group's refresh
+rate and pre-announcement. Each admitted member session attaches the
+schedule in place of the directional transmit key it would otherwise draw
+for itself; the handshake still runs the ordinary per-connection KM exchange
+and the member announces the group key to its own receiver with the usual
+runtime KMREQ, wrapped under that receiver's passphrase-derived KEK. A
+member whose receiver negotiated another mode or key length than the group
+is refused at admission; a group is encrypted for all receivers or for none.
+
+Rotation is positional, not acknowledgement-driven. The group's 31-bit
+sequence space is divided into generations of `SRTO_KMREFRESHRATE`
+positions counted from the group's initial sequence; generation *g* uses one
+SEK, selected on the wire by the parity of *g*, and a packet's generation is
+a pure function of its sequence number. The member that transmits the
+multicast copy and a member that later repeats the same sequence over
+unicast therefore encrypt byte-for-byte identically without coordination,
+and the schedule retains the last four generations for repeats. Inside the
+pre-announcement window of a generation each member rebuilds its KMREQ with
+both keys and sends it at once rather than on the retry timer, because the
+switch happens at the boundary whether or not a receiver has answered. Only
+the initial key is awaited: a member does not record DATA as sent until its
+receiver acknowledged the group key, and `SRTO_SNDKMSTATE` on the member
+reports `SRT_KM_S_SECURED` at that point. A receiver that has not installed
+a generation when its first packet arrives leaves that sequence
+unacknowledged (enforced encryption, the default) and reads it from the
+unicast repeat once the key is in place, or loses it to TLPKTDROP if the
+key is later than the latency; it never sees plaintext decrypted with a
+wrong key, because a dispatch receiver does not keep the handshake key
+clone that HSv5 otherwise retains for legacy reverse reception.
+
+Nonce uniqueness. AES-CTR and AES-GCM derive the IV from the salt and the
+31-bit sequence number. Under one SEK a sequence number is used at most
+once because every DATA packet of the group, original or repeat, carries
+the group's sequence; a sequence number recurs only after 2^31 positions,
+and a generation period is capped at 2^30 positions, so the recurrence is
+at least two generations and therefore two keys later. There is exactly one
+sender per dispatch group (the listener-side-only rule), so two senders
+never share a key. GCM additionally authenticates the header; every DATA
+packet of a dispatch member names the dispatch group as destination socket
+ID so the authenticated header is identical on the multicast copy and on a
+unicast repeat.
+
+Trust boundary. Any host that can join the multicast group sees ciphertext.
+Every holder of the passphrase admitted through `SRTO_ROBOTWEAX_GROUPDOMAIN`
+and the admission key holds the plaintext; a dispatch group is one trust
+domain per stream, as a bonded listener is. Receivers do not authenticate
+each other, and a receiver cannot inject DATA into the stream because
+receivers never send DATA on a dispatch group. The pre-announcement window
+must cover the KMREQ/KMRSP round trip at the stream's packet rate for
+receivers to follow a rotation without loss; the default of 4096 packets
+does for ordinary links, a window of a few packets at wire speed does not.
+
+This design has not yet been part of an independent cryptographic review;
+the review scope of the AES-CTR and AES-GCM profiles assumed per-connection
+keys. It is listed under qualification limits until it is.
+
 ## Error and security behavior
 
 AES-CTR does not authenticate DATA or its sequence/key-selection metadata.

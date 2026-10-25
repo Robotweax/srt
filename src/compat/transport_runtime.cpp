@@ -2934,6 +2934,14 @@ bool ConnectionRuntime::send_data(
     MutablePacketView view;
     view.kind = PacketKind::data;
     view.data = packet.header;
+    if (group_data_egress_.mode != GroupDataEgress::Mode::normal) {
+        // Every DATA packet of a dispatch member, original or repeat, names
+        // the dispatch group as its destination: receivers route that ID on
+        // both of their sockets, and an authenticated header stays
+        // identical whichever path carries the packet.
+        view.data.destination_socket_id =
+            group_data_egress_.destination_socket_id;
+    }
     const bool encrypted_retransmission =
         packet.header.retransmitted
         && packet.header.encryption_key != EncryptionKey::none;
@@ -2948,7 +2956,7 @@ bool ConnectionRuntime::send_data(
     if (crypto_ != nullptr && crypto_->enabled()
         && !encrypted_retransmission) {
         view.data.encryption_key =
-            crypto_->active_sender_key();
+            crypto_->sender_key_for(packet.header.sequence);
     }
     // Clear/CTR encoding writes the complete submitted prefix. GCM writes
     // its header, ciphertext and tag before submission; every failure returns
@@ -3025,16 +3033,9 @@ bool ConnectionRuntime::send_data(
         .payload_size = application_payload_size};
     if (!packet.header.retransmitted
         && group_data_egress_.mode == GroupDataEgress::Mode::redirect) {
-        // One copy for every receiver: the destination socket ID becomes
-        // the dispatch group ID (header word 3) and the datagram leaves on
-        // this member's channel socket towards the multicast group, so its
-        // source address is the one the receivers' control links know.
-        const std::uint32_t group_id =
-            group_data_egress_.destination_socket_id;
-        datagram[12] = static_cast<std::byte>((group_id >> 24U) & 0xffU);
-        datagram[13] = static_cast<std::byte>((group_id >> 16U) & 0xffU);
-        datagram[14] = static_cast<std::byte>((group_id >> 8U) & 0xffU);
-        datagram[15] = static_cast<std::byte>(group_id & 0xffU);
+        // One copy for every receiver: the datagram leaves on this member's
+        // channel socket towards the multicast group, so its source address
+        // is the one the receivers' control links know.
         const auto channel = channel_.lock();
         if (channel == nullptr) {
             break_locked(0);
@@ -3510,17 +3511,24 @@ bool ConnectionRuntime::service_key_rotation(
     }
     // Keep the initial cadence until an RTT observation is available. Once
     // measured, allow a round trip plus half an RTT before repeating KMREQ.
+    // Under a shared schedule the key switches at a group position whether
+    // or not this receiver has answered, so freshly built material cannot
+    // wait for the retry timer: it is sent as soon as it exists.
+    const std::uint64_t revision = crypto_->key_material_revision();
+    const bool new_material = crypto_->has_shared_transmit_schedule()
+        && revision != last_key_material_revision_sent_;
     const bool retry_due = !last_key_material_send_microseconds_.has_value()
         || now < *last_key_material_send_microseconds_
         || now - *last_key_material_send_microseconds_
             >= retry_interval_microseconds;
-    if (!retry_due) {
+    if (!retry_due && !new_material) {
         return true;
     }
     if (!send_key_material(
             key_material_request_subtype, key_material, now)) {
         return false;
     }
+    last_key_material_revision_sent_ = revision;
     return true;
 }
 
@@ -4533,6 +4541,9 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
                 if (!service_key_rotation(packet_time)
                     || crypto_->prepare_data_packet(
                            candidate->sequence_position)
+                        != Error::none
+                    || crypto_->prepare_data_sequence(
+                           candidate->header.sequence)
                         != Error::none
                     || !service_key_rotation(packet_time)) {
                     break_locked(0);

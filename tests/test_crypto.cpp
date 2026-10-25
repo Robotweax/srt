@@ -3703,3 +3703,114 @@ TEST(session_authentication_parity_binds_header_session_role_and_replay_window)
     REQUIRE_EQ(listener.seal_fec(header, parity, wire, size), Error::none);
     REQUIRE(caller.open_fec(header, std::span {wire}.first(size), opened));
 }
+
+// --- Shared transmit key schedule (multicast dispatch) ---------------------
+
+TEST(crypto_shared_schedule_maps_group_sequence_to_generation_and_selector)
+{
+    SharedTransmitKeySchedule schedule({
+        .key_length = 16,
+        .mode = CryptoMode::aes_ctr,
+        .refresh_rate_packets = 64,
+        .preannouncement_packets = 16,
+        .origin = SequenceNumber {1'000U},
+    });
+    REQUIRE(!schedule.initialized());
+    REQUIRE_EQ(schedule.initialize(), Error::none);
+    REQUIRE(schedule.initialized());
+    REQUIRE_EQ(schedule.key_length(), 16U);
+    REQUIRE_EQ(schedule.refresh_rate_packets(), 64U);
+    REQUIRE_EQ(schedule.preannouncement_packets(), 16U);
+
+    // Positions count from the origin; the generation is positional.
+    REQUIRE_EQ(schedule.position_of(SequenceNumber {1'000U}), 0U);
+    REQUIRE_EQ(schedule.position_of(SequenceNumber {1'063U}), 63U);
+    REQUIRE_EQ(schedule.generation_at(63U), 0U);
+    REQUIRE_EQ(schedule.generation_at(64U), 1U);
+    REQUIRE_EQ(schedule.generation_at(200U), 3U);
+    REQUIRE_EQ(SharedTransmitKeySchedule::selector_of(0U), EncryptionKey::even);
+    REQUIRE_EQ(SharedTransmitKeySchedule::selector_of(1U), EncryptionKey::odd);
+    REQUIRE_EQ(SharedTransmitKeySchedule::selector_of(2U), EncryptionKey::even);
+    // The announcement window is the last `preannouncement` positions.
+    REQUIRE(!schedule.announcement_due(47U));
+    REQUIRE(schedule.announcement_due(48U));
+    REQUIRE(schedule.announcement_due(63U));
+    REQUIRE(!schedule.announcement_due(64U));
+
+    // A retransmitted (older) sequence maps behind the frontier and does
+    // not move it; a newer one advances it.
+    REQUIRE_EQ(schedule.position_of(SequenceNumber {1'200U}), 200U);
+    REQUIRE_EQ(schedule.frontier_position(), 200U);
+    REQUIRE_EQ(schedule.position_of(SequenceNumber {1'010U}), 10U);
+    REQUIRE_EQ(schedule.frontier_position(), 200U);
+
+    // Keys are stable per generation and distinct across generations; the
+    // salt is one for the whole schedule.
+    std::array<std::byte, 16> first {};
+    std::array<std::byte, 16> again {};
+    std::array<std::byte, 16> next {};
+    REQUIRE_EQ(schedule.key_for(0U, first), Error::none);
+    REQUIRE_EQ(schedule.key_for(0U, again), Error::none);
+    REQUIRE(first == again);
+    REQUIRE_EQ(schedule.key_for(1U, next), Error::none);
+    REQUIRE(first != next);
+    std::array<std::byte, srt_salt_size> salt_a {};
+    std::array<std::byte, srt_salt_size> salt_b {};
+    schedule.copy_salt(salt_a);
+    schedule.copy_salt(salt_b);
+    REQUIRE(salt_a == salt_b);
+    REQUIRE(std::any_of(salt_a.begin(), salt_a.end(),
+        [](std::byte value) { return value != std::byte {}; }));
+
+    // Only the next generation may be created on demand; a jump ahead is
+    // refused, and a generation that fell out of the retained window too.
+    std::array<std::byte, 16> key {};
+    REQUIRE_EQ(schedule.key_for(3U, key), Error::invalid_state);
+    REQUIRE_EQ(schedule.key_for(2U, key), Error::none);
+    REQUIRE_EQ(schedule.key_for(3U, key), Error::none);
+    REQUIRE_EQ(schedule.key_for(4U, key), Error::none);
+    REQUIRE_EQ(schedule.key_for(0U, key), Error::invalid_state);
+    REQUIRE_EQ(schedule.key_for(1U, key), Error::none);
+    // Short destinations are refused before anything is copied.
+    std::array<std::byte, 8> small {};
+    REQUIRE_EQ(schedule.key_for(1U, small), Error::invalid_state);
+}
+
+TEST(crypto_shared_schedule_keeps_one_key_per_sequence_across_wraparound)
+{
+    // A generation period never exceeds half the sequence space, so a
+    // sequence number recurring after 2^31 positions lands at least two
+    // generations later and never meets the same key twice.
+    SharedTransmitKeySchedule schedule({
+        .key_length = 16,
+        .mode = CryptoMode::aes_ctr,
+        .refresh_rate_packets = static_cast<std::uint64_t>(1U) << 40U,
+        .preannouncement_packets = 10,
+        .origin = SequenceNumber {SequenceNumber::mask - 5U},
+    });
+    REQUIRE_EQ(schedule.refresh_rate_packets(),
+        static_cast<std::uint64_t>(effective_key_refresh_cap));
+    REQUIRE_EQ(schedule.initialize(), Error::none);
+    // Crossing the 31-bit wrap keeps positions monotonic.
+    REQUIRE_EQ(schedule.position_of(SequenceNumber {SequenceNumber::mask}), 5U);
+    REQUIRE_EQ(schedule.position_of(SequenceNumber {0U}), 6U);
+    REQUIRE_EQ(schedule.position_of(SequenceNumber {10U}), 16U);
+    // The same sequence number one full cycle later is two generations on.
+    const auto cycle = static_cast<std::uint64_t>(SequenceNumber::mask) + 1U;
+    const std::uint64_t generation_now = schedule.generation_at(16U);
+    const std::uint64_t generation_later = schedule.generation_at(16U + cycle);
+    REQUIRE(generation_later >= generation_now + 2U);
+    // Preannouncement is clamped strictly inside the period.
+    SharedTransmitKeySchedule tight({
+        .key_length = 16,
+        .mode = CryptoMode::aes_ctr,
+        .refresh_rate_packets = 9,
+        .preannouncement_packets = 100,
+    });
+    REQUIRE_EQ(tight.preannouncement_packets(), 4U);
+    // Unsupported key lengths and modes fail to initialize.
+    SharedTransmitKeySchedule bad({.key_length = 7});
+    REQUIRE_EQ(bad.initialize(), Error::invalid_state);
+    SharedTransmitKeySchedule automatic({.mode = CryptoMode::automatic});
+    REQUIRE_EQ(automatic.initialize(), Error::invalid_state);
+}

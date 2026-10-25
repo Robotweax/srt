@@ -806,6 +806,7 @@ private:
     std::condition_variable send_ready_;
     std::weak_ptr<DatagramChannel> channel_;
     GroupDataEgress group_data_egress_ {};
+    std::uint64_t last_key_material_revision_sent_ = 0;
     IpEndpoint peer_{};
     std::uint32_t peer_socket_id_ = 0;
     ReliabilitySession session_;

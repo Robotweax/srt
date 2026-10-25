@@ -206,6 +206,9 @@ struct ListenerGroupAdmission {
     std::string admission_key;
     MulticastDispatch announcement {};
     bool has_announcement = false;
+    // This admission's crypto session (null when unencrypted); a dispatch
+    // member draws its transmit keys from the group's shared schedule.
+    std::shared_ptr<CryptoSession>* crypto = nullptr;
     std::uint64_t admission_domain = 0;
     SRTSOCKET member_handle = SRT_INVALID_SOCK;
     std::shared_ptr<SocketRecord> member;
@@ -264,6 +267,25 @@ struct ListenerGroupAdmission {
                 description.minimum_input_bandwidth_bytes_per_second;
             mirror.minimum_peer_srt_version =
                 description.minimum_peer_srt_version;
+            // Encryption is all-or-nothing per dispatch group: a member
+            // without the group key could neither read the shared copy nor
+            // repeat it, and a keyed member in a clear group would encrypt
+            // what the others send in the clear.
+            const bool keyed_group = description.key_schedule != nullptr;
+            const bool keyed_member = crypto != nullptr && *crypto != nullptr
+                && (*crypto)->enabled();
+            if (keyed_group != keyed_member
+                || (keyed_group
+                    && (*crypto)->attach_shared_transmit_schedule(
+                           description.key_schedule)
+                        != Error::none)) {
+                if (description.created) {
+                    GroupRegistry::instance().release_empty_mirror(
+                        description.group, description.generation);
+                }
+                mirror = {};
+                return false;
+            }
             announcement = description.announcement;
             has_announcement = true;
             peer = proposed;
@@ -801,17 +823,31 @@ void publish_group_member_state(SocketRecord& socket) noexcept
     } catch (...) {
         return fail(SRT_ENOBUF);
     }
+    // Unicast retransmissions carry the dispatch group ID as well, so the
+    // control link's channel routes it into the same session.
+    std::shared_ptr<DatagramChannel> control;
+    {
+        std::lock_guard lock(socket.mutex);
+        control = socket.channel;
+    }
+    if (control == nullptr
+        || !control->register_ingress_route(dispatch.group_id, runtime)) {
+        return fail(SRT_ECONNSETUP);
+    }
     if (!channel->register_ingress_route(dispatch.group_id, runtime)
         || !channel->start()) {
+        control->unregister_connection(dispatch.group_id);
         return fail(SRT_ETHREAD);
     }
     {
         std::lock_guard lock(record->mutex);
         if (record->closed || record->dispatch == nullptr) {
             channel->unregister_connection(dispatch.group_id);
+            control->unregister_connection(dispatch.group_id);
             return fail(SRT_ESCLOSED);
         }
         record->dispatch->receive_channel = channel;
+        record->dispatch->control_channel = control;
         record->dispatch->ingress_group_id = dispatch.group_id;
         record->dispatch->multicast_group = dispatch.multicast_group;
         record->dispatch->multicast_interface = interface;
@@ -1761,9 +1797,16 @@ public:
             const bool has_response = message.has_key_material_extension
                 && message.key_material_extension_type
                     == HandshakeExtensionType::key_material_response;
+            // A dispatch receiver never keeps the handshake key for
+            // reception: the sender's directional key arrives by KMREQ on
+            // this link, and a stale clone under the same selector would
+            // turn "no key yet" into silently garbled plaintext for the
+            // multicast copy that may arrive first. Without a receive key
+            // such DATA stays unacknowledged until it can be decrypted.
             if (!key_length_matches || !has_response
                 || setup_.crypto->acknowledge_key_material(
-                       message.key_material.view(), true)
+                       message.key_material.view(),
+                       !message.has_multicast_dispatch)
                     != Error::none) {
                 if (setup_.enforced_encryption
                     || !setup_.crypto->allows_plaintext_fallback()) {
@@ -4681,6 +4724,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     SessionAuthenticationParameters session_response {},
         session_confirmation {};
     std::shared_ptr<CryptoSession> crypto;
+    group_admission.crypto = &crypto;
     CryptoState receiver_key_state = CryptoState::unsecured;
     if (!policy_rejected) {
         if (native_options.encryption_enabled()) {

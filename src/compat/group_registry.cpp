@@ -1116,12 +1116,9 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
         || !listener_public_options.multicast_group.is_multicast()) {
         return false;
     }
-    // Fail closed on what this phase does not implement: encryption needs
-    // one session key for the whole group (per-member keys cannot decrypt
-    // one shared copy), and packet-filter FEC would run per member while
-    // only one member transmits. Neither may silently half-work.
-    if (listener_native_options.encryption_enabled()
-        || listener_native_options.packet_filter_configuration().enabled) {
+    // Fail closed on what is not implemented: packet-filter FEC would run
+    // per member while only one member transmits.
+    if (listener_native_options.packet_filter_configuration().enabled) {
         return false;
     }
     const auto announce = [&](const GroupRecord& record) {
@@ -1184,6 +1181,7 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
             output.minimum_input_bandwidth_bytes_per_second =
                 record->minimum_input_bandwidth_bytes_per_second;
             output.minimum_peer_srt_version = record->minimum_peer_srt_version;
+            output.key_schedule = record->dispatch->key_schedule;
             return true;
         }
 
@@ -1205,6 +1203,28 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
             : IpEndpoint{};
         prepared->dispatch->multicast_time_to_live =
             listener_public_options.multicast_time_to_live;
+        if (listener_native_options.encryption_enabled()) {
+            // One schedule for the sender's lifetime; members attach it to
+            // their own sessions and announce its generations themselves.
+            const CryptoConfiguration crypto =
+                listener_native_options.crypto_configuration();
+            prepared->dispatch->key_schedule =
+                std::make_shared<SharedTransmitKeySchedule>(
+                    SharedTransmitKeySchedule::Configuration {
+                        .key_length = crypto.key_length,
+                        .mode = crypto.mode == CryptoMode::automatic
+                            ? CryptoMode::aes_ctr
+                            : crypto.mode,
+                        .refresh_rate_packets = crypto.refresh_rate_packets,
+                        .preannouncement_packets =
+                            crypto.preannouncement_packets,
+                        .origin = SequenceNumber {initial_sequence},
+                    });
+            if (prepared->dispatch->key_schedule->initialize()
+                != Error::none) {
+                return false;
+            }
+        }
         prepared->handle = candidate;
         prepared->type = ROBOTWEAX_SRT_GTYPE_MULTICAST;
         prepared->generation = next_generation_++;
@@ -1248,6 +1268,7 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
         output.minimum_input_bandwidth_bytes_per_second =
             prepared->minimum_input_bandwidth_bytes_per_second;
         output.minimum_peer_srt_version = prepared->minimum_peer_srt_version;
+        output.key_schedule = prepared->dispatch->key_schedule;
         groups_.emplace(candidate, std::move(prepared));
         return true;
     } catch (...) {
@@ -1675,6 +1696,7 @@ void GroupRegistry::close(SRTSOCKET group) noexcept
     }
     std::vector<GroupMemberSnapshot> members;
     std::shared_ptr<DatagramChannel> receive_channel;
+    std::shared_ptr<DatagramChannel> control_channel;
     std::uint32_t ingress_group_id = 0;
     {
         // Mark closure under the metadata lock only. A group send blocked in
@@ -1698,9 +1720,11 @@ void GroupRegistry::close(SRTSOCKET group) noexcept
         if (record->dispatch != nullptr) {
             // Leave the multicast group before the control link goes: the
             // channel's socket closes with the channel, which ends the
-            // membership, and the route is dropped so no late datagram
+            // membership, and the routes are dropped so no late datagram
             // reaches a member that is closing.
             receive_channel.swap(record->dispatch->receive_channel);
+            control_channel = record->dispatch->control_channel.lock();
+            record->dispatch->control_channel.reset();
             ingress_group_id = record->dispatch->ingress_group_id;
             record->dispatch->joined = false;
         }
@@ -1708,6 +1732,10 @@ void GroupRegistry::close(SRTSOCKET group) noexcept
     if (receive_channel != nullptr) {
         receive_channel->unregister_connection(ingress_group_id);
         receive_channel.reset();
+    }
+    if (control_channel != nullptr) {
+        control_channel->unregister_connection(ingress_group_id);
+        control_channel.reset();
     }
     // Wake blocked group I/O so it observes the closure and returns before
     // the members go away underneath it.
