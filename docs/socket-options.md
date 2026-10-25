@@ -713,7 +713,15 @@ own value takes precedence. `SRTO_ROBOTWEAX_MCAST_TTL` (`0x01000013`, int32
 is the per-join admission key a callback sets, together with
 `SRTO_ROBOTWEAX_GROUPDOMAIN`, to admit a `ROBOTWEAX_SRT_GTYPE_MULTICAST`
 proposal; it is readable inside the callback and rejected anywhere else.
-All four are experimental and absent from v0.3.1 artifacts. See
+`SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD` (`0x01000014`, int32 0..16, default 0,
+POST, dispatch sender group only) is the number of distinct receivers that
+must ask for a repeat of one packet within a couple of round trips before the
+sender repeats it once on the multicast path instead of once more per
+receiver; 0 keeps every repeat unicast. `SRTO_ROBOTWEAX_MCAST_STATS`
+(`0x01000015`, read-only, `ROBOTWEAX_SRT_MCAST_STATS_V1`, dispatch groups
+only) reports the multicast-path counters described in
+[Connection groups](connection-groups.md#multicast-dispatch-groups).
+All six are experimental and absent from v0.3.1 artifacts. See
 [multicast dispatch groups](connection-groups.md#multicast-dispatch-groups).
 
 ## Group admission callback migration (since 0.2.8)

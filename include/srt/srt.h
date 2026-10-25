@@ -240,6 +240,16 @@ typedef enum SRT_SOCKOPT {
     /** Listener, pre-listen: int32_t hop limit for multicast payload,
      * 0..255, default 1 (link-local). */
     SRTO_ROBOTWEAX_MCAST_TTL = 0x01000013,
+    /** Dispatch sender group, POST: int32_t 0..16. Once this many distinct
+     * receivers have requested a repeat of the same packet within a couple
+     * of round trips, the packet is repeated once to the multicast group
+     * instead of once more per receiver; later requests in that window are
+     * answered by that repeat. 0 (default) keeps every repeat unicast. */
+    SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD = 0x01000014,
+    /** Dispatch group, read-only: ROBOTWEAX_SRT_MCAST_STATS_V1 for the
+     * multicast path. A sender reports what left on it; a receiver reports
+     * what its multicast socket received and dropped before decoding. */
+    SRTO_ROBOTWEAX_MCAST_STATS = 0x01000015,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif
@@ -755,6 +765,27 @@ typedef struct ROBOTWEAX_SRT_GroupPathDataV1_ {
 } ROBOTWEAX_SRT_GROUP_PATHDATA_V1;
 #define ROBOTWEAX_SRT_PATHID_LOCAL_OFFER 1U
 #define ROBOTWEAX_SRT_PATHID_NEGOTIATED 2U
+
+/**
+ * Multicast dispatch counters, cumulative since the group was created.
+ * Sender: packets and payload bytes sent on the multicast path (originals
+ * and repeats), the repeats among them, unicast repeats skipped because a
+ * multicast repeat already covered them, and the live receiver count.
+ * Receiver: datagrams the multicast socket received, those dropped before
+ * decoding because they did not carry the dispatch group ID from the
+ * announced sender, and member_count 1 while connected. Unused fields are 0.
+ */
+typedef struct ROBOTWEAX_SRT_McastStatsV1_ {
+    uint32_t abi_version;
+    uint32_t member_count;
+    uint64_t mcast_pkt_sent;
+    uint64_t mcast_byte_sent;
+    uint64_t mcast_pkt_rexmit;
+    uint64_t unicast_rexmit_skipped;
+    uint64_t mcast_pkt_received;
+    uint64_t mcast_pkt_filtered;
+} ROBOTWEAX_SRT_MCAST_STATS_V1;
+#define ROBOTWEAX_SRT_MCAST_STATS_VERSION 1U
 
 typedef struct SRT_SocketOptionObject SRT_SOCKOPT_CONFIG;
 
