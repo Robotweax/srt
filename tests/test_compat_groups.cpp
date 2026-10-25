@@ -460,13 +460,13 @@ TEST(
     REQUIRE_EQ(srt_close(socket), 0);
 }
 
-TEST(compat_multicast_dispatch_group_is_created_but_not_yet_connectable)
+TEST(compat_multicast_dispatch_group_creation_and_receiver_shape)
 {
     const auto multicast =
-        static_cast<SRT_GROUP_TYPE>(ROBOTWEAX_SRT_GTYPE_MULTICAST);
+        ROBOTWEAX_SRT_GTYPE_MULTICAST;
     // The public enum stays byte-identical to the reference ABI.
     REQUIRE_EQ(static_cast<int>(SRT_GTYPE_E_END), 3);
-    REQUIRE_EQ(ROBOTWEAX_SRT_GTYPE_MULTICAST, 4);
+    REQUIRE_EQ(static_cast<int>(ROBOTWEAX_SRT_GTYPE_MULTICAST), 4);
 
     const SRTSOCKET group = srt_create_group(multicast);
     REQUIRE(group != SRT_INVALID_SOCK);
@@ -478,7 +478,7 @@ TEST(compat_multicast_dispatch_group_is_created_but_not_yet_connectable)
     std::int32_t type = -1;
     int size = sizeof(type);
     REQUIRE_EQ(srt_getsockflag(group, SRTO_GROUPTYPE, &type, &size), 0);
-    REQUIRE_EQ(type, ROBOTWEAX_SRT_GTYPE_MULTICAST);
+    REQUIRE_EQ(type, static_cast<std::int32_t>(ROBOTWEAX_SRT_GTYPE_MULTICAST));
 
     const auto record = GroupRegistry::instance().find(group);
     REQUIRE(record != nullptr);
@@ -489,12 +489,19 @@ TEST(compat_multicast_dispatch_group_is_created_but_not_yet_connectable)
         REQUIRE(!record->dispatch->sender);
     }
 
-    // The receiving side of a dispatch group is not implemented yet:
-    // connecting fails with a defined error before any member is created.
+    // A dispatch receiver has one control link: two endpoints or a weight
+    // are rejected before any member is created.
     const sockaddr_in peer = ipv4_address(9'000);
-    SRT_SOCKGROUPCONFIG endpoint = srt_prepare_endpoint(nullptr,
-        reinterpret_cast<const sockaddr*>(&peer), sizeof(peer));
-    REQUIRE_EQ(srt_connect_group(group, &endpoint, 1), SRT_ERROR);
+    SRT_SOCKGROUPCONFIG endpoints[2] = {
+        srt_prepare_endpoint(nullptr,
+            reinterpret_cast<const sockaddr*>(&peer), sizeof(peer)),
+        srt_prepare_endpoint(nullptr,
+            reinterpret_cast<const sockaddr*>(&peer), sizeof(peer)),
+    };
+    REQUIRE_EQ(srt_connect_group(group, endpoints, 2), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    endpoints[0].weight = 1;
+    REQUIRE_EQ(srt_connect_group(group, endpoints, 1), SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
     size_t members = 0;
     REQUIRE_EQ(srt_group_data(group, nullptr, &members), 0);

@@ -96,6 +96,9 @@ struct SocketRecord {
     SRT_GROUP_TYPE incoming_group_type = SRT_GTYPE_UNDEFINED;
     SRTSOCKET incoming_peer_group = SRT_INVALID_SOCK;
     std::uint64_t incoming_group_domain = 0;
+    // Dispatch admission key set by the callback; empty rejects a join.
+    std::array<char, 512> incoming_multicast_key {};
+    std::size_t incoming_multicast_key_size = 0;
     // Non-owning, generation-checked membership identity.  Group records do
     // not own SocketRecord pointers, and sockets do not own group records.
     SRTSOCKET group_id = SRT_INVALID_SOCK;

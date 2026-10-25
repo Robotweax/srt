@@ -272,13 +272,21 @@ static int connect_group_impl(SRTSOCKET group, SRT_SOCKGROUPCONFIG endpoints[],
         set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
     }
-    // Dispatch (multicast) groups are created and their options configured,
-    // but the connecting receiver side is not implemented yet. Fail here
-    // with a defined error instead of letting a type-4 membership extension
-    // be rejected deep inside the handshake encoder.
+    // A dispatch receiver has exactly one control link: one endpoint, and
+    // none already enrolled. Bonding semantics (several members, weights,
+    // replacement members) do not apply to it.
     if (group_category_of(description.type) == GroupCategory::dispatch) {
-        set_last_error(SRT_EINVOP);
-        return SRT_ERROR;
+        bool occupied = false;
+        {
+            std::lock_guard lock(group_record->mutex);
+            occupied = !group_record->members.empty()
+                || (group_record->dispatch != nullptr
+                    && group_record->dispatch->sender);
+        }
+        if (endpoint_count != 1 || occupied || endpoints[0].weight != 0U) {
+            set_last_error(SRT_EINVOP);
+            return SRT_ERROR;
+        }
     }
     // Reject repeated descriptor values before any ownership transfer. Copy
     // only on the explicit adoption path; the address-only API is unchanged.

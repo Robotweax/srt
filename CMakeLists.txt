@@ -514,6 +514,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_compat_epoll.cpp
         tests/test_group_acquire.cpp
         tests/test_compat_groups.cpp
+        tests/test_multicast_dispatch.cpp
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp
         tests/test_compat_message_attempts.cpp)

@@ -2,6 +2,7 @@
 
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
+#include "robotweax/srt/udp.hpp"
 #include "srt/srt.h"
 
 #include <array>
@@ -65,6 +66,13 @@ struct PublicSocketOptions {
     bool path_identifier_required = false;
     bool path_identifier_if_offered = false;
     PathIdentifier path_identifier {};
+    // Multicast dispatch (SRTO_ROBOTWEAX_MCAST_*). A set group enables
+    // dispatch admission on a Listener; a Caller only uses the interface.
+    bool multicast_group_set = false;
+    IpEndpoint multicast_group {};
+    bool multicast_interface_set = false;
+    IpEndpoint multicast_interface {};
+    std::int32_t multicast_time_to_live = 1;
 };
 
 [[nodiscard]] constexpr bool standby_rtt_enabled(

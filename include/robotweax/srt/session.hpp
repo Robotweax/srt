@@ -231,6 +231,14 @@ public:
         }
         return packet;
     }
+    // Selects the next never-sent packet with its submission deferred to
+    // note_packet_submitted, bypassing the pacer and flow window. Used by a
+    // dispatch member whose originals leave on another member's path.
+    [[nodiscard]] std::optional<OutboundPacket> next_unpaced_new_packet(
+        std::uint64_t now_microseconds) noexcept
+    {
+        return send_buffer_.next_packet(true, false, now_microseconds);
+    }
     void configure_efficient_retransmission(
         bool enabled, bool peer_periodic_nak = false) noexcept
     {

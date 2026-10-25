@@ -239,6 +239,14 @@ public:
         const std::shared_ptr<DatagramInbox>& inbox, RuntimeFactory factory,
         void* context);
 
+    // Routes datagrams whose destination socket ID is `protocol_socket_id`
+    // to `runtime` without polling it from this channel: the runtime stays
+    // driven by the channel it sends on. A dispatch receiver uses this on
+    // the socket joined to the multicast group, keyed by the dispatch group
+    // ID the Listener announced. Removed with unregister_connection.
+    [[nodiscard]] bool register_ingress_route(
+        std::uint32_t protocol_socket_id,
+        std::shared_ptr<ConnectionRuntime> runtime) noexcept;
     void unregister_connection(std::uint32_t protocol_socket_id) noexcept;
     [[nodiscard]] bool replay_established_handshake(
         const HandshakeEnvelope& envelope) noexcept;
@@ -538,6 +546,23 @@ public:
     {
         return origin_epoch_microseconds_;
     }
+
+    // Where this member's original DATA packets go. A multicast dispatch
+    // sender queues every payload into each member session so ACK, NAK and
+    // unicast retransmission keep their per-receiver semantics, but only one
+    // member (`redirect`) transmits the original, once, to the multicast
+    // group with the dispatch group ID as destination; the others
+    // (`suppress`) record the packet as submitted without a datagram.
+    // Retransmissions always use the member's own unicast path. `normal`
+    // is the bonding behaviour.
+    struct GroupDataEgress {
+        enum class Mode : std::uint8_t { normal, suppress, redirect };
+        Mode mode = Mode::normal;
+        IpEndpoint destination {};
+        std::uint32_t destination_socket_id = 0;
+    };
+    void set_group_data_egress(const GroupDataEgress& egress) noexcept;
+    [[nodiscard]] GroupDataEgress group_data_egress() const noexcept;
     [[nodiscard]] MessageIoResult queue_stream(
         std::span<const std::byte> bytes,
         bool blocking,
@@ -780,6 +805,7 @@ private:
     std::condition_variable receive_ready_;
     std::condition_variable send_ready_;
     std::weak_ptr<DatagramChannel> channel_;
+    GroupDataEgress group_data_egress_ {};
     IpEndpoint peer_{};
     std::uint32_t peer_socket_id_ = 0;
     ReliabilitySession session_;

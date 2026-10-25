@@ -223,6 +223,23 @@ typedef enum SRT_SOCKOPT {
      * REQUIRED, any other peer as OFF. Accepted sockets report the result.
      */
     SRTO_ROBOTWEAX_STANDBYRTT_POLICY = 0x0100000f,
+    /** Multicast dispatch admission key (char[], 1..512 bytes, no NUL
+     * required). Valid only inside a listen callback whose proposed group
+     * type is ROBOTWEAX_SRT_GTYPE_MULTICAST; setting it admits the Caller
+     * into the dispatch group recorded under that key on this listener or
+     * bond. Returning from the callback without it rejects the join. */
+    SRTO_ROBOTWEAX_MULTICAST = 0x01000010,
+    /** Listener, pre-bind/listen: sockaddr_in or sockaddr_in6 naming the UDP
+     * multicast group and port the dispatch sender transmits to. Setting it
+     * enables dispatch admission on the listener. Readable. */
+    SRTO_ROBOTWEAX_MCAST_GROUP = 0x01000011,
+    /** Pre-bind/listen on either side: sockaddr selecting the local
+     * interface for multicast; IPv4 by address, IPv6 by sin6_scope_id. The
+     * Listener announces it as a hint; the Caller's own value wins. */
+    SRTO_ROBOTWEAX_MCAST_IFACE = 0x01000012,
+    /** Listener, pre-listen: int32_t hop limit for multicast payload,
+     * 0..255, default 1 (link-local). */
+    SRTO_ROBOTWEAX_MCAST_TTL = 0x01000013,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif
@@ -692,22 +709,23 @@ typedef enum SRT_GROUP_TYPE {
     SRT_GTYPE_UNDEFINED = 0,
     SRT_GTYPE_BROADCAST,
     SRT_GTYPE_BACKUP,
-    SRT_GTYPE_E_END
+    SRT_GTYPE_E_END,
+    /*
+     * Robotweax multicast dispatch group. The value is the wire type the
+     * published SRT draft reserves for multicast; Haivision libsrt v1.5.7
+     * does not expose or implement it and rejects it with SRT_REJ_GROUP.
+     * It is declared after SRT_GTYPE_E_END so every reference value and
+     * SRT_GTYPE_E_END itself stay byte-identical; declaring it inside the
+     * enum (rather than as a macro) keeps 4 inside the enum's value range,
+     * which a plain cast of an out-of-range integer would not.
+     *
+     * A dispatch group has one sender on the Listener side and any number
+     * of Caller receivers. Control traffic uses each Caller's unicast
+     * connection; payload is sent once to a UDP multicast group announced
+     * in the handshake. Experimental: see docs/connection-groups.md.
+     */
+    ROBOTWEAX_SRT_GTYPE_MULTICAST = 4
 } SRT_GROUP_TYPE;
-
-/*
- * Robotweax multicast dispatch group. The value is the wire type the
- * published SRT draft reserves for multicast; Haivision libsrt v1.5.7 does
- * not expose or implement it and rejects it with SRT_REJ_GROUP. It is kept
- * outside SRT_GROUP_TYPE so the enum and SRT_GTYPE_E_END stay byte-identical
- * to the reference ABI. Pass it as (SRT_GROUP_TYPE)ROBOTWEAX_SRT_GTYPE_MULTICAST.
- *
- * A dispatch group has one sender on the Listener side and any number of
- * Caller receivers. Control traffic uses each Caller's unicast connection;
- * payload is sent once to a UDP multicast group announced in the handshake.
- * Experimental: see docs/connection-groups.md for the supported profile.
- */
-#define ROBOTWEAX_SRT_GTYPE_MULTICAST 4
 
 static const uint32_t SRT_GFLAG_SYNCONMSG = 1;
 
