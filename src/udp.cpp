@@ -821,12 +821,18 @@ Error UdpSocket::set_multicast_time_to_live(std::int32_t value) noexcept
     }
     int result = 0;
     if (family_ == IpAddressFamily::ipv4) {
-        // IPv4 takes a byte on POSIX; Windows and Linux also accept an int,
-        // but a byte is portable for setting.
+#if defined(_WIN32)
+        // Winsock defines IP_MULTICAST_TTL as a DWORD; a one-byte value is
+        // rejected with WSAEFAULT.
+        const DWORD ttl = static_cast<DWORD>(value);
+        result = set_option(to_native(native_), IPPROTO_IP, IP_MULTICAST_TTL,
+            &ttl, sizeof(ttl));
+#else
+        // POSIX stacks take a byte; Linux also accepts an int, and some
+        // stacks only accept the int, so fall back on EINVAL.
         const unsigned char ttl = static_cast<unsigned char>(value);
         result = set_option(to_native(native_), IPPROTO_IP, IP_MULTICAST_TTL,
             &ttl, sizeof(ttl));
-#if !defined(_WIN32)
         if (result != 0 && last_socket_error() == EINVAL) {
             const int wide = value;
             result = set_option(to_native(native_), IPPROTO_IP,
@@ -874,10 +880,15 @@ Error UdpSocket::set_multicast_loopback(bool enabled) noexcept
     }
     int result = 0;
     if (family_ == IpAddressFamily::ipv4) {
+#if defined(_WIN32)
+        // Winsock defines IP_MULTICAST_LOOP as a DWORD as well.
+        const DWORD flag = enabled ? 1U : 0U;
+        result = set_option(to_native(native_), IPPROTO_IP, IP_MULTICAST_LOOP,
+            &flag, sizeof(flag));
+#else
         const unsigned char flag = enabled ? 1U : 0U;
         result = set_option(to_native(native_), IPPROTO_IP, IP_MULTICAST_LOOP,
             &flag, sizeof(flag));
-#if !defined(_WIN32)
         if (result != 0 && last_socket_error() == EINVAL) {
             const int wide = enabled ? 1 : 0;
             result = set_option(to_native(native_), IPPROTO_IP,
