@@ -26,6 +26,17 @@ interface configuration, failures and skips with the results. A designated
 multicast qualification environment must execute its required cases without
 skips. IPv6 socket primitive tests alone do not qualify IPv6 dispatch groups.
 
+The required CI multicast job checks IPv4 loopback dispatch and the public
+MPEG-TS sample in plain, CTR and GCM modes on OpenSSL Linux/macOS/Windows,
+Mbed TLS Linux, and experimental BCrypt Windows. It requires every named
+dispatch regression to execute and rejects skips, missing cases, unsuccessful
+processes and incomplete summaries. Evidence records the exact source SHA,
+platform, configured backend and logs. Its result participates in the required
+CI gate. To run this matrix alone, dispatch the `CI` workflow on the candidate
+branch with the `multicast_only` input set to `true`. That focused run does not
+replace the full CI suite or qualify IPv6 dispatch, physical networking, scale
+or independent cryptographic review.
+
 ## Build and run the default suite
 
 ```sh
