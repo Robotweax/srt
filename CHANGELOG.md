@@ -6,6 +6,17 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Require the elected multicast transmitter to accept a message before
+  suppressed members can commit the group send; preserve the sequence on
+  backpressure and report transmitter readiness through epoll.
+- Start multicast repair suppression only after local UDP acceptance, fall
+  back to unicast after transient send failure, and allow repeated NAKs to
+  recover a lost multicast repair without waiting for the tally window.
+- Wake the owning control channel after multicast ingress so ACK and NAK
+  timers progress while that receiver has no unicast traffic.
+- Clarify that shared multicast traffic keys provide neither sender identity
+  against other key holders nor cryptographic revocation on receiver leave.
+
 - Add experimental multicast dispatch groups (`ROBOTWEAX_SRT_GTYPE_MULTICAST`,
   wire type 4): one Listener sender, any number of Caller receivers, control
   per receiver over unicast, payload once over UDP multicast. New options

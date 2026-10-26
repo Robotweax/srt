@@ -1330,12 +1330,14 @@ void DatagramChannel::dispatch(const PacketView& packet,
         : packet.control.destination_socket_id;
     std::shared_ptr<ConnectionRuntime> runtime;
     std::shared_ptr<DatagramInbox> setup_inbox;
+    bool ingress_only = false;
     {
         std::lock_guard lock(routes_mutex_);
         const auto route = routes_.find(
             destination_socket_id);
         if (route != routes_.end()) {
             runtime = route->second.runtime;
+            ingress_only = route->second.next == nullptr;
         } else {
             const auto setup = setup_routes_.find(
                 destination_socket_id);
@@ -1348,6 +1350,15 @@ void DatagramChannel::dispatch(const PacketView& packet,
     if (runtime != nullptr) {
         routed_datagrams_.fetch_add(1U, std::memory_order_relaxed);
         runtime->process_packet(packet, peer, ingress);
+        if (ingress_only) {
+            // Multicast ingress does not poll this runtime. Wake its control
+            // channel so newly armed ACK/NAK deadlines are serviced even if
+            // no unicast traffic arrives to wake that channel itself.
+            const auto owner = runtime->channel_.lock();
+            if (owner != nullptr && owner.get() != this) {
+                owner->notify_send_work();
+            }
+        }
     } else if (setup_inbox != nullptr) {
         (void)setup_inbox->push(datagram, peer);
     } else {
@@ -3037,6 +3048,7 @@ bool ConnectionRuntime::send_data(
     bool multicast_path =
         !packet.header.retransmitted
         && group_data_egress_.mode == GroupDataEgress::Mode::redirect;
+    DispatchTransmitState::RepeatDecision repeat_decision;
     if (packet.header.retransmitted
         && group_data_egress_.mode != GroupDataEgress::Mode::normal
         && group_data_egress_.transmit != nullptr
@@ -3048,10 +3060,10 @@ bool ConnectionRuntime::send_data(
         const std::uint64_t window = std::clamp<std::uint64_t>(
             rtt.has_sample() ? 2ULL * rtt.smoothed_microseconds() : 100'000U,
             10'000U, 1'000'000U);
-        const auto decision = group_data_egress_.transmit->note_repeat(
+        repeat_decision = group_data_egress_.transmit->note_repeat(
             packet.header.sequence, group_data_egress_.member_id, now,
             group_data_egress_.repeat_threshold, window);
-        if (decision.skip) {
+        if (repeat_decision.skip) {
             // Already repeated to the group by another member: account for
             // the repeat on this session without a datagram.
             group_data_egress_.transmit->note_unicast_repeat_skipped();
@@ -3059,7 +3071,7 @@ bool ConnectionRuntime::send_data(
             session_.note_retransmission_sent(packet.header.sequence, now);
             return true;
         }
-        multicast_path = decision.multicast;
+        multicast_path = repeat_decision.multicast;
     }
     if (multicast_path) {
         // One copy for every receiver: the datagram leaves on this member's
@@ -3067,12 +3079,21 @@ bool ConnectionRuntime::send_data(
         // is the one the receivers' control links know.
         const auto channel = channel_.lock();
         if (channel == nullptr) {
+            if (repeat_decision.multicast) {
+                group_data_egress_.transmit->complete_repeat(
+                    packet.header.sequence, repeat_decision.attempt, false);
+            }
             break_locked(0);
             return false;
         }
         const auto bytes = std::span {datagram}.first(datagram_size);
         const auto sent =
             channel->send_datagram(bytes, group_data_egress_.destination);
+        if (repeat_decision.multicast) {
+            group_data_egress_.transmit->complete_repeat(packet.header.sequence,
+                repeat_decision.attempt,
+                sent && sent.bytes_transferred == bytes.size());
+        }
         if (sent && sent.bytes_transferred == bytes.size()) {
             if (group_data_egress_.transmit != nullptr) {
                 group_data_egress_.transmit->note_multicast_sent(
@@ -3083,6 +3104,11 @@ bool ConnectionRuntime::send_data(
         if (!sent && !UdpSocket::is_transient_send_error(sent.system_error)) {
             break_locked(sent.system_error);
             return false;
+        }
+        if (repeat_decision.multicast) {
+            // A local multicast failure did not repair this receiver. Use
+            // its ordinary bounded unicast retry path with the same packet.
+            return submit_datagram(bytes, completion, now);
         }
         // A transient multicast send failure drops this copy for every
         // receiver; each one recovers it by NAK over its own link.

@@ -27,6 +27,115 @@ using robotweax::srt::compat::GroupRegistry;
 using robotweax::srt::compat::SocketRegistry;
 using Egress = robotweax::srt::compat::ConnectionRuntime::GroupDataEgress;
 
+TEST(multicast_dispatch_repair_does_not_suppress_before_submission)
+{
+    robotweax::srt::compat::DispatchTransmitState state;
+    const SequenceNumber sequence {42};
+    const auto attempted = state.note_repeat(sequence, 1, 100, 1, 100'000);
+    REQUIRE(attempted.multicast);
+    // The elected multicast repair has not been submitted yet.
+    const auto next = state.note_repeat(sequence, 2, 101, 1, 100'000);
+    REQUIRE(!next.skip);
+    REQUIRE(!next.multicast);
+    state.complete_repeat(sequence, attempted.attempt, false);
+    const auto failed = state.note_repeat(sequence, 3, 102, 1, 100'000);
+    REQUIRE(!failed.skip);
+    REQUIRE(!failed.multicast);
+}
+
+TEST(multicast_dispatch_repair_repeated_nak_uses_unicast)
+{
+    robotweax::srt::compat::DispatchTransmitState state;
+    const SequenceNumber sequence {42};
+    const auto attempted = state.note_repeat(sequence, 1, 100, 1, 100'000);
+    REQUIRE(attempted.multicast);
+    state.complete_repeat(sequence, attempted.attempt, true);
+    // A repeated request must not wait for the shared tally to expire.
+    const auto retry = state.note_repeat(sequence, 1, 101, 1, 100'000);
+    REQUIRE(!retry.skip);
+    REQUIRE(!retry.multicast);
+    REQUIRE(state.note_repeat(sequence, 2, 102, 1, 100'000).skip);
+    const auto suppressed_retry =
+        state.note_repeat(sequence, 2, 103, 1, 100'000);
+    REQUIRE(!suppressed_retry.skip);
+    REQUIRE(!suppressed_retry.multicast);
+}
+
+TEST(multicast_dispatch_repair_completion_cannot_mutate_a_new_tally)
+{
+    robotweax::srt::compat::DispatchTransmitState state;
+    const SequenceNumber sequence {SequenceNumber::mask};
+    const auto old = state.note_repeat(sequence, 1, 100, 1, 10'000);
+    const auto expired = state.note_repeat(sequence, 1, 10'101, 1, 10'000);
+    REQUIRE(old.multicast);
+    REQUIRE(!expired.multicast && !expired.skip);
+    // A colliding ring slot and a wrapped sequence must not inherit completion.
+    const SequenceNumber collision {sequence.value() - 1'024};
+    const auto replacement = state.note_repeat(collision, 4, 10'104, 1, 10'000);
+    REQUIRE(replacement.multicast);
+    state.complete_repeat(sequence, old.attempt, true);
+    REQUIRE(!state.note_repeat(collision, 5, 10'105, 1, 10'000).skip);
+    const auto reinserted = state.note_repeat(sequence, 1, 10'106, 1, 10'000);
+    REQUIRE(reinserted.multicast);
+    state.complete_repeat(sequence, old.attempt, true);
+    REQUIRE(!state.note_repeat(sequence, 2, 10'107, 1, 10'000).skip);
+    const auto wrapped =
+        state.note_repeat(sequence.next(), 6, 10'106, 1, 10'000);
+    REQUIRE(wrapped.multicast);
+    state.complete_repeat(sequence.next(), wrapped.attempt, true);
+    REQUIRE(state.note_repeat(sequence.next(), 7, 10'107, 1, 10'000).skip);
+    REQUIRE(!state.note_repeat(sequence.next(), 8, 10'108, 0, 10'000).skip);
+}
+
+TEST(multicast_dispatch_repair_member_capacity_preserves_unicast_fallback)
+{
+    robotweax::srt::compat::DispatchTransmitState state;
+    const SequenceNumber sequence {42};
+    const auto repair = state.note_repeat(sequence, 0, 100, 1, 100'000);
+    state.complete_repeat(sequence, repair.attempt, true);
+    for (int member = 1; member < 16; ++member) {
+        REQUIRE(state.note_repeat(sequence, member, 101, 1, 100'000).skip);
+    }
+    const auto overflow = state.note_repeat(sequence, 16, 102, 1, 100'000);
+    REQUIRE(!overflow.skip && !overflow.multicast);
+    REQUIRE(!state.note_repeat(sequence, 16, 103, 1, 100'000).skip);
+    REQUIRE(!state.note_repeat(sequence, 1, 104, 1, 100'000).skip);
+}
+
+TEST(multicast_dispatch_repair_threshold_counts_distinct_receivers_in_window)
+{
+    for (const std::uint64_t window : {10'000U, 100'000U, 1'000'000U}) {
+        for (const std::uint32_t threshold : {2U, 16U}) {
+            robotweax::srt::compat::DispatchTransmitState state;
+            const SequenceNumber sequence {42};
+            for (std::uint32_t member = 0; member < threshold; ++member) {
+                const auto first = state.note_repeat(sequence,
+                    static_cast<std::int32_t>(member), 100 + member, threshold,
+                    window);
+                REQUIRE_EQ(first.multicast, member + 1 == threshold);
+                REQUIRE(!first.skip);
+                const auto repeated = state.note_repeat(sequence,
+                    static_cast<std::int32_t>(member), 100 + member, threshold,
+                    window);
+                REQUIRE(!repeated.multicast && !repeated.skip);
+                if (first.multicast) {
+                    state.complete_repeat(sequence, first.attempt, true);
+                }
+            }
+            const auto expired = state.note_repeat(
+                sequence, 100, 101 + window, threshold, window);
+            REQUIRE(!expired.multicast && !expired.skip);
+            // Before any multicast attempt, expiry starts a fresh tally.
+            const SequenceNumber next = sequence.next();
+            REQUIRE(!state.note_repeat(next, 1, 100, 2, window).multicast);
+            REQUIRE(
+                !state.note_repeat(next, 2, 101 + window, 2, window).multicast);
+            REQUIRE(
+                state.note_repeat(next, 3, 102 + window, 2, window).multicast);
+        }
+    }
+}
+
 namespace {
 
 constexpr std::uint16_t multicast_port = 25'999;
@@ -494,6 +603,7 @@ struct DropOneOriginal {
     std::atomic<int> dropped {0};
     std::atomic<int> multicast_data {0};
     std::atomic<int> multicast_repeats {0};
+    bool lose_multicast_repair = false;
 };
 
 UdpIoResult drop_one_original(std::span<const std::byte> bytes,
@@ -506,6 +616,9 @@ UdpIoResult drop_one_original(std::span<const std::byte> bytes,
             ++hook.multicast_data;
             if (packet.packet.data.retransmitted) {
                 ++hook.multicast_repeats;
+                if (hook.lose_multicast_repair) {
+                    return {.bytes_transferred = bytes.size()};
+                }
             } else if (hook.drop_sequence.load() >= 0
                 && packet.packet.data.sequence.value()
                     == static_cast<std::uint32_t>(hook.drop_sequence.load())) {
@@ -519,7 +632,7 @@ UdpIoResult drop_one_original(std::span<const std::byte> bytes,
 
 } // namespace
 
-TEST(multicast_dispatch_group_repeats_a_shared_loss_once_over_multicast)
+void run_dispatch_shared_loss(bool lose_multicast_repair)
 {
     SKIP_UNLESS(loopback_multicast_available(),
         "no loopback multicast on this host");
@@ -550,6 +663,7 @@ TEST(multicast_dispatch_group_repeats_a_shared_loss_once_over_multicast)
                    &bound_size),
         0);
     DropOneOriginal hook;
+    hook.lose_multicast_repair = lose_multicast_repair;
     {
         const auto record = SocketRegistry::instance().find(listener);
         REQUIRE(record != nullptr);
@@ -625,7 +739,9 @@ TEST(multicast_dispatch_group_repeats_a_shared_loss_once_over_multicast)
     REQUIRE(transmit != nullptr);
     REQUIRE_EQ(transmit->multicast_repeats(), 1U);
     REQUIRE_EQ(hook.multicast_repeats.load(), 1);
-    REQUIRE_EQ(transmit->skipped_repeats(), 1U);
+    if (!lose_multicast_repair) {
+        REQUIRE_EQ(transmit->skipped_repeats(), 1U);
+    }
     REQUIRE_EQ(transmit->multicast_packets(), static_cast<std::uint64_t>(count + 1));
     REQUIRE_EQ(hook.multicast_data.load(), count + 1);
 
@@ -641,7 +757,7 @@ TEST(multicast_dispatch_group_repeats_a_shared_loss_once_over_multicast)
     REQUIRE_EQ(stats.member_count, 3U);
     REQUIRE_EQ(stats.mcast_pkt_sent, static_cast<std::uint64_t>(count + 1));
     REQUIRE_EQ(stats.mcast_pkt_rexmit, 1U);
-    REQUIRE_EQ(stats.unicast_rexmit_skipped, 1U);
+    REQUIRE_EQ(stats.unicast_rexmit_skipped, transmit->skipped_repeats());
     REQUIRE(stats.mcast_byte_sent > 0U);
     REQUIRE_EQ(stats.mcast_pkt_received, 0U);
     // Read-only, and absent on bonding groups.
@@ -683,7 +799,8 @@ TEST(multicast_dispatch_group_repeats_a_shared_loss_once_over_multicast)
     REQUIRE_EQ(a.mcast_pkt_sent, 0U);
     // count originals minus the dropped one, plus the multicast repeat and
     // the stray datagram.
-    REQUIRE_EQ(a.mcast_pkt_received, static_cast<std::uint64_t>(count + 1));
+    REQUIRE_EQ(a.mcast_pkt_received,
+        static_cast<std::uint64_t>(count + (lose_multicast_repair ? 0 : 1)));
     REQUIRE_EQ(a.mcast_pkt_filtered, 1U);
     // The stray datagram never reached the application.
     std::array<char, 64> none {};
@@ -693,6 +810,17 @@ TEST(multicast_dispatch_group_repeats_a_shared_loss_once_over_multicast)
         0);
     REQUIRE_EQ(srt_recvmsg(receiver_a, none.data(), none.size()), SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ETIMEOUT);
+}
+
+TEST(multicast_dispatch_group_repeats_a_shared_loss_once_over_multicast)
+{
+    run_dispatch_shared_loss(false);
+}
+
+TEST(
+    multicast_dispatch_group_recovers_when_original_and_multicast_repair_are_lost)
+{
+    run_dispatch_shared_loss(true);
 }
 
 TEST(multicast_dispatch_group_delivers_one_stream_to_several_receivers)

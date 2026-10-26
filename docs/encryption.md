@@ -598,8 +598,20 @@ Trust boundary. Any host that can join the multicast group sees ciphertext.
 Every holder of the passphrase admitted through `SRTO_ROBOTWEAX_GROUPDOMAIN`
 and the admission key holds the plaintext; a dispatch group is one trust
 domain per stream, as a bonded listener is. Receivers do not authenticate
-each other, and a receiver cannot inject DATA into the stream because
-receivers never send DATA on a dispatch group. The pre-announcement window
+each other. The public receiver API cannot send DATA, but every admitted
+receiver holds the shared traffic keys. AES-GCM therefore does not provide
+cryptographic sender identity against another holder of those keys; source
+address filtering is not a sender signature. AES-CTR provides no DATA integrity.
+
+Membership is not cryptographic revocation. Joining or leaving does not force
+a new traffic-key generation; rotation follows sequence position. Closing a
+receiver's control connection does not erase keys it already learned or prevent
+it from using those keys on captured multicast traffic. A late joiner learns
+the keys distributed at admission, so historical ciphertext protected by those
+same keys has no per-receiver backward-access guarantee. Applications must not
+assume forward or backward secrecy from admission or control-link closure.
+
+The pre-announcement window
 must cover the KMREQ/KMRSP round trip at the stream's packet rate for
 receivers to follow a rotation without loss; the default of 4096 packets
 does for ordinary links, a window of a few packets at wire speed does not.

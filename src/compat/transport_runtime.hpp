@@ -670,6 +670,7 @@ public:
         handshake_replay_key() const noexcept;
 
 private:
+    friend class DatagramChannel;
     friend struct ConnectionRuntimeTestAccess;
     friend void close_connection_runtime(
         const std::shared_ptr<ConnectionRuntime>& runtime,
