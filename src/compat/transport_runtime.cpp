@@ -711,8 +711,7 @@ std::shared_ptr<ConnectionRuntime> DatagramChannel::promote_setup_connection(
     return runtime;
 }
 
-bool DatagramChannel::register_ingress_route(
-    std::uint32_t protocol_socket_id,
+bool DatagramChannel::register_ingress_route(std::uint32_t protocol_socket_id,
     std::shared_ptr<ConnectionRuntime> runtime) noexcept
 {
     if (protocol_socket_id == 0U || runtime == nullptr) {
@@ -3045,8 +3044,7 @@ bool ConnectionRuntime::send_data(
     const DatagramCompletion completion {.kind = DatagramKind::data,
         .data = view.data,
         .payload_size = application_payload_size};
-    bool multicast_path =
-        !packet.header.retransmitted
+    bool multicast_path = !packet.header.retransmitted
         && group_data_egress_.mode == GroupDataEgress::Mode::redirect;
     DispatchTransmitState::RepeatDecision repeat_decision;
     if (packet.header.retransmitted

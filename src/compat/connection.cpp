@@ -272,8 +272,8 @@ struct ListenerGroupAdmission {
             // repeat it, and a keyed member in a clear group would encrypt
             // what the others send in the clear.
             const bool keyed_group = description.key_schedule != nullptr;
-            const bool keyed_member = crypto != nullptr && *crypto != nullptr
-                && (*crypto)->enabled();
+            const bool keyed_member =
+                crypto != nullptr && *crypto != nullptr && (*crypto)->enabled();
             if (keyed_group != keyed_member
                 || (keyed_group
                     && (*crypto)->attach_shared_transmit_schedule(
@@ -815,8 +815,7 @@ void publish_group_member_state(SocketRecord& socket) noexcept
         return fail(SRT_ESOCKFAIL, receive.last_system_error());
     }
     // Best effort: payload arrives here, not on the control socket.
-    (void)receive.set_receive_buffer_size(
-        options.udp_receive_buffer_bytes);
+    (void)receive.set_receive_buffer_size(options.udp_receive_buffer_bytes);
     std::shared_ptr<DatagramChannel> channel;
     try {
         channel = std::make_shared<DatagramChannel>(std::move(receive));
@@ -4207,9 +4206,9 @@ int connect_socket(
                 },
             // A dispatch receiver admits the Listener's type-4 answer and
             // its announcement; a bonding member keeps the v1.5.7 profile.
-            .group_membership_policy =
-                {.admit_multicast_dispatch =
-                        socket->group_type == ROBOTWEAX_SRT_GTYPE_MULTICAST},
+            .group_membership_policy = {.admit_multicast_dispatch =
+                                            socket->group_type
+                    == ROBOTWEAX_SRT_GTYPE_MULTICAST},
         };
         setup.configuration.implementation_identity =
             local_implementation_identity(
@@ -4557,7 +4556,8 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
             if (accepted->incoming_group_type != SRT_GTYPE_UNDEFINED
                 && group_admission.admission_domain == 0)
                 callback_result = SRT_ERROR;
-            if (accepted->incoming_group_type == ROBOTWEAX_SRT_GTYPE_MULTICAST) {
+            if (accepted->incoming_group_type
+                == ROBOTWEAX_SRT_GTYPE_MULTICAST) {
                 // The key is this join's admission token; without it the
                 // callback did not admit the receiver into any stream.
                 if (accepted->incoming_multicast_key_size == 0U) {
@@ -4878,8 +4878,8 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
             ? negotiate_listener_group
             : nullptr,
         .group_membership_context = &group_admission,
-        .group_membership_policy =
-            {.admit_multicast_dispatch = public_options.multicast_group_set},
+        .group_membership_policy = {.admit_multicast_dispatch =
+                                        public_options.multicast_group_set},
         .multicast_dispatch_provider = provide_listener_dispatch,
         .multicast_dispatch_context = &group_admission,
         .cookie_generator = approved_connection_cookie,

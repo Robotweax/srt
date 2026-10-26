@@ -199,8 +199,7 @@ using GroupMembershipNegotiator = bool (*)(
 // announcement for the conclusion response. Returning false rejects the
 // connection with the group rejection reason.
 using MulticastDispatchProvider = bool (*)(
-    MulticastDispatch& dispatch,
-    void* context) noexcept;
+    MulticastDispatch& dispatch, void* context) noexcept;
 
 /**
  * Allocation-free protocol state machine. Configuration and callback pointers
@@ -373,9 +372,9 @@ private:
     PathIdentifier peer_path_identifier_ {};
     GroupMembership local_group_response_{};
     bool has_local_group_response_ = false;
-    MulticastDispatch local_multicast_dispatch_{};
+    MulticastDispatch local_multicast_dispatch_ {};
     bool has_local_multicast_dispatch_ = false;
-    MulticastDispatch peer_multicast_dispatch_{};
+    MulticastDispatch peer_multicast_dispatch_ {};
     bool has_peer_multicast_dispatch_ = false;
     int rejection_reason_ = 0;
 };

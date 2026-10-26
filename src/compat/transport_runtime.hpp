@@ -246,8 +246,7 @@ public:
     // driven by the channel it sends on. A dispatch receiver uses this on
     // the socket joined to the multicast group, keyed by the dispatch group
     // ID the Listener announced. Removed with unregister_connection.
-    [[nodiscard]] bool register_ingress_route(
-        std::uint32_t protocol_socket_id,
+    [[nodiscard]] bool register_ingress_route(std::uint32_t protocol_socket_id,
         std::shared_ptr<ConnectionRuntime> runtime) noexcept;
     void unregister_connection(std::uint32_t protocol_socket_id) noexcept;
     [[nodiscard]] bool replay_established_handshake(

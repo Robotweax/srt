@@ -84,9 +84,8 @@ enum class GroupCategory : std::uint8_t {
 [[nodiscard]] constexpr GroupCategory group_category_of(
     SRT_GROUP_TYPE type) noexcept
 {
-    return type == ROBOTWEAX_SRT_GTYPE_MULTICAST
-        ? GroupCategory::dispatch
-        : GroupCategory::bonding;
+    return type == ROBOTWEAX_SRT_GTYPE_MULTICAST ? GroupCategory::dispatch
+                                                 : GroupCategory::bonding;
 }
 
 // Whether `type` names a group this build can create. Balancing (3) and
@@ -104,10 +103,10 @@ struct DispatchGroupState {
     // SRTO_ROBOTWEAX_MULTICAST. One dispatch group per (bond, key, domain).
     std::string admission_key;
     // Multicast group the sender transmits to and receivers join.
-    IpEndpoint multicast_group{};
+    IpEndpoint multicast_group {};
     // Local interface selector: IPv4 address or IPv6 scope_id; unspecified
     // lets the operating system choose.
-    IpEndpoint multicast_interface{};
+    IpEndpoint multicast_interface {};
     std::int32_t multicast_time_to_live = 1;
     // Whether this record is the sending (Listener) side. The Caller side
     // has exactly one member and a multicast receive channel. The sender

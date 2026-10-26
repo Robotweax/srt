@@ -680,7 +680,8 @@ int GroupRegistry::get_io_option(
         // is taken after the group mutex is released, since attach_runtime
         // orders socket before group.
         if (receiver_member != SRT_INVALID_SOCK) {
-            const auto member = SocketRegistry::instance().find(receiver_member);
+            const auto member =
+                SocketRegistry::instance().find(receiver_member);
             if (member != nullptr) {
                 std::lock_guard member_lock(member->mutex);
                 if (member->runtime != nullptr) {
@@ -1214,11 +1215,11 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
         return false;
     }
     const auto announce = [&](const GroupRecord& record) {
-        MulticastDispatch announcement{
+        MulticastDispatch announcement {
             .group_id = static_cast<std::uint32_t>(record.handle),
             .multicast_group = record.dispatch->multicast_group,
             .has_interface_hint =
-                record.dispatch->multicast_interface != IpEndpoint{}
+                record.dispatch->multicast_interface != IpEndpoint {}
                 && record.dispatch->multicast_interface.family
                     == record.dispatch->multicast_group.family,
             .interface_hint = record.dispatch->multicast_interface,
@@ -1231,7 +1232,7 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
         };
         if (!announcement.has_interface_hint) {
             announcement.interface_hint =
-                IpEndpoint{.family = announcement.multicast_group.family};
+                IpEndpoint {.family = announcement.multicast_group.family};
         }
         return announcement;
     };
@@ -1254,8 +1255,8 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
                 || record->dispatch->admission_key != admission_key) {
                 continue;
             }
-            const bool same_scope = (bond_scope != 0U
-                                        && record->mirror_bond_scope == bond_scope)
+            const bool same_scope =
+                (bond_scope != 0U && record->mirror_bond_scope == bond_scope)
                 || (bond_scope == 0U && record->mirror_bond_scope == 0U
                     && record->mirror_listener == listener);
             if (!same_scope) {
@@ -1286,14 +1287,15 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
         prepared->category = GroupCategory::dispatch;
         prepared->dispatch = std::make_unique<DispatchGroupState>();
         prepared->dispatch->sender = true;
-        prepared->dispatch->transmit = std::make_shared<DispatchTransmitState>();
+        prepared->dispatch->transmit =
+            std::make_shared<DispatchTransmitState>();
         prepared->dispatch->admission_key = std::string(admission_key);
         prepared->dispatch->multicast_group =
             listener_public_options.multicast_group;
         prepared->dispatch->multicast_interface =
             listener_public_options.multicast_interface_set
             ? listener_public_options.multicast_interface
-            : IpEndpoint{};
+            : IpEndpoint {};
         prepared->dispatch->multicast_time_to_live =
             listener_public_options.multicast_time_to_live;
         if (listener_native_options.encryption_enabled()) {
@@ -1313,8 +1315,7 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
                             crypto.preannouncement_packets,
                         .origin = SequenceNumber {initial_sequence},
                     });
-            if (prepared->dispatch->key_schedule->initialize()
-                != Error::none) {
+            if (prepared->dispatch->key_schedule->initialize() != Error::none) {
                 return false;
             }
         }
@@ -1337,8 +1338,7 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
             listener_public_options.ip_type_of_service;
         prepared->ip_type_of_service_explicit =
             listener_public_options.ip_type_of_service_explicit;
-        prepared->send_synchronous =
-            listener_public_options.send_synchronous;
+        prepared->send_synchronous = listener_public_options.send_synchronous;
         prepared->receive_synchronous =
             listener_public_options.receive_synchronous;
         prepared->send_timeout_milliseconds =

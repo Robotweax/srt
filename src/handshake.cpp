@@ -557,11 +557,9 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             peer_path_identifier_ = message.path_identifier;
             if (message.has_group_membership) {
                 const auto policy = configuration_.group_membership_policy;
-                if (validate_group_membership(
-                        message.group_membership, policy)
+                if (validate_group_membership(message.group_membership, policy)
                         != GroupMembershipValidation::compatible
-                    || configuration_
-                            .group_membership_negotiator == nullptr) {
+                    || configuration_.group_membership_negotiator == nullptr) {
                     return reject(group_rejection_reason);
                 }
                 GroupMembership local{};
@@ -576,7 +574,7 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 // A dispatch admission must announce the multicast group;
                 // the announcement's ID is the mirror group this Listener
                 // answers with, so receivers filter on the same value.
-                MulticastDispatch dispatch{};
+                MulticastDispatch dispatch {};
                 bool has_dispatch = false;
                 if (local.type == GroupType::multicast) {
                     if (configuration_.multicast_dispatch_provider == nullptr
@@ -942,9 +940,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                     configuration_.group_membership.type
                     == GroupType::multicast;
                 if (!message.has_group_membership
-                    || validate_group_membership(
-                        message.group_membership,
-                        configuration_.group_membership_policy)
+                    || validate_group_membership(message.group_membership,
+                           configuration_.group_membership_policy)
                         != GroupMembershipValidation::compatible
                     || message.group_membership.type
                         != configuration_.group_membership.type

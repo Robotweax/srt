@@ -66,8 +66,7 @@ struct IpEndpoint {
     /** IPv4 224.0.0.0/4 or IPv6 ff00::/8 group address. */
     [[nodiscard]] constexpr bool is_multicast() const noexcept
     {
-        return is_ipv4() ? (address[0] & 0xf0U) == 0xe0U
-                         : address[0] == 0xffU;
+        return is_ipv4() ? (address[0] & 0xf0U) == 0xe0U : address[0] == 0xffU;
     }
 
     [[nodiscard]] constexpr bool is_ipv4_mapped_ipv6() const noexcept
@@ -253,7 +252,8 @@ public:
     [[nodiscard]] Error set_multicast_interface(IpEndpoint interface) noexcept;
     /** Hop limit for outgoing multicast datagrams, 0..255. */
     [[nodiscard]] Error set_multicast_time_to_live(std::int32_t value) noexcept;
-    [[nodiscard]] UdpIntegerOptionResult multicast_time_to_live() const noexcept;
+    [[nodiscard]] UdpIntegerOptionResult
+    multicast_time_to_live() const noexcept;
     /**
      * Whether datagrams this socket sends to a group are delivered to local
      * receivers of that group. POSIX applies this to the sending socket;

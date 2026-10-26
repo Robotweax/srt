@@ -650,11 +650,11 @@ namespace {
     const void* value, std::size_t size) noexcept
 {
 #if defined(_WIN32)
-    return ::setsockopt(socket, level, option,
-        static_cast<const char*>(value), static_cast<int>(size));
+    return ::setsockopt(socket, level, option, static_cast<const char*>(value),
+        static_cast<int>(size));
 #else
-    return ::setsockopt(socket, level, option, value,
-        static_cast<SocketLength>(size));
+    return ::setsockopt(
+        socket, level, option, value, static_cast<SocketLength>(size));
 #endif
 }
 
@@ -662,8 +662,8 @@ namespace {
     void* value, SocketLength& size) noexcept
 {
 #if defined(_WIN32)
-    return ::getsockopt(socket, level, option,
-        static_cast<char*>(value), &size);
+    return ::getsockopt(
+        socket, level, option, static_cast<char*>(value), &size);
 #else
     return ::getsockopt(socket, level, option, value, &size);
 #endif
@@ -685,7 +685,7 @@ namespace {
     // IPv6 selects the interface by scope_id; the address bytes are ignored
     // but must not carry an IPv4 selector by mistake.
     return interface.family == IpAddressFamily::ipv6
-        || interface == IpEndpoint{};
+        || interface == IpEndpoint {};
 }
 
 } // namespace
@@ -697,8 +697,8 @@ Error UdpSocket::set_reuse_address(bool enabled) noexcept
         return Error::io_error;
     }
     int value = enabled ? 1 : 0;
-    int result = set_option(to_native(native_), SOL_SOCKET, SO_REUSEADDR,
-        &value, sizeof(value));
+    int result = set_option(
+        to_native(native_), SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value));
 #if defined(SO_REUSEPORT) && !defined(__linux__)
     // BSD-derived stacks (macOS included) need SO_REUSEPORT as well before
     // several sockets may bind one multicast port. Linux SO_REUSEPORT has
@@ -712,8 +712,7 @@ Error UdpSocket::set_reuse_address(bool enabled) noexcept
     return result == 0 ? Error::none : Error::io_error;
 }
 
-Error UdpSocket::join_multicast(
-    IpEndpoint group, IpEndpoint interface) noexcept
+Error UdpSocket::join_multicast(IpEndpoint group, IpEndpoint interface) noexcept
 {
     if (!valid()) {
         last_system_error_ = open_system_error_;
@@ -734,22 +733,22 @@ Error UdpSocket::join_multicast(
         (void)set_option(to_native(native_), IPPROTO_IP, IP_MULTICAST_ALL,
             &only_joined, sizeof(only_joined));
 #endif
-        ip_mreq request{};
+        ip_mreq request {};
         std::memcpy(&request.imr_multiaddr, group.address.data(), 4U);
         std::memcpy(&request.imr_interface, interface.address.data(), 4U);
-        result = set_option(to_native(native_), IPPROTO_IP,
-            IP_ADD_MEMBERSHIP, &request, sizeof(request));
+        result = set_option(to_native(native_), IPPROTO_IP, IP_ADD_MEMBERSHIP,
+            &request, sizeof(request));
     } else {
 #if defined(IPV6_MULTICAST_ALL)
         const int only_joined = 0;
-        (void)set_option(to_native(native_), IPPROTO_IPV6,
-            IPV6_MULTICAST_ALL, &only_joined, sizeof(only_joined));
+        (void)set_option(to_native(native_), IPPROTO_IPV6, IPV6_MULTICAST_ALL,
+            &only_joined, sizeof(only_joined));
 #endif
-        ipv6_mreq request{};
+        ipv6_mreq request {};
         std::memcpy(&request.ipv6mr_multiaddr, group.address.data(), 16U);
         request.ipv6mr_interface = interface.scope_id;
-        result = set_option(to_native(native_), IPPROTO_IPV6,
-            IPV6_JOIN_GROUP, &request, sizeof(request));
+        result = set_option(to_native(native_), IPPROTO_IPV6, IPV6_JOIN_GROUP,
+            &request, sizeof(request));
     }
     last_system_error_ = result == 0 ? 0 : last_socket_error();
     return result == 0 ? Error::none : Error::io_error;
@@ -768,17 +767,17 @@ Error UdpSocket::leave_multicast(
     }
     int result = 0;
     if (family_ == IpAddressFamily::ipv4) {
-        ip_mreq request{};
+        ip_mreq request {};
         std::memcpy(&request.imr_multiaddr, group.address.data(), 4U);
         std::memcpy(&request.imr_interface, interface.address.data(), 4U);
-        result = set_option(to_native(native_), IPPROTO_IP,
-            IP_DROP_MEMBERSHIP, &request, sizeof(request));
+        result = set_option(to_native(native_), IPPROTO_IP, IP_DROP_MEMBERSHIP,
+            &request, sizeof(request));
     } else {
-        ipv6_mreq request{};
+        ipv6_mreq request {};
         std::memcpy(&request.ipv6mr_multiaddr, group.address.data(), 16U);
         request.ipv6mr_interface = interface.scope_id;
-        result = set_option(to_native(native_), IPPROTO_IPV6,
-            IPV6_LEAVE_GROUP, &request, sizeof(request));
+        result = set_option(to_native(native_), IPPROTO_IPV6, IPV6_LEAVE_GROUP,
+            &request, sizeof(request));
     }
     last_system_error_ = result == 0 ? 0 : last_socket_error();
     return result == 0 ? Error::none : Error::io_error;
@@ -796,14 +795,14 @@ Error UdpSocket::set_multicast_interface(IpEndpoint interface) noexcept
     }
     int result = 0;
     if (family_ == IpAddressFamily::ipv4) {
-        in_addr address{};
+        in_addr address {};
         std::memcpy(&address, interface.address.data(), 4U);
         result = set_option(to_native(native_), IPPROTO_IP, IP_MULTICAST_IF,
             &address, sizeof(address));
     } else {
         unsigned int index = interface.scope_id;
-        result = set_option(to_native(native_), IPPROTO_IPV6,
-            IPV6_MULTICAST_IF, &index, sizeof(index));
+        result = set_option(to_native(native_), IPPROTO_IPV6, IPV6_MULTICAST_IF,
+            &index, sizeof(index));
     }
     last_system_error_ = result == 0 ? 0 : last_socket_error();
     return result == 0 ? Error::none : Error::io_error;
@@ -857,10 +856,10 @@ UdpIntegerOptionResult UdpSocket::multicast_time_to_live() const noexcept
     // byte and report a shorter length.
     int value = 0;
     SocketLength size = static_cast<SocketLength>(sizeof(value));
-    const int level = family_ == IpAddressFamily::ipv4
-        ? IPPROTO_IP : IPPROTO_IPV6;
-    const int option = family_ == IpAddressFamily::ipv4
-        ? IP_MULTICAST_TTL : IPV6_MULTICAST_HOPS;
+    const int level =
+        family_ == IpAddressFamily::ipv4 ? IPPROTO_IP : IPPROTO_IPV6;
+    const int option = family_ == IpAddressFamily::ipv4 ? IP_MULTICAST_TTL
+                                                        : IPV6_MULTICAST_HOPS;
     if (get_option(to_native(native_), level, option, &value, size) != 0) {
         return {.error = Error::io_error, .system_error = last_socket_error()};
     }
@@ -911,10 +910,10 @@ UdpIntegerOptionResult UdpSocket::multicast_loopback() const noexcept
     }
     int value = 0;
     SocketLength size = static_cast<SocketLength>(sizeof(value));
-    const int level = family_ == IpAddressFamily::ipv4
-        ? IPPROTO_IP : IPPROTO_IPV6;
-    const int option = family_ == IpAddressFamily::ipv4
-        ? IP_MULTICAST_LOOP : IPV6_MULTICAST_LOOP;
+    const int level =
+        family_ == IpAddressFamily::ipv4 ? IPPROTO_IP : IPPROTO_IPV6;
+    const int option = family_ == IpAddressFamily::ipv4 ? IP_MULTICAST_LOOP
+                                                        : IPV6_MULTICAST_LOOP;
     if (get_option(to_native(native_), level, option, &value, size) != 0) {
         return {.error = Error::io_error, .system_error = last_socket_error()};
     }
