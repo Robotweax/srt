@@ -515,7 +515,7 @@ bool provide_test_dispatch(MulticastDispatch& dispatch, void* context) noexcept
     if (provider.fail) {
         return false;
     }
-    dispatch = MulticastDispatch{
+    dispatch = MulticastDispatch {
         .group_id = group_handle_mask
             | (provider.wrong_id ? provider.mirror_base + 1U
                                  : provider.mirror_base),
@@ -535,7 +535,7 @@ bool provide_test_dispatch(MulticastDispatch& dispatch, void* context) noexcept
     return {
         .role = ConnectionRole::caller,
         .local_socket_id = 401U,
-        .initial_sequence = SequenceNumber{8'000U},
+        .initial_sequence = SequenceNumber {8'000U},
         .has_group_membership = true,
         .group_membership =
             {
@@ -554,12 +554,12 @@ TEST(hsv5_multicast_dispatch_negotiation_announces_the_group)
 {
     std::uint32_t cookie_secret = 0x51a2'51c3U;
     std::uint32_t mirror_base = 93U;
-    DispatchProviderContext provider{.mirror_base = mirror_base};
-    HandshakeMachine caller{dispatch_caller_configuration(43U)};
-    HandshakeMachine listener{{
+    DispatchProviderContext provider {.mirror_base = mirror_base};
+    HandshakeMachine caller {dispatch_caller_configuration(43U)};
+    HandshakeMachine listener {{
         .role = ConnectionRole::listener,
         .local_socket_id = 402U,
-        .initial_sequence = SequenceNumber{8'000U},
+        .initial_sequence = SequenceNumber {8'000U},
         .group_membership_negotiator = negotiate_test_group,
         .group_membership_context = &mirror_base,
         .group_membership_policy = {.admit_multicast_dispatch = true},
@@ -571,13 +571,13 @@ TEST(hsv5_multicast_dispatch_negotiation_announces_the_group)
 
     const auto induction = encode_then_decode(caller.start().values[0], 0U);
     REQUIRE(induction);
-    const auto induction_response = encode_then_decode(
-        listener.receive(induction.message).values[0], 401U);
+    const auto induction_response =
+        encode_then_decode(listener.receive(induction.message).values[0], 401U);
     REQUIRE(induction_response);
     const auto conclusion = caller.receive(induction_response.message);
     REQUIRE(conclusion.values[0].has_group_membership);
-    REQUIRE_EQ(conclusion.values[0].group_membership.type,
-        GroupType::multicast);
+    REQUIRE_EQ(
+        conclusion.values[0].group_membership.type, GroupType::multicast);
     // The Caller never announces a multicast group itself.
     REQUIRE(!conclusion.values[0].has_multicast_dispatch);
 
@@ -590,8 +590,8 @@ TEST(hsv5_multicast_dispatch_negotiation_announces_the_group)
     REQUIRE(response.values[0].has_multicast_dispatch);
     REQUIRE_EQ(response.values[0].multicast_dispatch.group_id,
         group_handle_mask | mirror_base);
-    REQUIRE_EQ(response.values[0].multicast_dispatch.multicast_group.port,
-        5'999U);
+    REQUIRE_EQ(
+        response.values[0].multicast_dispatch.multicast_group.port, 5'999U);
     REQUIRE((response.values[0].packet.extension_field
                 & handshake_extension_flag_config)
         != 0U);
@@ -616,11 +616,11 @@ TEST(hsv5_multicast_dispatch_is_rejected_without_policy_or_announcement)
     {
         std::uint32_t cookie_secret = 0x61a2'51c3U;
         std::uint32_t mirror_base = 94U;
-        HandshakeMachine caller{dispatch_caller_configuration(44U)};
-        HandshakeMachine listener{{
+        HandshakeMachine caller {dispatch_caller_configuration(44U)};
+        HandshakeMachine listener {{
             .role = ConnectionRole::listener,
             .local_socket_id = 412U,
-            .initial_sequence = SequenceNumber{8'000U},
+            .initial_sequence = SequenceNumber {8'000U},
             .group_membership_negotiator = negotiate_test_group,
             .group_membership_context = &mirror_base,
             .cookie_generator = datagram_test_cookie,
@@ -643,16 +643,16 @@ TEST(hsv5_multicast_dispatch_is_rejected_without_policy_or_announcement)
     for (const int variant : {0, 1, 2}) {
         std::uint32_t cookie_secret = 0x71a2'51c3U;
         std::uint32_t mirror_base = 95U;
-        DispatchProviderContext provider{
+        DispatchProviderContext provider {
             .mirror_base = mirror_base,
             .fail = variant == 1,
             .wrong_id = variant == 2,
         };
-        HandshakeMachine caller{dispatch_caller_configuration(45U)};
-        HandshakeMachine listener{{
+        HandshakeMachine caller {dispatch_caller_configuration(45U)};
+        HandshakeMachine listener {{
             .role = ConnectionRole::listener,
             .local_socket_id = 422U,
-            .initial_sequence = SequenceNumber{8'000U},
+            .initial_sequence = SequenceNumber {8'000U},
             .group_membership_negotiator = negotiate_test_group,
             .group_membership_context = &mirror_base,
             .group_membership_policy = {.admit_multicast_dispatch = true},
@@ -678,12 +678,12 @@ TEST(hsv5_multicast_dispatch_is_rejected_without_policy_or_announcement)
     {
         std::uint32_t cookie_secret = 0x81a2'51c3U;
         std::uint32_t mirror_base = 96U;
-        DispatchProviderContext provider{.mirror_base = mirror_base};
-        HandshakeMachine caller{dispatch_caller_configuration(46U)};
-        HandshakeMachine listener{{
+        DispatchProviderContext provider {.mirror_base = mirror_base};
+        HandshakeMachine caller {dispatch_caller_configuration(46U)};
+        HandshakeMachine listener {{
             .role = ConnectionRole::listener,
             .local_socket_id = 432U,
-            .initial_sequence = SequenceNumber{8'000U},
+            .initial_sequence = SequenceNumber {8'000U},
             .group_membership_negotiator = negotiate_test_group,
             .group_membership_context = &mirror_base,
             .group_membership_policy = {.admit_multicast_dispatch = true},
@@ -710,11 +710,11 @@ TEST(hsv5_multicast_dispatch_is_rejected_without_policy_or_announcement)
     {
         std::uint32_t cookie_secret = 0x91a2'51c3U;
         std::uint32_t mirror_base = 97U;
-        DispatchProviderContext provider{.mirror_base = mirror_base};
-        HandshakeMachine caller{{
+        DispatchProviderContext provider {.mirror_base = mirror_base};
+        HandshakeMachine caller {{
             .role = ConnectionRole::caller,
             .local_socket_id = 441U,
-            .initial_sequence = SequenceNumber{8'000U},
+            .initial_sequence = SequenceNumber {8'000U},
             .has_group_membership = true,
             .group_membership =
                 {
@@ -724,10 +724,10 @@ TEST(hsv5_multicast_dispatch_is_rejected_without_policy_or_announcement)
                     .weight = 1U,
                 },
         }};
-        HandshakeMachine listener{{
+        HandshakeMachine listener {{
             .role = ConnectionRole::listener,
             .local_socket_id = 442U,
-            .initial_sequence = SequenceNumber{8'000U},
+            .initial_sequence = SequenceNumber {8'000U},
             .group_membership_negotiator = negotiate_test_group,
             .group_membership_context = &mirror_base,
             .cookie_generator = datagram_test_cookie,

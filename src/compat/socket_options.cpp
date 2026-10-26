@@ -1345,8 +1345,8 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         if (!socket.listen_callback_active
             || socket.incoming_group_type != ROBOTWEAX_SRT_GTYPE_MULTICAST
             || value == nullptr || value_size <= 0
-            || value_size > static_cast<int>(
-                   socket.incoming_multicast_key.size()))
+            || value_size
+                > static_cast<int>(socket.incoming_multicast_key.size()))
             return invalid_parameter();
         std::memcpy(socket.incoming_multicast_key.data(), value,
             static_cast<std::size_t>(value_size));

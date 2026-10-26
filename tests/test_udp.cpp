@@ -681,10 +681,10 @@ constexpr IpEndpoint ipv6_test_group(std::uint16_t port) noexcept
 TEST(ip_endpoint_classifies_multicast_addresses)
 {
     REQUIRE(ipv4_test_group(1).is_multicast());
-    REQUIRE((IpEndpoint{.address = {224, 0, 0, 1}}).is_multicast());
-    REQUIRE((IpEndpoint{.address = {239, 255, 255, 255}}).is_multicast());
-    REQUIRE(!(IpEndpoint{.address = {223, 255, 255, 255}}).is_multicast());
-    REQUIRE(!(IpEndpoint{.address = {240, 0, 0, 1}}).is_multicast());
+    REQUIRE((IpEndpoint {.address = {224, 0, 0, 1}}).is_multicast());
+    REQUIRE((IpEndpoint {.address = {239, 255, 255, 255}}).is_multicast());
+    REQUIRE(!(IpEndpoint {.address = {223, 255, 255, 255}}).is_multicast());
+    REQUIRE(!(IpEndpoint {.address = {240, 0, 0, 1}}).is_multicast());
     REQUIRE(!IpEndpoint::loopback().is_multicast());
     REQUIRE(ipv6_test_group(1).is_multicast());
     REQUIRE(!IpEndpoint::ipv6_loopback().is_multicast());
@@ -699,14 +699,18 @@ TEST(udp_multicast_options_validate_arguments_before_touching_the_socket)
     UdpSocket ipv4;
     REQUIRE(ipv4.valid());
     // Family mismatch and non-multicast groups are argument errors.
-    REQUIRE_EQ(ipv4.join_multicast(ipv6_test_group(5'000)), Error::invalid_state);
-    REQUIRE_EQ(ipv4.join_multicast(IpEndpoint::loopback(5'000)), Error::invalid_state);
-    REQUIRE_EQ(ipv4.leave_multicast(IpEndpoint::loopback(5'000)), Error::invalid_state);
+    REQUIRE_EQ(
+        ipv4.join_multicast(ipv6_test_group(5'000)), Error::invalid_state);
+    REQUIRE_EQ(
+        ipv4.join_multicast(IpEndpoint::loopback(5'000)), Error::invalid_state);
+    REQUIRE_EQ(ipv4.leave_multicast(IpEndpoint::loopback(5'000)),
+        Error::invalid_state);
     REQUIRE_EQ(ipv4.last_system_error(), 0);
     // A multicast address is not an interface selector.
     REQUIRE_EQ(ipv4.join_multicast(ipv4_test_group(5'000), ipv4_test_group(0)),
         Error::invalid_state);
-    REQUIRE_EQ(ipv4.set_multicast_interface(ipv4_test_group(0)), Error::invalid_state);
+    REQUIRE_EQ(
+        ipv4.set_multicast_interface(ipv4_test_group(0)), Error::invalid_state);
     REQUIRE_EQ(ipv4.set_multicast_interface(IpEndpoint::ipv6_loopback()),
         Error::invalid_state);
     // Hop limits are 0..255; unlike unicast TTL, 0 is meaningful (on-host).
@@ -785,8 +789,8 @@ TEST(udp_multicast_join_leave_delivers_one_datagram_to_two_local_receivers)
     REQUIRE(sender.valid());
     REQUIRE_EQ(sender.set_multicast_time_to_live(0), Error::none);
     REQUIRE_EQ(sender.set_multicast_loopback(true), Error::none);
-    const std::array<std::byte, 5> payload{std::byte{'m'}, std::byte{'c'},
-        std::byte{'a'}, std::byte{'s'}, std::byte{'t'}};
+    const std::array<std::byte, 5> payload {std::byte {'m'}, std::byte {'c'},
+        std::byte {'a'}, std::byte {'s'}, std::byte {'t'}};
     const UdpIoResult sent = sender.send_to(payload, group);
     REQUIRE(sent);
     REQUIRE_EQ(sent.bytes_transferred, payload.size());
@@ -795,7 +799,7 @@ TEST(udp_multicast_join_leave_delivers_one_datagram_to_two_local_receivers)
         const UdpWaitResult ready = receiver->wait_readable(2'000);
         REQUIRE(ready);
         REQUIRE(ready.ready);
-        std::array<std::byte, 64> buffer{};
+        std::array<std::byte, 64> buffer {};
         const UdpIoResult received = receiver->receive_from(buffer);
         REQUIRE(received);
         REQUIRE_EQ(received.bytes_transferred, payload.size());
@@ -840,19 +844,20 @@ TEST(udp_ipv6_multicast_join_and_loopback_delivery)
     }
     group.scope_id = interface.scope_id;
     const Error joined = receiver.join_multicast(group, interface);
-    SKIP_UNLESS(joined == Error::none,
-        "no IPv6 multicast membership on this host");
+    SKIP_UNLESS(
+        joined == Error::none, "no IPv6 multicast membership on this host");
 
     UdpSocket sender(IpAddressFamily::ipv6);
     REQUIRE(sender.valid());
     REQUIRE_EQ(sender.set_multicast_interface(interface), Error::none);
     REQUIRE_EQ(sender.set_multicast_time_to_live(0), Error::none);
     REQUIRE_EQ(sender.set_multicast_loopback(true), Error::none);
-    const std::array<std::byte, 3> payload{std::byte{'v'}, std::byte{'6'}, std::byte{'!'}};
+    const std::array<std::byte, 3> payload {
+        std::byte {'v'}, std::byte {'6'}, std::byte {'!'}};
     REQUIRE(sender.send_to(payload, group));
     const UdpWaitResult ready = receiver.wait_readable(2'000);
     REQUIRE(ready && ready.ready);
-    std::array<std::byte, 64> buffer{};
+    std::array<std::byte, 64> buffer {};
     const UdpIoResult received = receiver.receive_from(buffer);
     REQUIRE(received);
     REQUIRE_EQ(received.bytes_transferred, payload.size());

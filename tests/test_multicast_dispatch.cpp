@@ -146,11 +146,11 @@ constexpr std::uint16_t multicast_port = 25'999;
     sockaddr_in result {};
     result.sin_family = AF_INET;
     result.sin_port = htons(port);
-    result.sin_addr.s_addr = htonl(
-        (static_cast<std::uint32_t>(address[0]) << 24U)
-        | (static_cast<std::uint32_t>(address[1]) << 16U)
-        | (static_cast<std::uint32_t>(address[2]) << 8U)
-        | static_cast<std::uint32_t>(address[3]));
+    result.sin_addr.s_addr =
+        htonl((static_cast<std::uint32_t>(address[0]) << 24U)
+            | (static_cast<std::uint32_t>(address[1]) << 16U)
+            | (static_cast<std::uint32_t>(address[2]) << 8U)
+            | static_cast<std::uint32_t>(address[3]));
     return result;
 }
 
@@ -163,18 +163,17 @@ constexpr std::uint16_t multicast_port = 25'999;
     if (!receiver.valid() || !sender.valid()
         || receiver.set_reuse_address(true) != Error::none
         || receiver.bind(IpEndpoint::any(multicast_port)) != Error::none
-        || receiver.join_multicast({.address = {239, 255, 133, 12}},
-               IpEndpoint::loopback())
+        || receiver.join_multicast(
+               {.address = {239, 255, 133, 12}}, IpEndpoint::loopback())
             != Error::none
         || sender.bind(IpEndpoint::loopback()) != Error::none
-        || sender.set_multicast_interface(IpEndpoint::loopback())
-            != Error::none
+        || sender.set_multicast_interface(IpEndpoint::loopback()) != Error::none
         || sender.set_multicast_time_to_live(0) != Error::none) {
         return false;
     }
     const std::array<std::byte, 1> probe {std::byte {1}};
-    if (!sender.send_to(probe,
-            {.address = {239, 255, 133, 12}, .port = multicast_port})) {
+    if (!sender.send_to(
+            probe, {.address = {239, 255, 133, 12}, .port = multicast_port})) {
         return false;
     }
     const UdpWaitResult ready = receiver.wait_readable(500);
@@ -196,8 +195,8 @@ struct Peers {
     }
     void drop(SRTSOCKET handle)
     {
-        handles.erase(std::remove(handles.begin(), handles.end(), handle),
-            handles.end());
+        handles.erase(
+            std::remove(handles.begin(), handles.end(), handle), handles.end());
         (void)srt_close(handle);
     }
 };
@@ -207,8 +206,8 @@ struct AdmissionLog {
     std::atomic<int> multicast_proposals {0};
 };
 
-int admit_dispatch(void* opaque, SRTSOCKET socket, int, const sockaddr*,
-    const char*)
+int admit_dispatch(
+    void* opaque, SRTSOCKET socket, int, const sockaddr*, const char*)
 {
     auto& log = *static_cast<AdmissionLog*>(opaque);
     ++log.calls;
@@ -222,8 +221,8 @@ int admit_dispatch(void* opaque, SRTSOCKET socket, int, const sockaddr*,
     }
     ++log.multicast_proposals;
     const std::uint64_t domain = 7;
-    if (srt_setsockflag(socket, SRTO_ROBOTWEAX_GROUPDOMAIN, &domain,
-            sizeof(domain))
+    if (srt_setsockflag(
+            socket, SRTO_ROBOTWEAX_GROUPDOMAIN, &domain, sizeof(domain))
         != 0) {
         return -1;
     }
@@ -234,12 +233,12 @@ int admit_dispatch(void* opaque, SRTSOCKET socket, int, const sockaddr*,
 
 // Admits any multicast proposal under a fixed key; used where the listener
 // configuration itself is what must refuse the join.
-int admit_dispatch_plain(void*, SRTSOCKET socket, int, const sockaddr*,
-    const char*)
+int admit_dispatch_plain(
+    void*, SRTSOCKET socket, int, const sockaddr*, const char*)
 {
     const std::uint64_t domain = 7;
-    if (srt_setsockflag(socket, SRTO_ROBOTWEAX_GROUPDOMAIN, &domain,
-            sizeof(domain))
+    if (srt_setsockflag(
+            socket, SRTO_ROBOTWEAX_GROUPDOMAIN, &domain, sizeof(domain))
         != 0) {
         return -1;
     }
@@ -324,8 +323,8 @@ constexpr const char group_passphrase[] = "sixteen-char-key";
 #ifdef ENABLE_AEAD_API_PREVIEW
     if (aes_gcm) {
         const std::int32_t gcm = 2;
-        REQUIRE_EQ(srt_setsockflag(group, SRTO_CRYPTOMODE, &gcm, sizeof(gcm)),
-            0);
+        REQUIRE_EQ(
+            srt_setsockflag(group, SRTO_CRYPTOMODE, &gcm, sizeof(gcm)), 0);
     }
 #else
     (void)aes_gcm;
@@ -400,8 +399,8 @@ void run_dispatch_stream(const StreamScenario& scenario)
 #ifdef ENABLE_AEAD_API_PREVIEW
         if (scenario.aes_gcm) {
             const std::int32_t gcm = 2;
-            REQUIRE_EQ(srt_setsockflag(listener, SRTO_CRYPTOMODE, &gcm,
-                           sizeof(gcm)),
+            REQUIRE_EQ(
+                srt_setsockflag(listener, SRTO_CRYPTOMODE, &gcm, sizeof(gcm)),
                 0);
         }
 #endif
@@ -410,25 +409,25 @@ void run_dispatch_stream(const StreamScenario& scenario)
                            &scenario.preannouncement,
                            sizeof(scenario.preannouncement)),
                 0);
-            REQUIRE_EQ(srt_setsockflag(listener, SRTO_KMREFRESHRATE,
-                           &scenario.refresh_rate,
-                           sizeof(scenario.refresh_rate)),
+            REQUIRE_EQ(
+                srt_setsockflag(listener, SRTO_KMREFRESHRATE,
+                    &scenario.refresh_rate, sizeof(scenario.refresh_rate)),
                 0);
         }
     }
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP,
                    &group_address, sizeof(group_address)),
         0);
-    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE,
-                   &interface, sizeof(interface)),
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE, &interface,
+                   sizeof(interface)),
         0);
-    REQUIRE_EQ(
-        srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_TTL, &hops, sizeof(hops)),
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_ROBOTWEAX_MCAST_TTL, &hops, sizeof(hops)),
         0);
     sockaddr_in readback {};
     int readback_size = sizeof(readback);
-    REQUIRE_EQ(srt_getsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP,
-                   &readback, &readback_size),
+    REQUIRE_EQ(srt_getsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP, &readback,
+                   &readback_size),
         0);
     REQUIRE_EQ(readback.sin_port, group_address.sin_port);
     REQUIRE_EQ(srt_listen_callback(listener, admit_dispatch, &admissions), 0);
@@ -438,17 +437,20 @@ void run_dispatch_stream(const StreamScenario& scenario)
         0);
     REQUIRE_EQ(srt_listen(listener, 8), 0);
     int bound_size = sizeof(bound);
-    REQUIRE_EQ(srt_getsockname(listener, reinterpret_cast<sockaddr*>(&bound),
-                   &bound_size),
+    REQUIRE_EQ(srt_getsockname(
+                   listener, reinterpret_cast<sockaddr*>(&bound), &bound_size),
         0);
 
     // Three receivers join; srt_accept yields the sender group once.
-    const SRTSOCKET receiver_a = make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+    const SRTSOCKET receiver_a =
+        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
     const SRTSOCKET sender = peers.keep(srt_accept(listener, nullptr, nullptr));
     REQUIRE(sender != SRT_INVALID_SOCK);
     REQUIRE((sender & SRTGROUP_MASK) != 0);
-    const SRTSOCKET receiver_b = make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
-    const SRTSOCKET receiver_c = make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+    const SRTSOCKET receiver_b =
+        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+    const SRTSOCKET receiver_c =
+        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
     REQUIRE(wait_for_members(sender, 3, scenario.encrypted));
     REQUIRE_EQ(admissions.multicast_proposals.load(), 3);
     for (const SRTSOCKET receiver : {receiver_a, receiver_b, receiver_c}) {
@@ -475,8 +477,8 @@ void run_dispatch_stream(const StreamScenario& scenario)
         REQUIRE_EQ(record->dispatch->admission_key, std::string {"camera-1"});
         REQUIRE_EQ(record->members.size(), 3U);
         REQUIRE_EQ(record->admission_domain, 7U);
-        REQUIRE_EQ(record->dispatch->key_schedule != nullptr,
-            scenario.encrypted);
+        REQUIRE_EQ(
+            record->dispatch->key_schedule != nullptr, scenario.encrypted);
     }
     // The sender does not receive; a receiver does not send.
     std::array<char, 16> scratch {};
@@ -557,13 +559,14 @@ void run_dispatch_stream(const StreamScenario& scenario)
     expect_messages(receiver_b, first_batch, second_batch);
     expect_messages(receiver_c, first_batch, second_batch);
 
-    const SRTSOCKET receiver_d = make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+    const SRTSOCKET receiver_d =
+        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
     REQUIRE(wait_for_members(sender, 3, scenario.encrypted));
     REQUIRE(wait_for_members(receiver_d, 1));
     // Let the joiner's TSBPD clock settle (and, encrypted, its initial key
     // exchange complete) before the first live packet.
-    std::this_thread::sleep_for(std::chrono::milliseconds {
-        scenario.encrypted ? 200 : 50});
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds {scenario.encrypted ? 200 : 50});
     const int third_batch = scenario.third_batch;
     const int third_first = first_batch + second_batch;
     for (int index = third_first; index < third_first + third_batch; ++index) {
@@ -606,8 +609,8 @@ struct DropOneOriginal {
     bool lose_multicast_repair = false;
 };
 
-UdpIoResult drop_one_original(std::span<const std::byte> bytes,
-    IpEndpoint peer, void* context) noexcept
+UdpIoResult drop_one_original(
+    std::span<const std::byte> bytes, IpEndpoint peer, void* context) noexcept
 {
     auto& hook = *static_cast<DropOneOriginal*>(context);
     if (peer == hook.multicast) {
@@ -634,8 +637,8 @@ UdpIoResult drop_one_original(std::span<const std::byte> bytes,
 
 void run_dispatch_shared_loss(bool lose_multicast_repair)
 {
-    SKIP_UNLESS(loopback_multicast_available(),
-        "no loopback multicast on this host");
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
     Peers peers;
     AdmissionLog admissions;
     const SRTSOCKET listener = peers.keep(srt_create_socket());
@@ -646,11 +649,11 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP,
                    &group_address, sizeof(group_address)),
         0);
-    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE,
-                   &interface, sizeof(interface)),
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE, &interface,
+                   sizeof(interface)),
         0);
-    REQUIRE_EQ(
-        srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_TTL, &hops, sizeof(hops)),
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_ROBOTWEAX_MCAST_TTL, &hops, sizeof(hops)),
         0);
     REQUIRE_EQ(srt_listen_callback(listener, admit_dispatch, &admissions), 0);
     sockaddr_in bound = ipv4_sockaddr({127, 0, 0, 1}, 0);
@@ -659,8 +662,8 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
         0);
     REQUIRE_EQ(srt_listen(listener, 8), 0);
     int bound_size = sizeof(bound);
-    REQUIRE_EQ(srt_getsockname(listener, reinterpret_cast<sockaddr*>(&bound),
-                   &bound_size),
+    REQUIRE_EQ(srt_getsockname(
+                   listener, reinterpret_cast<sockaddr*>(&bound), &bound_size),
         0);
     DropOneOriginal hook;
     hook.lose_multicast_repair = lose_multicast_repair;
@@ -675,7 +678,10 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
     hook.channel->set_send_hook_for_testing(drop_one_original, &hook);
     struct UnhookOnExit {
         DropOneOriginal& hook;
-        ~UnhookOnExit() { hook.channel->set_send_hook_for_testing(nullptr, nullptr); }
+        ~UnhookOnExit()
+        {
+            hook.channel->set_send_hook_for_testing(nullptr, nullptr);
+        }
     } unhook {hook};
 
     const SRTSOCKET receiver_a = make_receiver(peers, bound);
@@ -690,8 +696,9 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
 
     // The option belongs to the dispatch sender only.
     std::int32_t threshold = 2;
-    REQUIRE_EQ(srt_setsockflag(receiver_a, SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD,
-                   &threshold, sizeof(threshold)),
+    REQUIRE_EQ(
+        srt_setsockflag(receiver_a, SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD,
+            &threshold, sizeof(threshold)),
         SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
     const std::int32_t too_many = 17;
@@ -742,7 +749,8 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
     if (!lose_multicast_repair) {
         REQUIRE_EQ(transmit->skipped_repeats(), 1U);
     }
-    REQUIRE_EQ(transmit->multicast_packets(), static_cast<std::uint64_t>(count + 1));
+    REQUIRE_EQ(
+        transmit->multicast_packets(), static_cast<std::uint64_t>(count + 1));
     REQUIRE_EQ(hook.multicast_data.load(), count + 1);
 
     // The same counters through the public read-only option, on the sender
@@ -750,8 +758,8 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
     // carry the dispatch ID is counted as filtered, never delivered.
     ROBOTWEAX_SRT_MCAST_STATS_V1 stats {};
     int stats_size = sizeof(stats);
-    REQUIRE_EQ(
-        srt_getsockflag(sender, SRTO_ROBOTWEAX_MCAST_STATS, &stats, &stats_size),
+    REQUIRE_EQ(srt_getsockflag(
+                   sender, SRTO_ROBOTWEAX_MCAST_STATS, &stats, &stats_size),
         0);
     REQUIRE_EQ(stats.abi_version, ROBOTWEAX_SRT_MCAST_STATS_VERSION);
     REQUIRE_EQ(stats.member_count, 3U);
@@ -766,7 +774,8 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
         SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
     {
-        const SRTSOCKET bonding = peers.keep(srt_create_group(SRT_GTYPE_BROADCAST));
+        const SRTSOCKET bonding =
+            peers.keep(srt_create_group(SRT_GTYPE_BROADCAST));
         stats_size = sizeof(stats);
         REQUIRE_EQ(srt_getsockflag(bonding, SRTO_ROBOTWEAX_MCAST_STATS, &stats,
                        &stats_size),
@@ -775,8 +784,8 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
     {
         UdpSocket stray;
         REQUIRE(stray.valid());
-        REQUIRE_EQ(stray.set_multicast_interface(IpEndpoint::loopback()),
-            Error::none);
+        REQUIRE_EQ(
+            stray.set_multicast_interface(IpEndpoint::loopback()), Error::none);
         REQUIRE_EQ(stray.set_multicast_time_to_live(0), Error::none);
         // A well-formed DATA header addressed to socket 0x1234, from a
         // foreign source: no route, so it is filtered before decoding.
@@ -789,8 +798,8 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
     const auto receiver_stats = [&](SRTSOCKET receiver) {
         ROBOTWEAX_SRT_MCAST_STATS_V1 result {};
         int size = sizeof(result);
-        REQUIRE_EQ(srt_getsockflag(receiver, SRTO_ROBOTWEAX_MCAST_STATS,
-                       &result, &size),
+        REQUIRE_EQ(srt_getsockflag(
+                       receiver, SRTO_ROBOTWEAX_MCAST_STATS, &result, &size),
             0);
         return result;
     };
@@ -825,16 +834,16 @@ TEST(
 
 TEST(multicast_dispatch_group_delivers_one_stream_to_several_receivers)
 {
-    SKIP_UNLESS(loopback_multicast_available(),
-        "no loopback multicast on this host");
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
     run_dispatch_stream({});
 }
 
 #ifdef ENABLE_AEAD_API_PREVIEW
 TEST(multicast_dispatch_group_authenticates_with_aes_gcm_group_key)
 {
-    SKIP_UNLESS(loopback_multicast_available(),
-        "no loopback multicast on this host");
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
     // Every DATA packet of a dispatch member names the group as its
     // destination, so the authenticated header is identical on the
     // multicast copy and on a unicast repeat.
@@ -853,8 +862,8 @@ TEST(multicast_dispatch_group_authenticates_with_aes_gcm_group_key)
 
 TEST(multicast_dispatch_group_encrypts_with_one_group_key_across_rotations)
 {
-    SKIP_UNLESS(loopback_multicast_available(),
-        "no loopback multicast on this host");
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
     // Refresh every 64 group positions, announce 16 ahead: the first batch
     // crosses three key generations, the late joiner arrives after them and
     // must still read the live generation it is handed at its own exchange.
@@ -871,8 +880,8 @@ TEST(multicast_dispatch_group_encrypts_with_one_group_key_across_rotations)
 
 TEST(multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding)
 {
-    SKIP_UNLESS(loopback_multicast_available(),
-        "no loopback multicast on this host");
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
     Peers peers;
     const SRTSOCKET listener = peers.keep(srt_create_socket());
     const sockaddr_in group_address =
@@ -881,19 +890,19 @@ TEST(multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding)
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP,
                    &group_address, sizeof(group_address)),
         0);
-    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE,
-                   &interface, sizeof(interface)),
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE, &interface,
+                   sizeof(interface)),
         0);
     // Domain set, key not set: the join must be refused.
-    REQUIRE_EQ(srt_listen_callback(
-                   listener,
-                   [](void*, SRTSOCKET socket, int, const sockaddr*,
-                       const char*) {
-                       const std::uint64_t domain = 7;
-                       return srt_setsockflag(socket,
-                           SRTO_ROBOTWEAX_GROUPDOMAIN, &domain, sizeof(domain));
-                   },
-                   nullptr),
+    REQUIRE_EQ(
+        srt_listen_callback(
+            listener,
+            [](void*, SRTSOCKET socket, int, const sockaddr*, const char*) {
+                const std::uint64_t domain = 7;
+                return srt_setsockflag(socket, SRTO_ROBOTWEAX_GROUPDOMAIN,
+                    &domain, sizeof(domain));
+            },
+            nullptr),
         0);
     sockaddr_in bound = ipv4_sockaddr({127, 0, 0, 1}, 0);
     REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&bound),
@@ -901,8 +910,8 @@ TEST(multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding)
         0);
     REQUIRE_EQ(srt_listen(listener, 4), 0);
     int bound_size = sizeof(bound);
-    REQUIRE_EQ(srt_getsockname(listener, reinterpret_cast<sockaddr*>(&bound),
-                   &bound_size),
+    REQUIRE_EQ(srt_getsockname(
+                   listener, reinterpret_cast<sockaddr*>(&bound), &bound_size),
         0);
     const std::int32_t connect_timeout = 1'500;
 
@@ -912,8 +921,8 @@ TEST(multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding)
         REQUIRE_EQ(srt_setsockflag(receiver, SRTO_CONNTIMEO, &connect_timeout,
                        sizeof(connect_timeout)),
             0);
-        SRT_SOCKGROUPCONFIG endpoint = srt_prepare_endpoint(nullptr,
-            reinterpret_cast<const sockaddr*>(&bound), sizeof(bound));
+        SRT_SOCKGROUPCONFIG endpoint = srt_prepare_endpoint(
+            nullptr, reinterpret_cast<const sockaddr*>(&bound), sizeof(bound));
         REQUIRE_EQ(srt_connect_group(receiver, &endpoint, 1), SRT_ERROR);
         REQUIRE_EQ(srt_getsockstate(receiver), SRTS_BROKEN);
     }
@@ -925,8 +934,8 @@ TEST(multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding)
         REQUIRE_EQ(srt_setsockflag(bonding, SRTO_CONNTIMEO, &connect_timeout,
                        sizeof(connect_timeout)),
             0);
-        SRT_SOCKGROUPCONFIG endpoint = srt_prepare_endpoint(nullptr,
-            reinterpret_cast<const sockaddr*>(&bound), sizeof(bound));
+        SRT_SOCKGROUPCONFIG endpoint = srt_prepare_endpoint(
+            nullptr, reinterpret_cast<const sockaddr*>(&bound), sizeof(bound));
         REQUIRE_EQ(srt_connect_group(bonding, &endpoint, 1), SRT_ERROR);
     }
     // Encryption is all-or-nothing per dispatch group: a receiver without
@@ -942,8 +951,8 @@ TEST(multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding)
         REQUIRE_EQ(srt_setsockflag(encrypted, SRTO_PASSPHRASE, group_passphrase,
                        static_cast<int>(sizeof(group_passphrase) - 1U)),
             0);
-        REQUIRE_EQ(srt_listen_callback(encrypted, admit_dispatch_plain, nullptr),
-            0);
+        REQUIRE_EQ(
+            srt_listen_callback(encrypted, admit_dispatch_plain, nullptr), 0);
         sockaddr_in encrypted_bound = ipv4_sockaddr({127, 0, 0, 1}, 0);
         REQUIRE_EQ(srt_bind(encrypted,
                        reinterpret_cast<const sockaddr*>(&encrypted_bound),
@@ -951,9 +960,9 @@ TEST(multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding)
             0);
         REQUIRE_EQ(srt_listen(encrypted, 4), 0);
         int encrypted_size = sizeof(encrypted_bound);
-        REQUIRE_EQ(srt_getsockname(encrypted,
-                       reinterpret_cast<sockaddr*>(&encrypted_bound),
-                       &encrypted_size),
+        REQUIRE_EQ(
+            srt_getsockname(encrypted,
+                reinterpret_cast<sockaddr*>(&encrypted_bound), &encrypted_size),
             0);
         const SRTSOCKET receiver =
             peers.keep(srt_create_group(ROBOTWEAX_SRT_GTYPE_MULTICAST));
@@ -967,8 +976,8 @@ TEST(multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding)
     }
     // The option itself is rejected outside a multicast admission.
     const SRTSOCKET plain = peers.keep(srt_create_socket());
-    REQUIRE_EQ(srt_setsockflag(plain, SRTO_ROBOTWEAX_MULTICAST, "k", 1),
-        SRT_ERROR);
+    REQUIRE_EQ(
+        srt_setsockflag(plain, SRTO_ROBOTWEAX_MULTICAST, "k", 1), SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
     const sockaddr_in unicast = ipv4_sockaddr({10, 1, 2, 3}, 5'000);
     REQUIRE_EQ(srt_setsockflag(plain, SRTO_ROBOTWEAX_MCAST_GROUP, &unicast,

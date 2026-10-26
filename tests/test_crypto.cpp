@@ -3759,8 +3759,9 @@ TEST(crypto_shared_schedule_maps_group_sequence_to_generation_and_selector)
     schedule.copy_salt(salt_a);
     schedule.copy_salt(salt_b);
     REQUIRE(salt_a == salt_b);
-    REQUIRE(std::any_of(salt_a.begin(), salt_a.end(),
-        [](std::byte value) { return value != std::byte {}; }));
+    REQUIRE(std::any_of(salt_a.begin(), salt_a.end(), [](std::byte value) {
+        return value != std::byte {};
+    }));
 
     // Only the next generation may be created on demand; a jump ahead is
     // refused, and a generation that fell out of the retained window too.

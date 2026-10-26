@@ -93,7 +93,7 @@ ExtensionEncodeResult encode_group_membership(
 MulticastDispatchDecodeResult decode_multicast_dispatch(
     const HandshakeExtensionView& extension) noexcept
 {
-    constexpr MulticastDispatchDecodeResult invalid{
+    constexpr MulticastDispatchDecodeResult invalid {
         .error = Error::invalid_extension};
     if (extension.type != HandshakeExtensionType::multicast_dispatch
         || extension.content.size() != multicast_dispatch_content_size) {
@@ -107,14 +107,14 @@ MulticastDispatchDecodeResult decode_multicast_dispatch(
     const auto flags = std::to_integer<std::uint8_t>(content[9]);
     if ((family != 4U && family != 6U)
         || (flags & ~multicast_dispatch_flag_interface_hint) != 0U
-        || content[57] != std::byte{} || content[58] != std::byte{}
-        || content[59] != std::byte{}) {
+        || content[57] != std::byte {} || content[58] != std::byte {}
+        || content[59] != std::byte {}) {
         return invalid;
     }
     MulticastDispatch dispatch;
     dispatch.group_id = read_u32(content + 4);
-    const IpAddressFamily ip_family = family == 4U
-        ? IpAddressFamily::ipv4 : IpAddressFamily::ipv6;
+    const IpAddressFamily ip_family =
+        family == 4U ? IpAddressFamily::ipv4 : IpAddressFamily::ipv6;
     dispatch.multicast_group.family = ip_family;
     dispatch.multicast_group.port = read_u16(content + 10);
     for (std::size_t index = 0; index < 16; ++index) {
@@ -128,8 +128,8 @@ MulticastDispatchDecodeResult decode_multicast_dispatch(
         // Padding must be zero so two encoders cannot disagree on bytes
         // the receiver never reads.
         for (std::size_t index = 4; index < 16; ++index) {
-            if (content[12 + index] != std::byte{}
-                || content[28 + index] != std::byte{}) {
+            if (content[12 + index] != std::byte {}
+                || content[28 + index] != std::byte {}) {
                 return invalid;
             }
         }
@@ -141,14 +141,14 @@ MulticastDispatchDecodeResult decode_multicast_dispatch(
         // IPv6 selects the interface by index; the address bytes are unused
         // and must be zero except the index in the last four.
         for (std::size_t index = 0; index < 12; ++index) {
-            if (content[28 + index] != std::byte{}) {
+            if (content[28 + index] != std::byte {}) {
                 return invalid;
             }
         }
         dispatch.interface_hint.scope_id = read_u32(content + 40);
     }
     if (!dispatch.has_interface_hint
-        && dispatch.interface_hint != IpEndpoint{.family = ip_family}) {
+        && dispatch.interface_hint != IpEndpoint {.family = ip_family}) {
         // An absent hint carries no selector bytes.
         return invalid;
     }
@@ -169,13 +169,14 @@ ExtensionEncodeResult encode_multicast_dispatch(
     if (!valid_multicast_dispatch(dispatch)) {
         return {.error = Error::invalid_extension};
     }
-    std::array<std::byte, multicast_dispatch_content_size> content{};
+    std::array<std::byte, multicast_dispatch_content_size> content {};
     write_u32(content.data(), multicast_dispatch_magic);
     write_u32(content.data() + 4, dispatch.group_id);
     const bool ipv4 = dispatch.multicast_group.is_ipv4();
     content[8] = static_cast<std::byte>(ipv4 ? 4U : 6U);
     content[9] = static_cast<std::byte>(dispatch.has_interface_hint
-            ? multicast_dispatch_flag_interface_hint : 0U);
+            ? multicast_dispatch_flag_interface_hint
+            : 0U);
     write_u16(content.data() + 10, dispatch.multicast_group.port);
     for (std::size_t index = 0; index < (ipv4 ? 4U : 16U); ++index) {
         content[12 + index] =
@@ -192,8 +193,9 @@ ExtensionEncodeResult encode_multicast_dispatch(
         }
     }
     write_u32(content.data() + 44, dispatch.initial_sequence);
-    write_u64(content.data() + 48, static_cast<std::uint64_t>(
-        dispatch.timestamp_origin_delta_microseconds));
+    write_u64(content.data() + 48,
+        static_cast<std::uint64_t>(
+            dispatch.timestamp_origin_delta_microseconds));
     content[56] = static_cast<std::byte>(dispatch.time_to_live);
     return encode_extension(
         HandshakeExtensionType::multicast_dispatch, content, destination);

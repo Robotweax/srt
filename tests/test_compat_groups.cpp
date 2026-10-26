@@ -463,8 +463,7 @@ TEST(
 
 TEST(compat_multicast_dispatch_group_creation_and_receiver_shape)
 {
-    const auto multicast =
-        ROBOTWEAX_SRT_GTYPE_MULTICAST;
+    const auto multicast = ROBOTWEAX_SRT_GTYPE_MULTICAST;
     // Existing public enum values keep their reference ABI values.
     REQUIRE_EQ(static_cast<int>(SRT_GTYPE_E_END), 3);
     REQUIRE_EQ(static_cast<int>(ROBOTWEAX_SRT_GTYPE_MULTICAST), 4);
@@ -485,7 +484,8 @@ TEST(compat_multicast_dispatch_group_creation_and_receiver_shape)
     REQUIRE(record != nullptr);
     {
         std::lock_guard lock(record->mutex);
-        REQUIRE(record->category == robotweax::srt::compat::GroupCategory::dispatch);
+        REQUIRE(record->category
+            == robotweax::srt::compat::GroupCategory::dispatch);
         REQUIRE(record->dispatch != nullptr);
         REQUIRE(!record->dispatch->sender);
     }
@@ -494,10 +494,10 @@ TEST(compat_multicast_dispatch_group_creation_and_receiver_shape)
     // are rejected before any member is created.
     const sockaddr_in peer = ipv4_address(9'000);
     SRT_SOCKGROUPCONFIG endpoints[2] = {
-        srt_prepare_endpoint(nullptr,
-            reinterpret_cast<const sockaddr*>(&peer), sizeof(peer)),
-        srt_prepare_endpoint(nullptr,
-            reinterpret_cast<const sockaddr*>(&peer), sizeof(peer)),
+        srt_prepare_endpoint(
+            nullptr, reinterpret_cast<const sockaddr*>(&peer), sizeof(peer)),
+        srt_prepare_endpoint(
+            nullptr, reinterpret_cast<const sockaddr*>(&peer), sizeof(peer)),
     };
     REQUIRE_EQ(srt_connect_group(group, endpoints, 2), SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
@@ -528,7 +528,8 @@ TEST(compat_multicast_dispatch_group_creation_and_receiver_shape)
     REQUIRE(bonding_record != nullptr);
     {
         std::lock_guard lock(bonding_record->mutex);
-        REQUIRE(bonding_record->category == robotweax::srt::compat::GroupCategory::bonding);
+        REQUIRE(bonding_record->category
+            == robotweax::srt::compat::GroupCategory::bonding);
         REQUIRE(bonding_record->dispatch == nullptr);
     }
     REQUIRE_EQ(srt_close(bonding), 0);

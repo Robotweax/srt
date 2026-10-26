@@ -422,7 +422,8 @@ public:
     [[nodiscard]] CryptoMode mode() const noexcept;
     [[nodiscard]] std::uint64_t refresh_rate_packets() const noexcept;
     [[nodiscard]] std::uint64_t preannouncement_packets() const noexcept;
-    void copy_salt(std::span<std::byte, srt_salt_size> destination) const noexcept;
+    void copy_salt(
+        std::span<std::byte, srt_salt_size> destination) const noexcept;
     /**
      * Monotonic 64-bit position of `sequence` relative to the origin. The
      * frontier advances with the highest sequence seen; an older sequence
@@ -446,8 +447,8 @@ public:
      * Error::invalid_state; a generation more than one ahead of the newest
      * known is refused too, so a stray sequence cannot burn key material.
      */
-    [[nodiscard]] Error key_for(std::uint64_t generation,
-        std::span<std::byte> destination) noexcept;
+    [[nodiscard]] Error key_for(
+        std::uint64_t generation, std::span<std::byte> destination) noexcept;
 
 private:
     struct Generation {

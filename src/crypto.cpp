@@ -385,8 +385,8 @@ Error SharedTransmitKeySchedule::generate_locked(
     return Error::none;
 }
 
-Error SharedTransmitKeySchedule::key_for(std::uint64_t generation,
-    std::span<std::byte> destination) noexcept
+Error SharedTransmitKeySchedule::key_for(
+    std::uint64_t generation, std::span<std::byte> destination) noexcept
 {
     std::lock_guard lock(mutex_);
     if (!initialized_ || destination.size() < configuration_.key_length) {
@@ -406,8 +406,8 @@ Error SharedTransmitKeySchedule::key_for(std::uint64_t generation,
             return generated;
         }
     }
-    std::copy_n(slot.key.begin(), configuration_.key_length,
-        destination.begin());
+    std::copy_n(
+        slot.key.begin(), configuration_.key_length, destination.begin());
     return Error::none;
 }
 
@@ -810,15 +810,15 @@ Error CryptoSession::install_shared_generation(
     if (slot == nullptr) {
         return Error::invalid_state;
     }
-    if (shared_slot_known_[index] && shared_slot_generation_[index] == generation
-        && slot->ready()) {
+    if (shared_slot_known_[index]
+        && shared_slot_generation_[index] == generation && slot->ready()) {
         return Error::none;
     }
     std::array<std::byte, maximum_aes_key_size> key {};
     std::array<std::byte, srt_salt_size> salt {};
     const std::size_t length = shared_schedule_->key_length();
-    Error result = shared_schedule_->key_for(generation,
-        std::span {key}.first(length));
+    Error result =
+        shared_schedule_->key_for(generation, std::span {key}.first(length));
     if (result == Error::none) {
         shared_schedule_->copy_salt(salt);
         if (slot->ready()) {
@@ -899,18 +899,19 @@ Error CryptoSession::attach_shared_transmit_schedule(
     return prepare_bidirectional_sender(shared_schedule_->key_length());
 }
 
-Error CryptoSession::ensure_shared_key(SequenceNumber sequence,
-    KeySlot*& slot, EncryptionKey& selector) noexcept
+Error CryptoSession::ensure_shared_key(
+    SequenceNumber sequence, KeySlot*& slot, EncryptionKey& selector) noexcept
 {
-    const std::uint64_t generation =
-        shared_schedule_->generation_at(shared_schedule_->position_of(sequence));
+    const std::uint64_t generation = shared_schedule_->generation_at(
+        shared_schedule_->position_of(sequence));
     const Error installed = install_shared_generation(generation);
     if (installed != Error::none) {
         return installed;
     }
     selector = SharedTransmitKeySchedule::selector_of(generation);
     slot = transmit_slot(selector);
-    return slot != nullptr && slot->ready() ? Error::none : Error::invalid_state;
+    return slot != nullptr && slot->ready() ? Error::none
+                                            : Error::invalid_state;
 }
 
 Error CryptoSession::prepare_data_sequence(SequenceNumber sequence) noexcept
@@ -959,7 +960,8 @@ EncryptionKey CryptoSession::sender_key_for(SequenceNumber sequence) noexcept
         return active_sender_key_;
     }
     return SharedTransmitKeySchedule::selector_of(
-        shared_schedule_->generation_at(shared_schedule_->position_of(sequence)));
+        shared_schedule_->generation_at(
+            shared_schedule_->position_of(sequence)));
 }
 
 Error CryptoSession::generate_initial_sender_key(
@@ -1473,7 +1475,8 @@ Error CryptoSession::continue_without_peer_key(CryptoState reported) noexcept
 
 Error CryptoSession::prepare_rotation() noexcept
 {
-    if (!enabled() || shared_schedule_ != nullptr) return Error::none;
+    if (!enabled() || shared_schedule_ != nullptr)
+        return Error::none;
     if (unacknowledged_sending_) {
         // No peer can acknowledge a successor; rotation happens locally.
         return Error::none;
@@ -1525,7 +1528,8 @@ void CryptoSession::set_preannouncement_floor(std::uint64_t positions) noexcept
 
 Error CryptoSession::note_data_packet_sent() noexcept
 {
-    if (!enabled() || shared_schedule_ != nullptr) return Error::none;
+    if (!enabled() || shared_schedule_ != nullptr)
+        return Error::none;
     prepared_packet_sent_ = true;
     return note_sequences_consumed(1U);
 }

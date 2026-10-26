@@ -51,7 +51,7 @@ TEST(group_membership_has_exact_hsv5_wire_layout)
 
 TEST(group_membership_admits_multicast_dispatch_only_by_policy)
 {
-    const GroupMembership dispatch{
+    const GroupMembership dispatch {
         .group_id = group_handle_mask | 7U,
         .type = GroupType::multicast,
         .flags = 0U,
@@ -61,7 +61,7 @@ TEST(group_membership_admits_multicast_dispatch_only_by_policy)
     REQUIRE_EQ(validate_group_membership(dispatch),
         GroupMembershipValidation::unsupported_type);
     // An endpoint that offers dispatch groups admits a clean type 4.
-    const GroupMembershipPolicy offering{.admit_multicast_dispatch = true};
+    const GroupMembershipPolicy offering {.admit_multicast_dispatch = true};
     REQUIRE_EQ(validate_group_membership(dispatch, offering),
         GroupMembershipValidation::compatible);
     // Flags or a weight on a dispatch membership are not negotiable.
@@ -179,7 +179,7 @@ namespace {
 
 [[nodiscard]] MulticastDispatch sample_ipv4_dispatch()
 {
-    return MulticastDispatch{
+    return MulticastDispatch {
         .group_id = group_handle_mask | 0x1234U,
         .multicast_group = {.address = {239, 255, 133, 10}, .port = 5'999},
         .has_interface_hint = true,
@@ -198,7 +198,7 @@ namespace {
     group.address[15] = 0x11;
     IpEndpoint interface = IpEndpoint::ipv6_any();
     interface.scope_id = 3;
-    return MulticastDispatch{
+    return MulticastDispatch {
         .group_id = group_handle_mask | 9U,
         .multicast_group = group,
         .has_interface_hint = true,
@@ -213,7 +213,7 @@ namespace {
 [[nodiscard]] std::array<std::byte, 4 + multicast_dispatch_content_size>
 encoded_dispatch(const MulticastDispatch& dispatch)
 {
-    std::array<std::byte, 4 + multicast_dispatch_content_size> bytes{};
+    std::array<std::byte, 4 + multicast_dispatch_content_size> bytes {};
     const auto encoded = encode_multicast_dispatch(dispatch, bytes);
     REQUIRE(encoded);
     REQUIRE_EQ(encoded.bytes_written, bytes.size());
@@ -232,7 +232,8 @@ encoded_dispatch(const MulticastDispatch& dispatch)
 
 TEST(multicast_dispatch_round_trips_ipv4_and_ipv6_announcements)
 {
-    for (const auto& sample : {sample_ipv4_dispatch(), sample_ipv6_dispatch()}) {
+    for (const auto& sample :
+        {sample_ipv4_dispatch(), sample_ipv6_dispatch()}) {
         const auto bytes = encoded_dispatch(sample);
         const auto extension = decode_extension(bytes);
         REQUIRE(extension);
@@ -257,7 +258,7 @@ TEST(multicast_dispatch_round_trips_ipv4_and_ipv6_announcements)
 
 TEST(multicast_dispatch_encoder_rejects_invalid_announcements)
 {
-    std::array<std::byte, 64> bytes{};
+    std::array<std::byte, 64> bytes {};
     MulticastDispatch unmasked = sample_ipv4_dispatch();
     unmasked.group_id = 0x1234U;
     REQUIRE(!encode_multicast_dispatch(unmasked, bytes));
@@ -277,7 +278,7 @@ TEST(multicast_dispatch_encoder_rejects_invalid_announcements)
     group_as_interface.interface_hint = group_as_interface.multicast_group;
     REQUIRE(!encode_multicast_dispatch(group_as_interface, bytes));
     // Too small a destination is reported, not truncated.
-    std::array<std::byte, 4 + multicast_dispatch_content_size - 1> small{};
+    std::array<std::byte, 4 + multicast_dispatch_content_size - 1> small {};
     REQUIRE(!encode_multicast_dispatch(sample_ipv4_dispatch(), small));
 }
 
@@ -289,41 +290,41 @@ TEST(multicast_dispatch_decoder_rejects_malformed_wire_content)
 
     // Wrong magic or layout version: a foreign extension on this number.
     auto tampered = good;
-    tampered[content + 3] = std::byte{0x02};
+    tampered[content + 3] = std::byte {0x02};
     REQUIRE(!decode_bytes(tampered));
     tampered = good;
-    tampered[content + 0] = std::byte{0x00};
+    tampered[content + 0] = std::byte {0x00};
     REQUIRE(!decode_bytes(tampered));
     // Unknown family and unknown flag bits.
     tampered = good;
-    tampered[content + 8] = std::byte{5};
+    tampered[content + 8] = std::byte {5};
     REQUIRE(!decode_bytes(tampered));
     tampered = good;
-    tampered[content + 9] = std::byte{0x03};
+    tampered[content + 9] = std::byte {0x03};
     REQUIRE(!decode_bytes(tampered));
     // Non-zero IPv4 padding in the group or interface fields.
     tampered = good;
-    tampered[content + 12 + 7] = std::byte{1};
+    tampered[content + 12 + 7] = std::byte {1};
     REQUIRE(!decode_bytes(tampered));
     tampered = good;
-    tampered[content + 28 + 15] = std::byte{1};
+    tampered[content + 28 + 15] = std::byte {1};
     REQUIRE(!decode_bytes(tampered));
     // Reserved tail must be zero.
     for (const std::size_t offset : {57U, 58U, 59U}) {
         tampered = good;
-        tampered[content + offset] = std::byte{0xff};
+        tampered[content + offset] = std::byte {0xff};
         REQUIRE(!decode_bytes(tampered));
     }
     // Semantic checks apply to decoded content too.
     tampered = good;
-    tampered[content + 12] = std::byte{10}; // 10.255.133.10 is unicast
+    tampered[content + 12] = std::byte {10}; // 10.255.133.10 is unicast
     REQUIRE(!decode_bytes(tampered));
     tampered = good;
-    tampered[content + 44] = std::byte{0x80}; // sequence above 31 bits
+    tampered[content + 44] = std::byte {0x80}; // sequence above 31 bits
     REQUIRE(!decode_bytes(tampered));
     // Hint flag clear but selector bytes present.
     tampered = good;
-    tampered[content + 9] = std::byte{0};
+    tampered[content + 9] = std::byte {0};
     REQUIRE(!decode_bytes(tampered));
 
     // Wrong type with otherwise valid content, and a short content length.
@@ -340,6 +341,6 @@ TEST(multicast_dispatch_decoder_rejects_malformed_wire_content)
     const auto six = encoded_dispatch(sample_ipv6_dispatch());
     REQUIRE(decode_bytes(six));
     auto six_tampered = six;
-    six_tampered[content + 28] = std::byte{1};
+    six_tampered[content + 28] = std::byte {1};
     REQUIRE(!decode_bytes(six_tampered));
 }

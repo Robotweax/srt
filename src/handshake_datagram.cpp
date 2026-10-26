@@ -193,8 +193,7 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
             if (message.has_multicast_dispatch) {
                 return {.error = Error::invalid_extension};
             }
-            const auto dispatch =
-                decode_multicast_dispatch(decoded.extension);
+            const auto dispatch = decode_multicast_dispatch(decoded.extension);
             if (!dispatch) {
                 return {.error = dispatch.error};
             }
@@ -449,8 +448,8 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
     if (action.has_group_membership) {
         // Structural guard only; the handshake machine decided which group
         // categories this endpoint admits before it emitted the action.
-        if (validate_group_membership(action.group_membership,
-                {.admit_multicast_dispatch = true})
+        if (validate_group_membership(
+                action.group_membership, {.admit_multicast_dispatch = true})
             != GroupMembershipValidation::compatible) {
             return {.error = Error::invalid_extension};
         }
@@ -513,11 +512,11 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
         if ((action.packet.extension_field & handshake_extension_flag_config)
             == 0U)
             return {.error = Error::invalid_extension};
-        const auto extension = encode_multicast_dispatch(
-            action.multicast_dispatch,
-            destination.subspan(
-                required + path_extension_size + measurement_extension_size,
-                dispatch_extension_size));
+        const auto extension =
+            encode_multicast_dispatch(action.multicast_dispatch,
+                destination.subspan(
+                    required + path_extension_size + measurement_extension_size,
+                    dispatch_extension_size));
         if (!extension)
             return {.error = extension.error};
     }

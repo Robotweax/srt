@@ -56,8 +56,7 @@ struct GroupMembershipPolicy {
     bool admit_multicast_dispatch = false;
 };
 
-[[nodiscard]] constexpr GroupMembershipValidation
-validate_group_membership(
+[[nodiscard]] constexpr GroupMembershipValidation validate_group_membership(
     const GroupMembership& membership,
     GroupMembershipPolicy policy = {}) noexcept
 {
@@ -121,11 +120,11 @@ inline constexpr std::uint8_t multicast_dispatch_flag_interface_hint = 0x01U;
 
 struct MulticastDispatch {
     std::uint32_t group_id = 0;
-    IpEndpoint multicast_group{};
+    IpEndpoint multicast_group {};
     // Family matches multicast_group; IPv4 selects by address, IPv6 by
     // scope_id. has_interface_hint false means "operating system default".
     bool has_interface_hint = false;
-    IpEndpoint interface_hint{};
+    IpEndpoint interface_hint {};
     std::uint32_t initial_sequence = 0;
     std::int64_t timestamp_origin_delta_microseconds = 0;
     std::uint8_t time_to_live = 1;
@@ -136,7 +135,7 @@ struct MulticastDispatch {
 
 struct MulticastDispatchDecodeResult {
     Error error = Error::none;
-    MulticastDispatch dispatch{};
+    MulticastDispatch dispatch {};
 
     [[nodiscard]] constexpr explicit operator bool() const noexcept
     {
