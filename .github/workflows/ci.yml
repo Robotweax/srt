@@ -2409,14 +2409,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          options=()
+          options=(-DBUILD_SHARED_LIBS=OFF)
           if [[ '${{ matrix.backend }}' == mbedtls ]]; then
             options+=(-DMbedTLS_ROOT="$PWD/mbedtls-dependency/install" -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON)
           elif [[ '${{ matrix.backend }}' == bcrypt ]]; then
             options+=(-DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON)
           fi
           cmake -S . -B build-multicast -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF -DENABLE_AEAD_API_PREVIEW=ON \
+            -DENABLE_AEAD_API_PREVIEW=ON \
             -DROBOTWEAX_SRT_CRYPTO_BACKEND=${{ matrix.backend }} \
             -DROBOTWEAX_SRT_BUILD_EXAMPLES=ON -DROBOTWEAX_SRT_BUILD_TESTS=ON \
             -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF -DROBOTWEAX_SRT_BUILD_TOOLS=OFF \
