@@ -8250,6 +8250,198 @@ TEST(compat_runtime_rejects_malformed_peer_error_without_refreshing_idle_time)
     REQUIRE(!runtime.writable());
 }
 
+namespace {
+
+void exercise_established_peer_endpoint(bool original_peer_resumes)
+{
+    const Ipv4Endpoint original {{192, 0, 2, 41}, 14'401};
+    const Ipv4Endpoint destination {{192, 0, 2, 42}, 14'402};
+    for (const auto candidate : {Ipv4Endpoint {{192, 0, 2, 41}, 14'403},
+             Ipv4Endpoint {{192, 0, 2, 43}, 14'401}}) {
+        for (unsigned profile = 0; profile < 3; ++profile) {
+            std::shared_ptr<CryptoSession> sender_crypto;
+            std::shared_ptr<CryptoSession> receiver_crypto;
+            if (profile != 0) {
+                const CryptoConfiguration configuration {
+                    .passphrase = "fixed peer endpoint fixture",
+                    .mode = profile == 1 ? CryptoMode::aes_ctr
+                                         : CryptoMode::aes_gcm,
+                    .enable_aes_gcm = profile == 2,
+                    .key_length = 16,
+                    .refresh_rate_packets = 1'024,
+                    .preannouncement_packets = 16,
+                };
+                sender_crypto = std::make_shared<CryptoSession>(configuration);
+                receiver_crypto =
+                    std::make_shared<CryptoSession>(configuration);
+                REQUIRE_EQ(sender_crypto->start_initiator(), Error::none);
+                REQUIRE_EQ(receiver_crypto->accept_key_material(
+                               sender_crypto->pending_key_material(), true),
+                    Error::none);
+                REQUIRE_EQ(sender_crypto->acknowledge_key_material(
+                               receiver_crypto->key_material_response(), true),
+                    Error::none);
+                confirm_directional_test_keys(*sender_crypto, *receiver_crypto);
+            }
+
+            const auto sender_channel = std::make_shared<DatagramChannel>();
+            const auto receiver_channel = std::make_shared<DatagramChannel>();
+            CapturedDatagrams sender_output;
+            sender_channel->set_send_hook_for_testing(
+                capture_datagram, &sender_output);
+            struct Destinations {
+                std::array<IpEndpoint, 16> peers {};
+                std::size_t count = 0;
+            } replies;
+            receiver_channel->set_send_hook_for_testing(
+                [](std::span<const std::byte> bytes, IpEndpoint peer,
+                    void* context) noexcept -> UdpIoResult {
+                    auto& replies = *static_cast<Destinations*>(context);
+                    if (replies.count == replies.peers.size())
+                        return {.error = Error::io_error};
+                    replies.peers[replies.count++] = peer;
+                    return {.bytes_transferred = bytes.size()};
+                },
+                &replies);
+            SocketOptions options;
+            REQUIRE_EQ(options.set(SocketOption::maximum_payload_size, 16),
+                Error::none);
+            REQUIRE_EQ(
+                options.set(SocketOption::send_buffer_packets, 8), Error::none);
+            REQUIRE_EQ(options.set(SocketOption::receive_buffer_packets, 8),
+                Error::none);
+            std::uint64_t now = 1'000;
+            const auto origin =
+                ConnectionRuntime::Clock::now() + std::chrono::seconds {1};
+            ConnectionRuntime sender {{
+                .channel = sender_channel,
+                .peer = destination,
+                .local_socket_id = 701,
+                .peer_socket_id = 702,
+                .initial_sequence = SequenceNumber {400},
+                .options = options,
+                .origin = origin,
+                .crypto = sender_crypto,
+                .now_function = injected_now,
+                .now_context = &now,
+            }};
+            auto receiver = std::make_shared<ConnectionRuntime>(
+                ConnectionRuntime::Configuration {
+                    .channel = receiver_channel,
+                    .peer = original,
+                    .local_socket_id = 702,
+                    .peer_socket_id = 701,
+                    .initial_sequence = SequenceNumber {400},
+                    .options = options,
+                    .origin = origin,
+                    .peer_idle_timeout_milliseconds = 50,
+                    .crypto = receiver_crypto,
+                    .now_function = injected_now,
+                    .now_context = &now,
+                });
+            REQUIRE(receiver_channel->register_connection(702, receiver));
+            const std::array<std::byte, 4> payload {std::byte {'p'},
+                std::byte {'e'}, std::byte {'e'}, std::byte {'r'}};
+            REQUIRE_EQ(sender.queue_message(payload, 0, true, false, 0).status,
+                MessageIoStatus::success);
+            (void)sender.poll();
+            const auto packets = take_datagrams(sender_output);
+            const auto data = std::find_if(
+                packets.begin(), packets.end(), [](const auto& bytes) {
+                    const auto decoded = decode_packet(bytes);
+                    return decoded && decoded.packet.kind == PacketKind::data;
+                });
+            REQUIRE(data != packets.end());
+            const auto decoded = decode_packet(*data);
+            REQUIRE(decoded);
+            REQUIRE_EQ(decoded.packet.data.destination_socket_id, 702U);
+
+            // Exercise destination-ID routing with a valid packet from a changed
+            // endpoint. The encrypted cases use real established directional keys.
+            now = 10'000;
+            bool delivered = false;
+            auto input =
+                [&](std::span<std::byte> output) noexcept -> UdpIoResult {
+                if (delivered)
+                    return {.error = Error::would_block};
+                delivered = true;
+                std::copy(data->begin(), data->end(), output.begin());
+                return {.bytes_transferred = data->size(), .peer = candidate};
+            };
+            (void)receiver_channel->run_once_for_testing(input);
+            REQUIRE(delivered);
+            REQUIRE(!receiver->broken());
+            REQUIRE(!receiver->peer_closed());
+            REQUIRE(!receiver->has_buffered_receive_data());
+            REQUIRE_EQ(
+                receiver->statistics(false, true).total.received.packets, 0U);
+            REQUIRE_EQ(
+                receiver->response_health().last_response_microseconds, 0U);
+            REQUIRE_EQ(
+                receiver->receive_floor_sequence(), SequenceNumber {400});
+
+            std::array<std::byte, 4> padding {};
+            PacketView control;
+            control.kind = PacketKind::control;
+            control.control.destination_socket_id = 702;
+            control.payload = padding;
+            for (const auto type :
+                {ControlType::keepalive, ControlType::shutdown}) {
+                control.control.type = type;
+                receiver->process_packet(control, candidate);
+                REQUIRE(!receiver->broken());
+                REQUIRE(!receiver->peer_closed());
+                REQUIRE_EQ(
+                    receiver->response_health().last_response_microseconds, 0U);
+            }
+
+            std::uint64_t last_original_activity = 0;
+            if (original_peer_resumes) {
+                now = 20'000;
+                receiver->process_packet(decoded.packet, original);
+                std::array<std::byte, 4> received {};
+                REQUIRE_EQ(receiver->receive_message(received, false, 0).status,
+                    MessageIoStatus::success);
+                REQUIRE_EQ(received, payload);
+                REQUIRE_EQ(
+                    receiver->statistics(false, true).total.received.packets,
+                    1U);
+                last_original_activity = now;
+            }
+            REQUIRE_EQ(receiver->response_health().last_response_microseconds,
+                last_original_activity);
+            const auto deadline = last_original_activity + 50'000;
+            now = deadline - 1;
+            control.control.type = ControlType::keepalive;
+            receiver->process_packet(control, candidate);
+            REQUIRE_EQ(receiver->response_health().last_response_microseconds,
+                last_original_activity);
+            now = deadline;
+            (void)receiver->poll();
+            REQUIRE(!receiver->broken());
+            now = deadline + 1;
+            (void)receiver->poll();
+            REQUIRE(receiver->broken());
+            REQUIRE(replies.count != 0U);
+            for (std::size_t index = 0; index < replies.count; ++index)
+                REQUIRE_EQ(replies.peers[index], original);
+            receiver_channel->unregister_connection(702);
+        }
+    }
+}
+
+} // namespace
+
+TEST(compat_runtime_nat_rebinding_cannot_extend_peer_idle_deadline)
+{
+    exercise_established_peer_endpoint(false);
+}
+
+TEST(compat_runtime_nat_rebinding_keeps_original_peer_usable)
+{
+    exercise_established_peer_endpoint(true);
+}
+
 TEST(compat_runtime_rejects_malformed_controls_without_refreshing_liveness)
 {
     const auto channel = std::make_shared<DatagramChannel>();

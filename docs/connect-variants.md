@@ -37,6 +37,38 @@ The forced value enters only the compatibility handshake configuration. It is
 not a mutable global, a socket option, or a test hook in the native protocol
 core.
 
+## Established peer endpoint and NAT rebinding
+
+The 0.3.1 connection contract keeps an established socket bound to the peer IP
+address and UDP port selected during its handshake. This applies to Caller,
+Listener and Rendezvous connections, including each Broadcast or Backup member.
+A NAT rebinding can change the source port, address, or both without changing
+the sender's local socket.
+
+An incoming destination socket ID selects a protocol route; it does not
+authorize a change of peer endpoint. Packets from another endpoint are discarded
+before transport admission. They do not change the reply address, refresh peer
+liveness, or immediately break an otherwise healthy connection. The established
+peer can continue sending normally from its original endpoint.
+
+If no accepted activity arrives from the established peer, the configured
+`SRTO_PEERIDLETIMEO` applies. Detection is measured from the last accepted peer
+activity, not from a router's rebinding event. The application observes the
+ordinary broken-connection/member state; socket retirement, application retry
+backoff and the next handshake have separate timing. A measurement such as six
+seconds is not a fixed reconnection deadline.
+
+Recovery uses a fresh connection handshake or a distinct replacement group
+member. The application owns reconnect and member-rejoin policy; the library
+does not automatically redial or revive a broken member. Normal listener
+admission, application authorization and crypto negotiation apply again.
+A group can continue over other usable members while the application restores
+its lost path; see [group replacement](connection-groups.md#replay-and-failover).
+
+Enabling AES-GCM or session authentication does not enable endpoint migration.
+Authenticated DATA alone does not establish reachability at a new address.
+The existing contract provides no negotiated path-migration mechanism.
+
 ## Completion callback workers
 
 Outgoing asynchronous caller and rendezvous completion callbacks share a bounded
