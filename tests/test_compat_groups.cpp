@@ -464,7 +464,7 @@ TEST(compat_multicast_dispatch_group_creation_and_receiver_shape)
 {
     const auto multicast =
         ROBOTWEAX_SRT_GTYPE_MULTICAST;
-    // The public enum stays byte-identical to the reference ABI.
+    // Existing public enum values keep their reference ABI values.
     REQUIRE_EQ(static_cast<int>(SRT_GTYPE_E_END), 3);
     REQUIRE_EQ(static_cast<int>(ROBOTWEAX_SRT_GTYPE_MULTICAST), 4);
 
@@ -507,8 +507,9 @@ TEST(compat_multicast_dispatch_group_creation_and_receiver_shape)
     REQUIRE_EQ(srt_group_data(group, nullptr, &members), 0);
     REQUIRE_EQ(members, 0U);
 
-    // Balancing (3) and values past the draft stay rejected, unchanged.
-    for (const int rejected : {3, 5, 255}) {
+    // Unsupported values inside the enum's representable range stay rejected.
+    // Casting 255 to this enum would itself be undefined behavior in C++.
+    for (const int rejected : {0, 3, 5, 6, 7}) {
         REQUIRE_EQ(srt_create_group(static_cast<SRT_GROUP_TYPE>(rejected)),
             SRT_INVALID_SOCK);
         REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
