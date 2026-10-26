@@ -78,7 +78,7 @@ class MulticastQualificationTests(unittest.TestCase):
 
     def test_linux_native_jobs_prepare_multicast_interface(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        for name in ["linux_release", "gcc_release", "portable_release", "debug_matrix",
+        for name in ["linux_release", "portable_release", "debug_matrix",
                      "aead_platform", "sanitizers", "thread_sanitizer", "mbedtls_backend"]:
             with self.subTest(job=name):
                 job = workflow.split("\n  "+name+":\n", 1)[1]
@@ -93,6 +93,12 @@ class MulticastQualificationTests(unittest.TestCase):
         self.assertEqual(len(target_lists), 3)
         for targets in target_lists:
             self.assertIn("robotweax_srt_multicast", targets)
+
+    def test_epoll_only_container_does_not_require_multicast_privileges(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = workflow.split("\n  gcc_release:\n", 1)[1].split("\n  live_timing:\n", 1)[0]
+        self.assertIn("--include epoll", job)
+        self.assertNotIn("uses: ./.github/actions/multicast-interface", job)
 
 
 if __name__ == "__main__":
