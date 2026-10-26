@@ -1,8 +1,11 @@
 from __future__ import annotations
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +52,28 @@ class MulticastQualificationTests(unittest.TestCase):
         self.assertIn("backend: bcrypt", job)
         self.assertIn("python3 tools/qualify_multicast.py", job)
         self.assertIn("if: needs.changes.outputs.multicast == 'true'", job)
+
+    @unittest.skipUnless(os.name == "posix", "configure script runs in POSIX bash")
+    def test_actual_configure_script_handles_each_backend(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        step = workflow.split("      - name: Configure multicast qualification\n", 1)[1].split("      - name:", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake = root / "cmake"
+            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$CAPTURE"\n')
+            fake.chmod(0o755)
+            for backend in ["openssl", "mbedtls", "bcrypt"]:
+                with self.subTest(backend=backend):
+                    capture = root / "args.txt"
+                    result = subprocess.run(["/bin/bash", "-c", script.replace("${{ matrix.backend }}", backend)],
+                                            cwd=root, env={**os.environ, "PATH": str(root)+os.pathsep+os.environ["PATH"], "CAPTURE": str(capture)},
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    options = capture.read_text().splitlines()
+                    self.assertIn("-DBUILD_SHARED_LIBS=OFF", options)
+                    self.assertIn("-DROBOTWEAX_SRT_CRYPTO_BACKEND="+backend, options)
+                    self.assertNotIn("", options)
 
 
 if __name__ == "__main__":
