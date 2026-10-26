@@ -1,10 +1,16 @@
-# Application samples: contribution, recovery, and device control
+# Application samples
 
 These opt-in executables demonstrate sustained public-C-API workflows. They
 share a small binary sample protocol, bounded configuration, exact payload
 validation, and JSONL observations. They do not use private SRT headers. All
 three build and run from this repository without SRT Network Lab, Docker, or a
 cloud account.
+
+The fourth executable, `robotweax_srt_multicast`, forwards live MPEG-TS from a
+Listener sender to multiple Caller receivers with the experimental dispatch
+group API. It uses raw media without synthetic framing. See the
+[multicast audio/video guide](../../docs/multicast-media.md) for a live picture
+and tone, playback, recording, encryption, and separate-machine configuration.
 
 Contribution supports real MPEG-TS ingress, recording, and UDP playback output.
 Its default mode, plus recovery and device workloads, uses synthetic 1,316-byte
@@ -17,7 +23,7 @@ process exit status. Control requires every command to execute in order.
 
 Use the [normal library build dependencies](../../docs/building.md). Python
 3.10+ is needed for the helpers and tests; FFmpeg is needed only for the media
-checks and console. The three C++ executables do not require either at runtime.
+checks and console. The C++ executables do not require either at runtime.
 
 From the repository root:
 
@@ -28,7 +34,8 @@ cmake -S . -B build-applications -DCMAKE_BUILD_TYPE=Release \
   -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF \
   -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
 cmake --build build-applications --parallel \
-  --target robotweax_srt_contribution robotweax_srt_recovery robotweax_srt_device
+  --target robotweax_srt_contribution robotweax_srt_recovery robotweax_srt_device \
+    robotweax_srt_multicast
 ```
 
 Executables are in `build-applications/examples/applications`. Multi-config
@@ -38,7 +45,7 @@ support Windows; use the corresponding executable paths and environment syntax.
 Python helpers require Python 3.10+, with no extra packages. On Windows, replace
 `./tools/python` with the selected Python interpreter.
 
-All three support `--help`, `--count`, `--interval-ms`, `--timeout-ms`,
+Contribution, recovery, and device support `--help`, `--count`, `--interval-ms`, `--timeout-ms`,
 `--latency-ms`, `--passphrase-env`, and `--crypto ctr|gcm`. Both endpoints must
 use matching counts and transport settings. Default traffic is 600 frames at
 10-ms submission intervals. Only numeric IPv4 endpoints are currently supported.

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-foreach(application IN ITEMS contribution recovery device)
+foreach(application IN ITEMS contribution recovery device multicast)
     add_executable(robotweax_srt_${application} ${application}.cpp)
     target_link_libraries(robotweax_srt_${application} PRIVATE RobotweaxSRT::srt)
     target_compile_features(robotweax_srt_${application} PRIVATE cxx_std_20)

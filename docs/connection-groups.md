@@ -544,6 +544,9 @@ connection for control, and the payload sent once to a UDP multicast group.
 Receivers join and leave at any time; the sender does nothing per receiver
 beyond the handshake. The feature is experimental and Robotweax-to-Robotweax.
 
+The [live multicast audio/video sample](multicast-media.md) demonstrates the
+public API with an MPEG-TS encoder, multiple receivers, recording, and playback.
+
 Sender (Listener):
 
 - set `SRTO_ROBOTWEAX_MCAST_GROUP` (a `sockaddr_in`/`sockaddr_in6` naming a
