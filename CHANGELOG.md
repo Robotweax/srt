@@ -6,7 +6,44 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
-No additional changes are recorded after the 0.3.1 scope below.
+- Add a public-API multicast MPEG-TS application sample with a Listener
+  sender, multiple Caller receivers, UDP encoder/player connections,
+  optional recording, CTR/GCM group encryption, and live path statistics.
+  Include exact two-receiver fan-out and live H.264/AAC decoder checks.
+
+- Require the elected multicast transmitter to accept a message before
+  suppressed members can commit the group send; preserve the sequence on
+  backpressure and report transmitter readiness through epoll.
+- Start multicast repair suppression only after local UDP acceptance, fall
+  back to unicast after transient send failure, and allow repeated NAKs to
+  recover a lost multicast repair without waiting for the tally window.
+- Wake the owning control channel after multicast ingress so ACK and NAK
+  timers progress while that receiver has no unicast traffic.
+- Clarify that shared multicast traffic keys provide neither sender identity
+  against other key holders nor cryptographic revocation on receiver leave.
+
+- Add experimental multicast dispatch groups (`ROBOTWEAX_SRT_GTYPE_MULTICAST`,
+  wire type 4): one Listener sender, any number of Caller receivers, control
+  per receiver over unicast, payload once over UDP multicast. New options
+  `SRTO_ROBOTWEAX_MULTICAST`, `SRTO_ROBOTWEAX_MCAST_GROUP`,
+  `SRTO_ROBOTWEAX_MCAST_IFACE`, `SRTO_ROBOTWEAX_MCAST_TTL`; new handshake
+  extension `multicast_dispatch` (`0x7f14`); `UdpSocket` multicast
+  membership, interface, hop-limit and loopback primitives.
+  Robotweax-to-Robotweax, Live Caller/Listener only; FEC is refused at
+  admission. `SRT_GROUP_TYPE` keeps every v1.5.7 value and
+  `SRT_GTYPE_E_END`.
+- Encrypt multicast dispatch groups with one traffic key and salt per
+  sender (`SharedTransmitKeySchedule`): members keep their own KM exchange
+  and KEK, rotation is positional by group sequence, announcements leave
+  immediately, and every dispatch DATA packet names the group as
+  destination so AES-GCM headers match on the multicast copy and the unicast
+  repeat. A dispatch receiver does not retain the HSv5 handshake key clone.
+  Not yet covered by the independent cryptographic review.
+- Add `SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD`: once that many receivers ask
+  for a repeat of one packet within a couple of round trips, a dispatch
+  sender repeats it once on the multicast path; and read-only
+  `SRTO_ROBOTWEAX_MCAST_STATS` (`ROBOTWEAX_SRT_MCAST_STATS_V1`) with the
+  multicast-path counters on sender and receiver.
 
 ## 0.3.1 — Integrated Runtime and Resource Hardening
 

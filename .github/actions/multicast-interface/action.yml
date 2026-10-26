@@ -1,0 +1,17 @@
+name: Prepare Linux multicast test interface
+description: Select an owned IPv6 multicast-capable dummy interface for native CI tests
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        [[ "$RUNNER_OS" == Linux ]]
+        sudo ip link add srt-mcast0 type dummy
+        sudo ip link set srt-mcast0 up
+        sudo ip -6 addr add fe80::5347/64 dev srt-mcast0 nodad
+        sudo ip -6 route add ff01::/16 dev srt-mcast0
+        index=$(cat /sys/class/net/srt-mcast0/ifindex)
+        echo "ROBOTWEAX_SRT_TEST_IPV6_MULTICAST_IFINDEX=$index" >> "$GITHUB_ENV"
+        ip -6 addr show dev srt-mcast0
+        ip -6 route show dev srt-mcast0

@@ -6,6 +6,7 @@
 #include "robotweax/srt/session.hpp"
 #include "robotweax/srt/socket_options.hpp"
 #include "robotweax/srt/udp.hpp"
+#include "compat/dispatch_transmit_state.hpp"
 #include "compat/runtime_scheduler.hpp"
 #include "compat/standby_rtt_service.hpp"
 #include "compat/readiness.hpp"
@@ -36,6 +37,7 @@ class MemberFilterRuntime;
 namespace robotweax::srt::compat {
 
 class ConnectionRuntime;
+class DispatchTransmitState;
 class RuntimeWorkExecutor;
 struct GroupRecord;
 struct RetainedGroupReceiveBatch;
@@ -239,6 +241,13 @@ public:
         const std::shared_ptr<DatagramInbox>& inbox, RuntimeFactory factory,
         void* context);
 
+    // Routes datagrams whose destination socket ID is `protocol_socket_id`
+    // to `runtime` without polling it from this channel: the runtime stays
+    // driven by the channel it sends on. A dispatch receiver uses this on
+    // the socket joined to the multicast group, keyed by the dispatch group
+    // ID the Listener announced. Removed with unregister_connection.
+    [[nodiscard]] bool register_ingress_route(std::uint32_t protocol_socket_id,
+        std::shared_ptr<ConnectionRuntime> runtime) noexcept;
     void unregister_connection(std::uint32_t protocol_socket_id) noexcept;
     [[nodiscard]] bool replay_established_handshake(
         const HandshakeEnvelope& envelope) noexcept;
@@ -294,6 +303,17 @@ public:
     [[nodiscard]] bool running() const noexcept
     {
         return running_.load(std::memory_order_acquire);
+    }
+    // Datagrams that decoded as a packet and found no route, setup inbox or
+    // listener; a dispatch receiver's multicast socket reports them as
+    // filtered. Also the total decoded datagrams, for the same report.
+    [[nodiscard]] std::uint64_t unrouted_datagrams() const noexcept
+    {
+        return unrouted_datagrams_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::uint64_t routed_datagrams() const noexcept
+    {
+        return routed_datagrams_.load(std::memory_order_relaxed);
     }
 
 private:
@@ -398,6 +418,8 @@ private:
         ConnectionRoute* next = nullptr;
     };
     std::unordered_map<std::uint32_t, ConnectionRoute> routes_;
+    std::atomic<std::uint64_t> unrouted_datagrams_ {0};
+    std::atomic<std::uint64_t> routed_datagrams_ {0};
     // unordered_map rehash preserves element addresses. Erasure unlinks the
     // node and advances this cursor under routes_mutex_.
     ConnectionRoute* next_poll_route_ = nullptr;
@@ -538,6 +560,38 @@ public:
     {
         return origin_epoch_microseconds_;
     }
+
+    // Where this member's original DATA packets go. A multicast dispatch
+    // sender queues every payload into each member session so ACK, NAK and
+    // unicast retransmission keep their per-receiver semantics, but only one
+    // member (`redirect`) transmits the original, once, to the multicast
+    // group with the dispatch group ID as destination; the others
+    // (`suppress`) record the packet as submitted without a datagram.
+    // Retransmissions always use the member's own unicast path. `normal`
+    // is the bonding behaviour.
+    struct GroupDataEgress {
+        enum class Mode : std::uint8_t { normal, suppress, redirect };
+        Mode mode = Mode::normal;
+        IpEndpoint destination {};
+        std::uint32_t destination_socket_id = 0;
+        // Shared by every member of one dispatch sender: the repeat tally
+        // and the multicast-path counters. Null for bonding members.
+        std::shared_ptr<DispatchTransmitState> transmit;
+        // Distinct receivers that must repeat one sequence before it is
+        // repeated once on the multicast path instead; 0 keeps every
+        // repeat unicast.
+        std::uint32_t repeat_threshold = 0;
+        std::int32_t member_id = -1;
+    };
+    void set_group_data_egress(const GroupDataEgress& egress) noexcept;
+    [[nodiscard]] GroupDataEgress group_data_egress() const noexcept;
+    // Packets routed to this runtime from an address other than its peer's
+    // and dropped before any processing; a dispatch receiver reports them
+    // with its multicast-path filter count.
+    [[nodiscard]] std::uint64_t foreign_peer_packets() const noexcept
+    {
+        return foreign_peer_packets_.load(std::memory_order_relaxed);
+    }
     [[nodiscard]] MessageIoResult queue_stream(
         std::span<const std::byte> bytes,
         bool blocking,
@@ -615,6 +669,7 @@ public:
         handshake_replay_key() const noexcept;
 
 private:
+    friend class DatagramChannel;
     friend struct ConnectionRuntimeTestAccess;
     friend void close_connection_runtime(
         const std::shared_ptr<ConnectionRuntime>& runtime,
@@ -780,6 +835,9 @@ private:
     std::condition_variable receive_ready_;
     std::condition_variable send_ready_;
     std::weak_ptr<DatagramChannel> channel_;
+    GroupDataEgress group_data_egress_ {};
+    std::uint64_t last_key_material_revision_sent_ = 0;
+    std::atomic<std::uint64_t> foreign_peer_packets_ {0};
     IpEndpoint peer_{};
     std::uint32_t peer_socket_id_ = 0;
     ReliabilitySession session_;

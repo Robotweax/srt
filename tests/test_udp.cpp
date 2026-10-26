@@ -11,11 +11,18 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <charconv>
 #include <cerrno>
+#include <cstdlib>
 #include <limits>
+#include <string_view>
 #include <vector>
 #include <cstddef>
 #include <thread>
+#include <utility>
+#if defined(__APPLE__)
+#include <unistd.h>
+#endif
 
 using namespace robotweax::srt;
 
@@ -639,4 +646,276 @@ TEST(udp_reports_and_discards_oversized_ipv6_datagrams)
 {
     SKIP_WITHOUT_IPV6_LOOPBACK();
     require_oversized_datagram_is_discarded(IpAddressFamily::ipv6);
+}
+
+// --- Multicast primitives -------------------------------------------------
+
+namespace {
+
+constexpr IpEndpoint ipv4_test_group(std::uint16_t port) noexcept
+{
+    // 239.255.0.0/16 is administratively scoped; TTL 0 keeps it on-host.
+    return {.address = {239, 255, 133, 10}, .port = port};
+}
+
+constexpr IpEndpoint ipv6_test_group(std::uint16_t port) noexcept
+{
+    IpEndpoint group = IpEndpoint::ipv6_any(port);
+    group.address[0] = 0xff;
+    group.address[1] = 0x01; // interface-local scope
+    group.address[15] = 0x42;
+    return group;
+}
+
+// Whether this host lets a socket join an IPv4 multicast group on the
+// loopback interface. Containers without a multicast route refuse
+// IP_ADD_MEMBERSHIP with ENODEV; that is an environment limit, not a defect.
+[[nodiscard]] bool ipv4_multicast_available()
+{
+    UdpSocket probe;
+    if (!probe.valid() || probe.bind(IpEndpoint::any()) != Error::none) {
+        return false;
+    }
+    return probe.join_multicast(ipv4_test_group(0), IpEndpoint::loopback())
+        == Error::none;
+}
+
+#if defined(__APPLE__)
+// Check the native stack independently: some hosted macOS images can join an
+// interface-local IPv6 group but have no usable send route. A library failure
+// must still fail the delivery test whenever the same native send works.
+[[nodiscard]] int native_ipv6_multicast_send_error(
+    IpEndpoint group, std::uint32_t index)
+{
+    const int socket = ::socket(AF_INET6, SOCK_DGRAM, 0);
+    if (socket < 0)
+        return errno;
+    const int hops = 0;
+    const int loop = 1;
+    int error = 0;
+    if (::setsockopt(
+            socket, IPPROTO_IPV6, IPV6_MULTICAST_IF, &index, sizeof(index))
+            != 0
+        || ::setsockopt(
+               socket, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hops, sizeof(hops))
+            != 0
+        || ::setsockopt(
+               socket, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop))
+            != 0) {
+        error = errno;
+    } else {
+        sockaddr_in6 destination {};
+        destination.sin6_len = sizeof(destination);
+        destination.sin6_family = AF_INET6;
+        destination.sin6_port = htons(9);
+        destination.sin6_scope_id = index;
+        std::copy(group.address.begin(), group.address.end(),
+            destination.sin6_addr.s6_addr);
+        const char probe = 'p';
+        if (::sendto(socket, &probe, 1, 0,
+                reinterpret_cast<const sockaddr*>(&destination),
+                sizeof(destination))
+            != 1)
+            error = errno;
+    }
+    (void)::close(socket);
+    return error;
+}
+#endif
+
+} // namespace
+
+TEST(ip_endpoint_classifies_multicast_addresses)
+{
+    REQUIRE(ipv4_test_group(1).is_multicast());
+    REQUIRE((IpEndpoint {.address = {224, 0, 0, 1}}).is_multicast());
+    REQUIRE((IpEndpoint {.address = {239, 255, 255, 255}}).is_multicast());
+    REQUIRE(!(IpEndpoint {.address = {223, 255, 255, 255}}).is_multicast());
+    REQUIRE(!(IpEndpoint {.address = {240, 0, 0, 1}}).is_multicast());
+    REQUIRE(!IpEndpoint::loopback().is_multicast());
+    REQUIRE(ipv6_test_group(1).is_multicast());
+    REQUIRE(!IpEndpoint::ipv6_loopback().is_multicast());
+    IpEndpoint almost = IpEndpoint::ipv6_any();
+    almost.address[0] = 0xfe;
+    almost.address[1] = 0x80;
+    REQUIRE(!almost.is_multicast());
+}
+
+TEST(udp_multicast_options_validate_arguments_before_touching_the_socket)
+{
+    UdpSocket ipv4;
+    REQUIRE(ipv4.valid());
+    // Family mismatch and non-multicast groups are argument errors.
+    REQUIRE_EQ(
+        ipv4.join_multicast(ipv6_test_group(5'000)), Error::invalid_state);
+    REQUIRE_EQ(
+        ipv4.join_multicast(IpEndpoint::loopback(5'000)), Error::invalid_state);
+    REQUIRE_EQ(ipv4.leave_multicast(IpEndpoint::loopback(5'000)),
+        Error::invalid_state);
+    REQUIRE_EQ(ipv4.last_system_error(), 0);
+    // A multicast address is not an interface selector.
+    REQUIRE_EQ(ipv4.join_multicast(ipv4_test_group(5'000), ipv4_test_group(0)),
+        Error::invalid_state);
+    REQUIRE_EQ(
+        ipv4.set_multicast_interface(ipv4_test_group(0)), Error::invalid_state);
+    REQUIRE_EQ(ipv4.set_multicast_interface(IpEndpoint::ipv6_loopback()),
+        Error::invalid_state);
+    // Hop limits are 0..255; unlike unicast TTL, 0 is meaningful (on-host).
+    REQUIRE_EQ(ipv4.set_multicast_time_to_live(-1), Error::invalid_state);
+    REQUIRE_EQ(ipv4.set_multicast_time_to_live(256), Error::invalid_state);
+
+    // Invalid sockets report io_error with the open error, never success.
+    UdpSocket moved_from = std::move(ipv4);
+    REQUIRE(!ipv4.valid());
+    REQUIRE_EQ(ipv4.set_reuse_address(true), Error::io_error);
+    REQUIRE_EQ(ipv4.join_multicast(ipv4_test_group(1)), Error::io_error);
+    REQUIRE_EQ(ipv4.set_multicast_time_to_live(1), Error::io_error);
+    REQUIRE_EQ(ipv4.set_multicast_loopback(true), Error::io_error);
+    REQUIRE_EQ(ipv4.multicast_time_to_live().error, Error::io_error);
+    REQUIRE_EQ(ipv4.multicast_loopback().error, Error::io_error);
+    REQUIRE(moved_from.valid());
+}
+
+TEST(udp_ipv4_multicast_ttl_and_loopback_round_trip)
+{
+    UdpSocket ipv4;
+    REQUIRE(ipv4.valid());
+    for (const std::int32_t ttl : {0, 1, 7, 255}) {
+        REQUIRE_EQ(ipv4.set_multicast_time_to_live(ttl), Error::none);
+        const UdpIntegerOptionResult read = ipv4.multicast_time_to_live();
+        REQUIRE(read);
+        REQUIRE_EQ(read.value, ttl);
+    }
+    REQUIRE_EQ(ipv4.set_multicast_loopback(false), Error::none);
+    REQUIRE(ipv4.multicast_loopback());
+    REQUIRE_EQ(ipv4.multicast_loopback().value, 0);
+    REQUIRE_EQ(ipv4.set_multicast_loopback(true), Error::none);
+    REQUIRE_EQ(ipv4.multicast_loopback().value, 1);
+}
+
+TEST(udp_ipv6_multicast_hops_and_loopback_round_trip)
+{
+    SKIP_WITHOUT_IPV6_LOOPBACK();
+    UdpSocket ipv6(IpAddressFamily::ipv6);
+    REQUIRE(ipv6.valid());
+    for (const std::int32_t hops : {0, 1, 64, 255}) {
+        REQUIRE_EQ(ipv6.set_multicast_time_to_live(hops), Error::none);
+        const UdpIntegerOptionResult read = ipv6.multicast_time_to_live();
+        REQUIRE(read);
+        REQUIRE_EQ(read.value, hops);
+    }
+    REQUIRE_EQ(ipv6.set_multicast_loopback(false), Error::none);
+    REQUIRE_EQ(ipv6.multicast_loopback().value, 0);
+    REQUIRE_EQ(ipv6.set_multicast_loopback(true), Error::none);
+    REQUIRE_EQ(ipv6.multicast_loopback().value, 1);
+    // An IPv6 group on an IPv4 socket and vice versa stay argument errors.
+    REQUIRE_EQ(ipv6.join_multicast(ipv4_test_group(1)), Error::invalid_state);
+}
+
+TEST(udp_multicast_join_leave_delivers_one_datagram_to_two_local_receivers)
+{
+    SKIP_UNLESS(ipv4_multicast_available(),
+        "no IPv4 multicast membership on this host");
+
+    // Two receivers share the group port through reuse-address, both join.
+    UdpSocket first;
+    UdpSocket second;
+    REQUIRE(first.valid() && second.valid());
+    REQUIRE_EQ(first.set_reuse_address(true), Error::none);
+    REQUIRE_EQ(second.set_reuse_address(true), Error::none);
+    REQUIRE_EQ(first.bind(IpEndpoint::any()), Error::none);
+    const EndpointResult bound = first.local_endpoint();
+    REQUIRE(bound);
+    const IpEndpoint group = ipv4_test_group(bound.endpoint.port);
+    REQUIRE_EQ(second.bind(IpEndpoint::any(group.port)), Error::none);
+    const auto interface = IpEndpoint::loopback();
+    REQUIRE_EQ(first.join_multicast(group, interface), Error::none);
+    REQUIRE_EQ(second.join_multicast(group, interface), Error::none);
+
+    // The sender keeps the datagram on this host and loops it back locally.
+    UdpSocket sender;
+    REQUIRE(sender.valid());
+    REQUIRE_EQ(sender.set_multicast_interface(interface), Error::none);
+    REQUIRE_EQ(sender.set_multicast_time_to_live(0), Error::none);
+    REQUIRE_EQ(sender.set_multicast_loopback(true), Error::none);
+    const std::array<std::byte, 5> payload {std::byte {'m'}, std::byte {'c'},
+        std::byte {'a'}, std::byte {'s'}, std::byte {'t'}};
+    const UdpIoResult sent = sender.send_to(payload, group);
+    REQUIRE(sent);
+    REQUIRE_EQ(sent.bytes_transferred, payload.size());
+
+    for (UdpSocket* receiver : {&first, &second}) {
+        const UdpWaitResult ready = receiver->wait_readable(2'000);
+        REQUIRE(ready);
+        REQUIRE(ready.ready);
+        std::array<std::byte, 64> buffer {};
+        const UdpIoResult received = receiver->receive_from(buffer);
+        REQUIRE(received);
+        REQUIRE_EQ(received.bytes_transferred, payload.size());
+        REQUIRE(std::equal(payload.begin(), payload.end(), buffer.begin()));
+    }
+
+    // After leaving, a second datagram no longer reaches that receiver.
+    REQUIRE_EQ(second.leave_multicast(group, interface), Error::none);
+    REQUIRE(sender.send_to(payload, group));
+    const UdpWaitResult still = first.wait_readable(2'000);
+    REQUIRE(still && still.ready);
+    const UdpWaitResult gone = second.wait_readable(200);
+    REQUIRE(gone);
+    REQUIRE(!gone.ready);
+    // Leaving twice is a native failure, reported, not hidden.
+    REQUIRE_EQ(second.leave_multicast(group, interface), Error::io_error);
+    REQUIRE(second.last_system_error() != 0);
+}
+
+TEST(udp_ipv6_multicast_join_and_loopback_delivery)
+{
+    SKIP_WITHOUT_IPV6_LOOPBACK();
+    UdpSocket receiver(IpAddressFamily::ipv6);
+    REQUIRE(receiver.valid());
+    REQUIRE_EQ(receiver.set_reuse_address(true), Error::none);
+    REQUIRE_EQ(receiver.bind(IpEndpoint::ipv6_any()), Error::none);
+    const EndpointResult bound = receiver.local_endpoint();
+    REQUIRE(bound);
+    IpEndpoint group = ipv6_test_group(bound.endpoint.port);
+    // Interface-local scope needs an explicit interface. Keep the historical
+    // index 1 default; qualification namespaces can select a capable device.
+    IpEndpoint interface = IpEndpoint::ipv6_any();
+    interface.scope_id = 1;
+    if (const char* selected =
+            std::getenv("ROBOTWEAX_SRT_TEST_IPV6_MULTICAST_IFINDEX")) {
+        const std::string_view value {selected};
+        const auto parsed = std::from_chars(
+            value.data(), value.data() + value.size(), interface.scope_id);
+        REQUIRE(parsed.ec == std::errc {});
+        REQUIRE(parsed.ptr == value.data() + value.size());
+        REQUIRE(interface.scope_id != 0);
+    }
+    group.scope_id = interface.scope_id;
+#if defined(__APPLE__)
+    if (const int error =
+            native_ipv6_multicast_send_error(group, interface.scope_id))
+        throw robotweax::srt::test::Skipped(
+            "native IPv6 multicast send unavailable, errno="
+            + std::to_string(error));
+#endif
+    const Error joined = receiver.join_multicast(group, interface);
+    SKIP_UNLESS(
+        joined == Error::none, "no IPv6 multicast membership on this host");
+
+    UdpSocket sender(IpAddressFamily::ipv6);
+    REQUIRE(sender.valid());
+    REQUIRE_EQ(sender.set_multicast_interface(interface), Error::none);
+    REQUIRE_EQ(sender.set_multicast_time_to_live(0), Error::none);
+    REQUIRE_EQ(sender.set_multicast_loopback(true), Error::none);
+    const std::array<std::byte, 3> payload {
+        std::byte {'v'}, std::byte {'6'}, std::byte {'!'}};
+    REQUIRE(sender.send_to(payload, group));
+    const UdpWaitResult ready = receiver.wait_readable(2'000);
+    REQUIRE(ready && ready.ready);
+    std::array<std::byte, 64> buffer {};
+    const UdpIoResult received = receiver.receive_from(buffer);
+    REQUIRE(received);
+    REQUIRE_EQ(received.bytes_transferred, payload.size());
+    REQUIRE_EQ(receiver.leave_multicast(group, interface), Error::none);
 }

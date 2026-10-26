@@ -1291,7 +1291,7 @@ class CiChangeClassifierTests(unittest.TestCase):
 
         # Both macOS OBS jobs upload text diagnostics only; fuzz smoke also
         # preserves generated failure inputs.
-        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 12)
+        self.assertEqual(workflow.count("uses: actions/upload-artifact@"), 13)
         timing_evidence = workflow.split(
             "      - name: Preserve AES-GCM timing failure diagnostics\n", 1
         )[1].split("      - name:", 1)[0]

@@ -711,6 +711,25 @@ std::shared_ptr<ConnectionRuntime> DatagramChannel::promote_setup_connection(
     return runtime;
 }
 
+bool DatagramChannel::register_ingress_route(std::uint32_t protocol_socket_id,
+    std::shared_ptr<ConnectionRuntime> runtime) noexcept
+{
+    if (protocol_socket_id == 0U || runtime == nullptr) {
+        return false;
+    }
+    try {
+        std::lock_guard lock(routes_mutex_);
+        // Not linked into the poll ring (previous/next stay null) and no
+        // handshake replay key: this channel only delivers.
+        return routes_
+            .emplace(protocol_socket_id,
+                ConnectionRoute {.runtime = std::move(runtime)})
+            .second;
+    } catch (...) {
+        return false;
+    }
+}
+
 void DatagramChannel::unregister_connection(
     std::uint32_t protocol_socket_id) noexcept
 {
@@ -719,11 +738,16 @@ void DatagramChannel::unregister_connection(
     if (route == routes_.end()) {
         return;
     }
+    auto& node = route->second;
+    if (node.next == nullptr) {
+        // Ingress-only route: never in the poll ring, no replay key.
+        routes_.erase(route);
+        return;
+    }
     const auto replay_key = route->second.runtime->handshake_replay_key();
     if (replay_key.has_value()) {
         handshake_routes_.erase(*replay_key);
     }
-    auto& node = route->second;
     if (node.next == &node) {
         next_poll_route_ = nullptr;
     } else {
@@ -1305,12 +1329,14 @@ void DatagramChannel::dispatch(const PacketView& packet,
         : packet.control.destination_socket_id;
     std::shared_ptr<ConnectionRuntime> runtime;
     std::shared_ptr<DatagramInbox> setup_inbox;
+    bool ingress_only = false;
     {
         std::lock_guard lock(routes_mutex_);
         const auto route = routes_.find(
             destination_socket_id);
         if (route != routes_.end()) {
             runtime = route->second.runtime;
+            ingress_only = route->second.next == nullptr;
         } else {
             const auto setup = setup_routes_.find(
                 destination_socket_id);
@@ -1321,9 +1347,21 @@ void DatagramChannel::dispatch(const PacketView& packet,
         }
     }
     if (runtime != nullptr) {
+        routed_datagrams_.fetch_add(1U, std::memory_order_relaxed);
         runtime->process_packet(packet, peer, ingress);
+        if (ingress_only) {
+            // Multicast ingress does not poll this runtime. Wake its control
+            // channel so newly armed ACK/NAK deadlines are serviced even if
+            // no unicast traffic arrives to wake that channel itself.
+            const auto owner = runtime->channel_.lock();
+            if (owner != nullptr && owner.get() != this) {
+                owner->notify_send_work();
+            }
+        }
     } else if (setup_inbox != nullptr) {
         (void)setup_inbox->push(datagram, peer);
+    } else {
+        unrouted_datagrams_.fetch_add(1U, std::memory_order_relaxed);
     }
 }
 
@@ -2880,13 +2918,43 @@ bool ConnectionRuntime::send_actions(
     return true;
 }
 
+void ConnectionRuntime::set_group_data_egress(
+    const GroupDataEgress& egress) noexcept
+{
+    std::lock_guard lock(mutex_);
+    group_data_egress_ = egress;
+}
+
+ConnectionRuntime::GroupDataEgress
+ConnectionRuntime::group_data_egress() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    return group_data_egress_;
+}
+
 bool ConnectionRuntime::send_data(
     const OutboundPacket& packet,
     std::uint64_t now) noexcept
 {
+    if (!packet.header.retransmitted
+        && group_data_egress_.mode == GroupDataEgress::Mode::suppress) {
+        // Another member transmits this original to the multicast group.
+        // Record it as sent so the receiver's ACK can retire it and a NAK
+        // can select it for unicast retransmission from this buffer.
+        session_.note_packet_submitted(packet.header.sequence);
+        return true;
+    }
     MutablePacketView view;
     view.kind = PacketKind::data;
     view.data = packet.header;
+    if (group_data_egress_.mode != GroupDataEgress::Mode::normal) {
+        // Every DATA packet of a dispatch member, original or repeat, names
+        // the dispatch group as its destination: receivers route that ID on
+        // both of their sockets, and an authenticated header stays
+        // identical whichever path carries the packet.
+        view.data.destination_socket_id =
+            group_data_egress_.destination_socket_id;
+    }
     const bool encrypted_retransmission =
         packet.header.retransmitted
         && packet.header.encryption_key != EncryptionKey::none;
@@ -2901,7 +2969,7 @@ bool ConnectionRuntime::send_data(
     if (crypto_ != nullptr && crypto_->enabled()
         && !encrypted_retransmission) {
         view.data.encryption_key =
-            crypto_->active_sender_key();
+            crypto_->sender_key_for(packet.header.sequence);
     }
     // Clear/CTR encoding writes the complete submitted prefix. GCM writes
     // its header, ciphertext and tag before submission; every failure returns
@@ -2973,11 +3041,83 @@ bool ConnectionRuntime::send_data(
             && packet.payload.size() >= srt_gcm_authentication_tag_size
         ? packet.payload.size() - srt_gcm_authentication_tag_size
         : packet.payload.size();
-    return submit_datagram(std::span {datagram}.first(datagram_size),
-        {.kind = DatagramKind::data,
-            .data = view.data,
-            .payload_size = application_payload_size},
-        now);
+    const DatagramCompletion completion {.kind = DatagramKind::data,
+        .data = view.data,
+        .payload_size = application_payload_size};
+    bool multicast_path = !packet.header.retransmitted
+        && group_data_egress_.mode == GroupDataEgress::Mode::redirect;
+    DispatchTransmitState::RepeatDecision repeat_decision;
+    if (packet.header.retransmitted
+        && group_data_egress_.mode != GroupDataEgress::Mode::normal
+        && group_data_egress_.transmit != nullptr
+        && group_data_egress_.repeat_threshold != 0U) {
+        // Several receivers lost the same packet: repeat it once to all of
+        // them instead of once per receiver. The window is a couple of this
+        // link's round trips, since the receivers' NAKs arrive within that.
+        const auto& rtt = session_.rtt();
+        const std::uint64_t window = std::clamp<std::uint64_t>(
+            rtt.has_sample() ? 2ULL * rtt.smoothed_microseconds() : 100'000U,
+            10'000U, 1'000'000U);
+        repeat_decision = group_data_egress_.transmit->note_repeat(
+            packet.header.sequence, group_data_egress_.member_id, now,
+            group_data_egress_.repeat_threshold, window);
+        if (repeat_decision.skip) {
+            // Already repeated to the group by another member: account for
+            // the repeat on this session without a datagram.
+            group_data_egress_.transmit->note_unicast_repeat_skipped();
+            session_.note_packet_submitted(packet.header.sequence);
+            session_.note_retransmission_sent(packet.header.sequence, now);
+            return true;
+        }
+        multicast_path = repeat_decision.multicast;
+    }
+    if (multicast_path) {
+        // One copy for every receiver: the datagram leaves on this member's
+        // channel socket towards the multicast group, so its source address
+        // is the one the receivers' control links know.
+        const auto channel = channel_.lock();
+        if (channel == nullptr) {
+            if (repeat_decision.multicast) {
+                group_data_egress_.transmit->complete_repeat(
+                    packet.header.sequence, repeat_decision.attempt, false);
+            }
+            break_locked(0);
+            return false;
+        }
+        const auto bytes = std::span {datagram}.first(datagram_size);
+        const auto sent =
+            channel->send_datagram(bytes, group_data_egress_.destination);
+        if (repeat_decision.multicast) {
+            group_data_egress_.transmit->complete_repeat(packet.header.sequence,
+                repeat_decision.attempt,
+                sent && sent.bytes_transferred == bytes.size());
+        }
+        if (sent && sent.bytes_transferred == bytes.size()) {
+            if (group_data_egress_.transmit != nullptr) {
+                group_data_egress_.transmit->note_multicast_sent(
+                    bytes.size(), packet.header.retransmitted);
+            }
+            return complete_datagram(bytes, completion, now);
+        }
+        if (!sent && !UdpSocket::is_transient_send_error(sent.system_error)) {
+            break_locked(sent.system_error);
+            return false;
+        }
+        if (repeat_decision.multicast) {
+            // A local multicast failure did not repair this receiver. Use
+            // its ordinary bounded unicast retry path with the same packet.
+            return submit_datagram(bytes, completion, now);
+        }
+        // A transient multicast send failure drops this copy for every
+        // receiver; each one recovers it by NAK over its own link.
+        session_.note_packet_submitted(packet.header.sequence);
+        if (packet.header.retransmitted) {
+            session_.note_retransmission_sent(packet.header.sequence, now);
+        }
+        return true;
+    }
+    return submit_datagram(
+        std::span {datagram}.first(datagram_size), completion, now);
 }
 
 bool ConnectionRuntime::send_filter_control(
@@ -3431,17 +3571,24 @@ bool ConnectionRuntime::service_key_rotation(
     }
     // Keep the initial cadence until an RTT observation is available. Once
     // measured, allow a round trip plus half an RTT before repeating KMREQ.
+    // Under a shared schedule the key switches at a group position whether
+    // or not this receiver has answered, so freshly built material cannot
+    // wait for the retry timer: it is sent as soon as it exists.
+    const std::uint64_t revision = crypto_->key_material_revision();
+    const bool new_material = crypto_->has_shared_transmit_schedule()
+        && revision != last_key_material_revision_sent_;
     const bool retry_due = !last_key_material_send_microseconds_.has_value()
         || now < *last_key_material_send_microseconds_
         || now - *last_key_material_send_microseconds_
             >= retry_interval_microseconds;
-    if (!retry_due) {
+    if (!retry_due && !new_material) {
         return true;
     }
     if (!send_key_material(
             key_material_request_subtype, key_material, now)) {
         return false;
     }
+    last_key_material_revision_sent_ = revision;
     return true;
 }
 
@@ -3811,6 +3958,7 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
 {
     PacketView packet = incoming_packet;
     if (peer != peer_) {
+        foreign_peer_packets_.fetch_add(1U, std::memory_order_relaxed);
         return;
     }
     // Admission must precede FEC state, liveness and statistics mutations.
@@ -4455,6 +4603,9 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
                     || crypto_->prepare_data_packet(
                            candidate->sequence_position)
                         != Error::none
+                    || crypto_->prepare_data_sequence(
+                           candidate->header.sequence)
+                        != Error::none
                     || !service_key_rotation(packet_time)) {
                     break_locked(0);
                     return {};
@@ -4469,6 +4620,21 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             break;
         }
         const bool retransmission = retransmission_ready(now_microseconds());
+        if (!retransmission
+            && group_data_egress_.mode == GroupDataEgress::Mode::suppress) {
+            // No datagram leaves here, so neither pacing nor the flow
+            // window applies: the original is on the multicast path and
+            // the receiver may acknowledge it before this member would
+            // have been allowed to send it.
+            const auto packet = session_.next_unpaced_new_packet(packet_time);
+            if (!packet.has_value()) {
+                break;
+            }
+            if (!send_data(*packet, packet_time)) {
+                return {};
+            }
+            continue;
+        }
         if (!retransmission
             && session_.send_buffer().packets_in_flight()
                 >= flow_window_packets_) {

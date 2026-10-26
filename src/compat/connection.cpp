@@ -38,6 +38,7 @@
 #include <new>
 #include <optional>
 #include <span>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -183,6 +184,8 @@ void publish_listener_group_update(SRTSOCKET listener) noexcept
         return SRT_GTYPE_BROADCAST;
     case GroupType::backup:
         return SRT_GTYPE_BACKUP;
+    case GroupType::multicast:
+        return ROBOTWEAX_SRT_GTYPE_MULTICAST;
     default:
         return SRT_GTYPE_UNDEFINED;
     }
@@ -195,7 +198,17 @@ void publish_listener_group_update(SRTSOCKET listener) noexcept
 struct ListenerGroupAdmission {
     SRTSOCKET listener = SRT_INVALID_SOCK;
     std::uint32_t initial_sequence = 0;
+    // Bonding admission (SRTO_GROUPCONNECT).
     bool enabled = false;
+    // Dispatch admission (SRTO_ROBOTWEAX_MCAST_GROUP set on the listener);
+    // the callback must still supply the key per join.
+    bool dispatch_enabled = false;
+    std::string admission_key;
+    MulticastDispatch announcement {};
+    bool has_announcement = false;
+    // This admission's crypto session (null when unencrypted); a dispatch
+    // member draws its transmit keys from the group's shared schedule.
+    std::shared_ptr<CryptoSession> crypto;
     std::uint64_t admission_domain = 0;
     SRTSOCKET member_handle = SRT_INVALID_SOCK;
     std::shared_ptr<SocketRecord> member;
@@ -222,9 +235,12 @@ struct ListenerGroupAdmission {
         constexpr std::uint16_t maximum_weight = 32'767U;
         const SRT_GROUP_TYPE type =
             compatible_group_type(proposed.type);
-        if (!enabled || type == SRT_GTYPE_UNDEFINED
-            || proposed.flags != 0U
-            || proposed.weight > maximum_weight) {
+        const bool dispatch = type == ROBOTWEAX_SRT_GTYPE_MULTICAST;
+        if (type == SRT_GTYPE_UNDEFINED || proposed.flags != 0U
+            || proposed.weight > maximum_weight
+            || (dispatch ? (!dispatch_enabled || proposed.weight != 0U
+                               || admission_key.empty())
+                         : !enabled)) {
             return false;
         }
         if (mirror.group != SRT_INVALID_SOCK) {
@@ -234,6 +250,44 @@ struct ListenerGroupAdmission {
                 || proposed.weight != peer.weight) {
                 return false;
             }
+        } else if (dispatch) {
+            GroupRegistry::DispatchDescription description;
+            if (!GroupRegistry::instance().prepare_dispatch(listener,
+                    admission_key, admission_domain, initial_sequence,
+                    description)) {
+                return false;
+            }
+            // The rest of admission (member enrolment, activation, commit
+            // and rollback) is shared with mirrors through this view.
+            mirror.group = description.group;
+            mirror.generation = description.generation;
+            mirror.created = description.created;
+            mirror.drift_tracer = description.drift_tracer;
+            mirror.minimum_input_bandwidth_bytes_per_second =
+                description.minimum_input_bandwidth_bytes_per_second;
+            mirror.minimum_peer_srt_version =
+                description.minimum_peer_srt_version;
+            // Encryption is all-or-nothing per dispatch group: a member
+            // without the group key could neither read the shared copy nor
+            // repeat it, and a keyed member in a clear group would encrypt
+            // what the others send in the clear.
+            const bool keyed_group = description.key_schedule != nullptr;
+            const bool keyed_member = crypto != nullptr && crypto->enabled();
+            if (keyed_group != keyed_member
+                || (keyed_group
+                    && crypto->attach_shared_transmit_schedule(
+                           description.key_schedule)
+                        != Error::none)) {
+                if (description.created) {
+                    GroupRegistry::instance().release_empty_mirror(
+                        description.group, description.generation);
+                }
+                mirror = {};
+                return false;
+            }
+            announcement = description.announcement;
+            has_announcement = true;
+            peer = proposed;
         } else if (!GroupRegistry::instance().prepare_mirror(listener,
                        static_cast<SRTSOCKET>(proposed.group_id), type,
                        initial_sequence, mirror, admission_domain,
@@ -387,6 +441,20 @@ void resolve_offered_extensions(
     return context != nullptr
         && static_cast<ListenerGroupAdmission*>(context)
             ->prepare(peer, local);
+}
+
+[[nodiscard]] bool provide_listener_dispatch(
+    MulticastDispatch& dispatch, void* context) noexcept
+{
+    if (context == nullptr) {
+        return false;
+    }
+    const auto& admission = *static_cast<ListenerGroupAdmission*>(context);
+    if (!admission.has_announcement) {
+        return false;
+    }
+    dispatch = admission.announcement;
+    return true;
 }
 
 [[nodiscard]] int fail(SRT_ERRNO error, int system_error = 0) noexcept
@@ -696,6 +764,94 @@ void publish_group_member_state(SocketRecord& socket) noexcept
     GroupRegistry::instance().update_member(
         group, group_generation, handle, member_generation,
         state, result);
+}
+
+// Caller side of a multicast dispatch group, after the runtime is attached:
+// join the announced group on a dedicated socket and route datagrams that
+// carry the Listener's dispatch group ID into this member's session. The
+// control link stays on the connection's own channel. Any failure here
+// fails the connect: a receiver that cannot hear the group is not usable.
+[[nodiscard]] int attach_dispatch_receiver(
+    SocketRecord& socket, const HandshakeMachine& protocol) noexcept
+{
+    if (!protocol.has_peer_multicast_dispatch()) {
+        return 0;
+    }
+    const MulticastDispatch& dispatch = protocol.peer_multicast_dispatch();
+    SRTSOCKET group = SRT_INVALID_SOCK;
+    std::shared_ptr<ConnectionRuntime> runtime;
+    PublicSocketOptions options;
+    {
+        std::lock_guard lock(socket.mutex);
+        group = socket.group_id;
+        runtime = socket.runtime;
+        options = socket.public_options;
+    }
+    const auto record = GroupRegistry::instance().find(group);
+    if (record == nullptr || runtime == nullptr) {
+        return fail(SRT_ECONNSETUP);
+    }
+    const IpAddressFamily family = dispatch.multicast_group.family;
+    UdpSocket receive(family);
+    if (!receive.valid()) {
+        return fail(SRT_ESOCKFAIL, receive.open_system_error());
+    }
+    // The receiver's own interface choice wins over the Listener's hint.
+    IpEndpoint interface = IpEndpoint {.family = family};
+    if (options.multicast_interface_set
+        && options.multicast_interface.family == family) {
+        interface = options.multicast_interface;
+    } else if (dispatch.has_interface_hint) {
+        interface = dispatch.interface_hint;
+    }
+    const IpEndpoint local = family == IpAddressFamily::ipv4
+        ? IpEndpoint::any(dispatch.multicast_group.port)
+        : IpEndpoint::ipv6_any(dispatch.multicast_group.port);
+    if (receive.set_reuse_address(true) != Error::none
+        || receive.bind(local) != Error::none
+        || receive.join_multicast(dispatch.multicast_group, interface)
+            != Error::none) {
+        return fail(SRT_ESOCKFAIL, receive.last_system_error());
+    }
+    // Best effort: payload arrives here, not on the control socket.
+    (void)receive.set_receive_buffer_size(options.udp_receive_buffer_bytes);
+    std::shared_ptr<DatagramChannel> channel;
+    try {
+        channel = std::make_shared<DatagramChannel>(std::move(receive));
+    } catch (...) {
+        return fail(SRT_ENOBUF);
+    }
+    // Unicast retransmissions carry the dispatch group ID as well, so the
+    // control link's channel routes it into the same session.
+    std::shared_ptr<DatagramChannel> control;
+    {
+        std::lock_guard lock(socket.mutex);
+        control = socket.channel;
+    }
+    if (control == nullptr
+        || !control->register_ingress_route(dispatch.group_id, runtime)) {
+        return fail(SRT_ECONNSETUP);
+    }
+    if (!channel->register_ingress_route(dispatch.group_id, runtime)
+        || !channel->start()) {
+        control->unregister_connection(dispatch.group_id);
+        return fail(SRT_ETHREAD);
+    }
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->closed || record->dispatch == nullptr) {
+            channel->unregister_connection(dispatch.group_id);
+            control->unregister_connection(dispatch.group_id);
+            return fail(SRT_ESCLOSED);
+        }
+        record->dispatch->receive_channel = channel;
+        record->dispatch->control_channel = control;
+        record->dispatch->ingress_group_id = dispatch.group_id;
+        record->dispatch->multicast_group = dispatch.multicast_group;
+        record->dispatch->multicast_interface = interface;
+        record->dispatch->joined = true;
+    }
+    return 0;
 }
 
 void confirm_peer_group(SocketRecord& socket) noexcept
@@ -1639,9 +1795,16 @@ public:
             const bool has_response = message.has_key_material_extension
                 && message.key_material_extension_type
                     == HandshakeExtensionType::key_material_response;
+            // A dispatch receiver never keeps the handshake key for
+            // reception: the sender's directional key arrives by KMREQ on
+            // this link, and a stale clone under the same selector would
+            // turn "no key yet" into silently garbled plaintext for the
+            // multicast copy that may arrive first. Without a receive key
+            // such DATA stays unacknowledged until it can be decrypted.
             if (!key_length_matches || !has_response
                 || setup_.crypto->acknowledge_key_material(
-                       message.key_material.view(), true)
+                       message.key_material.view(),
+                       !message.has_multicast_dispatch)
                     != Error::none) {
                 if (setup_.enforced_encryption
                     || !setup_.crypto->allows_plaintext_fallback()) {
@@ -1698,10 +1861,15 @@ public:
         {
             // The listener's CONCLUSION carries the sequence its DATA starts
             // at. A reference listener echoes our ISN; another listener may
-            // pick its own.
+            // pick its own. A dispatch sender's payload is already running
+            // on the group sequence; its announcement names the position a
+            // joiner starts receiving at, so no gap is reported for the
+            // stream before the join.
             std::lock_guard lock(socket_.mutex);
             socket_.peer_connection_initial_sequence =
-                protocol.peer_initial_sequence().value();
+                protocol.has_peer_multicast_dispatch()
+                ? protocol.peer_multicast_dispatch().initial_sequence
+                : protocol.peer_initial_sequence().value();
         }
         // CONNECTED wakes group waits and asynchronous senders. Keep every
         // profile CONNECTING until its usable runtime has been installed.
@@ -1728,6 +1896,11 @@ public:
                 last_error().system_error);
         }
         confirm_peer_group(socket_);
+        if (attach_dispatch_receiver(socket_, protocol) == SRT_ERROR) {
+            return fail_connect(socket_,
+                static_cast<SRT_ERRNO>(last_error().code),
+                last_error().system_error);
+        }
         publish_connected_state(socket_, SRTS_CONNECTED);
         return 0;
     }
@@ -4030,6 +4203,11 @@ int connect_socket(
                     .flags = 0U,
                     .weight = socket->group_weight,
                 },
+            // A dispatch receiver admits the Listener's type-4 answer and
+            // its announcement; a bonding member keeps the v1.5.7 profile.
+            .group_membership_policy = {.admit_multicast_dispatch =
+                                            socket->group_type
+                    == ROBOTWEAX_SRT_GTYPE_MULTICAST},
         };
         setup.configuration.implementation_identity =
             local_implementation_identity(
@@ -4377,6 +4555,24 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
             if (accepted->incoming_group_type != SRT_GTYPE_UNDEFINED
                 && group_admission.admission_domain == 0)
                 callback_result = SRT_ERROR;
+            if (accepted->incoming_group_type
+                == ROBOTWEAX_SRT_GTYPE_MULTICAST) {
+                // The key is this join's admission token; without it the
+                // callback did not admit the receiver into any stream.
+                if (accepted->incoming_multicast_key_size == 0U) {
+                    callback_result = SRT_ERROR;
+                } else {
+                    try {
+                        group_admission.admission_key.assign(
+                            accepted->incoming_multicast_key.data(),
+                            accepted->incoming_multicast_key_size);
+                    } catch (...) {
+                        callback_result = SRT_ERROR;
+                    }
+                }
+            }
+            accepted->incoming_multicast_key = {};
+            accepted->incoming_multicast_key_size = 0U;
             accepted->listen_callback_active = false;
             accepted->incoming_peer_handshake = {};
             accepted->incoming_peer_identity = {};
@@ -4405,6 +4601,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         timeout_milliseconds = public_options.connection_timeout_milliseconds;
     }
     group_admission.enabled = public_options.group_connect;
+    group_admission.dispatch_enabled = public_options.multicast_group_set;
     group_admission.path_identifier_required =
         public_options.path_identifier_required;
     group_admission.standby_rtt_required = public_options.standby_rtt_required;
@@ -4644,6 +4841,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
 
     setup_context->native_options = native_options;
     setup_context->crypto = crypto;
+    group_admission.crypto = crypto;
     setup_context->policy_error = policy_error;
     setup_context->policy_rejected = policy_rejected;
     setup_context->cookie_context.cookie = admission.validated_cookie;
@@ -4675,8 +4873,14 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
             std::min<std::size_t>(native_options.receive_buffer_packets(),
                 static_cast<std::size_t>(public_options.flow_window_packets)),
         .group_membership_negotiator =
-            public_options.group_connect ? negotiate_listener_group : nullptr,
+            public_options.group_connect || public_options.multicast_group_set
+            ? negotiate_listener_group
+            : nullptr,
         .group_membership_context = &group_admission,
+        .group_membership_policy = {.admit_multicast_dispatch =
+                                        public_options.multicast_group_set},
+        .multicast_dispatch_provider = provide_listener_dispatch,
+        .multicast_dispatch_context = &group_admission,
         .cookie_generator = approved_connection_cookie,
         .cookie_context = &setup_context->cookie_context,
     };

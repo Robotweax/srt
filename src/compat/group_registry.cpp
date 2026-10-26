@@ -38,6 +38,15 @@ namespace {
             pending = member.public_data.sockstate;
         }
     }
+    if (pending == SRTS_NONEXIST && group.category == GroupCategory::dispatch
+        && group.dispatch != nullptr && group.dispatch->sender
+        && group.opened) {
+        // A dispatch sender keeps transmitting between receivers: "join at
+        // any time" requires the group to outlive its last member. This is
+        // the defining difference from bonding, where no member means no
+        // peer.
+        return SRTS_CONNECTED;
+    }
     // This is the observable v1.5.7 result for a newly created empty group.
     return pending == SRTS_NONEXIST ? SRTS_BROKEN : pending;
 }
@@ -166,12 +175,16 @@ namespace {
 
 SRTSOCKET GroupRegistry::create(SRT_GROUP_TYPE type) noexcept
 {
-    if (type != SRT_GTYPE_BROADCAST && type != SRT_GTYPE_BACKUP) {
+    if (!creatable_group_type(type)) {
         return SRT_INVALID_SOCK;
     }
 
     try {
         auto record = std::make_shared<GroupRecord>();
+        record->category = group_category_of(type);
+        if (record->category == GroupCategory::dispatch) {
+            record->dispatch = std::make_unique<DispatchGroupState>();
+        }
         (void)record->member_native_options.set(
             SocketOption::maximum_payload_size, SRT_LIVE_DEF_PLSIZE);
         std::lock_guard lock(mutex_);
@@ -622,6 +635,65 @@ int GroupRegistry::get_io_option(
         || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
         || option == SRTO_ROBOTWEAX_PATHID_POLICY
         || option == SRTO_ROBOTWEAX_ACP1_REQUIRED;
+    if (option == SRTO_ROBOTWEAX_MCAST_STATS) {
+        ROBOTWEAX_SRT_MCAST_STATS_V1 stats {};
+        SRTSOCKET receiver_member = SRT_INVALID_SOCK;
+        {
+            std::lock_guard lock(record->mutex);
+            if (record->closed) {
+                set_last_error(SRT_EINVSOCK);
+                return SRT_ERROR;
+            }
+            if (record->dispatch == nullptr) {
+                set_last_error(SRT_EINVOP);
+                return SRT_ERROR;
+            }
+            if (value == nullptr
+                || *value_size < static_cast<int>(sizeof(stats))) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            stats.abi_version = ROBOTWEAX_SRT_MCAST_STATS_VERSION;
+            for (const auto& member : record->members) {
+                if (member.public_data.sockstate == SRTS_CONNECTED) {
+                    ++stats.member_count;
+                }
+            }
+            if (record->dispatch->sender
+                && record->dispatch->transmit != nullptr) {
+                const auto& transmit = *record->dispatch->transmit;
+                stats.mcast_pkt_sent = transmit.multicast_packets();
+                stats.mcast_byte_sent = transmit.multicast_bytes();
+                stats.mcast_pkt_rexmit = transmit.multicast_repeats();
+                stats.unicast_rexmit_skipped = transmit.skipped_repeats();
+            } else if (record->dispatch->receive_channel != nullptr) {
+                const auto& channel = *record->dispatch->receive_channel;
+                stats.mcast_pkt_filtered = channel.unrouted_datagrams();
+                stats.mcast_pkt_received =
+                    channel.routed_datagrams() + channel.unrouted_datagrams();
+                if (!record->members.empty()) {
+                    receiver_member = record->members.front().public_data.id;
+                }
+            }
+        }
+        // Source-address drops live on the member runtime; its socket mutex
+        // is taken after the group mutex is released, since attach_runtime
+        // orders socket before group.
+        if (receiver_member != SRT_INVALID_SOCK) {
+            const auto member =
+                SocketRegistry::instance().find(receiver_member);
+            if (member != nullptr) {
+                std::lock_guard member_lock(member->mutex);
+                if (member->runtime != nullptr) {
+                    stats.mcast_pkt_filtered +=
+                        member->runtime->foreign_peer_packets();
+                }
+            }
+        }
+        std::memcpy(value, &stats, sizeof(stats));
+        *value_size = static_cast<int>(sizeof(stats));
+        return 0;
+    }
     {
         std::lock_guard lock(record->mutex);
         if (record->closed) {
@@ -638,16 +710,24 @@ int GroupRegistry::get_io_option(
             return SRT_ERROR;
         }
         if (option == SRTO_STATE || option == SRTO_GROUPMINSTABLETIMEO
-            || option == SRTO_GROUPTYPE) {
+            || option == SRTO_GROUPTYPE
+            || option == SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD) {
             if (option == SRTO_GROUPMINSTABLETIMEO
                 && record->type != SRT_GTYPE_BACKUP) {
                 set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            if (option == SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD
+                && (record->dispatch == nullptr || !record->dispatch->sender)) {
+                set_last_error(SRT_EINVOP);
                 return SRT_ERROR;
             }
             const std::int32_t result = option == SRTO_STATE
                 ? static_cast<std::int32_t>(aggregate_state(*record))
                 : option == SRTO_GROUPTYPE
                 ? static_cast<std::int32_t>(record->type)
+                : option == SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD
+                ? static_cast<std::int32_t>(record->dispatch->repeat_threshold)
                 : record->minimum_stability_timeout_milliseconds;
             if (*value_size < static_cast<int>(sizeof(result))) {
                 set_last_error(SRT_EINVPARAM);
@@ -746,6 +826,32 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
                 return SRT_ERROR;
             }
             record->minimum_stability_timeout_milliseconds = parsed;
+            return 0;
+        }
+        if (option == SRTO_ROBOTWEAX_MCAST_STATS) {
+            set_last_error(SRT_EINVOP);
+            return SRT_ERROR;
+        }
+        if (option == SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD) {
+            // POST option of a dispatch sender; takes effect on the next
+            // repeat decision. Receivers and bonding groups have no use for it.
+            std::int32_t parsed = 0;
+            if (value == nullptr
+                || value_size != static_cast<int>(sizeof(parsed))) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            std::memcpy(&parsed, value, sizeof(parsed));
+            if (record->dispatch == nullptr || !record->dispatch->sender) {
+                set_last_error(SRT_EINVOP);
+                return SRT_ERROR;
+            }
+            if (parsed < 0 || parsed > 16) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            record->dispatch->repeat_threshold =
+                static_cast<std::uint32_t>(parsed);
             return 0;
         }
         if (option == SRTO_BINDTODEVICE || option == SRTO_CONGESTION
@@ -1071,6 +1177,191 @@ bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
         output.minimum_input_bandwidth_bytes_per_second =
             prepared->minimum_input_bandwidth_bytes_per_second;
         output.minimum_peer_srt_version = prepared->minimum_peer_srt_version;
+        groups_.emplace(candidate, std::move(prepared));
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
+    std::string_view admission_key, std::uint64_t admission_domain,
+    std::uint32_t initial_sequence, DispatchDescription& output) noexcept
+{
+    output = {};
+    if (listener < 0 || is_group_handle(listener) || admission_key.empty()
+        || admission_key.size() > 512U || admission_domain == 0U
+        || initial_sequence > SequenceNumber::mask) {
+        return false;
+    }
+    const auto listener_record = SocketRegistry::instance().find(listener);
+    if (listener_record == nullptr) {
+        return false;
+    }
+    PublicSocketOptions listener_public_options;
+    SocketOptions listener_native_options;
+    {
+        std::lock_guard lock(listener_record->mutex);
+        listener_public_options = listener_record->public_options;
+        listener_native_options = listener_record->native_options;
+    }
+    if (!listener_public_options.multicast_group_set
+        || !listener_public_options.multicast_group.is_multicast()) {
+        return false;
+    }
+    // Fail closed on what is not implemented: packet-filter FEC would run
+    // per member while only one member transmits.
+    if (listener_native_options.packet_filter_configuration().enabled) {
+        return false;
+    }
+    const auto announce = [&](const GroupRecord& record) {
+        MulticastDispatch announcement {
+            .group_id = static_cast<std::uint32_t>(record.handle),
+            .multicast_group = record.dispatch->multicast_group,
+            .has_interface_hint =
+                record.dispatch->multicast_interface != IpEndpoint {}
+                && record.dispatch->multicast_interface.family
+                    == record.dispatch->multicast_group.family,
+            .interface_hint = record.dispatch->multicast_interface,
+            .initial_sequence = record.next_send_sequence,
+            // Members already share the group timestamp origin, so the
+            // multicast copy and this connection agree without a delta.
+            .timestamp_origin_delta_microseconds = 0,
+            .time_to_live = static_cast<std::uint8_t>(
+                record.dispatch->multicast_time_to_live),
+        };
+        if (!announcement.has_interface_hint) {
+            announcement.interface_hint =
+                IpEndpoint {.family = announcement.multicast_group.family};
+        }
+        return announcement;
+    };
+
+    try {
+        std::lock_guard registry_lock(mutex_);
+        if (clearing_) {
+            return false;
+        }
+        std::uint64_t bond_scope = 0U;
+        if (const auto bonded = listener_bond_scopes_.find(listener);
+            bonded != listener_bond_scopes_.end()) {
+            bond_scope = bonded->second;
+        }
+        for (const auto& entry : groups_) {
+            const auto& record = entry.second;
+            std::lock_guard record_lock(record->mutex);
+            if (record->closed || record->category != GroupCategory::dispatch
+                || record->dispatch == nullptr || !record->dispatch->sender
+                || record->dispatch->admission_key != admission_key) {
+                continue;
+            }
+            const bool same_scope =
+                (bond_scope != 0U && record->mirror_bond_scope == bond_scope)
+                || (bond_scope == 0U && record->mirror_bond_scope == 0U
+                    && record->mirror_listener == listener);
+            if (!same_scope) {
+                continue;
+            }
+            // One key, one trust domain: a different domain on the same
+            // listener is a configuration error, not a second group.
+            if (record->admission_domain != admission_domain) {
+                return false;
+            }
+            output.group = record->handle;
+            output.generation = record->generation;
+            output.announcement = announce(*record);
+            output.drift_tracer = record->drift_tracer;
+            output.minimum_input_bandwidth_bytes_per_second =
+                record->minimum_input_bandwidth_bytes_per_second;
+            output.minimum_peer_srt_version = record->minimum_peer_srt_version;
+            output.key_schedule = record->dispatch->key_schedule;
+            return true;
+        }
+
+        const SRTSOCKET candidate =
+            next_group_handle(groups_, next_group_index_);
+        if (candidate == SRT_INVALID_SOCK) {
+            return false;
+        }
+        auto prepared = std::make_shared<GroupRecord>();
+        prepared->category = GroupCategory::dispatch;
+        prepared->dispatch = std::make_unique<DispatchGroupState>();
+        prepared->dispatch->sender = true;
+        prepared->dispatch->transmit =
+            std::make_shared<DispatchTransmitState>();
+        prepared->dispatch->admission_key = std::string(admission_key);
+        prepared->dispatch->multicast_group =
+            listener_public_options.multicast_group;
+        prepared->dispatch->multicast_interface =
+            listener_public_options.multicast_interface_set
+            ? listener_public_options.multicast_interface
+            : IpEndpoint {};
+        prepared->dispatch->multicast_time_to_live =
+            listener_public_options.multicast_time_to_live;
+        if (listener_native_options.encryption_enabled()) {
+            // One schedule for the sender's lifetime; members attach it to
+            // their own sessions and announce its generations themselves.
+            const CryptoConfiguration crypto =
+                listener_native_options.crypto_configuration();
+            prepared->dispatch->key_schedule =
+                std::make_shared<SharedTransmitKeySchedule>(
+                    SharedTransmitKeySchedule::Configuration {
+                        .key_length = crypto.key_length,
+                        .mode = crypto.mode == CryptoMode::automatic
+                            ? CryptoMode::aes_ctr
+                            : crypto.mode,
+                        .refresh_rate_packets = crypto.refresh_rate_packets,
+                        .preannouncement_packets =
+                            crypto.preannouncement_packets,
+                        .origin = SequenceNumber {initial_sequence},
+                    });
+            if (prepared->dispatch->key_schedule->initialize() != Error::none) {
+                return false;
+            }
+        }
+        prepared->handle = candidate;
+        prepared->type = ROBOTWEAX_SRT_GTYPE_MULTICAST;
+        prepared->generation = next_generation_++;
+        prepared->initial_sequence = initial_sequence;
+        prepared->next_send_sequence = initial_sequence;
+        prepared->replay_acknowledged_sequence = initial_sequence;
+        prepared->next_receive_sequence = initial_sequence;
+        prepared->mirror_listener = listener;
+        prepared->mirror_bond_scope = bond_scope;
+        prepared->admission_domain = admission_domain;
+        prepared->member_public_options = listener_public_options;
+        prepared->member_native_options = listener_native_options;
+        prepared->peer_idle_timeout_milliseconds =
+            listener_public_options.peer_idle_timeout_milliseconds;
+        prepared->ip_time_to_live = listener_public_options.ip_time_to_live;
+        prepared->ip_type_of_service =
+            listener_public_options.ip_type_of_service;
+        prepared->ip_type_of_service_explicit =
+            listener_public_options.ip_type_of_service_explicit;
+        prepared->send_synchronous = listener_public_options.send_synchronous;
+        prepared->receive_synchronous =
+            listener_public_options.receive_synchronous;
+        prepared->send_timeout_milliseconds =
+            listener_public_options.send_timeout_milliseconds;
+        prepared->receive_timeout_milliseconds =
+            listener_public_options.receive_timeout_milliseconds;
+        prepared->drift_tracer = listener_public_options.drift_tracer;
+        prepared->minimum_input_bandwidth_bytes_per_second =
+            listener_public_options.minimum_input_bandwidth_bytes_per_second;
+        prepared->minimum_peer_srt_version =
+            listener_public_options.minimum_peer_srt_version;
+        if (next_generation_ == 0U) {
+            next_generation_ = 1U;
+        }
+        output.group = candidate;
+        output.generation = prepared->generation;
+        output.created = true;
+        output.announcement = announce(*prepared);
+        output.drift_tracer = prepared->drift_tracer;
+        output.minimum_input_bandwidth_bytes_per_second =
+            prepared->minimum_input_bandwidth_bytes_per_second;
+        output.minimum_peer_srt_version = prepared->minimum_peer_srt_version;
+        output.key_schedule = prepared->dispatch->key_schedule;
         groups_.emplace(candidate, std::move(prepared));
         return true;
     } catch (...) {
@@ -1497,6 +1788,9 @@ void GroupRegistry::close(SRTSOCKET group) noexcept
         return;
     }
     std::vector<GroupMemberSnapshot> members;
+    std::shared_ptr<DatagramChannel> receive_channel;
+    std::shared_ptr<DatagramChannel> control_channel;
+    std::uint32_t ingress_group_id = 0;
     {
         // Mark closure under the metadata lock only. A group send blocked in
         // its readiness wait holds `send_mutex`; taking it here would wait
@@ -1516,6 +1810,25 @@ void GroupRegistry::close(SRTSOCKET group) noexcept
         record->member_native_options = {};
         members.swap(record->members);
         ++record->snapshot_version;
+        if (record->dispatch != nullptr) {
+            // Leave the multicast group before the control link goes: the
+            // channel's socket closes with the channel, which ends the
+            // membership, and the routes are dropped so no late datagram
+            // reaches a member that is closing.
+            receive_channel.swap(record->dispatch->receive_channel);
+            control_channel = record->dispatch->control_channel.lock();
+            record->dispatch->control_channel.reset();
+            ingress_group_id = record->dispatch->ingress_group_id;
+            record->dispatch->joined = false;
+        }
+    }
+    if (receive_channel != nullptr) {
+        receive_channel->unregister_connection(ingress_group_id);
+        receive_channel.reset();
+    }
+    if (control_channel != nullptr) {
+        control_channel->unregister_connection(ingress_group_id);
+        control_channel.reset();
     }
     // Wake blocked group I/O so it observes the closure and returns before
     // the members go away underneath it.

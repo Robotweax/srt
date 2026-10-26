@@ -115,7 +115,7 @@ SRTSOCKET srt_create_group(SRT_GROUP_TYPE type)
     if (!stateful_api_available()) {
         return SRT_INVALID_SOCK;
     }
-    if (type != SRT_GTYPE_BROADCAST && type != SRT_GTYPE_BACKUP) {
+    if (!robotweax::srt::compat::creatable_group_type(type)) {
         robotweax::srt::compat::set_last_error(SRT_EINVPARAM);
         return SRT_INVALID_SOCK;
     }
@@ -271,6 +271,22 @@ static int connect_group_impl(SRTSOCKET group, SRT_SOCKGROUPCONFIG endpoints[],
             group, description)) {
         set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
+    }
+    // A dispatch receiver has exactly one control link: one endpoint, and
+    // none already enrolled. Bonding semantics (several members, weights,
+    // replacement members) do not apply to it.
+    if (group_category_of(description.type) == GroupCategory::dispatch) {
+        bool occupied = false;
+        {
+            std::lock_guard lock(group_record->mutex);
+            occupied = !group_record->members.empty()
+                || (group_record->dispatch != nullptr
+                    && group_record->dispatch->sender);
+        }
+        if (endpoint_count != 1 || occupied || endpoints[0].weight != 0U) {
+            set_last_error(SRT_EINVOP);
+            return SRT_ERROR;
+        }
     }
     // Reject repeated descriptor values before any ownership transfer. Copy
     // only on the explicit adoption path; the address-only API is unchanged.

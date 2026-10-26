@@ -1047,19 +1047,30 @@ int send_group_message_implementation(
     std::int32_t timeout = -1;
     std::uint64_t generation = 0;
     SRT_GROUP_TYPE group_type = SRT_GTYPE_UNDEFINED;
+    bool dispatch_sender = false;
+    IpEndpoint dispatch_destination {};
+    std::shared_ptr<DispatchTransmitState> dispatch_transmit;
     {
         std::lock_guard lock(group->mutex);
         if (group->closed) {
             return fail(SRT_ESCLOSED);
         }
+        dispatch_sender = group->category == GroupCategory::dispatch
+            && group->dispatch != nullptr && group->dispatch->sender;
         if (group->type != SRT_GTYPE_BROADCAST
-            && group->type != SRT_GTYPE_BACKUP) {
+            && group->type != SRT_GTYPE_BACKUP && !dispatch_sender) {
+            // A dispatch receiver has nothing to send on; its control link
+            // is not a data channel.
             return fail(SRT_EINVOP);
         }
         group_type = group->type;
         blocking = group->send_synchronous;
         timeout = group->send_timeout_milliseconds;
         generation = group->generation;
+        if (dispatch_sender) {
+            dispatch_destination = group->dispatch->multicast_group;
+            dispatch_transmit = group->dispatch->transmit;
+        }
     }
     const auto deadline = io_deadline(timeout);
     const auto bytes = std::as_bytes(std::span{
@@ -1069,7 +1080,78 @@ int send_group_message_implementation(
         const std::uint64_t observed = ReadinessSignal::generation();
         auto members = group_members(group);
         if (members.empty()) {
-            return fail(SRT_ENOCONN);
+            if (!dispatch_sender) {
+                return fail(SRT_ENOCONN);
+            }
+            // Nobody has joined (yet). The stream still advances so a later
+            // receiver joins at a live position, but no datagram is worth
+            // sending to an empty group.
+            std::lock_guard lock(group->mutex);
+            if (group->closed || group->generation != generation) {
+                return fail(SRT_ESCLOSED);
+            }
+            if (!group->opened) {
+                return fail(SRT_ENOCONN);
+            }
+            if (length > SRT_LIVE_MAX_PLSIZE) {
+                return fail(SRT_EINVALMSGAPI);
+            }
+            const std::size_t payload =
+                group->member_native_options.maximum_payload_size();
+            const std::size_t packets = payload == 0U
+                ? 1U
+                : (static_cast<std::size_t>(length) + payload - 1U) / payload;
+            group->next_send_sequence =
+                SequenceNumber {group->next_send_sequence}
+                    .advanced(static_cast<std::uint32_t>(packets))
+                    .value();
+            group->next_send_message =
+                (group->next_send_message + 1U) & 0x03ff'ffffU;
+            if (group->next_send_message == 0U) {
+                group->next_send_message = 1U;
+            }
+            GroupRegistry::note_group_sent(
+                *group, static_cast<std::uint64_t>(length));
+            if (control != nullptr) {
+                control->srctime = local_control.srctime;
+            }
+            return length;
+        }
+        SRTSOCKET dispatch_owner = SRT_INVALID_SOCK;
+        if (dispatch_sender) {
+            // The first live member transmits the single multicast copy;
+            // every other member only records the packets as sent. New
+            // members start suppressed and take over only when they become
+            // first, so one receiver's departure re-elects deterministically.
+            std::uint32_t repeat_threshold = 0;
+            {
+                std::lock_guard lock(group->mutex);
+                if (group->dispatch != nullptr) {
+                    repeat_threshold = group->dispatch->repeat_threshold;
+                }
+            }
+            bool elected = false;
+            for (const auto& member : members) {
+                if (member.runtime == nullptr) {
+                    continue;
+                }
+                using Egress = ConnectionRuntime::GroupDataEgress;
+                Egress egress {
+                    .mode = Egress::Mode::suppress,
+                    .destination = dispatch_destination,
+                    .destination_socket_id =
+                        static_cast<std::uint32_t>(group->handle),
+                    .transmit = dispatch_transmit,
+                    .repeat_threshold = repeat_threshold,
+                    .member_id = member.id,
+                };
+                if (!elected && !member.terminal) {
+                    egress.mode = Egress::Mode::redirect;
+                    dispatch_owner = member.id;
+                    elected = true;
+                }
+                member.runtime->set_group_data_egress(egress);
+            }
         }
         if (group_type == SRT_GTYPE_BACKUP) {
             acknowledge_backup_replay(members.view(), group);
@@ -1170,6 +1252,13 @@ int send_group_message_implementation(
                 have_failure = true;
             }
             failed_members.push_back({member, result});
+            if (dispatch_sender && member.id == dispatch_owner) {
+                // Suppressed members cannot emit an original. Do not let
+                // their queue acceptance commit a sequence the transmitter
+                // could not accept. Retry the same sequence after capacity
+                // returns, or after a failed owner has been retired.
+                break;
+            }
         }
 
         if (!succeeded && would_block) {
@@ -1329,7 +1418,7 @@ int send_group_message_implementation(
                 requested_data, requested_capacity, true);
             return length;
         }
-        if (group_type == SRT_GTYPE_BROADCAST) {
+        if (group_type == SRT_GTYPE_BROADCAST || dispatch_sender) {
             for (const auto& failure : failed_members) {
                 if (failure.result.status == MessageIoStatus::would_block) {
                     GroupRegistry::instance().note_io_result(group->handle,
@@ -1371,6 +1460,13 @@ int send_group_message_implementation(
             ReadinessSignal::wait_until(observed, deadline);
             continue;
         }
+        if (dispatch_sender && hard_failure && !would_block) {
+            // Every remaining receiver has gone away at once. The failed
+            // members were closed above; the stream itself is still open,
+            // so this payload is treated like a send to an empty group
+            // instead of reporting a lost connection.
+            continue;
+        }
         if (hard_failure || !would_block || !blocking) {
             return fail(result_error(first_failure, true),
                 first_failure.system_error);
@@ -1408,11 +1504,16 @@ int receive_group_message_implementation(
         if (group->closed) {
             return fail(SRT_ESCLOSED);
         }
+        // A dispatch receiver reads its single member like a one-member
+        // Broadcast group; the dispatch sender has nothing to read.
+        const bool dispatch_receiver =
+            group->category == GroupCategory::dispatch
+            && group->dispatch != nullptr && !group->dispatch->sender;
         if (group->type != SRT_GTYPE_BROADCAST
-            && group->type != SRT_GTYPE_BACKUP) {
+            && group->type != SRT_GTYPE_BACKUP && !dispatch_receiver) {
             return fail(SRT_EINVOP);
         }
-        group_type = group->type;
+        group_type = dispatch_receiver ? SRT_GTYPE_BROADCAST : group->type;
         blocking = group->receive_synchronous;
         timeout = group->receive_timeout_milliseconds;
         generation = group->generation;
@@ -1616,6 +1717,7 @@ SocketReadinessSnapshot group_poll_readiness(
     bool opened = false;
     bool connected = false;
     bool pending = false;
+    bool dispatch_sender = false;
     SequenceNumber expected;
     {
         std::lock_guard lock(group->mutex);
@@ -1625,6 +1727,8 @@ SocketReadinessSnapshot group_poll_readiness(
             return readiness;
         }
         opened = group->opened;
+        dispatch_sender = group->category == GroupCategory::dispatch
+            && group->dispatch != nullptr && group->dispatch->sender;
         expected = SequenceNumber {group->next_receive_sequence};
         // Read current membership flags as well: a newly added pending member
         // must suppress terminal readiness even if absent from this snapshot.
@@ -1636,14 +1740,18 @@ SocketReadinessSnapshot group_poll_readiness(
                 && state != SRTS_NONEXIST;
         }
     }
+    bool output_owner_seen = false;
     for (const auto& member : members) {
         if (!member.terminal) {
             // Include terminal transitions after the registry snapshot and
             // preserve the runtime's delayed SHUTDOWN drain semantics.
             const auto member_readiness =
                 connection_readiness(*member.runtime, false);
-            readiness.events |=
-                member_readiness.events & (SRT_EPOLL_OUT | SRT_EPOLL_ERR);
+            readiness.events |= member_readiness.events & SRT_EPOLL_ERR;
+            if (!dispatch_sender || !output_owner_seen) {
+                readiness.events |= member_readiness.events & SRT_EPOLL_OUT;
+            }
+            output_owner_seen = true;
         }
     }
     const auto receive = inspect_group_readiness(members.view(), expected);

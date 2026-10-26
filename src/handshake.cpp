@@ -556,32 +556,50 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             }
             peer_path_identifier_ = message.path_identifier;
             if (message.has_group_membership) {
-                if (validate_group_membership(
-                        message.group_membership)
+                const auto policy = configuration_.group_membership_policy;
+                if (validate_group_membership(message.group_membership, policy)
                         != GroupMembershipValidation::compatible
-                    || configuration_
-                            .group_membership_negotiator == nullptr) {
+                    || configuration_.group_membership_negotiator == nullptr) {
                     return reject(group_rejection_reason);
                 }
                 GroupMembership local{};
                 if (!configuration_.group_membership_negotiator(
                         message.group_membership, local,
                         configuration_.group_membership_context)
-                    || validate_group_membership(local)
+                    || validate_group_membership(local, policy)
                         != GroupMembershipValidation::compatible
                     || local.type != message.group_membership.type) {
                     return reject(group_rejection_reason);
+                }
+                // A dispatch admission must announce the multicast group;
+                // the announcement's ID is the mirror group this Listener
+                // answers with, so receivers filter on the same value.
+                MulticastDispatch dispatch {};
+                bool has_dispatch = false;
+                if (local.type == GroupType::multicast) {
+                    if (configuration_.multicast_dispatch_provider == nullptr
+                        || !configuration_.multicast_dispatch_provider(
+                            dispatch, configuration_.multicast_dispatch_context)
+                        || dispatch.group_id != local.group_id
+                        || !valid_multicast_dispatch(dispatch)) {
+                        return reject(group_rejection_reason);
+                    }
+                    has_dispatch = true;
                 }
                 peer_group_membership_ =
                     message.group_membership;
                 has_peer_group_membership_ = true;
                 local_group_response_ = local;
                 has_local_group_response_ = true;
+                local_multicast_dispatch_ = dispatch;
+                has_local_multicast_dispatch_ = has_dispatch;
             } else {
                 peer_group_membership_ = {};
                 has_peer_group_membership_ = false;
                 local_group_response_ = {};
                 has_local_group_response_ = false;
+                local_multicast_dispatch_ = {};
+                has_local_multicast_dispatch_ = false;
             }
             if (message.has_handshake_extension) {
                 peer_extension_parameters_ =
@@ -642,6 +660,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .group_membership = local_group_response_,
                 .has_path_identifier = configuration_.require_path_identifier,
                 .path_identifier = peer_path_identifier_,
+                .has_multicast_dispatch = has_local_multicast_dispatch_,
+                .multicast_dispatch = local_multicast_dispatch_,
                 .has_standby_rtt = configuration_.require_standby_rtt,
                 .standby_rtt = standby_rtt_identity_,
                 .implementation_identity =
@@ -715,6 +735,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .group_membership = local_group_response_,
                 .has_path_identifier = configuration_.require_path_identifier,
                 .path_identifier = peer_path_identifier_,
+                .has_multicast_dispatch = has_local_multicast_dispatch_,
+                .multicast_dispatch = local_multicast_dispatch_,
                 .has_standby_rtt = configuration_.require_standby_rtt,
                 .standby_rtt = standby_rtt_identity_,
                 .implementation_identity =
@@ -914,14 +936,24 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                             != tsbpd)))
                 return reject_locally(group_rejection_reason);
             if (configuration_.has_group_membership) {
+                const bool dispatch_expected =
+                    configuration_.group_membership.type
+                    == GroupType::multicast;
                 if (!message.has_group_membership
-                    || validate_group_membership(
-                        message.group_membership)
+                    || validate_group_membership(message.group_membership,
+                           configuration_.group_membership_policy)
                         != GroupMembershipValidation::compatible
                     || message.group_membership.type
                         != configuration_.group_membership.type
                     || message.group_membership.flags
-                        != configuration_.group_membership.flags) {
+                        != configuration_.group_membership.flags
+                    // A dispatch receiver needs the announcement and it
+                    // must name the group the Listener answered with; a
+                    // bonding peer must not send one.
+                    || message.has_multicast_dispatch != dispatch_expected
+                    || (dispatch_expected
+                        && message.multicast_dispatch.group_id
+                            != message.group_membership.group_id)) {
                     rejection_reason_ = group_rejection_reason;
                     state_ = HandshakeState::rejected;
                     actions.push({
@@ -933,7 +965,10 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 peer_group_membership_ =
                     message.group_membership;
                 has_peer_group_membership_ = true;
-            } else if (message.has_group_membership) {
+                peer_multicast_dispatch_ = message.multicast_dispatch;
+                has_peer_multicast_dispatch_ = message.has_multicast_dispatch;
+            } else if (message.has_group_membership
+                || message.has_multicast_dispatch) {
                 rejection_reason_ = group_rejection_reason;
                 state_ = HandshakeState::rejected;
                 actions.push({

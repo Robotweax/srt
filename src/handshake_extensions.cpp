@@ -60,7 +60,10 @@ void write_u32(std::byte* bytes, std::uint32_t value) noexcept
         == static_cast<std::uint16_t>(HandshakeExtensionType::standby_rtt)
         || type
         == static_cast<std::uint16_t>(
-            HandshakeExtensionType::implementation_identity);
+            HandshakeExtensionType::implementation_identity)
+        || type
+        == static_cast<std::uint16_t>(
+            HandshakeExtensionType::multicast_dispatch);
 }
 
 } // namespace

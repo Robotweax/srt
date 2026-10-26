@@ -6,6 +6,43 @@ interoperability profiles. External integrators should run the layers relevant
 to their build and deployment rather than treating one loopback transfer as
 complete qualification.
 
+## Multicast test interfaces
+
+The IPv6 multicast socket test uses interface index 1 by default. Some Linux
+hosts permit joining a group on loopback but do not deliver multicast there.
+Select an existing multicast-capable interface explicitly when qualifying such
+a host, for example a configured Linux lab interface named `mcast0`:
+
+```sh
+export ROBOTWEAX_SRT_TEST_IPV6_MULTICAST_IFINDEX="$(cat /sys/class/net/mcast0/ifindex)"
+./build/robotweax_srt_tests --include multicast
+```
+
+The value must be a nonzero unsigned interface index; malformed values fail the
+test. This setting changes only the test's interface selection and destination
+scope. It does not create interfaces, configure multicast routes, or turn an
+unsupported environment into a passing qualification. Record route and
+interface configuration, failures and skips with the results. A designated
+multicast qualification environment must execute its required cases without
+skips. IPv6 socket primitive tests alone do not qualify IPv6 dispatch groups.
+The IPv4 primitive uses loopback explicitly for membership and sending. On
+macOS, an independent native IPv6 socket send probes route availability before
+the IPv6 primitive runs; a native failure is reported as an environment skip
+with its error number. A library failure still fails when native sending works.
+Linux native CI jobs create a job-local dummy interface and select its index
+through this variable, because Linux loopback need not deliver IPv6 multicast.
+
+The required CI multicast job checks IPv4 loopback dispatch and the public
+MPEG-TS sample in plain, CTR and GCM modes on OpenSSL Linux/macOS/Windows,
+Mbed TLS Linux, and experimental BCrypt Windows. It requires every named
+dispatch regression to execute and rejects skips, missing cases, unsuccessful
+processes and incomplete summaries. Evidence records the exact source SHA,
+platform, configured backend and logs. Its result participates in the required
+CI gate. To run this matrix alone, dispatch the `CI` workflow on the candidate
+branch with the `multicast_only` input set to `true`. That focused run does not
+replace the full CI suite or qualify IPv6 dispatch, physical networking, scale
+or independent cryptographic review.
+
 ## Build and run the default suite
 
 ```sh

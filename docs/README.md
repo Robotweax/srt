@@ -57,6 +57,8 @@ developers and transport integrators using the installed public API.
 - [Testing](testing.md) — local verification and focused test selection.
 - [Early FEC NAK diagnostics](fec-nak-diagnostics.md) — reproduction and
   evidence for intermittent encrypted Rendezvous recovery failures.
+- [Multicast audio/video sample](multicast-media.md) — live MPEG-TS from one
+  Listener sender to multiple Caller receivers, with encoder and player commands
 - [Live UDP/SRT bridge](udp-srt-bridge.md) — continuous MPEG-TS UDP → SRT → UDP
   forwarding with the public API.
 - [Public API examples](../examples/README.md) — runnable Caller, Listener,

@@ -252,6 +252,165 @@ Error CryptoSession::establish_session_authentication(
         peer_socket_id, local_cookie, peer_cookie, group_context);
 }
 
+SharedTransmitKeySchedule::SharedTransmitKeySchedule(
+    Configuration configuration, CryptoProvider& provider) noexcept
+    : provider_(provider)
+    , configuration_(configuration)
+    , frontier_sequence_(configuration.origin)
+{
+    // Keep the generation period inside the IV budget and the announcement
+    // window strictly inside the period, as CryptoSession does.
+    configuration_.refresh_rate_packets = std::clamp<std::uint64_t>(
+        configuration_.refresh_rate_packets, 2U, effective_key_refresh_cap);
+    configuration_.preannouncement_packets =
+        std::min<std::uint64_t>(configuration_.preannouncement_packets,
+            (configuration_.refresh_rate_packets - 1U) / 2U);
+}
+
+SharedTransmitKeySchedule::~SharedTransmitKeySchedule()
+{
+    for (auto& generation : generations_) {
+        provider_.secure_erase(generation.key);
+    }
+    provider_.secure_erase(salt_);
+}
+
+Error SharedTransmitKeySchedule::initialize() noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (initialized_) {
+        return Error::none;
+    }
+    if (configuration_.key_length < minimum_aes_key_size
+        || configuration_.key_length > maximum_aes_key_size
+        || (configuration_.mode != CryptoMode::aes_ctr
+            && configuration_.mode != CryptoMode::aes_gcm)) {
+        return Error::invalid_state;
+    }
+    const Error salted = provider_.random_bytes(salt_);
+    if (salted != Error::none) {
+        return salted;
+    }
+    const Error generated = generate_locked(0U);
+    if (generated != Error::none) {
+        provider_.secure_erase(salt_);
+        return generated;
+    }
+    initialized_ = true;
+    return Error::none;
+}
+
+bool SharedTransmitKeySchedule::initialized() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    return initialized_;
+}
+
+std::size_t SharedTransmitKeySchedule::key_length() const noexcept
+{
+    return configuration_.key_length;
+}
+
+CryptoMode SharedTransmitKeySchedule::mode() const noexcept
+{
+    return configuration_.mode;
+}
+
+std::uint64_t SharedTransmitKeySchedule::refresh_rate_packets() const noexcept
+{
+    return configuration_.refresh_rate_packets;
+}
+
+std::uint64_t
+SharedTransmitKeySchedule::preannouncement_packets() const noexcept
+{
+    return configuration_.preannouncement_packets;
+}
+
+void SharedTransmitKeySchedule::copy_salt(
+    std::span<std::byte, srt_salt_size> destination) const noexcept
+{
+    std::lock_guard lock(mutex_);
+    std::copy(salt_.begin(), salt_.end(), destination.begin());
+}
+
+std::uint64_t SharedTransmitKeySchedule::position_of(
+    SequenceNumber sequence) noexcept
+{
+    std::lock_guard lock(mutex_);
+    const std::int64_t distance = sequence.distance_from(frontier_sequence_);
+    if (distance > 0) {
+        frontier_position_ += static_cast<std::uint64_t>(distance);
+        frontier_sequence_ = sequence;
+        return frontier_position_;
+    }
+    const auto behind = static_cast<std::uint64_t>(-distance);
+    return behind > frontier_position_ ? 0U : frontier_position_ - behind;
+}
+
+std::uint64_t SharedTransmitKeySchedule::frontier_position() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    return frontier_position_;
+}
+
+std::uint64_t SharedTransmitKeySchedule::generation_at(
+    std::uint64_t position) const noexcept
+{
+    return position / configuration_.refresh_rate_packets;
+}
+
+bool SharedTransmitKeySchedule::announcement_due(
+    std::uint64_t position) const noexcept
+{
+    return position % configuration_.refresh_rate_packets
+        >= configuration_.refresh_rate_packets
+        - configuration_.preannouncement_packets;
+}
+
+Error SharedTransmitKeySchedule::generate_locked(
+    std::uint64_t generation) noexcept
+{
+    auto& slot = generations_[generation % retained_generations];
+    provider_.secure_erase(slot.key);
+    slot.valid = false;
+    const Error result = provider_.random_bytes(
+        std::span {slot.key}.first(configuration_.key_length));
+    if (result != Error::none) {
+        return result;
+    }
+    slot.index = generation;
+    slot.valid = true;
+    newest_generation_ = std::max(newest_generation_, generation);
+    return Error::none;
+}
+
+Error SharedTransmitKeySchedule::key_for(
+    std::uint64_t generation, std::span<std::byte> destination) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (!initialized_ || destination.size() < configuration_.key_length) {
+        return Error::invalid_state;
+    }
+    auto& slot = generations_[generation % retained_generations];
+    if (!slot.valid || slot.index != generation) {
+        // Only the next generation may be created on demand; anything
+        // older fell out of the retained window and anything further ahead
+        // would let a corrupt sequence consume key material.
+        if (generation > newest_generation_ + 1U
+            || (generation + retained_generations <= newest_generation_)) {
+            return Error::invalid_state;
+        }
+        const Error generated = generate_locked(generation);
+        if (generated != Error::none) {
+            return generated;
+        }
+    }
+    std::copy_n(
+        slot.key.begin(), configuration_.key_length, destination.begin());
+    return Error::none;
+}
+
 CryptoSession::~CryptoSession()
 {
     erase_slot(transmit_even_);
@@ -631,11 +790,178 @@ Error CryptoSession::prepare_bidirectional_sender(
     active_sender_key_ = EncryptionKey::even;
     erase_slot(transmit_even_);
     erase_slot(transmit_odd_);
+    if (shared_schedule_ != nullptr) {
+        return prepare_shared_sender();
+    }
     Error result = generate_initial_sender_key(key_length);
     if (result == Error::none) {
         result = build_sender_key_material(EncryptionKey::even);
     }
     return result;
+}
+
+Error CryptoSession::install_shared_generation(
+    std::uint64_t generation) noexcept
+{
+    const EncryptionKey selector =
+        SharedTransmitKeySchedule::selector_of(generation);
+    KeySlot* slot = transmit_slot(selector);
+    const std::size_t index = selector == EncryptionKey::even ? 0U : 1U;
+    if (slot == nullptr) {
+        return Error::invalid_state;
+    }
+    if (shared_slot_known_[index]
+        && shared_slot_generation_[index] == generation && slot->ready()) {
+        return Error::none;
+    }
+    std::array<std::byte, maximum_aes_key_size> key {};
+    std::array<std::byte, srt_salt_size> salt {};
+    const std::size_t length = shared_schedule_->key_length();
+    Error result =
+        shared_schedule_->key_for(generation, std::span {key}.first(length));
+    if (result == Error::none) {
+        shared_schedule_->copy_salt(salt);
+        if (slot->ready()) {
+            auto& retired = retired_transmit_keys_[retired_transmit_cursor_];
+            provider_.secure_erase(retired.key);
+            retired.key = slot->key;
+            retired.length = slot->key_length;
+            retired_transmit_cursor_ =
+                (retired_transmit_cursor_ + 1U) % retired_transmit_keys_.size();
+        }
+        result = install_key(*slot, std::span {key}.first(length), salt,
+            shared_schedule_->mode());
+    }
+    provider_.secure_erase(key);
+    provider_.secure_erase(salt);
+    if (result == Error::none) {
+        shared_slot_generation_[index] = generation;
+        shared_slot_known_[index] = true;
+    }
+    return result;
+}
+
+Error CryptoSession::prepare_shared_sender() noexcept
+{
+    const std::uint64_t position = shared_schedule_->frontier_position();
+    const std::uint64_t generation = shared_schedule_->generation_at(position);
+    Error result = install_shared_generation(generation);
+    if (result != Error::none) {
+        return result;
+    }
+    active_sender_key_ = SharedTransmitKeySchedule::selector_of(generation);
+    shared_prepared_selector_ = active_sender_key_;
+    if (shared_schedule_->announcement_due(position)) {
+        // Joining inside the pre-announcement window: announce both.
+        result = install_shared_generation(generation + 1U);
+        if (result != Error::none) {
+            return result;
+        }
+        shared_announced_generation_ = generation + 1U;
+        shared_announced_known_ = true;
+        return build_sender_key_material(EncryptionKey::reserved);
+    }
+    shared_announced_generation_ = generation;
+    shared_announced_known_ = true;
+    return build_sender_key_material(active_sender_key_);
+}
+
+Error CryptoSession::attach_shared_transmit_schedule(
+    std::shared_ptr<SharedTransmitKeySchedule> schedule) noexcept
+{
+    if (schedule == nullptr || !enabled() || shared_schedule_ != nullptr) {
+        return Error::invalid_state;
+    }
+    if (!schedule->initialized()) {
+        const Error initialized = schedule->initialize();
+        if (initialized != Error::none) {
+            return initialized;
+        }
+    }
+    // One mode and key length for the whole group: the shared copy is
+    // decrypted by every receiver with the same material.
+    // key_length() is the directional transmit key drawn so far, which
+    // follows the receiver's negotiated key length; a member whose receiver
+    // negotiated another length than the group's cannot share its key.
+    if (schedule->mode() != effective_mode_
+        || schedule->key_length() != key_length()) {
+        return Error::invalid_state;
+    }
+    // Only the directional transmit material that has not been announced
+    // yet may be replaced; a session that already secured a key of its own
+    // cannot switch keys underneath its receiver.
+    if (!directional_key_pending_ || pending_acknowledged_) {
+        return Error::invalid_state;
+    }
+    shared_schedule_ = std::move(schedule);
+    shared_slot_known_ = {};
+    shared_announced_known_ = false;
+    return prepare_bidirectional_sender(shared_schedule_->key_length());
+}
+
+Error CryptoSession::ensure_shared_key(
+    SequenceNumber sequence, KeySlot*& slot, EncryptionKey& selector) noexcept
+{
+    const std::uint64_t generation = shared_schedule_->generation_at(
+        shared_schedule_->position_of(sequence));
+    const Error installed = install_shared_generation(generation);
+    if (installed != Error::none) {
+        return installed;
+    }
+    selector = SharedTransmitKeySchedule::selector_of(generation);
+    slot = transmit_slot(selector);
+    return slot != nullptr && slot->ready() ? Error::none
+                                            : Error::invalid_state;
+}
+
+Error CryptoSession::prepare_data_sequence(SequenceNumber sequence) noexcept
+{
+    if (!enabled() || shared_schedule_ == nullptr) {
+        return Error::none;
+    }
+    KeySlot* slot = nullptr;
+    EncryptionKey selector = EncryptionKey::even;
+    const Error ready = ensure_shared_key(sequence, slot, selector);
+    if (ready != Error::none) {
+        return ready;
+    }
+    shared_prepared_selector_ = selector;
+    active_sender_key_ = selector;
+    const std::uint64_t position = shared_schedule_->position_of(sequence);
+    const std::uint64_t generation = shared_schedule_->generation_at(position);
+    if (shared_schedule_->announcement_due(position)
+        && (!shared_announced_known_
+            || shared_announced_generation_ < generation + 1U)) {
+        const Error next = install_shared_generation(generation + 1U);
+        if (next != Error::none) {
+            return next;
+        }
+        const Error built = build_sender_key_material(EncryptionKey::reserved);
+        if (built != Error::none) {
+            return built;
+        }
+        shared_announced_generation_ = generation + 1U;
+        shared_announced_known_ = true;
+        rotation_prepared_ = true;
+        pending_acknowledged_ = false;
+        if (sender_state_ == CryptoState::secured) {
+            sender_state_ = CryptoState::securing;
+        }
+    }
+    return Error::none;
+}
+
+EncryptionKey CryptoSession::sender_key_for(SequenceNumber sequence) noexcept
+{
+    if (!enabled()) {
+        return EncryptionKey::none;
+    }
+    if (shared_schedule_ == nullptr) {
+        return active_sender_key_;
+    }
+    return SharedTransmitKeySchedule::selector_of(
+        shared_schedule_->generation_at(
+            shared_schedule_->position_of(sequence)));
 }
 
 Error CryptoSession::generate_initial_sender_key(
@@ -754,6 +1080,7 @@ Error CryptoSession::build_sender_key_material(
         pending_key_material_.size =
             encoded ? encoded.bytes_written : 0U;
         key_material_pending_ = static_cast<bool>(encoded);
+        ++key_material_revision_;
     }
     provider_.secure_erase(kek);
     provider_.secure_erase(plaintext);
@@ -1055,6 +1382,11 @@ Error CryptoSession::acknowledge_key_material(
     key_material_pending_ = false;
     sender_state_ = CryptoState::secured;
     directional_key_pending_ = false;
+    if (shared_schedule_ != nullptr) {
+        // The switch itself is decided by the group sequence; the receiver
+        // now holds both generations.
+        rotation_prepared_ = false;
+    }
     remember_key_material(acknowledged_key_material_history_,
         acknowledged_key_material_history_size_, response);
     if (clone_for_bidirectional_receiver
@@ -1143,7 +1475,8 @@ Error CryptoSession::continue_without_peer_key(CryptoState reported) noexcept
 
 Error CryptoSession::prepare_rotation() noexcept
 {
-    if (!enabled()) return Error::none;
+    if (!enabled() || shared_schedule_ != nullptr)
+        return Error::none;
     if (unacknowledged_sending_) {
         // No peer can acknowledge a successor; rotation happens locally.
         return Error::none;
@@ -1195,14 +1528,15 @@ void CryptoSession::set_preannouncement_floor(std::uint64_t positions) noexcept
 
 Error CryptoSession::note_data_packet_sent() noexcept
 {
-    if (!enabled()) return Error::none;
+    if (!enabled() || shared_schedule_ != nullptr)
+        return Error::none;
     prepared_packet_sent_ = true;
     return note_sequences_consumed(1U);
 }
 
 Error CryptoSession::prepare_data_packet(std::uint64_t position) noexcept
 {
-    if (!enabled())
+    if (!enabled() || shared_schedule_ != nullptr)
         return Error::none;
     if (prepared_sequence_position_known_) {
         if (position < prepared_sequence_position_)
@@ -1291,6 +1625,11 @@ bool CryptoSession::ready_to_send_data() const noexcept
         && sender_state_ != CryptoState::securing) {
         return false;
     }
+    if (shared_schedule_ != nullptr) {
+        // The initial key must be acknowledged; a later generation is used
+        // from its boundary whether or not this receiver confirmed it.
+        return sender_state_ == CryptoState::secured || rotation_prepared_;
+    }
     // Runtime key negotiation can begin after the transport handshake.
     // SECURING therefore does not imply that a peer owns the first key. A
     // prepared rotation is different: its already-acknowledged active key
@@ -1352,7 +1691,14 @@ Error CryptoSession::encrypt(
         && sender_state_ != CryptoState::securing) {
         return Error::cryptographic_failure;
     }
+    EncryptionKey selector = active_sender_key_;
     KeySlot* slot = transmit_slot(active_sender_key_);
+    if (shared_schedule_ != nullptr) {
+        const Error shared = ensure_shared_key(sequence, slot, selector);
+        if (shared != Error::none) {
+            return shared;
+        }
+    }
     if (slot == nullptr || !slot->ready()) {
         return Error::invalid_state;
     }
@@ -1368,7 +1714,7 @@ Error CryptoSession::encrypt(
         make_srt_ctr_initialization_vector(sequence, slot->salt);
     const Error result = slot->ctr_cipher->transform(iv, plaintext, ciphertext);
     if (result == Error::none) {
-        key = active_sender_key_;
+        key = selector;
     }
     return result;
 }
@@ -1536,10 +1882,17 @@ Error CryptoSession::seal(const DataHeader& header,
     if (!ready_to_send_data()) {
         return reject(Error::cryptographic_failure);
     }
+    EncryptionKey selector = active_sender_key_;
     KeySlot* slot = transmit_slot(active_sender_key_);
+    if (shared_schedule_ != nullptr) {
+        const Error shared = ensure_shared_key(header.sequence, slot, selector);
+        if (shared != Error::none) {
+            return reject(shared);
+        }
+    }
     if (slot == nullptr || slot->mode != CryptoMode::aes_gcm
         || slot->authenticated_cipher == nullptr
-        || header.encryption_key != active_sender_key_) {
+        || header.encryption_key != selector) {
         return reject(Error::invalid_state);
     }
     const auto iv =
@@ -1548,7 +1901,7 @@ Error CryptoSession::seal(const DataHeader& header,
     const Error result = slot->authenticated_cipher->seal(
         iv, aad, plaintext, ciphertext, authentication_tag);
     if (result == Error::none) {
-        key = active_sender_key_;
+        key = selector;
     } else {
         provider_.secure_erase(ciphertext);
         provider_.secure_erase(authentication_tag);

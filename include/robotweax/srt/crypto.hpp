@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -380,6 +381,94 @@ struct KeyMaterialBuffer {
 // class; it intentionally contains no lock in the packet hot path. The
 // provider is borrowed and must outlive the session. Public operations are
 // noexcept, but concurrent access to one session requires external locking.
+/**
+ * One traffic-key schedule shared by every member session of a multicast
+ * dispatch sender. The group's 31-bit sequence space is split into
+ * generations of `refresh_rate_packets` positions counted from `origin`;
+ * generation g uses one SEK, selected on the wire by the parity of g, under
+ * one salt for the whole group. Because the generation of a packet is a pure
+ * function of its group sequence number, the member that transmits the
+ * multicast copy and a member that later retransmits the same sequence over
+ * unicast encrypt identically without talking to each other, and every
+ * (key, IV) pair is used once: a sequence number recurs only after 2^31
+ * positions, which is at least two generations later.
+ *
+ * Keys are generated lazily, once per generation, and the last four
+ * generations are retained for retransmission. Instances are shared across
+ * runtime threads and internally synchronized.
+ */
+class SharedTransmitKeySchedule {
+public:
+    struct Configuration {
+        std::size_t key_length = minimum_aes_key_size;
+        CryptoMode mode = CryptoMode::aes_ctr;
+        std::uint64_t refresh_rate_packets = default_key_refresh_rate;
+        std::uint64_t preannouncement_packets = default_key_preannouncement;
+        SequenceNumber origin {};
+    };
+    static constexpr std::size_t retained_generations = 4;
+
+    SharedTransmitKeySchedule(Configuration configuration,
+        CryptoProvider& provider = default_crypto_provider()) noexcept;
+    ~SharedTransmitKeySchedule();
+    SharedTransmitKeySchedule(const SharedTransmitKeySchedule&) = delete;
+    SharedTransmitKeySchedule& operator=(
+        const SharedTransmitKeySchedule&) = delete;
+
+    /** Draws the salt and the first generation's key. */
+    [[nodiscard]] Error initialize() noexcept;
+    [[nodiscard]] bool initialized() const noexcept;
+    [[nodiscard]] std::size_t key_length() const noexcept;
+    [[nodiscard]] CryptoMode mode() const noexcept;
+    [[nodiscard]] std::uint64_t refresh_rate_packets() const noexcept;
+    [[nodiscard]] std::uint64_t preannouncement_packets() const noexcept;
+    void copy_salt(
+        std::span<std::byte, srt_salt_size> destination) const noexcept;
+    /**
+     * Monotonic 64-bit position of `sequence` relative to the origin. The
+     * frontier advances with the highest sequence seen; an older sequence
+     * (a retransmission) maps behind it.
+     */
+    [[nodiscard]] std::uint64_t position_of(SequenceNumber sequence) noexcept;
+    [[nodiscard]] std::uint64_t frontier_position() const noexcept;
+    [[nodiscard]] std::uint64_t generation_at(
+        std::uint64_t position) const noexcept;
+    /** Whether `position` lies in the pre-announcement window of its successor. */
+    [[nodiscard]] bool announcement_due(std::uint64_t position) const noexcept;
+    [[nodiscard]] static constexpr EncryptionKey selector_of(
+        std::uint64_t generation) noexcept
+    {
+        return (generation & 1U) == 0U ? EncryptionKey::even
+                                       : EncryptionKey::odd;
+    }
+    /**
+     * Copies generation `generation`'s key, generating it on first request.
+     * A generation older than the retained window is refused with
+     * Error::invalid_state; a generation more than one ahead of the newest
+     * known is refused too, so a stray sequence cannot burn key material.
+     */
+    [[nodiscard]] Error key_for(
+        std::uint64_t generation, std::span<std::byte> destination) noexcept;
+
+private:
+    struct Generation {
+        std::uint64_t index = 0;
+        std::array<std::byte, maximum_aes_key_size> key {};
+        bool valid = false;
+    };
+    [[nodiscard]] Error generate_locked(std::uint64_t generation) noexcept;
+
+    mutable std::mutex mutex_;
+    CryptoProvider& provider_;
+    Configuration configuration_;
+    std::array<std::byte, srt_salt_size> salt_ {};
+    std::array<Generation, retained_generations> generations_ {};
+    std::uint64_t newest_generation_ = 0;
+    bool initialized_ = false;
+    std::uint64_t frontier_position_ = 0;
+    SequenceNumber frontier_sequence_ {};
+};
+
 class CryptoSession {
 public:
     explicit CryptoSession(
@@ -448,6 +537,36 @@ public:
         return unacknowledged_sending_;
     }
     [[nodiscard]] Error prepare_rotation() noexcept;
+
+    // Multicast dispatch: this session's transmit keys come from a schedule
+    // shared with the other member sessions of one sender. Attaching after
+    // the handshake replaces the directional transmit material that
+    // prepare_bidirectional_sender drew locally with the schedule's current
+    // generation; the directional KMREQ has not been sent yet at that point.
+    // Rotation is then decided per packet from its group sequence through
+    // prepare_data_sequence() instead of the consumed-position counters, and
+    // the pre-announcement window of the next generation is signalled on
+    // this session's own KMREQ to its own receiver. A receiver that has not
+    // acknowledged the successor by the time it is used cannot decrypt that
+    // generation; DATA does not wait for it, only the initial key is awaited.
+    [[nodiscard]] Error attach_shared_transmit_schedule(
+        std::shared_ptr<SharedTransmitKeySchedule> schedule) noexcept;
+    [[nodiscard]] bool has_shared_transmit_schedule() const noexcept
+    {
+        return shared_schedule_ != nullptr;
+    }
+    [[nodiscard]] Error prepare_data_sequence(SequenceNumber sequence) noexcept;
+    // Key selector a DATA packet with `sequence` carries: the schedule's
+    // generation parity when a schedule is attached, else the active key.
+    [[nodiscard]] EncryptionKey sender_key_for(
+        SequenceNumber sequence) noexcept;
+    // Counts every rebuild of the pending KMREQ. A runtime that sends
+    // schedule-driven announcements compares it with the value at its last
+    // send so new material leaves at once instead of on the retry timer.
+    [[nodiscard]] std::uint64_t key_material_revision() const noexcept
+    {
+        return key_material_revision_;
+    }
     // A runtime may announce earlier to cover its observed exchange horizon.
     // This never changes the refresh boundary or the configured minimum.
     void set_preannouncement_floor(std::uint64_t sequence_positions) noexcept;
@@ -504,7 +623,10 @@ public:
     }
     [[nodiscard]] EncryptionKey active_sender_key() const noexcept
     {
-        return active_sender_key_;
+        // With a shared schedule the selector follows the packet prepared
+        // last; sender_key_for() gives it for any sequence.
+        return shared_schedule_ != nullptr ? shared_prepared_selector_
+                                           : active_sender_key_;
     }
     [[nodiscard]] std::uint64_t packets_on_active_key() const noexcept
     {
@@ -599,6 +721,18 @@ private:
     [[nodiscard]] Error clone_key(
         const KeySlot& source, KeySlot& destination) noexcept;
     [[nodiscard]] Error clone_transmit_keys_to_receive() noexcept;
+    // Shared-schedule helpers; all require shared_schedule_ != nullptr.
+    [[nodiscard]] Error install_shared_generation(
+        std::uint64_t generation) noexcept;
+    [[nodiscard]] Error prepare_shared_sender() noexcept;
+    [[nodiscard]] Error ensure_shared_key(SequenceNumber sequence,
+        KeySlot*& slot, EncryptionKey& selector) noexcept;
+    std::shared_ptr<SharedTransmitKeySchedule> shared_schedule_;
+    std::array<std::uint64_t, 2> shared_slot_generation_ {};
+    std::array<bool, 2> shared_slot_known_ {};
+    std::uint64_t shared_announced_generation_ = 0;
+    bool shared_announced_known_ = false;
+    EncryptionKey shared_prepared_selector_ = EncryptionKey::even;
     [[nodiscard]] KeySlot* transmit_slot(EncryptionKey key) noexcept;
     [[nodiscard]] KeySlot* receive_slot(EncryptionKey key) noexcept;
     [[nodiscard]] ReceiveKeyHistory* receive_history(
@@ -703,6 +837,7 @@ private:
     Error configuration_error_ = Error::none;
     bool rotation_prepared_ = false;
     bool key_material_pending_ = false;
+    std::uint64_t key_material_revision_ = 0;
     bool pending_acknowledged_ = false;
     bool directional_key_pending_ = false;
     bool unacknowledged_sending_ = false;

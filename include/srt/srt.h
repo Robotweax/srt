@@ -223,6 +223,33 @@ typedef enum SRT_SOCKOPT {
      * REQUIRED, any other peer as OFF. Accepted sockets report the result.
      */
     SRTO_ROBOTWEAX_STANDBYRTT_POLICY = 0x0100000f,
+    /** Multicast dispatch admission key (char[], 1..512 bytes, no NUL
+     * required). Valid only inside a listen callback whose proposed group
+     * type is ROBOTWEAX_SRT_GTYPE_MULTICAST; setting it admits the Caller
+     * into the dispatch group recorded under that key on this listener or
+     * bond. Returning from the callback without it rejects the join. */
+    SRTO_ROBOTWEAX_MULTICAST = 0x01000010,
+    /** Listener, pre-bind/listen: sockaddr_in or sockaddr_in6 naming the UDP
+     * multicast group and port the dispatch sender transmits to. Setting it
+     * enables dispatch admission on the listener. Readable. */
+    SRTO_ROBOTWEAX_MCAST_GROUP = 0x01000011,
+    /** Pre-bind/listen on either side: sockaddr selecting the local
+     * interface for multicast; IPv4 by address, IPv6 by sin6_scope_id. The
+     * Listener announces it as a hint; the Caller's own value wins. */
+    SRTO_ROBOTWEAX_MCAST_IFACE = 0x01000012,
+    /** Listener, pre-listen: int32_t hop limit for multicast payload,
+     * 0..255, default 1 (link-local). */
+    SRTO_ROBOTWEAX_MCAST_TTL = 0x01000013,
+    /** Dispatch sender group, POST: int32_t 0..16. Once this many distinct
+     * receivers have requested a repeat of the same packet within a couple
+     * of round trips, the packet is repeated once to the multicast group
+     * instead of once more per receiver; later requests in that window are
+     * answered by that repeat. 0 (default) keeps every repeat unicast. */
+    SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD = 0x01000014,
+    /** Dispatch group, read-only: ROBOTWEAX_SRT_MCAST_STATS_V1 for the
+     * multicast path. A sender reports what left on it; a receiver reports
+     * what its multicast socket received and dropped before decoding. */
+    SRTO_ROBOTWEAX_MCAST_STATS = 0x01000015,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif
@@ -692,7 +719,22 @@ typedef enum SRT_GROUP_TYPE {
     SRT_GTYPE_UNDEFINED = 0,
     SRT_GTYPE_BROADCAST,
     SRT_GTYPE_BACKUP,
-    SRT_GTYPE_E_END
+    SRT_GTYPE_E_END,
+    /*
+     * Robotweax multicast dispatch group. The value is the wire type the
+     * published SRT draft reserves for multicast; Haivision libsrt v1.5.7
+     * does not expose or implement it and rejects it with SRT_REJ_GROUP.
+     * It is declared after SRT_GTYPE_E_END so every reference value and
+     * SRT_GTYPE_E_END itself stay byte-identical; declaring it inside the
+     * enum (rather than as a macro) keeps 4 inside the enum's value range,
+     * which a plain cast of an out-of-range integer would not.
+     *
+     * A dispatch group has one sender on the Listener side and any number
+     * of Caller receivers. Control traffic uses each Caller's unicast
+     * connection; payload is sent once to a UDP multicast group announced
+     * in the handshake. Experimental: see docs/connection-groups.md.
+     */
+    ROBOTWEAX_SRT_GTYPE_MULTICAST = 4
 } SRT_GROUP_TYPE;
 
 static const uint32_t SRT_GFLAG_SYNCONMSG = 1;
@@ -723,6 +765,27 @@ typedef struct ROBOTWEAX_SRT_GroupPathDataV1_ {
 } ROBOTWEAX_SRT_GROUP_PATHDATA_V1;
 #define ROBOTWEAX_SRT_PATHID_LOCAL_OFFER 1U
 #define ROBOTWEAX_SRT_PATHID_NEGOTIATED 2U
+
+/**
+ * Multicast dispatch counters, cumulative since the group was created.
+ * Sender: packets and payload bytes sent on the multicast path (originals
+ * and repeats), the repeats among them, unicast repeats skipped because a
+ * multicast repeat already covered them, and the live receiver count.
+ * Receiver: datagrams the multicast socket received, those dropped before
+ * decoding because they did not carry the dispatch group ID from the
+ * announced sender, and member_count 1 while connected. Unused fields are 0.
+ */
+typedef struct ROBOTWEAX_SRT_McastStatsV1_ {
+    uint32_t abi_version;
+    uint32_t member_count;
+    uint64_t mcast_pkt_sent;
+    uint64_t mcast_byte_sent;
+    uint64_t mcast_pkt_rexmit;
+    uint64_t unicast_rexmit_skipped;
+    uint64_t mcast_pkt_received;
+    uint64_t mcast_pkt_filtered;
+} ROBOTWEAX_SRT_MCAST_STATS_V1;
+#define ROBOTWEAX_SRT_MCAST_STATS_VERSION 1U
 
 typedef struct SRT_SocketOptionObject SRT_SOCKOPT_CONFIG;
 

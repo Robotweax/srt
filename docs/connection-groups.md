@@ -23,11 +23,14 @@ This page is the application contract. The broader release boundary is in
 | `SRT_GTYPE_BROADCAST` | Send one logical message on every usable member; receive one ordered copy | Supported |
 | `SRT_GTYPE_BACKUP` | Select one authoritative member by weight and health; retain alternatives for failover | Supported |
 | Balancing / striping | Split one logical stream across paths | Not supported |
-| Multicast group type | Protocol-managed multicast membership | Not supported |
+| `ROBOTWEAX_SRT_GTYPE_MULTICAST` | One Listener sender, N Caller receivers; payload once over UDP multicast, control per receiver over unicast | Experimental, Robotweax-to-Robotweax; optional group encryption is unreviewed (see [Multicast dispatch groups](#multicast-dispatch-groups)) |
 
 The public `SRT_GFLAG_SYNCONMSG` bit value is preserved for ABI compatibility,
 but the v1.5.7 profile accepts only zero flags. Unsupported or unnegotiated
 group types are rejected; they are never downgraded to Broadcast or Backup.
+`ROBOTWEAX_SRT_GTYPE_MULTICAST` is declared after `SRT_GTYPE_E_END`, so every
+reference enumerator and `SRT_GTYPE_E_END` itself keep their v1.5.7 values; a
+Haivision peer rejects the type with `SRT_REJ_GROUP`.
 
 ## Listener group authorization
 
@@ -531,11 +534,113 @@ member runtimes without requiring an application receive call. This implements
 the separate send/receive directions described by the
 [public v1.5.7 member-state contract](https://github.com/Haivision/srt/blob/v1.5.7/docs/API/API-functions.md#srt_memberstatus).
 
+## Multicast dispatch groups
+
+Broadcast and Backup are *bonding* groups: one signal between two endpoints
+over several links. A multicast dispatch group is the other category the SRT
+draft reserved wire type 4 for and never implemented: one sender on the
+Listener side, any number of Caller receivers, each with its own unicast SRT
+connection for control, and the payload sent once to a UDP multicast group.
+Receivers join and leave at any time; the sender does nothing per receiver
+beyond the handshake. The feature is experimental and Robotweax-to-Robotweax.
+
+The [live multicast audio/video sample](multicast-media.md) demonstrates the
+public API with an MPEG-TS encoder, multiple receivers, recording, and playback.
+
+Sender (Listener):
+
+- set `SRTO_ROBOTWEAX_MCAST_GROUP` (a `sockaddr_in`/`sockaddr_in6` naming a
+  multicast address and port) before `srt_bind`; this enables dispatch
+  admission. `SRTO_ROBOTWEAX_MCAST_IFACE` selects the outgoing interface
+  (IPv4 address, IPv6 scope index) and `SRTO_ROBOTWEAX_MCAST_TTL` the hop
+  limit (default 1);
+- install a listen callback. For a multicast proposal (`SRTO_GROUPTYPE`
+  reads `ROBOTWEAX_SRT_GTYPE_MULTICAST`) it must set
+  `SRTO_ROBOTWEAX_GROUPDOMAIN` and `SRTO_ROBOTWEAX_MULTICAST` (a 1..512 byte
+  stream key). One dispatch group exists per listener or bond, key and
+  domain; returning without the key rejects the join;
+- `srt_accept` returns the dispatch group once, with the first admitted
+  receiver. Later receivers join it and surface as `SRT_EPOLL_UPDATE`.
+- `srt_send*` on the group encodes each message once per member buffer so
+  ACK, NAK and unicast retransmission keep their per-receiver meaning, but
+  only the first live member transmits the original, to the multicast group
+  with the dispatch group handle as destination socket ID, from the
+  Listener's own socket. The others record the packet as sent. A send with
+  no receivers advances the stream and succeeds; `srt_recv*` is `SRT_EINVOP`.
+- The dispatch group stays `SRTS_CONNECTED` with zero members while the
+  listener is open; this is the defining difference from bonding, where an
+  empty group is `SRTS_BROKEN`.
+- Every DATA packet of a dispatch member, original or repeat, carries the
+  dispatch group handle as destination socket ID; receivers route that ID
+  on their multicast socket and on their control link.
+
+Receiver (Caller):
+
+- `srt_create_group(ROBOTWEAX_SRT_GTYPE_MULTICAST)` and `srt_connect_group`
+  with exactly one endpoint and weight 0; a second endpoint is `SRT_EINVOP`.
+  `SRTO_ROBOTWEAX_MCAST_IFACE` on the group overrides the Listener's hint;
+- the Listener's conclusion handshake carries a 60-byte `multicast_dispatch`
+  extension (type `0x7f14`, magic-guarded) with the group address, the
+  destination socket ID to filter on, the live sequence to start at and the
+  hop limit. The receiver joins the group on a dedicated socket and routes
+  datagrams that carry that ID and the Listener's source address into its
+  one member session; everything else on that socket is dropped before
+  decoding. `srt_recv*` reads that member; `srt_send*` is `SRT_EINVOP`;
+- closing the group leaves the multicast group before the control link ends.
+
+Encryption: set `SRTO_PASSPHRASE` (and optionally `SRTO_CRYPTOMODE`,
+`SRTO_KMREFRESHRATE`, `SRTO_KMPREANNOUNCE`) on the dispatch listener and the
+same passphrase on every receiver. The sender uses one traffic key and salt
+for the whole group and rotates by group sequence; each receiver still gets
+the key through its own unicast KM exchange, and a receiver without the
+passphrase, or with another mode or key length, is refused at admission. A
+member's `SRTO_SNDKMSTATE` reports `SRT_KM_S_SECURED` once its receiver
+holds the group key; DATA to that member is recorded only from then on. See
+[one traffic key per group](encryption.md#multicast-dispatch-groups-one-traffic-key-per-group)
+for the mechanism, the nonce argument and the trust boundary.
+
+Repeats, pacing and readiness:
+
+- every repeat is unicast to the receiver that asked, from that member's
+  own buffer. With `SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD` set to *n* (1..16,
+  POST on the sender group, default 0) the sender keeps a bounded tally of
+  repeats per sequence: once *n* distinct receivers asked for the same packet
+  within a couple of round trips, the member reaching *n* repeats it once on
+  the multicast path. Only after UDP accepts that repair may another receiver's
+  first request be suppressed. A repeated request from the same receiver uses
+  unicast, including when the multicast repair was lost. A transient local
+  multicast repair failure falls back to the member's unicast retry path.
+  After a multicast attempt, window expiry restores unicast until the bounded
+  tally entry is evicted; failed repairs do not restart a multicast retry loop;
+- `SRTO_MAXBW` set on the sender group reaches every member, so it caps the
+  transmitting member's pacer and with it the multicast path, as well as each
+  member's unicast repeats. There is no separate aggregate cap;
+- `SRT_EPOLL_OUT` on the sender group follows the elected transmitting
+  member's readiness. That member must accept the payload before suppressed
+  members can accept it. A full transmitter buffer blocks a synchronous send
+  or returns `SRT_EASYNCSND` for a nonblocking send without advancing the
+  group sequence. A terminal transmitter is retired before electing its
+  replacement. Send success means local queue acceptance, not delivery;
+- `SRTO_ROBOTWEAX_MCAST_STATS` (read-only, `ROBOTWEAX_SRT_MCAST_STATS_V1`)
+  reports on the sender the packets and bytes sent on the multicast path, the
+  repeats among them, the unicast repeats skipped and the live receiver
+  count; on a receiver the datagrams its multicast socket received and those
+  dropped before decoding because they did not carry the dispatch ID from the
+  announced sender. The libsrt-shaped group row (`srt_bstats`) keeps its
+  documented meaning and counts each message once.
+
+Not supported in this release, and refused at admission rather than
+half-working: packet-filter FEC on the dispatch listener, Rendezvous,
+File/Stream mode, FileCC, several endpoints on a receiver, and
+interoperability with Haivision libsrt, which has no implementation of this
+type.
+
 ## Compatibility limits
 
 The 0.2 group profile is limited to Live-mode Caller/Listener operation.
-Rendezvous groups, FileCC groups, striping, multicast, and arbitrary
-application-defined group policies are not supported.
+Rendezvous groups, FileCC groups, striping, and arbitrary
+application-defined group policies are not supported. Multicast dispatch
+groups are an experimental Robotweax extension with the limits above.
 
 Connection Groups provide path management within their documented resource and
 timing bounds; they do not by themselves prove physical path diversity,

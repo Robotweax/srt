@@ -514,6 +514,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_compat_epoll.cpp
         tests/test_group_acquire.cpp
         tests/test_compat_groups.cpp
+        tests/test_multicast_dispatch.cpp
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp
         tests/test_compat_message_attempts.cpp)
@@ -1032,6 +1033,29 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
                 set_tests_properties(robotweax_srt_application_${application_scenario}_${application_crypto}
                     PROPERTIES TIMEOUT 50 LABELS "example;integration;application")
             endforeach()
+        endforeach()
+        set(multicast_example_modes plain ctr)
+        if(ENABLE_AEAD_API_PREVIEW)
+            list(APPEND multicast_example_modes gcm)
+        endif()
+        foreach(multicast_mode IN LISTS multicast_example_modes)
+            add_test(NAME robotweax_srt_multicast_example_${multicast_mode}
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_multicast.py
+                    --binary $<TARGET_FILE:robotweax_srt_multicast>
+                    --crypto ${multicast_mode})
+            set_tests_properties(robotweax_srt_multicast_example_${multicast_mode}
+                PROPERTIES TIMEOUT 35 LABELS "example;application;multicast;integration")
+            if(ROBOTWEAX_SRT_SAMPLE_FFMPEG)
+                add_test(NAME robotweax_srt_multicast_media_${multicast_mode}
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_multicast.py
+                        --binary $<TARGET_FILE:robotweax_srt_multicast>
+                        --crypto ${multicast_mode}
+                        --ffmpeg ${ROBOTWEAX_SRT_SAMPLE_FFMPEG})
+                set_tests_properties(robotweax_srt_multicast_media_${multicast_mode}
+                    PROPERTIES TIMEOUT 45 LABELS "example;application;multicast;media;integration")
+            endif()
         endforeach()
         add_test(NAME robotweax_srt_demo_terminal_output
             COMMAND ${Python3_EXECUTABLE}

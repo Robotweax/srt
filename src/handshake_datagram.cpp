@@ -31,6 +31,7 @@ namespace {
     case HandshakeExtensionType::path_identifier:
     case HandshakeExtensionType::standby_rtt:
     case HandshakeExtensionType::group:
+    case HandshakeExtensionType::multicast_dispatch:
         return (flags & handshake_extension_flag_config) != 0U;
     }
 
@@ -188,6 +189,17 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
             message.has_group_membership = true;
             message.group_membership = membership.membership;
         } else if (decoded.extension.type
+            == HandshakeExtensionType::multicast_dispatch) {
+            if (message.has_multicast_dispatch) {
+                return {.error = Error::invalid_extension};
+            }
+            const auto dispatch = decode_multicast_dispatch(decoded.extension);
+            if (!dispatch) {
+                return {.error = dispatch.error};
+            }
+            message.has_multicast_dispatch = true;
+            message.multicast_dispatch = dispatch.dispatch;
+        } else if (decoded.extension.type
             == HandshakeExtensionType::session_authentication) {
             const auto content = decoded.extension.content;
             if (message.has_session_authentication
@@ -302,9 +314,13 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
     const std::size_t measurement_extension_size = action.has_standby_rtt
         ? extension_header_size + standby_rtt_extension_size
         : 0U;
-    const std::size_t total_required =
-        required + path_extension_size + measurement_extension_size;
-    if ((action.has_path_identifier || action.has_standby_rtt)
+    const std::size_t dispatch_extension_size = action.has_multicast_dispatch
+        ? extension_header_size + multicast_dispatch_content_size
+        : 0U;
+    const std::size_t total_required = required + path_extension_size
+        + measurement_extension_size + dispatch_extension_size;
+    if ((action.has_path_identifier || action.has_standby_rtt
+            || action.has_multicast_dispatch)
         && (action.packet.maximum_transmission_unit < 48U
             || total_required > action.packet.maximum_transmission_unit - 48U))
         return {.error = Error::buffer_too_small};
@@ -430,7 +446,10 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
         }
     }
     if (action.has_group_membership) {
-        if (validate_group_membership(action.group_membership)
+        // Structural guard only; the handshake machine decided which group
+        // categories this endpoint admits before it emitted the action.
+        if (validate_group_membership(
+                action.group_membership, {.admit_multicast_dispatch = true})
             != GroupMembershipValidation::compatible) {
             return {.error = Error::invalid_extension};
         }
@@ -486,6 +505,18 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
         const auto extension = encode_standby_rtt_identity(action.standby_rtt,
             destination.subspan(
                 required + path_extension_size, measurement_extension_size));
+        if (!extension)
+            return {.error = extension.error};
+    }
+    if (action.has_multicast_dispatch) {
+        if ((action.packet.extension_field & handshake_extension_flag_config)
+            == 0U)
+            return {.error = Error::invalid_extension};
+        const auto extension =
+            encode_multicast_dispatch(action.multicast_dispatch,
+                destination.subspan(
+                    required + path_extension_size + measurement_extension_size,
+                    dispatch_extension_size));
         if (!extension)
             return {.error = extension.error};
     }
