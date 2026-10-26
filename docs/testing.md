@@ -6,6 +6,26 @@ interoperability profiles. External integrators should run the layers relevant
 to their build and deployment rather than treating one loopback transfer as
 complete qualification.
 
+## Multicast test interfaces
+
+The IPv6 multicast socket test uses interface index 1 by default. Some Linux
+hosts permit joining a group on loopback but do not deliver multicast there.
+Select an existing multicast-capable interface explicitly when qualifying such
+a host, for example a configured Linux lab interface named `mcast0`:
+
+```sh
+export ROBOTWEAX_SRT_TEST_IPV6_MULTICAST_IFINDEX="$(cat /sys/class/net/mcast0/ifindex)"
+./build/robotweax_srt_tests --include multicast
+```
+
+The value must be a nonzero unsigned interface index; malformed values fail the
+test. This setting changes only the test's interface selection and destination
+scope. It does not create interfaces, configure multicast routes, or turn an
+unsupported environment into a passing qualification. Record route and
+interface configuration, failures and skips with the results. A designated
+multicast qualification environment must execute its required cases without
+skips. IPv6 socket primitive tests alone do not qualify IPv6 dispatch groups.
+
 ## Build and run the default suite
 
 ```sh
