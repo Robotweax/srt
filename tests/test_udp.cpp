@@ -20,6 +20,9 @@
 #include <cstddef>
 #include <thread>
 #include <utility>
+#if defined(__APPLE__)
+#include <unistd.h>
+#endif
 
 using namespace robotweax::srt;
 
@@ -665,7 +668,7 @@ constexpr IpEndpoint ipv6_test_group(std::uint16_t port) noexcept
 }
 
 // Whether this host lets a socket join an IPv4 multicast group on the
-// loopback/default interface. Containers without a multicast route refuse
+// loopback interface. Containers without a multicast route refuse
 // IP_ADD_MEMBERSHIP with ENODEV; that is an environment limit, not a defect.
 [[nodiscard]] bool ipv4_multicast_available()
 {
@@ -673,8 +676,52 @@ constexpr IpEndpoint ipv6_test_group(std::uint16_t port) noexcept
     if (!probe.valid() || probe.bind(IpEndpoint::any()) != Error::none) {
         return false;
     }
-    return probe.join_multicast(ipv4_test_group(0)) == Error::none;
+    return probe.join_multicast(ipv4_test_group(0), IpEndpoint::loopback())
+        == Error::none;
 }
+
+#if defined(__APPLE__)
+// Check the native stack independently: some hosted macOS images can join an
+// interface-local IPv6 group but have no usable send route. A library failure
+// must still fail the delivery test whenever the same native send works.
+[[nodiscard]] int native_ipv6_multicast_send_error(
+    IpEndpoint group, std::uint32_t index)
+{
+    const int socket = ::socket(AF_INET6, SOCK_DGRAM, 0);
+    if (socket < 0)
+        return errno;
+    const int hops = 0;
+    const int loop = 1;
+    int error = 0;
+    if (::setsockopt(
+            socket, IPPROTO_IPV6, IPV6_MULTICAST_IF, &index, sizeof(index))
+            != 0
+        || ::setsockopt(
+               socket, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hops, sizeof(hops))
+            != 0
+        || ::setsockopt(
+               socket, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop))
+            != 0) {
+        error = errno;
+    } else {
+        sockaddr_in6 destination {};
+        destination.sin6_len = sizeof(destination);
+        destination.sin6_family = AF_INET6;
+        destination.sin6_port = htons(9);
+        destination.sin6_scope_id = index;
+        std::copy(group.address.begin(), group.address.end(),
+            destination.sin6_addr.s6_addr);
+        const char probe = 'p';
+        if (::sendto(socket, &probe, 1, 0,
+                reinterpret_cast<const sockaddr*>(&destination),
+                sizeof(destination))
+            != 1)
+            error = errno;
+    }
+    (void)::close(socket);
+    return error;
+}
+#endif
 
 } // namespace
 
@@ -781,12 +828,14 @@ TEST(udp_multicast_join_leave_delivers_one_datagram_to_two_local_receivers)
     REQUIRE(bound);
     const IpEndpoint group = ipv4_test_group(bound.endpoint.port);
     REQUIRE_EQ(second.bind(IpEndpoint::any(group.port)), Error::none);
-    REQUIRE_EQ(first.join_multicast(group), Error::none);
-    REQUIRE_EQ(second.join_multicast(group), Error::none);
+    const auto interface = IpEndpoint::loopback();
+    REQUIRE_EQ(first.join_multicast(group, interface), Error::none);
+    REQUIRE_EQ(second.join_multicast(group, interface), Error::none);
 
     // The sender keeps the datagram on this host and loops it back locally.
     UdpSocket sender;
     REQUIRE(sender.valid());
+    REQUIRE_EQ(sender.set_multicast_interface(interface), Error::none);
     REQUIRE_EQ(sender.set_multicast_time_to_live(0), Error::none);
     REQUIRE_EQ(sender.set_multicast_loopback(true), Error::none);
     const std::array<std::byte, 5> payload {std::byte {'m'}, std::byte {'c'},
@@ -807,7 +856,7 @@ TEST(udp_multicast_join_leave_delivers_one_datagram_to_two_local_receivers)
     }
 
     // After leaving, a second datagram no longer reaches that receiver.
-    REQUIRE_EQ(second.leave_multicast(group), Error::none);
+    REQUIRE_EQ(second.leave_multicast(group, interface), Error::none);
     REQUIRE(sender.send_to(payload, group));
     const UdpWaitResult still = first.wait_readable(2'000);
     REQUIRE(still && still.ready);
@@ -815,7 +864,7 @@ TEST(udp_multicast_join_leave_delivers_one_datagram_to_two_local_receivers)
     REQUIRE(gone);
     REQUIRE(!gone.ready);
     // Leaving twice is a native failure, reported, not hidden.
-    REQUIRE_EQ(second.leave_multicast(group), Error::io_error);
+    REQUIRE_EQ(second.leave_multicast(group, interface), Error::io_error);
     REQUIRE(second.last_system_error() != 0);
 }
 
@@ -843,6 +892,13 @@ TEST(udp_ipv6_multicast_join_and_loopback_delivery)
         REQUIRE(interface.scope_id != 0);
     }
     group.scope_id = interface.scope_id;
+#if defined(__APPLE__)
+    if (const int error =
+            native_ipv6_multicast_send_error(group, interface.scope_id))
+        throw robotweax::srt::test::Skipped(
+            "native IPv6 multicast send unavailable, errno="
+            + std::to_string(error));
+#endif
     const Error joined = receiver.join_multicast(group, interface);
     SKIP_UNLESS(
         joined == Error::none, "no IPv6 multicast membership on this host");

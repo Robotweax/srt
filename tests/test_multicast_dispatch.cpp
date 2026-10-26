@@ -41,6 +41,18 @@ TEST(multicast_dispatch_repair_does_not_suppress_before_submission)
     const auto failed = state.note_repeat(sequence, 3, 102, 1, 100'000);
     REQUIRE(!failed.skip);
     REQUIRE(!failed.multicast);
+
+    // Model all three requests arriving before UDP accepts the elected
+    // repair. The third request must get unicast, not premature suppression.
+    const SequenceNumber shared {43};
+    REQUIRE(!state.note_repeat(shared, 1, 200, 2, 100'000).multicast);
+    const auto elected = state.note_repeat(shared, 2, 201, 2, 100'000);
+    REQUIRE(elected.multicast);
+    const auto pending = state.note_repeat(shared, 3, 202, 2, 100'000);
+    REQUIRE(!pending.multicast && !pending.skip);
+    state.complete_repeat(shared, elected.attempt, true);
+    const auto retry = state.note_repeat(shared, 3, 203, 2, 100'000);
+    REQUIRE(!retry.multicast && !retry.skip);
 }
 
 TEST(multicast_dispatch_repair_repeated_nak_uses_unicast)
@@ -734,9 +746,10 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
         expect_messages(receiver, 0, count);
     }
     REQUIRE_EQ(hook.dropped.load(), 1);
-    // Three receivers requested the same repeat: the first was answered on
-    // its unicast link, the second reached the threshold and was answered
-    // once on the multicast path, the third was already covered.
+    // The second distinct request elects one multicast repeat. The third
+    // receiver may recover before requesting, request before UDP acceptance
+    // (requiring unicast), or request after acceptance (allowing one skip).
+    // Exact suppression ordering is covered by deterministic state tests.
     std::shared_ptr<robotweax::srt::compat::DispatchTransmitState> transmit;
     {
         const auto record = GroupRegistry::instance().find(sender);
@@ -747,7 +760,7 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
     REQUIRE_EQ(transmit->multicast_repeats(), 1U);
     REQUIRE_EQ(hook.multicast_repeats.load(), 1);
     if (!lose_multicast_repair) {
-        REQUIRE_EQ(transmit->skipped_repeats(), 1U);
+        REQUIRE(transmit->skipped_repeats() <= 1U);
     }
     REQUIRE_EQ(
         transmit->multicast_packets(), static_cast<std::uint64_t>(count + 1));

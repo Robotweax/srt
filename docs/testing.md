@@ -25,6 +25,10 @@ unsupported environment into a passing qualification. Record route and
 interface configuration, failures and skips with the results. A designated
 multicast qualification environment must execute its required cases without
 skips. IPv6 socket primitive tests alone do not qualify IPv6 dispatch groups.
+The IPv4 primitive uses loopback explicitly for membership and sending. On
+macOS, an independent native IPv6 socket send probes route availability before
+the IPv6 primitive runs; a native failure is reported as an environment skip
+with its error number. A library failure still fails when native sending works.
 Linux native CI jobs create a job-local dummy interface and select its index
 through this variable, because Linux loopback need not deliver IPv6 multicast.
 
