@@ -23,7 +23,7 @@ This page is the application contract. The broader release boundary is in
 | `SRT_GTYPE_BROADCAST` | Send one logical message on every usable member; receive one ordered copy | Supported |
 | `SRT_GTYPE_BACKUP` | Select one authoritative member by weight and health; retain alternatives for failover | Supported |
 | Balancing / striping | Split one logical stream across paths | Not supported |
-| `ROBOTWEAX_SRT_GTYPE_MULTICAST` | One Listener sender, N Caller receivers; payload once over UDP multicast, control per receiver over unicast | Experimental, Robotweax-to-Robotweax, unencrypted (see [Multicast dispatch groups](#multicast-dispatch-groups)) |
+| `ROBOTWEAX_SRT_GTYPE_MULTICAST` | One Listener sender, N Caller receivers; payload once over UDP multicast, control per receiver over unicast | Experimental, Robotweax-to-Robotweax; optional group encryption is unreviewed (see [Multicast dispatch groups](#multicast-dispatch-groups)) |
 
 The public `SRT_GFLAG_SYNCONMSG` bit value is preserved for ABI compatibility,
 but the v1.5.7 profile accepts only zero flags. Unsupported or unnegotiated
