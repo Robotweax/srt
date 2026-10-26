@@ -11,8 +11,11 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <charconv>
 #include <cerrno>
+#include <cstdlib>
 #include <limits>
+#include <string_view>
 #include <vector>
 #include <cstddef>
 #include <thread>
@@ -821,11 +824,21 @@ TEST(udp_ipv6_multicast_join_and_loopback_delivery)
     REQUIRE_EQ(receiver.bind(IpEndpoint::ipv6_any()), Error::none);
     const EndpointResult bound = receiver.local_endpoint();
     REQUIRE(bound);
-    const IpEndpoint group = ipv6_test_group(bound.endpoint.port);
-    // Interface-local scope needs an explicit interface on most stacks;
-    // use the loopback interface's index when the host exposes one.
+    IpEndpoint group = ipv6_test_group(bound.endpoint.port);
+    // Interface-local scope needs an explicit interface. Keep the historical
+    // index 1 default; qualification namespaces can select a capable device.
     IpEndpoint interface = IpEndpoint::ipv6_any();
     interface.scope_id = 1;
+    if (const char* selected =
+            std::getenv("ROBOTWEAX_SRT_TEST_IPV6_MULTICAST_IFINDEX")) {
+        const std::string_view value {selected};
+        const auto parsed = std::from_chars(
+            value.data(), value.data() + value.size(), interface.scope_id);
+        REQUIRE(parsed.ec == std::errc {});
+        REQUIRE(parsed.ptr == value.data() + value.size());
+        REQUIRE(interface.scope_id != 0);
+    }
+    group.scope_id = interface.scope_id;
     const Error joined = receiver.join_multicast(group, interface);
     SKIP_UNLESS(joined == Error::none,
         "no IPv6 multicast membership on this host");
