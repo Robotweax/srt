@@ -329,6 +329,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Prepare multicast test interface
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/multicast-interface
       - name: Configure
         run: >-
           cmake -S . -B build
@@ -392,6 +395,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Prepare multicast test interface
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/multicast-interface
       - name: Install GCC 15 and build dependencies
         run: |
           apt-get update
@@ -454,6 +460,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Prepare multicast test interface
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/multicast-interface
       - name: Compile iOS pacing with warnings as errors
         if: runner.os == 'macOS'
         shell: bash
@@ -542,6 +551,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Prepare multicast test interface
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/multicast-interface
       - name: Configure
         run: >-
           cmake -S . -B build
@@ -1082,6 +1094,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Prepare multicast test interface
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/multicast-interface
       - name: Configure static AES-GCM preview
         run: >-
           cmake -S . -B build-aead-static
@@ -1190,6 +1205,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Prepare multicast test interface
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/multicast-interface
       - name: Configure
         run: >-
           cmake -S . -B build
@@ -1220,6 +1238,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Prepare multicast test interface
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/multicast-interface
       - name: Configure
         env:
           CC: clang
@@ -2299,6 +2320,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Prepare multicast test interface
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/multicast-interface
       - name: Install diagnostic OpenSSL dependency
         shell: bash
         run: |

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import importlib.util
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -74,6 +75,16 @@ class MulticastQualificationTests(unittest.TestCase):
                     self.assertIn("-DBUILD_SHARED_LIBS=OFF", options)
                     self.assertIn("-DROBOTWEAX_SRT_CRYPTO_BACKEND="+backend, options)
                     self.assertNotIn("", options)
+
+    def test_linux_native_jobs_prepare_multicast_interface(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for name in ["linux_release", "gcc_release", "portable_release", "debug_matrix",
+                     "aead_platform", "sanitizers", "thread_sanitizer", "mbedtls_backend"]:
+            with self.subTest(job=name):
+                job = workflow.split("\n  "+name+":\n", 1)[1]
+                job = re.split(r"\n  [a-z_]+:\n", job, maxsplit=1)[0]
+                self.assertIn("uses: ./.github/actions/multicast-interface", job)
+                self.assertIn("if: runner.os == 'Linux'", job)
 
 
 if __name__ == "__main__":

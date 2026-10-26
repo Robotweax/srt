@@ -25,6 +25,8 @@ unsupported environment into a passing qualification. Record route and
 interface configuration, failures and skips with the results. A designated
 multicast qualification environment must execute its required cases without
 skips. IPv6 socket primitive tests alone do not qualify IPv6 dispatch groups.
+Linux native CI jobs create a job-local dummy interface and select its index
+through this variable, because Linux loopback need not deliver IPv6 multicast.
 
 The required CI multicast job checks IPv4 loopback dispatch and the public
 MPEG-TS sample in plain, CTR and GCM modes on OpenSSL Linux/macOS/Windows,
