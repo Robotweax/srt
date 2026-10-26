@@ -86,6 +86,14 @@ class MulticastQualificationTests(unittest.TestCase):
                 self.assertIn("uses: ./.github/actions/multicast-interface", job)
                 self.assertIn("if: runner.os == 'Linux'", job)
 
+    def test_selected_example_builds_include_multicast_sample(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        target_lists = [line for line in workflow.splitlines()
+                        if "robotweax_srt_contribution robotweax_srt_recovery robotweax_srt_device" in line]
+        self.assertEqual(len(target_lists), 3)
+        for targets in target_lists:
+            self.assertIn("robotweax_srt_multicast", targets)
+
 
 if __name__ == "__main__":
     unittest.main()
