@@ -3,6 +3,8 @@
 For sustained workflows, see the [application samples](applications/README.md):
 multi-path contribution with member replacement, controlled recovery comparison,
 and a concurrent Live/Sensor/Control device simulator with JSONL observations.
+The [multicast audio/video sample](../docs/multicast-media.md) sends live MPEG-TS
+from one Listener to multiple Caller receivers, with UDP encoder input and player output.
 
 The examples in this directory are small, inspectable demonstrations of the
 installed Robotweax SRT C API. They include only `<srt/srt.h>` and link through
@@ -26,7 +28,7 @@ statistics and opt-in reconnect. It does not transcode or promise lossless resta
 
 ## Build the networked examples
 
-The four basic networked examples and three application samples are opt-in and
+The four basic networked examples and four application samples are opt-in and
 are not installed with the library. The standalone consumer source below is installed as
 part of the public documentation package.
 

@@ -6,6 +6,11 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add a public-API multicast MPEG-TS application sample with a Listener
+  sender, multiple Caller receivers, UDP encoder/player connections,
+  optional recording, CTR/GCM group encryption, and live path statistics.
+  Include exact two-receiver fan-out and live H.264/AAC decoder checks.
+
 - Require the elected multicast transmitter to accept a message before
   suppressed members can commit the group send; preserve the sequence on
   backpressure and report transmitter readiness through epoll.
