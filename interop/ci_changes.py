@@ -156,6 +156,7 @@ class ChangeSet:
     obs: bool = False
     obs_platforms: bool = False
     aead_platform: bool = False
+    multicast: bool = False
     sanitizers: bool = False
     thread_sanitizer: bool = False
     fuzz: bool = False
@@ -706,6 +707,10 @@ def classify(
         # relevant test is more expensive than an occasional full PR run.
         change_set.enable_all()
 
+    change_set.multicast = change_set.multicast or change_set.cpp or change_set.examples
+    if any(path in {"tools/qualify_multicast.py", "interop/tests/test_multicast_qualification.py"}
+           for path in normalized_paths):
+        change_set.multicast = True
     return change_set
 
 
@@ -719,6 +724,7 @@ def main() -> int:
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--full", action="store_true")
     selection.add_argument("--integrations-only", action="store_true")
+    selection.add_argument("--multicast-only", action="store_true")
     parser.add_argument("--without-integrations", action="store_true",
                         help="exclude ecosystem jobs from automatic CI")
     arguments = parser.parse_args()
@@ -727,7 +733,9 @@ def main() -> int:
         if arguments.paths == ["-"]
         else arguments.paths
     )
-    if arguments.integrations_only:
+    if arguments.multicast_only:
+        result = ChangeSet(docs_only=False, multicast=True)
+    elif arguments.integrations_only:
         result = ChangeSet(
             docs_only=False, ffmpeg=True, gstreamer=True, vlc=True,
             obs=True, obs_platforms=True,
