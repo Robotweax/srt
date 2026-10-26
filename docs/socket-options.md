@@ -717,7 +717,10 @@ proposal; it is readable inside the callback and rejected anywhere else.
 POST, dispatch sender group only) is the number of distinct receivers that
 must ask for a repeat of one packet within a couple of round trips before the
 sender repeats it once on the multicast path instead of once more per
-receiver; 0 keeps every repeat unicast. `SRTO_ROBOTWEAX_MCAST_STATS`
+receiver. Suppression starts only after local UDP acceptance; repeated NAKs
+use unicast. After a multicast attempt, window expiry restores unicast until
+the bounded tally entry is evicted. A value of 0 keeps every repeat unicast.
+`SRTO_ROBOTWEAX_MCAST_STATS`
 (`0x01000015`, read-only, `ROBOTWEAX_SRT_MCAST_STATS_V1`, dispatch groups
 only) reports the multicast-path counters described in
 [Connection groups](connection-groups.md#multicast-dispatch-groups).

@@ -1117,6 +1117,7 @@ int send_group_message_implementation(
             }
             return length;
         }
+        SRTSOCKET dispatch_owner = SRT_INVALID_SOCK;
         if (dispatch_sender) {
             // The first live member transmits the single multicast copy;
             // every other member only records the packets as sent. New
@@ -1146,6 +1147,7 @@ int send_group_message_implementation(
                 };
                 if (!elected && !member.terminal) {
                     egress.mode = Egress::Mode::redirect;
+                    dispatch_owner = member.id;
                     elected = true;
                 }
                 member.runtime->set_group_data_egress(egress);
@@ -1250,6 +1252,13 @@ int send_group_message_implementation(
                 have_failure = true;
             }
             failed_members.push_back({member, result});
+            if (dispatch_sender && member.id == dispatch_owner) {
+                // Suppressed members cannot emit an original. Do not let
+                // their queue acceptance commit a sequence the transmitter
+                // could not accept. Retry the same sequence after capacity
+                // returns, or after a failed owner has been retired.
+                break;
+            }
         }
 
         if (!succeeded && would_block) {
@@ -1708,6 +1717,7 @@ SocketReadinessSnapshot group_poll_readiness(
     bool opened = false;
     bool connected = false;
     bool pending = false;
+    bool dispatch_sender = false;
     SequenceNumber expected;
     {
         std::lock_guard lock(group->mutex);
@@ -1717,6 +1727,8 @@ SocketReadinessSnapshot group_poll_readiness(
             return readiness;
         }
         opened = group->opened;
+        dispatch_sender = group->category == GroupCategory::dispatch
+            && group->dispatch != nullptr && group->dispatch->sender;
         expected = SequenceNumber {group->next_receive_sequence};
         // Read current membership flags as well: a newly added pending member
         // must suppress terminal readiness even if absent from this snapshot.
@@ -1728,14 +1740,18 @@ SocketReadinessSnapshot group_poll_readiness(
                 && state != SRTS_NONEXIST;
         }
     }
+    bool output_owner_seen = false;
     for (const auto& member : members) {
         if (!member.terminal) {
             // Include terminal transitions after the registry snapshot and
             // preserve the runtime's delayed SHUTDOWN drain semantics.
             const auto member_readiness =
                 connection_readiness(*member.runtime, false);
-            readiness.events |=
-                member_readiness.events & (SRT_EPOLL_OUT | SRT_EPOLL_ERR);
+            readiness.events |= member_readiness.events & SRT_EPOLL_ERR;
+            if (!dispatch_sender || !output_owner_seen) {
+                readiness.events |= member_readiness.events & SRT_EPOLL_OUT;
+            }
+            output_owner_seen = true;
         }
     }
     const auto receive = inspect_group_readiness(members.view(), expected);

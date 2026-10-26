@@ -603,14 +603,21 @@ Repeats, pacing and readiness:
   POST on the sender group, default 0) the sender keeps a bounded tally of
   repeats per sequence: once *n* distinct receivers asked for the same packet
   within a couple of round trips, the member reaching *n* repeats it once on
-  the multicast path and later requests inside that window send nothing;
-  receivers that asked earlier already got their unicast repeat;
+  the multicast path. Only after UDP accepts that repair may another receiver's
+  first request be suppressed. A repeated request from the same receiver uses
+  unicast, including when the multicast repair was lost. A transient local
+  multicast repair failure falls back to the member's unicast retry path.
+  After a multicast attempt, window expiry restores unicast until the bounded
+  tally entry is evicted; failed repairs do not restart a multicast retry loop;
 - `SRTO_MAXBW` set on the sender group reaches every member, so it caps the
   transmitting member's pacer and with it the multicast path, as well as each
   member's unicast repeats. There is no separate aggregate cap;
-- `SRT_EPOLL_OUT` on the sender group follows member readiness as for
-  Broadcast: a send succeeds while at least one member accepts the payload,
-  which in practice is the transmitting member's pacing;
+- `SRT_EPOLL_OUT` on the sender group follows the elected transmitting
+  member's readiness. That member must accept the payload before suppressed
+  members can accept it. A full transmitter buffer blocks a synchronous send
+  or returns `SRT_EASYNCSND` for a nonblocking send without advancing the
+  group sequence. A terminal transmitter is retired before electing its
+  replacement. Send success means local queue acceptance, not delivery;
 - `SRTO_ROBOTWEAX_MCAST_STATS` (read-only, `ROBOTWEAX_SRT_MCAST_STATS_V1`)
   reports on the sender the packets and bytes sent on the multicast path, the
   repeats among them, the unicast repeats skipped and the live receiver
