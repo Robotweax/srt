@@ -208,7 +208,7 @@ struct ListenerGroupAdmission {
     bool has_announcement = false;
     // This admission's crypto session (null when unencrypted); a dispatch
     // member draws its transmit keys from the group's shared schedule.
-    std::shared_ptr<CryptoSession>* crypto = nullptr;
+    std::shared_ptr<CryptoSession> crypto;
     std::uint64_t admission_domain = 0;
     SRTSOCKET member_handle = SRT_INVALID_SOCK;
     std::shared_ptr<SocketRecord> member;
@@ -272,11 +272,10 @@ struct ListenerGroupAdmission {
             // repeat it, and a keyed member in a clear group would encrypt
             // what the others send in the clear.
             const bool keyed_group = description.key_schedule != nullptr;
-            const bool keyed_member =
-                crypto != nullptr && *crypto != nullptr && (*crypto)->enabled();
+            const bool keyed_member = crypto != nullptr && crypto->enabled();
             if (keyed_group != keyed_member
                 || (keyed_group
-                    && (*crypto)->attach_shared_transmit_schedule(
+                    && crypto->attach_shared_transmit_schedule(
                            description.key_schedule)
                         != Error::none)) {
                 if (description.created) {
@@ -4724,7 +4723,6 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     SessionAuthenticationParameters session_response {},
         session_confirmation {};
     std::shared_ptr<CryptoSession> crypto;
-    group_admission.crypto = &crypto;
     CryptoState receiver_key_state = CryptoState::unsecured;
     if (!policy_rejected) {
         if (native_options.encryption_enabled()) {
@@ -4843,6 +4841,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
 
     setup_context->native_options = native_options;
     setup_context->crypto = crypto;
+    group_admission.crypto = crypto;
     setup_context->policy_error = policy_error;
     setup_context->policy_rejected = policy_rejected;
     setup_context->cookie_context.cookie = admission.validated_cookie;
