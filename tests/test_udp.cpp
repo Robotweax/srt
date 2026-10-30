@@ -751,6 +751,10 @@ struct NativeMulticastProbe {
     return probe.system_error == WSAENETUNREACH
         || probe.system_error == WSAEADDRNOTAVAIL;
 #else
+#if defined(__APPLE__)
+    if (probe.system_error == EHOSTUNREACH)
+        return true;
+#endif
     return probe.system_error == ENETUNREACH
         || probe.system_error == EADDRNOTAVAIL || probe.system_error == ENODEV;
 #endif
@@ -761,12 +765,17 @@ struct NativeMulticastProbe {
 TEST(udp_ipv6_multicast_probe_skips_only_unavailable_optional_send_routes)
 {
 #if defined(_WIN32)
-    const std::array unavailable {WSAENETUNREACH, WSAEADDRNOTAVAIL};
-    const std::array unexpected {
-        0, WSAEINVAL, WSAENOTSOCK, WSAEACCES, WSAENOBUFS};
+    const std::array<int, 2> unavailable {WSAENETUNREACH, WSAEADDRNOTAVAIL};
+    const std::array<int, 6> unexpected {
+        0, WSAEINVAL, WSAENOTSOCK, WSAEACCES, WSAENOBUFS, WSAEHOSTUNREACH};
+#elif defined(__APPLE__)
+    const std::array<int, 4> unavailable {
+        ENETUNREACH, EADDRNOTAVAIL, ENODEV, EHOSTUNREACH};
+    const std::array<int, 5> unexpected {0, EINVAL, EBADF, EACCES, ENOBUFS};
 #else
-    const std::array unavailable {ENETUNREACH, EADDRNOTAVAIL, ENODEV};
-    const std::array unexpected {0, EINVAL, EBADF, EACCES, ENOBUFS};
+    const std::array<int, 3> unavailable {ENETUNREACH, EADDRNOTAVAIL, ENODEV};
+    const std::array<int, 6> unexpected {
+        0, EINVAL, EBADF, EACCES, ENOBUFS, EHOSTUNREACH};
 #endif
     for (const int error : unavailable) {
         REQUIRE(ipv6_multicast_probe_can_skip({error, true}, false));

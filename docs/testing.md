@@ -31,8 +31,10 @@ The IPv4 primitive uses loopback explicitly for membership and sending. On
 every platform, an independent native IPv6 socket send probes route availability
 before the IPv6 primitive runs. Without an explicit interface selection, only
 native send errors `ENETUNREACH`, `EADDRNOTAVAIL` or `ENODEV` (Winsock:
-`WSAENETUNREACH` or `WSAEADDRNOTAVAIL`) permit an environment skip. The message
-records the interface index and system error. Native socket/option errors and
+`WSAENETUNREACH` or `WSAEADDRNOTAVAIL`) permit an environment skip. On macOS,
+`EHOSTUNREACH` also permits a skip: Darwin reports an unreachable destination
+with this [native send error](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/sendto.2.html).
+The message records the interface index and system error. Native socket/option errors and
 other send errors fail. Once the probe succeeds, every library membership,
 send, receive and leave assertion remains mandatory.
 Linux native CI jobs create a job-local dummy interface and select its index
