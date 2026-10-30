@@ -20,7 +20,7 @@
 #include <cstddef>
 #include <thread>
 #include <utility>
-#if defined(__APPLE__)
+#if !defined(_WIN32)
 #include <unistd.h>
 #endif
 
@@ -680,50 +680,111 @@ constexpr IpEndpoint ipv6_test_group(std::uint16_t port) noexcept
         == Error::none;
 }
 
-#if defined(__APPLE__)
-// Check the native stack independently: some hosted macOS images can join an
-// interface-local IPv6 group but have no usable send route. A library failure
-// must still fail the delivery test whenever the same native send works.
-[[nodiscard]] int native_ipv6_multicast_send_error(
+struct NativeMulticastProbe {
+    int system_error = 0;
+    bool send_attempted = false;
+};
+
+// Membership alone does not prove the interface has a usable send route.
+// Check independently of UdpSocket so library failures cannot cause a skip.
+[[nodiscard]] NativeMulticastProbe native_ipv6_multicast_send_error(
     IpEndpoint group, std::uint32_t index)
 {
-    const int socket = ::socket(AF_INET6, SOCK_DGRAM, 0);
-    if (socket < 0)
+    const auto socket = ::socket(AF_INET6, SOCK_DGRAM, 0);
+#if defined(_WIN32)
+    const auto last_error = [] {
+        return ::WSAGetLastError();
+    };
+    if (socket == INVALID_SOCKET)
+#else
+    const auto last_error = [] {
         return errno;
+    };
+    if (socket < 0)
+#endif
+        return {.system_error = last_error()};
     const int hops = 0;
     const int loop = 1;
-    int error = 0;
-    if (::setsockopt(
-            socket, IPPROTO_IPV6, IPV6_MULTICAST_IF, &index, sizeof(index))
+    NativeMulticastProbe result;
+    if (::setsockopt(socket, IPPROTO_IPV6, IPV6_MULTICAST_IF,
+            reinterpret_cast<const char*>(&index), sizeof(index))
             != 0
-        || ::setsockopt(
-               socket, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hops, sizeof(hops))
+        || ::setsockopt(socket, IPPROTO_IPV6, IPV6_MULTICAST_HOPS,
+               reinterpret_cast<const char*>(&hops), sizeof(hops))
             != 0
-        || ::setsockopt(
-               socket, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop))
+        || ::setsockopt(socket, IPPROTO_IPV6, IPV6_MULTICAST_LOOP,
+               reinterpret_cast<const char*>(&loop), sizeof(loop))
             != 0) {
-        error = errno;
+        result.system_error = last_error();
     } else {
         sockaddr_in6 destination {};
+#if defined(__APPLE__)
         destination.sin6_len = sizeof(destination);
+#endif
         destination.sin6_family = AF_INET6;
         destination.sin6_port = htons(9);
         destination.sin6_scope_id = index;
         std::copy(group.address.begin(), group.address.end(),
             destination.sin6_addr.s6_addr);
         const char probe = 'p';
+        result.send_attempted = true;
         if (::sendto(socket, &probe, 1, 0,
                 reinterpret_cast<const sockaddr*>(&destination),
                 sizeof(destination))
             != 1)
-            error = errno;
+            result.system_error = last_error();
     }
+#if defined(_WIN32)
+    (void)::closesocket(socket);
+#else
     (void)::close(socket);
-    return error;
-}
 #endif
+    return result;
+}
+
+[[nodiscard]] bool ipv6_multicast_probe_can_skip(
+    NativeMulticastProbe probe, bool required)
+{
+    if (required || !probe.send_attempted)
+        return false;
+#if defined(_WIN32)
+    return probe.system_error == WSAENETUNREACH
+        || probe.system_error == WSAEADDRNOTAVAIL;
+#else
+#if defined(__APPLE__)
+    if (probe.system_error == EHOSTUNREACH)
+        return true;
+#endif
+    return probe.system_error == ENETUNREACH
+        || probe.system_error == EADDRNOTAVAIL || probe.system_error == ENODEV;
+#endif
+}
 
 } // namespace
+
+TEST(udp_ipv6_multicast_probe_skips_only_unavailable_optional_send_routes)
+{
+#if defined(_WIN32)
+    const std::array<int, 2> unavailable {WSAENETUNREACH, WSAEADDRNOTAVAIL};
+    const std::array<int, 6> unexpected {
+        0, WSAEINVAL, WSAENOTSOCK, WSAEACCES, WSAENOBUFS, WSAEHOSTUNREACH};
+#elif defined(__APPLE__)
+    const std::array<int, 4> unavailable {
+        ENETUNREACH, EADDRNOTAVAIL, ENODEV, EHOSTUNREACH};
+    const std::array<int, 5> unexpected {0, EINVAL, EBADF, EACCES, ENOBUFS};
+#else
+    const std::array<int, 3> unavailable {ENETUNREACH, EADDRNOTAVAIL, ENODEV};
+    const std::array<int, 6> unexpected {
+        0, EINVAL, EBADF, EACCES, ENOBUFS, EHOSTUNREACH};
+#endif
+    for (const int error : unavailable) {
+        REQUIRE(ipv6_multicast_probe_can_skip({error, true}, false));
+        REQUIRE(!ipv6_multicast_probe_can_skip({error, false}, false));
+        REQUIRE(!ipv6_multicast_probe_can_skip({error, true}, true));
+    }
+    for (const int error : unexpected)
+        REQUIRE(!ipv6_multicast_probe_can_skip({error, true}, false));
+}
 
 TEST(ip_endpoint_classifies_multicast_addresses)
 {
@@ -870,7 +931,12 @@ TEST(udp_multicast_join_leave_delivers_one_datagram_to_two_local_receivers)
 
 TEST(udp_ipv6_multicast_join_and_loopback_delivery)
 {
-    SKIP_WITHOUT_IPV6_LOOPBACK();
+    const char* selected =
+        std::getenv("ROBOTWEAX_SRT_TEST_IPV6_MULTICAST_IFINDEX");
+    if (selected)
+        REQUIRE(ipv6_loopback_available());
+    else
+        SKIP_WITHOUT_IPV6_LOOPBACK();
     UdpSocket receiver(IpAddressFamily::ipv6);
     REQUIRE(receiver.valid());
     REQUIRE_EQ(receiver.set_reuse_address(true), Error::none);
@@ -882,8 +948,7 @@ TEST(udp_ipv6_multicast_join_and_loopback_delivery)
     // index 1 default; qualification namespaces can select a capable device.
     IpEndpoint interface = IpEndpoint::ipv6_any();
     interface.scope_id = 1;
-    if (const char* selected =
-            std::getenv("ROBOTWEAX_SRT_TEST_IPV6_MULTICAST_IFINDEX")) {
+    if (selected) {
         const std::string_view value {selected};
         const auto parsed = std::from_chars(
             value.data(), value.data() + value.size(), interface.scope_id);
@@ -892,16 +957,21 @@ TEST(udp_ipv6_multicast_join_and_loopback_delivery)
         REQUIRE(interface.scope_id != 0);
     }
     group.scope_id = interface.scope_id;
-#if defined(__APPLE__)
-    if (const int error =
-            native_ipv6_multicast_send_error(group, interface.scope_id))
-        throw robotweax::srt::test::Skipped(
-            "native IPv6 multicast send unavailable, errno="
-            + std::to_string(error));
-#endif
+    const auto probe =
+        native_ipv6_multicast_send_error(group, interface.scope_id);
+    const auto probe_message = "native IPv6 multicast send on ifindex "
+        + std::to_string(interface.scope_id)
+        + ", system_error=" + std::to_string(probe.system_error)
+        + (probe.send_attempted ? " (sendto)" : " (socket/options)");
+    if (ipv6_multicast_probe_can_skip(probe, selected != nullptr))
+        throw robotweax::srt::test::Skipped(probe_message);
+    robotweax::srt::test::require(
+        probe.system_error == 0, probe_message.c_str(), __FILE__, __LINE__);
     const Error joined = receiver.join_multicast(group, interface);
-    SKIP_UNLESS(
-        joined == Error::none, "no IPv6 multicast membership on this host");
+    const auto join_message = "join_multicast system_error="
+        + std::to_string(receiver.last_system_error());
+    robotweax::srt::test::require(
+        joined == Error::none, join_message.c_str(), __FILE__, __LINE__);
 
     UdpSocket sender(IpAddressFamily::ipv6);
     REQUIRE(sender.valid());
@@ -910,12 +980,18 @@ TEST(udp_ipv6_multicast_join_and_loopback_delivery)
     REQUIRE_EQ(sender.set_multicast_loopback(true), Error::none);
     const std::array<std::byte, 3> payload {
         std::byte {'v'}, std::byte {'6'}, std::byte {'!'}};
-    REQUIRE(sender.send_to(payload, group));
+    const UdpIoResult sent = sender.send_to(payload, group);
+    const auto send_message =
+        "send_to system_error=" + std::to_string(sent.system_error);
+    robotweax::srt::test::require(
+        sent.error == Error::none, send_message.c_str(), __FILE__, __LINE__);
+    REQUIRE_EQ(sent.bytes_transferred, payload.size());
     const UdpWaitResult ready = receiver.wait_readable(2'000);
     REQUIRE(ready && ready.ready);
     std::array<std::byte, 64> buffer {};
     const UdpIoResult received = receiver.receive_from(buffer);
     REQUIRE(received);
     REQUIRE_EQ(received.bytes_transferred, payload.size());
+    REQUIRE(std::equal(payload.begin(), payload.end(), buffer.begin()));
     REQUIRE_EQ(receiver.leave_multicast(group, interface), Error::none);
 }
