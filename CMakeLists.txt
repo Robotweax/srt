@@ -510,6 +510,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_simulation.cpp
         tests/test_statistics.cpp
         tests/test_timing.cpp
+        tests/test_tsbpd_rtt.cpp
         tests/test_udp.cpp
         tests/test_compat_epoll.cpp
         tests/test_group_acquire.cpp

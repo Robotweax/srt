@@ -3173,6 +3173,99 @@ TEST(compat_group_shared_tsbpd_clock_never_shortens_negotiated_latency)
     REQUIRE_EQ(srt_close(group), 0);
 }
 
+TEST(compat_group_tsbpd_rtt_defaults_cannot_shift_the_shared_clock)
+{
+    using namespace robotweax::srt;
+    for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {
+        const auto group = srt_create_group(type);
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        const auto sequence = record->initial_sequence;
+        const auto origin = ConnectionRuntime::Clock::now();
+        TestClock clock {.now_microseconds = 40'000,
+            .channel = std::make_shared<compat::DatagramChannel>()};
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        const auto first = attach_group_runtime(group, srt_create_socket(),
+            sequence, 1, &clock, 0, true, 120, origin, record);
+        const auto second = attach_group_runtime(group, srt_create_socket(),
+            sequence, 1, &clock, 0, true, 120, origin, record);
+        const bool synchronous = false;
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_RCVSYN, &synchronous,
+                       static_cast<int>(sizeof(synchronous))),
+            0);
+        std::uint32_t delivered = 0;
+        constexpr std::uint32_t count = 2'500;
+        for (std::uint32_t index = 0; index < count + 121; ++index) {
+            clock.now_microseconds = 40'000ULL + index * 1'000ULL;
+            if (index == 80) {
+                std::array<std::byte, 64> payload {};
+                const auto encoded = encode_acknowledgement_payload(
+                    {
+                        .kind = AcknowledgementKind::full,
+                        .next_sequence = SequenceNumber {sequence},
+                        .round_trip_time_microseconds = 80'000,
+                        .round_trip_time_variance_microseconds = 40'000,
+                        .available_receive_buffer_packets = 8'192,
+                    },
+                    payload);
+                REQUIRE(encoded);
+                PacketView ack;
+                ack.kind = PacketKind::control;
+                ack.control.type = ControlType::acknowledgement;
+                ack.payload = std::span {payload}.first(encoded.bytes_written);
+                first->process_packet(ack, IpEndpoint::loopback(9'000));
+                REQUIRE_EQ(first->response_health().smoothed_rtt_microseconds,
+                    80'000U);
+            }
+            // The unmeasured member continues contributing physical samples
+            // after the other member establishes the shared RTT reference.
+            const std::array<std::byte, 4> padding {};
+            PacketView keepalive;
+            keepalive.kind = PacketKind::control;
+            keepalive.control.type = ControlType::keepalive;
+            keepalive.control.timestamp = PacketTimestamp {index * 1'000};
+            keepalive.payload = padding;
+            second->process_packet(keepalive, IpEndpoint::loopback(9'000));
+            if (index < count) {
+                PacketView data;
+                data.kind = PacketKind::data;
+                data.data.sequence = SequenceNumber {sequence + index};
+                data.data.message_number = index + 1;
+                data.data.boundary = MessageBoundary::solo;
+                data.data.in_order = true;
+                data.data.timestamp = PacketTimestamp {index * 1'000};
+                data.payload =
+                    std::as_bytes(std::span {&index, std::size_t {1}});
+                first->process_packet(data, IpEndpoint::loopback(9'000));
+            }
+            for (;;) {
+                std::uint32_t payload = 0;
+                SRT_MSGCTRL control = srt_msgctrl_default;
+                const int received =
+                    srt_recvmsg2(group, reinterpret_cast<char*>(&payload),
+                        sizeof(payload), &control);
+                if (received == SRT_ERROR) {
+                    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+                    break;
+                }
+                REQUIRE_EQ(received, static_cast<int>(sizeof(payload)));
+                REQUIRE_EQ(payload, delivered);
+                REQUIRE(delivered < count);
+                const auto nominal = 160'000ULL + delivered * 1'000ULL;
+                REQUIRE_EQ(clock.now_microseconds, nominal);
+                REQUIRE_EQ(control.srctime,
+                    first->timestamp_origin_microseconds()
+                        + static_cast<std::int64_t>(nominal));
+                ++delivered;
+            }
+        }
+        REQUIRE_EQ(delivered, count);
+        REQUIRE_EQ(
+            second->response_health().smoothed_rtt_microseconds, 100'000U);
+        REQUIRE_EQ(srt_close(group), 0);
+    }
+}
+
 TEST(compat_group_receive_preserves_deadline_when_member_joins_after_pop)
 {
     for (const auto type : {SRT_GTYPE_BACKUP, SRT_GTYPE_BROADCAST}) {

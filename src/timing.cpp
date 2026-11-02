@@ -476,14 +476,16 @@ bool TsbpdClock::too_late(PacketTimestamp timestamp,
 
 DriftUpdate TsbpdClock::observe_arrival(PacketTimestamp timestamp,
     std::uint64_t arrival_microseconds,
-    std::uint32_t round_trip_time_microseconds, bool advance_epoch) noexcept
+    std::optional<std::uint32_t> round_trip_time_microseconds,
+    bool advance_epoch) noexcept
 {
     if (shared_state_) {
         std::lock_guard lock(shared_state_->mutex);
         return shared_state_->clock.observe_arrival(timestamp,
             arrival_microseconds, round_trip_time_microseconds, advance_epoch);
     }
-    if (!first_round_trip_time_microseconds_.has_value()) {
+    if (!first_round_trip_time_microseconds_.has_value()
+        && round_trip_time_microseconds.has_value()) {
         first_round_trip_time_microseconds_ = round_trip_time_microseconds;
     }
     if (!advance_epoch) {
@@ -500,8 +502,14 @@ DriftUpdate TsbpdClock::observe_arrival(PacketTimestamp timestamp,
     }
     const auto unwrapped =
         advance_epoch ? unwrap(timestamp) : project(timestamp);
-    const auto rtt_delta = (static_cast<std::int64_t>(round_trip_time_microseconds)
-        - static_cast<std::int64_t>(*first_round_trip_time_microseconds_)) / 2;
+    // An estimator's startup default is not a path-delay observation. Keep
+    // sampling physical drift without the RTT term until a valid RTT exists,
+    // including samples from an unmeasured member of a shared group clock.
+    const auto rtt_delta = round_trip_time_microseconds.has_value()
+        ? (static_cast<std::int64_t>(*round_trip_time_microseconds)
+              - static_cast<std::int64_t>(*first_round_trip_time_microseconds_))
+            / 2
+        : 0;
     const auto expected_arrival = time_base_microseconds_
         + static_cast<std::int64_t>(unwrapped) + rtt_delta;
     const auto update = drift_sampler_.observe(
