@@ -1536,8 +1536,11 @@ void ReliabilitySession::observe_tsbpd_drift(PacketTimestamp timestamp,
     if (!drift_tracer_enabled_ || !tsbpd_clock_.has_value()) {
         return;
     }
-    const auto drift = tsbpd_clock_->observe_arrival(timestamp,
-        arrival_microseconds, rtt_.smoothed_microseconds(), advance_epoch);
+    const auto drift =
+        tsbpd_clock_->observe_arrival(timestamp, arrival_microseconds,
+            rtt_.has_sample() ? std::optional {rtt_.smoothed_microseconds()}
+                              : std::nullopt,
+            advance_epoch);
     if (drift.window_complete
         && drift.correction_microseconds != 0) {
         ++drift_correction_count_;

@@ -510,6 +510,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_simulation.cpp
         tests/test_statistics.cpp
         tests/test_timing.cpp
+        tests/test_tsbpd_rtt.cpp
         tests/test_udp.cpp
         tests/test_compat_epoll.cpp
         tests/test_group_acquire.cpp
@@ -588,7 +589,12 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             srt_compat_bind_acquire srt_compat_group_acquire_ srt_compat_connection_local_name_
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
-            stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover)
+            stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover
+            tsbpd_rtt)
+    # Keep the deterministic multi-RTT simulation matrices independently
+    # bounded instead of charging them to the general unit-test run.
+    add_test(NAME robotweax_srt_tsbpd_rtt_tests
+        COMMAND robotweax_srt_tests --include tsbpd_rtt)
     # Public socket API integration cases have their own bounded run.
     add_test(NAME robotweax_srt_socket_api_tests
         COMMAND robotweax_srt_tests --include srt_compat_
@@ -718,7 +724,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests
             compat_group_closed_member_retains_bounded_copy_after_oversized_message)
     set_tests_properties(
-        robotweax_srt_tests robotweax_srt_socket_api_tests
+        robotweax_srt_tests robotweax_srt_tsbpd_rtt_tests robotweax_srt_socket_api_tests
         robotweax_srt_transport_runtime_tests
         robotweax_srt_group_join_rollover_tests
         robotweax_srt_rotation_tests robotweax_srt_key_length_tests

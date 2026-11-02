@@ -188,6 +188,14 @@ Live congestion controller. Direct Live Stream API interoperability with
 that reference cannot be tested; File/Stream interoperability remains covered
 separately.
 
+The drift tracer uses a measured or accepted peer RTT estimate as its RTT
+reference. An estimator's startup default cannot establish that reference.
+Before a valid RTT estimate exists, physical arrival samples still contribute
+to clock-drift correction, with no RTT-change term. This also applies to an
+unmeasured member using a shared group clock; a measured RTT of 100 ms remains
+a valid reference. Enabling or disabling `SRTO_DRIFTTRACER` retains its existing
+effect on drift sampling.
+
 ## Receiver scheduling
 
 The receive path enforces these invariants:

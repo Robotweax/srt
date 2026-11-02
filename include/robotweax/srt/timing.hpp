@@ -212,7 +212,7 @@ public:
         std::uint32_t tolerance_microseconds) noexcept;
     [[nodiscard]] DriftUpdate observe_arrival(PacketTimestamp timestamp,
         std::uint64_t arrival_microseconds,
-        std::uint32_t round_trip_time_microseconds,
+        std::optional<std::uint32_t> round_trip_time_microseconds,
         bool advance_epoch = true) noexcept;
 
 private:
