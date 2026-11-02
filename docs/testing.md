@@ -19,16 +19,24 @@ export ROBOTWEAX_SRT_TEST_IPV6_MULTICAST_IFINDEX="$(cat /sys/class/net/mcast0/if
 ```
 
 The value must be a nonzero unsigned interface index; malformed values fail the
-test. This setting changes only the test's interface selection and destination
+test. Selecting an index also makes this case mandatory: missing IPv6 loopback,
+an unavailable native send route, or a failed membership is a failure, not a
+skip. This setting changes only the test's interface selection and destination
 scope. It does not create interfaces, configure multicast routes, or turn an
 unsupported environment into a passing qualification. Record route and
 interface configuration, failures and skips with the results. A designated
 multicast qualification environment must execute its required cases without
 skips. IPv6 socket primitive tests alone do not qualify IPv6 dispatch groups.
 The IPv4 primitive uses loopback explicitly for membership and sending. On
-macOS, an independent native IPv6 socket send probes route availability before
-the IPv6 primitive runs; a native failure is reported as an environment skip
-with its error number. A library failure still fails when native sending works.
+every platform, an independent native IPv6 socket send probes route availability
+before the IPv6 primitive runs. Without an explicit interface selection, only
+native send errors `ENETUNREACH`, `EADDRNOTAVAIL` or `ENODEV` (Winsock:
+`WSAENETUNREACH` or `WSAEADDRNOTAVAIL`) permit an environment skip. On macOS,
+`EHOSTUNREACH` also permits a skip: Darwin reports an unreachable destination
+with this [native send error](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/sendto.2.html).
+The message records the interface index and system error. Native socket/option errors and
+other send errors fail. Once the probe succeeds, every library membership,
+send, receive and leave assertion remains mandatory.
 Linux native CI jobs create a job-local dummy interface and select its index
 through this variable, because Linux loopback need not deliver IPv6 multicast.
 
