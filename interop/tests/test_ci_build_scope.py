@@ -181,7 +181,7 @@ class CiTestRegistrationTests(unittest.TestCase):
                 "--include", "compat_runtime_", "--exclude", "compat_runtime_"],
         }
         partitions = {
-            "robotweax_srt_tests", "robotweax_srt_socket_api_tests",
+            "robotweax_srt_tests", "robotweax_srt_tsbpd_rtt_tests", "robotweax_srt_socket_api_tests",
             "robotweax_srt_transport_runtime_tests",
             "robotweax_srt_session_auth_admission_tests",
             "robotweax_srt_acp1_tests",
@@ -234,6 +234,10 @@ class CiTestRegistrationTests(unittest.TestCase):
             "srt_compat_group_pathid_",
             "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
             "stale_drop_coverage", "stale_nak", "standby_rtt_native_runtime_", "compat_group_connect_joins_with_unread_messages_across_rollover",
+            "tsbpd_rtt",
+        ])
+        self.assertEqual(commands["robotweax_srt_tsbpd_rtt_tests"], [
+            "--include", "tsbpd_rtt",
         ])
         self.assertEqual(commands["robotweax_srt_socket_api_tests"], [
             "--include", "srt_compat_", "--exclude", "acp1", "key_length",
