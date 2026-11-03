@@ -8,9 +8,14 @@
 #include <array>
 #include <bit>
 #include <cstddef>
+#include <cstdio>
+#include <cstring>
+#include <deque>
 #include <limits>
 #include <map>
 #include <optional>
+#include <span>
+#include <string_view>
 #include <vector>
 
 using namespace robotweax::srt;
@@ -6717,4 +6722,291 @@ TEST(rtt_metadata_records_only_accepted_observations)
     REQUIRE(!rtt.local_observation_time());
     REQUIRE(!rtt.peer_observation_time());
     REQUIRE(!rtt.has_sample());
+}
+
+// ---------------------------------------------------------------------------
+// ARQ-first FEC and tail loss probe, Stage A.
+//
+// Deterministic in-process live stream: 1,024 solo messages of 1,250 bytes
+// offered at 1 ms, a constant 40 ms one-way delay in both directions, a
+// negotiated 120 ms receive delay and the Matrix 8x8 `arq:always` filter
+// policy. Sources 9, 10, 11 and 600 are lost once on the forward path so the
+// NAK, retransmission and ACK paths run. Every datagram either session puts
+// on the wire, and every delivered message, feeds one FNV-1a digest. The
+// expected digests were captured from this same fixture on the untouched pin
+// 1bdd4037cf714ea4e07725d945bb305a182dfbc1; with both options at their
+// defaults the sender must reproduce them byte for byte.
+namespace {
+
+constexpr std::size_t stage_a_population = 1'024;
+constexpr std::size_t stage_a_payload_bytes = 1'250;
+constexpr std::uint64_t stage_a_one_way_microseconds = 40'000;
+constexpr std::uint16_t stage_a_receive_delay_milliseconds = 120;
+constexpr std::uint64_t stage_a_step_microseconds = 1'000;
+constexpr std::uint64_t stage_a_stop_microseconds =
+    stage_a_population * 1'000ULL + stage_a_one_way_microseconds
+    + stage_a_receive_delay_milliseconds * 1'000ULL + 250'000ULL;
+constexpr std::string_view stage_a_filter =
+    "fec,cols:8,rows:8,layout:even,arq:always";
+
+struct StageADigest {
+    std::uint64_t value = 0xcbf29ce484222325ULL;
+    std::uint64_t records = 0;
+
+    void mix(std::span<const std::byte> bytes) noexcept
+    {
+        for (const auto byte : bytes) {
+            value ^= std::to_integer<std::uint64_t>(byte);
+            value *= 0x100000001b3ULL;
+        }
+    }
+    void mix(std::uint64_t word) noexcept
+    {
+        std::array<std::byte, 8> bytes {};
+        for (std::size_t index = 0; index < bytes.size(); ++index) {
+            bytes[index] = static_cast<std::byte>(word >> (8U * index));
+        }
+        mix(bytes);
+    }
+    void record(std::uint64_t now, std::span<const std::byte> bytes) noexcept
+    {
+        ++records;
+        mix(now);
+        mix(bytes.size());
+        mix(bytes);
+    }
+};
+
+struct StageAWireEvent {
+    std::uint64_t due = 0;
+    std::vector<std::byte> bytes;
+};
+
+struct StageAStream {
+    StageADigest sender_wire;
+    StageADigest receiver_wire;
+    StageADigest delivery;
+    std::uint64_t originals = 0;
+    std::uint64_t retransmissions = 0;
+    std::uint64_t sender_controls = 0;
+    std::uint64_t receiver_controls = 0;
+    std::uint64_t delivered = 0;
+    bool sender_rtt_known = false;
+    std::uint32_t sender_srtt = 0;
+};
+
+std::array<std::byte, stage_a_payload_bytes> stage_a_payload(
+    std::uint32_t index)
+{
+    std::array<std::byte, stage_a_payload_bytes> bytes {};
+    std::memcpy(bytes.data(), &index, sizeof index);
+    for (std::size_t offset = sizeof index; offset < bytes.size(); ++offset) {
+        bytes[offset] = static_cast<std::byte>(
+            (offset * 7U + index * 13U) & 0xffU);
+    }
+    return bytes;
+}
+
+bool stage_a_lost_original(std::uint32_t index)
+{
+    return index == 9U || index == 10U || index == 11U || index == 600U;
+}
+
+// Drives the stream and returns its digests. `options` is applied to the
+// sender through apply_dynamic_options after configure_live, exactly as the
+// compat runtime applies a socket's options at connection setup.
+StageAStream run_stage_a_live_stream(const SocketOptions& options)
+{
+    ReliabilitySession sender {{
+        .local_initial_sequence = SequenceNumber {10},
+        .peer_initial_sequence = SequenceNumber {1},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 2'048,
+        .receive_capacity_packets = 8,
+        .maximum_payload_size = stage_a_payload_bytes,
+    }};
+    ReliabilitySession receiver {{
+        .local_initial_sequence = SequenceNumber {1},
+        .peer_initial_sequence = SequenceNumber {10},
+        .peer_socket_id = 800,
+        .send_capacity_packets = 8,
+        .receive_capacity_packets = 2'048,
+        .maximum_payload_size = stage_a_payload_bytes,
+    }};
+    const NegotiatedLiveOptions live {
+        .send_tsbpd = true,
+        .receive_tsbpd = true,
+        .too_late_packet_drop = true,
+        .sender_too_late_packet_drop = true,
+        .periodic_nak = true,
+        .retransmit_flag = true,
+        .receive_delay_milliseconds = stage_a_receive_delay_milliseconds,
+        .peer_receive_delay_milliseconds = stage_a_receive_delay_milliseconds,
+        .peer_periodic_nak = true,
+    };
+    sender.configure_live(live, 0, PacketTimestamp {0});
+    // The peer's handshake left at 0 and arrived one way later, so a DATA
+    // packet stamped T arrives on time at exactly one_way + T.
+    receiver.configure_live(
+        live, stage_a_one_way_microseconds, PacketTimestamp {0});
+    const auto filter = parse_packet_filter_configuration(stage_a_filter);
+    REQUIRE(filter);
+    sender.configure_packet_filter(filter.configuration, true);
+    receiver.configure_packet_filter(filter.configuration, true);
+    REQUIRE_EQ(sender.apply_dynamic_options(options), Error::none);
+
+    StageAStream run;
+    std::deque<StageAWireEvent> to_receiver;
+    std::deque<StageAWireEvent> to_sender;
+    std::uint32_t offered = 0;
+
+    const auto send_controls = [&](const ReliabilityActions& actions,
+                                   std::uint64_t now, bool from_sender) {
+        for (std::size_t index = 0; index < actions.size; ++index) {
+            const auto& action = actions.values[index];
+            std::array<std::byte, 1'500> storage {};
+            const auto ranges =
+                action.kind == ReliabilityActionKind::loss_report
+                    && action.loss_range_count != 0U
+                ? std::span<const SequenceRange> {actions.loss_range_storage}
+                      .subspan(action.loss_range_offset,
+                          action.loss_range_count)
+                : std::span<const SequenceRange> {};
+            const auto encoded = ranges.empty()
+                ? encode_reliability_action(action, PacketTimestamp {
+                    static_cast<std::uint32_t>(now)}, from_sender ? 900U : 800U,
+                    storage)
+                : encode_reliability_action(action, ranges, PacketTimestamp {
+                    static_cast<std::uint32_t>(now)}, from_sender ? 900U : 800U,
+                    storage);
+            REQUIRE(encoded);
+            const std::span<const std::byte> bytes =
+                std::span {storage}.first(encoded.bytes_written);
+            if (from_sender) {
+                ++run.sender_controls;
+                run.sender_wire.record(now, bytes);
+                to_receiver.push_back({now + stage_a_one_way_microseconds,
+                    {bytes.begin(), bytes.end()}});
+            } else {
+                ++run.receiver_controls;
+                run.receiver_wire.record(now, bytes);
+                to_sender.push_back({now + stage_a_one_way_microseconds,
+                    {bytes.begin(), bytes.end()}});
+            }
+        }
+    };
+    const auto send_data = [&](const OutboundPacket& packet,
+                               std::uint64_t now) {
+        MutablePacketView view;
+        view.kind = PacketKind::data;
+        view.data = packet.header;
+        view.payload = packet.payload;
+        std::array<std::byte, 1'500> storage {};
+        const auto encoded = encode_packet(view, storage);
+        REQUIRE(encoded);
+        const std::span<const std::byte> bytes =
+            std::span {storage}.first(encoded.bytes_written);
+        run.sender_wire.record(now, bytes);
+        if (packet.header.retransmitted) {
+            ++run.retransmissions;
+        } else {
+            ++run.originals;
+        }
+        sender.note_packet_submitted(packet.header.sequence);
+        sender.note_data_packet_sent(now);
+        const auto index = static_cast<std::uint32_t>(
+            packet.header.sequence.distance_from(SequenceNumber {10}));
+        if (!packet.header.retransmitted && stage_a_lost_original(index)) {
+            return;
+        }
+        to_receiver.push_back({now + stage_a_one_way_microseconds,
+            {bytes.begin(), bytes.end()}});
+    };
+    const auto deliver = [&](std::deque<StageAWireEvent>& queue,
+                             ReliabilitySession& session, std::uint64_t now,
+                             bool to_sender_side) {
+        while (!queue.empty() && queue.front().due <= now) {
+            const auto event = std::move(queue.front());
+            queue.pop_front();
+            const auto decoded = decode_packet(event.bytes);
+            REQUIRE(decoded);
+            const auto result = session.receive(decoded.packet, now);
+            REQUIRE(result);
+            send_controls(result.actions, now, to_sender_side);
+        }
+    };
+
+    std::array<std::byte, stage_a_payload_bytes> output {};
+    for (std::uint64_t now = 0; now <= stage_a_stop_microseconds;
+        now += stage_a_step_microseconds) {
+        deliver(to_sender, sender, now, true);
+        deliver(to_receiver, receiver, now, false);
+        send_controls(sender.poll_timers(now), now, true);
+        send_controls(receiver.poll_timers(now), now, false);
+        (void)sender.poll_sender_retransmission_timeout(now);
+        std::size_t drained = 0;
+        while (const auto packet = sender.next_data_packet(now)) {
+            REQUIRE(++drained <= 512U);
+            REQUIRE(packet->header.retransmitted);
+            send_data(*packet, now);
+        }
+        if (offered < stage_a_population
+            && now == 1'000ULL * (offered + 1U)) {
+            const auto payload = stage_a_payload(offered);
+            REQUIRE_EQ(sender.queue_message(payload,
+                           PacketTimestamp {static_cast<std::uint32_t>(now)}),
+                Error::none);
+            const auto packet = sender.next_data_packet(now);
+            REQUIRE(packet.has_value());
+            REQUIRE(!packet->header.retransmitted);
+            REQUIRE_EQ(packet->header.sequence,
+                SequenceNumber {10}.advanced(offered));
+            send_data(*packet, now);
+            ++offered;
+        }
+        for (;;) {
+            const auto popped = receiver.pop_message_at(output, now);
+            if (!popped) {
+                REQUIRE_EQ(popped.error, Error::would_block);
+                break;
+            }
+            REQUIRE_EQ(popped.bytes_written, stage_a_payload_bytes);
+            std::uint32_t index = 0;
+            std::memcpy(&index, output.data(), sizeof index);
+            REQUIRE(index < stage_a_population);
+            REQUIRE_EQ(output, stage_a_payload(index));
+            REQUIRE(popped.delivery_time_microseconds.has_value());
+            run.delivery.record(*popped.delivery_time_microseconds, output);
+            ++run.delivered;
+        }
+    }
+    REQUIRE_EQ(offered, stage_a_population);
+    run.sender_rtt_known = sender.rtt().has_sample();
+    run.sender_srtt = sender.rtt().smoothed_microseconds();
+    return run;
+}
+
+} // namespace
+
+TEST(stage_a_defaults_reproduce_the_pinned_live_stream_byte_for_byte)
+{
+    SocketOptions options;
+    REQUIRE_EQ(options.set_packet_filter(stage_a_filter), Error::none);
+    const auto run = run_stage_a_live_stream(options);
+    // Captured on the untouched pin 1bdd4037cf714ea4e07725d945bb305a182dfbc1
+    // with this fixture: 1,024 originals, 4 retransmissions and 104 sender
+    // controls on the sender's wire, 107 receiver controls, 1,024 deliveries.
+    REQUIRE_EQ(run.sender_wire.value, 0x91c6af16db159c02ULL);
+    REQUIRE_EQ(run.sender_wire.records, 1'132U);
+    REQUIRE_EQ(run.receiver_wire.value, 0xb7ca47e27c3fab7eULL);
+    REQUIRE_EQ(run.receiver_wire.records, 107U);
+    REQUIRE_EQ(run.delivery.value, 0xdcc510a0768c4745ULL);
+    REQUIRE_EQ(run.delivery.records, 1'024U);
+    REQUIRE_EQ(run.retransmissions, 4U);
+    REQUIRE_EQ(run.sender_controls, 104U);
+    REQUIRE_EQ(run.receiver_controls, 107U);
+    REQUIRE_EQ(run.sender_srtt, 80'000U);
+    REQUIRE_EQ(run.originals, stage_a_population);
+    REQUIRE_EQ(run.delivered, stage_a_population);
+    REQUIRE(run.sender_rtt_known);
 }
