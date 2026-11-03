@@ -298,3 +298,39 @@ ASan/UBSan build: every `stage_a_`, `parity_policy`, `fec_policy` and
 the general partition and the three further CTest entries passed
 (`100% tests passed`), with no warning and no sanitizer report. The gate
 verdict above is unchanged.
+
+## Review follow-up (3 November 2026)
+
+An external read-only review of the pull request at `a003426` reproduced two
+behaviours with a standalone two-runtime simulation (injected time, captured
+datagrams, 7 sources of 1,250 bytes at 1 ms, originals 15 and 16 dropped,
+120 ms negotiated delay, measured peer RTT 20 ms).
+
+1. **Group template accepted the non-default values.** `srt_setsockflag` on
+   a broadcast group returned success for `SRTO_ROBOTWEAX_FECPOLICY =
+   ARQFIRST` and `SRTO_ROBOTWEAX_TAILPROBE = true`, although proposal
+   section 1.1 and the option documentation say group sockets reject them.
+   Cause: `GroupRegistry::set_io_option` validates through a temporary
+   option-template record and stamps it with the group id only for a fixed
+   list of options, which did not include the two new ones, so
+   `set_socket_option` saw no group and accepted. Fixed in
+   `src/compat/group_registry.cpp` by adding both options to that list; the
+   native and member rules are unchanged. New case
+   `compat_group_rejects_arqfirst_fec_and_tail_probe` in
+   `tests/test_compat_groups.cpp` covers the group handle at the C API:
+   the non-default values fail with `SRT_EINVPARAM`, the defaults are
+   readable and settable.
+
+2. **First probe after a cold RTT estimator waits the 120 ms cap.** With the
+   first RTT sample arriving 30 ms into the connection, the first probe fired
+   at 127 ms (idle start 7 ms + cap) instead of 47 ms with a warm estimator,
+   and one tail retransmission then missed its playout deadline (6 of 7
+   delivered against 7 of 7). This is the sealed rule, not an integration
+   defect: the fixture's `ProbeClock::original` fixes the interval from the
+   srtt at idle start and `advance` from the srtt at each due time, and
+   `ReliabilitySession` does the same. Recomputing the due time on the first
+   sample, or evaluating it lazily, would change the rule and make the
+   Stage B replay diverge from the sealed ledgers wherever the estimate moves
+   during an idle period. Not changed. The cold-start behaviour is now stated
+   in `docs/socket-options.md`; a rule change is left to a proposal
+   amendment with its own contract.

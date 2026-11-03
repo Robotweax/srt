@@ -755,6 +755,18 @@ ordinary retransmitted flag and original timestamp, and is limited to three
 due times per idle period; only a new original restarts the period, while
 ACKs, NAKs, retransmissions and probes leave it alone.
 
+Cold start: the interval of a due time is computed from the smoothed RTT at
+the moment the idle period starts (or at the previous due time), exactly as
+the sealed study's probe clock does, and is not recomputed when a new RTT
+sample arrives in between. Before the first measured sample the estimator
+holds its default, so an idle period that starts on a connection without an
+RTT sample waits the full 120 ms cap for its first probe even if a short RTT
+is measured a few milliseconds later; the second and third due times then
+use the measured value. The study's traffic always had a measured RTT at
+its idle starts. A warm estimator (any ACK with a measurement before the
+first idle period) is the qualified case; changing the rule is a proposal
+amendment, not an option.
+
 Acceptance, enforced when the option is set and re-checked at connection
 setup: `ARQFIRST` requires `SRTT_LIVE`, TSBPD on, the live congestion
 controller, no rendezvous, no group socket or member, and an enabled `fec`

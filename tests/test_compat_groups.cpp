@@ -925,6 +925,52 @@ TEST(compat_group_connect_callback_snapshots_current_registration_for_future_mem
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
 }
 
+TEST(compat_group_rejects_arqfirst_fec_and_tail_probe)
+{
+    // The option template of a group carries no group id of its own; the
+    // registry must stamp it so SocketOptions::set sees the group and
+    // rejects the non-default values (proposal section 1.1).
+    const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
+    REQUIRE(group != SRT_INVALID_SOCK);
+    const char* filter = "fec,cols:8,rows:8,layout:even,arq:always";
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_PACKETFILTER, filter,
+                   static_cast<int>(std::strlen(filter))),
+        0);
+
+    std::int32_t policy = ROBOTWEAX_SRT_FECPOLICY_ARQFIRST;
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_FECPOLICY, &policy,
+                   static_cast<int>(sizeof(policy))),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    bool probe = true;
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_TAILPROBE, &probe,
+                   static_cast<int>(sizeof(probe))),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+
+    std::int32_t value = -1;
+    int size = static_cast<int>(sizeof(value));
+    REQUIRE_EQ(
+        srt_getsockflag(group, SRTO_ROBOTWEAX_FECPOLICY, &value, &size), 0);
+    REQUIRE_EQ(value, ROBOTWEAX_SRT_FECPOLICY_ALWAYS);
+    bool enabled = true;
+    size = static_cast<int>(sizeof(enabled));
+    REQUIRE_EQ(
+        srt_getsockflag(group, SRTO_ROBOTWEAX_TAILPROBE, &enabled, &size), 0);
+    REQUIRE(!enabled);
+
+    // The defaults remain settable on the template.
+    policy = ROBOTWEAX_SRT_FECPOLICY_ALWAYS;
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_FECPOLICY, &policy,
+                   static_cast<int>(sizeof(policy))),
+        0);
+    probe = false;
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_TAILPROBE, &probe,
+                   static_cast<int>(sizeof(probe))),
+        0);
+    REQUIRE_EQ(srt_close(group), 0);
+}
+
 TEST(compat_group_network_options_are_preconnect_member_defaults)
 {
     const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);

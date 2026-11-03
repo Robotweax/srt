@@ -866,7 +866,11 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
         configured.native_options = record->member_native_options;
         configured.state = record->opened ? SRTS_CONNECTED : SRTS_INIT;
         // Group-only combinations and member-filter rejection need the owner.
+        // ARQ-first FEC and the tail loss probe are rejected on groups, so
+        // the template must carry its group for the setter to see it.
         if (option == SRTO_PACKETFILTER || option == SRTO_RENDEZVOUS
+            || option == SRTO_ROBOTWEAX_FECPOLICY
+            || option == SRTO_ROBOTWEAX_TAILPROBE
             || option == SRTO_ROBOTWEAX_PATHID_REQUIRED
             || option == SRTO_ROBOTWEAX_PATHID_POLICY
             || option == SRTO_ROBOTWEAX_STANDBYRTT_REQUIRED
