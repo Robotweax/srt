@@ -777,7 +777,7 @@ options are sender-local and never negotiated. Two Robotweax statistics
 counters, `parity_withheld` and `tail_probes_sent`, record the withheld
 repair packets and the queued probes; `SRT_TRACEBSTATS` is unchanged.
 
-Validation is limited to unit tests and a deterministic component study with
+Validation includes unit tests, demo loopback smoke tests and a component study with
 120 ms receive delay and Matrix 8×8 even geometry. The study compared 80
 ARQ-first FEC cases with 80 matching always-on Matrix FEC cases and found
 8.5620% fewer aggregate IPv4 bytes, with no missing sources or deadline

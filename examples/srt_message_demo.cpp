@@ -3,6 +3,7 @@
 #include <srt/srt.h>
 
 #include "demo_text.hpp"
+#include "demo_fec.hpp"
 
 #include <array>
 #include <charconv>
@@ -51,6 +52,7 @@ struct Configuration {
     std::optional<std::string> expected_stream_id;
     std::optional<std::string> passphrase_environment;
     std::optional<std::string> packet_filter;
+    bool arq_first = false;
     CryptoMode crypto_mode = CryptoMode::ctr;
     std::int32_t key_length = 32;
     std::int32_t timeout_milliseconds = 5'000;
@@ -192,6 +194,7 @@ void print_usage(std::ostream& stream)
            "(default "
            "live)\n"
         << "  --packet-filter CONFIG  SRTO_PACKETFILTER value\n"
+        << srt_demo::arq_first_help
         << "  --timeout-ms VALUE      Connect and I/O timeout (default "
            "5000)\n\n"
         << "Passphrases are deliberately not accepted as command-line "
@@ -291,6 +294,8 @@ template <typename Integer>
             configuration.key_length = parse_integer<std::int32_t>(
                 require_value(argc, argv, index, option), option);
             configuration.key_length_requested = true;
+        } else if (option == "--arq-first") {
+            configuration.arq_first = true;
         } else if (option == "--profile") {
             const auto profile = require_value(argc, argv, index, option);
             if (profile == "live") {
@@ -329,6 +334,14 @@ template <typename Integer>
 
     if (configuration.port == 0) {
         throw std::runtime_error("--port is required");
+    }
+    if (configuration.arq_first) {
+        if (configuration.transport_type != SRTT_LIVE
+            || configuration.role == Role::rendezvous)
+            throw std::runtime_error(
+                "--arq-first requires Live Caller/Listener");
+        if (!configuration.packet_filter.has_value())
+            configuration.packet_filter = srt_demo::matrix_filter;
     }
     if (configuration.role == Role::rendezvous
         && configuration.local_port == 0) {
@@ -462,6 +475,8 @@ void configure_socket(SRTSOCKET socket, const Configuration& configuration)
         set_string_option(
             socket, SRTO_PACKETFILTER, *configuration.packet_filter);
     }
+    if (configuration.arq_first)
+        srt_demo::configure_arq_first(socket);
     if (configuration.passphrase_environment.has_value()) {
         const char* passphrase =
             std::getenv(configuration.passphrase_environment->c_str());

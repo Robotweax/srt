@@ -11,7 +11,8 @@ version returned by `srt_getversion()`.
   probe (`SRTO_ROBOTWEAX_TAILPROBE`, default off). Both use the existing
   matrix FEC filter without changing its filter string, handshake, wire
   format or defaults. See [ARQ-first FEC and tail loss probes](docs/arq-first-fec.md)
-  for configuration, cold-start behavior and validation scope.
+  for configuration, cold-start behavior and validation scope. The Recovery,
+  Message and UDP bridge demos expose ARQ-first FEC through `--arq-first`.
 
 - Add a public-API multicast MPEG-TS application sample with a Listener
   sender, multiple Caller receivers, UDP encoder/player connections,

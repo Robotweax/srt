@@ -87,6 +87,35 @@ of lossless delivery. See the status and reconnect sections below.
 Stop the source and use Ctrl+C to stop each bridge. There is no EOF message
 inside the MPEG-TS payload and no guarantee to drain pending data on Ctrl+C.
 
+## ARQ-first FEC
+
+Development builds containing ARQ-first FEC accept `--arq-first` on the
+UDP-to-SRT sender, in either Caller or Listener mode:
+
+```sh
+./build-bridge/robotweax_srt_udp_bridge send \
+  --srt-mode caller --srt-host 127.0.0.1 --srt-port 9000 \
+  --udp-host 127.0.0.1 --udp-port 5000 --latency-ms 120 --arq-first
+```
+
+This single switch enables Matrix 8×8 even FEC with `arq:always` and selects
+the sender-local ARQ-first parity policy. Repairs are withheld when the
+sender's RTT estimate indicates that retransmission can meet the receive
+delay; otherwise full parity is sent. When the sender is the Caller, the receiving
+Listener needs no new switch. If the sender is the Listener instead, the
+receiving Caller must request the same filter using
+`--packet-filter 'fec,cols:8,rows:8,layout:even,arq:always'`. A Listener does
+not force an unrequested filter onto its Caller. `--packet-filter` also lets
+the sender select another compatible matrix geometry. `--arq-first` is rejected for
+`receive` and Rendezvous mode. Without it, the existing bridge defaults are
+unchanged. The `CONNECTED` line reports whether ARQ-first was selected.
+The bridge does not offer a tail loss probe option.
+
+This can reduce parity traffic on a sufficiently short-RTT path, but it is
+not a loss-free delivery guarantee. See
+[ARQ-first FEC and tail loss probes](arq-first-fec.md) for the policy,
+cold-start behavior and validation scope.
+
 ## Two machines
 
 On the receiving machine, use `--srt-host 0.0.0.0` to listen on all IPv4

@@ -12,7 +12,7 @@ import sys
 from process_support import Process, ports
 
 
-def experiment(args, name, packet_filter, impaired):
+def experiment(args, name, packet_filter, impaired, arq_first=False):
     port = ports(2)
     executable = str(args.binary_dir / ("robotweax_srt_recovery.exe" if os.name == "nt" else "robotweax_srt_recovery"))
     common = ["--count", "320", "--interval-ms", "5", "--latency-ms", "200", "--crypto", args.crypto]
@@ -34,16 +34,18 @@ def experiment(args, name, packet_filter, impaired):
             "--delay-ms", str(args.delay_ms if impaired else 0),
             "--reorder-every", str(args.reorder_every if impaired else 0), "--reorder-ms", "30"])
         proxy.ready()
-        sender = start([executable, "send", "--endpoint", f"127.0.0.1:{port + 1}", *common])
+        sender_options = ["--arq-first"] if arq_first else []
+        sender = start([executable, "send", "--endpoint", f"127.0.0.1:{port + 1}", *common, *sender_options])
         sent, received = sender.finish(), receiver.finish()
         proxy_events = proxy.finish()
         summary = next(e for e in received if e["event"] == "summary")
         tx = [e for e in sent if e["event"] == "stats"][-1]
         rx = [e for e in received if e["event"] == "stats"][-1]
-        return {"scenario": name, "filter": packet_filter or "none", "crypto": args.crypto,
+        return {"scenario": name, "filter": packet_filter or "none", "arq_first": arq_first, "crypto": args.crypto,
             "impairment": {"drop_every": args.drop_every if impaired else 0, "burst": args.burst,
                 "delay_ms": args.delay_ms if impaired else 0, "reorder_every": args.reorder_every if impaired else 0},
-            "summary": summary, "sender_stats": tx, "receiver_stats": rx,
+            "summary": summary, "sender_mode": next(e for e in sent if e["event"] == "recovery_mode"),
+            "sender_stats": tx, "receiver_stats": rx,
             "proxy": next(e for e in proxy_events if e["event"] == "proxy_summary")}
     finally:
         for process in processes:
@@ -71,6 +73,11 @@ def main():
         ("column", "fec,cols:4,rows:-4,layout:even,arq:never", True),
         ("matrix", "fec,cols:4,rows:4,layout:even,arq:onreq", True)]
     results = []
+    for mode in ("always", "arqfirst"):
+        result = experiment(args, "matrix-" + mode,
+                            "fec,cols:8,rows:8,layout:even,arq:always", True, mode == "arqfirst")
+        results.append(result)
+        print(json.dumps(result), flush=True)
     for name, packet_filter, impaired in scenarios:
         result = experiment(args, name, packet_filter, impaired)
         results.append(result)

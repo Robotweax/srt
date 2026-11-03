@@ -40,6 +40,17 @@ to false. Both settings are local to the sender. They add no filter-string
 key or handshake field and require no new receiver feature beyond support
 for the negotiated FEC filter.
 
+## Application demos
+
+The existing [Recovery application](../examples/applications/README.md#2-recovery-comparison),
+[Message demo](../examples/README.md#arq-first-fec) and
+[UDP-to-SRT bridge sender](udp-srt-bridge.md#arq-first-fec) accept
+`--arq-first`. The switch supplies a compatible Matrix 8×8 filter and enables
+ARQ-first FEC. In the Recovery and Message demos an explicitly configured
+filter can override that geometry. The Recovery web console and comparison
+launcher compare it with always-on FEC using identical geometry and
+impairment settings. The demos do not expose a tail loss probe option.
+
 ## Recovery behavior
 
 With `ALWAYS`, every ready FEC repair packet is sent. With `ARQFIRST`, a
@@ -86,7 +97,9 @@ tolerance. This result does not establish strictly zero lateness.
 
 Integration unit tests cover option defaults and rejection rules, parity
 decisions, probe scheduling, retransmission metadata and unchanged session
-packet sequences with the options off. These tests do not establish
-end-to-end qualification of the integrated sender's FEC output. The component
-results are not socket, scheduler, CPU or WAN measurements and do not
-qualify other payloads, geometries, delays or encrypted operation.
+packet sequences with the options off. Loopback smoke tests also exercise
+ARQ-first in the Recovery sender with CTR/GCM, Message Caller/Listener echo,
+and UDP-to-SRT bridging in both connection directions, including AES-CTR.
+They check configuration and payload integrity, not comparative performance.
+The component-study results are not socket, scheduler, CPU or WAN measurements
+and do not qualify other payloads, geometries, delays or encrypted operation.

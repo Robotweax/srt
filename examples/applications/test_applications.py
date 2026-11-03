@@ -70,6 +70,9 @@ def run(binary_dir: Path, scenario: str, crypto="ctr"):
                 "--fail-after", "40", "--restore-after", "100", *common])
         else:
             impaired = scenario != "recovery"
+            arq_first = scenario == "recovery-arqfirst"
+            if scenario == "recovery-matrix-always":
+                common += ["--filter", "fec,cols:8,rows:8,layout:even,arq:always"]
             if scenario == "recovery-fec":
                 common += ["--filter", "fec,cols:4,rows:1,arq:never"]
             receiver = start([executable, "receive", "--endpoint", endpoint, *common])
@@ -80,7 +83,8 @@ def run(binary_dir: Path, scenario: str, crypto="ctr"):
                 proxy = start([sys.executable, str(Path(__file__).with_name("impairment_proxy.py")),
                     "--listen", target, "--target", endpoint, "--duration", "8", "--drop-every", "16"])
                 proxy.ready()
-            sender = start([executable, "send", "--endpoint", target, *common])
+            sender_options = ["--arq-first"] if arq_first else []
+            sender = start([executable, "send", "--endpoint", target, *common, *sender_options])
         sent = sender.finish()
         received = receiver.finish()
         summaries = [e for e in sent + received if e.get("event") == "summary"]
@@ -102,6 +106,11 @@ def run(binary_dir: Path, scenario: str, crypto="ctr"):
             restored = next(e for e in sent[rejoin + 1:] if e.get("event") == "path_snapshot")
             assert len(restored["members"]) == 2, restored
             assert {m["token"] for m in restored["members"]} == {1, 2}, restored
+        if scenario in ("recovery-matrix-always", "recovery-arqfirst"):
+            mode = next(e for e in sent if e["event"] == "recovery_mode")
+            assert mode["fec_policy"] == (0 if scenario == "recovery-matrix-always" else 1), mode
+            assert mode["tail_probe"] is False, mode
+            assert [e for e in sent if e["event"] == "stats"][-1]["sent_bytes"] > 0, sent
         if scenario == "recovery-fec":
             assert max(e.get("fec_supplied", 0) for e in received) > 0
         if scenario == "recovery-arq":
@@ -120,7 +129,7 @@ def run(binary_dir: Path, scenario: str, crypto="ctr"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary-dir", type=Path, required=True)
-    parser.add_argument("--scenario", choices=["recovery", "recovery-fec", "recovery-arq", "contribution-backup", "contribution-broadcast", "device", "device-impaired"], required=True)
+    parser.add_argument("--scenario", choices=["recovery", "recovery-fec", "recovery-arq", "recovery-matrix-always", "recovery-arqfirst", "contribution-backup", "contribution-broadcast", "device", "device-impaired"], required=True)
     parser.add_argument("--crypto", choices=["ctr", "gcm"], default="ctr")
     arguments = parser.parse_args()
     run(arguments.binary_dir.resolve(), arguments.scenario, arguments.crypto)

@@ -3,6 +3,7 @@
 // A deliberately small public-API live bridge. No private wire framing is added:
 // one complete UDP datagram is one SRT Message and one output UDP datagram.
 #include <srt/srt.h>
+#include "demo_fec.hpp"
 
 #include <array>
 #include <cerrno>
@@ -152,6 +153,7 @@ struct Configuration {
     bool sender = false;
     bool listener = false;
     bool rendezvous = false;
+    bool arq_first = false;
     std::string udp_host = "127.0.0.1";
     std::string srt_host;
     std::string srt_bind_host;
@@ -169,6 +171,7 @@ struct Configuration {
     int input_idle_ms = 2000;
     std::string passphrase_env;
     std::string stream_id;
+    std::string packet_filter;
 };
 
 void usage()
@@ -209,6 +212,8 @@ void usage()
            "(default 2000)\n"
         << "  --passphrase-env VAR AES-CTR, 256-bit key; read passphrase from "
            "VAR\n"
+        << srt_demo::arq_first_help
+        << "  --packet-filter CONFIG  Request/configure a FEC filter\n"
         << "Payload: raw MPEG-TS, 1..7 aligned 188-byte packets per UDP "
            "datagram.\n"
         << "Start the UDP source after CONNECTED. Ctrl+C stops the bridge.\n"
@@ -243,6 +248,10 @@ void usage()
     bool ttl_explicit = false;
     for (int i = 2; i < argc; ++i) {
         const std::string_view option {argv[i]};
+        if (option == "--arq-first") {
+            c.arq_first = true;
+            continue;
+        }
         if (++i == argc) {
             throw std::runtime_error(
                 "missing value for " + std::string {option});
@@ -302,6 +311,8 @@ void usage()
             c.passphrase_env = value;
         } else if (option == "--stream-id") {
             c.stream_id = value;
+        } else if (option == "--packet-filter") {
+            c.packet_filter = value;
         } else {
             throw std::runtime_error("unknown option: " + std::string {option});
         }
@@ -309,6 +320,11 @@ void usage()
     if (c.udp_port == 0 || c.srt_port == 0) {
         throw std::runtime_error("--udp-port and --srt-port are required");
     }
+    if (c.arq_first && (!c.sender || c.rendezvous))
+        throw std::runtime_error(
+            "--arq-first requires send with Caller/Listener");
+    if (c.arq_first && c.packet_filter.empty())
+        c.packet_filter = srt_demo::matrix_filter;
     in_addr udp_ip {};
     const bool multicast = inet_pton(AF_INET, c.udp_host.c_str(), &udp_ip) == 1
         && (ntohl(udp_ip.s_addr) & 0xf0000000U) == 0xe0000000U;
@@ -376,6 +392,14 @@ void configure(SRTSOCKET socket, const Configuration& c)
     option(socket, SRTO_PEERIDLETIMEO, c.peer_idle_timeout_ms);
     option(socket, SRTO_SNDTIMEO, 1000);
     option(socket, SRTO_RCVTIMEO, 250);
+    if (!c.packet_filter.empty()) {
+        if (srt_setsockflag(socket, SRTO_PACKETFILTER, c.packet_filter.data(),
+                static_cast<int>(c.packet_filter.size()))
+            == SRT_ERROR)
+            srt_error("FEC filter");
+    }
+    if (c.arq_first)
+        srt_demo::configure_arq_first(socket);
     if (!c.stream_id.empty()
         && srt_setsockflag(socket, SRTO_STREAMID, c.stream_id.data(),
                static_cast<int>(c.stream_id.size()))
@@ -551,7 +575,8 @@ void relay(SRTSOCKET srt, const Configuration& c, ConnectionHistory& history,
     bool received_input = false;
     ++history.generation;
     std::cout << "CONNECTED direction=" << (sender ? "UDP->SRT" : "SRT->UDP")
-              << " generation=" << history.generation;
+              << " generation=" << history.generation
+              << " arq_first=" << (c.arq_first ? "on" : "off");
     if (history.disconnected) {
         std::cout << " recovery_ms="
                   << std::chrono::duration_cast<std::chrono::milliseconds>(

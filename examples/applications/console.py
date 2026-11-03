@@ -27,7 +27,9 @@ from process_support import Process, ports
 ROOT = Path(__file__).resolve().parent
 FILTERS = {"arq": "", "row": "fec,cols:4,rows:1,arq:never",
            "column": "fec,cols:4,rows:-4,layout:even,arq:never",
-           "matrix": "fec,cols:4,rows:4,layout:even,arq:onreq"}
+           "matrix": "fec,cols:4,rows:4,layout:even,arq:onreq",
+           **{"matrix-" + mode: "fec,cols:8,rows:8,layout:even,arq:always"
+              for mode in ("always", "arqfirst")}}
 
 
 def configuration(data):
@@ -212,7 +214,8 @@ class Job:
             receiver = self.spawn("receiver", [self.binary("recovery"), "receive", "--endpoint", f"127.0.0.1:{base}", *common])
             receiver.ready()
             self.proxy("relay", base + 1, base)
-            sender = self.spawn("sender", [self.binary("recovery"), "send", "--endpoint", f"127.0.0.1:{base + 1}", *common])
+            sender_options = ["--arq-first"] if config["filter"] == "matrix-arqfirst" else []
+            sender = self.spawn("sender", [self.binary("recovery"), "send", "--endpoint", f"127.0.0.1:{base + 1}", *common, *sender_options])
         self.state = "running"
         self.wait(sender, config["duration"] + 15)
         self.wait(receiver, config["duration"] + 15)

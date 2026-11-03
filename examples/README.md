@@ -191,6 +191,35 @@ proves option negotiation and ordinary payload exchange; controlled loss and
 recovery qualification belongs in a network test harness. See the
 [packet-filter guide](../docs/packet-filter.md).
 
+### ARQ-first FEC
+
+Live Caller/Listener connections can select the new sender policy with one
+option (development builds containing the feature):
+
+```sh
+./build-examples/robotweax_srt_message_demo listener --port 9000
+```
+
+```sh
+./build-examples/robotweax_srt_message_demo caller --port 9000 \
+  --message "hello with ARQ-first FEC" --arq-first
+```
+
+`--arq-first` selects ARQ-first FEC and supplies a Matrix 8×8 even
+`arq:always` filter. `--packet-filter` can override that geometry with a
+compatible matrix filter. The listener needs no additional option to receive
+the stream. Because the listener echoes, it can also select its own sender
+policy with `--arq-first`; in that case its Caller must request the matching
+filter with `--packet-filter 'fec,cols:8,rows:8,layout:even,arq:always'`.
+A Listener does not force an unrequested filter onto its Caller.
+The switch is rejected for Rendezvous, Sensor and
+Control roles. Existing invocations without it retain their defaults. The
+same switch is available on the [UDP-to-SRT bridge sender](../docs/udp-srt-bridge.md#arq-first-fec).
+
+This short echo demo shows configuration and payload exchange. For sustained
+traffic, injected loss, comparison results and the graphical selector, use
+the [Recovery application](applications/README.md#2-recovery-comparison).
+
 ## File/Stream API demo
 
 `robotweax_srt_file_demo` transfers one file per connection in File mode. It
