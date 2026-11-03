@@ -294,7 +294,8 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         fec_policy_ = static_cast<FecPolicy>(value);
         return Error::none;
     case SocketOption::sender_tail_probe:
-        if (!is_boolean(value)) return Error::invalid_state;
+        if (!is_boolean(value))
+            return Error::invalid_state;
         if (value != 0 && fec_policy_ != FecPolicy::arqfirst)
             return Error::invalid_state;
         sender_tail_probe_ = value != 0;

@@ -465,8 +465,8 @@ Error ReliabilitySession::apply_dynamic_options(const SocketOptions& options) no
     // SocketOptions::set already restricted the probe to fec_policy =
     // arqfirst. A disabled probe clears its clock so nothing stays due.
     fec_policy_ = options.fec_policy();
-    tail_probe_enabled_ = options.sender_tail_probe()
-        && fec_policy_ == FecPolicy::arqfirst;
+    tail_probe_enabled_ =
+        options.sender_tail_probe() && fec_policy_ == FecPolicy::arqfirst;
     if (!tail_probe_enabled_) {
         tail_probe_ = {};
     }
@@ -2323,7 +2323,8 @@ void ReliabilitySession::note_data_packet_sent(
     }
 }
 
-bool ReliabilitySession::poll_tail_probe(std::uint64_t now_microseconds) noexcept
+bool ReliabilitySession::poll_tail_probe(
+    std::uint64_t now_microseconds) noexcept
 {
     if (!tail_probe_enabled_ || !tail_probe_.due.has_value()
         || now_microseconds < *tail_probe_.due) {
@@ -2344,7 +2345,7 @@ bool ReliabilitySession::poll_tail_probe(std::uint64_t now_microseconds) noexcep
     }
     tail_probe_.due = tail_probe_.entries < parity::probe_limit
         ? std::optional<std::uint64_t> {now_microseconds
-            + parity::probe_interval(rtt_.smoothed_microseconds())}
+              + parity::probe_interval(rtt_.smoothed_microseconds())}
         : std::nullopt;
     return fire;
 }

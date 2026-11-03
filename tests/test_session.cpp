@@ -6808,8 +6808,8 @@ std::array<std::byte, stage_a_payload_bytes> stage_a_payload(
     std::array<std::byte, stage_a_payload_bytes> bytes {};
     std::memcpy(bytes.data(), &index, sizeof index);
     for (std::size_t offset = sizeof index; offset < bytes.size(); ++offset) {
-        bytes[offset] = static_cast<std::byte>(
-            (offset * 7U + index * 13U) & 0xffU);
+        bytes[offset] =
+            static_cast<std::byte>((offset * 7U + index * 13U) & 0xffU);
     }
     return bytes;
 }
@@ -6876,16 +6876,16 @@ StageAStream run_stage_a_live_stream(const SocketOptions& options)
                 action.kind == ReliabilityActionKind::loss_report
                     && action.loss_range_count != 0U
                 ? std::span<const SequenceRange> {actions.loss_range_storage}
-                      .subspan(action.loss_range_offset,
-                          action.loss_range_count)
+                      .subspan(
+                          action.loss_range_offset, action.loss_range_count)
                 : std::span<const SequenceRange> {};
             const auto encoded = ranges.empty()
-                ? encode_reliability_action(action, PacketTimestamp {
-                    static_cast<std::uint32_t>(now)}, from_sender ? 900U : 800U,
-                    storage)
-                : encode_reliability_action(action, ranges, PacketTimestamp {
-                    static_cast<std::uint32_t>(now)}, from_sender ? 900U : 800U,
-                    storage);
+                ? encode_reliability_action(action,
+                      PacketTimestamp {static_cast<std::uint32_t>(now)},
+                      from_sender ? 900U : 800U, storage)
+                : encode_reliability_action(action, ranges,
+                      PacketTimestamp {static_cast<std::uint32_t>(now)},
+                      from_sender ? 900U : 800U, storage);
             REQUIRE(encoded);
             const std::span<const std::byte> bytes =
                 std::span {storage}.first(encoded.bytes_written);
@@ -6926,8 +6926,8 @@ StageAStream run_stage_a_live_stream(const SocketOptions& options)
         if (!packet.header.retransmitted && stage_a_lost_original(index)) {
             return;
         }
-        to_receiver.push_back({now + stage_a_one_way_microseconds,
-            {bytes.begin(), bytes.end()}});
+        to_receiver.push_back(
+            {now + stage_a_one_way_microseconds, {bytes.begin(), bytes.end()}});
     };
     const auto deliver = [&](std::deque<StageAWireEvent>& queue,
                              ReliabilitySession& session, std::uint64_t now,
@@ -6967,8 +6967,7 @@ StageAStream run_stage_a_live_stream(const SocketOptions& options)
             REQUIRE(packet->header.retransmitted);
             send_data(*packet, now);
         }
-        if (offered < stage_a_population
-            && now == 1'000ULL * (offered + 1U)) {
+        if (offered < stage_a_population && now == 1'000ULL * (offered + 1U)) {
             const auto payload = stage_a_payload(offered);
             REQUIRE_EQ(sender.queue_message(payload,
                            PacketTimestamp {static_cast<std::uint32_t>(now)}),
@@ -6976,8 +6975,8 @@ StageAStream run_stage_a_live_stream(const SocketOptions& options)
             const auto packet = sender.next_data_packet(now);
             REQUIRE(packet.has_value());
             REQUIRE(!packet->header.retransmitted);
-            REQUIRE_EQ(packet->header.sequence,
-                SequenceNumber {10}.advanced(offered));
+            REQUIRE_EQ(
+                packet->header.sequence, SequenceNumber {10}.advanced(offered));
             send_data(*packet, now);
             ++offered;
         }
@@ -7015,16 +7014,18 @@ void stage_a_feed_acknowledgement(ReliabilitySession& sender,
     std::array<std::byte, 64> storage {};
     const ReliabilityAction action {
         .kind = ReliabilityActionKind::acknowledgement,
-        .acknowledgement = {
-            .kind = AcknowledgementKind::full,
-            .acknowledgement_number = number,
-            .next_sequence = next_sequence,
-            .round_trip_time_microseconds = rtt,
-            .round_trip_time_variance_microseconds = rtt_variance,
-            .available_receive_buffer_packets = 1'000,
-        },
+        .acknowledgement =
+            {
+                .kind = AcknowledgementKind::full,
+                .acknowledgement_number = number,
+                .next_sequence = next_sequence,
+                .round_trip_time_microseconds = rtt,
+                .round_trip_time_variance_microseconds = rtt_variance,
+                .available_receive_buffer_packets = 1'000,
+            },
     };
-    const auto received = sender.receive(encode_and_decode(action, storage), now);
+    const auto received =
+        sender.receive(encode_and_decode(action, storage), now);
     REQUIRE(received);
 }
 
@@ -7036,7 +7037,8 @@ void stage_a_feed_loss_report(
         .kind = ReliabilityActionKind::loss_report,
         .loss = {sequence, sequence},
     };
-    const auto received = sender.receive(encode_and_decode(action, storage), now);
+    const auto received =
+        sender.receive(encode_and_decode(action, storage), now);
     REQUIRE(received);
 }
 
@@ -7149,7 +7151,8 @@ TEST(stage_a_tail_probe_clock_follows_the_contract_rules)
     // interval is capped at 120 ms.
     send_original(1'000);
     send_original(2'000);
-    REQUIRE_EQ(sender.tail_probe_idle_since(), std::optional<std::uint64_t> {2'000});
+    REQUIRE_EQ(
+        sender.tail_probe_idle_since(), std::optional<std::uint64_t> {2'000});
     due(122'000);
     REQUIRE_EQ(sender.tail_probe_due_entries(), 0U);
     REQUIRE(!sender.poll_tail_probe(121'999));
@@ -7171,7 +7174,8 @@ TEST(stage_a_tail_probe_clock_follows_the_contract_rules)
     REQUIRE(sender.rtt().has_sample());
     REQUIRE_EQ(sender.rtt().smoothed_microseconds(), 20'000U);
     REQUIRE(sender.parity_withheld(130'000));
-    REQUIRE_EQ(sender.tail_probe_idle_since(), std::optional<std::uint64_t> {2'000});
+    REQUIRE_EQ(
+        sender.tail_probe_idle_since(), std::optional<std::uint64_t> {2'000});
     due(242'000);
     REQUIRE_EQ(sender.tail_probe_due_entries(), 1U);
 
@@ -7195,13 +7199,15 @@ TEST(stage_a_tail_probe_clock_follows_the_contract_rules)
     }
     // The probe submission did not move the idle reference; the next due
     // time is the fire time plus probe_interval(20 ms) = 40 ms.
-    REQUIRE_EQ(sender.tail_probe_idle_since(), std::optional<std::uint64_t> {2'000});
+    REQUIRE_EQ(
+        sender.tail_probe_idle_since(), std::optional<std::uint64_t> {2'000});
     due(282'000);
 
     // A NAK-driven retransmission does not touch the clock either.
     stage_a_feed_loss_report(sender, first, 250'000);
     REQUIRE_EQ(drain(250'000), (std::vector<std::uint32_t> {10}));
-    REQUIRE_EQ(sender.tail_probe_idle_since(), std::optional<std::uint64_t> {2'000});
+    REQUIRE_EQ(
+        sender.tail_probe_idle_since(), std::optional<std::uint64_t> {2'000});
     due(282'000);
     REQUIRE_EQ(sender.tail_probe_due_entries(), 2U);
 
@@ -7228,8 +7234,8 @@ TEST(stage_a_tail_probe_clock_follows_the_contract_rules)
     // Rule 2: an ACK that empties the buffer suppresses the due times of this
     // period; the chain still continues past each suppressed due time and
     // still ends after three entries. The idle reference is untouched.
-    stage_a_feed_acknowledgement(
-        sender, sender.send_buffer().next_sequence(), 20'000, 2'000, 2, 510'000);
+    stage_a_feed_acknowledgement(sender, sender.send_buffer().next_sequence(),
+        20'000, 2'000, 2, 510'000);
     REQUIRE_EQ(sender.send_buffer().packets_in_flight(), 0U);
     REQUIRE_EQ(
         sender.tail_probe_idle_since(), std::optional<std::uint64_t> {500'000});
@@ -7251,8 +7257,8 @@ TEST(stage_a_tail_probe_clock_follows_the_contract_rules)
     // 2 + 2*60 + 4*5 + 20 + 5 = 167 ms >= 120 ms, so parity is emitted and
     // the probe is not armed although a packet is in flight. The interval
     // is capped at 120 ms. Once the estimate drops, the same period arms.
-    stage_a_feed_acknowledgement(
-        sender, sender.send_buffer().next_sequence(), 60'000, 5'000, 3, 650'000);
+    stage_a_feed_acknowledgement(sender, sender.send_buffer().next_sequence(),
+        60'000, 5'000, 3, 650'000);
     REQUIRE(!sender.parity_withheld(650'000));
     send_original(700'000);
     due(820'000);
@@ -7261,8 +7267,8 @@ TEST(stage_a_tail_probe_clock_follows_the_contract_rules)
     REQUIRE_EQ(sender.tail_probe_due_entries(), 1U);
     REQUIRE(!sender.has_pending_retransmission());
     due(940'000);
-    stage_a_feed_acknowledgement(sender, first.advanced(offered - 1U), 20'000,
-        2'000, 4, 850'000);
+    stage_a_feed_acknowledgement(
+        sender, first.advanced(offered - 1U), 20'000, 2'000, 4, 850'000);
     REQUIRE(sender.parity_withheld(850'000));
     due(940'000);
     REQUIRE(sender.poll_tail_probe(940'000));
@@ -7306,7 +7312,8 @@ TEST(stage_a_tail_probe_is_inert_without_the_options)
                 .receive_tsbpd = true,
                 .periodic_nak = true,
                 .retransmit_flag = true,
-                .receive_delay_milliseconds = stage_a_receive_delay_milliseconds,
+                .receive_delay_milliseconds =
+                    stage_a_receive_delay_milliseconds,
                 .peer_receive_delay_milliseconds =
                     stage_a_receive_delay_milliseconds,
                 .peer_periodic_nak = true,

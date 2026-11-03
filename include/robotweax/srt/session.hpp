@@ -526,15 +526,18 @@ public:
     // probe). Only a submitted non-retransmitted original resets the tail
     // probe idle reference; ACK, NAK, retransmission and probe submissions
     // leave it alone.
-    void note_data_packet_sent(std::uint64_t now_microseconds,
-        bool retransmitted = false) noexcept;
+    void note_data_packet_sent(
+        std::uint64_t now_microseconds, bool retransmitted = false) noexcept;
 
     // ARQ-first FEC and the tail loss probe (sender side, both off by
     // default). The policy inputs come from this session's RTT estimator and
     // the negotiated peer receive delay; the runtime evaluates
     // parity::decide(parity::Mode::deadline_only, ...) with them before it
     // submits a ready repair packet.
-    [[nodiscard]] FecPolicy fec_policy() const noexcept { return fec_policy_; }
+    [[nodiscard]] FecPolicy fec_policy() const noexcept
+    {
+        return fec_policy_;
+    }
     [[nodiscard]] bool tail_probe_enabled() const noexcept
     {
         return tail_probe_enabled_;
@@ -547,13 +550,16 @@ public:
             .rtt_known = rtt_.has_sample(),
             .srtt_us = rtt_.smoothed_microseconds(),
             .rttvar_us = rtt_.variation_microseconds(),
+            .last_nak_us = std::nullopt,
+            .last_burst_us = std::nullopt,
         };
     }
     [[nodiscard]] parity::Constants parity_constants() const noexcept
     {
         parity::Constants constants;
-        constants.latency_us = static_cast<std::uint64_t>(
-                                   live_options_.peer_receive_delay_milliseconds)
+        constants.latency_us =
+            static_cast<std::uint64_t>(
+                live_options_.peer_receive_delay_milliseconds)
             * 1'000ULL;
         return constants;
     }
@@ -565,7 +571,7 @@ public:
         return fec_policy_ == FecPolicy::arqfirst
             && parity::decide(parity::Mode::deadline_only,
                    parity_inputs(now_microseconds), parity_constants())
-                == parity::Level::none;
+            == parity::Level::none;
     }
     // Sender tick for the tail loss probe. At a due time it writes one
     // entry and fires only while parity is withheld and packets are in

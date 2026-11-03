@@ -15,7 +15,12 @@
 
 namespace robotweax::srt::parity {
 
-enum class Mode : std::uint8_t { fixed, adaptive, deadline_only, evidence_only };
+enum class Mode : std::uint8_t {
+    fixed,
+    adaptive,
+    deadline_only,
+    evidence_only
+};
 enum class Level : std::uint8_t { full, row_only, none };
 enum class Kind : std::uint8_t { row, column };
 
@@ -53,7 +58,8 @@ struct Inputs {
 [[nodiscard]] inline bool arq_meets_deadline(
     const Inputs& in, const Constants& c) noexcept
 {
-    if (!in.rtt_known) return false;
+    if (!in.rtt_known)
+        return false;
     const std::uint64_t bound = c.detect_us + 2ULL * in.srtt_us
         + 4ULL * in.rttvar_us + c.nak_interval_us + c.guard_us;
     return bound < c.latency_us;
@@ -62,22 +68,30 @@ struct Inputs {
 [[nodiscard]] inline Level decide(
     Mode mode, const Inputs& in, const Constants& c) noexcept
 {
-    if (mode == Mode::fixed) return Level::full;
-    if (mode != Mode::evidence_only && arq_meets_deadline(in, c)) return Level::none;
-    if (mode == Mode::deadline_only) return Level::full;
+    if (mode == Mode::fixed)
+        return Level::full;
+    if (mode != Mode::evidence_only && arq_meets_deadline(in, c))
+        return Level::none;
+    if (mode == Mode::deadline_only)
+        return Level::full;
     // Where ARQ cannot meet the deadline, never remove all protection: the
     // floor is row parity, which repairs one isolated loss per row.
-    if (!in.rtt_known) return Level::full;
-    if (in.last_nak_us && in.now_us < *in.last_nak_us) return Level::full;
+    if (!in.rtt_known)
+        return Level::full;
+    if (in.last_nak_us && in.now_us < *in.last_nak_us)
+        return Level::full;
     const std::uint64_t since_nak = in.now_us - in.last_nak_us.value_or(0);
-    if (since_nak < c.clean_hold_us) return Level::full;
-    if (in.last_burst_us && in.now_us - *in.last_burst_us < c.burst_memory_us) return Level::full;
+    if (since_nak < c.clean_hold_us)
+        return Level::full;
+    if (in.last_burst_us && in.now_us - *in.last_burst_us < c.burst_memory_us)
+        return Level::full;
     return Level::row_only;
 }
 
 [[nodiscard]] inline bool emit(Level level, Kind kind) noexcept
 {
-    return level == Level::full || (level == Level::row_only && kind == Kind::row);
+    return level == Level::full
+        || (level == Level::row_only && kind == Kind::row);
 }
 
 // Tail loss probe idle interval: due when no original source has been
@@ -87,7 +101,8 @@ inline constexpr std::uint64_t probe_interval_floor_us = 10'000;
 inline constexpr std::uint64_t probe_interval_cap_us = 120'000;
 inline constexpr unsigned probe_limit = 3;
 
-[[nodiscard]] constexpr std::uint64_t probe_interval(std::uint32_t srtt_us) noexcept
+[[nodiscard]] constexpr std::uint64_t probe_interval(
+    std::uint32_t srtt_us) noexcept
 {
     const std::uint64_t doubled = 2ULL * srtt_us;
     const std::uint64_t floored =

@@ -154,7 +154,8 @@ TEST(parity_policy_deadline_test_matches_the_sealed_reader_table)
             + 4ULL * row.rttvar_us + c.nak_interval_us + c.guard_us;
         REQUIRE_EQ(bound, row.bound_us);
         REQUIRE_EQ(parity::arq_meets_deadline(in, c), row.meets_deadline);
-        REQUIRE_EQ(level_code(parity::decide(parity::Mode::deadline_only, in, c)),
+        REQUIRE_EQ(
+            level_code(parity::decide(parity::Mode::deadline_only, in, c)),
             row.deadline_only_level);
         REQUIRE_EQ(level_code(parity::decide(parity::Mode::fixed, in, c)),
             row.fixed_level);
@@ -191,6 +192,6 @@ TEST(parity_policy_emit_and_probe_interval_match_the_sealed_reader)
     REQUIRE_EQ(parity::probe_interval(5'000), parity::probe_interval_floor_us);
     REQUIRE_EQ(parity::probe_interval(60'000), parity::probe_interval_cap_us);
     REQUIRE_EQ(parity::probe_interval(100'000), parity::probe_interval_cap_us);
-    REQUIRE_EQ(parity::probe_interval(0xffff'ffffU),
-        parity::probe_interval_cap_us);
+    REQUIRE_EQ(
+        parity::probe_interval(0xffff'ffffU), parity::probe_interval_cap_us);
 }

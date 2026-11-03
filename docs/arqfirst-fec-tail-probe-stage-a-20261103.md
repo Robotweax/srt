@@ -273,3 +273,28 @@ Stage A is retained as passed.
   qualified by the study's evidence; the option documentation says so.
 - The ThreadSanitizer, shared-library, GCM-only and interoperability lanes
   of CI were not run here.
+
+## CI follow-up (3 November 2026, after the pull request opened)
+
+The first CI run of the pull request failed on two causes that the macOS
+host build had not shown:
+
+- GCC with `-Werror=missing-field-initializers` rejected the designated
+  initialization of `parity::Inputs` in
+  `ReliabilitySession::parity_inputs` (`include/robotweax/srt/session.hpp`),
+  because `last_nak_us` and `last_burst_us` were left to their defaults.
+  Both are now initialized explicitly to `std::nullopt`; the values are
+  unchanged, and `Mode::deadline_only` does not consult them.
+- The C++ format guard (`tools/clang_format.py check-changed`, clang-format
+  22.1.8) reported violations in the changed line ranges of eight files.
+  `tools/clang_format.py write-changed` reformatted those ranges only; no
+  unchanged line was touched and no code changed meaning.
+
+The other failing lanes were the same GCC error, or matrix siblings
+cancelled by `fail-fast`. After both fixes the Stage A commands of
+"Builds and commands" were rerun on the host in the normal and the
+ASan/UBSan build: every `stage_a_`, `parity_policy`, `fec_policy` and
+`send_buffer_tail_probe` case passed (`3/3 tests passed` for each group),
+the general partition and the three further CTest entries passed
+(`100% tests passed`), with no warning and no sanitizer report. The gate
+verdict above is unchanged.

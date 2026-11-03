@@ -775,8 +775,8 @@ TEST(fec_policy_and_tail_probe_default_off_and_change_no_other_option)
     // Values outside the enumerations are rejected without mutation.
     REQUIRE_EQ(options.set(SocketOption::fec_policy, 2), Error::invalid_state);
     REQUIRE_EQ(options.set(SocketOption::fec_policy, -1), Error::invalid_state);
-    REQUIRE_EQ(options.set(SocketOption::sender_tail_probe, 2),
-        Error::invalid_state);
+    REQUIRE_EQ(
+        options.set(SocketOption::sender_tail_probe, 2), Error::invalid_state);
     REQUIRE_EQ(options.fec_policy(), FecPolicy::arqfirst);
     REQUIRE(options.sender_tail_probe());
 
@@ -800,8 +800,8 @@ TEST(fec_policy_arqfirst_rejects_every_unsupported_combination)
             Error::invalid_state);
         REQUIRE_EQ(options.fec_policy(), FecPolicy::always);
         // The probe alone is never accepted either.
-        REQUIRE_EQ(
-            options.set(SocketOption::sender_tail_probe, 1), Error::invalid_state);
+        REQUIRE_EQ(options.set(SocketOption::sender_tail_probe, 1),
+            Error::invalid_state);
         REQUIRE(!options.sender_tail_probe());
         REQUIRE_EQ(snapshot_other_options(options), before);
     };
@@ -908,13 +908,14 @@ TEST(fec_policy_arqfirst_locks_the_accepted_bundle)
     REQUIRE_EQ(options.set_packet_filter("fec,cols:8,rows:8,arq:onreq"),
         Error::invalid_state);
     REQUIRE_EQ(options.set_packet_filter({}), Error::invalid_state);
-    REQUIRE_EQ(options.set_packet_filter("fec-sensor-v1,cols:4,rows:1,arq:never"),
+    REQUIRE_EQ(
+        options.set_packet_filter("fec-sensor-v1,cols:4,rows:1,arq:never"),
         Error::invalid_state);
     REQUIRE_EQ(snapshot_other_options(options), before);
     REQUIRE_EQ(options.packet_filter(), arqfirst_filter);
     // Another matrix arq:always geometry stays acceptable.
-    REQUIRE_EQ(options.set_packet_filter("fec,cols:4,rows:2,arq:always"),
-        Error::none);
+    REQUIRE_EQ(
+        options.set_packet_filter("fec,cols:4,rows:2,arq:always"), Error::none);
     REQUIRE_EQ(options.fec_policy(), FecPolicy::arqfirst);
     REQUIRE(options.sender_tail_probe());
     // Re-selecting live keeps the bundle and the options.

@@ -1370,7 +1370,8 @@ TEST(send_buffer_tail_probe_keeps_original_timestamp_and_marks_retransmission)
         REQUIRE_EQ(buffer.enqueue_message(input, index + 1U,
                        PacketTimestamp {1'000U * (index + 1U)}, 900),
             Error::none);
-        const auto original = buffer.next_packet(false, true, 1'000U * (index + 1U));
+        const auto original =
+            buffer.next_packet(false, true, 1'000U * (index + 1U));
         REQUIRE(original.has_value());
         REQUIRE(!original->header.retransmitted);
         buffer.note_packet_submitted(original->header.sequence);
