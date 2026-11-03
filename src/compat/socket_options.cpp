@@ -1302,7 +1302,9 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                 && (is_experimental_congestion_controller(
                         socket.native_options.congestion_controller())
                     || socket.native_options.packet_filter_configuration()
-                        .experimental()))) {
+                        .experimental()
+                    || socket.native_options.fec_policy()
+                        == FecPolicy::arqfirst))) {
             return invalid_parameter();
         }
         options.group_connect = parsed;

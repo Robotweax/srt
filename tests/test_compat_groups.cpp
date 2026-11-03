@@ -971,6 +971,65 @@ TEST(compat_group_rejects_arqfirst_fec_and_tail_probe)
     REQUIRE_EQ(srt_close(group), 0);
 }
 
+TEST(compat_group_connect_rejects_arqfirst_in_either_setting_order)
+{
+    const char* filter = "fec,cols:8,rows:8,layout:even,arq:always";
+    const std::int32_t policy = ROBOTWEAX_SRT_FECPOLICY_ARQFIRST;
+    const bool enabled = true;
+    for (const bool group_first : {false, true}) {
+        for (const bool probe : {false, true}) {
+            const SRTSOCKET socket = srt_create_socket();
+            REQUIRE(socket != SRT_INVALID_SOCK);
+            REQUIRE_EQ(srt_setsockflag(socket, SRTO_PACKETFILTER, filter,
+                           static_cast<int>(std::strlen(filter))),
+                0);
+            if (group_first) {
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_GROUPCONNECT, &enabled,
+                               sizeof(enabled)),
+                    0);
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_FECPOLICY,
+                               &policy, sizeof(policy)),
+                    SRT_ERROR);
+                REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_TAILPROBE,
+                               &enabled, sizeof(enabled)),
+                    SRT_ERROR);
+                REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+            } else {
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_FECPOLICY,
+                               &policy, sizeof(policy)),
+                    0);
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_TAILPROBE,
+                               &probe, sizeof(probe)),
+                    0);
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_GROUPCONNECT, &enabled,
+                               sizeof(enabled)),
+                    SRT_ERROR);
+                REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+            }
+            bool grouped = !group_first;
+            int size = sizeof(grouped);
+            REQUIRE_EQ(
+                srt_getsockflag(socket, SRTO_GROUPCONNECT, &grouped, &size), 0);
+            REQUIRE_EQ(grouped, group_first);
+            std::int32_t actual_policy = -1;
+            size = sizeof(actual_policy);
+            REQUIRE_EQ(srt_getsockflag(socket, SRTO_ROBOTWEAX_FECPOLICY,
+                           &actual_policy, &size),
+                0);
+            REQUIRE_EQ(actual_policy,
+                group_first ? ROBOTWEAX_SRT_FECPOLICY_ALWAYS : policy);
+            bool actual_probe = !probe;
+            size = sizeof(actual_probe);
+            REQUIRE_EQ(srt_getsockflag(socket, SRTO_ROBOTWEAX_TAILPROBE,
+                           &actual_probe, &size),
+                0);
+            REQUIRE_EQ(actual_probe, !group_first && probe);
+            REQUIRE_EQ(srt_close(socket), 0);
+        }
+    }
+}
+
 TEST(compat_group_network_options_are_preconnect_member_defaults)
 {
     const SRTSOCKET group = srt_create_group(SRT_GTYPE_BROADCAST);
