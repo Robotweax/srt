@@ -5,6 +5,7 @@
 #include "robotweax/srt/file.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
 #include "robotweax/srt/live.hpp"
+#include "robotweax/srt/parity_policy.hpp"
 #include "robotweax/srt/receive_buffer.hpp"
 #include "robotweax/srt/rtt.hpp"
 #include "robotweax/srt/send_buffer.hpp"
@@ -521,8 +522,81 @@ public:
         send_buffer_.note_packet_submitted(sequence);
     }
 
-    void note_data_packet_sent(
-        std::uint64_t now_microseconds) noexcept;
+    // `retransmitted` marks a repeated DATA packet (NAK-driven or tail loss
+    // probe). Only a submitted non-retransmitted original resets the tail
+    // probe idle reference; ACK, NAK, retransmission and probe submissions
+    // leave it alone.
+    void note_data_packet_sent(std::uint64_t now_microseconds,
+        bool retransmitted = false) noexcept;
+
+    // ARQ-first FEC and the tail loss probe (sender side, both off by
+    // default). The policy inputs come from this session's RTT estimator and
+    // the negotiated peer receive delay; the runtime evaluates
+    // parity::decide(parity::Mode::deadline_only, ...) with them before it
+    // submits a ready repair packet.
+    [[nodiscard]] FecPolicy fec_policy() const noexcept { return fec_policy_; }
+    [[nodiscard]] bool tail_probe_enabled() const noexcept
+    {
+        return tail_probe_enabled_;
+    }
+    [[nodiscard]] parity::Inputs parity_inputs(
+        std::uint64_t now_microseconds) const noexcept
+    {
+        return {
+            .now_us = now_microseconds,
+            .rtt_known = rtt_.has_sample(),
+            .srtt_us = rtt_.smoothed_microseconds(),
+            .rttvar_us = rtt_.variation_microseconds(),
+        };
+    }
+    [[nodiscard]] parity::Constants parity_constants() const noexcept
+    {
+        parity::Constants constants;
+        constants.latency_us = static_cast<std::uint64_t>(
+                                   live_options_.peer_receive_delay_milliseconds)
+            * 1'000ULL;
+        return constants;
+    }
+    // True while fec_policy is arqfirst and the deadline test withholds
+    // parity at `now`; this is the tail probe's arming condition (rule 1).
+    [[nodiscard]] bool parity_withheld(
+        std::uint64_t now_microseconds) const noexcept
+    {
+        return fec_policy_ == FecPolicy::arqfirst
+            && parity::decide(parity::Mode::deadline_only,
+                   parity_inputs(now_microseconds), parity_constants())
+                == parity::Level::none;
+    }
+    // Sender tick for the tail loss probe. At a due time it writes one
+    // entry and fires only while parity is withheld and packets are in
+    // flight, through SendBuffer::request_retransmission_of_last_sent(); the
+    // probe then leaves via the ordinary retransmission drain. Returns true
+    // when a probe was queued. No other path may call that primitive.
+    [[nodiscard]] bool poll_tail_probe(std::uint64_t now_microseconds) noexcept;
+    [[nodiscard]] std::optional<std::uint64_t>
+    next_tail_probe_due() const noexcept
+    {
+        return tail_probe_enabled_ ? tail_probe_.due : std::nullopt;
+    }
+    [[nodiscard]] std::optional<std::uint64_t>
+    tail_probe_idle_since() const noexcept
+    {
+        return tail_probe_.idle;
+    }
+    // Due entries and fired probes of the current idle period, and the
+    // total number of probes this session has queued.
+    [[nodiscard]] unsigned tail_probe_due_entries() const noexcept
+    {
+        return tail_probe_.entries;
+    }
+    [[nodiscard]] unsigned tail_probes_fired() const noexcept
+    {
+        return tail_probe_.fired;
+    }
+    [[nodiscard]] std::uint64_t tail_probes_fired_total() const noexcept
+    {
+        return tail_probes_fired_total_;
+    }
     // Produce a full ACK for bytes that an owning transport layer has already
     // copied into bounded staging storage but cannot yet publish to the
     // receive buffer. Sharing the regular ACK number/tracker keeps ACKACK and
@@ -667,6 +741,19 @@ private:
     bool efficient_retransmission_ = false;
     bool peer_periodic_nak_ = false;
     bool drift_tracer_enabled_ = true;
+    // Mirrors the component study's ProbeClock: idle reference (submission
+    // time of the last original), next due time, and the entries and fired
+    // probes of the current idle period (at most parity::probe_limit).
+    struct TailProbeClock {
+        std::optional<std::uint64_t> idle;
+        std::optional<std::uint64_t> due;
+        unsigned entries = 0;
+        unsigned fired = 0;
+    };
+    FecPolicy fec_policy_ = FecPolicy::always;
+    bool tail_probe_enabled_ = false;
+    TailProbeClock tail_probe_ {};
+    std::uint64_t tail_probes_fired_total_ = 0;
     PacketFilterPolicy packet_filter_policy_{};
     std::uint64_t next_sensor_retirement_repeat_microseconds_ = 0;
     // Expired contiguous prefix detached from the payload ring. Constant

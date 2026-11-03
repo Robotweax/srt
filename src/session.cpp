@@ -461,6 +461,15 @@ void ReliabilitySession::configure_file(bool message_api,
 
 Error ReliabilitySession::apply_dynamic_options(const SocketOptions& options) noexcept
 {
+    // Sender-local ARQ-first FEC and tail loss probe. Both default to off;
+    // SocketOptions::set already restricted the probe to fec_policy =
+    // arqfirst. A disabled probe clears its clock so nothing stays due.
+    fec_policy_ = options.fec_policy();
+    tail_probe_enabled_ = options.sender_tail_probe()
+        && fec_policy_ == FecPolicy::arqfirst;
+    if (!tail_probe_enabled_) {
+        tail_probe_ = {};
+    }
     const auto maximum_reorder_tolerance = options.get(
         SocketOption::maximum_reorder_tolerance_packets);
     if (!maximum_reorder_tolerance) {
@@ -2299,10 +2308,45 @@ ReliabilityActions ReliabilitySession::flush_acknowledgement(
 }
 
 void ReliabilitySession::note_data_packet_sent(
-    std::uint64_t now_microseconds) noexcept
+    std::uint64_t now_microseconds, bool retransmitted) noexcept
 {
     timer_scheduler_.on_packet_sent(now_microseconds);
     sender_retransmission_timer_.on_data_packet_sent(now_microseconds);
+    if (tail_probe_enabled_ && !retransmitted) {
+        // Rule 4: a submitted original starts a new idle period. The first
+        // due time is idle_since + probe_interval(srtt at idle_since).
+        tail_probe_.idle = now_microseconds;
+        tail_probe_.due = now_microseconds
+            + parity::probe_interval(rtt_.smoothed_microseconds());
+        tail_probe_.entries = 0;
+        tail_probe_.fired = 0;
+    }
+}
+
+bool ReliabilitySession::poll_tail_probe(std::uint64_t now_microseconds) noexcept
+{
+    if (!tail_probe_enabled_ || !tail_probe_.due.has_value()
+        || now_microseconds < *tail_probe_.due) {
+        return false;
+    }
+    // Rule 1: armed only while the deadline test withholds parity. Rule 2:
+    // fires only while the send buffer still holds unacknowledged packets.
+    const bool armed = parity_withheld(now_microseconds);
+    const bool fire = armed && send_buffer_.packets_in_flight() != 0U
+        && send_buffer_.request_retransmission_of_last_sent();
+    // Rules 4 and 5: exactly one entry per due time, fired or suppressed; the
+    // chain continues from this evaluation time with the current estimate
+    // and ends after probe_limit entries. Only a new original resets it.
+    ++tail_probe_.entries;
+    if (fire) {
+        ++tail_probe_.fired;
+        ++tail_probes_fired_total_;
+    }
+    tail_probe_.due = tail_probe_.entries < parity::probe_limit
+        ? std::optional<std::uint64_t> {now_microseconds
+            + parity::probe_interval(rtt_.smoothed_microseconds())}
+        : std::nullopt;
+    return fire;
 }
 
 bool ReliabilitySession::poll_sender_retransmission_timeout(

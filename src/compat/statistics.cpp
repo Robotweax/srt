@@ -208,6 +208,16 @@ void RuntimeStatisticsState::note_receiver_belated(
     }
 }
 
+void RuntimeStatisticsState::note_parity_withheld() noexcept
+{
+    increment(&StatisticsCounters::parity_withheld);
+}
+
+void RuntimeStatisticsState::note_tail_probe_sent() noexcept
+{
+    increment(&StatisticsCounters::tail_probes_sent);
+}
+
 void RuntimeStatisticsState::note_sender_filter_extra(
     std::size_t payload_bytes) noexcept
 {

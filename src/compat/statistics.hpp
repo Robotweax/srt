@@ -60,6 +60,12 @@ struct StatisticsCounters {
     // acknowledgement after the bounded overrun was exhausted.
     std::uint64_t sender_key_refresh_overrun_positions = 0;
     std::uint64_t sender_key_pause_microseconds = 0;
+    // ARQ-first FEC: ready repair packets consumed without submission
+    // because a retransmission could still meet the latency window, and tail
+    // loss probes the sender's probe clock queued for the retransmission
+    // drain. Robotweax extension counters; SRT_TRACEBSTATS is unchanged.
+    std::uint64_t parity_withheld = 0;
+    std::uint64_t tail_probes_sent = 0;
 };
 
 struct BufferStatisticsSample {
@@ -158,6 +164,8 @@ public:
         std::uint64_t now_microseconds, bool sender_buffer_nonempty) noexcept;
     void note_key_refresh_overrun(std::uint64_t positions) noexcept;
     void update_key_pause(std::uint64_t now_microseconds, bool paused) noexcept;
+    void note_parity_withheld() noexcept;
+    void note_tail_probe_sent() noexcept;
     void sample_buffers(
         std::uint64_t now_microseconds,
         BufferStatisticsSample sample) noexcept;
