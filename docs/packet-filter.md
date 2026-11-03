@@ -168,10 +168,10 @@ With the default `SRTO_ROBOTWEAX_FECPOLICY=ALWAYS` every ready repair packet
 is sent. `ARQFIRST` withholds a ready repair packet while two ARQ rounds still
 fit the negotiated latency window and may add the sender tail loss probe
 (`SRTO_ROBOTWEAX_TAILPROBE`). Both are sender-local: the filter string, the
-HSv5 negotiation and the wire format above are unchanged, and a receiver at
-any version needs nothing. Only a 120 ms negotiated delay with a matrix
-`arq:always` geometry is qualified by evidence. See
-[Socket options](socket-options.md#arq-first-fec-and-the-tail-loss-probe-opt-in-sender-local).
+HSv5 negotiation and the wire format above are unchanged. A receiver that
+supports the negotiated matrix FEC filter needs no additional feature. See
+[ARQ-first FEC and tail loss probes](arq-first-fec.md) for configuration,
+recovery behavior and validation scope.
 
 ## Compatibility and limitations
 

@@ -735,11 +735,10 @@ All six are experimental and absent from v0.3.1 artifacts. See
 FEC filter emits its parity. `ALWAYS` is today's behaviour: every ready
 repair packet is sent. `ROBOTWEAX_SRT_FECPOLICY_ARQFIRST` (1), "ARQ-first
 FEC", sends FEC parity only while a retransmission could not arrive within the
-latency window; otherwise it relies on ARQ. The test is the sealed component
-study's deadline test: no parity while
-`2 + 2·srtt + 4·rttvar + 20 + 5 ms < negotiated peer receive delay`, using the
-sender's own RTT estimate, and full parity otherwise or while no RTT sample
-exists. A withheld repair packet is consumed, not delayed; the receiver
+latency window; otherwise it relies on ARQ. Parity is withheld while
+`2 + 2·srtt + 4·rttvar + 20 + 5 ms < negotiated peer receive delay`.
+The sender uses its own RTT estimate and sends full parity when the condition
+is not met or while no RTT sample exists. A withheld repair packet is consumed, not delayed; the receiver
 already tolerates a missing repair, so the filter string, handshake and wire
 format are unchanged and the peer needs nothing.
 
@@ -755,17 +754,13 @@ ordinary retransmitted flag and original timestamp, and is limited to three
 due times per idle period; only a new original restarts the period, while
 ACKs, NAKs, retransmissions and probes leave it alone.
 
-Cold start: the interval of a due time is computed from the smoothed RTT at
-the moment the idle period starts (or at the previous due time), exactly as
-the sealed study's probe clock does, and is not recomputed when a new RTT
-sample arrives in between. Before the first measured sample the estimator
-holds its default, so an idle period that starts on a connection without an
-RTT sample waits the full 120 ms cap for its first probe even if a short RTT
-is measured a few milliseconds later; the second and third due times then
-use the measured value. The study's traffic always had a measured RTT at
-its idle starts. A warm estimator (any ACK with a measurement before the
-first idle period) is the qualified case; changing the rule is a proposal
-amendment, not an option.
+Cold start: the first probe interval uses the smoothed RTT at submission of
+the last original. Each subsequent interval uses the RTT when the previous
+due time is evaluated. A new RTT sample does not reschedule an existing due
+time. Before any measured RTT, the first interval is the full 120 ms cap,
+even if a shorter RTT is measured shortly afterwards. This can prevent timely
+tail recovery on a short stream. The component study covered bursts that
+ended with a measured RTT already available.
 
 Acceptance, enforced when the option is set and re-checked at connection
 setup: `ARQFIRST` requires `SRTT_LIVE`, TSBPD on, the live congestion
@@ -782,15 +777,15 @@ options are sender-local and never negotiated. Two Robotweax statistics
 counters, `parity_withheld` and `tail_probes_sent`, record the withheld
 repair packets and the queued probes; `SRT_TRACEBSTATS` is unchanged.
 
-Evidence boundary: the only configuration qualified by evidence is the
-deterministic in-process component study of 3 November 2026 with a
-negotiated 120 ms receive delay, Matrix 8×8 even geometry, 1,250-byte
-sources at 1 ms and 20 Mbit/s (8.56 % fewer bytes than always-on Matrix FEC
-with zero missing or late sources across 400 cases). Any other negotiated
-delay, geometry, payload, rate, encryption, group, rendezvous or socket-level
-behaviour is unqualified. No production, CPU, host, socket or WAN
-qualification exists. See
-[Stage A record](arqfirst-fec-tail-probe-stage-a-20261103.md).
+Validation is limited to unit tests and a deterministic component study with
+120 ms receive delay and Matrix 8×8 even geometry. The study compared 80
+ARQ-first FEC cases with 80 matching always-on Matrix FEC cases and found
+8.5620% fewer aggregate IPv4 bytes, with no missing sources or deadline
+failures under a fixed 147 µs timing tolerance. These are component results,
+not qualification of the integrated socket path. See
+[ARQ-first FEC and tail loss probes](arq-first-fec.md#validation-scope) for
+the workload, the distinction between the 80 matched cases and the complete
+400-case study, and the limits of the evidence.
 
 ## Group admission callback migration (since 0.2.8)
 
