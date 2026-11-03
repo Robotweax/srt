@@ -6793,6 +6793,13 @@ struct StageAStream {
     std::uint64_t delivered = 0;
     bool sender_rtt_known = false;
     std::uint32_t sender_srtt = 0;
+    // Steps at which the ARQ-first policy would withhold a ready repair, tail
+    // probe due entries seen, and probes the sender's clock queued.
+    std::uint64_t withheld_evaluations = 0;
+    std::uint64_t probe_due_entries = 0;
+    std::uint64_t probes_fired = 0;
+    FecPolicy sender_fec_policy = FecPolicy::always;
+    bool sender_tail_probe_enabled = false;
 };
 
 std::array<std::byte, stage_a_payload_bytes> stage_a_payload(
@@ -6913,7 +6920,7 @@ StageAStream run_stage_a_live_stream(const SocketOptions& options)
             ++run.originals;
         }
         sender.note_packet_submitted(packet.header.sequence);
-        sender.note_data_packet_sent(now);
+        sender.note_data_packet_sent(now, packet.header.retransmitted);
         const auto index = static_cast<std::uint32_t>(
             packet.header.sequence.distance_from(SequenceNumber {10}));
         if (!packet.header.retransmitted && stage_a_lost_original(index)) {
@@ -6944,6 +6951,16 @@ StageAStream run_stage_a_live_stream(const SocketOptions& options)
         send_controls(sender.poll_timers(now), now, true);
         send_controls(receiver.poll_timers(now), now, false);
         (void)sender.poll_sender_retransmission_timeout(now);
+        if (sender.parity_withheld(now)) {
+            ++run.withheld_evaluations;
+        }
+        const auto entries_before = sender.tail_probe_due_entries();
+        if (sender.poll_tail_probe(now)) {
+            ++run.probes_fired;
+        }
+        if (sender.tail_probe_due_entries() > entries_before) {
+            ++run.probe_due_entries;
+        }
         std::size_t drained = 0;
         while (const auto packet = sender.next_data_packet(now)) {
             REQUIRE(++drained <= 512U);
@@ -6983,7 +7000,55 @@ StageAStream run_stage_a_live_stream(const SocketOptions& options)
     REQUIRE_EQ(offered, stage_a_population);
     run.sender_rtt_known = sender.rtt().has_sample();
     run.sender_srtt = sender.rtt().smoothed_microseconds();
+    run.sender_fec_policy = sender.fec_policy();
+    run.sender_tail_probe_enabled = sender.tail_probe_enabled();
+    REQUIRE_EQ(run.probes_fired, sender.tail_probes_fired_total());
     return run;
+}
+
+// A full ACK as the receiver would send it, carrying its RTT estimate; the
+// sender adopts that estimate (RttEstimator::observe_peer_estimate).
+void stage_a_feed_acknowledgement(ReliabilitySession& sender,
+    SequenceNumber next_sequence, std::uint32_t rtt, std::uint32_t rtt_variance,
+    std::uint32_t number, std::uint64_t now)
+{
+    std::array<std::byte, 64> storage {};
+    const ReliabilityAction action {
+        .kind = ReliabilityActionKind::acknowledgement,
+        .acknowledgement = {
+            .kind = AcknowledgementKind::full,
+            .acknowledgement_number = number,
+            .next_sequence = next_sequence,
+            .round_trip_time_microseconds = rtt,
+            .round_trip_time_variance_microseconds = rtt_variance,
+            .available_receive_buffer_packets = 1'000,
+        },
+    };
+    const auto received = sender.receive(encode_and_decode(action, storage), now);
+    REQUIRE(received);
+}
+
+void stage_a_feed_loss_report(
+    ReliabilitySession& sender, SequenceNumber sequence, std::uint64_t now)
+{
+    std::array<std::byte, 64> storage {};
+    const ReliabilityAction action {
+        .kind = ReliabilityActionKind::loss_report,
+        .loss = {sequence, sequence},
+    };
+    const auto received = sender.receive(encode_and_decode(action, storage), now);
+    REQUIRE(received);
+}
+
+SocketOptions stage_a_options_on()
+{
+    SocketOptions options;
+    REQUIRE_EQ(options.set_packet_filter(stage_a_filter), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::fec_policy,
+                   static_cast<std::int64_t>(FecPolicy::arqfirst)),
+        Error::none);
+    REQUIRE_EQ(options.set(SocketOption::sender_tail_probe, 1), Error::none);
+    return options;
 }
 
 } // namespace
@@ -7009,4 +7074,270 @@ TEST(stage_a_defaults_reproduce_the_pinned_live_stream_byte_for_byte)
     REQUIRE_EQ(run.originals, stage_a_population);
     REQUIRE_EQ(run.delivered, stage_a_population);
     REQUIRE(run.sender_rtt_known);
+    // Options off: the policy stays `always`, so no repair would ever be
+    // withheld, the probe clock never arms and no probe is queued.
+    REQUIRE_EQ(run.sender_fec_policy, FecPolicy::always);
+    REQUIRE(!run.sender_tail_probe_enabled);
+    REQUIRE_EQ(run.withheld_evaluations, 0U);
+    REQUIRE_EQ(run.probe_due_entries, 0U);
+    REQUIRE_EQ(run.probes_fired, 0U);
+}
+
+TEST(stage_a_tail_probe_clock_follows_the_contract_rules)
+{
+    const SequenceNumber first {10};
+    ReliabilitySession sender {{
+        .local_initial_sequence = first,
+        .peer_initial_sequence = SequenceNumber {1},
+        .peer_socket_id = 900,
+        .send_capacity_packets = 32,
+        .receive_capacity_packets = 32,
+        .maximum_payload_size = stage_a_payload_bytes,
+    }};
+    const NegotiatedLiveOptions live {
+        .send_tsbpd = true,
+        .receive_tsbpd = true,
+        .periodic_nak = true,
+        .retransmit_flag = true,
+        .receive_delay_milliseconds = stage_a_receive_delay_milliseconds,
+        .peer_receive_delay_milliseconds = stage_a_receive_delay_milliseconds,
+        .peer_periodic_nak = true,
+    };
+    sender.configure_live(live, 0, PacketTimestamp {0});
+    const auto filter = parse_packet_filter_configuration(stage_a_filter);
+    REQUIRE(filter);
+    sender.configure_packet_filter(filter.configuration, true);
+    REQUIRE_EQ(sender.apply_dynamic_options(stage_a_options_on()), Error::none);
+    REQUIRE_EQ(sender.fec_policy(), FecPolicy::arqfirst);
+    REQUIRE(sender.tail_probe_enabled());
+    REQUIRE_EQ(sender.parity_constants().latency_us, 120'000U);
+    REQUIRE(!sender.next_tail_probe_due().has_value());
+
+    std::uint32_t offered = 0;
+    const auto send_original = [&](std::uint64_t now) {
+        const auto payload = stage_a_payload(offered);
+        REQUIRE_EQ(sender.queue_message(payload,
+                       PacketTimestamp {static_cast<std::uint32_t>(now)}),
+            Error::none);
+        const auto packet = sender.next_data_packet(now);
+        REQUIRE(packet.has_value());
+        REQUIRE(!packet->header.retransmitted);
+        REQUIRE_EQ(packet->header.sequence, first.advanced(offered));
+        sender.note_packet_submitted(packet->header.sequence);
+        sender.note_data_packet_sent(now, false);
+        ++offered;
+    };
+    // Drains the retransmission queue the way the runtime does and returns
+    // the sequences it carried.
+    const auto drain = [&](std::uint64_t now) {
+        std::vector<std::uint32_t> sequences;
+        while (const auto packet = sender.next_data_packet(now)) {
+            REQUIRE(packet->header.retransmitted);
+            sequences.push_back(packet->header.sequence.value());
+            sender.note_packet_submitted(packet->header.sequence);
+            sender.note_data_packet_sent(now, true);
+        }
+        return sequences;
+    };
+    const auto due = [&](std::uint64_t expected) {
+        REQUIRE_EQ(sender.next_tail_probe_due(),
+            std::optional<std::uint64_t> {expected});
+    };
+
+    // Rule 4: the first due time is idle_since + probe_interval(srtt at
+    // idle_since). The estimator still holds its 100 ms default, so the
+    // interval is capped at 120 ms.
+    send_original(1'000);
+    send_original(2'000);
+    REQUIRE_EQ(sender.tail_probe_idle_since(), std::optional<std::uint64_t> {2'000});
+    due(122'000);
+    REQUIRE_EQ(sender.tail_probe_due_entries(), 0U);
+    REQUIRE(!sender.poll_tail_probe(121'999));
+    REQUIRE_EQ(sender.tail_probe_due_entries(), 0U);
+
+    // Rule 1: not armed without a measured RTT (parity is emitted), so the
+    // due time writes an entry without firing; the chain continues (rule 5).
+    REQUIRE(!sender.rtt().has_sample());
+    REQUIRE(!sender.parity_withheld(122'000));
+    REQUIRE(!sender.poll_tail_probe(122'000));
+    REQUIRE_EQ(sender.tail_probe_due_entries(), 1U);
+    REQUIRE_EQ(sender.tail_probes_fired(), 0U);
+    REQUIRE(!sender.has_pending_retransmission());
+    due(242'000);
+
+    // An ACK (here without progress) supplies the RTT and moves nothing on
+    // the probe clock. 2 + 2*20 + 4*2 + 20 + 5 = 75 ms < 120 ms: withheld.
+    stage_a_feed_acknowledgement(sender, first, 20'000, 2'000, 1, 130'000);
+    REQUIRE(sender.rtt().has_sample());
+    REQUIRE_EQ(sender.rtt().smoothed_microseconds(), 20'000U);
+    REQUIRE(sender.parity_withheld(130'000));
+    REQUIRE_EQ(sender.tail_probe_idle_since(), std::optional<std::uint64_t> {2'000});
+    due(242'000);
+    REQUIRE_EQ(sender.tail_probe_due_entries(), 1U);
+
+    // Rule 3: armed with two packets in flight, the due time fires one
+    // probe: a retransmission of the last sent original with its timestamp.
+    REQUIRE_EQ(sender.send_buffer().packets_in_flight(), 2U);
+    REQUIRE(sender.poll_tail_probe(242'000));
+    REQUIRE_EQ(sender.tail_probe_due_entries(), 2U);
+    REQUIRE_EQ(sender.tail_probes_fired(), 1U);
+    REQUIRE_EQ(sender.tail_probes_fired_total(), 1U);
+    {
+        const auto probe = sender.next_data_packet(242'000);
+        REQUIRE(probe.has_value());
+        REQUIRE(probe->header.retransmitted);
+        REQUIRE_EQ(probe->header.sequence, first.advanced(1));
+        REQUIRE_EQ(probe->header.timestamp.value(), 2'000U);
+        REQUIRE_EQ(probe->payload.size(), stage_a_payload_bytes);
+        sender.note_packet_submitted(probe->header.sequence);
+        sender.note_data_packet_sent(242'000, true);
+        REQUIRE(!sender.next_data_packet(242'000).has_value());
+    }
+    // The probe submission did not move the idle reference; the next due
+    // time is the fire time plus probe_interval(20 ms) = 40 ms.
+    REQUIRE_EQ(sender.tail_probe_idle_since(), std::optional<std::uint64_t> {2'000});
+    due(282'000);
+
+    // A NAK-driven retransmission does not touch the clock either.
+    stage_a_feed_loss_report(sender, first, 250'000);
+    REQUIRE_EQ(drain(250'000), (std::vector<std::uint32_t> {10}));
+    REQUIRE_EQ(sender.tail_probe_idle_since(), std::optional<std::uint64_t> {2'000});
+    due(282'000);
+    REQUIRE_EQ(sender.tail_probe_due_entries(), 2U);
+
+    // Rule 4: at most three due entries per idle period; afterwards nothing
+    // is due until a new original.
+    REQUIRE(sender.poll_tail_probe(282'000));
+    REQUIRE_EQ(sender.tail_probe_due_entries(), 3U);
+    REQUIRE_EQ(sender.tail_probes_fired(), 2U);
+    REQUIRE_EQ(drain(282'000), (std::vector<std::uint32_t> {11}));
+    REQUIRE(!sender.next_tail_probe_due().has_value());
+    REQUIRE(!sender.poll_tail_probe(400'000));
+    REQUIRE(!sender.poll_tail_probe(1'000'000));
+    REQUIRE_EQ(sender.tail_probe_due_entries(), 3U);
+    REQUIRE_EQ(sender.tail_probes_fired_total(), 2U);
+
+    // A new original resets the period: idle, due, entries and fired count.
+    send_original(500'000);
+    REQUIRE_EQ(
+        sender.tail_probe_idle_since(), std::optional<std::uint64_t> {500'000});
+    due(540'000);
+    REQUIRE_EQ(sender.tail_probe_due_entries(), 0U);
+    REQUIRE_EQ(sender.tail_probes_fired(), 0U);
+
+    // Rule 2: an ACK that empties the buffer suppresses the due times of this
+    // period; the chain still continues past each suppressed due time and
+    // still ends after three entries. The idle reference is untouched.
+    stage_a_feed_acknowledgement(
+        sender, sender.send_buffer().next_sequence(), 20'000, 2'000, 2, 510'000);
+    REQUIRE_EQ(sender.send_buffer().packets_in_flight(), 0U);
+    REQUIRE_EQ(
+        sender.tail_probe_idle_since(), std::optional<std::uint64_t> {500'000});
+    due(540'000);
+    REQUIRE(sender.parity_withheld(540'000));
+    REQUIRE(!sender.poll_tail_probe(540'000));
+    REQUIRE_EQ(sender.tail_probe_due_entries(), 1U);
+    due(580'000);
+    REQUIRE(!sender.poll_tail_probe(580'000));
+    due(620'000);
+    REQUIRE(!sender.poll_tail_probe(620'000));
+    REQUIRE_EQ(sender.tail_probe_due_entries(), 3U);
+    REQUIRE_EQ(sender.tail_probes_fired(), 0U);
+    REQUIRE(!sender.next_tail_probe_due().has_value());
+    REQUIRE(!sender.has_pending_retransmission());
+    REQUIRE_EQ(sender.tail_probes_fired_total(), 2U);
+
+    // Rule 1 again with a measured RTT that fails the deadline test:
+    // 2 + 2*60 + 4*5 + 20 + 5 = 167 ms >= 120 ms, so parity is emitted and
+    // the probe is not armed although a packet is in flight. The interval
+    // is capped at 120 ms. Once the estimate drops, the same period arms.
+    stage_a_feed_acknowledgement(
+        sender, sender.send_buffer().next_sequence(), 60'000, 5'000, 3, 650'000);
+    REQUIRE(!sender.parity_withheld(650'000));
+    send_original(700'000);
+    due(820'000);
+    REQUIRE_EQ(sender.send_buffer().packets_in_flight(), 1U);
+    REQUIRE(!sender.poll_tail_probe(820'000));
+    REQUIRE_EQ(sender.tail_probe_due_entries(), 1U);
+    REQUIRE(!sender.has_pending_retransmission());
+    due(940'000);
+    stage_a_feed_acknowledgement(sender, first.advanced(offered - 1U), 20'000,
+        2'000, 4, 850'000);
+    REQUIRE(sender.parity_withheld(850'000));
+    due(940'000);
+    REQUIRE(sender.poll_tail_probe(940'000));
+    REQUIRE_EQ(sender.tail_probes_fired(), 1U);
+    REQUIRE_EQ(drain(940'000),
+        (std::vector<std::uint32_t> {first.advanced(offered - 1U).value()}));
+    REQUIRE_EQ(sender.tail_probes_fired_total(), 3U);
+
+    // Rule 2 at the 10 ms floor: srtt 2 ms gives a 10 ms interval.
+    stage_a_feed_acknowledgement(
+        sender, sender.send_buffer().next_sequence(), 2'000, 500, 5, 1'000'000);
+    send_original(1'100'000);
+    due(1'110'000);
+    // Rule 2 at the 120 ms cap with a known 100 ms estimate.
+    stage_a_feed_acknowledgement(sender, sender.send_buffer().next_sequence(),
+        100'000, 1'000, 6, 1'150'000);
+    REQUIRE(sender.rtt().has_sample());
+    REQUIRE_EQ(sender.rtt().smoothed_microseconds(), 100'000U);
+    send_original(1'200'000);
+    due(1'320'000);
+    REQUIRE_EQ(sender.tail_probes_fired_total(), 3U);
+}
+
+TEST(stage_a_tail_probe_is_inert_without_the_options)
+{
+    // Options off, and arqfirst without the probe: no due time ever exists,
+    // originals and retransmissions leave the clock untouched, and no path
+    // requests a retransmission of the last sent packet.
+    for (const bool arqfirst : {false, true}) {
+        ReliabilitySession sender {{
+            .local_initial_sequence = SequenceNumber {10},
+            .peer_initial_sequence = SequenceNumber {1},
+            .peer_socket_id = 900,
+            .send_capacity_packets = 32,
+            .receive_capacity_packets = 32,
+            .maximum_payload_size = stage_a_payload_bytes,
+        }};
+        sender.configure_live(
+            NegotiatedLiveOptions {
+                .send_tsbpd = true,
+                .receive_tsbpd = true,
+                .periodic_nak = true,
+                .retransmit_flag = true,
+                .receive_delay_milliseconds = stage_a_receive_delay_milliseconds,
+                .peer_receive_delay_milliseconds =
+                    stage_a_receive_delay_milliseconds,
+                .peer_periodic_nak = true,
+            },
+            0, PacketTimestamp {0});
+        SocketOptions options;
+        REQUIRE_EQ(options.set_packet_filter(stage_a_filter), Error::none);
+        if (arqfirst) {
+            REQUIRE_EQ(options.set(SocketOption::fec_policy,
+                           static_cast<std::int64_t>(FecPolicy::arqfirst)),
+                Error::none);
+        }
+        REQUIRE_EQ(sender.apply_dynamic_options(options), Error::none);
+        REQUIRE(!sender.tail_probe_enabled());
+        const auto payload = stage_a_payload(0);
+        REQUIRE_EQ(sender.queue_message(payload, PacketTimestamp {1'000}),
+            Error::none);
+        const auto packet = sender.next_data_packet(1'000);
+        REQUIRE(packet.has_value());
+        sender.note_packet_submitted(packet->header.sequence);
+        sender.note_data_packet_sent(1'000, false);
+        REQUIRE(!sender.next_tail_probe_due().has_value());
+        REQUIRE(!sender.tail_probe_idle_since().has_value());
+        stage_a_feed_acknowledgement(
+            sender, SequenceNumber {10}, 20'000, 2'000, 1, 50'000);
+        REQUIRE_EQ(sender.parity_withheld(50'000), arqfirst);
+        for (const std::uint64_t now : {121'000ULL, 500'000ULL, 5'000'000ULL}) {
+            REQUIRE(!sender.poll_tail_probe(now));
+        }
+        REQUIRE(!sender.has_pending_retransmission());
+        REQUIRE_EQ(sender.tail_probe_due_entries(), 0U);
+        REQUIRE_EQ(sender.tail_probes_fired_total(), 0U);
+    }
 }

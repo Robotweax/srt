@@ -487,6 +487,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_live.cpp
         tests/test_logging.cpp
         tests/test_packet_filter.cpp
+        tests/test_parity_policy.cpp
         tests/test_receive_buffer.cpp
         tests/test_reliability.cpp
         tests/test_rendezvous.cpp
