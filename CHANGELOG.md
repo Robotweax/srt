@@ -6,6 +6,13 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add the opt-in, sender-local ARQ-first FEC parity policy
+  (`SRTO_ROBOTWEAX_FECPOLICY`, default `ALWAYS`) and the sender tail loss
+  probe (`SRTO_ROBOTWEAX_TAILPROBE`, default off) at the pinned seams of the
+  adaptive recovery proposal, with Stage A unit tests. Defaults, filter
+  string, handshake and wire format are unchanged; only a 120 ms negotiated
+  delay with a matrix `arq:always` filter is qualified by evidence.
+
 - Add a public-API multicast MPEG-TS application sample with a Listener
   sender, multiple Caller receivers, UDP encoder/player connections,
   optional recording, CTR/GCM group encryption, and live path statistics.
