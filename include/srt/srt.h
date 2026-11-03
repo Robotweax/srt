@@ -250,6 +250,21 @@ typedef enum SRT_SOCKOPT {
      * multicast path. A sender reports what left on it; a receiver reports
      * what its multicast socket received and dropped before decoding. */
     SRTO_ROBOTWEAX_MCAST_STATS = 0x01000015,
+    /** Sender-local FEC parity policy, int32_t, PRE: ROBOTWEAX_SRT_FECPOLICY_ALWAYS
+     * (default, every ready repair packet is sent) or
+     * ROBOTWEAX_SRT_FECPOLICY_ARQFIRST ("ARQ-first FEC": send FEC parity only
+     * while a retransmission could not arrive within the latency window;
+     * otherwise rely on ARQ). ARQFIRST is accepted only with SRTT_LIVE, TSBPD
+     * on, no rendezvous or group, and an enabled fec filter with arq:always
+     * and rows >= 2 (matrix geometry); the filter string, handshake and wire
+     * format are unchanged, so the peer needs nothing. Only a negotiated
+     * 120 ms latency is qualified by evidence. */
+    SRTO_ROBOTWEAX_FECPOLICY = 0x01000016,
+    /** Sender tail loss probe, bool, PRE, default false: after the sender
+     * goes idle with packets in flight, resend the last packet so the
+     * receiver can detect a lost tail (TCP TLP, RFC 8985). Accepted only
+     * together with SRTO_ROBOTWEAX_FECPOLICY = ARQFIRST. */
+    SRTO_ROBOTWEAX_TAILPROBE = 0x01000017,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif
@@ -289,6 +304,10 @@ typedef struct ROBOTWEAX_SRT_PeerHandshakeV1_ {
     uint32_t receiver_delay_milliseconds; /* Peer receive delay for our DATA. */
     uint32_t sender_delay_milliseconds; /* Minimum delay for our receiver. */
 } ROBOTWEAX_SRT_PEER_HANDSHAKE_V1;
+
+/* Values of SRTO_ROBOTWEAX_FECPOLICY. */
+#define ROBOTWEAX_SRT_FECPOLICY_ALWAYS 0
+#define ROBOTWEAX_SRT_FECPOLICY_ARQFIRST 1
 
 /* Values of SRTO_ROBOTWEAX_PATHID_POLICY and SRTO_ROBOTWEAX_STANDBYRTT_POLICY. */
 #define ROBOTWEAX_SRT_EXTENSION_OFF 0

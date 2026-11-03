@@ -134,6 +134,8 @@ template <typename Value>
         || option == SRTO_ROBOTWEAX_MCAST_GROUP
         || option == SRTO_ROBOTWEAX_MCAST_IFACE
         || option == SRTO_ROBOTWEAX_MCAST_TTL
+        || option == SRTO_ROBOTWEAX_FECPOLICY
+        || option == SRTO_ROBOTWEAX_TAILPROBE
         || option == SRTO_ROBOTWEAX_SESSIONAUTH || option == SRTO_CONGESTION
         || option == SRTO_MESSAGEAPI || option == SRTO_SENDER
         || option == SRTO_MINVERSION || option == SRTO_STREAMID
@@ -594,6 +596,12 @@ int get_socket_option(
     case SRTO_ROBOTWEAX_SESSIONAUTH:
         return write_value(
             value, value_size, socket.native_options.session_authentication());
+    case SRTO_ROBOTWEAX_FECPOLICY:
+        return write_value(value, value_size,
+            static_cast<std::int32_t>(socket.native_options.fec_policy()));
+    case SRTO_ROBOTWEAX_TAILPROBE:
+        return write_value(
+            value, value_size, socket.native_options.sender_tail_probe());
     case SRTO_ENFORCEDENCRYPTION:
         return write_value(value, value_size,
             socket.native_options.enforced_encryption());
@@ -1502,6 +1510,33 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                 ? SocketOption::session_authentication
                 : SocketOption::enforced_encryption,
             parsed ? 1 : 0);
+    }
+    case SRTO_ROBOTWEAX_FECPOLICY: {
+        // Follows the SRTO_DRIFTTRACER pattern: the native option owns the
+        // state; the acceptance rules live in SocketOptions::set. Group
+        // sockets and members reject the non-default policy.
+        std::int32_t parsed = 0;
+        if (!read_value(value, value_size, parsed)) {
+            return invalid_parameter();
+        }
+        if (parsed != ROBOTWEAX_SRT_FECPOLICY_ALWAYS
+            && (options.group_connect || socket.group_id != SRT_INVALID_SOCK)) {
+            return invalid_parameter();
+        }
+        return set_native(
+            socket.native_options, SocketOption::fec_policy, parsed);
+    }
+    case SRTO_ROBOTWEAX_TAILPROBE: {
+        bool parsed = false;
+        if (!read_boolean(value, value_size, parsed)) {
+            return invalid_parameter();
+        }
+        if (parsed
+            && (options.group_connect || socket.group_id != SRT_INVALID_SOCK)) {
+            return invalid_parameter();
+        }
+        return set_native(socket.native_options,
+            SocketOption::sender_tail_probe, parsed ? 1 : 0);
     }
     case SRTO_ROBOTWEAX_ACP1_ACTIVE:
     case SRTO_ISN:

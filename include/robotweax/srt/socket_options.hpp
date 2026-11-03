@@ -27,6 +27,16 @@ enum class TransmissionType : std::uint8_t {
     control = 2,
 };
 
+// Sender-local parity emission policy for a negotiated FEC filter. `always`
+// is today's behaviour: every ready repair packet is sent. `arqfirst` sends
+// FEC parity only while a retransmission could not arrive within the latency
+// window (parity::Mode::deadline_only); otherwise the sender relies on ARQ.
+// Not negotiated; the filter string, handshake and wire format are unchanged.
+enum class FecPolicy : std::uint8_t {
+    always = 0,
+    arqfirst = 1,
+};
+
 // Public options for every transport feature currently implemented by Robotweax.
 // Integer values make this API straightforward to expose through a stable C ABI.
 enum class SocketOption : std::uint16_t {
@@ -64,6 +74,11 @@ enum class SocketOption : std::uint16_t {
 #endif
     session_authentication,
     experimental_acp1,
+    // ARQ-first FEC (FecPolicy) and the sender tail loss probe (0/1). Both
+    // are sender-local and default to today's behaviour; see
+    // SocketOptions::supports_arqfirst_fec for the accepted combination.
+    fec_policy,
+    sender_tail_probe,
 };
 
 struct SocketOptionResult {
@@ -132,6 +147,23 @@ public:
     [[nodiscard]] bool experimental_acp1() const noexcept
     {
         return experimental_acp1_;
+    }
+    [[nodiscard]] FecPolicy fec_policy() const noexcept
+    {
+        return fec_policy_;
+    }
+    [[nodiscard]] bool sender_tail_probe() const noexcept
+    {
+        return sender_tail_probe_;
+    }
+    // The only configuration the ARQ-first evidence covers: live transmission
+    // with TSBPD, no rendezvous, and an enabled non-sensor, non-experimental
+    // FEC filter whose ARQ level is `always` with a matrix geometry
+    // (rows >= 2). Group sockets and file mode are rejected by the compat
+    // layer and at connection setup.
+    [[nodiscard]] bool supports_arqfirst_fec() const noexcept
+    {
+        return arqfirst_fec_compatible(packet_filter_configuration_);
     }
     [[nodiscard]] bool enforced_encryption() const noexcept
     {
@@ -250,6 +282,15 @@ public:
         IpAddressFamily family) noexcept;
 
 private:
+    [[nodiscard]] bool arqfirst_fec_compatible(
+        const PacketFilterConfiguration& filter) const noexcept
+    {
+        return transmission_type_ == TransmissionType::live
+            && congestion_controller_ == CongestionController::live
+            && tsbpd_mode_ && !rendezvous_ && filter.enabled
+            && !filter.sensor_profile() && !filter.experimental()
+            && filter.arq == PacketFilterArqLevel::always && filter.rows >= 2;
+    }
     void apply_sensor_profile_bundle() noexcept;
 #ifdef ENABLE_AEAD_API_PREVIEW
     [[nodiscard]] bool supports_aes_gcm_transport_bundle(
@@ -296,6 +337,8 @@ private:
     bool enforced_encryption_ = true;
     bool session_authentication_ = false;
     bool experimental_acp1_ = false;
+    FecPolicy fec_policy_ = FecPolicy::always;
+    bool sender_tail_probe_ = false;
     bool rendezvous_ = false;
     bool message_api_ = true;
     TransmissionType transmission_type_ = TransmissionType::live;
