@@ -87,7 +87,9 @@ SRT member may need a new run after a long outage; resuming a relay is not an
 automatic SRT reconnect. Path labels use complete `path_snapshot` membership
 reports and distinguish broken sockets from idle members. Rebuild the contribution
 binary with the console; older binaries without snapshots show an awaiting-status
-label rather than a cached connection claim. Recovery offers ARQ, Row, Column, and Matrix FEC. Device
+label rather than a cached connection claim. Recovery offers ARQ, Row, Column, and Matrix FEC, including two Matrix 8×8
+choices: always-on parity and ARQ-first.
+Device
 shows synthetic Live/Sensor traffic and command execution acknowledgements.
 
 Stop terminates the run's child processes. Completed runs retain `received.ts`,
@@ -170,7 +172,9 @@ reported, not hidden. Real-network runs may legitimately have missing frames.
 ## 2. Recovery comparison
 
 Run the comparison launcher; it starts and cleans up its own loopback peers and
-bounded impairment relay. It runs a baseline, ARQ, Row, Column, and Matrix case:
+bounded impairment relay. It compares Matrix 8×8 always-on parity with ARQ-first,
+then runs the existing baseline, ARQ,
+Row, Column and Matrix-on-request cases:
 
 ```sh
 ./tools/python examples/applications/recovery_lab.py \
@@ -180,12 +184,47 @@ bounded impairment relay. It runs a baseline, ARQ, Row, Column, and Matrix case:
 ```
 
 Each case sends 320 source frames at 5-ms intervals with 200-ms configured SRT
-latency. One JSON result per case reports exact application delivery, FEC supply,
-parity, retransmissions, receiver drops, interarrival gaps, and actual relay
+latency. The two comparison modes use the same 8×8 `arq:always` filter; only the
+sender policy differs. One JSON result per case reports exact application
+delivery, sent/received socket bytes, FEC supply, parity, retransmissions,
+receiver drops, belated packets, interarrival gaps, and actual relay
 impairment counters. Row and Column use `arq:never` to isolate FEC; Matrix uses
 `arq:onreq`. Increase `--burst` to demonstrate unrecoverable FEC geometry. A
 nonzero missing count is a measurement, not automatically a failed experiment.
 A failed connection, corrupt payload or failed completion exchange exits nonzero.
+
+For a direct sender/receiver run, enable the new behavior with one sender
+option. Start the receiver first:
+
+```sh
+./build-applications/examples/applications/robotweax_srt_recovery receive \
+  --endpoint 127.0.0.1:9000 --count 320 --interval-ms 5 --latency-ms 120
+```
+
+```sh
+./build-applications/examples/applications/robotweax_srt_recovery send \
+  --endpoint 127.0.0.1:9000 --count 320 --interval-ms 5 --latency-ms 120 \
+  --arq-first
+```
+
+`--arq-first` enables ARQ-first FEC with a Matrix 8×8 even `arq:always`
+filter unless `--filter` supplies another compatible matrix geometry.
+Without the switch, existing defaults and filter behavior are unchanged.
+For an always-on comparison, set the same `--filter` without `--arq-first`.
+The receiver needs no new option; it accepts the negotiated FEC filter.
+
+The same switch is available in the Live Caller/Listener Message demo and on
+the UDP-to-SRT sender of `robotweax_srt_udp_bridge`. It is not offered for
+group-based Contribution, Rendezvous or Sensor/Control device profiles.
+The graphical Recovery selector offers Matrix 8×8 always-on FEC and ARQ-first
+with identical filter geometry. No demo option enables the tail loss probe.
+
+The sender's `recovery_mode` event reports the actual socket policy and probe
+setting. Socket byte counters describe SRT accounting, not captured IP bytes;
+`belated` is the library's belated-packet counter, not an application deadline
+score. The comparison is a local observation, not a throughput or WAN
+qualification. See [ARQ-first FEC and tail loss probes](../../docs/arq-first-fec.md)
+for the library policy and its validation scope.
 
 For independent endpoints or custom geometry, run three terminals:
 
@@ -309,14 +348,13 @@ Multi-config generators also require `--config Debug` for the build and
 `-DPython3_EXECUTABLE="$(./tools/python -c 'import sys; print(sys.executable)')"`
 when configuring; on Windows, pass the selected interpreter's absolute path.
 
-Seven integration scenarios run in CTR builds, with seven additional GCM cases
-when the AEAD preview is enabled. Three further checks cover statistics,
-process support and console controls. With FFmpeg configured, the application
-suite therefore contains 18 checks. Checks require exact baseline payloads,
-FEC/ARQ activity under injected loss, connected replacement members, no duplicate
-delivery, complete ordered command execution, and deliberate Sensor loss in the
-impaired device case. The comparison launcher separately exercises Column,
-Matrix, delay and reordering.
+Integration scenarios cover baseline recovery, ARQ, FEC, both Matrix
+policies, group replacement and the device profiles in CTR and, when enabled,
+GCM builds. Additional checks cover statistics, process support, delivery
+contracts, console controls and invalid demo FEC configurations. The new
+recovery cases check complete delivery under original-DATA loss and read back
+the configured policy and probe flag from the connected sender. The comparison
+launcher separately exercises Column, Matrix, delay and reordering.
 
 The sample build and automated checks have been exercised on macOS ARM64,
 Linux ARM64 and hosted Windows. This does not qualify every media codec,

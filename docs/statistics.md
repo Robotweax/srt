@@ -149,6 +149,14 @@ field and an interval field without that suffix, with the snapshot/clear rules
 described above. `CBytePerfMon` / `SRT_TRACEBSTATS` has no corresponding
 `byte*FilterExtra`, `byte*FilterSupply`, or `byte*FilterLoss` fields.
 
+With the opt-in `SRTO_ROBOTWEAX_FECPOLICY=ARQFIRST` a withheld repair packet
+is not sent and therefore not counted in `pktSndFilterExtra*`. The Robotweax
+runtime statistics keep two appended counters, `parity_withheld` (ready
+repair packets consumed without submission) and `tail_probes_sent` (tail
+loss probes queued by the sender's probe clock; each leaves as an ordinary
+retransmission and is counted there as well). They are not part of
+`SRT_TRACEBSTATS`, whose fields are unchanged.
+
 Successfully sent parity packets contribute to `pktSent*` and `byteSent*` but
 not to the unique-send fields. Consumed FEC control packets contribute to
 `pktRecv*` and `byteRecv*` but not to the unique-receive fields. Their byte

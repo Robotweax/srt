@@ -6,6 +6,14 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add the opt-in, sender-local ARQ-first FEC parity policy
+  (`SRTO_ROBOTWEAX_FECPOLICY`, default `ALWAYS`) and the sender tail loss
+  probe (`SRTO_ROBOTWEAX_TAILPROBE`, default off). Both use the existing
+  matrix FEC filter without changing its filter string, handshake, wire
+  format or defaults. See [ARQ-first FEC and tail loss probes](docs/arq-first-fec.md)
+  for configuration, cold-start behavior and validation scope. The Recovery,
+  Message and UDP bridge demos expose ARQ-first FEC through `--arq-first`.
+
 - Add a public-API multicast MPEG-TS application sample with a Listener
   sender, multiple Caller receivers, UDP encoder/player connections,
   optional recording, CTR/GCM group encryption, and live path statistics.

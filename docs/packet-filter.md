@@ -162,6 +162,17 @@ contributes to unique receive counters without another physical DATA receive.
 See [Statistics](statistics.md#packet-filter-and-fec-counters) for byte
 accounting, interpretation limits, and snapshot/clear behavior.
 
+## Sender-local ARQ-first parity policy
+
+With the default `SRTO_ROBOTWEAX_FECPOLICY=ALWAYS` every ready repair packet
+is sent. `ARQFIRST` withholds a ready repair packet while two ARQ rounds still
+fit the negotiated latency window and may add the sender tail loss probe
+(`SRTO_ROBOTWEAX_TAILPROBE`). Both are sender-local: the filter string, the
+HSv5 negotiation and the wire format above are unchanged. A receiver that
+supports the negotiated matrix FEC filter needs no additional feature. See
+[ARQ-first FEC and tail loss probes](arq-first-fec.md) for configuration,
+recovery behavior and validation scope.
+
 ## Compatibility and limitations
 
 Robotweax supports Row, Column, and Matrix FEC with `even` and `staircase`

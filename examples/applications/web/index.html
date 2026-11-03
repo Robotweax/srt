@@ -15,7 +15,7 @@
           <label>Duration <span class="unit">seconds</span><input id="duration" type="number" min="10" max="120" value="18" required></label>
           <label>SRT latency <span class="unit">ms</span><input id="latency" type="number" min="60" max="1000" value="120" required></label>
           <div data-section="media"><label>Source<select id="source"><option value="testcard">Encoded test card + tone</option value="file" disabled>Configured media file</option></select></label><label>Path policy<select id="policy"><option value="backup">Weighted Backup</option><option value="broadcast">Broadcast redundancy</option></select></label></div>
-          <div data-section="recovery" hidden><label>Recovery strategy<select id="filter"><option value="arq">ARQ only</option><option value="row">Row FEC · no ARQ</option><option value="column">Column FEC · no ARQ</option><option value="matrix">Matrix FEC + ARQ on request</option></select></label></div>
+          <div data-section="recovery" hidden><label>Recovery strategy<select id="filter"><option value="arq">ARQ only</option><option value="row">Row FEC · no ARQ</option><option value="column">Column FEC · no ARQ</option><option value="matrix">Matrix FEC + ARQ on request</option><option value="matrix-always">Matrix 8×8 · always-on FEC</option><option value="matrix-arqfirst">Matrix 8×8 · ARQ-first FEC</option></select></label></div>
           <div class="divider"></div><p class="eyebrow">CONTROLLED IMPAIRMENT</p>
           <label>Drop period <span class="unit">0 = off</span><input id="drop-every" type="number" min="0" max="10000" value="0" required></label>
           <label>Burst size <span class="unit">packets</span><input id="burst" type="number" min="1" max="100" value="1" required></label>

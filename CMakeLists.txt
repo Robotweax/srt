@@ -487,6 +487,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_live.cpp
         tests/test_logging.cpp
         tests/test_packet_filter.cpp
+        tests/test_parity_policy.cpp
         tests/test_receive_buffer.cpp
         tests/test_reliability.cpp
         tests/test_rendezvous.cpp
@@ -1030,6 +1031,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         endif()
         foreach(application_crypto IN LISTS application_crypto_modes)
             foreach(application_scenario IN ITEMS recovery recovery-arq recovery-fec
+                    recovery-matrix-always recovery-arqfirst
                     contribution-backup contribution-broadcast device device-impaired)
                 add_test(NAME robotweax_srt_application_${application_scenario}_${application_crypto}
                     COMMAND ${Python3_EXECUTABLE}
@@ -1076,6 +1078,12 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
                 --demo $<TARGET_FILE:robotweax_srt_udp_bridge>)
         set_tests_properties(robotweax_srt_udp_bridge_loopback
             PROPERTIES TIMEOUT 120 LABELS "example;integration")
+        add_test(NAME robotweax_srt_udp_bridge_arqfirst
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples/test_udp_bridge.py
+                --demo $<TARGET_FILE:robotweax_srt_udp_bridge> --arq-first-only)
+        set_tests_properties(robotweax_srt_udp_bridge_arqfirst
+            PROPERTIES TIMEOUT 30 LABELS "example;integration")
         foreach(message_demo_scenario IN ITEMS
                 caller-listener
                 rendezvous)
@@ -1089,6 +1097,28 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
                 robotweax_srt_message_demo_${message_demo_scenario}
                 PROPERTIES TIMEOUT 20 LABELS "example;integration")
         endforeach()
+        add_test(NAME robotweax_srt_message_demo_arqfirst
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples/test_message_demo.py
+                --demo $<TARGET_FILE:robotweax_srt_message_demo>
+                --scenario caller-listener --arq-first)
+        set_tests_properties(robotweax_srt_message_demo_arqfirst
+            PROPERTIES TIMEOUT 20 LABELS "example;integration")
+        add_test(NAME robotweax_srt_message_demo_arqfirst_listener
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples/test_message_demo.py
+                --demo $<TARGET_FILE:robotweax_srt_message_demo>
+                --scenario caller-listener --arq-first-listener)
+        set_tests_properties(robotweax_srt_message_demo_arqfirst_listener
+            PROPERTIES TIMEOUT 20 LABELS "example;integration")
+        add_test(NAME robotweax_srt_demo_fec_options
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples/test_fec_options.py
+                --message $<TARGET_FILE:robotweax_srt_message_demo>
+                --recovery $<TARGET_FILE:robotweax_srt_recovery>
+                --bridge $<TARGET_FILE:robotweax_srt_udp_bridge>)
+        set_tests_properties(robotweax_srt_demo_fec_options
+            PROPERTIES TIMEOUT 20 LABELS "example;application")
         set(control_demo_crypto_modes ctr)
         if(ENABLE_AEAD_API_PREVIEW)
             list(APPEND control_demo_crypto_modes gcm)

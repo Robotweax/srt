@@ -93,6 +93,7 @@ and are not a source- or binary-compatibility contract.
 - [Optional group path identifiers](group-path-identifiers.md) — development-branch
   bilateral labels, versioned metadata and reconnect scope.
 - [Packet-filter FEC](packet-filter.md)
+- [ARQ-first FEC and tail loss probes](arq-first-fec.md)
 - [Runtime construction during handshake handoff](setup-runtime-handoff.md) —
   bounded setup-inbox overflow diagnosis and routing-lock correction.
 - [Live timing](live-timing.md)

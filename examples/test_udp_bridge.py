@@ -77,7 +77,8 @@ def free_port(excluded: set[int]) -> int:
 
 def run_bridge(demo: Path, reverse: bool = False, encrypted: bool = False,
                invalid: bytes | None = None, rendezvous: bool = False,
-               multicast: bool = False, restart_sender: bool | None = None) -> None:
+               multicast: bool = False, restart_sender: bool | None = None,
+               arq_first: bool = False) -> None:
     environment = os.environ.copy()
     secret_name = "ROBOTWEAX_BRIDGE_TEST_SECRET"
     environment[secret_name] = "public-loopback-fixture-only"
@@ -122,6 +123,10 @@ def run_bridge(demo: Path, reverse: bool = False, encrypted: bool = False,
                                 "--srt-port", str(srt_port), "--srt-local-port",
                                 str(second_port), *rv_common]
         sender_command += ["--udp-host", input_host]
+        if arq_first:
+            sender_command += ["--arq-first"]
+            if reverse:
+                receiver_command += ["--packet-filter", "fec,cols:8,rows:8,layout:even,arq:always"]
         receiver_command += ["--udp-host", output_host]
         if multicast:
             sender_command += ["--udp-interface", "127.0.0.1"]
@@ -344,7 +349,14 @@ def run_failure_policy(demo: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--demo", type=Path, required=True)
-    demo = parser.parse_args().demo.resolve()
+    parser.add_argument("--arq-first-only", action="store_true")
+    args = parser.parse_args()
+    demo = args.demo.resolve()
+    if args.arq_first_only:
+        for reverse, encrypted in ((False, False), (True, False), (False, True)):
+            run_bridge(demo, reverse=reverse, encrypted=encrypted, arq_first=True)
+        print("PASS ARQ-first bridge: exact datagrams, Caller/Listener senders and AES-CTR")
+        return
     help_result = subprocess.run([str(demo), "--help"], capture_output=True, timeout=5)
     assert help_result.returncode == 0
     invalid_cli = subprocess.run(

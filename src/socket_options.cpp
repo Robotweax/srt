@@ -113,7 +113,8 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
     case SocketOption::tsbpd_mode:
         if (!is_boolean(value)) return Error::invalid_state;
         if ((is_experimental_congestion_controller(congestion_controller_)
-                || packet_filter_configuration_.experimental())
+                || packet_filter_configuration_.experimental()
+                || fec_policy_ == FecPolicy::arqfirst)
             && value == 0)
             return Error::invalid_state;
         if ((packet_filter_configuration_.sensor_profile() || control_profile())
@@ -276,6 +277,29 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
 #else
         return Error::invalid_state;
 #endif
+    case SocketOption::fec_policy:
+        // Accepted only for the configuration the ARQ-first evidence covers;
+        // every other combination is rejected (SRT_EINVPARAM at the C API).
+        if (value != static_cast<std::int64_t>(FecPolicy::always)
+            && value != static_cast<std::int64_t>(FecPolicy::arqfirst))
+            return Error::invalid_state;
+        if (value == static_cast<std::int64_t>(FecPolicy::arqfirst)
+            && !supports_arqfirst_fec())
+            return Error::invalid_state;
+        // The tail loss probe is only proposed together with ARQ-first FEC;
+        // turn it off before returning to the always-on policy.
+        if (value == static_cast<std::int64_t>(FecPolicy::always)
+            && sender_tail_probe_)
+            return Error::invalid_state;
+        fec_policy_ = static_cast<FecPolicy>(value);
+        return Error::none;
+    case SocketOption::sender_tail_probe:
+        if (!is_boolean(value))
+            return Error::invalid_state;
+        if (value != 0 && fec_policy_ != FecPolicy::arqfirst)
+            return Error::invalid_state;
+        sender_tail_probe_ = value != 0;
+        return Error::none;
     case SocketOption::session_authentication:
         if (value != 0 && packet_filter_configuration_.experimental())
             return Error::invalid_state;
@@ -298,6 +322,7 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
                 && is_experimental_congestion_controller(
                     congestion_controller_))
             || (value != 0 && packet_filter_configuration_.experimental())
+            || (value != 0 && fec_policy_ == FecPolicy::arqfirst)
             || (value != 0 && session_authentication_ && !experimental_acp1_))
             return Error::invalid_state;
         rendezvous_ = value != 0;
@@ -344,7 +369,8 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
         }
         if (value == static_cast<std::int64_t>(TransmissionType::file)) {
             if (packet_filter_configuration_.sensor_profile()
-                || packet_filter_configuration_.experimental()) {
+                || packet_filter_configuration_.experimental()
+                || fec_policy_ == FecPolicy::arqfirst) {
                 return Error::invalid_state;
             }
 #ifdef ENABLE_AEAD_API_PREVIEW
@@ -373,7 +399,8 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
             return Error::none;
         }
         if (value == static_cast<std::int64_t>(TransmissionType::control)) {
-            if (packet_filter_configuration_.enabled) {
+            if (packet_filter_configuration_.enabled
+                || fec_policy_ == FecPolicy::arqfirst) {
                 return Error::invalid_state;
             }
 #ifdef ENABLE_AEAD_API_PREVIEW
@@ -487,6 +514,10 @@ SocketOptionResult SocketOptions::get(SocketOption option) const noexcept
     case SocketOption::key_preannouncement_packets: return {.value = key_preannouncement_packets_};
     case SocketOption::experimental_acp1:
         return {.value = experimental_acp1_ ? 1 : 0};
+    case SocketOption::fec_policy:
+        return {.value = static_cast<std::int64_t>(fec_policy_)};
+    case SocketOption::sender_tail_probe:
+        return {.value = sender_tail_probe_ ? 1 : 0};
     case SocketOption::session_authentication:
         return {.value = session_authentication_ ? 1 : 0};
     case SocketOption::enforced_encryption: return {.value = enforced_encryption_ ? 1 : 0};
@@ -555,6 +586,10 @@ Error SocketOptions::set_packet_filter(
             || !message_api_)) {
         return Error::invalid_state;
     }
+    if (fec_policy_ == FecPolicy::arqfirst
+        && !arqfirst_fec_compatible(parsed.configuration)) {
+        return Error::invalid_state;
+    }
 #ifdef ENABLE_AEAD_API_PREVIEW
     if (parsed.configuration.sensor_profile()
         && crypto_mode_ == CryptoMode::aes_gcm && !enforced_encryption_) {
@@ -606,6 +641,10 @@ Error SocketOptions::set_congestion_controller(
         && parsed != CongestionController::live)
         return Error::invalid_state;
     if (control_profile() || parsed == CongestionController::control) {
+        return Error::invalid_state;
+    }
+    if (fec_policy_ == FecPolicy::arqfirst
+        && parsed != CongestionController::live) {
         return Error::invalid_state;
     }
 #ifdef ENABLE_AEAD_API_PREVIEW

@@ -1358,3 +1358,36 @@ TEST(send_buffer_ack_requires_submission_and_preserves_prefix_on_rejection)
         buffer.acknowledge_submitted_before(first.advanced(2)), Error::none);
     REQUIRE_EQ(buffer.size(), 0U);
 }
+
+TEST(send_buffer_tail_probe_keeps_original_timestamp_and_marks_retransmission)
+{
+    // Stage A: a queued tail loss probe is the last sent original, carrying
+    // its original timestamp and payload with the retransmitted flag set.
+    SendBuffer buffer {SequenceNumber {500}, 8, 4};
+    for (std::uint32_t index = 0; index < 3; ++index) {
+        const std::array<std::byte, 4> input {std::byte {1}, std::byte {2},
+            std::byte {3}, static_cast<std::byte>(index)};
+        REQUIRE_EQ(buffer.enqueue_message(input, index + 1U,
+                       PacketTimestamp {1'000U * (index + 1U)}, 900),
+            Error::none);
+        const auto original =
+            buffer.next_packet(false, true, 1'000U * (index + 1U));
+        REQUIRE(original.has_value());
+        REQUIRE(!original->header.retransmitted);
+        buffer.note_packet_submitted(original->header.sequence);
+    }
+    REQUIRE_EQ(buffer.packets_in_flight(), 3U);
+    REQUIRE(!buffer.has_pending_retransmission());
+    REQUIRE(buffer.request_retransmission_of_last_sent());
+    REQUIRE(buffer.has_pending_retransmission());
+    const auto probe = buffer.next_packet(false, true, 48'000);
+    REQUIRE(probe.has_value());
+    REQUIRE_EQ(probe->header.sequence, SequenceNumber {502});
+    REQUIRE(probe->header.retransmitted);
+    REQUIRE_EQ(probe->header.timestamp.value(), 3'000U);
+    REQUIRE_EQ(probe->header.message_number, 3U);
+    REQUIRE_EQ(probe->payload.size(), 4U);
+    REQUIRE_EQ(std::to_integer<int>(probe->payload[3]), 2);
+    REQUIRE(!buffer.next_packet(false, true, 48'000).has_value());
+    REQUIRE_EQ(buffer.packets_in_flight(), 3U);
+}

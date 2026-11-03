@@ -2,6 +2,7 @@
 #include "compat/transport_runtime.hpp"
 #include "compat/submillisecond_pacing_platform.hpp"
 
+#include "robotweax/srt/parity_policy.hpp"
 #include "robotweax/srt/codec.hpp"
 #include "compat/readiness.hpp"
 #include "compat/group_registry.hpp"
@@ -1706,6 +1707,17 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
         filter, row_fec_decoder_.has_value()
             || column_fec_decoder_.has_value()
             || matrix_fec_decoder_.has_value());
+    // ARQ-first FEC is re-checked against the negotiated filter and the
+    // final connection shape: live, TSBPD, a matrix encoder with arq:always,
+    // no group and no rendezvous. Anything else fails setup, as the
+    // experimental profiles do.
+    if (configuration.options.fec_policy() == FecPolicy::arqfirst
+        && (configuration.group || configuration.options.rendezvous()
+            || !configuration.options.supports_arqfirst_fec()
+            || !matrix_fec_encoder_.has_value()
+            || !configuration.negotiated_options.send_tsbpd)) {
+        throw std::runtime_error("unsupported ARQ-first FEC profile");
+    }
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
     if (filter.experimental()) {
         const auto* selected = extensions::compiled_filter(filter.view());
@@ -2672,7 +2684,7 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
             completion.data.retransmitted, completion.payload_size,
             session_.send_buffer().size(),
             session_.send_buffer().packets_in_flight());
-        session_.note_data_packet_sent(now);
+        session_.note_data_packet_sent(now, completion.data.retransmitted);
         if (completion.data.retransmitted) {
 #ifdef ENABLE_MAXREXMITBW
             retransmission_budget_.consume(bytes.size(), now);
@@ -4512,6 +4524,12 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         now, session_.send_buffer().size() != 0U);
     sample_receiver_buffer_statistics(now);
     (void)session_.poll_sender_retransmission_timeout(now);
+    // Tail loss probe tick (sender_tail_probe = 1 only). A fired probe is
+    // queued as an ordinary retransmission and leaves through the bounded
+    // retransmission drain below.
+    if (session_.poll_tail_probe(now)) {
+        statistics_.note_tail_probe_sent();
+    }
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
     if (session_.experimental_controller_error() != Error::none) {
         break_locked(0);
@@ -4542,6 +4560,18 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             break;
         }
         if (fec_control_ready() && !retransmission_ready(now_microseconds())) {
+            // ARQ-first FEC: a ready repair packet is withheld while two ARQ
+            // rounds still fit the negotiated latency window. Withholding
+            // costs no bandwidth, so it is decided before pacing.
+            if (options_.fec_policy() == FecPolicy::arqfirst
+                && parity::decide(parity::Mode::deadline_only,
+                       session_.parity_inputs(packet_time),
+                       session_.parity_constants())
+                    == parity::Level::none) {
+                consume_fec_control();
+                statistics_.note_parity_withheld();
+                continue;
+            }
             const std::uint64_t live_rate =
                 session_
                     .live_pacing_rate_bytes_per_second();
@@ -4748,6 +4778,15 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             || session_.next_receive_delivery_time().has_value()
             || (crypto_ != nullptr
                 && !crypto_->pending_key_material().empty())) {
+            // A due tail loss probe bounds the wait like a retirement does.
+            if (const auto probe_due = session_.next_tail_probe_due()) {
+                const std::chrono::microseconds probe_delay {
+                    *probe_due > current ? *probe_due - current : 0U};
+                if (!retirement_delay.has_value()
+                    || probe_delay < *retirement_delay) {
+                    retirement_delay = probe_delay;
+                }
+            }
             return {.next_work_delay = retirement_delay};
         }
         const auto maximum = (std::numeric_limits<std::uint64_t>::max)();

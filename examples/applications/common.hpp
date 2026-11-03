@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #pragma once
 
+#include "../demo_fec.hpp"
 #include <srt/srt.h>
 #include <algorithm>
 #include <array>
@@ -54,20 +55,23 @@ inline int number(std::string_view text, int low, int high)
 struct Arguments {
     std::string role;
     std::map<std::string, std::vector<std::string>> values;
-    Arguments(int argc, char** argv, std::string_view allowed)
+    Arguments(int argc, char** argv, std::string_view allowed,
+        std::string_view flags = "")
     {
         if (argc < 2)
             throw std::runtime_error("missing role; use --help");
         role = argv[1];
-        for (int i = 2; i < argc; i += 2) {
+        for (int i = 2; i < argc; ++i) {
             const std::string key = argv[i];
-            if (i + 1 >= argc
+            const bool flag =
+                flags.find(" " + key + " ") != std::string_view::npos;
+            if ((!flag && i + 1 >= argc)
                 || allowed.find(" " + key + " ") == std::string_view::npos)
                 throw std::runtime_error(
                     "unknown option or missing value: " + key);
             if (key != "--path" && values.contains(key))
                 throw std::runtime_error("duplicate option: " + key);
-            values[key].emplace_back(argv[i + 1]);
+            values[key].emplace_back(flag ? "1" : argv[++i]);
         }
     }
     std::string get(
@@ -151,6 +155,7 @@ struct Settings {
     std::string secret_environment;
     std::string crypto = "ctr";
     std::string filter;
+    bool arq_first = false;
     explicit Settings(const Arguments& args)
         : count(args.integer("--count", 600, 1, 1000000))
         , interval_ms(args.integer("--interval-ms", 10, 1, 1000))
@@ -159,7 +164,10 @@ struct Settings {
         , secret_environment(args.get("--passphrase-env"))
         , crypto(args.get("--crypto", "ctr"))
         , filter(args.get("--filter"))
+        , arq_first(args.values.contains("--arq-first"))
     {
+        if (arq_first && filter.empty())
+            filter = srt_demo::matrix_filter;
         if (crypto != "ctr" && crypto != "gcm")
             throw std::runtime_error("crypto must be ctr or gcm");
 #ifndef ENABLE_AEAD_API_PREVIEW
@@ -189,6 +197,12 @@ inline void configure(SRTSOCKET s, const Settings& settings,
         option(s, SRTO_LATENCY, settings.latency_ms);
         if (!settings.filter.empty())
             text_option(s, SRTO_PACKETFILTER, settings.filter);
+    }
+    if (settings.arq_first) {
+        if (profile != SRTT_LIVE || group)
+            throw std::runtime_error(
+                "--arq-first requires a non-group Live socket");
+        srt_demo::configure_arq_first(s);
     }
     if (!settings.secret_environment.empty()) {
         const char* secret = std::getenv(settings.secret_environment.c_str());
@@ -276,6 +290,9 @@ inline void stats(SRTSOCKET s, const std::string& channel,
         + ",\"retransmitted\":" + std::to_string(b.pktRetransTotal)
         + ",\"fec_supplied\":" + std::to_string(b.pktRcvFilterSupplyTotal)
         + ",\"fec_extra\":" + std::to_string(b.pktSndFilterExtraTotal)
+        + ",\"sent_bytes\":" + std::to_string(b.byteSentTotal)
+        + ",\"received_bytes\":" + std::to_string(b.byteRecvTotal)
+        + ",\"belated\":" + std::to_string(b.pktRcvBelated)
         + ",\"receive_drops\":" + std::to_string(b.pktRcvDropTotal)
         + ",\"rtt_ms\":" + std::to_string(b.msRTT)
         + ",\"send_buffer_packets\":" + std::to_string(b.pktSndBuf));

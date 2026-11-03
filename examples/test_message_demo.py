@@ -73,7 +73,8 @@ def wait_for_ready(process: subprocess.Popen[str]) -> str:
     return line
 
 
-def run_caller_listener(demo: Path, crypto: str, profile: str = "live") -> None:
+def run_caller_listener(demo: Path, crypto: str, profile: str = "live", arq_first: bool = False,
+                        arq_first_listener: bool = False) -> None:
     # Keep argv fixtures ASCII: Windows narrow main uses the active code page.
     # All 256 byte values are covered directly by test_demo_text.cpp.
     port = reserve_udp_port()
@@ -93,8 +94,9 @@ def run_caller_listener(demo: Path, crypto: str, profile: str = "live") -> None:
         "5000",
         "--nonblocking",
     ]
-    if profile == "live":
+    if profile == "live" and not arq_first and not arq_first_listener:
         common.extend(["--packet-filter", "fec,cols:10,arq:onreq"])
+    listener_options = ["--arq-first"] if arq_first_listener else []
     listener = subprocess.Popen(
         [
             str(demo),
@@ -106,6 +108,7 @@ def run_caller_listener(demo: Path, crypto: str, profile: str = "live") -> None:
             "--expect-stream-id",
             "demo/loopback",
             *common,
+            *listener_options,
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -113,6 +116,9 @@ def run_caller_listener(demo: Path, crypto: str, profile: str = "live") -> None:
         env=environment,
     )
     ready = wait_for_ready(listener)
+    sender_options = ["--arq-first"] if arq_first else []
+    if arq_first_listener:
+        sender_options += ["--packet-filter", "fec,cols:8,rows:8,layout:even,arq:always"]
     caller = subprocess.run(
         [
             str(demo),
@@ -126,6 +132,7 @@ def run_caller_listener(demo: Path, crypto: str, profile: str = "live") -> None:
             "--message",
             "caller-listener-smoke\nFORGED\x1b]52;c;demo\x07\x7f",
             *common,
+            *sender_options,
         ],
         capture_output=True,
         text=True,
@@ -224,9 +231,12 @@ def main() -> int:
     )
     parser.add_argument("--crypto", choices=("ctr", "gcm"), default="ctr")
     parser.add_argument("--profile", choices=("live", "control", "sensor"), default="live")
+    parser.add_argument("--arq-first", action="store_true")
+    parser.add_argument("--arq-first-listener", action="store_true")
     arguments = parser.parse_args()
     if arguments.scenario == "caller-listener":
-        run_caller_listener(arguments.demo, arguments.crypto, arguments.profile)
+        run_caller_listener(arguments.demo, arguments.crypto, arguments.profile,
+                            arguments.arq_first, arguments.arq_first_listener)
     else:
         run_rendezvous(arguments.demo)
     return 0

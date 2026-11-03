@@ -155,6 +155,7 @@ configure live transport through `<srt/srt.h>`.
 - Independent `"live"`/`"file"` congestion-controller selection
 - Compatible live/file linger configuration
 - Packet-filter configuration through a bounded pre-connection string
+- Opt-in sender-local ARQ-first FEC parity policy and tail loss probe
 - Caller Stream ID through a bounded pre-connection string
 - Compatible pre-connection sender-role hint
 - Read-only local initial data sequence number
@@ -727,6 +728,65 @@ only) reports the multicast-path counters described in
 All six are experimental and absent from v0.3.1 artifacts. See
 [multicast dispatch groups](connection-groups.md#multicast-dispatch-groups).
 
+## ARQ-first FEC and the tail loss probe (opt-in, sender-local)
+
+`SRTO_ROBOTWEAX_FECPOLICY` (`0x01000016`, int32, PRE, default
+`ROBOTWEAX_SRT_FECPOLICY_ALWAYS` = 0) selects how a sender with a negotiated
+FEC filter emits its parity. `ALWAYS` is today's behaviour: every ready
+repair packet is sent. `ROBOTWEAX_SRT_FECPOLICY_ARQFIRST` (1), "ARQ-first
+FEC", sends FEC parity only while a retransmission could not arrive within the
+latency window; otherwise it relies on ARQ. Parity is withheld while
+`2 + 2·srtt + 4·rttvar + 20 + 5 ms < negotiated peer receive delay`.
+The sender uses its own RTT estimate and sends full parity when the condition
+is not met or while no RTT sample exists. A withheld repair packet is consumed, not delayed; the receiver
+already tolerates a missing repair, so the filter string, handshake and wire
+format are unchanged and the peer needs nothing.
+
+`SRTO_ROBOTWEAX_TAILPROBE` (`0x01000017`, bool, PRE, default false) enables
+the sender tail loss probe (the established term from TCP TLP,
+[RFC 8985](https://www.rfc-editor.org/rfc/rfc8985.html)): after the sender
+goes idle with packets in flight, it resends the last packet so the receiver
+can detect a lost tail. The probe is armed only while ARQ-first FEC currently
+withholds parity. It is due when no original has been submitted for
+`max(2·srtt, 10 ms)`, capped at 120 ms, fires only while the send buffer still
+holds unacknowledged packets, costs one source-sized datagram carrying the
+ordinary retransmitted flag and original timestamp, and is limited to three
+due times per idle period; only a new original restarts the period, while
+ACKs, NAKs, retransmissions and probes leave it alone.
+
+Cold start: the first probe interval uses the smoothed RTT at submission of
+the last original. Each subsequent interval uses the RTT when the previous
+due time is evaluated. A new RTT sample does not reschedule an existing due
+time. Before any measured RTT, the first interval is the full 120 ms cap,
+even if a shorter RTT is measured shortly afterwards. This can prevent timely
+tail recovery on a short stream. The component study covered bursts that
+ended with a measured RTT already available.
+
+Acceptance, enforced when the option is set and re-checked at connection
+setup: `ARQFIRST` requires `SRTT_LIVE`, TSBPD on, the live congestion
+controller, no rendezvous, no group socket or member, and an enabled `fec`
+filter with `arq:always` and `rows >= 2` (a matrix geometry, for example
+`fec,cols:8,rows:8,layout:even,arq:always`). The sensor profile
+(`fec-sensor-v1`), `rwx-` experimental filters, file and control modes reject
+it. `SRTO_ROBOTWEAX_TAILPROBE=true` is accepted only while the policy is
+`ARQFIRST`, and the policy cannot return to `ALWAYS` while the probe is on.
+Set the filter first, then the policy, then the probe; a later change that
+would leave this bundle fails with `SRT_EINVPARAM` and changes nothing, and
+a negotiated filter that no longer satisfies it fails connection setup. Both
+options are sender-local and never negotiated. Two Robotweax statistics
+counters, `parity_withheld` and `tail_probes_sent`, record the withheld
+repair packets and the queued probes; `SRT_TRACEBSTATS` is unchanged.
+
+Validation includes unit tests, demo loopback smoke tests and a component study with
+120 ms receive delay and Matrix 8×8 even geometry. The study compared 80
+ARQ-first FEC cases with 80 matching always-on Matrix FEC cases and found
+8.5620% fewer aggregate IPv4 bytes, with no missing sources or deadline
+failures under a fixed 147 µs timing tolerance. These are component results,
+not qualification of the integrated socket path. See
+[ARQ-first FEC and tail loss probes](arq-first-fec.md#validation-scope) for
+the workload, the distinction between the 80 matched cases and the complete
+400-case study, and the limits of the evidence.
+
 ## Group admission callback migration (since 0.2.8)
 
 A listen callback admitting a group member must authorize it and set a nonzero
@@ -853,3 +913,5 @@ These options occupy a separate namespace and do not alter the upstream
 | STANDBYRTT_REQUIRED | 0x01000008 | bool / false | R/W, PRE; bilateral Backup Live/Message with TSBPD | Group/listener template; endpoint configuration rejected |
 | PATHID_POLICY | 0x0100000e | int32 / OFF | R/W, PRE; OFF, REQUIRED (= PATHID_REQUIRED), IF_OFFERED listener-only | Caller group OFF/REQUIRED; accepted sockets report the negotiated result |
 | STANDBYRTT_POLICY | 0x0100000f | int32 / OFF | R/W, PRE; OFF, REQUIRED (= STANDBYRTT_REQUIRED), IF_OFFERED listener-only | Backup group OFF/REQUIRED; accepted sockets report the negotiated result |
+| FECPOLICY | 0x01000016 | int32 / ALWAYS (0) | R/W, PRE; ARQFIRST (1) only with live TSBPD, no rendezvous, `fec` filter `arq:always` and `rows >= 2`; sender-local, not negotiated | Group sockets and members reject ARQFIRST |
+| TAILPROBE | 0x01000017 | bool / false | R/W, PRE; only together with FECPOLICY = ARQFIRST; sender-local | Group sockets and members reject true |

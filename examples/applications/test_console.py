@@ -10,7 +10,34 @@ import types
 import unittest
 from unittest.mock import patch
 
-from console import Console, ConsoleServer, Handler, Job, configuration, path_labels
+from console import Console, ConsoleServer, FILTERS, Handler, Job, configuration, path_labels
+
+
+class RecoveryModeTests(unittest.TestCase):
+    def test_modes_use_the_same_filter_and_only_configure_the_sender_policy(self):
+        for mode in ("always", "arqfirst"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                config = configuration({"kind": "recovery", "filter": "matrix-" + mode})
+                args = argparse.Namespace(output_dir=Path(directory), binary_dir=Path(directory))
+                job = Job(args, config)
+                launched = {}
+                def spawn(name, command):
+                    launched[name] = command
+                    return types.SimpleNamespace(ready=lambda: None)
+                with patch.object(job, "spawn", side_effect=spawn), \
+                     patch.object(job, "proxy"), patch.object(job, "wait"), \
+                     patch.object(job, "snapshot", return_value={}), \
+                     patch("console.ports", return_value=9000):
+                    job.transport()
+                self.assertNotIn("--arq-first", launched["receiver"])
+                sender = launched["sender"]
+                self.assertEqual("--arq-first" in sender, mode == "arqfirst")
+                for name in ("receiver", "sender"):
+                    command = launched[name]
+                    self.assertEqual(command[command.index("--filter") + 1],
+                                     "fec,cols:8,rows:8,layout:even,arq:always")
+                self.assertEqual(FILTERS[config["filter"]],
+                                 "fec,cols:8,rows:8,layout:even,arq:always")
 
 
 class PathStatusTests(unittest.TestCase):

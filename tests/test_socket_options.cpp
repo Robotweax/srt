@@ -2,6 +2,10 @@
 
 #include "robotweax/srt/socket_options.hpp"
 
+#include <cstdint>
+#include <string_view>
+#include <vector>
+
 using namespace robotweax::srt;
 
 TEST(socket_options_experimental_controller_is_explicit_build_opt_in)
@@ -684,4 +688,240 @@ TEST(session_authentication_rejects_insufficient_fec_mss_without_mutation)
     REQUIRE_EQ(options.set(SocketOption::maximum_segment_size, 76),
         Error::invalid_state);
     REQUIRE_EQ(options.maximum_payload_size_limit(), before);
+}
+
+namespace {
+
+constexpr std::string_view arqfirst_filter =
+    "fec,cols:8,rows:8,layout:even,arq:always";
+
+constexpr SocketOption observed_options[] = {
+    SocketOption::input_bandwidth_bytes_per_second,
+    SocketOption::minimum_input_bandwidth_bytes_per_second,
+    SocketOption::maximum_bandwidth_bytes_per_second,
+    SocketOption::overhead_bandwidth_percent,
+    SocketOption::receiver_latency_milliseconds,
+    SocketOption::peer_latency_milliseconds,
+    SocketOption::sender_drop_delay_milliseconds,
+    SocketOption::drift_tracer,
+    SocketOption::tsbpd_mode,
+    SocketOption::too_late_packet_drop,
+    SocketOption::periodic_nak,
+    SocketOption::retransmit_flag,
+    SocketOption::maximum_reorder_tolerance_packets,
+    SocketOption::send_buffer_packets,
+    SocketOption::receive_buffer_packets,
+    SocketOption::flow_window_packets,
+    SocketOption::maximum_segment_size,
+    SocketOption::maximum_payload_size,
+    SocketOption::encryption_key_length,
+    SocketOption::key_refresh_rate_packets,
+    SocketOption::key_preannouncement_packets,
+    SocketOption::enforced_encryption,
+    SocketOption::rendezvous,
+    SocketOption::message_api,
+    SocketOption::transmission_type,
+    SocketOption::congestion_controller,
+    SocketOption::session_authentication,
+    SocketOption::experimental_acp1,
+};
+
+std::vector<std::int64_t> snapshot_other_options(const SocketOptions& options)
+{
+    std::vector<std::int64_t> values;
+    for (const auto option : observed_options) {
+        values.push_back(options.get(option).value);
+    }
+    values.push_back(static_cast<std::int64_t>(options.packet_filter().size()));
+    values.push_back(static_cast<std::int64_t>(options.maximum_payload_size()));
+    return values;
+}
+
+SocketOptions arqfirst_capable_options()
+{
+    SocketOptions options;
+    REQUIRE_EQ(options.set_packet_filter(arqfirst_filter), Error::none);
+    REQUIRE(options.supports_arqfirst_fec());
+    return options;
+}
+
+} // namespace
+
+TEST(fec_policy_and_tail_probe_default_off_and_change_no_other_option)
+{
+    const SocketOptions defaults;
+    REQUIRE_EQ(defaults.get(SocketOption::fec_policy).value,
+        static_cast<std::int64_t>(FecPolicy::always));
+    REQUIRE_EQ(defaults.fec_policy(), FecPolicy::always);
+    REQUIRE_EQ(defaults.get(SocketOption::sender_tail_probe).value, 0);
+    REQUIRE(!defaults.sender_tail_probe());
+    REQUIRE(!defaults.supports_arqfirst_fec());
+
+    auto options = arqfirst_capable_options();
+    const auto before = snapshot_other_options(options);
+    REQUIRE_EQ(options.set(SocketOption::fec_policy,
+                   static_cast<std::int64_t>(FecPolicy::arqfirst)),
+        Error::none);
+    REQUIRE_EQ(options.fec_policy(), FecPolicy::arqfirst);
+    REQUIRE_EQ(snapshot_other_options(options), before);
+    REQUIRE_EQ(options.set(SocketOption::sender_tail_probe, 1), Error::none);
+    REQUIRE(options.sender_tail_probe());
+    REQUIRE_EQ(snapshot_other_options(options), before);
+    REQUIRE_EQ(options.packet_filter(), arqfirst_filter);
+    // The filter string, and therefore the handshake, is untouched.
+    REQUIRE_EQ(options.handshake_parameters().flags,
+        arqfirst_capable_options().handshake_parameters().flags);
+
+    // Values outside the enumerations are rejected without mutation.
+    REQUIRE_EQ(options.set(SocketOption::fec_policy, 2), Error::invalid_state);
+    REQUIRE_EQ(options.set(SocketOption::fec_policy, -1), Error::invalid_state);
+    REQUIRE_EQ(
+        options.set(SocketOption::sender_tail_probe, 2), Error::invalid_state);
+    REQUIRE_EQ(options.fec_policy(), FecPolicy::arqfirst);
+    REQUIRE(options.sender_tail_probe());
+
+    // Back to the defaults: the probe must go first.
+    REQUIRE_EQ(options.set(SocketOption::fec_policy,
+                   static_cast<std::int64_t>(FecPolicy::always)),
+        Error::invalid_state);
+    REQUIRE_EQ(options.set(SocketOption::sender_tail_probe, 0), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::fec_policy,
+                   static_cast<std::int64_t>(FecPolicy::always)),
+        Error::none);
+    REQUIRE_EQ(snapshot_other_options(options), before);
+}
+
+TEST(fec_policy_arqfirst_rejects_every_unsupported_combination)
+{
+    constexpr auto arqfirst = static_cast<std::int64_t>(FecPolicy::arqfirst);
+    const auto rejects = [](SocketOptions options) {
+        const auto before = snapshot_other_options(options);
+        REQUIRE_EQ(options.set(SocketOption::fec_policy, arqfirst),
+            Error::invalid_state);
+        REQUIRE_EQ(options.fec_policy(), FecPolicy::always);
+        // The probe alone is never accepted either.
+        REQUIRE_EQ(options.set(SocketOption::sender_tail_probe, 1),
+            Error::invalid_state);
+        REQUIRE(!options.sender_tail_probe());
+        REQUIRE_EQ(snapshot_other_options(options), before);
+    };
+
+    // No filter at all.
+    rejects(SocketOptions {});
+    {
+        // Filter with the default arq:onreq, with arq:never, and row-only
+        // or column-only geometries.
+        for (const std::string_view filter : {
+                 std::string_view {"fec,cols:8,rows:8,layout:even"},
+                 std::string_view {"fec,cols:8,rows:8,layout:even,arq:onreq"},
+                 std::string_view {"fec,cols:8,rows:8,layout:even,arq:never"},
+                 std::string_view {"fec,cols:8,rows:1,arq:always"},
+                 std::string_view {"fec,cols:8,rows:-2,arq:always"},
+                 std::string_view {"fec,cols:8"},
+             }) {
+            SocketOptions options;
+            REQUIRE_EQ(options.set_packet_filter(filter), Error::none);
+            REQUIRE(!options.supports_arqfirst_fec());
+            rejects(options);
+        }
+    }
+    {
+        // Sensor profile.
+        SocketOptions options;
+        REQUIRE_EQ(
+            options.set_packet_filter("fec-sensor-v1,cols:4,rows:1,arq:never"),
+            Error::none);
+        rejects(options);
+    }
+    {
+        // TSBPD off.
+        auto options = arqfirst_capable_options();
+        REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+        rejects(options);
+    }
+    {
+        // Rendezvous.
+        auto options = arqfirst_capable_options();
+        REQUIRE_EQ(options.set(SocketOption::rendezvous, 1), Error::none);
+        rejects(options);
+    }
+    {
+        // File mode (the filter is dropped from the matrix bundle anyway).
+        SocketOptions options;
+        REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                       static_cast<std::int64_t>(TransmissionType::file)),
+            Error::none);
+        rejects(options);
+        auto with_filter = arqfirst_capable_options();
+        REQUIRE_EQ(with_filter.set(SocketOption::transmission_type,
+                       static_cast<std::int64_t>(TransmissionType::file)),
+            Error::none);
+        rejects(with_filter);
+    }
+    {
+        // Control profile.
+        SocketOptions options;
+        REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                       static_cast<std::int64_t>(TransmissionType::control)),
+            Error::none);
+        rejects(options);
+    }
+    {
+        // A non-live congestion controller.
+        auto options = arqfirst_capable_options();
+        REQUIRE_EQ(options.set_congestion_controller("file"), Error::none);
+        rejects(options);
+    }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+    {
+        // Experimental rwx- filters.
+        SocketOptions options;
+        if (options.set_packet_filter("rwx-repeat-v1") == Error::none) {
+            REQUIRE(options.packet_filter_configuration().experimental());
+            rejects(options);
+        }
+    }
+#endif
+}
+
+TEST(fec_policy_arqfirst_locks_the_accepted_bundle)
+{
+    auto options = arqfirst_capable_options();
+    REQUIRE_EQ(options.set(SocketOption::fec_policy,
+                   static_cast<std::int64_t>(FecPolicy::arqfirst)),
+        Error::none);
+    REQUIRE_EQ(options.set(SocketOption::sender_tail_probe, 1), Error::none);
+    const auto before = snapshot_other_options(options);
+    // Later changes that would leave the evidence-covered bundle fail and
+    // mutate nothing; the connection setup re-check covers negotiation.
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::invalid_state);
+    REQUIRE_EQ(options.set(SocketOption::rendezvous, 1), Error::invalid_state);
+    REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::file)),
+        Error::invalid_state);
+    REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::control)),
+        Error::invalid_state);
+    REQUIRE_EQ(options.set_congestion_controller("file"), Error::invalid_state);
+    REQUIRE_EQ(options.set_packet_filter("fec,cols:8,rows:1,arq:always"),
+        Error::invalid_state);
+    REQUIRE_EQ(options.set_packet_filter("fec,cols:8,rows:8,arq:onreq"),
+        Error::invalid_state);
+    REQUIRE_EQ(options.set_packet_filter({}), Error::invalid_state);
+    REQUIRE_EQ(
+        options.set_packet_filter("fec-sensor-v1,cols:4,rows:1,arq:never"),
+        Error::invalid_state);
+    REQUIRE_EQ(snapshot_other_options(options), before);
+    REQUIRE_EQ(options.packet_filter(), arqfirst_filter);
+    // Another matrix arq:always geometry stays acceptable.
+    REQUIRE_EQ(
+        options.set_packet_filter("fec,cols:4,rows:2,arq:always"), Error::none);
+    REQUIRE_EQ(options.fec_policy(), FecPolicy::arqfirst);
+    REQUIRE(options.sender_tail_probe());
+    // Re-selecting live keeps the bundle and the options.
+    REQUIRE_EQ(options.set(SocketOption::transmission_type,
+                   static_cast<std::int64_t>(TransmissionType::live)),
+        Error::none);
+    REQUIRE_EQ(options.fec_policy(), FecPolicy::arqfirst);
+    REQUIRE(options.supports_arqfirst_fec());
 }
