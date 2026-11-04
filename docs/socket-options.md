@@ -730,6 +730,8 @@ All six are experimental and absent from v0.3.1 artifacts. See
 
 ## ARQ-first FEC and the tail loss probe (opt-in, sender-local)
 
+Available from 0.3.2 as regular opt-in options; both defaults remain unchanged.
+
 `SRTO_ROBOTWEAX_FECPOLICY` (`0x01000016`, int32, PRE, default
 `ROBOTWEAX_SRT_FECPOLICY_ALWAYS` = 0) selects how a sender with a negotiated
 FEC filter emits its parity. `ALWAYS` is today's behaviour: every ready
@@ -759,8 +761,9 @@ the last original. Each subsequent interval uses the RTT when the previous
 due time is evaluated. A new RTT sample does not reschedule an existing due
 time. Before any measured RTT, the first interval is the full 120 ms cap,
 even if a shorter RTT is measured shortly afterwards. This can prevent timely
-tail recovery on a short stream. The component study covered bursts that
-ended with a measured RTT already available.
+tail recovery on a short stream. With no measured RTT feedback, parity remains
+enabled and the probe is disarmed; a partial first FEC matrix may still lose
+its final packets.
 
 Acceptance, enforced when the option is set and re-checked at connection
 setup: `ARQFIRST` requires `SRTT_LIVE`, TSBPD on, the live congestion
@@ -777,15 +780,12 @@ options are sender-local and never negotiated. Two Robotweax statistics
 counters, `parity_withheld` and `tail_probes_sent`, record the withheld
 repair packets and the queued probes; `SRT_TRACEBSTATS` is unchanged.
 
-Validation includes unit tests, demo loopback smoke tests and a component study with
-120 ms receive delay and Matrix 8×8 even geometry. The study compared 80
-ARQ-first FEC cases with 80 matching always-on Matrix FEC cases and found
-8.5620% fewer aggregate IPv4 bytes, with no missing sources or deadline
-failures under a fixed 147 µs timing tolerance. These are component results,
-not qualification of the integrated socket path. See
+Validation includes unit tests, demo loopback smoke tests and real-UDP tail-loss
+tests with Matrix 8×8, measured RTT and a 400 ms receive delay, including CTR/GCM.
+Missing-feedback cases explicitly retain the cold-start limitation. See
 [ARQ-first FEC and tail loss probes](arq-first-fec.md#validation-scope) for
-the workload, the distinction between the 80 matched cases and the complete
-400-case study, and the limits of the evidence.
+the exact workload and commands. No general traffic-reduction percentage or
+universal delivery deadline is claimed.
 
 ## Group admission callback migration (since 0.2.8)
 

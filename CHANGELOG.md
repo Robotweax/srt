@@ -6,6 +6,17 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Advance multicast group keys across receiver-free intervals, including sequence
+  wrap; preserve retained keys and stream position when new key generation fails.
+- Report an empty open multicast sender as writable, without receive or terminal
+  error readiness; retain elected-transmitter backpressure.
+- Partition bounded multicast and idle-readiness tests and preserve media-sample
+  child logs on timeout. Add real-UDP ARQ-first tail-loss coverage with measured
+  RTT, missing-feedback coverage and explicit option-off checks.
+- Apply TSBPD drift correction only with valid measured RTT, distinguish missing
+  IPv6 multicast host capability, and reserve listener accept capacity before
+  provisional allocation, admission callbacks and setup.
+
 - Add the opt-in, sender-local ARQ-first FEC parity policy
   (`SRTO_ROBOTWEAX_FECPOLICY`, default `ALWAYS`) and the sender tail loss
   probe (`SRTO_ROBOTWEAX_TAILPROBE`, default off). Both use the existing
@@ -46,7 +57,8 @@ version returned by `srt_getversion()`.
   immediately, and every dispatch DATA packet names the group as
   destination so AES-GCM headers match on the multicast copy and the unicast
   repeat. A dispatch receiver does not retain the HSv5 handshake key clone.
-  Not yet covered by the independent cryptographic review.
+  Included in the completed 2026-11-04 Codex Security source review; shared-key
+  trust and revocation limits remain explicit.
 - Add `SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD`: once that many receivers ask
   for a repeat of one packet within a couple of round trips, a dispatch
   sender repeats it once on the multicast path; and read-only

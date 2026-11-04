@@ -6,7 +6,9 @@ for the existing matrix FEC filter. The optional tail loss probe helps
 reveal losses at the end of a burst, when no later original packet would
 otherwise expose a gap.
 
-These options are development features and are not included in v0.3.1.
+Available from Robotweax SRT 0.3.2. ARQ-first is a regular opt-in sender
+policy; existing applications retain always-on parity and no tail probes
+unless they explicitly enable these options.
 
 ## Configuration
 
@@ -72,8 +74,10 @@ is submitted, and subsequent intervals are computed when the previous due
 time is evaluated. A later RTT update does not reschedule an existing due
 time. Without an initial RTT measurement, the first interval is 120 ms,
 even if a shorter RTT is measured before that interval ends. This can
-prevent timely tail recovery on a short stream; the component study below
-covered bursts that ended with a measured RTT already available.
+prevent timely tail recovery on a short stream. Without measured RTT feedback,
+parity remains enabled and the probe stays disarmed. A short, incomplete FEC
+matrix can therefore still lose its final packets; enabling the probe does
+not establish a deadline guarantee for that cold-start case.
 
 Withheld repairs do not count as sent FEC packets. Queued probes use the
 ordinary retransmission path. The internal counters `parity_withheld` and
@@ -82,24 +86,28 @@ ordinary retransmission path. The internal counters `parity_withheld` and
 
 ## Validation scope
 
-A deterministic in-process component study compared 80 ARQ-first FEC cases
-with 80 matching always-on Matrix FEC cases. The complete study contained
-400 cases across five recovery configurations; it did not contain 400
-ARQ-first FEC cases. The workload used Matrix 8×8 even geometry, `arq:always`,
-a 120 ms negotiated receive delay, 1,250-byte sources at 1 ms intervals,
-and a 20 Mbit/s simulated link, reduced to 12 Mbit/s for the capacity profile.
-
-Across the 80 matched cases, aggregate IPv4 traffic in both directions was
-123,762,844 bytes for ARQ-first FEC with the probe and 135,351,656 bytes for
-always-on Matrix FEC, a reduction of 8.5620%. Neither configuration had
-missing sources or deadline failures under the study's fixed 147 µs timing
-tolerance. This result does not establish strictly zero lateness.
-
 Integration unit tests cover option defaults and rejection rules, parity
 decisions, probe scheduling, retransmission metadata and unchanged session
 packet sequences with the options off. Loopback smoke tests also exercise
 ARQ-first in the Recovery sender with CTR/GCM, Message Caller/Listener echo,
 and UDP-to-SRT bridging in both connection directions, including AES-CTR.
-They check configuration and payload integrity, not comparative performance.
-The component-study results are not socket, scheduler, CPU or WAN measurements
-and do not qualify other payloads, geometries, delays or encrypted operation.
+They check configuration and payload integrity.
+
+The `robotweax_srt_arq_transport_tests` CTest partition runs real UDP sockets,
+the transport scheduler and public send/receive APIs with controlled packet
+loss. With measured RTT, Matrix 8×8, 400 ms receive delay and a partial
+three-message tail, it drops the last one or two originals and checks exact
+ordered recovery, zero source drops and repair submission within the configured
+delay. The cases cover plaintext, AES-CTR and AES-GCM when enabled. Separate
+cases keep the probe off unless requested and verify the disarmed state with
+missing RTT feedback at 60 ms and 400 ms receive delays.
+
+```sh
+ctest --test-dir build -R robotweax_srt_arq_transport_tests --output-on-failure
+```
+
+These are functional regression profiles, not CPU, throughput or WAN benchmarks.
+Earlier numerical traffic-reduction results came from an external component
+study whose complete pinned harness and raw evidence are not shipped here.
+They are not used as a release performance claim. Other workloads, geometries
+and network conditions require their own measurements.

@@ -133,8 +133,8 @@ profiles in 0.2:
 - balancing group policies;
 - multicast dispatch groups with packet-filter FEC, Rendezvous, File/Stream
   mode or a Haivision peer (the experimental Robotweax-to-Robotweax profile,
-  including its one-key-per-group encryption that has not been part of an
-  independent cryptographic review, is described in
+  including its one-key-per-group encryption and
+  [completed source review](security-review-2026-11-04.md), is described in
   [Connection groups](connection-groups.md#multicast-dispatch-groups));
 - group Rendezvous;
 - group File/Stream or FileCC;
