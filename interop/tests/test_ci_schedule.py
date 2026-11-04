@@ -195,7 +195,7 @@ class ScheduledWorkflowTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             flags = dict(line.split("=", 1) for line in out.read_text().splitlines())
             self.assertEqual({key for key, value in flags.items() if value == "true"},
-                             {"ffmpeg", "gstreamer", "vlc", "obs", "obs_platforms"})
+                             {"ffmpeg", "live_transmit", "gstreamer", "vlc", "obs", "obs_platforms"})
             self.assertIn(SHA, summary.read_text())
             self.assertIn("Release integrations only", summary.read_text())
             self.assertEqual(flags["full"], "false")

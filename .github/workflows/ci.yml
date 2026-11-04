@@ -69,6 +69,7 @@ jobs:
       debug: ${{ steps.classify.outputs.debug }}
       shared: ${{ steps.classify.outputs.shared }}
       ffmpeg: ${{ steps.classify.outputs.ffmpeg }}
+      live_transmit: ${{ steps.classify.outputs.live_transmit }}
       gstreamer: ${{ steps.classify.outputs.gstreamer }}
       vlc: ${{ steps.classify.outputs.vlc }}
       obs: ${{ steps.classify.outputs.obs }}
@@ -151,6 +152,9 @@ jobs:
                     && "${INTEGRATIONS_ONLY:-false}" != "true" ]]; then
             integration_policy=(--without-integrations)
           fi
+          if [[ "$profile_ci" == "true" ]]; then
+            integration_policy+=(--without-live-transmit)
+          fi
           output_file="$RUNNER_TEMP/ci-classification.txt"
           changed_file="$RUNNER_TEMP/ci-changed-paths.txt"
           evidence_run_id="$EVIDENCE_RUN_ID"
@@ -191,7 +195,7 @@ jobs:
               echo "Multicast dispatch platform/backend qualification only."
               echo "Commit: $HEAD_SHA"
             elif [[ "${INTEGRATIONS_ONLY:-false}" == "true" ]]; then
-              echo "Release integrations only: FFmpeg, GStreamer, VLC and all OBS profiles."
+              echo "Release integrations only: srt-live-transmit, FFmpeg, GStreamer, VLC and all OBS profiles."
               echo "Commit: $HEAD_SHA"
             elif [[ "$EVENT_NAME" == "schedule" && -n "$evidence_run_id" ]]; then
               echo "Scheduled duplicate omitted: same-commit full CI passed within 24 hours."
@@ -619,6 +623,42 @@ jobs:
           ctest --test-dir build -C Release
           -R robotweax_srt_package_consumer_tests
           --no-tests=error --output-on-failure
+
+  live_transmit_integration:
+    name: srt-live-transmit / ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.live_transmit == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Qualify external application against installed SDK
+        shell: bash
+        env:
+          WORK: ${{ runner.temp }}/live-transmit
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            python tests/live_transmit/build_and_test.py --work "$WORK" --jobs 3
+          else
+            ./tools/python tests/live_transmit/build_and_test.py --work "$WORK" --jobs 3
+          fi
+      - name: Retain application qualification summaries
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: live-transmit-evidence-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/live-transmit/evidence/build-identity.json
+            ${{ runner.temp }}/live-transmit/evidence/runtime/results.json
+          if-no-files-found: warn
+          retention-days: 7
 
   ffmpeg_integration:
     name: FFmpeg integration
@@ -2477,6 +2517,7 @@ jobs:
       - portable_release
       - debug_matrix
       - shared_library
+      - live_transmit_integration
       - ffmpeg_integration
       - gstreamer_integration
       - vlc_integration
@@ -2514,6 +2555,7 @@ jobs:
           PORTABLE_RELEASE: ${{ needs.portable_release.result }}
           DEBUG_MATRIX: ${{ needs.debug_matrix.result }}
           SHARED_LIBRARY: ${{ needs.shared_library.result }}
+          LIVE_TRANSMIT_INTEGRATION: ${{ needs.live_transmit_integration.result }}
           FFMPEG_INTEGRATION: ${{ needs.ffmpeg_integration.result }}
           GSTREAMER_INTEGRATION: ${{ needs.gstreamer_integration.result }}
           VLC_INTEGRATION: ${{ needs.vlc_integration.result }}
@@ -2542,6 +2584,7 @@ jobs:
           EXPECT_portable_release: ${{ needs.changes.outputs.portable == 'true' }}
           EXPECT_debug_matrix: ${{ needs.changes.outputs.debug == 'true' }}
           EXPECT_shared_library: ${{ needs.changes.outputs.shared == 'true' }}
+          EXPECT_live_transmit_integration: ${{ needs.changes.outputs.live_transmit == 'true' }}
           EXPECT_ffmpeg_integration: ${{ needs.changes.outputs.ffmpeg == 'true' }}
           EXPECT_gstreamer_integration: ${{ needs.changes.outputs.gstreamer == 'true' }}
           EXPECT_vlc_integration: ${{ needs.changes.outputs.vlc == 'true' }}
@@ -2570,6 +2613,7 @@ jobs:
             "portable-release=$PORTABLE_RELEASE" \
             "debug-matrix=$DEBUG_MATRIX" \
             "shared-library=$SHARED_LIBRARY" \
+            "live-transmit-integration=$LIVE_TRANSMIT_INTEGRATION" \
             "ffmpeg-integration=$FFMPEG_INTEGRATION" \
             "gstreamer-integration=$GSTREAMER_INTEGRATION" \
             "vlc-integration=$VLC_INTEGRATION" \

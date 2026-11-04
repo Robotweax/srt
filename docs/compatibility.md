@@ -162,6 +162,7 @@ installed binaries. See [0.2.5 release acceptance](release-notes-0.2.5.md#qualif
 
 | Application | Platform / backend | Qualified profile | Required adjustment / boundary |
 | --- | --- | --- | --- |
+| [srt-live-transmit 1.5.7 recipe](srt-live-transmit.md) | Apple Silicon macOS locally; CI matrix Linux/macOS/Windows | Installed-SDK Live UDP↔SRT, Caller/Listener, Matrix FEC, ARQ-first, AES-CTR and invalid-option checks | Optional external application; source/hash guarded. JSON evidence only; no app redistribution or broader mode qualification. |
 | [GStreamer 1.28.7](gstreamer-integration.md) | Linux / OpenSSL | IPv4 Live, Caller/Listener in both directions, cleartext/AES-128-CTR, byte/media checks, listener reconnect and rejection tests | Unmodified plugin; namespaced Robotweax selected by opt-in `srt.pc`. macOS recipe is not a current macOS CI gate; Windows not qualified. No lossless abrupt EOF claim. |
 | [VLC 3.0.24-rc1 pin](vlc-integration.md) | Linux headless / OpenSSL | IPv4 Live MPEG-TS/MPEG-2 video, input Caller/Listener, output Caller, cleartext/AES-128-CTR, media and reconnect checks | Hash-guarded obsolete payload-option removal. No GUI, audio, Windows or macOS qualification. |
 | [OBS 32.2.2 Linux](obs-integration.md), [desktop](obs-desktop.md) | Linux Xvfb/Mesa / OpenSSL | Modules and Qt frontend, H.264/AAC, cleartext/AES-128-CTR, both module roles, desktop duplex/reconnect and short soak | Restricted plugins/FFmpeg; pinned lifecycle fix for desktop only. |

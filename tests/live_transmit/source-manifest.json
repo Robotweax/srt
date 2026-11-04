@@ -1,0 +1,29 @@
+{
+  "repository": "https://github.com/Haivision/srt.git",
+  "revision": "899348d8318eb9a3c5a5b6ec43c4a1114288773a",
+  "files": {
+    "apps/apputil.cpp": "b0b971ef3f5965a9c0e30fc2f9750cdb918bd18c665f68e40591e714fa2c1040",
+    "apps/apputil.hpp": "13ec34f555004f8a44899e43317d938ed3f2b70479c2d61a9b259b3c3a76008e",
+    "apps/logsupport.cpp": "a97be7c74c6c27efe7272e95f69dd6e264e77bd9b29a726ae0cfe74be7870d9c",
+    "apps/logsupport.hpp": "5d3be4235109b7b16d2dece18268e2d02a396242e89bd3a37ea3a62bb9f45cda",
+    "apps/logsupport_appdefs.cpp": "cfccf69377fe2db6f5399da62d31410490430c2f222dea87c195b48b9ff4bf56",
+    "apps/socketoptions.cpp": "5130049d6d0a3d9e5859c00e83a992218e6e101bb24f198d279349ff1159a25b",
+    "apps/socketoptions.hpp": "127e227de76e697a2239ee905a927673d9de2ed377e9cb12113f9dcdd8745815",
+    "apps/srt-live-transmit.cpp": "1ffc8abdac95c3a7b9d35403bc43d29e97b43d87927b2c6e1824dab2830923b3",
+    "apps/statswriter.cpp": "23190a845b7de47f91bc4f0b838950416073bc296e0b7beb6d8cdeaa999e27ec",
+    "apps/statswriter.hpp": "35cb517f06e3a1fc478e401fecab74ef36bc2736a63ae46614767090aa484dae",
+    "apps/transmitbase.hpp": "2d6978211a2c93f0a32c5a068fdab07f89a135c02c5f5c4b71dc28a7bb5e8039",
+    "apps/transmitmedia.cpp": "d976f50a4c11bc577d56dc288941eeee2f1073f81cdbf2d3cccbc7428ed1af91",
+    "apps/transmitmedia.hpp": "36cad48e28199195c38d3ee0ec955af00f5813dafe1574dd904649bde39138ca",
+    "apps/uriparser.cpp": "ae5e7fd3f6ce52c5cfa3443a7ac65f646fa18cffe2979ad010b764ac3372fdc8",
+    "apps/uriparser.hpp": "356dc97aceee431f2fdf4f062a8db68f23eb329fe5951b9ea2ed679b989ff38f",
+    "apps/verbose.cpp": "a0a58efb875a0fc471687aae92e8def84d9b4b632510dbb6f8e81df466629e8b",
+    "apps/verbose.hpp": "0b1699966253b41f64bcb1d00c4464c3b42e12c2529975619394bed17c963025",
+    "srtcore/netinet_any.h": "43fb137da347b2243b40bc12bb49fdca8a5236fd744a5e9060acad95645fbbed",
+    "srtcore/platform_sys.h": "af70eac168b5fabf46eded5a2927ffd9521621dc5cd6b0272ec8b8db1a2510a5",
+    "srtcore/srt_attr_defs.h": "68b9edc0259cf8f924a8038fcd37f5fb39dd85cba8927cc396e3628d46e40a14",
+    "srtcore/srt_compat.h": "486006486f3614a90b3193859bc33d8451f0e3569ec58565463a45cb20bb21c0",
+    "srtcore/utilities.h": "1a7fdbbd32908313003a647da972d7fa9fc2e8de289878f6733824be3d926d2d",
+    "LICENSE": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85"
+  }
+}
