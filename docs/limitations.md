@@ -1,13 +1,13 @@
 # Known limitations
 
-Robotweax SRT 0.3.1 is a pre-1.0 release, with an explicit
+Robotweax SRT 0.3.2 is a pre-1.0 release, with an explicit
 support boundary. This document summarizes limits that application developers
 and integrators should account for. Unsupported operations are intended to fail
 with defined errors rather than being silently approximated.
 
 ## Version and ABI boundaries
 
-- The project version is 0.3.1 and the shared-library ABI line is 0.3.
+- The project version is 0.3.2 and the shared-library ABI line is 0.3.
 - Binary compatibility with the 0.1 or 0.2 ABI is not promised. Rebuild applications
   and dependencies against the 0.3 package.
 - The default compatible API target and `srt_getversion()` value are 1.5.7;
@@ -259,6 +259,6 @@ before declaring a deployment supported.
 
 A separate default-off [experimental ACP1 build](experimental-acp1.md) adds
 strict session-authentication version 3 for Caller/Listener or version 4 for
-Rendezvous, with authenticated runtime controls. It is unreviewed and outside the supported
+Rendezvous, with authenticated runtime controls. It is experimental and outside the supported
 security and Haivision interoperability boundary. SESSIONAUTH alone continues
 to use version 2; ordinary connections retain their existing behavior.

@@ -112,7 +112,7 @@ rollover use the same per-direction state as Caller/Listener connections.
 SESSIONAUTH version 2 alone remains unsupported. With the explicitly enabled
 experimental ACP1 build and `SRTO_ROBOTWEAX_ACP1_REQUIRED=true`, both peers can
 use cookie-bound version-4 session authentication. Enable ACP1 before combining
-SESSIONAUTH with Rendezvous. This remains unreviewed; protected connections
+SESSIONAUTH with Rendezvous. This remains experimental; protected connections
 require matching Robotweax support and never fall back to an unprotected peer.
 
 See [Encryption and key rotation](encryption.md).
