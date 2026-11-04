@@ -7,6 +7,7 @@
 #include <chrono>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 // TSan owns the global new/delete interceptors. Keep the independent allocation
 // probe available in ordinary/ASan builds without replacing those interceptors.
@@ -36,6 +37,14 @@ TEST(connection_publication_allocation_probe_requires_non_tsan)
 
 namespace robotweax::srt::test {
 std::atomic<unsigned> runtime_allocations_until_pause {0};
+std::atomic<unsigned> runtime_allocations_observed {0};
+std::atomic_size_t fail_allocation_minimum {0};
+bool fail_allocation(std::size_t bytes) noexcept
+{
+    auto minimum = fail_allocation_minimum.load();
+    return minimum != 0 && bytes >= minimum && bytes <= minimum + 256
+        && fail_allocation_minimum.compare_exchange_strong(minimum, 0);
+}
 std::atomic_bool runtime_allocation_paused {false};
 std::atomic_bool runtime_allocation_released {false};
 void pause_runtime_allocation(std::size_t bytes) noexcept
@@ -45,6 +54,7 @@ void pause_runtime_allocation(std::size_t bytes) noexcept
     if (bytes < sizeof(compat::ConnectionRuntime)
         || bytes > sizeof(compat::ConnectionRuntime) + 256)
         return;
+    ++runtime_allocations_observed;
     auto remaining = runtime_allocations_until_pause.load();
     while (remaining != 0
         && !runtime_allocations_until_pause.compare_exchange_weak(
@@ -60,6 +70,8 @@ void pause_runtime_allocation(std::size_t bytes) noexcept
 
 void* operator new(std::size_t size)
 {
+    if (robotweax::srt::test::fail_allocation(size))
+        throw std::bad_alloc {};
     if (auto* memory = std::malloc(size == 0 ? 1 : size)) {
         robotweax::srt::test::pause_runtime_allocation(size);
         return memory;
@@ -89,6 +101,8 @@ void operator delete[](void* memory, std::size_t) noexcept
 
 void* operator new(std::size_t size, std::align_val_t alignment)
 {
+    if (robotweax::srt::test::fail_allocation(size))
+        throw std::bad_alloc {};
     void* memory = nullptr;
 #ifdef _WIN32
     memory = _aligned_malloc(
@@ -210,6 +224,7 @@ struct ReleaseAllocation {
     void release()
     {
         test::runtime_allocations_until_pause = 0;
+        test::fail_allocation_minimum = 0;
         test::runtime_allocation_released = true;
         test::runtime_allocation_released.notify_all();
     }
@@ -311,5 +326,153 @@ TEST(connection_listener_stays_connecting_until_runtime_is_attached)
 TEST(connection_async_caller_stays_connecting_until_runtime_is_attached)
 {
     publication_waits_for_runtime(2);
+}
+TEST(connection_full_backlog_rejects_before_callback_and_runtime_allocation)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    std::atomic<unsigned> calls {0};
+    struct Cleanup {
+        std::vector<SRTSOCKET> sockets;
+        ~Cleanup()
+        {
+            for (const auto socket : sockets)
+                srt_close(socket);
+            srt_cleanup();
+        }
+        SRTSOCKET keep(SRTSOCKET socket)
+        {
+            REQUIRE(socket != SRT_INVALID_SOCK);
+            sockets.push_back(socket);
+            return socket;
+        }
+    } cleanup;
+    const auto listener = cleanup.keep(srt_create_socket());
+    REQUIRE_EQ(srt_listen_callback(
+                   listener,
+                   [](void* opaque, SRTSOCKET, int, const sockaddr*,
+                       const char*) -> int {
+                       ++*static_cast<std::atomic<unsigned>*>(opaque);
+                       return 0;
+                   },
+                   &calls),
+        0);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(srt_bind(listener, reinterpret_cast<sockaddr*>(&address),
+                   sizeof(address)),
+        0);
+    int length = sizeof(address);
+    REQUIRE_EQ(srt_getsockname(
+                   listener, reinterpret_cast<sockaddr*>(&address), &length),
+        0);
+    REQUIRE_EQ(srt_listen(listener, 1), 0);
+    const auto first = cleanup.keep(srt_create_socket());
+    REQUIRE_EQ(srt_connect(first, reinterpret_cast<sockaddr*>(&address),
+                   sizeof(address)),
+        0);
+    const auto record = SocketRegistry::instance().find(listener);
+    REQUIRE(record);
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (record->pending_accepts.load() != 1
+        && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    REQUIRE_EQ(record->pending_accepts.load(), 1U);
+    const auto baseline = SocketRegistry::instance().size();
+    const auto allocations = test::runtime_allocations_observed.load();
+    REQUIRE_EQ(calls.load(), 1U);
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const auto caller = cleanup.keep(srt_create_socket());
+        const int timeout = 150;
+        REQUIRE_EQ(
+            srt_setsockflag(caller, SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+            0);
+        REQUIRE_EQ(srt_connect(caller, reinterpret_cast<sockaddr*>(&address),
+                       sizeof(address)),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ENOSERVER);
+        REQUIRE_EQ(srt_getrejectreason(caller), SRT_REJ_TIMEOUT);
+        REQUIRE_EQ(calls.load(), 1U);
+        REQUIRE_EQ(test::runtime_allocations_observed.load(), allocations);
+        REQUIRE_EQ(record->pending_accepts.load(), 1U);
+        REQUIRE_EQ(SocketRegistry::instance().size(), baseline + 1U);
+        REQUIRE_EQ(srt_close(caller), 0);
+    }
+    cleanup.keep(srt_accept(listener, nullptr, nullptr));
+    REQUIRE_EQ(record->pending_accepts.load(), 0U);
+    const auto next = cleanup.keep(srt_create_socket());
+    REQUIRE_EQ(srt_connect(next, reinterpret_cast<sockaddr*>(&address),
+                   sizeof(address)),
+        0);
+    cleanup.keep(srt_accept(listener, nullptr, nullptr));
+    REQUIRE_EQ(calls.load(), 2U);
+}
+namespace {
+void listener_recovers_after_allocation_failure(bool setup_inbox)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    struct Observation {
+        std::atomic<unsigned> calls {0};
+        bool fail_setup_inbox = false;
+    } observation;
+    observation.fail_setup_inbox = setup_inbox;
+    Sockets sockets;
+    ReleaseAllocation reset;
+    REQUIRE_EQ(srt_listen_callback(
+                   sockets.listener,
+                   [](void* opaque, SRTSOCKET, int, const sockaddr*,
+                       const char*) -> int {
+                       auto& observed = *static_cast<Observation*>(opaque);
+                       if (observed.calls.fetch_add(1) == 0
+                           && observed.fail_setup_inbox)
+                           test::fail_allocation_minimum =
+                               sizeof(DatagramInbox);
+                       return 0;
+                   },
+                   &observation),
+        0);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(srt_bind(sockets.listener, reinterpret_cast<sockaddr*>(&address),
+                   sizeof(address)),
+        0);
+    int length = sizeof(address);
+    REQUIRE_EQ(srt_getsockname(sockets.listener,
+                   reinterpret_cast<sockaddr*>(&address), &length),
+        0);
+    REQUIRE_EQ(srt_listen(sockets.listener, 1), 0);
+    // Finish this attempt before the caller's 250 ms automatic retry.
+    const int timeout = 100;
+    REQUIRE_EQ(srt_setsockflag(
+                   sockets.caller, SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+        0);
+    if (!setup_inbox)
+        test::fail_allocation_minimum = sizeof(ConnectionRuntime);
+    REQUIRE_EQ(srt_connect(sockets.caller,
+                   reinterpret_cast<sockaddr*>(&address), sizeof(address)),
+        SRT_ERROR);
+    REQUIRE_EQ(test::fail_allocation_minimum.load(), 0U);
+    REQUIRE_EQ(observation.calls.load(), 1U);
+    REQUIRE_EQ(srt_close(sockets.caller), 0);
+    sockets.caller = srt_create_socket();
+    REQUIRE(sockets.caller != SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_connect(sockets.caller,
+                   reinterpret_cast<sockaddr*>(&address), sizeof(address)),
+        0);
+    sockets.accepted = srt_accept(sockets.listener, nullptr, nullptr);
+    REQUIRE(sockets.accepted != SRT_INVALID_SOCK);
+    REQUIRE_EQ(observation.calls.load(), 2U);
+}
+}
+TEST(
+    connection_listener_releases_accept_reservation_after_inbox_allocation_failure)
+{
+    listener_recovers_after_allocation_failure(true);
+}
+TEST(
+    connection_listener_releases_accept_reservation_after_runtime_allocation_failure)
+{
+    listener_recovers_after_allocation_failure(false);
 }
 #endif

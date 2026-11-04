@@ -244,7 +244,13 @@ Otherwise the request is rejected with `SRT_REJ_GROUP`.
 
 The first connected member publishes one mirror-group handle through
 `srt_accept`. Later members with the same peer group identity and type join that mirror
-without another accept result. The wire ISN can advance as traffic continues.
+without another accept result. With a full accept backlog, a bonding proposal
+must name an existing live mirror within this listener or its explicit listener
+bond before provisional allocation or the callback. This preflight does not
+authorize the peer, and unreserved joins remain subject to admission budgets.
+A new group needs an accept slot. See the [backlog and timeout
+contract](api-compatibility.md#listener-backlog-and-caller-timeouts).
+The wire ISN can advance as traffic continues.
 Each direction uses its own group sequence cursor: a late mirror member starts
 sending at the mirror's current send cursor, while a late caller member starts
 receiving at the caller group's current receive cursor.

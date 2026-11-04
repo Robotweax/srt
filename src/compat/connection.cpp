@@ -198,6 +198,8 @@ void publish_listener_group_update(SRTSOCKET listener) noexcept
 struct ListenerGroupAdmission {
     SRTSOCKET listener = SRT_INVALID_SOCK;
     std::uint32_t initial_sequence = 0;
+    ListenerAcceptQueue::Reservation accept_reservation;
+    SRT_ERRNO accept_error = SRT_SUCCESS;
     // Bonding admission (SRTO_GROUPCONNECT).
     bool enabled = false;
     // Dispatch admission (SRTO_ROBOTWEAX_MCAST_GROUP set on the listener);
@@ -320,6 +322,19 @@ struct ListenerGroupAdmission {
                 }
                 return false;
             }
+        }
+        // Only a first member publishes an application accept. Additional
+        // members can join a full listener, subject to its overflow budget.
+        if (first_member) {
+            const auto status = accept_reservation.acquire();
+            if (status != ListenerAcceptReserveStatus::reserved) {
+                accept_error = status == ListenerAcceptReserveStatus::closed
+                    ? SRT_ESCLOSED
+                    : SRT_ENOBUF;
+                return false;
+            }
+        } else {
+            accept_reservation.release();
         }
         response = {
             .group_id = static_cast<std::uint32_t>(mirror.group),
@@ -4362,7 +4377,8 @@ struct ListenerRuntime::SetupContext {
 
 SRTSOCKET ListenerRuntime::start_admitted_socket(
     std::shared_ptr<SocketRecord> listener,
-    const ListenerHandshakeAdmission& admitted) noexcept
+    const ListenerHandshakeAdmission& admitted,
+    Clock::time_point admitted_at) noexcept
 {
     if (listener == nullptr) {
         return fail_accept(SRT_EINVSOCK);
@@ -4412,10 +4428,41 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         initial.message.packet.initial_sequence.value();
     const Clock::time_point origin = Clock::now();
 
+    auto accept_reservation = accepts_.reserve();
+    if (!accept_reservation) {
+        const auto status = accept_reservation.acquire();
+        if (status == ListenerAcceptReserveStatus::closed)
+            return fail_accept(SRT_ESCLOSED);
+        if (status == ListenerAcceptReserveStatus::full) {
+            const auto& conclusion = admission.conclusion.message;
+            if (!conclusion.has_group_membership)
+                return fail_accept(SRT_EASYNCRCV);
+            const auto type =
+                compatible_group_type(conclusion.group_membership.type);
+            const bool dispatch_candidate = public_options.multicast_group_set
+                && type == ROBOTWEAX_SRT_GTYPE_MULTICAST;
+            const bool bonding_candidate = public_options.group_connect
+                && GroupRegistry::instance().has_existing_mirror(
+                    static_cast<SRTSOCKET>(listener_socket_id),
+                    static_cast<SRTSOCKET>(
+                        conclusion.group_membership.group_id),
+                    type);
+            if (!dispatch_candidate && !bonding_candidate)
+                return fail_accept(SRT_EASYNCRCV);
+            // A known peer group is not authentication. Keep the budget for every
+            // unreserved proposal; callback domain checks still authorize the join.
+            if (!native_options.encryption_enabled()) {
+                std::lock_guard lock(mutex_);
+                if (!group_overflow_budget_.admit(initial.peer, admitted_at))
+                    return fail_accept(SRT_EASYNCRCV);
+            }
+        }
+    }
+
     bool crypto_budget_charged = false;
     const auto charge_crypto_budget = [&] {
         std::lock_guard lock(mutex_);
-        return crypto_budget_.admit(initial.peer, Clock::now());
+        return crypto_budget_.admit(initial.peer, admitted_at);
     };
     if (native_options.encryption_enabled()) {
         if (!charge_crypto_budget())
@@ -4454,6 +4501,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     setup_context->caller_socket_id = caller_socket_id;
     setup_context->selected_protocol = selected_protocol;
     ListenerGroupAdmission& group_admission = setup_context->group_admission;
+    group_admission.accept_reservation = std::move(accept_reservation);
     group_admission.listener = static_cast<SRTSOCKET>(listener_socket_id);
     group_admission.initial_sequence = connection_sequence;
     group_admission.enabled = public_options.group_connect;
@@ -5146,11 +5194,13 @@ bool ListenerRuntime::start() noexcept
 }
 
 ListenerAcceptPublishStatus ListenerRuntime::publish(
+    ListenerAcceptQueue::Reservation&& reservation,
     ListenerAcceptedConnection connection) noexcept
 {
     const auto listener = listener_.lock();
-    const ListenerAcceptPublishStatus status = accepts_.publish(
-        connection, listener != nullptr ? &listener->pending_accepts : nullptr);
+    const ListenerAcceptPublishStatus status =
+        accepts_.publish(std::move(reservation), connection,
+            listener != nullptr ? &listener->pending_accepts : nullptr);
     if (status == ListenerAcceptPublishStatus::published) {
         // Only the listener's own readiness changed.
         if (listener != nullptr) {
@@ -5367,8 +5417,8 @@ bool ListenerRuntime::process_result(
     if (channel == nullptr
         || !channel->replay_established_handshake(
             result.step.admission.conclusion)) {
-        const SRTSOCKET accepted =
-            start_admitted_socket(listener, result.step.admission);
+        const SRTSOCKET accepted = start_admitted_socket(
+            listener, result.step.admission, Clock::now());
         if (accepted != SRT_INVALID_SOCK) {
             return true;
         }
@@ -5414,6 +5464,15 @@ bool ListenerRuntime::process_setup_result(
         if (!result.runtime.has_peer_extension_parameters
             || !result.has_peer_handshake) {
             return finish_setup_context(context, false, SRT_ECONNSETUP);
+        }
+        if (!result.runtime.has_peer_group_membership
+            || context->group_admission.first_member) {
+            const auto status =
+                context->group_admission.accept_reservation.acquire();
+            if (status != ListenerAcceptReserveStatus::reserved)
+                return finish_setup_context(context, false,
+                    status == ListenerAcceptReserveStatus::closed ? SRT_ESCLOSED
+                                                                  : SRT_ENOBUF);
         }
         const ConnectedNegotiation negotiation {
             .peer_srt_version =
@@ -5490,7 +5549,10 @@ bool ListenerRuntime::process_setup_result(
         log_listener_rejection(*context->listener, context->initial.peer,
             context->caller_socket_id, result.setup.rejection_reason);
         return finish_setup_context(context, false,
-            context->policy_rejected ? context->policy_error : SRT_ECONNREJ);
+            context->group_admission.accept_error != SRT_SUCCESS
+                ? context->group_admission.accept_error
+                : (context->policy_rejected ? context->policy_error
+                                            : SRT_ECONNREJ));
     }
     if (result.setup.outcome == ListenerConnectionSetupOutcome::timed_out) {
         return finish_setup_context(context, false, SRT_ENOSERVER);
@@ -5579,10 +5641,12 @@ bool ListenerRuntime::finish_setup_context(
     if (!publish_accept) {
         return true;
     }
-    const ListenerAcceptPublishStatus published = publish({
-        .handle = public_handle,
-        .peer = peer,
-    });
+    const ListenerAcceptPublishStatus published =
+        publish(std::move(context->group_admission.accept_reservation),
+            {
+                .handle = public_handle,
+                .peer = peer,
+            });
     if (published == ListenerAcceptPublishStatus::published) {
         return true;
     }

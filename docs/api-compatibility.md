@@ -466,6 +466,26 @@ for the activation profile, flags, errors, lifecycle, bounds and security limits
 Discover or inject the new symbol from the exact loaded library; older and
 reference providers do not need to export or implement it.
 
+## Listener backlog and caller timeouts
+
+The listener backlog bounds queued application accepts plus in-flight accept
+reservations. An ordinary cookie-valid connection must reserve a slot before
+provisional socket creation or the listen callback. A full backlog silently
+drops its conclusion so the caller can retry. If saturation lasts through
+`SRTO_CONNTIMEO`, the caller observes a setup timeout, not a distinct backlog-full
+rejection. A retry can connect if the application drains an accept before that
+deadline. Applications should drain accepts promptly and apply their intended
+retry policy; the timeout alone does not distinguish saturation from packet loss.
+
+Additional members of an existing bonding group need no new application accept.
+At full backlog, an early, non-authorizing lookup must find a live mirror in the
+same listener or explicit listener bond. Callback domain and extension checks
+remain authoritative. A new group needs accept capacity. Multicast proposals
+need callback-selected admission keys and retain their bounded exceptional
+setup path. Every unreserved proposal remains subject to the relevant plaintext
+overflow or encrypted admission budget; a known group ID is not authentication.
+See [listener capacity and budgets](../SECURITY.md#listener-accept-capacity).
+
 ## Group admission callback migration (since 0.2.8)
 
 A listen callback admitting a group member must authorize it and set a nonzero

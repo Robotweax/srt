@@ -1011,6 +1011,34 @@ void GroupRegistry::note_io_result(
     }
 }
 
+bool GroupRegistry::has_existing_mirror(
+    SRTSOCKET listener, SRTSOCKET peer_group, SRT_GROUP_TYPE type) noexcept
+{
+    if (listener < 0 || is_group_handle(listener)
+        || !is_group_handle(peer_group)
+        || (type != SRT_GTYPE_BROADCAST && type != SRT_GTYPE_BACKUP))
+        return false;
+    std::lock_guard registry_lock(mutex_);
+    if (clearing_)
+        return false;
+    const auto bonded = listener_bond_scopes_.find(listener);
+    const auto scope =
+        bonded != listener_bond_scopes_.end() ? bonded->second : 0U;
+    for (const auto& [handle, record] : groups_) {
+        (void)handle;
+        std::lock_guard record_lock(record->mutex);
+        if (!record->closed && record->opened
+            && record->category == GroupCategory::bonding
+            && record->type == type && record->peer_group == peer_group
+            && !record->members.empty()
+            && ((scope != 0U && record->mirror_bond_scope == scope)
+                || (scope == 0U && record->mirror_bond_scope == 0U
+                    && record->mirror_listener == listener)))
+            return true;
+    }
+    return false;
+}
+
 bool GroupRegistry::prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
     SRT_GROUP_TYPE type, std::uint32_t initial_sequence,
     MirrorDescription& output, std::uint64_t admission_domain,

@@ -1,9 +1,10 @@
 #pragma once
 
 #include "compat/listener_accept_queue.hpp"
-#include "compat/listener_crypto_budget.hpp"
+#include "compat/listener_admission_budget.hpp"
 #include "compat/socket_registry.hpp"
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <memory>
@@ -35,6 +36,7 @@ public:
         bool blocking, IpEndpoint& peer) noexcept;
 
 private:
+    friend struct ListenerRuntimeTestAccess;
     struct ResultContext;
     struct SetupContext;
 
@@ -56,14 +58,17 @@ private:
     void finish_result_consumer() noexcept;
     [[nodiscard]] SRTSOCKET start_admitted_socket(
         std::shared_ptr<SocketRecord> listener,
-        const ListenerHandshakeAdmission& admission) noexcept;
+        const ListenerHandshakeAdmission& admission,
+        std::chrono::steady_clock::time_point admitted_at) noexcept;
     [[nodiscard]] ListenerAcceptPublishStatus publish(
+        ListenerAcceptQueue::Reservation&& reservation,
         ListenerAcceptedConnection connection) noexcept;
 
     std::weak_ptr<SocketRecord> listener_;
     ListenerAcceptQueue accepts_;
     std::mutex mutex_;
-    ListenerCryptoBudget crypto_budget_;
+    ListenerAdmissionBudget crypto_budget_;
+    ListenerAdmissionBudget group_overflow_budget_;
     std::condition_variable result_idle_;
     bool closed_ = false;
     bool result_work_scheduled_ = false;

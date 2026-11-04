@@ -390,6 +390,7 @@ struct StreamScenario {
     // window even on loopback, as it would for any SRT receiver.
     std::chrono::microseconds send_gap {0};
     bool aes_gcm = false;
+    bool fill_accept_backlog = false;
 };
 
 void run_dispatch_stream(const StreamScenario& scenario)
@@ -447,7 +448,7 @@ void run_dispatch_stream(const StreamScenario& scenario)
     REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&bound),
                    sizeof(bound)),
         0);
-    REQUIRE_EQ(srt_listen(listener, 8), 0);
+    REQUIRE_EQ(srt_listen(listener, scenario.fill_accept_backlog ? 1 : 8), 0);
     int bound_size = sizeof(bound);
     REQUIRE_EQ(srt_getsockname(
                    listener, reinterpret_cast<sockaddr*>(&bound), &bound_size),
@@ -456,13 +457,23 @@ void run_dispatch_stream(const StreamScenario& scenario)
     // Three receivers join; srt_accept yields the sender group once.
     const SRTSOCKET receiver_a =
         make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
-    const SRTSOCKET sender = peers.keep(srt_accept(listener, nullptr, nullptr));
-    REQUIRE(sender != SRT_INVALID_SOCK);
-    REQUIRE((sender & SRTGROUP_MASK) != 0);
+    SRTSOCKET sender = SRT_INVALID_SOCK;
+    if (!scenario.fill_accept_backlog) {
+        sender = peers.keep(srt_accept(listener, nullptr, nullptr));
+        REQUIRE(sender != SRT_INVALID_SOCK);
+    }
     const SRTSOCKET receiver_b =
         make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
     const SRTSOCKET receiver_c =
         make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+    if (scenario.fill_accept_backlog) {
+        const auto listener_record = SocketRegistry::instance().find(listener);
+        REQUIRE(listener_record);
+        REQUIRE_EQ(listener_record->pending_accepts.load(), 1U);
+        sender = peers.keep(srt_accept(listener, nullptr, nullptr));
+        REQUIRE(sender != SRT_INVALID_SOCK);
+    }
+    REQUIRE((sender & SRTGROUP_MASK) != 0);
     REQUIRE(wait_for_members(sender, 3, scenario.encrypted));
     REQUIRE_EQ(admissions.multicast_proposals.load(), 3);
     for (const SRTSOCKET receiver : {receiver_a, receiver_b, receiver_c}) {
@@ -1000,4 +1011,11 @@ TEST(multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding)
     REQUIRE_EQ(srt_setsockflag(plain, SRTO_ROBOTWEAX_MCAST_TTL, &bad_hops,
                    sizeof(bad_hops)),
         SRT_ERROR);
+}
+
+TEST(multicast_dispatch_group_joins_with_a_full_accept_backlog)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    run_dispatch_stream({.fill_accept_backlog = true});
 }

@@ -124,6 +124,33 @@ are unaffected. These bounds contain listener-local derivation work; they do
 not guarantee admission during a distributed flood or impose a process-wide
 limit across multiple listeners.
 
+### Listener accept capacity
+
+Ordinary connections reserve completed-accept capacity after cookie validation
+and before provisional socket creation or the application listen callback.
+Queued accepts and in-flight reservations share the configured backlog bound.
+Publication consumes a reservation; failure and close release it automatically.
+When capacity is unavailable, ordinary conclusions are dropped for caller retry.
+If the queue remains full for the caller's connection timeout, the caller reports
+a setup timeout; it receives no dedicated backlog-full rejection. Freeing a slot
+allows a subsequent retry to proceed within that same connection deadline.
+
+Additional members of an existing group do not publish another accept. A
+cookie-valid bonding proposal may proceed without an accept reservation only
+when a live mirror of the proposed remote group already exists within this
+listener or its explicit listener bond. This lookup does not authorize the peer;
+the callback's admission domain and negotiated extension checks still apply.
+Unknown bonding groups are dropped before provisional allocation or callbacks.
+Multicast proposals use the exceptional path because their admission key is
+selected by the callback. Before provisional allocation, plaintext proposals
+on this exceptional path use a separate
+listener-wide token bucket with the same overall and per-source bounds as
+encrypted admission above. Encrypted proposals retain the existing crypto
+budget. Negotiation must reserve capacity for a first member before attaching
+a transport runtime; additional members release any unnecessary reservation.
+These limits preserve group joins without permitting unbounded setup work
+through group-marked conclusions.
+
 ## Secure integration guidance
 
 - Use unique, high-entropy passphrases delivered through a secure secret
