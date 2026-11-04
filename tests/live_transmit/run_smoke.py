@@ -120,6 +120,15 @@ class Smoke:
                 'exact_payloads': True, 'arq_first': enabled, 'tail_probe': False,
                 'encrypted': encrypted, 'listener_sender': listener_sender,
                 'dropped_originals': summary['dropped']})
+        except Exception:
+            # Keep failure diagnosis in the job console, never in CI artifacts.
+            for process, stream in zip(children, streams):
+                stream.flush()
+                log = Path(stream.name)
+                diagnostic = log.read_text(errors='replace')[-6000:].replace(PASSPHRASE, '<redacted>')
+                print(f'Failure diagnostic: {log.name}; exit={process.poll()}\n{diagnostic}',
+                      file=sys.stderr, flush=True)
+            raise
         finally:
             stop.set()
             if feed:
