@@ -151,6 +151,7 @@ class ChangeSet:
     debug: bool = False
     shared: bool = False
     ffmpeg: bool = False
+    live_transmit: bool = False
     gstreamer: bool = False
     vlc: bool = False
     obs: bool = False
@@ -345,6 +346,7 @@ def enable_cpp(change_set: ChangeSet, path: str) -> None:
         change_set.aead_platform = True
 
     production = path.startswith(("src/", "include/"))
+    change_set.live_transmit |= production
     if not production:
         return
     if normalized.startswith(
@@ -553,6 +555,14 @@ def classify(
         return change_set
 
     for path in normalized_paths:
+        if path.startswith("tests/live_transmit/") or path == "interop/tests/test_live_transmit.py":
+            change_set.docs_only = False
+            change_set.documentation = True
+            change_set.code = True
+            change_set.live_transmit = True
+            change_set.python = True
+            change_set.format |= PurePosixPath(path).suffix.lower() in CPP_SUFFIXES
+            continue
         if is_documentation(path):
             change_set.documentation = True
             continue
@@ -614,6 +624,7 @@ def classify(
             change_set.python = True
             continue
         if path in PACKAGE_FILES:
+            change_set.live_transmit = True
             change_set.code = True
             change_set.package = True
             change_set.mbedtls = True
@@ -726,7 +737,9 @@ def main() -> int:
     selection.add_argument("--integrations-only", action="store_true")
     selection.add_argument("--multicast-only", action="store_true")
     parser.add_argument("--without-integrations", action="store_true",
-                        help="exclude ecosystem jobs from automatic CI")
+                        help="exclude heavyweight media jobs from automatic CI")
+    parser.add_argument("--without-live-transmit", action="store_true",
+                        help="exclude the lightweight external application consumer")
     arguments = parser.parse_args()
     paths = (
         [line.rstrip("\n") for line in sys.stdin]
@@ -737,7 +750,7 @@ def main() -> int:
         result = ChangeSet(docs_only=False, multicast=True)
     elif arguments.integrations_only:
         result = ChangeSet(
-            docs_only=False, ffmpeg=True, gstreamer=True, vlc=True,
+            docs_only=False, ffmpeg=True, live_transmit=True, gstreamer=True, vlc=True,
             obs=True, obs_platforms=True,
         )
     else:
@@ -748,6 +761,8 @@ def main() -> int:
         result.vlc = False
         result.obs = False
         result.obs_platforms = False
+    if arguments.without_live_transmit:
+        result.live_transmit = False
     print("\n".join(result.output_lines()))
     return 0
 
