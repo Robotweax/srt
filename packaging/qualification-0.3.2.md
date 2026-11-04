@@ -7,24 +7,32 @@ exports from 0.3.1 are preserved. The historical
 
 ## Immutable product archive
 
-- Product commit: `b19c6a88b6257c749e16dc1e53d803cc3c792e32`.
-- [Public archive](https://github.com/Robotweax/srt/archive/b19c6a88b6257c749e16dc1e53d803cc3c792e32.tar.gz).
-- Bytes: 2223752.
-- SHA-256: `709e3a353ca4cdf0afea6de2d363934c313117f1ccc8121a3b641d5155c1658a`.
-- SHA-512: `db5ff293fc8f77279025de0d78598c8e44c5fabcdc668fe4067219f836c4641e3cf98cc549a288e6b2905d71c47803f98faa7a4f31ecdc5fd9d79f690714ff28`.
-- All 743 tracked regular files matched Git byte-for-byte, including executable bits.
+- Product commit: `838a022b75cfa95137bb7e40f575d0a65f6bd551`.
+- [Public archive](https://github.com/Robotweax/srt/archive/838a022b75cfa95137bb7e40f575d0a65f6bd551.tar.gz).
+- Bytes: 2239489.
+- SHA-256: `b7f0cb906abe8d064e7d7c18287596ff0f594ac6cb07aaa10f5c791971683a9b`.
+- SHA-512: `0c8fe50aed576628c84a677a51009438365ed1d6bec63b84ac0c632903e97a8ba2bb6f8bfd3ced1f6109f2522e31db9d74d859b6f99d50b006d93e0a5a1090b3`.
+- All 752 tracked regular files matched Git byte-for-byte, including executable bits.
 - Machine-readable identity and frozen paths: [source-0.3.2.json](source-0.3.2.json).
 
 Homebrew, vcpkg, DEB/RPM and the Linux qualification workflow use this exact
 archive. Recipe and evidence commits must preserve all frozen product paths:
 
 ```sh
-git diff --exit-code b19c6a88b6257c749e16dc1e53d803cc3c792e32 HEAD -- src include cmake compat CMakeLists.txt docs README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md THIRD_PARTY.md LICENSE examples experimental fuzz benchmarks tools tests interop .github/workflows/windows-sdk.yml packaging/windows
+git diff --exit-code 838a022b75cfa95137bb7e40f575d0a65f6bd551 HEAD -- src include cmake compat CMakeLists.txt docs README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md THIRD_PARTY.md LICENSE examples experimental fuzz benchmarks tools tests interop .github/workflows/windows-sdk.yml packaging/windows
 ```
 
 ## Local verification and upgrade inputs
 
-All 95 public Markdown files passed source and isolated installed documentation validation. The complete
+The integrated product includes the optional srt-live-transmit recipe from
+PR #377. All 96 public Markdown files passed source and isolated installed
+documentation validation. Library sources, public headers, build configuration,
+compatibility contracts and native examples are unchanged from the preceding
+`b19c6a88b6257c749e16dc1e53d803cc3c792e32` freeze. That earlier archive is
+superseded; its qualification remains historical evidence for those unchanged
+paths, not exact-source qualification of this integrated product.
+
+The complete
 native macOS Release/OpenSSL/GCM build passed 140/140 CTest entries after the
 protocol, test and documentation corrections and before the version-only update.
 That result is local correction evidence, not final-source release acceptance.
