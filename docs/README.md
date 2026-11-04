@@ -36,6 +36,8 @@ developers and transport integrators using the installed public API.
   readiness, encryption, errors, and shutdown.
 - [FFmpeg integration](ffmpeg-integration.md) — opt-in package discovery,
   reproducible builds, runtime verification, and the qualified media profile.
+- [srt-live-transmit with Robotweax SRT](srt-live-transmit.md): optional pinned
+  application recipe against an installed SDK, with ARQ-first and local tests.
 - [GStreamer integration](gstreamer-integration.md) — `srtsrc`/`srtsink` builds,
   provider selection, interoperability tests, and controlled shutdown.
 - [VLC integration](vlc-integration.md) — headless SRT module builds, decoded

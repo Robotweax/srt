@@ -79,3 +79,17 @@ The optional [OBS Windows preview](docs/obs-windows-preview.md) is manually
 invoked and is not an SRT SDK release asset. Bundled notices alone do not
 establish redistribution permission or fulfill every corresponding-source
 obligation; follow that guide's distribution boundary before sharing a build.
+
+
+## srt-live-transmit application recipe
+
+The optional [srt-live-transmit recipe](docs/srt-live-transmit.md) prepares a
+pinned Haivision 1.5.7 application outside the tracked source tree and builds it
+against an installed Robotweax SDK. The input manifest lists the reviewed
+application files and five upstream utility headers at the immutable revision.
+Own build/test scripts and support overlays are MIT-licensed; fetched and
+adapted upstream files retain MPL-2.0. No Haivision transport translation unit
+is compiled. CI uploads only allowlisted JSON qualification summaries, never
+the application, external source, generated source or build trees. The recipe
+adds no SDK component or permission to publish application binaries; the
+existing distribution boundary above remains in force.
