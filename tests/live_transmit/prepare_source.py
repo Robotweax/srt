@@ -94,6 +94,11 @@ def adapt(name: str, text: str) -> str:
         text = replace(text, 'w_name = srt::getstreamid(m_sock);',
                        'char streamid[513] = {};\n        int streamid_size = sizeof(streamid);\n        if (srt_getsockflag(m_sock, SRTO_STREAMID, streamid, &streamid_size) == SRT_ERROR)\n            Error("get Stream ID");\n        w_name.assign(streamid, static_cast<size_t>(streamid_size));')
         text = replace(text, 'SysStrError(err, buf, 512u)', 'std::system_category().message(err)')
+        # Winsock would-block is not the POSIX errno value. Otherwise draining
+        # one UDP batch permanently marks the live source as EOF on Windows.
+        text = replace(text, '            if (SysError() != EWOULDBLOCK)',
+                       '#if defined(_WIN32)\n            if (WSAGetLastError() != WSAEWOULDBLOCK)\n'
+                       '#else\n            if (errno != EWOULDBLOCK)\n#endif')
     return text
 
 
