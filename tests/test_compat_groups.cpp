@@ -3703,6 +3703,60 @@ TEST(compat_broadcast_group_keeps_sending_after_one_member_path_fails)
     REQUIRE_EQ(srt_close(group), 0);
 }
 
+TEST(compat_multicast_dispatch_sender_epoll_tracks_empty_and_backpressure)
+{
+    for (const bool edge : {false, true}) {
+        TestClock clock;
+        clock.channel =
+            std::make_shared<robotweax::srt::compat::DatagramChannel>();
+        clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+        const auto group = srt_create_group(ROBOTWEAX_SRT_GTYPE_MULTICAST);
+        const auto record = GroupRegistry::instance().find(group);
+        REQUIRE(record != nullptr);
+        {
+            std::lock_guard lock(record->mutex);
+            record->dispatch->sender = true;
+        }
+        REQUIRE_EQ(
+            robotweax::srt::compat::group_poll_readiness(record).events, 0);
+        GroupRegistry::instance().mark_opened(group, record->generation);
+        const int poll = srt_epoll_create();
+        const int flags = SRT_EPOLL_IN | SRT_EPOLL_OUT | SRT_EPOLL_ERR
+            | (edge ? SRT_EPOLL_ET : 0);
+        REQUIRE_EQ(srt_epoll_add_usock(poll, group, &flags), 0);
+        SRT_EPOLL_EVENT event {};
+        const auto expect_out = [&] {
+            REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 1);
+            REQUIRE_EQ(event.fd, group);
+            REQUIRE_EQ(event.events, SRT_EPOLL_OUT);
+        };
+        expect_out();
+        REQUIRE_EQ(srt_getsockstate(group), SRTS_CONNECTED);
+        REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), edge ? 0 : 1);
+        REQUIRE_EQ(srt_send(group, "idle", 4), 4);
+        for (int cycle = 0; cycle < 2; ++cycle) {
+            const auto socket = srt_create_socket();
+            const auto runtime = attach_group_runtime(group, socket,
+                record->next_send_sequence, 1, &clock, 1, false, 0,
+                ConnectionRuntime::Clock::now(), record);
+            // Joining does not interrupt continuous writability or invent
+            // a receive event for the send-only group.
+            REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), edge ? 0 : 1);
+            REQUIRE_EQ(srt_send(group, "a", 1), 1);
+            clock.now_microseconds += 1'000;
+            (void)runtime->poll();
+            REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), 0);
+            REQUIRE_EQ(srt_close(socket), 0);
+            expect_out();
+            REQUIRE_EQ(srt_epoll_uwait(poll, &event, 1, 0), edge ? 0 : 1);
+        }
+        REQUIRE_EQ(srt_close(group), 0);
+        REQUIRE_EQ(robotweax::srt::compat::group_poll_readiness(record).events,
+            SRT_EPOLL_ERR);
+        REQUIRE_EQ(srt_epoll_release(poll), 0);
+    }
+}
+
 TEST(compat_multicast_dispatch_backpressure_preserves_original_and_tail)
 {
     for (const int outcome : {0, 1, 2}) {
