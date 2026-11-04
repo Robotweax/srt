@@ -1761,6 +1761,16 @@ SocketReadinessSnapshot group_poll_readiness(
             output_owner_seen = true;
         }
     }
+    if (dispatch_sender) {
+        // This role has no receive stream. A listener-side sender stays
+        // usable after its last receiver leaves, including while the next
+        // receiver's control connection is being established.
+        readiness.events &= SRT_EPOLL_OUT;
+        if (opened && !output_owner_seen) {
+            readiness.events |= SRT_EPOLL_OUT;
+        }
+        return readiness;
+    }
     const auto receive = inspect_group_readiness(members.view(), expected);
     if (receive.message_ready) {
         readiness.events |= SRT_EPOLL_IN;
