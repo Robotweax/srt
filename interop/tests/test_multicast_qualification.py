@@ -23,19 +23,28 @@ class MulticastQualificationTests(unittest.TestCase):
     def test_accepts_complete_execution(self):
         self.assertEqual(set(qualification.validate_native(self.transcript())), qualification.REQUIRED)
 
+    def test_key_lifecycle_regressions_are_required(self):
+        self.assertEqual(set(qualification.validate_native(
+            self.transcript(qualification.KEY_REQUIRED), qualification.KEY_REQUIRED)),
+            qualification.KEY_REQUIRED)
+        with self.assertRaises(ValueError):
+            qualification.validate_native(self.transcript([]), qualification.KEY_REQUIRED)
+
     def test_rejects_silent_subset(self):
         with self.assertRaises(ValueError):
             qualification.validate_native(self.transcript(sorted(qualification.REQUIRED)[:-1]))
 
     def test_rejects_skip_even_if_process_succeeded(self):
+        count = len(qualification.REQUIRED)
         for transcript in [self.transcript()+"[SKIP] unsupported\n",
-                           self.transcript().replace("20/20 tests passed", "20/20 tests passed (1 skipped)")]:
+                           self.transcript().replace(f"{count}/{count} tests passed", f"{count}/{count} tests passed (1 skipped)")]:
             with self.subTest(transcript=transcript), self.assertRaises(ValueError):
                 qualification.validate_native(transcript)
 
     def test_rejects_failure_or_invalid_summary(self):
+        count = len(qualification.REQUIRED)
         for transcript in [self.transcript()+"[FAIL] failed\n", self.transcript()+"20/20 tests passed\n",
-                           self.transcript().replace("20/20", "19/20"), "0/0 tests passed\n"]:
+                           self.transcript().replace(f"{count}/{count}", f"{count-1}/{count}"), "0/0 tests passed\n"]:
             with self.subTest(transcript=transcript), self.assertRaises(ValueError):
                 qualification.validate_native(transcript)
 
