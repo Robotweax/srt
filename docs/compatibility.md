@@ -1,7 +1,7 @@
 # Compatibility status
 
 This document describes the public compatibility boundary of Robotweax SRT
-0.3.1. A listed capability is part of the supported boundary only for the
+0.3.2. A listed capability is part of the supported boundary only for the
 roles, transport mode, address family, and encryption profile stated here.
 
 Robotweax SRT is an independent implementation. Compatibility means that the
@@ -9,15 +9,15 @@ documented public behavior and wire exchange have been validated against the
 stated SRT profile; it does not imply shared implementation code or universal
 drop-in compatibility with every `libsrt` deployment.
 
-See the [0.3.1 release notes](release-notes-0.3.1.md) for changes and migration.
-Applications linked to ABI line 0.2 must rebuild for 0.3. Existing 0.3.0 C
+See the [0.3.2 release notes](release-notes-0.3.2.md) for changes and migration.
+Applications linked to ABI line 0.2 must rebuild for 0.3. Existing 0.3.1 C
 exports and layouts are preserved; source-tree C++ consumers must rebuild.
 
 ## Version boundary
 
-| Axis | Robotweax SRT 0.3.1 |
+| Axis | Robotweax SRT 0.3.2 |
 | --- | --- |
-| Project version | `0.3.1` |
+| Project version | `0.3.2` |
 | Shared-library ABI line | `0.3` |
 | Default public SRT API profile | Haivision SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -35,7 +35,7 @@ v1.5.7 tag at commit
 `899348d8318eb9a3c5a5b6ec43c4a1114288773a`. Focused 1.5.5 backward and 1.5.6
 security lanes remain separate evidence; they do not replace the 1.5.7 gate.
 
-Robotweax SRT 0.3.1 does not establish positive HSv4 sessions. Applications
+Robotweax SRT 0.3.2 does not establish positive HSv4 sessions. Applications
 that require genuine HSv4 must remain on the immutable 0.1 line or upgrade the
 peer. Valid unsupported legacy establishment attempts fail deterministically
 instead of causing an automatic downgrade.
@@ -53,7 +53,7 @@ instead of causing an automatic downgrade.
 
 ## Transport and protocol matrix
 
-| Capability | Status | Public scope in 0.3.1 |
+| Capability | Status | Public scope in 0.3.2 |
 | --- | --- | --- |
 | HSv5 Caller/Listener | Supported | Blocking and nonblocking establishment, admission callbacks, connection completion, Stream ID, IPv4 and IPv6 |
 | HSv5 Rendezvous | Supported | IPv4 and IPv6 simultaneous open with deterministic role resolution |
@@ -140,7 +140,7 @@ by [Encryption and key rotation](encryption.md).
 
 ## Known limits
 
-- Robotweax SRT 0.3.1 is a pre-1.0 release and does not promise binary
+- Robotweax SRT 0.3.2 is a pre-1.0 release and does not promise binary
   compatibility with 0.1 or 0.2. Applications must be rebuilt against ABI line 0.3.
 - The default public header intentionally matches the SRT 1.5.7 profile;
   AES-GCM does not constitute a complete SRT 1.6 API or ABI claim.
@@ -203,7 +203,7 @@ See [session authentication](session-authentication.md) for the wire contract,
 
 ## Established endpoints and NAT rebinding
 
-An established 0.3.1 connection retains its peer IP address and UDP port.
+An established 0.3.2 connection retains its peer IP address and UDP port.
 Packets from another endpoint cannot migrate it or refresh its idle timer,
 including when their destination socket ID matches. Applications recover through
 a new handshake or replacement group member after ordinary transport failure.
@@ -305,6 +305,6 @@ Published 0.2.9 artifacts do not include the identity options or wire record.
 A separate default-off [experimental ACP1 build](experimental-acp1.md) adds
 strict session-authentication version 3 for Caller/Listener, version 4 for
 Rendezvous, version 5 for Broadcast/Backup Caller/Listener group members, or
-version 6 for Group Rendezvous members, with authenticated runtime controls. It is unreviewed and outside the supported
+version 6 for Group Rendezvous members, with authenticated runtime controls. It is experimental and outside the supported
 security and Haivision interoperability boundary. SESSIONAUTH alone continues
 to use version 2; ordinary connections retain their existing behavior.

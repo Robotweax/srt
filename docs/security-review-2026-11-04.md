@@ -6,6 +6,10 @@ commit `cdacfcb58330e3a9b172f9fa32ddfbfe9c3c857f`, completed at
 exclusions. The report records independent source-level validation of candidate
 findings and their attacker reachability.
 
+Reviewed sources include the default-off ACP1 prototype; its experimental
+wire contract and unsupported security profile remain unchanged. Source review
+does not constitute protocol certification or a decision to support that profile.
+
 Reviewed surfaces include cryptography, key-material negotiation and rotation,
 authenticated payload handling, secret lifecycle, groups, multicast membership,
 reliability, FEC, public APIs, tooling and release workflows. No reportable

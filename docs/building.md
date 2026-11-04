@@ -60,7 +60,7 @@ For unqualified mobile cross-build experiments, see
 | `ROBOTWEAX_SRT_BUILD_EXAMPLES` | `OFF` | Build public API demonstration applications |
 | `ROBOTWEAX_SRT_WARNINGS_AS_ERRORS` | `ON` | Treat library warnings as errors |
 | `ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT` | `OFF` | Install opt-in `srt.pc` metadata for shared-library consumers such as FFmpeg |
-| `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1` | `OFF` | Build the [unreviewed ACP1 prototype](experimental-acp1.md) |
+| `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1` | `OFF` | Build the [experimental ACP1 prototype](experimental-acp1.md) |
 | `ENABLE_AEAD_API_PREVIEW` | `OFF` | Enable the released Robotweax 0.2 AES-GCM extension |
 
 Native benchmarks and protocol tools use source-level C++ implementation
@@ -112,7 +112,7 @@ cmake --build build-shared --parallel
 ctest --test-dir build-shared --output-on-failure
 ```
 
-Robotweax SRT 0.3.1 uses shared-library ABI line 0.3. Rebuild applications
+Robotweax SRT 0.3.2 uses shared-library ABI line 0.3. Rebuild applications
 and dependencies when moving from ABI line 0.2 to 0.3. The shared artifact
 exports the supported public C ABI; source-tree C++ implementation symbols are
 not a stable binary interface.

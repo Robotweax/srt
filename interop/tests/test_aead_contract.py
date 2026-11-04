@@ -20,7 +20,7 @@ HISTORICAL_ABI_PATH = ROOT / "cmake" / "abi" / "robotweax-srt-0.1.0.txt"
 FROZEN_0_2_0_ABI_PATH = (
     ROOT / "cmake" / "abi" / "robotweax-srt-0.2.0.txt"
 )
-CURRENT_PROJECT_VERSION = "0.3.1"
+CURRENT_PROJECT_VERSION = "0.3.2"
 FROZEN_0_3_0_ABI_PATH = ROOT / "cmake/abi/robotweax-srt-0.3.0.txt"
 PREVIOUS_ABI_PATH = ROOT / "cmake" / "abi" / "robotweax-srt-0.2.8.txt"
 CURRENT_ABI_PATH = (
@@ -168,6 +168,7 @@ class AeadContractTests(unittest.TestCase):
         symbols = PUBLIC_SYMBOLS_PATH.read_bytes()
         self.assertEqual(symbols.decode().splitlines(), expected)
         self.assertEqual(CURRENT_ABI_PATH.read_bytes(), symbols)
+        self.assertEqual((ROOT / "cmake/abi/robotweax-srt-0.3.1.txt").read_bytes(), symbols)
         self.assertEqual(symbols,
                          (ROOT / "cmake/abi/robotweax-srt-development.txt").read_bytes())
         cmake = CMAKE_PATH.read_text(encoding="utf-8")

@@ -1,7 +1,7 @@
 # Robotweax SRT documentation
 
 This directory contains the public documentation for building, integrating,
-operating, and evaluating Robotweax SRT 0.3.1.
+operating, and evaluating Robotweax SRT 0.3.2.
 It is written for application
 developers and transport integrators using the installed public API.
 
@@ -16,7 +16,7 @@ developers and transport integrators using the installed public API.
 - [Packet-filter extension contracts](packet-filter-extensions.md) — private,
   group-independent ownership, lifecycle and resource boundaries.
 
-- [Experimental ACP1](experimental-acp1.md) — unreviewed runtime-control
+- [Experimental ACP1](experimental-acp1.md) — experimental runtime-control
   authentication, strict bilateral opt-in and provisional wire/API contract.
 
 - [Experimental remote identity](implementation-identity.md) — development-only,
@@ -158,7 +158,7 @@ named as public contracts may change between pre-1.0 releases.
 - [Project changelog](../CHANGELOG.md)
 
 Robotweax release numbers, the shared-library ABI, the compatible SRT API
-value, and the wire handshake generation are independent. For 0.3.1, the ABI
+value, and the wire handshake generation are independent. For 0.3.2, the ABI
 line is 0.3, the default public API and `srt_getversion()` value are 1.5.7,
 and supported connection establishment uses HSv5.
 
@@ -182,6 +182,6 @@ See [Optional session authentication](session-authentication.md) for the default
 
 A separate default-off [experimental ACP1 build](experimental-acp1.md) adds
 strict session-authentication version 3 for Caller/Listener or version 4 for
-Rendezvous, with authenticated runtime controls. It is unreviewed and outside the supported
+Rendezvous, with authenticated runtime controls. It is experimental and outside the supported
 security and Haivision interoperability boundary. SESSIONAUTH alone continues
 to use version 2; ordinary connections retain their existing behavior.

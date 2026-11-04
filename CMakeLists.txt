@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(robotweax_srt VERSION 0.3.1 LANGUAGES C CXX)
+project(robotweax_srt VERSION 0.3.2 LANGUAGES C CXX)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
@@ -44,7 +44,7 @@ option(ROBOTWEAX_SRT_SENDER_DROP_TRACE
 option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
     "Install opt-in srt.pc metadata for libsrt-compatible consumers" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
-    "Enable unreviewed experimental authenticated runtime controls" OFF)
+    "Enable experimental authenticated runtime controls" OFF)
 option(ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES
     "Build private controller components and contract tests (no socket integration)" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS

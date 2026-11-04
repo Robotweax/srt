@@ -1,10 +1,12 @@
 # Experimental ACP1 runtime-control authentication
 
-ACP1 is an **unreviewed, unstable prototype**, behind
+ACP1 is an **experimental, unstable prototype**, behind
 `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON` (default `OFF`). It is not a supported
 security profile or a release compatibility promise. The wire values below
-are provisional. Independent cryptographic review and a separate go/no-go
-remain outstanding under [issue #190](https://github.com/Robotweax/srt/issues/190).
+are provisional. ACP1 sources were included in the completed
+[whole-repository security source review](security-review-2026-11-04.md).
+That static review does not establish protocol certification or change the
+separate support decision under [issue #190](https://github.com/Robotweax/srt/issues/190).
 This prototype does not close that issue or the legacy KM replay issue
 [#112](https://github.com/Robotweax/srt/issues/112).
 
@@ -229,7 +231,7 @@ or a different peer group on a later join must reject without fallback.
 Group Rendezvous requires explicit ACP1, SESSIONAUTH and encryption policy on
 both groups, plus an explicit local address for every paired member. The build
 gate remains off by default; existing non-ACP1 group Rendezvous remains rejected.
-The profile is unreviewed and outside the supported Haivision interoperability
+The profile is experimental and outside the supported Haivision interoperability
 boundary. Ordinary groups retain their existing behavior.
 
 Configure both groups before opening them: REQUIRED, SESSIONAUTH, passphrase,
