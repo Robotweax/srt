@@ -613,9 +613,26 @@ void run_dispatch_stream(const StreamScenario& scenario)
     REQUIRE(wait_for_members(sender, 0));
     REQUIRE_EQ(srt_getsockstate(sender), SRTS_CONNECTED);
     const std::string idle = message(999);
-    REQUIRE_EQ(
-        srt_sendmsg(sender, idle.data(), static_cast<int>(idle.size()), -1, 1),
-        static_cast<int>(idle.size()));
+    // More than the retained key window passes with no receiver. Repeat
+    // the transition to catch a schedule that only repairs the first join.
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        for (int index = 0; index < 512; ++index) {
+            REQUIRE_EQ(srt_sendmsg(sender, idle.data(),
+                           static_cast<int>(idle.size()), -1, 1),
+                static_cast<int>(idle.size()));
+        }
+        const auto joined =
+            make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+        REQUIRE(wait_for_members(sender, 1, scenario.encrypted));
+        REQUIRE(wait_for_members(joined, 1));
+        const auto resumed = message(1000 + cycle);
+        REQUIRE_EQ(srt_sendmsg(sender, resumed.data(),
+                       static_cast<int>(resumed.size()), -1, 1),
+            static_cast<int>(resumed.size()));
+        expect_messages(joined, 1000 + cycle, 1);
+        peers.drop(joined);
+        REQUIRE(wait_for_members(sender, 0));
+    }
 }
 
 namespace {

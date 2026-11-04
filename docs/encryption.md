@@ -616,9 +616,13 @@ must cover the KMREQ/KMRSP round trip at the stream's packet rate for
 receivers to follow a rotation without loss; the default of 4096 packets
 does for ordinary links, a window of a few packets at wire speed does not.
 
-This design has not yet been part of an independent cryptographic review;
-the review scope of the AES-CTR and AES-GCM profiles assumed per-connection
-keys. It is listed under qualification limits until it is.
+The completed 2026-11-04 Codex Security source review covered cryptography,
+key-material state, groups and multicast at commit
+`cdacfcb58330e3a9b172f9fa32ddfbfe9c3c857f`. It established no reportable
+cryptographic or multicast issue. See the
+[review scope and disposition](security-review-2026-11-04.md) for its exact
+coverage and the subsequent fixes. The shared-key trust, admission and
+revocation limits above remain part of the contract.
 
 ## Error and security behavior
 

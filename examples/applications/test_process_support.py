@@ -1,9 +1,32 @@
 # SPDX-License-Identifier: MIT
 """Port planning avoids dynamic allocation and rejects occupied blocks."""
 import unittest
+import sys
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import process_support
+
+
+class ProcessLogTests(unittest.TestCase):
+    def test_live_logs_survive_completion_timeout_and_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory) / "receiver"
+            process = process_support.Process([
+                sys.executable, "-u", "-c",
+                'import sys,time; print("diagnostic", file=sys.stderr); '
+                'print(\'{"event":"ready"}\'); time.sleep(60)',
+            ], log_prefix=prefix)
+            try:
+                process.ready()
+                self.assertIn('"ready"', Path(str(prefix)+".stdout.log").read_text())
+                with self.assertRaisesRegex(RuntimeError, "completion timed out.*ready"):
+                    process.finish(timeout=0.05)
+            finally:
+                process.close()
+            self.assertIn("diagnostic", Path(str(prefix)+".stderr.log").read_text())
+            self.assertIsNotNone(process.child.poll())
 
 
 class PortTests(unittest.TestCase):

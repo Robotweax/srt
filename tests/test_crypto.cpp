@@ -3815,3 +3815,72 @@ TEST(crypto_shared_schedule_keeps_one_key_per_sequence_across_wraparound)
     SharedTransmitKeySchedule automatic({.mode = CryptoMode::automatic});
     REQUIRE_EQ(automatic.initialize(), Error::invalid_state);
 }
+
+TEST(crypto_shared_schedule_advances_unused_rotations_and_wraps)
+{
+    const SequenceNumber origin {SequenceNumber::mask - 3U};
+    SharedTransmitKeySchedule schedule({
+        .refresh_rate_packets = 64,
+        .preannouncement_packets = 24,
+        .origin = origin,
+    });
+    REQUIRE_EQ(schedule.initialize(), Error::none);
+    std::array<std::byte, 16> initial {}, current {}, repeated {};
+    REQUIRE_EQ(schedule.key_for(0, initial), Error::none);
+    // Rejoin exactly at a rotation boundary after crossing the wire wrap.
+    REQUIRE_EQ(schedule.advance_unused(origin, 512), Error::none);
+    REQUIRE_EQ(schedule.frontier_position(), 512U);
+    REQUIRE_EQ(schedule.position_of(origin.advanced(512)), 512U);
+    REQUIRE_EQ(schedule.key_for(8, current), Error::none);
+    REQUIRE(current != initial);
+    REQUIRE_EQ(schedule.key_for(8, repeated), Error::none);
+    REQUIRE_EQ(current, repeated);
+    REQUIRE_EQ(schedule.key_for(0, repeated), Error::invalid_state);
+    REQUIRE_EQ(schedule.key_for(10, repeated), Error::invalid_state);
+    // Rejoin inside the announcement window: the successor remains usable.
+    REQUIRE_EQ(schedule.advance_unused(origin.advanced(512), 40), Error::none);
+    REQUIRE(schedule.announcement_due(schedule.frontier_position()));
+    REQUIRE_EQ(schedule.key_for(9, repeated), Error::none);
+    REQUIRE(repeated != current);
+    // A whole wire cycle with bounded local increments never reuses a key.
+    auto first = origin.advanced(552);
+    for (int part = 0; part < 4; ++part) {
+        constexpr auto count = SequenceNumber::half_range / 2U;
+        REQUIRE_EQ(schedule.advance_unused(first, count), Error::none);
+        first = first.advanced(count);
+    }
+    REQUIRE_EQ(schedule.frontier_position(),
+        static_cast<std::uint64_t>(SequenceNumber::modulus) + 552U);
+    REQUIRE_EQ(
+        schedule.key_for(
+            schedule.generation_at(schedule.frontier_position()), repeated),
+        Error::none);
+    REQUIRE(repeated != current);
+}
+
+TEST(crypto_shared_schedule_unused_advance_failure_preserves_keys_and_position)
+{
+    CtrOnlyCryptoProvider provider;
+    SharedTransmitKeySchedule schedule({.refresh_rate_packets = 64}, provider);
+    REQUIRE_EQ(schedule.initialize(), Error::none);
+    std::array<std::byte, 16> initial {}, retained {};
+    REQUIRE_EQ(schedule.key_for(0, initial), Error::none);
+    provider.fail_random_bytes();
+    // Generation 8 collides with generation 0's ring slot. Failure must
+    // not erase the retained key or consume the caller's stream position.
+    REQUIRE_EQ(schedule.advance_unused(SequenceNumber {0}, 512),
+        Error::cryptographic_failure);
+    REQUIRE_EQ(schedule.frontier_position(), 0U);
+    REQUIRE_EQ(schedule.key_for(0, retained), Error::none);
+    REQUIRE_EQ(initial, retained);
+    REQUIRE_EQ(
+        schedule.advance_unused(SequenceNumber {SequenceNumber::mask}, 1),
+        Error::invalid_state);
+    REQUIRE_EQ(
+        schedule.advance_unused(SequenceNumber {0}, 0), Error::invalid_state);
+    REQUIRE_EQ(
+        schedule.advance_unused(SequenceNumber {0}, SequenceNumber::half_range),
+        Error::invalid_state);
+    REQUIRE_EQ(schedule.advance_unused(SequenceNumber {0}, 1), Error::none);
+    REQUIRE_EQ(schedule.frontier_position(), 1U);
+}

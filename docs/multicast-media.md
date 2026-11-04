@@ -143,7 +143,8 @@ Cipher selections must match.
 
 The example callback admits every multicast proposal into one fixed stream
 and domain. Applications must replace this with their own authorization
-policy. The group key design is unreviewed. Removing a receiver does not revoke
+policy. The [completed source review](security-review-2026-11-04.md) includes
+group encryption. Removing a receiver does not revoke
 keys it already knows, and shared keys do not provide sender identity against
 other key holders. See the [encryption contract](encryption.md#multicast-dispatch-groups-one-traffic-key-per-group).
 

@@ -20,6 +20,7 @@ REQUIRED = {
     "hsv5_multicast_dispatch_negotiation_announces_the_group",
     "hsv5_multicast_dispatch_is_rejected_without_policy_or_announcement",
     "compat_multicast_dispatch_group_creation_and_receiver_shape",
+    "compat_multicast_dispatch_sender_epoll_tracks_empty_and_backpressure",
     "compat_multicast_dispatch_backpressure_preserves_original_and_tail",
     "compat_multicast_dispatch_lost_or_failed_repair_uses_unicast_within_budget",
     "multicast_dispatch_repair_does_not_suppress_before_submission",
@@ -33,10 +34,17 @@ REQUIRED = {
     "multicast_dispatch_group_authenticates_with_aes_gcm_group_key",
     "multicast_dispatch_group_encrypts_with_one_group_key_across_rotations",
     "multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding",
+    "multicast_dispatch_group_joins_with_a_full_accept_backlog",
+}
+KEY_REQUIRED = {
+    "crypto_shared_schedule_maps_group_sequence_to_generation_and_selector",
+    "crypto_shared_schedule_keeps_one_key_per_sequence_across_wraparound",
+    "crypto_shared_schedule_advances_unused_rotations_and_wraps",
+    "crypto_shared_schedule_unused_advance_failure_preserves_keys_and_position",
 }
 
 
-def validate_native(output: str) -> list[str]:
+def validate_native(output: str, required=REQUIRED) -> list[str]:
     if re.search(r"\[(?:SKIP|FAIL)\]", output):
         raise ValueError("required multicast case skipped or failed")
     passed = re.findall(r"^\[PASS\] (\w+)$", output, re.MULTILINE)
@@ -48,8 +56,8 @@ def validate_native(output: str) -> list[str]:
     if (extra.strip() or int(good) != int(selected) or int(good) != len(passed)
             or len(set(passed)) != len(passed) or sorted(started) != sorted(passed)):
         raise ValueError("incomplete or skipped native execution")
-    if not REQUIRED.issubset(passed):
-        raise ValueError("missing required native cases: " + ", ".join(sorted(REQUIRED - set(passed))))
+    if not required.issubset(passed):
+        raise ValueError("missing required native cases: " + ", ".join(sorted(required - set(passed))))
     return passed
 
 
@@ -94,10 +102,15 @@ def main() -> None:
         sample = binary(args.build, "examples/applications", "robotweax_srt_multicast", args.config)
         output = execute([str(native), "--include", "multicast_dispatch"], args.output / "native.log", 120)
         record["native_cases"] = validate_native(output)
+        output = execute([str(native), "--include", "crypto_shared_schedule"],
+                         args.output / "key-schedule.log", 30)
+        record["key_cases"] = validate_native(output, KEY_REQUIRED)
         record["sample_modes"] = []
         for mode in ["plain", "ctr", "gcm"]:
-            output = execute([sys.executable, str(ROOT / "examples/applications/test_multicast.py"),
-                              "--binary", str(sample), "--crypto", mode], args.output / f"sample-{mode}.log", 45)
+            output = execute([sys.executable, "-u", str(ROOT / "examples/applications/test_multicast.py"),
+                              "--binary", str(sample), "--crypto", mode,
+                              "--logs", str(args.output / f"sample-{mode}")],
+                             args.output / f"sample-{mode}.log", 45)
             if not re.search(rf"^PASS {mode}: \d+ bytes, \d+ multicast originals, two exact receivers, datagram integrity$",
                              output, re.MULTILINE):
                 raise ValueError("missing sample completion: " + mode)

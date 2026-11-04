@@ -131,6 +131,9 @@ named as public contracts may change between pre-1.0 releases.
 
 ## Releases and migration
 
+- [Robotweax SRT 0.3.2 release notes](release-notes-0.3.2.md) — multicast, optional ARQ-first, timing and admission changes.
+- [Release contract for 0.3.2](release-process-0.3.2.md) — source freeze, qualification, upgrade and publication requirements.
+- [Security source review — 2026-11-04](security-review-2026-11-04.md) — completed scan scope and finding disposition.
 - [Robotweax SRT 0.3.1 release notes](release-notes-0.3.1.md) — integrated changes, upgrade requirements and retained limits.
 - [Release contract for 0.3.1](release-process-0.3.1.md) — immutable source, documentation, qualification and signing requirements.
 

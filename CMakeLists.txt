@@ -518,6 +518,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_group_acquire.cpp
         tests/test_compat_groups.cpp
         tests/test_multicast_dispatch.cpp
+        tests/test_arq_transport.cpp
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp
         tests/test_compat_message_attempts.cpp)
@@ -592,7 +593,19 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover
-            tsbpd_rtt)
+            tsbpd_rtt multicast_dispatch compat_idle_readiness_ arq_transport_)
+    add_test(NAME robotweax_srt_arq_transport_tests
+        COMMAND robotweax_srt_tests --include arq_transport_)
+    set_tests_properties(robotweax_srt_arq_transport_tests
+        PROPERTIES TIMEOUT 30 LABELS "network;integration;fec")
+    # Real multicast and idle-watcher waits have their own bounded budgets;
+    # do not charge all platform setup costs to the aggregate unit timeout.
+    add_test(NAME robotweax_srt_multicast_dispatch_tests
+        COMMAND robotweax_srt_tests --include multicast_dispatch)
+    add_test(NAME robotweax_srt_idle_readiness_tests
+        COMMAND robotweax_srt_tests --include compat_idle_readiness_)
+    set_tests_properties(robotweax_srt_multicast_dispatch_tests
+        robotweax_srt_idle_readiness_tests PROPERTIES LABELS "network;integration")
     # Keep the deterministic multi-RTT simulation matrices independently
     # bounded instead of charging them to the general unit-test run.
     add_test(NAME robotweax_srt_tsbpd_rtt_tests
@@ -727,6 +740,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             compat_group_closed_member_retains_bounded_copy_after_oversized_message)
     set_tests_properties(
         robotweax_srt_tests robotweax_srt_tsbpd_rtt_tests robotweax_srt_socket_api_tests
+        robotweax_srt_multicast_dispatch_tests robotweax_srt_idle_readiness_tests
         robotweax_srt_transport_runtime_tests
         robotweax_srt_group_join_rollover_tests
         robotweax_srt_rotation_tests robotweax_srt_key_length_tests

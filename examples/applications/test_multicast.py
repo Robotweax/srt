@@ -63,6 +63,8 @@ def synthetic_ts() -> bytes:
 
 def run(args):
     binary = str(args.binary.resolve())
+    def log_prefix(name):
+        return args.logs / name if args.logs is not None else None
     with tempfile.TemporaryDirectory(prefix="srt-multicast-media-") as directory:
         root = Path(directory)
         payload = synthetic_ts()
@@ -79,6 +81,7 @@ def run(args):
         collectors: list[Collector] = []
         tap = None
         try:
+            print(f"START {args.crypto}: creating media endpoints", flush=True)
             for port in (base + 3, base + 4):
                 collectors.append(Collector(port))
             if args.ffmpeg:
@@ -89,20 +92,23 @@ def run(args):
                 binary, "send", *common, "--multicast", f"239.255.133.11:{base + 1}",
                 "--ttl", "0", "--min-receivers", "2", "--duration", str(run_seconds + 1),
                 "--media-udp", f"127.0.0.1:{base + 2}",
-            ], environment)
+            ], environment, log_prefix("sender"))
             processes.append(sender)
             sender.ready()
+            print("READY sender: starting receivers", flush=True)
             receivers = []
             for index in range(2):
                 receiver = Process([
                     binary, "receive", *common, "--duration", str(run_seconds),
                     "--media-udp", f"127.0.0.1:{base + 3 + index}",
                     "--record", str(root / f"received-{index}.ts"),
-                ], environment)
+                ], environment, log_prefix(f"receiver-{index}"))
                 processes.append(receiver)
                 receivers.append(receiver)
                 wait_event(receiver, "media_ready")
+                print(f"READY receiver-{index}", flush=True)
             wait_event(sender, "media_ready")
+            print("READY media: feeding MPEG-TS", flush=True)
             if args.ffmpeg:
                 subprocess.run([
                     args.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
@@ -122,8 +128,8 @@ def run(args):
                     for index, chunk in enumerate(chunks):
                         time.sleep(max(0, started + 0.4 * index / len(chunks) - time.monotonic()))
                         source.sendto(chunk, ("127.0.0.1", base + 2))
-            received_events = [receiver.finish() for receiver in receivers]
-            sent_events = sender.finish()
+            received_events = [receiver.finish(timeout=10) for receiver in receivers]
+            sent_events = sender.finish(timeout=10)
             if tap:
                 tap.close()
                 chunks = tap.values
@@ -152,6 +158,10 @@ def run(args):
             kind = "decoded video and audio" if args.ffmpeg else "datagram integrity"
             print(f"PASS {args.crypto}: {len(payload)} bytes, {len(chunks)} multicast originals, "
                   f"two exact receivers, {kind}")
+        except BaseException:
+            for index, process in enumerate(processes):
+                print(f"PROCESS {index} exit={process.child.poll()}:\n{process.output()}", flush=True)
+            raise
         finally:
             for process in processes:
                 process.close()
@@ -167,4 +177,5 @@ if __name__ == "__main__":
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--crypto", choices=("plain", "ctr", "gcm"), default="plain")
     parser.add_argument("--ffmpeg", help="Also generate and decode MPEG-TS with video and audio")
+    parser.add_argument("--logs", type=Path, help="Persist live child stdout/stderr, including on timeout")
     run(parser.parse_args())

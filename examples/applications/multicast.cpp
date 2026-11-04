@@ -215,8 +215,8 @@ int main(int argc, char** argv)
                    "transcoding or RTP.\n"
                    "Wait for media_ready before starting the source. Ctrl+C "
                    "stops forwarding.\n"
-                   "Experimental Robotweax peers only. Shared group keys are "
-                   "unreviewed.\n";
+                   "Experimental Robotweax peers only. Shared group keys "
+                   "require trusted members.\n";
             return 0;
         }
         Arguments args(argc, argv,

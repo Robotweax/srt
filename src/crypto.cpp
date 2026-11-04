@@ -354,6 +354,36 @@ std::uint64_t SharedTransmitKeySchedule::frontier_position() const noexcept
     return frontier_position_;
 }
 
+Error SharedTransmitKeySchedule::advance_unused(
+    SequenceNumber first, std::uint32_t packets) noexcept
+{
+    std::lock_guard lock(mutex_);
+    const auto distance = first.distance_from(frontier_sequence_);
+    if (!initialized_ || packets == 0U || packets >= SequenceNumber::half_range
+        || distance < 0) {
+        return Error::invalid_state;
+    }
+    const auto advance = static_cast<std::uint64_t>(distance) + packets;
+    if (advance
+        > std::numeric_limits<std::uint64_t>::max() - frontier_position_) {
+        return Error::invalid_state;
+    }
+    const auto position = frontier_position_ + advance;
+    const auto generation = generation_at(position);
+    const auto& slot = generations_[generation % retained_generations];
+    if (!slot.valid || slot.index != generation) {
+        // No packet in this range was emitted. Only its next live key is
+        // needed, so work stays bounded even across many unused rotations.
+        const Error generated = generate_locked(generation);
+        if (generated != Error::none) {
+            return generated;
+        }
+    }
+    frontier_position_ = position;
+    frontier_sequence_ = first.advanced(packets);
+    return Error::none;
+}
+
 std::uint64_t SharedTransmitKeySchedule::generation_at(
     std::uint64_t position) const noexcept
 {
@@ -371,14 +401,17 @@ bool SharedTransmitKeySchedule::announcement_due(
 Error SharedTransmitKeySchedule::generate_locked(
     std::uint64_t generation) noexcept
 {
-    auto& slot = generations_[generation % retained_generations];
-    provider_.secure_erase(slot.key);
-    slot.valid = false;
+    std::array<std::byte, maximum_aes_key_size> key {};
     const Error result = provider_.random_bytes(
-        std::span {slot.key}.first(configuration_.key_length));
+        std::span {key}.first(configuration_.key_length));
     if (result != Error::none) {
+        provider_.secure_erase(key);
         return result;
     }
+    auto& slot = generations_[generation % retained_generations];
+    provider_.secure_erase(slot.key);
+    slot.key = key;
+    provider_.secure_erase(key);
     slot.index = generation;
     slot.valid = true;
     newest_generation_ = std::max(newest_generation_, generation);
