@@ -21,9 +21,8 @@ transcoding, remuxing, or adding an application header. FFmpeg is a separate
 encoder/player process; the C++ executable has no FFmpeg library dependency.
 
 This uses the experimental [multicast dispatch extension](connection-groups.md#multicast-dispatch-groups).
-Build matching feature headers and library from source. Released v0.3.1
-packages do not contain these options even though the branch retains that
-product version.
+Use matching headers and library from version 0.3.2 or newer. Published v0.3.1
+packages do not contain these options.
 
 ## Build
 

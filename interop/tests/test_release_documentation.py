@@ -27,4 +27,4 @@ class ReleaseDocumentationTests(unittest.TestCase):
             self.assertTrue(checker.validate_release(root, "0.3.1"))
 
     def test_current_source_documentation_is_finished_and_version_matched(self):
-        self.assertEqual(checker.validate_release(ROOT, "0.3.1"), [])
+        self.assertEqual(checker.validate_release(ROOT, "0.3.2"), [])

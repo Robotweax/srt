@@ -12,22 +12,21 @@ depending on implementation-specific C++ internals.
 
 ## Release status
 
-Version **0.3.1** integrates connection-publication and resource hardening, direct
-group UDP-socket adoption, application samples and explicit experimental providers.
-See the [0.3.1 release notes](docs/release-notes-0.3.1.md) for changes and migration,
+Version **0.3.2** adds experimental multicast dispatch, regular opt-in ARQ-first
+recovery, group key and readiness fixes, and early listener-capacity enforcement.
+See the [0.3.2 release notes](docs/release-notes-0.3.2.md) for changes and migration,
 and [GitHub releases](https://github.com/Robotweax/srt/releases) for published
 artifacts, signed Windows SDK installers, checksums and tag provenance.
-The preceding [v0.3.0](https://github.com/Robotweax/srt/releases/tag/v0.3.0) was
-published on 2026-10-14; its [publication record](docs/release-process-0.3.0.md#publication-record)
-retains the exact evidence and qualification limits.
+The preceding [v0.3.1](https://github.com/Robotweax/srt/releases/tag/v0.3.1)
+retains its own [release notes](docs/release-notes-0.3.1.md) and qualification limits.
 
 The separate Homebrew 0.3.0 ARM64 bottle for macOS 15 (`arm64_sequoia`)
 was published on 22 October 2026; see the [tap publication record](https://github.com/Robotweax/homebrew-tap/blob/8490b0b7d6eda295207b180fb2704de1878d8908/README.md).
 Other bottle platforms require their own qualification.
 
-| Axis | Robotweax SRT 0.3.1 |
+| Axis | Robotweax SRT 0.3.2 |
 | --- | --- |
-| Project release | `0.3.1` |
+| Project release | `0.3.2` |
 | Shared-library ABI | `0.3` |
 | Default public API target | SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -41,7 +40,7 @@ handshake, and encryption profile are separate version axes. In particular,
 release number.
 
 Version 0.3 is a pre-1.0 release. Rebuild applications and dependencies when
-moving from ABI line 0.2 to 0.3. See the [0.3.1 release notes](docs/release-notes-0.3.1.md)
+moving from ABI line 0.2 to 0.3. See the [0.3.2 release notes](docs/release-notes-0.3.2.md)
 and [0.1-to-0.2 migration guide](docs/migration-0.2.md).
 
 See the [ecosystem support matrix](docs/compatibility.md#ecosystem-build-profiles)

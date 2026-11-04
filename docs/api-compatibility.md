@@ -1,6 +1,6 @@
 # Public SRT API compatibility
 
-Robotweax SRT 0.3.1 provides a compatible public C boundary for the selected
+Robotweax SRT 0.3.2 provides a compatible public C boundary for the selected
 Haivision SRT v1.5.7 API profile. It is an independent implementation, not a
 source fork and not a claim of complete compatibility with every historical or
 future `libsrt` behavior.
@@ -14,17 +14,17 @@ selected function, public type, socket option, constant group, ABI check, and
 its exact implemented or partial scope. When this overview and the manifest
 differ, the manifest is authoritative.
 
-See the [0.3.1 release notes](release-notes-0.3.1.md) for changes and migration.
-Applications linked to ABI line 0.2 must rebuild for 0.3. Existing 0.3.0 C
+See the [0.3.2 release notes](release-notes-0.3.2.md) for changes and migration.
+Applications linked to ABI line 0.2 must rebuild for 0.3. Existing 0.3.1 C
 exports and layouts are preserved; source-tree C++ consumers must rebuild.
 
 ## Version axes
 
 These values are intentionally independent:
 
-| Axis | Robotweax SRT 0.3.1 |
+| Axis | Robotweax SRT 0.3.2 |
 | --- | --- |
-| Project release | `0.3.1` |
+| Project release | `0.3.2` |
 | Shared-library ABI line | `0.3` |
 | Default compatible public API | Haivision SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -367,7 +367,7 @@ the manifest as the contract.
 
 ## Compatibility limits
 
-Robotweax SRT 0.3.1 is not yet a link-compatible replacement for arbitrary
+Robotweax SRT 0.3.2 is not yet a link-compatible replacement for arbitrary
 `libsrt` applications. In particular:
 
 - HSv4 positive connection establishment is not supported in 0.2;

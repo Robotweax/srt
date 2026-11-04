@@ -1,11 +1,11 @@
-# Windows SDK installers — Robotweax SRT 0.3.1
+# Windows SDK installers — Robotweax SRT 0.3.2
 
 This SDK is for application developers. Separate OpenSSL and
 [experimental BCrypt](../../docs/windows-bcrypt.md) installers contain static
 Robotweax SRT for Debug/Release × Win32/x64/Arm64. Consumers use `/MDd` for Debug
 and `/MD` for Release. Debug binaries are development-only; applications must
 deploy the appropriate Microsoft runtime for Release. AES-GCM preview is disabled.
-The library's complete public documentation, including the 0.3.1 release notes,
+The library's complete public documentation, including the 0.3.2 release notes,
 is installed under `share/doc/robotweax_srt/` and included in payload checksums.
 
 Published downloads and their qualification evidence are available from
@@ -58,7 +58,7 @@ installation tests on those exact signed bytes. Only the verified signed pair
 and its checksums can be attached to a draft release. Publishing remains a manual review step;
 an existing published release is never modified. Re-running an upload with
 existing asset names fails rather than replacing them. Manual runs only produce
-CI artifacts. For the normal 0.3.1 release sequence, perform protected signing
+CI artifacts. For the normal 0.3.2 release sequence, perform protected signing
 once from the final tag, after pre-tag checks; do not request a second signed
 qualification run beforehand. The alternative manual `sign=true` path remains
 main-only for deliberately requested diagnostics, requires the existing signing
@@ -207,8 +207,8 @@ message boxes does not turn a failed install into success. Setup preflight
 rejection normally returns 7; treat any nonzero exit as failure with the options
 above. A newly opened shell observes machine environment changes. CI exercises
 real earlier-release upgrades, repair, rejection and backend coexistence, then
-builds and runs a consumer against the installed SDK. For 0.3.1,
-the earlier inputs are the published signed 0.3.0 OpenSSL/BCrypt installers,
+builds and runs a consumer against the installed SDK. For 0.3.2,
+the earlier inputs are the published signed 0.3.1 OpenSSL/BCrypt installers,
 checked against their fixed SHA-256 values and valid Authenticode signatures.
 The historical [0.3.0 final tag SDK run](https://github.com/Robotweax/srt/actions/runs/38624266358)
 passed installer, coexistence, independent-rebuild and signing checks for 0.3.0;

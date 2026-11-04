@@ -725,7 +725,7 @@ the bounded tally entry is evicted. A value of 0 keeps every repeat unicast.
 (`0x01000015`, read-only, `ROBOTWEAX_SRT_MCAST_STATS_V1`, dispatch groups
 only) reports the multicast-path counters described in
 [Connection groups](connection-groups.md#multicast-dispatch-groups).
-All six are experimental and absent from v0.3.1 artifacts. See
+All six are experimental and available from 0.3.2. See
 [multicast dispatch groups](connection-groups.md#multicast-dispatch-groups).
 
 ## ARQ-first FEC and the tail loss probe (opt-in, sender-local)

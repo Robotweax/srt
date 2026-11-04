@@ -39,19 +39,19 @@ try {
     if ($Plan.Count -ne 1 -or $Plan[0].Substring(66) -ne 'include\srt\obsolete.h') { throw 'Incorrect obsolete-file plan' }
     if (@(Get-SdkUpgradePlan $Installed $Incoming '0.2.8' '0.2.8' 'bcrypt').Count -ne 1) { throw 'Repair rejected' }
     # New public documentation is valid for a fresh install and an upgrade
-    # from the released SDK, whose inventory did not contain documentation.
-    $Documentation = 'share\doc\robotweax_srt\docs\release-notes-0.3.1.md'
+    # from the released SDK, whose inventory did not contain the new notes.
+    $Documentation = 'share\doc\robotweax_srt\docs\release-notes-0.3.2.md'
     $WithDocumentation = $NewHashes.Clone()
     $WithDocumentation[$Documentation] = 'a' * 64
     $WithDocumentation | ConvertTo-Json | Set-Content $Incoming
     $Fresh = Join-Path $TestRoot 'fresh'
     New-Item -ItemType Directory $Fresh | Out-Null
-    if (@(Get-SdkUpgradePlan $Fresh $Incoming '' '0.3.1' 'bcrypt').Count -ne 0) { throw 'Fresh documentation install rejected' }
-    if (@(Get-SdkUpgradePlan $Installed $Incoming '0.3.0' '0.3.1' 'bcrypt').Count -ne 1) { throw 'Documentation upgrade rejected' }
+    if (@(Get-SdkUpgradePlan $Fresh $Incoming '' '0.3.2' 'bcrypt').Count -ne 0) { throw 'Fresh documentation install rejected' }
+    if (@(Get-SdkUpgradePlan $Installed $Incoming '0.3.1' '0.3.2' 'bcrypt').Count -ne 1) { throw 'Documentation upgrade rejected' }
     $DocumentPath = Join-Path $Installed $Documentation
     New-Item -ItemType Directory (Split-Path $DocumentPath) -Force | Out-Null
     'user document' | Set-Content $DocumentPath
-    Expect-Rejection { Get-SdkUpgradePlan $Installed $Incoming '0.3.0' '0.3.1' 'bcrypt' } 'overwrite an untracked file'
+    Expect-Rejection { Get-SdkUpgradePlan $Installed $Incoming '0.3.1' '0.3.2' 'bcrypt' } 'overwrite an untracked file'
     if ((Get-Content $DocumentPath -Raw).Trim() -ne 'user document') { throw 'Collision changed user documentation' }
     Remove-Item $DocumentPath
     $NewHashes | ConvertTo-Json | Set-Content $Incoming

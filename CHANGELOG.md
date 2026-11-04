@@ -4,7 +4,9 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
-## Unreleased
+## 0.3.2 — Multicast and Recovery Stabilization
+
+See the [release notes](docs/release-notes-0.3.2.md) for upgrade behavior and limits.
 
 - Advance multicast group keys across receiver-free intervals, including sequence
   wrap; preserve retained keys and stream position when new key generation fails.
