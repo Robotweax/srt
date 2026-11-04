@@ -518,6 +518,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_group_acquire.cpp
         tests/test_compat_groups.cpp
         tests/test_multicast_dispatch.cpp
+        tests/test_arq_transport.cpp
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp
         tests/test_compat_message_attempts.cpp)
@@ -592,7 +593,11 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover
-            tsbpd_rtt multicast_dispatch compat_idle_readiness_)
+            tsbpd_rtt multicast_dispatch compat_idle_readiness_ arq_transport_)
+    add_test(NAME robotweax_srt_arq_transport_tests
+        COMMAND robotweax_srt_tests --include arq_transport_)
+    set_tests_properties(robotweax_srt_arq_transport_tests
+        PROPERTIES TIMEOUT 30 LABELS "network;integration;fec")
     # Real multicast and idle-watcher waits have their own bounded budgets;
     # do not charge all platform setup costs to the aggregate unit timeout.
     add_test(NAME robotweax_srt_multicast_dispatch_tests
