@@ -198,6 +198,7 @@ void publish_listener_group_update(SRTSOCKET listener) noexcept
 struct ListenerGroupAdmission {
     SRTSOCKET listener = SRT_INVALID_SOCK;
     std::uint32_t initial_sequence = 0;
+    ListenerAcceptQueue::Reservation accept_reservation;
     // Bonding admission (SRTO_GROUPCONNECT).
     bool enabled = false;
     // Dispatch admission (SRTO_ROBOTWEAX_MCAST_GROUP set on the listener);
@@ -320,6 +321,14 @@ struct ListenerGroupAdmission {
                 }
                 return false;
             }
+        }
+        // Only a first member publishes an application accept. Additional
+        // members can join a full listener, subject to its overflow budget.
+        if (first_member) {
+            if (!accept_reservation.try_acquire())
+                return false;
+        } else {
+            accept_reservation.release();
         }
         response = {
             .group_id = static_cast<std::uint32_t>(mirror.group),
@@ -4412,6 +4421,23 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         initial.message.packet.initial_sequence.value();
     const Clock::time_point origin = Clock::now();
 
+    auto accept_reservation = accepts_.reserve();
+    if (!accept_reservation) {
+        const bool group_candidate =
+            admission.conclusion.message.has_group_membership
+            && (public_options.group_connect
+                || public_options.multicast_group_set);
+        if (!group_candidate)
+            return fail_accept(SRT_EASYNCRCV);
+        // Group identity and first-member status require callback policy and
+        // negotiation. Bound that exception before any provisional allocation.
+        if (!native_options.encryption_enabled()) {
+            std::lock_guard lock(mutex_);
+            if (!group_overflow_budget_.admit(initial.peer, origin))
+                return fail_accept(SRT_EASYNCRCV);
+        }
+    }
+
     bool crypto_budget_charged = false;
     const auto charge_crypto_budget = [&] {
         std::lock_guard lock(mutex_);
@@ -4454,6 +4480,7 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     setup_context->caller_socket_id = caller_socket_id;
     setup_context->selected_protocol = selected_protocol;
     ListenerGroupAdmission& group_admission = setup_context->group_admission;
+    group_admission.accept_reservation = std::move(accept_reservation);
     group_admission.listener = static_cast<SRTSOCKET>(listener_socket_id);
     group_admission.initial_sequence = connection_sequence;
     group_admission.enabled = public_options.group_connect;
@@ -5146,11 +5173,13 @@ bool ListenerRuntime::start() noexcept
 }
 
 ListenerAcceptPublishStatus ListenerRuntime::publish(
+    ListenerAcceptQueue::Reservation&& reservation,
     ListenerAcceptedConnection connection) noexcept
 {
     const auto listener = listener_.lock();
-    const ListenerAcceptPublishStatus status = accepts_.publish(
-        connection, listener != nullptr ? &listener->pending_accepts : nullptr);
+    const ListenerAcceptPublishStatus status =
+        accepts_.publish(std::move(reservation), connection,
+            listener != nullptr ? &listener->pending_accepts : nullptr);
     if (status == ListenerAcceptPublishStatus::published) {
         // Only the listener's own readiness changed.
         if (listener != nullptr) {
@@ -5415,6 +5444,11 @@ bool ListenerRuntime::process_setup_result(
             || !result.has_peer_handshake) {
             return finish_setup_context(context, false, SRT_ECONNSETUP);
         }
+        if ((!result.runtime.has_peer_group_membership
+                || context->group_admission.first_member)
+            && !context->group_admission.accept_reservation.try_acquire()) {
+            return finish_setup_context(context, false, SRT_ENOBUF);
+        }
         const ConnectedNegotiation negotiation {
             .peer_srt_version =
                 result.runtime.peer_extension_parameters.srt_version,
@@ -5579,10 +5613,12 @@ bool ListenerRuntime::finish_setup_context(
     if (!publish_accept) {
         return true;
     }
-    const ListenerAcceptPublishStatus published = publish({
-        .handle = public_handle,
-        .peer = peer,
-    });
+    const ListenerAcceptPublishStatus published =
+        publish(std::move(context->group_admission.accept_reservation),
+            {
+                .handle = public_handle,
+                .peer = peer,
+            });
     if (published == ListenerAcceptPublishStatus::published) {
         return true;
     }

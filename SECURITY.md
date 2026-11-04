@@ -124,6 +124,25 @@ are unaffected. These bounds contain listener-local derivation work; they do
 not guarantee admission during a distributed flood or impose a process-wide
 limit across multiple listeners.
 
+### Listener accept capacity
+
+Ordinary connections reserve completed-accept capacity after cookie validation
+and before provisional socket creation or the application listen callback.
+Queued accepts and in-flight reservations share the configured backlog bound.
+Publication consumes a reservation; failure and close release it automatically.
+When capacity is unavailable, ordinary conclusions are dropped for caller retry.
+
+Additional members of an existing group do not publish another accept. A
+cookie-valid group proposal on a group-enabled listener may therefore proceed
+without an accept reservation while the queue is full. Before provisional
+allocation, plaintext proposals on this exceptional path use a separate
+listener-wide token bucket with the same overall and per-source bounds as
+encrypted admission above. Encrypted proposals retain the existing crypto
+budget. Negotiation must reserve capacity for a first member before attaching
+a transport runtime; additional members release any unnecessary reservation.
+These limits preserve group joins without permitting unbounded setup work
+through group-marked conclusions.
+
 ## Secure integration guidance
 
 - Use unique, high-entropy passphrases delivered through a secure secret

@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
+#include <memory>
 #include <vector>
 
 namespace robotweax::srt::compat {
@@ -25,6 +26,7 @@ enum class ListenerAcceptPublishStatus {
 struct ListenerAcceptQueueSnapshot {
     std::size_t capacity = 0;
     std::size_t size = 0;
+    std::size_t reserved = 0;
     bool closed = false;
 };
 
@@ -32,12 +34,43 @@ struct ListenerAcceptQueueSnapshot {
 // application accept call: saturation is explicit and therefore cannot block a
 // bounded completion owner or a future affinity-shard owner.
 class ListenerAcceptQueue {
+    struct State;
+
 public:
+    // Move-only admission ownership. Shared queue state survives listener close
+    // until every setup has released its slot, without retaining the listener.
+    class Reservation {
+    public:
+        Reservation() noexcept = default;
+        ~Reservation();
+        Reservation(Reservation&& other) noexcept;
+        Reservation& operator=(Reservation&& other) noexcept;
+        Reservation(const Reservation&) = delete;
+        Reservation& operator=(const Reservation&) = delete;
+
+        [[nodiscard]] explicit operator bool() const noexcept
+        {
+            return reserved_;
+        }
+        [[nodiscard]] bool try_acquire() noexcept;
+        void release() noexcept;
+
+    private:
+        friend class ListenerAcceptQueue;
+        explicit Reservation(std::shared_ptr<State> state) noexcept;
+        std::shared_ptr<State> state_;
+        bool reserved_ = false;
+    };
     explicit ListenerAcceptQueue(std::size_t capacity);
+    ~ListenerAcceptQueue();
 
     ListenerAcceptQueue(const ListenerAcceptQueue&) = delete;
     ListenerAcceptQueue& operator=(const ListenerAcceptQueue&) = delete;
 
+    [[nodiscard]] Reservation reserve() noexcept;
+    [[nodiscard]] ListenerAcceptPublishStatus publish(Reservation&& reservation,
+        ListenerAcceptedConnection connection,
+        std::atomic_size_t* observed_size = nullptr) noexcept;
     [[nodiscard]] ListenerAcceptPublishStatus publish(
         ListenerAcceptedConnection connection,
         std::atomic_size_t* observed_size = nullptr) noexcept;
@@ -49,14 +82,7 @@ public:
     [[nodiscard]] ListenerAcceptQueueSnapshot snapshot() const noexcept;
 
 private:
-    void publish_size(std::atomic_size_t* observed_size) const noexcept;
-
-    std::vector<ListenerAcceptedConnection> entries_;
-    mutable std::mutex mutex_;
-    std::condition_variable changed_;
-    std::size_t head_ = 0;
-    std::size_t size_ = 0;
-    bool closed_ = false;
+    std::shared_ptr<State> state_;
 };
 
 } // namespace robotweax::srt::compat

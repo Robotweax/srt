@@ -10,7 +10,8 @@ namespace robotweax::srt::compat {
 
 // Charged before creating encrypted accepted sockets, including failed and
 // repeated cookie-valid conclusions. Ports, cookies and salts cannot reset it.
-// The owner serializes access; the table never allocates or evicts active debt.
+// A separate instance also bounds group proposals admitted without an accept
+// slot. The owner serializes access; the table never allocates or evicts debt.
 class ListenerCryptoBudget {
 public:
     using Clock = std::chrono::steady_clock;
