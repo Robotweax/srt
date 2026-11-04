@@ -431,6 +431,14 @@ public:
      */
     [[nodiscard]] std::uint64_t position_of(SequenceNumber sequence) noexcept;
     [[nodiscard]] std::uint64_t frontier_position() const noexcept;
+    /**
+     * Advance over locally accepted packets with no receivers. Unlike a
+     * received sequence, this trusted send operation may skip unused key
+     * generations. Prepare the next live generation before publishing the
+     * new frontier; failure leaves both the keys and position unchanged.
+     */
+    [[nodiscard]] Error advance_unused(
+        SequenceNumber first, std::uint32_t packets) noexcept;
     [[nodiscard]] std::uint64_t generation_at(
         std::uint64_t position) const noexcept;
     /** Whether `position` lies in the pre-announcement window of its successor. */

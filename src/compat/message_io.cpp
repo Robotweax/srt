@@ -1101,6 +1101,13 @@ int send_group_message_implementation(
             const std::size_t packets = payload == 0U
                 ? 1U
                 : (static_cast<std::size_t>(length) + payload - 1U) / payload;
+            if (group->dispatch->key_schedule != nullptr
+                && group->dispatch->key_schedule->advance_unused(
+                       SequenceNumber {group->next_send_sequence},
+                       static_cast<std::uint32_t>(packets))
+                    != Error::none) {
+                return fail(SRT_ESECFAIL);
+            }
             group->next_send_sequence =
                 SequenceNumber {group->next_send_sequence}
                     .advanced(static_cast<std::uint32_t>(packets))
