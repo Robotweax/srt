@@ -45,7 +45,12 @@ To reuse an SDK already built and qualified, supply its installation prefix:
   --sdk-prefix /absolute/path/to/robotweax-sdk
 ```
 
-This skips the library build. `--openssl-root /path/to/openssl` selects a
+This skips the library build. The automatically built SDK is static; when
+reusing a shared SDK, make its runtime libraries discoverable before running
+the application (in particular, the SDK's `bin` directory on Windows). Runtime
+dependencies are not bundled by this recipe.
+
+`--openssl-root /path/to/openssl` selects a
 non-default OpenSSL installation. `--source /path/to/haivision-srt` reuses an
 existing checkout at the exact pin below instead of fetching it. That checkout
 must have the original LF bytes; when cloning on Windows, use

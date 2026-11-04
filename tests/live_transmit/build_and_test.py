@@ -41,7 +41,7 @@ def build(args: argparse.Namespace) -> None:
         common.append(f'-DOPENSSL_ROOT_DIR={args.openssl_root.resolve()}')
     if not args.sdk_prefix:
         run(['cmake', '-S', str(ROOT), '-B', str(work / 'sdk-build'), *common,
-             '-DROBOTWEAX_SRT_BUILD_TESTS=OFF', '-DROBOTWEAX_SRT_BUILD_TOOLS=OFF',
+             '-DBUILD_SHARED_LIBS=OFF', '-DROBOTWEAX_SRT_BUILD_TESTS=OFF', '-DROBOTWEAX_SRT_BUILD_TOOLS=OFF',
              '-DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF', '-DROBOTWEAX_SRT_BUILD_EXAMPLES=OFF',
              f'-DCMAKE_INSTALL_PREFIX={sdk}'], evidence / 'sdk-configure.log')
         run(['cmake', '--build', str(work / 'sdk-build'), '--config', 'Release',

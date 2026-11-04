@@ -55,6 +55,10 @@ def adapt(name: str, text: str) -> str:
         text = replace(text, 'void PrintLibVersion()\n{',
                        'void PrintLibVersion()\n{\n    cerr << "Transport provider: Robotweax SRT; arqfirst=yes (tail probe off)" << endl;')
         text = replace(text, '<< SRT_VERSION ', '<< SRT_VERSION_STRING ')
+    elif name == 'apps/logsupport.cpp':
+        # The public SDK severity range begins at LOG_CRIT on every platform.
+        text = replace(text, 'LOG_ALERT', 'LOG_CRIT')
+        text = replace(text, 'LOG_EMERG', 'LOG_CRIT', count=2)
     elif name == 'apps/logsupport.hpp':
         text = replace(text, '#include <string>', '#include <string>\n#include <set>\n#include <iostream>')
     elif name == 'apps/socketoptions.hpp':
