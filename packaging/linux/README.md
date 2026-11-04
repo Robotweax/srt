@@ -1,9 +1,9 @@
 # Ubuntu and Fedora package prototypes
 
 These distribution recipes build the immutable Robotweax SRT 0.3.2 source
-revision `4b464a789521b1ce5b6b045f934eca7364660135`, not the repository
+revision `b19c6a88b6257c749e16dc1e53d803cc3c792e32`, not the repository
 checkout. The source archive SHA-256 is
-`49a4850de3c5dbde46ed9f47d22bb2700f53937d57c4e0fe435fcdbf9884d066`.
+`709e3a353ca4cdf0afea6de2d363934c313117f1ccc8121a3b641d5155c1658a`.
 The CI workflow verifies this hash before starting a container.
 
 Ubuntu 24.04 produces `librobotweax-srt0.3` and

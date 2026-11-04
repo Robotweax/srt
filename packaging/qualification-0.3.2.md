@@ -7,28 +7,32 @@ exports from 0.3.1 are preserved. The historical
 
 ## Immutable product archive
 
-- Product commit: `4b464a789521b1ce5b6b045f934eca7364660135`.
-- [Public archive](https://github.com/Robotweax/srt/archive/4b464a789521b1ce5b6b045f934eca7364660135.tar.gz).
-- Bytes: 2222428.
-- SHA-256: `49a4850de3c5dbde46ed9f47d22bb2700f53937d57c4e0fe435fcdbf9884d066`.
-- SHA-512: `62f66a835738cb9af94e55aef7be76ab4feda0f8fcab66ac092d53ba38abc393d42744b7cea5bc46678ac2ae8deedb70e93defd48c80b05a93fe57ed589cf123`.
-- All 741 tracked regular files matched Git byte-for-byte, including executable bits.
+- Product commit: `b19c6a88b6257c749e16dc1e53d803cc3c792e32`.
+- [Public archive](https://github.com/Robotweax/srt/archive/b19c6a88b6257c749e16dc1e53d803cc3c792e32.tar.gz).
+- Bytes: 2223752.
+- SHA-256: `709e3a353ca4cdf0afea6de2d363934c313117f1ccc8121a3b641d5155c1658a`.
+- SHA-512: `db5ff293fc8f77279025de0d78598c8e44c5fabcdc668fe4067219f836c4641e3cf98cc549a288e6b2905d71c47803f98faa7a4f31ecdc5fd9d79f690714ff28`.
+- All 743 tracked regular files matched Git byte-for-byte, including executable bits.
 - Machine-readable identity and frozen paths: [source-0.3.2.json](source-0.3.2.json).
 
 Homebrew, vcpkg, DEB/RPM and the Linux qualification workflow use this exact
 archive. Recipe and evidence commits must preserve all frozen product paths:
 
 ```sh
-git diff --exit-code 4b464a789521b1ce5b6b045f934eca7364660135 HEAD -- src include cmake compat CMakeLists.txt docs README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md THIRD_PARTY.md LICENSE examples experimental fuzz benchmarks tools tests interop .github/workflows/windows-sdk.yml packaging/windows
+git diff --exit-code b19c6a88b6257c749e16dc1e53d803cc3c792e32 HEAD -- src include cmake compat CMakeLists.txt docs README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md THIRD_PARTY.md LICENSE examples experimental fuzz benchmarks tools tests interop .github/workflows/windows-sdk.yml packaging/windows
 ```
 
 ## Local verification and upgrade inputs
 
-All 95 public Markdown files passed source documentation validation. The complete
+All 95 public Markdown files passed source and isolated installed documentation validation. The complete
 native macOS Release/OpenSSL/GCM build passed 140/140 CTest entries after the
 protocol, test and documentation corrections and before the version-only update.
 That result is local correction evidence, not final-source release acceptance.
-ABI/version and isolated installed-consumer checks cover the subsequent update.
+The subsequent header, ABI and installed-consumer checks passed 3/3; the AEAD,
+release-documentation, Windows-SDK and release-tag harness checks passed 28/28.
+A final documentation consistency pass replaced stale current-version and
+source-review status text. The initial archive at `4b464a789521b1ce5b6b045f934eca7364660135`
+is superseded by the product above; it is not final release evidence.
 
 The published signed 0.3.1 SDK assets are the previous-release inputs. Their
 SHA-256 values were checked against GitHub release asset digests; Windows
