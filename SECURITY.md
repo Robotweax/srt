@@ -131,11 +131,19 @@ and before provisional socket creation or the application listen callback.
 Queued accepts and in-flight reservations share the configured backlog bound.
 Publication consumes a reservation; failure and close release it automatically.
 When capacity is unavailable, ordinary conclusions are dropped for caller retry.
+If the queue remains full for the caller's connection timeout, the caller reports
+a setup timeout; it receives no dedicated backlog-full rejection. Freeing a slot
+allows a subsequent retry to proceed within that same connection deadline.
 
 Additional members of an existing group do not publish another accept. A
-cookie-valid group proposal on a group-enabled listener may therefore proceed
-without an accept reservation while the queue is full. Before provisional
-allocation, plaintext proposals on this exceptional path use a separate
+cookie-valid bonding proposal may proceed without an accept reservation only
+when a live mirror of the proposed remote group already exists within this
+listener or its explicit listener bond. This lookup does not authorize the peer;
+the callback's admission domain and negotiated extension checks still apply.
+Unknown bonding groups are dropped before provisional allocation or callbacks.
+Multicast proposals use the exceptional path because their admission key is
+selected by the callback. Before provisional allocation, plaintext proposals
+on this exceptional path use a separate
 listener-wide token bucket with the same overall and per-source bounds as
 encrypted admission above. Encrypted proposals retain the existing crypto
 budget. Negotiation must reserve capacity for a first member before attaching

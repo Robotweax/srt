@@ -326,6 +326,11 @@ public:
     [[nodiscard]] bool prepare_dispatch(SRTSOCKET listener,
         std::string_view admission_key, std::uint64_t admission_domain,
         std::uint32_t initial_sequence, DispatchDescription& output) noexcept;
+    // Non-authorizing, allocation-free preflight for a full listener. Only
+    // existing live bonding mirrors in this listener/bond qualify; callback
+    // domain and extension checks still apply during prepare_mirror.
+    [[nodiscard]] bool has_existing_mirror(
+        SRTSOCKET listener, SRTSOCKET peer_group, SRT_GROUP_TYPE type) noexcept;
     [[nodiscard]] bool prepare_mirror(SRTSOCKET listener, SRTSOCKET peer_group,
         SRT_GROUP_TYPE type, std::uint32_t initial_sequence,
         MirrorDescription& output, std::uint64_t admission_domain = 0,

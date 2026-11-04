@@ -55,20 +55,20 @@ ListenerAcceptQueue::Reservation& ListenerAcceptQueue::Reservation::operator=(
     return *this;
 }
 
-bool ListenerAcceptQueue::Reservation::try_acquire() noexcept
+ListenerAcceptReserveStatus ListenerAcceptQueue::Reservation::acquire() noexcept
 {
     if (state_ == nullptr)
-        return false;
+        return ListenerAcceptReserveStatus::full;
     std::lock_guard lock(state_->mutex);
     if (state_->closed)
-        return false;
+        return ListenerAcceptReserveStatus::closed;
     if (reserved_)
-        return true;
+        return ListenerAcceptReserveStatus::reserved;
     if (state_->reserved == state_->entries.size() - state_->size)
-        return false;
+        return ListenerAcceptReserveStatus::full;
     ++state_->reserved;
     reserved_ = true;
-    return true;
+    return ListenerAcceptReserveStatus::reserved;
 }
 
 void ListenerAcceptQueue::Reservation::release() noexcept
@@ -93,15 +93,8 @@ ListenerAcceptQueue::~ListenerAcceptQueue()
 ListenerAcceptQueue::Reservation ListenerAcceptQueue::reserve() noexcept
 {
     Reservation reservation {state_};
-    (void)reservation.try_acquire();
+    (void)reservation.acquire();
     return reservation;
-}
-
-ListenerAcceptPublishStatus ListenerAcceptQueue::publish(
-    ListenerAcceptedConnection connection,
-    std::atomic_size_t* observed_size) noexcept
-{
-    return publish(reserve(), connection, observed_size);
 }
 
 ListenerAcceptPublishStatus ListenerAcceptQueue::publish(

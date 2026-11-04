@@ -6,8 +6,8 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
-#include <mutex>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 namespace robotweax::srt::compat {
@@ -15,6 +15,12 @@ namespace robotweax::srt::compat {
 struct ListenerAcceptedConnection {
     SRTSOCKET handle = SRT_INVALID_SOCK;
     IpEndpoint peer {};
+};
+
+enum class ListenerAcceptReserveStatus {
+    reserved,
+    full,
+    closed,
 };
 
 enum class ListenerAcceptPublishStatus {
@@ -52,7 +58,7 @@ public:
         {
             return reserved_;
         }
-        [[nodiscard]] bool try_acquire() noexcept;
+        [[nodiscard]] ListenerAcceptReserveStatus acquire() noexcept;
         void release() noexcept;
 
     private:
@@ -69,9 +75,6 @@ public:
 
     [[nodiscard]] Reservation reserve() noexcept;
     [[nodiscard]] ListenerAcceptPublishStatus publish(Reservation&& reservation,
-        ListenerAcceptedConnection connection,
-        std::atomic_size_t* observed_size = nullptr) noexcept;
-    [[nodiscard]] ListenerAcceptPublishStatus publish(
         ListenerAcceptedConnection connection,
         std::atomic_size_t* observed_size = nullptr) noexcept;
     [[nodiscard]] bool pop(bool blocking,

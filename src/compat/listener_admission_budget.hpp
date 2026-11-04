@@ -8,11 +8,11 @@
 
 namespace robotweax::srt::compat {
 
-// Charged before creating encrypted accepted sockets, including failed and
-// repeated cookie-valid conclusions. Ports, cookies and salts cannot reset it.
-// A separate instance also bounds group proposals admitted without an accept
-// slot. The owner serializes access; the table never allocates or evicts debt.
-class ListenerCryptoBudget {
+// Charged before crypto setup or unreserved group admission, including failed
+// and repeated cookie-valid conclusions. Ports, cookies and salts cannot reset
+// a source budget. The owner serializes access; the table never allocates or
+// evicts active debt. Each admission purpose owns a separate instance.
+class ListenerAdmissionBudget {
 public:
     using Clock = std::chrono::steady_clock;
     static constexpr unsigned global_burst = 128;

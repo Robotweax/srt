@@ -15,7 +15,7 @@ TEST(listener_accept_queue_publishes_without_waiting_and_reports_saturation)
 {
     ListenerAcceptQueue queue {1U};
     std::atomic_size_t observed_size = 0U;
-    REQUIRE_EQ(queue.publish(
+    REQUIRE_EQ(queue.publish(queue.reserve(),
                    {
                        .handle = 101,
                        .peer = IpEndpoint::loopback(9'001U),
@@ -23,7 +23,7 @@ TEST(listener_accept_queue_publishes_without_waiting_and_reports_saturation)
                    &observed_size),
         ListenerAcceptPublishStatus::published);
     REQUIRE_EQ(observed_size.load(std::memory_order_acquire), 1U);
-    REQUIRE_EQ(queue.publish(
+    REQUIRE_EQ(queue.publish(queue.reserve(),
                    {
                        .handle = 102,
                        .peer = IpEndpoint::loopback(9'002U),
@@ -52,7 +52,7 @@ TEST(listener_accept_queue_wakes_a_blocking_application_consumer)
 
     REQUIRE_EQ(consumer.wait_for(std::chrono::milliseconds {20}),
         std::future_status::timeout);
-    REQUIRE_EQ(queue.publish(
+    REQUIRE_EQ(queue.publish(queue.reserve(),
                    {
                        .handle = 103,
                        .peer = IpEndpoint::loopback(9'003U),
@@ -69,7 +69,7 @@ TEST(listener_accept_queue_close_wakes_waiters_and_preserves_queued_ownership)
 {
     ListenerAcceptQueue queue {2U};
     std::atomic_size_t observed_size = 0U;
-    REQUIRE_EQ(queue.publish(
+    REQUIRE_EQ(queue.publish(queue.reserve(),
                    {
                        .handle = 104,
                        .peer = IpEndpoint::loopback(9'004U),
@@ -77,7 +77,7 @@ TEST(listener_accept_queue_close_wakes_waiters_and_preserves_queued_ownership)
                    &observed_size),
         ListenerAcceptPublishStatus::published);
     queue.close(&observed_size);
-    REQUIRE_EQ(queue.publish(
+    REQUIRE_EQ(queue.publish(queue.reserve(),
                    {
                        .handle = 105,
                        .peer = IpEndpoint::loopback(9'005U),
@@ -119,10 +119,11 @@ TEST(listener_accept_queue_reserves_capacity_until_publication_or_release)
     REQUIRE(!blocked);
     REQUIRE_EQ(queue.snapshot().size, 0U);
     REQUIRE_EQ(queue.snapshot().reserved, 2U);
-    REQUIRE_EQ(queue.publish({.handle = 9}), ListenerAcceptPublishStatus::full);
+    REQUIRE_EQ(queue.publish(queue.reserve(), {.handle = 9}),
+        ListenerAcceptPublishStatus::full);
     first.release();
     first.release();
-    REQUIRE(blocked.try_acquire());
+    REQUIRE_EQ(blocked.acquire(), ListenerAcceptReserveStatus::reserved);
     REQUIRE_EQ(queue.snapshot().reserved, 2U);
     REQUIRE_EQ(queue.publish(std::move(second), {.handle = 11}),
         ListenerAcceptPublishStatus::published);
@@ -164,7 +165,9 @@ TEST(listener_accept_queue_close_consumes_reservations_without_publication)
     ListenerAcceptQueue queue {1U};
     auto token = queue.reserve();
     queue.close();
-    REQUIRE(!token.try_acquire());
+    REQUIRE(token);
+    REQUIRE_EQ(queue.snapshot().reserved, 1U);
+    REQUIRE_EQ(token.acquire(), ListenerAcceptReserveStatus::closed);
     REQUIRE_EQ(queue.publish(std::move(token), {.handle = 15}),
         ListenerAcceptPublishStatus::closed);
     REQUIRE(!token);
@@ -181,16 +184,16 @@ TEST(listener_accept_queue_reservations_outlive_closed_owner_safely)
         token = queue.reserve();
         REQUIRE(token);
     }
-    REQUIRE(!token.try_acquire());
+    REQUIRE_EQ(token.acquire(), ListenerAcceptReserveStatus::closed);
     token.release();
-    REQUIRE(!token.try_acquire());
+    REQUIRE_EQ(token.acquire(), ListenerAcceptReserveStatus::closed);
 }
 
 TEST(listener_accept_queue_inflight_reservation_survives_concurrent_accept)
 {
     ListenerAcceptQueue queue {2U};
-    REQUIRE_EQ(
-        queue.publish({.handle = 16}), ListenerAcceptPublishStatus::published);
+    REQUIRE_EQ(queue.publish(queue.reserve(), {.handle = 16}),
+        ListenerAcceptPublishStatus::published);
     auto inflight = queue.reserve();
     auto consumer = std::async(std::launch::async, [&] {
         ListenerAcceptedConnection accepted;

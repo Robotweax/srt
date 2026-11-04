@@ -390,6 +390,8 @@ TEST(connection_full_backlog_rejects_before_callback_and_runtime_allocation)
         REQUIRE_EQ(srt_connect(caller, reinterpret_cast<sockaddr*>(&address),
                        sizeof(address)),
             SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ENOSERVER);
+        REQUIRE_EQ(srt_getrejectreason(caller), SRT_REJ_TIMEOUT);
         REQUIRE_EQ(calls.load(), 1U);
         REQUIRE_EQ(test::runtime_allocations_observed.load(), allocations);
         REQUIRE_EQ(record->pending_accepts.load(), 1U);
