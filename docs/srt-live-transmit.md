@@ -158,9 +158,8 @@ Use the exact CI run's platform results when assessing Linux or Windows.
 ## Source and licensing boundary
 
 Application baseline: Haivision SRT 1.5.7 at
-`899348d8318eb9a3c5a5b6ec43c4a1114288773a`. The exact selected input files and
-SHA-256 hashes are in
-[`source-manifest.json`](../tests/live_transmit/source-manifest.json).
+`899348d8318eb9a3c5a5b6ec43c4a1114288773a`. The source checkout records the exact selected input files and SHA-256 hashes
+in `tests/live_transmit/source-manifest.json`.
 The upstream root `CMakeLists.txt` at that revision was also reviewed for
 application build dependencies. The recipe compiles nine application
 translation units and retains five upstream utility headers. It never builds
