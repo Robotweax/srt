@@ -522,6 +522,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_multicast_dispatch.cpp
         tests/test_group_multicast_emitter.cpp
         tests/test_group_packet_encoder.cpp
+        tests/test_group_admission.cpp
         tests/test_arq_transport.cpp
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp

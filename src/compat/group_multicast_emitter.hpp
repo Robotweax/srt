@@ -65,6 +65,7 @@ public:
         expired,
         closed,
         failed,
+        cancelled,
     };
 
     enum class Failure : std::uint8_t {
@@ -94,6 +95,45 @@ public:
         bool writable = false;
     };
 
+    // A short, thread-bound transaction holding the emitter admission mutex.
+    // Reserve before sealing or modifying any receiver history. The owner
+    // keeps its encoder/histories serialized until publish returns. No socket
+    // I/O or registry work belongs in this interval. Destruction cancels an
+    // unpublished reservation without consuming sequence/capacity.
+    class Reservation {
+    public:
+        Reservation(Reservation&&) noexcept = default;
+        Reservation& operator=(Reservation&&) = delete;
+        ~Reservation();
+        [[nodiscard]] Admission status() const noexcept
+        {
+            return status_ == Admission::accepted && !owner_
+                ? Admission::cancelled
+                : status_;
+        }
+        // Called only after packet validation and a successful scheduler wake,
+        // while the worker remains excluded. A false result MUST have no
+        // effects; a true result publishes all coordinator/history state with
+        // no remaining fallible work. Must not reenter the emitter or do I/O.
+        using Commit = bool (*)(void*) noexcept;
+        [[nodiscard]] Admission publish(std::span<const std::byte> packet,
+            std::shared_ptr<const void> generation_owner = {},
+            Commit commit = nullptr, void* context = nullptr) noexcept;
+
+    private:
+        friend class GroupMulticastEmitter;
+        explicit Reservation(Admission status) noexcept
+            : status_(status)
+        {
+        }
+        Reservation(std::shared_ptr<GroupMulticastEmitter>,
+            std::unique_lock<std::mutex>, TimePoint) noexcept;
+        std::shared_ptr<GroupMulticastEmitter> owner_;
+        std::unique_lock<std::mutex> lock_;
+        TimePoint deadline_ {};
+        Admission status_ = Admission::failed;
+    };
+
     // Fails without publishing an emitter if configuration, allocation or
     // service reservation fails. The scheduler must provide service capacity;
     // its owner must close emitters before stopping the scheduler.
@@ -115,6 +155,11 @@ public:
     [[nodiscard]] Admission enqueue(std::uint64_t generation,
         std::span<const std::byte> packet, TimePoint deadline,
         std::shared_ptr<const void> generation_owner = {}) noexcept;
+    // A deadline is checked at reservation. If it elapses during preparation,
+    // accepted work is still committed and then expires through ordinary drive
+    // accounting; sealing cannot leave a rejected nonce pinned to the caller.
+    [[nodiscard]] Reservation reserve(std::uint64_t generation,
+        SequenceNumber sequence, TimePoint deadline) noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
     [[nodiscard]] const std::shared_ptr<ReadinessSource>&
     readiness_source() const noexcept
@@ -144,6 +189,8 @@ private:
     explicit GroupMulticastEmitter(Configuration configuration);
     [[nodiscard]] static bool valid_configuration(
         const Configuration&) noexcept;
+    [[nodiscard]] bool valid_packet(
+        std::span<const std::byte>, bool has_owner) const noexcept;
     static void run(void*) noexcept;
     void drive() noexcept;
     [[nodiscard]] TimePoint now_locked() noexcept;

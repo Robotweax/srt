@@ -513,10 +513,12 @@ TEST(
     release_gate(gate);
     await_attempts(f.output, 2);
     REQUIRE_EQ(emitter->snapshot().submitted_packets, 2U);
-    REQUIRE(pool->snapshot().service_runs >= 2U);
     emitter->close();
     (void)pool->cancel_timer(timer.token);
     pool->stop();
+    // Submission is visible before the callback returns and the scheduler
+    // increments its completion counter. Join workers before reading it.
+    REQUIRE(pool->snapshot().service_runs >= 2U);
 }
 
 TEST(compat_group_emitter_service_reuse_cannot_execute_a_retired_owner)

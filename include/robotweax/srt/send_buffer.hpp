@@ -107,6 +107,23 @@ public:
         std::uint32_t destination_socket_id,
         std::uint64_t enqueue_microseconds = 0) noexcept;
 
+    // Dispatch coordinator's recovery history for an original emitted by a
+    // group-owned transport. Keep this buffer externally serialized from
+    // preflight through import; preflight is read-only and allocation-free.
+    // Do not mix with queued, never-selected ordinary originals. No implicit
+    // cursor rebasing: membership catch-up must synchronize explicitly.
+    [[nodiscard]] Error preflight_group_original(SequenceNumber sequence,
+        std::size_t plaintext_size, CryptoMode mode) const noexcept;
+    // Import the exact canonical header/body (GCM body includes its tag).
+    // mode AUTOMATIC means plaintext; CTR/GCM require an EVEN/ODD selector.
+    // Acceptance does not authorize ACK/NAK or schedule an original on the
+    // member path. The actual emitting transport calls note_group_original_submitted
+    // only after complete UDP submission, separately for every original.
+    [[nodiscard]] Error import_group_original(const DataHeader& header,
+        std::span<const std::byte> wire_payload, std::size_t plaintext_size,
+        CryptoMode mode, std::uint64_t enqueue_microseconds = 0,
+        std::uint64_t expiration_microseconds = 0) noexcept;
+
     // now_microseconds records when an original packet is first selected
     // for transmission; sender too-late drop measures age from that time.
     // Deferred selection also requires note_packet_submitted after UDP
@@ -135,6 +152,20 @@ public:
         EncryptionKey key, CryptoMode mode,
         std::span<const std::byte> protected_payload) noexcept;
     void note_packet_submitted(SequenceNumber sequence) noexcept;
+    struct GroupOriginalSubmission {
+        SequenceNumber sequence {};
+        std::uint64_t sequence_position = 0;
+    };
+    // Capture at admission, never resolve a later completion by sequence alone.
+    // The coordinator must separately fence the member/stream incarnation;
+    // the local monotonic position prevents aliases after 31-bit rollover.
+    [[nodiscard]] std::optional<GroupOriginalSubmission>
+    group_original_submission(SequenceNumber sequence) const noexcept;
+    // Separate from ordinary member completions: stamp first-send age and
+    // authorize this exact external original once. Duplicate reports do not
+    // restart its sender-drop clock.
+    void note_group_original_submitted(GroupOriginalSubmission submission,
+        std::uint64_t now_microseconds) noexcept;
     // Wire ACKs require successful submission; acknowledge_before is also
     // used for trusted, locally confirmed group-prefix retirement.
     [[nodiscard]] Error acknowledge_submitted_before(
@@ -230,6 +261,7 @@ private:
         bool drop_request_queued = false;
         bool sent = false;
         bool submitted = false;
+        bool external_original = false;
         bool retransmission_queued = false;
         bool has_retransmission_send_time = false;
     };
@@ -278,6 +310,7 @@ private:
     std::size_t drop_request_head_ = 0;
     std::size_t drop_request_size_ = 0;
     std::size_t packets_in_flight_ = 0;
+    std::size_t external_unsubmitted_count_ = 0;
 };
 
 } // namespace robotweax::srt
