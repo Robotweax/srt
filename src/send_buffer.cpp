@@ -641,7 +641,7 @@ SendBuffer::group_original_submission(SequenceNumber sequence) const noexcept
     return GroupOriginalSubmission {sequence, slot.sequence_position};
 }
 
-void SendBuffer::note_group_original_submitted(
+bool SendBuffer::note_group_original_submitted(
     GroupOriginalSubmission submission, std::uint64_t now_microseconds) noexcept
 {
     if (auto* slot = find(submission.sequence); slot != nullptr
@@ -651,7 +651,9 @@ void SendBuffer::note_group_original_submitted(
         slot->first_send_microseconds = now_microseconds;
         slot->submitted = true;
         --external_unsubmitted_count_;
+        return true;
     }
+    return false;
 }
 
 Error SendBuffer::acknowledge_submitted_before(SequenceNumber sequence) noexcept

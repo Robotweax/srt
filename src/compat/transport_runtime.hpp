@@ -40,6 +40,8 @@ namespace robotweax::srt::compat {
 class ConnectionRuntime;
 class DispatchTransmitState;
 class RuntimeWorkExecutor;
+class GroupRuntimeAdmission;
+struct GroupRuntimeSendState;
 struct GroupRecord;
 struct RetainedGroupReceiveBatch;
 
@@ -601,9 +603,16 @@ public:
     // group with the dispatch group ID as destination; the others
     // (`suppress`) record the packet as submitted without a datagram.
     // Retransmissions always use the member's own unicast path. `normal`
-    // is the bonding behaviour.
+    // is the bonding behaviour. `external_originals` reserves this member for
+    // canonical recovery history; a group-owned emitter submits originals and
+    // reports their exact completion through the admission binding.
     struct GroupDataEgress {
-        enum class Mode : std::uint8_t { normal, suppress, redirect };
+        enum class Mode : std::uint8_t {
+            normal,
+            suppress,
+            redirect,
+            external_originals
+        };
         Mode mode = Mode::normal;
         IpEndpoint destination {};
         std::uint32_t destination_socket_id = 0;
@@ -710,6 +719,8 @@ private:
     friend class DatagramChannel;
     friend struct ConnectionRuntimeTestAccess;
     friend struct MulticastIngressTestAccess;
+    friend class GroupRuntimeAdmission;
+    friend struct GroupRuntimeAdmissionTestAccess;
     // Binding operations follow routes_mutex_ -> mutex_ and never acquire
     // channel locks or perform socket I/O while holding the runtime mutex.
     [[nodiscard]] bool activate_multicast_ingress(
@@ -881,6 +892,10 @@ private:
     std::condition_variable send_ready_;
     std::weak_ptr<DatagramChannel> channel_;
     GroupDataEgress group_data_egress_ {};
+    // Allocated only on explicit internal external-original binding. Ownership
+    // remains latched after revocation: ordinary member send cannot become an
+    // accidental alternate producer for this stream incarnation.
+    std::unique_ptr<GroupRuntimeSendState> group_send_state_;
     // One active multicast route per member. Never wrap/reuse generations;
     // exhaustion rejects registration without disturbing the current binding.
     std::uint64_t multicast_ingress_generation_ = 0;

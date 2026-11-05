@@ -1,5 +1,6 @@
 #include "compat/group_receive_retention.hpp"
 #include "compat/transport_runtime.hpp"
+#include "compat/group_runtime_admission.hpp"
 #include "compat/submillisecond_pacing_platform.hpp"
 
 #include "robotweax/srt/parity_policy.hpp"
@@ -1911,6 +1912,8 @@ MessageIoResult ConnectionRuntime::queue_message(
     std::int32_t ttl_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    if (group_send_state_ && !locally_closed_ && !peer_closed_ && !broken_)
+        return {.status = MessageIoStatus::invalid_state};
     if (options_.control_profile() && ttl_milliseconds >= 0) {
         return {.status = MessageIoStatus::invalid_state};
     }
@@ -2013,6 +2016,8 @@ MessageIoResult ConnectionRuntime::queue_group_message(
     std::int32_t ttl_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    if (group_send_state_ && !locally_closed_ && !peer_closed_ && !broken_)
+        return {.status = MessageIoStatus::invalid_state};
     if (options_.control_profile() && ttl_milliseconds >= 0) {
         return {.status = MessageIoStatus::invalid_state};
     }
@@ -2354,6 +2359,8 @@ MessageIoResult ConnectionRuntime::queue_stream(
     std::int32_t timeout_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    if (group_send_state_ && !locally_closed_ && !peer_closed_ && !broken_)
+        return {.status = MessageIoStatus::invalid_state};
     const bool has_deadline = timeout_milliseconds >= 0;
     const Clock::time_point deadline = has_deadline
         ? Clock::now() + std::chrono::milliseconds{timeout_milliseconds}
@@ -3004,6 +3011,12 @@ void ConnectionRuntime::set_group_data_egress(
     const GroupDataEgress& egress) noexcept
 {
     std::lock_guard lock(mutex_);
+    if (group_send_state_) {
+        // External ownership is exclusive for this runtime. A legacy election
+        // cannot rewrite retained canonical identity or create another producer.
+        group_send_state_->binding.reset();
+        return;
+    }
     group_data_egress_ = egress;
 }
 
@@ -4946,6 +4959,8 @@ void ConnectionRuntime::apply_options(
     const SocketOptions& options) noexcept
 {
     std::unique_lock lock(mutex_);
+    if (group_send_state_)
+        group_send_state_->binding.reset();
     options_ = options;
 #ifdef ENABLE_MAXREXMITBW
     const auto limit =
@@ -5030,6 +5045,8 @@ void ConnectionRuntime::break_locked(int system_error) noexcept
     statistics_.update_send_duration(now, false);
     terminate_standby_rtt();
     broken_ = true;
+    if (group_send_state_)
+        group_send_state_->binding.reset();
     pending_datagram_head_.reset();
     pending_datagram_tail_ = nullptr;
     pending_datagram_size_ = 0U;
@@ -5093,6 +5110,8 @@ bool ConnectionRuntime::begin_close() noexcept
         return false;
     }
     locally_closed_ = true;
+    if (group_send_state_)
+        group_send_state_->binding.reset();
     multicast_ingress_binding_.reset();
     terminate_standby_rtt();
     receive_ready_.notify_all();
@@ -5343,7 +5362,7 @@ SocketReadinessSnapshot ConnectionRuntime::readiness_snapshot(
     } else {
         readiness.read_wakeup = wakeup;
     }
-    if (!locally_closed_ && !peer_closed_ && !broken_
+    if (!locally_closed_ && !peer_closed_ && !broken_ && !group_send_state_
         && (peer_error_pending_ || session_.send_buffer().available() != 0U)) {
         readiness.events |= SRT_EPOLL_OUT;
     }
@@ -5353,9 +5372,8 @@ SocketReadinessSnapshot ConnectionRuntime::readiness_snapshot(
 bool ConnectionRuntime::writable() const noexcept
 {
     std::lock_guard lock(mutex_);
-    return !locally_closed_ && !peer_closed_ && !broken_
-        && (peer_error_pending_
-            || session_.send_buffer().available() != 0U);
+    return !locally_closed_ && !peer_closed_ && !broken_ && !group_send_state_
+        && (peer_error_pending_ || session_.send_buffer().available() != 0U);
 }
 
 std::size_t ConnectionRuntime::retained_payload_capacity() const noexcept

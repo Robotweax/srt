@@ -1,4 +1,5 @@
 #include "robotweax/srt/session.hpp"
+#include "robotweax/srt/connection_group.hpp"
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
 #include "compiled_congestion.hpp"
 #include <new>
@@ -267,6 +268,47 @@ Error ReliabilitySession::queue_group_message(
         }
     }
     return error;
+}
+
+Error ReliabilitySession::preflight_group_original(const DataHeader& header,
+    std::size_t plaintext_size, CryptoMode mode) const noexcept
+{
+    if (file_rate_controller_ || !live_rate_controller_ || !message_api_
+        || packet_filter_policy_.enabled()
+        || header.boundary != MessageBoundary::solo || header.retransmitted
+        || header.message_number == 0U || header.message_number > 0x03ff'ffffU
+        || (header.destination_socket_id & group_handle_mask) == 0U
+        || (mode == CryptoMode::automatic
+                ? header.encryption_key != EncryptionKey::none
+                : (header.encryption_key != EncryptionKey::even
+                      && header.encryption_key != EncryptionKey::odd))
+        || (send_buffer_.sequence_span() != 0U
+            && header.message_number != next_message_number_))
+        return Error::invalid_state;
+    return send_buffer_.preflight_group_original(
+        header.sequence, plaintext_size, mode);
+}
+
+Error ReliabilitySession::import_group_original(const DataHeader& header,
+    std::span<const std::byte> wire_payload, std::size_t plaintext_size,
+    CryptoMode mode, std::uint64_t enqueue_microseconds,
+    std::uint64_t expiration_microseconds) noexcept
+{
+    const auto checked = preflight_group_original(header, plaintext_size, mode);
+    if (checked != Error::none)
+        return checked;
+    const auto imported =
+        send_buffer_.import_group_original(header, wire_payload, plaintext_size,
+            mode, enqueue_microseconds, expiration_microseconds);
+    if (imported == Error::none) {
+        if (live_rate_controller_)
+            live_rate_controller_->observe_input(
+                plaintext_size, enqueue_microseconds);
+        next_message_number_ = (header.message_number + 1U) & 0x03ff'ffffU;
+        if (next_message_number_ == 0U)
+            next_message_number_ = 1U;
+    }
+    return imported;
 }
 
 Error ReliabilitySession::skip_group_sequences(

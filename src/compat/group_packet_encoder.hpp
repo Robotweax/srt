@@ -57,6 +57,8 @@ public:
         }
         [[nodiscard]] std::optional<std::uint64_t>
         crypto_generation() const noexcept;
+        [[nodiscard]] bool uses_key_schedule(
+            const std::shared_ptr<SharedTransmitKeySchedule>&) const noexcept;
         // Pins the immutable cipher generation until the emitter retires it.
         [[nodiscard]] std::shared_ptr<const void>
         generation_owner() const noexcept;

@@ -20,6 +20,7 @@ struct GroupPacketEncoder::Generation {
     }
     CryptoProvider& provider;
     std::uint64_t index = 0;
+    std::weak_ptr<SharedTransmitKeySchedule> schedule;
     std::array<std::byte, srt_salt_size> salt {};
     // Provider ciphers own and erase their prepared key material. No mutable
     // schedule slot is borrowed; rotation cannot change this generation.
@@ -37,6 +38,13 @@ std::shared_ptr<const void>
 GroupPacketEncoder::Packet::generation_owner() const noexcept
 {
     return generation_;
+}
+
+bool GroupPacketEncoder::Packet::uses_key_schedule(
+    const std::shared_ptr<SharedTransmitKeySchedule>& schedule) const noexcept
+{
+    return generation_ ? schedule && generation_->schedule.lock() == schedule
+                       : !schedule;
 }
 
 std::unique_ptr<GroupPacketEncoder> GroupPacketEncoder::create(
@@ -113,6 +121,7 @@ GroupPacketEncoder::generation_locked(std::uint64_t index, Error& error)
     generations_[available].reset();
     auto generation = std::make_shared<Generation>(provider_);
     generation->index = index;
+    generation->schedule = configuration_.key_schedule;
     std::array<std::byte, maximum_aes_key_size> key {};
     const auto length = configuration_.key_schedule->key_length();
     error = configuration_.key_schedule->key_for(

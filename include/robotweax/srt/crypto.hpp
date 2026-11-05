@@ -563,6 +563,12 @@ public:
     {
         return shared_schedule_ != nullptr;
     }
+    [[nodiscard]] bool uses_shared_transmit_schedule(
+        const std::shared_ptr<SharedTransmitKeySchedule>& schedule)
+        const noexcept
+    {
+        return schedule && shared_schedule_ == schedule;
+    }
     [[nodiscard]] Error prepare_data_sequence(SequenceNumber sequence) noexcept;
     // Key selector a DATA packet with `sequence` carries: the schedule's
     // generation parity when a schedule is attached, else the active key.

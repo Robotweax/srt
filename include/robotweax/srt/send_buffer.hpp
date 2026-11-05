@@ -164,7 +164,8 @@ public:
     // Separate from ordinary member completions: stamp first-send age and
     // authorize this exact external original once. Duplicate reports do not
     // restart its sender-drop clock.
-    void note_group_original_submitted(GroupOriginalSubmission submission,
+    // Returns true only for the first matching submission transition.
+    bool note_group_original_submitted(GroupOriginalSubmission submission,
         std::uint64_t now_microseconds) noexcept;
     // Wire ACKs require successful submission; acknowledge_before is also
     // used for trusted, locally confirmed group-prefix retirement.
