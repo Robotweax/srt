@@ -8956,3 +8956,52 @@ TEST(compat_backup_probe_rotation_keeps_healthy_authority_and_priority)
     f.expect(better, SRT_INVALID_SOCK);
     REQUIRE_EQ(lower_runtime->sender_buffer_status().packets, 0U);
 }
+
+TEST(investigation_hybrid_source_port_and_original_data_merge)
+{
+    using namespace robotweax::srt;
+    TestClock clock;
+    clock.channel = std::make_shared<compat::DatagramChannel>();
+    clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+    ConnectionRuntime receiver {ConnectionRuntime::Configuration {
+        .channel = clock.channel,
+        .peer = IpEndpoint::loopback(9000),
+        .peer_socket_id = 77,
+        .initial_sequence = SequenceNumber {42},
+        .peer_initial_sequence = SequenceNumber {42},
+        .has_distinct_peer_initial_sequence = true,
+        .options = options,
+        .now_function = read_test_clock,
+        .now_context = &clock,
+    }};
+    const std::array payload {std::byte {'x'}};
+    PacketView data;
+    data.kind = PacketKind::data;
+    data.data.sequence = SequenceNumber {42};
+    data.data.message_number = 1;
+    data.data.boundary = MessageBoundary::solo;
+    data.data.in_order = true;
+    data.data.destination_socket_id = 0x40000001U;
+    data.payload = payload;
+    receiver.process_packet(data, IpEndpoint::loopback(9001));
+    REQUIRE_EQ(receiver.foreign_peer_packets(), 1U);
+    std::array<std::byte, 8> output {};
+    REQUIRE_EQ(receiver.receive_message(output, false, 0).status,
+        compat::MessageIoStatus::would_block);
+    // Simulate original DATA arriving through the existing unicast route.
+    // No retransmission flag, new handshake or sequence reset is necessary.
+    for (unsigned i = 0; i < 16; ++i) {
+        data.data.sequence = SequenceNumber {42 + i};
+        data.data.message_number = 1 + i;
+        receiver.process_packet(data, IpEndpoint::loopback(9000));
+        receiver.process_packet(data, IpEndpoint::loopback(9000));
+        const auto got = receiver.receive_message(output, false, 0);
+        REQUIRE_EQ(got.status, compat::MessageIoStatus::success);
+        REQUIRE_EQ(got.bytes, 1U);
+        REQUIRE_EQ(output[0], std::byte {'x'});
+        REQUIRE_EQ(receiver.receive_message(output, false, 0).status,
+            compat::MessageIoStatus::would_block);
+    }
+}

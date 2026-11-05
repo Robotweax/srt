@@ -7348,3 +7348,56 @@ TEST(stage_a_tail_probe_is_inert_without_the_options)
         REQUIRE_EQ(sender.tail_probes_fired_total(), 0U);
     }
 }
+
+// Investigation-only diagnostics against the unchanged v0.3.2 library.
+TEST(investigation_hybrid_blackout_needs_a_new_data_horizon)
+{
+    ReliabilitySession sender {{.local_initial_sequence = SequenceNumber {10},
+        .peer_initial_sequence = SequenceNumber {10},
+        .send_capacity_packets = 64,
+        .receive_capacity_packets = 64}};
+    ReliabilitySession receiver {{.local_initial_sequence = SequenceNumber {10},
+        .peer_initial_sequence = SequenceNumber {10},
+        .send_capacity_packets = 64,
+        .receive_capacity_packets = 64}};
+    sender.configure_live({.peer_periodic_nak = true}, 0, PacketTimestamp {});
+    receiver.configure_live({.periodic_nak = true}, 0, PacketTimestamp {});
+    const std::array payload {std::byte {'p'}};
+    REQUIRE_EQ(sender.queue_message(payload, PacketTimestamp {}), Error::none);
+    auto first = sender.next_data_packet();
+    REQUIRE(first);
+    sender.note_packet_submitted(first->header.sequence);
+    sender.note_data_packet_sent(100);
+    REQUIRE(receiver.receive(view_of(*first), 200));
+    // Six submitted originals are blackholed; no later DATA reaches receiver.
+    for (unsigned i = 0; i < 6; ++i) {
+        REQUIRE_EQ(sender.queue_message(payload, PacketTimestamp {1000 + i}),
+            Error::none);
+        auto packet = sender.next_data_packet();
+        REQUIRE(packet);
+        sender.note_packet_submitted(packet->header.sequence);
+        sender.note_data_packet_sent(1000 + i);
+    }
+    std::array<std::byte, 4> zero {};
+    PacketView keepalive;
+    keepalive.kind = PacketKind::control;
+    keepalive.control.type = ControlType::keepalive;
+    keepalive.payload = zero;
+    for (std::uint64_t now = 10000; now <= 1000000; now += 10000) {
+        REQUIRE(receiver.receive(keepalive, now));
+        const auto actions = receiver.poll_timers(now);
+        for (std::size_t i = 0; i < actions.size; ++i)
+            REQUIRE(
+                actions.values[i].kind != ReliabilityActionKind::loss_report);
+        REQUIRE(!sender.poll_sender_retransmission_timeout(now));
+        REQUIRE(!sender.poll_tail_probe(now));
+        REQUIRE(!sender.next_data_packet());
+    }
+    REQUIRE_EQ(
+        sender.queue_message(payload, PacketTimestamp {1000001}), Error::none);
+    auto later = sender.next_data_packet();
+    REQUIRE(later);
+    const auto result = receiver.receive(view_of(*later), 1000002);
+    REQUIRE(result);
+    REQUIRE_EQ(result.receiver_loss_packets, 6U);
+}

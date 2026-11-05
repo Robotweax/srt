@@ -322,7 +322,7 @@ int admit_dispatch_plain(
 constexpr const char group_passphrase[] = "sixteen-char-key";
 
 [[nodiscard]] SRTSOCKET make_receiver(Peers& peers, const sockaddr_in& listener,
-    bool encrypted = false, bool aes_gcm = false)
+    bool encrypted = false, bool aes_gcm = false, int latency_ms = 120)
 {
     const SRTSOCKET group =
         peers.keep(srt_create_group(ROBOTWEAX_SRT_GTYPE_MULTICAST));
@@ -341,6 +341,9 @@ constexpr const char group_passphrase[] = "sixteen-char-key";
 #else
     (void)aes_gcm;
 #endif
+    REQUIRE_EQ(
+        srt_setsockflag(group, SRTO_LATENCY, &latency_ms, sizeof(latency_ms)),
+        0);
     const std::int32_t receive_timeout = 3'000;
     REQUIRE_EQ(srt_setsockflag(group, SRTO_RCVTIMEO, &receive_timeout,
                    sizeof(receive_timeout)),
@@ -1035,4 +1038,199 @@ TEST(multicast_dispatch_group_joins_with_a_full_accept_backlog)
     SKIP_UNLESS(
         loopback_multicast_available(), "no loopback multicast on this host");
     run_dispatch_stream({.fill_accept_backlog = true});
+}
+
+// Investigation-only wire rerouting; no production-library changes.
+namespace {
+struct HybridWireProbe {
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+    IpEndpoint unicast;
+    bool isolated = false;
+    std::atomic<int> phase {
+        0}; // 0 multicast, 1 blackhole, 2 unicast, 3 overlap
+    std::atomic<int> dropped {0};
+    std::atomic<int> repairs {0};
+    std::atomic<int> redirected {0};
+};
+UdpIoResult hybrid_wire_probe(
+    std::span<const std::byte> bytes, IpEndpoint peer, void* context) noexcept
+{
+    auto& probe = *static_cast<HybridWireProbe*>(context);
+    auto decoded = decode_packet(bytes);
+    if (decoded && decoded.packet.kind == PacketKind::data) {
+        if (!peer.is_multicast())
+            ++probe.repairs;
+        if (peer.is_multicast()) {
+            auto phase = probe.phase.load();
+            if (phase == 1) {
+                ++probe.dropped;
+                if (!probe.isolated)
+                    return {.bytes_transferred = bytes.size()};
+            }
+            if (phase >= 2) {
+                ++probe.redirected;
+                auto result =
+                    probe.channel->socket.send_to(bytes, probe.unicast);
+                if ((phase == 2 && !probe.isolated) || !result)
+                    return result;
+            }
+        }
+    }
+    return probe.channel->socket.send_to(bytes, peer);
+}
+void investigate_hybrid_wire(bool encrypted, bool gcm, bool isolated = false)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    Peers peers;
+    AdmissionLog admissions;
+    auto listener = peers.keep(srt_create_socket());
+    auto group_address = ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
+    auto interface = ipv4_sockaddr({127, 0, 0, 1}, 0);
+    std::int32_t hops = 0;
+    if (encrypted) {
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_PASSPHRASE, group_passphrase,
+                       sizeof(group_passphrase) - 1),
+            0);
+        if (gcm) {
+            std::int32_t mode = 2;
+            REQUIRE_EQ(
+                srt_setsockflag(listener, SRTO_CRYPTOMODE, &mode, sizeof(mode)),
+                0);
+        }
+    }
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP,
+                   &group_address, sizeof(group_address)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE, &interface,
+                   sizeof(interface)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_ROBOTWEAX_MCAST_TTL, &hops, sizeof(hops)),
+        0);
+    REQUIRE_EQ(srt_listen_callback(listener, admit_dispatch, &admissions), 0);
+    auto bound = interface;
+    REQUIRE_EQ(
+        srt_bind(listener, reinterpret_cast<sockaddr*>(&bound), sizeof(bound)),
+        0);
+    REQUIRE_EQ(srt_listen(listener, 8), 0);
+    int size = sizeof(bound);
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&bound), &size),
+        0);
+    auto receiver = make_receiver(peers, bound, encrypted, gcm, 2000);
+    auto sender = peers.keep(srt_accept(listener, nullptr, nullptr));
+    REQUIRE(sender != SRT_INVALID_SOCK);
+    REQUIRE(wait_for_members(sender, 1, encrypted));
+    REQUIRE(wait_for_members(receiver, 1));
+    SRTSOCKET healthy = SRT_INVALID_SOCK;
+    if (isolated) {
+        healthy = make_receiver(peers, bound, encrypted, gcm, 2000);
+        REQUIRE(wait_for_members(sender, 2, encrypted));
+        REQUIRE(wait_for_members(healthy, 1));
+    }
+    HybridWireProbe probe;
+    probe.isolated = isolated;
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> ingress;
+    std::shared_ptr<robotweax::srt::compat::ConnectionRuntime> runtime;
+    std::uint32_t route_id = 0;
+    if (isolated) {
+        auto r = GroupRegistry::instance().find(receiver);
+        SRTSOCKET m;
+        {
+            std::lock_guard lock(r->mutex);
+            ingress = r->dispatch->receive_channel;
+            route_id = r->dispatch->ingress_group_id;
+            m = r->members.front().public_data.id;
+        }
+        auto socket = SocketRegistry::instance().find(m);
+        {
+            std::lock_guard lock(socket->mutex);
+            runtime = socket->runtime;
+        }
+    }
+    auto listener_record = SocketRegistry::instance().find(listener);
+    {
+        std::lock_guard lock(listener_record->mutex);
+        probe.channel = listener_record->channel;
+    }
+    auto group_record = GroupRegistry::instance().find(sender);
+    SRTSOCKET member;
+    {
+        std::lock_guard lock(group_record->mutex);
+        member = group_record->members.front().public_data.id;
+    }
+    auto member_record = SocketRegistry::instance().find(member);
+    {
+        std::lock_guard lock(member_record->mutex);
+        probe.unicast = member_record->peer_endpoint;
+    }
+    probe.channel->set_send_hook_for_testing(hybrid_wire_probe, &probe);
+    struct Cleanup {
+        HybridWireProbe& p;
+        ~Cleanup()
+        {
+            p.channel->set_send_hook_for_testing(nullptr, nullptr);
+        }
+    } cleanup {probe};
+    auto send = [&](int i) {
+        auto payload = message(i);
+        REQUIRE_EQ(srt_sendmsg(sender, payload.data(), payload.size(), -1, 1),
+            static_cast<int>(payload.size()));
+        std::this_thread::sleep_for(std::chrono::milliseconds {10});
+    };
+    send(0);
+    send(1);
+    if (isolated)
+        ingress->unregister_connection(route_id);
+    probe.phase = 1;
+    for (int i = 2; i < 8; ++i)
+        send(i);
+    std::this_thread::sleep_for(std::chrono::milliseconds {350});
+    REQUIRE_EQ(probe.dropped.load(), 6);
+    REQUIRE_EQ(probe.repairs.load(), 0);
+    REQUIRE_EQ(srt_getsockstate(receiver), SRTS_CONNECTED);
+    // An externally forced unicast original supplies a new sequence horizon.
+    probe.phase = 2;
+    for (int i = 8; i < 16; ++i)
+        send(i);
+    if (isolated)
+        REQUIRE(ingress->register_ingress_route(route_id, runtime));
+    probe.phase = 3;
+    for (int i = 16; i < 20; ++i)
+        send(i);
+    probe.phase = 0;
+    for (int i = 20; i < 24; ++i)
+        send(i);
+    expect_messages(receiver, 0, 24);
+    if (isolated)
+        expect_messages(healthy, 0, 24);
+    REQUIRE(probe.repairs.load() >= 6);
+    REQUIRE_EQ(probe.redirected.load(), 12);
+    const bool nonblocking = false;
+    REQUIRE_EQ(srt_setsockflag(
+                   receiver, SRTO_RCVSYN, &nonblocking, sizeof(nonblocking)),
+        0);
+    std::array<char, 256> output {};
+    REQUIRE_EQ(srt_recvmsg(receiver, output.data(), output.size()), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+}
+}
+TEST(investigation_hybrid_wire_plain)
+{
+    investigate_hybrid_wire(false, false);
+}
+TEST(investigation_hybrid_wire_ctr)
+{
+    investigate_hybrid_wire(true, false);
+}
+#ifdef ENABLE_AEAD_API_PREVIEW
+TEST(investigation_hybrid_wire_gcm)
+{
+    investigate_hybrid_wire(true, true);
+}
+#endif
+
+TEST(investigation_hybrid_one_receiver_falls_back_while_other_keeps_multicast)
+{
+    investigate_hybrid_wire(false, false, true);
 }
