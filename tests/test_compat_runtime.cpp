@@ -13662,3 +13662,156 @@ TEST(
         REQUIRE(acknowledged_cycle);
     }
 }
+
+namespace {
+
+struct MulticastIngressFixture {
+    static constexpr std::uint32_t dispatch_id = 0x40000001U;
+    static constexpr std::uint32_t member_id = 101U;
+    std::uint64_t now = 0;
+    CapturedDatagrams output;
+    std::shared_ptr<DatagramChannel> control =
+        std::make_shared<DatagramChannel>();
+    DatagramChannel multicast;
+    std::shared_ptr<ConnectionRuntime> runtime;
+
+    MulticastIngressFixture()
+    {
+        control->set_send_hook_for_testing(capture_datagram, &output);
+        SocketOptions options;
+        REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+        runtime = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {
+                .channel = control,
+                .peer = IpEndpoint::loopback(9000),
+                .peer_socket_id = 77,
+                .initial_sequence = SequenceNumber {42},
+                .options = options,
+                .peer_idle_timeout_milliseconds = 5,
+                .now_function = injected_now,
+                .now_context = &now,
+            });
+        REQUIRE(multicast.register_ingress_route(
+            dispatch_id, runtime, PacketIngress::multicast_data));
+        REQUIRE(control->register_ingress_route(
+            dispatch_id, runtime, PacketIngress::unicast_session));
+        REQUIRE(control->register_ingress_route(
+            member_id, runtime, PacketIngress::unicast_session));
+    }
+
+    void deliver(DatagramChannel& channel, const MutablePacketView& packet,
+        IpEndpoint peer = IpEndpoint::loopback(9000))
+    {
+        std::array<std::byte, 1500> bytes {};
+        const auto encoded = encode_packet(packet, bytes);
+        REQUIRE(encoded);
+        bool consumed = false;
+        auto input = [&](std::span<std::byte> destination) -> UdpIoResult {
+            if (consumed)
+                return {.error = Error::would_block};
+            consumed = true;
+            std::copy_n(
+                bytes.begin(), encoded.bytes_written, destination.begin());
+            return {.bytes_transferred = encoded.bytes_written, .peer = peer};
+        };
+        (void)channel.run_once_for_testing(input);
+    }
+};
+
+} // namespace
+
+TEST(compat_multicast_ingress_rejects_shutdown_but_unicast_keeps_control)
+{
+    for (const auto destination : {MulticastIngressFixture::dispatch_id,
+             MulticastIngressFixture::member_id}) {
+        MulticastIngressFixture fixture;
+        const std::array<std::byte, 4> payload {};
+        MutablePacketView packet;
+        packet.kind = PacketKind::control;
+        packet.control.type = ControlType::shutdown;
+        packet.control.destination_socket_id =
+            MulticastIngressFixture::dispatch_id;
+        packet.payload = payload;
+        fixture.deliver(fixture.multicast, packet);
+        REQUIRE(!fixture.runtime->peer_closed());
+        REQUIRE(!fixture.runtime->broken());
+        packet.control.destination_socket_id = destination;
+        fixture.deliver(*fixture.control, packet);
+        REQUIRE(fixture.runtime->peer_closed());
+    }
+}
+
+TEST(compat_multicast_ingress_rejects_acknowledgements_before_statistics)
+{
+    MulticastIngressFixture fixture;
+    std::array<std::byte, 4> payload {};
+    REQUIRE(encode_acknowledgement_payload(
+        {.kind = AcknowledgementKind::lite,
+            .next_sequence = SequenceNumber {42}},
+        payload));
+    MutablePacketView packet;
+    packet.kind = PacketKind::control;
+    packet.control.type = ControlType::acknowledgement;
+    packet.control.destination_socket_id = MulticastIngressFixture::dispatch_id;
+    packet.payload = payload;
+    fixture.deliver(fixture.multicast, packet);
+    REQUIRE_EQ(fixture.runtime->statistics(false, false)
+                   .total.received_acknowledgements,
+        0U);
+    fixture.deliver(*fixture.control, packet);
+    REQUIRE_EQ(fixture.runtime->statistics(false, false)
+                   .total.received_acknowledgements,
+        1U);
+}
+
+TEST(compat_multicast_ingress_rejected_keepalive_does_not_extend_liveness)
+{
+    MulticastIngressFixture fixture;
+    const std::array<std::byte, 4> payload {};
+    MutablePacketView packet;
+    packet.kind = PacketKind::control;
+    packet.control.type = ControlType::keepalive;
+    packet.control.destination_socket_id = MulticastIngressFixture::dispatch_id;
+    packet.payload = payload;
+    fixture.now = 4000;
+    fixture.deliver(fixture.multicast, packet);
+    fixture.now = 6000;
+    (void)fixture.runtime->poll();
+    REQUIRE(fixture.runtime->broken());
+}
+
+TEST(compat_multicast_ingress_source_destination_and_merge_admission)
+{
+    MulticastIngressFixture fixture;
+    const std::array payload {std::byte {'a'}};
+    MutablePacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.destination_socket_id = MulticastIngressFixture::dispatch_id;
+    packet.data.sequence = SequenceNumber {42};
+    packet.data.message_number = 1;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.data.in_order = true;
+    packet.payload = payload;
+    for (const auto source : {IpEndpoint::loopback(9001),
+             IpEndpoint {.address = {127, 0, 0, 2}, .port = 9000},
+             IpEndpoint::ipv6_loopback(9000)})
+        fixture.deliver(fixture.multicast, packet, source);
+    REQUIRE_EQ(fixture.runtime->foreign_peer_packets(), 3U);
+    packet.data.destination_socket_id = MulticastIngressFixture::member_id;
+    fixture.deliver(fixture.multicast, packet);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received.packets, 0U);
+    REQUIRE_EQ(fixture.multicast.unrouted_datagrams(), 1U);
+    packet.data.destination_socket_id = MulticastIngressFixture::dispatch_id;
+    fixture.deliver(fixture.multicast, packet);
+    fixture.deliver(*fixture.control, packet);
+    std::array<std::byte, 1> output {};
+    REQUIRE_EQ(fixture.runtime->receive_message(output, false, 0).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(output, payload);
+    REQUIRE_EQ(fixture.runtime->receive_message(output, false, 0).status,
+        MessageIoStatus::would_block);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received_unique.packets,
+        1U);
+}

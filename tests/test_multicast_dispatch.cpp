@@ -394,6 +394,7 @@ struct StreamScenario {
     std::chrono::microseconds send_gap {0};
     bool aes_gcm = false;
     bool fill_accept_backlog = false;
+    bool multicast_shutdown_probe = false;
 };
 
 void run_dispatch_stream(const StreamScenario& scenario)
@@ -505,6 +506,47 @@ void run_dispatch_stream(const StreamScenario& scenario)
         REQUIRE_EQ(record->admission_domain, 7U);
         REQUIRE_EQ(
             record->dispatch->key_schedule != nullptr, scenario.encrypted);
+    }
+    if (scenario.multicast_shutdown_probe) {
+        // Use the actual listener socket so the packet has the expected source
+        // endpoint. Only ingress provenance can reject this control packet.
+        const auto listener_record = SocketRegistry::instance().find(listener);
+        REQUIRE(listener_record);
+        std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+        {
+            std::lock_guard lock(listener_record->mutex);
+            channel = listener_record->channel;
+        }
+        REQUIRE(channel);
+        MutablePacketView shutdown;
+        shutdown.kind = PacketKind::control;
+        shutdown.control.type = ControlType::shutdown;
+        shutdown.control.destination_socket_id =
+            static_cast<std::uint32_t>(sender);
+        const std::array<std::byte, 4> payload {};
+        shutdown.payload = payload;
+        std::array<std::byte, 64> bytes {};
+        const auto encoded = encode_packet(shutdown, bytes);
+        REQUIRE(encoded);
+        REQUIRE(channel->send_datagram(
+            std::span {bytes}.first(encoded.bytes_written),
+            IpEndpoint {
+                .address = {239, 255, 133, 11}, .port = multicast_port}));
+        for (const auto receiver : {receiver_a, receiver_b, receiver_c}) {
+            const auto record = GroupRegistry::instance().find(receiver);
+            std::shared_ptr<robotweax::srt::compat::DatagramChannel> ingress;
+            {
+                std::lock_guard lock(record->mutex);
+                ingress = record->dispatch->receive_channel;
+            }
+            const auto deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds {2};
+            while (ingress->routed_datagrams() == 0
+                && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds {2});
+            REQUIRE(ingress->routed_datagrams() != 0);
+            REQUIRE_EQ(srt_getsockstate(receiver), SRTS_CONNECTED);
+        }
     }
     // The sender does not receive; a receiver does not send.
     std::array<char, 16> scratch {};
@@ -1040,6 +1082,13 @@ TEST(multicast_dispatch_group_joins_with_a_full_accept_backlog)
     run_dispatch_stream({.fill_accept_backlog = true});
 }
 
+TEST(multicast_dispatch_multicast_control_does_not_close_receivers)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    run_dispatch_stream({.multicast_shutdown_probe = true});
+}
+
 // Investigation-only wire rerouting; no production-library changes.
 namespace {
 struct HybridWireProbe {
@@ -1194,7 +1243,8 @@ void investigate_hybrid_wire(bool encrypted, bool gcm, bool isolated = false)
     for (int i = 8; i < 16; ++i)
         send(i);
     if (isolated)
-        REQUIRE(ingress->register_ingress_route(route_id, runtime));
+        REQUIRE(ingress->register_ingress_route(route_id, runtime,
+            robotweax::srt::compat::PacketIngress::multicast_data));
     probe.phase = 3;
     for (int i = 16; i < 20; ++i)
         send(i);

@@ -713,7 +713,8 @@ std::shared_ptr<ConnectionRuntime> DatagramChannel::promote_setup_connection(
 }
 
 bool DatagramChannel::register_ingress_route(std::uint32_t protocol_socket_id,
-    std::shared_ptr<ConnectionRuntime> runtime) noexcept
+    std::shared_ptr<ConnectionRuntime> runtime,
+    PacketIngress provenance) noexcept
 {
     if (protocol_socket_id == 0U || runtime == nullptr) {
         return false;
@@ -724,7 +725,8 @@ bool DatagramChannel::register_ingress_route(std::uint32_t protocol_socket_id,
         // handshake replay key: this channel only delivers.
         return routes_
             .emplace(protocol_socket_id,
-                ConnectionRoute {.runtime = std::move(runtime)})
+                ConnectionRoute {
+                    .runtime = std::move(runtime), .provenance = provenance})
             .second;
     } catch (...) {
         return false;
@@ -1331,6 +1333,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
     std::shared_ptr<ConnectionRuntime> runtime;
     std::shared_ptr<DatagramInbox> setup_inbox;
     bool ingress_only = false;
+    PacketIngress provenance = PacketIngress::unicast_session;
     {
         std::lock_guard lock(routes_mutex_);
         const auto route = routes_.find(
@@ -1338,6 +1341,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
         if (route != routes_.end()) {
             runtime = route->second.runtime;
             ingress_only = route->second.next == nullptr;
+            provenance = route->second.provenance;
         } else {
             const auto setup = setup_routes_.find(
                 destination_socket_id);
@@ -1349,7 +1353,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
     }
     if (runtime != nullptr) {
         routed_datagrams_.fetch_add(1U, std::memory_order_relaxed);
-        runtime->process_packet(packet, peer, ingress);
+        runtime->process_packet(packet, peer, ingress, provenance);
         if (ingress_only) {
             // Multicast ingress does not poll this runtime. Wake its control
             // channel so newly armed ACK/NAK deadlines are serviced even if
@@ -3966,8 +3970,15 @@ void ConnectionRuntime::process_experimental_filter_locked(
 #endif
 
 void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
-    IpEndpoint peer, std::optional<Clock::time_point> ingress) noexcept
+    IpEndpoint peer, std::optional<Clock::time_point> ingress,
+    PacketIngress provenance) noexcept
 {
+    // Multicast is DATA-only. Reject before control authentication, key
+    // processing, liveness, statistics or any reliability/clock mutation.
+    // The existing complete peer endpoint check still applies to both paths.
+    if (provenance == PacketIngress::multicast_data
+        && incoming_packet.kind != PacketKind::data)
+        return;
     PacketView packet = incoming_packet;
     if (peer != peer_) {
         foreign_peer_packets_.fetch_add(1U, std::memory_order_relaxed);

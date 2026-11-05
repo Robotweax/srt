@@ -589,9 +589,12 @@ Receiver (Caller):
   extension (type `0x7f14`, magic-guarded) with the group address, the
   destination socket ID to filter on, the live sequence to start at and the
   hop limit. The receiver joins the group on a dedicated socket and routes
-  datagrams that carry that ID and the Listener's source address into its
-  one member session; everything else on that socket is dropped before
-  decoding. `srt_recv*` reads that member; `srt_send*` is `SRT_EINVOP`;
+  DATA packets that carry that ID and match the Listener's complete source
+  endpoint (address and UDP port) into its one member session. Control packets
+  on this multicast route are rejected before session processing, including
+  liveness, key handling and reliability statistics. The unicast control link
+  continues to accept control and repair DATA into the same session.
+  `srt_recv*` reads that member; `srt_send*` is `SRT_EINVOP`;
 - closing the group leaves the multicast group before the control link ends.
 
 Encryption: set `SRTO_PASSPHRASE` (and optionally `SRTO_CRYPTOMODE`,

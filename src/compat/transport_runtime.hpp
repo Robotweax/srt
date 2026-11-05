@@ -42,6 +42,12 @@ class RuntimeWorkExecutor;
 struct GroupRecord;
 struct RetainedGroupReceiveBatch;
 
+// Local routing metadata, never inferred from a packet's destination ID.
+enum class PacketIngress : std::uint8_t {
+    unicast_session,
+    multicast_data,
+};
+
 struct HandshakeRouteKey {
     IpEndpoint peer{};
     std::uint32_t peer_socket_id = 0;
@@ -245,9 +251,11 @@ public:
     // to `runtime` without polling it from this channel: the runtime stays
     // driven by the channel it sends on. A dispatch receiver uses this on
     // the socket joined to the multicast group, keyed by the dispatch group
-    // ID the Listener announced. Removed with unregister_connection.
+    // ID the Listener announced. Removed with unregister_connection. Callers
+    // must distinguish the dedicated multicast socket from unicast aliases.
     [[nodiscard]] bool register_ingress_route(std::uint32_t protocol_socket_id,
-        std::shared_ptr<ConnectionRuntime> runtime) noexcept;
+        std::shared_ptr<ConnectionRuntime> runtime,
+        PacketIngress provenance) noexcept;
     void unregister_connection(std::uint32_t protocol_socket_id) noexcept;
     [[nodiscard]] bool replay_established_handshake(
         const HandshakeEnvelope& envelope) noexcept;
@@ -414,6 +422,7 @@ private:
     std::mutex routes_mutex_;
     struct ConnectionRoute {
         std::shared_ptr<ConnectionRuntime> runtime;
+        PacketIngress provenance = PacketIngress::unicast_session;
         ConnectionRoute* previous = nullptr;
         ConnectionRoute* next = nullptr;
     };
@@ -622,7 +631,8 @@ public:
         bool blocking,
         std::int32_t timeout_milliseconds) noexcept;
     void process_packet(const PacketView& packet, IpEndpoint peer,
-        std::optional<Clock::time_point> ingress = std::nullopt) noexcept;
+        std::optional<Clock::time_point> ingress = std::nullopt,
+        PacketIngress provenance = PacketIngress::unicast_session) noexcept;
     [[nodiscard]] bool process_handshake(
         const HandshakeMessage& message,
         IpEndpoint peer) noexcept;

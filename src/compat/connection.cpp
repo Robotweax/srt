@@ -844,10 +844,12 @@ void publish_group_member_state(SocketRecord& socket) noexcept
         control = socket.channel;
     }
     if (control == nullptr
-        || !control->register_ingress_route(dispatch.group_id, runtime)) {
+        || !control->register_ingress_route(
+            dispatch.group_id, runtime, PacketIngress::unicast_session)) {
         return fail(SRT_ECONNSETUP);
     }
-    if (!channel->register_ingress_route(dispatch.group_id, runtime)
+    if (!channel->register_ingress_route(
+            dispatch.group_id, runtime, PacketIngress::multicast_data)
         || !channel->start()) {
         control->unregister_connection(dispatch.group_id);
         return fail(SRT_ETHREAD);
