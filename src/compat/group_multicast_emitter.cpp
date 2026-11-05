@@ -5,6 +5,7 @@
 #include "robotweax/srt/connection_group.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <limits>
 #include <utility>
 
@@ -31,8 +32,10 @@ bool GroupMulticastEmitter::valid_configuration(const Configuration& c) noexcept
 GroupMulticastEmitter::GroupMulticastEmitter(Configuration configuration)
     : configuration_(std::move(configuration))
     , entries_(configuration_.capacity)
+    , outcomes_(configuration_.capacity)
     , network_header_bytes_(configuration_.destination.is_ipv4() ? 28U : 48U)
     , readiness_(std::make_shared<ReadinessSource>())
+    , outcome_readiness_(std::make_shared<ReadinessSource>())
     , work_(std::make_shared<WorkContext>())
 {
     state_.capacity = configuration_.capacity;
@@ -120,11 +123,12 @@ bool GroupMulticastEmitter::valid_packet(
 
 GroupMulticastEmitter::Reservation::Reservation(
     std::shared_ptr<GroupMulticastEmitter> owner,
-    std::unique_lock<std::mutex> lock, TimePoint deadline) noexcept
+    std::unique_lock<std::mutex> lock, TimePoint deadline, bool report) noexcept
     : owner_(std::move(owner))
     , lock_(std::move(lock))
     , deadline_(deadline)
     , status_(Admission::accepted)
+    , report_(report)
 {
 }
 
@@ -137,8 +141,8 @@ GroupMulticastEmitter::Reservation::~Reservation()
 }
 
 GroupMulticastEmitter::Reservation GroupMulticastEmitter::reserve(
-    std::uint64_t generation, SequenceNumber sequence,
-    TimePoint deadline) noexcept
+    std::uint64_t generation, SequenceNumber sequence, TimePoint deadline,
+    bool report) noexcept
 {
     std::unique_lock lock(mutex_);
     if (state_.closed)
@@ -151,15 +155,18 @@ GroupMulticastEmitter::Reservation GroupMulticastEmitter::reserve(
         return Reservation {Admission::wrong_sequence};
     if (deadline <= now_locked())
         return Reservation {Admission::expired};
-    if (state_.queued == entries_.size())
+    if (state_.queued == entries_.size()
+        || (report
+            && state_.reported_queued + state_.pending_outcomes
+                == outcomes_.size()))
         return Reservation {Admission::full};
-    return Reservation {work_->owner.lock(), std::move(lock), deadline};
+    return Reservation {work_->owner.lock(), std::move(lock), deadline, report};
 }
 
 GroupMulticastEmitter::Admission GroupMulticastEmitter::Reservation::publish(
     std::span<const std::byte> packet,
-    std::shared_ptr<const void> generation_owner, Commit commit,
-    void* context) noexcept
+    std::shared_ptr<const void> generation_owner, Commit commit, void* context,
+    std::shared_ptr<const void> outcome_context) noexcept
 {
     // Lock is declared last so all owners (including failure/early returns)
     // retire after unlocking. A consumed or moved reservation cannot publish.
@@ -170,7 +177,8 @@ GroupMulticastEmitter::Admission GroupMulticastEmitter::Reservation::publish(
     if (!owner || !lock.owns_lock())
         return status_ == Admission::accepted ? Admission::cancelled : status_;
     status_ = Admission::cancelled;
-    if (!owner->valid_packet(packet, generation_owner != nullptr))
+    if (report_ != (outcome_context != nullptr)
+        || !owner->valid_packet(packet, generation_owner != nullptr))
         return Admission::invalid_packet;
     const auto decoded = decode_packet(packet);
     if (decoded.packet.data.sequence != owner->state_.accepted_next_sequence)
@@ -184,10 +192,12 @@ GroupMulticastEmitter::Admission GroupMulticastEmitter::Reservation::publish(
     entry.deadline = deadline_;
     entry.attempts = 0;
     entry.generation_owner = std::move(generation_owner);
+    entry.outcome_context = std::move(outcome_context);
     ++state.queued;
     state.queued_bytes += packet.size();
     auto rollback = [&] {
         generation_owner = std::move(entry.generation_owner);
+        outcome_context = std::move(entry.outcome_context);
         --state.queued;
         state.queued_bytes -= entry.size;
         entry.size = 0;
@@ -196,39 +206,70 @@ GroupMulticastEmitter::Admission GroupMulticastEmitter::Reservation::publish(
         && owner->scheduler_->notify_service(owner->service_)
             != RuntimeScheduler::SubmitStatus::accepted) {
         rollback();
-        owner->fail_locked(Failure::scheduler, 0, retired, retired_count);
+        owner->fail_locked(
+            Failure::scheduler, 0, retired, retired_count, owner->now_locked());
         lock.unlock();
-        ReadinessSignal::notify(*owner->readiness_);
+        ReadinessSignal::notify(
+            *owner->readiness_, owner->outcome_readiness_.get());
         return Admission::failed;
     }
     if (commit && !commit(context)) {
         rollback();
         return Admission::cancelled;
     }
+    state.reported_queued += static_cast<std::size_t>(report_);
     ++state.accepted_packets;
     state.accepted_next_sequence = state.accepted_next_sequence.next();
-    if (state.queued == owner->entries_.size())
+    if (state.queued == owner->entries_.size()) {
         owner->readiness_->note_not_ready(SRT_EPOLL_OUT);
+        owner->outcome_readiness_->note_not_ready(SRT_EPOLL_OUT);
+    } else if (state.reported_queued + state.pending_outcomes
+        == owner->outcomes_.size()) {
+        owner->outcome_readiness_->note_not_ready(SRT_EPOLL_OUT);
+    }
     return Admission::accepted;
 }
 
 GroupMulticastEmitter::Admission GroupMulticastEmitter::enqueue(
     std::uint64_t generation, std::span<const std::byte> packet,
-    TimePoint deadline, std::shared_ptr<const void> generation_owner) noexcept
+    TimePoint deadline, std::shared_ptr<const void> generation_owner,
+    std::shared_ptr<const void> outcome_context) noexcept
 {
     if (!valid_packet(packet, generation_owner != nullptr))
         return Admission::invalid_packet;
-    auto reservation = reserve(
-        generation, decode_packet(packet).packet.data.sequence, deadline);
+    auto reservation =
+        reserve(generation, decode_packet(packet).packet.data.sequence,
+            deadline, outcome_context != nullptr);
     if (reservation.status() != Admission::accepted)
         return reservation.status();
-    return reservation.publish(packet, std::move(generation_owner));
+    return reservation.publish(packet, std::move(generation_owner), nullptr,
+        nullptr, std::move(outcome_context));
 }
 
-void GroupMulticastEmitter::pop_locked(
-    RetiredOwners& retired, std::size_t& retired_count) noexcept
+void GroupMulticastEmitter::pop_locked(RetiredOwners& retired,
+    std::size_t& retired_count, Disposition disposition, TimePoint completed_at,
+    Failure failure, int system_error) noexcept
 {
     auto& entry = entries_[head_];
+    if (entry.outcome_context) {
+        assert(state_.reported_queued != 0U
+            && state_.pending_outcomes < outcomes_.size());
+        auto& outcome = outcomes_[(outcome_head_ + state_.pending_outcomes)
+            % outcomes_.size()];
+        assert(!outcome.context);
+        outcome = {.group_id = configuration_.group_id,
+            .generation = configuration_.generation,
+            .sequence = entry.sequence,
+            .disposition = disposition,
+            .failure = failure,
+            .system_error = system_error,
+            .attempts = entry.attempts,
+            .datagram_size = entry.size,
+            .completed_at = completed_at,
+            .context = std::move(entry.outcome_context)};
+        --state_.reported_queued;
+        ++state_.pending_outcomes;
+    }
     retired[retired_count++] = std::move(entry.generation_owner);
     state_.queued_bytes -= entry.size;
     entry.size = 0;
@@ -239,13 +280,16 @@ void GroupMulticastEmitter::pop_locked(
 }
 
 void GroupMulticastEmitter::fail_locked(Failure failure, int error,
-    RetiredOwners& retired, std::size_t& retired_count) noexcept
+    RetiredOwners& retired, std::size_t& retired_count,
+    TimePoint completed_at) noexcept
 {
     state_.failure = failure;
     state_.system_error = error;
     state_.cancelled_packets += state_.queued;
     while (state_.queued != 0U)
-        pop_locked(retired, retired_count);
+        pop_locked(retired, retired_count, Disposition::failed, completed_at,
+            failure, error);
+    outcome_readiness_->note_not_ready(SRT_EPOLL_OUT);
     readiness_->note_not_ready(SRT_EPOLL_OUT);
 }
 
@@ -276,7 +320,7 @@ void GroupMulticastEmitter::drive() noexcept
         auto& entry = entries_[head_];
         if (now >= entry.deadline) {
             ++state_.expired_packets;
-            pop_locked(retired, retired_count);
+            pop_locked(retired, retired_count, Disposition::expired, now);
             continue;
         }
         if (now < std::max(rate_ready_, retry_ready_))
@@ -300,12 +344,13 @@ void GroupMulticastEmitter::drive() noexcept
             const auto delay = std::chrono::ceil<Clock::duration>(
                 std::chrono::nanoseconds {static_cast<std::int64_t>(ns)});
             rate_ready_ = add_saturated(now, delay);
-            pop_locked(retired, retired_count);
+            pop_locked(
+                retired, retired_count, Disposition::submitted, now_locked());
             continue;
         }
         if (sent) {
             fail_locked(Failure::partial_datagram, sent.system_error, retired,
-                retired_count);
+                retired_count, now_locked());
             break;
         }
         if (sent.error == Error::would_block
@@ -313,14 +358,15 @@ void GroupMulticastEmitter::drive() noexcept
                 && UdpSocket::is_transient_send_error(sent.system_error))) {
             if (entry.attempts >= configuration_.maximum_attempts) {
                 ++state_.retry_exhausted_packets;
-                pop_locked(retired, retired_count);
+                pop_locked(retired, retired_count, Disposition::retry_exhausted,
+                    now_locked(), Failure::none, sent.system_error);
                 continue;
             }
             retry_ready_ = add_saturated(now, configuration_.retry_delay);
             break;
         }
-        fail_locked(
-            Failure::transport, sent.system_error, retired, retired_count);
+        fail_locked(Failure::transport, sent.system_error, retired,
+            retired_count, now_locked());
         break;
     }
     if (!manual_ && state_.failure == Failure::none) {
@@ -331,10 +377,11 @@ void GroupMulticastEmitter::drive() noexcept
         else
             (void)scheduler_->cancel_service_timer(service_);
         if (scheduled != RuntimeScheduler::SubmitStatus::accepted)
-            fail_locked(Failure::scheduler, 0, retired, retired_count);
+            fail_locked(
+                Failure::scheduler, 0, retired, retired_count, now_locked());
     }
     lock.unlock();
-    ReadinessSignal::notify(*readiness_);
+    ReadinessSignal::notify(*readiness_, outcome_readiness_.get());
 }
 
 GroupMulticastEmitter::Snapshot GroupMulticastEmitter::snapshot() const noexcept
@@ -343,6 +390,8 @@ GroupMulticastEmitter::Snapshot GroupMulticastEmitter::snapshot() const noexcept
     auto result = state_;
     result.writable = !state_.closed && state_.failure == Failure::none
         && state_.queued < entries_.size();
+    result.report_writable = result.writable
+        && state_.reported_queued + state_.pending_outcomes < outcomes_.size();
     if (!state_.closed && state_.failure == Failure::none
         && state_.queued != 0U)
         result.next_wakeup = wakeup_locked();
@@ -362,8 +411,10 @@ void GroupMulticastEmitter::close() noexcept
             return;
         state_.closed = true;
         state_.cancelled_packets += state_.queued;
+        const auto now = now_locked();
         while (state_.queued != 0U)
-            pop_locked(retired, retired_count);
+            pop_locked(retired, retired_count, Disposition::cancelled, now);
+        outcome_readiness_->note_not_ready(SRT_EPOLL_OUT);
         channel.swap(configuration_.channel);
         scheduler.swap(scheduler_);
         service = std::exchange(service_, {});
@@ -371,7 +422,31 @@ void GroupMulticastEmitter::close() noexcept
     }
     if (scheduler && service.valid())
         (void)scheduler->release_service(service);
-    ReadinessSignal::notify(*readiness_);
+    ReadinessSignal::notify(*readiness_, outcome_readiness_.get());
+}
+
+std::size_t GroupMulticastEmitter::take_outcomes(
+    std::span<Outcome> destination) noexcept
+{
+    // Caller may reuse an output span that still owns old contexts. Retire
+    // those only after unlocking, including when their destructors reenter us.
+    std::array<Outcome, maximum_batch> retired {};
+    std::unique_lock lock(mutex_);
+    const auto count =
+        std::min({destination.size(), state_.pending_outcomes, maximum_batch});
+    for (std::size_t i = 0; i < count; ++i) {
+        retired[i] = std::move(destination[i]);
+        destination[i] = std::move(outcomes_[outcome_head_]);
+        outcomes_[outcome_head_] = Outcome {};
+        outcome_head_ = (outcome_head_ + 1U) % outcomes_.size();
+        --state_.pending_outcomes;
+    }
+    if (count != 0U && state_.pending_outcomes == 0U)
+        outcome_readiness_->note_not_ready(SRT_EPOLL_IN);
+    lock.unlock();
+    if (count != 0U)
+        ReadinessSignal::notify(*readiness_, outcome_readiness_.get());
+    return count;
 }
 
 void GroupMulticastEmitter::pump_for_testing() noexcept

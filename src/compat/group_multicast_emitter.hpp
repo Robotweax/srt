@@ -75,6 +75,33 @@ public:
         scheduler,
     };
 
+    enum class Disposition : std::uint8_t {
+        submitted,
+        expired,
+        retry_exhausted,
+        cancelled,
+        failed,
+    };
+
+    struct Outcome {
+        std::uint32_t group_id = 0;
+        std::uint64_t generation = 0;
+        SequenceNumber sequence {};
+        Disposition disposition = Disposition::cancelled;
+        Failure failure = Failure::none;
+        int system_error = 0;
+        std::uint32_t attempts = 0;
+        std::size_t datagram_size = 0;
+        // Monotonic observation AFTER UDP returns, or at local retirement.
+        // A complete UDP submission is not remote receipt or delivery.
+        TimePoint completed_at {};
+        // Captured member/stream lifetime identities and per-history monotonic
+        // submission tokens. Immutable after admission commit. Use weak source
+        // ownership to avoid an emitter -> context -> emitter cycle. Context
+        // teardown and fanout storage must be bounded by the coordinator.
+        std::shared_ptr<const void> context;
+    };
+
     struct Snapshot {
         std::size_t queued = 0;
         std::size_t queued_bytes = 0;
@@ -93,6 +120,9 @@ public:
         int system_error = 0;
         bool closed = false;
         bool writable = false;
+        std::size_t reported_queued = 0;
+        std::size_t pending_outcomes = 0;
+        bool report_writable = false;
     };
 
     // A short, thread-bound transaction holding the emitter admission mutex.
@@ -118,7 +148,8 @@ public:
         using Commit = bool (*)(void*) noexcept;
         [[nodiscard]] Admission publish(std::span<const std::byte> packet,
             std::shared_ptr<const void> generation_owner = {},
-            Commit commit = nullptr, void* context = nullptr) noexcept;
+            Commit commit = nullptr, void* context = nullptr,
+            std::shared_ptr<const void> outcome_context = {}) noexcept;
 
     private:
         friend class GroupMulticastEmitter;
@@ -127,11 +158,12 @@ public:
         {
         }
         Reservation(std::shared_ptr<GroupMulticastEmitter>,
-            std::unique_lock<std::mutex>, TimePoint) noexcept;
+            std::unique_lock<std::mutex>, TimePoint, bool report) noexcept;
         std::shared_ptr<GroupMulticastEmitter> owner_;
         std::unique_lock<std::mutex> lock_;
         TimePoint deadline_ {};
         Admission status_ = Admission::failed;
+        bool report_ = false;
     };
 
     // Fails without publishing an emitter if configuration, allocation or
@@ -154,17 +186,37 @@ public:
     // is not multicast emission, remote delivery or an ACK over unseen DATA.
     [[nodiscard]] Admission enqueue(std::uint64_t generation,
         std::span<const std::byte> packet, TimePoint deadline,
-        std::shared_ptr<const void> generation_owner = {}) noexcept;
+        std::shared_ptr<const void> generation_owner = {},
+        std::shared_ptr<const void> outcome_context = {}) noexcept;
     // A deadline is checked at reservation. If it elapses during preparation,
     // accepted work is still committed and then expires through ordinary drive
     // accounting; sealing cannot leave a rejected nonce pinned to the caller.
     [[nodiscard]] Reservation reserve(std::uint64_t generation,
-        SequenceNumber sequence, TimePoint deadline) noexcept;
+        SequenceNumber sequence, TimePoint deadline,
+        bool report = false) noexcept;
+    // A reported reservation also reserves one terminal mailbox slot before
+    // sealing; allocate its context before sealing too. Publish requires a
+    // non-null outcome_context. At most capacity
+    // reported originals can be queued or awaiting consumption in total.
+    // Rejections/unpublished reservations produce no outcome. Each accepted
+    // reported original produces exactly one outcome, including close/failure.
+    // Drain after close as well; dropping the emitter abandons undrained reports.
+    // Replaced destination contexts retire outside the emitter mutex. Each
+    // drain is capped at maximum_batch and does not invoke callbacks.
+    [[nodiscard]] std::size_t take_outcomes(
+        std::span<Outcome> destination) noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
     [[nodiscard]] const std::shared_ptr<ReadinessSource>&
     readiness_source() const noexcept
     {
         return readiness_;
+    }
+    // IN: terminal reports available; OUT: queue AND report slot available.
+    // Internal readiness only, not receiver application DATA or public epoll.
+    [[nodiscard]] const std::shared_ptr<ReadinessSource>&
+    outcome_readiness_source() const noexcept
+    {
+        return outcome_readiness_;
     }
     // Serializes with admitted socket I/O; no further emission after return.
     // Service retirement is nonblocking even on a scheduler worker.
@@ -182,6 +234,7 @@ private:
         TimePoint deadline {};
         std::uint32_t attempts = 0;
         std::shared_ptr<const void> generation_owner;
+        std::shared_ptr<const void> outcome_context;
     };
     using RetiredOwners =
         std::array<std::shared_ptr<const void>, maximum_capacity>;
@@ -197,19 +250,24 @@ private:
     [[nodiscard]] TimePoint wakeup_locked() const noexcept;
     [[nodiscard]] static TimePoint add_saturated(
         TimePoint, Clock::duration) noexcept;
-    void pop_locked(RetiredOwners&, std::size_t&) noexcept;
-    void fail_locked(Failure, int, RetiredOwners&, std::size_t&) noexcept;
+    void pop_locked(RetiredOwners&, std::size_t&, Disposition, TimePoint,
+        Failure = Failure::none, int system_error = 0) noexcept;
+    void fail_locked(
+        Failure, int, RetiredOwners&, std::size_t&, TimePoint) noexcept;
 
     mutable std::mutex mutex_;
     Configuration configuration_;
     std::vector<Entry> entries_;
+    std::vector<Outcome> outcomes_;
     std::size_t head_ = 0;
+    std::size_t outcome_head_ = 0;
     Snapshot state_;
     TimePoint last_now_ = TimePoint::min();
     TimePoint rate_ready_ = TimePoint::min();
     TimePoint retry_ready_ = TimePoint::min();
     const std::size_t network_header_bytes_;
     std::shared_ptr<ReadinessSource> readiness_;
+    std::shared_ptr<ReadinessSource> outcome_readiness_;
     std::shared_ptr<WorkContext> work_;
     std::shared_ptr<RuntimeScheduler> scheduler_;
     RuntimeScheduler::ServiceToken service_ {};
