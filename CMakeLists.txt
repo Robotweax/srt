@@ -163,6 +163,7 @@ add_library(robotweax_srt
     src/compat/statistics.cpp
     src/compat/srt_api.cpp
     src/compat/transport_runtime.cpp
+    src/compat/group_multicast_emitter.cpp
     src/compat/standby_rtt_service.cpp
     src/control.cpp
     src/connection_group.cpp
@@ -518,6 +519,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_group_acquire.cpp
         tests/test_compat_groups.cpp
         tests/test_multicast_dispatch.cpp
+        tests/test_group_multicast_emitter.cpp
         tests/test_arq_transport.cpp
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp
