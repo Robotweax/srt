@@ -725,8 +725,21 @@ the bounded tally entry is evicted. A value of 0 keeps every repeat unicast.
 (`0x01000015`, read-only, `ROBOTWEAX_SRT_MCAST_STATS_V1`, dispatch groups
 only) reports the multicast-path counters described in
 [Connection groups](connection-groups.md#multicast-dispatch-groups).
-All six are experimental and available from 0.3.2. See
+These six are experimental and available from 0.3.2. See
 [multicast dispatch groups](connection-groups.md#multicast-dispatch-groups).
+
+`SRTO_ROBOTWEAX_MCAST_INDEPENDENT` (`0x01000018`, bool, default false,
+PRE-BIND) selects required fixed-source negotiation on the multicast Listener
+and receiver group. Both sides must select it. The Listener also sets
+`SRTO_ROBOTWEAX_MCAST_SOURCE` (`0x01000019`, `sockaddr_in`, PRE-BIND), a
+concrete local source address and UDP port; port zero chooses an ephemeral
+source port at listen. Readback after listen returns the actual bound endpoint,
+also readable on the sender group. Receivers cannot set this Listener source.
+Set all multicast network options before binding in this profile. Unicast bind
+and peer selection continue through the existing APIs, and control/repair
+remain on that channel. The initial opt-in profile supports IPv4 with a single
+Listener; it provides no automatic fallback. See
+[independent IPv4 source](connection-groups.md#independent-ipv4-source-opt-in).
 
 ## ARQ-first FEC and the tail loss probe (opt-in, sender-local)
 

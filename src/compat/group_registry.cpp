@@ -854,6 +854,12 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
                 static_cast<std::uint32_t>(parsed);
             return 0;
         }
+        if (option == SRTO_ROBOTWEAX_MCAST_SOURCE
+            || (option == SRTO_ROBOTWEAX_MCAST_INDEPENDENT
+                && record->type != ROBOTWEAX_SRT_GTYPE_MULTICAST)) {
+            set_last_error(SRT_EINVOP);
+            return SRT_ERROR;
+        }
         if (option == SRTO_BINDTODEVICE || option == SRTO_CONGESTION
             || option == SRTO_GROUPCONNECT
             || (option == SRTO_RENDEZVOUS
@@ -1232,13 +1238,20 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
     }
     PublicSocketOptions listener_public_options;
     SocketOptions listener_native_options;
+    std::shared_ptr<DatagramChannel> transmit_channel;
     {
         std::lock_guard lock(listener_record->mutex);
         listener_public_options = listener_record->public_options;
         listener_native_options = listener_record->native_options;
+        transmit_channel = listener_record->multicast_transmit_channel;
+        if (listener_public_options.multicast_independent)
+            listener_public_options.multicast_source =
+                listener_record->multicast_transmit_source;
     }
     if (!listener_public_options.multicast_group_set
-        || !listener_public_options.multicast_group.is_multicast()) {
+        || !listener_public_options.multicast_group.is_multicast()
+        || (listener_public_options.multicast_independent
+            && transmit_channel == nullptr)) {
         return false;
     }
     // Fail closed on what is not implemented: packet-filter FEC would run
@@ -1296,6 +1309,11 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
             }
             // One key, one trust domain: a different domain on the same
             // listener is a configuration error, not a second group.
+            if (record->member_public_options.multicast_independent
+                    != listener_public_options.multicast_independent
+                || (listener_public_options.multicast_independent
+                    && record->dispatch->transmit_channel != transmit_channel))
+                return false;
             if (record->admission_domain != admission_domain) {
                 return false;
             }
@@ -1319,6 +1337,7 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
         prepared->category = GroupCategory::dispatch;
         prepared->dispatch = std::make_unique<DispatchGroupState>();
         prepared->dispatch->sender = true;
+        prepared->dispatch->transmit_channel = transmit_channel;
         prepared->dispatch->transmit =
             std::make_shared<DispatchTransmitState>();
         prepared->dispatch->admission_key = std::string(admission_key);
@@ -1467,20 +1486,24 @@ void GroupRegistry::forget_listener(SRTSOCKET listener) noexcept
 void GroupRegistry::release_empty_mirror(
     SRTSOCKET group, std::uint64_t generation) noexcept
 {
-    std::lock_guard registry_lock(mutex_);
-    const auto entry = groups_.find(group);
-    if (entry == groups_.end()) {
-        return;
+    std::shared_ptr<GroupRecord> retired;
+    {
+        std::lock_guard registry_lock(mutex_);
+        const auto entry = groups_.find(group);
+        if (entry == groups_.end()) {
+            return;
+        }
+        const auto record = entry->second;
+        std::lock_guard record_lock(record->mutex);
+        if (record->generation != generation
+            || record->mirror_listener == SRT_INVALID_SOCK || record->opened
+            || !record->members.empty()) {
+            return;
+        }
+        record->closed = true;
+        retired = record;
+        groups_.erase(entry);
     }
-    const auto record = entry->second;
-    std::lock_guard record_lock(record->mutex);
-    if (record->generation != generation
-        || record->mirror_listener == SRT_INVALID_SOCK
-        || record->opened || !record->members.empty()) {
-        return;
-    }
-    record->closed = true;
-    groups_.erase(entry);
 }
 
 bool GroupRegistry::add_member(SRTSOCKET group, SRTSOCKET socket,
@@ -1821,6 +1844,7 @@ void GroupRegistry::close(SRTSOCKET group) noexcept
     }
     std::vector<GroupMemberSnapshot> members;
     std::shared_ptr<DatagramChannel> receive_channel;
+    std::shared_ptr<DatagramChannel> transmit_channel;
     std::shared_ptr<DatagramChannel> control_channel;
     std::uint32_t ingress_group_id = 0;
     {
@@ -1843,6 +1867,7 @@ void GroupRegistry::close(SRTSOCKET group) noexcept
         members.swap(record->members);
         ++record->snapshot_version;
         if (record->dispatch != nullptr) {
+            transmit_channel.swap(record->dispatch->transmit_channel);
             // Leave the multicast group before the control link goes: the
             // channel's socket closes with the channel, which ends the
             // membership, and the routes are dropped so no late datagram

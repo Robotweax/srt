@@ -39,6 +39,9 @@ struct SocketRecord {
     PublicSocketOptions public_options;
     SocketOptions native_options;
     std::shared_ptr<DatagramChannel> channel;
+    // Send-only, independently bound multicast socket; dispatch groups retain it.
+    std::shared_ptr<DatagramChannel> multicast_transmit_channel;
+    IpEndpoint multicast_transmit_source {};
     std::shared_ptr<ConnectionRuntime> runtime;
     std::shared_ptr<CryptoSession> crypto;
     // Receive-direction key-material state from connection setup when no

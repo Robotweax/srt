@@ -571,7 +571,8 @@ Sender (Listener):
   ACK, NAK and unicast retransmission keep their per-receiver meaning, but
   only the first live member transmits the original, to the multicast group
   with the dispatch group handle as destination socket ID, from the
-  Listener's own socket. The others record the packet as sent. A send with
+  Listener's control socket in the legacy profile, or the dedicated socket
+  in the independent-source profile. The others record the packet as sent. A send with
   no receivers advances the stream and succeeds; `srt_recv*` is `SRT_EINVOP`.
 - The dispatch group stays `SRTS_CONNECTED` with zero members while the
   listener is open; this is the defining difference from bonding, where an
@@ -589,8 +590,10 @@ Receiver (Caller):
   extension (type `0x7f14`, magic-guarded) with the group address, the
   destination socket ID to filter on, the live sequence to start at and the
   hop limit. The receiver joins the group on a dedicated socket and routes
-  DATA packets that carry that ID and match the Listener's complete source
-  endpoint (address and UDP port) into its one member session. Control packets
+  DATA packets that carry that ID and match the expected complete source
+  endpoint (address and UDP port) into its one member session: the control
+  endpoint in the legacy profile, or the negotiated independent source.
+  Control packets
   on this multicast route are rejected before session processing, including
   liveness, key handling and reliability statistics. The unicast control link
   continues to accept control and repair DATA into the same session.
@@ -645,6 +648,36 @@ File/Stream mode, FileCC, several endpoints on a receiver, and
 interoperability with Haivision libsrt, which has no implementation of this
 type.
 
+### Independent IPv4 source (opt-in)
+
+Set `SRTO_ROBOTWEAX_MCAST_INDEPENDENT=true` on the Listener and each multicast
+receiver group before binding or connecting. On the Listener also set
+`SRTO_ROBOTWEAX_MCAST_SOURCE` to a concrete local IPv4 address and source UDP
+port, alongside the existing multicast group, interface and hop-limit options.
+A zero source port requests an ephemeral port. Bind the unicast control socket
+with the ordinary `srt_bind` API; its endpoint can differ from the multicast
+source in address, port or both. Both peers must opt in; one-sided selection
+is rejected with the group reason rather than silently downgrading.
+
+The dedicated source socket is bound at `srt_listen`, before admission. Source
+readback on the Listener then returns the actual bound port; the sender group
+also reports that endpoint. A failed source bind leaves the Listener OPENED
+and permits retrying `srt_listen`. The socket has no receive routes, scheduler
+watch or permanent thread. Dispatch groups retain its ownership independently
+of the elected member. Multicast originals and shared multicast repairs use
+this socket; control, key exchange and unicast repairs use the established
+unicast channel. Transient multicast repair send failure retains the existing
+unicast retry behavior.
+
+Configure the multicast network options before binding when this profile is
+selected. Each receiver chooses its own multicast interface or the OS default;
+the sender's interface hint is not used. The initial C API profile supports
+IPv4 control and multicast paths, one Listener and one endpoint per receiver.
+IPv6, mixed-family paths, multi-Listener accept bonds and source address/port
+rewriting are unsupported. Existing multicast mode, crypto and FEC limits
+apply. Send/readiness still follow the elected member's pacing and capacity.
+This profile provides fixed source addressing and no automatic path switching.
+
 ### Protocol engine fixed-source negotiation
 
 The C++ `HandshakeMachine` supports a default-off, required fixed-source
@@ -652,8 +685,8 @@ profile for multicast transport embedders. Both endpoints set
 `Configuration::require_multicast_source`; the Listener also supplies
 `Configuration::multicast_source`, a concrete source address and nonzero UDP
 port. It requires Live multicast membership, dispatch admission policy and no
-packet filter. The compatible C socket API does not select this profile;
-ordinary multicast sessions retain the existing announcement and source rules.
+packet filter. The C API selects this profile only through the explicit opt-in
+above; default multicast sessions retain the existing announcement and source rules.
 Native C++ consumers must rebuild after these handshake structure additions;
 the public C ABI is unchanged.
 
@@ -699,8 +732,8 @@ identity and packet admission are checked together under the runtime lock.
 IPv6 link-local sources require an explicit receiver-local interface index;
 the independently sourced profile does not use the sender's interface hint.
 
-The C API still uses the legacy source endpoint and does not enable independent
-transmission sockets through this protocol-engine profile. The
+IPv6 source/scope metadata is supported by the protocol engine; the initial
+C API independent-source profile remains IPv4-only. The
 record does not implement source switching, progress reports or unicast
 fallback. It adds no authentication or replay cryptography; the existing
 session authentication proof does not bind this source record. Source filtering

@@ -3154,10 +3154,11 @@ bool ConnectionRuntime::send_data(
         multicast_path = repeat_decision.multicast;
     }
     if (multicast_path) {
-        // One copy for every receiver: the datagram leaves on this member's
-        // channel socket towards the multicast group, so its source address
-        // is the one the receivers' control links know.
-        const auto channel = channel_.lock();
+        // All multicast originals and aggregated repairs use the same source.
+        // The independent channel is send-only and never owns member routes.
+        const auto channel = group_data_egress_.transmit_channel
+            ? group_data_egress_.transmit_channel
+            : channel_.lock();
         if (channel == nullptr) {
             if (repeat_decision.multicast) {
                 group_data_egress_.transmit->complete_repeat(

@@ -418,6 +418,7 @@ void shutdown_record(
     const auto close_generation =
         deferred_close_manager().admission_generation();
     std::shared_ptr<DatagramChannel> channel;
+    std::shared_ptr<DatagramChannel> multicast_transmitter;
     std::shared_ptr<ConnectionRuntime> runtime;
     std::shared_ptr<CryptoSession> crypto;
     std::shared_ptr<HandshakeInbox> listener_inbox;
@@ -457,6 +458,8 @@ void shutdown_record(
         record->state = SRTS_CLOSING;
         protocol_socket_id = record->protocol_socket_id;
         channel = std::move(record->channel);
+        multicast_transmitter = std::move(record->multicast_transmit_channel);
+        record->multicast_transmit_source = {};
         runtime = std::move(record->runtime);
         crypto = std::move(record->crypto);
         listener_inbox = std::move(record->listener_inbox);

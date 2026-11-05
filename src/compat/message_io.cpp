@@ -1050,6 +1050,7 @@ int send_group_message_implementation(
     bool dispatch_sender = false;
     IpEndpoint dispatch_destination {};
     std::shared_ptr<DispatchTransmitState> dispatch_transmit;
+    std::shared_ptr<DatagramChannel> dispatch_channel;
     {
         std::lock_guard lock(group->mutex);
         if (group->closed) {
@@ -1070,6 +1071,7 @@ int send_group_message_implementation(
         if (dispatch_sender) {
             dispatch_destination = group->dispatch->multicast_group;
             dispatch_transmit = group->dispatch->transmit;
+            dispatch_channel = group->dispatch->transmit_channel;
         }
     }
     const auto deadline = io_deadline(timeout);
@@ -1149,6 +1151,7 @@ int send_group_message_implementation(
                     .destination_socket_id =
                         static_cast<std::uint32_t>(group->handle),
                     .transmit = dispatch_transmit,
+                    .transmit_channel = dispatch_channel,
                     .repeat_threshold = repeat_threshold,
                     .member_id = member.id,
                 };

@@ -235,7 +235,8 @@ typedef enum SRT_SOCKOPT {
     SRTO_ROBOTWEAX_MCAST_GROUP = 0x01000011,
     /** Pre-bind/listen on either side: sockaddr selecting the local
      * interface for multicast; IPv4 by address, IPv6 by sin6_scope_id. The
-     * Listener announces it as a hint; the Caller's own value wins. */
+     * legacy Listener announces a hint; the Caller's own value wins. The
+     * independent profile uses only receiver-local selection or OS default. */
     SRTO_ROBOTWEAX_MCAST_IFACE = 0x01000012,
     /** Listener, pre-listen: int32_t hop limit for multicast payload,
      * 0..255, default 1 (link-local). */
@@ -248,7 +249,7 @@ typedef enum SRT_SOCKOPT {
     SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD = 0x01000014,
     /** Dispatch group, read-only: ROBOTWEAX_SRT_MCAST_STATS_V1 for the
      * multicast path. A sender reports what left on it; a receiver reports
-     * what its multicast socket received and dropped before decoding. */
+     * decoded multicast route observations and source rejections. */
     SRTO_ROBOTWEAX_MCAST_STATS = 0x01000015,
     /** Sender-local FEC parity policy, int32_t, PRE: ROBOTWEAX_SRT_FECPOLICY_ALWAYS
      * (default, every ready repair packet is sent) or
@@ -265,6 +266,14 @@ typedef enum SRT_SOCKOPT {
      * receiver can detect a lost tail (TCP TLP, RFC 8985). Accepted only
      * together with SRTO_ROBOTWEAX_FECPOLICY = ARQFIRST. */
     SRTO_ROBOTWEAX_TAILPROBE = 0x01000017,
+    /** PRE-bind bool, default false. Require bilateral fixed-source multicast
+     * negotiation. IPv4 multicast Listener or single-endpoint receiver group.
+     * Listener also requires MCAST_SOURCE and MCAST_GROUP. No automatic fallback. */
+    SRTO_ROBOTWEAX_MCAST_INDEPENDENT = 0x01000018,
+    /** Listener PRE-bind sockaddr_in: concrete multicast transmit source;
+     * port zero selects an ephemeral port at listen. Readback after listen
+     * returns the bound source. Requires MCAST_INDEPENDENT. */
+    SRTO_ROBOTWEAX_MCAST_SOURCE = 0x01000019,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif

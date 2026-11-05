@@ -1316,6 +1316,63 @@ void set_key_material_state_response(
     return listener.state == SRTS_LISTENING;
 }
 
+// Called with only the individual SocketRecord mutex held. No registry/group
+// lock is held during native socket setup. This socket is send-only: no watch,
+// route or scheduler task is installed on it.
+[[nodiscard]] int prepare_multicast_transmitter(SocketRecord& owner,
+    std::shared_ptr<DatagramChannel>& channel, IpEndpoint& bound) noexcept
+{
+    const auto& options = owner.public_options;
+    if (!options.multicast_independent)
+        return options.multicast_source_set ? fail(SRT_EINVPARAM) : 0;
+    if (!options.multicast_group_set || !options.multicast_source_set
+        || !options.message_api || !options.tsbpd_mode
+        || options.transmission_type != SRTT_LIVE
+        || owner.native_options.congestion_controller()
+            != CongestionController::live
+        || owner.native_options.packet_filter_configuration().enabled)
+        return fail(SRT_EINVPARAM);
+    // Independent IPv6/mixed-family paths retain a separate qualification gate.
+    if (!options.multicast_source.is_ipv4()
+        || !options.multicast_group.is_ipv4()
+        || !owner.local_endpoint.is_ipv4())
+        return fail(SRT_EINVOP);
+    if (options.multicast_interface_set
+        && !options.multicast_interface.is_ipv4())
+        return fail(SRT_EINVPARAM);
+    UdpSocket transmit {IpAddressFamily::ipv4};
+    if (!transmit.valid())
+        return fail(SRT_ESOCKFAIL, transmit.open_system_error());
+    auto interface = options.multicast_interface_set
+        ? options.multicast_interface
+        : options.multicast_source;
+    interface.port = 0;
+    if (transmit.set_send_buffer_size(options.udp_send_buffer_bytes)
+            != Error::none
+        || transmit.set_multicast_time_to_live(options.multicast_time_to_live)
+            != Error::none
+        || transmit.set_multicast_loopback(true) != Error::none
+        || transmit.set_multicast_interface(interface) != Error::none
+        || transmit.bind(options.multicast_source) != Error::none)
+        return fail(SRT_ESOCKFAIL, transmit.last_system_error());
+    const auto tos =
+        transmit.set_ip_type_of_service(options.ip_type_of_service);
+    if (tos != Error::none
+        && (tos != Error::unsupported || options.ip_type_of_service_explicit))
+        return fail(tos == Error::unsupported ? SRT_EINVOP : SRT_ESOCKFAIL,
+            transmit.last_system_error());
+    const auto local = transmit.local_endpoint();
+    if (!local)
+        return fail(SRT_ESOCKFAIL, local.system_error);
+    try {
+        channel = std::make_shared<DatagramChannel>(std::move(transmit));
+    } catch (...) {
+        return fail(SRT_ENOBUF);
+    }
+    bound = local.endpoint;
+    return 0;
+}
+
 } // namespace
 
 int listen_socket(
@@ -1329,6 +1386,8 @@ int listen_socket(
     }
 
     std::shared_ptr<DatagramChannel> channel;
+    std::shared_ptr<DatagramChannel> multicast_transmitter;
+    IpEndpoint multicast_source;
     std::shared_ptr<HandshakeInbox> inbox;
     std::shared_ptr<ListenerRuntime> listener_runtime;
     {
@@ -1364,6 +1423,10 @@ int listen_socket(
             if (socket->channel == nullptr || !socket->has_local_endpoint) {
                 return fail(SRT_EUNBOUNDSOCK);
             }
+            if (prepare_multicast_transmitter(
+                    *socket, multicast_transmitter, multicast_source)
+                == SRT_ERROR)
+                return SRT_ERROR;
             if (!generate_listener_cookie_secret(
                     socket->listener_cookie_secret)) {
                 return fail(SRT_ESECFAIL);
@@ -1389,6 +1452,8 @@ int listen_socket(
             socket->listener_inbox = inbox;
             socket->listener_runtime = listener_runtime;
             socket->listen_backlog = backlog;
+            socket->multicast_transmit_channel = multicast_transmitter;
+            socket->multicast_transmit_source = multicast_source;
             socket->state = SRTS_LISTENING;
             break;
         case SRTS_LISTENING:
@@ -1408,6 +1473,8 @@ int listen_socket(
         listener_runtime->close();
         std::lock_guard lock(socket->mutex);
         if (socket->state == SRTS_LISTENING) {
+            socket->multicast_transmit_channel.reset();
+            socket->multicast_transmit_source = {};
             socket->listener_inbox.reset();
             socket->listener_runtime.reset();
             default_crypto_provider().secure_erase(
@@ -1425,6 +1492,8 @@ int listen_socket(
         std::lock_guard lock(socket->mutex);
         was_closed = socket->state == SRTS_CLOSED;
         if (socket->state == SRTS_LISTENING) {
+            socket->multicast_transmit_channel.reset();
+            socket->multicast_transmit_source = {};
             socket->listener_inbox.reset();
             socket->listener_runtime.reset();
             default_crypto_provider().secure_erase(
@@ -3971,6 +4040,12 @@ int connect_socket(
             return fail(SRT_ESECFAIL);
         }
         const auto& path_options = socket->public_options;
+        if (path_options.multicast_source_set
+            || (path_options.multicast_independent
+                && (socket->group_id == SRT_INVALID_SOCK
+                    || socket->group_type != ROBOTWEAX_SRT_GTYPE_MULTICAST
+                    || path_options.rendezvous || !peer.is_ipv4())))
+            return fail(SRT_EINVPARAM);
         // A Caller states what it requires; only a Listener may accept
         // either form of a peer.
         if (path_options.standby_rtt_if_offered
@@ -4253,6 +4328,8 @@ int connect_socket(
                                             socket->group_type
                     == ROBOTWEAX_SRT_GTYPE_MULTICAST},
         };
+        setup.configuration.require_multicast_source =
+            socket->public_options.multicast_independent;
         setup.configuration.implementation_identity =
             local_implementation_identity(
                 socket->public_options.identity_advertisement);
@@ -4434,6 +4511,9 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         channel = listener->channel;
         listener_inbox = listener->listener_inbox;
         public_options = listener->public_options;
+        if (public_options.multicast_independent)
+            public_options.multicast_source =
+                listener->multicast_transmit_source;
         native_options = listener->native_options;
         local_endpoint = listener->local_endpoint;
         effective_ipv6_only = listener->effective_ipv6_only;
@@ -4962,6 +5042,11 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         .cookie_context = &setup_context->cookie_context,
     };
 
+    configuration.hsv5.require_multicast_source =
+        public_options.multicast_independent;
+    configuration.hsv5.multicast_source = public_options.multicast_independent
+        ? public_options.multicast_source
+        : IpEndpoint {};
     configuration.hsv5.implementation_identity =
         local_implementation_identity(public_options.identity_advertisement);
     configuration.hsv5.require_standby_rtt =
@@ -5875,6 +5960,9 @@ SRTSOCKET accept_bond_sockets(
             std::shared_ptr<ListenerRuntime> runtime;
             {
                 std::lock_guard lock(socket->mutex);
+                if (listener_count > 1
+                    && socket->public_options.multicast_independent)
+                    return fail_accept(SRT_EINVOP);
                 if (socket->state == SRTS_CLOSING
                     || socket->state == SRTS_CLOSED) {
                     return fail_accept(SRT_EINVSOCK);

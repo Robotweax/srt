@@ -110,9 +110,12 @@ struct DispatchGroupState {
     std::int32_t multicast_time_to_live = 1;
     // Whether this record is the sending (Listener) side. The Caller side
     // has exactly one member and a multicast receive channel. The sender
-    // transmits from the Listener's own channel socket, so no extra socket
-    // is held here.
+    // uses the Listener's control channel in the legacy profile; the fixed-
+    // source profile retains a dedicated send-only channel below.
     bool sender = false;
+    // Independent source profile: shared Listener transmitter, group-owned
+    // reference. No receive watch, runtime routes or permanent transport thread.
+    std::shared_ptr<DatagramChannel> transmit_channel;
     // Caller side only: the channel over the socket joined to the group,
     // routing datagrams addressed to `ingress_group_id` (the Listener's
     // dispatch group handle) into the member session.

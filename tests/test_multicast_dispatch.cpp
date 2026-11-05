@@ -15,11 +15,19 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <ifaddrs.h>
+#include <net/if.h>
+#endif
 
 using namespace robotweax::srt;
 using robotweax::srt::compat::GroupCategory;
@@ -322,11 +330,16 @@ int admit_dispatch_plain(
 constexpr const char group_passphrase[] = "sixteen-char-key";
 
 [[nodiscard]] SRTSOCKET make_receiver(Peers& peers, const sockaddr_in& listener,
-    bool encrypted = false, bool aes_gcm = false, int latency_ms = 120)
+    bool encrypted = false, bool aes_gcm = false, int latency_ms = 120,
+    bool independent = false, bool asynchronous = false)
 {
     const SRTSOCKET group =
         peers.keep(srt_create_group(ROBOTWEAX_SRT_GTYPE_MULTICAST));
     REQUIRE(group != SRT_INVALID_SOCK);
+    if (independent)
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                       &independent, sizeof(independent)),
+            0);
     if (encrypted) {
         REQUIRE_EQ(srt_setsockflag(group, SRTO_PASSPHRASE, group_passphrase,
                        static_cast<int>(sizeof(group_passphrase) - 1U)),
@@ -352,9 +365,22 @@ constexpr const char group_passphrase[] = "sixteen-char-key";
     REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_MCAST_IFACE, &interface,
                    sizeof(interface)),
         0);
+    if (asynchronous) {
+        const bool nonblocking = false;
+        REQUIRE_EQ(srt_setsockflag(
+                       group, SRTO_RCVSYN, &nonblocking, sizeof(nonblocking)),
+            0);
+    }
     SRT_SOCKGROUPCONFIG endpoint = srt_prepare_endpoint(nullptr,
         reinterpret_cast<const sockaddr*>(&listener), sizeof(listener));
     REQUIRE(srt_connect_group(group, &endpoint, 1) != SRT_ERROR);
+    if (asynchronous) {
+        REQUIRE(wait_for_members(group, 1));
+        const bool blocking = true;
+        REQUIRE_EQ(
+            srt_setsockflag(group, SRTO_RCVSYN, &blocking, sizeof(blocking)),
+            0);
+    }
     return group;
 }
 
@@ -395,6 +421,9 @@ struct StreamScenario {
     bool aes_gcm = false;
     bool fill_accept_backlog = false;
     bool multicast_shutdown_probe = false;
+    bool independent = false;
+    std::array<std::uint8_t, 4> control_address {127, 0, 0, 1};
+    bool asynchronous_receiver = false;
 };
 
 void run_dispatch_stream(const StreamScenario& scenario)
@@ -409,6 +438,15 @@ void run_dispatch_stream(const StreamScenario& scenario)
         ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
     const sockaddr_in interface = ipv4_sockaddr({127, 0, 0, 1}, 0);
     const std::int32_t hops = 0;
+    if (scenario.independent) {
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                       &scenario.independent, sizeof(scenario.independent)),
+            0);
+        const auto source = ipv4_sockaddr({127, 0, 0, 1}, 0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE,
+                       &source, sizeof(source)),
+            0);
+    }
     if (scenario.encrypted) {
         REQUIRE_EQ(srt_setsockflag(listener, SRTO_PASSPHRASE, group_passphrase,
                        static_cast<int>(sizeof(group_passphrase) - 1U)),
@@ -448,7 +486,7 @@ void run_dispatch_stream(const StreamScenario& scenario)
         0);
     REQUIRE_EQ(readback.sin_port, group_address.sin_port);
     REQUIRE_EQ(srt_listen_callback(listener, admit_dispatch, &admissions), 0);
-    sockaddr_in bound = ipv4_sockaddr({127, 0, 0, 1}, 0);
+    sockaddr_in bound = ipv4_sockaddr(scenario.control_address, 0);
     REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&bound),
                    sizeof(bound)),
         0);
@@ -458,18 +496,36 @@ void run_dispatch_stream(const StreamScenario& scenario)
                    listener, reinterpret_cast<sockaddr*>(&bound), &bound_size),
         0);
 
+    if (scenario.independent) {
+        sockaddr_in source {};
+        int source_size = sizeof(source);
+        REQUIRE_EQ(srt_getsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE,
+                       &source, &source_size),
+            0);
+        REQUIRE(source.sin_port != 0);
+        REQUIRE(source.sin_port != bound.sin_port
+            || source.sin_addr.s_addr != bound.sin_addr.s_addr);
+        const auto record = SocketRegistry::instance().find(listener);
+        std::lock_guard lock(record->mutex);
+        REQUIRE(record->multicast_transmit_channel);
+        REQUIRE(record->multicast_transmit_channel != record->channel);
+        REQUIRE(!record->multicast_transmit_channel->running());
+    }
     // Three receivers join; srt_accept yields the sender group once.
     const SRTSOCKET receiver_a =
-        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm, 120,
+            scenario.independent, scenario.asynchronous_receiver);
     SRTSOCKET sender = SRT_INVALID_SOCK;
     if (!scenario.fill_accept_backlog) {
         sender = peers.keep(srt_accept(listener, nullptr, nullptr));
         REQUIRE(sender != SRT_INVALID_SOCK);
     }
     const SRTSOCKET receiver_b =
-        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm, 120,
+            scenario.independent, scenario.asynchronous_receiver);
     const SRTSOCKET receiver_c =
-        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm, 120,
+            scenario.independent, scenario.asynchronous_receiver);
     if (scenario.fill_accept_backlog) {
         const auto listener_record = SocketRegistry::instance().find(listener);
         REQUIRE(listener_record);
@@ -501,6 +557,8 @@ void run_dispatch_stream(const StreamScenario& scenario)
         std::lock_guard lock(record->mutex);
         REQUIRE(record->category == GroupCategory::dispatch);
         REQUIRE(record->dispatch->sender);
+        REQUIRE_EQ(record->dispatch->transmit_channel != nullptr,
+            scenario.independent);
         REQUIRE_EQ(record->dispatch->admission_key, std::string {"camera-1"});
         REQUIRE_EQ(record->members.size(), 3U);
         REQUIRE_EQ(record->admission_domain, 7U);
@@ -547,6 +605,20 @@ void run_dispatch_stream(const StreamScenario& scenario)
             REQUIRE(ingress->routed_datagrams() != 0);
             REQUIRE_EQ(srt_getsockstate(receiver), SRTS_CONNECTED);
         }
+    }
+    if (scenario.independent) {
+        sockaddr_in listener_source {}, group_source {};
+        int source_size = sizeof(listener_source);
+        REQUIRE_EQ(srt_getsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE,
+                       &listener_source, &source_size),
+            0);
+        source_size = sizeof(group_source);
+        REQUIRE_EQ(srt_getsockflag(sender, SRTO_ROBOTWEAX_MCAST_SOURCE,
+                       &group_source, &source_size),
+            0);
+        REQUIRE_EQ(listener_source.sin_port, group_source.sin_port);
+        REQUIRE_EQ(
+            listener_source.sin_addr.s_addr, group_source.sin_addr.s_addr);
     }
     // The sender does not receive; a receiver does not send.
     std::array<char, 16> scratch {};
@@ -628,7 +700,8 @@ void run_dispatch_stream(const StreamScenario& scenario)
     expect_messages(receiver_c, first_batch, second_batch);
 
     const SRTSOCKET receiver_d =
-        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm, 120,
+            scenario.independent, scenario.asynchronous_receiver);
     REQUIRE(wait_for_members(sender, 3, scenario.encrypted));
     REQUIRE(wait_for_members(receiver_d, 1));
     // Let the joiner's TSBPD clock settle (and, encrypted, its initial key
@@ -667,7 +740,8 @@ void run_dispatch_stream(const StreamScenario& scenario)
                 static_cast<int>(idle.size()));
         }
         const auto joined =
-            make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm);
+            make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm,
+                120, scenario.independent, scenario.asynchronous_receiver);
         REQUIRE(wait_for_members(sender, 1, scenario.encrypted));
         REQUIRE(wait_for_members(joined, 1));
         const auto resumed = message(1000 + cycle);
@@ -677,6 +751,21 @@ void run_dispatch_stream(const StreamScenario& scenario)
         expect_messages(joined, 1000 + cycle, 1);
         peers.drop(joined);
         REQUIRE(wait_for_members(sender, 0));
+    }
+    if (scenario.independent) {
+        std::weak_ptr<robotweax::srt::compat::DatagramChannel> source;
+        {
+            const auto record = SocketRegistry::instance().find(listener);
+            std::lock_guard lock(record->mutex);
+            source = record->multicast_transmit_channel;
+        }
+        peers.drop(sender);
+        peers.drop(listener);
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds {2};
+        while (!source.expired() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds {2});
+        REQUIRE(source.expired());
     }
 }
 
@@ -692,6 +781,7 @@ struct DropOneOriginal {
     std::atomic<int> multicast_data {0};
     std::atomic<int> multicast_repeats {0};
     bool lose_multicast_repair = false;
+    bool transient_multicast_repair = false;
 };
 
 UdpIoResult drop_one_original(
@@ -704,6 +794,15 @@ UdpIoResult drop_one_original(
             ++hook.multicast_data;
             if (packet.packet.data.retransmitted) {
                 ++hook.multicast_repeats;
+                if (hook.transient_multicast_repair) {
+#if defined(_WIN32)
+                    return {.error = Error::would_block,
+                        .system_error = WSAEWOULDBLOCK};
+#else
+                    return {
+                        .error = Error::would_block, .system_error = EAGAIN};
+#endif
+                }
                 if (hook.lose_multicast_repair) {
                     return {.bytes_transferred = bytes.size()};
                 }
@@ -720,7 +819,8 @@ UdpIoResult drop_one_original(
 
 } // namespace
 
-void run_dispatch_shared_loss(bool lose_multicast_repair)
+void run_dispatch_shared_loss(bool lose_multicast_repair,
+    bool independent = false, bool transient_multicast_repair = false)
 {
     SKIP_UNLESS(
         loopback_multicast_available(), "no loopback multicast on this host");
@@ -731,6 +831,15 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
         ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
     const sockaddr_in interface = ipv4_sockaddr({127, 0, 0, 1}, 0);
     const std::int32_t hops = 0;
+    if (independent) {
+        const auto source = ipv4_sockaddr({127, 0, 0, 1}, 0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                       &independent, sizeof(independent)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE,
+                       &source, sizeof(source)),
+            0);
+    }
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP,
                    &group_address, sizeof(group_address)),
         0);
@@ -752,11 +861,13 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
         0);
     DropOneOriginal hook;
     hook.lose_multicast_repair = lose_multicast_repair;
+    hook.transient_multicast_repair = transient_multicast_repair;
     {
         const auto record = SocketRegistry::instance().find(listener);
         REQUIRE(record != nullptr);
         std::lock_guard lock(record->mutex);
-        hook.channel = record->channel;
+        hook.channel =
+            independent ? record->multicast_transmit_channel : record->channel;
     }
     REQUIRE(hook.channel != nullptr);
     hook.multicast = {.address = {239, 255, 133, 11}, .port = multicast_port};
@@ -769,11 +880,14 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
         }
     } unhook {hook};
 
-    const SRTSOCKET receiver_a = make_receiver(peers, bound);
+    const SRTSOCKET receiver_a =
+        make_receiver(peers, bound, false, false, 120, independent);
     const SRTSOCKET sender = peers.keep(srt_accept(listener, nullptr, nullptr));
     REQUIRE(sender != SRT_INVALID_SOCK);
-    const SRTSOCKET receiver_b = make_receiver(peers, bound);
-    const SRTSOCKET receiver_c = make_receiver(peers, bound);
+    const SRTSOCKET receiver_b =
+        make_receiver(peers, bound, false, false, 120, independent);
+    const SRTSOCKET receiver_c =
+        make_receiver(peers, bound, false, false, 120, independent);
     REQUIRE(wait_for_members(sender, 3));
     for (const SRTSOCKET receiver : {receiver_a, receiver_b, receiver_c}) {
         REQUIRE(wait_for_members(receiver, 1));
@@ -830,13 +944,14 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
         transmit = record->dispatch->transmit;
     }
     REQUIRE(transmit != nullptr);
-    REQUIRE_EQ(transmit->multicast_repeats(), 1U);
+    const std::uint64_t accepted_repeats = transient_multicast_repair ? 0U : 1U;
+    REQUIRE_EQ(transmit->multicast_repeats(), accepted_repeats);
     REQUIRE_EQ(hook.multicast_repeats.load(), 1);
     if (!lose_multicast_repair) {
         REQUIRE(transmit->skipped_repeats() <= 1U);
     }
-    REQUIRE_EQ(
-        transmit->multicast_packets(), static_cast<std::uint64_t>(count + 1));
+    REQUIRE_EQ(transmit->multicast_packets(),
+        static_cast<std::uint64_t>(count) + accepted_repeats);
     REQUIRE_EQ(hook.multicast_data.load(), count + 1);
 
     // The same counters through the public read-only option, on the sender
@@ -849,8 +964,9 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
         0);
     REQUIRE_EQ(stats.abi_version, ROBOTWEAX_SRT_MCAST_STATS_VERSION);
     REQUIRE_EQ(stats.member_count, 3U);
-    REQUIRE_EQ(stats.mcast_pkt_sent, static_cast<std::uint64_t>(count + 1));
-    REQUIRE_EQ(stats.mcast_pkt_rexmit, 1U);
+    REQUIRE_EQ(stats.mcast_pkt_sent,
+        static_cast<std::uint64_t>(count) + accepted_repeats);
+    REQUIRE_EQ(stats.mcast_pkt_rexmit, accepted_repeats);
     REQUIRE_EQ(stats.unicast_rexmit_skipped, transmit->skipped_repeats());
     REQUIRE(stats.mcast_byte_sent > 0U);
     REQUIRE_EQ(stats.mcast_pkt_received, 0U);
@@ -895,7 +1011,8 @@ void run_dispatch_shared_loss(bool lose_multicast_repair)
     // count originals minus the dropped one, plus the multicast repeat and
     // the stray datagram.
     REQUIRE_EQ(a.mcast_pkt_received,
-        static_cast<std::uint64_t>(count + (lose_multicast_repair ? 0 : 1)));
+        static_cast<std::uint64_t>(count
+            + ((lose_multicast_repair || transient_multicast_repair) ? 0 : 1)));
     REQUIRE_EQ(a.mcast_pkt_filtered, 1U);
     // The stray datagram never reached the application.
     std::array<char, 64> none {};
@@ -1283,4 +1400,280 @@ TEST(investigation_hybrid_wire_gcm)
 TEST(investigation_hybrid_one_receiver_falls_back_while_other_keeps_multicast)
 {
     investigate_hybrid_wire(false, false, true);
+}
+
+TEST(multicast_dispatch_independent_source_port_distributes_and_rejoins)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    run_dispatch_stream({.independent = true});
+}
+
+TEST(multicast_dispatch_independent_source_ip_distributes_and_rejoins)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    std::optional<std::array<std::uint8_t, 4>> address;
+#if !defined(_WIN32)
+    ifaddrs* interfaces = nullptr;
+    if (getifaddrs(&interfaces) == 0) {
+        std::unique_ptr<ifaddrs, decltype(&freeifaddrs)> cleanup {
+            interfaces, freeifaddrs};
+        for (auto* entry = interfaces; entry != nullptr;
+            entry = entry->ifa_next) {
+            if (entry->ifa_addr == nullptr
+                || entry->ifa_addr->sa_family != AF_INET
+                || (entry->ifa_flags & IFF_UP) == 0)
+                continue;
+            std::array<std::uint8_t, 4> candidate {};
+            std::memcpy(candidate.data(),
+                &reinterpret_cast<const sockaddr_in*>(entry->ifa_addr)
+                    ->sin_addr,
+                4);
+            if (candidate[0] == 0 || candidate[0] == 127)
+                continue;
+            UdpSocket probe;
+            if (probe.bind(IpEndpoint {.address = {candidate[0], candidate[1],
+                                           candidate[2], candidate[3]}})
+                == Error::none) {
+                address = candidate;
+                break;
+            }
+        }
+    }
+#endif
+    SKIP_UNLESS(
+        address.has_value(), "no second assigned IPv4 address available");
+    // Control stays on an already assigned local address. Multicast remains
+    // on loopback with hop limit zero; no host interface is changed.
+    run_dispatch_stream({.independent = true, .control_address = *address});
+}
+
+TEST(multicast_dispatch_independent_ctr_preserves_group_rotations)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    run_dispatch_stream({.encrypted = true,
+        .first_batch = 200,
+        .second_batch = 40,
+        .third_batch = 40,
+        .refresh_rate = 64,
+        .preannouncement = 24,
+        .send_gap = std::chrono::microseconds {500},
+        .independent = true});
+}
+
+#ifdef ENABLE_AEAD_API_PREVIEW
+TEST(multicast_dispatch_independent_gcm_preserves_group_rotations)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    run_dispatch_stream({.encrypted = true,
+        .first_batch = 120,
+        .second_batch = 20,
+        .third_batch = 20,
+        .refresh_rate = 64,
+        .preannouncement = 24,
+        .send_gap = std::chrono::microseconds {500},
+        .aes_gcm = true,
+        .independent = true});
+}
+#endif
+
+TEST(multicast_dispatch_independent_shared_loss_uses_dedicated_repair_source)
+{
+    run_dispatch_shared_loss(false, true);
+}
+
+TEST(multicast_dispatch_independent_lost_multicast_repair_retries_on_unicast)
+{
+    run_dispatch_shared_loss(true, true);
+}
+
+TEST(multicast_dispatch_independent_options_fail_closed_and_freeze_at_bind)
+{
+    Peers peers;
+    const bool enabled = true;
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP}) {
+        const auto group = peers.keep(srt_create_group(type));
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                       &enabled, sizeof(enabled)),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    }
+    const auto receiver =
+        peers.keep(srt_create_group(ROBOTWEAX_SRT_GTYPE_MULTICAST));
+    const auto source = ipv4_sockaddr({127, 0, 0, 1}, 0);
+    REQUIRE_EQ(srt_setsockflag(receiver, SRTO_ROBOTWEAX_MCAST_SOURCE, &source,
+                   sizeof(source)),
+        SRT_ERROR);
+    const auto listener = peers.keep(srt_create_socket());
+    bool actual = true;
+    int size = sizeof(actual);
+    REQUIRE_EQ(srt_getsockflag(
+                   listener, SRTO_ROBOTWEAX_MCAST_INDEPENDENT, &actual, &size),
+        0);
+    REQUIRE(!actual);
+    sockaddr_in6 ipv6 {};
+    ipv6.sin6_family = AF_INET6;
+    ipv6.sin6_addr.s6_addr[15] = 1;
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_ROBOTWEAX_MCAST_SOURCE, &ipv6, sizeof(ipv6)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    const auto caller = peers.keep(srt_create_socket());
+    REQUIRE_EQ(srt_setsockflag(caller, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                   &enabled, sizeof(enabled)),
+        0);
+    const auto peer = ipv4_sockaddr({127, 0, 0, 1}, 9000);
+    REQUIRE_EQ(srt_connect(caller, reinterpret_cast<const sockaddr*>(&peer),
+                   sizeof(peer)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getsockstate(caller), SRTS_INIT);
+    const auto any = ipv4_sockaddr({0, 0, 0, 0}, 0);
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_ROBOTWEAX_MCAST_SOURCE, &any, sizeof(any)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                   &enabled, sizeof(enabled)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE, &source,
+                   sizeof(source)),
+        0);
+    REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&source),
+                   sizeof(source)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                   &enabled, sizeof(enabled)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EBOUNDSOCK);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE, &source,
+                   sizeof(source)),
+        SRT_ERROR);
+    // Incomplete profile: no multicast destination. No transmitter is published.
+    REQUIRE_EQ(srt_listen(listener, 1), SRT_ERROR);
+    REQUIRE_EQ(srt_getsockstate(listener), SRTS_OPENED);
+    const auto record = SocketRegistry::instance().find(listener);
+    std::lock_guard lock(record->mutex);
+    REQUIRE(!record->multicast_transmit_channel);
+}
+
+TEST(
+    multicast_dispatch_independent_bind_failure_rolls_back_and_close_releases_source)
+{
+    Peers peers;
+    auto occupied = std::make_unique<UdpSocket>();
+    REQUIRE_EQ(occupied->bind(IpEndpoint::loopback()), Error::none);
+    const auto endpoint = occupied->local_endpoint();
+    REQUIRE(endpoint);
+    const auto source = ipv4_sockaddr({127, 0, 0, 1}, endpoint.endpoint.port);
+    const auto listener = peers.keep(srt_create_socket());
+    const bool enabled = true;
+    const auto group = ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
+    const auto local = ipv4_sockaddr({127, 0, 0, 1}, 0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                   &enabled, sizeof(enabled)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE, &source,
+                   sizeof(source)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_ROBOTWEAX_MCAST_GROUP, &group, sizeof(group)),
+        0);
+    REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&local),
+                   sizeof(local)),
+        0);
+    REQUIRE_EQ(srt_listen(listener, 1), SRT_ERROR);
+    REQUIRE_EQ(srt_getsockstate(listener), SRTS_OPENED);
+    occupied.reset();
+    REQUIRE_EQ(srt_listen(listener, 1), 0);
+    const std::array bonded {listener, listener};
+    REQUIRE_EQ(
+        srt_accept_bond(bonded.data(), static_cast<int>(bonded.size()), 0),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    std::weak_ptr<robotweax::srt::compat::DatagramChannel> channel;
+    {
+        const auto record = SocketRegistry::instance().find(listener);
+        std::lock_guard lock(record->mutex);
+        channel = record->multicast_transmit_channel;
+        REQUIRE(!channel.expired());
+    }
+    peers.drop(listener);
+    REQUIRE(channel.expired());
+    UdpSocket rebound;
+    REQUIRE_EQ(rebound.bind(endpoint.endpoint), Error::none);
+}
+
+TEST(multicast_dispatch_independent_one_sided_selection_is_rejected)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    for (const bool listener_requires : {false, true}) {
+        Peers peers;
+        AdmissionLog admissions;
+        const auto listener = peers.keep(srt_create_socket());
+        const auto group = ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
+        auto local = ipv4_sockaddr({127, 0, 0, 1}, 0);
+        const std::int32_t hops = 0;
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP, &group,
+                       sizeof(group)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE, &local,
+                       sizeof(local)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(
+                       listener, SRTO_ROBOTWEAX_MCAST_TTL, &hops, sizeof(hops)),
+            0);
+        if (listener_requires) {
+            REQUIRE_EQ(
+                srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                    &listener_requires, sizeof(listener_requires)),
+                0);
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE,
+                           &local, sizeof(local)),
+                0);
+        }
+        const bool nonblocking = false;
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVSYN, &nonblocking,
+                       sizeof(nonblocking)),
+            0);
+        REQUIRE_EQ(
+            srt_listen_callback(listener, admit_dispatch, &admissions), 0);
+        REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&local),
+                       sizeof(local)),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 4), 0);
+        int size = sizeof(local);
+        REQUIRE_EQ(srt_getsockname(
+                       listener, reinterpret_cast<sockaddr*>(&local), &size),
+            0);
+        const auto receiver =
+            peers.keep(srt_create_group(ROBOTWEAX_SRT_GTYPE_MULTICAST));
+        const bool caller_requires = !listener_requires;
+        REQUIRE_EQ(srt_setsockflag(receiver, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                       &caller_requires, sizeof(caller_requires)),
+            0);
+        const std::int32_t timeout = 1000;
+        REQUIRE_EQ(srt_setsockflag(
+                       receiver, SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+            0);
+        auto endpoint = srt_prepare_endpoint(
+            nullptr, reinterpret_cast<const sockaddr*>(&local), sizeof(local));
+        REQUIRE_EQ(srt_connect_group(receiver, &endpoint, 1), SRT_ERROR);
+        REQUIRE_EQ(srt_accept(listener, nullptr, nullptr), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+    }
+}
+
+TEST(multicast_dispatch_independent_async_receiver_negotiates_source)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    run_dispatch_stream({.independent = true, .asynchronous_receiver = true});
+}
+
+TEST(multicast_dispatch_independent_transient_repair_uses_unicast_retry)
+{
+    run_dispatch_shared_loss(false, true, true);
 }

@@ -610,6 +610,8 @@ public:
         // Shared by every member of one dispatch sender: the repeat tally
         // and the multicast-path counters. Null for bonding members.
         std::shared_ptr<DispatchTransmitState> transmit;
+        // Null retains legacy emission from the member's control channel.
+        std::shared_ptr<DatagramChannel> transmit_channel;
         // Distinct receivers that must repeat one sequence before it is
         // repeated once on the multicast path instead; 0 keeps every
         // repeat unicast.
