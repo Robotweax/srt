@@ -735,3 +735,25 @@ TEST(compat_group_encoder_cannot_start_behind_live_shared_schedule_frontier)
     c.initial_sequence = initial.advanced(2);
     REQUIRE(Encoder::create(c));
 }
+
+TEST(compat_group_encoder_unused_advance_cannot_abandon_a_prepared_nonce)
+{
+    for (auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        auto keys = schedule(mode);
+        auto encoder = Encoder::create(configuration(keys));
+        REQUIRE(encoder);
+        auto prepared = encoder->prepare(header(), message);
+        REQUIRE(prepared);
+        REQUIRE(!encoder->advance_unused());
+        REQUIRE_EQ(encoder->snapshot().next_sequence, initial);
+        REQUIRE_EQ(keys->frontier_position(), 0U);
+        REQUIRE(encoder->commit(prepared.packet));
+        REQUIRE(encoder->advance_unused());
+        REQUIRE_EQ(encoder->snapshot().next_sequence, initial.advanced(2));
+        REQUIRE_EQ(encoder->snapshot().unused_packets, 1U);
+        REQUIRE_EQ(keys->frontier_position(), 2U);
+        encoder->close();
+        REQUIRE(!encoder->advance_unused());
+        REQUIRE_EQ(encoder->snapshot().next_sequence, initial.advanced(2));
+    }
+}

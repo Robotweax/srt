@@ -246,6 +246,28 @@ GroupMulticastEmitter::Admission GroupMulticastEmitter::enqueue(
         nullptr, std::move(outcome_context));
 }
 
+GroupMulticastEmitter::Admission GroupMulticastEmitter::advance_unused(
+    std::uint64_t generation, SequenceNumber sequence,
+    Reservation::Commit commit, void* context, TimePoint deadline) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (state_.closed)
+        return Admission::closed;
+    if (state_.failure != Failure::none)
+        return Admission::failed;
+    if (generation != configuration_.generation)
+        return Admission::wrong_generation;
+    if (sequence != state_.accepted_next_sequence)
+        return Admission::wrong_sequence;
+    if (deadline <= now_locked())
+        return Admission::expired;
+    if (!commit || !commit(context))
+        return Admission::cancelled;
+    state_.accepted_next_sequence = sequence.next();
+    ++state_.unused_packets;
+    return Admission::accepted;
+}
+
 void GroupMulticastEmitter::pop_locked(RetiredOwners& retired,
     std::size_t& retired_count, Disposition disposition, TimePoint completed_at,
     Failure failure, int system_error) noexcept

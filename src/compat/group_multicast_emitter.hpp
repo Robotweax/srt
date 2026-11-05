@@ -110,6 +110,7 @@ public:
         std::optional<SequenceNumber> last_submitted_sequence;
         std::optional<TimePoint> next_wakeup;
         std::uint64_t accepted_packets = 0;
+        std::uint64_t unused_packets = 0;
         std::uint64_t submitted_packets = 0;
         std::uint64_t submitted_bytes = 0;
         std::uint64_t send_attempts = 0;
@@ -194,6 +195,11 @@ public:
     [[nodiscard]] Reservation reserve(std::uint64_t generation,
         SequenceNumber sequence, TimePoint deadline,
         bool report = false) noexcept;
+    // No DATA or mailbox slot for an empty-recipient frame. The callback
+    // commits the encoder's matching unused position under this cursor lock.
+    [[nodiscard]] Admission advance_unused(std::uint64_t generation,
+        SequenceNumber, Reservation::Commit, void*,
+        TimePoint deadline = TimePoint::max()) noexcept;
     // A reported reservation also reserves one terminal mailbox slot before
     // sealing; allocate its context before sealing too. Publish requires a
     // non-null outcome_context. At most capacity

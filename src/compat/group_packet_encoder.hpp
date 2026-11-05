@@ -97,6 +97,7 @@ public:
         std::size_t live_packets = 0;
         std::size_t cached_generations = 0;
         std::uint64_t committed_packets = 0;
+        std::uint64_t unused_packets = 0;
         bool prepared = false;
         bool closed = false;
         Error failure = Error::none;
@@ -121,6 +122,8 @@ public:
     [[nodiscard]] Result prepare(
         const DataHeader&, std::span<const std::byte>) noexcept;
     [[nodiscard]] bool commit(const std::shared_ptr<const Packet>&) noexcept;
+    // Empty-recipient timeline advance, with no seal or pending preparation.
+    [[nodiscard]] bool advance_unused() noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
     void close() noexcept;
 

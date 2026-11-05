@@ -691,3 +691,51 @@ TEST(
                    generation, invalid, f.now + 1s, std::make_shared<int>(1)),
         Admission::invalid_packet);
 }
+
+TEST(
+    compat_group_emitter_unused_advance_is_atomic_with_callback_and_preserves_queued_work)
+{
+    Fixture f;
+    f.config.capacity = 1;
+    f.recreate();
+    REQUIRE_EQ(f.enqueue(1), Admission::accepted);
+    unsigned commits = 0;
+    const auto commit = +[](void* p) noexcept {
+        ++*static_cast<unsigned*>(p);
+        return true;
+    };
+    const auto reject = +[](void*) noexcept {
+        return false;
+    };
+    REQUIRE_EQ(f.emitter->advance_unused(
+                   generation + 1, SequenceNumber {2}, commit, &commits),
+        Admission::wrong_generation);
+    REQUIRE_EQ(f.emitter->advance_unused(
+                   generation, SequenceNumber {3}, commit, &commits),
+        Admission::wrong_sequence);
+    REQUIRE_EQ(f.emitter->advance_unused(
+                   generation, SequenceNumber {2}, commit, &commits, f.now),
+        Admission::expired);
+    REQUIRE_EQ(f.emitter->advance_unused(
+                   generation, SequenceNumber {2}, reject, nullptr),
+        Admission::cancelled);
+    REQUIRE_EQ(commits, 0U);
+    REQUIRE_EQ(
+        f.emitter->snapshot().accepted_next_sequence, SequenceNumber {2});
+    // No new queue/mailbox slot is needed, even while the packet queue is full.
+    REQUIRE_EQ(f.emitter->advance_unused(
+                   generation, SequenceNumber {2}, commit, &commits),
+        Admission::accepted);
+    REQUIRE_EQ(commits, 1U);
+    REQUIRE_EQ(
+        f.emitter->snapshot().accepted_next_sequence, SequenceNumber {3});
+    REQUIRE_EQ(f.emitter->snapshot().unused_packets, 1U);
+    f.emitter->pump_for_testing();
+    REQUIRE_EQ(f.output.attempts.size(), 1U);
+    REQUIRE_EQ(f.output.attempts[0], packet(1));
+    f.emitter->close();
+    REQUIRE_EQ(f.emitter->advance_unused(
+                   generation, SequenceNumber {3}, commit, &commits),
+        Admission::closed);
+    REQUIRE_EQ(commits, 1U);
+}

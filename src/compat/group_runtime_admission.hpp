@@ -37,6 +37,7 @@ public:
         Clock::time_point timestamp_origin {};
         IpAddressFamily family = IpAddressFamily::ipv4;
         std::shared_ptr<SharedTransmitKeySchedule> key_schedule;
+        std::optional<SequenceNumber> initial_sequence;
     };
     struct Ticket {
         Binding binding;

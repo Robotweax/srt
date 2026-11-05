@@ -286,6 +286,22 @@ GroupPacketEncoder::Snapshot GroupPacketEncoder::snapshot() const noexcept
     return result;
 }
 
+bool GroupPacketEncoder::advance_unused() noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (state_.closed || state_.failure != Error::none || pending_
+        || next_position_ == std::numeric_limits<std::uint64_t>::max())
+        return false;
+    if (configuration_.key_schedule
+        && configuration_.key_schedule->advance_unused(state_.next_sequence, 1)
+            != Error::none)
+        return false;
+    ++next_position_;
+    state_.next_sequence = state_.next_sequence.next();
+    ++state_.unused_packets;
+    return true;
+}
+
 void GroupPacketEncoder::close() noexcept
 {
     std::shared_ptr<const Packet> retired;

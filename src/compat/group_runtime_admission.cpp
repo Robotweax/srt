@@ -50,6 +50,9 @@ GroupRuntimeAdmission::Binding GroupRuntimeAdmission::bind(
             || runtime->broken_ || runtime->peer_error_pending_
             || runtime->pending_datagram_size_ != 0U
             || runtime->session_.send_buffer().sequence_span() != 0U
+            || (c.initial_sequence
+                && *c.initial_sequence
+                    != runtime->session_.send_buffer().next_sequence())
             || c.timestamp_origin != runtime->origin_
             || c.family != runtime->peer_.wire_family()
             || !runtime->options_.message_api()
