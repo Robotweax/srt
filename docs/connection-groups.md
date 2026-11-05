@@ -644,6 +644,56 @@ File/Stream mode, FileCC, several endpoints on a receiver, and
 interoperability with Haivision libsrt, which has no implementation of this
 type.
 
+### Protocol engine fixed-source negotiation
+
+The C++ `HandshakeMachine` supports a default-off, required fixed-source
+profile for multicast transport embedders. Both endpoints set
+`Configuration::require_multicast_source`; the Listener also supplies
+`Configuration::multicast_source`, a concrete source address and nonzero UDP
+port. It requires Live multicast membership, dispatch admission policy and no
+packet filter. The compatible C socket API does not select this profile;
+ordinary multicast sessions retain the existing announcement and source rules.
+Native C++ consumers must rebuild after these handshake structure additions;
+the public C ABI is unchanged.
+
+The provisional Robotweax CONFIG record `multicast_source` (`0x7f15`) is
+separate from the strict 60-byte `multicast_dispatch` record (`0x7f14`). Its
+32-byte content uses network byte order:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | Magic/version `0x52575301` |
+| 4 | 1 | Kind: 1 Caller offer, 2 Listener announcement |
+| 5 | 1 | Source family: 0 for offer, 4 for IPv4, 6 for IPv6 |
+| 6 | 2 | Source UDP port |
+| 8 | 4 | Dispatch group ID |
+| 12 | 16 | Source address, IPv4 zero padded |
+| 28 | 4 | Reserved, zero |
+
+An offer has zero port, group ID and address. An announcement names the same
+group ID as the Listener's membership and legacy dispatch announcement, with
+a source of the multicast destination's family. Wildcard, multicast,
+IPv4-mapped IPv6 and scoped source representations are rejected. IPv6 scope
+selectors are local interface configuration and never copied from this record.
+The record appears only in HSv5 CONCLUSION alongside HSREQ or HSRSP and
+multicast membership; the announcement additionally requires the legacy
+dispatch record. Duplicates, unknown versions, nonzero reserved/padding bytes,
+invalid contexts and records exceeding the handshake MTU are rejected.
+
+One-sided selection fails with the group rejection reason. A Caller requiring
+the profile rejects a legacy response without source metadata. Retries retain
+the selected source and dispatch snapshot; changed membership or source offers
+cannot renegotiate an established session. After successful admission the
+Caller reads `has_peer_multicast_source()` and `peer_multicast_source()`.
+
+This is source metadata negotiation. The embedding transport owns the
+transmitting socket and generation-checked multicast ingress binding. The
+record does not implement source switching, progress reports or unicast
+fallback. It adds no authentication or replay cryptography; the existing
+session authentication proof does not bind this source record. Source filtering
+and the shared traffic key do not uniquely authenticate a sender against other
+group-key holders. Retain the trusted-member deployment boundary.
+
 ## Compatibility limits
 
 The 0.2 group profile is limited to Live-mode Caller/Listener operation.

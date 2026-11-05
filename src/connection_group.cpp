@@ -201,4 +201,55 @@ ExtensionEncodeResult encode_multicast_dispatch(
         HandshakeExtensionType::multicast_dispatch, content, destination);
 }
 
+MulticastSourceDecodeResult decode_multicast_source(
+    const HandshakeExtensionView& extension) noexcept
+{
+    constexpr MulticastSourceDecodeResult invalid {
+        .error = Error::invalid_extension};
+    if (extension.type != HandshakeExtensionType::multicast_source
+        || extension.content.size() != multicast_source_content_size)
+        return invalid;
+    const auto* bytes = extension.content.data();
+    if (read_u32(bytes) != multicast_source_magic || read_u32(bytes + 28) != 0U)
+        return invalid;
+    const auto family = std::to_integer<unsigned>(bytes[5]);
+    MulticastSource source {.kind = static_cast<MulticastSourceKind>(
+                                std::to_integer<std::uint8_t>(bytes[4])),
+        .group_id = read_u32(bytes + 8)};
+    if (source.kind == MulticastSourceKind::offer) {
+        if (family != 0U)
+            return invalid;
+    } else {
+        if (family != 4U && family != 6U)
+            return invalid;
+        source.endpoint.family =
+            family == 4U ? IpAddressFamily::ipv4 : IpAddressFamily::ipv6;
+    }
+    source.endpoint.port = read_u16(bytes + 6);
+    for (std::size_t i = 0; i < 16; ++i)
+        source.endpoint.address[i] =
+            std::to_integer<std::uint8_t>(bytes[12 + i]);
+    return valid_multicast_source(source)
+        ? MulticastSourceDecodeResult {.source = source}
+        : invalid;
+}
+
+ExtensionEncodeResult encode_multicast_source(
+    const MulticastSource& source, std::span<std::byte> destination) noexcept
+{
+    if (!valid_multicast_source(source))
+        return {.error = Error::invalid_extension};
+    std::array<std::byte, multicast_source_content_size> bytes {};
+    write_u32(bytes.data(), multicast_source_magic);
+    bytes[4] = static_cast<std::byte>(source.kind);
+    if (source.kind == MulticastSourceKind::announcement)
+        bytes[5] = source.endpoint.is_ipv4() ? std::byte {4} : std::byte {6};
+    write_u16(bytes.data() + 6, source.endpoint.port);
+    write_u32(bytes.data() + 8, source.group_id);
+    for (std::size_t i = 0; i < 16; ++i)
+        bytes[12 + i] = static_cast<std::byte>(source.endpoint.address[i]);
+    return encode_extension(
+        HandshakeExtensionType::multicast_source, bytes, destination);
+}
+
 } // namespace robotweax::srt

@@ -177,4 +177,57 @@ struct MulticastDispatchDecodeResult {
     const MulticastDispatch& dispatch,
     std::span<std::byte> destination) noexcept;
 
+// Separately negotiated fixed multicast source. The legacy announcement above
+// remains exactly 60 bytes. IPv6 scope selection is receiver-local, not wire data.
+inline constexpr std::size_t multicast_source_content_size = 32;
+inline constexpr std::uint32_t multicast_source_magic = 0x5257'5301U;
+
+enum class MulticastSourceKind : std::uint8_t { offer = 1, announcement = 2 };
+
+struct MulticastSource {
+    MulticastSourceKind kind = MulticastSourceKind::offer;
+    std::uint32_t group_id = 0;
+    IpEndpoint endpoint {};
+
+    friend constexpr bool operator==(
+        const MulticastSource&, const MulticastSource&) noexcept = default;
+};
+
+[[nodiscard]] constexpr bool valid_multicast_source(
+    const MulticastSource& source) noexcept
+{
+    if (source.kind == MulticastSourceKind::offer)
+        return source.group_id == 0U && source.endpoint == IpEndpoint {};
+    const auto& endpoint = source.endpoint;
+    if (source.kind != MulticastSourceKind::announcement
+        || (source.group_id & group_handle_mask) == 0U
+        || (endpoint.family != IpAddressFamily::ipv4
+            && endpoint.family != IpAddressFamily::ipv6)
+        || endpoint.port == 0U || endpoint.scope_id != 0U
+        || endpoint.is_wildcard() || endpoint.is_multicast())
+        return false;
+    if (endpoint.is_ipv4()) {
+        for (std::size_t i = 4; i < endpoint.address.size(); ++i)
+            if (endpoint.address[i] != 0U)
+                return false;
+    } else if (endpoint.is_ipv4_mapped_ipv6()) {
+        return false;
+    }
+    return true;
+}
+
+struct MulticastSourceDecodeResult {
+    Error error = Error::none;
+    MulticastSource source {};
+    [[nodiscard]] constexpr explicit operator bool() const noexcept
+    {
+        return error == Error::none;
+    }
+};
+
+[[nodiscard]] MulticastSourceDecodeResult decode_multicast_source(
+    const HandshakeExtensionView& extension) noexcept;
+[[nodiscard]] ExtensionEncodeResult encode_multicast_source(
+    const MulticastSource& source, std::span<std::byte> destination) noexcept;
+
 } // namespace robotweax::srt
