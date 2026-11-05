@@ -816,8 +816,27 @@ void publish_group_member_state(SocketRecord& socket) noexcept
     if (options.multicast_interface_set
         && options.multicast_interface.family == family) {
         interface = options.multicast_interface;
-    } else if (dispatch.has_interface_hint) {
+    } else if (dispatch.has_interface_hint
+        && !protocol.has_peer_multicast_source()) {
         interface = dispatch.interface_hint;
+    }
+    std::optional<MulticastIngressConfiguration> multicast_source;
+    if (protocol.has_peer_multicast_source()) {
+        const auto& source = protocol.peer_multicast_source();
+        if (!valid_multicast_source(source)
+            || source.kind != MulticastSourceKind::announcement
+            || source.endpoint.family != family
+            || source.group_id != dispatch.group_id)
+            return fail(SRT_ECONNSETUP);
+        multicast_source = MulticastIngressConfiguration {.source = source};
+        // Scope IDs name receiver-local interfaces. Never use the sender's
+        // interface hint as a local index for the independently sourced profile.
+        if (source.endpoint.is_ipv6() && source.endpoint.address[0] == 0xfeU
+            && (source.endpoint.address[1] & 0xc0U) == 0x80U) {
+            if (interface.scope_id == 0U)
+                return fail(SRT_ECONNSETUP);
+            multicast_source->interface_scope_id = interface.scope_id;
+        }
     }
     const IpEndpoint local = family == IpAddressFamily::ipv4
         ? IpEndpoint::any(dispatch.multicast_group.port)
@@ -848,25 +867,33 @@ void publish_group_member_state(SocketRecord& socket) noexcept
             dispatch.group_id, runtime, PacketIngress::unicast_session)) {
         return fail(SRT_ECONNSETUP);
     }
-    if (!channel->register_ingress_route(
-            dispatch.group_id, runtime, PacketIngress::multicast_data)
-        || !channel->start()) {
+    if (!channel->register_ingress_route(dispatch.group_id, runtime,
+            PacketIngress::multicast_data, multicast_source)) {
+        control->unregister_connection(dispatch.group_id);
+        return fail(SRT_ECONNSETUP);
+    }
+    if (!channel->start()) {
+        channel->unregister_connection(dispatch.group_id);
         control->unregister_connection(dispatch.group_id);
         return fail(SRT_ETHREAD);
     }
+    bool attached = false;
     {
         std::lock_guard lock(record->mutex);
-        if (record->closed || record->dispatch == nullptr) {
-            channel->unregister_connection(dispatch.group_id);
-            control->unregister_connection(dispatch.group_id);
-            return fail(SRT_ESCLOSED);
+        if (!record->closed && record->dispatch != nullptr) {
+            record->dispatch->receive_channel = channel;
+            record->dispatch->control_channel = control;
+            record->dispatch->ingress_group_id = dispatch.group_id;
+            record->dispatch->multicast_group = dispatch.multicast_group;
+            record->dispatch->multicast_interface = interface;
+            record->dispatch->joined = true;
+            attached = true;
         }
-        record->dispatch->receive_channel = channel;
-        record->dispatch->control_channel = control;
-        record->dispatch->ingress_group_id = dispatch.group_id;
-        record->dispatch->multicast_group = dispatch.multicast_group;
-        record->dispatch->multicast_interface = interface;
-        record->dispatch->joined = true;
+    }
+    if (!attached) {
+        channel->unregister_connection(dispatch.group_id);
+        control->unregister_connection(dispatch.group_id);
+        return fail(SRT_ESCLOSED);
     }
     return 0;
 }

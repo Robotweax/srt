@@ -559,6 +559,11 @@ DatagramChannel::DatagramChannel(
 DatagramChannel::~DatagramChannel()
 {
     stop();
+    std::lock_guard lock(routes_mutex_);
+    for (const auto& [id, route] : routes_) {
+        if (route.multicast_binding != nullptr)
+            route.runtime->revoke_multicast_ingress(route.multicast_binding);
+    }
 }
 
 UdpIoResult DatagramChannel::send_datagram(
@@ -713,24 +718,80 @@ std::shared_ptr<ConnectionRuntime> DatagramChannel::promote_setup_connection(
 }
 
 bool DatagramChannel::register_ingress_route(std::uint32_t protocol_socket_id,
-    std::shared_ptr<ConnectionRuntime> runtime,
-    PacketIngress provenance) noexcept
+    std::shared_ptr<ConnectionRuntime> runtime, PacketIngress provenance,
+    std::optional<MulticastIngressConfiguration> multicast) noexcept
 {
-    if (protocol_socket_id == 0U || runtime == nullptr) {
+    if (protocol_socket_id == 0U || runtime == nullptr
+        || (provenance != PacketIngress::multicast_data
+            && provenance != PacketIngress::unicast_session)
+        || (multicast && provenance != PacketIngress::multicast_data))
         return false;
-    }
     try {
+        std::shared_ptr<MulticastIngressBinding> binding;
+        if (provenance == PacketIngress::multicast_data) {
+            if ((protocol_socket_id & group_handle_mask) == 0U)
+                return false;
+            IpEndpoint source = runtime->peer_;
+            if (multicast) {
+                const auto& announcement = multicast->source;
+                if (!valid_multicast_source(announcement)
+                    || announcement.kind != MulticastSourceKind::announcement
+                    || announcement.group_id != protocol_socket_id)
+                    return false;
+                source = announcement.endpoint;
+                const bool link_local = source.is_ipv6()
+                    && source.address[0] == 0xfeU
+                    && (source.address[1] & 0xc0U) == 0x80U;
+                if (link_local) {
+                    if (multicast->interface_scope_id == 0U)
+                        return false;
+                    source.scope_id = multicast->interface_scope_id;
+                } else if (multicast->interface_scope_id != 0U) {
+                    return false;
+                }
+            }
+            binding = std::make_shared<MulticastIngressBinding>();
+            binding->destination_socket_id_ = protocol_socket_id;
+            binding->source_ = source;
+        }
         std::lock_guard lock(routes_mutex_);
-        // Not linked into the poll ring (previous/next stay null) and no
-        // handshake replay key: this channel only delivers.
-        return routes_
-            .emplace(protocol_socket_id,
-                ConnectionRoute {
-                    .runtime = std::move(runtime), .provenance = provenance})
-            .second;
+        // Registration is transactional: publish the new runtime generation
+        // only after map insertion succeeds. The routing lock excludes readers.
+        const auto [route, inserted] = routes_.emplace(protocol_socket_id,
+            ConnectionRoute {.runtime = runtime,
+                .provenance = provenance,
+                .multicast_binding = binding});
+        if (!inserted)
+            return false;
+        if (binding && !runtime->activate_multicast_ingress(binding)) {
+            routes_.erase(route);
+            return false;
+        }
+        return true;
     } catch (...) {
         return false;
     }
+}
+
+bool ConnectionRuntime::activate_multicast_ingress(
+    const std::shared_ptr<MulticastIngressBinding>& binding) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (locally_closed_ || broken_ || peer_closed_
+        || multicast_ingress_generation_
+            == std::numeric_limits<std::uint64_t>::max())
+        return false;
+    binding->generation_ = ++multicast_ingress_generation_;
+    multicast_ingress_binding_ = binding;
+    return true;
+}
+
+void ConnectionRuntime::revoke_multicast_ingress(
+    const std::shared_ptr<const MulticastIngressBinding>& binding) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (multicast_ingress_binding_ == binding)
+        multicast_ingress_binding_.reset();
 }
 
 void DatagramChannel::unregister_connection(
@@ -742,6 +803,8 @@ void DatagramChannel::unregister_connection(
         return;
     }
     auto& node = route->second;
+    if (node.multicast_binding != nullptr)
+        node.runtime->revoke_multicast_ingress(node.multicast_binding);
     if (node.next == nullptr) {
         // Ingress-only route: never in the poll ring, no replay key.
         routes_.erase(route);
@@ -1334,6 +1397,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
     std::shared_ptr<DatagramInbox> setup_inbox;
     bool ingress_only = false;
     PacketIngress provenance = PacketIngress::unicast_session;
+    std::shared_ptr<const MulticastIngressBinding> multicast_binding;
     {
         std::lock_guard lock(routes_mutex_);
         const auto route = routes_.find(
@@ -1342,6 +1406,7 @@ void DatagramChannel::dispatch(const PacketView& packet,
             runtime = route->second.runtime;
             ingress_only = route->second.next == nullptr;
             provenance = route->second.provenance;
+            multicast_binding = route->second.multicast_binding;
         } else {
             const auto setup = setup_routes_.find(
                 destination_socket_id);
@@ -1353,7 +1418,8 @@ void DatagramChannel::dispatch(const PacketView& packet,
     }
     if (runtime != nullptr) {
         routed_datagrams_.fetch_add(1U, std::memory_order_relaxed);
-        runtime->process_packet(packet, peer, ingress, provenance);
+        runtime->process_packet(
+            packet, peer, ingress, provenance, multicast_binding);
         if (ingress_only) {
             // Multicast ingress does not poll this runtime. Wake its control
             // channel so newly armed ACK/NAK deadlines are serviced even if
@@ -3971,27 +4037,43 @@ void ConnectionRuntime::process_experimental_filter_locked(
 
 void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
     IpEndpoint peer, std::optional<Clock::time_point> ingress,
-    PacketIngress provenance) noexcept
+    PacketIngress provenance,
+    const std::shared_ptr<const MulticastIngressBinding>&
+        multicast_binding) noexcept
 {
-    // Multicast is DATA-only. Reject before control authentication, key
-    // processing, liveness, statistics or any reliability/clock mutation.
-    // The existing complete peer endpoint check still applies to both paths.
+    if (provenance != PacketIngress::multicast_data
+        && provenance != PacketIngress::unicast_session)
+        return;
     if (provenance == PacketIngress::multicast_data
         && incoming_packet.kind != PacketKind::data)
         return;
-    PacketView packet = incoming_packet;
-    if (peer != peer_) {
+    // Preserve the established unicast peer check; an independent multicast
+    // source is admitted only through the active route token below.
+    if (provenance == PacketIngress::unicast_session && peer != peer_) {
         foreign_peer_packets_.fetch_add(1U, std::memory_order_relaxed);
         return;
     }
-    // Admission must precede FEC state, liveness and statistics mutations.
-    if (packet.kind == PacketKind::data
-        && packet.payload.size() > maximum_data_payload_size)
+    if (incoming_packet.kind == PacketKind::data
+        && incoming_packet.payload.size() > maximum_data_payload_size)
         return;
     std::lock_guard lock(mutex_);
-    if (locally_closed_ || broken_) {
+    if (locally_closed_ || broken_)
         return;
+    if (provenance == PacketIngress::multicast_data) {
+        // Revocation, replacement and admission serialize on this mutex.
+        // Reject stale identities before even source/liveness counters change.
+        if (multicast_binding == nullptr
+            || multicast_binding != multicast_ingress_binding_
+            || multicast_binding->generation_ != multicast_ingress_generation_
+            || incoming_packet.data.destination_socket_id
+                != multicast_binding->destination_socket_id_)
+            return;
+        if (peer != multicast_binding->source_) {
+            foreign_peer_packets_.fetch_add(1U, std::memory_order_relaxed);
+            return;
+        }
     }
+    PacketView packet = incoming_packet;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
     if (options_.experimental_acp1() && packet.kind == PacketKind::control) {
         PacketView opened;
@@ -5010,6 +5092,7 @@ bool ConnectionRuntime::begin_close() noexcept
         return false;
     }
     locally_closed_ = true;
+    multicast_ingress_binding_.reset();
     terminate_standby_rtt();
     receive_ready_.notify_all();
     send_ready_.notify_all();

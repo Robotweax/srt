@@ -633,9 +633,10 @@ Repeats, pacing and readiness:
 - `SRTO_ROBOTWEAX_MCAST_STATS` (read-only, `ROBOTWEAX_SRT_MCAST_STATS_V1`)
   reports on the sender the packets and bytes sent on the multicast path, the
   repeats among them, the unicast repeats skipped and the live receiver
-  count; on a receiver the datagrams its multicast socket received and those
-  dropped before decoding because they did not carry the dispatch ID from the
-  announced sender. The libsrt-shaped group row (`srt_bstats`) keeps its
+  count; on a receiver, decoded multicast-channel datagrams and filtered
+  observations (unmatched destinations plus member source rejections).
+  Routing observations are not proof of validated multicast DATA progress or
+  recovery. The libsrt-shaped group row (`srt_bstats`) keeps its
   documented meaning and counts each message once.
 
 Not supported in this release, and refused at admission rather than
@@ -688,6 +689,18 @@ Caller reads `has_peer_multicast_source()` and `peer_multicast_source()`.
 
 This is source metadata negotiation. The embedding transport owns the
 transmitting socket and generation-checked multicast ingress binding. The
+transport adapter binds negotiated multicast DATA to that source address and
+port while keeping the established peer check on unicast control and repair.
+Each multicast route installation has a distinct member-local generation;
+removal, replacement, channel destruction and runtime close invalidate captured
+route identities before they can alter reliability, timing or liveness state.
+Failed registration leaves the previously active binding intact. Binding
+identity and packet admission are checked together under the runtime lock.
+IPv6 link-local sources require an explicit receiver-local interface index;
+the independently sourced profile does not use the sender's interface hint.
+
+The C API still uses the legacy source endpoint and does not enable independent
+transmission sockets through this protocol-engine profile. The
 record does not implement source switching, progress reports or unicast
 fallback. It adds no authentication or replay cryptography; the existing
 session authentication proof does not bind this source record. Source filtering

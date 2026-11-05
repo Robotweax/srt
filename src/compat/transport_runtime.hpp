@@ -1,6 +1,7 @@
 #pragma once
 
 #include "robotweax/srt/codec.hpp"
+#include "robotweax/srt/connection_group.hpp"
 #include "robotweax/srt/fec.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 #include "robotweax/srt/session.hpp"
@@ -46,6 +47,24 @@ struct RetainedGroupReceiveBatch;
 enum class PacketIngress : std::uint8_t {
     unicast_session,
     multicast_data,
+};
+
+// A source announcement is wire metadata; a scope selector belongs to the
+// receiver's local interface. Neither is learned from incoming datagrams.
+struct MulticastIngressConfiguration {
+    MulticastSource source;
+    std::uint32_t interface_scope_id = 0;
+};
+
+// Immutable after route publication. Shared ownership keeps an old identity
+// alive across the route lookup/admission gap, preventing address reuse (ABA).
+class MulticastIngressBinding {
+    friend class DatagramChannel;
+    friend class ConnectionRuntime;
+    friend struct MulticastIngressTestAccess;
+    std::uint64_t generation_ = 0;
+    std::uint32_t destination_socket_id_ = 0;
+    IpEndpoint source_ {};
 };
 
 struct HandshakeRouteKey {
@@ -253,9 +272,12 @@ public:
     // the socket joined to the multicast group, keyed by the dispatch group
     // ID the Listener announced. Removed with unregister_connection. Callers
     // must distinguish the dedicated multicast socket from unicast aliases.
+    // The optional source is supplied only after bilateral negotiation; absent
+    // metadata retains the legacy complete unicast-peer endpoint as source.
     [[nodiscard]] bool register_ingress_route(std::uint32_t protocol_socket_id,
-        std::shared_ptr<ConnectionRuntime> runtime,
-        PacketIngress provenance) noexcept;
+        std::shared_ptr<ConnectionRuntime> runtime, PacketIngress provenance,
+        std::optional<MulticastIngressConfiguration> multicast =
+            std::nullopt) noexcept;
     void unregister_connection(std::uint32_t protocol_socket_id) noexcept;
     [[nodiscard]] bool replay_established_handshake(
         const HandshakeEnvelope& envelope) noexcept;
@@ -325,6 +347,7 @@ public:
     }
 
 private:
+    friend struct MulticastIngressTestAccess;
     struct ScheduledWorkContext {
         std::weak_ptr<DatagramChannel> owner;
     };
@@ -423,6 +446,7 @@ private:
     struct ConnectionRoute {
         std::shared_ptr<ConnectionRuntime> runtime;
         PacketIngress provenance = PacketIngress::unicast_session;
+        std::shared_ptr<const MulticastIngressBinding> multicast_binding;
         ConnectionRoute* previous = nullptr;
         ConnectionRoute* next = nullptr;
     };
@@ -594,9 +618,9 @@ public:
     };
     void set_group_data_egress(const GroupDataEgress& egress) noexcept;
     [[nodiscard]] GroupDataEgress group_data_egress() const noexcept;
-    // Packets routed to this runtime from an address other than its peer's
-    // and dropped before any processing; a dispatch receiver reports them
-    // with its multicast-path filter count.
+    // Complete source endpoint rejections: the established unicast peer or
+    // the currently bound multicast source. Stale route identities are not
+    // counted here. Dispatch receivers fold this into their filter count.
     [[nodiscard]] std::uint64_t foreign_peer_packets() const noexcept
     {
         return foreign_peer_packets_.load(std::memory_order_relaxed);
@@ -632,7 +656,9 @@ public:
         std::int32_t timeout_milliseconds) noexcept;
     void process_packet(const PacketView& packet, IpEndpoint peer,
         std::optional<Clock::time_point> ingress = std::nullopt,
-        PacketIngress provenance = PacketIngress::unicast_session) noexcept;
+        PacketIngress provenance = PacketIngress::unicast_session,
+        const std::shared_ptr<const MulticastIngressBinding>&
+            multicast_binding = {}) noexcept;
     [[nodiscard]] bool process_handshake(
         const HandshakeMessage& message,
         IpEndpoint peer) noexcept;
@@ -681,6 +707,13 @@ public:
 private:
     friend class DatagramChannel;
     friend struct ConnectionRuntimeTestAccess;
+    friend struct MulticastIngressTestAccess;
+    // Binding operations follow routes_mutex_ -> mutex_ and never acquire
+    // channel locks or perform socket I/O while holding the runtime mutex.
+    [[nodiscard]] bool activate_multicast_ingress(
+        const std::shared_ptr<MulticastIngressBinding>& binding) noexcept;
+    void revoke_multicast_ingress(
+        const std::shared_ptr<const MulticastIngressBinding>& binding) noexcept;
     friend void close_connection_runtime(
         const std::shared_ptr<ConnectionRuntime>& runtime,
         std::shared_ptr<RuntimeWorkExecutor> executor,
@@ -846,6 +879,10 @@ private:
     std::condition_variable send_ready_;
     std::weak_ptr<DatagramChannel> channel_;
     GroupDataEgress group_data_egress_ {};
+    // One active multicast route per member. Never wrap/reuse generations;
+    // exhaustion rejects registration without disturbing the current binding.
+    std::uint64_t multicast_ingress_generation_ = 0;
+    std::shared_ptr<const MulticastIngressBinding> multicast_ingress_binding_;
     std::uint64_t last_key_material_revision_sent_ = 0;
     std::atomic<std::uint64_t> foreign_peer_packets_ {0};
     IpEndpoint peer_{};
