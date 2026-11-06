@@ -4,6 +4,18 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
+## Unreleased
+
+- Add default-off experimental pinned-key caller/listener authentication behind
+  `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH`. OpenSSL P-256 identities,
+  a passphrase and AES-GCM protect setup and traffic-key establishment; public
+  connections remain unpublished until both traffic-key directions confirm.
+  See the [draft contract and qualification evidence](docs/peer-authentication.md).
+  Independent cryptographic review is pending; groups, rendezvous and additional
+  P-256 backends are outside this first version.
+- Fix unaligned reference binding to packed Linux epoll readiness tokens,
+  exposed by the peer-authentication sanitizer job.
+
 ## 0.3.2 — Multicast and Recovery Stabilization
 
 See the [release notes](docs/release-notes-0.3.2.md) for upgrade behavior and limits.
