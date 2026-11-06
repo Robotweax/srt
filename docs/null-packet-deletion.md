@@ -531,6 +531,22 @@ This requires completion-aware peers and does not qualify deployed captures,
 physical WANs, encryption or arbitrary raw-TS receivers. The original v1
 incomplete results remain unchanged, and neither main branch was merged.
 
+
+A subsequent [full-file broadcast capture preservation experiment](https://github.com/Robotweax/srt_network_lab/blob/f20c49b233143f7a8db8e8be50a0a2fc89a069db/results/2026-11-06-npd-capture-replay/README.md)
+passed 32 cases and 16 OFF/ON pairs across two unchanged public captures.
+Original media SRT DATA savings were 68.1962% for the high-stuffing Italian
+capture and 0.0349% for the low-stuffing Freeview capture, excluding
+retransmissions, parity, completion traffic and lower-layer headers. Both
+sources already fail strict decoding; replay preserved their complete bytes
+and decoder outcomes, without claiming clean media. The short final Italian
+TS message was included. Replay uses each capture's PCR-endpoint average rate;
+Freeview's 287.903 ms deviation from a linear source schedule remains explicit.
+An initial incomplete Freeview attempt is retained with capture drops, a
+transient diagnostic mismatch and a router-readiness race. A dedicated capture
+buffer and atomic readiness fix preceded a new full matrix; no assertions or
+individual cases were replaced. A clean real-source fixture, live encoder
+integration and release acceptance remain separate requirements.
+
 ## Qualification required before broader support claims
 
 Evidence must be reproducible and black-box, as required by
