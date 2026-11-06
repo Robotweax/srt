@@ -497,6 +497,18 @@ a deterministic final-packet-loss comparison with NPD OFF and ON is needed.
 The failed run is retained, no cases were replaced, and the Lab PR remains
 draft. The earlier successful run does not close this later qualification gap.
 
+The subsequent [32-case deterministic tail-loss diagnosis](https://github.com/Robotweax/srt_network_lab/blob/cea13e0ffe1282d7a787b2c4a3d7dc6c31b87721/results/2026-11-06-npd-tail-diagnostic/README.md)
+found matching completion and delivered-message counts in all 16 OFF/ON pairs,
+in both data directions. Interior loss recovered through ARQ; an uncovered
+lost final packet remained missing with either NPD policy; a complete final
+four-packet FEC row repaired its lost last packet. This isolates shared
+finite-stream tail-loss behavior under the tested settings, not an NPD-specific
+regression. The peer, shutdown grace and transport defaults were unchanged.
+Diagnostic validity does not imply successful stream delivery: 20 recoverable
+controls completed and 12 deliberately uncovered tails remained incomplete.
+The original kernel-netem qualification remains incomplete, and any revised
+finite-stream completion workload must have its own declared contract.
+
 ## Qualification required before broader support claims
 
 Evidence must be reproducible and black-box, as required by
