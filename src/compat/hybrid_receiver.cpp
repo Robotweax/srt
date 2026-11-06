@@ -22,7 +22,8 @@ std::shared_ptr<ReceiverBridge> ReceiverBridge::create(
     std::shared_ptr<NativeService> service, Configuration c) noexcept
 {
     if (!service || !service->configuration_.caller || !valid(c.reporting)
-        || !c.retry_interval_us || c.retry_interval_us > c.round_timeout_us
+        || (c.detection && !valid(*c.detection)) || !c.retry_interval_us
+        || c.retry_interval_us > c.round_timeout_us
         || c.round_timeout_us > c.operation_timeout_us
         || c.operation_timeout_us > maximum_age_us || !c.query_interval_us
         || c.query_interval_us > maximum_age_us || !c.confirmation_lifetime_us
@@ -32,6 +33,11 @@ std::shared_ptr<ReceiverBridge> ReceiverBridge::create(
     try {
         auto receiver = std::shared_ptr<ReceiverBridge>(
             new ReceiverBridge(std::move(service), c));
+        if (c.detection) {
+            const auto native = receiver->service_->snapshot();
+            receiver->detector_ = std::make_unique<PathDetector>(
+                *c.detection, native.context, native.generation);
+        }
         receiver->pump();
         if (!receiver->snapshot().attached)
             return {};
@@ -52,9 +58,9 @@ void ReceiverBridge::close() noexcept
 }
 ReceiverBridge::Snapshot ReceiverBridge::snapshot() const noexcept
 {
-    const auto at = service_->now();
     const auto native = service_->snapshot();
     std::lock_guard lock(mutex_);
+    const auto at = service_->now();
     auto s = state_;
     s.closed = s.closed || cancelled_.load() || native.closed;
     s.fresh = !s.closed && confirmed_ && at >= s.confirmation_origin_us
@@ -78,9 +84,49 @@ ReceiverBridge::Snapshot ReceiverBridge::snapshot() const noexcept
                     configuration_.confirmation_lifetime_us));
         if (configuration_.reporting.interval_us && !pending_report_)
             s.next_wakeup_us = std::min(s.next_wakeup_us, next_report_);
+        if (detector_)
+            s.next_wakeup_us = std::min(
+                {s.next_wakeup_us, detector_->snapshot(at).next_wakeup_us,
+                    add(last_now_, configuration_.detection->sample_gap_us)});
         s.next_wakeup_us = std::min(s.next_wakeup_us, native.expires_at_us);
     }
     return s;
+}
+std::optional<PathDetector::Assessment>
+ReceiverBridge::path_assessment() const noexcept
+{
+    const auto native = service_->snapshot();
+    std::lock_guard lock(mutex_);
+    const auto at = service_->now();
+    if (!detector_ || cancelled_.load() || service_->closed() || native.closed
+        || !native.active || at >= native.expires_at_us || !state_.attached)
+        return {};
+    const auto assessment = detector_->snapshot(at);
+    if (!data_progress())
+        return PathDetector::Assessment {.state = PathDetector::State::unknown,
+            .reason = PathDetector::Reason::no_data,
+            .observed_at_us = at};
+    return assessment;
+}
+void ReceiverBridge::detect() noexcept
+{
+    if (!detector_)
+        return;
+    const auto data = data_progress();
+    const auto at = service_->now();
+    const auto expiry = add(
+        state_.confirmation_origin_us, configuration_.confirmation_lifetime_us);
+    detector_->observe({.now_us = at,
+        .generation = generation_,
+        .source =
+            peer_report_.snapshot(at, configuration_.detection->report_age_us),
+        .data = data,
+        .policy = {
+            .confirmed = confirmed_ && at >= state_.confirmation_origin_us,
+            .mode = state_.mode,
+            .revision = state_.revision,
+            .expires_at_us =
+                std::min(expiry, service_->state_.expires_at_us)}});
 }
 std::optional<ReceiveDataProgress>
 ReceiverBridge::data_progress() const noexcept
@@ -419,8 +465,10 @@ void ReceiverBridge::work() noexcept
                 cancelled_.store(true);
         }
     }
-    if (!cancelled_.load())
+    if (!cancelled_.load()) {
+        detect();
         report();
+    }
     if (cancelled_.load()) {
         state_.phase = Phase::closed;
         lock.unlock();

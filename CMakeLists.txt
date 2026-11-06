@@ -179,6 +179,7 @@ add_library(robotweax_srt
     src/compat/hybrid_native.cpp
     src/compat/hybrid_bridge.cpp
     src/compat/hybrid_receiver.cpp
+    src/compat/hybrid_detector.cpp
     src/compat/hybrid_reporting.cpp
     src/compat/hybrid_progress.cpp
     src/compat/standby_rtt_service.cpp
@@ -551,6 +552,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_hybrid_exchange.cpp
         tests/test_hybrid_conclusions.cpp
         tests/test_hybrid_native.cpp
+        tests/test_hybrid_detector.cpp
         tests/test_hybrid_reporting.cpp
         tests/test_hybrid_progress.cpp
         tests/test_arq_transport.cpp

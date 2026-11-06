@@ -2488,8 +2488,9 @@ struct NativeReceiverOwners {
     std::shared_ptr<hn::AuthorizationLease> lease;
     std::shared_ptr<hn::CoordinatorBridge> sender;
     std::shared_ptr<hn::ReceiverBridge> receiver;
-    explicit NativeReceiverOwners(
-        CoordinatedNative& f, hn::ReportingConfiguration reporting = {})
+    explicit NativeReceiverOwners(CoordinatedNative& f,
+        hn::ReportingConfiguration reporting = {},
+        std::optional<hn::DetectionConfiguration> detection = std::nullopt)
         : pair(f)
     {
         const auto identity =
@@ -2515,6 +2516,7 @@ struct NativeReceiverOwners {
         while (!receiver && std::chrono::steady_clock::now() < until) {
             receiver = hn::ReceiverBridge::create(pair.c,
                 {.reporting = reporting,
+                    .detection = detection,
                     .retry_interval_us = 10'000,
                     .round_timeout_us = 40'000,
                     .operation_timeout_us = 240'000,
@@ -2669,6 +2671,94 @@ struct HeldMulticastData {
         return frames;
     }
 };
+}
+TEST(
+    multicast_dispatch_native_passive_detector_outage_explicit_fallback_and_recovery)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    CoordinatedNative f;
+    const hn::DetectionConfiguration policy {.report_age_us = 800'000,
+        .maximum_transit_us = 5'000,
+        .stall_us = 40'000,
+        .emission_lifetime_us = 400'000,
+        .recovery_us = 80'000,
+        .recovery_gap_us = 60'000,
+        .hold_down_us = 100'000,
+        .sample_gap_us = 20'000,
+        .recovery_advances = 3};
+    NativeReceiverOwners owners(f, {10'000, 600'000}, policy);
+    REQUIRE(f.actor()->declare_source_activity(
+        hn::Activity::producing, 0, 1'000'000));
+    owners.wait([&] {
+        return owners.receiver->snapshot().fresh
+            && owners.receiver->peer_report(800'000).has_value();
+    });
+    HeldMulticastData held;
+    held.channel = f.source();
+    SendHookReset reset {held.channel};
+    held.channel->set_send_hook_for_testing(HeldMulticastData::send, &held);
+    int next = 0;
+    const auto run = [&](auto predicate) {
+        const auto until =
+            std::chrono::steady_clock::now() + std::chrono::seconds {1};
+        auto send_at = std::chrono::steady_clock::now();
+        while (!predicate() && std::chrono::steady_clock::now() < until) {
+            REQUIRE(next < 128);
+            if (std::chrono::steady_clock::now() >= send_at) {
+                REQUIRE(
+                    f.actor()->declare_source_activity(hn::Activity::producing,
+                        static_cast<std::uint64_t>(next + 1), 1'000'000));
+                REQUIRE_EQ(
+                    f.send(next), static_cast<int>(message(next).size()));
+                ++next;
+                send_at = std::chrono::steady_clock::now()
+                    + std::chrono::milliseconds {12};
+            }
+            owners.receiver->pump();
+            owners.sender->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        if (!predicate()) {
+            const auto a = owners.receiver->path_assessment();
+            throw std::runtime_error("passive detector: state="
+                + std::to_string(a ? static_cast<unsigned>(a->state) : 99)
+                + " reason="
+                + std::to_string(a ? static_cast<unsigned>(a->reason) : 99));
+        }
+    };
+    run([&] {
+        const auto a = owners.receiver->path_assessment();
+        return a && a->fallback_candidate;
+    });
+    auto a = owners.receiver->path_assessment();
+    REQUIRE(a->multicast_stalled);
+    REQUIRE(a->all_data_stalled);
+    REQUIRE_EQ(owners.sender->snapshot().applied, 0U);
+    REQUIRE_EQ(owners.receiver->snapshot().fallback,
+        hn::ReceiverBridge::RequestState::none);
+    REQUIRE_EQ(owners.receiver->data_progress()->unique_packets, 0U);
+    REQUIRE_EQ(owners.receiver->request_fallback(0),
+        hn::ReceiverBridge::Admission::accepted);
+    owners.wait([&] {
+        const auto s = owners.receiver->snapshot();
+        return s.fresh && s.mode == hn::Mode::unicast;
+    });
+    held.channel->set_send_hook_for_testing(nullptr, nullptr);
+    run([&] {
+        const auto ready = owners.receiver->path_assessment();
+        return ready && ready->return_candidate;
+    });
+    REQUIRE_EQ(owners.sender->snapshot().applied, 1U);
+    REQUIRE_EQ(f.actor()->snapshot().unicast_members, 1U);
+    REQUIRE(f.actor()->declare_source_activity(
+        hn::Activity::paused, static_cast<std::uint64_t>(next), 1'000'000));
+    owners.wait([&] {
+        const auto p = owners.receiver->path_assessment();
+        return p && p->state == hn::PathDetector::State::paused;
+    });
+    REQUIRE(!owners.receiver->path_assessment()->return_candidate);
+    owners.receiver->close();
+    REQUIRE(!owners.receiver->path_assessment());
 }
 TEST(multicast_dispatch_native_authenticated_reporting_plain_ctr_gcm)
 {

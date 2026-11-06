@@ -2,15 +2,17 @@
 #pragma once
 #include "compat/hybrid_native.hpp"
 #include "compat/hybrid_reporting.hpp"
+#include "compat/hybrid_detector.hpp"
 
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 namespace robotweax::srt::compat::hybrid {
-// Caller-side policy observations and bounded control reconciliation only.
-// Does not select DATA paths, ACK data, infer failure or initiate fallback.
+// Caller policy owner with optional read-only reports and path assessments.
+// Does not select DATA paths, ACK data or initiate fallback automatically.
 class ReceiverBridge {
 public:
     struct Configuration {
         ReportingConfiguration reporting;
+        std::optional<DetectionConfiguration> detection;
         std::uint32_t retry_interval_us = 100'000, round_timeout_us = 500'000,
                       operation_timeout_us = 2'000'000,
                       query_interval_us = 500'000,
@@ -55,6 +57,8 @@ public:
     void pump() noexcept;
     void close() noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
+    [[nodiscard]] std::optional<PathDetector::Assessment>
+    path_assessment() const noexcept;
     [[nodiscard]] std::optional<ReceiveDataProgress>
     data_progress() const noexcept;
     [[nodiscard]] std::optional<ReportObservation> peer_report(
@@ -66,6 +70,7 @@ private:
         std::shared_ptr<NativeService>, Configuration) noexcept;
     void work() noexcept;
     void report() noexcept;
+    void detect() noexcept;
     void event(const NativeService::Event&, std::uint64_t) noexcept;
     void start(bool fallback, std::uint64_t position, std::uint64_t now,
         std::uint64_t origin) noexcept;
@@ -76,6 +81,7 @@ private:
     mutable std::mutex mutex_;
     std::atomic_bool cancelled_ = false;
     ReportTracker peer_report_;
+    std::unique_ptr<PathDetector> detector_;
     std::uint64_t next_report_ = 0, pending_report_ = 0;
     Snapshot state_;
     Context context_;

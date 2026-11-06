@@ -684,6 +684,45 @@ struct ReceiverFixture {
 };
 }
 TEST(
+    hybrid_detector_receiver_opt_in_is_validated_and_never_creates_fallback_without_data)
+{
+    ReceiverFixture disabled;
+    REQUIRE(!disabled.receiver->path_assessment());
+    auto c = ReceiverFixture::configuration();
+    c.detection = h::DetectionConfiguration {};
+    Pair invalid;
+    invalid.connect();
+    REQUIRE(!h::ReceiverBridge::create(invalid.c, c));
+    c.detection = h::DetectionConfiguration {.report_age_us = 1000,
+        .maximum_transit_us = 10,
+        .stall_us = 50,
+        .emission_lifetime_us = 300,
+        .recovery_us = 40,
+        .recovery_gap_us = 30,
+        .hold_down_us = 80,
+        .sample_gap_us = 20,
+        .recovery_advances = 3};
+    ReceiverFixture f(c);
+    for (unsigned i = 0; i < 30; ++i) {
+        f.p.clock->value += 10;
+        f.step();
+    }
+    const auto assessment = f.receiver->path_assessment();
+    REQUIRE(assessment);
+    REQUIRE_EQ(assessment->state, h::PathDetector::State::unknown);
+    REQUIRE_EQ(assessment->reason, h::PathDetector::Reason::no_data);
+    REQUIRE(!assessment->fallback_candidate);
+    REQUIRE(
+        std::all_of(f.requests.begin(), f.requests.end(), [](const auto& m) {
+            return m.kind == h::Kind::delivery_query;
+        }));
+    REQUIRE_EQ(
+        f.receiver->snapshot().fallback, h::ReceiverBridge::RequestState::none);
+    REQUIRE(f.receiver->snapshot().next_wakeup_us <= f.p.clock->value + 20);
+    f.receiver->close();
+    REQUIRE(!f.receiver->path_assessment());
+}
+TEST(
     hybrid_reporting_receiver_consumes_authenticated_stream_reports_without_policy_confirmation)
 {
     ReceiverFixture f;

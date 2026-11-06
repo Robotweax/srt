@@ -13,7 +13,9 @@ An explicitly attached sender-side coordinator bridge can now grant bounded
 unicast fallback commands. An explicitly attached receiver owner now tracks
 revisions and reconciles policy with bounded read-only queries. Explicitly configured
 owners can also publish authenticated progress/path reports from local DATA
-observations and bounded host activity declarations. These components allocate no public C
+observations and bounded host activity declarations. An explicitly configured
+passive receiver detector assesses stalls and sustained multicast recovery.
+These components allocate no public C
 option and do not activate automatic recovery on live sockets. Native handshakes still
 reject authentication version 7. No new capability handshake extension ID is
 allocated. Existing strict multicast announcements and existing authentication
@@ -31,6 +33,7 @@ cmake --build build-hybrid-control --parallel
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_bridge
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_receiver
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_reporting
+./build-hybrid-control/robotweax_srt_tests --include hybrid_detector
 ./tools/python tests/hybrid_control_vectors.py
 ```
 
@@ -809,8 +812,102 @@ renew metadata freshness while its `next_advanced_at_us` and
 receive times for strictly increasing reported high waters, not remote DATA
 arrival timestamps or proof of a contiguous prefix. Incoming reports neither
 confirm a delivery query nor create fallback intent or mutate DATA/ACK state.
-Closing/revoking an owner hides its peer report. Next work is age-based detection
-and hysteresis with explicit latency policy before automatic transitions.
+Closing/revoking an owner hides its peer report. The optional passive detector
+below consumes these observations; automatic transitions remain separate work.
+
+## Passive stall detection and recovery hysteresis
+
+`ReceiverBridge::Configuration::detection` defaults to absent. Explicitly
+configuring it allocates one fixed-size detector (below 2 KiB); allocation or
+configuration failure refuses receiver-owner creation without changing DATA.
+There is no public C option, new wire field, thread, timer or scheduler service.
+`path_assessment()` returns no value when disabled or the native owner is
+closed/revoked/expired. An unavailable original DATA route yields an unknown
+assessment. The host still pumps the receiver owner; `next_wakeup_us` includes
+its sampling bound. No detector code posts a fallback request, MULTICAST_READY,
+policy command, merge cursor or ACK, or disables either DATA ingress.
+
+All nine configuration fields are required explicitly. Times are positive and
+at most five seconds; `recovery_advances` is between 2 and 64. There are no
+production defaults or automatic thresholds derived from the negotiated latency.
+The host must choose and validate timing against its application latency,
+control scheduling, network behavior and possible recovery cost:
+
+| Field | Meaning |
+| --- | --- |
+| `report_age_us` | Exclusive report-age bound including advertised age, elapsed local receive time and the configured transit allowance |
+| `maximum_transit_us` | Assumed maximum one-way network transit for control/DATA; this component does not measure or enforce it |
+| `stall_us` | Silence budget after observing a missing submitted horizon; a candidate needs this plus the transit allowance |
+| `emission_lifetime_us` | How long an observed increase in actual submission position can support stall/recovery assessment |
+| `recovery_us` | Required span between first and last qualifying multicast DATA advances |
+| `recovery_gap_us` | Exclusive maximum age/gap for recovery progress |
+| `hold_down_us` | Minimum hold after a stall or establishing a unicast policy baseline |
+| `sample_gap_us` | Exclusive maximum interval for retaining assessment evidence without another owner sample |
+| `recovery_advances` | Minimum distinct multicast DATA advances and distinct advancing multicast submission reports in a recovery window |
+
+Validation requires transit and sampling bounds no larger than `stall_us`,
+sampling no larger than recovery gap, and recovery gap no larger than recovery
+span. Report age must exceed transit plus sampling. Emission lifetime must
+exceed stall plus transit plus sampling. The complete detect/control/replay
+budget can still exceed playback slack; these checks do not promise continuity
+or qualify a production network. Incorrect assumed transit bounds can produce
+incorrect assessments. Reports do not provide synchronized clocks or independent
+proof of peer honesty.
+
+Each assessment requires an authenticated fresh STREAM_PROGRESS, an available
+local validated DATA snapshot, and fresh correlated policy confirmation whose
+revision/mode matches that report. Missing/stale reports, unknown policy,
+inconsistent identity/positions, changed route or sampling delay produce unknown
+or a new observing baseline. Clock regression or replacement native generation
+permanently invalidates that detector. Fresh evidence after an interruption must
+establish a baseline and then advance again. Reports with altered content/first
+receive time under the same serial, backwards horizons or changed timestamps for
+unchanged local high waters cannot refresh evidence.
+
+The first positive report establishes a baseline. Only a later strict increase
+in the actual multicast submission horizon arms multicast emission evidence.
+Produced/admitted positions, retained/receive-window floors and repeated reports
+with stationary submission horizons cannot arm it. Multicast is suspect while
+a freshly advancing submitted horizon is ahead of local multicast observations.
+The silence timer starts when that gap is first observed and restarts only for
+an actual higher local multicast observation. After `stall_us` plus transit it
+marks `multicast_stalled`. A separate aggregate timer compares all original
+submissions against all validated DATA; `all_data_stalled` means no advancing
+aggregate DATA against that horizon, not proof that two physical paths failed.
+A confirmed multicast policy with multicast stall can expose
+`fallback_candidate`; it never creates fallback intent.
+
+Submission evidence ages from its original local report receive time. Fresh
+stationary metadata cannot renew it. When that emission evidence expires, old
+blackouts cannot remain candidates. Source activity claims yield distinct
+startup, paused, ended and source-failed states and suppress candidates. This
+is conservative during paused/ended production even if a backlog remains;
+ordinary reliability handling is unchanged. A source-failed report remains a
+peer assertion; producing it from actual source-error recovery is separate work.
+No fresh emission increase gives `awaiting_emission`, which is not a path outage.
+
+After a stall, or while the confirmed policy is unicast, recovery requires
+strict increases in local multicast DATA and authenticated multicast submission
+reports. Each side must reach `recovery_advances`; repeated copies or stationary
+metadata do not count. Local advances must span `recovery_us`, stay within the
+recovery gap and sampling/age bounds, and outlast hold-down. The local multicast
+high water must also catch the reported multicast horizon. A confirmed unicast
+policy can then expose `multicast_ready` and `return_candidate`, while sender
+policy stays unicast. Insufficient progress, another stall, stale evidence,
+pause, policy revision change or excessive gaps clear the recovery window.
+A ready assessment expires without continued observations or pumping.
+
+Assessments include observation time, exclusive validity deadline, next wakeup,
+policy revision, separate source/local high waters and recovery counts. Getter
+reads project expired assessments to unknown and clear both candidate flags;
+those reads never count as progress or send commands. `multicast_progress` and
+ready states describe bounded high-water evidence, not continuous coverage,
+loss-free delivery, a retained replay prefix, key availability, available
+bandwidth or an overlap commit boundary. Native loopback qualification exercises
+blackout detection, explicit host fallback, sustained multicast observation
+while unicast remains committed, pause suppression and owner closure. Controlled
+automatic transitions, budgeted overlap/return, public provisioning and startup
+join failure handling remain unimplemented.
 
 ## Control body
 
