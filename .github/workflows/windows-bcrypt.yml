@@ -2,6 +2,10 @@ name: Experimental BCrypt backend
 on:
   workflow_dispatch:
     inputs:
+      npd_only:
+        description: Run focused NPD qualification on native Windows x64 and ARM64
+        type: boolean
+        default: false
       qualification:
         description: Run native ARM64 and serial x64/ARM64 performance diagnostics only
         type: boolean
@@ -25,7 +29,7 @@ permissions:
   contents: read
 jobs:
   arm64-runtime:
-    if: github.event_name == 'workflow_dispatch' && inputs.qualification
+    if: github.event_name == 'workflow_dispatch' && inputs.qualification && !inputs.npd_only
     runs-on: windows-11-arm
     timeout-minutes: 20
     steps:
@@ -59,7 +63,7 @@ jobs:
           path: evidence/
           retention-days: 7
   serial-performance:
-    if: github.event_name == 'workflow_dispatch' && inputs.qualification
+    if: github.event_name == 'workflow_dispatch' && inputs.qualification && !inputs.npd_only
     strategy:
       fail-fast: false
       matrix:
@@ -98,7 +102,7 @@ jobs:
           path: evidence/
           retention-days: 7
   shared:
-    if: github.event_name != 'workflow_dispatch' || !inputs.qualification
+    if: github.event_name != 'workflow_dispatch' || (!inputs.qualification && !inputs.npd_only)
     name: Shared x64 (${{ matrix.configuration }})
     runs-on: windows-latest
     timeout-minutes: 25
@@ -181,7 +185,7 @@ jobs:
           python interop/run_encrypted_interop.py --robotweax-peer peer-bcrypt/Release/crypto_peer.exe --reference-peer peer-haivision/Release/crypto_peer.exe --bytes 524288 --km-refresh-rate 64 --km-preannounce 20
           if ($LASTEXITCODE -ne 0) { throw 'Haivision CTR interoperability failed' }
   native:
-    if: github.event_name != 'workflow_dispatch' || !inputs.qualification
+    if: github.event_name != 'workflow_dispatch' || (!inputs.qualification && !inputs.npd_only)
     runs-on: windows-latest
     timeout-minutes: 15
     strategy:
@@ -230,3 +234,60 @@ jobs:
             ctest --test-dir consumer -C Release --output-on-failure
             if ($LASTEXITCODE -ne 0) { throw 'Consumer execution failed' }
           }
+  npd:
+    if: github.event_name == 'workflow_dispatch' && inputs.npd_only
+    name: NPD (${{ matrix.arch }}, ${{ matrix.backend }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+            backend: bcrypt
+          - runner: windows-latest
+            arch: x64
+            backend: openssl
+          - runner: windows-11-arm
+            arch: ARM64
+            backend: bcrypt
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and qualify NPD
+        shell: pwsh
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+          CRYPTO_BACKEND: ${{ matrix.backend }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Run([string]$Program, [string[]]$Arguments) {
+            & $Program @Arguments
+            if ($LASTEXITCODE -ne 0) { throw "$Program failed: $LASTEXITCODE" }
+          }
+          New-Item -ItemType Directory evidence | Out-Null
+          "runner=$env:RUNNER_ARCH; process=$([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture); sha=$env:GITHUB_SHA; backend=$env:CRYPTO_BACKEND" | Set-Content evidence/architecture.txt
+          if ($env:RUNNER_ARCH -ine $env:TARGET_ARCH) { throw 'Native target runner required' }
+          $options = @('-S','.', '-B','build-npd','-A',$env:TARGET_ARCH,
+            "-DROBOTWEAX_SRT_CRYPTO_BACKEND=$env:CRYPTO_BACKEND",
+            '-DENABLE_AEAD_API_PREVIEW=ON','-DROBOTWEAX_SRT_BUILD_TOOLS=ON',
+            '-DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF')
+          if ($env:CRYPTO_BACKEND -eq 'bcrypt') { $options += '-DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON' }
+          Run cmake $options
+          Run cmake @('--build','build-npd','--config','Release','--parallel','2',
+            '--target','robotweax_srt_tests','robotweax_srt_interop_peer')
+          Run ctest @('--test-dir','build-npd','-C','Release','--output-on-failure',
+            '--no-tests=error','-R','robotweax_srt_(npd_tests|rotation_tests|transport_runtime_tests)$')
+          Run python @('interop/run_npd_interop.py','--robotweax-peer',
+            'build-npd/Release/robotweax_srt_interop_peer.exe','--output','evidence/wire')
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: npd-windows-${{ matrix.arch }}-${{ matrix.backend }}
+          path: |
+            evidence/
+            build-npd/CMakeCache.txt
+            build-npd/Testing/Temporary/
+          retention-days: 14
