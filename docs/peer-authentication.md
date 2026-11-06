@@ -432,14 +432,12 @@ authentication and ACP1 documents for the CONCLUSION and AGREEMENT messages.
 It does not cover INDUCTION or packet headers, as listed under non-goals. Any
 value that INDUCTION influences must reappear in M1 or M2 to be authenticated.
 
-A message that is retransmitted must repeat the same `T(M)` bytes. In
-`src/handshake.cpp` a retry is not a replay of stored bytes: the caller
-rebuilds its CONCLUSION from its fixed configuration, and the listener response
-and the caller AGREEMENT are re-sent from a cached action, each encoded again.
-Byte identity therefore depends on the encoder being deterministic and on the
-compatibility layer adding the same fields each time, which remains an
-*assumption*. An implementation should keep the encoded bytes of each message
-for the transcript and for retries.
+A message that is retransmitted must repeat the same `T(M)` bytes. The
+peer-authentication adapter retains the exact encoded payload of all three
+flights, including unknown extensions and their order. Retries reuse those
+payloads; only the outer packet timestamp and destination may change. The
+ordinary handshake machine still uses its existing action encoder for OFF
+connections.
 
 ### Key schedule
 
@@ -644,9 +642,9 @@ key that wraps the traffic keys inside it.
 - After the handshake each endpoint generates its own random transmit key and
   salt and announces them with the runtime key exchange that Robotweax peers
   already run before sending DATA ([Encryption](encryption.md)).
-  `SRTO_SNDKMSTATE` reports SECURING until the peer confirms. That this
-  exchange can start without handshake key material is an *assumption* about
-  the current implementation.
+  `SRTO_SNDKMSTATE` reports SECURING until the peer confirms. Both public
+  socket actors now start this exchange without handshake key material and
+  withhold application publication until both directions are confirmed.
 - The traffic keys in every KMREQ are wrapped with RFC 3394 under `key(5)` or
   `key(6)`, by sender role. The passphrase-derived key-encrypting key is never
   used. The salt field keeps its role in IV derivation only, so a receiver
@@ -703,8 +701,9 @@ Public-key work is placed after every cheaper check:
    sender can cause one.
 
 A caller performs its public-key work only for a response that matches its own
-pending attempt. Invalid responses are dropped and the attempt ends at its
-connect timeout.
+pending attempt. A matched response that fails proof checks fails setup.
+Invalid authenticated-KM envelopes do not advance admission; an incomplete
+attempt ends at its connect timeout.
 
 The response record is 96 bytes larger than the offer record, and M2 is sent
 only to an address that returned a cookie, so the exchange adds no useful
@@ -829,46 +828,36 @@ runtime controls. The first follow-up is therefore the composition with
 Until it exists, applications that need protection against forged SHUTDOWN,
 ACK, NAK or DROPREQ must not rely on peer authentication for it.
 
-## Open decisions
+## Implemented version 1 decisions
 
-1. **A mode without a passphrase.** Version 1 requires one as a second factor.
-   Identity-only operation would need the encryption options to work without
-   a passphrase.
-2. **`IF_OFFERED` on listeners.** Excluded here. Allowing it would need a rule
-   that applications must read the per-connection result.
-3. **Caller key identifier in M1.** It enables the callback lookup and the
-   cheap rejection, and discloses which key is connecting. The alternative
-   sends it only in M3.
-4. **Admission cost** of public-key work, and whether a listener may prepare
-   key shares ahead of demand.
-5. **Limit of four invalid M3 signatures** per pending child, and a counter
-   that lets an application see repeated confirmation failures after valid
-   signatures.
-6. **Closing a connection** whose first authenticated key exchange does not
-   complete within the connect timeout.
-7. **Minimum MSS** of 512.
-8. **Marking key material.** Whether a nonzero KEKI should flag key material
-   wrapped under an ephemeral key-encrypting key. Key material uses KEKI zero
-   today.
-9. **Rekeying the key-encrypting key** during long connections, to limit what
-   a compromise during a connection exposes.
-10. **Binding INDUCTION.** Whether any INDUCTION field beyond the key length
-    needs to be restated in M1 or M2.
-11. **Private keys that cannot be exported.** A signing callback for hardware
-    or operating-system key stores, and a helper to generate and convert keys.
-12. **Pinned-set limit** of sixteen keys.
-13. **Rejection reasons.** Session authentication uses `SRT_REJ_UNSECURE` and
-    `SRT_REJ_BADSECRET`. This draft uses one reason for every M3 failure;
-    whether M1 and M2 failures should share it, so that a listener does not
-    reveal which identifiers it pins.
-14. **Build option name** and whether it should also gate the provider
-    interface additions.
-15. **Later scope,** after the first follow-up: Rendezvous, connection groups
-    and multicast dispatch groups.
+- REQUIRED and OFF are the only policies. REQUIRED needs a passphrase,
+  SESSIONAUTH, enforced encryption and explicit AES-GCM; there is no fallback.
+- M1 exposes the caller's claimed key identifier for callback lookup and early
+  pin rejection. OFFERED does not identify an authenticated peer.
+- The minimum MSS is 512 and the pinned set holds at most sixteen public keys.
+- Four invalid M3 signatures terminate a pending listener attempt. Matched
+  proof failures use UNSECURE; a wrong password cannot publish a connection.
+- Both authenticated runtime key directions must finish within the connect
+  timeout. Caller queueing time counts toward that deadline. Close cancels
+  pending setup and clears its secrets.
+- KEKI remains zero. Directional wrapping keys stay fixed for the connection;
+  AES traffic keys continue rotating through authenticated KMREQ/KMRSP.
+- The default-off `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH` option gates
+  the protocol, socket integration and provider interface additions.
+- Exact M1/M2/M3 payloads are retained for transcripts and retries. Ordinary
+  runtime ACK/NAK/drop controls remain outside this profile's authentication.
+
+Deferred work includes passwordless operation, IF_OFFERED policy, hardware-key
+callbacks and key-management helpers, connection-lifetime wrapping-key renewal,
+additional crypto backends, and groups/rendezvous/multicast. Admission weighting,
+precomputed shares and portable cost measurements still need evaluation;
+bounded-queue tests are not a throughput benchmark. These are not prerequisites
+for the current experimental caller/listener scope.
 
 ## Review and qualification required before any support claim
 
-Independent cryptographic review comes first and covers at least:
+Independent cryptographic review is planned after merging to main, while the
+feature remains default-off. Before any support claim it must cover at least:
 
 - the two-stage key schedule, its reversal of the TLS 1.3 extraction order,
   and the use of a PBKDF2 output as input keying material;
@@ -890,7 +879,7 @@ close that issue or [issue #112](https://github.com/Robotweax/srt/issues/112),
 and it was not part of the
 [2026-11-04 source review](security-review-2026-11-04.md).
 
-Evidence must then be reproducible and black-box, as required by
+Qualification evidence must also be reproducible and black-box, as required by
 [Contributing](../CONTRIBUTING.md):
 
 - Byte comparison showing that OFF/OFF connections, with and without session
@@ -913,8 +902,9 @@ Evidence must then be reproducible and black-box, as required by
 - Known-answer tests on all three backends: ECDH and ECDSA vectors from the
   NIST validation program and RFC 6979, HKDF vectors from RFC 5869, and a
   complete handshake vector computed by an independent implementation.
-- Cross-backend peers in every pairing of OpenSSL, Mbed TLS and BCrypt, both
-  roles, AES-CTR and AES-GCM, all key lengths, with FEC and repeated rotation.
+- When additional P-256 backends are implemented, cross-backend peers in both
+  roles with AES-GCM, all key lengths, FEC and repeated rotation. AES-CTR is
+  a negative configuration case, not a supported peer-authentication mode.
 - Tampering with every byte of M1, M2 and M3 on the wire, including Stream ID,
   filter configuration, MSS and unknown records; each must fail setup.
 - Reflection, replay of recorded handshakes, role swap, substitution of another
@@ -927,3 +917,62 @@ Evidence must then be reproducible and black-box, as required by
   the admission budget bounds CPU and that established connections continue.
 - Fuzzing of the record parser and of the three-message state machine.
 - Datagram-size tests at the minimum MSS and at the IPv6 minimum MTU.
+
+## Branch qualification evidence (2026-11-06)
+
+The following are implementation/regression checks, not independent
+cryptographic review:
+
+- Public sockets exchange 96 messages in each direction at each AES-GCM key
+  length (16/24/32 bytes), with and without FEC. A refresh interval of sixteen
+  packets exercises repeated selector transitions. With FEC, twelve deliberately
+  dropped source packets per direction are recovered with ARQ disabled.
+  An injected forged parity packet is rejected without poisoning recovery.
+- Eight simultaneous callers use distinct pinned identities and Stream IDs;
+  accepted identities and payloads remain associated with the correct caller.
+- Filling the shared worker pool and its queue causes bounded setup rejection
+  with ENOBUF and no published crypto/runtime. After draining, a fresh
+  authenticated connection succeeds. A queued attempt cannot extend its connect
+  deadline; queue expiry or close produces no discovery traffic or published
+  runtime.
+- A fixed-input encoder probe produces 36 byte-identical legacy handshake
+  fixtures across pre-feature main
+  `e45d0edd346e5c427d85e4c3b1ac605c81a23397`, this feature-enabled build
+  with policy OFF, and the default-off build. Cases cover both directions,
+  CONCLUSION/AGREEMENT, SESSIONAUTH v2 on/off, CTR/GCM key-material encoding and
+  all three key lengths. This is an encoder comparison with fixed public
+  inputs, not a claim that randomized live captures are byte-identical.
+- Black-box public C API fixtures pass legacy AES-GCM connections against
+  pinned upstream SRT 1.5.7
+  `899348d8318eb9a3c5a5b6ec43c4a1114288773a` in both roles.
+  REQUIRED/legacy combinations reject without accept publication in either
+  role. Against the pre-feature Robotweax main snapshot, OFF/OFF connections
+  also succeed with SESSIONAUTH v2 on and off. REQUIRED/REQUIRED is a positive
+  control. The upstream implementation source was built, not inspected;
+  the fixture is independently authored against the public C API.
+
+The [peer-authentication workflow](../.github/workflows/experimental-peerauth.yml)
+runs enabled and default-off builds on Linux/macOS and an enabled ASan/UBSan
+build on Linux. It checks the fixed-input wire digest and runs the pinned
+upstream compatibility cases on Linux. Actual workflow results must be checked
+for the candidate commit.
+
+To reproduce installed-library compatibility, build
+`tests/peer_authentication_peer` with `CMAKE_PREFIX_PATH` pointing to the
+installation. For the upstream fixture instead pass `HAIVISION_SOURCE` pointing
+to the pinned checkout. Run:
+
+```sh
+./tools/python interop/run_peer_authentication_compat.py \
+  --enabled-peer enabled/peer_authentication_peer \
+  --legacy-peer reference/peer_authentication_peer \
+  --legacy-revision 899348d8318eb9a3c5a5b6ec43c4a1114288773a \
+  --output evidence/reference-compatibility.json
+```
+
+For another Robotweax build supporting SESSIONAUTH, also pass
+`--legacy-session-auth`. To build the internal fixed-input wire probe, pass
+`ROBOTWEAX_NATIVE_SOURCE` pointing to the exact source tree used for that
+installed library. Compare `peer_authentication_wire` stdout byte-for-byte,
+or check it against `tests/peer_authentication_peer/legacy-wire.sha256`.
+The recorded digest comes from the pre-feature main snapshot above.
