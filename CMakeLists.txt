@@ -46,7 +46,7 @@ option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
     "Enable experimental authenticated runtime controls" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH
-    "Build experimental peer-authentication components (connection setup incomplete)" OFF)
+    "Enable experimental pinned-key caller/listener authentication (unreviewed)" OFF)
 option(ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES
     "Build private controller components and contract tests (no socket integration)" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS

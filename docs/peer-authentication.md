@@ -85,7 +85,7 @@ OpenSSL-only for P-256, and unsupported for groups/rendezvous; ordinary runtime
 controls are not authenticated by this profile. `Exchange::ready_for_key_exchange()`
 alone is never permission to publish a connection or release DATA.
 
-Build and exercise the private components with:
+Build and exercise the experimental components with:
 
 ```sh
 cmake -S . -B build-peerauth -DCMAKE_BUILD_TYPE=Debug \
@@ -949,12 +949,24 @@ cryptographic review:
   role. Against the pre-feature Robotweax main snapshot, OFF/OFF connections
   also succeed with SESSIONAUTH v2 on and off. REQUIRED/REQUIRED is a positive
   control. The upstream implementation source was built, not inspected;
-  the fixture is independently authored against the public C API.
+  the fixture is independently authored against the public C API. Successful
+  connections exchange encrypted application data in both directions before
+  closing; REQUIRED connections also verify the published peer identity.
+- Installed shared-library packages with the feature enabled and disabled expose
+  exactly the 85 expected C ABI symbols. The disabled package rejects get/set
+  operations for all five PEERAUTH options. Seven public API compatibility
+  scenarios cover legacy and SESSIONAUTH success, REQUIRED rejection against
+  disabled peers, and authenticated success.
+- A deterministic corpus of eleven synthetic record, datagram, transcript and
+  curve-input seeds completes 50,000 libFuzzer iterations with seed 385 under
+  sanitizers. This bounded smoke test does not establish exhaustive coverage or
+  replace cryptographic review.
 
 The [peer-authentication workflow](../.github/workflows/experimental-peerauth.yml)
 runs enabled and default-off builds on Linux/macOS and an enabled ASan/UBSan
 build on Linux. It checks the fixed-input wire digest and runs the pinned
-upstream compatibility cases on Linux. Actual workflow results must be checked
+upstream compatibility cases on Linux. Additional jobs exercise installed shared
+packages on Linux/macOS and seeded fuzzing on Linux. Actual workflow results must be checked
 for the candidate commit.
 
 To reproduce installed-library compatibility, build

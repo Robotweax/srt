@@ -121,3 +121,87 @@ jobs:
           name: peerauth-${{ matrix.os }}-${{ matrix.profile }}
           path: evidence/
           if-no-files-found: ignore
+
+  shared-api:
+    name: Installed shared C API (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install OpenSSL
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo apt-get update
+            sudo apt-get install -y libssl-dev pkg-config
+          else
+            brew install openssl@3 pkg-config
+            echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          fi
+      - name: Build and inspect enabled and disabled shared packages
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p evidence
+          suffix=so
+          if [[ "$RUNNER_OS" == macOS ]]; then suffix=dylib; fi
+          for mode in ON OFF; do
+            cmake -S . -B "shared-$mode" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DENABLE_AEAD_API_PREVIEW=ON "-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH=$mode" -DROBOTWEAX_SRT_BUILD_TESTS=OFF -DROBOTWEAX_SRT_BUILD_TOOLS=OFF -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+            cmake --build "shared-$mode" --parallel 4
+            cmake --install "shared-$mode" --prefix "$PWD/shared-$mode-stage"
+            cmake -S tests/peer_authentication_peer -B "shared-$mode-peer" "-DCMAKE_PREFIX_PATH=$PWD/shared-$mode-stage"
+            cmake --build "shared-$mode-peer" --parallel 4
+            python3 tests/verify_shared_library_exports.py --library "$PWD/shared-$mode-stage/lib/librobotweax-srt.$suffix" --manifest cmake/public-symbols.txt --header include/robotweax_srt.h --header include/srt/srt.h --tool nm | tee "evidence/shared-$mode-exports.log"
+          done
+      - name: Installed C API authentication and feature-off gating
+        shell: bash
+        run: |
+          set -o pipefail
+          shared-OFF-peer/peer_authentication_peer caller 0 unavailable | tee evidence/options-unavailable.log
+          python3 interop/run_peer_authentication_compat.py --enabled-peer shared-ON-peer/peer_authentication_peer --legacy-peer shared-OFF-peer/peer_authentication_peer --legacy-session-auth --legacy-revision "feature-disabled-shared-$GITHUB_SHA" --output evidence/shared-compatibility.json
+      - name: Preserve shared-package evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: peerauth-shared-${{ matrix.os }}
+          path: evidence/
+          if-no-files-found: ignore
+
+  fuzz:
+    name: Seeded peer-authentication fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Clang and OpenSSL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libssl-dev pkg-config
+      - name: Build instrumented parser and transcript target
+        run: |
+          cmake -S . -B fuzz-build -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH=ON -DENABLE_AEAD_API_PREVIEW=ON -DROBOTWEAX_SRT_BUILD_FUZZERS=ON -DROBOTWEAX_SRT_BUILD_TESTS=OFF -DROBOTWEAX_SRT_BUILD_TOOLS=OFF -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          cmake --build fuzz-build --target fuzz_peer_authentication --parallel 4
+      - name: Exercise valid records, transcripts, opaque extensions and curve inputs
+        shell: bash
+        env:
+          UBSAN_OPTIONS: halt_on_error=1
+        run: |
+          set -o pipefail
+          mkdir -p evidence/fuzz
+          python3 fuzz/peer_authentication_corpus.py evidence/corpus
+          fuzz-build/fuzz_peer_authentication evidence/corpus -runs=50000 -seed=385 -max_len=4500 -timeout=5 -rss_limit_mb=1024 "-artifact_prefix=$PWD/evidence/fuzz/" 2>&1 | tee evidence/fuzz.log
+      - name: Preserve fuzz evidence and reproductions
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: peerauth-fuzz
+          path: evidence/
+          if-no-files-found: ignore
