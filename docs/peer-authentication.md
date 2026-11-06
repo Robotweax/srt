@@ -417,6 +417,13 @@ Processing, with failure at any step ending setup without fallback:
    Only if the signature is valid does it compute `psk` and `master` and check
    `confirm_C`. Only then is the connection published to `accept`.
 
+On both peers, `hkey(2)` and `psk` must be erased immediately after deriving
+`master`. The listener retains `hkey(2)` only while waiting for M3; retries
+use cached handshake messages and do not require retaining it after derivation.
+A retained `hkey(2)`, together with a later passphrase compromise and a recorded
+transcript, would allow reconstruction of `master` and the traffic wrapping
+keys.
+
 The order in step 3 is deliberate. A sender without the pinned caller key
 fails at the signature, so the passphrase-dependent comparison is never
 evaluated for it and its outcome cannot leak through timing or through the
@@ -548,7 +555,10 @@ key that wraps the traffic keys inside it.
   key-encrypting key for the life of the connection.
 - The first exchange in each direction also completes the passphrase proof
   described under [What each proof establishes](#what-each-proof-establishes).
-- On close, `master`, every `key(n)` and all traffic keys are erased.
+- On setup failure, timeout, cancellation or close, both peers must erase all
+  remaining per-connection secrets: the ephemeral private key, `Z`, `hs`,
+  every `hkey(n)`, `psk`, `master`, every `key(n)` and all traffic keys,
+  including temporary copies.
 
 Forward secrecy is therefore per connection. A recorded connection stays
 confidential if the passphrase and both identity keys leak after it closed and
