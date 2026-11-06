@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from run_npd_interop import Relay, corpus, events
+from run_npd_interop import Relay, corpus, events, expected_source_bytes
 
 
 class NpdEvidenceTests(unittest.TestCase):
@@ -32,6 +32,17 @@ class NpdEvidenceTests(unittest.TestCase):
             self.assertEqual(len(result["payload_hashes"]["caller"]), 1)
         finally:
             relay.socket.close()
+
+    def test_wire_length_oracle_handles_nulls_passthrough_and_partial_messages(self):
+        null = bytes.fromhex("471fff10") + b"\xff" * 184
+        self.assertEqual(expected_source_bytes(corpus()), 45184)
+        self.assertEqual(expected_source_bytes(null * 7), 1)
+        self.assertEqual(expected_source_bytes(null * 8), 2)
+        self.assertEqual(expected_source_bytes(null * 7 + b"tail"), 6)
+        self.assertEqual(expected_source_bytes(b"x" + null[1:]), 189)
+        self.assertEqual(expected_source_bytes(null[:3] + b"\x11" + null[4:]), 189)
+        with self.assertRaises(ValueError):
+            expected_source_bytes(b"")
 
     def test_events_ignore_diagnostics_and_nonobjects(self):
         self.assertEqual(events('noise\n[]\n{"event":"ready"}\n'), [{"event": "ready"}])

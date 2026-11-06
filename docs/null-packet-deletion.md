@@ -279,6 +279,42 @@ For the 84,224-byte synthetic corpus, source DATA payload bytes fell from
 from 21,120 to 21,136 (16 parity packets), confirming the added prefix capacity.
 These are payload-byte measurements, not an end-to-end network bandwidth claim.
 
+### Supplied streams and burst scheduling
+
+Pass `--input /path/to/clip.ts` to qualify a short supplied stream instead of
+the deterministic corpus. The runner reads 1,316-byte application messages,
+retains a partial final message, checks bit-exact delivery in both directions
+with and without row FEC, and compares source bytes against an independent
+length oracle. It records the input SHA-256 and application byte count. A
+stream without canonical nulls is valid: its NPD source size grows by one byte
+per message. Use short clips that complete within the runner's eight-second
+process timeout. Input/output copies remain in the evidence directory; do not
+commit private captures.
+
+A local FFmpeg 9.0.2 MPEG-2/TS run passed all eight self-peer cases:
+
+```sh
+ffmpeg -f lavfi -i testsrc2=size=160x90:rate=25 -t 1 \
+  -c:v mpeg2video -b:v 100k -muxrate 1000000 -f mpegts /tmp/npd-cbr.ts
+./tools/python interop/run_npd_interop.py \
+  --robotweax-peer build-npd/robotweax_srt_interop_peer \
+  --input /tmp/npd-cbr.ts --output /tmp/npd-cbr-evidence
+```
+
+The generated clip had 122,764 bytes (SHA-256
+`a8d27a52288547f2949ed6e1d98383a782536be63e593aa06113425968758abf`).
+NPD source DATA payloads totaled 51,982 bytes in each direction; row-FEC parity
+payloads changed from 30,360 to 30,383 bytes. This is a generated muxed stream,
+not a deployed broadcast capture, and counts payload bytes rather than total
+network traffic. Different FFmpeg versions can produce different input bytes.
+
+The deterministic `npd_burst_after_null_run_preserves_sender_schedule` test
+sends sixteen all-null messages, then queues eight full-size passthrough
+messages. It compares actual pacer release deadlines with NPD OFF, permitting
+only the extra prefix's serialization time. This checks the sender scheduling
+model; operating-system wake-up and end-to-end delivery jitter still require
+platform measurements.
+
 ## Qualification required before broader support claims
 
 Evidence must be reproducible and black-box, as required by

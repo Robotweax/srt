@@ -27,6 +27,21 @@ def corpus() -> bytes:
                      real * 7, noncanonical * 7) * 16)
 
 
+def expected_source_bytes(data: bytes) -> int:
+    """Independent wire-length oracle for 1316-byte public-API messages."""
+    if not data:
+        raise ValueError("qualification input must not be empty")
+    null = bytes.fromhex("471fff10") + b"\xff" * 184
+    total = 0
+    for offset in range(0, len(data), 1316):
+        message = data[offset:offset + 1316]
+        deleted = 0
+        if len(message) % 188 == 0 and all(message[i] == 0x47 for i in range(0, len(message), 188)):
+            deleted = sum(message[i:i + 188] == null for i in range(0, len(message), 188))
+        total += len(message) + 1 - deleted * 188
+    return total
+
+
 def events(text: str) -> list[dict]:
     result = []
     for line in text.splitlines():
@@ -109,11 +124,11 @@ class Relay:
 
 
 def run_case(directory, name, caller_peer, listener_peer, caller_policy,
-             listener_policy, *, reverse=False, reject=False, fec=False):
+             listener_policy, *, reverse=False, reject=False, fec=False, data=None):
     directory = directory / name
     directory.mkdir(parents=True, exist_ok=True)
     source, output = directory / "input.ts", directory / "output.ts"
-    source.write_bytes(corpus())
+    source.write_bytes(corpus() if data is None else data)
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as reserved:
         reserved.bind(("127.0.0.1", 0))
         port = reserved.getsockname()[1]
@@ -183,32 +198,38 @@ def main():
     parser.add_argument("--robotweax-peer", type=Path, required=True)
     parser.add_argument("--reference-peer", type=Path, action="append", default=[])
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--input", type=Path, help="optional stream corpus; read in 1316-byte messages")
     args = parser.parse_args()
     candidate = args.robotweax_peer.resolve(strict=True)
+    data = corpus() if args.input is None else args.input.read_bytes()
+    expected = expected_source_bytes(data)
     results = []
     for reverse in (False, True):
         for fec in (False, True):
             stem = f"self-{'reverse' if reverse else 'forward'}-{'fec' if fec else 'arq'}"
-            off = run_case(args.output, stem + "-off", candidate, candidate, 0, 0, reverse=reverse, fec=fec)
-            active = run_case(args.output, stem + "-npd", candidate, candidate, 1, 2, reverse=reverse, fec=fec)
-            if active["source_payload_bytes"] >= off["source_payload_bytes"]:
-                raise RuntimeError("NPD did not reduce source bytes")
-            if fec and active["parity_payload_bytes"] <= off["parity_payload_bytes"]:
+            off = run_case(args.output, stem + "-off", candidate, candidate, 0, 0, reverse=reverse, fec=fec, data=data)
+            active = run_case(args.output, stem + "-npd", candidate, candidate, 1, 2, reverse=reverse, fec=fec, data=data)
+            if off["source_payload_bytes"] != len(data) or active["source_payload_bytes"] != expected:
+                raise RuntimeError("source bytes differ from independent NPD length oracle")
+            if args.input is None and fec and active["parity_payload_bytes"] <= off["parity_payload_bytes"]:
                 raise RuntimeError("NPD parity must include the additional prefix byte")
             results += [off, active]
     for index, reference in enumerate(args.reference_peer):
         reference = reference.resolve(strict=True)
         for reverse in (False, True):
             stem = f"reference-{index}-{'reverse' if reverse else 'forward'}"
-            off = run_case(args.output, stem + "-off", reference, candidate, None, 0, reverse=reverse)
-            optional = run_case(args.output, stem + "-optional", reference, candidate, None, 2, reverse=reverse)
+            off = run_case(args.output, stem + "-off", reference, candidate, None, 0, reverse=reverse, data=data)
+            optional = run_case(args.output, stem + "-optional", reference, candidate, None, 2, reverse=reverse, data=data)
             for field in ("payload_hashes", "extension_records"):
                 if off[field] != optional[field]:
                     raise RuntimeError(f"{stem}: IF_OFFERED changed {field} for stock caller")
             results += [off, optional]
-        results.append(run_case(args.output, f"reference-{index}-required-caller", candidate, reference, 1, None, reject=True))
-        results.append(run_case(args.output, f"reference-{index}-required-listener", reference, candidate, None, 1, reject=True))
-    report = {"binaries": {str(p.resolve()): hashlib.sha256(p.read_bytes()).hexdigest()
+        results.append(run_case(args.output, f"reference-{index}-required-caller", candidate, reference, 1, None, reject=True, data=data))
+        results.append(run_case(args.output, f"reference-{index}-required-listener", reference, candidate, None, 1, reject=True, data=data))
+    report = {"input": {"path": str(args.input.resolve()) if args.input else None,
+                        "sha256": hashlib.sha256(data).hexdigest(), "application_bytes": len(data),
+                        "expected_npd_source_bytes": expected},
+              "binaries": {str(p.resolve()): hashlib.sha256(p.read_bytes()).hexdigest()
                            for p in [candidate, *args.reference_peer]}, "cases": results}
     (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"validated {len(results)} black-box NPD cases")

@@ -536,6 +536,57 @@ TEST(npd_input_estimator_counts_application_bytes_after_null_runs)
     REQUIRE_EQ(compressed.npd_deleted_units(), 112U);
 }
 
+TEST(npd_burst_after_null_run_preserves_sender_schedule)
+{
+    const auto schedule = [](bool npd) {
+        ReliabilitySession session({.send_capacity_packets = 32,
+            .receive_capacity_packets = 32,
+            .maximum_payload_size = npd ? 1317U : 1316U,
+            .npd_enabled = npd});
+        session.configure_live(
+            {}, 0, {}, {.maximum_bandwidth_bytes_per_second = 0});
+        PacketPacer pacer {1, 32};
+        auto payload = transport_stream(7);
+        for (unsigned index = 0; index < 16; ++index) {
+            const auto now = index * 100000ULL;
+            REQUIRE_EQ(session.queue_message(
+                           std::as_bytes(std::span {payload}), {}, false, now),
+                Error::none);
+            REQUIRE(session.next_paced_data_packet(pacer, now));
+        }
+        // Lost sync forces full-size passthrough after the all-null run.
+        payload[0] = 0;
+        constexpr std::uint64_t burst_start = 1600000;
+        for (unsigned index = 0; index < 8; ++index)
+            REQUIRE_EQ(session.queue_message(std::as_bytes(std::span {payload}),
+                           {}, false, burst_start),
+                Error::none);
+        std::array<std::uint64_t, 8> deadlines {};
+        auto now = burst_start;
+        for (auto& deadline : deadlines) {
+            if (!session.next_paced_data_packet(pacer, now)) {
+                now = pacer.query(now, 0).next_ready_microseconds;
+                REQUIRE(session.next_paced_data_packet(pacer, now));
+            }
+            deadline = now;
+        }
+        return std::pair {
+            deadlines, session.live_pacing_rate_bytes_per_second()};
+    };
+    const auto [plain, plain_rate] = schedule(false);
+    const auto [compressed, compressed_rate] = schedule(true);
+    REQUIRE_EQ(plain_rate, compressed_rate);
+    REQUIRE(plain_rate > 0U);
+    REQUIRE_EQ(plain[0], compressed[0]);
+    // Each passthrough DATA adds one prefix byte. Permit only its serialization
+    // time (rounded up per packet), not a delay caused by a depressed estimate.
+    const auto prefix_time = (1000000ULL + plain_rate - 1) / plain_rate;
+    for (std::size_t index = 1; index < plain.size(); ++index) {
+        REQUIRE(compressed[index] <= plain[index] + index * prefix_time);
+        REQUIRE(plain[index] > plain[index - 1]);
+    }
+}
+
 TEST(npd_malformed_payload_is_counted_and_retransmission_restores_delivery)
 {
     Sockets sockets;
