@@ -23,6 +23,12 @@ inline constexpr std::uint8_t acp1_group_session_version = 5;
 inline constexpr std::size_t acp1_group_context_size = 88;
 inline constexpr std::uint8_t acp1_group_rendezvous_session_version = 6;
 inline constexpr std::size_t acp1_group_rendezvous_context_size = 96;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+// Component-only profile; deliberately excluded from is_acp1_session_version
+// so production handshakes continue to reject it.
+inline constexpr std::uint8_t hybrid_control_session_version = 7;
+inline constexpr std::size_t hybrid_control_context_size = 192;
+#endif
 [[nodiscard]] constexpr bool is_acp1_session_version(
     std::uint8_t version) noexcept
 {
@@ -72,9 +78,24 @@ public:
     [[nodiscard]] bool open_control(
         const PacketView& envelope, PacketView& packet) noexcept;
 #endif
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    [[nodiscard]] bool hybrid_control_ready(
+        bool caller, std::span<const std::byte> context) const noexcept;
+    [[nodiscard]] bool claim_hybrid_control(
+        bool caller, std::span<const std::byte> context) noexcept;
+    [[nodiscard]] std::uint32_t hybrid_local_socket_id() const noexcept
+    {
+        return hybrid_local_socket_id_;
+    }
+    [[nodiscard]] std::uint32_t hybrid_peer_socket_id() const noexcept
+    {
+        return hybrid_peer_socket_id_;
+    }
+#endif
     // Versions 5 and 6 require canonical group contexts of 88 and 96 bytes,
-    // respectively, documented in experimental-acp1.md. Other versions reject
-    // a group context. Versions 4 and 6 also require the Rendezvous cookies.
+    // respectively, documented in experimental-acp1.md. The separately gated
+    // component-only hybrid v7 requires its canonical 192-byte context. Other
+    // versions reject a group context. Versions 4 and 6 require Rendezvous cookies.
     [[nodiscard]] Error establish(std::span<const std::byte> passphrase,
         const SessionAuthenticationParameters& peer,
         std::uint32_t local_socket_id, std::uint32_t peer_socket_id,
@@ -120,6 +141,7 @@ private:
         std::uint64_t counter, std::span<const std::byte> input,
         std::span<std::byte, 32> output) noexcept;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+    [[nodiscard]] bool control_ready() const noexcept;
     [[nodiscard]] Error control_mac(bool caller,
         std::span<const std::byte> wire, std::span<std::byte, 32> tag) noexcept;
     std::array<std::byte, 32> caller_control_key_ {}, listener_control_key_ {};
@@ -137,6 +159,11 @@ private:
     std::uint64_t fec_sent_counter_ = 0, fec_received_counter_ = 0,
                   fec_received_bitmap_ = 0;
     bool caller_ = false, started_ = false, ready_ = false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::array<std::byte, hybrid_control_context_size> hybrid_context_ {};
+    std::uint32_t hybrid_local_socket_id_ = 0, hybrid_peer_socket_id_ = 0;
+    bool hybrid_peer_confirmed_ = false, hybrid_claimed_ = false;
+#endif
 };
 
 } // namespace robotweax::srt

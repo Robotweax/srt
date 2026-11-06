@@ -45,6 +45,11 @@ option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
     "Install opt-in srt.pc metadata for libsrt-compatible consumers" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
     "Enable experimental authenticated runtime controls" OFF)
+option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL
+    "Build staged hybrid control authentication components (no socket activation)" OFF)
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL AND NOT ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
+    message(FATAL_ERROR "Experimental hybrid control requires experimental ACP1 explicitly enabled")
+endif()
 option(ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES
     "Build private controller components and contract tests (no socket integration)" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS
@@ -167,6 +172,7 @@ add_library(robotweax_srt
     src/compat/group_packet_encoder.cpp
     src/compat/group_runtime_admission.cpp
     src/compat/group_send_coordinator.cpp
+    src/compat/hybrid_control.cpp
     src/compat/standby_rtt_service.cpp
     src/control.cpp
     src/connection_group.cpp
@@ -248,6 +254,9 @@ if(ENABLE_MAXREXMITBW)
 endif()
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
     target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_ACP1)
+endif()
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL)
+    target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL)
 endif()
 if(ENABLE_AEAD_API_PREVIEW)
     target_compile_definitions(robotweax_srt
@@ -529,6 +538,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_group_runtime_admission.cpp
         tests/test_group_send_coordinator.cpp
         tests/test_group_unicast_budget.cpp
+        tests/test_hybrid_control.cpp
         tests/test_arq_transport.cpp
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp
@@ -2232,6 +2242,9 @@ endif()
 set(ROBOTWEAX_SRT_PC_CFLAGS "")
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
     string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DROBOTWEAX_SRT_EXPERIMENTAL_ACP1")
+endif()
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL)
+    string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL")
 endif()
 if(ENABLE_AEAD_API_PREVIEW)
     string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DENABLE_AEAD_API_PREVIEW")

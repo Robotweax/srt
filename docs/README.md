@@ -19,6 +19,10 @@ developers and transport integrators using the installed public API.
 - [Experimental ACP1](experimental-acp1.md) — experimental runtime-control
   authentication, strict bilateral opt-in and provisional wire/API contract.
 
+- [Experimental hybrid control](experimental-hybrid-control.md) — staged,
+  default-off capability codecs and session-bound control admission, without
+  socket activation.
+
 - [Experimental remote identity](implementation-identity.md) — development-only,
   default-off peer labels, disclosure policy and qualification boundaries.
 
