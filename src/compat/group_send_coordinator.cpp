@@ -2,11 +2,24 @@
 
 #include <algorithm>
 #include <cassert>
+#include <exception>
 #include <limits>
 
 namespace robotweax::srt::compat {
 using RuntimeAdmission = GroupRuntimeAdmission;
 using Emitter = GroupMulticastEmitter;
+namespace {
+GroupSendCoordinator::Clock::time_point after(
+    GroupSendCoordinator::Clock::time_point now,
+    GroupSendCoordinator::Clock::duration delay) noexcept
+{
+    using Clock = GroupSendCoordinator::Clock;
+    const auto ticks = now.time_since_epoch().count();
+    return ticks > std::numeric_limits<Clock::rep>::max() - delay.count()
+        ? Clock::time_point::max()
+        : Clock::time_point {Clock::duration {ticks + delay.count()}};
+}
+}
 
 struct GroupSendCoordinator::Publication {
     GroupSendCoordinator& owner;
@@ -19,7 +32,8 @@ GroupSendCoordinator::GroupSendCoordinator(Configuration c)
     : configuration_(std::move(c))
     , members_(configuration_.member_capacity)
     , work_(std::make_shared<Work>())
-    , readiness_(std::make_shared<ReadinessSource>())
+    , readiness_(configuration_.readiness ? configuration_.readiness
+                                          : std::make_shared<ReadinessSource>())
 {
     state_.next_sequence = configuration_.source.initial_sequence;
     state_.next_message = configuration_.initial_message;
@@ -51,6 +65,8 @@ std::shared_ptr<GroupSendCoordinator> GroupSendCoordinator::make(
         || c.maximum_busy_attempts == 0 || c.maximum_busy_attempts > 64
         || c.poll_interval <= Clock::duration::zero()
         || c.poll_interval > std::chrono::seconds {1} || c.initial_message == 0
+        || c.admission_busy_grace < Clock::duration::zero()
+        || c.admission_busy_grace > std::chrono::seconds {5}
         || c.initial_message > 0x03ff'ffffU)
         return {};
     try {
@@ -105,6 +121,14 @@ std::shared_ptr<GroupSendCoordinator> GroupSendCoordinator::create_for_testing(
 GroupSendCoordinator::~GroupSendCoordinator()
 {
     close();
+}
+
+GroupSendCoordinator::Clock::time_point
+GroupSendCoordinator::admission_now() const noexcept
+{
+    return configuration_.admission_clock
+        ? configuration_.admission_clock(configuration_.admission_clock_context)
+        : Clock::now();
 }
 
 std::optional<GroupSendCoordinator::Member> GroupSendCoordinator::add_member(
@@ -250,6 +274,9 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
         return Status::failed;
     if (bytes.empty() || bytes.size() > maximum_payload_)
         return Status::invalid;
+    if (retry_at_ && admission_now() < *retry_at_)
+        return Status::busy;
+    retry_at_.reset();
     // Empty groups advance the same source/key timeline without a datagram.
     if (state_.active_members == 0)
         return advance_empty(deadline);
@@ -277,6 +304,7 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
         }
         Frame& frame = **available;
         Publication tx {*this, frame, {}, {}};
+        bool retry = false;
         frame.count = 0;
         const DataHeader header {.sequence = state_.next_sequence,
             .message_number = state_.next_message,
@@ -294,8 +322,20 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
             Detachment reason = Detachment::none;
             switch (guard.status()) {
             case S::ready:
+                member.busy_since.reset();
                 break;
             case S::busy:
+                if (configuration_.admission_busy_grace
+                    > Clock::duration::zero()) {
+                    const auto now = admission_now();
+                    if (!member.busy_since)
+                        member.busy_since = now;
+                    if (now < after(*member.busy_since,
+                            configuration_.admission_busy_grace)) {
+                        retry = true;
+                        continue;
+                    }
+                }
                 reason = Detachment::admission_busy;
                 break;
             case S::full:
@@ -323,6 +363,16 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
             }
             frame.recipients[frame.count] = {.member = member.state.id};
             tx.guards[frame.count++].emplace(std::move(guard));
+        }
+        if (retry) {
+            retry_at_ = after(admission_now(), configuration_.poll_interval);
+            if (!manual_
+                && scheduler_->schedule_service_at(service_, *retry_at_)
+                    != RuntimeScheduler::SubmitStatus::accepted) {
+                state_.failed = true;
+                return Status::failed;
+            }
+            return Status::busy;
         }
         // The enclosing scope releases source/runtime guards before unused advance.
         if (frame.count == 0)
@@ -400,6 +450,7 @@ void GroupSendCoordinator::update_readiness() noexcept
 {
     const auto source = emitter_ ? emitter_->snapshot() : Emitter::Snapshot {};
     state_.writable = !state_.closed && !state_.failed
+        && (!retry_at_ || admission_now() >= *retry_at_)
         && (state_.active_members == 0
             || (crypto_writable() && source.report_writable
                 && state_.inflight_frames < frames_.size()));
@@ -412,6 +463,7 @@ GroupSendCoordinator::Snapshot GroupSendCoordinator::snapshot() const noexcept
     std::lock_guard lock(publication_);
     auto state = state_;
     state.writable = !state.closed && !state.failed
+        && (!retry_at_ || admission_now() >= *retry_at_)
         && (state.active_members == 0
             || (crypto_writable() && emitter_->snapshot().report_writable
                 && state.inflight_frames < frames_.size()));
@@ -483,9 +535,11 @@ void GroupSendCoordinator::drive() noexcept
     }
     if (emitter_->snapshot().failure != Emitter::Failure::none)
         state_.failed = true;
-    if (!manual_ && state_.inflight_frames
+    if (retry_at_ && admission_now() >= *retry_at_)
+        retry_at_.reset();
+    if (!manual_ && (state_.inflight_frames || retry_at_)
         && scheduler_->schedule_service_at(
-               service_, Clock::now() + configuration_.poll_interval)
+               service_, after(Clock::now(), configuration_.poll_interval))
             != RuntimeScheduler::SubmitStatus::accepted)
         state_.failed = true;
     update_readiness();

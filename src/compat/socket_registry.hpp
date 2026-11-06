@@ -106,6 +106,7 @@ struct SocketRecord {
     // not own SocketRecord pointers, and sockets do not own group records.
     SRTSOCKET group_id = SRT_INVALID_SOCK;
     std::uint64_t group_generation = 0;
+    bool coordinated_member = false;
     std::uint64_t member_generation = 0;
     SRT_GROUP_TYPE group_type = SRT_GTYPE_UNDEFINED;
     std::uint16_t group_weight = 0;

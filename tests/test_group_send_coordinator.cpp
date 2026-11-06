@@ -851,3 +851,54 @@ TEST(compat_group_coordinator_factory_rolls_back_partial_service_reservation)
     }
     pool->stop();
 }
+
+TEST(
+    compat_group_coordinator_busy_grace_retries_before_sealing_and_bounds_stalled_admission)
+{
+    for (unsigned scenario = 0; scenario < 3; ++scenario) {
+        const bool persistent = scenario != 0;
+        Fixture f;
+        auto admission_time =
+            scenario == 2 ? Clock::time_point::max() - 1ms : f.now;
+        f.actor->close();
+        f.config.admission_busy_grace = 10ms;
+        f.config.admission_clock = +[](void* p) noexcept {
+            return *static_cast<Clock::time_point*>(p);
+        };
+        f.config.admission_clock_context = &admission_time;
+        f.recreate();
+        Receiver a(f);
+        auto held = a.hold(f);
+        REQUIRE_EQ(held.status(), Admission::Status::ready);
+        auto attempt = std::async(std::launch::async, [&] {
+            return f.send();
+        });
+        REQUIRE_EQ(attempt.wait_for(2s), std::future_status::ready);
+        REQUIRE_EQ(attempt.get(), Status::busy);
+        REQUIRE_EQ(f.actor->snapshot().next_sequence, initial);
+        REQUIRE(!f.actor->snapshot().writable);
+        REQUIRE_EQ(f.output.size(), 0U);
+        if (!persistent)
+            held.release();
+        f.now += persistent ? 11ms : 1ms;
+        admission_time = scenario == 2 ? Clock::time_point::max() : f.now;
+        f.pump();
+        REQUIRE(f.actor->snapshot().writable);
+        attempt = std::async(std::launch::async, [&] {
+            return f.send();
+        });
+        REQUIRE_EQ(attempt.wait_for(2s), std::future_status::ready);
+        REQUIRE_EQ(attempt.get(),
+            persistent ? Status::advanced_without_receivers : Status::accepted);
+        held.release();
+        REQUIRE_EQ(reason(f, a.id),
+            persistent ? Actor::Detachment::admission_busy
+                       : Actor::Detachment::none);
+        REQUIRE_EQ(a.buffered(), persistent ? 0U : 1U);
+        f.now += 1ms;
+        a.now += 12'000;
+        f.pump();
+        REQUIRE_EQ(f.output.size(), persistent ? 0U : 1U);
+        f.actor->close();
+    }
+}

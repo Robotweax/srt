@@ -357,6 +357,9 @@ void GroupMulticastEmitter::drive() noexcept
         if (sent && sent.bytes_transferred == entry.size) {
             ++state_.submitted_packets;
             state_.submitted_bytes += entry.size;
+            if (configuration_.transmit_statistics)
+                configuration_.transmit_statistics->note_multicast_sent(
+                    entry.size, false);
             state_.last_submitted_sequence = entry.sequence;
             const std::uint64_t numerator =
                 (entry.size + network_header_bytes_) * 1'000'000'000ULL;

@@ -1154,6 +1154,17 @@ void set_key_material_state_response(
                     // A mirror's outbound direction has its own group cursor.
                     socket.connection_initial_sequence =
                         group->next_send_sequence;
+                    if (group->dispatch && group->dispatch->coordinator) {
+                        if (!handshake_replay_response
+                            || !handshake_replay_response
+                                ->has_multicast_dispatch)
+                            return fail(SRT_ECONNSETUP);
+                        // Bind later against the authoritative actor cursor.
+                        // A stale advertised ISN is rejected, never rebased.
+                        socket.connection_initial_sequence =
+                            handshake_replay_response->multicast_dispatch
+                                .initial_sequence;
+                    }
                 } else {
                     if (!group->receive_sequence_initialized) {
                         group->next_receive_sequence =
@@ -1323,6 +1334,12 @@ void set_key_material_state_response(
     std::shared_ptr<DatagramChannel>& channel, IpEndpoint& bound) noexcept
 {
     const auto& options = owner.public_options;
+    if (options.multicast_coordinated
+        && (!options.multicast_independent
+            || options.maximum_bandwidth_bytes_per_second <= 0
+            || owner.native_options.experimental_acp1()
+            || owner.native_options.session_authentication()))
+        return fail(SRT_EINVPARAM);
     if (!options.multicast_independent)
         return options.multicast_source_set ? fail(SRT_EINVPARAM) : 0;
     if (!options.multicast_group_set || !options.multicast_source_set
@@ -4041,6 +4058,7 @@ int connect_socket(
         }
         const auto& path_options = socket->public_options;
         if (path_options.multicast_source_set
+            || path_options.multicast_coordinated
             || (path_options.multicast_independent
                 && (socket->group_id == SRT_INVALID_SOCK
                     || socket->group_type != ROBOTWEAX_SRT_GTYPE_MULTICAST
@@ -5628,6 +5646,25 @@ bool ListenerRuntime::process_setup_result(
         if (result.runtime.has_peer_group_membership
             && !context->group_admission.activate()) {
             return finish_setup_context(context, false, SRT_ESCLOSED);
+        }
+        if (admitted_group) {
+            // Serialize final ownership with POST setters. After publication
+            // only application I/O flags may change on this member.
+            std::lock_guard option_lock(context->accepted->option_mutex);
+            std::shared_ptr<ConnectionRuntime> runtime;
+            {
+                std::lock_guard lock(context->accepted->mutex);
+                runtime = context->accepted->runtime;
+            }
+            const auto& admission = context->group_admission;
+            if (!GroupRegistry::instance().activate_coordinated_member(
+                    admission.mirror.group, admission.mirror.generation,
+                    admission.member_handle, admission.member_generation,
+                    runtime))
+                return finish_setup_context(context, false, SRT_ECONNSETUP);
+            std::lock_guard lock(context->accepted->mutex);
+            context->accepted->coordinated_member =
+                context->accepted->public_options.multicast_coordinated;
         }
         const ActionResult actions = apply_actions(*context->channel,
             context->initial.peer, context->caller_socket_id,

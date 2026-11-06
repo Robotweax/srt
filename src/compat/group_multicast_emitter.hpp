@@ -19,6 +19,7 @@
 namespace robotweax::srt::compat {
 
 class DatagramChannel;
+class DispatchTransmitState;
 
 // Group-owned original DATA work, independent of member ACK/window state.
 // The coordinator must encode canonical protected packets and commit member
@@ -54,6 +55,7 @@ public:
         // Must outlive the emitter and must not reenter it.
         ClockFunction clock = nullptr;
         void* clock_context = nullptr;
+        std::shared_ptr<DispatchTransmitState> transmit_statistics;
     };
 
     enum class Admission : std::uint8_t {

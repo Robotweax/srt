@@ -5,6 +5,8 @@
 #include "test.hpp"
 
 #include "compat/group_registry.hpp"
+#include "compat/group_send_coordinator.hpp"
+#include "compat/runtime_scheduler_service.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/transport_runtime.hpp"
 #include "robotweax/srt/codec.hpp"
@@ -18,6 +20,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -424,6 +427,7 @@ struct StreamScenario {
     bool independent = false;
     std::array<std::uint8_t, 4> control_address {127, 0, 0, 1};
     bool asynchronous_receiver = false;
+    bool coordinated = false;
 };
 
 void run_dispatch_stream(const StreamScenario& scenario)
@@ -445,6 +449,14 @@ void run_dispatch_stream(const StreamScenario& scenario)
         const auto source = ipv4_sockaddr({127, 0, 0, 1}, 0);
         REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE,
                        &source, sizeof(source)),
+            0);
+    }
+    if (scenario.coordinated) {
+        const std::int64_t rate = 1'000'000;
+        REQUIRE_EQ(
+            srt_setsockflag(listener, SRTO_MAXBW, &rate, sizeof(rate)), 0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_COORDINATED,
+                       &scenario.coordinated, sizeof(scenario.coordinated)),
             0);
     }
     if (scenario.encrypted) {
@@ -654,6 +666,7 @@ void run_dispatch_stream(const StreamScenario& scenario)
         }
         int redirecting = 0;
         int suppressed = 0;
+        int external = 0;
         for (const SRTSOCKET member : members) {
             const auto socket = SocketRegistry::instance().find(member);
             REQUIRE(socket != nullptr);
@@ -671,10 +684,16 @@ void run_dispatch_stream(const StreamScenario& scenario)
                 REQUIRE_EQ(egress.destination.port, multicast_port);
             } else if (egress.mode == Egress::Mode::suppress) {
                 ++suppressed;
+            } else if (egress.mode == Egress::Mode::external_originals) {
+                ++external;
+                REQUIRE_EQ(
+                    runtime->statistics(false, true).total.sent_unique.packets,
+                    0U);
             }
         }
-        REQUIRE_EQ(redirecting, 1);
-        REQUIRE_EQ(suppressed, 2);
+        REQUIRE_EQ(redirecting, scenario.coordinated ? 0 : 1);
+        REQUIRE_EQ(suppressed, scenario.coordinated ? 0 : 2);
+        REQUIRE_EQ(external, scenario.coordinated ? 3 : 0);
         SRT_TRACEBSTATS statistics {};
         REQUIRE_EQ(srt_bstats(sender, &statistics, 0), 0);
         REQUIRE_EQ(statistics.pktSentUniqueTotal,
@@ -1672,6 +1691,532 @@ TEST(multicast_dispatch_independent_async_receiver_negotiates_source)
         loopback_multicast_available(), "no loopback multicast on this host");
     run_dispatch_stream({.independent = true, .asynchronous_receiver = true});
 }
+
+TEST(multicast_dispatch_coordinated_plaintext_public_stream_and_lifecycle)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    run_dispatch_stream({.independent = true, .coordinated = true});
+}
+
+namespace {
+struct CoordinatedNative {
+    Peers peers;
+    AdmissionLog admissions;
+    SRTSOCKET listener = SRT_INVALID_SOCK;
+    SRTSOCKET sender = SRT_INVALID_SOCK;
+    SRTSOCKET receiver = SRT_INVALID_SOCK;
+    sockaddr_in bound {};
+    explicit CoordinatedNative(std::int64_t rate = 1'000'000,
+        bool encrypted = false, bool gcm = false, int send_packets = 0)
+    {
+        listener = peers.keep(srt_create_socket());
+        const bool enabled = true;
+        auto local = ipv4_sockaddr({127, 0, 0, 1}, 0);
+        const auto multicast =
+            ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
+        const std::int32_t hops = 0;
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                       &enabled, sizeof(enabled)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_COORDINATED,
+                       &enabled, sizeof(enabled)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE,
+                       &local, sizeof(local)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP,
+                       &multicast, sizeof(multicast)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE, &local,
+                       sizeof(local)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(
+                       listener, SRTO_ROBOTWEAX_MCAST_TTL, &hops, sizeof(hops)),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(listener, SRTO_MAXBW, &rate, sizeof(rate)), 0);
+        if (send_packets) {
+            const std::int32_t bytes = send_packets * 1472;
+            REQUIRE_EQ(
+                srt_setsockflag(listener, SRTO_SNDBUF, &bytes, sizeof(bytes)),
+                0);
+            const bool drop = false;
+            REQUIRE_EQ(
+                srt_setsockflag(listener, SRTO_TLPKTDROP, &drop, sizeof(drop)),
+                0);
+            // This fixture suppresses ACKs to exhaust retention, rather than
+            // testing the independent peer-idle timeout.
+            const std::int32_t idle = 20'000;
+            REQUIRE_EQ(srt_setsockflag(
+                           listener, SRTO_PEERIDLETIMEO, &idle, sizeof(idle)),
+                0);
+        }
+        if (encrypted) {
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_PASSPHRASE,
+                           group_passphrase, sizeof(group_passphrase) - 1),
+                0);
+            const std::int32_t refresh = 32, preannounce = 8;
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_KMPREANNOUNCE,
+                           &preannounce, sizeof(preannounce)),
+                0);
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_KMREFRESHRATE, &refresh,
+                           sizeof(refresh)),
+                0);
+#ifdef ENABLE_AEAD_API_PREVIEW
+            if (gcm) {
+                const std::int32_t mode = 2;
+                REQUIRE_EQ(srt_setsockflag(
+                               listener, SRTO_CRYPTOMODE, &mode, sizeof(mode)),
+                    0);
+            }
+#endif
+        }
+        REQUIRE_EQ(
+            srt_listen_callback(listener, admit_dispatch, &admissions), 0);
+        REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&local),
+                       sizeof(local)),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 8), 0);
+        int size = sizeof(bound);
+        REQUIRE_EQ(srt_getsockname(
+                       listener, reinterpret_cast<sockaddr*>(&bound), &size),
+            0);
+        receiver = make_receiver(peers, bound, encrypted, gcm, 120, true);
+        sender = peers.keep(srt_accept(listener, nullptr, nullptr));
+        REQUIRE(sender != SRT_INVALID_SOCK);
+        REQUIRE(wait_for_members(sender, 1, encrypted));
+        REQUIRE(wait_for_members(receiver, 1));
+    }
+    std::shared_ptr<robotweax::srt::compat::GroupSendCoordinator> actor()
+    {
+        const auto record = GroupRegistry::instance().find(sender);
+        std::lock_guard lock(record->mutex);
+        return record->dispatch->coordinator;
+    }
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> source()
+    {
+        const auto record = SocketRegistry::instance().find(listener);
+        std::lock_guard lock(record->mutex);
+        return record->multicast_transmit_channel;
+    }
+    int send(int index)
+    {
+        const auto p = message(index);
+        return srt_sendmsg(sender, p.data(), p.size(), -1, 1);
+    }
+};
+struct SendHookReset {
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+    ~SendHookReset()
+    {
+        channel->set_send_hook_for_testing(nullptr, nullptr);
+    }
+};
+}
+
+TEST(
+    multicast_dispatch_coordinated_options_freeze_transport_but_allow_group_io_flags)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    CoordinatedNative f;
+    for (const auto handle : {f.listener, f.sender}) {
+        bool enabled = false;
+        int size = sizeof(enabled);
+        REQUIRE_EQ(srt_getsockflag(handle, SRTO_ROBOTWEAX_MCAST_COORDINATED,
+                       &enabled, &size),
+            0);
+        REQUIRE(enabled);
+        const std::int64_t rate = 1234;
+        REQUIRE_EQ(srt_setsockflag(handle, SRTO_MAXBW, &rate, sizeof(rate)),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNSOCK);
+        std::int64_t actual = 0;
+        size = sizeof(actual);
+        REQUIRE_EQ(srt_getsockflag(handle, SRTO_MAXBW, &actual, &size), 0);
+        REQUIRE_EQ(actual, 1'000'000);
+    }
+    const bool yes = true, no = false;
+    REQUIRE_EQ(srt_setsockflag(f.receiver, SRTO_ROBOTWEAX_MCAST_COORDINATED,
+                   &yes, sizeof(yes)),
+        SRT_ERROR);
+    std::int32_t threshold = 2;
+    REQUIRE_EQ(srt_setsockflag(f.sender, SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD,
+                   &threshold, sizeof(threshold)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_setsockflag(f.sender, SRTO_SNDSYN, &no, sizeof(no)), 0);
+    REQUIRE_EQ(srt_setsockflag(f.sender, SRTO_SNDSYN, &yes, sizeof(yes)), 0);
+    const std::int32_t timeout = 500;
+    REQUIRE_EQ(
+        srt_setsockflag(f.sender, SRTO_SNDTIMEO, &timeout, sizeof(timeout)), 0);
+    REQUIRE_EQ(f.send(0), static_cast<int>(message(0).size()));
+    expect_messages(f.receiver, 0, 1);
+    SRT_SOCKGROUPDATA row[1] {};
+    std::size_t count = 1;
+    REQUIRE_EQ(srt_group_data(f.sender, row, &count), 1);
+    REQUIRE_EQ(srt_sendmsg(row[0].id, "x", 1, -1, 1), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    const std::int64_t changed_rate = 17;
+    REQUIRE_EQ(srt_setsockflag(
+                   row[0].id, SRTO_MAXBW, &changed_rate, sizeof(changed_rate)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_setsockflag(row[0].id, SRTO_SNDSYN, &no, sizeof(no)), 0);
+    REQUIRE_EQ(srt_setsockflag(row[0].id, SRTO_SNDSYN, &yes, sizeof(yes)), 0);
+    const auto before = f.actor()->snapshot();
+    auto control = srt_msgctrl_default;
+    control.msgttl = 0;
+    control.srctime = 1;
+    REQUIRE_EQ(srt_sendmsg2(f.sender, "x", 1, &control), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ETIMEOUT);
+    REQUIRE_EQ(f.actor()->snapshot().next_sequence, before.next_sequence);
+    control = srt_msgctrl_default;
+    control.grpdata = row;
+    control.grpdata_size = 1;
+    const auto body = message(1);
+    REQUIRE_EQ(srt_sendmsg2(f.sender, body.data(), body.size(), &control),
+        static_cast<int>(body.size()));
+    REQUIRE_EQ(control.pktseq,
+        static_cast<std::int32_t>(before.next_sequence.value()));
+    REQUIRE_EQ(control.msgno, static_cast<std::int32_t>(before.next_message));
+    REQUIRE_EQ(row[0].memberstate, SRT_GST_RUNNING);
+    expect_messages(f.receiver, 1, 1);
+    ROBOTWEAX_SRT_MCAST_STATS_V1 stats {};
+    int size = sizeof(stats);
+    REQUIRE_EQ(
+        srt_getsockflag(f.sender, SRTO_ROBOTWEAX_MCAST_STATS, &stats, &size),
+        0);
+    REQUIRE_EQ(stats.mcast_pkt_sent, 2U);
+    REQUIRE_EQ(stats.mcast_byte_sent,
+        2U * packet_header_size + message(0).size() + body.size());
+}
+
+TEST(
+    multicast_dispatch_coordinated_backpressure_epoll_and_close_wake_blocked_send)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    CoordinatedNative f(1);
+    const bool no = false, yes = true;
+    REQUIRE_EQ(srt_setsockflag(f.sender, SRTO_SNDSYN, &no, sizeof(no)), 0);
+    const int epoll = srt_epoll_create();
+    REQUIRE(epoll >= 0);
+    struct EpollRelease {
+        int id;
+        ~EpollRelease()
+        {
+            (void)srt_epoll_release(id);
+        }
+    } cleanup {epoll};
+    const int out = SRT_EPOLL_OUT;
+    REQUIRE_EQ(srt_epoll_add_usock(epoll, f.sender, &out), 0);
+    SRT_EPOLL_EVENT events[1] {};
+    int accepted = 0;
+    const auto fill_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    while (accepted < 128) {
+        const int sent = f.send(accepted);
+        if (sent == SRT_ERROR) {
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCSND);
+            if (f.actor()->snapshot().inflight_frames == 64)
+                break;
+            REQUIRE(std::chrono::steady_clock::now() < fill_deadline);
+            REQUIRE_EQ(srt_epoll_uwait(epoll, events, 1, 1000), 1);
+            continue;
+        }
+        REQUIRE_EQ(sent, static_cast<int>(message(accepted).size()));
+        ++accepted;
+    }
+    REQUIRE(accepted >= 64 && accepted < 128);
+    REQUIRE(!f.actor()->snapshot().writable);
+    REQUIRE_EQ(srt_epoll_uwait(epoll, events, 1, 0), 0);
+    REQUIRE_EQ(srt_setsockflag(f.sender, SRTO_SNDSYN, &yes, sizeof(yes)), 0);
+    std::future<int> pending;
+    struct Unblock {
+        CoordinatedNative& f;
+        ~Unblock()
+        {
+            f.peers.drop(f.sender);
+        }
+    } unblock {f};
+    std::promise<void> requested;
+    auto started = requested.get_future();
+    pending = std::async(std::launch::async, [&] {
+        requested.set_value();
+        return f.send(129);
+    });
+    REQUIRE_EQ(
+        started.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    REQUIRE_EQ(pending.wait_for(std::chrono::milliseconds {10}),
+        std::future_status::timeout);
+    f.peers.drop(f.sender);
+    REQUIRE_EQ(
+        pending.wait_for(std::chrono::seconds {2}), std::future_status::ready);
+    REQUIRE_EQ(pending.get(), SRT_ERROR);
+}
+
+TEST(
+    multicast_dispatch_coordinated_source_failure_preserves_unicast_sessions_and_reports_error)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    CoordinatedNative f;
+    const auto source = f.source();
+    SendHookReset cleanup {source};
+    source->set_send_hook_for_testing(
+        +[](std::span<const std::byte>, IpEndpoint, void*) noexcept {
+            return UdpIoResult {.error = Error::io_error};
+        },
+        nullptr);
+    REQUIRE_EQ(f.send(0), static_cast<int>(message(0).size()));
+    const int epoll = srt_epoll_create();
+    REQUIRE(epoll >= 0);
+    const int error = SRT_EPOLL_ERR;
+    REQUIRE_EQ(srt_epoll_add_usock(epoll, f.sender, &error), 0);
+    SRT_EPOLL_EVENT events[1] {};
+    const int ready = srt_epoll_uwait(epoll, events, 1, 2000);
+    (void)srt_epoll_release(epoll);
+    REQUIRE_EQ(ready, 1);
+    REQUIRE(events[0].events & SRT_EPOLL_ERR);
+    REQUIRE_EQ(srt_getsockstate(f.sender), SRTS_BROKEN);
+    std::int32_t state = 0;
+    int size = sizeof(state);
+    REQUIRE_EQ(srt_getsockflag(f.sender, SRTO_STATE, &state, &size), 0);
+    REQUIRE_EQ(state, SRTS_BROKEN);
+    REQUIRE_EQ(f.send(1), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESOCKFAIL);
+    SRT_SOCKGROUPDATA data[1] {};
+    std::size_t count = 1;
+    REQUIRE_EQ(srt_group_data(f.sender, data, &count), 1);
+    REQUIRE_EQ(data[0].sockstate, SRTS_CONNECTED);
+    REQUIRE_EQ(data[0].memberstate, SRT_GST_BROKEN);
+    REQUIRE_EQ(data[0].result, SRT_ECONNLOST);
+    REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
+    ROBOTWEAX_SRT_MCAST_STATS_V1 stats {};
+    size = sizeof(stats);
+    REQUIRE_EQ(
+        srt_getsockflag(f.sender, SRTO_ROBOTWEAX_MCAST_STATS, &stats, &size),
+        0);
+    REQUIRE_EQ(stats.mcast_pkt_sent, 0U);
+}
+
+TEST(
+    multicast_dispatch_coordinated_lost_originals_repair_over_unicast_with_canonical_keys)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2);
+        DropOneOriginal probe;
+        probe.channel = f.source();
+        probe.multicast = {
+            .address = {239, 255, 133, 11}, .port = multicast_port};
+        probe.drop_sequence = static_cast<std::int32_t>(
+            f.actor()->snapshot().next_sequence.advanced(3).value());
+        SendHookReset cleanup {probe.channel};
+        probe.channel->set_send_hook_for_testing(drop_one_original, &probe);
+        for (int i = 0; i < 10; ++i) {
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+            std::this_thread::sleep_for(std::chrono::milliseconds {2});
+        }
+        expect_messages(f.receiver, 0, 10);
+        REQUIRE_EQ(probe.dropped.load(), 1);
+        REQUIRE_EQ(probe.multicast_repeats.load(), 0);
+        SRT_TRACEBSTATS stats {};
+        REQUIRE_EQ(srt_bstats(f.sender, &stats, 0), 0);
+        REQUIRE(stats.pktRetransTotal > 0);
+        REQUIRE_EQ(f.actor()->snapshot().detached_members, 0U);
+    }
+}
+
+TEST(
+    multicast_dispatch_coordinated_slow_receiver_is_visible_and_healthy_stream_continues)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    CoordinatedNative f(1'000'000, false, false, 32);
+    const auto healthy =
+        make_receiver(f.peers, f.bound, false, false, 120, true);
+    REQUIRE(wait_for_members(f.sender, 2));
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> control;
+    {
+        const auto record = GroupRegistry::instance().find(f.receiver);
+        std::lock_guard lock(record->mutex);
+        control = record->dispatch->control_channel.lock();
+    }
+    REQUIRE(control);
+    SendHookReset cleanup {control};
+    control->set_send_hook_for_testing(
+        +[](std::span<const std::byte> bytes, IpEndpoint peer,
+             void* p) noexcept {
+            const auto decoded = decode_packet(bytes);
+            if (decoded && decoded.packet.kind == PacketKind::control
+                && (decoded.packet.control.type == ControlType::acknowledgement
+                    || decoded.packet.control.type
+                        == ControlType::negative_acknowledgement))
+                return UdpIoResult {.bytes_transferred = bytes.size()};
+            return static_cast<robotweax::srt::compat::DatagramChannel*>(p)
+                ->socket.send_to(bytes, peer);
+        },
+        control.get());
+    for (int i = 0; i < 40; ++i) {
+        REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        expect_messages(healthy, i, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds {20});
+    }
+    SRT_SOCKGROUPDATA data[2] {};
+    std::size_t count = 2;
+    REQUIRE_EQ(srt_group_data(f.sender, data, &count), 2);
+    int detached = 0, running = 0;
+    for (auto& row : data) {
+        REQUIRE_EQ(row.sockstate, SRTS_CONNECTED);
+        detached +=
+            row.memberstate == SRT_GST_BROKEN && row.result == SRT_ECONNLOST;
+        running +=
+            row.memberstate == SRT_GST_RUNNING && row.result == SRT_SUCCESS;
+    }
+    REQUIRE_EQ(detached, 1);
+    REQUIRE_EQ(running, 1);
+    REQUIRE_EQ(f.actor()->snapshot().detached_members, 1U);
+    std::array<robotweax::srt::compat::GroupSendCoordinator::Member, 2> members;
+    REQUIRE_EQ(f.actor()->members(members), 2U);
+    REQUIRE(std::any_of(members.begin(), members.end(), [](const auto& m) {
+        return m.detachment
+            == robotweax::srt::compat::GroupSendCoordinator::Detachment::
+                history_full;
+    }));
+    REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
+}
+
+TEST(
+    multicast_dispatch_coordinated_validation_requires_fixed_source_and_positive_wire_rate)
+{
+    const bool yes = true;
+    for (const auto type :
+        {SRT_GTYPE_BROADCAST, ROBOTWEAX_SRT_GTYPE_MULTICAST}) {
+        Peers peers;
+        const auto group = peers.keep(srt_create_group(type));
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_MCAST_COORDINATED,
+                       &yes, sizeof(yes)),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    }
+    for (unsigned mutation = 0; mutation < 3; ++mutation) {
+        Peers peers;
+        const auto listener = peers.keep(srt_create_socket());
+        bool selected = true;
+        int size = sizeof(selected);
+        REQUIRE_EQ(srt_getsockflag(listener, SRTO_ROBOTWEAX_MCAST_COORDINATED,
+                       &selected, &size),
+            0);
+        REQUIRE(!selected);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_COORDINATED,
+                       &yes, sizeof(yes)),
+            0);
+        auto local = ipv4_sockaddr({127, 0, 0, 1}, 0);
+        const auto group = ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP, &group,
+                       sizeof(group)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE,
+                       &local, sizeof(local)),
+            0);
+        if (mutation != 0)
+            REQUIRE_EQ(srt_setsockflag(listener,
+                           SRTO_ROBOTWEAX_MCAST_INDEPENDENT, &yes, sizeof(yes)),
+                0);
+        const std::int64_t rate = mutation == 0 ? 1000 : mutation == 1 ? 0 : -1;
+        REQUIRE_EQ(
+            srt_setsockflag(listener, SRTO_MAXBW, &rate, sizeof(rate)), 0);
+        REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&local),
+                       sizeof(local)),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 2), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+        REQUIRE_EQ(srt_getsockstate(listener), SRTS_OPENED);
+    }
+    Peers peers;
+    const auto caller = peers.keep(srt_create_socket());
+    REQUIRE_EQ(srt_setsockflag(
+                   caller, SRTO_ROBOTWEAX_MCAST_COORDINATED, &yes, sizeof(yes)),
+        0);
+    const auto peer = ipv4_sockaddr({127, 0, 0, 1}, 9);
+    REQUIRE_EQ(srt_connect(caller, reinterpret_cast<const sockaddr*>(&peer),
+                   sizeof(peer)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+}
+
+TEST(multicast_dispatch_coordinated_final_cleanup_retires_live_source_services)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    // Prior socket creation owns an implicit startup reference. Retire that
+    // generation before establishing this test's explicit final reference.
+    REQUIRE_EQ(srt_cleanup(), 0);
+    REQUIRE_EQ(srt_startup(), 0);
+    struct Cleanup {
+        bool active = true;
+        ~Cleanup()
+        {
+            if (active)
+                (void)srt_cleanup();
+        }
+    } cleanup;
+    CoordinatedNative f(1);
+    auto actor = f.actor();
+    auto pool = robotweax::srt::compat::acquire_runtime_scheduler();
+    REQUIRE_EQ(f.send(0), static_cast<int>(message(0).size()));
+    REQUIRE_EQ(f.send(1), static_cast<int>(message(1).size()));
+    REQUIRE(pool->snapshot().services_reserved >= 2U);
+    REQUIRE_EQ(srt_cleanup(), 0);
+    cleanup.active = false;
+    REQUIRE(actor->snapshot().closed);
+    REQUIRE_EQ(pool->snapshot().services_reserved, 0U);
+    REQUIRE(!pool->snapshot().accepting);
+    REQUIRE_EQ(srt_startup(), 0);
+    cleanup.active = true;
+    auto fresh = robotweax::srt::compat::acquire_runtime_scheduler();
+    REQUIRE(fresh && fresh != pool);
+    REQUIRE_EQ(fresh->snapshot().services_reserved, 0U);
+}
+
+TEST(multicast_dispatch_coordinated_ctr_public_rotations_and_empty_rejoin)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    run_dispatch_stream({.encrypted = true,
+        .first_batch = 80,
+        .second_batch = 40,
+        .third_batch = 40,
+        .refresh_rate = 32,
+        .preannouncement = 8,
+        .send_gap = std::chrono::milliseconds {2},
+        .independent = true,
+        .coordinated = true});
+}
+
+#ifdef ENABLE_AEAD_API_PREVIEW
+TEST(multicast_dispatch_coordinated_gcm_public_rotations_and_empty_rejoin)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    run_dispatch_stream({.encrypted = true,
+        .first_batch = 80,
+        .second_batch = 40,
+        .third_batch = 40,
+        .refresh_rate = 32,
+        .preannouncement = 8,
+        .send_gap = std::chrono::milliseconds {2},
+        .aes_gcm = true,
+        .independent = true,
+        .coordinated = true});
+}
+#endif
 
 TEST(multicast_dispatch_independent_transient_repair_uses_unicast_retry)
 {

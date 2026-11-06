@@ -274,6 +274,13 @@ typedef enum SRT_SOCKOPT {
      * port zero selects an ephemeral port at listen. Readback after listen
      * returns the bound source. Requires MCAST_INDEPENDENT. */
     SRTO_ROBOTWEAX_MCAST_SOURCE = 0x01000019,
+    /** Listener-local PRE-bind bool, default false: group-owned original
+     * multicast emission. Requires MCAST_INDEPENDENT and positive MAXBW;
+     * MAXBW includes IP/UDP overhead and is frozen after listen. Solo Live
+     * messages only, at most 64 receivers. Unavailable receivers are detached
+     * from group sending; inspect group data. No automatic fallback. The
+     * fixed-source wire format and receiver configuration are unchanged. */
+    SRTO_ROBOTWEAX_MCAST_COORDINATED = 0x0100001a,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif

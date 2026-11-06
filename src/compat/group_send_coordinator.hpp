@@ -4,9 +4,11 @@
 
 namespace robotweax::srt::compat {
 
-// Internal single-packet Live dispatch actor. No public profile selects it.
+// Single-packet Live dispatch actor for the coordinated sender profile.
 // Owns the publication/close gate and authoritative advertised cursor. Callers
 // must not hold registry/group metadata or runtime locks when entering it.
+// Factory construction alone may reserve idle services under a registry lock
+// with an already running scheduler and bound source; it performs no I/O.
 // Lock order: publication -> emitter -> distinct runtimes (try-lock only).
 // Its two reserved services require explicit scheduler capacity; close before
 // scheduler stop. The borrowed crypto provider outlives the actor and its work.
@@ -24,11 +26,18 @@ public:
         // Busy completion attempts are bounded independently of source slots.
         std::uint32_t maximum_busy_attempts = 8;
         Clock::duration poll_interval = std::chrono::milliseconds {1};
+        // Optional transient runtime/KM busy grace. No sealing while retrying.
+        Clock::duration admission_busy_grace {};
+        std::shared_ptr<ReadinessSource> readiness;
+        // Borrowed monotonic admission clock, serialized by the actor gate.
+        GroupMulticastEmitter::ClockFunction admission_clock = nullptr;
+        void* admission_clock_context = nullptr;
     };
     enum class Status : std::uint8_t {
         accepted,
         advanced_without_receivers,
         full,
+        busy,
         expired,
         invalid,
         failed,
@@ -81,9 +90,8 @@ public:
         const std::shared_ptr<ConnectionRuntime>&) noexcept;
     void remove_member(std::uint64_t id) noexcept;
     [[nodiscard]] std::size_t members(std::span<Member>) const noexcept;
-    // Admission uses explicit detach-on-unavailable policy, including KM busy.
-    // This is intentionally internal until public degradation/recovery policy
-    // is defined. Full source/fanout capacity rejects before member mutation or
+    // Admission uses detach-on-unavailable, including KM busy after the optional
+    // grace. Full source/fanout capacity rejects before member mutation or
     // sealing. A source failure never authorizes a receiver's history.
     // A key-horizon limit rejects before KM preparation can replace a selector
     // used by a still-pending original. This fences local backlog only; it does
@@ -106,6 +114,7 @@ private:
         Member state;
         std::weak_ptr<ConnectionRuntime> runtime;
         GroupRuntimeAdmission::Binding binding;
+        std::optional<Clock::time_point> busy_since;
     };
     struct Recipient {
         std::uint64_t member = 0;
@@ -138,6 +147,7 @@ private:
     void update_readiness() noexcept;
     [[nodiscard]] bool crypto_writable() const noexcept;
     [[nodiscard]] Status advance_empty(Clock::time_point) noexcept;
+    [[nodiscard]] Clock::time_point admission_now() const noexcept;
 
     mutable std::mutex publication_;
     Configuration configuration_;
@@ -155,5 +165,6 @@ private:
     std::shared_ptr<Work> work_;
     std::shared_ptr<ReadinessSource> readiness_;
     bool manual_ = false;
+    std::optional<Clock::time_point> retry_at_;
 };
 } // namespace robotweax::srt::compat

@@ -17,6 +17,9 @@ constexpr std::size_t default_runtime_scheduler_shards = 2U;
 // because all sockets start in one burst.
 constexpr std::size_t runtime_scheduler_queue_capacity = 4'096U;
 constexpr std::size_t runtime_scheduler_timer_capacity = 4'096U;
+// Each coordinated dispatch actor reserves two slots on one affinity shard.
+// Full reservation fails admission; ordinary socket queues are independent.
+constexpr std::size_t runtime_scheduler_service_capacity = 128U;
 
 class RuntimeSchedulerService {
 public:
@@ -57,6 +60,8 @@ public:
                         runtime_scheduler_queue_capacity,
                     .timer_capacity_per_shard =
                         runtime_scheduler_timer_capacity,
+                    .service_capacity_per_shard =
+                        runtime_scheduler_service_capacity,
                 });
             if (!scheduler->start()) {
                 return {};

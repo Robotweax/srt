@@ -3,6 +3,7 @@
 
 #include "compat/error_state.hpp"
 #include "compat/group_registry.hpp"
+#include "compat/group_send_coordinator.hpp"
 #include "compat/readiness.hpp"
 
 #include <algorithm>
@@ -1051,6 +1052,10 @@ int send_group_message_implementation(
     IpEndpoint dispatch_destination {};
     std::shared_ptr<DispatchTransmitState> dispatch_transmit;
     std::shared_ptr<DatagramChannel> dispatch_channel;
+    std::shared_ptr<GroupSendCoordinator> coordinator;
+    std::chrono::steady_clock::time_point timestamp_origin;
+    std::int32_t coordinated_payload = 0;
+    bool coordinated_opened = false;
     {
         std::lock_guard lock(group->mutex);
         if (group->closed) {
@@ -1072,11 +1077,100 @@ int send_group_message_implementation(
             dispatch_destination = group->dispatch->multicast_group;
             dispatch_transmit = group->dispatch->transmit;
             dispatch_channel = group->dispatch->transmit_channel;
+            coordinator = group->dispatch->coordinator;
+            timestamp_origin = group->timestamp_origin.value_or(
+                std::chrono::steady_clock::time_point {});
+            coordinated_payload =
+                group->member_public_options.maximum_payload_size;
+            coordinated_opened = group->opened;
         }
     }
     const auto deadline = io_deadline(timeout);
     const auto bytes = std::as_bytes(std::span{
         buffer, static_cast<std::size_t>(length)});
+
+    if (coordinator) {
+        using Clock = GroupSendCoordinator::Clock;
+        if (!coordinated_opened)
+            return fail(SRT_ENOCONN);
+        if (length > coordinated_payload)
+            return fail(SRT_EINVALMSGAPI);
+        const auto origin_us =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                timestamp_origin.time_since_epoch())
+                .count();
+        const auto maximum_us =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                Clock::duration::max())
+                .count();
+        if (local_control.srctime > maximum_us)
+            return fail(SRT_EINVALMSGAPI);
+        const auto relative = local_control.srctime > origin_us
+            ? local_control.srctime - origin_us
+            : 0;
+        auto expiration = Clock::time_point::max();
+        if (local_control.msgttl >= 0) {
+            const auto ttl_us =
+                static_cast<std::int64_t>(local_control.msgttl) * 1'000;
+            const auto base = std::max(local_control.srctime, origin_us + 1);
+            const auto expires =
+                base > maximum_us - ttl_us ? maximum_us : base + ttl_us;
+            expiration =
+                Clock::time_point {std::chrono::duration_cast<Clock::duration>(
+                    std::chrono::microseconds {expires})};
+        }
+        for (;;) {
+            const auto observed = ReadinessSignal::generation();
+            const auto before = coordinator->snapshot();
+            const auto result = coordinator->send(bytes,
+                PacketTimestamp {static_cast<std::uint32_t>(relative)},
+                expiration, local_control.inorder != 0);
+            using Status = GroupSendCoordinator::Status;
+            if (result == Status::accepted
+                || result == Status::advanced_without_receivers) {
+                const auto state = coordinator->snapshot();
+                GroupRegistry::refresh_coordinated_members(group);
+                {
+                    std::lock_guard lock(group->mutex);
+                    // This mirror is diagnostic only. Handshakes read the
+                    // actor's authoritative cursor outside metadata locks.
+                    group->next_send_sequence = state.next_sequence.value();
+                    group->next_send_message = state.next_message;
+                    GroupRegistry::note_group_sent(
+                        *group, static_cast<std::uint64_t>(length));
+                    for (auto& member : group->members)
+                        if (member.coordinator_member
+                            && !member.coordinator_detached) {
+                            member.public_data.memberstate = SRT_GST_RUNNING;
+                            member.public_data.result = SRT_SUCCESS;
+                        }
+                }
+                if (control) {
+                    control->srctime = local_control.srctime;
+                    control->pktseq =
+                        static_cast<std::int32_t>(before.next_sequence.value());
+                    control->msgno =
+                        static_cast<std::int32_t>(before.next_message);
+                }
+                fill_group_data(
+                    group, control, requested_data, requested_capacity, true);
+                return length;
+            }
+            if (result == Status::closed)
+                return fail(SRT_ESCLOSED);
+            if (result == Status::failed)
+                return fail(SRT_ESOCKFAIL);
+            if (result == Status::invalid)
+                return fail(SRT_EINVALMSGAPI);
+            if (result == Status::expired)
+                return fail(SRT_ETIMEOUT);
+            if (!blocking)
+                return fail(SRT_EASYNCSND);
+            if (Clock::now() >= deadline)
+                return fail(SRT_ETIMEOUT);
+            ReadinessSignal::wait_until(observed, deadline);
+        }
+    }
 
     for (;;) {
         const std::uint64_t observed = ReadinessSignal::generation();
@@ -1717,6 +1811,27 @@ SocketReadinessSnapshot group_poll_readiness(
 {
     SocketReadinessSnapshot readiness {};
     if (group == nullptr) {
+        return readiness;
+    }
+    std::shared_ptr<GroupSendCoordinator> coordinator;
+    {
+        std::lock_guard lock(group->mutex);
+        if (group->dispatch)
+            coordinator = group->dispatch->coordinator;
+    }
+    if (coordinator) {
+        GroupRegistry::refresh_coordinated_members(group);
+        const auto state = coordinator->snapshot();
+        std::lock_guard lock(group->mutex);
+        readiness.exists = true;
+        readiness.source = group->readiness_source;
+        readiness.update_version = group->update_version;
+        if (group->closed || state.closed)
+            readiness.events = SRT_EPOLL_ERR;
+        else if (state.failed)
+            readiness.events = SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+        else if (group->opened && state.writable)
+            readiness.events = SRT_EPOLL_OUT;
         return readiness;
     }
     // Resolve identities and publish terminal member states once per query.

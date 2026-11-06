@@ -33,6 +33,7 @@ template <typename T> class ProcessOwned;
 class ConnectionRuntime;
 class DatagramChannel;
 class GroupReceiveRetention;
+class GroupSendCoordinator;
 
 // Numeric identities plus generations deliberately replace reciprocal owning
 // pointers between sockets and groups.  The coordinator introduced by the
@@ -42,6 +43,8 @@ struct GroupMemberSnapshot {
     std::uint64_t generation = 0;
     // Receive activity survives send-path idling and logical deduplication.
     bool received_data = false;
+    std::uint64_t coordinator_member = 0;
+    bool coordinator_detached = false;
     // Member retransmissions already folded into the group counters.
     PacketByteCounter retransmitted_folded;
     // This caller member accepted GroupRecord::peer_group during its own
@@ -128,6 +131,7 @@ struct DispatchGroupState {
     // Listener side only, when the listener encrypts: the one traffic-key
     // schedule every member session of this sender draws from.
     std::shared_ptr<SharedTransmitKeySchedule> key_schedule;
+    std::shared_ptr<GroupSendCoordinator> coordinator;
     // Listener side only: repeat tally and multicast-path counters.
     std::shared_ptr<DispatchTransmitState> transmit;
     // SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD; 0 keeps every repeat unicast.
@@ -329,6 +333,12 @@ public:
     [[nodiscard]] bool prepare_dispatch(SRTSOCKET listener,
         std::string_view admission_key, std::uint64_t admission_domain,
         std::uint32_t initial_sequence, DispatchDescription& output) noexcept;
+    [[nodiscard]] bool activate_coordinated_member(SRTSOCKET group,
+        std::uint64_t generation, SRTSOCKET socket,
+        std::uint64_t member_generation,
+        const std::shared_ptr<ConnectionRuntime>&) noexcept;
+    static void refresh_coordinated_members(
+        const std::shared_ptr<GroupRecord>&) noexcept;
     // Non-authorizing, allocation-free preflight for a full listener. Only
     // existing live bonding mirrors in this listener/bond qualify; callback
     // domain and extension checks still apply during prepare_mirror.

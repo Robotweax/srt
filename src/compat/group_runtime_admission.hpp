@@ -22,7 +22,7 @@ struct GroupRuntimeSendState {
     std::shared_ptr<const GroupSendBinding> binding;
 };
 
-// Internal single-original Live admission. No public option selects it yet.
+// Internal single-original Live admission for coordinated group sending.
 // Binding/revocation run outside emitter/registry locks. For an admission,
 // reserve the emitter first, then try-reserve distinct selected runtimes in
 // stable member order. Busy/full returns before sealing; release all guards

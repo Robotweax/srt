@@ -741,6 +741,17 @@ remain on that channel. The initial opt-in profile supports IPv4 with a single
 Listener; it provides no automatic fallback. See
 [independent IPv4 source](connection-groups.md#independent-ipv4-source-opt-in).
 
+`SRTO_ROBOTWEAX_MCAST_COORDINATED` (`0x0100001a`, bool, default false,
+Listener-local PRE-BIND) selects group-owned original emission with the existing
+fixed-source wire format. It requires independent-source configuration and
+positive `SRTO_MAXBW`, interpreted as multicast wire bytes per second. Transport
+POST changes are refused after listen/enrollment; application I/O flags remain
+mutable. Only solo Live messages and up to 64 members are supported. Source
+capacity determines send readiness; unavailable members can be detached with
+`SRT_GST_BROKEN` / `SRT_ECONNLOST` group data while their control sockets remain
+connected. See [coordinated IPv4 sender](connection-groups.md#coordinated-ipv4-sender-opt-in)
+for admission, key readiness, late joins, error and resource limits.
+
 ## ARQ-first FEC and the tail loss probe (opt-in, sender-local)
 
 Available from 0.3.2 as regular opt-in options; both defaults remain unchanged.

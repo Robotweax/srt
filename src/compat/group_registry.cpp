@@ -2,6 +2,8 @@
 #include "compat/group_registry.hpp"
 #include "compat/process_owned.hpp"
 #include "compat/random_identity.hpp"
+#include "compat/group_send_coordinator.hpp"
+#include "compat/runtime_scheduler_service.hpp"
 
 #include "compat/error_state.hpp"
 #include "compat/readiness.hpp"
@@ -128,6 +130,7 @@ void refresh_member_states(const std::shared_ptr<GroupRecord>& record) noexcept
     } catch (const std::bad_alloc&) {
         // Keep the last published snapshot if allocation is unavailable.
     }
+    GroupRegistry::refresh_coordinated_members(record);
 }
 
 void advance_version(std::uint64_t& version) noexcept
@@ -434,6 +437,19 @@ SRT_SOCKSTATUS GroupRegistry::state(SRTSOCKET group) noexcept
         record = entry->second;
     }
     refresh_member_states(record);
+    std::shared_ptr<GroupSendCoordinator> coordinator;
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->dispatch)
+            coordinator = record->dispatch->coordinator;
+    }
+    if (coordinator) {
+        const auto state = coordinator->snapshot();
+        if (state.closed)
+            return SRTS_CLOSED;
+        if (state.failed)
+            return SRTS_BROKEN;
+    }
     std::lock_guard lock(record->mutex);
     return aggregate_state(*record);
 }
@@ -570,6 +586,27 @@ int GroupRegistry::get_io_option(
     if (record == nullptr) {
         set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
+    }
+    if (option == SRTO_STATE) {
+        bool coordinated = false;
+        {
+            std::lock_guard lock(record->mutex);
+            if (record->closed) {
+                set_last_error(SRT_EINVSOCK);
+                return SRT_ERROR;
+            }
+            coordinated = record->dispatch && record->dispatch->coordinator;
+        }
+        if (coordinated) {
+            if (*value_size < static_cast<int>(sizeof(std::int32_t))) {
+                set_last_error(SRT_EINVPARAM);
+                return SRT_ERROR;
+            }
+            const auto current = static_cast<std::int32_t>(state(group));
+            std::memcpy(value, &current, sizeof(current));
+            *value_size = sizeof(current);
+            return 0;
+        }
     }
     if (option == SRTO_ROBOTWEAX_ACP1_ACTIVE) {
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
@@ -846,6 +883,10 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
                 set_last_error(SRT_EINVOP);
                 return SRT_ERROR;
             }
+            if (record->dispatch->coordinator && parsed != 0) {
+                set_last_error(SRT_EINVOP);
+                return SRT_ERROR;
+            }
             if (parsed < 0 || parsed > 16) {
                 set_last_error(SRT_EINVPARAM);
                 return SRT_ERROR;
@@ -855,9 +896,14 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
             return 0;
         }
         if (option == SRTO_ROBOTWEAX_MCAST_SOURCE
+            || option == SRTO_ROBOTWEAX_MCAST_COORDINATED
             || (option == SRTO_ROBOTWEAX_MCAST_INDEPENDENT
                 && record->type != ROBOTWEAX_SRT_GTYPE_MULTICAST)) {
             set_last_error(SRT_EINVOP);
+            return SRT_ERROR;
+        }
+        if (record->dispatch && record->dispatch->coordinator && !group_owned) {
+            set_last_error(SRT_ECONNSOCK);
             return SRT_ERROR;
         }
         if (option == SRTO_BINDTODEVICE || option == SRTO_CONGESTION
@@ -982,6 +1028,7 @@ void GroupRegistry::note_receive_activity(SRTSOCKET group,
     }
     member->received_data = true;
     if (member->public_data.sockstate == SRTS_CONNECTED
+        && !member->coordinator_detached
         && member->public_data.memberstate != SRT_GST_RUNNING) {
         member->public_data.memberstate = SRT_GST_RUNNING;
         advance_version(record->snapshot_version);
@@ -1259,6 +1306,11 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
     if (listener_native_options.packet_filter_configuration().enabled) {
         return false;
     }
+    auto scheduler = listener_public_options.multicast_coordinated
+        ? acquire_runtime_scheduler()
+        : std::shared_ptr<RuntimeScheduler> {};
+    if (listener_public_options.multicast_coordinated && !scheduler)
+        return false;
     const auto announce = [&](const GroupRecord& record) {
         MulticastDispatch announcement {
             .group_id = static_cast<std::uint32_t>(record.handle),
@@ -1283,7 +1335,7 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
     };
 
     try {
-        std::lock_guard registry_lock(mutex_);
+        std::unique_lock registry_lock(mutex_);
         if (clearing_) {
             return false;
         }
@@ -1294,7 +1346,7 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
         }
         for (const auto& entry : groups_) {
             const auto& record = entry.second;
-            std::lock_guard record_lock(record->mutex);
+            std::unique_lock record_lock(record->mutex);
             if (record->closed || record->category != GroupCategory::dispatch
                 || record->dispatch == nullptr || !record->dispatch->sender
                 || record->dispatch->admission_key != admission_key) {
@@ -1309,6 +1361,9 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
             }
             // One key, one trust domain: a different domain on the same
             // listener is a configuration error, not a second group.
+            if (record->member_public_options.multicast_coordinated
+                != listener_public_options.multicast_coordinated)
+                return false;
             if (record->member_public_options.multicast_independent
                     != listener_public_options.multicast_independent
                 || (listener_public_options.multicast_independent
@@ -1325,6 +1380,16 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
                 record->minimum_input_bandwidth_bytes_per_second;
             output.minimum_peer_srt_version = record->minimum_peer_srt_version;
             output.key_schedule = record->dispatch->key_schedule;
+            const auto coordinator = record->dispatch->coordinator;
+            record_lock.unlock();
+            registry_lock.unlock();
+            if (coordinator) {
+                const auto state = coordinator->snapshot();
+                if (state.closed || state.failed)
+                    return false;
+                output.announcement.initial_sequence =
+                    state.next_sequence.value();
+            }
             return true;
         }
 
@@ -1404,6 +1469,34 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
         if (next_generation_ == 0U) {
             next_generation_ = 1U;
         }
+        if (listener_public_options.multicast_coordinated) {
+            // The source is already bound and scheduler already running.
+            // Construction reserves bounded idle services only: no runtime
+            // guards, native setup, callbacks or datagram I/O occur here.
+            prepared->timestamp_origin = std::chrono::steady_clock::now();
+            prepared->dispatch->coordinator = GroupSendCoordinator::create(
+                {.source = {.channel = transmit_channel,
+                     .destination = prepared->dispatch->multicast_group,
+                     .group_id = static_cast<std::uint32_t>(candidate),
+                     .generation = prepared->generation,
+                     .initial_sequence = SequenceNumber {initial_sequence},
+                     .capacity = 64,
+                     .maximum_transmission_unit =
+                         listener_native_options.maximum_segment_size(),
+                     .wire_bytes_per_second =
+                         static_cast<std::uint64_t>(listener_public_options
+                                 .maximum_bandwidth_bytes_per_second),
+                     .affinity = static_cast<std::uint64_t>(candidate),
+                     .transmit_statistics = prepared->dispatch->transmit},
+                    .timestamp_origin = *prepared->timestamp_origin,
+                    .key_schedule = prepared->dispatch->key_schedule,
+                    .member_capacity = GroupSendCoordinator::maximum_members,
+                    .admission_busy_grace = std::chrono::milliseconds {50},
+                    .readiness = prepared->readiness_source},
+                scheduler);
+            if (!prepared->dispatch->coordinator)
+                return false;
+        }
         output.group = candidate;
         output.generation = prepared->generation;
         output.created = true;
@@ -1417,6 +1510,78 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
         return true;
     } catch (...) {
         return false;
+    }
+}
+
+bool GroupRegistry::activate_coordinated_member(SRTSOCKET group,
+    std::uint64_t generation, SRTSOCKET socket, std::uint64_t member_generation,
+    const std::shared_ptr<ConnectionRuntime>& runtime) noexcept
+{
+    const auto record = find(group);
+    if (!record)
+        return false;
+    std::shared_ptr<GroupSendCoordinator> coordinator;
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->closed || record->generation != generation)
+            return false;
+        if (record->dispatch)
+            coordinator = record->dispatch->coordinator;
+    }
+    if (!coordinator)
+        return true;
+    const auto joined = coordinator->add_member(runtime);
+    if (!joined)
+        return false;
+    bool published = false;
+    {
+        std::lock_guard lock(record->mutex);
+        if (!record->closed && record->generation == generation) {
+            const auto member = find_member(*record, socket, member_generation);
+            if (member != record->members.end()) {
+                member->coordinator_member = joined->id;
+                published = true;
+            }
+        }
+    }
+    if (!published)
+        coordinator->remove_member(joined->id);
+    return published;
+}
+
+void GroupRegistry::refresh_coordinated_members(
+    const std::shared_ptr<GroupRecord>& record) noexcept
+{
+    std::shared_ptr<GroupSendCoordinator> coordinator;
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->closed || !record->dispatch)
+            return;
+        coordinator = record->dispatch->coordinator;
+    }
+    if (!coordinator)
+        return;
+    std::array<GroupSendCoordinator::Member,
+        GroupSendCoordinator::maximum_members>
+        rows;
+    const auto count = coordinator->members(rows);
+    std::lock_guard lock(record->mutex);
+    if (record->closed || record->dispatch->coordinator != coordinator)
+        return;
+    for (auto& member : record->members) {
+        if (!member.coordinator_member || member.coordinator_detached)
+            continue;
+        for (std::size_t i = 0; i < count; ++i) {
+            if (rows[i].id != member.coordinator_member
+                || rows[i].detachment == GroupSendCoordinator::Detachment::none)
+                continue;
+            member.coordinator_detached = true;
+            member.public_data.memberstate = SRT_GST_BROKEN;
+            member.public_data.result = SRT_ECONNLOST;
+            advance_version(record->snapshot_version);
+            advance_version(record->update_version);
+            break;
+        }
     }
 }
 
@@ -1524,6 +1689,9 @@ bool GroupRegistry::add_member(SRTSOCKET group, SRTSOCKET socket,
         if (record->closed) {
             return false;
         }
+        if (record->member_public_options.multicast_coordinated
+            && record->members.size() >= GroupSendCoordinator::maximum_members)
+            return false;
         const bool was_empty = record->members.empty();
         const bool was_terminal =
             record->opened && aggregate_state(*record) == SRTS_BROKEN;
@@ -1607,6 +1775,8 @@ void GroupRegistry::update_member(
             return;
         }
         const SRT_SOCKSTATUS previous_state = member->public_data.sockstate;
+        if (member->coordinator_detached && state == SRTS_CONNECTED)
+            result = member->public_data.result;
         if (state == SRTS_CONNECTED
             && member->path_data.identifier_length != 0U)
             member->path_data.flags |= ROBOTWEAX_SRT_PATHID_NEGOTIATED;
@@ -1625,7 +1795,9 @@ void GroupRegistry::update_member(
         }
         if (previous_state != state || member->public_data.result != result) {
             member->public_data.sockstate = state;
-            member->public_data.memberstate = state == SRTS_CONNECTED
+            member->public_data.memberstate = member->coordinator_detached
+                ? SRT_GST_BROKEN
+                : state == SRTS_CONNECTED
                     && (member->received_data
                         || (previous_state == SRTS_CONNECTED
                             && member->public_data.memberstate
@@ -1719,11 +1891,19 @@ void GroupRegistry::remove_member(SRTSOCKET group,
         return;
     }
     bool changed = false;
+    std::shared_ptr<GroupSendCoordinator> coordinator;
+    std::uint64_t coordinator_member = 0;
     {
         std::lock_guard lock(record->mutex);
         if (record->closed
             || record->generation != group_generation) {
             return;
+        }
+        if (record->dispatch && record->dispatch->coordinator) {
+            const auto member = find_member(*record, socket, member_generation);
+            if (member != record->members.end())
+                coordinator_member = member->coordinator_member;
+            coordinator = record->dispatch->coordinator;
         }
         if (retirement != nullptr) {
             const auto member = find_member(*record, socket, member_generation);
@@ -1764,6 +1944,8 @@ void GroupRegistry::remove_member(SRTSOCKET group,
     if (changed) {
         ReadinessSignal::notify(*record->readiness_source);
     }
+    if (coordinator_member)
+        coordinator->remove_member(coordinator_member);
 }
 
 bool peer_group_admits(const GroupRecord& group, SRTSOCKET peer_group) noexcept
@@ -1847,6 +2029,16 @@ void GroupRegistry::close(SRTSOCKET group) noexcept
     std::shared_ptr<DatagramChannel> transmit_channel;
     std::shared_ptr<DatagramChannel> control_channel;
     std::uint32_t ingress_group_id = 0;
+    std::shared_ptr<GroupSendCoordinator> coordinator;
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->dispatch)
+            coordinator = record->dispatch->coordinator;
+    }
+    // The actor's gate is the first close barrier for coordinated sends.
+    // Never acquire it while holding GroupRecord::mutex.
+    if (coordinator)
+        coordinator->close();
     {
         // Mark closure under the metadata lock only. A group send blocked in
         // its readiness wait holds `send_mutex`; taking it here would wait
@@ -1925,6 +2117,14 @@ void GroupRegistry::clear() noexcept
     }
     for (const auto& entry : records) {
         auto& record = *entry.second;
+        std::shared_ptr<GroupSendCoordinator> coordinator;
+        {
+            std::lock_guard lock(record.mutex);
+            if (record.dispatch)
+                coordinator = record.dispatch->coordinator;
+        }
+        if (coordinator)
+            coordinator->close();
         std::lock_guard lock(record.mutex);
         record.closed = true;
         if (record.retained_receive != nullptr) {

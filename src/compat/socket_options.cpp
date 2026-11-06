@@ -109,7 +109,8 @@ template <typename Value>
         || option == SRTO_IPTOS || option == SRTO_BINDTODEVICE
         || option == SRTO_TRANSTYPE
         || option == SRTO_ROBOTWEAX_MCAST_INDEPENDENT
-        || option == SRTO_ROBOTWEAX_MCAST_SOURCE;
+        || option == SRTO_ROBOTWEAX_MCAST_SOURCE
+        || option == SRTO_ROBOTWEAX_MCAST_COORDINATED;
 }
 
 [[nodiscard]] constexpr bool is_pre_connection(
@@ -551,6 +552,8 @@ int get_socket_option(
     }
     case SRTO_ROBOTWEAX_MCAST_INDEPENDENT:
         return write_value(value, value_size, options.multicast_independent);
+    case SRTO_ROBOTWEAX_MCAST_COORDINATED:
+        return write_value(value, value_size, options.multicast_coordinated);
     case SRTO_ROBOTWEAX_MCAST_SOURCE:
         if (!options.multicast_source_set)
             return invalid_parameter();
@@ -660,6 +663,14 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         return SRT_ERROR;
     }
     PublicSocketOptions& options = socket.public_options;
+    if ((socket.coordinated_member
+            || (options.multicast_coordinated
+                && socket.state == SRTS_LISTENING))
+        && option != SRTO_SNDSYN && option != SRTO_RCVSYN
+        && option != SRTO_SNDTIMEO && option != SRTO_RCVTIMEO) {
+        set_last_error(SRT_ECONNSOCK);
+        return SRT_ERROR;
+    }
 
     switch (option) {
     case SRTO_SNDSYN: {
@@ -1372,6 +1383,14 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             static_cast<std::size_t>(value_size);
         return 0;
     }
+    case SRTO_ROBOTWEAX_MCAST_COORDINATED: {
+        bool parsed = false;
+        if (socket.listen_callback_active || socket.group_id != SRT_INVALID_SOCK
+            || !read_boolean(value, value_size, parsed))
+            return invalid_parameter();
+        options.multicast_coordinated = parsed;
+        return 0;
+    }
     case SRTO_ROBOTWEAX_MCAST_INDEPENDENT: {
         bool parsed = false;
         if (socket.listen_callback_active
@@ -1612,6 +1631,9 @@ int set_socket_option(SocketRecord& socket, SRT_SOCKOPT option,
     {
         std::lock_guard lock(socket.mutex);
         runtime = socket.runtime;
+        if (socket.coordinated_member)
+            runtime
+                .reset(); // Only application I/O flags are mutable; no rebind.
         options = socket.native_options;
     }
     // Retain option_lock through publication so an older snapshot cannot

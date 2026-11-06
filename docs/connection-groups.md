@@ -567,7 +567,7 @@ Sender (Listener):
   domain; returning without the key rejects the join;
 - `srt_accept` returns the dispatch group once, with the first admitted
   receiver. Later receivers join it and surface as `SRT_EPOLL_UPDATE`.
-- `srt_send*` on the group encodes each message once per member buffer so
+- By default, `srt_send*` on the group encodes each message once per member buffer so
   ACK, NAK and unicast retransmission keep their per-receiver meaning, but
   only the first live member transmits the original, to the multicast group
   with the dispatch group handle as destination socket ID, from the
@@ -624,10 +624,10 @@ Repeats, pacing and readiness:
   multicast repair failure falls back to the member's unicast retry path.
   After a multicast attempt, window expiry restores unicast until the bounded
   tally entry is evicted; failed repairs do not restart a multicast retry loop;
-- `SRTO_MAXBW` set on the sender group reaches every member, so it caps the
+- By default, `SRTO_MAXBW` set on the sender group reaches every member, so it caps the
   transmitting member's pacer and with it the multicast path, as well as each
   member's unicast repeats. There is no separate aggregate cap;
-- `SRT_EPOLL_OUT` on the sender group follows the elected transmitting
+- By default, `SRT_EPOLL_OUT` on the sender group follows the elected transmitting
   member's readiness. That member must accept the payload before suppressed
   members can accept it. A full transmitter buffer blocks a synchronous send
   or returns `SRT_EASYNCSND` for a nonblocking send without advancing the
@@ -675,8 +675,62 @@ the sender's interface hint is not used. The initial C API profile supports
 IPv4 control and multicast paths, one Listener and one endpoint per receiver.
 IPv6, mixed-family paths, multi-Listener accept bonds and source address/port
 rewriting are unsupported. Existing multicast mode, crypto and FEC limits
-apply. Send/readiness still follow the elected member's pacing and capacity.
+apply. By default, send/readiness follow the elected member's pacing and capacity.
 This profile provides fixed source addressing and no automatic path switching.
+
+### Coordinated IPv4 sender (opt-in)
+
+Set `SRTO_ROBOTWEAX_MCAST_COORDINATED=true` on the Listener before binding,
+alongside the independent-source configuration above. Set `SRTO_MAXBW` to a
+positive `int64_t` byte rate before listening. In this profile that rate includes
+the DATA header, ciphertext/tag and IP/UDP overhead of each multicast original.
+The option is sender-local: receivers use the existing independent-source
+configuration and wire format. Receiver groups and ordinary Callers cannot
+select coordinated sending.
+
+The group owns encoding, pacing and a 64-frame queue. One send accepts one Live
+message fitting the configured maximum payload into bounded group work; success
+means queue acceptance. Actual UDP submission and remote delivery occur later.
+Member flow credit does not pace multicast originals. `SRT_EPOLL_OUT` reflects
+source/fanout capacity and queued-key limits. Control, KM and ordinary repairs
+remain on each established unicast session. Shared multicast repair aggregation
+is disabled; keep `SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD=0`. Packet filters,
+session-authentication profiles and fragmented application messages are refused.
+At most 64 receiver members, including detached members, can occupy the group.
+
+A member whose repair history is full is detached from future group admission.
+Runtime/KM busy gets a 50 ms retry grace before detachment; completion fanout also
+has a bounded busy retry budget. `srt_group_data` and the `srt_sendmsg2` group-data
+array show `SRT_GST_BROKEN` with `result=SRT_ECONNLOST` for a detached send path.
+The unicast socket can remain `SRTS_CONNECTED`. Group `SRT_EPOLL_UPDATE` reports
+the membership-status change. Close and reconnect that receiver to enroll it
+again; later ACKs do not restore its skipped history. It may still observe
+multicast DATA, with no repair-retention guarantee after detachment.
+
+With no eligible members, sends succeed and advance the stream without emitting
+DATA. Pause production until the receiver's join has completed and, for encrypted
+streams, wait for that member's `SRTO_SNDKMSTATE` to become `SRT_KM_S_SECURED`
+before resuming. An admission
+whose advertised ISN became stale is rejected instead of silently rebasing the
+receiver. CTR/GCM retain the same canonical protected identity on multicast and
+unicast repairs. Local key-queue limits prevent announcing a selector replacement
+while an older original still needs it; they do not prove remote receipt or
+qualify delayed/reordered KM and multicast blackouts.
+
+A hard source error makes the group `SRTS_BROKEN`, raises `SRT_EPOLL_ERR`, and
+subsequent sends return `SRT_ESOCKFAIL`. Queued packets that expired, failed or
+were cancelled never authorize receiver ACK progress. Established unicast
+sessions remain available for inspection and explicit close. Automatic fallback
+and source recovery are unavailable. An expired finite message TTL returns
+`SRT_ETIMEOUT`; ordinary send timeout and asynchronous `SRT_EASYNCSND` apply to
+admission backpressure.
+
+Transport configuration, including `SRTO_MAXBW`, is frozen on the listening
+socket, sender group and enrolled members. Group/member application I/O flags
+(`SRTO_SNDSYN`, `SRTO_RCVSYN`, `SRTO_SNDTIMEO`, `SRTO_RCVTIMEO`) remain mutable.
+Close fences source admission and cancels queued work before retiring members.
+Each sender group reserves two scheduler service slots; exhaustion fails group
+admission. See [scheduler resources](scheduler-shards.md#process-configuration).
 
 ### Protocol engine fixed-source negotiation
 
