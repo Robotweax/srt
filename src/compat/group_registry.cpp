@@ -869,6 +869,7 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
         // ARQ-first FEC and the tail loss probe are rejected on groups, so
         // the template must carry its group for the setter to see it.
         if (option == SRTO_PACKETFILTER || option == SRTO_RENDEZVOUS
+            || option == SRTO_ROBOTWEAX_PEERAUTH_POLICY
             || option == SRTO_ROBOTWEAX_FECPOLICY
             || option == SRTO_ROBOTWEAX_TAILPROBE
             || option == SRTO_ROBOTWEAX_PATHID_REQUIRED

@@ -1304,6 +1304,12 @@ int listen_socket(
     std::shared_ptr<ListenerRuntime> listener_runtime;
     {
         std::lock_guard lock(socket->mutex);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        // Fail closed until authenticated admission owns all three flights
+        // and runtime confirmation. REQUIRED must never enter legacy setup.
+        if (socket->native_options.peer_authentication_required())
+            return fail(SRT_ESECFAIL);
+#endif
         if (socket->native_options.experimental_acp1()
             && (!socket->native_options.session_authentication()
                 || !socket->native_options.encryption_enabled()
@@ -3938,6 +3944,12 @@ int connect_socket(
                 ? SRT_ECONNSOCK
                 : SRT_EINVOP);
         }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        // Fail closed until authenticated admission owns all three flights
+        // and runtime confirmation. REQUIRED must never enter legacy setup.
+        if (socket->native_options.peer_authentication_required())
+            return fail(SRT_ESECFAIL);
+#endif
         if (socket->native_options.experimental_acp1()
             && (!socket->native_options.session_authentication()
                 || !socket->native_options.encryption_enabled()

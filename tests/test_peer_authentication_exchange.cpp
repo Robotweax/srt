@@ -4,6 +4,9 @@
 #include "robotweax/srt/handshake.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 #include "robotweax/srt/crypto.hpp"
+#include "robotweax/srt/socket_options.hpp"
+#include "srt/srt.h"
+#include "compat/socket_registry.hpp"
 
 #include <algorithm>
 #include <vector>
@@ -982,4 +985,212 @@ TEST(peer_auth_datagram_encoder_rejects_inconsistent_actions)
         REQUIRE(!encoded);
         REQUIRE_EQ(encoded.bytes_written, 0U);
     }
+}
+
+TEST(peer_auth_configuration_credentials_are_validated_and_copied_independently)
+{
+    PeerAuthenticationCredentials credentials;
+    const auto pin = public_key(2);
+    REQUIRE_EQ(credentials.set_identity(scalar(1)), Error::none);
+    REQUIRE_EQ(credentials.set_trusted(pin), Error::none);
+    REQUIRE(credentials.complete());
+    REQUIRE(credentials.set_identity(scalar(0)) != Error::none);
+    REQUIRE(
+        credentials.set_identity(std::span<const std::byte> {}) != Error::none);
+    std::array<std::byte, 64> invalid {};
+    REQUIRE(credentials.set_trusted(invalid) != Error::none);
+    REQUIRE(equal(credentials.trusted(), pin));
+    REQUIRE(
+        credentials.set_trusted(std::span<const std::byte> {}) != Error::none);
+    std::vector<std::byte> pins;
+    for (unsigned i = 0; i < 16; ++i)
+        pins.insert(pins.end(), pin.begin(), pin.end());
+    REQUIRE_EQ(credentials.set_trusted(pins), Error::none);
+    pins.insert(pins.end(), pin.begin(), pin.end());
+    REQUIRE(credentials.set_trusted(pins) != Error::none);
+    auto copy = credentials;
+    PeerAuthenticationCredentials assigned;
+    REQUIRE_EQ(assigned.set_identity(scalar(3)), Error::none);
+    assigned = credentials;
+    credentials.clear();
+    REQUIRE(!credentials.complete());
+    REQUIRE(credentials.trusted().empty());
+    for (auto* saved : {&copy, &assigned}) {
+        REQUIRE_EQ(
+            saved->set_trusted(saved->trusted().subspan(64, 64)), Error::none);
+        pa::Exchange exchange(default_crypto_provider(), true);
+        REQUIRE_EQ(saved->configure(exchange), Error::none);
+        pa::Record record;
+        REQUIRE_EQ(exchange.prepare_offer(16, record), Error::none);
+        pa::Digest expected;
+        REQUIRE_EQ(default_crypto_provider().sha256(public_key(1), expected),
+            Error::none);
+        REQUIRE_EQ(record.key_identifier, expected);
+    }
+}
+
+TEST(peer_auth_configuration_dependency_order_and_missing_credentials)
+{
+    (void)public_key(1); // skip backends without P-256
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::peer_authentication_policy, 1),
+        Error::invalid_state);
+    REQUIRE_EQ(
+        options.set_passphrase("configuration test passphrase"), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::session_authentication, 1), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::peer_authentication_policy, 2),
+        Error::invalid_state);
+    REQUIRE_EQ(
+        options.set(SocketOption::peer_authentication_policy, 1), Error::none);
+    pa::Exchange missing(default_crypto_provider(), true);
+    REQUIRE_EQ(
+        options.configure_peer_authentication(missing), Error::invalid_state);
+    REQUIRE_EQ(options.set_peer_authentication_key(scalar(1)), Error::none);
+    REQUIRE_EQ(
+        options.set_peer_authentication_trusted(public_key(2)), Error::none);
+    auto copied = options;
+    options.clear_peer_authentication();
+    REQUIRE_EQ(copied.configure_peer_authentication(missing), Error::none);
+    for (auto [option, value] :
+        {std::pair {SocketOption::session_authentication, 0},
+            {SocketOption::enforced_encryption, 0},
+            {SocketOption::crypto_mode, 0}, {SocketOption::crypto_mode, 1},
+            {SocketOption::maximum_segment_size, 511},
+            {SocketOption::rendezvous, 1},
+            {SocketOption::experimental_acp1, 1}}) {
+        REQUIRE_EQ(copied.set(option, value), Error::invalid_state);
+        auto reverse = copied;
+        REQUIRE_EQ(reverse.set(SocketOption::peer_authentication_policy, 0),
+            Error::none);
+        if (reverse.set(option, value) == Error::none)
+            REQUIRE_EQ(reverse.set(SocketOption::peer_authentication_policy, 1),
+                Error::invalid_state);
+    }
+    REQUIRE_EQ(copied.set_passphrase({}), Error::invalid_state);
+    copied.clear_peer_authentication();
+    REQUIRE_EQ(copied.set_passphrase({}), Error::none);
+    REQUIRE(!copied.encryption_enabled());
+}
+
+TEST(peer_auth_socket_options_fail_closed_until_admission_is_implemented)
+{
+    const auto pin = public_key(2);
+    REQUIRE_EQ(srt_startup(), 0);
+    struct Cleanup {
+        ~Cleanup()
+        {
+            (void)srt_cleanup();
+        }
+    } cleanup;
+    const auto socket = srt_create_socket();
+    auto retained = compat::SocketRegistry::instance().find(socket);
+    REQUIRE(retained != nullptr);
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    struct Close {
+        SRTSOCKET id;
+        ~Close()
+        {
+            (void)srt_close(id);
+        }
+    } close {socket};
+    const std::int32_t required = 1, off = 0, gcm = 2;
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_PEERAUTH_POLICY,
+                   &required, sizeof(required)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_setsockflag(
+                   socket, SRTO_PASSPHRASE, "configuration passphrase", 24),
+        0);
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_CRYPTOMODE, &gcm, sizeof(gcm)), 0);
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_SESSIONAUTH, &required,
+                   sizeof(required)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(
+                   socket, SRTO_ROBOTWEAX_PEERAUTH_KEY, scalar(1).data(), 32),
+        0);
+    REQUIRE_EQ(srt_setsockflag(
+                   socket, SRTO_ROBOTWEAX_PEERAUTH_TRUSTED, pin.data(), 64),
+        0);
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_PEERAUTH_POLICY,
+                   &required, sizeof(required)),
+        0);
+    std::array<std::byte, 64> returned {};
+    int size = 64;
+    REQUIRE_EQ(srt_getsockflag(
+                   socket, SRTO_ROBOTWEAX_PEERAUTH_KEY, returned.data(), &size),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getsockflag(socket, SRTO_ROBOTWEAX_PEERAUTH_TRUSTED,
+                   returned.data(), &size),
+        0);
+    REQUIRE_EQ(returned, pin);
+    REQUIRE_EQ(size, 64);
+    REQUIRE_EQ(
+        srt_setsockflag(socket, SRTO_GROUPCONNECT, &required, sizeof(required)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_setsockflag(
+                   socket, SRTO_ROBOTWEAX_PEERAUTH_POLICY, &off, sizeof(off)),
+        0);
+    REQUIRE_EQ(
+        srt_setsockflag(socket, SRTO_GROUPCONNECT, &required, sizeof(required)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_PEERAUTH_POLICY,
+                   &required, sizeof(required)),
+        SRT_ERROR);
+    REQUIRE_EQ(
+        srt_setsockflag(socket, SRTO_GROUPCONNECT, &off, sizeof(off)), 0);
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_PEERAUTH_POLICY,
+                   &required, sizeof(required)),
+        0);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(srt_bind(socket, reinterpret_cast<const sockaddr*>(&address),
+                   sizeof(address)),
+        0);
+    REQUIRE_EQ(srt_listen(socket, 8), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESECFAIL);
+    address.sin_port = htons(9);
+    REQUIRE_EQ(srt_connect(socket, reinterpret_cast<const sockaddr*>(&address),
+                   sizeof(address)),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESECFAIL);
+    REQUIRE_EQ(srt_close(socket), 0);
+    REQUIRE(!retained->native_options.peer_authentication_required());
+    REQUIRE(retained->native_options.peer_authentication_trusted().empty());
+    REQUIRE(!retained->native_options.encryption_enabled());
+    pa::Exchange erased(default_crypto_provider(), true);
+    REQUIRE_EQ(retained->native_options.configure_peer_authentication(erased),
+        Error::invalid_state);
+}
+
+TEST(peer_auth_group_policy_cannot_be_enabled_through_option_template)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    struct Cleanup {
+        ~Cleanup()
+        {
+            (void)srt_cleanup();
+        }
+    } cleanup;
+    const auto group = srt_create_group(SRT_GTYPE_BROADCAST);
+    REQUIRE(group != SRT_INVALID_SOCK);
+    struct Close {
+        SRTSOCKET id;
+        ~Close()
+        {
+            (void)srt_close(id);
+        }
+    } close {group};
+    const int required = 1, gcm = 2;
+    REQUIRE_EQ(
+        srt_setsockflag(group, SRTO_PASSPHRASE, "configuration passphrase", 24),
+        0);
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_CRYPTOMODE, &gcm, sizeof(gcm)), 0);
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_SESSIONAUTH, &required,
+                   sizeof(required)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_PEERAUTH_POLICY, &required,
+                   sizeof(required)),
+        SRT_ERROR);
 }

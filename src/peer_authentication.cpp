@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "peer_authentication.hpp"
+#include "robotweax/srt/socket_options.hpp"
+#include <cstring>
 
 #include "robotweax/srt/handshake.hpp"
 
@@ -797,3 +799,82 @@ std::span<const std::byte> Exchange::wrapping_key(bool caller) const noexcept
 }
 
 } // namespace robotweax::srt::peer_authentication
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+namespace robotweax::srt {
+PeerAuthenticationCredentials::~PeerAuthenticationCredentials()
+{
+    clear();
+}
+PeerAuthenticationCredentials& PeerAuthenticationCredentials::operator=(
+    const PeerAuthenticationCredentials& other) noexcept
+{
+    if (this != &other) {
+        clear();
+        identity_ = other.identity_;
+        trusted_ = other.trusted_;
+        trusted_size_ = other.trusted_size_;
+        has_identity_ = other.has_identity_;
+    }
+    return *this;
+}
+void PeerAuthenticationCredentials::clear() noexcept
+{
+    default_crypto_provider().secure_erase(identity_);
+    trusted_.fill(std::byte {});
+    trusted_size_ = 0;
+    has_identity_ = false;
+}
+Error PeerAuthenticationCredentials::set_identity(
+    std::span<const std::byte> key) noexcept
+{
+    if (key.size() != identity_.size())
+        return Error::invalid_state;
+    std::unique_ptr<P256Key> validated;
+    const auto error = default_crypto_provider().import_p256_key(
+        std::span<const std::byte, 32>(key.data(), 32), validated);
+    if (error != Error::none)
+        return error;
+    if (!validated)
+        return Error::cryptographic_failure;
+    default_crypto_provider().secure_erase(identity_);
+    std::copy(key.begin(), key.end(), identity_.begin());
+    has_identity_ = true;
+    return Error::none;
+}
+Error PeerAuthenticationCredentials::set_trusted(
+    std::span<const std::byte> keys) noexcept
+{
+    if (keys.empty() || keys.size() > trusted_.size() || keys.size() % 64 != 0)
+        return Error::invalid_state;
+    for (std::size_t i = 0; i < keys.size(); i += 64) {
+        const auto error = default_crypto_provider().validate_p256_public_key(
+            std::span<const std::byte, 64>(keys.data() + i, 64));
+        if (error != Error::none)
+            return error;
+    }
+    // memmove also permits replacing the set with a subspan returned by trusted().
+    std::memmove(trusted_.data(), keys.data(), keys.size());
+    trusted_size_ = keys.size();
+    std::fill(trusted_.begin() + trusted_size_, trusted_.end(), std::byte {});
+    return Error::none;
+}
+Error PeerAuthenticationCredentials::configure(
+    peer_authentication::Exchange& exchange) const noexcept
+{
+    if (!complete())
+        return Error::invalid_state;
+    return exchange.configure(identity_, trusted());
+}
+Error SocketOptions::configure_peer_authentication(
+    peer_authentication::Exchange& exchange) const noexcept
+{
+    if (!peer_authentication_required_ || !session_authentication_
+        || !enforced_encryption_ || !encryption_enabled()
+        || crypto_mode_ != CryptoMode::aes_gcm || rendezvous_
+        || experimental_acp1_ || maximum_segment_size_ < 512)
+        return Error::invalid_state;
+    return peer_authentication_credentials_.configure(exchange);
+}
+} // namespace robotweax::srt
+#endif

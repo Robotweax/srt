@@ -61,7 +61,35 @@ SocketOptions::~SocketOptions()
 
 Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (option == SocketOption::peer_authentication_policy) {
+        if (!is_boolean(value)
+            || (value != 0
+                && (rendezvous_ || experimental_acp1_
+                    || maximum_segment_size_ < 512 || !session_authentication_
+                    || !enforced_encryption_
+                    || crypto_mode_ != CryptoMode::aes_gcm
+                    || !encryption_enabled())))
+            return Error::invalid_state;
+        peer_authentication_required_ = value != 0;
+        return Error::none;
+    }
+    if (peer_authentication_required_
+        && ((option == SocketOption::maximum_segment_size && value < 512)
+            || (option == SocketOption::experimental_acp1 && value != 0)
+            || (option == SocketOption::rendezvous && value != 0)
+            || (option == SocketOption::session_authentication && value != 1)
+            || (option == SocketOption::enforced_encryption && value != 1)
+            || (option == SocketOption::crypto_mode
+                && value != static_cast<std::int64_t>(CryptoMode::aes_gcm))))
+        return Error::invalid_state;
+#endif
     switch (option) {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    case SocketOption::peer_authentication_policy:
+        return Error::invalid_state; // handled above
+#endif
+
     case SocketOption::input_bandwidth_bytes_per_second:
         if (value < 0) return Error::invalid_state;
         input_bandwidth_ = static_cast<std::uint64_t>(value);
@@ -484,6 +512,11 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
 SocketOptionResult SocketOptions::get(SocketOption option) const noexcept
 {
     switch (option) {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    case SocketOption::peer_authentication_policy:
+        return {.value = peer_authentication_required_ ? 1 : 0};
+#endif
+
     case SocketOption::input_bandwidth_bytes_per_second: return {.value = static_cast<std::int64_t>(input_bandwidth_)};
     case SocketOption::minimum_input_bandwidth_bytes_per_second: return {.value = static_cast<std::int64_t>(minimum_input_bandwidth_)};
     case SocketOption::maximum_bandwidth_bytes_per_second: return {.value = maximum_bandwidth_};
@@ -539,6 +572,11 @@ SocketOptionResult SocketOptions::get(SocketOption option) const noexcept
 Error SocketOptions::set_passphrase(
     std::string_view passphrase) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_required_ && passphrase.empty())
+        return Error::invalid_state;
+#endif
+
     if (!passphrase.empty() && packet_filter_configuration_.experimental())
         return Error::invalid_state;
     if (!passphrase.empty()
