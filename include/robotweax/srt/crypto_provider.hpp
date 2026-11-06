@@ -70,6 +70,16 @@ public:
         return Error::unsupported;
     }
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    // Optional transcript primitive. Custom providers fail closed until supplied.
+    [[nodiscard]] virtual Error sha256(
+        std::span<const std::byte>, std::span<std::byte, 32> output) noexcept
+    {
+        secure_erase(output);
+        return Error::unsupported;
+    }
+#endif
+
     [[nodiscard]] virtual Error wrap_key(
         std::span<const std::byte> key_encrypting_key,
         std::span<const std::byte> plaintext_keys,

@@ -45,6 +45,8 @@ option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
     "Install opt-in srt.pc metadata for libsrt-compatible consumers" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
     "Enable experimental authenticated runtime controls" OFF)
+option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH
+    "Build experimental peer-authentication protocol components (no socket integration yet)" OFF)
 option(ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES
     "Build private controller components and contract tests (no socket integration)" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS
@@ -62,6 +64,10 @@ set(ROBOTWEAX_SRT_FILTER_PROVIDER
 option(ENABLE_MAXREXMITBW "Enable optional retransmission bandwidth limit" OFF)
 option(ENABLE_AEAD_API_PREVIEW
     "Enable the version-pinned AES-GCM extension API" OFF)
+
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH AND NOT ENABLE_AEAD_API_PREVIEW)
+    message(FATAL_ERROR "Experimental peer authentication requires ENABLE_AEAD_API_PREVIEW=ON")
+endif()
 
 if(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT AND NOT BUILD_SHARED_LIBS)
     message(FATAL_ERROR
@@ -223,6 +229,10 @@ if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
     target_include_directories(robotweax_srt PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/experimental/packet_filters")
     target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS)
+endif()
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
+    target_sources(robotweax_srt PRIVATE src/peer_authentication.cpp)
+    target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH)
 endif()
 target_compile_definitions(robotweax_srt PRIVATE ROBOTWEAX_SRT_BUILDING)
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING)
@@ -522,6 +532,9 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp
         tests/test_compat_message_attempts.cpp)
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
+        target_sources(robotweax_srt_tests PRIVATE tests/test_peer_authentication.cpp)
+    endif()
     target_compile_definitions(robotweax_srt_tests PRIVATE
         ROBOTWEAX_SRT_EXPECT_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
     target_link_libraries(robotweax_srt_tests
@@ -2164,6 +2177,13 @@ if(ROBOTWEAX_SRT_BUILD_FUZZERS)
         target_compile_options(fuzz_acp1_control_open PRIVATE -fsanitize=fuzzer,address,undefined)
         target_link_options(fuzz_acp1_control_open PRIVATE -fsanitize=fuzzer,address,undefined)
     endif()
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
+        add_executable(fuzz_peer_authentication fuzz/fuzz_peer_authentication.cpp)
+        target_include_directories(fuzz_peer_authentication PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        target_link_libraries(fuzz_peer_authentication PRIVATE RobotweaxSRT::srt)
+        target_compile_options(fuzz_peer_authentication PRIVATE -fsanitize=fuzzer,address,undefined)
+        target_link_options(fuzz_peer_authentication PRIVATE -fsanitize=fuzzer,address,undefined)
+    endif()
     add_executable(fuzz_aead_packet_open
         fuzz/fuzz_aead_packet_open.cpp)
     target_link_libraries(fuzz_aead_packet_open
@@ -2221,6 +2241,9 @@ endif()
 set(ROBOTWEAX_SRT_PC_CFLAGS "")
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
     string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DROBOTWEAX_SRT_EXPERIMENTAL_ACP1")
+endif()
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
+    string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH")
 endif()
 if(ENABLE_AEAD_API_PREVIEW)
     string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DENABLE_AEAD_API_PREVIEW")

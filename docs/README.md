@@ -19,8 +19,8 @@ developers and transport integrators using the installed public API.
 - [Experimental ACP1](experimental-acp1.md) — experimental runtime-control
   authentication, strict bilateral opt-in and provisional wire/API contract.
 
-- [Peer authentication draft](peer-authentication.md) — unimplemented, unreviewed
-  proposal for pinned-key peer identity and forward secrecy in the handshake.
+- [Peer authentication draft](peer-authentication.md) — unreviewed draft with private protocol
+  components for pinned-key peer identity and forward secrecy; no socket support.
 
 - [Experimental remote identity](implementation-identity.md) — development-only,
   default-off peer labels, disclosure policy and qualification boundaries.
