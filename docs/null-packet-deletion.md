@@ -516,8 +516,20 @@ last-media, end-marker and receipt loss. All 16 negative controls prevented
 sender success when receipts were blocked or a marker digest was corrupted.
 The peer deadline is five seconds with at most 32 end markers. Both peers must
 understand this application protocol; it does not change raw MPEG-TS behavior,
-SRT defaults, or the original peer and failed matrix. Kernel-netem media
-integration, deployed captures and release acceptance remain separate work.
+SRT defaults, or the original peer and failed matrix. Deployed captures and release acceptance remain separate work.
+
+
+The subsequent [separate media-completion v2 qualification](https://github.com/Robotweax/srt_network_lab/blob/7b3fcbc3147ef9816887d4f4fa61cea5bb4cee83/results/2026-11-06-npd-media-v2/README.md)
+passed all 16 kernel-netem cases and eight OFF/ON pairs with generated media.
+Every stream was bit-exact and decoded successfully, and every impaired case
+observed loss and reordering. Content receipts arrived within 667 ms of the
+scheduled last media message, inside the five-second window. Original media
+SRT DATA bytes fell 40.7%, with end markers, receipts and parity accounted
+separately. The initial attempt remains invalid due to an incorrect validator
+bound for reverse parity; the corrected full attempt is separately sealed.
+This requires completion-aware peers and does not qualify deployed captures,
+physical WANs, encryption or arbitrary raw-TS receivers. The original v1
+incomplete results remain unchanged, and neither main branch was merged.
 
 ## Qualification required before broader support claims
 
