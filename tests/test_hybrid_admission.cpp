@@ -195,10 +195,10 @@ TEST(
             f.listener.multicast_dispatch.time_to_live++;
             break;
         case 5:
-            f.caller.packet.initial_sequence = SequenceNumber {1};
+            f.caller.has_multicast_source = false;
             break;
         case 6:
-            f.listener.packet.initial_sequence = SequenceNumber {1};
+            f.context.dispatch.initial_sequence = 1;
             break;
         case 7:
             f.listener.has_stream_id_extension = true;

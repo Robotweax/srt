@@ -175,6 +175,7 @@ add_library(robotweax_srt
     src/compat/hybrid_control.cpp
     src/compat/hybrid_admission.cpp
     src/compat/hybrid_exchange.cpp
+    src/compat/hybrid_conclusions.cpp
     src/compat/standby_rtt_service.cpp
     src/control.cpp
     src/connection_group.cpp
@@ -543,6 +544,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_hybrid_control.cpp
         tests/test_hybrid_admission.cpp
         tests/test_hybrid_exchange.cpp
+        tests/test_hybrid_conclusions.cpp
         tests/test_arq_transport.cpp
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp
@@ -772,6 +774,11 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         robotweax_srt_delayed_key_response_tests
         robotweax_srt_group_retention_prefix_tests
         robotweax_srt_group_retention_oversized_tests PROPERTIES TIMEOUT 30)
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL)
+        # Two additional cases run five complete encrypted/plain/authenticated
+        # source-profile lifecycles. Preserve the default 30-second gate.
+        set_tests_properties(robotweax_srt_multicast_dispatch_tests PROPERTIES TIMEOUT 45)
+    endif()
     set_tests_properties(robotweax_srt_delayed_key_response_tests PROPERTIES LABELS "encryption")
     set_tests_properties(robotweax_srt_rotation_tests PROPERTIES LABELS "encryption")
     set_tests_properties(robotweax_srt_key_length_tests PROPERTIES LABELS "encryption")

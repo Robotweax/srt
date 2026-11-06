@@ -134,12 +134,13 @@ on terminal revocation and destruction. A revoked root cannot be re-established;
 an already borrowed control gate immediately becomes unusable. A fresh owner,
 fresh nonces and a fresh admission decision are required to try again.
 
-`prepare` copies both final, exact HSV5 CONCLUSION **payloads**, excluding the
+`prepare` copies the selected, exact HSV5 HSREQ and HSRSP CONCLUSION **payloads**, excluding the
 outer 16-byte control header, into one immutable transcript. It validates caller
 request/listener response roles, nonzero distinct socket IDs, both multicast
 group memberships, the explicitly authorized Stream ID and the selected
-dispatch/source announcements. Both sequence origins must equal the advertised
-dispatch ISN. This initial owner excludes Rendezvous, packet filters, standby
+dispatch/source announcements. Ordinary handshake sequence proposals are bound
+as separate fields; the dispatch announcement alone defines the canonical
+multicast DATA sequence origin. They need not be equal. This initial owner excludes Rendezvous, packet filters, standby
 measurement and unknown extensions. It accepts only the Live controller.
 Existing ordinary authentication records can be present and are included
 unchanged; native decoding still rejects a version 7 record.
@@ -195,6 +196,58 @@ native integration still needs provider configuration, a reviewed carrier,
 the final enrollment transaction and expiry scheduling before enabling runtime
 switching. Existing ACP1 security-review
 limits and the shared-credential impersonation boundary remain unchanged.
+
+## Native conclusion capture
+
+With the hybrid build gate enabled, native independent-source Caller/Listener
+setup now retains an immutable `Conclusions` pair on each established member
+runtime. This is metadata preparation, not native hybrid-control activation.
+Other profiles retain no published pair. No credential lookup, exchange carrier,
+timer, public C option or delivery-policy change is connected by this step.
+
+The native writer captures the exact encoded payload only after full UDP
+submission. Partial submission invalidates that setup's capture. The listener
+inbox carries the original datagram through admission and setup handoff rather
+than reconstructing it from decoded fields. Source/dispatch records are also
+preserved by the decoded-only handoff fallback. Blocking and asynchronous
+Callers freeze the actual received HSRSP together with the submitted HSREQ.
+The Listener freezes the admitted original HSREQ together with its submitted
+HSRSP, after setup, runtime attachment, native group enrollment and successful
+response I/O. Compact authenticated AGREEMENT records do not replace either
+conclusion. Existing primary authentication, when configured, still must succeed
+through its normal state machine before publication.
+
+The pair preserves every payload byte, including peer-address fields, KM,
+ordinary authentication records, diagnostic metadata and accepted ignored
+extension suffixes. It excludes the outer control header, whose packet timestamp
+may change on retransmission. Frozen snapshots cannot be changed by later
+capture or replay. Publication is single assignment under the runtime mutex,
+requires matching local/peer socket identities and refuses closed or broken
+runtimes. The getter hides the pair after close/breakage. A retained snapshot
+is immutable historical metadata, not a live authorization or binding lease.
+
+Native HSV5 responses may echo the Caller's ordinary ISN while independently
+advertising the multicast DATA cursor. The admission validator now accepts
+these distinct origins, retaining them in the authenticated transcript; it still
+checks the exact source/dispatch announcement. Hybrid DATA position mapping
+continues using the dispatch ISN. Equating these origins would reject legitimate
+native connections and late joins.
+
+The capture builder and frozen pair are each under 4 KiB, with 1,484 bytes per
+payload. A feature-enabled listener inbox reserves an extra 1,500-byte raw
+datagram field per existing bounded slot. A frozen pair is allocated only for
+successfully captured independent-source setup. The default build has neither
+the raw inbox field nor the runtime snapshot slot; no queue, scheduler service
+or worker is added. Native consumers must wait for pair publication rather than
+infer readiness from a group row's CONNECTED observation during setup.
+
+Native loopback tests compare both endpoints' complete captured payloads and
+feed them directly into the staged exchange with explicit synthetic credentials.
+They cover plaintext/CTR/GCM, blocking/asynchronous Callers, ordinary session
+authentication's final AGREEMENT and existing join/departure/key lifecycles.
+The in-memory exchange in these tests is not a native carrier or production
+credential-provider integration. Native carrier allocation, credential/expiry
+ownership and atomic hybrid enrollment remain the next integration gates.
 
 ## Bounded exchange and credential provider
 

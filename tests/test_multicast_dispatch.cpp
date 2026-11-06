@@ -9,6 +9,9 @@
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/transport_runtime.hpp"
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+#include "compat/hybrid_exchange.hpp"
+#endif
 #include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/udp.hpp"
 #include "srt/srt.h"
@@ -335,7 +338,8 @@ constexpr const char group_passphrase[] = "sixteen-char-key";
 
 [[nodiscard]] SRTSOCKET make_receiver(Peers& peers, const sockaddr_in& listener,
     bool encrypted = false, bool aes_gcm = false, int latency_ms = 120,
-    bool independent = false, bool asynchronous = false)
+    bool independent = false, bool asynchronous = false,
+    bool session_authentication = false)
 {
     const SRTSOCKET group =
         peers.keep(srt_create_group(ROBOTWEAX_SRT_GTYPE_MULTICAST));
@@ -349,6 +353,10 @@ constexpr const char group_passphrase[] = "sixteen-char-key";
                        static_cast<int>(sizeof(group_passphrase) - 1U)),
             0);
     }
+    if (session_authentication)
+        REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_SESSIONAUTH,
+                       &session_authentication, sizeof(session_authentication)),
+            0);
 #ifdef ENABLE_AEAD_API_PREVIEW
     if (aes_gcm) {
         const std::int32_t gcm = 2;
@@ -429,7 +437,130 @@ struct StreamScenario {
     std::array<std::uint8_t, 4> control_address {127, 0, 0, 1};
     bool asynchronous_receiver = false;
     bool coordinated = false;
+    bool session_authentication = false;
 };
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+struct NativeSnapshotTestProvider {
+    static bool resolve(void*,
+        const robotweax::srt::compat::hybrid::CredentialRequest& request,
+        robotweax::srt::compat::hybrid::Authorization& out,
+        std::span<std::byte, 32> secret) noexcept
+    {
+        out = {.credential_id = request.credential_id,
+            .caller_group = request.caller_group,
+            .listener_group = request.listener_group,
+            .stream_id = request.stream_id,
+            .generation = 1,
+            .expires_at_us = 10000};
+        std::fill(secret.begin(), secret.end(), std::byte {0x22});
+        return true;
+    }
+    static bool revalidate(void*,
+        const robotweax::srt::compat::hybrid::CredentialRequest&,
+        const robotweax::srt::compat::hybrid::Authorization& expected,
+        robotweax::srt::compat::hybrid::Authorization& current) noexcept
+    {
+        current = expected;
+        return true;
+    }
+};
+void verify_native_conclusions(
+    SRTSOCKET sender, SRTSOCKET receiver, bool independent)
+{
+    namespace h = robotweax::srt::compat::hybrid;
+    struct Member {
+        std::shared_ptr<robotweax::srt::compat::ConnectionRuntime> runtime;
+        std::uint32_t local = 0, peer = 0;
+        IpEndpoint endpoint;
+    };
+    const auto members = [](SRTSOCKET group) {
+        const auto g = GroupRegistry::instance().find(group);
+        REQUIRE(g);
+        std::vector<SRTSOCKET> ids;
+        {
+            std::lock_guard lock(g->mutex);
+            for (const auto& m : g->members)
+                ids.push_back(m.public_data.id);
+        }
+        std::vector<Member> out;
+        for (auto id : ids) {
+            const auto socket = SocketRegistry::instance().find(id);
+            REQUIRE(socket);
+            std::lock_guard lock(socket->mutex);
+            out.push_back({socket->runtime, socket->protocol_socket_id,
+                socket->peer_protocol_socket_id, socket->peer_endpoint});
+        }
+        return out;
+    };
+    const auto receivers = members(receiver), senders = members(sender);
+    REQUIRE_EQ(receivers.size(), 1U);
+    REQUIRE(receivers.front().runtime);
+    const auto pair = receivers.front().runtime->hybrid_conclusions();
+    REQUIRE_EQ(pair != nullptr, independent);
+    if (!independent)
+        return;
+    REQUIRE(
+        pair->matches(true, receivers.front().local, receivers.front().peer));
+    unsigned matches = 0;
+    for (const auto& member : senders) {
+        if (member.local != receivers.front().peer)
+            continue;
+        REQUIRE(member.runtime);
+        auto peer = member.runtime->hybrid_conclusions();
+        const auto until =
+            std::chrono::steady_clock::now() + std::chrono::seconds {1};
+        while (!peer && std::chrono::steady_clock::now() < until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+            peer = member.runtime->hybrid_conclusions();
+        }
+        REQUIRE(peer);
+        REQUIRE(peer->matches(false, member.local, member.peer));
+        REQUIRE(std::equal(pair->caller_payload().begin(),
+            pair->caller_payload().end(), peer->caller_payload().begin(),
+            peer->caller_payload().end()));
+        REQUIRE(std::equal(pair->listener_payload().begin(),
+            pair->listener_payload().end(), peer->listener_payload().begin(),
+            peer->listener_payload().end()));
+        // The native snapshots must be usable directly, including ordinary
+        // core sequence proposals that differ from the dispatch DATA origin.
+        // This in-memory exchange is not a native carrier or policy grant.
+        h::Exchange c(default_crypto_provider(), true),
+            l(default_crypto_provider(), false);
+        h::Exchange::Configuration cc {
+            .dispatch = pair->dispatch(), .source = pair->source()};
+        cc.credential_id.fill(std::byte {0x11});
+        cc.established_peer = receivers.front().endpoint;
+        cc.connection_generation = 1;
+        auto lc = cc;
+        lc.established_peer = member.endpoint;
+        lc.stream = 1;
+        lc.member = 1;
+        h::CredentialProvider provider {
+            .resolve = NativeSnapshotTestProvider::resolve,
+            .revalidate = NativeSnapshotTestProvider::revalidate};
+        REQUIRE(
+            !l.start(lc, provider, peer->caller_payload(),
+                  peer->listener_payload(), 0)
+                .has_output);
+        const auto offer = c.start(
+            cc, provider, pair->caller_payload(), pair->listener_payload(), 0);
+        REQUIRE(offer.has_output);
+        const auto selection = l.receive(offer.output, 1);
+        REQUIRE(selection.has_output);
+        const auto proof = c.receive(selection.output, 2);
+        REQUIRE(proof.has_output);
+        const auto receipt = l.receive(proof.output, 3);
+        REQUIRE(receipt.has_output);
+        REQUIRE_EQ(
+            c.receive(receipt.output, 4).status, h::Exchange::Status::active);
+        REQUIRE(c.authentication());
+        REQUIRE(l.authentication());
+        ++matches;
+    }
+    REQUIRE_EQ(matches, 1U);
+}
+#endif
 
 void run_dispatch_stream(const StreamScenario& scenario)
 {
@@ -483,6 +614,11 @@ void run_dispatch_stream(const StreamScenario& scenario)
                 0);
         }
     }
+    if (scenario.session_authentication)
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_SESSIONAUTH,
+                       &scenario.session_authentication,
+                       sizeof(scenario.session_authentication)),
+            0);
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP,
                    &group_address, sizeof(group_address)),
         0);
@@ -525,20 +661,20 @@ void run_dispatch_stream(const StreamScenario& scenario)
         REQUIRE(!record->multicast_transmit_channel->running());
     }
     // Three receivers join; srt_accept yields the sender group once.
-    const SRTSOCKET receiver_a =
-        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm, 120,
-            scenario.independent, scenario.asynchronous_receiver);
+    const SRTSOCKET receiver_a = make_receiver(peers, bound, scenario.encrypted,
+        scenario.aes_gcm, 120, scenario.independent,
+        scenario.asynchronous_receiver, scenario.session_authentication);
     SRTSOCKET sender = SRT_INVALID_SOCK;
     if (!scenario.fill_accept_backlog) {
         sender = peers.keep(srt_accept(listener, nullptr, nullptr));
         REQUIRE(sender != SRT_INVALID_SOCK);
     }
-    const SRTSOCKET receiver_b =
-        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm, 120,
-            scenario.independent, scenario.asynchronous_receiver);
-    const SRTSOCKET receiver_c =
-        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm, 120,
-            scenario.independent, scenario.asynchronous_receiver);
+    const SRTSOCKET receiver_b = make_receiver(peers, bound, scenario.encrypted,
+        scenario.aes_gcm, 120, scenario.independent,
+        scenario.asynchronous_receiver, scenario.session_authentication);
+    const SRTSOCKET receiver_c = make_receiver(peers, bound, scenario.encrypted,
+        scenario.aes_gcm, 120, scenario.independent,
+        scenario.asynchronous_receiver, scenario.session_authentication);
     if (scenario.fill_accept_backlog) {
         const auto listener_record = SocketRegistry::instance().find(listener);
         REQUIRE(listener_record);
@@ -549,6 +685,10 @@ void run_dispatch_stream(const StreamScenario& scenario)
     REQUIRE((sender & SRTGROUP_MASK) != 0);
     REQUIRE(wait_for_members(sender, 3, scenario.encrypted));
     REQUIRE_EQ(admissions.multicast_proposals.load(), 3);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    for (auto receiver : {receiver_a, receiver_b, receiver_c})
+        verify_native_conclusions(sender, receiver, scenario.independent);
+#endif
     for (const SRTSOCKET receiver : {receiver_a, receiver_b, receiver_c}) {
         REQUIRE(wait_for_members(receiver, 1));
         REQUIRE_EQ(srt_getsockstate(receiver), SRTS_CONNECTED);
@@ -719,9 +859,9 @@ void run_dispatch_stream(const StreamScenario& scenario)
     expect_messages(receiver_b, first_batch, second_batch);
     expect_messages(receiver_c, first_batch, second_batch);
 
-    const SRTSOCKET receiver_d =
-        make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm, 120,
-            scenario.independent, scenario.asynchronous_receiver);
+    const SRTSOCKET receiver_d = make_receiver(peers, bound, scenario.encrypted,
+        scenario.aes_gcm, 120, scenario.independent,
+        scenario.asynchronous_receiver, scenario.session_authentication);
     REQUIRE(wait_for_members(sender, 3, scenario.encrypted));
     REQUIRE(wait_for_members(receiver_d, 1));
     // Let the joiner's TSBPD clock settle (and, encrypted, its initial key
@@ -759,9 +899,9 @@ void run_dispatch_stream(const StreamScenario& scenario)
                            static_cast<int>(idle.size()), -1, 1),
                 static_cast<int>(idle.size()));
         }
-        const auto joined =
-            make_receiver(peers, bound, scenario.encrypted, scenario.aes_gcm,
-                120, scenario.independent, scenario.asynchronous_receiver);
+        const auto joined = make_receiver(peers, bound, scenario.encrypted,
+            scenario.aes_gcm, 120, scenario.independent,
+            scenario.asynchronous_receiver, scenario.session_authentication);
         REQUIRE(wait_for_members(sender, 1, scenario.encrypted));
         REQUIRE(wait_for_members(joined, 1));
         const auto resumed = message(1000 + cycle);
@@ -1692,6 +1832,41 @@ TEST(multicast_dispatch_independent_async_receiver_negotiates_source)
         loopback_multicast_available(), "no loopback multicast on this host");
     run_dispatch_stream({.independent = true, .asynchronous_receiver = true});
 }
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+TEST(multicast_dispatch_native_conclusions_plain_ctr_gcm_and_async_capture)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        run_dispatch_stream({.encrypted = mode != 0,
+            .first_batch = 3,
+            .second_batch = 2,
+            .third_batch = 2,
+            .aes_gcm = mode == 2,
+            .independent = true,
+            .asynchronous_receiver = mode != 0});
+    }
+}
+TEST(
+    multicast_dispatch_native_conclusions_keep_hsreq_hsrsp_after_authenticated_agreement)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    for (const bool asynchronous : {false, true})
+        run_dispatch_stream({.encrypted = true,
+            .first_batch = 3,
+            .second_batch = 2,
+            .third_batch = 2,
+            .independent = true,
+            .asynchronous_receiver = asynchronous,
+            .session_authentication = true});
+}
+#endif
 
 TEST(multicast_dispatch_coordinated_plaintext_public_stream_and_lifecycle)
 {

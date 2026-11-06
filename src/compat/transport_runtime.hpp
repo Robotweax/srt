@@ -13,6 +13,9 @@
 #include "compat/readiness.hpp"
 #include "compat/socket_readiness.hpp"
 #include "compat/statistics.hpp"
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+#include "compat/hybrid_conclusions.hpp"
+#endif
 #ifdef ENABLE_MAXREXMITBW
 #include "compat/retransmission_budget.hpp"
 #endif
@@ -88,6 +91,10 @@ struct HandshakeEnvelope {
     HandshakeMessage message{};
     ControlHeader control{};
     IpEndpoint peer{};
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::array<std::byte, 1500> raw_datagram {};
+    std::size_t raw_size = 0;
+#endif
 };
 
 struct DatagramEnvelope {
@@ -573,6 +580,12 @@ public:
 
     explicit ConnectionRuntime(Configuration configuration);
     ~ConnectionRuntime();
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    [[nodiscard]] bool publish_hybrid_conclusions(
+        std::shared_ptr<const hybrid::Conclusions>, bool caller) noexcept;
+    [[nodiscard]] std::shared_ptr<const hybrid::Conclusions>
+    hybrid_conclusions() const noexcept;
+#endif
 
     [[nodiscard]] MessageIoResult queue_message(
         std::span<const std::byte> message,
@@ -901,6 +914,10 @@ private:
     void receive_standby_rtt(const PacketView&, std::uint64_t ingress) noexcept;
     [[nodiscard]] bool send_standby_rtt(const StandbyRttMessage&) noexcept;
     mutable std::mutex mutex_;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::shared_ptr<const hybrid::Conclusions> hybrid_conclusions_;
+    std::uint32_t hybrid_local_socket_id_ = 0;
+#endif
     std::condition_variable receive_ready_;
     std::condition_variable send_ready_;
     std::weak_ptr<DatagramChannel> channel_;

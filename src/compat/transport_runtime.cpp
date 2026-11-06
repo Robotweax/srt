@@ -1381,11 +1381,19 @@ void DatagramChannel::dispatch(const PacketView& packet,
             return;
         }
         if (inbox != nullptr) {
-            (void)inbox->push({
+            HandshakeEnvelope envelope {
                 .message = decoded.message,
                 .control = decoded.control,
                 .peer = peer,
-            });
+            };
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+            if (datagram.size() <= envelope.raw_datagram.size()) {
+                std::copy(datagram.begin(), datagram.end(),
+                    envelope.raw_datagram.begin());
+                envelope.raw_size = datagram.size();
+            }
+#endif
+            (void)inbox->push(envelope);
         }
         return;
     }
@@ -1629,6 +1637,9 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
     , peer_flow_window_ceiling_(effective_peer_flow_window(configuration))
     , flow_window_packets_(peer_flow_window_ceiling_)
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    hybrid_local_socket_id_ = configuration.local_socket_id;
+#endif
     // Leave three further heartbeat opportunities inside a short local idle
     // budget. The peer timeout itself is unchanged. Keep the usual one-second
     // cadence for budgets of four seconds or longer, and cap idle heartbeat
@@ -4237,6 +4248,26 @@ void ConnectionRuntime::process_experimental_filter_locked(
 }
 #endif
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+bool ConnectionRuntime::publish_hybrid_conclusions(
+    std::shared_ptr<const hybrid::Conclusions> pair, bool caller) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (locally_closed_ || broken_ || peer_closed_ || hybrid_conclusions_
+        || !pair
+        || !pair->matches(caller, hybrid_local_socket_id_, peer_socket_id_))
+        return false;
+    hybrid_conclusions_ = std::move(pair);
+    return true;
+}
+std::shared_ptr<const hybrid::Conclusions>
+ConnectionRuntime::hybrid_conclusions() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    return locally_closed_ || broken_ || peer_closed_ ? nullptr
+                                                      : hybrid_conclusions_;
+}
+#endif
 void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
     IpEndpoint peer, std::optional<Clock::time_point> ingress,
     PacketIngress provenance,

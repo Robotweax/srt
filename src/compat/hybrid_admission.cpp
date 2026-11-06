@@ -86,10 +86,7 @@ bool admission_transcript(const Context& c, const Authorization& a,
         || caller.has_multicast_dispatch || !listener.has_multicast_dispatch
         || listener.multicast_dispatch != c.dispatch
         || !listener.has_multicast_source
-        || listener.multicast_source != c.source
-        || caller.packet.initial_sequence.value() != c.dispatch.initial_sequence
-        || listener.packet.initial_sequence.value()
-            != c.dispatch.initial_sequence)
+        || listener.multicast_source != c.source)
         return false;
     AdmissionTranscript transcript;
     transcript.size =

@@ -619,11 +619,13 @@ handshake_peer_address(IpEndpoint endpoint) noexcept
 }
 
 [[nodiscard]] ActionResult send_action(
-    DatagramChannel& channel,
-    IpEndpoint peer,
-    const HandshakeAction& action,
-    std::uint32_t destination_socket_id,
-    Clock::time_point origin) noexcept
+    DatagramChannel& channel, IpEndpoint peer, const HandshakeAction& action,
+    std::uint32_t destination_socket_id, Clock::time_point origin
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    ,
+    hybrid::ConclusionCapture* conclusions = nullptr
+#endif
+    ) noexcept
 {
     std::array<std::byte, 1500> datagram{};
     HandshakeAction wire_action = action;
@@ -643,6 +645,15 @@ handshake_peer_address(IpEndpoint endpoint) noexcept
             .system_error = sent.system_error,
         };
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (conclusions) {
+        if (sent.bytes_transferred == encoded.bytes_written)
+            (void)conclusions->observe(
+                std::span {datagram}.first(encoded.bytes_written));
+        else
+            conclusions->invalidate();
+    }
+#endif
     return {};
 }
 
@@ -650,6 +661,9 @@ struct CallerHandshakeSendContext {
     DatagramChannel* channel = nullptr;
     IpEndpoint peer {};
     Clock::time_point origin {};
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    hybrid::ConclusionCapture* conclusions = nullptr;
+#endif
 };
 
 [[nodiscard]] CallerHandshakeSendResult send_caller_handshake_action(
@@ -664,7 +678,12 @@ struct CallerHandshakeSendContext {
         return {.status = CallerHandshakeSendStatus::failed};
     }
     const ActionResult sent = send_action(*context.channel, context.peer,
-        action, destination_socket_id, context.origin);
+        action, destination_socket_id, context.origin
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        ,
+        context.conclusions
+#endif
+    );
     if (sent.outcome == ActionOutcome::io_error) {
         return {
             .status = CallerHandshakeSendStatus::io_error,
@@ -678,20 +697,27 @@ struct CallerHandshakeSendContext {
 }
 
 [[nodiscard]] ActionResult apply_actions(
-    DatagramChannel& channel,
-    IpEndpoint peer,
-    std::uint32_t destination_socket_id,
-    const HandshakeActions& actions,
-    Clock::time_point origin,
-    Clock::time_point& retry_deadline) noexcept
+    DatagramChannel& channel, IpEndpoint peer,
+    std::uint32_t destination_socket_id, const HandshakeActions& actions,
+    Clock::time_point origin, Clock::time_point& retry_deadline
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    ,
+    hybrid::ConclusionCapture* conclusions = nullptr
+#endif
+    ) noexcept
 {
     ActionResult result;
     for (std::size_t index = 0; index < actions.size; ++index) {
         const HandshakeAction& action = actions.values[index];
         switch (action.kind) {
         case HandshakeActionKind::send: {
-            const ActionResult sent = send_action(
-                channel, peer, action, destination_socket_id, origin);
+            const ActionResult sent =
+                send_action(channel, peer, action, destination_socket_id, origin
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+                    ,
+                    conclusions
+#endif
+                );
             if (sent.outcome != ActionOutcome::running) {
                 return sent;
             }
@@ -1591,6 +1617,9 @@ struct CallerSetup {
     bool enforced_encryption = true;
     bool data_sender = false;
     std::int32_t timeout_milliseconds = 0;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    hybrid::ConclusionCapture conclusions;
+#endif
 };
 
 struct RendezvousSetup {
@@ -1742,6 +1771,12 @@ create_setup_inbox() noexcept
 [[nodiscard]] bool enqueue_setup_handshake(
     DatagramInbox& inbox, const HandshakeEnvelope& envelope) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (envelope.raw_size && envelope.raw_size <= envelope.raw_datagram.size())
+        return inbox.push(
+            std::span {envelope.raw_datagram}.first(envelope.raw_size),
+            envelope.peer);
+#endif
     if (envelope.message.has_unknown_extension) {
         return false;
     }
@@ -1771,6 +1806,10 @@ create_setup_inbox() noexcept
         .session_authentication = envelope.message.session_authentication,
         .has_path_identifier = envelope.message.has_path_identifier,
         .path_identifier = envelope.message.path_identifier,
+        .has_multicast_dispatch = envelope.message.has_multicast_dispatch,
+        .multicast_dispatch = envelope.message.multicast_dispatch,
+        .has_multicast_source = envelope.message.has_multicast_source,
+        .multicast_source = envelope.message.multicast_source,
         .has_standby_rtt = envelope.message.has_standby_rtt,
         .standby_rtt = envelope.message.standby_rtt,
         .implementation_identity = envelope.message.implementation_identity,
@@ -1965,8 +2004,12 @@ public:
     }
 
     [[nodiscard]] int publish_connection(const HandshakeMessage& message,
-        PacketTimestamp peer_handshake_timestamp) noexcept
+        PacketTimestamp peer_handshake_timestamp,
+        std::span<const std::byte> accepted_datagram) noexcept
     {
+#ifndef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        (void)accepted_datagram;
+#endif
         const HandshakeMachine& protocol = driver_.protocol();
         if (setup_.configuration.has_group_membership) {
             SRTSOCKET group = SRT_INVALID_SOCK;
@@ -2031,6 +2074,22 @@ public:
                 static_cast<SRT_ERRNO>(last_error().code),
                 last_error().system_error);
         }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        if (setup_.configuration.require_multicast_source) {
+            (void)setup_.conclusions.observe(accepted_datagram);
+            auto frozen = setup_.conclusions.freeze(true,
+                setup_.configuration.local_socket_id, driver_.peer_socket_id());
+            std::shared_ptr<ConnectionRuntime> runtime;
+            {
+                std::lock_guard lock(socket_.mutex);
+                runtime = socket_.runtime;
+            }
+            if (!runtime || !frozen
+                || !runtime->publish_hybrid_conclusions(
+                    std::move(frozen), true))
+                return fail_connect(socket_, SRT_ECONNSETUP, 0);
+        }
+#endif
         publish_connected_state(socket_, SRTS_CONNECTED);
         return 0;
     }
@@ -2391,6 +2450,11 @@ private:
             .channel = setup_.channel.get(),
             .peer = peer_,
             .origin = origin_,
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+            .conclusions = setup_.configuration.require_multicast_source
+                ? &setup_.conclusions
+                : nullptr,
+#endif
         };
         establishment_.emplace(*socket_, peer_, setup_, inbox_, origin_,
             send_caller_handshake_action, &send_context_, true);
@@ -2531,7 +2595,8 @@ private:
         }
         if (result.outcome == CallerHandshakeEventOutcome::connected) {
             const int published = establishment_->publish_connection(
-                decoded.message, decoded.control.timestamp);
+                decoded.message, decoded.control.timestamp,
+                std::span {envelope.bytes}.first(envelope.size));
             if (published == SRT_ERROR) {
                 finish_peer_policy_failure();
             } else {
@@ -2739,6 +2804,11 @@ private:
         .channel = setup.channel.get(),
         .peer = peer,
         .origin = origin,
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        .conclusions = setup.configuration.require_multicast_source
+            ? &setup.conclusions
+            : nullptr,
+#endif
     };
     CallerHsv5Establishment establishment {*socket, peer, setup, inbox, origin,
         send_caller_handshake_action, &send_context};
@@ -2817,8 +2887,9 @@ private:
         });
         arm_retry(action_result);
         if (action_result.outcome == CallerHandshakeEventOutcome::connected) {
-            return establishment.publish_connection(
-                decoded.message, decoded.control.timestamp);
+            return establishment.publish_connection(decoded.message,
+                decoded.control.timestamp,
+                std::span {envelope.bytes}.first(envelope.size));
         }
         if (action_result.outcome != CallerHandshakeEventOutcome::running) {
             return establishment.fail_event(action_result);
@@ -4497,6 +4568,10 @@ struct ListenerRuntime::SetupContext {
     ListenerHandshakeProtocol selected_protocol =
         ListenerHandshakeProtocol::invalid;
     bool policy_rejected = false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    hybrid::ConclusionCapture conclusions;
+    bool capture_conclusions = false;
+#endif
 };
 
 SRTSOCKET ListenerRuntime::start_admitted_socket(
@@ -4623,6 +4698,13 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     setup_context->accepted = accepted;
     setup_context->channel = channel;
     setup_context->initial = initial;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (admission.conclusion.raw_size
+        <= admission.conclusion.raw_datagram.size())
+        (void)setup_context->conclusions.observe(
+            std::span {admission.conclusion.raw_datagram}.first(
+                admission.conclusion.raw_size));
+#endif
     setup_context->origin = origin;
     setup_context->accepted_handle = accepted_handle;
     setup_context->caller_socket_id = caller_socket_id;
@@ -5015,6 +5097,9 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     }
 
     setup_context->native_options = native_options;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    setup_context->capture_conclusions = public_options.multicast_independent;
+#endif
     setup_context->crypto = crypto;
     group_admission.crypto = crypto;
     setup_context->policy_error = policy_error;
@@ -5666,9 +5751,14 @@ bool ListenerRuntime::process_setup_result(
             context->accepted->coordinated_member =
                 context->accepted->public_options.multicast_coordinated;
         }
-        const ActionResult actions = apply_actions(*context->channel,
-            context->initial.peer, context->caller_socket_id,
-            result.setup.hsv5_actions, context->origin, ignored_retry_deadline);
+        const ActionResult actions = apply_actions(
+            *context->channel, context->initial.peer, context->caller_socket_id,
+            result.setup.hsv5_actions, context->origin, ignored_retry_deadline
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+            ,
+            &context->conclusions
+#endif
+        );
         if (actions.outcome == ActionOutcome::io_error) {
             return finish_setup_context(
                 context, false, SRT_ESOCKFAIL, actions.system_error);
@@ -5676,12 +5766,33 @@ bool ListenerRuntime::process_setup_result(
         if (actions.outcome != ActionOutcome::connected) {
             return finish_setup_context(context, false, SRT_ECONNSETUP);
         }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        if (context->capture_conclusions) {
+            auto frozen = context->conclusions.freeze(false,
+                context->accepted->protocol_socket_id,
+                context->caller_socket_id);
+            std::shared_ptr<ConnectionRuntime> runtime;
+            {
+                std::lock_guard lock(context->accepted->mutex);
+                runtime = context->accepted->runtime;
+            }
+            if (!runtime || !frozen
+                || !runtime->publish_hybrid_conclusions(
+                    std::move(frozen), false))
+                return finish_setup_context(context, false, SRT_ECONNSETUP);
+        }
+#endif
         return finish_setup_context(context, true);
     }
 
-    const ActionResult actions = apply_actions(*context->channel,
-        context->initial.peer, context->caller_socket_id,
-        result.setup.hsv5_actions, context->origin, ignored_retry_deadline);
+    const ActionResult actions = apply_actions(
+        *context->channel, context->initial.peer, context->caller_socket_id,
+        result.setup.hsv5_actions, context->origin, ignored_retry_deadline
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        ,
+        &context->conclusions
+#endif
+    );
     if (actions.outcome == ActionOutcome::io_error) {
         return finish_setup_context(
             context, false, SRT_ESOCKFAIL, actions.system_error);
