@@ -594,6 +594,9 @@ public:
     [[nodiscard]] std::optional<hybrid::ReceiveDataProgress>
     hybrid_receive_progress(const hybrid::NativeService*,
         std::uint64_t absolute_origin) const noexcept;
+    [[nodiscard]] std::optional<hybrid::MulticastCoverage>
+    hybrid_multicast_coverage(const hybrid::NativeService*, std::uint64_t begin,
+        std::uint64_t through, std::uint64_t origin) const noexcept;
 #endif
 
     [[nodiscard]] MessageIoResult queue_message(

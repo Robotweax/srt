@@ -98,10 +98,33 @@ void ReceiveProgress::receive(
     if (entry.paths & bit)
         return;
     entry.paths |= bit;
+    if (path == DataPath::multicast)
+        entry.multicast_at_us = at;
     if (!unique && state_.matched_copies != UINT64_MAX)
         ++state_.matched_copies;
     (void)(path == DataPath::multicast ? state_.multicast : state_.unicast)
         .note(*pos, at);
+}
+std::optional<MulticastCoverage> ReceiveProgress::coverage(std::uint64_t begin,
+    std::uint64_t through, std::uint64_t origin) const noexcept
+{
+    if (!state_.valid || begin < origin || through <= begin
+        || through - begin > capacity || !state_.all.observed)
+        return {};
+    const auto first = begin - origin, last = through - origin;
+    if (last > state_.all.next
+        || (state_.all.next > first && state_.all.next - first > capacity))
+        return {};
+    MulticastCoverage result {UINT64_MAX, 0};
+    for (auto p = first; p < last; ++p) {
+        const auto& entry = entries_[p % capacity];
+        if (!entry.occupied || entry.position != p || !(entry.paths & 2U))
+            return {};
+        result.first_at_us =
+            std::min(result.first_at_us, entry.multicast_at_us);
+        result.last_at_us = std::max(result.last_at_us, entry.multicast_at_us);
+    }
+    return result;
 }
 std::optional<ReceiveDataProgress> ReceiveProgress::snapshot(
     std::uint64_t origin) const noexcept

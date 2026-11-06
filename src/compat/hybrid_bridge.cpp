@@ -73,9 +73,9 @@ std::shared_ptr<CoordinatorBridge> CoordinatorBridge::create(
     std::shared_ptr<AuthorizationLease> lease, Configuration c) noexcept
 {
     if (!actor || !service || !lease || !valid(c.reporting)
-        || !c.command_timeout_us || c.command_timeout_us > maximum_age_us
-        || !c.maximum_attempts || c.maximum_attempts > 8
-        || service->configuration_.caller)
+        || (c.returning && !valid(*c.returning)) || !c.command_timeout_us
+        || c.command_timeout_us > maximum_age_us || !c.maximum_attempts
+        || c.maximum_attempts > 8 || service->configuration_.caller)
         return {};
     // Socket identity inspection is outside all transaction/protocol locks.
     std::shared_ptr<DatagramChannel> channel;
@@ -117,6 +117,8 @@ CoordinatorBridge::Snapshot CoordinatorBridge::snapshot() const noexcept
     if (!s.closed && state_.enrolled && configuration_.reporting.interval_us
         && !pending_report_)
         s.next_wakeup_us = next_report_;
+    if (!s.closed && s.overlap_deadline_us)
+        s.next_wakeup_us = std::min(s.next_wakeup_us, s.overlap_deadline_us);
     return s;
 }
 std::optional<SourceDataProgress>
@@ -226,6 +228,16 @@ bool CoordinatorBridge::transact(Entry* entry) noexcept
         std::find_if(a.members_.begin(), a.members_.end(), [&](const auto& m) {
             return m.state.id == context.selection.member;
         });
+    if (!a.state_.closed && !a.state_.failed)
+        a.expire_overlaps_locked();
+    if (found != a.members_.end() && state_.enrolled
+        && found->expired_overlap_root == service_->state_.generation
+        && found->expired_overlap_revision == state_.revision
+        && found->state.revision == state_.revision + 1
+        && found->state.delivery == GroupOriginalDelivery::unicast) {
+        state_.revision = found->state.revision;
+        ++state_.overlap_expirations;
+    }
     if (a.state_.closed || a.state_.failed
         || a.state_.source_mode != A::SourceMode::multicast
         || found == a.members_.end() || context.selection.stream != c.generation
@@ -287,6 +299,13 @@ bool CoordinatorBridge::transact(Entry* entry) noexcept
         cancelled_.store(true);
         return true;
     }
+    if (found->overlap_window) {
+        state_.overlap_deadline_us = found->overlap_window->not_after_us;
+        state_.overlap_end_position = found->overlap_window->end_position;
+    } else {
+        state_.overlap_deadline_us = 0;
+        state_.overlap_end_position = 0;
+    }
     if (!entry) {
         if (state_.enrolled)
             return true;
@@ -315,12 +334,21 @@ bool CoordinatorBridge::transact(Entry* entry) noexcept
         a.next_position_ >= span ? a.next_position_ - span : a.next_position_;
     Outcome outcome = Outcome::ok;
     const bool query = e.request.kind == Kind::delivery_query;
-    if (e.request.kind != Kind::fallback_request && !query)
+    const bool ready = e.request.kind == Kind::multicast_ready;
+    const bool returning = ready && configuration_.returning
+        && (context.selection.supported & return_control);
+    const auto target = returning
+        ? (e.request.mode == Mode::overlap ? GroupOriginalDelivery::overlap
+                                           : GroupOriginalDelivery::multicast)
+        : GroupOriginalDelivery::unicast;
+    if (e.request.kind != Kind::fallback_request && !query && !returning)
         outcome = Outcome::unsupported;
     else if (!query && e.request.revision != found->state.revision)
         outcome = Outcome::stale;
-    else if (!query
-        && (prefix.status != R::Status::ready || e.request.next_position < floor
+    else if (!query && prefix.status != R::Status::ready)
+        outcome = Outcome::history_unavailable;
+    else if (!query && !ready
+        && (e.request.next_position < floor
             || e.request.next_position > a.next_position_
             || prefix.prefix.originals + prefix.prefix.repairs
                 > context.selection.prefix_limit))
@@ -333,14 +361,41 @@ bool CoordinatorBridge::transact(Entry* entry) noexcept
         outcome = Outcome::budget;
     else if (!query && found->state.revision == UINT64_MAX)
         outcome = Outcome::unsupported;
+    if (returning && outcome == Outcome::ok) {
+        const auto p = *configuration_.returning;
+        if (e.request.age_us >= p.maximum_proof_age_us || at < e.first_received
+            || at - e.first_received
+                >= p.maximum_proof_age_us - e.request.age_us)
+            outcome = Outcome::stale;
+        else if (target == GroupOriginalDelivery::overlap) {
+            if (found->state.delivery != GroupOriginalDelivery::unicast
+                || found->state.revision >= UINT64_MAX - 1
+                || e.request.next_position != context.selection.initial_position
+                || e.request.multicast_next
+                    != context.selection.initial_position
+                || a.next_position_ > UINT64_MAX - p.maximum_overlap_packets)
+                outcome = Outcome::denied;
+        } else {
+            const auto& w = found->overlap_window;
+            if (found->state.delivery != GroupOriginalDelivery::overlap || !w
+                || w->root != service_->state_.generation
+                || w->revision != found->state.revision
+                || e.request.multicast_next != w->boundary
+                || e.request.next_position < w->boundary
+                || e.request.next_position - w->boundary
+                    < p.minimum_coverage_packets
+                || e.request.next_position > a.next_position_
+                || e.request.interval_us < p.minimum_coverage_us)
+                outcome = Outcome::denied;
+        }
+    }
     if (!next_reply_ || next_reply_ == UINT64_MAX) {
         cancelled_.store(true);
         return true;
     }
-    const bool change = found->state.delivery != GroupOriginalDelivery::unicast;
+    const bool change = found->state.delivery != target;
     if (outcome == Outcome::ok && !query) {
-        // Recheck TTL at the commit boundary, after every retained guard.
-        if (prefix.prefix.earliest_expiration_microseconds
+        if (!ready && prefix.prefix.earliest_expiration_microseconds
             && prefix.prefix.earliest_expiration_microseconds
                 <= runtime->now_microseconds())
             outcome = Outcome::history_unavailable;
@@ -356,21 +411,71 @@ bool CoordinatorBridge::transact(Entry* entry) noexcept
                 e.complete = true;
                 return true;
             }
-            (void)guard.commit();
-            if (change) {
-                a.state_.unicast_members -= static_cast<std::size_t>(
-                    found->state.delivery != GroupOriginalDelivery::multicast);
-                ++a.state_.unicast_members;
-                if (!found->unicast_lease) {
-                    found->unicast_lease = true;
-                    ++a.state_.unicast_reservations;
+            if (returning && target == GroupOriginalDelivery::multicast) {
+                a.expire_overlaps_locked();
+                if (!found->overlap_window
+                    || found->state.revision != e.request.revision) {
+                    if (found->expired_overlap_root
+                            == service_->state_.generation
+                        && found->expired_overlap_revision == state_.revision
+                        && found->state.revision == state_.revision + 1) {
+                        state_.revision = found->state.revision;
+                        ++state_.overlap_expirations;
+                    }
+                    state_.overlap_deadline_us = 0;
+                    state_.overlap_end_position = 0;
+                    outcome = Outcome::stale;
                 }
-                found->state.delivery = GroupOriginalDelivery::unicast;
-                ++found->state.revision;
-                found->state.effective_sequence = a.state_.next_sequence;
-                found->state.effective_position = a.next_position_;
-                state_.revision = found->state.revision;
-                ++state_.applied;
+            }
+            std::optional<A::Membership::OverlapWindow> window;
+            if (returning && target == GroupOriginalDelivery::overlap) {
+                const auto raw =
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        a.source_now().time_since_epoch())
+                        .count();
+                const auto p = *configuration_.returning;
+                if (raw < 0
+                    || static_cast<std::uint64_t>(raw)
+                        > UINT64_MAX - p.maximum_overlap_us)
+                    outcome = Outcome::unsupported;
+                else
+                    window = A::Membership::OverlapWindow {
+                        service_->state_.generation, found->state.revision + 1,
+                        a.next_position_, static_cast<std::uint64_t>(raw),
+                        static_cast<std::uint64_t>(raw) + p.maximum_overlap_us,
+                        a.next_position_ + p.maximum_overlap_packets};
+            }
+            if (outcome == Outcome::ok) {
+                if (!ready)
+                    (void)guard.commit();
+                if (change) {
+                    a.state_.unicast_members -=
+                        static_cast<std::size_t>(found->state.delivery
+                            != GroupOriginalDelivery::multicast);
+                    a.state_.unicast_members += static_cast<std::size_t>(
+                        target != GroupOriginalDelivery::multicast);
+                    const bool lease =
+                        target != GroupOriginalDelivery::multicast
+                        || prefix.pending_unicast;
+                    a.state_.unicast_reservations -=
+                        static_cast<std::size_t>(found->unicast_lease);
+                    a.state_.unicast_reservations +=
+                        static_cast<std::size_t>(lease);
+                    found->unicast_lease = lease;
+                    found->state.delivery = target;
+                    ++found->state.revision;
+                    found->state.effective_sequence = a.state_.next_sequence;
+                    found->state.effective_position = a.next_position_;
+                    found->overlap_window = window;
+                    found->expired_overlap_root = 0;
+                    found->expired_overlap_revision = 0;
+                    state_.overlap_deadline_us =
+                        window ? window->not_after_us : 0;
+                    state_.overlap_end_position =
+                        window ? window->end_position : 0;
+                    state_.revision = found->state.revision;
+                    ++state_.applied;
+                }
             }
         }
     }
@@ -389,6 +494,9 @@ bool CoordinatorBridge::transact(Entry* entry) noexcept
             outcome == Outcome::ok && prefix.status == R::Status::ready
             ? floor
             : a.next_position_,
+        .multicast_next = (context.selection.supported & return_control)
+            ? member.effective_position
+            : 0,
         .outcome = outcome,
         .request_serial = (context.selection.supported & policy_query)
             ? e.request.serial
@@ -456,6 +564,12 @@ void CoordinatorBridge::event(const NativeService::Event& event) noexcept
                                  configuration_.command_timeout_us),
             service_->state_.expires_at_us),
         .occupied = true};
+    if (m.kind == Kind::multicast_ready && configuration_.returning
+        && (service_->state_.context.selection.supported & return_control)) {
+        const auto maximum = configuration_.returning->maximum_proof_age_us;
+        const auto remaining = m.age_us >= maximum ? 0U : maximum - m.age_us;
+        e.deadline = std::min(e.deadline, add(e.first_received, remaining));
+    }
 }
 void CoordinatorBridge::replies() noexcept
 {
@@ -489,6 +603,16 @@ void CoordinatorBridge::work() noexcept
         return;
     if (!state_.enrolled) {
         (void)transact(nullptr);
+        return;
+    }
+    // Idle expiry observation is needed only for an owned overlap window.
+    // Each transaction also wakes the actor, so avoid waking DATA work on
+    // every control pump when no return window needs reconciliation.
+    if (state_.overlap_deadline_us)
+        (void)transact(nullptr);
+    if (cancelled_.load()) {
+        lock.unlock();
+        close();
         return;
     }
     for (std::size_t i = 0; i < NativeService::batch; ++i) {

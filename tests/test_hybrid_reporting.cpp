@@ -14,7 +14,7 @@ hr::Context context()
     c.source = {.kind = MulticastSourceKind::announcement,
         .group_id = c.dispatch.group_id,
         .endpoint = {.address = {192, 0, 2, 1}, .port = 9000}};
-    c.offer.supported = hr::known_features;
+    c.offer.supported = hr::policy_query_features;
     c.selection = c.offer;
     c.selection.kind = hr::CapabilityKind::selection;
     c.selection.stream = 71;

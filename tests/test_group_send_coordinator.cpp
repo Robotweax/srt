@@ -2466,7 +2466,8 @@ struct BridgeFixture {
     std::shared_ptr<hb::CoordinatorBridge> bridge;
     std::shared_ptr<const hb::Conclusions> origin;
     explicit BridgeFixture(std::uint32_t limit = 256, bool attach = true,
-        std::size_t recipients = 4, hb::ReportingConfiguration reporting = {})
+        std::size_t recipients = 4, hb::ReportingConfiguration reporting = {},
+        std::optional<hb::ReturnPolicy> returning = std::nullopt)
         : f(CryptoMode::automatic, 4, initial, recipients)
         , receiver(f, 8)
     {
@@ -2512,7 +2513,7 @@ struct BridgeFixture {
         }
         origin = capture.freeze(false, 107, 108);
         REQUIRE(origin);
-        if (reporting.interval_us)
+        if (reporting.interval_us || returning)
             cp->now = lp->now = static_cast<std::uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     f.now.time_since_epoch())
@@ -2532,7 +2533,8 @@ struct BridgeFixture {
             x.exchange.connection_generation = c ? 1 : 2;
             x.exchange.established_peer = IpEndpoint::loopback(c ? 8000 : 8001);
             x.exchange.credential_id.fill(std::byte {0x11});
-            x.exchange.policy.supported = hb::known_features;
+            x.exchange.policy.supported =
+                returning ? hb::known_features : hb::policy_query_features;
             x.exchange.policy.prefix_limit = limit;
             if (!c) {
                 x.exchange.stream = identity->stream;
@@ -2567,7 +2569,9 @@ struct BridgeFixture {
         lease = std::make_shared<hb::AuthorizationLease>(lp->grant);
         if (attach) {
             bridge = hb::CoordinatorBridge::create(f.actor, listener, lease,
-                {.reporting = reporting, .command_timeout_us = 1000});
+                {.reporting = reporting,
+                    .returning = returning,
+                    .command_timeout_us = 1000});
             REQUIRE(bridge);
         }
     }
@@ -3054,6 +3058,159 @@ TEST(
     const auto reply = f.reply();
     REQUIRE_EQ(reply.kind, hb::Kind::delivery_commit);
     REQUIRE_EQ(f.bridge->snapshot().applied, 1U);
+}
+namespace {
+hb::ReturnPolicy return_policy()
+{
+    return {1000, 8, 2, 10, 500};
+}
+void ready(BridgeFixture& f, std::uint64_t serial, std::uint64_t revision,
+    hb::Mode mode, std::uint64_t begin = 0, std::uint64_t end = 0,
+    std::uint32_t interval = 10)
+{
+    auto m = f.request(serial, revision, end);
+    m.kind = hb::Kind::multicast_ready;
+    m.mode = mode;
+    m.multicast_next = begin;
+    m.interval_us = interval;
+    REQUIRE_EQ(f.caller->send(m, f.cp->now + 1000, f.cp->now),
+        hb::NativeService::Admission::accepted);
+    f.round();
+}
+void to_unicast(BridgeFixture& f)
+{
+    f.submit(f.request());
+    REQUIRE_EQ(f.reply().mode, hb::Mode::unicast);
+}
+}
+TEST(
+    hybrid_return_sender_commits_overlap_then_multicast_without_replaying_or_releasing_queued_uc)
+{
+    auto p = return_policy();
+    p.maximum_overlap_packets = 2;
+    BridgeFixture f(256, true, 4, {}, p);
+    to_unicast(f);
+    ready(f, 2, 1, hb::Mode::overlap);
+    auto reply = f.reply();
+    REQUIRE_EQ(reply.mode, hb::Mode::overlap);
+    REQUIRE_EQ(reply.revision, 2U);
+    REQUIRE_EQ(reply.multicast_next, 0U);
+    for (unsigned i = 0; i < 2; ++i)
+        REQUIRE_EQ(f.f.send(), Status::accepted);
+    f.f.pump();
+    ready(f, 3, 2, hb::Mode::multicast, 0, 2);
+    reply = f.reply();
+    REQUIRE_EQ(reply.mode, hb::Mode::multicast);
+    REQUIRE_EQ(reply.revision, 3U);
+    REQUIRE_EQ(reply.multicast_next, 2U);
+    REQUIRE_EQ(f.f.actor->snapshot().unicast_members, 0U);
+    REQUIRE_EQ(f.f.actor->snapshot().unicast_reservations, 1U);
+    REQUIRE_EQ(f.receiver.buffered(), 2U);
+    REQUIRE_EQ(f.bridge->snapshot().applied, 3U);
+}
+TEST(
+    hybrid_return_sender_expiry_reverts_to_uc_by_time_and_before_excess_admission)
+{
+    for (bool packets : {false, true}) {
+        auto p = return_policy();
+        p.maximum_overlap_packets = 2;
+        BridgeFixture f(256, true, 4, {}, p);
+        to_unicast(f);
+        ready(f, 2, 1, hb::Mode::overlap);
+        REQUIRE_EQ(f.reply().mode, hb::Mode::overlap);
+        if (packets) {
+            for (unsigned i = 0; i < 3; ++i)
+                REQUIRE_EQ(f.f.send(), Status::accepted);
+        } else {
+            f.f.now += 1000us;
+            f.cp->now += 1000;
+            f.lp->now += 1000;
+            f.f.pump();
+        }
+        REQUIRE_EQ(f.member().delivery, GroupOriginalDelivery::unicast);
+        REQUIRE_EQ(f.member().revision, 3U);
+        f.bridge->pump();
+        REQUIRE(!f.bridge->snapshot().closed);
+        REQUIRE_EQ(f.bridge->snapshot().overlap_expirations, 1U);
+        REQUIRE_EQ(f.f.actor->snapshot().unicast_reservations, 1U);
+    }
+}
+TEST(
+    hybrid_return_sender_rejects_wrong_boundary_short_stale_or_out_of_horizon_coverage)
+{
+    for (unsigned wrong = 0; wrong < 4; ++wrong) {
+        BridgeFixture f(256, true, 4, {}, return_policy());
+        to_unicast(f);
+        ready(f, 2, 1, hb::Mode::overlap);
+        (void)f.reply();
+        for (unsigned i = 0; i < 2; ++i)
+            REQUIRE_EQ(f.f.send(), Status::accepted);
+        f.f.pump();
+        auto m = f.request(3, 2, wrong == 1 ? 1 : wrong == 2 ? 3 : 2);
+        m.kind = hb::Kind::multicast_ready;
+        m.mode = hb::Mode::multicast;
+        m.multicast_next = wrong == 0 ? 1 : 0;
+        m.interval_us = wrong == 3 ? 1 : 10;
+        REQUIRE_EQ(f.caller->send(m, f.cp->now + 1000, f.cp->now),
+            hb::NativeService::Admission::accepted);
+        f.round();
+        const auto denied = f.reply();
+        REQUIRE_EQ(denied.outcome, hb::Outcome::denied);
+        REQUIRE_EQ(f.member().delivery, GroupOriginalDelivery::overlap);
+        REQUIRE_EQ(f.bridge->snapshot().applied, 2U);
+    }
+}
+TEST(
+    hybrid_return_sender_old_queued_proofs_and_unselected_policy_cannot_release_uc)
+{
+    BridgeFixture legacy;
+    to_unicast(legacy);
+    ready(legacy, 2, 1, hb::Mode::overlap);
+    REQUIRE_EQ(legacy.reply().outcome, hb::Outcome::unsupported);
+    REQUIRE_EQ(legacy.member().delivery, GroupOriginalDelivery::unicast);
+    BridgeFixture f(256, true, 4, {}, return_policy());
+    to_unicast(f);
+    ready(f, 2, 1, hb::Mode::overlap);
+    (void)f.reply();
+    for (unsigned i = 0; i < 2; ++i)
+        REQUIRE_EQ(f.f.send(), Status::accepted);
+    f.f.pump();
+    auto m = f.request(3, 2, 2);
+    m.kind = hb::Kind::multicast_ready;
+    m.mode = hb::Mode::multicast;
+    m.multicast_next = 0;
+    m.interval_us = 10;
+    REQUIRE_EQ(f.caller->send(m, f.cp->now + 1000, f.cp->now),
+        hb::NativeService::Admission::accepted);
+    f.cp->now += 500;
+    f.lp->now += 500;
+    f.f.now += 500us;
+    f.receiver.now += 500;
+    f.round();
+    f.bridge->pump();
+    f.round();
+    REQUIRE_EQ(f.member().delivery, GroupOriginalDelivery::overlap);
+    REQUIRE_EQ(f.bridge->snapshot().applied, 2U);
+    auto query = f.request(4);
+    query.kind = hb::Kind::delivery_query;
+    query.mode = hb::Mode::multicast;
+    f.submit(query);
+    REQUIRE_EQ(f.reply().mode, hb::Mode::overlap);
+}
+TEST(
+    hybrid_return_sender_fresh_serial_retries_do_not_reset_overlap_boundary_or_budget)
+{
+    BridgeFixture f(256, true, 4, {}, return_policy());
+    to_unicast(f);
+    ready(f, 2, 1, hb::Mode::overlap);
+    const auto first = f.reply();
+    const auto deadline = f.bridge->snapshot().overlap_deadline_us;
+    ready(f, 3, 1, hb::Mode::overlap);
+    const auto retry = f.reply();
+    REQUIRE_EQ(retry.outcome, hb::Outcome::stale);
+    REQUIRE_EQ(retry.multicast_next, first.multicast_next);
+    REQUIRE_EQ(f.bridge->snapshot().overlap_deadline_us, deadline);
+    REQUIRE_EQ(f.bridge->snapshot().applied, 2U);
 }
 TEST(hybrid_progress_sender_admission_and_eagain_are_not_multicast_submissions)
 {

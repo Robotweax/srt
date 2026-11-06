@@ -82,4 +82,10 @@ status = p('!IIQQQQQIIQQQIIII', 1, 5, 71, 97, 1, 1, 1237, 1, 0, 1234, 0, 0x01020
 assert len(query) == len(status) == 96
 assert status[72:80] == bytes(range(1, 9))
 result['policy_query'] = {'query': query.hex(), 'status_echo': status.hex(), 'feature': 32}
+# return_control64: word64 is the effective boundary in delivery responses.
+return_status = p('!IIQQQQQIIQQQIIII', 1, 5, 71, 97, 9, 2, 1242, 6, 2, 1234, 1237, 8, 0, 0, 0, 0)
+ready_return = p('!IIQQQQQIIQQQIIII', 1, 6, 71, 97, 10, 2, 1241, 5, 0, 0, 1237, 0, 0, 0, 1000, 20)
+assert len(return_status) == len(ready_return) == 96
+assert return_status[64:72] == p('!Q', 1237) and return_status[72:80] == p('!Q', 8)
+result['return_control'] = {'feature':64,'status_boundary':return_status.hex(),'ready_coverage':ready_return.hex()}
 print(json.dumps(result, indent=2))

@@ -210,6 +210,12 @@ private:
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
         std::uint64_t join_position = 0;
         SequenceNumber join_sequence;
+        struct OverlapWindow {
+            std::uint64_t root = 0, revision = 0, boundary = 0, opened_us = 0,
+                          not_after_us = 0, end_position = 0;
+        };
+        std::optional<OverlapWindow> overlap_window;
+        std::uint64_t expired_overlap_root = 0, expired_overlap_revision = 0;
 #endif
     };
     struct Recipient {
@@ -263,6 +269,7 @@ private:
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
     hybrid::DataHighWater multicast_originals_;
     hybrid::SourceActivity source_activity_;
+    void expire_overlaps_locked(bool admission = false) noexcept;
 #endif
     std::size_t maximum_payload_ = 0;
     std::unique_ptr<GroupPacketEncoder> encoder_;

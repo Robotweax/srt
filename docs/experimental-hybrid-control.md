@@ -36,6 +36,7 @@ cmake --build build-hybrid-control --parallel
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_reporting
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_detector
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_automatic
+./build-hybrid-control/robotweax_srt_tests --include hybrid_return
 ./tools/python tests/hybrid_control_vectors.py
 ```
 
@@ -60,7 +61,9 @@ reject incorrect lengths, versions, reserved bytes and invalid fields.
 Bits 1, 2 and 4 mean canonical unicast originals, bounded prefix recovery and
 progress reports. All three are mandatory. Bits 8 and 16 mean overlap and source
 recovery. Bit 32 selects read-only policy queries and request-correlated delivery
-responses. Unknown bits are rejected, required bits must be supported, and a
+responses. Bit 64 selects bounded return control and effective-boundary metadata;
+it requires bits 8 and 32. The previous all-features mask remains 63 and the
+current mask is 127. Unknown bits are rejected, required bits must be supported, and a
 selection must satisfy both peers' requirements. The prefix limit is the smaller
 of their limits. Offers have zero incarnation/position fields. A selection has
 nonzero stream and member incarnations; position may be zero. A receiver checks
@@ -909,9 +912,9 @@ loss-free delivery, a retained replay prefix, key availability, available
 bandwidth or an overlap commit boundary. Native loopback qualification exercises
 blackout detection, explicit host fallback, sustained multicast observation
 while unicast remains committed, pause suppression and owner closure. The
-separate controller below can consume fallback candidates. Budgeted
-multicast overlap/return, public provisioning and startup join failure handling
-remain unimplemented.
+separate controller below can consume fallback candidates. Explicit bounded
+multicast overlap/return is described below; public provisioning, autonomous
+return selection and startup join failure handling remain unimplemented.
 
 ## Explicitly attached automatic unicast fallback
 
@@ -1001,9 +1004,107 @@ across CTR/GCM rotation. Component cases cover invalid/scoped/stale cursors,
 callback delay/reentrancy/close/route loss/pause, manual intent precedence,
 per-revision/lifetime budgets, persistent ticket results, posting-age expiry,
 EAGAIN and total reply loss. The detector's assumed timing/transit bounds and
-peer-honesty limits still apply. Automatic multicast return, budgeted overlap
-and its committed coverage boundary remain separate work; return candidates do
-not select multicast or send MULTICAST_READY.
+peer-honesty limits still apply. This fallback controller ignores return candidates. The explicit bounded
+return protocol below supplies overlap and coverage validation; it does not
+attach an autonomous return controller.
+
+## Bounded overlap and explicit multicast return
+
+Return control requires negotiated feature bit 64 (`return_control`) together
+with overlap bit 8 and policy-query bit 32. It reuses MULTICAST_READY with explicit
+new semantics only when selected. Capability/context/body/envelope sizes remain
+48/192/96/172 bytes and the existing proof/MAC construction covers the selected
+bit and complete records. Older strict prototype peers may reject the bit;
+required-feature negotiation fails explicitly. Legacy31 and policy-query63
+fixtures retain their formats and known answers. Native primary handshakes
+continue rejecting authentication v7; no public selector or crypto primitive is
+added.
+
+The sender bridge must also receive an explicit `ReturnPolicy`. All fields are
+positive: overlap duration at most five seconds, overlap packets at most 256,
+minimum coverage packets no greater than that cap, minimum coverage interval at
+most one second and less than overlap duration, and maximum proof age no greater
+than overlap duration. No policy is selected by default. Existing recipient and
+aggregate UC wire quotas still apply; entering overlap retains the UC reservation
+and does not schedule a prefix or add another recipient.
+
+The host calls `ReceiverBridge::request_overlap()` only with fresh confirmed UC
+policy. With bit 64 selected it sends a timed ready intent for overlap using the
+current revision and empty interval at the selected initial position. The sender
+commits overlap at its actual next admission position **B**, increments revision,
+and records a native-root-bound overlap window. Future admissions continue
+canonical UC originals while the source continues multicast. Already admitted
+copies and their deadlines remain unchanged.
+
+The window expires by source monotonic time or before an admission beyond its
+packet cap. Expiry restores UC, increments revision and preserves its reservation.
+It does not switch to multicast. Source admission, existing actor work and sender
+bridge transactions enforce expiry; the existing actor scheduler service polls
+while a window remains active, and bridge wakeup exposes its deadline. No new
+service/thread/timer is reserved. Exactly the allowed number of overlap packets
+may be confirmed at the cap before a further admission; the next admission
+restores UC if return has not committed. Revision headroom is required so expiry
+cannot wrap. Retries under the old revision cannot reopen or extend the window.
+
+With bit 64, delivery responses carry the policy's effective absolute boundary
+in word 64. Word 40 remains the admission cursor and word 72 the request echo.
+A commit has boundary equal to its commit cursor; queries can report a later
+admission cursor with the original boundary. The receiver treats boundary/mode
+conflicts under one revision as a control error. Thus losing a commit reply can
+be reconciled by a correlated query without inventing B from current admission
+progress. Without bit 64 response word 64 remains zero.
+
+After overlap is confirmed, the host supplies a `CoverageProof` to
+`request_multicast()`. It asserts **contiguous validated multicast coverage of
+[B,C)** under that exact overlap revision and native generation, with positive
+observation interval, original observation time and exclusive local deadline.
+C must exceed B and be no greater than current locally observed multicast high
+water; that ceiling is not proof of contiguity. The sender requires its own
+window/root/revision/B, sufficient coverage count/interval, fresh proof, and C no
+greater than admitted source position. It checks expiry again at commit and
+clips command/reply lifetime by original advertised proof age plus local queue
+time. This is a trusted peer assertion; authentication does not independently
+establish honest coverage.
+
+`coverage_proof(C, lifetime_us)` can construct that assertion from the existing
+fixed 32-position exact-copy cache. Every position B..C-1 must have an admitted
+MC path copy, including exact matching MC copies after UC consumption. A hole,
+changed/uncached copy, wrong route epoch or interval outside the recent cache
+returns no proof. Each cache entry retains its first MC receive time; same-path
+replays cannot renew it. The proof uses the minimum/maximum actual MC receipt
+times for that interval, with observation origin at the last such receipt and
+deadline bounded by requested lifetime and grant expiry. Zero-span intervals
+return no proof. This adds only fixed entry timestamps, keeping the observer
+below 64 KiB. It retains plaintext/header cache semantics and existing integrity
+limits. Larger intervals require a separate trusted host ledger; high waters
+alone cannot substitute for it. No receive/ACK/drop cursor changes are made.
+
+A valid final request commits multicast at the sender's current next admission
+position **D**, with another revision. Only future originals stop using UC.
+Pending UC originals retain their canonical packets, pacing and completion
+ownership; their reservation remains until they drain. No outstanding copy is
+cancelled or rewritten, no prefix is replayed by either return phase, and
+ordinary UC repairs remain available. Coverage B..C does not promise future
+path reliability or establish delivery/playback deadlines for all packets.
+The host must still validate application merge/drop semantics and recovery cost.
+
+Ready attempts are timed messages. Every admitted retry uses a fresh semantic
+serial and authenticated envelope while keeping the original proof observation
+and operation deadline; they never retry a changed age under one serial. Sender
+revision checks make fresh-serial retries idempotent. Read-only query rounds
+reconcile lost overlap/final commits and their exact boundary. Unknown/denied
+return results are separate from fallback results. Missing replies, expired
+proof/window, stale revision, insufficient history/keys/budget or loss of owner
+cannot authorize release of UC. Already submitted datagrams cannot be recalled;
+local deadlines still do not imply an absolute distributed cancellation cutoff.
+
+Native loopback tests drop every commit reply through UC -> overlap -> MC across
+plain/CTR/GCM, use the exact cache to prove eight overlap positions, and deliver
+40 more canonical messages after return across key rotation. Sender UC-original
+high water stays at or below D. Explicit return APIs perform no autonomous
+recovery selection; `AutomaticFallback` remains one-way. An autonomous return
+controller, public provisioning, startup-join fallback, actual source-error
+control bridge and broader network/scale qualification remain future work.
 
 ## Control body
 
@@ -1021,7 +1122,7 @@ Every control body is exactly 96 bytes.
 | 48 | 4 | Matching 31-bit next sequence |
 | 52 | 4 | Mode: multicast 0, unicast 1, overlap 2 |
 | 56 | 8 | Retained floor |
-| 64 | 8 | Multicast next position |
+| 64 | 8 | Multicast next; negotiated delivery-response effective boundary; return-ready coverage begin |
 | 72 | 8 | STREAM_PROGRESS produced next; negotiated delivery-response request serial; otherwise zero |
 | 80 | 4 | Activity: startup, producing, paused, ended, source failed (0–4) |
 | 84 | 4 | Outcome: OK, denied, history unavailable, budget, stale, busy, unsupported (0–6) |
@@ -1039,8 +1140,10 @@ Progress and path reports carry a positive interval no larger than 1,000,000
 microseconds and age no larger than 5,000,000 microseconds. These are parsing
 bounds, not production detection thresholds. Fields unused by a kind must be
 zero. Only status may report a non-OK outcome. Only progress may report source
-activity. Requests select unicast; commits have a nonzero revision. Overlap and
-ready messages require negotiated overlap support.
+activity. FALLBACK_REQUEST selects unicast; commits have a nonzero revision.
+Overlap and ready messages require negotiated overlap support. With bit 64,
+MULTICAST_READY selects overlap or multicast as described below; without bit 64
+it retains legacy parsing and has no return side effects in the sender bridge.
 
 STREAM_PROGRESS distinguishes production from actual original-submission high
 water and multicast-submission high water. A high water mark is not proof of a

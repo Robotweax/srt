@@ -28,6 +28,9 @@ struct ReceiveDataProgress {
 // Serialized with the core runtime. Exact accepted plaintext/header copies,
 // bounded to32 recent positions, allow a late path copy after application pop.
 // No hash/MAC is invented; crypto and provenance validation precede this hook.
+struct MulticastCoverage {
+    std::uint64_t first_at_us = 0, last_at_us = 0;
+};
 class ReceiveProgress {
 public:
     static constexpr std::size_t capacity = 32;
@@ -36,6 +39,8 @@ public:
     {
     }
     void sync_floor(SequenceNumber) noexcept;
+    [[nodiscard]] std::optional<MulticastCoverage> coverage(std::uint64_t begin,
+        std::uint64_t through, std::uint64_t origin) const noexcept;
     void receive(const PacketView& clear, bool accepted_unique, DataPath,
         std::uint64_t arrival_us) noexcept;
     [[nodiscard]] std::optional<ReceiveDataProgress> snapshot(
@@ -47,6 +52,7 @@ private:
             bytes {};
         std::uint64_t position = 0;
         std::size_t size = 0;
+        std::uint64_t multicast_at_us = 0;
         unsigned paths = 0;
         bool occupied = false;
     };

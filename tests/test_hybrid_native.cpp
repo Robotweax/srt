@@ -119,6 +119,28 @@ struct HybridAutomaticTestAccess {
         r->hybrid_service_ = service;
         service->runtime_ = r;
     }
+    static void multicast(const std::shared_ptr<ConnectionRuntime>& r,
+        const std::shared_ptr<hybrid::NativeService>& service,
+        std::uint32_t sequence, std::uint64_t now)
+    {
+        std::shared_ptr<const MulticastIngressBinding> binding;
+        {
+            std::lock_guard lock(r->mutex_);
+            binding = r->multicast_ingress_binding_;
+        }
+        const std::array<std::byte, 1> payload {std::byte {1}};
+        r->process_packet({.kind = PacketKind::data,
+                              .data = {.sequence = SequenceNumber {sequence},
+                                  .message_number = sequence - 41,
+                                  .boundary = MessageBoundary::solo,
+                                  .destination_socket_id =
+                                      service->origin()->dispatch().group_id},
+                              .payload = payload},
+            service->origin()->source().endpoint,
+            ConnectionRuntime::Clock::time_point {
+                std::chrono::microseconds {now}},
+            PacketIngress::multicast_data, binding);
+    }
 };
 }
 namespace {
@@ -262,6 +284,7 @@ struct Transport {
     }
 };
 struct Pair {
+    bool returning = false;
     std::shared_ptr<Clock> clock = std::make_shared<Clock>();
     std::shared_ptr<Provider> cp = std::make_shared<Provider>(),
                               lp = std::make_shared<Provider>();
@@ -284,7 +307,8 @@ struct Pair {
         x.exchange.connection_generation = caller ? 1 : 2;
         x.exchange.retry_interval_us = 100;
         x.exchange.timeout_us = 1000;
-        x.exchange.policy.supported = h::known_features;
+        x.exchange.policy.supported =
+            returning ? h::known_features : h::policy_query_features;
         if (!caller) {
             x.exchange.stream = 71;
             x.exchange.member = 97;
@@ -301,7 +325,8 @@ struct Pair {
         x.clock_context = clock.get();
         return x;
     }
-    Pair()
+    explicit Pair(bool returns = false)
+        : returning(returns)
     {
         c = h::NativeService::create_for_testing(config(true));
         l = h::NativeService::create_for_testing(config(false));
@@ -650,7 +675,8 @@ struct ReceiverFixture {
     }
     explicit ReceiverFixture(
         h::ReceiverBridge::Configuration c = configuration(),
-        bool local_data = false)
+        bool local_data = false, bool returns = false)
+        : p(returns)
     {
         p.connect();
         if (local_data) {
@@ -698,6 +724,10 @@ struct ReceiverFixture {
                 (42 + (position - 1234)) & SequenceNumber::mask),
             .mode = mode,
             .retained_floor = 1234,
+            .multicast_next = (p.c->snapshot().context.selection.supported
+                                  & h::return_control)
+                ? position
+                : 0,
             .request_serial = reference == UINT64_MAX
                 ? receiver->snapshot().request_serial
                 : reference};
@@ -1119,6 +1149,153 @@ TEST(hybrid_automatic_total_loss_is_bounded_and_never_reinvokes_cursor_provider)
     REQUIRE(count > 0);
     REQUIRE(count <= 6);
     REQUIRE_EQ(f.controller->snapshot().admitted, 1U);
+}
+namespace {
+struct ReturnFixture : ReceiverFixture {
+    ReturnFixture()
+        : ReceiverFixture(configuration(), true, true)
+    {
+        step();
+        deliver(response(h::Kind::delivery_status, 1, h::Mode::unicast));
+        REQUIRE(receiver->snapshot().fresh);
+        REQUIRE_EQ(receiver->snapshot().mode, h::Mode::unicast);
+    }
+    void overlap()
+    {
+        REQUIRE_EQ(receiver->request_overlap(),
+            h::ReceiverBridge::Admission::accepted);
+        step();
+        deliver(response(h::Kind::delivery_commit, 2, h::Mode::overlap));
+        REQUIRE_EQ(receiver->snapshot().returning,
+            h::ReceiverBridge::RequestState::confirmed);
+    }
+    h::CoverageProof coverage()
+    {
+        const auto now = p.clock->value.load();
+        compat::HybridAutomaticTestAccess::multicast(runtime, p.c, 42, now);
+        compat::HybridAutomaticTestAccess::multicast(runtime, p.c, 43, now);
+        REQUIRE_EQ(receiver->data_progress()->multicast.next, 1236U);
+        return {.generation = p.c->snapshot().generation,
+            .revision = 2,
+            .boundary = 1234,
+            .through = 1236,
+            .observed_at_us = now,
+            .not_after_us = now + 100,
+            .interval_us = 10};
+    }
+};
+}
+TEST(
+    hybrid_return_receiver_requires_live_negotiated_uc_and_exact_scoped_coverage)
+{
+    ReceiverFixture legacy;
+    REQUIRE_EQ(legacy.receiver->request_overlap(),
+        h::ReceiverBridge::Admission::invalid);
+    ReturnFixture f;
+    f.overlap();
+    auto proof = f.coverage();
+    for (unsigned wrong = 0; wrong < 5; ++wrong) {
+        auto bad = proof;
+        if (wrong == 0)
+            bad.boundary = 1235;
+        if (wrong == 1)
+            bad.revision = 1;
+        if (wrong == 2)
+            bad.through = 1237;
+        if (wrong == 3)
+            bad.generation = 99;
+        if (wrong == 4)
+            bad.not_after_us = f.p.clock->value.load();
+        REQUIRE_EQ(f.receiver->request_multicast(bad),
+            h::ReceiverBridge::Admission::invalid);
+    }
+    REQUIRE_EQ(f.receiver->request_multicast(proof),
+        h::ReceiverBridge::Admission::accepted);
+    REQUIRE_EQ(
+        f.receiver->request_fallback(1234), h::ReceiverBridge::Admission::busy);
+    f.step();
+    REQUIRE_EQ(f.requests.back().kind, h::Kind::multicast_ready);
+    REQUIRE_EQ(f.requests.back().multicast_next, 1234U);
+    f.deliver(
+        f.response(h::Kind::delivery_commit, 3, h::Mode::multicast, 1236));
+    REQUIRE_EQ(f.receiver->snapshot().mode, h::Mode::multicast);
+    REQUIRE_EQ(f.receiver->snapshot().returning,
+        h::ReceiverBridge::RequestState::confirmed);
+}
+TEST(
+    hybrid_return_receiver_lost_commit_query_recovers_boundary_not_admission_cursor)
+{
+    ReturnFixture f;
+    REQUIRE_EQ(
+        f.receiver->request_overlap(), h::ReceiverBridge::Admission::accepted);
+    f.step();
+    f.advance(100);
+    REQUIRE_EQ(f.requests.back().kind, h::Kind::delivery_query);
+    auto status =
+        f.response(h::Kind::delivery_status, 2, h::Mode::overlap, 1236);
+    status.multicast_next = 1234;
+    f.deliver(status);
+    const auto s = f.receiver->snapshot();
+    REQUIRE(s.fresh);
+    REQUIRE(s.has_commit);
+    REQUIRE_EQ(s.cursor, 1236U);
+    REQUIRE_EQ(s.commit_position, 1234U);
+    REQUIRE_EQ(s.returning, h::ReceiverBridge::RequestState::confirmed);
+}
+TEST(
+    hybrid_return_receiver_timed_ready_retries_use_fresh_serials_and_original_observation)
+{
+    ReturnFixture f;
+    REQUIRE_EQ(
+        f.receiver->request_overlap(), h::ReceiverBridge::Admission::accepted);
+    f.step();
+    const auto first = f.requests.back();
+    f.advance(10);
+    const auto second = f.requests.back();
+    REQUIRE_EQ(second.kind, h::Kind::multicast_ready);
+    REQUIRE(second.serial > first.serial);
+    REQUIRE_EQ(second.revision, first.revision);
+    REQUIRE_EQ(second.next_position, first.next_position);
+    REQUIRE(second.age_us >= 10U);
+    REQUIRE_EQ(f.receiver->snapshot().request_serial, second.serial);
+    f.deliver(f.response(h::Kind::delivery_commit, 2, h::Mode::overlap));
+    REQUIRE_EQ(f.receiver->snapshot().returning,
+        h::ReceiverBridge::RequestState::confirmed);
+}
+TEST(hybrid_return_receiver_expired_overlap_and_total_loss_never_confirm_return)
+{
+    ReturnFixture f;
+    f.overlap();
+    auto proof = f.coverage();
+    REQUIRE_EQ(f.receiver->request_multicast(proof),
+        h::ReceiverBridge::Admission::accepted);
+    f.step();
+    auto expired =
+        f.response(h::Kind::delivery_status, 3, h::Mode::unicast, 1236);
+    expired.outcome = h::Outcome::stale;
+    f.deliver(expired);
+    REQUIRE_EQ(f.receiver->snapshot().returning,
+        h::ReceiverBridge::RequestState::denied);
+    REQUIRE_EQ(f.receiver->snapshot().mode, h::Mode::unicast);
+    ReturnFixture lost;
+    REQUIRE_EQ(lost.receiver->request_overlap(),
+        h::ReceiverBridge::Admission::accepted);
+    for (unsigned i = 0; i < 60; ++i)
+        lost.advance(10);
+    REQUIRE_EQ(lost.receiver->snapshot().returning,
+        h::ReceiverBridge::RequestState::unknown);
+    REQUIRE_EQ(lost.receiver->snapshot().fallback,
+        h::ReceiverBridge::RequestState::none);
+}
+TEST(hybrid_return_receiver_conflicting_same_revision_boundary_closes_control)
+{
+    ReturnFixture f;
+    f.overlap();
+    auto conflict =
+        f.response(h::Kind::delivery_status, 2, h::Mode::overlap, 1236);
+    conflict.multicast_next = 1235;
+    f.deliver(conflict);
+    REQUIRE(f.receiver->snapshot().closed);
 }
 TEST(
     hybrid_detector_receiver_opt_in_is_validated_and_never_creates_fallback_without_data)

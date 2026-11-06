@@ -4351,6 +4351,22 @@ ConnectionRuntime::hybrid_receive_progress(
         session_.receive_buffer().first_stored_sequence());
     return hybrid_receive_->snapshot(origin);
 }
+std::optional<hybrid::MulticastCoverage>
+ConnectionRuntime::hybrid_multicast_coverage(
+    const hybrid::NativeService* service, std::uint64_t begin,
+    std::uint64_t through, std::uint64_t origin) const noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (locally_closed_ || broken_ || peer_closed_ || peer_error_pending_
+        || !service || service->closed() || hybrid_service_.get() != service
+        || hybrid_conclusions_ != service->origin() || !hybrid_receive_
+        || !multicast_ingress_binding_
+        || hybrid_receive_route_ != multicast_ingress_generation_)
+        return {};
+    hybrid_receive_->sync_floor(
+        session_.receive_buffer().first_stored_sequence());
+    return hybrid_receive_->coverage(begin, through, origin);
+}
 #endif
 void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
     IpEndpoint peer, std::optional<Clock::time_point> ingress,

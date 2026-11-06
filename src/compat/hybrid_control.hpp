@@ -16,8 +16,9 @@ inline constexpr std::size_t capability_size = 48, context_size = 192,
                              message_size = 96;
 inline constexpr std::uint32_t originals = 1, prefix_replay = 2, progress = 4,
                                overlap = 8, source_recovery = 16,
-                               policy_query = 32, core_features = 7,
-                               legacy_features = 31, known_features = 63;
+                               policy_query = 32, return_control = 64,
+                               core_features = 7, legacy_features = 31,
+                               policy_query_features = 63, known_features = 127;
 inline constexpr std::uint32_t maximum_prefix = 256,
                                maximum_interval_us = 1'000'000,
                                maximum_age_us = 5'000'000;
@@ -80,6 +81,8 @@ struct Message {
     Activity activity = Activity::startup;
     Outcome outcome = Outcome::ok;
     std::uint32_t interval_us = 0, age_us = 0;
+    // Negotiated return_control: delivery-response multicast_next is the
+    // effective boundary; ready uses [multicast_next,next_position) coverage.
     // Negotiated policy_query: delivery responses echo the request serial in
     // wire word 72, which remains produced_next for STREAM_PROGRESS.
     std::uint64_t request_serial = 0;

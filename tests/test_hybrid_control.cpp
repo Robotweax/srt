@@ -277,7 +277,7 @@ TEST(hybrid_control_unused_fields_roles_modes_and_timing_fail_closed)
     REQUIRE(!h::valid(m));
     m = message(h::Kind::delivery_commit);
     m.multicast_next = 1;
-    REQUIRE(!h::valid(m));
+    REQUIRE(!h::valid(m, context()));
     m = message(h::Kind::path_report);
     m.produced_next = 1;
     REQUIRE(!h::valid(m));

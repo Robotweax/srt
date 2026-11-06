@@ -2,6 +2,7 @@
 #pragma once
 #include "compat/hybrid_native.hpp"
 #include "compat/hybrid_reporting.hpp"
+#include "compat/hybrid_return.hpp"
 
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 namespace robotweax::srt::compat {
@@ -27,9 +28,9 @@ private:
     bool revoked_ = false, claimed_ = false;
 };
 
-// Explicit sender-side fallback adapter. Own the service's application queue
-// exclusively; pump outside registry/runtime/group locks. No timer, detector,
-// multicast-return policy or automatic attachment is supplied by this adapter.
+// Explicit sender fallback/return adapter. Own the service application queue
+// exclusively; pump outside registry/runtime/group locks. Return policy is
+// optional and bounded; no detector or automatic attachment is supplied.
 class CoordinatorBridge {
 public:
     struct Identity {
@@ -37,6 +38,7 @@ public:
     };
     struct Configuration {
         ReportingConfiguration reporting;
+        std::optional<ReturnPolicy> returning;
         std::uint32_t command_timeout_us = 1'000'000;
         std::uint32_t maximum_attempts = 8;
     };
@@ -44,6 +46,8 @@ public:
         bool enrolled = false, closed = false;
         std::uint64_t applied = 0, denied = 0, duplicates = 0, expired = 0,
                       ignored = 0, replies = 0;
+        std::uint64_t overlap_expirations = 0, overlap_deadline_us = 0,
+                      overlap_end_position = 0;
         std::uint64_t revision = 0, next_wakeup_us = UINT64_MAX;
         std::uint64_t report_attempts = 0, reports_queued = 0,
                       reports_submitted = 0, reports_skipped = 0;

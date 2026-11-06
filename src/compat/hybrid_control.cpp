@@ -40,7 +40,10 @@ bool valid(const Capability& c) noexcept
     if ((c.supported & ~known_features) || (c.required & ~c.supported)
         || (c.supported & core_features) != core_features
         || (c.required & core_features) != core_features || !c.prefix_limit
-        || c.prefix_limit > maximum_prefix)
+        || c.prefix_limit > maximum_prefix
+        || ((c.supported & return_control)
+            && (c.supported & (overlap | policy_query))
+                != (overlap | policy_query)))
         return false;
     if (c.kind == CapabilityKind::offer)
         return !c.stream && !c.member && !c.initial_position;
@@ -193,7 +196,8 @@ bool valid(const Message& m) noexcept
     if (m.produced_next)
         return false;
     if (m.kind == Kind::delivery_commit || m.kind == Kind::delivery_status)
-        return !m.multicast_next && m.retained_floor <= m.next_position
+        return m.multicast_next <= m.next_position
+            && m.retained_floor <= m.next_position
             && (m.kind != Kind::delivery_commit || m.revision);
     if (m.retained_floor)
         return false;
@@ -215,6 +219,18 @@ bool valid(const Message& m, const Context& c) noexcept
                 & SequenceNumber::mask))
         & SequenceNumber::mask;
     if (m.next_sequence != sequence)
+        return false;
+    if (m.kind == Kind::delivery_commit || m.kind == Kind::delivery_status) {
+        if (c.selection.supported & return_control) {
+            if (m.multicast_next < c.selection.initial_position
+                || (m.kind == Kind::delivery_commit
+                    && m.multicast_next != m.next_position))
+                return false;
+        } else if (m.multicast_next)
+            return false;
+    }
+    if (m.kind == Kind::multicast_ready
+        && (c.selection.supported & return_control) && m.mode == Mode::unicast)
         return false;
     if ((m.kind == Kind::delivery_query || m.request_serial)
         && !(c.selection.supported & policy_query))

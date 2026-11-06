@@ -3,6 +3,7 @@
 #include "compat/hybrid_native.hpp"
 #include "compat/hybrid_reporting.hpp"
 #include "compat/hybrid_detector.hpp"
+#include "compat/hybrid_return.hpp"
 #include "compat/hybrid_automatic_types.hpp"
 
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
@@ -40,6 +41,9 @@ public:
         Outcome outcome = Outcome::ok;
         RequestState fallback = RequestState::none;
         Outcome fallback_outcome = Outcome::ok;
+        RequestState returning = RequestState::none;
+        Outcome return_outcome = Outcome::ok;
+        Mode return_target = Mode::overlap;
         std::uint64_t revision = 0, cursor = 0, retained_floor = 0,
                       commit_position = 0, confirmation_origin_us = 0,
                       request_serial = 0, next_wakeup_us = UINT64_MAX;
@@ -56,6 +60,10 @@ public:
     // state is inferred from an authenticated peer policy assertion.
     [[nodiscard]] Admission request_fallback(
         std::uint64_t next_position) noexcept;
+    [[nodiscard]] std::optional<CoverageProof> coverage_proof(
+        std::uint64_t through, std::uint32_t lifetime_us) const noexcept;
+    [[nodiscard]] Admission request_overlap() noexcept;
+    [[nodiscard]] Admission request_multicast(const CoverageProof&) noexcept;
     void pump() noexcept;
     void close() noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
@@ -89,7 +97,9 @@ private:
     void event(const NativeService::Event&, std::uint64_t) noexcept;
     void start(bool fallback, std::uint64_t position, std::uint64_t now,
         std::uint64_t origin, std::uint64_t not_after = UINT64_MAX,
-        std::uint64_t automatic_ticket = 0) noexcept;
+        std::uint64_t automatic_ticket = 0, Mode target = Mode::unicast,
+        std::uint64_t proof_begin = 0, std::uint32_t proof_interval = 0,
+        std::uint64_t proof_observed = 0) noexcept;
     void round(Kind, std::uint64_t) noexcept;
     void finish(Phase, std::uint64_t) noexcept;
     std::shared_ptr<NativeService> service_;
@@ -105,6 +115,9 @@ private:
     struct Posted {
         std::uint64_t position = 0, at = 0, not_after = UINT64_MAX,
                       automatic_ticket = 0;
+        Mode target = Mode::unicast;
+        std::uint64_t proof_begin = 0, proof_observed = 0;
+        std::uint32_t proof_interval = 0;
     };
     std::optional<Posted> posted_;
     bool automatic_claimed_ = false;
@@ -115,6 +128,10 @@ private:
                   next_send_ = 0, next_query_ = 0, first_send_ = 0,
                   requested_position_ = 0;
     std::uint32_t sends_ = 0, rounds_ = 0;
+    bool want_return_ = false;
+    Mode target_mode_ = Mode::unicast;
+    std::uint64_t expected_revision_ = 0, proof_begin_ = 0, proof_observed_ = 0;
+    std::uint32_t proof_interval_ = 0;
     bool active_ = false, want_fallback_ = false, confirmed_ = false,
          sent_ = false, queued_ = false;
 };

@@ -344,6 +344,11 @@ GroupSendCoordinator::Transition GroupSendCoordinator::set_delivery(
         state_.unicast_reservations += static_cast<std::size_t>(lease);
         member.unicast_lease = lease;
         member.state.delivery = mode;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        member.overlap_window.reset();
+        member.expired_overlap_root = 0;
+        member.expired_overlap_revision = 0;
+#endif
         member.state.revision = expected + 1;
         member.state.effective_sequence = state_.next_sequence;
         member.state.effective_position = next_position_;
@@ -581,6 +586,9 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
         return Status::closed;
     if (state_.failed)
         return Status::failed;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    expire_overlaps_locked(true);
+#endif
     if (bytes.empty() || bytes.size() > maximum_payload_)
         return Status::invalid;
     if (retry_at_ && admission_now() < *retry_at_)
@@ -804,6 +812,32 @@ GroupSendCoordinator::Snapshot GroupSendCoordinator::snapshot() const noexcept
     return state;
 }
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+void GroupSendCoordinator::expire_overlaps_locked(bool admission) noexcept
+{
+    const auto raw = std::chrono::duration_cast<std::chrono::microseconds>(
+        source_now().time_since_epoch())
+                         .count();
+    for (auto& m : members_)
+        if (m.overlap_window) {
+            const auto w = *m.overlap_window;
+            if (raw >= 0 && static_cast<std::uint64_t>(raw) >= w.opened_us
+                && static_cast<std::uint64_t>(raw) < w.not_after_us
+                && (next_position_ < w.end_position
+                    || (!admission && next_position_ == w.end_position)))
+                continue;
+            m.overlap_window.reset();
+            if (m.state.detachment != Detachment::none
+                || m.state.revision != w.revision
+                || m.state.delivery != GroupOriginalDelivery::overlap)
+                continue;
+            m.expired_overlap_root = w.root;
+            m.expired_overlap_revision = w.revision;
+            m.state.delivery = GroupOriginalDelivery::unicast;
+            ++m.state.revision;
+            m.state.effective_sequence = state_.next_sequence;
+            m.state.effective_position = next_position_;
+        }
+}
 bool GroupSendCoordinator::declare_source_activity(hybrid::Activity activity,
     std::uint64_t produced, std::uint32_t lifetime) noexcept
 {
@@ -875,6 +909,9 @@ void GroupSendCoordinator::drive() noexcept
     std::lock_guard lock(publication_);
     if (state_.closed)
         return;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    expire_overlaps_locked();
+#endif
     std::array<Emitter::Outcome, Emitter::maximum_batch> outcomes;
     const auto count = state_.source_mode == SourceMode::multicast
         ? emitter_->take_outcomes(
@@ -974,7 +1011,16 @@ void GroupSendCoordinator::drive() noexcept
     }
     if (retry_at_ && admission_now() >= *retry_at_)
         retry_at_.reset();
-    if (!manual_ && (state_.inflight_frames || retry_at_ || retiring_leases)
+    bool overlap_pending = false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    overlap_pending =
+        std::any_of(members_.begin(), members_.end(), [](const auto& m) {
+            return m.overlap_window.has_value();
+        });
+#endif
+    if (!manual_
+        && (state_.inflight_frames || retry_at_ || retiring_leases
+            || overlap_pending)
         && scheduler_->schedule_service_at(
                service_, after(Clock::now(), configuration_.poll_interval))
             != RuntimeScheduler::SubmitStatus::accepted)
