@@ -3120,6 +3120,12 @@ TEST(
         }
     }
     REQUIRE_EQ(children.sockets.size(), count);
+    // Listener acceptance and caller publication are independent final-KM gates.
+    for (const auto caller : clients.sockets) {
+        while (srt_getsockstate(caller) == SRTS_CONNECTING
+            && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
     for (unsigned i = 0; i < count; ++i) {
         REQUIRE_EQ(srt_getsockstate(clients.sockets[i]), SRTS_CONNECTED);
         const char byte = static_cast<char>(i);

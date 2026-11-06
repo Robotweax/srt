@@ -80,7 +80,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p evidence
-          for suite in peer_auth socket_options handshake connect listener_admission runtime_work_executor; do
+          for suite in peer_auth socket_options handshake connect listener_admission runtime_work_executor socket_readiness; do
             build/robotweax_srt_tests "$suite" 2>&1 | tee "evidence/$suite.log"
           done
           python3 tests/package_consumer/check_documentation.py .
