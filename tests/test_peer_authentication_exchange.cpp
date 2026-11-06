@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "test.hpp"
 #include "peer_authentication.hpp"
+#include "peer_authentication_admission.hpp"
 #include "robotweax/srt/handshake.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 #include "robotweax/srt/crypto.hpp"
@@ -9,6 +10,7 @@
 #include "compat/socket_registry.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <vector>
 
 using namespace robotweax::srt;
@@ -1193,4 +1195,488 @@ TEST(peer_auth_group_policy_cannot_be_enabled_through_option_template)
     REQUIRE_EQ(srt_setsockflag(group, SRTO_ROBOTWEAX_PEERAUTH_POLICY, &required,
                    sizeof(required)),
         SRT_ERROR);
+}
+
+namespace {
+struct AdmissionPair {
+    TrackingProvider cp, lp;
+    pa::Admission caller {cp, true}, listener {lp, false};
+    pa::Admission::Time now {};
+    pa::Admission::Time deadline = now + std::chrono::seconds {1};
+    std::vector<std::byte> m1, m2, m3;
+    void configure(bool wrong_password = false)
+    {
+        for (bool calling : {true, false}) {
+            SocketOptions options;
+            REQUIRE_EQ(options.set_passphrase(calling && wrong_password
+                               ? "different test passphrase"
+                               : "admission test passphrase"),
+                Error::none);
+            REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+            REQUIRE_EQ(options.set(SocketOption::session_authentication, 1),
+                Error::none);
+            REQUIRE_EQ(
+                options.set_peer_authentication_key(scalar(calling ? 1 : 2)),
+                Error::none);
+            REQUIRE_EQ(options.set_peer_authentication_trusted(
+                           public_key(calling ? 2 : 1)),
+                Error::none);
+            REQUIRE_EQ(options.set(SocketOption::peer_authentication_policy, 1),
+                Error::none);
+            REQUIRE_EQ(
+                (calling ? caller : listener).configure(options, deadline, now),
+                Error::none);
+        } // The coordinator must own every borrowed configuration byte now.
+    }
+    void offer(unsigned length = 16)
+    {
+        pa::Record record;
+        REQUIRE_EQ(caller.prepare_offer(length, record, now), Error::none);
+        m1 = packet(record);
+        REQUIRE_EQ(caller.bind_offer(m1, now), Error::none);
+    }
+    void response()
+    {
+        pa::Record record;
+        REQUIRE_EQ(listener.prepare_response(m1, 16, record, now), Error::none);
+        m2 = packet(record);
+        REQUIRE_EQ(listener.seal_response(m2, now), Error::none);
+    }
+    void confirmation()
+    {
+        pa::Record record;
+        REQUIRE_EQ(caller.prepare_confirmation(m2, record, now), Error::none);
+        m3 = packet(record);
+        REQUIRE_EQ(caller.seal_confirmation(m3, now), Error::none);
+    }
+    void proofs(unsigned length = 16)
+    {
+        configure();
+        offer(length);
+        response();
+        confirmation();
+        REQUIRE_EQ(listener.accept_confirmation(m3, now), Error::none);
+    }
+    void confirm_direction(bool calling)
+    {
+        auto& sender = calling ? caller : listener;
+        auto& receiver = calling ? listener : caller;
+        std::array<std::byte, 256> request {}, retry {}, response {},
+            duplicate {};
+        std::size_t n = 0, m = 0, r = 0, d = 0;
+        REQUIRE_EQ(sender.key_request(request, n, now), Error::none);
+        REQUIRE(n > authenticated_key_overhead);
+        REQUIRE_EQ(sender.key_request(retry, r, now), Error::none);
+        REQUIRE(
+            equal(std::span {request}.first(n), std::span {retry}.first(r)));
+        REQUIRE_EQ(receiver.accept_key_control(
+                       false, std::span {request}.first(n), response, m, now),
+            Error::none);
+        REQUIRE_EQ(receiver.accept_key_control(
+                       false, std::span {request}.first(n), duplicate, d, now),
+            Error::none);
+        REQUIRE(equal(
+            std::span {response}.first(m), std::span {duplicate}.first(d)));
+        REQUIRE_EQ(sender.accept_key_control(
+                       true, std::span {response}.first(m), {}, r, now),
+            Error::none);
+        REQUIRE_EQ(r, 0U);
+    }
+};
+}
+
+TEST(peer_auth_admission_publishes_only_after_both_runtime_directions_confirm)
+{
+    for (unsigned length : {16U, 24U, 32U}) {
+        for (bool listener_first : {false, true}) {
+            AdmissionPair p;
+            p.configure();
+            p.offer(length);
+            p.response();
+            p.confirmation();
+            REQUIRE(!p.caller.ready_to_publish(p.now));
+            REQUIRE(!p.caller.release_crypto(p.now));
+            REQUIRE(p.caller.peer_public_key(p.now).empty());
+            REQUIRE(!p.listener.release_crypto(p.now));
+            REQUIRE_EQ(
+                p.listener.accept_confirmation(p.m3, p.now), Error::none);
+            REQUIRE_EQ(p.cp.handles, 0U);
+            REQUIRE_EQ(p.lp.handles, 0U);
+            const auto c_derivations = p.cp.derivations,
+                       l_derivations = p.lp.derivations;
+            p.confirm_direction(!listener_first);
+            REQUIRE(!p.caller.ready_to_publish(p.now));
+            REQUIRE(!p.listener.ready_to_publish(p.now));
+            p.confirm_direction(listener_first);
+            REQUIRE(p.caller.ready_to_publish(p.now));
+            REQUIRE(p.listener.ready_to_publish(p.now));
+            REQUIRE(equal(p.caller.peer_public_key(p.now), public_key(2)));
+            REQUIRE(equal(p.listener.peer_public_key(p.now), public_key(1)));
+            REQUIRE_EQ(p.cp.derivations, c_derivations);
+            REQUIRE_EQ(p.lp.derivations, l_derivations);
+            auto caller = p.caller.release_crypto(p.now);
+            auto listener = p.listener.release_crypto(p.now);
+            REQUIRE(caller && listener);
+            REQUIRE(!p.caller.release_crypto(p.now));
+            REQUIRE(!p.listener.release_crypto(p.now));
+            REQUIRE_EQ(caller->key_length(), length);
+            REQUIRE(
+                equal(p.caller.cached(pa::Message::confirmation, p.now), p.m3));
+            p.caller.abort();
+            p.listener.abort(); // transferred keys survive owner cleanup
+            DataHeader header {.sequence = SequenceNumber {1},
+                .message_number = 1,
+                .boundary = MessageBoundary::solo,
+                .encryption_key = caller->active_sender_key()};
+            std::array<std::byte, 3> plaintext {
+                std::byte {1}, std::byte {2}, std::byte {3}};
+            std::array<std::byte, 3> ciphertext {}, opened {};
+            std::array<std::byte, srt_gcm_authentication_tag_size> tag {};
+            EncryptionKey key = EncryptionKey::none;
+            REQUIRE_EQ(caller->seal(header, plaintext, ciphertext, tag, key),
+                Error::none);
+            REQUIRE_EQ(
+                listener->open(header, ciphertext, tag, opened), Error::none);
+            REQUIRE_EQ(opened, plaintext);
+        }
+    }
+}
+
+TEST(peer_auth_admission_loss_retries_and_invalid_envelopes_do_not_publish)
+{
+    AdmissionPair p;
+    p.configure();
+    p.offer();
+    p.response();
+    p.confirmation();
+    // The first M3 was lost. Its exact cached retry completes the listener proof.
+    REQUIRE_EQ(p.listener.accept_confirmation(
+                   p.caller.cached(pa::Message::confirmation, p.now), p.now),
+        Error::none);
+    const auto derivations = p.lp.derivations;
+    REQUIRE_EQ(p.listener.accept_confirmation(p.m3, p.now), Error::none);
+    REQUIRE_EQ(p.lp.derivations, derivations);
+    auto changed = p.m3;
+    changed.back() ^= std::byte {1};
+    REQUIRE_EQ(
+        p.listener.accept_confirmation(changed, p.now), Error::invalid_state);
+    std::array<std::byte, 256> request {}, response {};
+    std::size_t n = 0, m = 0;
+    REQUIRE_EQ(p.caller.key_request(request, n, p.now), Error::none);
+    REQUIRE_EQ(p.caller.accept_key_control(
+                   false, std::span {request}.first(n), response, m, p.now),
+        Error::authentication_failure);
+    REQUIRE_EQ(p.listener.accept_key_control(
+                   false, std::span {request}.first(n), {}, m, p.now),
+        Error::buffer_too_small);
+    for (std::size_t i = 0; i < n; ++i) {
+        request[i] ^= std::byte {1};
+        REQUIRE_EQ(p.listener.accept_key_control(
+                       false, std::span {request}.first(n), response, m, p.now),
+            Error::authentication_failure);
+        REQUIRE(!p.listener.ready_to_publish(p.now));
+        request[i] ^= std::byte {1};
+    }
+    AdmissionPair other;
+    other.proofs();
+    REQUIRE_EQ(other.listener.accept_key_control(
+                   false, std::span {request}.first(n), response, m, other.now),
+        Error::authentication_failure);
+    p.confirm_direction(true);
+    p.confirm_direction(false);
+    REQUIRE(p.caller.ready_to_publish(p.now));
+    REQUIRE(p.listener.ready_to_publish(p.now));
+}
+
+TEST(peer_auth_admission_timeout_and_cancel_erase_each_pending_stage)
+{
+    for (unsigned stage = 0; stage < 6; ++stage) {
+        for (bool cancel : {true, false}) {
+            AdmissionPair p;
+            p.configure();
+            if (stage >= 1)
+                p.offer();
+            if (stage >= 2)
+                p.response();
+            if (stage >= 3)
+                p.confirmation();
+            if (stage >= 4)
+                REQUIRE_EQ(
+                    p.listener.accept_confirmation(p.m3, p.now), Error::none);
+            if (stage >= 5) {
+                p.confirm_direction(true);
+                p.confirm_direction(false);
+            }
+            if (cancel) {
+                p.caller.abort();
+                p.listener.abort();
+            } else {
+                REQUIRE(p.caller.expire(p.deadline));
+                REQUIRE(p.listener.expire(p.deadline));
+            }
+            REQUIRE(p.caller.failed());
+            REQUIRE(p.listener.failed());
+            REQUIRE(!p.caller.release_crypto(p.now));
+            REQUIRE(!p.listener.release_crypto(p.now));
+            REQUIRE_EQ(p.cp.handles, 0U);
+            REQUIRE_EQ(p.lp.handles, 0U);
+            REQUIRE(p.caller.cached(pa::Message::confirmation, p.now).empty());
+            REQUIRE(p.listener.cached(pa::Message::response, p.now).empty());
+        }
+    }
+}
+
+TEST(
+    peer_auth_admission_wrong_password_and_invalid_signature_budget_fail_closed)
+{
+    AdmissionPair wrong;
+    wrong.configure(true);
+    wrong.offer();
+    wrong.response();
+    wrong.confirmation();
+    REQUIRE_EQ(wrong.listener.accept_confirmation(wrong.m3, wrong.now),
+        Error::authentication_failure);
+    REQUIRE(wrong.listener.failed());
+    REQUIRE(!wrong.caller.ready_to_publish(wrong.now));
+    REQUIRE(!wrong.caller.release_crypto(wrong.now));
+    REQUIRE(wrong.caller.expire(wrong.deadline));
+    AdmissionPair p;
+    p.configure();
+    p.offer();
+    p.response();
+    p.confirmation();
+    p.m3[60] ^= std::byte {1};
+    for (unsigned i = 0; i < 4; ++i) {
+        REQUIRE_EQ(p.listener.accept_confirmation(p.m3, p.now),
+            Error::authentication_failure);
+        REQUIRE_EQ(p.listener.failed(), i == 3);
+        REQUIRE_EQ(p.lp.derivations, 0U);
+        REQUIRE(!p.listener.release_crypto(p.now));
+    }
+    REQUIRE_EQ(p.lp.handles, 0U);
+}
+
+TEST(peer_auth_admission_authenticated_invalid_key_material_aborts)
+{
+    AdmissionPair p;
+    p.proofs();
+    p.confirm_direction(true);
+    p.confirm_direction(false);
+    auto caller = p.caller.release_crypto(p.now);
+    REQUIRE(caller != nullptr);
+    std::array<std::byte, 3> invalid {
+        std::byte {1}, std::byte {2}, std::byte {3}};
+    std::array<std::byte, 256> request {}, response {};
+    std::size_t n = 0, m = 0;
+    REQUIRE_EQ(
+        caller->session_authentication()->seal(false, invalid, request, n),
+        Error::none);
+    REQUIRE(p.listener.accept_key_control(
+                false, std::span {request}.first(n), response, m, p.now)
+        != Error::none);
+    REQUIRE(p.listener.failed());
+    REQUIRE(!p.listener.release_crypto(p.now));
+}
+
+TEST(
+    peer_auth_listen_callback_sees_only_claimed_identity_after_cookie_validation)
+{
+    for (bool choose_required : {false, true}) {
+        const auto pin = public_key(2);
+        REQUIRE_EQ(srt_startup(), 0);
+        struct Cleanup {
+            ~Cleanup()
+            {
+                (void)srt_cleanup();
+            }
+        } cleanup;
+        const auto listener = srt_create_socket();
+        REQUIRE(listener != SRT_INVALID_SOCK);
+        struct Close {
+            SRTSOCKET id;
+            ~Close()
+            {
+                (void)srt_close(id);
+            }
+        } close {listener};
+        struct Offered {
+            std::array<std::byte, 32> identifier {};
+            std::atomic<bool> called {false};
+            bool valid = false;
+            bool choose_required = false;
+            std::array<std::byte, 64> pin {};
+            std::shared_ptr<compat::SocketRecord> child;
+        } offered;
+        offered.choose_required = choose_required;
+        offered.pin = public_key(1);
+        auto callback = +[](void* opaque, SRTSOCKET child, int, const sockaddr*,
+                             const char*) -> int {
+            auto& seen = *static_cast<Offered*>(opaque);
+            int size = 31;
+            const bool short_rejected =
+                srt_getsockflag(child, SRTO_ROBOTWEAX_PEERAUTH_OFFERED,
+                    seen.identifier.data(), &size)
+                == SRT_ERROR;
+            size = 32;
+            seen.valid = short_rejected
+                && srt_getsockflag(child, SRTO_ROBOTWEAX_PEERAUTH_OFFERED,
+                       seen.identifier.data(), &size)
+                    == 0
+                && size == 32;
+            std::array<std::byte, 64> authenticated {};
+            size = 64;
+            seen.valid = seen.valid
+                && srt_getsockflag(child, SRTO_ROBOTWEAX_PEERAUTH_PEER,
+                       authenticated.data(), &size)
+                    == SRT_ERROR;
+            seen.child = compat::SocketRegistry::instance().find(child);
+            if (seen.choose_required) {
+                const int enabled = 1, gcm = 2;
+                std::array<std::byte, 32> identity {};
+                identity.back() = std::byte {2};
+                seen.valid = seen.valid
+                    && srt_setsockflag(child, SRTO_PASSPHRASE,
+                           "callback test passphrase", 24)
+                        == 0
+                    && srt_setsockflag(
+                           child, SRTO_CRYPTOMODE, &gcm, sizeof(gcm))
+                        == 0
+                    && srt_setsockflag(child, SRTO_ROBOTWEAX_SESSIONAUTH,
+                           &enabled, sizeof(enabled))
+                        == 0
+                    && srt_setsockflag(child, SRTO_ROBOTWEAX_PEERAUTH_KEY,
+                           identity.data(), 32)
+                        == 0
+                    && srt_setsockflag(child, SRTO_ROBOTWEAX_PEERAUTH_TRUSTED,
+                           seen.pin.data(), 64)
+                        == 0
+                    && srt_setsockflag(child, SRTO_ROBOTWEAX_PEERAUTH_POLICY,
+                           &enabled, sizeof(enabled))
+                        == 0;
+            }
+            seen.called.store(true);
+            return seen.choose_required && seen.valid ? 0 : -1;
+        };
+        REQUIRE_EQ(srt_listen_callback(listener, callback, &offered), 0);
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        REQUIRE_EQ(
+            srt_bind(listener, reinterpret_cast<const sockaddr*>(&address),
+                sizeof(address)),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 8), 0);
+        int size = sizeof(address);
+        REQUIRE_EQ(srt_getsockname(
+                       listener, reinterpret_cast<sockaddr*>(&address), &size),
+            0);
+        const auto destination = IpEndpoint::loopback(ntohs(address.sin_port));
+        UdpSocket udp;
+        REQUIRE_EQ(udp.bind(IpEndpoint::loopback(0)), Error::none);
+        HandshakeMachine machine({.role = ConnectionRole::caller,
+            .local_socket_id = 123,
+            .initial_sequence = SequenceNumber {1},
+            .encryption_field = 2});
+        const auto induction = machine.start();
+        std::array<std::byte, 1500> wire {};
+        const auto initial =
+            encode_handshake_datagram(induction.values[0], {}, 0, wire);
+        REQUIRE(initial);
+        REQUIRE(udp.send_to(
+            std::span {wire}.first(initial.bytes_written), destination));
+        REQUIRE(udp.wait_readable(1000).ready);
+        const auto received = udp.receive_from(wire);
+        REQUIRE(received);
+        const auto response = decode_handshake_datagram(
+            std::span {wire}.first(received.bytes_transferred));
+        REQUIRE(response);
+        REQUIRE(!offered.called.load());
+        auto actions = machine.receive(response.message);
+        auto action = actions.values[0];
+        REQUIRE_EQ(action.kind, HandshakeActionKind::send);
+        pa::Exchange exchange(default_crypto_provider(), true);
+        REQUIRE_EQ(exchange.configure(scalar(1), pin), Error::none);
+        pa::Record record;
+        REQUIRE_EQ(exchange.prepare_offer(16, record), Error::none);
+        action.has_peer_authentication = true;
+        action.packet.extension_field |= handshake_extension_flag_config;
+        REQUIRE_EQ(pa::encode_record(record, action.peer_authentication.bytes,
+                       action.peer_authentication.size),
+            Error::none);
+        const auto encoded = encode_handshake_datagram(
+            action, {}, response.message.packet.socket_id, wire);
+        REQUIRE(encoded);
+        REQUIRE(udp.send_to(
+            std::span {wire}.first(encoded.bytes_written), destination));
+        REQUIRE(udp.wait_readable(1000).ready);
+        const auto rejected = udp.receive_from(wire);
+        REQUIRE(rejected);
+        const auto rejection = decode_handshake_datagram(
+            std::span {wire}.first(rejected.bytes_transferred));
+        REQUIRE(rejection);
+        if (choose_required)
+            REQUIRE_EQ(static_cast<int>(rejection.message.packet.request),
+                1000 + SRT_REJ_UNSECURE);
+        REQUIRE(offered.called.load());
+        REQUIRE(offered.valid);
+        REQUIRE_EQ(offered.identifier, record.key_identifier);
+        REQUIRE(offered.child != nullptr);
+        {
+            std::lock_guard lock(offered.child->mutex);
+            REQUIRE(!offered.child->has_incoming_peer_authentication);
+            REQUIRE(!offered.child->listen_callback_active);
+        }
+    }
+}
+
+TEST(peer_auth_admission_enforces_deadlines_on_entry_and_runtime_import_failure)
+{
+    AdmissionPair p;
+    p.configure();
+    p.offer();
+    p.response();
+    pa::Record record;
+    REQUIRE_EQ(p.caller.prepare_confirmation(p.m2, record, p.deadline),
+        Error::invalid_state);
+    REQUIRE(p.caller.failed());
+    REQUIRE_EQ(p.cp.handles, 0U);
+    AdmissionPair ready;
+    ready.proofs();
+    ready.confirm_direction(true);
+    ready.confirm_direction(false);
+    REQUIRE(!ready.caller.release_crypto(ready.deadline));
+    REQUIRE(ready.caller.failed());
+    REQUIRE(ready.caller.peer_public_key(ready.now).empty());
+    // Fault the runtime's first random draw after a successfully signed M3.
+    AdmissionPair failed;
+    failed.configure();
+    failed.offer();
+    failed.response();
+    REQUIRE_EQ(
+        failed.caller.prepare_confirmation(failed.m2, record, failed.now),
+        Error::none);
+    auto m3 = packet(record);
+    // Use a successful run to count the sealing/import operations, then fail
+    // each operation in that transition on a fresh exchange.
+    const auto before = failed.cp.operations;
+    REQUIRE_EQ(failed.caller.seal_confirmation(m3, failed.now), Error::none);
+    const auto count = failed.cp.operations - before;
+    for (unsigned operation = 1; operation <= count; ++operation) {
+        AdmissionPair faulted;
+        faulted.configure();
+        faulted.offer();
+        faulted.response();
+        REQUIRE_EQ(faulted.caller.prepare_confirmation(
+                       faulted.m2, record, faulted.now),
+            Error::none);
+        auto payload = packet(record);
+        faulted.cp.fail_at = faulted.cp.operations + operation;
+        REQUIRE(faulted.caller.seal_confirmation(payload, faulted.now)
+            != Error::none);
+        REQUIRE(faulted.caller.failed());
+        REQUIRE_EQ(faulted.cp.handles, 0U);
+        REQUIRE(!faulted.caller.release_crypto(faulted.now));
+        REQUIRE(faulted.caller.cached(pa::Message::confirmation, faulted.now)
+                .empty());
+    }
 }

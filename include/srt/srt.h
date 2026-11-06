@@ -270,8 +270,10 @@ typedef enum SRT_SOCKOPT {
     SRTO_ROBOTWEAX_PEERAUTH_POLICY = 0x01000019,
     SRTO_ROBOTWEAX_PEERAUTH_KEY = 0x0100001a,
     SRTO_ROBOTWEAX_PEERAUTH_TRUSTED = 0x0100001b,
-    /** Reserved read-only admission/connected results; currently unavailable. */
+    /** Claimed 32-byte key identifier, read-only during the listen callback;
+     * this is not an authenticated identity. */
     SRTO_ROBOTWEAX_PEERAUTH_OFFERED = 0x0100001c,
+    /** Reserved authenticated peer result; unavailable until admission is wired. */
     SRTO_ROBOTWEAX_PEERAUTH_PEER = 0x0100001d,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,

@@ -594,8 +594,15 @@ int get_socket_option(
 #else
         return unsupported_option();
 #endif
-    case SRTO_ROBOTWEAX_PEERAUTH_KEY:
     case SRTO_ROBOTWEAX_PEERAUTH_OFFERED:
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        if (socket.state == SRTS_CONNECTING && socket.listen_callback_active
+            && socket.has_incoming_peer_authentication)
+            return write_value(
+                value, value_size, socket.incoming_peer_authentication);
+#endif
+        return unsupported_option();
+    case SRTO_ROBOTWEAX_PEERAUTH_KEY:
     case SRTO_ROBOTWEAX_PEERAUTH_PEER:
         return unsupported_option();
     case SRTO_ROBOTWEAX_ACP1_REQUIRED:

@@ -46,7 +46,7 @@ option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
     "Enable experimental authenticated runtime controls" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH
-    "Build experimental peer-authentication protocol components (no socket integration yet)" OFF)
+    "Build experimental peer-authentication components (connection setup incomplete)" OFF)
 option(ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES
     "Build private controller components and contract tests (no socket integration)" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS
@@ -253,7 +253,8 @@ if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
     target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS)
 endif()
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
-    target_sources(robotweax_srt PRIVATE src/peer_authentication.cpp)
+    target_sources(robotweax_srt PRIVATE src/peer_authentication.cpp
+        src/peer_authentication_admission.cpp)
     target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH)
 endif()
 target_compile_definitions(robotweax_srt PRIVATE ROBOTWEAX_SRT_BUILDING)

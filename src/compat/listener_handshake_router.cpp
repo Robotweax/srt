@@ -18,7 +18,11 @@ has_integrated_extensions(const HandshakeMessage& message) noexcept
         || message.has_stream_id_extension || message.has_congestion_extension
         || message.has_packet_filter_extension || message.has_group_membership
         || message.has_unknown_extension || message.has_session_authentication
-        || message.has_path_identifier;
+        || message.has_path_identifier
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        || message.has_peer_authentication
+#endif
+        ;
 }
 
 [[nodiscard]] std::uint64_t load_u64_le(const std::byte* source) noexcept
