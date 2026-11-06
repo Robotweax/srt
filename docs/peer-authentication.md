@@ -38,8 +38,17 @@ configuration in both setting orders, including group option templates.
 A private admission coordinator now owns the proof-to-runtime transition. It
 keeps crypto private until both runtime KM directions are confirmed, preserves
 public retry payloads while erasing duplicate key schedules and passphrases,
-and cancels pending admission on timeout or close. This coordinator is not yet
-connected to the socket setup actors or application publication.
+and cancels pending admission on timeout or close. A packet adapter now combines
+it with the existing HSv5 transport validator: discovery/cookie checks precede
+public-key work, all three proof flights retain their exact payloads, and runtime
+KM envelopes must authenticate before installing keys. Transport negotiation and
+crypto remain inaccessible to the embedding owner until confirmation completes.
+The adapter accepts the existing stateless-listener admission result and routes
+its response from the admitted child's socket ID. Retry, reordering, lost-KMRSP,
+downgrade, routing and deadline tests cover this packet-level path.
+
+The production socket setup actors and application publication are not yet
+connected to this adapter.
 
 A listen callback can read OFFERED from a provisional child after cookie
 admission. It exposes only the claimed key identifier, clears after the callback,
