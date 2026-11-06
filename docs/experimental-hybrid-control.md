@@ -6,6 +6,8 @@ also requires `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON` explicitly. They provi
 strict capability/message codecs and an authenticated, bounded message gate.
 They also include a setup-only admission owner for explicit pairwise credentials,
 frozen conclusion transcripts and final local authorization checks.
+The staged exchange drives bilateral selection and proofs with bounded retries
+and an explicit credential-provider contract.
 They perform no socket I/O, change no delivery policy, allocate no public C
 option, and do not activate recovery on live sockets. Native handshakes still
 reject authentication version 7. No new capability handshake extension ID is
@@ -19,6 +21,7 @@ cmake -S . -B build-hybrid-control \
 cmake --build build-hybrid-control --parallel
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_control
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_admission
+./build-hybrid-control/robotweax_srt_tests --include hybrid_exchange
 ./tools/python tests/hybrid_control_vectors.py
 ```
 
@@ -187,10 +190,126 @@ incarnation, binding, source state, exact sequence cursor and selected features
 after user callbacks and before binding publication. A nonzero generation is
 only a token here: this component has no policy store and cannot discover
 revocation or prove that a callback actually ran. No native path invokes this
-owner yet. The next integration must define the separate credential-provider
-contract, capability/proof carrier, final enrollment transaction and expiry
-scheduling before enabling runtime switching. Existing ACP1 security-review
+owner yet. The exchange below defines a provider contract and proof bodies;
+native integration still needs provider configuration, a reviewed carrier,
+the final enrollment transaction and expiry scheduling before enabling runtime
+switching. Existing ACP1 security-review
 limits and the shared-credential impersonation boundary remain unchanged.
+
+## Bounded exchange and credential provider
+
+`compat::hybrid::Exchange` drives four staged records after the ordinary
+connection's conclusions are frozen. It performs no socket I/O, enrollment or
+coordinator mutation. Its storage is bounded to 16 KiB and its bookkeeping
+allocates no dynamic memory. There is still no native carrier, registered
+extension/subtype, public credential API or socket activation for these bodies.
+Native handshakes continue to refuse authentication version 7.
+
+| Direction | Record | Content and effect |
+| --- | --- | --- |
+| Caller to Listener | OFFER, 1 | Caller nonce and complete capability offer |
+| Listener to Caller | SELECTION, 2 | Bilateral selection, both nonces and Listener conclusion-transcript proof |
+| Caller to Listener | PROOF, 3 | Both nonces and Caller conclusion-transcript proof |
+| Listener to Caller | RECEIPT, 4 | Both nonces and Listener receipt for the verified Caller proof |
+
+Each record has exactly 176 bytes, with network-order integers:
+
+| Offset | Bytes | Field |
+| --- | --- | --- |
+| 0 | 4 | Magic/version `0x52575801` |
+| 4 | 4 | Record kind, 1 through 4 |
+| 8 | 4 | Caller socket ID |
+| 12 | 4 | Listener socket ID |
+| 16 | 16 | Explicit credential ID |
+| 32 | 48 | Capability offer/selection, zero for PROOF and RECEIPT |
+| 80 | 32 | Caller nonce |
+| 112 | 32 | Listener nonce, zero for OFFER |
+| 144 | 32 | Proof, zero for OFFER |
+
+Socket IDs must be distinct and nonzero. The credential ID and Caller nonce
+must be nonzero. All later records require both nonces and a nonzero proof.
+Authentication version 7 is implied by this body format. Unused capability
+bytes must be zero. Exact-size codecs validate before writing destinations.
+The authenticated context is constructed from the actual offer and selection
+plus the previously frozen dispatch/source announcements; these announcements
+are not inferred from the exchange sender address. Only the Listener supplies
+the stream/member incarnations and initial absolute position.
+
+The Caller generates its offer nonce once with `Admission::begin`, then freezes
+the final context after receiving a valid selection. The Listener verifies
+both sides' required features and selects their supported intersection and
+minimum prefix limit. Each endpoint resolves its credential once, derives one
+root and verifies its peer's conclusion proof. The Caller withholds its root
+from the runtime until it also verifies RECEIPT. The Listener can expose its
+root after verifying PROOF and constructing RECEIPT. Root exposure is local
+authentication readiness, not proof that both runtimes are installed, DATA is
+flowing or any delivery policy has been granted.
+
+Receipt proof material is exactly `ASCII("RWSRT-HYB-READY") || NUL` (16 bytes)
+followed by the 32-byte verified Caller conclusion proof. It uses the existing
+version 7 Listener role-proof primitive, with no new KDF or MAC construction.
+This material's prefix is disjoint from the canonical conclusion transcript's
+magic, so an ordinary Listener conclusion proof cannot serve as a receipt.
+The root already binds both nonces, socket IDs and the selected context; the
+included Caller proof binds both complete conclusion payloads. No runtime
+control counter or semantic serial is consumed. Independent Python vectors
+cover all four exact records and this receipt proof.
+
+`CredentialProvider` has two borrowed, `noexcept` callbacks. `resolve` receives
+the frozen request and fills a local grant plus exactly 32 secret bytes. Its
+secret output is erased through the crypto provider on every return path,
+including denial, malformed output, crypto failure and reentrant close.
+`revalidate` receives the same request and expected grant and must return the
+current local grant. Denial or any change closes the attempt; renewal requires
+a fresh owner. There is no retry or alternate credential lookup after denial.
+
+The request carries the locally configured established peer, connection
+generation, endpoint role, socket IDs, exact caller/listener groups and Stream
+ID, explicit credential ID and selected hybrid context. The peer address and
+connection generation come only from the native owner configuration, never the
+record. Before lookup, the component validates its bounded frozen baseline
+payloads. The native owner must still establish routing/cookie/session
+provenance and ensure that the callback's policy store authorizes that identity;
+the component cannot prove these facts from a nonzero generation. Callbacks
+must run without group/runtime locks, be nonblocking and outlive the exchange.
+Close from a callback is terminal and prevents output/root publication. Native
+callback dispatch, storage and public configuration remain future integration.
+
+`start`, `receive` and `tick` are serialized and take monotonic microseconds.
+Configuration bounds setup lifetime to 1 through 5,000,000 microseconds, retry
+interval to 1 through that lifetime and emissions to 1 through 8 per outgoing
+stage. Defaults are a one-second lifetime, 100 ms retry interval and four
+emissions; they are experimental component settings, not WAN continuity claims.
+Each role has two outgoing stages, so at most 16 records can be published per
+endpoint/attempt. An output counts against that bound even if a future native
+send fails. Retries reuse exact cached bytes and never repeat credential
+resolution, root derivation or nonce generation. Duplicate floods cannot
+advance the next emission time. Exhausting emissions stops retransmission
+while allowing a delayed response until the exclusive overall deadline.
+
+The hard setup deadline never renews. Arithmetic saturates, clock regression
+closes the owner and all callbacks are followed by state/grant checks. Invalid
+codec/identity/nonce/phase records are ignored; a matched attempt with an invalid
+cryptographic proof, unsatisfied requirements, bad credential or changed grant
+fails explicitly. There is no automatic legacy or plaintext fallback. Successful
+activation retains its root/replay state. The Listener's receipt cache stops at
+the original deadline or emission limit; old retries cannot reset the root.
+
+`next_deadline` supplies the next retry, setup deadline or grant expiry. The
+future native owner must service it with `tick` and call `receive` only for its
+already admitted unicast session. Active events revalidate the grant; a close,
+expiry or policy change revokes already borrowed gates. The component has no
+timer, global pending-attempt table, thread or native queue. It does not discover
+silent revocation between owner calls, cancel committed coordinator work, detect
+multicast failure or authorize switching. Lost final receipts may leave only
+one endpoint locally active; bounded setup failure and subsequent connection
+lifecycle handling must not be interpreted as delivery permission.
+
+The remaining native integration must allocate/review the carrier, preserve
+exact ordinary conclusion payloads, own the callback/expiry lifecycle and
+atomically recheck grant, binding, source, sequence and policy generations at
+enrollment. A revision/history/budget/deadline-fenced coordinator bridge and
+bounded policy reconciliation remain prerequisites for automatic switching.
 
 ## Control body
 

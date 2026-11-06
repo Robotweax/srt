@@ -39,11 +39,13 @@ struct AdmissionTranscript {
 // Keep it alive until all Sessions borrowing authentication() are destroyed.
 class Admission {
 public:
-    enum class State { empty, prepared, established, confirmed, closed };
+    enum class State { empty, begun, prepared, established, confirmed, closed };
     explicit Admission(CryptoProvider& provider, bool caller) noexcept;
     ~Admission();
     Admission(const Admission&) = delete;
     Admission& operator=(const Admission&) = delete;
+    // Generate the Caller offer nonce before a Listener selection is known.
+    [[nodiscard]] bool begin() noexcept;
     [[nodiscard]] bool prepare(const Context&, const Authorization&,
         std::span<const std::byte> caller_payload,
         std::span<const std::byte> listener_payload,
@@ -53,6 +55,11 @@ public:
         const SessionAuthenticationParameters& peer,
         std::uint64_t now_us) noexcept;
     [[nodiscard]] Error proof(SessionAuthenticationParameters&) noexcept;
+    // Receipt material is a disjoint fixed domain plus the confirmed Caller
+    // transcript proof. It uses the existing role-proof primitive and root.
+    [[nodiscard]] Error receipt(SessionAuthenticationParameters&) noexcept;
+    [[nodiscard]] bool accept_receipt(
+        const SessionAuthenticationParameters&) noexcept;
     // Final callback/authorization revalidation is supplied by the owner.
     // Failure is terminal, including changed/expired grants and bad proofs.
     [[nodiscard]] bool confirm(const SessionAuthenticationParameters&,
@@ -78,6 +85,7 @@ private:
     std::array<std::byte, context_size> context_ {};
     std::uint32_t caller_id_ = 0, listener_id_ = 0;
     std::uint64_t last_now_ = 0;
+    std::array<std::byte, 32> confirmed_peer_proof_ {};
     bool caller_ = false;
     State state_ = State::empty;
 };

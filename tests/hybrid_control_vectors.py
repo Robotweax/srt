@@ -61,4 +61,19 @@ def admission_proof(role):
     return hmac.digest(admission_root, label + p('!BBQH', 1, role, 0, len(admission)) + admission, 'sha256').hex()
 result['admission'] = {'transcript': admission.hex(), 'size': len(admission),
                        'caller_proof': admission_proof(1), 'listener_proof': admission_proof(2)}
+receipt_material = b'RWSRT-HYB-READY\0' + bytes.fromhex(admission_proof(1))
+assert len(receipt_material) == 48
+receipt_proof = hmac.digest(admission_root, label + p('!BBQH', 1, 2, 0, 48) + receipt_material, 'sha256')
+def exchange_record(kind, capability, caller_nonce, listener_nonce, proof):
+    record = (p('!IIII', 0x52575801, kind, 107, 108) + bytes([0x11])*16
+              + capability + caller_nonce + listener_nonce + proof)
+    assert len(record) == 176
+    return record.hex()
+cn, ln = bytes(range(32)), bytes(range(32, 64))
+result['exchange'] = {
+    'offer': exchange_record(1, offer, cn, bytes(32), bytes(32)),
+    'selection': exchange_record(2, selected, cn, ln, bytes.fromhex(admission_proof(2))),
+    'proof': exchange_record(3, bytes(48), cn, ln, bytes.fromhex(admission_proof(1))),
+    'receipt': exchange_record(4, bytes(48), cn, ln, receipt_proof),
+    'receipt_proof': receipt_proof.hex()}
 print(json.dumps(result, indent=2))

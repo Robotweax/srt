@@ -126,6 +126,17 @@ Admission::~Admission()
 {
     close();
 }
+bool Admission::begin() noexcept
+{
+    if (state_ != State::empty)
+        return false;
+    if (authentication_.start(caller_, authentication_version) != Error::none) {
+        close();
+        return false;
+    }
+    state_ = State::begun;
+    return true;
+}
 bool Admission::current(const Authorization& a, std::uint64_t now) noexcept
 {
     if (now < last_now_ || !valid_authorization(a)
@@ -144,15 +155,13 @@ bool Admission::prepare(const Context& c, const Authorization& a,
     std::span<const std::byte> caller_payload,
     std::span<const std::byte> listener_payload, std::uint64_t now) noexcept
 {
-    if (state_ != State::empty)
+    if (state_ != State::empty && state_ != State::begun)
         return false;
     authorization_ = a;
     if (!current(a, now)
         || !admission_transcript(
             c, a, caller_payload, listener_payload, transcript_)
-        || !encode(c, context_)
-        || authentication_.start(caller_, authentication_version)
-            != Error::none) {
+        || !encode(c, context_) || (state_ == State::empty && !begin())) {
         close();
         return false;
     }
@@ -208,6 +217,45 @@ bool Admission::confirm(const SessionAuthenticationParameters& proof,
         return false;
     }
     state_ = State::confirmed;
+    confirmed_peer_proof_ = proof.proof;
+    return true;
+}
+namespace {
+std::array<std::byte, 48> receipt_material(
+    std::span<const std::byte, 32> proof) noexcept
+{
+    std::array<std::byte, 48> bytes {};
+    constexpr char label[] = "RWSRT-HYB-READY";
+    static_assert(sizeof(label) == 16);
+    for (std::size_t i = 0; i < sizeof(label); ++i)
+        bytes[i] = std::byte(static_cast<unsigned char>(label[i]));
+    std::copy(proof.begin(), proof.end(), bytes.begin() + 16);
+    return bytes;
+}
+}
+Error Admission::receipt(SessionAuthenticationParameters& out) noexcept
+{
+    if (caller_ || state_ != State::confirmed)
+        return Error::invalid_state;
+    SessionAuthenticationParameters proof;
+    const auto error = authentication_.handshake_proof(
+        false, receipt_material(confirmed_peer_proof_), proof);
+    if (error == Error::none)
+        out = proof;
+    return error;
+}
+bool Admission::accept_receipt(
+    const SessionAuthenticationParameters& receipt) noexcept
+{
+    if (!caller_ || state_ != State::confirmed)
+        return false;
+    SessionAuthenticationParameters own;
+    if (proof(own) != Error::none
+        || !authentication_.verify_handshake(
+            false, receipt_material(own.proof), receipt)) {
+        close();
+        return false;
+    }
     return true;
 }
 const SessionAuthenticationParameters& Admission::parameters() const noexcept
@@ -234,6 +282,7 @@ void Admission::close() noexcept
     state_ = State::closed;
     transcript_ = {};
     authorization_ = {};
+    confirmed_peer_proof_ = {};
 }
 #endif
 } // namespace robotweax::srt::compat::hybrid
