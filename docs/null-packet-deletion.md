@@ -509,6 +509,16 @@ controls completed and 12 deliberately uncovered tails remained incomplete.
 The original kernel-netem qualification remains incomplete, and any revised
 finite-stream completion workload must have its own declared contract.
 
+A separate [bounded application-completion experiment](https://github.com/Robotweax/srt_network_lab/blob/3f92fbc8d2683f2d7d9ef59065796cd7cecdd6e2/docs/npd-completion.md)
+now has its own source-built peer and 48-case contract. Repeated end markers
+and length/SHA256 receipts recovered all 32 declared positive cases, including
+last-media, end-marker and receipt loss. All 16 negative controls prevented
+sender success when receipts were blocked or a marker digest was corrupted.
+The peer deadline is five seconds with at most 32 end markers. Both peers must
+understand this application protocol; it does not change raw MPEG-TS behavior,
+SRT defaults, or the original peer and failed matrix. Kernel-netem media
+integration, deployed captures and release acceptance remain separate work.
+
 ## Qualification required before broader support claims
 
 Evidence must be reproducible and black-box, as required by
