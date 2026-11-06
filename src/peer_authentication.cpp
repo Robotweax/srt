@@ -435,6 +435,14 @@ Error replace_record(std::span<std::byte> output, std::size_t offset,
         record, output.subspan(offset, content_size(record.message)), written);
 }
 }
+Error validate_payload(
+    std::span<const std::byte> input, Message expected) noexcept
+{
+    Record record;
+    std::size_t offset = 0;
+    return exchange_message(input, expected, record, offset);
+}
+
 void Exchange::Flight::assign(std::span<const std::byte> input) noexcept
 {
     std::copy(input.begin(), input.end(), bytes.begin());

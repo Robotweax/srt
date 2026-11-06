@@ -4,6 +4,9 @@
 #include "robotweax/srt/connection_group.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+#include "peer_authentication.hpp"
+#endif
 #include <array>
 #include <algorithm>
 
@@ -27,6 +30,9 @@ namespace {
     case HandshakeExtensionType::stream_id:
     case HandshakeExtensionType::congestion:
     case HandshakeExtensionType::packet_filter:
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    case HandshakeExtensionType::peer_authentication:
+#endif
     case HandshakeExtensionType::session_authentication:
     case HandshakeExtensionType::path_identifier:
     case HandshakeExtensionType::standby_rtt:
@@ -199,6 +205,21 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
             }
             message.has_multicast_dispatch = true;
             message.multicast_dispatch = dispatch.dispatch;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        } else if (decoded.extension.type
+            == HandshakeExtensionType::peer_authentication) {
+            peer_authentication::Record record;
+            if (message.has_peer_authentication
+                || peer_authentication::decode_record(
+                       decoded.extension.content, record)
+                    != Error::none)
+                return {.error = Error::invalid_extension};
+            message.has_peer_authentication = true;
+            message.peer_authentication.size = decoded.extension.content.size();
+            std::copy(decoded.extension.content.begin(),
+                decoded.extension.content.end(),
+                message.peer_authentication.bytes.begin());
+#endif
         } else if (decoded.extension.type
             == HandshakeExtensionType::session_authentication) {
             const auto content = decoded.extension.content;
@@ -248,8 +269,55 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
     }
     if (!message.has_handshake_extension)
         message.implementation_identity = {};
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (message.has_peer_authentication) {
+        peer_authentication::Record record;
+        const auto decoded = peer_authentication::decode_record(
+            message.peer_authentication.view(), record);
+        const auto validated = decoded == Error::none
+            ? peer_authentication::validate_payload(
+                  packet.packet.payload, record.message)
+            : decoded;
+        if (validated != Error::none)
+            return {.error = validated};
+        message.peer_authentication_payload.size = packet.packet.payload.size();
+        std::copy(packet.packet.payload.begin(), packet.packet.payload.end(),
+            message.peer_authentication_payload.bytes.begin());
+    }
+#endif
     return {.message = message, .control = packet.packet.control};
 }
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+HandshakeDatagramEncodeResult encode_peer_authentication_datagram(
+    std::span<const std::byte> payload, PacketTimestamp timestamp,
+    std::uint32_t destination_socket_id,
+    std::span<std::byte> destination) noexcept
+{
+    // Derive the expected flight from its record and validate the complete
+    // payload through the same decoder used for incoming packets.
+    if (payload.size() > peer_authentication::maximum_payload_size)
+        return {.error = Error::invalid_handshake_size};
+    const auto required = packet_header_size + payload.size();
+    if (destination.size() < required)
+        return {.error = Error::buffer_too_small};
+    MutablePacketView packet;
+    packet.kind = PacketKind::control;
+    packet.control.type = ControlType::handshake;
+    packet.control.timestamp = timestamp;
+    packet.control.destination_socket_id = destination_socket_id;
+    packet.payload = payload;
+    const auto encoded = encode_packet(packet, destination);
+    if (!encoded)
+        return {.error = encoded.error};
+    const auto decoded = decode_handshake_datagram(destination.first(required));
+    if (!decoded)
+        return {.error = decoded.error};
+    if (!decoded.message.has_peer_authentication)
+        return {.error = Error::invalid_extension};
+    return {.bytes_written = required};
+}
+#endif
 
 HandshakeDatagramEncodeResult encode_handshake_datagram(
     const HandshakeAction& action,
@@ -317,8 +385,27 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
     const std::size_t dispatch_extension_size = action.has_multicast_dispatch
         ? extension_header_size + multicast_dispatch_content_size
         : 0U;
-    const std::size_t total_required = required + path_extension_size
+    const std::size_t ordinary_required = required + path_extension_size
         + measurement_extension_size + dispatch_extension_size;
+    std::size_t total_required = ordinary_required;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (action.has_peer_authentication) {
+        peer_authentication::Record record;
+        if (action.has_session_authentication
+            || action.has_key_material_extension
+            || peer_authentication::decode_record(
+                   action.peer_authentication.view(), record)
+                != Error::none)
+            return {.error = Error::invalid_extension};
+        total_required +=
+            extension_header_size + action.peer_authentication.size;
+        if (action.packet.maximum_transmission_unit < 512
+            || total_required > action.packet.maximum_transmission_unit - 48
+            || total_required > packet_header_size
+                    + peer_authentication::maximum_payload_size)
+            return {.error = Error::buffer_too_small};
+    }
+#endif
     if ((action.has_path_identifier || action.has_standby_rtt
             || action.has_multicast_dispatch)
         && (action.packet.maximum_transmission_unit < 48U
@@ -520,6 +607,17 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
         if (!extension)
             return {.error = extension.error};
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (action.has_peer_authentication) {
+        const auto extension =
+            encode_extension(HandshakeExtensionType::peer_authentication,
+                action.peer_authentication.view(),
+                destination.subspan(
+                    ordinary_required, total_required - ordinary_required));
+        if (!extension)
+            return {.error = extension.error};
+    }
+#endif
     if (identity_size != 0) {
         const auto identity =
             encode_implementation_identity(action.implementation_identity,
@@ -527,6 +625,21 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
         if (!identity)
             return {.error = identity.error};
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (action.has_peer_authentication) {
+        peer_authentication::Record record;
+        const auto decoded = peer_authentication::decode_record(
+            action.peer_authentication.view(), record);
+        const auto validated = decoded == Error::none
+            ? peer_authentication::validate_payload(
+                  destination.subspan(packet_header_size,
+                      total_required + identity_size - packet_header_size),
+                  record.message)
+            : decoded;
+        if (validated != Error::none)
+            return {.error = validated};
+    }
+#endif
     return {.bytes_written = total_required + identity_size};
 }
 

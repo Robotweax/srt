@@ -27,6 +27,9 @@ enum class HandshakeExtensionType : std::uint16_t {
     packet_filter = 7,
     group = 8,
     session_authentication = 0x7f10,
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    peer_authentication = 0x7f16,
+#endif
     path_identifier = 0x7f11,
     standby_rtt = 0x7f12,
     implementation_identity = 0x7f13,

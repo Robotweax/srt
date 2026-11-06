@@ -47,10 +47,17 @@ void write_u32(std::byte* bytes, std::uint32_t value) noexcept
 
 [[nodiscard]] bool is_known_extension(std::uint16_t type) noexcept
 {
-    return (type >= static_cast<std::uint16_t>(
-                HandshakeExtensionType::handshake_request)
-               && type
-                   <= static_cast<std::uint16_t>(HandshakeExtensionType::group))
+    return
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        type
+        == static_cast<std::uint16_t>(
+            HandshakeExtensionType::peer_authentication)
+        ||
+#endif
+        (type >= static_cast<std::uint16_t>(
+             HandshakeExtensionType::handshake_request)
+            && type
+                <= static_cast<std::uint16_t>(HandshakeExtensionType::group))
         || type
         == static_cast<std::uint16_t>(
             HandshakeExtensionType::session_authentication)
