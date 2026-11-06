@@ -331,6 +331,16 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
 {
     HandshakeActions actions;
     const auto& incoming = message.packet;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    // The legacy state machine cannot authorize peer-authenticated admission.
+    // Until the dedicated admission owner is installed, fail closed instead
+    // of treating this recognized proof record as optional metadata.
+    if (message.has_peer_authentication) {
+        state_ = HandshakeState::failed;
+        actions.push({.kind = HandshakeActionKind::failed});
+        return actions;
+    }
+#endif
     if (!valid_standby_rtt_configuration()) {
         state_ = HandshakeState::failed;
         actions.push({.kind = HandshakeActionKind::failed});

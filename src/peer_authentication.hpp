@@ -32,6 +32,11 @@ struct Record {
 [[nodiscard]] Error decode_record(
     std::span<const std::byte> content, Record& record) noexcept;
 
+// Structural full-payload validation shared with the datagram adapter.
+// Does not authenticate a proof or validate an elliptic-curve point.
+[[nodiscard]] Error validate_payload(
+    std::span<const std::byte> input, Message expected) noexcept;
+
 // Inputs begin at the 48-byte handshake field, excluding the SRT packet header.
 // Exact received bytes, including unknown extension records, are hashed.
 // The caller retains these bytes for retries. No input pointer is retained.

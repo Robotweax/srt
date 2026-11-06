@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "peer_authentication.hpp"
+#include "robotweax/srt/handshake_datagram.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -9,6 +10,24 @@ extern "C" int LLVMFuzzerTestOneInput(
 {
     namespace pa = robotweax::srt::peer_authentication;
     const auto input = std::as_bytes(std::span {data, size});
+    const auto datagram = robotweax::srt::decode_handshake_datagram(input);
+    if (datagram && datagram.message.has_peer_authentication) {
+        const auto payload =
+            datagram.message.peer_authentication_payload.view();
+        if (!std::equal(payload.begin(), payload.end(),
+                input.begin() + robotweax::srt::packet_header_size,
+                input.end()))
+            std::abort();
+        std::array<std::byte, 1500> output {};
+        const auto retry = robotweax::srt::encode_peer_authentication_datagram(
+            payload, datagram.control.timestamp,
+            datagram.control.destination_socket_id, output);
+        if (!retry
+            || !std::equal(payload.begin(), payload.end(),
+                output.begin() + robotweax::srt::packet_header_size,
+                output.begin() + retry.bytes_written))
+            std::abort();
+    }
     auto& provider = robotweax::srt::default_crypto_provider();
     if (input.size() >= 64) {
         (void)provider.validate_p256_public_key(input.first<64>());

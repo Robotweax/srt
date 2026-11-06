@@ -2,6 +2,7 @@
 #include "test.hpp"
 #include "peer_authentication.hpp"
 #include "robotweax/srt/handshake.hpp"
+#include "robotweax/srt/handshake_datagram.hpp"
 #include "robotweax/srt/crypto.hpp"
 
 #include <algorithm>
@@ -35,22 +36,27 @@ std::array<std::byte, 64> public_key(unsigned n)
 }
 std::vector<std::byte> packet(const pa::Record& record)
 {
-    std::vector<std::byte> output(52 + pa::content_size(record.message));
-    Handshake h;
-    h.extension_field = handshake_extension_flag_config;
-    h.encryption_field = record.key_length / 8;
-    h.request = record.message == pa::Message::confirmation
+    HandshakeAction action {.kind = HandshakeActionKind::send};
+    action.packet.extension_field = handshake_extension_flag_config;
+    action.packet.encryption_field = record.key_length / 8;
+    action.packet.request = record.message == pa::Message::confirmation
         ? HandshakeRequest::agreement
         : HandshakeRequest::conclusion;
-    REQUIRE_EQ(encode_handshake(h, output), Error::none);
-    output[48] = std::byte {0x7f};
-    output[49] = std::byte {0x16};
-    output[51] = std::byte(pa::content_size(record.message) / 4);
-    std::size_t written = 0;
-    REQUIRE_EQ(
-        pa::encode_record(record, std::span {output}.subspan(52), written),
+    action.has_peer_authentication = true;
+    REQUIRE_EQ(pa::encode_record(record, action.peer_authentication.bytes,
+                   action.peer_authentication.size),
         Error::none);
-    return output;
+    std::array<std::byte, 1500> wire {};
+    const auto encoded =
+        encode_handshake_datagram(action, PacketTimestamp {7}, 123, wire);
+    REQUIRE(encoded);
+    const auto decoded = decode_handshake_datagram(
+        std::span {wire}.first(encoded.bytes_written));
+    REQUIRE(decoded);
+    REQUIRE(decoded.message.has_peer_authentication);
+    REQUIRE(!decoded.message.has_unknown_extension);
+    const auto payload = decoded.message.peer_authentication_payload.view();
+    return {payload.begin(), payload.end()};
 }
 class TrackingProvider final : public CryptoProvider {
 public:
@@ -814,4 +820,166 @@ TEST(peer_auth_runtime_initialization_failure_is_terminal)
     REQUIRE_EQ(c.start_initiator(), Error::cryptographic_failure);
     REQUIRE_EQ(c.continue_without_peer_key(CryptoState::no_secret),
         Error::invalid_state);
+}
+
+TEST(
+    peer_auth_datagram_preserves_opaque_extensions_and_outer_header_independence)
+{
+    Pair p;
+    p.configure();
+    pa::Record record;
+    REQUIRE_EQ(p.caller.prepare_offer(16, record), Error::none);
+    p.m1 = packet(record);
+    const std::array<std::byte, 8> opaque {std::byte {0x7e}, std::byte {0x01},
+        std::byte {0}, std::byte {1}, std::byte {1}, std::byte {2},
+        std::byte {3}, std::byte {4}};
+    // An unknown record before PEERAUTH must keep its exact position and bytes.
+    p.m1.insert(p.m1.begin() + handshake_size, opaque.begin(), opaque.end());
+    auto roundtrip = [](const std::vector<std::byte>& payload) {
+        std::array<std::byte, 1500> wire {};
+        const auto encoded = encode_peer_authentication_datagram(
+            payload, PacketTimestamp {99}, 456, wire);
+        REQUIRE(encoded);
+        auto decoded = decode_handshake_datagram(
+            std::span {wire}.first(encoded.bytes_written));
+        REQUIRE(decoded);
+        REQUIRE_EQ(decoded.control.destination_socket_id, 456U);
+        REQUIRE(
+            equal(decoded.message.peer_authentication_payload.view(), payload));
+        const auto copy = decoded.message;
+        std::fill(wire.begin(), wire.end(), std::byte {0});
+        REQUIRE(equal(
+            copy.peer_authentication_payload.view(), payload)); // owned bytes
+        const auto retry = encode_peer_authentication_datagram(
+            copy.peer_authentication_payload.view(), PacketTimestamp {100}, 789,
+            wire);
+        REQUIRE(retry);
+        REQUIRE(
+            equal(std::span {wire}.subspan(packet_header_size, payload.size()),
+                payload));
+        return copy;
+    };
+    const auto offer = roundtrip(p.m1);
+    REQUIRE(offer.has_unknown_extension);
+    REQUIRE_EQ(p.caller.bind_offer(offer.peer_authentication_payload.view()),
+        Error::none);
+    REQUIRE_EQ(p.listener.prepare_response(
+                   offer.peer_authentication_payload.view(), 16, record),
+        Error::none);
+    p.m2 = packet(record);
+    p.m2.insert(p.m2.end(), opaque.begin(), opaque.end());
+    REQUIRE_EQ(p.listener.seal_response(p.m2), Error::none);
+    auto response = roundtrip(p.m2);
+    REQUIRE_EQ(p.caller.prepare_confirmation(
+                   response.peer_authentication_payload.view(), record),
+        Error::none);
+    p.m3 = packet(record);
+    p.m3.insert(p.m3.end(), opaque.begin(), opaque.end());
+    REQUIRE_EQ(p.caller.seal_confirmation(p.m3, passphrase()), Error::none);
+    auto confirmation = roundtrip(p.m3);
+    REQUIRE_EQ(
+        p.listener.accept_confirmation(
+            confirmation.peer_authentication_payload.view(), passphrase()),
+        Error::none);
+    REQUIRE(equal(p.caller.session_key(), p.listener.session_key()));
+    HandshakeMachine machine({.role = ConnectionRole::listener});
+    const auto actions = machine.receive(offer);
+    REQUIRE_EQ(actions.size, 1U);
+    REQUIRE_EQ(actions.values[0].kind, HandshakeActionKind::failed);
+}
+
+TEST(peer_auth_datagram_rejects_malformed_mixed_and_oversized_payloads)
+{
+    Pair p;
+    p.configure();
+    p.offer();
+    auto reject = [](std::span<const std::byte> payload) {
+        std::array<std::byte, 2048> wire {};
+        const auto retry =
+            encode_peer_authentication_datagram(payload, {}, 1, wire);
+        REQUIRE(!retry);
+        REQUIRE_EQ(retry.bytes_written, 0U);
+        MutablePacketView packet;
+        packet.kind = PacketKind::control;
+        packet.control.type = ControlType::handshake;
+        packet.payload = payload;
+        REQUIRE(encode_packet(packet, wire));
+        REQUIRE(!decode_handshake_datagram(
+            std::span {wire}.first(packet_header_size + payload.size())));
+    };
+    for (std::size_t offset : {0U, 4U, 20U, 52U, 53U, 54U, 56U}) {
+        auto damaged = p.m1;
+        damaged[offset] ^= std::byte {0x80};
+        reject(damaged);
+    }
+    auto missing_config = p.m1;
+    missing_config[7] = std::byte {};
+    reject(missing_config);
+    auto duplicate = p.m1;
+    duplicate.insert(
+        duplicate.end(), p.m1.begin() + handshake_size, p.m1.end());
+    reject(duplicate);
+    auto mixed = p.m1;
+    mixed.insert(mixed.end(),
+        {std::byte {0x7f}, std::byte {0x10}, std::byte {0}, std::byte {0}});
+    reject(mixed);
+    auto oversized = p.m1;
+    oversized.insert(oversized.end(),
+        {std::byte {0x7e}, std::byte {1}, std::byte {1}, std::byte {0x40}});
+    oversized.resize(oversized.size() + 1280);
+    reject(oversized);
+    std::array<std::byte, 8> tiny {};
+    REQUIRE(!encode_peer_authentication_datagram(p.m1, {}, 1, tiny));
+    for (std::size_t size = handshake_size + 1; size < p.m1.size(); ++size)
+        reject(std::span {p.m1}.first(size));
+}
+
+TEST(peer_auth_datagram_encoder_rejects_inconsistent_actions)
+{
+    Pair p;
+    p.configure();
+    pa::Record record;
+    REQUIRE_EQ(p.caller.prepare_offer(16, record), Error::none);
+    HandshakeAction valid {.kind = HandshakeActionKind::send};
+    valid.packet.extension_field = handshake_extension_flag_config;
+    valid.packet.encryption_field = 2;
+    valid.packet.request = HandshakeRequest::conclusion;
+    valid.has_peer_authentication = true;
+    REQUIRE_EQ(pa::encode_record(record, valid.peer_authentication.bytes,
+                   valid.peer_authentication.size),
+        Error::none);
+    std::array<std::byte, 1500> wire {};
+    REQUIRE(encode_handshake_datagram(valid, {}, 1, wire));
+    for (unsigned test = 0; test < 8; ++test) {
+        auto action = valid;
+        switch (test) {
+        case 0:
+            action.has_session_authentication = true;
+            break;
+        case 1:
+            action.has_key_material_extension = true;
+            break;
+        case 2:
+            action.packet.extension_field = 0;
+            break;
+        case 3:
+            action.packet.encryption_field = 4;
+            break;
+        case 4:
+            action.packet.request = HandshakeRequest::agreement;
+            break;
+        case 5:
+            action.packet.maximum_transmission_unit = 511;
+            break;
+        case 6:
+            action.peer_authentication.size = 233;
+            break;
+        case 7:
+            action.packet.version = handshake_version_4;
+            break;
+        }
+        const auto encoded = encode_handshake_datagram(action, {}, 1, wire);
+        REQUIRE(!encoded);
+        REQUIRE_EQ(encoded.bytes_written, 0U);
+    }
 }

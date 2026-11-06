@@ -23,9 +23,15 @@ group schedules are rejected for imported sessions. The runtime erases its
 passphrase copy on import; the exchange owner still owns its cached flights
 and must destroy the exchange on completion or failure.
 
-Socket options, admission callbacks and transport-handshake integration are
-still absent. Enabling the build option does not
-authenticate socket connections or change their wire bytes. In particular,
+The datagram codec recognizes and validates PEERAUTH records and retains the
+exact received handshake payload, including unknown extensions and their order.
+Setup inbox forwarding and the retry encoder preserve those bytes while allowing
+the outer packet timestamp and destination to change. The legacy handshake
+machine refuses PEERAUTH records rather than accepting them without proof checks.
+
+Socket options, admission callbacks and authenticated connection establishment
+are still absent. Enabling the build option does not authenticate socket
+connections or enable outgoing PEERAUTH handshakes. In particular,
 `Exchange::ready_for_key_exchange()` is not permission to publish a caller or
 release DATA: the caller still needs the listener's passphrase proof through
 an authenticated runtime key control. The socket layer must supply cookie and

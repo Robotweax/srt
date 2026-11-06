@@ -1627,6 +1627,18 @@ create_setup_inbox() noexcept
 [[nodiscard]] bool enqueue_setup_handshake(
     DatagramInbox& inbox, const HandshakeEnvelope& envelope) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (envelope.message.has_peer_authentication) {
+        std::array<std::byte, DatagramEnvelope::maximum_size> bytes {};
+        const auto encoded = encode_peer_authentication_datagram(
+            envelope.message.peer_authentication_payload.view(),
+            envelope.control.timestamp, envelope.control.destination_socket_id,
+            bytes);
+        return encoded
+            && inbox.push(
+                std::span {bytes}.first(encoded.bytes_written), envelope.peer);
+    }
+#endif
     if (envelope.message.has_unknown_extension) {
         return false;
     }
