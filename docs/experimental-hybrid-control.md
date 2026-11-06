@@ -16,7 +16,8 @@ owners can also publish authenticated progress/path reports from local DATA
 observations and bounded host activity declarations. An explicitly configured
 passive receiver detector assesses stalls and sustained multicast recovery.
 A separately attached internal controller can opt into bounded automatic unicast
-fallback using trusted local merge state. Default configuration keeps automation
+fallback using trusted local merge state. A separate opt-in return controller uses
+sustained recovery and exact committed-overlap coverage. Default configuration keeps automation
 disabled and allocates no public C option. Native handshakes still
 reject authentication version 7. No new capability handshake extension ID is
 allocated. Existing strict multicast announcements and existing authentication
@@ -37,6 +38,7 @@ cmake --build build-hybrid-control --parallel
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_detector
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_automatic
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_return
+./build-hybrid-control/robotweax_srt_tests --include hybrid_auto_return
 ./tools/python tests/hybrid_control_vectors.py
 ```
 
@@ -913,8 +915,8 @@ bandwidth or an overlap commit boundary. Native loopback qualification exercises
 blackout detection, explicit host fallback, sustained multicast observation
 while unicast remains committed, pause suppression and owner closure. The
 separate controller below can consume fallback candidates. Explicit bounded
-multicast overlap/return is described below; public provisioning, autonomous
-return selection and startup join failure handling remain unimplemented.
+multicast overlap/return and its separate opt-in automatic controller are described
+below; public provisioning and startup join failure handling remain unimplemented.
 
 ## Explicitly attached automatic unicast fallback
 
@@ -1004,9 +1006,10 @@ across CTR/GCM rotation. Component cases cover invalid/scoped/stale cursors,
 callback delay/reentrancy/close/route loss/pause, manual intent precedence,
 per-revision/lifetime budgets, persistent ticket results, posting-age expiry,
 EAGAIN and total reply loss. The detector's assumed timing/transit bounds and
-peer-honesty limits still apply. This fallback controller ignores return candidates. The explicit bounded
-return protocol below supplies overlap and coverage validation; it does not
-attach an autonomous return controller.
+peer-honesty limits still apply. This fallback controller ignores return candidates.
+The explicit return protocol and separately attached return controller below
+supply overlap and coverage validation; attachment of either controller does
+not attach the other.
 
 ## Bounded overlap and explicit multicast return
 
@@ -1102,9 +1105,80 @@ Native loopback tests drop every commit reply through UC -> overlap -> MC across
 plain/CTR/GCM, use the exact cache to prove eight overlap positions, and deliver
 40 more canonical messages after return across key rotation. Sender UC-original
 high water stays at or below D. Explicit return APIs perform no autonomous
-recovery selection; `AutomaticFallback` remains one-way. An autonomous return
-controller, public provisioning, startup-join fallback, actual source-error
-control bridge and broader network/scale qualification remain future work.
+recovery selection; `AutomaticFallback` remains one-way. The separate controller
+below supplies opt-in return selection. Public provisioning, startup-join fallback,
+actual source-error control bridge and broader network/scale qualification remain
+future work.
+
+## Explicitly attached automatic multicast return
+
+`AutomaticReturn::create(receiver, configuration)` is an internal opt-in for a
+live receiver with detection and negotiated return control. All configuration
+fields default to zero and fail validation. The host supplies a lifetime allowance
+of 1..8 operations, a positive total operation timeout <=5 seconds, coverage of
+2..32 packets, a positive minimum coverage span <=1 second and smaller than the
+operation timeout, and a positive proof lifetime no greater than that timeout.
+The sender still needs its independent `ReturnPolicy`; receiver settings do not
+negotiate or relax the sender's bounds. A sender requiring more than 32 coverage
+packets cannot be satisfied by this cache-based controller.
+
+Attachment is exclusive and single-use for that receiver lifetime. Closing or
+recreating a controller cannot reset its allowance. It may coexist with the
+separately attached `AutomaticFallback`; both use the receiver's existing shared
+bounded operation owner, so their intents and manual intents cannot overlap.
+Each pump advances the receiver first and admits at most one phase. Concurrent
+or reentrant pumps return. One controller below 2 KiB, no callbacks/providers,
+new timer, thread, scheduler service, DATA queue, wire field or public C option.
+
+Only a fresh confirmed UC revision with the detector's sustained return
+candidate can consume an allowance. Its native generation, stream/member,
+revision, initial position and manual epoch are captured. Admission resamples
+recovery under receiver ownership. Even failed admission consumes the attempt;
+the same UC revision cannot rearm on denial, timeout, flapping or repeated pumps.
+A higher confirmed UC revision may consume another remaining allowance.
+
+The first phase posts overlap through the existing bounded ready/query exchange.
+No MC request is made until a correlated receipt confirms the exact overlap
+revision and boundary B. Missing commit responses are recovered by read-only
+queries. The second phase walks the exact cache for every position in
+[B,B+coverage_packets). A high water, UC-only position, missing entry, stale
+route, cache eviction or same-path replay cannot supply this coverage. A valid
+matching late MC copy after UC can fill a hole; its first MC receipt sets its age.
+The span must meet the receiver's minimum and original last receipt must remain
+within the configured proof lifetime. Fresh producing activity at the overlap
+revision, no current stall, and local MC progress caught up to reported source
+MC progress are also required. These high-water checks constrain current
+recovery evidence; only the exact cache supplies the contiguous proof.
+
+Both admissions recheck native lifetime, current revision/confirmation, shared
+operation availability and the original manual epoch. An accepted manual intent
+wins even if it completes before another controller pump. The entire operation
+retains its original start/deadline, clipped by receiver operation timeout and
+grant expiry; coverage collection, lost-reply queries and posting delay consume
+that bound. Final proof age may shorten it further. Sender window, authorization,
+history, key and budget fences remain authoritative. Expiry or denial never
+manufactures MC confirmation or starts an unbounded retry. Source window expiry
+independently restores UC while preserving queued UC work.
+
+Snapshots expose whole-operation and separate phase results, original UC
+revision, overlap B, proven coverage end C, actual final commit D, admitted phase
+counts and deadline. Ticket-specific return receipts persist independently of
+manual outcomes and automatic fallback receipts. Reads project expiry to unknown
+without pumping or posting. Final D can exceed C; future UC release follows D,
+not the proof horizon. **Close stops new admissions but cannot cancel an already
+posted phase.** An accepted final MC phase may still commit; an accepted overlap
+phase may still open its bounded source window, but a closed controller never
+posts the final phase. Primary DATA and committed policy remain intact.
+
+Deterministic cases cover configuration/attachment, exact holes and late copies,
+original proof age, paused activity, manual precedence, denial attribution,
+per-revision/lifetime budgets, route/native loss, close, posting delay and grant
+expiry. Native plain/CTR/GCM tests suppress every commit response, recover UC,
+observe sustained MC while in UC, automatically open overlap, prove eight exact
+positions, confirm MC by query, and deliver forty more canonical messages across
+key rotation. This remains loopback qualification under explicit host timing,
+truthful activity and pumping contracts, not WAN, startup join, hostile-peer,
+scale or playback-continuity qualification.
 
 ## Control body
 

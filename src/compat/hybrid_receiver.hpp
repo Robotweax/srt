@@ -9,6 +9,7 @@
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 namespace robotweax::srt::compat::hybrid {
 class AutomaticFallback;
+class AutomaticReturn;
 // Caller policy owner with optional read-only reports and path assessments.
 // Does not select DATA paths, ACK data or initiate fallback automatically.
 class ReceiverBridge {
@@ -77,6 +78,23 @@ public:
 private:
     friend class NativeService;
     friend class AutomaticFallback;
+    friend class AutomaticReturn;
+    [[nodiscard]] bool claim_automatic_return() noexcept;
+    [[nodiscard]] std::optional<AutomaticRequest>
+    automatic_return_candidate() const noexcept;
+    [[nodiscard]] std::optional<std::uint64_t> admit_automatic_return(
+        const AutomaticRequest&, std::uint64_t ticket, std::uint64_t deadline,
+        Mode target, std::uint32_t packets = 0, std::uint32_t minimum_span = 0,
+        std::uint32_t proof_lifetime = 0) noexcept;
+    struct ReturnReceipt {
+        std::uint64_t ticket = 0, revision = 0, boundary = 0, through = 0;
+        Mode target = Mode::overlap;
+        RequestState result = RequestState::none;
+        Outcome outcome = Outcome::ok;
+        bool current = false, closed = false;
+    };
+    [[nodiscard]] ReturnReceipt automatic_return_receipt(
+        const AutomaticRequest&, std::uint64_t deadline) const noexcept;
     [[nodiscard]] bool claim_automatic() noexcept;
     [[nodiscard]] std::optional<AutomaticRequest>
     automatic_candidate() const noexcept;
@@ -99,7 +117,8 @@ private:
         std::uint64_t origin, std::uint64_t not_after = UINT64_MAX,
         std::uint64_t automatic_ticket = 0, Mode target = Mode::unicast,
         std::uint64_t proof_begin = 0, std::uint32_t proof_interval = 0,
-        std::uint64_t proof_observed = 0) noexcept;
+        std::uint64_t proof_observed = 0,
+        std::uint64_t return_ticket = 0) noexcept;
     void round(Kind, std::uint64_t) noexcept;
     void finish(Phase, std::uint64_t) noexcept;
     std::shared_ptr<NativeService> service_;
@@ -118,11 +137,14 @@ private:
         Mode target = Mode::unicast;
         std::uint64_t proof_begin = 0, proof_observed = 0;
         std::uint32_t proof_interval = 0;
+        std::uint64_t return_ticket = 0;
     };
     std::optional<Posted> posted_;
-    bool automatic_claimed_ = false;
+    bool automatic_claimed_ = false, automatic_return_claimed_ = false;
     std::uint64_t manual_epoch_ = 0, active_automatic_ticket_ = 0;
     AutomaticReceipt automatic_receipt_;
+    ReturnReceipt return_receipt_;
+    std::uint64_t active_return_ticket_ = 0;
     std::uint64_t generation_ = 0, next_serial_ = 1, highest_reply_ = 0,
                   last_now_ = 0, deadline_ = 0, round_deadline_ = 0,
                   next_send_ = 0, next_query_ = 0, first_send_ = 0,

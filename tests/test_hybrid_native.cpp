@@ -3,6 +3,7 @@
 #include "compat/hybrid_native.hpp"
 #include "compat/hybrid_receiver.hpp"
 #include "compat/hybrid_automatic.hpp"
+#include "compat/hybrid_automatic_return.hpp"
 #include <functional>
 #include "compat/transport_runtime.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
@@ -121,7 +122,7 @@ struct HybridAutomaticTestAccess {
     }
     static void multicast(const std::shared_ptr<ConnectionRuntime>& r,
         const std::shared_ptr<hybrid::NativeService>& service,
-        std::uint32_t sequence, std::uint64_t now)
+        std::uint32_t sequence, std::uint64_t now, bool multicast = true)
     {
         std::shared_ptr<const MulticastIngressBinding> binding;
         {
@@ -136,10 +137,13 @@ struct HybridAutomaticTestAccess {
                                   .destination_socket_id =
                                       service->origin()->dispatch().group_id},
                               .payload = payload},
-            service->origin()->source().endpoint,
+            multicast ? service->origin()->source().endpoint
+                      : IpEndpoint::loopback(9000),
             ConnectionRuntime::Clock::time_point {
                 std::chrono::microseconds {now}},
-            PacketIngress::multicast_data, binding);
+            multicast ? PacketIngress::multicast_data
+                      : PacketIngress::unicast_session,
+            multicast ? binding : nullptr);
     }
 };
 }
@@ -1149,6 +1153,443 @@ TEST(hybrid_automatic_total_loss_is_bounded_and_never_reinvokes_cursor_provider)
     REQUIRE(count > 0);
     REQUIRE(count <= 6);
     REQUIRE_EQ(f.controller->snapshot().admitted, 1U);
+}
+namespace {
+struct AutomaticReturnFixture : ReceiverFixture {
+    std::shared_ptr<h::AutomaticReturn> controller;
+    std::uint64_t offset = 0, boundary = 0;
+    static h::AutomaticReturn::Configuration policy()
+    {
+        return {2, 350, 4, 20, 100};
+    }
+    explicit AutomaticReturnFixture(
+        h::AutomaticReturn::Configuration c = policy())
+        : ReceiverFixture(AutomaticFixture::configuration(), true, true)
+    {
+        controller = h::AutomaticReturn::create(receiver, c);
+        REQUIRE(controller);
+    }
+    void progress(h::Mode mode = h::Mode::unicast, std::uint64_t revision = 1,
+        h::Activity activity = h::Activity::producing)
+    {
+        auto m =
+            response(h::Kind::delivery_status, revision, mode, 1234 + offset);
+        m.kind = h::Kind::stream_progress;
+        m.request_serial = 0;
+        m.multicast_next = m.next_position;
+        m.produced_next = 2000;
+        m.interval_us = 10;
+        m.activity = activity;
+        REQUIRE_EQ(
+            p.l->send(m, p.clock->value.load() + 1000, p.clock->value.load()),
+            h::NativeService::Admission::accepted);
+        step();
+        step();
+    }
+    void data(bool receive = true)
+    {
+        advance(10);
+        compat::HybridAutomaticTestAccess::multicast(runtime, p.c,
+            static_cast<std::uint32_t>(42 + offset), p.clock->value.load(),
+            receive);
+        ++offset;
+    }
+    void candidate(std::uint64_t revision = 1)
+    {
+        step();
+        auto status = response(h::Kind::delivery_status, revision,
+            h::Mode::unicast, 1234 + offset);
+        status.multicast_next = 1234;
+        deliver(status);
+        progress(h::Mode::unicast, revision);
+        for (unsigned i = 0; i < 10; ++i) {
+            data();
+            progress(h::Mode::unicast, revision);
+        }
+        const auto a = receiver->path_assessment();
+        REQUIRE(a);
+        REQUIRE(a->return_candidate);
+    }
+    void open()
+    {
+        candidate();
+        controller->pump();
+        step();
+        REQUIRE_EQ(requests.back().kind, h::Kind::multicast_ready);
+        boundary = 1234 + offset;
+        deliver(
+            response(h::Kind::delivery_commit, 2, h::Mode::overlap, boundary));
+        REQUIRE_EQ(controller->snapshot().phase,
+            h::AutomaticReturn::Phase::collecting);
+    }
+    void coverage(bool hole = false)
+    {
+        for (unsigned i = 0; i < 4; ++i) {
+            data(!hole || i != 1);
+            progress(h::Mode::overlap, 2);
+        }
+    }
+    void commit()
+    {
+        controller->pump();
+        step();
+        REQUIRE_EQ(controller->snapshot().phase,
+            h::AutomaticReturn::Phase::multicast_pending);
+        deliver(response(
+            h::Kind::delivery_commit, 3, h::Mode::multicast, 1234 + offset));
+    }
+};
+}
+TEST(hybrid_auto_return_factory_bounds_negotiation_detector_and_single_use)
+{
+    ReceiverFixture plain;
+    REQUIRE(!h::AutomaticReturn::create(
+        plain.receiver, AutomaticReturnFixture::policy()));
+    ReceiverFixture negotiated(ReceiverFixture::configuration(), true, true);
+    REQUIRE(!h::AutomaticReturn::create(
+        negotiated.receiver, AutomaticReturnFixture::policy()));
+    for (unsigned bad = 0; bad < 10; ++bad) {
+        AutomaticReturnFixture f;
+        auto c = f.policy();
+        switch (bad) {
+        case 0:
+            c.maximum_operations = 0;
+            break;
+        case 1:
+            c.maximum_operations = 9;
+            break;
+        case 2:
+            c.operation_timeout_us = 0;
+            break;
+        case 3:
+            c.operation_timeout_us = h::maximum_age_us + 1;
+            break;
+        case 4:
+            c.coverage_packets = 1;
+            break;
+        case 5:
+            c.coverage_packets = 33;
+            break;
+        case 6:
+            c.minimum_coverage_us = 0;
+            break;
+        case 7:
+            c.minimum_coverage_us = c.operation_timeout_us;
+            break;
+        case 8:
+            c.proof_lifetime_us = 0;
+            break;
+        case 9:
+            c.proof_lifetime_us = c.operation_timeout_us + 1;
+            break;
+        }
+        REQUIRE(!h::AutomaticReturn::create(f.receiver, c));
+        f.controller->close();
+        REQUIRE(!h::AutomaticReturn::create(f.receiver, f.policy()));
+    }
+    AutomaticFixture legacy;
+    REQUIRE(!h::AutomaticReturn::create(
+        legacy.receiver, AutomaticReturnFixture::policy()));
+    AutomaticReturnFixture f;
+    auto provider = std::make_shared<AutomaticProvider>();
+    provider->clock = f.p.clock;
+    REQUIRE(h::AutomaticFallback::create(
+        f.receiver, {1, 100}, {provider, AutomaticProvider::resolve}));
+}
+TEST(hybrid_auto_return_recovery_opens_overlap_then_requires_exact_coverage)
+{
+    AutomaticReturnFixture f;
+    f.open();
+    f.controller->pump();
+    REQUIRE_EQ(f.controller->snapshot().multicast_admitted, 0U);
+    f.coverage();
+    f.commit();
+    const auto s = f.controller->snapshot();
+    REQUIRE_EQ(s.result, h::ReceiverBridge::RequestState::confirmed);
+    REQUIRE_EQ(s.operations, 1U);
+    REQUIRE_EQ(s.overlap_admitted, 1U);
+    REQUIRE_EQ(s.multicast_admitted, 1U);
+    REQUIRE_EQ(s.boundary, f.boundary);
+    REQUIRE_EQ(s.through, f.boundary + 4);
+    REQUIRE_EQ(
+        f.receiver->snapshot().fallback, h::ReceiverBridge::RequestState::none);
+}
+TEST(hybrid_auto_return_sparse_high_water_does_not_prove_contiguous_coverage)
+{
+    AutomaticReturnFixture f;
+    f.open();
+    f.coverage(true);
+    f.controller->pump();
+    const auto progress = f.receiver->data_progress();
+    REQUIRE(progress);
+    REQUIRE_EQ(progress->multicast.next, f.boundary + 4);
+    REQUIRE_EQ(f.controller->snapshot().multicast_admitted, 0U);
+    f.p.clock->value = f.controller->snapshot().not_after_us;
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::unknown);
+    f.controller->pump();
+    REQUIRE_EQ(f.controller->snapshot().operations, 1U);
+}
+TEST(hybrid_auto_return_stale_proof_and_paused_source_preserve_overlap)
+{
+    for (bool stale : {false, true}) {
+        AutomaticReturnFixture f;
+        f.open();
+        f.coverage();
+        if (stale) {
+            for (unsigned i = 0; i < 10; ++i)
+                f.advance(10);
+        } else
+            f.progress(h::Mode::overlap, 2, h::Activity::paused);
+        f.controller->pump();
+        REQUIRE_EQ(f.controller->snapshot().multicast_admitted, 0U);
+    }
+}
+TEST(
+    hybrid_auto_return_manual_intent_after_overlap_wins_and_receipt_is_separate)
+{
+    AutomaticReturnFixture f;
+    f.open();
+    f.coverage();
+    REQUIRE_EQ(f.receiver->request_fallback(f.boundary),
+        h::ReceiverBridge::Admission::accepted);
+    f.step();
+    f.deliver(f.response(
+        h::Kind::delivery_commit, 3, h::Mode::unicast, 1234 + f.offset));
+    f.controller->pump();
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::unknown);
+    REQUIRE_EQ(f.controller->snapshot().multicast_admitted, 0U);
+    REQUIRE_EQ(f.receiver->snapshot().fallback,
+        h::ReceiverBridge::RequestState::confirmed);
+}
+TEST(hybrid_auto_return_denial_does_not_rearm_same_unicast_revision)
+{
+    AutomaticReturnFixture f;
+    f.candidate();
+    f.controller->pump();
+    f.step();
+    auto m = f.response(
+        h::Kind::delivery_status, 1, h::Mode::unicast, 1234 + f.offset);
+    m.multicast_next = 1234;
+    m.outcome = h::Outcome::budget;
+    f.deliver(m);
+    auto s = f.controller->snapshot();
+    REQUIRE_EQ(s.result, h::ReceiverBridge::RequestState::denied);
+    REQUIRE_EQ(s.outcome, h::Outcome::budget);
+    for (unsigned i = 0; i < 10; ++i)
+        f.controller->pump();
+    REQUIRE_EQ(f.controller->snapshot().operations, 1U);
+}
+TEST(
+    hybrid_auto_return_close_before_and_after_handoff_never_posts_another_phase)
+{
+    AutomaticReturnFixture early;
+    early.candidate();
+    early.controller->close();
+    early.controller->pump();
+    REQUIRE_EQ(early.controller->snapshot().overlap_admitted, 0U);
+    AutomaticReturnFixture overlap;
+    overlap.candidate();
+    overlap.controller->pump();
+    overlap.controller->close();
+    overlap.step();
+    overlap.deliver(
+        overlap.response(h::Kind::delivery_commit, 2, h::Mode::overlap, 1244));
+    overlap.controller->pump();
+    REQUIRE_EQ(overlap.controller->snapshot().multicast_admitted, 0U);
+    REQUIRE(!overlap.receiver->snapshot().closed);
+    AutomaticReturnFixture final;
+    final.open();
+    final.coverage();
+    final.controller->pump();
+    final.controller->close();
+    final.step();
+    final.deliver(
+        final.response(h::Kind::delivery_commit, 3, h::Mode::multicast, 1248));
+    REQUIRE_EQ(final.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::confirmed);
+    REQUIRE(final.controller->snapshot().closed);
+}
+TEST(hybrid_auto_return_total_loss_and_posting_delay_keep_original_deadline)
+{
+    for (bool delay : {false, true}) {
+        AutomaticReturnFixture f;
+        f.candidate();
+        f.controller->pump();
+        const auto deadline = f.controller->snapshot().not_after_us;
+        if (delay)
+            f.p.clock->value = deadline;
+        else
+            for (unsigned i = 0; i < 35; ++i) {
+                f.advance(10);
+                f.controller->pump();
+            }
+        REQUIRE_EQ(f.controller->snapshot().result,
+            h::ReceiverBridge::RequestState::unknown);
+        REQUIRE_EQ(f.controller->snapshot().operations, 1U);
+        REQUIRE_EQ(f.controller->snapshot().not_after_us, deadline);
+        REQUIRE_EQ(f.controller->snapshot().multicast_admitted, 0U);
+    }
+}
+TEST(hybrid_auto_return_lost_commits_recover_exact_boundary_via_queries)
+{
+    auto policy = AutomaticReturnFixture::policy();
+    policy.proof_lifetime_us = 200;
+    AutomaticReturnFixture f(policy);
+    f.candidate();
+    f.controller->pump();
+    f.step();
+    f.boundary = 1234 + f.offset;
+    f.advance(100);
+    REQUIRE_EQ(f.requests.back().kind, h::Kind::delivery_query);
+    auto m = f.response(
+        h::Kind::delivery_status, 2, h::Mode::overlap, f.boundary + 4);
+    m.multicast_next = f.boundary;
+    f.deliver(m);
+    REQUIRE_EQ(f.controller->snapshot().boundary, f.boundary);
+    f.coverage();
+    f.controller->pump();
+    f.step();
+    f.advance(100);
+    REQUIRE_EQ(f.requests.back().kind, h::Kind::delivery_query);
+    m = f.response(
+        h::Kind::delivery_status, 3, h::Mode::multicast, f.boundary + 7);
+    m.multicast_next = f.boundary + 6;
+    f.deliver(m);
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::confirmed);
+    REQUIRE_EQ(f.controller->snapshot().through, f.boundary + 4);
+    REQUIRE_EQ(f.controller->snapshot().commit_position, f.boundary + 6);
+}
+TEST(hybrid_auto_return_lifetime_budget_cannot_be_reset_by_new_uc_revisions)
+{
+    auto policy = AutomaticReturnFixture::policy();
+    policy.maximum_operations = 1;
+    AutomaticReturnFixture f(policy);
+    f.candidate();
+    f.controller->pump();
+    f.step();
+    auto m = f.response(
+        h::Kind::delivery_status, 1, h::Mode::unicast, 1234 + f.offset);
+    m.multicast_next = 1234;
+    m.outcome = h::Outcome::budget;
+    f.deliver(m);
+    f.advance(200);
+    f.candidate(3);
+    f.controller->pump();
+    REQUIRE_EQ(f.controller->snapshot().operations, 1U);
+    REQUIRE(f.controller->snapshot().budget_exhausted);
+    REQUIRE_EQ(
+        f.controller->snapshot().phase, h::AutomaticReturn::Phase::exhausted);
+}
+TEST(hybrid_auto_return_route_loss_and_native_close_prevent_final_admission)
+{
+    for (bool close : {false, true}) {
+        AutomaticReturnFixture f;
+        f.open();
+        f.coverage();
+        if (close)
+            f.receiver->close();
+        else
+            f.multicast->unregister_connection(
+                f.p.c->origin()->dispatch().group_id);
+        f.controller->pump();
+        REQUIRE_EQ(f.controller->snapshot().multicast_admitted, 0U);
+        if (close)
+            REQUIRE(f.controller->snapshot().closed);
+        else {
+            f.advance(350);
+            REQUIRE_EQ(f.controller->snapshot().result,
+                h::ReceiverBridge::RequestState::unknown);
+        }
+    }
+}
+TEST(hybrid_auto_return_deadline_is_clipped_to_receiver_bound)
+{
+    auto p = AutomaticReturnFixture::policy();
+    p.operation_timeout_us = 1000;
+    AutomaticReturnFixture f(p);
+    f.candidate();
+    const auto started = f.p.clock->value.load();
+    f.controller->pump();
+    REQUIRE_EQ(f.controller->snapshot().not_after_us, started + 400);
+    f.p.clock->value = started + 400;
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::unknown);
+}
+TEST(hybrid_auto_return_matching_late_mc_copy_fills_the_exact_coverage_hole)
+{
+    AutomaticReturnFixture f;
+    f.open();
+    f.coverage(true);
+    f.controller->pump();
+    REQUIRE_EQ(f.controller->snapshot().multicast_admitted, 0U);
+    compat::HybridAutomaticTestAccess::multicast(f.runtime, f.p.c,
+        static_cast<std::uint32_t>(42 + f.boundary - 1234 + 1),
+        f.p.clock->value.load());
+    f.commit();
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::confirmed);
+}
+TEST(hybrid_auto_return_new_uc_revision_consumes_next_lifetime_allowance)
+{
+    AutomaticReturnFixture f;
+    f.candidate();
+    f.controller->pump();
+    f.step();
+    auto m = f.response(
+        h::Kind::delivery_status, 1, h::Mode::unicast, 1234 + f.offset);
+    m.multicast_next = 1234;
+    m.outcome = h::Outcome::budget;
+    f.deliver(m);
+    f.advance(200);
+    f.candidate(3);
+    f.controller->pump();
+    REQUIRE_EQ(f.controller->snapshot().operations, 2U);
+    REQUIRE_EQ(f.controller->snapshot().revision, 3U);
+    REQUIRE_EQ(f.controller->snapshot().overlap_admitted, 2U);
+    REQUIRE(f.controller->snapshot().budget_exhausted);
+}
+TEST(hybrid_auto_return_multicast_denial_receipt_survives_later_manual_outcome)
+{
+    AutomaticReturnFixture f;
+    f.open();
+    f.coverage();
+    f.controller->pump();
+    f.step();
+    auto m = f.response(
+        h::Kind::delivery_status, 2, h::Mode::overlap, 1234 + f.offset);
+    m.multicast_next = f.boundary;
+    m.outcome = h::Outcome::history_unavailable;
+    f.deliver(m);
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::denied);
+    REQUIRE_EQ(
+        f.controller->snapshot().outcome, h::Outcome::history_unavailable);
+    REQUIRE_EQ(f.receiver->request_fallback(f.boundary),
+        h::ReceiverBridge::Admission::accepted);
+    f.step();
+    f.deliver(f.response(
+        h::Kind::delivery_commit, 3, h::Mode::unicast, 1234 + f.offset));
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::denied);
+    REQUIRE_EQ(
+        f.controller->snapshot().outcome, h::Outcome::history_unavailable);
+}
+TEST(hybrid_auto_return_native_grant_clips_handoff_and_expires_pending_receipt)
+{
+    AutomaticReturnFixture f;
+    const auto expiry = f.p.c->snapshot().expires_at_us;
+    f.p.clock->value = expiry - 150;
+    f.candidate();
+    f.controller->pump();
+    REQUIRE_EQ(f.controller->snapshot().overlap_admitted, 1U);
+    REQUIRE_EQ(f.controller->snapshot().not_after_us, expiry);
+    f.p.clock->value = expiry;
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::unknown);
+    REQUIRE(f.controller->snapshot().closed);
 }
 namespace {
 struct ReturnFixture : ReceiverFixture {

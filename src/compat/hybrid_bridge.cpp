@@ -191,12 +191,12 @@ void CoordinatorBridge::pump() noexcept
     if (!cancelled_.load())
         (void)service_->bridge_work(*this);
 }
-bool CoordinatorBridge::transact(Entry* entry) noexcept
+bool CoordinatorBridge::transact(Entry* entry, bool wake_actor) noexcept
 {
     using A = GroupSendCoordinator;
     using R = GroupRuntimeAdmission;
     // Reserve the wake before taking transaction fences. It performs no I/O.
-    if (!actor_->manual_
+    if (wake_actor && !actor_->manual_
         && actor_->scheduler_->notify_service(actor_->service_)
             != RuntimeScheduler::SubmitStatus::accepted) {
         cancelled_.store(true);
@@ -606,10 +606,10 @@ void CoordinatorBridge::work() noexcept
         return;
     }
     // Idle expiry observation is needed only for an owned overlap window.
-    // Each transaction also wakes the actor, so avoid waking DATA work on
-    // every control pump when no return window needs reconciliation.
+    // The actor already polls an active window. Observing expiry cannot add
+    // DATA work (UC retains the same reservation), so do not wake it again.
     if (state_.overlap_deadline_us)
-        (void)transact(nullptr);
+        (void)transact(nullptr, false);
     if (cancelled_.load()) {
         lock.unlock();
         close();

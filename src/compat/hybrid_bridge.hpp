@@ -83,7 +83,7 @@ private:
     // Caller retains native protocol ownership. Takes policy and native queue
     // fences, then try-locks publication -> emitter -> runtime -> wire budget.
     // No callbacks, blocking lock acquisition or I/O after the queue fence.
-    [[nodiscard]] bool transact(Entry*) noexcept;
+    [[nodiscard]] bool transact(Entry*, bool wake_actor = true) noexcept;
     void event(const NativeService::Event&) noexcept;
     void replies() noexcept;
     std::shared_ptr<GroupSendCoordinator> actor_;

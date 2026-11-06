@@ -439,6 +439,15 @@ void ReceiverBridge::finish(Phase phase, std::uint64_t at) noexcept
         state_.returning = phase == Phase::known ? RequestState::confirmed
             : phase == Phase::denied             ? RequestState::denied
                                                  : RequestState::unknown;
+    if (active_return_ticket_)
+        return_receipt_ = {.ticket = active_return_ticket_,
+            .revision = state_.revision,
+            .boundary = state_.commit_position,
+            .through = requested_position_,
+            .target = target_mode_,
+            .result = state_.returning,
+            .outcome = state_.return_outcome};
+    active_return_ticket_ = 0;
     want_return_ = false;
     if (active_automatic_ticket_)
         automatic_receipt_ = {
@@ -452,7 +461,8 @@ void ReceiverBridge::finish(Phase phase, std::uint64_t at) noexcept
 void ReceiverBridge::start(bool fallback, std::uint64_t position,
     std::uint64_t at, std::uint64_t origin, std::uint64_t not_after,
     std::uint64_t automatic_ticket, Mode target, std::uint64_t proof_begin,
-    std::uint32_t proof_interval, std::uint64_t proof_observed) noexcept
+    std::uint32_t proof_interval, std::uint64_t proof_observed,
+    std::uint64_t return_ticket) noexcept
 {
     target_mode_ = target;
     want_return_ = fallback && target != Mode::unicast;
@@ -461,6 +471,7 @@ void ReceiverBridge::start(bool fallback, std::uint64_t position,
     proof_interval_ = proof_interval;
     proof_observed_ = proof_observed;
     active_automatic_ticket_ = automatic_ticket;
+    active_return_ticket_ = return_ticket;
     active_ = true;
     want_fallback_ = fallback && !want_return_;
     rounds_ = 0;
@@ -685,7 +696,7 @@ void ReceiverBridge::work() noexcept
         posted_.reset();
         start(true, posted.position, at, posted.at, posted.not_after,
             posted.automatic_ticket, posted.target, posted.proof_begin,
-            posted.proof_interval, posted.proof_observed);
+            posted.proof_interval, posted.proof_observed, posted.return_ticket);
     }
     for (std::size_t i = 0; i < NativeService::batch; ++i) {
         NativeService::Event e;

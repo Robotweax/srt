@@ -7,6 +7,7 @@
 #include "compat/group_registry.hpp"
 #include "compat/group_send_coordinator.hpp"
 #include "compat/hybrid_automatic.hpp"
+#include "compat/hybrid_automatic_return.hpp"
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/transport_runtime.hpp"
@@ -2888,6 +2889,126 @@ TEST(
         });
         REQUIRE(progress);
         REQUIRE(progress->unicast.next <= 12U);
+        REQUIRE_EQ(owners.sender->snapshot().applied, 3U);
+    }
+}
+TEST(multicast_dispatch_native_automatic_return_lost_commits_plain_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned profile = 0; profile < 3; ++profile) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (profile == 2)
+            continue;
+#endif
+        CoordinatedNative f(1'000'000, profile != 0, profile == 2);
+        const hn::DetectionConfiguration detection {.report_age_us = 800'000,
+            .maximum_transit_us = 5'000,
+            .stall_us = 40'000,
+            .emission_lifetime_us = 400'000,
+            .recovery_us = 80'000,
+            .recovery_gap_us = 60'000,
+            .hold_down_us = 100'000,
+            .sample_gap_us = 20'000,
+            .recovery_advances = 3};
+        NativeReceiverOwners owners(f, {10'000, 600'000}, detection,
+            hn::ReturnPolicy {1'000'000, 32, 4, 10'000, 200'000});
+        auto automatic = hn::AutomaticReturn::create(
+            owners.receiver, {1, 220'000, 8, 10'000, 160'000});
+        REQUIRE(automatic);
+        const auto socket = SocketRegistry::instance().find(f.listener);
+        std::shared_ptr<robotweax::srt::compat::DatagramChannel> control;
+        {
+            std::lock_guard lock(socket->mutex);
+            control = socket->channel;
+        }
+        REQUIRE(control);
+        HybridWireHook hook;
+        hook.channel = control;
+        hook.drop_commits = true;
+        SendHookReset reset {control};
+        control->set_send_hook_for_testing(HybridWireHook::send, &hook);
+        REQUIRE(f.actor()->declare_source_activity(
+            hn::Activity::producing, 4, 1'000'000));
+        for (int i = 0; i < 4; ++i)
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        expect_messages(f.receiver, 0, 4);
+        owners.wait([&] {
+            return owners.receiver->snapshot().fresh;
+        });
+        REQUIRE_EQ(owners.receiver->request_fallback(4),
+            hn::ReceiverBridge::Admission::accepted);
+        owners.wait([&] {
+            const auto s = owners.receiver->snapshot();
+            return s.fresh && s.mode == hn::Mode::unicast;
+        });
+        int next = 4;
+        auto send_at = std::chrono::steady_clock::now();
+        const auto until = send_at + std::chrono::seconds {2};
+        while (automatic->snapshot().phase
+                != hn::AutomaticReturn::Phase::collecting
+            && std::chrono::steady_clock::now() < until) {
+            if (std::chrono::steady_clock::now() >= send_at) {
+                REQUIRE(next < 64);
+                REQUIRE(
+                    f.actor()->declare_source_activity(hn::Activity::producing,
+                        static_cast<std::uint64_t>(next + 1), 1'000'000));
+                REQUIRE_EQ(
+                    f.send(next), static_cast<int>(message(next).size()));
+                ++next;
+                send_at = std::chrono::steady_clock::now()
+                    + std::chrono::milliseconds {12};
+            }
+            automatic->pump();
+            owners.sender->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        const auto overlap = automatic->snapshot();
+        REQUIRE_EQ(overlap.phase, hn::AutomaticReturn::Phase::collecting);
+        REQUIRE(overlap.boundary >= 4);
+        const auto through = overlap.boundary + 8;
+        REQUIRE(static_cast<std::uint64_t>(next) <= through);
+        while (static_cast<std::uint64_t>(next) < through) {
+            REQUIRE(f.actor()->declare_source_activity(hn::Activity::producing,
+                static_cast<std::uint64_t>(next + 1), 1'000'000));
+            REQUIRE_EQ(f.send(next), static_cast<int>(message(next).size()));
+            ++next;
+            automatic->pump();
+            owners.sender->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds {3});
+        }
+        owners.wait([&] {
+            automatic->pump();
+            return automatic->snapshot().result
+                == hn::ReceiverBridge::RequestState::confirmed;
+        });
+        const auto returned = automatic->snapshot();
+        REQUIRE_EQ(returned.operations, 1U);
+        REQUIRE_EQ(returned.overlap_admitted, 1U);
+        REQUIRE_EQ(returned.multicast_admitted, 1U);
+        REQUIRE_EQ(returned.through, through);
+        REQUIRE_EQ(returned.commit_position, through);
+        REQUIRE_EQ(owners.receiver->snapshot().commit_position, through);
+        REQUIRE_EQ(f.actor()->snapshot().unicast_members, 0U);
+        REQUIRE_EQ(owners.sender->snapshot().applied, 3U);
+        REQUIRE(hook.commits_dropped.load() >= 3);
+        expect_messages(f.receiver, 4, next - 4);
+        const auto first = next;
+        automatic->close();
+        REQUIRE(!owners.receiver->snapshot().closed);
+        for (unsigned i = 0; i < 40; ++i) {
+            REQUIRE_EQ(f.send(next), static_cast<int>(message(next).size()));
+            ++next;
+            owners.receiver->pump();
+            owners.sender->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        expect_messages(f.receiver, first, 40);
+        std::optional<hn::SourceDataProgress> progress;
+        owners.wait([&] {
+            progress = owners.sender->data_progress();
+            return progress.has_value();
+        });
+        REQUIRE(progress->unicast.next <= through);
         REQUIRE_EQ(owners.sender->snapshot().applied, 3U);
     }
 }
