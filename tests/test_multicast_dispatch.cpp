@@ -22,6 +22,7 @@
 #include <cstring>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -2221,4 +2222,226 @@ TEST(multicast_dispatch_coordinated_gcm_public_rotations_and_empty_rejoin)
 TEST(multicast_dispatch_independent_transient_repair_uses_unicast_retry)
 {
     run_dispatch_shared_loss(false, true, true);
+}
+
+namespace {
+using PolicyActor = robotweax::srt::compat::GroupSendCoordinator;
+using PolicyDelivery = GroupOriginalDelivery;
+struct PolicyWireTrace {
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> source, control;
+    IpEndpoint target;
+    std::mutex mutex;
+    std::vector<std::vector<std::byte>> multicast, unicast;
+    static UdpIoResult source_send(
+        std::span<const std::byte> bytes, IpEndpoint peer, void* p) noexcept
+    {
+        auto& self = *static_cast<PolicyWireTrace*>(p);
+        const auto packet = decode_packet(bytes);
+        if (packet && packet.packet.kind == PacketKind::data) {
+            std::lock_guard lock(self.mutex);
+            self.multicast.emplace_back(bytes.begin(), bytes.end());
+        }
+        return self.source->socket.send_to(bytes, peer);
+    }
+    static UdpIoResult control_send(
+        std::span<const std::byte> bytes, IpEndpoint peer, void* p) noexcept
+    {
+        auto& self = *static_cast<PolicyWireTrace*>(p);
+        const auto packet = decode_packet(bytes);
+        if (peer == self.target && packet
+            && packet.packet.kind == PacketKind::data) {
+            std::lock_guard lock(self.mutex);
+            self.unicast.emplace_back(bytes.begin(), bytes.end());
+        }
+        return self.control->socket.send_to(bytes, peer);
+    }
+};
+std::vector<std::byte> normalized_original(const std::vector<std::byte>& bytes)
+{
+    const auto packet = decode_packet(bytes);
+    REQUIRE(packet);
+    auto header = packet.packet.data;
+    header.retransmitted = false;
+    std::vector<std::byte> output(bytes.size());
+    REQUIRE(encode_packet({.kind = PacketKind::data,
+                              .data = header,
+                              .payload = packet.packet.payload},
+        output));
+    return output;
+}
+PolicyActor::Transition force_policy(const std::shared_ptr<PolicyActor>& actor,
+    std::uint64_t member, std::uint64_t revision, PolicyDelivery delivery,
+    bool recover = false)
+{
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    for (;;) {
+        auto result = actor->set_delivery(member, revision, delivery, recover);
+        if (result.status != PolicyActor::TransitionStatus::busy)
+            return result;
+        REQUIRE(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+}
+}
+
+TEST(
+    multicast_dispatch_delivery_policy_forced_blackout_recovery_overlap_and_return)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2);
+        const auto healthy =
+            make_receiver(f.peers, f.bound, mode != 0, mode == 2, 120, true);
+        REQUIRE(wait_for_members(f.sender, 2, mode != 0));
+        auto actor = f.actor();
+        std::uint64_t member = 0;
+        SRTSOCKET sender_socket = SRT_INVALID_SOCK,
+                  receiver_socket = SRT_INVALID_SOCK;
+        {
+            auto record = GroupRegistry::instance().find(f.sender);
+            std::lock_guard lock(record->mutex);
+            member = record->members.front().coordinator_member;
+            sender_socket = record->members.front().public_data.id;
+        }
+        PolicyWireTrace trace;
+        trace.source = f.source();
+        {
+            auto record = SocketRegistry::instance().find(sender_socket);
+            std::lock_guard lock(record->mutex);
+            trace.control = record->channel;
+            trace.target = record->peer_endpoint;
+        }
+        std::shared_ptr<robotweax::srt::compat::DatagramChannel> ingress;
+        std::shared_ptr<robotweax::srt::compat::ConnectionRuntime> runtime;
+        std::uint32_t route = 0;
+        {
+            auto record = GroupRegistry::instance().find(f.receiver);
+            std::lock_guard lock(record->mutex);
+            ingress = record->dispatch->receive_channel;
+            route = record->dispatch->ingress_group_id;
+            receiver_socket = record->members.front().public_data.id;
+        }
+        {
+            auto record = SocketRegistry::instance().find(receiver_socket);
+            std::lock_guard lock(record->mutex);
+            runtime = record->runtime;
+        }
+        SendHookReset reset_source {trace.source},
+            reset_control {trace.control};
+        trace.source->set_send_hook_for_testing(
+            PolicyWireTrace::source_send, &trace);
+        trace.control->set_send_hook_for_testing(
+            PolicyWireTrace::control_send, &trace);
+        ingress->unregister_connection(
+            route); // Complete receiver-local MC blackout, including startup.
+        const auto start = actor->snapshot().next_sequence;
+        const auto send_range = [&](int first, int count) {
+            for (int i = first; i < first + count; ++i) {
+                REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+                std::this_thread::sleep_for(std::chrono::milliseconds {2});
+            }
+        };
+        send_range(0, 4);
+        expect_messages(healthy, 0, 4);
+        auto policy =
+            force_policy(actor, member, 0, PolicyDelivery::unicast, true);
+        REQUIRE_EQ(policy.status, PolicyActor::TransitionStatus::applied);
+        REQUIRE_EQ(policy.member.effective_sequence, start.advanced(4));
+        REQUIRE_EQ(policy.prefix.repairs, 4U);
+        send_range(4, 48);
+        expect_messages(f.receiver, 0, 52);
+        expect_messages(healthy, 4, 48);
+        const auto bound_source = trace.source->socket.local_endpoint();
+        REQUIRE(bound_source);
+        REQUIRE(ingress->register_ingress_route(route, runtime,
+            robotweax::srt::compat::PacketIngress::multicast_data,
+            robotweax::srt::compat::MulticastIngressConfiguration {
+                .source = {.kind = MulticastSourceKind::announcement,
+                    .group_id = route,
+                    .endpoint = bound_source.endpoint}}));
+        policy = force_policy(actor, member, 1, PolicyDelivery::overlap);
+        REQUIRE_EQ(policy.status, PolicyActor::TransitionStatus::applied);
+        REQUIRE_EQ(policy.member.effective_sequence, start.advanced(52));
+        send_range(52, 12);
+        expect_messages(f.receiver, 52, 12);
+        expect_messages(healthy, 52, 12);
+        policy = force_policy(actor, member, 2, PolicyDelivery::multicast);
+        REQUIRE_EQ(policy.status, PolicyActor::TransitionStatus::applied);
+        REQUIRE_EQ(policy.member.effective_sequence, start.advanced(64));
+        send_range(64, 12);
+        expect_messages(f.receiver, 64, 12);
+        expect_messages(healthy, 64, 12);
+        std::vector<std::vector<std::byte>> multicast, unicast;
+        {
+            std::lock_guard lock(trace.mutex);
+            multicast = trace.multicast;
+            unicast = trace.unicast;
+        }
+        REQUIRE_EQ(multicast.size(), 76U);
+        std::size_t originals = 0, repairs = 0;
+        for (const auto& bytes : unicast) {
+            const auto decoded = decode_packet(bytes);
+            REQUIRE(decoded);
+            const auto offset =
+                decoded.packet.data.sequence.distance_from(start);
+            REQUIRE(offset >= 0 && offset < 76);
+            REQUIRE_EQ(normalized_original(bytes),
+                multicast[static_cast<std::size_t>(offset)]);
+            if (decoded.packet.data.retransmitted)
+                ++repairs;
+            else {
+                ++originals;
+                REQUIRE(offset >= 4 && offset < 64);
+            }
+        }
+        // A multicast ACK may retire a queued overlap copy before native UDP.
+        // Every unicast-only original must still have reached the unicast path.
+        REQUIRE(originals >= 48U && originals <= 60U);
+        REQUIRE(repairs >= 4U);
+        REQUIRE_EQ(actor->snapshot().detached_members, 0U);
+        SRT_TRACEBSTATS received {};
+        REQUIRE_EQ(srt_bstats(f.receiver, &received, 0), 0);
+        REQUIRE_EQ(received.pktRecvUniqueTotal, 76);
+        REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
+    }
+}
+
+TEST(multicast_dispatch_delivery_policy_committed_unicast_survives_source_error)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2);
+        auto actor = f.actor();
+        std::array<PolicyActor::Member, 1> rows;
+        REQUIRE_EQ(actor->members(rows), 1U);
+        REQUIRE_EQ(
+            force_policy(actor, rows[0].id, 0, PolicyDelivery::unicast).status,
+            PolicyActor::TransitionStatus::applied);
+        auto source = f.source();
+        SendHookReset cleanup {source};
+        source->set_send_hook_for_testing(
+            +[](std::span<const std::byte>, IpEndpoint, void*) noexcept {
+                return UdpIoResult {.error = Error::io_error};
+            },
+            nullptr);
+        REQUIRE_EQ(f.send(0), static_cast<int>(message(0).size()));
+        expect_messages(f.receiver, 0, 1);
+        REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
+        REQUIRE_EQ(srt_getsockstate(f.sender), SRTS_BROKEN);
+        REQUIRE_EQ(f.send(1),
+            SRT_ERROR); // Accepted work survives; new source admission still fails.
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESOCKFAIL);
+        REQUIRE_EQ(actor->snapshot().detached_members, 0U);
+    }
 }

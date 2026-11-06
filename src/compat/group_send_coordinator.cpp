@@ -67,6 +67,7 @@ std::shared_ptr<GroupSendCoordinator> GroupSendCoordinator::make(
         || c.poll_interval > std::chrono::seconds {1} || c.initial_message == 0
         || c.admission_busy_grace < Clock::duration::zero()
         || c.admission_busy_grace > std::chrono::seconds {5}
+        || c.maximum_unicast_members > maximum_members
         || c.initial_message > 0x03ff'ffffU)
         return {};
     try {
@@ -156,6 +157,8 @@ std::optional<GroupSendCoordinator::Member> GroupSendCoordinator::add_member(
     if (!binding)
         return {};
     available->state = {next_member_++, Detachment::none};
+    available->state.effective_sequence = state_.next_sequence;
+    available->state.effective_position = next_position_;
     available->runtime = runtime;
     available->binding = std::move(binding);
     ++state_.active_members;
@@ -166,22 +169,32 @@ std::optional<GroupSendCoordinator::Member> GroupSendCoordinator::add_member(
 void GroupSendCoordinator::remove_member(std::uint64_t id) noexcept
 {
     RuntimeAdmission::Binding retired;
+    bool retired_lease = false;
     {
         std::lock_guard lock(publication_);
         for (auto& entry : members_) {
             if (id == 0 || entry.state.id != id)
                 continue;
-            if (entry.state.detachment == Detachment::none)
+            if (entry.state.detachment == Detachment::none) {
                 --state_.active_members;
-            else
+                state_.unicast_members -= static_cast<std::size_t>(
+                    entry.state.delivery != GroupOriginalDelivery::multicast);
+            } else
                 --state_.detached_members;
             retired = std::move(entry.binding);
+            retired_lease = entry.unicast_lease;
             entry = {};
             update_readiness();
             break;
         }
     }
     RuntimeAdmission::revoke(retired);
+    if (retired_lease) {
+        std::lock_guard lock(publication_);
+        if (!state_.closed)
+            --state_.unicast_reservations;
+        update_readiness();
+    }
 }
 std::size_t GroupSendCoordinator::members(std::span<Member> out) const noexcept
 {
@@ -199,10 +212,92 @@ void GroupSendCoordinator::detach(std::uint64_t id, Detachment reason) noexcept
         if (entry.state.id == id
             && entry.state.detachment == Detachment::none) {
             entry.state.detachment = reason;
+            state_.unicast_members -= static_cast<std::size_t>(
+                entry.state.delivery != GroupOriginalDelivery::multicast);
             --state_.active_members;
             ++state_.detached_members;
             return;
         }
+}
+
+GroupSendCoordinator::Transition GroupSendCoordinator::set_delivery(
+    std::uint64_t id, std::uint64_t expected, GroupOriginalDelivery mode,
+    bool recover) noexcept
+{
+    RuntimeAdmission::Binding wake;
+    Transition result;
+    {
+        std::lock_guard lock(publication_);
+        if (state_.closed)
+            return {.status = TransitionStatus::closed};
+        if (state_.failed
+            || static_cast<unsigned>(mode)
+                > static_cast<unsigned>(GroupOriginalDelivery::overlap))
+            return {.status = TransitionStatus::unavailable};
+        auto found = std::find_if(
+            members_.begin(), members_.end(), [id](const auto& entry) {
+                return id && entry.state.id == id;
+            });
+        if (found == members_.end())
+            return {};
+        auto& member = *found;
+        result.member = member.state;
+        if (member.state.revision != expected)
+            return result;
+        if (member.state.detachment != Detachment::none)
+            return {.status = TransitionStatus::unavailable,
+                .member = member.state};
+        if (mode == member.state.delivery && !recover)
+            return {
+                .status = TransitionStatus::unchanged, .member = member.state};
+        if (expected == std::numeric_limits<std::uint64_t>::max())
+            return {
+                .status = TransitionStatus::exhausted, .member = member.state};
+        if (mode != GroupOriginalDelivery::multicast && !member.unicast_lease
+            && state_.unicast_reservations
+                == configuration_.maximum_unicast_members)
+            return {.status = TransitionStatus::full, .member = member.state};
+        if (!manual_
+            && scheduler_->notify_service(service_)
+                != RuntimeScheduler::SubmitStatus::accepted)
+            return {.status = TransitionStatus::unavailable,
+                .member = member.state};
+        const auto prefix = RuntimeAdmission::recover_prefix(member.binding,
+            state_.next_sequence, recover,
+            member.unicast_lease
+                || state_.unicast_reservations
+                    < configuration_.maximum_unicast_members);
+        if (prefix.status != RuntimeAdmission::Status::ready) {
+            result.status = prefix.status == RuntimeAdmission::Status::busy
+                ? TransitionStatus::busy
+                : prefix.status == RuntimeAdmission::Status::full
+                ? TransitionStatus::full
+                : TransitionStatus::unavailable;
+            return result;
+        }
+        state_.unicast_members -= static_cast<std::size_t>(
+            member.state.delivery != GroupOriginalDelivery::multicast);
+        state_.unicast_members +=
+            static_cast<std::size_t>(mode != GroupOriginalDelivery::multicast);
+        const bool lease =
+            mode != GroupOriginalDelivery::multicast || prefix.pending_unicast;
+        state_.unicast_reservations -=
+            static_cast<std::size_t>(member.unicast_lease);
+        state_.unicast_reservations += static_cast<std::size_t>(lease);
+        member.unicast_lease = lease;
+        member.state.delivery = mode;
+        member.state.revision = expected + 1;
+        member.state.effective_sequence = state_.next_sequence;
+        member.state.effective_position = next_position_;
+        result = {.status = TransitionStatus::applied,
+            .member = member.state,
+            .prefix = prefix.prefix,
+            .prefix_scheduled = recover};
+        wake = member.binding;
+        update_readiness();
+    }
+    RuntimeAdmission::notify_work(wake);
+    return result;
 }
 void GroupSendCoordinator::advance_cursor() noexcept
 {
@@ -316,8 +411,8 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
             if (!member.state.id || member.state.detachment != Detachment::none)
                 continue;
             wake[wake_count++] = member.binding;
-            auto guard = RuntimeAdmission::try_reserve(
-                member.binding, header, bytes.size(), deadline);
+            auto guard = RuntimeAdmission::try_reserve(member.binding, header,
+                bytes.size(), deadline, member.state.delivery);
             using S = RuntimeAdmission::Status;
             Detachment reason = Detachment::none;
             switch (guard.status()) {
@@ -505,13 +600,23 @@ void GroupSendCoordinator::drive() noexcept
         if (!frame.occupied || !frame.completed || !recipient.ticket)
             continue;
         ++attempts;
-        const auto result =
-            RuntimeAdmission::try_apply(*recipient.ticket, frame.outcome);
         using A = RuntimeAdmission::Application;
+        const bool delegated =
+            recipient.ticket->delivery == GroupOriginalDelivery::unicast
+            || (recipient.ticket->delivery == GroupOriginalDelivery::overlap
+                && frame.outcome.disposition
+                    != Emitter::Disposition::submitted);
+        const auto result = delegated
+            ? A::duplicate_or_retired
+            : RuntimeAdmission::try_apply(*recipient.ticket, frame.outcome);
         if (result == A::busy
             && ++recipient.busy_attempts < configuration_.maximum_busy_attempts)
             continue;
-        if (result == A::applied)
+        if (delegated)
+            ++state_.delegated_completions;
+        else if (result == A::duplicate_or_retired)
+            ++state_.duplicate_completions;
+        else if (result == A::applied)
             ++state_.applied_completions;
         else {
             ++state_.abandoned_completions;
@@ -535,9 +640,25 @@ void GroupSendCoordinator::drive() noexcept
     }
     if (emitter_->snapshot().failure != Emitter::Failure::none)
         state_.failed = true;
+    bool retiring_leases = false;
+    for (auto& member : members_) {
+        if (!member.unicast_lease
+            || (member.state.detachment == Detachment::none
+                && member.state.delivery != GroupOriginalDelivery::multicast))
+            continue;
+        const auto pending = RuntimeAdmission::inspect_unicast(member.binding);
+        if (pending.status == RuntimeAdmission::Status::busy
+            || (pending.status == RuntimeAdmission::Status::ready
+                && pending.pending_unicast)) {
+            retiring_leases = true;
+            continue;
+        }
+        member.unicast_lease = false;
+        --state_.unicast_reservations;
+    }
     if (retry_at_ && admission_now() >= *retry_at_)
         retry_at_.reset();
-    if (!manual_ && (state_.inflight_frames || retry_at_)
+    if (!manual_ && (state_.inflight_frames || retry_at_ || retiring_leases)
         && scheduler_->schedule_service_at(
                service_, after(Clock::now(), configuration_.poll_interval))
             != RuntimeScheduler::SubmitStatus::accepted)
@@ -579,6 +700,8 @@ void GroupSendCoordinator::close() noexcept
         }
         state_.active_members = state_.detached_members =
             state_.inflight_frames = 0;
+        state_.unicast_members = 0;
+        state_.unicast_reservations = 0;
         if (scheduler_ && service_.valid())
             (void)scheduler_->release_service(service_);
         update_readiness();

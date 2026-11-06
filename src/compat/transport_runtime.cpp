@@ -2723,10 +2723,17 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
 bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
     const DatagramCompletion& completion, std::uint64_t now) noexcept
 {
+    if (completion.group_binding)
+        now =
+            now_microseconds(); // Observe complete UDP acceptance, not selection.
     transient_send_failure_since_.reset();
     transient_send_system_error_ = 0;
     if (completion.kind == DatagramKind::data) {
-        session_.note_packet_submitted(completion.data.sequence);
+        if (completion.group_binding && !completion.data.retransmitted)
+            (void)session_.note_group_unicast_submitted(
+                {completion.data.sequence, completion.group_position}, now);
+        else
+            session_.note_packet_submitted(completion.data.sequence);
         if (standby_rtt_) {
             standby_rtt_->last_data = now;
             standby_rtt_->measurement.pause();
@@ -2761,7 +2768,10 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
             completion.data.retransmitted, completion.payload_size,
             session_.send_buffer().size(),
             session_.send_buffer().packets_in_flight());
-        session_.note_data_packet_sent(now, completion.data.retransmitted);
+        if (!completion.group_binding || completion.data.retransmitted)
+            session_.note_data_packet_sent(now, completion.data.retransmitted);
+        else
+            session_.note_packet_sent(now);
         if (completion.data.retransmitted) {
 #ifdef ENABLE_MAXREXMITBW
             retransmission_budget_.consume(bytes.size(), now);
@@ -2769,7 +2779,8 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
             session_.note_retransmission_sent(completion.data.sequence, now);
         }
         pacer_.on_packet_sent(bytes.size(), now);
-        if (crypto_ != nullptr && !completion.data.retransmitted) {
+        if (crypto_ != nullptr && !completion.data.retransmitted
+            && !completion.group_binding) {
             const std::uint64_t overrun_before =
                 crypto_->refresh_overrun_positions();
             if (crypto_->note_data_packet_sent() != Error::none) {
@@ -2862,6 +2873,17 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
             // ACK/TTL/TLPKTDROP can retire a prepared packet during the wait.
             current = session_.send_buffer().retains_packet(
                 pending.completion.data.sequence);
+            if (pending.completion.group_binding) {
+                const auto token =
+                    session_.send_buffer().group_original_submission(
+                        pending.completion.data.sequence);
+                current = current && group_send_state_
+                    && group_send_state_->binding
+                        == pending.completion.group_binding
+                    && token
+                    && token->sequence_position
+                        == pending.completion.group_position;
+            }
         } else if (pending.completion.kind == DatagramKind::key_request) {
             // An earlier copy may have been acknowledged while this retry
             // waited. Never let its completion timestamp delay a new rotation.
@@ -3031,6 +3053,28 @@ bool ConnectionRuntime::send_data(
     const OutboundPacket& packet,
     std::uint64_t now) noexcept
 {
+    if (packet.canonical_group) {
+        // Policy is captured in the history slot. Never consult mutable egress
+        // delivery, prepare another key, rewrite its destination or reseal.
+        if (!group_send_state_ || !group_send_state_->binding)
+            return true;
+        std::array<std::byte, DatagramEnvelope::maximum_size> bytes;
+        const auto encoded = encode_packet({.kind = PacketKind::data,
+                                               .data = packet.header,
+                                               .payload = packet.payload},
+            bytes);
+        if (!encoded) {
+            break_locked(0);
+            return false;
+        }
+        return submit_datagram(std::span {bytes}.first(encoded.bytes_written),
+            {.kind = DatagramKind::data,
+                .data = packet.header,
+                .payload_size = packet.plaintext_size,
+                .group_binding = group_send_state_->binding,
+                .group_position = packet.sequence_position},
+            now);
+    }
     if (!packet.header.retransmitted
         && group_data_egress_.mode == GroupDataEgress::Mode::suppress) {
         // Another member transmits this original to the multicast group.
@@ -4731,7 +4775,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         if (crypto_ != nullptr && crypto_->enabled()
             && !retransmission_ready(now_microseconds())) {
             const auto candidate = session_.send_buffer().peek_new_packet();
-            if (candidate.has_value()) {
+            if (candidate.has_value() && !candidate->canonical_group) {
                 observe_key_sequence_position(
                     candidate->sequence_position, packet_time);
                 // Refresh the hint before accounting for this candidate's
@@ -4753,6 +4797,8 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         // already owns its original ciphertext and does not depend on it.
         if (crypto_ != nullptr && crypto_->enabled()
             && !crypto_->ready_to_send_data()
+            && !(session_.send_buffer().peek_new_packet()
+                && session_.send_buffer().peek_new_packet()->canonical_group)
             && !retransmission_ready(now_microseconds())) {
             break;
         }
@@ -4773,7 +4819,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             continue;
         }
         if (!retransmission
-            && session_.send_buffer().packets_in_flight()
+            && session_.send_buffer().new_packet_flow_count()
                 >= flow_window_packets_) {
             break;
         }
@@ -4812,7 +4858,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             effective_window, session_.experimental_window_packets());
 #endif
     const bool flow_blocked = !retransmission
-        && session_.send_buffer().packets_in_flight() >= effective_window;
+        && session_.send_buffer().new_packet_flow_count() >= effective_window;
     bool filter_pending = fec_control_ready();
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
     filter_pending = filter_pending
@@ -4832,7 +4878,9 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     // produce the response, especially when another group member is behind a
     // black hole. Flow-window waits have the same inbound-event dependency.
     const bool crypto_blocked = !retransmission && crypto_ != nullptr
-        && crypto_->enabled() && !crypto_->ready_to_send_data();
+        && crypto_->enabled() && !crypto_->ready_to_send_data()
+        && !(session_.send_buffer().peek_new_packet()
+            && session_.send_buffer().peek_new_packet()->canonical_group);
     statistics_.update_key_pause(now_microseconds(), crypto_blocked && pending);
     const bool paced_work =
         filter_pending || (pending && !flow_blocked && !crypto_blocked);
@@ -4917,7 +4965,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     const PaceDecision pace = pacer_.query(current,
         filter_pending || retransmission
             ? 0U
-            : session_.send_buffer().packets_in_flight());
+            : session_.send_buffer().new_packet_flow_count());
     if (pace.ready || pace.next_ready_microseconds <= current) {
         return {
             .immediate_work = true,

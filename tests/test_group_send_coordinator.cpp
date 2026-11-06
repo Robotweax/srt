@@ -5,6 +5,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <future>
+#include <limits>
 #include <thread>
 
 using namespace robotweax::srt;
@@ -13,6 +14,14 @@ using namespace std::chrono_literals;
 
 namespace robotweax::srt::compat {
 struct GroupSendCoordinatorTestAccess {
+    static void revision(
+        GroupSendCoordinator& actor, std::uint64_t id, std::uint64_t revision)
+    {
+        std::lock_guard lock(actor.publication_);
+        for (auto& m : actor.members_)
+            if (m.state.id == id)
+                m.state.revision = revision;
+    }
     static GroupRuntimeAdmission::Binding binding(
         GroupSendCoordinator& actor, std::uint64_t id)
     {
@@ -40,6 +49,7 @@ struct Output {
     std::vector<std::vector<std::byte>> packets;
     Error error = Error::none;
     bool partial = false;
+    unsigned data_failures = 0;
     static UdpIoResult send(
         std::span<const std::byte> bytes, IpEndpoint, void* p) noexcept
     {
@@ -47,6 +57,11 @@ struct Output {
         std::lock_guard lock(self.mutex);
         self.packets.emplace_back(bytes.begin(), bytes.end());
         self.changed.notify_all();
+        if (self.data_failures
+            && decode_packet(bytes).packet.kind == PacketKind::data) {
+            --self.data_failures;
+            return {.error = Error::would_block};
+        }
         if (self.error != Error::none)
             return {.error = self.error};
         return {.bytes_transferred =
@@ -122,11 +137,17 @@ struct Receiver {
     std::unique_ptr<CryptoSession> decryptor;
     std::shared_ptr<ConnectionRuntime> runtime;
     std::uint64_t id = 0;
+    std::uint32_t ack_serial = 1;
+    std::vector<std::vector<std::byte>> data_attempts;
     explicit Receiver(Fixture& f, std::size_t capacity = 4, bool add = true,
-        SequenceNumber start = initial, bool realtime = false)
+        SequenceNumber start = initial, bool realtime = false,
+        std::int64_t rate = -1)
     {
         channel->set_send_hook_for_testing(Output::send, &output);
         SocketOptions options;
+        REQUIRE_EQ(
+            options.set(SocketOption::maximum_bandwidth_bytes_per_second, rate),
+            Error::none);
         REQUIRE_EQ(options.set(SocketOption::send_buffer_packets,
                        static_cast<std::int64_t>(capacity)),
             Error::none);
@@ -167,15 +188,22 @@ struct Receiver {
             id = member->id;
         }
     }
-    void ack(SequenceNumber next)
+    void ack(SequenceNumber next, bool full = false)
     {
+        const auto serial = full ? ack_serial++ : 0U;
         std::array<std::byte, 64> bytes {};
         const auto encoded = encode_acknowledgement_payload(
-            {.kind = AcknowledgementKind::lite, .next_sequence = next}, bytes);
+            {.kind = full ? AcknowledgementKind::full
+                          : AcknowledgementKind::lite,
+                .acknowledgement_number = serial,
+                .next_sequence = next,
+                .available_receive_buffer_packets = 4},
+            bytes);
         REQUIRE(encoded);
         runtime->process_packet(
             {.kind = PacketKind::control,
                 .control = {.type = ControlType::acknowledgement,
+                    .type_specific = serial,
                     .destination_socket_id = 107},
                 .payload = std::span {bytes}.first(encoded.bytes_written)},
             peer);
@@ -184,7 +212,7 @@ struct Receiver {
     {
         return runtime->buffer_packet_counts().unacknowledged_send;
     }
-    void exchange_keys()
+    void exchange_keys(bool allow_data = false)
     {
         (void)runtime->poll();
         std::vector<std::vector<std::byte>> packets;
@@ -195,7 +223,11 @@ struct Receiver {
         for (auto& bytes : packets) {
             const auto p = decode_packet(bytes);
             REQUIRE(p);
-            REQUIRE(p.packet.kind != PacketKind::data);
+            if (p.packet.kind == PacketKind::data) {
+                REQUIRE(allow_data);
+                data_attempts.push_back(std::move(bytes));
+                continue;
+            }
             if (!decryptor || p.packet.control.type != ControlType::user_defined
                 || p.packet.control.subtype != key_material_request_subtype)
                 continue;
@@ -900,5 +932,581 @@ TEST(
         f.pump();
         REQUIRE_EQ(f.output.size(), persistent ? 0U : 1U);
         f.actor->close();
+    }
+}
+
+namespace {
+using Delivery = GroupOriginalDelivery;
+using Transition = Actor::TransitionStatus;
+void tick(Fixture& f, Receiver& a, Receiver* b = nullptr)
+{
+    f.now += 1ms;
+    a.now += 1'000;
+    if (b)
+        b->now += 1'000;
+}
+void decrypt_original(
+    Receiver& a, CryptoMode mode, const std::vector<std::byte>& bytes)
+{
+    const auto decoded = decode_packet(bytes);
+    REQUIRE(decoded);
+    REQUIRE_EQ(decoded.packet.data.destination_socket_id, group_id);
+    std::array<std::byte, payload.size()> clear {};
+    if (mode == CryptoMode::automatic)
+        std::copy(decoded.packet.payload.begin(), decoded.packet.payload.end(),
+            clear.begin());
+    else if (mode == CryptoMode::aes_gcm)
+        REQUIRE_EQ(
+            a.decryptor->open(decoded.packet.data,
+                decoded.packet.payload.first(payload.size()),
+                decoded.packet.payload.last(srt_gcm_authentication_tag_size),
+                clear),
+            Error::none);
+    else {
+        REQUIRE_EQ(
+            a.decryptor->decrypt(decoded.packet.data.encryption_key,
+                decoded.packet.data.sequence, decoded.packet.payload, clear),
+            Error::none);
+        a.decryptor->note_accepted_receive_sequence(
+            decoded.packet.data.sequence);
+    }
+    REQUIRE_EQ(clear, payload);
+}
+}
+
+TEST(compat_group_policy_modes_persist_and_preserve_canonical_wire_identity)
+{
+    for (auto mode :
+        {CryptoMode::automatic, CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        Fixture f(mode, 8);
+        Receiver a(f), b(f);
+        auto policy = f.actor->set_delivery(a.id, 0, Delivery::unicast);
+        REQUIRE_EQ(policy.status, Transition::applied);
+        REQUIRE_EQ(policy.member.revision, 1U);
+        REQUIRE_EQ(policy.member.effective_sequence, initial);
+        REQUIRE_EQ(policy.member.effective_position, 0U);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        f.pump();
+        a.ack(initial.next(), true);
+        REQUIRE_EQ(a.buffered(), 1U); // MC cannot credit uni-only.
+        b.ack(initial.next(), true);
+        REQUIRE_EQ(b.buffered(), 0U);
+        a.exchange_keys(true);
+        b.exchange_keys();
+        REQUIRE_EQ(a.data_attempts.size(), 1U);
+        REQUIRE_EQ(a.data_attempts.back(), f.output.packets.back());
+        decrypt_original(a, mode, a.data_attempts.back());
+        a.ack(initial.next(), true);
+        REQUIRE_EQ(a.buffered(), 0U);
+        tick(f, a, &b);
+        policy = f.actor->set_delivery(a.id, 1, Delivery::overlap);
+        REQUIRE_EQ(policy.status, Transition::applied);
+        REQUIRE_EQ(policy.member.effective_sequence, initial.next());
+        REQUIRE_EQ(f.send(), Status::accepted);
+        a.exchange_keys(true);
+        b.exchange_keys();
+        f.pump();
+        REQUIRE_EQ(a.data_attempts.size(), 2U);
+        REQUIRE_EQ(a.data_attempts.back(), f.output.packets.back());
+        decrypt_original(a, mode, a.data_attempts.back());
+        REQUIRE_EQ(f.actor->snapshot().duplicate_completions, 1U);
+        a.ack(initial.advanced(2), true);
+        b.ack(initial.advanced(2), true);
+        tick(f, a, &b);
+        policy = f.actor->set_delivery(a.id, 2, Delivery::multicast);
+        REQUIRE_EQ(policy.status, Transition::applied);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        f.pump();
+        a.exchange_keys(true);
+        b.exchange_keys();
+        REQUIRE_EQ(a.data_attempts.size(), 2U);
+        REQUIRE_EQ(
+            a.runtime->statistics(false, true).total.sent_unique.packets, 2U);
+        REQUIRE_EQ(
+            b.runtime->statistics(false, true).total.sent_unique.packets, 0U);
+        a.ack(initial.advanced(3), true);
+        b.ack(initial.advanced(3), true);
+        REQUIRE_EQ(a.buffered(), 0U);
+        REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 0U);
+    }
+}
+
+TEST(
+    compat_group_policy_queued_retry_keeps_mode_and_budget_across_future_transition)
+{
+    Fixture f(CryptoMode::aes_gcm, 8);
+    f.actor->close();
+    f.config.maximum_unicast_members = 1;
+    f.recreate();
+    Receiver a(f), b(f);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+        Transition::applied);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    a.output.data_failures = 1;
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 1U);
+    const auto encoded = a.data_attempts[0];
+    REQUIRE_EQ(
+        a.runtime->statistics(false, true).total.sent_unique.packets, 0U);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 1, Delivery::multicast).status,
+        Transition::applied);
+    REQUIRE_EQ(f.actor->set_delivery(b.id, 0, Delivery::unicast).status,
+        Transition::full);
+    f.pump();
+    a.ack(initial.next(), true);
+    REQUIRE_EQ(a.buffered(), 1U);
+    b.ack(initial.next(), true);
+    tick(f, a, &b);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    f.pump();
+    a.ack(initial.advanced(2), true);
+    REQUIRE_EQ(a.buffered(), 2U);
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 2U);
+    REQUIRE_EQ(a.data_attempts[1], encoded);
+    REQUIRE_EQ(a.data_attempts[1], f.output.packets[0]);
+    a.ack(initial.advanced(2), true);
+    b.ack(initial.advanced(2), true);
+    REQUIRE_EQ(a.buffered(), 0U);
+    f.pump();
+    REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 0U);
+    REQUIRE_EQ(f.actor->set_delivery(b.id, 0, Delivery::unicast).status,
+        Transition::applied);
+}
+
+TEST(
+    compat_group_policy_explicit_prefix_recovery_classifies_unsent_and_submitted_work)
+{
+    for (auto mode :
+        {CryptoMode::automatic, CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        Fixture f(mode, 8);
+        Receiver a(f), b(f);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        f.pump();
+        b.ack(initial.next(), true);
+        tick(f, a, &b);
+        REQUIRE_EQ(f.send(),
+            Status::accepted); // This multicast original is still queued.
+        auto result = f.actor->set_delivery(a.id, 0, Delivery::unicast, true);
+        REQUIRE_EQ(result.status, Transition::applied);
+        REQUIRE_EQ(result.member.effective_sequence, initial.advanced(2));
+        REQUIRE_EQ(result.prefix.repairs, 1U);
+        REQUIRE_EQ(result.prefix.originals, 1U);
+        REQUIRE(result.prefix_scheduled);
+        a.ack(initial.advanced(2), true);
+        REQUIRE_EQ(a.buffered(), 2U);
+        a.exchange_keys(true);
+        REQUIRE_EQ(a.data_attempts.size(), 1U);
+        auto first = decode_packet(a.data_attempts[0]);
+        REQUIRE(first);
+        REQUIRE(first.packet.data.retransmitted);
+        decrypt_original(a, mode, a.data_attempts[0]);
+        a.ack(initial.next(), true);
+        tick(f, a, &b);
+        a.exchange_keys(true);
+        REQUIRE_EQ(a.data_attempts.size(), 2U);
+        auto second = decode_packet(a.data_attempts[1]);
+        REQUIRE(second);
+        REQUIRE(!second.packet.data.retransmitted);
+        decrypt_original(a, mode, a.data_attempts[1]);
+        f.pump();
+        REQUIRE_EQ(a.data_attempts[1], f.output.packets[1]);
+        a.ack(initial.advanced(2), true);
+        b.ack(initial.advanced(2), true);
+        REQUIRE_EQ(a.buffered(), 0U);
+        REQUIRE_EQ(
+            a.runtime->statistics(false, true).total.sent_retransmitted.packets,
+            1U);
+        REQUIRE_EQ(
+            a.runtime->statistics(false, true).total.sent_unique.packets, 1U);
+        REQUIRE_EQ(
+            f.actor->set_delivery(a.id, 0, Delivery::overlap, true).status,
+            Transition::stale);
+    }
+}
+
+TEST(compat_group_policy_revision_member_lifetime_and_budget_checks_are_atomic)
+{
+    Fixture f;
+    f.actor->close();
+    f.config.maximum_unicast_members = 1;
+    f.recreate();
+    Receiver a(f), b(f);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 1, Delivery::unicast).status,
+        Transition::stale);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::multicast).status,
+        Transition::unchanged);
+    REQUIRE_EQ(
+        f.actor->set_delivery(a.id, 0, static_cast<Delivery>(255)).status,
+        Transition::unavailable);
+    auto held = a.hold(f);
+    REQUIRE_EQ(held.status(), Admission::Status::ready);
+    auto attempt = std::async(std::launch::async, [&] {
+        return f.actor->set_delivery(a.id, 0, Delivery::unicast);
+    });
+    REQUIRE_EQ(attempt.wait_for(2s), std::future_status::ready);
+    REQUIRE_EQ(attempt.get().status, Transition::busy);
+    held.release();
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+        Transition::applied);
+    REQUIRE_EQ(f.actor->set_delivery(b.id, 0, Delivery::overlap).status,
+        Transition::full);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 1, Delivery::multicast).status,
+        Transition::applied);
+    REQUIRE_EQ(f.actor->set_delivery(b.id, 0, Delivery::overlap).status,
+        Transition::applied);
+    GroupSendCoordinatorTestAccess::revision(
+        *f.actor, a.id, std::numeric_limits<std::uint64_t>::max());
+    REQUIRE_EQ(
+        f.actor
+            ->set_delivery(a.id, std::numeric_limits<std::uint64_t>::max(),
+                Delivery::unicast)
+            .status,
+        Transition::exhausted);
+    f.actor->remove_member(b.id);
+    REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 0U);
+    REQUIRE_EQ(f.actor->set_delivery(b.id, 1, Delivery::unicast).status,
+        Transition::stale);
+    f.actor->close();
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+        Transition::closed);
+}
+
+TEST(
+    compat_group_policy_unavailable_or_excessive_prefix_never_partially_replays)
+{
+    for (const bool too_large : {false, true}) {
+        Fixture f(CryptoMode::automatic, 64);
+        Receiver a(f, 300);
+        if (too_large) {
+            for (unsigned i = 0; i < 257; ++i) {
+                REQUIRE_EQ(f.send(), Status::accepted);
+                f.pump();
+                tick(f, a);
+            }
+        } else {
+            REQUIRE_EQ(f.send(f.now + 1ms), Status::accepted);
+            f.pump();
+            tick(f, a);
+            tick(f, a);
+            a.exchange_keys();
+        }
+        const auto policy =
+            f.actor->set_delivery(a.id, 0, Delivery::unicast, true);
+        REQUIRE_EQ(policy.status,
+            too_large ? Transition::full : Transition::unavailable);
+        REQUIRE_EQ(policy.member.revision, 0U);
+        REQUIRE_EQ(policy.member.delivery, Delivery::multicast);
+        REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 0U);
+        REQUIRE(a.data_attempts.empty());
+    }
+}
+
+TEST(compat_group_policy_stalled_unicast_key_horizon_detaches_only_that_member)
+{
+    for (auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        Fixture f(mode, 32);
+        f.actor->close();
+        f.config.maximum_unicast_members = 1;
+        f.recreate();
+        Receiver a(f, 32), b(f, 32);
+        REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+            Transition::applied);
+        for (unsigned i = 0; i < 7; ++i) {
+            REQUIRE_EQ(f.send(), Status::accepted);
+            a.exchange_keys(true);
+            b.exchange_keys();
+            f.pump();
+            b.ack(initial.advanced(i + 1), true);
+            tick(f, a, &b);
+        }
+        REQUIRE_EQ(
+            a.data_attempts.size(), 1U); // One-packet unicast flow window.
+        const auto revision = a.crypto->key_material_revision();
+        REQUIRE_EQ(f.send(), Status::accepted);
+        b.exchange_keys();
+        f.pump();
+        REQUIRE_EQ(reason(f, a.id), Actor::Detachment::history_full);
+        REQUIRE_EQ(reason(f, b.id), Actor::Detachment::none);
+        REQUIRE_EQ(a.crypto->key_material_revision(), revision);
+        b.ack(initial.advanced(8), true);
+        REQUIRE_EQ(b.buffered(), 0U);
+        REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 1U);
+        REQUIRE_EQ(f.actor->set_delivery(b.id, 0, Delivery::unicast).status,
+            Transition::full);
+        a.runtime->close();
+        f.pump();
+        REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 0U);
+        REQUIRE_EQ(f.actor->set_delivery(b.id, 0, Delivery::unicast).status,
+            Transition::applied);
+    }
+}
+
+TEST(compat_group_policy_rotations_and_sequence_wrap_preserve_both_paths)
+{
+    for (auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        const SequenceNumber start {SequenceNumber::mask - 2U};
+        Fixture f(mode, 8, start);
+        Receiver a(f, 4, true, start), b(f, 4, true, start);
+        std::uint64_t revision = 0;
+        std::size_t unicast = 0;
+        for (unsigned i = 0; i < 20; ++i) {
+            const auto delivery = static_cast<Delivery>(i % 3);
+            const auto policy = f.actor->set_delivery(a.id, revision, delivery);
+            REQUIRE(policy.status == Transition::applied
+                || policy.status == Transition::unchanged);
+            revision = policy.member.revision;
+            REQUIRE_EQ(f.send(), Status::accepted);
+            if (i % 2) {
+                a.exchange_keys(true);
+                b.exchange_keys();
+                f.pump();
+            } else {
+                f.pump();
+                a.exchange_keys(true);
+                b.exchange_keys();
+            }
+            if (delivery != Delivery::multicast) {
+                REQUIRE_EQ(a.data_attempts.size(), unicast + 1);
+                ++unicast;
+                REQUIRE_EQ(a.data_attempts.back(), f.output.packets.back());
+            }
+            decrypt_original(a, mode, f.output.packets.back());
+            a.ack(start.advanced(i + 1), true);
+            b.ack(start.advanced(i + 1), true);
+            REQUIRE_EQ(a.buffered(), 0U);
+            tick(f, a, &b);
+        }
+        REQUIRE_EQ(a.runtime->statistics(false, true).total.sent_unique.packets,
+            unicast);
+        REQUIRE_EQ(
+            b.runtime->statistics(false, true).total.sent_unique.packets, 0U);
+        REQUIRE_EQ(f.actor->snapshot().detached_members, 0U);
+    }
+}
+
+TEST(
+    compat_group_policy_source_failure_does_not_credit_or_cancel_committed_unicast)
+{
+    for (auto delivery :
+        {Delivery::multicast, Delivery::unicast, Delivery::overlap}) {
+        Fixture f;
+        Receiver a(f);
+        const auto policy = f.actor->set_delivery(a.id, 0, delivery);
+        REQUIRE(policy.status == Transition::applied
+            || policy.status == Transition::unchanged);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        f.output.error = Error::io_error;
+        f.pump();
+        a.ack(initial.next(), true);
+        REQUIRE_EQ(a.buffered(), 1U);
+        a.exchange_keys(true);
+        if (delivery == Delivery::multicast) {
+            REQUIRE(a.data_attempts.empty());
+            REQUIRE_EQ(
+                reason(f, a.id), Actor::Detachment::source_not_submitted);
+        } else {
+            REQUIRE_EQ(a.data_attempts.size(), 1U);
+            a.ack(initial.next(), true);
+            REQUIRE_EQ(a.buffered(), 0U);
+            REQUIRE_EQ(reason(f, a.id), Actor::Detachment::none);
+        }
+        REQUIRE(!a.runtime->broken());
+        REQUIRE_EQ(f.send(), Status::failed);
+    }
+}
+
+TEST(compat_group_policy_native_retry_is_fenced_by_binding_close_ttl_or_ack)
+{
+    for (unsigned cause = 0; cause < 5; ++cause) {
+        Fixture f;
+        Receiver a(f);
+        const auto mode = cause == 4 ? Delivery::overlap : Delivery::unicast;
+        REQUIRE_EQ(
+            f.actor->set_delivery(a.id, 0, mode).status, Transition::applied);
+        REQUIRE_EQ(f.send(cause == 3 ? f.now + 1ms : Clock::time_point::max()),
+            Status::accepted);
+        a.output.data_failures = 1;
+        a.exchange_keys(true);
+        REQUIRE_EQ(a.data_attempts.size(), 1U);
+        if (cause == 0)
+            Admission::revoke(
+                GroupSendCoordinatorTestAccess::binding(*f.actor, a.id));
+        if (cause == 1)
+            a.runtime->close();
+        if (cause == 2) {
+            SocketOptions options;
+            a.runtime->apply_options(options);
+        }
+        if (cause == 4) {
+            f.pump();
+            a.ack(initial.next(), true);
+            REQUIRE_EQ(a.buffered(), 0U);
+        }
+        tick(f, a);
+        tick(f, a);
+        a.exchange_keys(true);
+        f.pump();
+        REQUIRE_EQ(a.data_attempts.size(), 1U);
+        REQUIRE_EQ(
+            a.runtime->statistics(false, true).total.sent_unique.packets, 0U);
+    }
+}
+
+TEST(compat_group_policy_lite_ack_does_not_replenish_unicast_receive_credit)
+{
+    Fixture f;
+    Receiver a(f);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+        Transition::applied);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    a.exchange_keys(true);
+    f.pump();
+    REQUIRE_EQ(a.data_attempts.size(), 1U);
+    a.ack(initial.next()); // Lite ACK consumes the one advertised credit.
+    tick(f, a);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    a.exchange_keys(true);
+    f.pump();
+    REQUIRE_EQ(a.data_attempts.size(), 1U);
+    a.ack(initial.next(), true);
+    tick(f, a);
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 2U);
+    a.ack(initial.advanced(2), true);
+    REQUIRE_EQ(a.buffered(), 0U);
+}
+
+TEST(
+    compat_group_policy_late_member_key_horizon_uses_group_position_not_local_zero)
+{
+    for (auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        Fixture f(mode, 32);
+        for (unsigned i = 0; i < 9; ++i)
+            REQUIRE_EQ(f.send(), Status::advanced_without_receivers);
+        const auto start = initial.advanced(9);
+        Receiver a(f, 32, true, start), b(f, 32, true, start);
+        REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+            Transition::applied);
+        for (unsigned i = 0; i < 6; ++i) {
+            REQUIRE_EQ(f.send(), Status::accepted);
+            a.exchange_keys(true);
+            b.exchange_keys();
+            f.pump();
+            b.ack(start.advanced(i + 1), true);
+            tick(f, a, &b);
+        }
+        REQUIRE_EQ(a.data_attempts.size(), 1U);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        b.exchange_keys();
+        f.pump();
+        REQUIRE_EQ(reason(f, a.id), Actor::Detachment::history_full);
+        REQUIRE_EQ(reason(f, b.id), Actor::Detachment::none);
+        b.ack(start.advanced(7), true);
+        REQUIRE_EQ(b.buffered(), 0U);
+    }
+}
+
+TEST(
+    compat_group_policy_unicast_uses_actual_datagram_pacing_without_double_gcm_tag)
+{
+    for (auto mode : {CryptoMode::automatic, CryptoMode::aes_gcm}) {
+        Fixture f(mode, 8);
+        const std::int64_t rate = packet_header_size + payload.size()
+            + (mode == CryptoMode::aes_gcm ? srt_gcm_authentication_tag_size
+                                           : 0);
+        Receiver a(f, 4, true, initial, false, rate);
+        REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+            Transition::applied);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        a.exchange_keys(true);
+        f.pump();
+        REQUIRE_EQ(a.data_attempts.size(), 1U);
+        a.ack(initial.next(), true);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        a.now += 999'999;
+        f.now += 999999us;
+        a.exchange_keys(true);
+        REQUIRE_EQ(a.data_attempts.size(), 1U);
+        ++a.now;
+        f.now += 1us;
+        a.exchange_keys(true);
+        f.pump();
+        REQUIRE_EQ(a.data_attempts.size(), 2U);
+        REQUIRE_EQ(
+            a.data_attempts.back().size(), static_cast<std::size_t>(rate));
+        REQUIRE_EQ(
+            a.runtime->statistics(false, true).total.sent_unique.payload_bytes,
+            2U * payload.size());
+        a.ack(initial.advanced(2), true);
+        REQUIRE_EQ(a.buffered(), 0U);
+    }
+}
+
+TEST(
+    compat_group_policy_replaced_prefix_key_generation_refuses_transition_without_replay)
+{
+    for (auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        Fixture f(mode, 16);
+        Receiver a(f, 16);
+        for (unsigned i = 0; i < 8; ++i) {
+            REQUIRE_EQ(f.send(), Status::accepted);
+            a.exchange_keys();
+            f.pump();
+            tick(f, a);
+        }
+        for (const bool replay : {false, true}) {
+            const auto result =
+                f.actor->set_delivery(a.id, 0, Delivery::unicast, replay);
+            REQUIRE_EQ(result.status, Transition::unavailable);
+            REQUIRE_EQ(result.member.revision, 0U);
+            REQUIRE_EQ(result.member.delivery, Delivery::multicast);
+            REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 0U);
+            a.exchange_keys();
+            REQUIRE(a.data_attempts.empty());
+        }
+        // Explicitly retiring the old prefix makes a future boundary eligible.
+        a.ack(initial.advanced(8), true);
+        REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+            Transition::applied);
+    }
+}
+
+TEST(compat_group_policy_prefix_repairs_pin_keys_until_cumulative_retirement)
+{
+    for (auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        for (const bool retire : {false, true}) {
+            Fixture f(mode, 16);
+            Receiver a(f, 16), b(f, 16);
+            for (unsigned i = 0; i < 7; ++i) {
+                REQUIRE_EQ(f.send(), Status::accepted);
+                a.exchange_keys();
+                b.exchange_keys();
+                f.pump();
+                b.ack(initial.advanced(i + 1), true);
+                tick(f, a, &b);
+            }
+            const auto recovered =
+                f.actor->set_delivery(a.id, 0, Delivery::multicast, true);
+            REQUIRE_EQ(recovered.status, Transition::applied);
+            REQUIRE_EQ(recovered.prefix.repairs, 7U);
+            a.output.data_failures = 1;
+            a.exchange_keys(true);
+            REQUIRE_EQ(a.data_attempts.size(), 1U);
+            REQUIRE(decode_packet(a.data_attempts.back())
+                    .packet.data.retransmitted);
+            const auto key_revision = a.crypto->key_material_revision();
+            if (retire)
+                a.ack(initial.advanced(7), true);
+            REQUIRE_EQ(f.send(), Status::accepted);
+            b.exchange_keys();
+            f.pump();
+            REQUIRE_EQ(reason(f, a.id),
+                retire ? Actor::Detachment::none
+                       : Actor::Detachment::history_full);
+            REQUIRE_EQ(reason(f, b.id), Actor::Detachment::none);
+            if (!retire)
+                REQUIRE_EQ(a.crypto->key_material_revision(), key_revision);
+        }
     }
 }

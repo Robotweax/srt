@@ -41,6 +41,7 @@ class ConnectionRuntime;
 class DispatchTransmitState;
 class RuntimeWorkExecutor;
 class GroupRuntimeAdmission;
+class GroupSendBinding;
 struct GroupRuntimeSendState;
 struct GroupRecord;
 struct RetainedGroupReceiveBatch;
@@ -768,6 +769,8 @@ private:
         DataHeader data {};
         ControlType control = ControlType::keepalive;
         std::size_t payload_size = 0;
+        std::shared_ptr<const GroupSendBinding> group_binding;
+        std::uint64_t group_position = 0;
     };
 
     struct PendingDatagram {

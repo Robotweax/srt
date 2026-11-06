@@ -27,7 +27,11 @@ struct OutboundPacket {
     DataHeader header{};
     std::span<const std::byte> payload{};
     std::uint64_t sequence_position = 0;
+    bool canonical_group = false;
+    std::size_t plaintext_size = 0;
 };
+
+enum class GroupOriginalDelivery : std::uint8_t { multicast, unicast, overlap };
 
 struct SendDropResult {
     std::size_t packets = 0;
@@ -91,6 +95,17 @@ public:
     }
     [[nodiscard]] bool synchronize_empty(
         SequenceNumber next_sequence) noexcept;
+    [[nodiscard]] std::uint64_t next_sequence_position() const noexcept
+    {
+        return next_sequence_position_;
+    }
+    [[nodiscard]] std::size_t new_packet_flow_count() const noexcept;
+    [[nodiscard]] std::size_t pending_group_unicast() const noexcept
+    {
+        return pending_group_unicast_count_;
+    }
+    [[nodiscard]] std::optional<OutboundPacket>
+    first_pending_group_unicast() const noexcept;
 
     [[nodiscard]] Error enqueue_message(
         std::span<const std::byte> message,
@@ -116,13 +131,26 @@ public:
         std::size_t plaintext_size, CryptoMode mode) const noexcept;
     // Import the exact canonical header/body (GCM body includes its tag).
     // mode AUTOMATIC means plaintext; CTR/GCM require an EVEN/ODD selector.
-    // Acceptance does not authorize ACK/NAK or schedule an original on the
-    // member path. The actual emitting transport calls note_group_original_submitted
-    // only after complete UDP submission, separately for every original.
+    // Acceptance does not authorize ACK/NAK. Unicast and overlap schedule an
+    // exact original on the member path; multicast keeps only recovery history.
+    // The emitting path reports each original only after complete UDP submission.
     [[nodiscard]] Error import_group_original(const DataHeader& header,
         std::span<const std::byte> wire_payload, std::size_t plaintext_size,
         CryptoMode mode, std::uint64_t enqueue_microseconds = 0,
-        std::uint64_t expiration_microseconds = 0) noexcept;
+        std::uint64_t expiration_microseconds = 0,
+        GroupOriginalDelivery delivery =
+            GroupOriginalDelivery::multicast) noexcept;
+    struct GroupRecovery {
+        Error error = Error::none;
+        std::size_t originals = 0;
+        std::size_t repairs = 0;
+    };
+    // Explicit bounded retained-prefix recovery; tombstones refuse the whole
+    // operation, while selected native retries retain their immutable state.
+    [[nodiscard]] GroupRecovery group_recovery(
+        SequenceNumber next, std::size_t limit = 256) const noexcept;
+    [[nodiscard]] GroupRecovery recover_group_prefix(
+        SequenceNumber next, std::size_t limit = 256) noexcept;
 
     // now_microseconds records when an original packet is first selected
     // for transmission; sender too-late drop measures age from that time.
@@ -166,6 +194,8 @@ public:
     // restart its sender-drop clock.
     // Returns true only for the first matching submission transition.
     bool note_group_original_submitted(GroupOriginalSubmission submission,
+        std::uint64_t now_microseconds) noexcept;
+    bool note_group_unicast_submitted(GroupOriginalSubmission submission,
         std::uint64_t now_microseconds) noexcept;
     // Wire ACKs require successful submission; acknowledge_before is also
     // used for trusted, locally confirmed group-prefix retirement.
@@ -263,6 +293,9 @@ private:
         bool sent = false;
         bool submitted = false;
         bool external_original = false;
+        bool unicast_pending = false;
+        bool unicast_selected = false;
+        bool multicast_eligible = false;
         bool retransmission_queued = false;
         bool has_retransmission_send_time = false;
     };
@@ -270,6 +303,8 @@ private:
     static_assert(sizeof(Slot) <= 80U, "sender slot metadata budget exceeded");
 
     [[nodiscard]] Slot* find(SequenceNumber sequence) noexcept;
+    bool mark_group_submitted(
+        GroupOriginalSubmission, std::uint64_t now, bool unicast) noexcept;
     void discard_slot(Slot& slot, bool retain_drop_marker = false) noexcept;
     void refresh_first_buffered_enqueue_time() noexcept;
     void refresh_buffered_enqueue_time_bounds() noexcept;
@@ -312,6 +347,8 @@ private:
     std::size_t drop_request_size_ = 0;
     std::size_t packets_in_flight_ = 0;
     std::size_t external_unsubmitted_count_ = 0;
+    std::size_t ordinary_unsent_count_ = 0;
+    std::size_t pending_group_unicast_count_ = 0;
 };
 
 } // namespace robotweax::srt

@@ -219,7 +219,23 @@ public:
     [[nodiscard]] Error import_group_original(const DataHeader& header,
         std::span<const std::byte> wire_payload, std::size_t plaintext_size,
         CryptoMode mode, std::uint64_t enqueue_microseconds = 0,
-        std::uint64_t expiration_microseconds = 0) noexcept;
+        std::uint64_t expiration_microseconds = 0,
+        GroupOriginalDelivery delivery =
+            GroupOriginalDelivery::multicast) noexcept;
+    [[nodiscard]] SendBuffer::GroupRecovery group_recovery(
+        SequenceNumber next, bool apply) noexcept
+    {
+        return apply ? send_buffer_.recover_group_prefix(next)
+                     : send_buffer_.group_recovery(next);
+    }
+    bool note_group_unicast_submitted(
+        SendBuffer::GroupOriginalSubmission token, std::uint64_t now) noexcept
+    {
+        if (!send_buffer_.note_group_unicast_submitted(token, now))
+            return false;
+        note_data_packet_sent(now, false);
+        return true;
+    }
     bool note_group_original_submitted(
         SendBuffer::GroupOriginalSubmission submission,
         std::uint64_t now_microseconds) noexcept
@@ -405,6 +421,7 @@ public:
         return sensor_prefix_repeat_remaining_ != 0U
             || send_buffer_.has_pending_drop_request()
             || send_buffer_.has_pending_retransmission()
+            || send_buffer_.peek_new_packet().has_value()
             || send_buffer_.size() > send_buffer_.packets_in_flight();
     }
     [[nodiscard]] bool has_pending_retransmission() noexcept

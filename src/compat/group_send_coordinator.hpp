@@ -32,6 +32,10 @@ public:
         // Borrowed monotonic admission clock, serialized by the actor gate.
         GroupMulticastEmitter::ClockFunction admission_clock = nullptr;
         void* admission_clock_context = nullptr;
+        // Bound original recipients, including retired policies with queued
+        // native copies. This is not an aggregate wire/repair bandwidth budget.
+        // No public switching API selects these internal delivery policies.
+        std::size_t maximum_unicast_members = 4;
     };
     enum class Status : std::uint8_t {
         accepted,
@@ -59,7 +63,34 @@ public:
     struct Member {
         std::uint64_t id = 0;
         Detachment detachment = Detachment::none;
+        GroupOriginalDelivery delivery = GroupOriginalDelivery::multicast;
+        std::uint64_t revision = 0;
+        SequenceNumber effective_sequence {};
+        std::uint64_t effective_position = 0;
     };
+    enum class TransitionStatus : std::uint8_t {
+        applied,
+        unchanged,
+        busy,
+        stale,
+        full,
+        unavailable,
+        exhausted,
+        closed
+    };
+    struct Transition {
+        TransitionStatus status = TransitionStatus::stale;
+        Member member;
+        SendBuffer::GroupRecovery prefix;
+        bool prefix_scheduled = false;
+    };
+    // Internal single-writer policy command. The expected revision fences old
+    // requests; only future admissions use the new mode. Retained-prefix replay
+    // is explicit, all-or-nothing, bounded to 256 slots and separately classified
+    // as unsent originals or submitted repairs. Queued native retries survive.
+    [[nodiscard]] Transition set_delivery(std::uint64_t member,
+        std::uint64_t expected_revision, GroupOriginalDelivery,
+        bool recover_retained_prefix = false) noexcept;
     struct Snapshot {
         SequenceNumber next_sequence {};
         std::uint32_t next_message = 1;
@@ -70,6 +101,10 @@ public:
         std::uint64_t unused_frames = 0;
         std::uint64_t applied_completions = 0;
         std::uint64_t abandoned_completions = 0;
+        std::uint64_t delegated_completions = 0;
+        std::uint64_t duplicate_completions = 0;
+        std::size_t unicast_members = 0;
+        std::size_t unicast_reservations = 0;
         bool writable = false;
         bool failed = false;
         bool closed = false;
@@ -115,6 +150,7 @@ private:
         std::weak_ptr<ConnectionRuntime> runtime;
         GroupRuntimeAdmission::Binding binding;
         std::optional<Clock::time_point> busy_since;
+        bool unicast_lease = false;
     };
     struct Recipient {
         std::uint64_t member = 0;

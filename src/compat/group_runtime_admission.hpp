@@ -14,11 +14,21 @@ class GroupSendBinding {
     std::uint64_t member_generation_ = 0;
     std::shared_ptr<SharedTransmitKeySchedule> schedule_;
     CryptoMode mode_ = CryptoMode::automatic;
+    std::uint64_t runtime_position_origin_ = 0;
+    std::uint64_t source_position_origin_ = 0;
 };
 
 // Optional state; ordinary connections incur only one null pointer.
 struct GroupRuntimeSendState {
     std::uint64_t generation = 0;
+    // Highest parity generation prepared for this receiver, including a
+    // preannouncement made by a subsequently cancelled admission.
+    std::uint64_t prepared_key_generation = 0;
+    struct RecoveryKeyLease {
+        std::uint64_t generation = 0;
+        std::uint64_t end_position = 0;
+    };
+    std::optional<RecoveryKeyLease> recovery_key_lease;
     std::shared_ptr<const GroupSendBinding> binding;
 };
 
@@ -42,6 +52,7 @@ public:
     struct Ticket {
         Binding binding;
         SendBuffer::GroupOriginalSubmission original;
+        GroupOriginalDelivery delivery = GroupOriginalDelivery::multicast;
     };
     enum class Status : std::uint8_t {
         ready,
@@ -85,7 +96,8 @@ public:
         Guard(std::shared_ptr<ConnectionRuntime>, Binding,
             std::unique_lock<std::mutex>, DataHeader, std::size_t,
             std::uint64_t now, std::uint64_t expiration,
-            std::optional<std::uint64_t> crypto_generation) noexcept;
+            std::optional<std::uint64_t> crypto_generation,
+            GroupOriginalDelivery) noexcept;
         std::shared_ptr<ConnectionRuntime> runtime_;
         Binding binding_;
         std::unique_lock<std::mutex> lock_;
@@ -97,6 +109,7 @@ public:
         std::optional<std::uint64_t> crypto_generation_;
         Status status_ = Status::invalid;
         bool committed_ = false;
+        GroupOriginalDelivery delivery_ = GroupOriginalDelivery::multicast;
     };
 
     // Require an empty Live message sender, matching timestamp/family/schedule,
@@ -110,7 +123,20 @@ public:
     // polling must capture that request before a later admission may replace it.
     [[nodiscard]] static Guard try_reserve(const Binding&, DataHeader original,
         std::size_t plaintext_size,
-        Clock::time_point expiration = Clock::time_point::max()) noexcept;
+        Clock::time_point expiration = Clock::time_point::max(),
+        GroupOriginalDelivery delivery =
+            GroupOriginalDelivery::multicast) noexcept;
+    struct Recovery {
+        Status status = Status::stale;
+        SendBuffer::GroupRecovery prefix;
+        std::size_t pending_unicast = 0;
+    };
+    // Serialized by the coordinator policy gate. No wake/I/O under that gate;
+    // call notify_work after policy publication and release. At most 256 slots.
+    [[nodiscard]] static Recovery recover_prefix(const Binding&,
+        SequenceNumber next, bool apply,
+        bool allow_new_unicast = true) noexcept;
+    [[nodiscard]] static Recovery inspect_unicast(const Binding&) noexcept;
     // Call AFTER releasing all emitter/runtime guards, even after cancellation
     // if crypto preparation created a KM announcement. No original is emitted.
     static void notify_work(const Binding&) noexcept;

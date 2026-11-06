@@ -292,14 +292,15 @@ Error ReliabilitySession::preflight_group_original(const DataHeader& header,
 Error ReliabilitySession::import_group_original(const DataHeader& header,
     std::span<const std::byte> wire_payload, std::size_t plaintext_size,
     CryptoMode mode, std::uint64_t enqueue_microseconds,
-    std::uint64_t expiration_microseconds) noexcept
+    std::uint64_t expiration_microseconds,
+    GroupOriginalDelivery delivery) noexcept
 {
     const auto checked = preflight_group_original(header, plaintext_size, mode);
     if (checked != Error::none)
         return checked;
     const auto imported =
         send_buffer_.import_group_original(header, wire_payload, plaintext_size,
-            mode, enqueue_microseconds, expiration_microseconds);
+            mode, enqueue_microseconds, expiration_microseconds, delivery);
     if (imported == Error::none) {
         if (live_rate_controller_)
             live_rate_controller_->observe_input(
@@ -417,9 +418,8 @@ std::optional<OutboundPacket> ReliabilitySession::next_paced_data_packet(
     }
     const bool retransmission =
         allow_retransmission && send_buffer_.has_pending_retransmission();
-    const std::size_t flow_count = retransmission
-        ? 0U
-        : send_buffer_.packets_in_flight();
+    const std::size_t flow_count =
+        retransmission ? 0U : send_buffer_.new_packet_flow_count();
     if (!pacer.query(now_microseconds, flow_count).ready) {
         return std::nullopt;
     }
@@ -427,10 +427,14 @@ std::optional<OutboundPacket> ReliabilitySession::next_paced_data_packet(
         defer_pacing_commit, allow_retransmission, now_microseconds);
     if (packet.has_value()) {
         if (live_rate_controller_.has_value()) {
-            live_rate_controller_->observe_payload(packet->payload.size());
+            live_rate_controller_->observe_payload(packet->canonical_group
+                    ? packet->plaintext_size
+                    : packet->payload.size());
         }
         const std::size_t wire_overhead =
-            retransmission ? 0U : new_packet_wire_overhead;
+            retransmission || packet->canonical_group
+            ? 0U
+            : new_packet_wire_overhead;
         if (!defer_pacing_commit) {
             if (packet->header.retransmitted) {
                 note_retransmission_sent(
