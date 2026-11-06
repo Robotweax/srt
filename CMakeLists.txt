@@ -177,6 +177,7 @@ add_library(robotweax_srt
     src/handshake_extensions.cpp
     src/implementation_identity.cpp
     src/live.cpp
+    src/null_packet_deletion.cpp
     src/packet_filter.cpp
     src/payload_pool.cpp
     src/receive_buffer.cpp
@@ -478,6 +479,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_handshake_datagram.cpp
         tests/test_handshake_extensions.cpp
         tests/test_path_identifier.cpp
+        tests/test_null_packet_deletion.cpp
         tests/test_standby_rtt.cpp
         tests/test_listener_admission.cpp
         tests/test_listener_accept_queue.cpp
@@ -2140,6 +2142,15 @@ if(ROBOTWEAX_SRT_BUILD_FUZZERS)
     target_compile_options(fuzz_fec_control_decode
         PRIVATE -fsanitize=fuzzer,address,undefined)
     target_link_options(fuzz_fec_control_decode
+        PRIVATE -fsanitize=fuzzer,address,undefined)
+
+    add_executable(fuzz_null_packet_deletion fuzz/fuzz_null_packet_deletion.cpp)
+    target_include_directories(fuzz_null_packet_deletion PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fuzz_null_packet_deletion PRIVATE RobotweaxSRT::srt)
+    target_compile_options(fuzz_null_packet_deletion
+        PRIVATE -fsanitize=fuzzer,address,undefined)
+    target_link_options(fuzz_null_packet_deletion
         PRIVATE -fsanitize=fuzzer,address,undefined)
 
     if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS)

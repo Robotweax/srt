@@ -1,9 +1,24 @@
 # Null packet deletion (draft contract)
 
-**Status: draft proposal. Nothing in this document is implemented.** Every
-identifier below is provisional and unregistered. The draft exists so that the
-wire format, negotiation rules and qualification plan can be reviewed before
-any code is written. Items marked *open* need a decision.
+**Status: implementation in progress on `dev/null-packet-deletion`; not a
+supported socket feature.** The allocation-free payload and CONFIG-record
+codecs have initial deterministic tests and a fuzz target. They are not wired
+into connection negotiation or DATA processing, and the proposed socket option
+is not exposed. Every identifier below is provisional and unregistered. Items
+marked *open* need a decision.
+
+Remaining implementation and qualification work:
+
+- Socket policy, option-order validation and payload-budget reservation.
+- Caller/Listener negotiation, retry caching and session-authentication
+  consistency checks, including explicit mismatch rejection.
+- DATA processing around encryption, FEC, retransmission and delivery.
+- Pacing, byte accounting and private NPD counters.
+- Socket-level regression, sanitizer, fuzz and black-box qualification of the
+  integrated feature, as listed below.
+
+Development remains on the feature branch. Merging to `main` requires explicit
+maintainer approval after feature completion.
 
 Null packet deletion (NPD) removes MPEG-TS null packets from live payloads at
 the sender and restores them at the receiver, so constant-bitrate transport
