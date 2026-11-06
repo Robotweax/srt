@@ -246,7 +246,17 @@ The repair must preserve the original encryption-key selector and ciphertext
 (including the GCM tag), restore ordered bit-exact delivery, and leave counters
 unchanged on late originals or duplicate repairs. Key exchange is explicitly
 acknowledged in these deterministic fixtures; it does not simulate key-message
-loss. The codec tests cover 3,279 deletion/retention combinations and every prefix across
+loss.
+
+A separate 24-case delayed-response matrix covers CTR/GCM, all three key sizes,
+30 ms and 100 ms key-response delays, and either delivery or loss of the first
+response. Each case queues 1,200 messages alternating all-null, partially
+compressed and full-size passthrough payloads, then drains the queue. It checks
+ordered bit-exact delivery, repeated key changes, exact deletion/restoration
+counts, zero malformed or undecryptable packets, and no too-late drops. The
+100 ms cases must exercise the sender's bounded key-use pause. These fixtures
+delay rotation responses after successful setup; they do not combine delayed
+key exchange with DATA loss, FEC or network reordering. The codec tests cover 3,279 deletion/retention combinations and every prefix across
 payload lengths through 1,504 bytes. The dedicated fuzz targets are
 `fuzz_null_packet_deletion` and `fuzz_handshake_decode`.
 

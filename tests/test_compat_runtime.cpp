@@ -12067,10 +12067,13 @@ struct DelayedKeyResponseResult {
     std::uint64_t pause_microseconds = 0;
     std::uint64_t tlpktdrop = 0;
     std::size_t rotations = 0;
+    std::size_t key_changes = 0;
+    std::size_t dropped_responses = 0;
 };
 
-DelayedKeyResponseResult run_with_delayed_key_responses(
-    CryptoMode mode, std::uint64_t response_delay_microseconds)
+DelayedKeyResponseResult run_with_delayed_key_responses(CryptoMode mode,
+    std::uint64_t response_delay_microseconds, bool npd = false,
+    std::size_t key_size = 16, bool drop_first = false)
 {
     const auto sender_channel = std::make_shared<DatagramChannel>();
     const auto receiver_channel = std::make_shared<DatagramChannel>();
@@ -12087,7 +12090,7 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
         .passphrase = "delayed key response fixture",
         .mode = mode,
         .enable_aes_gcm = true,
-        .key_length = 16,
+        .key_length = key_size,
         .refresh_rate_packets = 200,
         .preannouncement_packets = 80,
     };
@@ -12120,6 +12123,8 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
         REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
     }
 #endif
+    if (npd)
+        REQUIRE_EQ(options.reserve_npd_prefix(true), Error::none);
     const SequenceNumber initial_sequence {5'000};
     const auto origin = ConnectionRuntime::Clock::now();
     std::uint64_t sender_now = 1'000'000;
@@ -12130,6 +12135,7 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
         .peer_socket_id = 920,
         .initial_sequence = initial_sequence,
         .flow_window_packets = 25'600,
+        .npd_enabled = npd,
         .options = options,
         .negotiated_options = {.periodic_nak = true, .retransmit_flag = true},
         .origin = origin,
@@ -12143,6 +12149,7 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
         .peer_socket_id = 910,
         .initial_sequence = initial_sequence,
         .flow_window_packets = 25'600,
+        .npd_enabled = npd,
         .options = options,
         .negotiated_options = {.periodic_nak = true, .retransmit_flag = true},
         .origin = origin,
@@ -12157,7 +12164,29 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
     };
     std::vector<DelayedResponse> delayed;
     DelayedKeyResponseResult result;
-    std::array<std::byte, message_size> message {};
+    const auto make_message = [npd](std::uint64_t index) {
+        std::array<std::byte, message_size> message {};
+        if (npd) {
+            message.fill(std::byte {0xff});
+            for (std::size_t offset = 0; offset < message.size();
+                offset += 188) {
+                message[offset] = std::byte {0x47};
+                message[offset + 1] = std::byte {0x1f};
+                message[offset + 3] = std::byte {0x10};
+            }
+            if (index % 3 != 0) {
+                message[1] = std::byte {0};
+                for (unsigned byte = 0; byte < 8; ++byte)
+                    message[4 + byte] =
+                        static_cast<std::byte>(index >> (8 * byte));
+            }
+            if (index % 3 == 2)
+                message[0] = std::byte {0};
+        }
+        return message;
+    };
+    std::optional<EncryptionKey> last_key;
+    const auto offered_milliseconds = npd ? 200U : 2000U;
     std::array<std::byte, 1'500> received {};
     // Windows restarts a late pacing slot at the actual send time, while
     // Linux/macOS can retain schedule credit. A 250 us simulation tick caps
@@ -12168,9 +12197,11 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
     constexpr std::uint64_t steps_per_millisecond = 1000 / tick_microseconds;
     for (std::uint64_t step = 0; step < 2'000U * steps_per_millisecond;
         ++step) {
-        if (step % steps_per_millisecond == 0U) {
+        if (step < offered_milliseconds * steps_per_millisecond
+            && step % steps_per_millisecond == 0U) {
             for (unsigned index = 0; index < messages_per_millisecond;
                 ++index) {
+                const auto message = make_message(result.queued);
                 if (sender.queue_message(message, 0, true, false, 0).status
                     == MessageIoStatus::success) {
                     ++result.queued;
@@ -12181,6 +12212,13 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
         for (const auto& datagram : take_datagrams(sender_output)) {
             const auto decoded = decode_packet(datagram);
             REQUIRE(decoded);
+            if (decoded.packet.kind == PacketKind::data
+                && !decoded.packet.data.retransmitted) {
+                const auto key = decoded.packet.data.encryption_key;
+                if (last_key && *last_key != key)
+                    ++result.key_changes;
+                last_key = key;
+            }
             receiver.process_packet(decoded.packet, sender_endpoint);
         }
         (void)receiver.poll();
@@ -12192,6 +12230,10 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
                 && decoded.packet.control.subtype
                     == key_material_response_subtype) {
                 ++result.rotations;
+                if (drop_first && result.dropped_responses == 0U) {
+                    ++result.dropped_responses;
+                    continue;
+                }
                 delayed.push_back({sender_now + response_delay_microseconds,
                     std::move(datagram)});
                 continue;
@@ -12213,6 +12255,11 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
                 break;
             }
             REQUIRE_EQ(got.bytes, static_cast<std::size_t>(message_size));
+            const auto expected = make_message(result.delivered);
+            REQUIRE(
+                std::equal(expected.begin(), expected.end(), received.begin()));
+            REQUIRE_EQ(got.first_sequence.value(),
+                initial_sequence.value() + result.delivered);
             ++result.delivered;
         }
         if (step % steps_per_millisecond == 0U) {
@@ -12226,6 +12273,9 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
         REQUIRE(sender_crypto->packets_on_active_key() < 400U);
         sender_now += tick_microseconds;
         receiver_now += tick_microseconds;
+        if (npd && step >= offered_milliseconds * steps_per_millisecond
+            && result.delivered == result.queued)
+            break;
     }
     const auto totals = sender.statistics(false, true).total;
     result.overrun_positions = totals.sender_key_refresh_overrun_positions;
@@ -12234,10 +12284,43 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
     REQUIRE_EQ(
         receiver.statistics(false, true).total.receiver_undecryptable.packets,
         0U);
+    if (npd) {
+        REQUIRE_EQ(
+            result.queued, messages_per_millisecond * offered_milliseconds);
+        REQUIRE_EQ(result.delivered, result.queued);
+        REQUIRE_EQ(result.dropped_responses, drop_first ? 1U : 0U);
+        REQUIRE(result.key_changes >= 2U);
+        const auto expected_units = result.queued / 3U * 13U;
+        REQUIRE_EQ(sender.npd_statistics().deleted_units, expected_units);
+        REQUIRE_EQ(receiver.npd_statistics().restored_units, expected_units);
+        REQUIRE_EQ(receiver.npd_statistics().malformed_payloads, 0U);
+    }
     return result;
 }
 
 } // namespace
+
+TEST(npd_late_and_missing_key_acknowledgements_preserve_delivery)
+{
+    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == CryptoMode::aes_gcm)
+            continue;
+#endif
+        for (const auto key_size : {16U, 24U, 32U}) {
+            for (const auto delay : {30000U, 100000U}) {
+                for (const bool drop_first : {false, true}) {
+                    const auto result = run_with_delayed_key_responses(
+                        mode, delay, true, key_size, drop_first);
+                    REQUIRE_EQ(result.tlpktdrop, 0U);
+                    REQUIRE(result.overrun_positions > 0U);
+                    if (delay == 100000U)
+                        REQUIRE(result.pause_microseconds > 0U);
+                }
+            }
+        }
+    }
+}
 
 TEST(compat_runtime_sender_late_drop_spares_packets_that_were_never_sent)
 {
