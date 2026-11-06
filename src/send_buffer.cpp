@@ -751,6 +751,11 @@ SendBuffer::GroupRecovery SendBuffer::group_recovery(
         const auto& slot = slots_[(head_ + offset) % capacity()];
         if (!slot.occupied || !slot.external_original)
             return {.error = Error::invalid_state};
+        const auto expiration = slot.metadata.live.expiration_microseconds;
+        if (expiration
+            && (!result.earliest_expiration_microseconds
+                || expiration < result.earliest_expiration_microseconds))
+            result.earliest_expiration_microseconds = expiration;
         if (slot.unicast_pending || slot.unicast_selected)
             continue;
         if (slot.submitted)

@@ -5,6 +5,8 @@
 #include "compat/group_unicast_budget.hpp"
 #include "compat/transport_runtime.hpp"
 
+#include <utility>
+
 namespace robotweax::srt::compat {
 
 class GroupSendBinding {
@@ -135,6 +137,50 @@ public:
         SendBuffer::GroupRecovery prefix;
         std::size_t pending_unicast = 0;
     };
+    // Hold distinct runtimes in stable order, without registry/emitter locks.
+    // Validate all guards before any commit. Commit is allocation-free under
+    // the retained runtime lock; release every guard before notifying work.
+    class RecoveryGuard {
+    public:
+        RecoveryGuard(RecoveryGuard&&) noexcept = default;
+        RecoveryGuard& operator=(RecoveryGuard&&) = delete;
+        [[nodiscard]] Recovery result() const noexcept;
+        [[nodiscard]] Recovery commit() noexcept;
+        // Keep ownership until guard destruction, which the coordinator places
+        // outside its publication gate for multi-member recovery.
+        void release() noexcept
+        {
+            if (lock_.owns_lock())
+                lock_.unlock();
+        }
+
+    private:
+        friend class GroupRuntimeAdmission;
+        explicit RecoveryGuard(Status status) noexcept
+        {
+            result_.status = status;
+        }
+        RecoveryGuard(std::shared_ptr<ConnectionRuntime> runtime,
+            std::unique_lock<std::mutex> lock, SequenceNumber next,
+            Recovery result,
+            std::optional<GroupRuntimeSendState::RecoveryKeyLease>
+                key_lease) noexcept
+            : runtime_(std::move(runtime))
+            , lock_(std::move(lock))
+            , next_(next)
+            , result_(result)
+            , key_lease_(key_lease)
+        {
+        }
+        std::shared_ptr<ConnectionRuntime> runtime_;
+        std::unique_lock<std::mutex> lock_;
+        SequenceNumber next_ {};
+        Recovery result_;
+        std::optional<GroupRuntimeSendState::RecoveryKeyLease> key_lease_;
+        bool committed_ = false;
+    };
+    [[nodiscard]] static RecoveryGuard try_recover_prefix(const Binding&,
+        SequenceNumber next, bool allow_new_unicast = true) noexcept;
     // Serialized by the coordinator policy gate. No wake/I/O under that gate;
     // call notify_work after policy publication and release. At most 256 slots.
     [[nodiscard]] static Recovery recover_prefix(const Binding&,

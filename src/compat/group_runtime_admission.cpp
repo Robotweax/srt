@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <exception>
 #include <limits>
 #include <ratio>
 #include <utility>
@@ -337,22 +338,61 @@ GroupRuntimeAdmission::Guard::commit() noexcept
     return Ticket {binding_, *token, delivery_};
 }
 
+GroupRuntimeAdmission::Recovery
+GroupRuntimeAdmission::RecoveryGuard::result() const noexcept
+{
+    if (result_.status == Status::ready && !lock_.owns_lock())
+        return {.status = Status::stale};
+    return result_;
+}
+
+GroupRuntimeAdmission::Recovery
+GroupRuntimeAdmission::RecoveryGuard::commit() noexcept
+{
+    if (result().status != Status::ready || committed_)
+        return {.status = Status::invalid};
+    const auto applied = runtime_->session_.group_recovery(next_, true);
+    assert(applied.error == Error::none);
+    if (applied.error != Error::none)
+        std::terminate();
+    if (key_lease_)
+        runtime_->group_send_state_->recovery_key_lease = key_lease_;
+    result_.prefix = applied;
+    result_.pending_unicast =
+        runtime_->session_.send_buffer().pending_group_unicast();
+    committed_ = true;
+    return result_;
+}
+
 GroupRuntimeAdmission::Recovery GroupRuntimeAdmission::recover_prefix(
     const Binding& binding, SequenceNumber next, bool apply,
     bool allow) noexcept
 {
+    auto guard = try_recover_prefix(binding, next, !apply || allow);
+    return apply && guard.result().status == Status::ready ? guard.commit()
+                                                           : guard.result();
+}
+
+GroupRuntimeAdmission::RecoveryGuard GroupRuntimeAdmission::try_recover_prefix(
+    const Binding& binding, SequenceNumber next, bool allow) noexcept
+{
     if (!binding)
-        return {};
+        return RecoveryGuard {Status::stale};
     const auto runtime = binding->runtime_.lock();
     if (!runtime)
-        return {.status = Status::closed};
+        return RecoveryGuard {Status::closed};
     std::unique_lock lock(runtime->mutex_, std::try_to_lock);
     if (!lock.owns_lock())
-        return {.status = Status::busy};
+        return RecoveryGuard {Status::busy};
     if (!active_locked(*runtime, binding) || runtime->locally_closed_
-        || runtime->peer_closed_ || runtime->broken_)
-        return {};
+        || runtime->peer_closed_ || runtime->broken_
+        || runtime->peer_error_pending_)
+        return RecoveryGuard {Status::stale};
     auto result = runtime->session_.group_recovery(next, false);
+    if (result.earliest_expiration_microseconds
+        && result.earliest_expiration_microseconds
+            <= runtime->now_microseconds())
+        return RecoveryGuard {Status::expired};
     const auto& history = runtime->session_.send_buffer();
     std::optional<GroupRuntimeSendState::RecoveryKeyLease> key_lease;
     if (result.error == Error::none && binding->schedule_
@@ -361,37 +401,32 @@ GroupRuntimeAdmission::Recovery GroupRuntimeAdmission::recover_prefix(
             history.group_original_submission(history.first_sequence());
         if (!first
             || first->sequence_position < binding->runtime_position_origin_)
-            return {.status = Status::invalid};
+            return RecoveryGuard {Status::invalid};
         const auto delta =
             first->sequence_position - binding->runtime_position_origin_;
         if (delta > std::numeric_limits<std::uint64_t>::max()
                 - binding->source_position_origin_)
-            return {.status = Status::invalid};
+            return RecoveryGuard {Status::invalid};
         const auto oldest = binding->schedule_->generation_at(
             binding->source_position_origin_ + delta);
         const auto newest = runtime->group_send_state_->prepared_key_generation;
-        // No key rollback on the native path. A retained ciphertext is not a
-        // recoverable prefix once a later KM has replaced its parity slot.
+        // No key rollback. A later KM may already have replaced this parity.
         if (newest >= oldest && newest - oldest >= 2U)
-            return {.status = Status::invalid};
+            return RecoveryGuard {Status::invalid};
         key_lease = {.generation = oldest,
             .end_position = history.next_sequence_position()};
     }
-    if (result.error == Error::none && apply && result.originals && !allow)
-        return {.status = Status::full};
-    if (result.error == Error::none && apply) {
-        result = runtime->session_.group_recovery(next, true);
-        // Explicit replay pins the receiver's parity slots through cumulative
-        // retirement of this prefix, including queued/submitted repairs.
-        if (key_lease)
-            runtime->group_send_state_->recovery_key_lease = key_lease;
-    }
-    return {.status = result.error == Error::none     ? Status::ready
-            : result.error == Error::buffer_too_small ? Status::full
-                                                      : Status::invalid,
-        .prefix = result,
-        .pending_unicast =
-            runtime->session_.send_buffer().pending_group_unicast()};
+    if (result.error != Error::none)
+        return RecoveryGuard {result.error == Error::buffer_too_small
+                ? Status::full
+                : Status::invalid};
+    if (result.originals && !allow)
+        return RecoveryGuard {Status::full};
+    return RecoveryGuard {runtime, std::move(lock), next,
+        {.status = Status::ready,
+            .prefix = result,
+            .pending_unicast = history.pending_group_unicast()},
+        key_lease};
 }
 
 GroupRuntimeAdmission::Recovery GroupRuntimeAdmission::inspect_unicast(

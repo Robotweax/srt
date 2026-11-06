@@ -1385,7 +1385,9 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
             registry_lock.unlock();
             if (coordinator) {
                 const auto state = coordinator->snapshot();
-                if (state.closed || state.failed)
+                if (state.closed || state.failed
+                    || state.source_mode
+                        != GroupSendCoordinator::SourceMode::multicast)
                     return false;
                 output.announcement.initial_sequence =
                     state.next_sequence.value();
@@ -1540,6 +1542,7 @@ bool GroupRegistry::activate_coordinated_member(SRTSOCKET group,
             const auto member = find_member(*record, socket, member_generation);
             if (member != record->members.end()) {
                 member->coordinator_member = joined->id;
+                member->coordinator_status_revision = joined->status_revision;
                 published = true;
             }
         }
@@ -1569,15 +1572,23 @@ void GroupRegistry::refresh_coordinated_members(
     if (record->closed || record->dispatch->coordinator != coordinator)
         return;
     for (auto& member : record->members) {
-        if (!member.coordinator_member || member.coordinator_detached)
+        if (!member.coordinator_member)
             continue;
         for (std::size_t i = 0; i < count; ++i) {
             if (rows[i].id != member.coordinator_member
-                || rows[i].detachment == GroupSendCoordinator::Detachment::none)
+                || rows[i].status_revision
+                    <= member.coordinator_status_revision)
                 continue;
-            member.coordinator_detached = true;
-            member.public_data.memberstate = SRT_GST_BROKEN;
-            member.public_data.result = SRT_ECONNLOST;
+            member.coordinator_status_revision = rows[i].status_revision;
+            member.coordinator_detached =
+                rows[i].detachment != GroupSendCoordinator::Detachment::none;
+            if (member.coordinator_detached) {
+                member.public_data.memberstate = SRT_GST_BROKEN;
+                member.public_data.result = SRT_ECONNLOST;
+            } else if (member.public_data.sockstate == SRTS_CONNECTED) {
+                member.public_data.memberstate = SRT_GST_RUNNING;
+                member.public_data.result = 0;
+            }
             advance_version(record->snapshot_version);
             advance_version(record->update_version);
             break;

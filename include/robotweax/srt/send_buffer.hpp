@@ -144,6 +144,8 @@ public:
         Error error = Error::none;
         std::size_t originals = 0;
         std::size_t repairs = 0;
+        // Exact minimum across this validated live prefix (zero means no TTL).
+        std::uint64_t earliest_expiration_microseconds = 0;
     };
     // Explicit bounded retained-prefix recovery; tombstones refuse the whole
     // operation, while selected native retries retain their immutable state.

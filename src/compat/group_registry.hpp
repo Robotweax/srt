@@ -45,6 +45,7 @@ struct GroupMemberSnapshot {
     bool received_data = false;
     std::uint64_t coordinator_member = 0;
     bool coordinator_detached = false;
+    std::uint64_t coordinator_status_revision = 0;
     // Member retransmissions already folded into the group counters.
     PacketByteCounter retransmitted_folded;
     // This caller member accepted GroupRecord::peer_group during its own

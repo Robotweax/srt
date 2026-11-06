@@ -2557,3 +2557,223 @@ TEST(
         REQUIRE(state.unicast_budget.repair_wire_bytes >= wire);
     }
 }
+
+namespace {
+PolicyActor::SourceRecovery recover_native_source(
+    const std::shared_ptr<PolicyActor>& actor,
+    std::span<const PolicyActor::RecoveryMember> members)
+{
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    for (;;) {
+        auto result = actor->recover_source_to_unicast(0, members);
+        if (result.status != PolicyActor::TransitionStatus::busy)
+            return result;
+        REQUIRE(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+}
+struct FailedSourceProbe {
+    std::atomic<bool> fatal {false};
+    std::atomic<unsigned> attempts {0};
+    std::mutex mutex;
+    std::vector<std::byte> first;
+    static UdpIoResult send(
+        std::span<const std::byte> bytes, IpEndpoint, void* p) noexcept
+    {
+        auto& self = *static_cast<FailedSourceProbe*>(p);
+        ++self.attempts;
+        {
+            std::lock_guard lock(self.mutex);
+            if (self.first.empty())
+                self.first.assign(bytes.begin(), bytes.end());
+        }
+        return self.fatal.load()
+            ? UdpIoResult {.error = Error::io_error, .system_error = EIO}
+            : UdpIoResult {.error = Error::would_block};
+    }
+};
+void wait_for_source_failure(const std::shared_ptr<PolicyActor>& actor)
+{
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    while (!actor->snapshot().failed || actor->snapshot().inflight_frames) {
+        REQUIRE(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+}
+}
+
+TEST(
+    multicast_dispatch_source_recovery_restores_cached_members_and_continues_canonical_rotations)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2, 64);
+        const auto second =
+            make_receiver(f.peers, f.bound, mode != 0, mode == 2, 120, true);
+        REQUIRE(wait_for_members(f.sender, 2, mode != 0));
+        auto actor = f.actor();
+        std::array<PolicyActor::Member, 2> members;
+        REQUIRE_EQ(actor->members(members), 2U);
+        FailedSourceProbe probe;
+        SendHookReset source_reset {f.source()};
+        f.source()->set_send_hook_for_testing(FailedSourceProbe::send, &probe);
+        PolicyWireTrace trace;
+        {
+            auto group = GroupRegistry::instance().find(f.sender);
+            SRTSOCKET member = SRT_INVALID_SOCK;
+            {
+                std::lock_guard lock(group->mutex);
+                member = group->members.front().public_data.id;
+            }
+            auto socket = SocketRegistry::instance().find(member);
+            std::lock_guard lock(socket->mutex);
+            trace.control = socket->channel;
+            trace.target = socket->peer_endpoint;
+        }
+        SendHookReset control_reset {trace.control};
+        trace.control->set_send_hook_for_testing(
+            PolicyWireTrace::control_send, &trace);
+        for (int i = 0; i < 4; ++i)
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        probe.fatal = true;
+        wait_for_source_failure(actor);
+        SRT_SOCKGROUPDATA rows[2] {};
+        std::size_t count = 2;
+        REQUIRE_EQ(srt_group_data(f.sender, rows, &count), 2);
+        for (const auto& row : rows) {
+            REQUIRE_EQ(row.sockstate, SRTS_CONNECTED);
+            REQUIRE_EQ(row.memberstate, SRT_GST_BROKEN);
+            REQUIRE_EQ(row.result, SRT_ECONNLOST);
+        }
+        REQUIRE_EQ(srt_getsockstate(f.sender), SRTS_BROKEN);
+        const int epoll = srt_epoll_create();
+        REQUIRE(epoll >= 0);
+        struct ReleaseRecoveryWatch {
+            int id;
+            ~ReleaseRecoveryWatch()
+            {
+                (void)srt_epoll_release(id);
+            }
+        } release_watch {epoll};
+        const int watched = SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+        REQUIRE_EQ(srt_epoll_add_usock(epoll, f.sender, &watched), 0);
+        SRT_EPOLL_EVENT ready[1] {};
+        REQUIRE_EQ(srt_epoll_uwait(epoll, ready, 1, 1000), 1);
+        REQUIRE(ready[0].events & SRT_EPOLL_ERR);
+        const auto boundary = actor->snapshot().next_sequence;
+        const std::array selected {
+            PolicyActor::RecoveryMember {members[0].id, 0},
+            PolicyActor::RecoveryMember {members[1].id, 0}};
+        const auto recovered = recover_native_source(actor, selected);
+        REQUIRE_EQ(recovered.status, PolicyActor::TransitionStatus::applied);
+        REQUIRE_EQ(recovered.prefix.originals, 8U);
+        REQUIRE_EQ(recovered.prefix.repairs, 0U);
+        REQUIRE_EQ(recovered.effective_sequence, boundary);
+        REQUIRE_EQ(srt_getsockstate(f.sender), SRTS_CONNECTED);
+        REQUIRE_EQ(srt_epoll_uwait(epoll, ready, 1, 1000), 1);
+        REQUIRE(ready[0].events & SRT_EPOLL_OUT);
+        REQUIRE(!(ready[0].events & SRT_EPOLL_ERR));
+        count = 2;
+        REQUIRE_EQ(srt_group_data(f.sender, rows, &count), 2);
+        for (const auto& row : rows) {
+            REQUIRE_EQ(row.memberstate, SRT_GST_RUNNING);
+            REQUIRE_EQ(row.result, 0);
+        }
+        const auto stopped_attempts = probe.attempts.load();
+        expect_messages(f.receiver, 0, 4);
+        expect_messages(second, 0, 4);
+        for (int i = 4; i < 84; ++i) {
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+            std::this_thread::sleep_for(std::chrono::milliseconds {2});
+        }
+        expect_messages(f.receiver, 4, 80);
+        expect_messages(second, 4, 80);
+        REQUIRE_EQ(probe.attempts.load(), stopped_attempts);
+        REQUIRE_EQ(actor->snapshot().unicast_only_frames, 80U);
+        REQUIRE_EQ(actor->snapshot().detached_members, 0U);
+        {
+            std::scoped_lock lock(probe.mutex, trace.mutex);
+            REQUIRE(trace.unicast.size() >= 84U);
+            REQUIRE_EQ(trace.unicast.front(), probe.first);
+            REQUIRE(!decode_packet(trace.unicast.front())
+                    .packet.data.retransmitted);
+        }
+        ROBOTWEAX_SRT_MCAST_STATS_V1 stats {};
+        int size = sizeof(stats);
+        REQUIRE_EQ(srt_getsockflag(
+                       f.sender, SRTO_ROBOTWEAX_MCAST_STATS, &stats, &size),
+            0);
+        REQUIRE_EQ(stats.mcast_pkt_sent, 0U);
+        SRT_TRACEBSTATS group_stats {};
+        REQUIRE_EQ(srt_bstats(f.sender, &group_stats, 0), 0);
+        REQUIRE_EQ(group_stats.pktSentUniqueTotal, 84);
+        REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
+        REQUIRE_EQ(srt_getsockstate(second), SRTS_CONNECTED);
+    }
+}
+
+TEST(
+    multicast_dispatch_source_recovery_preserves_preapproved_survivor_and_refuses_late_join)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    CoordinatedNative f;
+    const auto other = make_receiver(f.peers, f.bound, false, false, 120, true);
+    REQUIRE(wait_for_members(f.sender, 2));
+    auto actor = f.actor();
+    std::array<PolicyActor::Member, 2> members;
+    REQUIRE_EQ(actor->members(members), 2U);
+    REQUIRE_EQ(
+        force_policy(actor, members[0].id, 0, PolicyDelivery::unicast).status,
+        PolicyActor::TransitionStatus::applied);
+    FailedSourceProbe probe;
+    probe.fatal = true;
+    SendHookReset reset {f.source()};
+    f.source()->set_send_hook_for_testing(FailedSourceProbe::send, &probe);
+    REQUIRE_EQ(f.send(0), static_cast<int>(message(0).size()));
+    wait_for_source_failure(actor);
+    expect_messages(f.receiver, 0, 1);
+    const std::array selected {PolicyActor::RecoveryMember {members[0].id, 1}};
+    REQUIRE_EQ(recover_native_source(actor, selected).status,
+        PolicyActor::TransitionStatus::applied);
+    const auto attempts = probe.attempts.load();
+    const auto late =
+        f.peers.keep(srt_create_group(ROBOTWEAX_SRT_GTYPE_MULTICAST));
+    REQUIRE(late != SRT_INVALID_SOCK);
+    const bool yes = true;
+    REQUIRE_EQ(srt_setsockflag(
+                   late, SRTO_ROBOTWEAX_MCAST_INDEPENDENT, &yes, sizeof(yes)),
+        0);
+    const auto local = ipv4_sockaddr({127, 0, 0, 1}, 0);
+    REQUIRE_EQ(srt_setsockflag(
+                   late, SRTO_ROBOTWEAX_MCAST_IFACE, &local, sizeof(local)),
+        0);
+    const std::int32_t timeout = 1000;
+    REQUIRE_EQ(
+        srt_setsockflag(late, SRTO_CONNTIMEO, &timeout, sizeof(timeout)), 0);
+    auto endpoint = srt_prepare_endpoint(
+        nullptr, reinterpret_cast<const sockaddr*>(&f.bound), sizeof(f.bound));
+    REQUIRE_EQ(srt_connect_group(late, &endpoint, 1), SRT_ERROR);
+    for (int i = 1; i < 11; ++i)
+        REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+    expect_messages(f.receiver, 1, 10);
+    SRT_SOCKGROUPDATA rows[2] {};
+    std::size_t count = 2;
+    REQUIRE_EQ(srt_group_data(f.sender, rows, &count), 2);
+    REQUIRE_EQ(rows[0].memberstate, SRT_GST_RUNNING);
+    REQUIRE_EQ(rows[1].memberstate, SRT_GST_BROKEN);
+    REQUIRE_EQ(actor->snapshot().active_members, 1U);
+    REQUIRE_EQ(actor->snapshot().detached_members, 1U);
+    REQUIRE_EQ(probe.attempts.load(), attempts);
+    REQUIRE_EQ(srt_getsockstate(other), SRTS_CONNECTED);
+    f.peers.drop(f.sender);
+    REQUIRE(actor->snapshot().closed);
+    REQUIRE_EQ(probe.attempts.load(), attempts);
+}

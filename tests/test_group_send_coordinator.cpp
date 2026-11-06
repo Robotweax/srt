@@ -1,5 +1,6 @@
 #include "test.hpp"
 #include "compat/group_send_coordinator.hpp"
+#include "compat/group_registry.hpp"
 #include "robotweax/srt/control.hpp"
 
 #include <atomic>
@@ -14,6 +15,22 @@ using namespace std::chrono_literals;
 
 namespace robotweax::srt::compat {
 struct GroupSendCoordinatorTestAccess {
+    static GroupPacketEncoder::Snapshot encoder(GroupSendCoordinator& actor)
+    {
+        std::lock_guard lock(actor.publication_);
+        return actor.encoder_->snapshot();
+    }
+    static void source_revision(
+        GroupSendCoordinator& actor, std::uint64_t value)
+    {
+        std::lock_guard lock(actor.publication_);
+        actor.state_.source_revision = value;
+    }
+    static void fail(GroupSendCoordinator& actor)
+    {
+        std::lock_guard lock(actor.publication_);
+        actor.fail();
+    }
     static std::shared_ptr<GroupUnicastBudget> budget(
         GroupSendCoordinator& actor)
     {
@@ -1848,4 +1865,513 @@ TEST(
     a.exchange_keys(true);
     REQUIRE_EQ(a.data_attempts.size(), 1U);
     REQUIRE(decode_packet(a.data_attempts.back()).packet.data.retransmitted);
+}
+
+namespace {
+Actor::SourceRecovery recover_source(Fixture& f,
+    std::initializer_list<Actor::RecoveryMember> members,
+    std::uint64_t revision = 0)
+{
+    return f.actor->recover_source_to_unicast(
+        revision, {members.begin(), members.size()});
+}
+void fail_source(Fixture& f)
+{
+    f.output.error = Error::io_error;
+    for (unsigned i = 0; i < 64 && f.actor->snapshot().inflight_frames; ++i)
+        f.pump();
+    REQUIRE_EQ(f.actor->snapshot().inflight_frames, 0U);
+    REQUIRE(f.actor->snapshot().failed);
+    REQUIRE_EQ(f.actor->snapshot().source_failure,
+        GroupMulticastEmitter::Failure::transport);
+}
+}
+
+TEST(
+    compat_group_source_recovery_preserves_prefix_identity_wrap_and_rotating_future_unicast)
+{
+    for (auto mode :
+        {CryptoMode::automatic, CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        const SequenceNumber start {SequenceNumber::mask - 2U};
+        Fixture f(mode, 8, start);
+        f.actor->close();
+        f.config.unicast_budget_clock = f.config.source.clock;
+        f.config.unicast_budget_clock_context = &f.now;
+        f.recreate();
+        Receiver a(f, 16, true, start), b(f, 16, true, start);
+        REQUIRE_EQ(f.actor->set_delivery(b.id, 0, Delivery::overlap).status,
+            Transition::applied);
+        for (unsigned i = 0; i < 3; ++i)
+            REQUIRE_EQ(f.send(), Status::accepted);
+        fail_source(f);
+        REQUIRE_EQ(reason(f, a.id), Actor::Detachment::source_not_submitted);
+        REQUIRE_EQ(reason(f, b.id), Actor::Detachment::none);
+        a.ack(start.next(), true);
+        REQUIRE_EQ(a.buffered(), 3U);
+        const auto result = recover_source(f, {{a.id, 0}, {b.id, 1}});
+        REQUIRE_EQ(result.status, Transition::applied);
+        REQUIRE_EQ(result.revision, 1U);
+        REQUIRE_EQ(result.members, 2U);
+        REQUIRE_EQ(result.effective_sequence, start.advanced(3));
+        REQUIRE_EQ(result.effective_position, 3U);
+        REQUIRE_EQ(result.prefix.originals, 3U);
+        REQUIRE_EQ(result.prefix.repairs, 0U);
+        REQUIRE_EQ(
+            GroupSendCoordinatorTestAccess::encoder(*f.actor).committed_packets,
+            3U);
+        REQUIRE(!f.actor->snapshot().failed);
+        REQUIRE(f.actor->snapshot().writable);
+        for (unsigned i = 0; i < 3; ++i) {
+            tick(f, a, &b);
+            a.exchange_keys(true);
+            b.exchange_keys(true);
+            REQUIRE(a.data_attempts.size() >= i + 1);
+            REQUIRE(b.data_attempts.size() >= i + 1);
+            REQUIRE_EQ(a.data_attempts[i], b.data_attempts[i]);
+            REQUIRE(
+                !decode_packet(a.data_attempts[i]).packet.data.retransmitted);
+            decrypt_original(a, mode, a.data_attempts[i]);
+            a.ack(start.advanced(i + 1), true);
+            b.ack(start.advanced(i + 1), true);
+        }
+        REQUIRE_EQ(a.data_attempts.front(), f.output.packets.front());
+        for (unsigned i = 3; i < 23; ++i) {
+            tick(f, a, &b);
+            REQUIRE_EQ(f.send(), Status::accepted);
+            a.exchange_keys(true);
+            b.exchange_keys(true);
+            f.pump();
+            REQUIRE_EQ(a.data_attempts.size(), i + 1U);
+            REQUIRE_EQ(b.data_attempts.size(), i + 1U);
+            REQUIRE_EQ(a.data_attempts.back(), b.data_attempts.back());
+            decrypt_original(a, mode, a.data_attempts.back());
+            a.ack(start.advanced(i + 1), true);
+            b.ack(start.advanced(i + 1), true);
+        }
+        REQUIRE_EQ(
+            f.output.size(), 1U); // No multicast syscall after retirement.
+        REQUIRE_EQ(f.actor->snapshot().unicast_only_frames, 20U);
+        REQUIRE_EQ(
+            GroupSendCoordinatorTestAccess::encoder(*f.actor).committed_packets,
+            23U);
+        REQUIRE_EQ(f.actor->snapshot().detached_members, 0U);
+        REQUIRE_EQ(a.buffered() + b.buffered(), 0U);
+    }
+}
+
+TEST(
+    compat_group_source_recovery_revision_request_and_member_checks_leave_failure_unchanged)
+{
+    Fixture f;
+    Receiver a(f), b(f);
+    REQUIRE_EQ(recover_source(f, {{a.id, 0}}).status, Transition::unavailable);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    fail_source(f);
+    REQUIRE_EQ(recover_source(f, {}).status, Transition::invalid);
+    REQUIRE_EQ(
+        recover_source(f, {{a.id, 0}, {a.id, 0}}).status, Transition::invalid);
+    REQUIRE_EQ(recover_source(f, {{0, 0}}).status, Transition::stale);
+    REQUIRE_EQ(recover_source(f, {{a.id, 1}}).status, Transition::stale);
+    REQUIRE_EQ(recover_source(f, {{a.id, 0}}, 1).status, Transition::stale);
+    REQUIRE(f.actor->snapshot().failed);
+    REQUIRE_EQ(f.actor->snapshot().source_revision, 0U);
+    a.exchange_keys(true);
+    b.exchange_keys(true);
+    REQUIRE(a.data_attempts.empty());
+    REQUIRE(b.data_attempts.empty());
+    REQUIRE_EQ(recover_source(f, {{a.id, 0}}).status, Transition::applied);
+    REQUIRE_EQ(recover_source(f, {{a.id, 0}}).status, Transition::stale);
+    REQUIRE_EQ(
+        recover_source(f, {{b.id, 0}}, 1).status, Transition::unavailable);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 1, Delivery::multicast).status,
+        Transition::unavailable);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 1, Delivery::overlap).status,
+        Transition::unavailable);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 1, Delivery::unicast).status,
+        Transition::unchanged);
+}
+
+TEST(
+    compat_group_source_recovery_busy_second_runtime_does_not_schedule_first_prefix)
+{
+    Fixture f;
+    Receiver a(f), b(f);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    fail_source(f);
+    auto binding = GroupSendCoordinatorTestAccess::binding(*f.actor, b.id);
+    std::promise<void> held, release;
+    auto released = release.get_future();
+    auto blocker = std::async(std::launch::async, [&] {
+        auto guard = Admission::try_recover_prefix(binding, initial.next());
+        REQUIRE_EQ(guard.result().status, Admission::Status::ready);
+        held.set_value();
+        released.wait();
+    });
+    held.get_future().wait();
+    const auto result = recover_source(
+        f, {{b.id, 0}, {a.id, 0}}); // Order cannot change lock order.
+    release.set_value();
+    blocker.get();
+    REQUIRE_EQ(result.status, Transition::busy);
+    REQUIRE(f.actor->snapshot().failed);
+    REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 0U);
+    a.exchange_keys(true);
+    REQUIRE(a.data_attempts.empty());
+    REQUIRE_EQ(
+        recover_source(f, {{a.id, 0}, {b.id, 0}}).status, Transition::applied);
+}
+
+TEST(
+    compat_group_source_recovery_budget_rejection_is_atomic_and_nonselected_members_stay_detached)
+{
+    Fixture f;
+    f.actor->close();
+    f.config.maximum_unicast_members = 1;
+    f.recreate();
+    Receiver a(f), b(f);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    fail_source(f);
+    REQUIRE_EQ(
+        recover_source(f, {{a.id, 0}, {b.id, 0}}).status, Transition::full);
+    REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 0U);
+    a.exchange_keys(true);
+    b.exchange_keys(true);
+    REQUIRE(a.data_attempts.empty());
+    REQUIRE(b.data_attempts.empty());
+    REQUIRE_EQ(recover_source(f, {{a.id, 0}}).status, Transition::applied);
+    tick(f, a);
+    a.exchange_keys(true);
+    a.ack(initial.next(), true);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    tick(f, a);
+    a.exchange_keys(true);
+    f.pump();
+    REQUIRE_EQ(a.data_attempts.size(), 2U);
+    REQUIRE(b.data_attempts.empty());
+    REQUIRE_EQ(reason(f, b.id), Actor::Detachment::source_not_submitted);
+    REQUIRE_EQ(f.actor->snapshot().active_members, 1U);
+    REQUIRE_EQ(f.actor->snapshot().detached_members, 1U);
+}
+
+TEST(compat_group_source_recovery_waits_for_every_old_outcome_and_fanout_ticket)
+{
+    Fixture f(CryptoMode::automatic, 8);
+    f.actor->close();
+    f.config.fanout_batch = 1;
+    f.recreate();
+    Receiver a(f), b(f);
+    for (unsigned i = 0; i < 3; ++i)
+        REQUIRE_EQ(f.send(), Status::accepted);
+    f.output.error = Error::io_error;
+    f.pump();
+    REQUIRE(f.actor->snapshot().inflight_frames > 0);
+    REQUIRE_EQ(recover_source(f, {{a.id, 0}}).status, Transition::busy);
+    fail_source(f);
+    REQUIRE_EQ(recover_source(f, {{a.id, 0}}).status, Transition::applied);
+    for (unsigned i = 0; i < 12; ++i)
+        f.pump(); // No old event can apply to reused frame slots.
+    REQUIRE(!f.actor->snapshot().failed);
+    REQUIRE_EQ(reason(f, a.id), Actor::Detachment::none);
+}
+
+TEST(
+    compat_group_source_recovery_mixed_submitted_and_unsubmitted_prefix_uses_correct_R_flags)
+{
+    Fixture f(CryptoMode::aes_gcm, 8);
+    Receiver a(f, 16);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    f.pump();
+    tick(f, a);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    fail_source(f);
+    const auto first = f.output.packets[0], second = f.output.packets[1];
+    const auto recovered = recover_source(f, {{a.id, 0}});
+    REQUIRE_EQ(recovered.status, Transition::applied);
+    REQUIRE_EQ(recovered.prefix.repairs, 1U);
+    REQUIRE_EQ(recovered.prefix.originals, 1U);
+    for (unsigned i = 0; i < 3; ++i) {
+        tick(f, a);
+        a.exchange_keys(true);
+        a.ack(initial.advanced(std::min(i + 1, 2U)), true);
+    }
+    REQUIRE_EQ(a.data_attempts.size(), 2U);
+    for (const auto& bytes : a.data_attempts) {
+        const auto decoded = decode_packet(bytes);
+        REQUIRE(decoded);
+        const bool old = decoded.packet.data.sequence == initial;
+        REQUIRE_EQ(decoded.packet.data.retransmitted, old);
+        auto normalized = decoded.packet.data;
+        normalized.retransmitted = false;
+        std::vector<std::byte> wire(bytes.size());
+        REQUIRE(encode_packet({.kind = PacketKind::data,
+                                  .data = normalized,
+                                  .payload = decoded.packet.payload},
+            wire));
+        REQUIRE_EQ(wire, old ? first : second);
+        decrypt_original(a, CryptoMode::aes_gcm, bytes);
+    }
+    REQUIRE_EQ(a.buffered(), 0U);
+}
+
+TEST(
+    compat_group_source_recovery_unavailable_prefix_key_or_deadline_cannot_be_partially_replayed)
+{
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        Fixture f(
+            variant == 2 ? CryptoMode::aes_gcm : CryptoMode::automatic, 16);
+        Receiver a(f, 16);
+        if (variant == 2) {
+            for (unsigned i = 0; i < 8; ++i) {
+                REQUIRE_EQ(f.send(), Status::accepted);
+                a.exchange_keys();
+                f.pump();
+                tick(f, a);
+            }
+            REQUIRE_EQ(f.send(), Status::accepted);
+        } else
+            REQUIRE_EQ(f.send(f.now + 1ms), Status::accepted);
+        fail_source(f);
+        if (variant != 2) {
+            tick(f, a);
+            tick(f, a);
+        }
+        if (variant == 1)
+            a.exchange_keys(); // Convert expired storage into a tombstone.
+        REQUIRE_EQ(
+            recover_source(f, {{a.id, 0}}).status, Transition::unavailable);
+        REQUIRE(f.actor->snapshot().failed);
+        REQUIRE_EQ(f.actor->snapshot().source_revision, 0U);
+        REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 0U);
+        a.exchange_keys(true);
+        REQUIRE(a.data_attempts.empty());
+    }
+}
+
+TEST(
+    compat_group_source_recovery_excessive_second_prefix_rolls_back_the_entire_batch)
+{
+    Fixture f(CryptoMode::automatic, 64);
+    Receiver a(f, 300), b(f, 300);
+    for (unsigned i = 0; i < 256; ++i) {
+        REQUIRE_EQ(f.send(), Status::accepted);
+        f.pump();
+        a.ack(initial.advanced(i + 1), true);
+        tick(f, a, &b);
+    }
+    REQUIRE_EQ(f.send(), Status::accepted);
+    fail_source(f);
+    REQUIRE_EQ(
+        recover_source(f, {{a.id, 0}, {b.id, 0}}).status, Transition::full);
+    a.exchange_keys(true);
+    REQUIRE(a.data_attempts.empty());
+    REQUIRE_EQ(a.buffered(), 1U);
+    REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 0U);
+}
+
+TEST(
+    compat_group_source_recovery_internal_fault_or_retired_binding_is_not_a_resumable_source_error)
+{
+    for (unsigned variant = 0; variant < 4; ++variant) {
+        Fixture f;
+        Receiver a(f);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        if (variant == 0)
+            GroupSendCoordinatorTestAccess::fail(*f.actor);
+        fail_source(f);
+        if (variant == 1)
+            Admission::revoke(
+                GroupSendCoordinatorTestAccess::binding(*f.actor, a.id));
+        if (variant == 2)
+            a.runtime->close();
+        if (variant == 3)
+            a.runtime->apply_options(SocketOptions {});
+        REQUIRE_EQ(
+            recover_source(f, {{a.id, 0}}).status, Transition::unavailable);
+        REQUIRE(f.actor->snapshot().failed);
+        REQUIRE_EQ(f.actor->snapshot().source_revision, 0U);
+    }
+}
+
+TEST(
+    compat_group_source_recovery_last_revisions_are_usable_and_exhaustion_never_wraps)
+{
+    Fixture f;
+    Receiver a(f);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    fail_source(f);
+    GroupSendCoordinatorTestAccess::source_revision(*f.actor, UINT64_MAX);
+    REQUIRE_EQ(recover_source(f, {{a.id, 0}}, UINT64_MAX).status,
+        Transition::exhausted);
+    GroupSendCoordinatorTestAccess::source_revision(*f.actor, UINT64_MAX - 1);
+    GroupSendCoordinatorTestAccess::revision(*f.actor, a.id, UINT64_MAX);
+    REQUIRE_EQ(recover_source(f, {{a.id, UINT64_MAX}}, UINT64_MAX - 1).status,
+        Transition::exhausted);
+    GroupSendCoordinatorTestAccess::revision(*f.actor, a.id, UINT64_MAX - 1);
+    REQUIRE_EQ(
+        recover_source(f, {{a.id, UINT64_MAX - 1}}, UINT64_MAX - 1).status,
+        Transition::applied);
+    REQUIRE_EQ(f.actor->snapshot().source_revision, UINT64_MAX);
+}
+
+TEST(
+    compat_group_source_recovery_new_work_is_bounded_and_empty_advance_never_rejoins_a_failed_source)
+{
+    Fixture f(CryptoMode::aes_gcm, 2);
+    Receiver a(f, 16);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    fail_source(f);
+    REQUIRE_EQ(recover_source(f, {{a.id, 0}}).status, Transition::applied);
+    tick(f, a);
+    a.exchange_keys(true);
+    a.ack(initial.next(), true);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    const auto next = f.actor->snapshot().next_sequence;
+    REQUIRE_EQ(f.send(), Status::full);
+    REQUIRE_EQ(f.actor->snapshot().next_sequence, next);
+    f.pump();
+    REQUIRE_EQ(f.actor->snapshot().inflight_frames, 0U);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    f.pump();
+    f.actor->remove_member(a.id);
+    for (unsigned i = 0; i < 20; ++i)
+        REQUIRE_EQ(f.send(), Status::advanced_without_receivers);
+    Receiver late(f, 16, false, f.actor->snapshot().next_sequence);
+    REQUIRE(!f.actor->add_member(late.runtime));
+    REQUIRE_EQ(late.buffered(), 0U);
+    REQUIRE_EQ(f.output.size(), 1U);
+    REQUIRE_EQ(f.send(f.now), Status::expired);
+    f.actor->close();
+    REQUIRE_EQ(recover_source(f, {{a.id, 1}}, 1).status, Transition::closed);
+}
+
+TEST(
+    compat_group_source_recovery_busy_admission_preserves_identity_until_all_survivors_are_ready)
+{
+    Fixture f;
+    f.actor->close();
+    f.config.admission_busy_grace = 10ms;
+    f.config.admission_clock = f.config.source.clock;
+    f.config.admission_clock_context = &f.now;
+    f.recreate();
+    Receiver a(f), b(f);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    fail_source(f);
+    REQUIRE_EQ(
+        recover_source(f, {{a.id, 0}, {b.id, 0}}).status, Transition::applied);
+    tick(f, a, &b);
+    a.exchange_keys(true);
+    b.exchange_keys(true);
+    a.ack(initial.next(), true);
+    b.ack(initial.next(), true);
+    auto held = b.hold(f);
+    REQUIRE_EQ(held.status(), Admission::Status::ready);
+    const auto count =
+        GroupSendCoordinatorTestAccess::encoder(*f.actor).committed_packets;
+    REQUIRE_EQ(f.send(), Status::busy);
+    REQUIRE_EQ(
+        GroupSendCoordinatorTestAccess::encoder(*f.actor).committed_packets,
+        count);
+    held.release();
+    tick(f, a, &b);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    f.pump();
+    REQUIRE_EQ(f.actor->snapshot().unicast_only_frames, 1U);
+}
+
+TEST(
+    compat_group_source_recovery_member_status_refresh_rejects_a_stale_resume_observation)
+{
+    Fixture f;
+    Receiver a(f);
+    auto record = std::make_shared<GroupRecord>();
+    record->dispatch = std::make_unique<DispatchGroupState>();
+    record->dispatch->coordinator = f.actor;
+    GroupMemberSnapshot member;
+    member.coordinator_member = a.id;
+    member.public_data.sockstate = SRTS_CONNECTED;
+    member.public_data.memberstate = SRT_GST_RUNNING;
+    record->members.push_back(member);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    fail_source(f);
+    GroupRegistry::refresh_coordinated_members(record);
+    REQUIRE(record->members[0].coordinator_detached);
+    REQUIRE_EQ(record->members[0].coordinator_status_revision, 1U);
+    REQUIRE_EQ(recover_source(f, {{a.id, 0}}).status, Transition::applied);
+    GroupRegistry::refresh_coordinated_members(record);
+    REQUIRE(!record->members[0].coordinator_detached);
+    REQUIRE_EQ(record->members[0].coordinator_status_revision, 2U);
+    REQUIRE_EQ(record->members[0].public_data.memberstate, SRT_GST_RUNNING);
+    // Model an already observed newer failure, followed by an older row read
+    // before that failure. Refresh must not restore its stale recovery state.
+    record->members[0].coordinator_status_revision = 3;
+    record->members[0].coordinator_detached = true;
+    record->members[0].public_data.memberstate = SRT_GST_BROKEN;
+    record->members[0].public_data.result = SRT_ECONNLOST;
+    const auto version = record->snapshot_version;
+    GroupRegistry::refresh_coordinated_members(record);
+    REQUIRE(record->members[0].coordinator_detached);
+    REQUIRE_EQ(record->members[0].public_data.memberstate, SRT_GST_BROKEN);
+    REQUIRE_EQ(record->snapshot_version, version);
+}
+
+TEST(
+    compat_group_source_recovery_close_serializes_commit_and_fences_new_native_work)
+{
+    for (unsigned i = 0; i < 16; ++i) {
+        Fixture f;
+        Receiver a(f);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        fail_source(f);
+        auto recovered = std::async(std::launch::async, [&] {
+            return recover_source(f, {{a.id, 0}});
+        });
+        auto closed = std::async(std::launch::async, [&] {
+            f.actor->close();
+        });
+        const auto result = recovered.get();
+        closed.get();
+        REQUIRE(result.status == Transition::applied
+            || result.status == Transition::closed);
+        REQUIRE(f.actor->snapshot().closed);
+        a.exchange_keys(true);
+        REQUIRE(a.data_attempts.empty());
+        REQUIRE_EQ(
+            a.runtime->statistics(false, true).total.sent_unique.packets, 0U);
+        REQUIRE_EQ(f.output.size(), 1U);
+    }
+}
+
+TEST(
+    compat_group_source_recovery_negative_outcome_retires_while_its_runtime_is_busy)
+{
+    Fixture f;
+    Receiver a(f);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    const auto binding =
+        GroupSendCoordinatorTestAccess::binding(*f.actor, a.id);
+    std::promise<void> held, release;
+    auto released = release.get_future();
+    Admission::Status held_status = Admission::Status::invalid;
+    auto blocker = std::async(std::launch::async, [&] {
+        auto guard = Admission::try_recover_prefix(binding, initial.next());
+        held_status = guard.result().status;
+        held.set_value();
+        released.wait();
+    });
+    held.get_future().wait();
+    f.output.error = Error::io_error;
+    f.pump();
+    const auto state = f.actor->snapshot();
+    const auto detachment = reason(f, a.id);
+    const auto recovery = recover_source(f, {{a.id, 0}});
+    release.set_value();
+    blocker.get();
+    REQUIRE_EQ(held_status, Admission::Status::ready);
+    REQUIRE_EQ(state.inflight_frames, 0U);
+    REQUIRE_EQ(state.abandoned_completions, 1U);
+    REQUIRE(state.failed);
+    REQUIRE_EQ(detachment, Actor::Detachment::source_not_submitted);
+    REQUIRE_EQ(recovery.status, Transition::busy);
+    REQUIRE_EQ(recover_source(f, {{a.id, 0}}).status, Transition::applied);
 }

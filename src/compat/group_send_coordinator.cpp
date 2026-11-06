@@ -155,11 +155,39 @@ GroupSendCoordinator::admission_now() const noexcept
         : Clock::now();
 }
 
+GroupSendCoordinator::Clock::time_point
+GroupSendCoordinator::source_now() const noexcept
+{
+    return configuration_.source.clock
+        ? configuration_.source.clock(configuration_.source.clock_context)
+        : Clock::now();
+}
+bool GroupSendCoordinator::source_writable() const noexcept
+{
+    return state_.source_mode == SourceMode::unicast_only
+        || (emitter_ && emitter_->snapshot().report_writable);
+}
+void GroupSendCoordinator::fail() noexcept
+{
+    terminal_failure_ = true;
+    state_.failed = true;
+}
+void GroupSendCoordinator::observe_source_failure() noexcept
+{
+    const auto failure = emitter_->snapshot().failure;
+    if (failure != Emitter::Failure::none) {
+        state_.source_failure = failure;
+        if (state_.source_mode == SourceMode::multicast)
+            state_.failed = true;
+    }
+}
+
 std::optional<GroupSendCoordinator::Member> GroupSendCoordinator::add_member(
     const std::shared_ptr<ConnectionRuntime>& runtime) noexcept
 {
     std::lock_guard lock(publication_);
-    if (!runtime || state_.closed || state_.failed || next_member_ == 0)
+    if (!runtime || state_.closed || state_.failed || next_member_ == 0
+        || state_.source_mode != SourceMode::multicast)
         return {};
     Membership* available = nullptr;
     for (auto& entry : members_) {
@@ -236,6 +264,7 @@ void GroupSendCoordinator::detach(std::uint64_t id, Detachment reason) noexcept
         if (entry.state.id == id
             && entry.state.detachment == Detachment::none) {
             entry.state.detachment = reason;
+            ++entry.state.status_revision;
             state_.unicast_members -= static_cast<std::size_t>(
                 entry.state.delivery != GroupOriginalDelivery::multicast);
             --state_.active_members;
@@ -255,6 +284,8 @@ GroupSendCoordinator::Transition GroupSendCoordinator::set_delivery(
         if (state_.closed)
             return {.status = TransitionStatus::closed};
         if (state_.failed
+            || (state_.source_mode == SourceMode::unicast_only
+                && mode != GroupOriginalDelivery::unicast)
             || static_cast<unsigned>(mode)
                 > static_cast<unsigned>(GroupOriginalDelivery::overlap))
             return {.status = TransitionStatus::unavailable};
@@ -322,6 +353,154 @@ GroupSendCoordinator::Transition GroupSendCoordinator::set_delivery(
     RuntimeAdmission::notify_work(wake);
     return result;
 }
+GroupSendCoordinator::SourceRecovery
+GroupSendCoordinator::recover_source_to_unicast(
+    std::uint64_t expected, std::span<const RecoveryMember> selected) noexcept
+{
+    std::array<RuntimeAdmission::Binding, maximum_members> wake;
+    std::size_t wake_count = 0;
+    std::shared_ptr<Emitter> retired;
+    std::array<std::optional<RuntimeAdmission::RecoveryGuard>, maximum_members>
+        guards;
+    SourceRecovery result;
+    {
+        std::lock_guard lock(publication_);
+        result.revision = state_.source_revision;
+        result.effective_sequence = state_.next_sequence;
+        result.effective_position = next_position_;
+        const auto refused = [&](TransitionStatus status) {
+            auto copy = result;
+            copy.status = status;
+            return copy;
+        };
+        if (state_.closed)
+            return refused(TransitionStatus::closed);
+        if (expected != state_.source_revision)
+            return refused(TransitionStatus::stale);
+        const auto source = emitter_->snapshot();
+        if (terminal_failure_ || state_.source_mode != SourceMode::multicast
+            || (source.failure != Emitter::Failure::transport
+                && source.failure != Emitter::Failure::partial_datagram))
+            return refused(TransitionStatus::unavailable);
+        if (state_.inflight_frames || source.queued || source.pending_outcomes
+            || source.reported_queued)
+            return refused(TransitionStatus::busy);
+        if (selected.empty() || selected.size() > members_.size())
+            return refused(TransitionStatus::invalid);
+        if (expected == std::numeric_limits<std::uint64_t>::max())
+            return refused(TransitionStatus::exhausted);
+        std::array<const RecoveryMember*, maximum_members> requests {};
+        std::size_t new_leases = 0;
+        for (const auto& request : selected) {
+            auto found = std::find_if(
+                members_.begin(), members_.end(), [&](const auto& member) {
+                    return request.id && member.state.id == request.id;
+                });
+            if (found == members_.end())
+                return refused(TransitionStatus::stale);
+            const auto index =
+                static_cast<std::size_t>(found - members_.begin());
+            if (requests[index])
+                return refused(TransitionStatus::invalid);
+            if (found->state.revision != request.expected_revision)
+                return refused(TransitionStatus::stale);
+            if (found->state.detachment != Detachment::none
+                && found->state.detachment != Detachment::source_not_submitted)
+                return refused(TransitionStatus::unavailable);
+            if (found->state.revision
+                    == std::numeric_limits<std::uint64_t>::max()
+                || found->state.status_revision
+                    == std::numeric_limits<std::uint64_t>::max())
+                return refused(TransitionStatus::exhausted);
+            requests[index] = &request;
+            new_leases += static_cast<std::size_t>(!found->unicast_lease);
+        }
+        if (new_leases > state_.unicast_recipient_limit
+                - std::min(state_.unicast_reservations,
+                    state_.unicast_recipient_limit))
+            return refused(TransitionStatus::full);
+        // All runtime locks stay retained until every prefix has passed.
+        for (std::size_t i = 0; i < members_.size(); ++i) {
+            if (!requests[i])
+                continue;
+            guards[i].emplace(RuntimeAdmission::try_recover_prefix(
+                members_[i].binding, state_.next_sequence));
+            const auto status = guards[i]->result().status;
+            if (status != RuntimeAdmission::Status::ready)
+                return refused(status == RuntimeAdmission::Status::busy
+                        ? TransitionStatus::busy
+                        : status == RuntimeAdmission::Status::full
+                        ? TransitionStatus::full
+                        : TransitionStatus::unavailable);
+        }
+        if (!manual_
+            && scheduler_->notify_service(service_)
+                != RuntimeScheduler::SubmitStatus::accepted)
+            return refused(TransitionStatus::unavailable);
+        for (std::size_t i = 0; i < members_.size(); ++i) {
+            auto& member = members_[i];
+            if (!requests[i]) {
+                if (member.state.id
+                    && member.state.detachment == Detachment::none)
+                    detach(member.state.id, Detachment::source_unavailable);
+                continue;
+            }
+            const auto prefix = guards[i]->commit();
+            result.prefix.originals += prefix.prefix.originals;
+            result.prefix.repairs += prefix.prefix.repairs;
+            const auto expiration =
+                prefix.prefix.earliest_expiration_microseconds;
+            if (expiration
+                && (!result.prefix.earliest_expiration_microseconds
+                    || expiration
+                        < result.prefix.earliest_expiration_microseconds))
+                result.prefix.earliest_expiration_microseconds = expiration;
+            if (member.state.detachment != Detachment::none) {
+                --state_.detached_members;
+                ++state_.active_members;
+                member.state.detachment = Detachment::none;
+            } else {
+                state_.unicast_members -= static_cast<std::size_t>(
+                    member.state.delivery != GroupOriginalDelivery::multicast);
+            }
+            ++member.state.status_revision;
+            ++state_.unicast_members;
+            if (!member.unicast_lease) {
+                member.unicast_lease = true;
+                ++state_.unicast_reservations;
+            }
+            member.state.delivery = GroupOriginalDelivery::unicast;
+            ++member.state.revision;
+            member.state.effective_sequence = state_.next_sequence;
+            member.state.effective_position = next_position_;
+            member.busy_since.reset();
+            wake[wake_count++] = member.binding;
+        }
+        state_.source_mode = SourceMode::unicast_only;
+        state_.source_revision = expected + 1;
+        state_.source_effective_sequence = state_.next_sequence;
+        state_.source_effective_position = next_position_;
+        state_.source_failure = source.failure;
+        state_.failed = false;
+        retry_at_.reset();
+        result.status = TransitionStatus::applied;
+        result.revision = state_.source_revision;
+        result.members = wake_count;
+        retired = emitter_;
+        // No emitter/registry operations or notifications while guards live.
+        for (auto& guard : guards)
+            if (guard)
+                guard->release();
+        update_readiness();
+    }
+    // The failed, fully drained emitter cannot create another completion.
+    // Retire its reserved service outside actor/runtime locks.
+    retired->close();
+    for (std::size_t i = 0; i < wake_count; ++i)
+        RuntimeAdmission::notify_work(wake[i]);
+    return result;
+}
+
 void GroupSendCoordinator::advance_cursor() noexcept
 {
     ++next_position_;
@@ -354,6 +533,11 @@ bool GroupSendCoordinator::publish(void* p) noexcept
         tx.frame.recipients[i].ticket = std::move(ticket);
     }
     tx.frame.occupied = true;
+    if (tx.owner.state_.source_mode == SourceMode::unicast_only) {
+        tx.frame.completed =
+            true; // Consumer retires delegated tickets, never submits DATA.
+        ++tx.owner.state_.unicast_only_frames;
+    }
     tx.frame.crypto_generation = tx.packet->crypto_generation();
     tx.frame.remaining = tx.frame.count;
     ++tx.owner.state_.inflight_frames;
@@ -407,19 +591,29 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
     if (available == frames_.end())
         return Status::full;
     const auto admitted = [&]() noexcept -> Status {
-        auto reservation = emitter_->reserve(configuration_.source.generation,
-            state_.next_sequence, deadline, true);
-        if (reservation.status() != Emitter::Admission::accepted) {
-            switch (reservation.status()) {
-            case Emitter::Admission::expired:
-                return Status::expired;
-            case Emitter::Admission::full:
-                return Status::full;
-            default:
-                state_.failed = true;
-                return Status::failed;
+        std::optional<Emitter::Reservation> reservation;
+        if (state_.source_mode == SourceMode::multicast) {
+            reservation.emplace(
+                emitter_->reserve(configuration_.source.generation,
+                    state_.next_sequence, deadline, true));
+            if (reservation->status() != Emitter::Admission::accepted) {
+                switch (reservation->status()) {
+                case Emitter::Admission::expired:
+                    return Status::expired;
+                case Emitter::Admission::full:
+                    return Status::full;
+                case Emitter::Admission::failed:
+                    observe_source_failure();
+                    if (!state_.failed)
+                        fail();
+                    return Status::failed;
+                default:
+                    fail();
+                    return Status::failed;
+                }
             }
-        }
+        } else if (deadline <= source_now())
+            return Status::expired;
         Frame& frame = **available;
         Publication tx {*this, frame, {}, {}};
         bool retry = false;
@@ -487,7 +681,7 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
             if (!manual_
                 && scheduler_->schedule_service_at(service_, *retry_at_)
                     != RuntimeScheduler::SubmitStatus::accepted) {
-                state_.failed = true;
+                fail();
                 return Status::failed;
             }
             return Status::busy;
@@ -498,7 +692,7 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
         if (!manual_
             && scheduler_->notify_service(service_)
                 != RuntimeScheduler::SubmitStatus::accepted) {
-            state_.failed = true;
+            fail();
             return Status::failed;
         }
         auto packet = encoder_->prepare(header, bytes);
@@ -507,20 +701,23 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
                 || packet.status
                     == GroupPacketEncoder::Status::allocation_failure)
                 return Status::full;
-            state_.failed = true;
+            fail();
             return Status::failed;
         }
         tx.packet = packet.packet;
         for (std::size_t i = 0; i < frame.count; ++i)
             if (!tx.guards[i]->stage(tx.packet)) {
-                state_.failed = true;
+                fail();
                 return Status::failed;
             }
-        const auto result = reservation.publish(tx.packet->bytes(),
-            tx.packet->generation_owner(), publish, &tx, *available);
+        const auto result = reservation
+            ? reservation->publish(tx.packet->bytes(),
+                  tx.packet->generation_owner(), publish, &tx, *available)
+            : publish(&tx) ? Emitter::Admission::accepted
+                           : Emitter::Admission::failed;
         if (result != Emitter::Admission::accepted) {
             // A sealed identity cannot be abandoned and reused with new plaintext.
-            state_.failed = true;
+            fail();
             return Status::failed;
         }
         // No snapshot calls on emitter/runtime while their guards remain alive.
@@ -536,6 +733,14 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
 GroupSendCoordinator::Status GroupSendCoordinator::advance_empty(
     Clock::time_point deadline) noexcept
 {
+    if (state_.source_mode == SourceMode::unicast_only) {
+        if (deadline <= source_now())
+            return Status::expired;
+        if (skip(this))
+            return Status::advanced_without_receivers;
+        fail();
+        return Status::failed;
+    }
     const auto result =
         emitter_->advance_unused(configuration_.source.generation,
             state_.next_sequence, skip, this, deadline);
@@ -543,7 +748,10 @@ GroupSendCoordinator::Status GroupSendCoordinator::advance_empty(
         return Status::expired;
     if (result == Emitter::Admission::accepted)
         return Status::advanced_without_receivers;
-    state_.failed = true;
+    if (result == Emitter::Admission::failed)
+        observe_source_failure();
+    else
+        fail();
     return Status::failed;
 }
 
@@ -566,11 +774,10 @@ bool GroupSendCoordinator::crypto_writable() const noexcept
 
 void GroupSendCoordinator::update_readiness() noexcept
 {
-    const auto source = emitter_ ? emitter_->snapshot() : Emitter::Snapshot {};
     state_.writable = !state_.closed && !state_.failed
         && (!retry_at_ || admission_now() >= *retry_at_)
         && (state_.active_members == 0
-            || (crypto_writable() && source.report_writable
+            || (crypto_writable() && source_writable()
                 && state_.inflight_frames < frames_.size()));
     if (!state_.writable)
         readiness_->note_not_ready(SRT_EPOLL_OUT);
@@ -585,7 +792,7 @@ GroupSendCoordinator::Snapshot GroupSendCoordinator::snapshot() const noexcept
     state.writable = !state.closed && !state.failed
         && (!retry_at_ || admission_now() >= *retry_at_)
         && (state.active_members == 0
-            || (crypto_writable() && emitter_->snapshot().report_writable
+            || (crypto_writable() && source_writable()
                 && state.inflight_frames < frames_.size()));
     return state;
 }
@@ -600,8 +807,10 @@ void GroupSendCoordinator::drive() noexcept
     if (state_.closed)
         return;
     std::array<Emitter::Outcome, Emitter::maximum_batch> outcomes;
-    const auto count = emitter_->take_outcomes(
-        std::span {outcomes}.first(configuration_.fanout_batch));
+    const auto count = state_.source_mode == SourceMode::multicast
+        ? emitter_->take_outcomes(
+              std::span {outcomes}.first(configuration_.fanout_batch))
+        : 0U;
     for (std::size_t i = 0; i < count; ++i) {
         // Only this actor publishes source contexts; no external emitter access.
         auto frame = std::static_pointer_cast<const Frame>(outcomes[i].context);
@@ -631,8 +840,11 @@ void GroupSendCoordinator::drive() noexcept
             || (recipient.ticket->delivery == GroupOriginalDelivery::overlap
                 && frame.outcome.disposition
                     != Emitter::Disposition::submitted);
-        const auto result = delegated
-            ? A::duplicate_or_retired
+        const auto result = delegated ? A::duplicate_or_retired
+            // A negative source outcome cannot authorize history. Its captured
+            // member ID is never reused, so retirement needs no runtime lock.
+            : frame.outcome.disposition != Emitter::Disposition::submitted
+            ? A::not_submitted
             : RuntimeAdmission::try_apply(*recipient.ticket, frame.outcome);
         if (result == A::busy
             && ++recipient.busy_attempts < configuration_.maximum_busy_attempts)
@@ -663,8 +875,7 @@ void GroupSendCoordinator::drive() noexcept
             --state_.inflight_frames;
         }
     }
-    if (emitter_->snapshot().failure != Emitter::Failure::none)
-        state_.failed = true;
+    observe_source_failure();
     bool retiring_leases = false;
     for (auto& member : members_) {
         if (!member.unicast_lease
@@ -687,7 +898,7 @@ void GroupSendCoordinator::drive() noexcept
         && scheduler_->schedule_service_at(
                service_, after(Clock::now(), configuration_.poll_interval))
             != RuntimeScheduler::SubmitStatus::accepted)
-        state_.failed = true;
+        fail();
     update_readiness();
 }
 void GroupSendCoordinator::pump_for_testing() noexcept

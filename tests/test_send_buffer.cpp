@@ -1509,3 +1509,40 @@ TEST(send_buffer_canonical_queue_counters_survive_copy_ttl_and_mixed_preflight)
                    first.advanced(2), body.size(), CryptoMode::automatic),
         Error::none);
 }
+
+TEST(send_buffer_group_recovery_reports_exact_remaining_prefix_expiration)
+{
+    const SequenceNumber first {100};
+    SendBuffer history(first, 4, 32);
+    const std::array<std::byte, 1> body {std::byte {7}};
+    for (unsigned i = 0; i < 3; ++i) {
+        const DataHeader header {.sequence = first.advanced(i),
+            .message_number = i + 1,
+            .boundary = MessageBoundary::solo,
+            .destination_socket_id = 0x40000058U};
+        REQUIRE_EQ(history.import_group_original(header, body, body.size(),
+                       CryptoMode::automatic, 0,
+                       i == 0       ? 10
+                           : i == 1 ? 30
+                                    : 20),
+            Error::none);
+        const auto token = history.group_original_submission(header.sequence);
+        REQUIRE(token);
+        REQUIRE(history.note_group_original_submitted(*token, 1));
+    }
+    REQUIRE_EQ(history.group_recovery(first.advanced(3))
+                   .earliest_expiration_microseconds,
+        10U);
+    REQUIRE_EQ(history.acknowledge_submitted_before(first.next()), Error::none);
+    const auto remaining = history.group_recovery(first.advanced(3));
+    REQUIRE_EQ(remaining.error, Error::none);
+    REQUIRE_EQ(remaining.earliest_expiration_microseconds, 20U);
+    REQUIRE_EQ(history.recover_group_prefix(first.advanced(3))
+                   .earliest_expiration_microseconds,
+        20U);
+    REQUIRE_EQ(history.drop_expired_message(21).packets, 1U);
+    const auto unavailable = history.group_recovery(first.advanced(3));
+    REQUIRE_EQ(unavailable.error, Error::invalid_state);
+    REQUIRE_EQ(unavailable.earliest_expiration_microseconds, 0U);
+    REQUIRE_EQ(unavailable.originals + unavailable.repairs, 0U);
+}

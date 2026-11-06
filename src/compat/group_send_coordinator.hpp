@@ -64,7 +64,8 @@ public:
         crypto_error,
         source_not_submitted,
         completion_busy,
-        invalid_completion
+        invalid_completion,
+        source_unavailable
     };
     struct Member {
         std::uint64_t id = 0;
@@ -73,6 +74,9 @@ public:
         std::uint64_t revision = 0;
         SequenceNumber effective_sequence {};
         std::uint64_t effective_position = 0;
+        // At most detach, one source recovery, then detach again per lifetime.
+        // Used by public-row refresh to reject delayed status observations.
+        std::uint64_t status_revision = 0;
     };
     enum class TransitionStatus : std::uint8_t {
         applied,
@@ -82,7 +86,8 @@ public:
         full,
         unavailable,
         exhausted,
-        closed
+        closed,
+        invalid
     };
     struct Transition {
         TransitionStatus status = TransitionStatus::stale;
@@ -97,6 +102,27 @@ public:
     [[nodiscard]] Transition set_delivery(std::uint64_t member,
         std::uint64_t expected_revision, GroupOriginalDelivery,
         bool recover_retained_prefix = false) noexcept;
+    enum class SourceMode : std::uint8_t { multicast, unicast_only };
+    struct RecoveryMember {
+        std::uint64_t id = 0;
+        std::uint64_t expected_revision = 0;
+    };
+    struct SourceRecovery {
+        TransitionStatus status = TransitionStatus::stale;
+        std::uint64_t revision = 0;
+        SequenceNumber effective_sequence {};
+        std::uint64_t effective_position = 0;
+        std::size_t members = 0;
+        SendBuffer::GroupRecovery prefix;
+    };
+    // Explicit internal recovery after a terminal native multicast error and
+    // complete outcome drain. Atomically validate selected member lifetimes,
+    // revisions, retained prefixes/keys and full-stream budget. Recover every
+    // selected prefix and force future originals to unicast; detach others.
+    // No source restart, rewind, multicast return, new join or public command.
+    [[nodiscard]] SourceRecovery recover_source_to_unicast(
+        std::uint64_t expected_revision,
+        std::span<const RecoveryMember>) noexcept;
     struct Snapshot {
         SequenceNumber next_sequence {};
         std::uint32_t next_message = 1;
@@ -113,6 +139,13 @@ public:
         std::size_t unicast_reservations = 0;
         std::size_t unicast_recipient_limit = 0;
         GroupUnicastBudget::Snapshot unicast_budget;
+        SourceMode source_mode = SourceMode::multicast;
+        std::uint64_t source_revision = 0;
+        SequenceNumber source_effective_sequence {};
+        std::uint64_t source_effective_position = 0;
+        GroupMulticastEmitter::Failure source_failure =
+            GroupMulticastEmitter::Failure::none;
+        std::uint64_t unicast_only_frames = 0;
         bool writable = false;
         bool failed = false;
         bool closed = false;
@@ -127,7 +160,8 @@ public:
 
     // Empty history and exact current advertised ISN required. Failed addition
     // preserves the runtime. Detached members stay visible until removal;
-    // they cannot resume across a skipped frame. Removal revokes ownership,
+    // they cannot resume across a skipped frame. Explicit source-error recovery
+    // can restore a complete retained prefix without skipping. Removal revokes ownership,
     // but leaves the established session available for explicit recovery/close.
     [[nodiscard]] std::optional<Member> add_member(
         const std::shared_ptr<ConnectionRuntime>&) noexcept;
@@ -192,6 +226,10 @@ private:
     [[nodiscard]] bool crypto_writable() const noexcept;
     [[nodiscard]] Status advance_empty(Clock::time_point) noexcept;
     [[nodiscard]] Clock::time_point admission_now() const noexcept;
+    [[nodiscard]] Clock::time_point source_now() const noexcept;
+    [[nodiscard]] bool source_writable() const noexcept;
+    void fail() noexcept;
+    void observe_source_failure() noexcept;
 
     mutable std::mutex publication_;
     Configuration configuration_;
@@ -210,6 +248,7 @@ private:
     std::shared_ptr<Work> work_;
     std::shared_ptr<ReadinessSource> readiness_;
     bool manual_ = false;
+    bool terminal_failure_ = false;
     std::optional<Clock::time_point> retry_at_;
 };
 } // namespace robotweax::srt::compat
