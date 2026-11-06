@@ -20,7 +20,7 @@ h::Context context()
     c.source = {.kind = MulticastSourceKind::announcement,
         .group_id = c.dispatch.group_id,
         .endpoint = {.address = {192, 0, 2, 1}, .port = 9000}};
-    c.offer.supported = h::known_features;
+    c.offer.supported = h::legacy_features;
     REQUIRE(h::negotiate(c.offer, c.offer, 71, 97, 1234, c.selection));
     return c;
 }
@@ -185,6 +185,56 @@ TEST(hybrid_control_all_six_message_kinds_round_trip_without_allocated_state)
     }
 }
 
+TEST(hybrid_control_query_and_correlated_response_require_negotiation)
+{
+    auto c = context();
+    auto query = message(h::Kind::fallback_request);
+    query.kind = h::Kind::delivery_query;
+    query.mode = h::Mode::multicast;
+    REQUIRE(h::valid(query));
+    REQUIRE(!h::valid(query, c));
+    REQUIRE(h::sender_is_caller(query.kind));
+    c.offer.supported |= h::policy_query;
+    c.offer.required |= h::policy_query;
+    REQUIRE(!h::negotiate(c.offer, context().offer, 71, 97, 1234, c.selection));
+    REQUIRE(h::negotiate(c.offer, c.offer, 71, 97, 1234, c.selection));
+    REQUIRE(h::valid(query, c));
+    auto response = message(h::Kind::delivery_status);
+    response.request_serial = 17;
+    REQUIRE(h::valid(response, c));
+    REQUIRE(!h::valid(response, context()));
+    query.request_serial = 17;
+    REQUIRE(!h::valid(query));
+    query.request_serial = 0;
+    query.mode = h::Mode::unicast;
+    REQUIRE(!h::valid(query));
+}
+TEST(hybrid_control_query_echo_uses_word_72_and_preserves_legacy_layout)
+{
+    auto response = message(h::Kind::delivery_status);
+    response.request_serial = 0x0102030405060708ULL;
+    std::array<std::byte, h::message_size> bytes {};
+    REQUIRE(h::encode(response, bytes));
+    for (unsigned i = 0; i < 8; ++i)
+        REQUIRE_EQ(bytes[72 + i], std::byte(i + 1));
+    h::Message decoded;
+    REQUIRE(h::decode(bytes, decoded));
+    REQUIRE_EQ(decoded, response);
+    REQUIRE_EQ(decoded.produced_next, 0U);
+    auto progress = message();
+    REQUIRE(h::encode(progress, bytes));
+    REQUIRE(h::decode(bytes, decoded));
+    REQUIRE_EQ(decoded, progress);
+    response.produced_next = 1;
+    REQUIRE(!h::valid(response));
+    auto query = message(h::Kind::fallback_request);
+    query.kind = h::Kind::delivery_query;
+    query.mode = h::Mode::multicast;
+    REQUIRE(h::encode(query, bytes));
+    REQUIRE_EQ(bytes[7], std::byte {7});
+    REQUIRE(h::decode(bytes, decoded));
+    REQUIRE_EQ(decoded, query);
+}
 TEST(hybrid_control_unused_fields_roles_modes_and_timing_fail_closed)
 {
     for (unsigned k = 1; k <= 6; ++k) {

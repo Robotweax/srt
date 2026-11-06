@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "test.hpp"
 #include "compat/hybrid_native.hpp"
+#include "compat/hybrid_receiver.hpp"
 #include "compat/transport_runtime.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 #include <algorithm>
@@ -615,5 +616,372 @@ TEST(
     REQUIRE(second);
     second->close();
     scheduler->stop();
+}
+namespace {
+struct ReceiverFixture {
+    Pair p;
+    std::shared_ptr<h::ReceiverBridge> receiver;
+    std::vector<h::Message> requests;
+    std::uint64_t reply_serial = 1;
+    static h::ReceiverBridge::Configuration configuration()
+    {
+        return {.retry_interval_us = 10,
+            .round_timeout_us = 100,
+            .operation_timeout_us = 400,
+            .query_interval_us = 200,
+            .confirmation_lifetime_us = 150,
+            .maximum_sends = 2,
+            .maximum_rounds = 3};
+    }
+    explicit ReceiverFixture(
+        h::ReceiverBridge::Configuration c = configuration())
+    {
+        p.connect();
+        receiver = h::ReceiverBridge::create(p.c, c);
+        REQUIRE(receiver);
+    }
+    void step()
+    {
+        receiver->pump();
+        p.round();
+        p.round();
+        receiver->pump();
+        h::NativeService::Event e;
+        while (p.l->pop(e))
+            if (e.kind == h::NativeService::Event::Kind::received)
+                requests.push_back(e.message);
+    }
+    h::Message response(h::Kind kind = h::Kind::delivery_status,
+        std::uint64_t revision = 0, h::Mode mode = h::Mode::multicast,
+        std::uint64_t position = 1234, std::uint64_t reference = UINT64_MAX)
+    {
+        return {.kind = kind,
+            .stream = 71,
+            .member = 97,
+            .serial = reply_serial++,
+            .revision = revision,
+            .next_position = position,
+            .next_sequence = static_cast<std::uint32_t>(
+                (42 + (position - 1234)) & SequenceNumber::mask),
+            .mode = mode,
+            .retained_floor = 1234,
+            .request_serial = reference == UINT64_MAX
+                ? receiver->snapshot().request_serial
+                : reference};
+    }
+    void deliver(h::Message m)
+    {
+        REQUIRE_EQ(p.l->send(m, p.clock->value.load() + 1000),
+            h::NativeService::Admission::accepted);
+        step();
+        step();
+    }
+    void advance(std::uint64_t n)
+    {
+        p.clock->value += n;
+        step();
+    }
+};
+}
+TEST(hybrid_receiver_queries_confirm_and_expire_without_requesting_fallback)
+{
+    ReceiverFixture f;
+    f.step();
+    REQUIRE_EQ(f.requests.back().kind, h::Kind::delivery_query);
+    f.deliver(f.response());
+    auto s = f.receiver->snapshot();
+    REQUIRE(s.fresh);
+    REQUIRE_EQ(s.phase, h::ReceiverBridge::Phase::known);
+    f.advance(200);
+    REQUIRE(!f.receiver->snapshot().fresh);
+    REQUIRE_EQ(f.requests.back().kind, h::Kind::delivery_query);
+    f.deliver(
+        f.response(h::Kind::delivery_status, 0, h::Mode::multicast, 1235));
+    REQUIRE(f.receiver->snapshot().fresh);
+    REQUIRE_EQ(f.receiver->snapshot().cursor, 1235U);
+    for (const auto& request : f.requests)
+        REQUIRE_EQ(request.kind, h::Kind::delivery_query);
+}
+TEST(hybrid_receiver_explicit_fallback_preserves_cursor_and_tracks_commit)
+{
+    ReceiverFixture f;
+    REQUIRE_EQ(f.receiver->request_fallback(1240),
+        h::ReceiverBridge::Admission::accepted);
+    f.step();
+    REQUIRE_EQ(f.requests.back().kind, h::Kind::fallback_request);
+    REQUIRE_EQ(f.requests.back().next_position, 1240U);
+    f.deliver(f.response(h::Kind::delivery_commit, 1, h::Mode::unicast, 1241));
+    const auto s = f.receiver->snapshot();
+    REQUIRE(s.fresh);
+    REQUIRE(s.has_commit);
+    REQUIRE_EQ(s.commit_position, 1241U);
+    REQUIRE_EQ(s.revision, 1U);
+    REQUIRE_EQ(f.receiver->request_fallback(1241),
+        h::ReceiverBridge::Admission::already_unicast);
+}
+TEST(hybrid_receiver_lost_commit_reconciles_by_query_without_replaying_fallback)
+{
+    ReceiverFixture f;
+    REQUIRE_EQ(f.receiver->request_fallback(1234),
+        h::ReceiverBridge::Admission::accepted);
+    f.step();
+    const auto old = f.requests.back().serial;
+    f.advance(100);
+    REQUIRE_EQ(f.requests.back().kind, h::Kind::delivery_query);
+    auto current =
+        f.response(h::Kind::delivery_status, 1, h::Mode::unicast, 1238);
+    current.serial = 2;
+    current.retained_floor = 1236;
+    f.deliver(current);
+    const auto confirmed = f.receiver->snapshot();
+    REQUIRE(confirmed.fresh);
+    REQUIRE(!confirmed.has_commit);
+    f.advance(10);
+    auto late =
+        f.response(h::Kind::delivery_commit, 1, h::Mode::unicast, 1237, old);
+    late.serial = 1;
+    f.deliver(late);
+    const auto after = f.receiver->snapshot();
+    REQUIRE_EQ(after.confirmation_origin_us, confirmed.confirmation_origin_us);
+    REQUIRE_EQ(after.cursor, 1238U);
+    REQUIRE_EQ(after.retained_floor, 1236U);
+    REQUIRE(after.has_commit);
+    REQUIRE_EQ(after.commit_position, 1237U);
+}
+TEST(
+    hybrid_receiver_old_revisions_never_roll_back_and_same_revision_conflicts_close)
+{
+    for (bool boundary : {false, true}) {
+        ReceiverFixture f;
+        REQUIRE_EQ(f.receiver->request_fallback(1234),
+            h::ReceiverBridge::Admission::accepted);
+        f.step();
+        f.deliver(
+            f.response(h::Kind::delivery_commit, 2, h::Mode::unicast, 1237));
+        f.deliver(f.response(h::Kind::delivery_status, 1, h::Mode::multicast));
+        REQUIRE_EQ(f.receiver->snapshot().revision, 2U);
+        REQUIRE_EQ(f.receiver->snapshot().mode, h::Mode::unicast);
+        f.deliver(f.response(
+            boundary ? h::Kind::delivery_commit : h::Kind::delivery_status, 2,
+            boundary ? h::Mode::unicast : h::Mode::multicast,
+            boundary ? 1238 : 1237));
+        REQUIRE(f.receiver->snapshot().closed);
+        REQUIRE_EQ(f.receiver->snapshot().conflicts, 1U);
+    }
+    ReceiverFixture backwards;
+    backwards.step();
+    backwards.deliver(backwards.response(
+        h::Kind::delivery_status, 0, h::Mode::multicast, 1240));
+    backwards.deliver(backwards.response(
+        h::Kind::delivery_commit, 1, h::Mode::unicast, 1239));
+    REQUIRE(backwards.receiver->snapshot().closed);
+}
+TEST(
+    hybrid_receiver_uncorrelated_or_stale_queued_replies_cannot_confirm_freshness)
+{
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        auto c = ReceiverFixture::configuration();
+        if (mode == 2)
+            c.confirmation_lifetime_us = 50;
+        ReceiverFixture f(c);
+        f.step();
+        auto m = f.response();
+        if (mode < 2) {
+            m.request_serial = mode == 0 ? 0 : 77;
+            f.deliver(m);
+        } else {
+            REQUIRE_EQ(
+                f.p.l->send(m, 1000), h::NativeService::Admission::accepted);
+            f.p.round();
+            f.p.round();
+            f.p.clock->value += 60;
+            f.receiver->pump();
+        }
+        REQUIRE(!f.receiver->snapshot().fresh);
+        REQUIRE(f.receiver->snapshot().unmatched > 0);
+    }
+}
+TEST(hybrid_receiver_retry_rounds_and_lifetimes_are_bounded_under_total_loss)
+{
+    ReceiverFixture f;
+    f.step();
+    f.advance(10);
+    f.advance(10);
+    REQUIRE_EQ(f.receiver->snapshot().attempts, 2U);
+    f.advance(80);
+    f.advance(10);
+    f.advance(90);
+    f.advance(10);
+    f.advance(90);
+    const auto s = f.receiver->snapshot();
+    REQUIRE_EQ(s.phase, h::ReceiverBridge::Phase::unknown);
+    REQUIRE_EQ(s.attempts, 6U);
+    REQUIRE_EQ(s.rounds, 3U);
+    REQUIRE_EQ(s.exhausted, 1U);
+    for (unsigned i = 0; i < 16; ++i)
+        f.step();
+    REQUIRE_EQ(f.receiver->snapshot().attempts, 6U);
+    for (const auto& request : f.requests)
+        REQUIRE_EQ(request.kind, h::Kind::delivery_query);
+}
+TEST(
+    hybrid_receiver_query_after_lost_request_can_retry_explicit_intent_but_stops_on_denial)
+{
+    ReceiverFixture f;
+    REQUIRE_EQ(f.receiver->request_fallback(1240),
+        h::ReceiverBridge::Admission::accepted);
+    f.step();
+    f.advance(100);
+    REQUIRE_EQ(f.requests.back().kind, h::Kind::delivery_query);
+    f.deliver(f.response());
+    REQUIRE_EQ(f.requests.back().kind, h::Kind::fallback_request);
+    REQUIRE_EQ(f.requests.back().next_position, 1240U);
+    auto denied = f.response();
+    denied.outcome = h::Outcome::budget;
+    f.deliver(denied);
+    REQUIRE_EQ(f.receiver->snapshot().phase, h::ReceiverBridge::Phase::denied);
+    REQUIRE_EQ(f.receiver->snapshot().outcome, h::Outcome::budget);
+    REQUIRE_EQ(f.receiver->snapshot().fallback,
+        h::ReceiverBridge::RequestState::denied);
+    f.advance(200);
+    REQUIRE_EQ(f.requests.back().kind, h::Kind::delivery_query);
+}
+TEST(hybrid_receiver_eagain_requires_actual_submission_before_confirmation)
+{
+    ReceiverFixture f;
+    f.p.ct->would_block = 1;
+    f.step();
+    f.deliver(f.response());
+    REQUIRE(!f.receiver->snapshot().fresh);
+    f.advance(10);
+    f.deliver(f.response());
+    REQUIRE(f.receiver->snapshot().fresh);
+    REQUIRE_EQ(f.receiver->snapshot().attempts, 2U);
+}
+TEST(
+    hybrid_receiver_claims_application_queue_and_rejects_wrong_role_or_capability)
+{
+    ReceiverFixture f;
+    REQUIRE(
+        !h::ReceiverBridge::create(f.p.l, ReceiverFixture::configuration()));
+    REQUIRE(
+        !h::ReceiverBridge::create(f.p.c, ReceiverFixture::configuration()));
+    REQUIRE_EQ(f.p.c->send(Pair::request(), 1000),
+        h::NativeService::Admission::invalid);
+    h::NativeService::Event e;
+    REQUIRE(!f.p.c->pop(e));
+    auto bad = ReceiverFixture::configuration();
+    bad.maximum_rounds = 9;
+    REQUIRE(!h::ReceiverBridge::create(f.p.c, bad));
+    Pair legacy;
+    auto c = legacy.config(true), l = legacy.config(false);
+    c.exchange.policy.supported = l.exchange.policy.supported =
+        h::legacy_features;
+    legacy.c = h::NativeService::create_for_testing(c);
+    legacy.l = h::NativeService::create_for_testing(l);
+    legacy.connect();
+    REQUIRE(
+        !h::ReceiverBridge::create(legacy.c, ReceiverFixture::configuration()));
+}
+TEST(
+    hybrid_receiver_close_grant_revocation_and_expiry_fence_pending_observations)
+{
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        ReceiverFixture f;
+        f.step();
+        if (mode == 0)
+            f.receiver->close();
+        else if (mode == 1)
+            ++f.p.cp->generation;
+        else
+            f.p.clock->value = 10000;
+        f.receiver->pump();
+        REQUIRE(f.receiver->snapshot().closed);
+        REQUIRE(!f.receiver->snapshot().fresh);
+        REQUIRE_EQ(f.receiver->request_fallback(1234),
+            h::ReceiverBridge::Admission::closed);
+    }
+}
+TEST(hybrid_receiver_forged_echo_does_not_poison_the_authenticated_reply)
+{
+    ReceiverFixture f;
+    f.step();
+    const auto message = f.response();
+    REQUIRE_EQ(
+        f.p.l->send(message, 1000), h::NativeService::Admission::accepted);
+    f.p.l->pump_for_testing();
+    const auto wires = f.p.lt->take();
+    bool tested = false;
+    for (const auto& original : wires) {
+        const auto packet = decode_packet(original);
+        if (!packet || original.size() != 172)
+            continue;
+        auto forged = original;
+        forged[116] ^= std::byte {1};
+        const auto changed = decode_packet(forged);
+        REQUIRE(changed);
+        REQUIRE(f.p.c->enqueue(changed.packet, f.p.clock->value.load()));
+        f.p.c->pump_for_testing();
+        f.receiver->pump();
+        REQUIRE(!f.receiver->snapshot().observed);
+        REQUIRE(f.p.c->enqueue(packet.packet, f.p.clock->value.load()));
+        f.p.c->pump_for_testing();
+        f.receiver->pump();
+        REQUIRE(f.receiver->snapshot().fresh);
+        tested = true;
+    }
+    REQUIRE(tested);
+}
+TEST(
+    hybrid_receiver_full_native_queue_and_duplicate_reports_do_not_renew_timers)
+{
+    ReceiverFixture f;
+    const auto first = decode_packet(f.p.lt->history.front());
+    REQUIRE(first);
+    for (std::size_t i = 0; i < h::NativeService::capacity; ++i)
+        REQUIRE(f.p.c->enqueue(first.packet, f.p.clock->value.load()));
+    f.receiver->pump();
+    REQUIRE_EQ(f.receiver->snapshot().refused, 1U);
+    REQUIRE_EQ(f.receiver->snapshot().attempts, 0U);
+    for (unsigned i = 0; i < 16; ++i)
+        f.receiver->pump();
+    REQUIRE_EQ(f.receiver->snapshot().refused, 1U);
+    f.p.c->pump_for_testing();
+    f.p.c->pump_for_testing();
+    f.advance(10);
+    auto message = f.response();
+    f.deliver(message);
+    const auto before = f.receiver->snapshot();
+    REQUIRE(before.fresh);
+    f.advance(10);
+    f.deliver(message);
+    const auto after = f.receiver->snapshot();
+    REQUIRE_EQ(after.confirmation_origin_us, before.confirmation_origin_us);
+    REQUIRE_EQ(after.confirmed, before.confirmed);
+    REQUIRE(after.duplicates > 0);
+}
+TEST(
+    hybrid_receiver_network_and_posting_delay_count_against_freshness_and_lifetime)
+{
+    auto c = ReceiverFixture::configuration();
+    c.round_timeout_us = 200;
+    c.confirmation_lifetime_us = 100;
+    ReceiverFixture f(c);
+    f.step();
+    const auto origin = f.p.clock->value.load();
+    f.advance(70);
+    f.deliver(f.response());
+    REQUIRE(f.receiver->snapshot().fresh);
+    REQUIRE_EQ(f.receiver->snapshot().confirmation_origin_us, origin);
+    f.advance(31);
+    REQUIRE(!f.receiver->snapshot().fresh);
+    ReceiverFixture posted;
+    REQUIRE_EQ(posted.receiver->request_fallback(1234),
+        h::ReceiverBridge::Admission::accepted);
+    posted.advance(400);
+    REQUIRE_EQ(posted.receiver->snapshot().fallback,
+        h::ReceiverBridge::RequestState::unknown);
+    REQUIRE_EQ(posted.receiver->snapshot().attempts, 0U);
+    REQUIRE(posted.requests.empty());
 }
 #endif

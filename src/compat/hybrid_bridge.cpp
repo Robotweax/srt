@@ -243,29 +243,31 @@ bool CoordinatorBridge::transact(Entry* entry) noexcept
     const auto floor =
         a.next_position_ >= span ? a.next_position_ - span : a.next_position_;
     Outcome outcome = Outcome::ok;
-    if (e.request.kind != Kind::fallback_request)
+    const bool query = e.request.kind == Kind::delivery_query;
+    if (e.request.kind != Kind::fallback_request && !query)
         outcome = Outcome::unsupported;
-    else if (e.request.revision != found->state.revision)
+    else if (!query && e.request.revision != found->state.revision)
         outcome = Outcome::stale;
-    else if (prefix.status != R::Status::ready
-        || e.request.next_position < floor
-        || e.request.next_position > a.next_position_
-        || prefix.prefix.originals + prefix.prefix.repairs
-            > context.selection.prefix_limit)
+    else if (!query
+        && (prefix.status != R::Status::ready || e.request.next_position < floor
+            || e.request.next_position > a.next_position_
+            || prefix.prefix.originals + prefix.prefix.repairs
+                > context.selection.prefix_limit))
         outcome = Outcome::history_unavailable;
-    else if (a.unicast_budget_->state_.closed
-        || (!found->unicast_lease
-            && a.state_.unicast_reservations
-                >= a.state_.unicast_recipient_limit))
+    else if (!query
+        && (a.unicast_budget_->state_.closed
+            || (!found->unicast_lease
+                && a.state_.unicast_reservations
+                    >= a.state_.unicast_recipient_limit)))
         outcome = Outcome::budget;
-    else if (found->state.revision == UINT64_MAX)
+    else if (!query && found->state.revision == UINT64_MAX)
         outcome = Outcome::unsupported;
     if (!next_reply_ || next_reply_ == UINT64_MAX) {
         cancelled_.store(true);
         return true;
     }
     const bool change = found->state.delivery != GroupOriginalDelivery::unicast;
-    if (outcome == Outcome::ok) {
+    if (outcome == Outcome::ok && !query) {
         // Recheck TTL at the commit boundary, after every retained guard.
         if (prefix.prefix.earliest_expiration_microseconds
             && prefix.prefix.earliest_expiration_microseconds
@@ -302,8 +304,9 @@ bool CoordinatorBridge::transact(Entry* entry) noexcept
         }
     }
     const auto& member = found->state;
-    e.reply = {.kind = outcome == Outcome::ok && change ? Kind::delivery_commit
-                                                        : Kind::delivery_status,
+    e.reply = {.kind = outcome == Outcome::ok && change && !query
+            ? Kind::delivery_commit
+            : Kind::delivery_status,
         .stream = context.selection.stream,
         .member = context.selection.member,
         .serial = next_reply_++,
@@ -311,8 +314,14 @@ bool CoordinatorBridge::transact(Entry* entry) noexcept
         .next_position = a.next_position_,
         .next_sequence = a.state_.next_sequence.value(),
         .mode = mode(member.delivery),
-        .retained_floor = outcome == Outcome::ok ? floor : a.next_position_,
-        .outcome = outcome};
+        .retained_floor =
+            outcome == Outcome::ok && prefix.status == R::Status::ready
+            ? floor
+            : a.next_position_,
+        .outcome = outcome,
+        .request_serial = (context.selection.supported & policy_query)
+            ? e.request.serial
+            : 0};
     e.complete = true;
     e.pending = true;
     if (outcome != Outcome::ok)
@@ -331,7 +340,8 @@ void CoordinatorBridge::event(const NativeService::Event& event) noexcept
         return;
     }
     const auto& m = event.message;
-    if ((m.kind != Kind::fallback_request && m.kind != Kind::multicast_ready)
+    if ((m.kind != Kind::fallback_request && m.kind != Kind::multicast_ready
+            && m.kind != Kind::delivery_query)
         || event.generation != service_->state_.generation) {
         ++state_.ignored;
         return;

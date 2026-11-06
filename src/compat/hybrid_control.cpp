@@ -164,11 +164,11 @@ bool decode(std::span<const std::byte> in, Context& out) noexcept
 bool sender_is_caller(Kind kind) noexcept
 {
     return kind == Kind::path_report || kind == Kind::fallback_request
-        || kind == Kind::multicast_ready;
+        || kind == Kind::multicast_ready || kind == Kind::delivery_query;
 }
 bool valid(const Message& m) noexcept
 {
-    if (m.kind < Kind::stream_progress || m.kind > Kind::multicast_ready
+    if (m.kind < Kind::stream_progress || m.kind > Kind::delivery_query
         || !m.stream || !m.member || !m.serial
         || m.next_sequence > SequenceNumber::mask || m.mode > Mode::overlap
         || m.activity > Activity::source_failed
@@ -183,6 +183,9 @@ bool valid(const Message& m) noexcept
         return false;
     if (m.kind != Kind::stream_progress && m.activity != Activity::startup)
         return false;
+    if (m.request_serial && m.kind != Kind::delivery_commit
+        && m.kind != Kind::delivery_status)
+        return false;
     if (m.kind == Kind::stream_progress)
         return m.retained_floor <= m.produced_next
             && m.next_position <= m.produced_next
@@ -196,6 +199,8 @@ bool valid(const Message& m) noexcept
         return false;
     if (m.kind == Kind::fallback_request)
         return m.mode == Mode::unicast && !m.multicast_next;
+    if (m.kind == Kind::delivery_query)
+        return m.mode == Mode::multicast && !m.multicast_next;
     return m.multicast_next <= m.next_position;
 }
 bool valid(const Message& m, const Context& c) noexcept
@@ -210,6 +215,9 @@ bool valid(const Message& m, const Context& c) noexcept
                 & SequenceNumber::mask))
         & SequenceNumber::mask;
     if (m.next_sequence != sequence)
+        return false;
+    if ((m.kind == Kind::delivery_query || m.request_serial)
+        && !(c.selection.supported & policy_query))
         return false;
     if ((m.mode == Mode::overlap || m.kind == Kind::multicast_ready)
         && !(c.selection.supported & overlap))
@@ -243,7 +251,10 @@ bool encode(const Message& m, std::span<std::byte> out) noexcept
     put32(wire.data() + 52, static_cast<std::uint32_t>(m.mode));
     put64(wire.data() + 56, m.retained_floor);
     put64(wire.data() + 64, m.multicast_next);
-    put64(wire.data() + 72, m.produced_next);
+    put64(wire.data() + 72,
+        (m.kind == Kind::delivery_commit || m.kind == Kind::delivery_status)
+            ? m.request_serial
+            : m.produced_next);
     put32(wire.data() + 80, static_cast<std::uint32_t>(m.activity));
     put32(wire.data() + 84, static_cast<std::uint32_t>(m.outcome));
     put32(wire.data() + 88, m.interval_us);
@@ -266,11 +277,15 @@ bool decode(std::span<const std::byte> in, Message& out) noexcept
         .mode = static_cast<Mode>(get32(in.data() + 52)),
         .retained_floor = get64(in.data() + 56),
         .multicast_next = get64(in.data() + 64),
-        .produced_next = get64(in.data() + 72),
+        .produced_next = 0,
         .activity = static_cast<Activity>(get32(in.data() + 80)),
         .outcome = static_cast<Outcome>(get32(in.data() + 84)),
         .interval_us = get32(in.data() + 88),
         .age_us = get32(in.data() + 92)};
+    if (m.kind == Kind::delivery_commit || m.kind == Kind::delivery_status)
+        m.request_serial = get64(in.data() + 72);
+    else
+        m.produced_next = get64(in.data() + 72);
     if (!valid(m))
         return false;
     out = m;

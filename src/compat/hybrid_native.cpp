@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "compat/hybrid_native.hpp"
 #include "compat/hybrid_bridge.hpp"
+#include "compat/hybrid_receiver.hpp"
 #include "compat/transport_runtime.hpp"
 #include "compat/runtime_scheduler_service.hpp"
 #include <algorithm>
@@ -571,6 +572,24 @@ bool NativeService::bridge_work(CoordinatorBridge& bridge) noexcept
         return false;
     }
     bridge.work();
+    if (closed())
+        cleanup();
+    return true;
+}
+bool NativeService::receiver_work(ReceiverBridge& receiver) noexcept
+{
+    if (ProtocolScope::owns(this))
+        return false;
+    std::unique_lock protocol(protocol_mutex_, std::try_to_lock);
+    if (!protocol.owns_lock())
+        return false;
+    ProtocolScope scope(this);
+    if (!configuration_.caller || !session_ || !live()) {
+        if (closed())
+            cleanup();
+        return false;
+    }
+    receiver.work();
     if (closed())
         cleanup();
     return true;

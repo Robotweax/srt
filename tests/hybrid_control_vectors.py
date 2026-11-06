@@ -76,4 +76,10 @@ result['exchange'] = {
     'proof': exchange_record(3, bytes(48), cn, ln, bytes.fromhex(admission_proof(1))),
     'receipt': exchange_record(4, bytes(48), cn, ln, receipt_proof),
     'receipt_proof': receipt_proof.hex()}
+# Negotiated policy_query uses kind7 and echoes the request in response word72.
+query = p('!IIQQQQQIIQQQIIII', 1, 7, 71, 97, 1, 1, 1237, 1, 0, 0, 0, 0, 0, 0, 0, 0)
+status = p('!IIQQQQQIIQQQIIII', 1, 5, 71, 97, 1, 1, 1237, 1, 0, 1234, 0, 0x0102030405060708, 0, 0, 0, 0)
+assert len(query) == len(status) == 96
+assert status[72:80] == bytes(range(1, 9))
+result['policy_query'] = {'query': query.hex(), 'status_echo': status.hex(), 'feature': 32}
 print(json.dumps(result, indent=2))

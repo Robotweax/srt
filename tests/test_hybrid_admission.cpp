@@ -23,7 +23,7 @@ struct Fixture {
         context.source = {.kind = MulticastSourceKind::announcement,
             .group_id = context.dispatch.group_id,
             .endpoint = {.address = {192, 0, 2, 1}, .port = 9000}};
-        context.offer.supported = h::known_features;
+        context.offer.supported = h::legacy_features;
         REQUIRE(h::negotiate(
             context.offer, context.offer, 71, 97, 1234, context.selection));
         grant.credential_id.fill(std::byte {0x11});

@@ -13,6 +13,7 @@
 #include "compat/hybrid_exchange.hpp"
 #include "compat/hybrid_native.hpp"
 #include "compat/hybrid_bridge.hpp"
+#include "compat/hybrid_receiver.hpp"
 #endif
 #include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/udp.hpp"
@@ -2105,9 +2106,17 @@ struct NativeHybridPair {
         return o;
     }
     void start(
-        std::optional<hn::CoordinatorBridge::Identity> identity = std::nullopt)
+        std::optional<hn::CoordinatorBridge::Identity> identity = std::nullopt,
+        bool queries = false)
     {
         auto o = options(false);
+        auto caller_options = options(true);
+        if (queries) {
+            o.policy.supported |= hn::policy_query;
+            o.policy.required |= hn::policy_query;
+            caller_options.policy.supported |= hn::policy_query;
+            caller_options.policy.required |= hn::policy_query;
+        }
         if (identity) {
             o.stream = identity->stream;
             o.member = identity->member;
@@ -2115,7 +2124,7 @@ struct NativeHybridPair {
         }
         l = hn::attach_native_control(listener, std::move(o));
         REQUIRE(l);
-        c = hn::attach_native_control(caller, options(true));
+        c = hn::attach_native_control(caller, std::move(caller_options));
         REQUIRE(c);
     }
     bool wait_active()
@@ -2166,6 +2175,8 @@ struct HybridWireHook {
     std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
     bool drop_selection = false;
     bool drop_first_control = false;
+    std::atomic_bool drop_commits = false, drop_controls = false;
+    std::atomic<unsigned> commits_dropped = 0;
     std::atomic<unsigned> control_drops = 0;
     std::atomic<unsigned> dropped = 0;
     std::mutex mutex;
@@ -2176,6 +2187,23 @@ struct HybridWireHook {
         auto& self = *static_cast<HybridWireHook*>(p);
         const auto decoded = decode_packet(bytes);
         hn::ExchangeRecord record;
+        if (decoded && hn::native_candidate(decoded.packet)
+            && decoded.packet.control.subtype
+                == authenticated_control_subtype) {
+            if (self.drop_controls.load())
+                return {.bytes_transferred = bytes.size()};
+            const auto payload = decoded.packet.payload;
+            if (self.drop_commits.load() && payload.size() >= 44) {
+                const auto inner =
+                    decode_packet(payload.subspan(12, payload.size() - 44));
+                hn::Message message;
+                if (inner && hn::decode(inner.packet.payload, message)
+                    && message.kind == hn::Kind::delivery_commit) {
+                    ++self.commits_dropped;
+                    return {.bytes_transferred = bytes.size()};
+                }
+            }
+        }
         if (decoded && self.drop_first_control
             && decoded.packet.control.subtype == authenticated_control_subtype
             && hn::native_candidate(decoded.packet)
@@ -2453,6 +2481,159 @@ TEST(
 }
 #endif
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+namespace {
+struct NativeReceiverOwners {
+    NativeHybridPair pair;
+    std::shared_ptr<hn::AuthorizationLease> lease;
+    std::shared_ptr<hn::CoordinatorBridge> sender;
+    std::shared_ptr<hn::ReceiverBridge> receiver;
+    explicit NativeReceiverOwners(CoordinatedNative& f)
+        : pair(f)
+    {
+        const auto identity =
+            hn::CoordinatorBridge::identity(f.actor(), pair.listener);
+        REQUIRE(identity);
+        pair.start(identity, true);
+        REQUIRE(pair.wait_active());
+        hn::Authorization grant;
+        {
+            std::lock_guard lock(pair.lo->grant_mutex);
+            grant = pair.lo->resolved_grant;
+        }
+        lease = std::make_shared<hn::AuthorizationLease>(grant);
+        const auto until =
+            std::chrono::steady_clock::now() + std::chrono::seconds {1};
+        while (!sender && std::chrono::steady_clock::now() < until) {
+            sender =
+                hn::CoordinatorBridge::create(f.actor(), pair.l, lease, {});
+            if (!sender)
+                std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        REQUIRE(sender);
+        while (!receiver && std::chrono::steady_clock::now() < until) {
+            receiver = hn::ReceiverBridge::create(pair.c,
+                {.retry_interval_us = 10'000,
+                    .round_timeout_us = 40'000,
+                    .operation_timeout_us = 240'000,
+                    .query_interval_us = 50'000,
+                    .confirmation_lifetime_us = 80'000,
+                    .maximum_sends = 2,
+                    .maximum_rounds = 4});
+            if (!receiver)
+                std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        REQUIRE(receiver);
+    }
+    template <class F> void wait(F predicate)
+    {
+        const auto until =
+            std::chrono::steady_clock::now() + std::chrono::seconds {1};
+        while (!predicate() && std::chrono::steady_clock::now() < until) {
+            receiver->pump();
+            sender->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        REQUIRE(predicate());
+    }
+};
+}
+TEST(multicast_dispatch_native_receiver_reconciles_lost_commits_plain_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2);
+        NativeReceiverOwners owners(f);
+        const auto socket = SocketRegistry::instance().find(f.listener);
+        std::shared_ptr<robotweax::srt::compat::DatagramChannel> control;
+        {
+            std::lock_guard lock(socket->mutex);
+            control = socket->channel;
+        }
+        HybridWireHook hook;
+        hook.channel = control;
+        hook.drop_commits = true;
+        SendHookReset reset {control};
+        control->set_send_hook_for_testing(HybridWireHook::send, &hook);
+        REQUIRE_EQ(owners.receiver->request_fallback(
+                       owners.receiver->snapshot().cursor),
+            hn::ReceiverBridge::Admission::accepted);
+        owners.wait([&] {
+            const auto s = owners.receiver->snapshot();
+            return s.fresh && s.mode == hn::Mode::unicast;
+        });
+        REQUIRE(hook.commits_dropped.load() > 0);
+        REQUIRE(owners.receiver->snapshot().queries > 0);
+        REQUIRE(!owners.receiver->snapshot().has_commit);
+        REQUIRE_EQ(owners.sender->snapshot().applied, 1U);
+        const auto original_revision = owners.receiver->snapshot().revision;
+        const auto initial_confirmations =
+            owners.receiver->snapshot().confirmed;
+        owners.wait([&] {
+            return owners.receiver->snapshot().confirmed
+                > initial_confirmations;
+        });
+        REQUIRE_EQ(owners.sender->snapshot().applied, 1U);
+        REQUIRE_EQ(owners.receiver->snapshot().revision, original_revision);
+        auto source = f.source();
+        SendHookReset source_reset {source};
+        source->set_send_hook_for_testing(
+            [](std::span<const std::byte> b, IpEndpoint,
+                void*) noexcept -> UdpIoResult {
+                return {.bytes_transferred = b.size()};
+            },
+            nullptr);
+        for (int i = 0; i < 48; ++i)
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        expect_messages(f.receiver, 0, 48);
+        owners.receiver->close();
+        REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
+        REQUIRE_EQ(f.send(48), static_cast<int>(message(48).size()));
+        expect_messages(f.receiver, 48, 1);
+    }
+}
+TEST(
+    multicast_dispatch_native_receiver_missing_queries_remain_unknown_without_fallback)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    CoordinatedNative f;
+    NativeReceiverOwners owners(f);
+    owners.wait([&] {
+        return owners.receiver->snapshot().fresh;
+    });
+    const auto socket = SocketRegistry::instance().find(f.listener);
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> control;
+    {
+        std::lock_guard lock(socket->mutex);
+        control = socket->channel;
+    }
+    HybridWireHook hook;
+    hook.channel = control;
+    hook.drop_controls = true;
+    SendHookReset reset {control};
+    control->set_send_hook_for_testing(HybridWireHook::send, &hook);
+    owners.wait([&] {
+        const auto s = owners.receiver->snapshot();
+        return !s.fresh && s.exhausted > 0;
+    });
+    REQUIRE_EQ(owners.sender->snapshot().applied, 0U);
+    REQUIRE_EQ(f.actor()->snapshot().unicast_members, 0U);
+    for (int i = 0; i < 3; ++i)
+        REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+    expect_messages(f.receiver, 0, 3);
+    hook.drop_controls = false;
+    owners.wait([&] {
+        return owners.receiver->snapshot().fresh;
+    });
+    REQUIRE_EQ(owners.sender->snapshot().applied, 0U);
+    REQUIRE_EQ(owners.receiver->snapshot().mode, hn::Mode::multicast);
+}
+#endif
+
 TEST(
     multicast_dispatch_coordinated_options_freeze_transport_but_allow_group_io_flags)
 {
@@ -2549,7 +2730,17 @@ TEST(
     const int out = SRT_EPOLL_OUT;
     REQUIRE_EQ(srt_epoll_add_usock(epoll, f.sender, &out), 0);
     SRT_EPOLL_EVENT events[1] {};
-    int accepted = 0;
+    // Consume the immediate first paced submission before filling capacity.
+    // Otherwise its late completion can legitimately restore EPOLL_OUT between
+    // the full-queue snapshot and the zero-time readiness assertion below.
+    REQUIRE_EQ(f.send(0), static_cast<int>(message(0).size()));
+    const auto primed =
+        std::chrono::steady_clock::now() + std::chrono::seconds {2};
+    while (f.actor()->snapshot().inflight_frames
+        && std::chrono::steady_clock::now() < primed)
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    REQUIRE_EQ(f.actor()->snapshot().applied_completions, 1U);
+    int accepted = 1;
     const auto fill_deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds {2};
     while (accepted < 128) {

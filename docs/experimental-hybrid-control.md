@@ -10,7 +10,8 @@ The exchange drives bilateral selection and proofs with bounded retries
 and an explicit credential-provider contract. An explicitly attached internal
 native service now owns that exchange, authenticated UDP controls and expiry.
 An explicitly attached sender-side coordinator bridge can now grant bounded
-unicast fallback commands. These components allocate no public C
+unicast fallback commands. An explicitly attached receiver owner now tracks
+revisions and reconciles policy with bounded read-only queries. These components allocate no public C
 option and do not activate automatic recovery on live sockets. Native handshakes still
 reject authentication version 7. No new capability handshake extension ID is
 allocated. Existing strict multicast announcements and existing authentication
@@ -26,6 +27,7 @@ cmake --build build-hybrid-control --parallel
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_exchange
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_native
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_bridge
+./build-hybrid-control/robotweax_srt_tests --include hybrid_receiver
 ./tools/python tests/hybrid_control_vectors.py
 ```
 
@@ -49,7 +51,8 @@ reject incorrect lengths, versions, reserved bytes and invalid fields.
 
 Bits 1, 2 and 4 mean canonical unicast originals, bounded prefix recovery and
 progress reports. All three are mandatory. Bits 8 and 16 mean overlap and source
-recovery. Unknown bits are rejected, required bits must be supported, and a
+recovery. Bit 32 selects read-only policy queries and request-correlated delivery
+responses. Unknown bits are rejected, required bits must be supported, and a
 selection must satisfy both peers' requirements. The prefix limit is the smaller
 of their limits. Offers have zero incarnation/position fields. A selection has
 nonzero stream and member incarnations; position may be zero. A receiver checks
@@ -536,8 +539,8 @@ revision also precedes cached reply admission; an observed external policy
 change or source failure fences the bridge. Already admitted replies and network
 packets cannot be recalled, and observation between pumps can be delayed. New status
 responses describe the current cursor; cached commits retain their historical
-boundary and do not renew authorization or retention promises. A future receiver
-policy owner must enforce monotonic revisions and reconcile uncertainty.
+boundary and do not renew authorization or retention promises. The receiver
+owner below enforces monotonic revisions and reconciles uncertainty.
 
 Command lifetime is measured from the native Session's original receive time,
 including time waiting in both queues, and is capped by the local grant expiry.
@@ -547,7 +550,7 @@ bounded command attempts; exhaustion or expiry can discard a request without a
 reply and without mutation. A fresh request serial can reconcile the current
 revision. Lost replies are recovered by duplicate requests; EAGAIN produces a
 bounded retry of the same response in a fresh crypto envelope. There is no
-periodic reconciliation or guaranteed response while the host is not pumping.
+periodic scheduling or guaranteed response while the host is not pumping.
 Event/queue overflow retains NativeService's fail-closed behavior. Control-only
 failure does not roll back an already committed delivery policy.
 
@@ -557,11 +560,107 @@ runtime contention, close, source failure/departure and exclusive queue ownershi
 Native plaintext/CTR/GCM cases drop the first commit, retry the authenticated
 request and verify one transition, then suppress multicast DATA while delivering
 48 messages through canonical unicast originals, including CTR/GCM key rotation.
-No receiver detector, multicast return/hysteresis, periodic progress producer,
-bounded periodic reconciliation, public provisioning, automatic source recovery
+The receiver owner below adds bounded periodic policy queries. No receiver
+detector, multicast return/hysteresis, periodic progress producer,
+public provisioning, automatic source recovery
 or startup-join fallback is connected. Loopback/synthetic-credential evidence
 does not qualify hostile networks, physical/WAN paths, overload, scale or other
 platforms; the existing security limits remain.
+
+## Receiver revisions and bounded policy reconciliation
+
+`ReceiverBridge` explicitly claims a live Caller NativeService after both
+conclusion proofs and the local activation hook succeed. It requires negotiated
+`policy_query` (bit 32), and exclusively owns application events and outbound
+control serials. Previously used or already claimed application queues cannot
+hand over; public NativeService `send`/`pop` cannot bypass this owner afterwards.
+There is no public C option or automatic attachment. Requiring bit 32 in both
+NativeOptions capability policies makes this dependency explicit. Older prototype
+peers can reject the new capability; no silent downgrade or compatibility claim
+is made. Existing profiles that select only the previous feature bits retain
+their original response bodies and behavior.
+
+The negotiated extension adds Caller DELIVERY_QUERY (kind 7). It is read-only:
+the sender bridge checks current authorization/source/runtime binding and returns
+DELIVERY_STATUS with the current revision, mode and cursor, without scheduling
+prefix repair, changing policy or reserving a unicast recipient. Invalid or
+expired history may conservatively advertise only the current cursor as retained.
+A closed DATA budget does not prevent answering a query on an otherwise live
+member. Queries do not prove DATA production, emission, receipt or path health.
+
+When bit 32 is selected, sender delivery responses echo the triggering request's
+serial in body word 72. That word remains `produced_next` for STREAM_PROGRESS
+and zero for legacy delivery responses. The exact body stays 96 bytes and the
+existing authenticated envelope stays 172 bytes. Context validation rejects
+query kinds/nonzero response references without the negotiated bit. The feature
+selection is bound into the existing proof/KDF context, and the complete echoed
+body is covered by the existing MAC. No new cryptographic construction is added.
+There is no response correlation inferred from arrival order or policy revision.
+
+Receiver snapshots separate historical observations, a known commit boundary,
+current confirmation freshness and the last explicit fallback result. Revisions
+never decrease. Old revisions are ignored; conflicting modes or commit boundaries
+at one revision, or a newer revision with a backwards source cursor, close the
+control owner. Same-revision status cursors/retention observations never regress.
+A late commit may fill a missing historical boundary, but cannot refresh a newer
+confirmation or roll back its cursor. A status-only confirmation does not invent
+a commit boundary. Reported cursors are sender policy/admission metadata, not
+local receive/ACK cursors or original-emission high water.
+
+Only a fresh response echoing the current request can confirm policy: the local
+native owner must first report full UDP submission, the response must be newer
+than previously observed reply serials and its original native receive time must
+fit the current exclusive round/operation deadlines. Network/sender delay counts
+conservatively from the earliest local request admission, and the original
+receive time retains local queue age; semantic duplicates cannot renew it. Uncorrelated or old
+cached replies can add historical knowledge without completing the current
+query. This does not make an authenticated sender's claims truthful, establish
+current DATA delivery or recall previously admitted network packets.
+
+`request_fallback(next_position)` is explicit host intent. The host must supply
+its validated absolute merge cursor; the owner only validates its context mapping
+and never advances receive state from a peer assertion. An initial fallback
+request retains its original posting deadline, including local intent queue wait,
+and retries identical bytes/serial within its bounded round. If confirmation
+is lost, later rounds use fresh query serials. A query showing unicast completes
+mode reconciliation without rescheduling a prefix. A query showing multicast may
+retry the still-explicit intent in another bounded round, preserving the original
+cursor. A denial stops that intent. Its recorded result survives later background
+queries. Mode confirmation does not prove that a requested recovery prefix was
+delivered; the response outcome and ordinary reliability path remain relevant.
+
+Defaults are 100 ms retry spacing, 500 ms rounds, a two-second operation,
+500 ms periodic query spacing and a one-second confirmation lifetime. Each round
+has at most four local send attempts and each operation at most four rounds.
+Configuration bounds each to eight (at most 64 sends per operation), lifetime to
+five seconds and all intervals to their validated bounds. Queue-full/EAGAIN and
+duplicates cannot renew a deadline or create an immediate retry loop. Operation
+exhaustion or an expired confirmation means unknown policy freshness, not a
+multicast-failure decision. The next background operation is read-only; it never
+restarts a denied/exhausted fallback intent. Missing control replies do not
+automatically change delivery policy or fail the primary connection.
+
+The host calls `pump` outside group/runtime locks. Each turn consumes at most
+eight events and queues at most one timed request. `next_wakeup_us` exposes an
+absolute monotonic wake bound without creating a timer/thread or increasing
+scheduler capacity. The owner is below 4 KiB and uses constant request/revision
+storage. Provider callbacks run under native protocol ownership before the
+receiver mutex; callback close, runtime lifetime changes, option changes and
+grant expiry retain NativeService's cancellation fences. Freshness expires in
+snapshots even if the host has not pumped. Close prevents further confirmation
+and leaves historical metadata distinguishable from live authorization.
+
+Tests cover correlated/unmatched/late replies, rollback/conflict refusal, total
+loss and bounded attempts, queue delay/pressure, EAGAIN without submission,
+forged echoed references, duplicate freshness, capability/role/ownership refusal,
+explicit-intent cursor preservation and close/revocation/expiry. Native
+plaintext/CTR/GCM tests suppress every commit, reconcile by query with one actor
+transition, continue periodic read-only confirmation and receive 48 unicast DATA
+messages across key rotation. A separate native case suppresses all query replies,
+observes unknown freshness without fallback, continues multicast DATA and then
+reconfirms after replies resume. Both DATA ingress paths remain enabled under
+the existing merge/duplicate rules; receiver policy metadata does not select a
+path, ACK DATA, infer multicast health or implement return/hysteresis.
 
 ## Control body
 
@@ -570,7 +669,7 @@ Every control body is exactly 96 bytes.
 | Offset | Bytes | Field |
 | --- | --- | --- |
 | 0 | 4 | Version, 1 |
-| 4 | 4 | Kind, 1 through 6 |
+| 4 | 4 | Kind, 1 through 7 |
 | 8 | 8 | Stream incarnation |
 | 16 | 8 | Member incarnation |
 | 24 | 8 | Nonzero semantic serial |
@@ -580,14 +679,15 @@ Every control body is exactly 96 bytes.
 | 52 | 4 | Mode: multicast 0, unicast 1, overlap 2 |
 | 56 | 8 | Retained floor |
 | 64 | 8 | Multicast next position |
-| 72 | 8 | Produced next position |
+| 72 | 8 | STREAM_PROGRESS produced next; negotiated delivery-response request serial; otherwise zero |
 | 80 | 4 | Activity: startup, producing, paused, ended, source failed (0–4) |
 | 84 | 4 | Outcome: OK, denied, history unavailable, budget, stale, busy, unsupported (0–6) |
 | 88 | 4 | Observation/report interval in microseconds |
 | 92 | 4 | Report age in microseconds |
 
 Sender kinds are STREAM_PROGRESS (1), DELIVERY_COMMIT (4), DELIVERY_STATUS (5).
-Receiver kinds are PATH_REPORT (2), FALLBACK_REQUEST (3), MULTICAST_READY (6).
+Receiver kinds are PATH_REPORT (2), FALLBACK_REQUEST (3), MULTICAST_READY (6)
+and negotiated DELIVERY_QUERY (7).
 The gate checks roles, incarnation equality and the sequence mapping from the
 selected initial absolute position and advertised ISN, including multiple wire
 wraps. It does not infer positions from wire sequences alone.

@@ -16,7 +16,8 @@ inline constexpr std::size_t capability_size = 48, context_size = 192,
                              message_size = 96;
 inline constexpr std::uint32_t originals = 1, prefix_replay = 2, progress = 4,
                                overlap = 8, source_recovery = 16,
-                               core_features = 7, known_features = 31;
+                               policy_query = 32, core_features = 7,
+                               legacy_features = 31, known_features = 63;
 inline constexpr std::uint32_t maximum_prefix = 256,
                                maximum_interval_us = 1'000'000,
                                maximum_age_us = 5'000'000;
@@ -49,7 +50,8 @@ enum class Kind : std::uint32_t {
     fallback_request = 3,
     delivery_commit = 4,
     delivery_status = 5,
-    multicast_ready = 6
+    multicast_ready = 6,
+    delivery_query = 7
 };
 enum class Mode : std::uint32_t { multicast, unicast, overlap };
 enum class Activity : std::uint32_t {
@@ -78,6 +80,9 @@ struct Message {
     Activity activity = Activity::startup;
     Outcome outcome = Outcome::ok;
     std::uint32_t interval_us = 0, age_us = 0;
+    // Negotiated policy_query: delivery responses echo the request serial in
+    // wire word 72, which remains produced_next for STREAM_PROGRESS.
+    std::uint64_t request_serial = 0;
     friend bool operator==(const Message&, const Message&) = default;
 };
 [[nodiscard]] bool valid(const Message&) noexcept;

@@ -2878,4 +2878,25 @@ TEST(hybrid_bridge_command_backpressure_retries_cached_reply_without_reapplying)
     REQUIRE_EQ(f.bridge->snapshot().replies, 2U);
     REQUIRE_EQ(f.member().revision, 1U);
 }
+TEST(hybrid_bridge_status_queries_never_replay_prefix_or_reserve_unicast)
+{
+    BridgeFixture f;
+    REQUIRE_EQ(f.f.send(), Status::accepted);
+    f.f.pump();
+    GroupSendCoordinatorTestAccess::budget(*f.f.actor)->close();
+    auto query = f.request();
+    query.kind = hb::Kind::delivery_query;
+    query.mode = hb::Mode::multicast;
+    query.revision = 99;
+    f.submit(query);
+    const auto reply = f.reply();
+    REQUIRE_EQ(reply.kind, hb::Kind::delivery_status);
+    REQUIRE_EQ(reply.outcome, hb::Outcome::ok);
+    REQUIRE_EQ(reply.request_serial, query.serial);
+    REQUIRE_EQ(reply.revision, 0U);
+    REQUIRE_EQ(reply.next_position, 1U);
+    REQUIRE_EQ(f.member().delivery, GroupOriginalDelivery::multicast);
+    REQUIRE_EQ(f.f.actor->snapshot().unicast_reservations, 0U);
+    REQUIRE_EQ(f.bridge->snapshot().applied, 0U);
+}
 #endif

@@ -17,7 +17,7 @@ h::ExchangeRecord record(h::ExchangeKind kind)
     r.authentication.version = h::authentication_version;
     r.authentication.caller_nonce.fill(std::byte {1});
     h::Capability offer;
-    offer.supported = h::known_features;
+    offer.supported = h::legacy_features;
     if (kind == h::ExchangeKind::offer)
         r.capability = offer;
     else {
@@ -138,7 +138,7 @@ struct Fixture {
         c.source = {.kind = MulticastSourceKind::announcement,
             .group_id = c.dispatch.group_id,
             .endpoint = {.address = {192, 0, 2, 1}, .port = 9000}};
-        c.policy.supported = h::known_features;
+        c.policy.supported = h::legacy_features;
         c.credential_id.fill(std::byte {0x11});
         c.established_peer = IpEndpoint::loopback(8000);
         c.connection_generation = 123;
