@@ -3,9 +3,11 @@
 #include "compat/hybrid_native.hpp"
 #include "compat/hybrid_reporting.hpp"
 #include "compat/hybrid_detector.hpp"
+#include "compat/hybrid_automatic_types.hpp"
 
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 namespace robotweax::srt::compat::hybrid {
+class AutomaticFallback;
 // Caller policy owner with optional read-only reports and path assessments.
 // Does not select DATA paths, ACK data or initiate fallback automatically.
 class ReceiverBridge {
@@ -66,6 +68,19 @@ public:
 
 private:
     friend class NativeService;
+    friend class AutomaticFallback;
+    [[nodiscard]] bool claim_automatic() noexcept;
+    [[nodiscard]] std::optional<AutomaticRequest>
+    automatic_candidate() const noexcept;
+    [[nodiscard]] std::optional<std::uint64_t> admit_automatic(
+        const AutomaticRequest&, const AutomaticCursor&, std::uint64_t ticket,
+        std::uint32_t cursor_lifetime_us) noexcept;
+    struct AutomaticReceipt {
+        std::uint64_t ticket = 0;
+        RequestState result = RequestState::none;
+        Outcome outcome = Outcome::ok;
+    };
+    [[nodiscard]] AutomaticReceipt automatic_receipt() const noexcept;
     explicit ReceiverBridge(
         std::shared_ptr<NativeService>, Configuration) noexcept;
     void work() noexcept;
@@ -73,7 +88,8 @@ private:
     void detect() noexcept;
     void event(const NativeService::Event&, std::uint64_t) noexcept;
     void start(bool fallback, std::uint64_t position, std::uint64_t now,
-        std::uint64_t origin) noexcept;
+        std::uint64_t origin, std::uint64_t not_after = UINT64_MAX,
+        std::uint64_t automatic_ticket = 0) noexcept;
     void round(Kind, std::uint64_t) noexcept;
     void finish(Phase, std::uint64_t) noexcept;
     std::shared_ptr<NativeService> service_;
@@ -87,9 +103,13 @@ private:
     Context context_;
     Message request_;
     struct Posted {
-        std::uint64_t position = 0, at = 0;
+        std::uint64_t position = 0, at = 0, not_after = UINT64_MAX,
+                      automatic_ticket = 0;
     };
     std::optional<Posted> posted_;
+    bool automatic_claimed_ = false;
+    std::uint64_t manual_epoch_ = 0, active_automatic_ticket_ = 0;
+    AutomaticReceipt automatic_receipt_;
     std::uint64_t generation_ = 0, next_serial_ = 1, highest_reply_ = 0,
                   last_now_ = 0, deadline_ = 0, round_deadline_ = 0,
                   next_send_ = 0, next_query_ = 0, first_send_ = 0,

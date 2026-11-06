@@ -6,6 +6,7 @@
 
 #include "compat/group_registry.hpp"
 #include "compat/group_send_coordinator.hpp"
+#include "compat/hybrid_automatic.hpp"
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/transport_runtime.hpp"
@@ -2671,6 +2672,126 @@ struct HeldMulticastData {
         return frames;
     }
 };
+}
+namespace {
+struct NativeMergeCursor {
+    std::atomic<std::uint64_t> next_required = 0;
+    unsigned calls = 0;
+    std::uint64_t stream = 0, member = 0, generation = 0;
+    static std::optional<hn::AutomaticFallback::Cursor> resolve(
+        void* p, const hn::AutomaticFallback::Request& request) noexcept
+    {
+        auto& self = *static_cast<NativeMergeCursor*>(p);
+        ++self.calls;
+        if (request.stream != self.stream || request.member != self.member
+            || request.generation != self.generation)
+            return {};
+        // This test host has not consumed application DATA before fallback.
+        // Only the host updates next_required after actual application reads.
+        return hn::AutomaticFallback::Cursor {self.next_required.load(),
+            hn::NativeService::monotonic_now(), request.generation};
+    }
+};
+}
+TEST(multicast_dispatch_native_automatic_fallback_lost_commits_plain_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2);
+        const hn::DetectionConfiguration policy {.report_age_us = 800'000,
+            .maximum_transit_us = 5'000,
+            .stall_us = 40'000,
+            .emission_lifetime_us = 400'000,
+            .recovery_us = 80'000,
+            .recovery_gap_us = 60'000,
+            .hold_down_us = 100'000,
+            .sample_gap_us = 20'000,
+            .recovery_advances = 3};
+        NativeReceiverOwners owners(f, {10'000, 600'000}, policy);
+        const auto native = owners.pair.c->snapshot();
+        auto cursor = std::make_shared<NativeMergeCursor>();
+        cursor->stream = native.context.selection.stream;
+        cursor->member = native.context.selection.member;
+        cursor->generation = native.generation;
+        auto automatic = hn::AutomaticFallback::create(owners.receiver,
+            {1, 500'000}, {cursor, NativeMergeCursor::resolve});
+        REQUIRE(automatic);
+        const auto socket = SocketRegistry::instance().find(f.listener);
+        std::shared_ptr<robotweax::srt::compat::DatagramChannel> control;
+        {
+            std::lock_guard lock(socket->mutex);
+            control = socket->channel;
+        }
+        REQUIRE(control);
+        HybridWireHook hook;
+        hook.channel = control;
+        hook.drop_commits = true;
+        SendHookReset control_reset {control};
+        control->set_send_hook_for_testing(HybridWireHook::send, &hook);
+        HeldMulticastData held;
+        held.channel = f.source();
+        SendHookReset data_reset {held.channel};
+        held.channel->set_send_hook_for_testing(HeldMulticastData::send, &held);
+        REQUIRE(f.actor()->declare_source_activity(
+            hn::Activity::producing, 0, 1'000'000));
+        owners.wait([&] {
+            return owners.receiver->snapshot().fresh
+                && owners.receiver->peer_report(800'000).has_value();
+        });
+        int next = 0;
+        auto send_at = std::chrono::steady_clock::now();
+        const auto until = send_at + std::chrono::seconds {1};
+        while (automatic->snapshot().result
+                != hn::ReceiverBridge::RequestState::confirmed
+            && std::chrono::steady_clock::now() < until) {
+            REQUIRE(next < 64);
+            if (std::chrono::steady_clock::now() >= send_at) {
+                REQUIRE(
+                    f.actor()->declare_source_activity(hn::Activity::producing,
+                        static_cast<std::uint64_t>(next + 1), 1'000'000));
+                REQUIRE_EQ(
+                    f.send(next), static_cast<int>(message(next).size()));
+                ++next;
+                send_at = std::chrono::steady_clock::now()
+                    + std::chrono::milliseconds {12};
+            }
+            automatic->pump();
+            owners.sender->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        const auto state = automatic->snapshot();
+        REQUIRE_EQ(state.result, hn::ReceiverBridge::RequestState::confirmed);
+        REQUIRE_EQ(state.admitted, 1U);
+        REQUIRE_EQ(state.position, 0U);
+        REQUIRE_EQ(cursor->calls, 1U);
+        REQUIRE(hook.commits_dropped.load() > 0);
+        REQUIRE_EQ(owners.sender->snapshot().applied, 1U);
+        REQUIRE_EQ(f.actor()->snapshot().unicast_members, 1U);
+        expect_messages(f.receiver, 0, next);
+        cursor->next_required = static_cast<std::uint64_t>(next);
+        const auto first = next;
+        for (int i = 0; i < 40; ++i) {
+            REQUIRE(f.actor()->declare_source_activity(hn::Activity::producing,
+                static_cast<std::uint64_t>(next + 1), 1'000'000));
+            REQUIRE_EQ(f.send(next), static_cast<int>(message(next).size()));
+            ++next;
+            automatic->pump();
+            owners.sender->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        expect_messages(f.receiver, first, 40);
+        cursor->next_required = static_cast<std::uint64_t>(next);
+        automatic->pump();
+        REQUIRE_EQ(cursor->calls, 1U);
+        REQUIRE_EQ(owners.sender->snapshot().applied, 1U);
+        automatic->close();
+        REQUIRE(!owners.receiver->snapshot().closed);
+        REQUIRE_EQ(f.actor()->snapshot().unicast_members, 1U);
+    }
 }
 TEST(
     multicast_dispatch_native_passive_detector_outage_explicit_fallback_and_recovery)

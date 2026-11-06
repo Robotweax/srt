@@ -2,6 +2,8 @@
 #include "test.hpp"
 #include "compat/hybrid_native.hpp"
 #include "compat/hybrid_receiver.hpp"
+#include "compat/hybrid_automatic.hpp"
+#include <functional>
 #include "compat/transport_runtime.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 #include <algorithm>
@@ -108,6 +110,17 @@ TEST(hybrid_native_unconfigured_carrier_cannot_refresh_ordinary_peer_liveness)
 }
 
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+namespace robotweax::srt::compat {
+struct HybridAutomaticTestAccess {
+    static void link(const std::shared_ptr<ConnectionRuntime>& r,
+        const std::shared_ptr<hybrid::NativeService>& service)
+    {
+        std::lock_guard lock(r->mutex_);
+        r->hybrid_service_ = service;
+        service->runtime_ = r;
+    }
+};
+}
 namespace {
 std::shared_ptr<const h::Conclusions> conclusions()
 {
@@ -622,6 +635,8 @@ struct ReceiverFixture {
     Pair p;
     std::shared_ptr<h::ReceiverBridge> receiver;
     std::vector<h::Message> requests;
+    std::shared_ptr<compat::ConnectionRuntime> runtime;
+    std::shared_ptr<compat::DatagramChannel> multicast;
     std::uint64_t reply_serial = 1;
     static h::ReceiverBridge::Configuration configuration()
     {
@@ -634,9 +649,27 @@ struct ReceiverFixture {
             .maximum_rounds = 3};
     }
     explicit ReceiverFixture(
-        h::ReceiverBridge::Configuration c = configuration())
+        h::ReceiverBridge::Configuration c = configuration(),
+        bool local_data = false)
     {
         p.connect();
+        if (local_data) {
+            const auto pair = p.c->origin();
+            runtime = std::make_shared<compat::ConnectionRuntime>(
+                compat::ConnectionRuntime::Configuration {
+                    .peer = IpEndpoint::loopback(9000),
+                    .local_socket_id = 107,
+                    .peer_socket_id = 108,
+                    .initial_sequence = SequenceNumber {42},
+                    .peer_wire_initial_sequence = SequenceNumber {42}});
+            multicast = std::make_shared<compat::DatagramChannel>();
+            REQUIRE(multicast->register_ingress_route(pair->dispatch().group_id,
+                runtime, compat::PacketIngress::multicast_data,
+                compat::MulticastIngressConfiguration {
+                    .source = pair->source()}));
+            REQUIRE(runtime->publish_hybrid_conclusions(pair, true));
+            compat::HybridAutomaticTestAccess::link(runtime, p.c);
+        }
         receiver = h::ReceiverBridge::create(p.c, c);
         REQUIRE(receiver);
     }
@@ -682,6 +715,410 @@ struct ReceiverFixture {
         step();
     }
 };
+}
+namespace {
+struct AutomaticProvider {
+    std::shared_ptr<Clock> clock;
+    std::function<void(const h::AutomaticFallback::Request&)> effect;
+    unsigned calls = 0;
+    bool available = true, failed = false;
+    std::uint64_t position = 1234, age = 0, generation = 0;
+    static std::optional<h::AutomaticFallback::Cursor> resolve(
+        void* p, const h::AutomaticFallback::Request& request) noexcept
+    {
+        auto& self = *static_cast<AutomaticProvider*>(p);
+        ++self.calls;
+        try {
+            if (self.effect)
+                self.effect(request);
+        } catch (...) {
+            self.failed = true;
+            return {};
+        }
+        if (!self.available)
+            return {};
+        return h::AutomaticFallback::Cursor {self.position,
+            self.clock->value.load() - self.age,
+            self.generation ? self.generation : request.generation};
+    }
+};
+struct AutomaticFixture : ReceiverFixture {
+    std::shared_ptr<AutomaticProvider> provider =
+        std::make_shared<AutomaticProvider>();
+    std::shared_ptr<h::AutomaticFallback> controller;
+    static h::ReceiverBridge::Configuration configuration()
+    {
+        auto c = ReceiverFixture::configuration();
+        c.detection = h::DetectionConfiguration {.report_age_us = 1000,
+            .maximum_transit_us = 10,
+            .stall_us = 50,
+            .emission_lifetime_us = 300,
+            .recovery_us = 40,
+            .recovery_gap_us = 30,
+            .hold_down_us = 80,
+            .sample_gap_us = 20,
+            .recovery_advances = 3};
+        return c;
+    }
+    explicit AutomaticFixture(
+        std::uint32_t operations = 3, std::uint32_t cursor_lifetime = 1000)
+        : ReceiverFixture(configuration(), true)
+    {
+        provider->clock = p.clock;
+        controller = h::AutomaticFallback::create(receiver,
+            {operations, cursor_lifetime},
+            {provider, AutomaticProvider::resolve});
+        REQUIRE(controller);
+    }
+    void progress(std::uint64_t offset = 0,
+        h::Activity activity = h::Activity::producing,
+        std::uint64_t revision = 0)
+    {
+        auto m = response(h::Kind::delivery_status, revision,
+            h::Mode::multicast, 1234 + offset);
+        m.kind = h::Kind::stream_progress;
+        m.request_serial = 0;
+        m.multicast_next = m.next_position;
+        m.produced_next = 1334;
+        m.interval_us = 10;
+        m.activity = activity;
+        REQUIRE_EQ(
+            p.l->send(m, p.clock->value.load() + 1000, p.clock->value.load()),
+            h::NativeService::Admission::accepted);
+        step();
+        step();
+    }
+    void candidate(std::uint64_t revision = 0, std::uint64_t offset = 0)
+    {
+        step();
+        deliver(response(h::Kind::delivery_status, revision, h::Mode::multicast,
+            1234 + offset));
+        progress(offset, h::Activity::producing, revision);
+        advance(10);
+        progress(offset + 1, h::Activity::producing, revision);
+        for (unsigned i = 0; i < 6; ++i)
+            advance(10);
+        const auto a = receiver->path_assessment();
+        REQUIRE(a);
+        if (!a->fallback_candidate)
+            throw std::runtime_error("automatic candidate state="
+                + std::to_string(static_cast<unsigned>(a->state)) + " reason="
+                + std::to_string(static_cast<unsigned>(a->reason)) + " data="
+                + std::to_string(receiver->data_progress().has_value())
+                + " policy=" + std::to_string(receiver->snapshot().fresh));
+    }
+};
+}
+TEST(
+    hybrid_automatic_factory_requires_detector_provider_bounds_and_exclusive_single_use_attachment)
+{
+    ReceiverFixture plain;
+    auto provider = std::make_shared<AutomaticProvider>();
+    provider->clock = plain.p.clock;
+    REQUIRE(!h::AutomaticFallback::create(
+        plain.receiver, {1, 1000}, {provider, AutomaticProvider::resolve}));
+    AutomaticFixture f;
+    REQUIRE(!h::AutomaticFallback::create(
+        f.receiver, {1, 1000}, {f.provider, AutomaticProvider::resolve}));
+    f.controller->close();
+    f.controller.reset();
+    REQUIRE(!h::AutomaticFallback::create(
+        f.receiver, {1, 1000}, {f.provider, AutomaticProvider::resolve}));
+    REQUIRE(!h::AutomaticFallback::create(
+        f.receiver, {0, 1000}, {f.provider, AutomaticProvider::resolve}));
+    REQUIRE(!h::AutomaticFallback::create(
+        f.receiver, {9, 1000}, {f.provider, AutomaticProvider::resolve}));
+    REQUIRE(!h::AutomaticFallback::create(
+        f.receiver, {1, 0}, {f.provider, AutomaticProvider::resolve}));
+    REQUIRE(!h::AutomaticFallback::create(
+        f.receiver, {1, 1000}, {f.provider, nullptr}));
+}
+TEST(
+    hybrid_automatic_fresh_candidate_posts_one_owned_operation_and_preserves_cursor)
+{
+    AutomaticFixture f;
+    f.candidate();
+    f.controller->pump();
+    REQUIRE_EQ(f.provider->calls, 1U);
+    auto state = f.controller->snapshot();
+    REQUIRE_EQ(state.admitted, 1U);
+    REQUIRE_EQ(state.position, 1234U);
+    f.step();
+    REQUIRE_EQ(f.requests.back().kind, h::Kind::fallback_request);
+    REQUIRE_EQ(f.requests.back().next_position, 1234U);
+    f.deliver(f.response(h::Kind::delivery_commit, 1, h::Mode::unicast, 1235));
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::confirmed);
+    for (unsigned i = 0; i < 20; ++i)
+        f.controller->pump();
+    REQUIRE_EQ(f.provider->calls, 1U);
+    REQUIRE(!f.provider->failed);
+}
+TEST(
+    hybrid_automatic_unavailable_provider_and_repeated_candidates_cannot_refresh_attempt_budget)
+{
+    AutomaticFixture f;
+    f.provider->available = false;
+    f.candidate();
+    for (unsigned i = 0; i < 30; ++i)
+        f.controller->pump();
+    REQUIRE_EQ(f.provider->calls, 1U);
+    REQUIRE_EQ(f.controller->snapshot().phase,
+        h::AutomaticFallback::Phase::unavailable);
+    REQUIRE_EQ(
+        f.receiver->snapshot().fallback, h::ReceiverBridge::RequestState::none);
+}
+TEST(
+    hybrid_automatic_cursor_scope_age_future_position_and_provider_delay_are_revalidated)
+{
+    for (unsigned mode = 0; mode < 6; ++mode) {
+        AutomaticFixture f(3, 100);
+        f.candidate();
+        if (mode == 0)
+            f.provider->generation = 99;
+        if (mode == 1)
+            f.provider->age = 100;
+        if (mode == 2)
+            f.provider->position = 1235;
+        if (mode == 3)
+            f.provider->position = 1233;
+        if (mode == 4)
+            f.provider->effect = [&](const auto&) {
+                f.p.clock->value += 21;
+            };
+        if (mode == 5)
+            f.provider->age = f.p.clock->value.load() + 1;
+        f.controller->pump();
+        REQUIRE_EQ(f.controller->snapshot().phase,
+            h::AutomaticFallback::Phase::refused);
+        REQUIRE_EQ(f.controller->snapshot().admitted, 0U);
+        REQUIRE_EQ(f.receiver->snapshot().fallback,
+            h::ReceiverBridge::RequestState::none);
+    }
+}
+TEST(
+    hybrid_automatic_callbacks_can_inspect_reenter_close_or_lose_the_route_without_deadlock)
+{
+    for (unsigned mode = 0; mode < 4; ++mode) {
+        AutomaticFixture f;
+        f.candidate();
+        f.provider->effect = [&](const auto&) {
+            (void)f.receiver->snapshot();
+            (void)f.controller->snapshot();
+            f.controller->pump();
+            if (mode == 0)
+                f.controller->close();
+            if (mode == 1)
+                f.receiver->close();
+            if (mode == 2)
+                f.multicast->unregister_connection(
+                    f.p.c->origin()->dispatch().group_id);
+            if (mode == 3)
+                f.progress(1, h::Activity::paused);
+        };
+        f.controller->pump();
+        REQUIRE_EQ(f.provider->calls, 1U);
+        REQUIRE(!f.provider->failed);
+        REQUIRE_EQ(f.controller->snapshot().admitted, 0U);
+    }
+}
+TEST(
+    hybrid_automatic_manual_intent_wins_even_if_it_finishes_during_cursor_callback)
+{
+    AutomaticFixture f;
+    f.candidate();
+    f.provider->effect = [&](const auto&) {
+        REQUIRE_EQ(f.receiver->request_fallback(1234),
+            h::ReceiverBridge::Admission::accepted);
+        f.step();
+        auto denied = f.response();
+        denied.outcome = h::Outcome::budget;
+        f.deliver(denied);
+    };
+    f.controller->pump();
+    REQUIRE(!f.provider->failed);
+    REQUIRE_EQ(f.controller->snapshot().admitted, 0U);
+    REQUIRE_EQ(
+        f.controller->snapshot().phase, h::AutomaticFallback::Phase::refused);
+}
+TEST(
+    hybrid_automatic_denial_is_attributed_and_cannot_restart_under_same_revision)
+{
+    AutomaticFixture f;
+    f.candidate();
+    f.controller->pump();
+    f.step();
+    auto denied = f.response();
+    denied.outcome = h::Outcome::budget;
+    f.deliver(denied);
+    auto result = f.controller->snapshot();
+    REQUIRE_EQ(result.result, h::ReceiverBridge::RequestState::denied);
+    REQUIRE_EQ(result.outcome, h::Outcome::budget);
+    for (unsigned i = 0; i < 20; ++i)
+        f.controller->pump();
+    REQUIRE_EQ(f.provider->calls, 1U);
+    REQUIRE_EQ(f.receiver->request_fallback(1234),
+        h::ReceiverBridge::Admission::accepted);
+    f.step();
+    f.deliver(f.response(h::Kind::delivery_commit, 1, h::Mode::unicast, 1235));
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::denied);
+}
+TEST(
+    hybrid_automatic_close_prevents_new_admissions_but_preserves_receiver_owned_handoff)
+{
+    AutomaticFixture f;
+    f.candidate();
+    f.controller->pump();
+    f.controller->close();
+    REQUIRE(!f.receiver->snapshot().closed);
+    f.step();
+    REQUIRE_EQ(f.requests.back().kind, h::Kind::fallback_request);
+    f.deliver(f.response(h::Kind::delivery_commit, 1, h::Mode::unicast, 1235));
+    auto result = f.controller->snapshot();
+    REQUIRE(result.closed);
+    REQUIRE_EQ(result.result, h::ReceiverBridge::RequestState::confirmed);
+}
+TEST(hybrid_automatic_cursor_age_and_posting_delay_bound_the_original_operation)
+{
+    AutomaticFixture f(3, 100);
+    f.candidate();
+    f.provider->age = 50;
+    const auto now = f.p.clock->value.load();
+    f.controller->pump();
+    REQUIRE_EQ(f.controller->snapshot().not_after_us, now + 50);
+    f.p.clock->value = now + 50;
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::unknown);
+    f.step();
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::unknown);
+    REQUIRE(
+        std::none_of(f.requests.begin(), f.requests.end(), [](const auto& m) {
+            return m.kind == h::Kind::fallback_request;
+        }));
+}
+TEST(hybrid_automatic_close_does_not_wait_for_a_running_cursor_callback)
+{
+    AutomaticFixture f;
+    f.candidate();
+    std::promise<void> entered, release;
+    auto gate = release.get_future().share();
+    f.provider->effect = [&](const auto&) {
+        entered.set_value();
+        gate.wait();
+    };
+    auto pumping = std::async(std::launch::async, [&] {
+        f.controller->pump();
+    });
+    entered.get_future().wait();
+    auto closing = std::async(std::launch::async, [&] {
+        f.controller->close();
+    });
+    const auto ready =
+        closing.wait_for(std::chrono::seconds {1}) == std::future_status::ready;
+    release.set_value();
+    closing.get();
+    pumping.get();
+    REQUIRE(ready);
+    REQUIRE_EQ(f.controller->snapshot().admitted, 0U);
+    REQUIRE(!f.receiver->snapshot().closed);
+    REQUIRE(!f.provider->failed);
+}
+TEST(
+    hybrid_automatic_lifetime_budget_allows_new_revisions_but_cannot_be_reset_by_flapping)
+{
+    for (std::uint32_t limit : {1U, 2U}) {
+        AutomaticFixture f(limit);
+        f.provider->available = false;
+        f.candidate();
+        f.controller->pump();
+        for (std::uint64_t revision = 2; revision <= 2 * limit; revision += 2) {
+            REQUIRE_EQ(f.receiver->request_fallback(1234),
+                h::ReceiverBridge::Admission::accepted);
+            f.step();
+            auto response = f.response(h::Kind::delivery_status, revision,
+                h::Mode::multicast, 1234 + revision / 2);
+            response.outcome = h::Outcome::budget;
+            f.deliver(response);
+            f.progress(revision / 2, h::Activity::producing, revision);
+            f.advance(10);
+            f.progress(revision / 2 + 1, h::Activity::producing, revision);
+            for (unsigned i = 0; i < 6; ++i)
+                f.advance(10);
+            REQUIRE(f.receiver->path_assessment()->fallback_candidate);
+            f.controller->pump();
+        }
+        REQUIRE_EQ(f.provider->calls, limit);
+        REQUIRE_EQ(f.controller->snapshot().operations, limit);
+        REQUIRE(f.controller->snapshot().budget_exhausted);
+        REQUIRE_EQ(f.controller->snapshot().phase,
+            h::AutomaticFallback::Phase::exhausted);
+    }
+}
+TEST(hybrid_automatic_eagain_without_submission_keeps_one_bounded_owned_attempt)
+{
+    AutomaticFixture f;
+    f.candidate();
+    f.p.ct->would_block = 100;
+    f.controller->pump();
+    for (unsigned i = 0; i < 60; ++i) {
+        f.p.clock->value += 10;
+        f.controller->pump();
+        f.step();
+    }
+    REQUIRE_EQ(f.provider->calls, 1U);
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::unknown);
+    REQUIRE_EQ(f.controller->snapshot().admitted, 1U);
+    REQUIRE(
+        std::none_of(f.requests.begin(), f.requests.end(), [](const auto& m) {
+            return m.kind == h::Kind::fallback_request;
+        }));
+}
+TEST(hybrid_automatic_new_timeout_does_not_inherit_a_prior_manual_denial)
+{
+    AutomaticFixture f;
+    f.candidate();
+    REQUIRE_EQ(f.receiver->request_fallback(1234),
+        h::ReceiverBridge::Admission::accepted);
+    f.step();
+    auto denied = f.response();
+    denied.outcome = h::Outcome::budget;
+    f.deliver(denied);
+    REQUIRE_EQ(f.receiver->snapshot().fallback_outcome, h::Outcome::budget);
+    f.controller->pump();
+    REQUIRE_EQ(f.controller->snapshot().admitted, 1U);
+    for (unsigned i = 0; i < 60; ++i) {
+        f.p.clock->value += 10;
+        f.controller->pump();
+        f.step();
+    }
+    const auto result = f.controller->snapshot();
+    REQUIRE_EQ(result.result, h::ReceiverBridge::RequestState::unknown);
+    REQUIRE_EQ(result.outcome, h::Outcome::ok);
+    REQUIRE_EQ(f.provider->calls, 1U);
+}
+TEST(hybrid_automatic_total_loss_is_bounded_and_never_reinvokes_cursor_provider)
+{
+    AutomaticFixture f;
+    f.candidate();
+    f.controller->pump();
+    for (unsigned i = 0; i < 60; ++i) {
+        f.p.clock->value += 10;
+        f.controller->pump();
+        f.step();
+    }
+    REQUIRE_EQ(f.provider->calls, 1U);
+    REQUIRE_EQ(f.controller->snapshot().result,
+        h::ReceiverBridge::RequestState::unknown);
+    const auto count =
+        std::count_if(f.requests.begin(), f.requests.end(), [](const auto& m) {
+            return m.kind == h::Kind::fallback_request;
+        });
+    REQUIRE(count > 0);
+    REQUIRE(count <= 6);
+    REQUIRE_EQ(f.controller->snapshot().admitted, 1U);
 }
 TEST(
     hybrid_detector_receiver_opt_in_is_validated_and_never_creates_fallback_without_data)

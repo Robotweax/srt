@@ -10,6 +10,7 @@
 
 namespace robotweax::srt::compat {
 class ConnectionRuntime;
+struct HybridAutomaticTestAccess;
 }
 namespace robotweax::srt::compat::hybrid {
 // Provisional local assignment, default-OFF. No public C selector or automatic
@@ -128,6 +129,7 @@ private:
         const std::shared_ptr<ConnectionRuntime>&, NativeOptions) noexcept;
     friend class CoordinatorBridge;
     friend class ReceiverBridge;
+    friend struct robotweax::srt::compat::HybridAutomaticTestAccess;
     [[nodiscard]] bool bridge_work(CoordinatorBridge&) noexcept;
     [[nodiscard]] bool receiver_work(ReceiverBridge&) noexcept;
     [[nodiscard]] Admission send_impl(const Message&, std::uint64_t,

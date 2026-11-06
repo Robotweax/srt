@@ -521,6 +521,7 @@ class ConnectionRuntime {
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
     friend class hybrid::CoordinatorBridge;
     friend struct HybridBridgeTestAccess;
+    friend struct HybridAutomaticTestAccess;
     friend std::shared_ptr<hybrid::NativeService> hybrid::attach_native_control(
         const std::shared_ptr<ConnectionRuntime>&,
         hybrid::NativeOptions) noexcept;

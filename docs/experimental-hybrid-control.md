@@ -15,8 +15,9 @@ revisions and reconciles policy with bounded read-only queries. Explicitly confi
 owners can also publish authenticated progress/path reports from local DATA
 observations and bounded host activity declarations. An explicitly configured
 passive receiver detector assesses stalls and sustained multicast recovery.
-These components allocate no public C
-option and do not activate automatic recovery on live sockets. Native handshakes still
+A separately attached internal controller can opt into bounded automatic unicast
+fallback using trusted local merge state. Default configuration keeps automation
+disabled and allocates no public C option. Native handshakes still
 reject authentication version 7. No new capability handshake extension ID is
 allocated. Existing strict multicast announcements and existing authentication
 versions retain their formats.
@@ -34,6 +35,7 @@ cmake --build build-hybrid-control --parallel
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_receiver
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_reporting
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_detector
+./build-hybrid-control/robotweax_srt_tests --include hybrid_automatic
 ./tools/python tests/hybrid_control_vectors.py
 ```
 
@@ -813,7 +815,8 @@ receive times for strictly increasing reported high waters, not remote DATA
 arrival timestamps or proof of a contiguous prefix. Incoming reports neither
 confirm a delivery query nor create fallback intent or mutate DATA/ACK state.
 Closing/revoking an owner hides its peer report. The optional passive detector
-below consumes these observations; automatic transitions remain separate work.
+below consumes these observations; explicit one-way fallback automation is
+provided separately by the controller described below.
 
 ## Passive stall detection and recovery hysteresis
 
@@ -905,9 +908,102 @@ ready states describe bounded high-water evidence, not continuous coverage,
 loss-free delivery, a retained replay prefix, key availability, available
 bandwidth or an overlap commit boundary. Native loopback qualification exercises
 blackout detection, explicit host fallback, sustained multicast observation
-while unicast remains committed, pause suppression and owner closure. Controlled
-automatic transitions, budgeted overlap/return, public provisioning and startup
-join failure handling remain unimplemented.
+while unicast remains committed, pause suppression and owner closure. The
+separate controller below can consume fallback candidates. Budgeted
+multicast overlap/return, public provisioning and startup join failure handling
+remain unimplemented.
+
+## Explicitly attached automatic unicast fallback
+
+`AutomaticFallback::create(receiver, configuration, provider)` is an internal
+opt-in controller behind the existing default-OFF HC/ACP1 gates. It requires an
+attached live Caller receiver with a configured detector. Creation is exclusive
+and single-use for that receiver lifetime: closing/destroying the controller
+cannot reset its allowance by attaching another one. Default sockets, native
+owners and detectors do not create controllers. There is no public C selector,
+new handshake capability, wire record, key, timer, thread or scheduler service.
+The controller has fixed storage below 2 KiB and holds its existing receiver;
+provider storage/allocation behavior remains host-owned.
+
+The host explicitly configures `maximum_operations` in 1..8 and a positive
+`cursor_lifetime_us` no greater than five seconds. One operation allowance is
+spent before each cursor callback, including a missing/invalid cursor or failed
+final admission. At most one such preparation is allowed for a confirmed
+multicast policy revision. Candidate flapping, stale evidence, denial, exhaustion
+or provider unavailability cannot rearm the same revision. A later confirmed
+multicast revision can use another allowance, up to the lifetime maximum. There
+is no new autonomous retry policy; an accepted operation uses the receiver's
+existing bounded retry/query rounds and sender quotas/history/key checks.
+
+`pump()` advances the receiver first and processes at most one automatic
+preparation/admission. It returns immediately for concurrent/reentrant pumps.
+The host must keep pumping the controller/receiver and sender bridge and use the
+receiver's `next_wakeup_us`. No background automation thread is created.
+
+A candidate must still have fresh correlated multicast policy confirmation,
+a matching native generation and source/member identity, a live original DATA
+route, and current detector evidence. Capturing it grants no DATA/ACK authority.
+The provider receives the root identity, policy revision, initial absolute
+position, local start time and exclusive admission deadline. It must resolve a
+**trusted locally validated application merge cursor**, with observation time
+and matching native generation. The request deliberately supplies no remote
+horizon to use as that cursor. Neither a peer query cursor nor received/emitted
+high water is proof of a valid merge position.
+
+The provider callback must be nonblocking and uses the host monotonic clock. It
+runs outside controller, receiver, native protocol, runtime, group and queue
+locks. It may inspect state, post a manual request, close an owner or reenter
+`pump()`; no locks are held around it, and reentrant pumping does no work. Use
+weak back references to avoid cycles. Closing the controller does not wait for a
+running callback; a late return cannot admit work after that close.
+
+After the callback the receiver revalidates the root, candidate, confirmation,
+policy revision, original admission deadline, route and cursor. Detector
+resampling is pure and invokes no provider or native protocol work. New DATA,
+source activity or policy can clear the candidate. The cursor must not be future
+or stale, must be at least the selected initial position and no greater than the
+current core receive-window floor. That floor is only a ceiling, not cursor
+authority; the host must validate skipped/dropped/application merge semantics.
+The controller never clamps or manufactures a cursor. Sender history/budget
+refusal remains an explicit denial rather than silently advancing past data.
+
+A successfully posted intent transfers ownership to the receiver, with a unique
+ticket and an immutable local deadline. Its origin is the earlier of preparation
+and cursor observation; its deadline is bounded by the receiver operation
+lifetime from that origin, cursor lifetime and native grant expiry. Provider
+latency, old cursor age and local posting delay consume that bound. Queues or
+retries cannot renew it. A manual request accepted during cursor lookup wins,
+even if that manual operation finishes before the callback returns. An active
+fallback intent is never replaced by automation. Host manual requests otherwise
+retain their existing API and bounds.
+
+Controller snapshots expose operations/provider calls, admitted count, revision,
+ticket, selected cursor, local deadline, outcome and closed/exhausted state. A
+separate receiver receipt tracks that ticket: subsequent manual fallback or
+background query results cannot overwrite it. Local deadline or root expiry
+projects a pending automatic result to unknown even before another pump.
+Unknown does not mean the sender refused or rolled back a command.
+
+**Closing this controller stops new automatic preparations/admissions. It does
+not cancel a transaction already handed to the receiver.** That transaction may
+still commit and continues only within its original local retry bound while the
+receiver is pumped. Closing the receiver/native owner stops its future control
+work using the existing lifecycle fences, while primary DATA and already
+committed policy remain intact. Already selected/submitted/network datagrams
+cannot be recalled; a delayed authenticated request can reach the sender after
+the local deadline. No absolute remote commit cutoff or distributed cancellation
+is added by this feature.
+
+Loopback qualification covers automatic blackout fallback with every commit
+response suppressed: bounded read-only query reconciliation confirms unicast,
+exactly one actor transition occurs, and canonical DATA continues over unicast
+across CTR/GCM rotation. Component cases cover invalid/scoped/stale cursors,
+callback delay/reentrancy/close/route loss/pause, manual intent precedence,
+per-revision/lifetime budgets, persistent ticket results, posting-age expiry,
+EAGAIN and total reply loss. The detector's assumed timing/transit bounds and
+peer-honesty limits still apply. Automatic multicast return, budgeted overlap
+and its committed coverage boundary remain separate work; return candidates do
+not select multicast or send MULTICAST_READY.
 
 ## Control body
 

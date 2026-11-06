@@ -112,6 +112,7 @@ void ReceiverBridge::detect() noexcept
 {
     if (!detector_)
         return;
+    const auto native = service_->snapshot();
     const auto data = data_progress();
     const auto at = service_->now();
     const auto expiry = add(
@@ -125,8 +126,7 @@ void ReceiverBridge::detect() noexcept
             .confirmed = confirmed_ && at >= state_.confirmation_origin_us,
             .mode = state_.mode,
             .revision = state_.revision,
-            .expires_at_us =
-                std::min(expiry, service_->state_.expires_at_us)}});
+            .expires_at_us = std::min(expiry, native.expires_at_us)}});
 }
 std::optional<ReceiveDataProgress>
 ReceiverBridge::data_progress() const noexcept
@@ -179,6 +179,116 @@ void ReceiverBridge::report() noexcept
     } else
         ++state_.reports_skipped;
 }
+bool ReceiverBridge::claim_automatic() noexcept
+{
+    const auto native = service_->snapshot();
+    std::lock_guard lock(mutex_);
+    if (automatic_claimed_ || !detector_ || !state_.attached
+        || cancelled_.load() || service_->closed() || native.closed
+        || !native.active || service_->now() >= native.expires_at_us)
+        return false;
+    automatic_claimed_ = true;
+    return true;
+}
+std::optional<AutomaticRequest>
+ReceiverBridge::automatic_candidate() const noexcept
+{
+    const auto native = service_->snapshot();
+    std::lock_guard lock(mutex_);
+    const auto at = service_->now();
+    if (!automatic_claimed_ || !detector_ || !state_.attached
+        || cancelled_.load() || service_->closed() || native.closed
+        || !native.active || at >= native.expires_at_us || posted_
+        || (active_ && want_fallback_) || !confirmed_
+        || state_.mode != Mode::multicast || at < state_.confirmation_origin_us
+        || at - state_.confirmation_origin_us
+            >= configuration_.confirmation_lifetime_us)
+        return {};
+    const auto a = detector_->snapshot(at);
+    const auto data = data_progress();
+    if (!a.fallback_candidate || a.revision != state_.revision || !data
+        || data->all.next != a.received_next
+        || data->multicast.next != a.received_multicast_next)
+        return {};
+    return AutomaticRequest {.stream = context_.selection.stream,
+        .member = context_.selection.member,
+        .generation = generation_,
+        .revision = state_.revision,
+        .initial_position = context_.selection.initial_position,
+        .manual_epoch = manual_epoch_,
+        .started_at_us = at,
+        .admission_deadline_us =
+            std::min({a.valid_until_us, native.expires_at_us,
+                add(state_.confirmation_origin_us,
+                    configuration_.confirmation_lifetime_us)})};
+}
+std::optional<std::uint64_t> ReceiverBridge::admit_automatic(
+    const AutomaticRequest& request, const AutomaticCursor& cursor,
+    std::uint64_t ticket, std::uint32_t cursor_lifetime) noexcept
+{
+    const auto native = service_->snapshot();
+    std::lock_guard lock(mutex_);
+    const auto at = service_->now();
+    if (!ticket || !automatic_claimed_ || !detector_ || !state_.attached
+        || cancelled_.load() || service_->closed() || native.closed
+        || !native.active || at >= native.expires_at_us || posted_
+        || (active_ && want_fallback_) || request.generation != generation_
+        || cursor.generation != generation_
+        || request.stream != context_.selection.stream
+        || request.member != context_.selection.member
+        || request.initial_position != context_.selection.initial_position
+        || request.manual_epoch != manual_epoch_
+        || request.revision != state_.revision || !confirmed_
+        || state_.mode != Mode::multicast || at < request.started_at_us
+        || at >= request.admission_deadline_us
+        || at < state_.confirmation_origin_us
+        || at - state_.confirmation_origin_us
+            >= configuration_.confirmation_lifetime_us
+        || cursor.observed_at_us > at
+        || at - cursor.observed_at_us >= cursor_lifetime
+        || cursor.position < context_.selection.initial_position)
+        return {};
+    // Pure resampling under receiver ownership, with no provider callbacks or
+    // native protocol work. New DATA or activity may have cleared the outage.
+    detect();
+    const auto admitted_at = service_->now();
+    const auto a = detector_->snapshot(admitted_at);
+    const auto data = data_progress();
+    if (admitted_at < at || admitted_at >= request.admission_deadline_us
+        || cancelled_.load() || service_->closed() || !a.fallback_candidate
+        || a.revision != state_.revision || !data
+        || cursor.position > data->window_floor
+        || data->all.next != a.received_next
+        || data->multicast.next != a.received_multicast_next)
+        return {};
+    const auto origin = std::min(request.started_at_us, cursor.observed_at_us);
+    const auto deadline =
+        std::min({add(origin, configuration_.operation_timeout_us),
+            add(cursor.observed_at_us, cursor_lifetime), native.expires_at_us});
+    if (admitted_at >= deadline)
+        return {};
+    posted_ = Posted {cursor.position, origin, deadline, ticket};
+    automatic_receipt_ = {ticket, RequestState::pending, Outcome::ok};
+    state_.fallback = RequestState::pending;
+    state_.fallback_outcome = Outcome::ok;
+    return deadline;
+}
+ReceiverBridge::AutomaticReceipt
+ReceiverBridge::automatic_receipt() const noexcept
+{
+    const auto native = service_->snapshot();
+    std::lock_guard lock(mutex_);
+    auto receipt = automatic_receipt_;
+    const auto at = service_->now();
+    if (receipt.result == RequestState::pending
+        && (cancelled_.load() || service_->closed() || native.closed
+            || at >= native.expires_at_us
+            || (posted_ && posted_->automatic_ticket == receipt.ticket
+                && at >= posted_->not_after)
+            || (active_automatic_ticket_ == receipt.ticket && at >= deadline_)))
+        receipt.result = RequestState::unknown;
+    return receipt;
+}
 ReceiverBridge::Admission ReceiverBridge::request_fallback(
     std::uint64_t position) noexcept
 {
@@ -196,6 +306,9 @@ ReceiverBridge::Admission ReceiverBridge::request_fallback(
         && at - state_.confirmation_origin_us
             < configuration_.confirmation_lifetime_us)
         return Admission::already_unicast;
+    if (manual_epoch_ == UINT64_MAX)
+        return Admission::invalid;
+    ++manual_epoch_;
     posted_ = Posted {position, at};
     state_.fallback = RequestState::pending;
     state_.fallback_outcome = Outcome::ok;
@@ -214,21 +327,26 @@ void ReceiverBridge::finish(Phase phase, std::uint64_t at) noexcept
         state_.fallback = phase == Phase::known ? RequestState::confirmed
             : phase == Phase::denied            ? RequestState::denied
                                                 : RequestState::unknown;
-        state_.fallback_outcome = state_.outcome;
     }
+    if (active_automatic_ticket_)
+        automatic_receipt_ = {
+            active_automatic_ticket_, state_.fallback, state_.fallback_outcome};
+    active_automatic_ticket_ = 0;
     active_ = false;
     want_fallback_ = false;
     state_.phase = phase;
     next_query_ = add(at, configuration_.query_interval_us);
 }
 void ReceiverBridge::start(bool fallback, std::uint64_t position,
-    std::uint64_t at, std::uint64_t origin) noexcept
+    std::uint64_t at, std::uint64_t origin, std::uint64_t not_after,
+    std::uint64_t automatic_ticket) noexcept
 {
+    active_automatic_ticket_ = automatic_ticket;
     active_ = true;
     want_fallback_ = fallback;
     rounds_ = 0;
-    deadline_ = std::min(add(origin, configuration_.operation_timeout_us),
-        service_->state_.expires_at_us);
+    deadline_ = std::min({add(origin, configuration_.operation_timeout_us),
+        service_->state_.expires_at_us, not_after});
     if (at >= deadline_) {
         ++state_.exhausted;
         finish(Phase::unknown, at);
@@ -363,6 +481,8 @@ void ReceiverBridge::event(
     confirmed_ = true;
     state_.confirmation_origin_us = first_send_;
     state_.outcome = m.outcome;
+    if (want_fallback_)
+        state_.fallback_outcome = m.outcome;
     ++state_.confirmed;
     if (want_fallback_ && m.mode != Mode::unicast) {
         if (request_.kind == Kind::fallback_request) {
@@ -414,7 +534,8 @@ void ReceiverBridge::work() noexcept
     if (posted_) {
         const auto posted = *posted_;
         posted_.reset();
-        start(true, posted.position, at, posted.at);
+        start(true, posted.position, at, posted.at, posted.not_after,
+            posted.automatic_ticket);
     }
     for (std::size_t i = 0; i < NativeService::batch; ++i) {
         NativeService::Event e;

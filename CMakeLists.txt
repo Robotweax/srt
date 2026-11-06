@@ -179,6 +179,7 @@ add_library(robotweax_srt
     src/compat/hybrid_native.cpp
     src/compat/hybrid_bridge.cpp
     src/compat/hybrid_receiver.cpp
+    src/compat/hybrid_automatic.cpp
     src/compat/hybrid_detector.cpp
     src/compat/hybrid_reporting.cpp
     src/compat/hybrid_progress.cpp
