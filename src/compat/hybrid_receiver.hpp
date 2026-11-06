@@ -51,6 +51,8 @@ public:
     void pump() noexcept;
     void close() noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
+    [[nodiscard]] std::optional<ReceiveDataProgress>
+    data_progress() const noexcept;
 
 private:
     friend class NativeService;

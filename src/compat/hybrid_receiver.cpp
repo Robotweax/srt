@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "compat/hybrid_receiver.hpp"
+#include "compat/transport_runtime.hpp"
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 #include <algorithm>
 
@@ -78,6 +79,17 @@ ReceiverBridge::Snapshot ReceiverBridge::snapshot() const noexcept
         s.next_wakeup_us = std::min(s.next_wakeup_us, native.expires_at_us);
     }
     return s;
+}
+std::optional<ReceiveDataProgress>
+ReceiverBridge::data_progress() const noexcept
+{
+    const auto native = service_->snapshot();
+    if (cancelled_.load() || native.closed || !native.active)
+        return {};
+    const auto r = service_->runtime_.lock();
+    return r ? r->hybrid_receive_progress(
+                   service_.get(), native.context.selection.initial_position)
+             : std::nullopt;
 }
 ReceiverBridge::Admission ReceiverBridge::request_fallback(
     std::uint64_t position) noexcept

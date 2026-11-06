@@ -2899,4 +2899,162 @@ TEST(hybrid_bridge_status_queries_never_replay_prefix_or_reserve_unicast)
     REQUIRE_EQ(f.f.actor->snapshot().unicast_reservations, 0U);
     REQUIRE_EQ(f.bridge->snapshot().applied, 0U);
 }
+TEST(hybrid_progress_sender_admission_and_eagain_are_not_multicast_submissions)
+{
+    Fixture f;
+    Receiver r(f);
+    f.output.data_failures = 1;
+    REQUIRE_EQ(f.send(), Status::accepted);
+    auto s = f.actor->data_progress(r.id);
+    REQUIRE(s);
+    REQUIRE_EQ(s->admitted_next, 1U);
+    REQUIRE(!s->multicast.observed);
+    f.pump();
+    REQUIRE(!f.actor->data_progress(r.id)->multicast.observed);
+    f.now += 2ms;
+    r.now += 2000;
+    f.pump();
+    s = f.actor->data_progress(r.id);
+    REQUIRE(s);
+    REQUIRE_EQ(s->multicast.next, 1U);
+    REQUIRE_EQ(s->multicast.packets, 1U);
+    REQUIRE(!s->unicast.observed);
+    REQUIRE_EQ(s->multicast.last_advance_us,
+        static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                f.now.time_since_epoch())
+                .count()));
+}
+TEST(hybrid_progress_sender_unicast_records_only_full_native_udp_completion)
+{
+    Fixture f;
+    Receiver r(f);
+    REQUIRE_EQ(
+        f.actor->set_delivery(r.id, 0, GroupOriginalDelivery::unicast).status,
+        Actor::TransitionStatus::applied);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    REQUIRE(!f.actor->data_progress(r.id)->unicast.observed);
+    r.output.data_failures = 1;
+    (void)r.runtime->poll();
+    REQUIRE(!f.actor->data_progress(r.id)->unicast.observed);
+    r.now += 2000;
+    (void)r.runtime->poll();
+    const auto s = f.actor->data_progress(r.id);
+    REQUIRE(s);
+    REQUIRE_EQ(s->unicast.next, 1U);
+    REQUIRE_EQ(s->unicast.packets, 1U);
+    REQUIRE(!s->multicast.observed);
+}
+TEST(hybrid_progress_sender_overlap_paths_remain_separate_high_waters)
+{
+    Fixture f;
+    Receiver r(f);
+    REQUIRE_EQ(
+        f.actor->set_delivery(r.id, 0, GroupOriginalDelivery::overlap).status,
+        Actor::TransitionStatus::applied);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    f.pump();
+    (void)r.runtime->poll();
+    const auto s = f.actor->data_progress(r.id);
+    REQUIRE(s);
+    REQUIRE_EQ(s->multicast.next, 1U);
+    REQUIRE_EQ(s->unicast.next, 1U);
+    REQUIRE_EQ(s->multicast.packets, 1U);
+    REQUIRE_EQ(s->unicast.packets, 1U);
+}
+TEST(hybrid_progress_sender_partial_and_failed_data_have_no_success_sample)
+{
+    for (bool partial : {false, true}) {
+        Fixture f;
+        Receiver r(f);
+        f.output.partial = partial;
+        if (!partial)
+            f.output.error = Error::io_error;
+        REQUIRE_EQ(f.send(), Status::accepted);
+        REQUIRE(!f.actor->data_progress(r.id)->multicast.observed);
+        f.pump();
+        REQUIRE(!f.actor->data_progress(r.id));
+        REQUIRE(f.actor->snapshot().failed);
+        Fixture u;
+        Receiver receiver(u);
+        REQUIRE_EQ(
+            u.actor->set_delivery(
+                       receiver.id, 0, GroupOriginalDelivery::unicast)
+                .status,
+            Actor::TransitionStatus::applied);
+        REQUIRE_EQ(u.send(), Status::accepted);
+        REQUIRE(!u.actor->data_progress(receiver.id)->unicast.observed);
+        receiver.output.partial = partial;
+        if (!partial)
+            receiver.output.error = Error::io_error;
+        (void)receiver.runtime->poll();
+        REQUIRE(!u.actor->data_progress(receiver.id));
+    }
+}
+TEST(
+    hybrid_progress_sender_member_replacement_does_not_reuse_unicast_observations)
+{
+    Fixture f;
+    Receiver r(f);
+    REQUIRE_EQ(
+        f.actor->set_delivery(r.id, 0, GroupOriginalDelivery::unicast).status,
+        Actor::TransitionStatus::applied);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    (void)r.runtime->poll();
+    f.pump();
+    REQUIRE(f.actor->data_progress(r.id)->unicast.observed);
+    r.ack(initial.next());
+    const auto old = r.id;
+    f.actor->remove_member(old);
+    REQUIRE(!f.actor->data_progress(old));
+    const auto replacement = f.actor->add_member(r.runtime);
+    REQUIRE(replacement);
+    const auto s = f.actor->data_progress(replacement->id);
+    REQUIRE(s);
+    REQUIRE_EQ(s->member_origin, 1U);
+    REQUIRE_EQ(s->unicast.next, 1U);
+    REQUIRE(!s->unicast.observed);
+    f.actor->close();
+    REQUIRE(!f.actor->data_progress(replacement->id));
+}
+TEST(
+    hybrid_progress_sender_late_join_maps_runtime_positions_after_unused_frames)
+{
+    Fixture f;
+    REQUIRE_EQ(f.send(), Status::advanced_without_receivers);
+    Receiver r(f, 8, true, initial.next());
+    auto s = f.actor->data_progress(r.id);
+    REQUIRE(s);
+    REQUIRE_EQ(s->member_origin, 1U);
+    REQUIRE(!s->multicast.observed);
+    REQUIRE_EQ(
+        f.actor->set_delivery(r.id, 0, GroupOriginalDelivery::unicast).status,
+        Actor::TransitionStatus::applied);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    (void)r.runtime->poll();
+    s = f.actor->data_progress(r.id);
+    REQUIRE(s);
+    REQUIRE_EQ(s->unicast.next, 2U);
+    REQUIRE_EQ(s->history_floor, 1U);
+}
+TEST(hybrid_progress_sender_prefix_repairs_are_not_unicast_originals)
+{
+    for (bool submitted : {false, true}) {
+        Fixture f;
+        Receiver r(f);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        if (submitted)
+            f.pump();
+        REQUIRE_EQ(
+            f.actor->set_delivery(r.id, 0, GroupOriginalDelivery::unicast, true)
+                .status,
+            Actor::TransitionStatus::applied);
+        (void)r.runtime->poll();
+        const auto s = f.actor->data_progress(r.id);
+        REQUIRE(s);
+        REQUIRE_EQ(s->unicast.observed, !submitted);
+        if (!submitted)
+            REQUIRE_EQ(s->unicast.next, 1U);
+    }
+}
 #endif

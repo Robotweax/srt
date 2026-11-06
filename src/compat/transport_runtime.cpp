@@ -2879,6 +2879,26 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
     transient_send_failure_since_.reset();
     transient_send_system_error_ = 0;
     if (completion.kind == DatagramKind::data) {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        if (completion.group_binding && !completion.data.retransmitted
+            && group_send_state_
+            && group_send_state_->binding == completion.group_binding
+            && group_send_state_->generation
+                == completion.group_binding->member_generation_
+            && completion.group_position
+                >= completion.group_binding->runtime_position_origin_) {
+            const auto base =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    origin_.time_since_epoch())
+                    .count();
+            if (base >= 0
+                && now <= UINT64_MAX - static_cast<std::uint64_t>(base))
+                (void)group_send_state_->unicast_originals.note(
+                    completion.group_position
+                        - completion.group_binding->runtime_position_origin_,
+                    static_cast<std::uint64_t>(base) + now);
+        }
+#endif
         if (completion.group_binding && !completion.data.retransmitted)
             (void)session_.note_group_unicast_submitted(
                 {completion.data.sequence, completion.group_position}, now);
@@ -3896,8 +3916,18 @@ bool ConnectionRuntime::service_key_rotation(
 bool ConnectionRuntime::process_reliability_packet_locked(
     const PacketView& packet, std::uint64_t now,
     ReliabilityReceiveContext context, bool wire_received,
-    std::span<const std::byte> authenticated_plaintext) noexcept
+    std::span<const std::byte> authenticated_plaintext,
+    std::optional<hybrid::DataPath> observation_path,
+    std::uint64_t observation_arrival_us) noexcept
 {
+#ifndef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    (void)observation_path;
+    (void)observation_arrival_us;
+#else
+    if (hybrid_receive_)
+        hybrid_receive_->sync_floor(
+            session_.receive_buffer().first_stored_sequence());
+#endif
     // Reject oversized DATA before querying delivery state or doing provider
     // work. Invalid input must neither terminate nor advance this session.
     if (packet.kind == PacketKind::data
@@ -4028,6 +4058,18 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     if (!processed) {
         return false;
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_receive_) {
+        hybrid_receive_->sync_floor(
+            session_.receive_buffer().first_stored_sequence());
+        if (observation_path && wire_received && !context.filter_supplied
+            && !context.discard_payload
+            && !processed.receiver_filter_control_packet)
+            hybrid_receive_->receive(clear_packet,
+                processed.receiver_packet_accepted_unique, *observation_path,
+                observation_arrival_us);
+    }
+#endif
     if (packet.kind == PacketKind::data
         && processed.receiver_packet_accepted_unique && !context.discard_payload
         && !processed.receiver_filter_control_packet) {
@@ -4271,6 +4313,18 @@ bool ConnectionRuntime::publish_hybrid_conclusions(
         || !pair
         || !pair->matches(caller, hybrid_local_socket_id_, peer_socket_id_))
         return false;
+    if (caller) {
+        try {
+            auto progress = std::make_unique<hybrid::ReceiveProgress>(
+                SequenceNumber {pair->dispatch().initial_sequence});
+            progress->sync_floor(
+                session_.receive_buffer().first_stored_sequence());
+            hybrid_receive_ = std::move(progress);
+            hybrid_receive_route_ = multicast_ingress_generation_;
+        } catch (...) {
+            return false;
+        }
+    }
     hybrid_conclusions_ = std::move(pair);
     hybrid_caller_ = caller;
     return true;
@@ -4281,6 +4335,21 @@ ConnectionRuntime::hybrid_conclusions() const noexcept
     std::lock_guard lock(mutex_);
     return locally_closed_ || broken_ || peer_closed_ ? nullptr
                                                       : hybrid_conclusions_;
+}
+std::optional<hybrid::ReceiveDataProgress>
+ConnectionRuntime::hybrid_receive_progress(
+    const hybrid::NativeService* service, std::uint64_t origin) const noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (locally_closed_ || broken_ || peer_closed_ || peer_error_pending_
+        || !service || service->closed() || hybrid_service_.get() != service
+        || hybrid_conclusions_ != service->origin() || !hybrid_receive_
+        || !multicast_ingress_binding_
+        || hybrid_receive_route_ != multicast_ingress_generation_)
+        return {};
+    hybrid_receive_->sync_floor(
+        session_.receive_buffer().first_stored_sequence());
+    return hybrid_receive_->snapshot(origin);
 }
 #endif
 void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
@@ -4678,7 +4747,41 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
             filtered.irrecoverable_losses, now);
         return;
     }
-    if (process_reliability_packet_locked(packet, now)) {
+    std::optional<hybrid::DataPath> observation_path;
+    std::uint64_t arrival = 0;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (packet.kind == PacketKind::data && hybrid_receive_
+        && multicast_ingress_binding_
+        && hybrid_receive_route_ == multicast_ingress_generation_) {
+        observation_path = provenance == PacketIngress::multicast_data
+            ? hybrid::DataPath::multicast
+            : hybrid::DataPath::unicast;
+        // Compare native ingress against one absolute clock sample. Summing
+        // separately truncated origin and elapsed microseconds can put a valid
+        // receive one microsecond in the future.
+        const auto observed_at = Clock::now();
+        const auto absolute =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                observed_at.time_since_epoch())
+                .count();
+        if (absolute >= 0)
+            arrival = static_cast<std::uint64_t>(absolute);
+        else
+            observation_path.reset();
+        if (ingress) {
+            const auto recorded =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    ingress->time_since_epoch())
+                    .count();
+            if (recorded < 0 || static_cast<std::uint64_t>(recorded) > arrival)
+                observation_path.reset();
+            else
+                arrival = static_cast<std::uint64_t>(recorded);
+        }
+    }
+#endif
+    if (process_reliability_packet_locked(
+            packet, now, {}, true, {}, observation_path, arrival)) {
         last_peer_activity_microseconds_ = now;
     }
 }

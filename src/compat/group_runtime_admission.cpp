@@ -105,6 +105,9 @@ GroupRuntimeAdmission::Binding GroupRuntimeAdmission::bind(
         binding->member_generation_ = ++runtime->group_send_state_->generation;
         runtime->group_send_state_->recovery_key_lease.reset();
         runtime->group_send_state_->binding = binding;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        runtime->group_send_state_->unicast_originals = {};
+#endif
         runtime->group_data_egress_.mode =
             ConnectionRuntime::GroupDataEgress::Mode::external_originals;
         runtime->group_data_egress_.destination_socket_id = c.group_id;
@@ -448,6 +451,28 @@ GroupRuntimeAdmission::Recovery GroupRuntimeAdmission::inspect_unicast(
             runtime->session_.send_buffer().pending_group_unicast()};
 }
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+std::optional<GroupRuntimeAdmission::DataObservation>
+GroupRuntimeAdmission::observe_data(const Binding& b) noexcept
+{
+    if (!b)
+        return {};
+    const auto r = b->runtime_.lock();
+    if (!r)
+        return {};
+    std::unique_lock lock(r->mutex_, std::try_to_lock);
+    if (!lock.owns_lock() || !active_locked(*r, b) || r->locally_closed_
+        || r->broken_ || r->peer_closed_ || r->peer_error_pending_)
+        return {};
+    const auto& history = r->session_.send_buffer();
+    const auto end = history.next_sequence_position();
+    if (end < b->runtime_position_origin_
+        || history.sequence_span() > end - b->runtime_position_origin_)
+        return {};
+    return DataObservation {r->group_send_state_->unicast_originals,
+        end - b->runtime_position_origin_ - history.sequence_span()};
+}
+#endif
 void GroupRuntimeAdmission::notify_work(const Binding& binding) noexcept
 {
     if (binding) {

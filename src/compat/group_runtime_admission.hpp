@@ -35,6 +35,9 @@ struct GroupRuntimeSendState {
     };
     std::optional<RecoveryKeyLease> recovery_key_lease;
     std::shared_ptr<const GroupSendBinding> binding;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    hybrid::DataHighWater unicast_originals;
+#endif
 };
 
 // Internal single-original Live admission for coordinated group sending.
@@ -190,6 +193,14 @@ public:
         SequenceNumber next, bool apply,
         bool allow_new_unicast = true) noexcept;
     [[nodiscard]] static Recovery inspect_unicast(const Binding&) noexcept;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    struct DataObservation {
+        hybrid::DataHighWater unicast;
+        std::uint64_t retained_relative = 0;
+    };
+    [[nodiscard]] static std::optional<DataObservation> observe_data(
+        const Binding&) noexcept;
+#endif
     // Call AFTER releasing all emitter/runtime guards, even after cancellation
     // if crypto preparation created a KM announcement. No original is emitted.
     static void notify_work(const Binding&) noexcept;

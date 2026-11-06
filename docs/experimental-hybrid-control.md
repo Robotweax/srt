@@ -662,6 +662,67 @@ reconfirms after replies resume. Both DATA ingress paths remain enabled under
 the existing merge/duplicate rules; receiver policy metadata does not select a
 path, ACK DATA, infer multicast health or implement return/hysteresis.
 
+## Local DATA observations
+
+The internal `CoordinatorBridge::data_progress()` and
+`ReceiverBridge::data_progress()` getters expose bounded, read-only samples
+behind the hybrid gate. They do not emit STREAM_PROGRESS or PATH_REPORT, infer
+source activity, run a detector, request fallback or change DATA/ACK state.
+A missing sample means unavailable evidence. A high water is the largest
+observed absolute position plus one; it does not establish a contiguous prefix,
+remote receipt, application delivery, an ACK horizon or current source liveness.
+Only a strictly higher position changes `last_advance_us`; repeated and older
+copies cannot renew that timestamp. Timestamps use the host monotonic clock.
+
+The source sample separates the coordinator's admission cursor from actual
+multicast and per-member unicast original UDP submissions. Admission, queued
+work, EAGAIN, short sends and failed sends are not successful submissions.
+Multicast advances only when the actor drains a complete emitter outcome;
+unicast advances only after complete native UDP acceptance for the current
+member binding. Retransmitted repairs do not count as unicast originals.
+Multicast high water belongs to the source incarnation and can precede a
+member's join. Unicast positions and the retained send-window floor map through
+that member's join origin. This floor describes retained sequence slots; it is
+not a promise that an entire recovery prefix is available. Samples can lag
+completion while the actor is busy, and can be unavailable during runtime
+contention, detachment or failure. A false `source_failed` flag does not prove
+health or production.
+
+The receiver separates total unique DATA from validated unicast and multicast
+observations, including matching multicast copies after unicast application
+consumption. Existing source/peer and route-generation checks, crypto processing
+and core receive admission precede observation. Encrypted DATA must have usable
+plaintext; optional-encryption discards and filter-supplied/control packets do
+not count. Plaintext and CTR retain their existing integrity limitations.
+The receive window supplies only the lifting anchor across 31-bit wraps;
+window skips, application reads and ACK progress do not manufacture DATA
+observations. Ambiguous/backward anchors or absolute-position overflow make the
+sample unavailable.
+
+A fixed cache holds exact normalized DATA headers and accepted plaintext for
+32 recent positions. The retransmission flag is normalized; changed payloads,
+other header changes, uncached old copies and repeated copies on the same path
+cannot advance path progress. The cache allows comparison after the application
+has consumed the packet without inventing a hash or authentication mechanism.
+Receiver unicast observations include valid repairs, unlike source unicast
+original-submission marks. One sparse high position can evict older evidence;
+this bounded cache does not prove continuous path coverage. Plaintext may remain
+in this cache until replacement or runtime destruction.
+
+The observer is smaller than 64 KiB and is allocated once when an HC-enabled
+independent Caller publishes its immutable conclusions; allocation failure
+fails setup explicitly. Default-OFF builds add no observer allocation or runtime
+field. There is no new thread, timer or queue. Getter access requires the live
+native root and current route epoch; revoking or replacing that route hides its
+observations rather than carrying them into a new epoch. Closing the receiver
+owner or revoking the sender authorization lease hides its sample. These are
+local snapshots, not an authorization transaction or a fresh provider check;
+the existing revoke-before-provider-change contract remains mandatory.
+
+Next work is bounded authenticated reporting with an explicit source-activity
+contract, followed by detection and hysteresis based on evidence age. Policy
+query cursors remain admission metadata and cannot substitute for DATA evidence.
+
 ## Control body
 
 Every control body is exactly 96 bytes.

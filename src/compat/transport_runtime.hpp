@@ -590,6 +590,9 @@ public:
         std::shared_ptr<const hybrid::Conclusions>, bool caller) noexcept;
     [[nodiscard]] std::shared_ptr<const hybrid::Conclusions>
     hybrid_conclusions() const noexcept;
+    [[nodiscard]] std::optional<hybrid::ReceiveDataProgress>
+    hybrid_receive_progress(const hybrid::NativeService*,
+        std::uint64_t absolute_origin) const noexcept;
 #endif
 
     [[nodiscard]] MessageIoResult queue_message(
@@ -867,7 +870,9 @@ private:
     [[nodiscard]] bool process_reliability_packet_locked(
         const PacketView& packet, std::uint64_t now_microseconds,
         ReliabilityReceiveContext context = {}, bool wire_received = true,
-        std::span<const std::byte> authenticated_plaintext = {}) noexcept;
+        std::span<const std::byte> authenticated_plaintext = {},
+        std::optional<hybrid::DataPath> observation_path = std::nullopt,
+        std::uint64_t observation_arrival_us = 0) noexcept;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
     void process_experimental_filter_locked(
         const PacketView& packet, std::uint64_t now) noexcept;
@@ -924,6 +929,8 @@ private:
     std::uint32_t hybrid_local_socket_id_ = 0;
     bool hybrid_caller_ = false, hybrid_attempted_ = false;
     std::shared_ptr<hybrid::NativeService> hybrid_service_;
+    std::unique_ptr<hybrid::ReceiveProgress> hybrid_receive_;
+    std::uint64_t hybrid_receive_route_ = 0;
 #endif
     std::condition_variable receive_ready_;
     std::condition_variable send_ready_;

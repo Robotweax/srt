@@ -115,6 +115,24 @@ CoordinatorBridge::Snapshot CoordinatorBridge::snapshot() const noexcept
     s.closed = s.closed || cancelled_.load() || service_->closed();
     return s;
 }
+std::optional<SourceDataProgress>
+CoordinatorBridge::data_progress() const noexcept
+{
+    const auto native = service_->snapshot();
+    std::uint64_t revision = 0;
+    {
+        std::lock_guard lock(mutex_);
+        if (!state_.enrolled || cancelled_.load() || native.closed
+            || !native.active)
+            return {};
+        revision = state_.revision;
+    }
+    auto sample = actor_->data_progress(native.context.selection.member);
+    if (!sample || sample->stream != native.context.selection.stream
+        || sample->revision != revision)
+        return {};
+    return sample;
+}
 void CoordinatorBridge::pump() noexcept
 {
     if (!cancelled_.load())

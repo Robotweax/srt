@@ -2634,6 +2634,150 @@ TEST(
 }
 #endif
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+namespace {
+struct HeldMulticastData {
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+    std::mutex mutex;
+    std::vector<std::vector<std::byte>> frames;
+    static UdpIoResult send(std::span<const std::byte> bytes, IpEndpoint peer,
+        void* context) noexcept
+    {
+        auto& self = *static_cast<HeldMulticastData*>(context);
+        const auto packet = decode_packet(bytes);
+        if (packet && packet.packet.kind == PacketKind::data) {
+            std::lock_guard lock(self.mutex);
+            self.frames.emplace_back(bytes.begin(), bytes.end());
+            return {.bytes_transferred = bytes.size()};
+        }
+        return self.channel->socket.send_to(bytes, peer);
+    }
+    std::vector<std::vector<std::byte>> copy()
+    {
+        std::lock_guard lock(mutex);
+        return frames;
+    }
+};
+}
+TEST(
+    multicast_dispatch_native_data_observations_distinguish_late_paths_plain_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2);
+        NativeReceiverOwners owners(f);
+        for (int i = 0; i < 3; ++i)
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        expect_messages(f.receiver, 0, 3);
+        owners.wait([&] {
+            const auto p = owners.receiver->data_progress();
+            return p && p->all.next == 3 && p->multicast.next == 3;
+        });
+        auto received = owners.receiver->data_progress();
+        REQUIRE(received);
+        REQUIRE(!received->unicast.observed);
+        REQUIRE_EQ(received->unique_packets, 3U);
+        REQUIRE_EQ(received->window_floor, 3U);
+        REQUIRE_EQ(owners.receiver->request_fallback(received->window_floor),
+            hn::ReceiverBridge::Admission::accepted);
+        owners.wait([&] {
+            const auto s = owners.receiver->snapshot();
+            return s.fresh && s.mode == hn::Mode::unicast;
+        });
+        HeldMulticastData held;
+        held.channel = f.source();
+        SendHookReset reset {held.channel};
+        held.channel->set_send_hook_for_testing(HeldMulticastData::send, &held);
+        for (int i = 3; i < 6; ++i)
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        expect_messages(f.receiver, 3, 3);
+        owners.wait([&] {
+            const auto r = owners.receiver->data_progress();
+            const auto t = owners.sender->data_progress();
+            return r && t && r->unicast.next == 6 && t->unicast.next == 6
+                && held.copy().size() == 3;
+        });
+        received = owners.receiver->data_progress();
+        REQUIRE_EQ(received->all.next, 6U);
+        REQUIRE_EQ(received->multicast.next, 3U);
+        const auto frames = held.copy();
+        const auto context = owners.pair.c->snapshot().context;
+        auto changed = frames.front();
+        changed.back() ^= std::byte {1};
+        REQUIRE(held.channel->socket.send_to(
+            changed, context.dispatch.multicast_group));
+        const auto decoded = decode_packet(frames.front());
+        REQUIRE(decoded);
+        owners.pair.caller->process_packet(decoded.packet,
+            context.source.endpoint, std::nullopt,
+            robotweax::srt::compat::PacketIngress::multicast_data);
+        owners.pair.caller->process_packet(
+            decoded.packet, IpEndpoint::loopback(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds {10});
+        REQUIRE_EQ(owners.receiver->data_progress()->multicast.next, 3U);
+        for (const auto& frame : frames)
+            REQUIRE(held.channel->socket.send_to(
+                frame, context.dispatch.multicast_group));
+        owners.wait([&] {
+            const auto p = owners.receiver->data_progress();
+            return p && p->multicast.next == 6;
+        });
+        const auto after = owners.receiver->data_progress();
+        REQUIRE_EQ(after->unique_packets, 6U);
+        REQUIRE_EQ(after->all.next, 6U);
+        REQUIRE(after->matched_copies >= 3U);
+        for (const auto& frame : frames)
+            REQUIRE(held.channel->socket.send_to(
+                frame, context.dispatch.multicast_group));
+        std::this_thread::sleep_for(std::chrono::milliseconds {10});
+        REQUIRE_EQ(owners.receiver->data_progress()->multicast.last_advance_us,
+            after->multicast.last_advance_us);
+        REQUIRE_EQ(
+            owners.pair.caller->buffer_packet_counts().available_receive, 0U);
+        owners.receiver->close();
+        REQUIRE(!owners.receiver->data_progress());
+    }
+}
+TEST(
+    multicast_dispatch_native_data_observations_are_fenced_by_route_and_control_lifetimes)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    CoordinatedNative f;
+    NativeReceiverOwners owners(f);
+    REQUIRE_EQ(f.send(0), static_cast<int>(message(0).size()));
+    expect_messages(f.receiver, 0, 1);
+    owners.wait([&] {
+        const auto p = owners.receiver->data_progress();
+        return p && p->multicast.next == 1;
+    });
+    const auto group = GroupRegistry::instance().find(f.receiver);
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+    {
+        std::lock_guard lock(group->mutex);
+        channel = group->dispatch->receive_channel;
+    }
+    REQUIRE(channel);
+    const auto context = owners.pair.c->snapshot().context;
+    channel->unregister_connection(context.dispatch.group_id);
+    REQUIRE(!owners.receiver->data_progress());
+    REQUIRE(channel->register_ingress_route(context.dispatch.group_id,
+        owners.pair.caller,
+        robotweax::srt::compat::PacketIngress::multicast_data,
+        robotweax::srt::compat::MulticastIngressConfiguration {
+            .source = context.source}));
+    REQUIRE_EQ(f.send(1), static_cast<int>(message(1).size()));
+    expect_messages(f.receiver, 1, 1);
+    REQUIRE(!owners.receiver->data_progress());
+    REQUIRE(owners.sender->data_progress());
+    owners.lease->revoke();
+    REQUIRE(!owners.sender->data_progress());
+}
+#endif
+
 TEST(
     multicast_dispatch_coordinated_options_freeze_transport_but_allow_group_io_flags)
 {

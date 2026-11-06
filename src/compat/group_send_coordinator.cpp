@@ -537,6 +537,9 @@ bool GroupSendCoordinator::publish(void* p) noexcept
         tx.frame.recipients[i].ticket = std::move(ticket);
     }
     tx.frame.occupied = true;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    tx.frame.position = tx.owner.next_position_;
+#endif
     if (tx.owner.state_.source_mode == SourceMode::unicast_only) {
         tx.frame.completed =
             true; // Consumer retires delegated tickets, never submits DATA.
@@ -800,6 +803,44 @@ GroupSendCoordinator::Snapshot GroupSendCoordinator::snapshot() const noexcept
                 && state.inflight_frames < frames_.size()));
     return state;
 }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+std::optional<hybrid::SourceDataProgress> GroupSendCoordinator::data_progress(
+    std::uint64_t id) const noexcept
+{
+    std::lock_guard lock(publication_);
+    if (state_.closed)
+        return {};
+    for (const auto& member : members_) {
+        if (!id || member.state.id != id
+            || member.state.detachment != Detachment::none)
+            continue;
+        const auto runtime = RuntimeAdmission::observe_data(member.binding);
+        if (!runtime)
+            return {};
+        if (runtime->retained_relative > UINT64_MAX - member.join_position
+            || runtime->unicast.next > UINT64_MAX - member.join_position)
+            return {};
+        auto unicast = runtime->unicast;
+        unicast.next += member.join_position;
+        const auto when = std::chrono::duration_cast<std::chrono::microseconds>(
+            source_now().time_since_epoch())
+                              .count();
+        return hybrid::SourceDataProgress {
+            .stream = configuration_.source.generation,
+            .member = id,
+            .revision = member.state.revision,
+            .member_origin = member.join_position,
+            .admitted_next = next_position_,
+            .history_floor = member.join_position + runtime->retained_relative,
+            .observed_at_us = when < 0 ? 0 : static_cast<std::uint64_t>(when),
+            .multicast = multicast_originals_,
+            .unicast = unicast,
+            .source_failed = state_.failed,
+            .unicast_only = state_.source_mode == SourceMode::unicast_only};
+    }
+    return {};
+}
+#endif
 void GroupSendCoordinator::run(void* p) noexcept
 {
     if (auto self = static_cast<Work*>(p)->owner.lock())
@@ -824,6 +865,17 @@ void GroupSendCoordinator::drive() noexcept
             });
         assert(found != frames_.end() && frame->occupied && !frame->completed);
         auto& mutable_frame = **found;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        if (outcomes[i].disposition == Emitter::Disposition::submitted) {
+            const auto when =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    outcomes[i].completed_at.time_since_epoch())
+                    .count();
+            if (when >= 0)
+                (void)multicast_originals_.note(
+                    mutable_frame.position, static_cast<std::uint64_t>(when));
+        }
+#endif
         outcomes[i].context.reset(); // Avoid Frame -> Outcome -> Frame cycle.
         mutable_frame.outcome = std::move(outcomes[i]);
         mutable_frame.completed = true;

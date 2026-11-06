@@ -755,6 +755,7 @@ std::shared_ptr<NativeService> attach_native_control(
         NativeService::create(std::move(c), acquire_runtime_scheduler());
     if (!service)
         return {};
+    service->runtime_ = runtime;
     {
         std::lock_guard lock(runtime->mutex_);
         if (runtime->locally_closed_ || runtime->broken_

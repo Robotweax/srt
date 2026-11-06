@@ -177,6 +177,12 @@ public:
         Clock::time_point deadline = Clock::time_point::max(),
         bool in_order = true) noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    // Local observations, not remote delivery, contiguous progress or policy
+    // authorization. No sample if the member/runtime lifetime is unavailable.
+    [[nodiscard]] std::optional<hybrid::SourceDataProgress> data_progress(
+        std::uint64_t member) const noexcept;
+#endif
     [[nodiscard]] const std::shared_ptr<ReadinessSource>&
     readiness_source() const noexcept
     {
@@ -214,6 +220,9 @@ private:
         bool occupied = false;
         bool completed = false;
         std::optional<std::uint64_t> crypto_generation;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        std::uint64_t position = 0;
+#endif
     };
     struct Work {
         std::weak_ptr<GroupSendCoordinator> owner;
@@ -246,6 +255,9 @@ private:
     std::size_t fanout_cursor_ = 0;
     std::uint64_t next_member_ = 1;
     std::uint64_t next_position_ = 0;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    hybrid::DataHighWater multicast_originals_;
+#endif
     std::size_t maximum_payload_ = 0;
     std::unique_ptr<GroupPacketEncoder> encoder_;
     std::shared_ptr<GroupMulticastEmitter> emitter_;

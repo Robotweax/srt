@@ -2,6 +2,7 @@
 #pragma once
 #include "compat/hybrid_conclusions.hpp"
 #include "compat/hybrid_exchange.hpp"
+#include "compat/hybrid_progress.hpp"
 #include "compat/runtime_scheduler.hpp"
 #include <atomic>
 #include <mutex>
@@ -123,6 +124,8 @@ public:
     [[nodiscard]] static std::uint64_t monotonic_now() noexcept;
 
 private:
+    friend std::shared_ptr<NativeService> attach_native_control(
+        const std::shared_ptr<ConnectionRuntime>&, NativeOptions) noexcept;
     friend class CoordinatorBridge;
     friend class ReceiverBridge;
     [[nodiscard]] bool bridge_work(CoordinatorBridge&) noexcept;
@@ -170,6 +173,7 @@ private:
     std::atomic<std::uint64_t> expires_at_ = UINT64_MAX;
     bool activated_ = false, started_ = false, manual_ = false;
     bool bridged_ = false, application_used_ = false;
+    std::weak_ptr<ConnectionRuntime> runtime_;
     std::uint64_t setup_deadline_ = 0;
     std::array<std::uint64_t, 3> last_report_ {};
 };
