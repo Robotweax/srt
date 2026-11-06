@@ -91,5 +91,93 @@ private:
     std::array<Digest, 4> keys_ {};
 };
 
+// One Caller/Listener exchange, independent of sockets. Cookie/admission budgets,
+// transport negotiation, deadlines and application publication belong to the
+// socket layer. Every caller of this component must supply complete encoded
+// handshake payloads, including the generated record. Never change those bytes
+// after sealing; cached() is the only source for retransmission. Errors are
+// internal: the socket layer must use one rejection reason for all M3 failures.
+// An invalid M3 signature consumes the bounded retry allowance; check failed()
+// before rejecting the pending child.
+//
+// ready_for_key_exchange() does NOT authenticate the listener's passphrase:
+// the caller must verify its first authenticated KM control before DATA/I/O.
+class Exchange {
+public:
+    explicit Exchange(CryptoProvider& provider, bool caller) noexcept
+        : provider_(provider)
+        , schedule_(provider)
+        , caller_(caller)
+    {
+    }
+    ~Exchange();
+    Exchange(const Exchange&) = delete;
+    Exchange& operator=(const Exchange&) = delete;
+    Exchange(Exchange&&) = delete;
+    Exchange& operator=(Exchange&&) = delete;
+    [[nodiscard]] Error configure(std::span<const std::byte, 32> identity,
+        std::span<const std::byte> pinned_public_keys) noexcept;
+    [[nodiscard]] Error prepare_offer(
+        std::uint8_t key_length, Record& offer) noexcept;
+    [[nodiscard]] Error bind_offer(std::span<const std::byte> offer) noexcept;
+    [[nodiscard]] Error prepare_response(std::span<const std::byte> offer,
+        std::uint8_t local_key_length, Record& response) noexcept;
+    [[nodiscard]] Error seal_response(std::span<std::byte> response) noexcept;
+    [[nodiscard]] Error prepare_confirmation(
+        std::span<const std::byte> response, Record& confirmation) noexcept;
+    [[nodiscard]] Error seal_confirmation(std::span<std::byte> confirmation,
+        std::span<const std::byte> passphrase) noexcept;
+    [[nodiscard]] Error accept_confirmation(
+        std::span<const std::byte> confirmation,
+        std::span<const std::byte> passphrase) noexcept;
+    [[nodiscard]] bool ready_for_key_exchange() const noexcept;
+    [[nodiscard]] bool failed() const noexcept;
+    [[nodiscard]] std::span<const std::byte> cached(
+        Message message) const noexcept;
+    [[nodiscard]] std::span<const std::byte> peer_public_key() const noexcept;
+    [[nodiscard]] std::span<const std::byte> session_key() const noexcept;
+    [[nodiscard]] std::span<const std::byte> wrapping_key(
+        bool caller) const noexcept;
+    // Cancels even a partially completed exchange and destroys private handles.
+    void abort() noexcept;
+
+private:
+    enum class State {
+        fresh,
+        configured,
+        offer_prepared,
+        offered,
+        response_prepared,
+        responded,
+        confirmation_prepared,
+        ready,
+        failed
+    };
+    struct Flight {
+        std::array<std::byte, maximum_payload_size> bytes {};
+        std::size_t size = 0;
+        void assign(std::span<const std::byte> input) noexcept;
+        [[nodiscard]] std::span<const std::byte> view() const noexcept;
+    };
+    [[nodiscard]] Error fail(Error error) noexcept;
+    [[nodiscard]] Error select_peer(const Digest& identifier) noexcept;
+    [[nodiscard]] Error make_share(Record& record) noexcept;
+    [[nodiscard]] Error establish(
+        const Record& peer, const Digest& hash) noexcept;
+    CryptoProvider& provider_;
+    KeySchedule schedule_;
+    bool caller_;
+    State state_ = State::fresh;
+    std::unique_ptr<P256Key> identity_, ephemeral_;
+    Digest identity_identifier_ {};
+    std::array<std::array<std::byte, 64>, 16> pins_ {};
+    std::array<Digest, 16> pin_identifiers_ {};
+    std::size_t pin_count_ = 0;
+    std::array<std::byte, 64> peer_ {};
+    std::array<Flight, 3> flights_ {};
+    Record offer_ {}, response_ {}, confirmation_ {};
+    unsigned invalid_confirmations_ = 0;
+};
+
 } // namespace robotweax::srt::peer_authentication
 #endif

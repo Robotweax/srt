@@ -93,6 +93,28 @@ if(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "openssl")
     set(ROBOTWEAX_SRT_CRYPTO_SOURCE src/crypto_openssl.cpp)
     set(ROBOTWEAX_SRT_CRYPTO_LIBRARY OpenSSL::Crypto)
     set(ROBOTWEAX_SRT_PC_CRYPTO_REQUIRES "libcrypto >= 3.0")
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
+        include(CheckCXXSourceCompiles)
+        include(CMakePushCheckState)
+        cmake_push_check_state(RESET)
+        set(CMAKE_REQUIRED_LIBRARIES OpenSSL::Crypto)
+        check_cxx_source_compiles("#include <openssl/ec.h>
+            #include <openssl/evp.h>
+            #ifdef OPENSSL_NO_EC
+            #error OpenSSL elliptic curve support is required
+            #endif
+            int main() {
+                auto* group = EC_GROUP_new_by_curve_name(NID_X9_62_prime256v1);
+                EC_GROUP_free(group);
+                auto* ctx = EVP_PKEY_CTX_new_from_name(nullptr, \"EC\", nullptr);
+                EVP_PKEY_CTX_free(ctx);
+                return 0;
+            }" ROBOTWEAX_SRT_OPENSSL_PEERAUTH_SUPPORTED)
+        cmake_pop_check_state()
+        if(NOT ROBOTWEAX_SRT_OPENSSL_PEERAUTH_SUPPORTED)
+            message(FATAL_ERROR "Experimental peer authentication requires OpenSSL P-256 support")
+        endif()
+    endif()
 elseif(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "mbedtls")
     list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
     find_package(MbedTLS 3.6.7 REQUIRED MODULE)
@@ -533,7 +555,8 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_standby_rtt_runtime.cpp
         tests/test_compat_message_attempts.cpp)
     if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
-        target_sources(robotweax_srt_tests PRIVATE tests/test_peer_authentication.cpp)
+        target_sources(robotweax_srt_tests PRIVATE tests/test_peer_authentication.cpp
+            tests/test_peer_authentication_p256.cpp tests/test_peer_authentication_exchange.cpp)
     endif()
     target_compile_definitions(robotweax_srt_tests PRIVATE
         ROBOTWEAX_SRT_EXPECT_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
