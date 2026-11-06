@@ -87,6 +87,11 @@ struct SocketRecord {
     bool has_connected_local_endpoint = false;
     bool has_peer_endpoint = false;
     bool listen_callback_active = false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    // Claimed identifier only; availability is restricted to the callback.
+    bool has_incoming_peer_authentication = false;
+    std::array<std::byte, 32> incoming_peer_authentication {};
+#endif
     // Raw HSREQ admission observation; never inherited from listener options.
     ROBOTWEAX_SRT_PEER_HANDSHAKE_V1 incoming_peer_handshake {};
     ImplementationIdentity incoming_peer_identity {};

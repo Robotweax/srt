@@ -1,4 +1,7 @@
 #include "compat/connection.hpp"
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+#include "peer_authentication.hpp"
+#endif
 #include "compat/acp1_group_context.hpp"
 #include "compat/random_identity.hpp"
 #include "local_endpoint_probe.hpp"
@@ -4582,6 +4585,17 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         {
             std::lock_guard lock(accepted->mutex);
             accepted->listen_callback_active = true;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+            peer_authentication::Record offered;
+            accepted->has_incoming_peer_authentication =
+                conclusion.has_peer_authentication
+                && peer_authentication::decode_record(
+                       conclusion.peer_authentication.view(), offered)
+                    == Error::none
+                && offered.message == peer_authentication::Message::offer;
+            if (accepted->has_incoming_peer_authentication)
+                accepted->incoming_peer_authentication = offered.key_identifier;
+#endif
             accepted->incoming_peer_handshake = {};
             accepted->incoming_peer_identity =
                 conclusion.implementation_identity;
@@ -4646,6 +4660,10 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
             accepted->incoming_multicast_key = {};
             accepted->incoming_multicast_key_size = 0U;
             accepted->listen_callback_active = false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+            accepted->has_incoming_peer_authentication = false;
+            accepted->incoming_peer_authentication = {};
+#endif
             accepted->incoming_peer_handshake = {};
             accepted->incoming_peer_identity = {};
             accepted->incoming_group_type = SRT_GTYPE_UNDEFINED;
@@ -4672,6 +4690,15 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         native_options = accepted->native_options;
         timeout_milliseconds = public_options.connection_timeout_milliseconds;
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    // Callback-selected REQUIRED must also fail closed while the socket
+    // setup actors are not yet connected to the admission coordinator.
+    if (!policy_rejected && native_options.peer_authentication_required()) {
+        policy_rejected = true;
+        policy_rejection = SRT_REJ_UNSECURE;
+        policy_error = SRT_ESECFAIL;
+    }
+#endif
     group_admission.enabled = public_options.group_connect;
     group_admission.dispatch_enabled = public_options.multicast_group_set;
     group_admission.path_identifier_required =

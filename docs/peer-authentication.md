@@ -1,6 +1,6 @@
 # Peer authentication (draft contract)
 
-**Status: draft contract with private protocol components; no socket support.**
+**Status: draft implementation; authenticated socket establishment is incomplete.**
 Every identifier below is provisional and unregistered. **The cryptographic
 design is unreviewed.** Independent cryptographic review is required before
 any support or security claim. Development stays behind the default-off
@@ -35,10 +35,18 @@ write-only and erased on replacement, close and destruction. Accepted-child
 configuration copies own independent credentials. REQUIRED rejects incompatible
 configuration in both setting orders, including group option templates.
 
-Admission callbacks and authenticated connection establishment are still absent.
+A private admission coordinator now owns the proof-to-runtime transition. It
+keeps crypto private until both runtime KM directions are confirmed, preserves
+public retry payloads while erasing duplicate key schedules and passphrases,
+and cancels pending admission on timeout or close. This coordinator is not yet
+connected to the socket setup actors or application publication.
+
+A listen callback can read OFFERED from a provisional child after cookie
+admission. It exposes only the claimed key identifier, clears after the callback,
+and is unavailable outside that callback. PEER remains unavailable.
 For now, **connect and listen with REQUIRED return `SRT_ESECFAIL`**, even with
-complete credentials; they cannot fall back to the legacy handshake. OFFERED
-and PEER remain unavailable. Enabling the build option does not authenticate
+complete credentials; callback-selected REQUIRED is also rejected. None of
+these paths can fall back to a legacy handshake. Enabling the build option does not authenticate
 socket connections or enable outgoing PEERAUTH handshakes. In particular,
 `Exchange::ready_for_key_exchange()` is not permission to publish a caller or
 release DATA: the caller still needs the listener's passphrase proof through
