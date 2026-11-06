@@ -440,7 +440,7 @@ rate. The reviewed tracked tree contains no MPEG-TS media file or NPD profile;
 the documented media fixtures are generated, not deployed broadcast captures.
 This finding does not inventory private or externally retained captures.
 
-The next Lab increment should be a separate Caller/Listener profile, preserving
+The assessment recommended a separate Caller/Listener profile, preserving
 the existing frozen group matrix and its validators:
 
 - Build ordinary public-API peers from an immutable NPD feature commit. Compare
@@ -461,6 +461,32 @@ is also group-based and needs supplied endpoint configuration; it is not a
 ready-made NPD physical-network test. This assessment changed no Lab code and
 launched no Lab or cloud workload. Docker logical-path evidence and a genuine
 deployed-stream corpus remain distinct qualification requirements.
+
+### Subsequent local Lab qualification
+
+[Lab PR #387](https://github.com/Robotweax/srt_network_lab/pull/387) implements
+that separate profile on `srt/npd-qualification`; it remains a draft and is not
+merged. The [retained results](https://github.com/Robotweax/srt_network_lab/blob/cf9321fdf3d575ae37b1e23f688d2761e7cfd14a/results/2026-11-06-npd-qualification/README.md)
+qualify SRT commit `b06cde38704e21d2c4a152343ca972fe5b1dda9a` in a fixed,
+unencrypted 16-case Docker kernel-netem matrix: both Caller/Listener data
+directions, OFF versus negotiated NPD, no FEC versus row FEC, and baseline
+versus loss/reordering. All 16 cases and eight paired comparisons passed the
+independent evidence checks, including bitexact restoration, strict media
+decode, observed drops/reordering, wire encoding and application/wire pacing.
+
+The synthetic CBR source includes a canonical-null run and a retained-payload
+burst. Original SRT data bytes, including the 16-byte SRT header but excluding
+FEC, retransmissions and control traffic, fell from 1,068,264 to 633,470
+(40.7%). This stuffing-dependent result does not predict deployed savings.
+The largest paired increase in maximum delivery delay was 8.09 ms, within the
+predeclared 100 ms bound. An initial invalid engineering run is retained and
+documented; it exposed an oversized implicit UDP buffer request in the Lab
+peer, corrected by explicitly requesting 1 MiB without changing host settings.
+
+This is additional synthetic, single-host Linux Docker evidence. Release
+acceptance remains unset; deployed-stream captures, physical hosts and the
+other qualification requirements below remain separate. No main branch was
+merged and no cloud resources were provisioned.
 
 ## Qualification required before broader support claims
 
