@@ -488,6 +488,15 @@ acceptance remains unset; deployed-stream captures, physical hosts and the
 other qualification requirements below remain separate. No main branch was
 merged and no cloud resources were provisioned.
 
+A [subsequent run with stronger capture and netem validation](https://github.com/Robotweax/srt_network_lab/blob/45cdeb24feba81277fa1b7ebb722e3b5c56a1675/results/2026-11-06-npd-qualification/README.md#stronger-validator-and-attempt-003)
+is incomplete: 14/16 cases and 6/8 comparisons passed. One case did not
+exercise reordering. In another, the final source packet was absent from the
+receiver-side capture, was not retransmitted, and only 801/802 messages were
+delivered before closure. This has not been attributed specifically to NPD;
+a deterministic final-packet-loss comparison with NPD OFF and ON is needed.
+The failed run is retained, no cases were replaced, and the Lab PR remains
+draft. The earlier successful run does not close this later qualification gap.
+
 ## Qualification required before broader support claims
 
 Evidence must be reproducible and black-box, as required by
