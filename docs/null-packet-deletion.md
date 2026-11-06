@@ -8,7 +8,7 @@ unregistered. This is not a released feature or a RIST compatibility claim.
 
 Development remains on the feature branch. Merging to `main` requires explicit
 maintainer approval after feature completion. Remaining release qualification
-includes deployed MPEG-TS corpora, other platforms, and the broader
+includes deployed MPEG-TS corpora, native Windows qualification, and the broader
 loss/reordering, rotation and retransmission combinations listed below.
 
 Null packet deletion (NPD) removes MPEG-TS null packets from live payloads at
@@ -325,6 +325,56 @@ messages. It compares actual pacer release deadlines with NPD OFF, permitting
 only the extra prefix's serialization time. This checks the sender scheduling
 model; operating-system wake-up and end-to-end delivery jitter still require
 platform measurements.
+
+### Linux and released OFF/OFF comparison
+
+The Linux qualification uses Ubuntu 26.10 ARM64 on Docker/LinuxKit, GCC 15.3.0,
+OpenSSL 4.0.3, and a Release build with AEAD preview and warnings-as-errors.
+The source revision is `0906db09a3bceeae626ca7eaab225bd6fb9a89c4`; the released
+baseline is v0.3.2 at `e45d0edd346e5c427d85e4c3b1ac605c81a23397`.
+The Ubuntu image is pinned to
+`sha256:93e29beff5257b2cdf1c024d831f6d2997e53655a653ff76a811fc9e6564a719`,
+also used by the repository's GCC 15 CI job.
+
+All 100 CTest checks passed across the full run and an isolated package-consumer
+rerun after installing the static-link dependencies below. This includes the
+20 focused NPD native cases, the 855-case Python harness (with platform-specific
+skips), and the public-API self-peer wire test. All 16 separate-process
+qualification cases passed, including the eight released OFF/OFF comparisons.
+These results qualify this Linux ARM64 container environment; they do not cover
+native Windows, physical network interfaces or deployed broadcast streams.
+
+Inside that image, install `g++-15 cmake make libssl-dev python3 git pkg-config`
+and `libjitterentropy3-dev zlib1g-dev libzstd-dev`. The latter packages are
+needed by the OpenSSL 4 static-link package-consumer check.
+Use an actual Git checkout: the CI-classification tests inspect its tracked
+tree. Configure and run the candidate with:
+
+```sh
+CC=gcc-15 CXX=g++-15 cmake -S . -B build-npd-linux \
+  -DCMAKE_BUILD_TYPE=Release -DENABLE_AEAD_API_PREVIEW=ON \
+  -DROBOTWEAX_SRT_WARNINGS_AS_ERRORS=ON \
+  -DROBOTWEAX_SRT_BUILD_TOOLS=ON -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+cmake --build build-npd-linux --parallel 4
+ctest --test-dir build-npd-linux --parallel 2 --output-on-failure
+```
+
+Build `robotweax_srt_interop_peer` from the pinned release in a separate checkout,
+using the same compiler, provider and AEAD configuration. Then run:
+
+```sh
+./tools/python interop/run_npd_interop.py \
+  --robotweax-peer build-npd-linux/robotweax_srt_interop_peer \
+  --baseline-peer /path/to/v0.3.2-build/robotweax_srt_interop_peer \
+  --output /tmp/npd-linux-wire
+```
+
+`--baseline-peer` adds eight transfer cases: released versus candidate OFF/OFF,
+in both directions, with and without row FEC. It requires identical clear DATA
+payload hashes, source/parity payload byte totals and handshake extension
+records. Dynamic header fields remain excluded as described above. The report
+records both binary hashes. This comparison does not claim byte-for-byte
+identity of encrypted sessions or operating-system timing.
 
 ## Qualification required before broader support claims
 
