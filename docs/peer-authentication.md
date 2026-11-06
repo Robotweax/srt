@@ -7,14 +7,22 @@ any support or security claim. Development stays behind the default-off
 [build option](#build-option). Items marked *open* need a decision. Items
 marked *assumption* could not be verified in this repository.
 
-The current implementation provides the structural record codec, transcript
-hashing, two-stage key schedule and secret cleanup, with deterministic tests.
-It does not yet provide P-256 agreement/signatures, pinned-key admission,
-socket options, handshake integration or runtime key installation. Enabling
-the build option does not authenticate connections or change their wire bytes.
-The contract below describes the intended complete feature, not current socket
-behavior. The codec checks framing; elliptic-curve validation must be performed
-by admission before a decoded public key can be used.
+The current private implementation provides the record codec, transcript hashing,
+two-stage key schedule, secret cleanup and a complete three-message proof
+exchange using pinned P-256 identities. The OpenSSL provider implements P-256
+key generation/import, public-point validation, ECDH and ECDSA; Mbed TLS and
+BCrypt currently return `Error::unsupported` for those operations. Private
+keys stay in provider-owned handles with no raw private-key export.
+
+Socket options, admission callbacks, transport-handshake integration and
+runtime key installation are still absent. Enabling the build option does not
+authenticate socket connections or change their wire bytes. In particular,
+`Exchange::ready_for_key_exchange()` is not permission to publish a caller or
+release DATA: the caller still needs the listener's passphrase proof through
+an authenticated runtime key control. The socket layer must supply cookie and
+admission checks, normal transport-field validation, timeout/cancellation and
+application publication. The contract below describes the intended complete
+feature, not current socket behavior.
 
 Build and exercise the private components with:
 
@@ -29,8 +37,12 @@ build-peerauth/robotweax_srt_tests --include peer_auth_
 
 The vector generator independently computes synthetic transcript and key-schedule
 fixtures using Python's standard library; these are not ECDH/signature vectors
-or evidence of cryptographic review. SHA-256 is implemented for each backend;
-platform qualification still applies. The protocol components use bounded
+or evidence of cryptographic review. Separate P-256 tests use the public vectors
+from RFC 6979 section A.2.5 and RFC 5903 section 8.1. Exchange tests cover
+mutual authentication, pin rotation, transcript tampering, replay, wrong
+passphrases, bounded invalid signatures, byte-identical retries and provider
+failures. SHA-256 is implemented for each backend; platform qualification still
+applies. The protocol components use bounded
 storage and are not compiled into builds with the option off.
 
 **Scope of version 1: it authenticates the handshake and key establishment,
@@ -67,8 +79,8 @@ passphrase:
   identity private keys after a connection has closed does not reveal that
   connection's traffic keys.
 - **Authenticated handshake transcript.** Stream ID, transport settings and
-  every extension record in the CONCLUSION and AGREEMENT messages are covered
-  by both signatures.
+  every extension record in both CONCLUSION messages are covered by both
+  signatures. The later AGREEMENT message is covered by the caller signature.
 - **Authenticated DATA.** REQUIRED needs AES-GCM, so identity is not followed
   by a payload that can be altered in transit.
 - **Unchanged default.** With the option off, or in a build without the build
@@ -211,11 +223,12 @@ point at infinity.
 
 What the repository establishes:
 
-- The `CryptoProvider` interface in
-  `include/robotweax/srt/crypto_provider.hpp` has no public-key operation or
-  native HKDF. It offers random bytes, PBKDF2-HMAC-SHA1, HMAC-SHA256, AES key
-  wrap, AES-CTR and AES-GCM, plus SHA-256 behind the peer-authentication gate. None of `src/crypto_openssl.cpp`, `src/crypto_mbedtls.cpp` or
-  `src/crypto_bcrypt.cpp` calls an elliptic-curve function today.
+- Behind the peer-authentication gate, `CryptoProvider` exposes SHA-256,
+  private-key generation/import, public-key validation and signature
+  verification. `P256Key` owns a private key and exposes only its public key,
+  ECDH and signing. The OpenSSL implementation is in
+  `src/crypto_openssl_p256.hpp`; Mbed TLS and BCrypt still lack P-256 operations.
+  HKDF is built from the existing HMAC-SHA256 primitive.
 - OpenSSL 3.0 or later is required by `CMakeLists.txt`.
 - The Mbed TLS backend accepts 3.6.7 and later 3.6.x, links only `mbedcrypto`,
   and rejects `MBEDTLS_USE_PSA_CRYPTO`
@@ -223,17 +236,19 @@ What the repository establishes:
   no elliptic-curve module.
 - The [BCrypt backend](windows-bcrypt.md) links the system `bcrypt` library.
 
-So the portability of P-256 is **not verified in this repository**. It rests on
-these *assumptions*, taken from each library's public documentation, which
-qualification must confirm with known-answer tests:
+P-256 is now exercised with OpenSSL, but **cross-backend portability is not
+verified**. The remaining backend assumptions must be confirmed by implementation
+and known-answer tests:
 
-- OpenSSL 3.0 provides P-256 ECDH and ECDSA through `EVP_PKEY`.
+- OpenSSL uses `EVP_PKEY` for ECDH and ECDSA. Scalar import validates the range
+  and uses OpenSSL's constant-time point multiplication to derive the public
+  point. Imported public keys undergo a full provider public-key check.
 - Mbed TLS 3.6 provides both through its legacy `mbedtls_ecdh_*` and
   `mbedtls_ecdsa_*` interfaces when `MBEDTLS_ECP_C`, `MBEDTLS_ECDH_C`,
   `MBEDTLS_ECDSA_C` and `MBEDTLS_ECP_DP_SECP256R1_ENABLED` are set. Those
-  become required modules only when the build option is on, checked at
-  configure time like the others. Builds without the option keep the current
-  list.
+  will become required modules when that backend is implemented and the build
+  option is on, checked at configure time like the others. Builds without the
+  option keep the current list.
 - OpenSSL needs no newer version than the 3.0 already required, but it can be
   built without elliptic curves, so the build option adds a configure-time
   probe. BCrypt needs no additional library.
@@ -247,11 +262,11 @@ qualification must confirm with known-answer tests:
   itself on current Windows versions. The byte order of an exported secret
   needs a test vector before the backend is trusted.
 
-The provider would gain optional operations that default to
-`Error::unsupported`, as `hmac_sha256` does, so custom providers fail closed:
-ephemeral key generation, ECDH, ECDSA sign and ECDSA verify. SHA-256 already
-has such an optional operation behind the build gate. HKDF needs no provider
-change; it is built from `hmac_sha256`.
+The new provider operations are optional and default to `Error::unsupported`,
+as `hmac_sha256` does, so existing custom providers fail closed. A provider
+that supplies a private-key handle must implement its public-key export, ECDH
+and signing operations. Failed output-producing operations erase their output.
+HKDF needs no provider change; it is built from `hmac_sha256`.
 
 ## Handshake flow
 
@@ -425,7 +440,8 @@ confirm_L = HMAC-SHA256(hkey(1), th_L || sig_L)
 confirm_C = HMAC-SHA256(key(3),  th_C || sig_C)
 ```
 
-Processing, with failure at any step ending setup without fallback:
+Processing, with failure ending setup without fallback except for the bounded
+invalid-M3-signature allowance described below:
 
 1. **Listener, on M1.** After the cookie check, the listen callback and the
    admission charge described below: look up the caller key identifier in the
@@ -470,9 +486,11 @@ key. Implementations should use deterministic nonces
 mix the private key and the message with fresh randomness, wherever the
 backend offers them, and must never use a nonce source weaker than the
 provider's random generator. Deterministic and randomized signatures verify
-identically, so the choice is local to each endpoint. None of this can be
-confirmed from the repository, which contains no signature code. *Assumptions*
-from library documentation: Mbed TLS 3.6 offers RFC 6979 through
+identically, so the choice is local to each endpoint. The OpenSSL implementation
+requests RFC 6979 when its signature provider advertises the nonce-type
+parameter; otherwise it uses the provider's default nonce generation. It does
+not implement its own nonce generator. Remaining backend *assumptions* from
+library documentation: Mbed TLS 3.6 offers RFC 6979 through
 `MBEDTLS_ECDSA_DETERMINISTIC`; OpenSSL offers it as a signature parameter from
 3.2, later than the 3.0 minimum, and otherwise mixes the private key and digest
 into its random nonces; CNG exposes no nonce control and draws from the system
@@ -613,9 +631,11 @@ Public-key work is placed after every cheaper check:
 6. M3 is matched to a pending child by endpoint, socket IDs and cookie. The
    signature is verified before the confirmation tag, for the reason given
    under [Signatures and confirmation](#signatures-and-confirmation), so each
-   M3 that reaches a pending child costs one verification. *Proposed:* a
-   pending child fails after four M3 messages with an invalid signature, which
-   bounds that work per admitted M1.
+   M3 that reaches a pending child costs one verification. The private exchange
+   currently fails after four M3 messages with an invalid signature; this limit
+   remains subject to review. A valid signature with an invalid confirmation
+   ends the attempt immediately. Identical accepted M3 retries do no new crypto
+   work.
 7. PBKDF2 runs only after a valid caller signature, so no unauthenticated
    sender can cause one.
 

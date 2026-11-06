@@ -9,6 +9,13 @@ extern "C" int LLVMFuzzerTestOneInput(
 {
     namespace pa = robotweax::srt::peer_authentication;
     const auto input = std::as_bytes(std::span {data, size});
+    auto& provider = robotweax::srt::default_crypto_provider();
+    if (input.size() >= 64) {
+        (void)provider.validate_p256_public_key(input.first<64>());
+        if (input.size() >= 128)
+            (void)provider.verify_p256_sha256(
+                input.first<64>(), input.subspan(128), input.subspan<64, 64>());
+    }
     pa::Record record;
     if (pa::decode_record(input, record) == robotweax::srt::Error::none) {
         std::array<std::byte, 232> encoded {};
@@ -29,7 +36,6 @@ extern "C" int LLVMFuzzerTestOneInput(
     const auto m2 = input.subspan(4 + first, second);
     const auto m3 = input.subspan(4 + first + second);
     pa::Digest output {};
-    auto& provider = robotweax::srt::default_crypto_provider();
     (void)pa::listener_transcript(provider, m1, m2, output);
     (void)pa::caller_transcript(provider, m1, m2, m3, output);
     return 0;

@@ -80,11 +80,10 @@ Error confirm(CryptoProvider& provider, std::span<const std::byte, 32> key,
 
 // Validate framing before copying. Preserve unknown records verbatim; reject
 // legacy session-auth and KM records rather than mixing two key schedules.
-Error append_message(std::span<const std::byte> input, Message expected,
-    bool zero_proofs, std::span<std::byte> output,
-    std::size_t& written) noexcept
+Error inspect_message(std::span<const std::byte> input, Message expected,
+    Record& record, std::size_t& record_offset) noexcept
 {
-    written = 0;
+    record_offset = 0;
     if (input.size() > maximum_payload_size)
         return Error::invalid_handshake_size;
     const auto decoded = decode_handshake_payload(input);
@@ -100,7 +99,6 @@ Error append_message(std::span<const std::byte> input, Message expected,
                     ? HandshakeRequest::agreement
                     : HandshakeRequest::conclusion))
         return Error::invalid_handshake_value;
-    std::size_t proof_offset = 0;
     bool found = false;
     for (std::size_t offset = handshake_size; offset < input.size();) {
         if (input.size() - offset < 4)
@@ -114,21 +112,33 @@ Error append_message(std::span<const std::byte> input, Message expected,
         if (type == 3 || type == 4 || type == 0x7f10)
             return Error::invalid_extension;
         if (type == record_type) {
-            Record record;
             if (found
                 || decode_record(input.subspan(offset, length), record)
                     != Error::none
                 || record.message != expected)
                 return Error::invalid_extension;
             found = true;
-            if (expected != Message::offer)
-                proof_offset =
-                    offset + (expected == Message::response ? 136 : 8);
+            record_offset = offset;
         }
         offset += length;
     }
     if (!found)
         return Error::invalid_extension;
+    return Error::none;
+}
+Error append_message(std::span<const std::byte> input, Message expected,
+    bool zero_proofs, std::span<std::byte> output,
+    std::size_t& written) noexcept
+{
+    written = 0;
+    Record record;
+    std::size_t record_offset = 0;
+    const auto error = inspect_message(input, expected, record, record_offset);
+    if (error != Error::none)
+        return error;
+    const auto proof_offset = expected == Message::offer
+        ? 0
+        : record_offset + (expected == Message::response ? 136 : 8);
     if (output.size() < 4 + input.size())
         return Error::buffer_too_small;
     put32(output.first(4), static_cast<std::uint32_t>(input.size()));
@@ -372,4 +382,410 @@ std::span<const std::byte> KeySchedule::wrapping_key(bool caller) const noexcept
         ? std::span<const std::byte>(keys_[caller ? 2 : 3]).first(key_length_)
         : std::span<const std::byte> {};
 }
+namespace {
+bool same(
+    std::span<const std::byte> left, std::span<const std::byte> right) noexcept
+{
+    if (left.size() != right.size())
+        return false;
+    unsigned difference = 0;
+    for (std::size_t i = 0; i < left.size(); ++i)
+        difference |= std::to_integer<unsigned>(left[i] ^ right[i]);
+    return difference == 0;
+}
+bool same_record(const Record& left, const Record& right) noexcept
+{
+    std::array<std::byte, 232> a {}, b {};
+    std::size_t an = 0, bn = 0;
+    return encode_record(left, a, an) == Error::none
+        && encode_record(right, b, bn) == Error::none
+        && same(std::span {a}.first(an), std::span {b}.first(bn));
+}
+Error exchange_message(std::span<const std::byte> input, Message message,
+    Record& record, std::size_t& offset) noexcept
+{
+    auto error = inspect_message(input, message, record, offset);
+    if (error != Error::none)
+        return error;
+    const auto handshake = decode_handshake_payload(input).handshake;
+    if (handshake.encryption_field != record.key_length / 8
+        || handshake.maximum_transmission_unit < 512
+        || input.size() > handshake.maximum_transmission_unit - 64)
+        return Error::invalid_handshake_value;
+    return Error::none;
+}
+std::span<const std::byte> signed_message(bool caller, const Digest& hash,
+    std::array<std::byte, 160>& output) noexcept
+{
+    const std::string_view context = caller
+        ? "Robotweax SRT peer authentication 1, caller"
+        : "Robotweax SRT peer authentication 1, listener";
+    std::fill_n(output.begin(), 64, std::byte {0x20});
+    for (std::size_t i = 0; i < context.size(); ++i)
+        output[64 + i] = std::byte(static_cast<unsigned char>(context[i]));
+    output[64 + context.size()] = std::byte {};
+    std::copy(hash.begin(), hash.end(), output.data() + 65 + context.size());
+    return std::span {output}.first(65 + context.size() + hash.size());
+}
+Error replace_record(std::span<std::byte> output, std::size_t offset,
+    const Record& record) noexcept
+{
+    std::size_t written = 0;
+    return encode_record(
+        record, output.subspan(offset, content_size(record.message)), written);
+}
+}
+void Exchange::Flight::assign(std::span<const std::byte> input) noexcept
+{
+    std::copy(input.begin(), input.end(), bytes.begin());
+    size = input.size();
+}
+std::span<const std::byte> Exchange::Flight::view() const noexcept
+{
+    return std::span {bytes}.first(size);
+}
+Exchange::~Exchange()
+{
+    abort();
+}
+void Exchange::abort() noexcept
+{
+    identity_.reset();
+    ephemeral_.reset();
+    schedule_.reset();
+    for (auto& flight : flights_)
+        flight.size = 0;
+    peer_ = {};
+    state_ = State::failed;
+}
+Error Exchange::fail(Error error) noexcept
+{
+    abort();
+    return error;
+}
+Error Exchange::configure(std::span<const std::byte, 32> identity,
+    std::span<const std::byte> pins) noexcept
+{
+    if (state_ != State::fresh)
+        return Error::invalid_state;
+    if (pins.empty() || pins.size() % 64 != 0 || pins.size() > 16 * 64)
+        return fail(Error::invalid_key_material);
+    auto error = provider_.import_p256_key(identity, identity_);
+    if (error != Error::none || !identity_)
+        return fail(
+            error == Error::none ? Error::cryptographic_failure : error);
+    std::array<std::byte, 64> own_public {};
+    error = identity_->public_key(own_public);
+    if (error == Error::none)
+        error = provider_.sha256(own_public, identity_identifier_);
+    if (error != Error::none)
+        return fail(error);
+    pin_count_ = pins.size() / 64;
+    for (std::size_t i = 0; i < pin_count_; ++i) {
+        std::copy_n(pins.data() + i * 64, 64, pins_[i].begin());
+        error = provider_.validate_p256_public_key(pins_[i]);
+        if (error == Error::none)
+            error = provider_.sha256(pins_[i], pin_identifiers_[i]);
+        if (error != Error::none)
+            return fail(error);
+    }
+    state_ = State::configured;
+    return Error::none;
+}
+Error Exchange::select_peer(const Digest& identifier) noexcept
+{
+    for (std::size_t i = 0; i < pin_count_; ++i) {
+        if (same(identifier, pin_identifiers_[i])) {
+            peer_ = pins_[i];
+            return Error::none;
+        }
+    }
+    return Error::authentication_failure;
+}
+Error Exchange::make_share(Record& record) noexcept
+{
+    auto error = provider_.random_bytes(record.nonce);
+    if (error != Error::none || zero(record.nonce))
+        return Error::cryptographic_failure;
+    error = provider_.generate_p256_key(ephemeral_);
+    if (error != Error::none)
+        return error;
+    if (!ephemeral_)
+        return Error::cryptographic_failure;
+    record.key_identifier = identity_identifier_;
+    return ephemeral_->public_key(record.public_key);
+}
+Error Exchange::establish(const Record& peer, const Digest& hash) noexcept
+{
+    if (!ephemeral_)
+        return Error::invalid_state;
+    Secret shared(provider_);
+    auto error = ephemeral_->agree(peer.public_key, shared.bytes);
+    ephemeral_.reset();
+    if (error == Error::none)
+        error = schedule_.start(shared.bytes, hash);
+    return error;
+}
+Error Exchange::prepare_offer(std::uint8_t length, Record& output) noexcept
+{
+    output = {};
+    if (!caller_ || state_ != State::configured)
+        return Error::invalid_state;
+    if (length != 0 && !key_size(length))
+        return fail(Error::invalid_key_material);
+    offer_.message = Message::offer;
+    offer_.key_length = length;
+    auto error = make_share(offer_);
+    if (error != Error::none)
+        return fail(error);
+    output = offer_;
+    state_ = State::offer_prepared;
+    return Error::none;
+}
+Error Exchange::bind_offer(std::span<const std::byte> input) noexcept
+{
+    if (!caller_ || state_ != State::offer_prepared)
+        return Error::invalid_state;
+    Record record;
+    std::size_t offset = 0;
+    const auto error = exchange_message(input, Message::offer, record, offset);
+    if (error != Error::none)
+        return fail(error);
+    if (!same_record(record, offer_))
+        return fail(Error::invalid_key_material);
+    flights_[0].assign(input);
+    state_ = State::offered;
+    return Error::none;
+}
+Error Exchange::prepare_response(std::span<const std::byte> input,
+    std::uint8_t local_length, Record& output) noexcept
+{
+    output = {};
+    if (caller_)
+        return Error::invalid_state;
+    if (state_ == State::response_prepared || state_ == State::responded
+        || state_ == State::ready) {
+        if (!same(input, flights_[0].view()))
+            return Error::invalid_state;
+        output = response_;
+        return Error::none;
+    }
+    if (state_ != State::configured)
+        return Error::invalid_state;
+    if (local_length != 0 && !key_size(local_length))
+        return fail(Error::invalid_key_material);
+    std::size_t offset = 0;
+    auto error = exchange_message(input, Message::offer, offer_, offset);
+    if (error == Error::none)
+        error = select_peer(offer_.key_identifier);
+    if (error == Error::none)
+        error = provider_.validate_p256_public_key(offer_.public_key);
+    if (error != Error::none)
+        return fail(error);
+    flights_[0].assign(input);
+    response_.message = Message::response;
+    response_.key_length = offer_.key_length ? offer_.key_length
+        : local_length                       ? local_length
+                                             : 16;
+    error = make_share(response_);
+    if (error != Error::none)
+        return fail(error);
+    output = response_;
+    state_ = State::response_prepared;
+    return Error::none;
+}
+Error Exchange::seal_response(std::span<std::byte> input) noexcept
+{
+    if (caller_)
+        return Error::invalid_state;
+    if (state_ == State::responded || state_ == State::ready)
+        return same(input, flights_[1].view()) ? Error::none
+                                               : Error::invalid_state;
+    if (state_ != State::response_prepared)
+        return Error::invalid_state;
+    Record record;
+    std::size_t offset = 0;
+    auto error = exchange_message(input, Message::response, record, offset);
+    if (error != Error::none)
+        return fail(error);
+    if (!same_record(record, response_))
+        return fail(Error::invalid_key_material);
+    Digest hash {};
+    error = listener_transcript(provider_, flights_[0].view(), input, hash);
+    if (error == Error::none)
+        error = establish(offer_, hash);
+    std::array<std::byte, 160> message {};
+    if (error == Error::none)
+        error = identity_->sign_sha256(
+            signed_message(false, hash, message), response_.signature);
+    identity_.reset();
+    if (error == Error::none)
+        error = schedule_.listener_confirmation(
+            response_.signature, response_.confirmation);
+    if (error == Error::none)
+        error = replace_record(input, offset, response_);
+    if (error != Error::none)
+        return fail(error);
+    flights_[1].assign(input);
+    state_ = State::responded;
+    return Error::none;
+}
+Error Exchange::prepare_confirmation(
+    std::span<const std::byte> input, Record& output) noexcept
+{
+    output = {};
+    if (!caller_)
+        return Error::invalid_state;
+    if (state_ == State::confirmation_prepared || state_ == State::ready) {
+        if (!same(input, flights_[1].view()))
+            return Error::invalid_state;
+        output = confirmation_;
+        return Error::none;
+    }
+    if (state_ != State::offered)
+        return Error::invalid_state;
+    std::size_t offset = 0;
+    auto error = exchange_message(input, Message::response, response_, offset);
+    if (error != Error::none)
+        return fail(error);
+    if (offer_.key_length != 0 && response_.key_length != offer_.key_length)
+        return fail(Error::invalid_key_material);
+    error = select_peer(response_.key_identifier);
+    if (error == Error::none)
+        error = provider_.validate_p256_public_key(response_.public_key);
+    Digest hash {}, tag {};
+    if (error == Error::none)
+        error = listener_transcript(provider_, flights_[0].view(), input, hash);
+    if (error == Error::none)
+        error = establish(response_, hash);
+    if (error == Error::none)
+        error = schedule_.listener_confirmation(response_.signature, tag);
+    if (error != Error::none)
+        return fail(error);
+    if (!same(tag, response_.confirmation))
+        return fail(Error::authentication_failure);
+    std::array<std::byte, 160> message {};
+    error = provider_.verify_p256_sha256(
+        peer_, signed_message(false, hash, message), response_.signature);
+    if (error != Error::none)
+        return fail(error);
+    flights_[1].assign(input);
+    confirmation_.message = Message::confirmation;
+    confirmation_.key_length = response_.key_length;
+    output = confirmation_;
+    state_ = State::confirmation_prepared;
+    return Error::none;
+}
+Error Exchange::seal_confirmation(
+    std::span<std::byte> input, std::span<const std::byte> passphrase) noexcept
+{
+    if (!caller_)
+        return Error::invalid_state;
+    if (state_ == State::ready)
+        return same(input, flights_[2].view()) ? Error::none
+                                               : Error::invalid_state;
+    if (state_ != State::confirmation_prepared)
+        return Error::invalid_state;
+    Record record;
+    std::size_t offset = 0;
+    auto error = exchange_message(input, Message::confirmation, record, offset);
+    if (error != Error::none)
+        return fail(error);
+    if (!same_record(record, confirmation_))
+        return fail(Error::invalid_key_material);
+    Digest hash {};
+    error = caller_transcript(
+        provider_, flights_[0].view(), flights_[1].view(), input, hash);
+    if (error == Error::none)
+        error = schedule_.derive_authenticated_keys(passphrase, offer_.nonce,
+            response_.nonce, hash, response_.key_length);
+    std::array<std::byte, 160> message {};
+    if (error == Error::none)
+        error = identity_->sign_sha256(
+            signed_message(true, hash, message), confirmation_.signature);
+    identity_.reset();
+    if (error == Error::none)
+        error = schedule_.caller_confirmation(
+            confirmation_.signature, confirmation_.confirmation);
+    if (error == Error::none)
+        error = replace_record(input, offset, confirmation_);
+    if (error != Error::none)
+        return fail(error);
+    flights_[2].assign(input);
+    state_ = State::ready;
+    return Error::none;
+}
+Error Exchange::accept_confirmation(std::span<const std::byte> input,
+    std::span<const std::byte> passphrase) noexcept
+{
+    if (caller_)
+        return Error::invalid_state;
+    if (state_ == State::ready)
+        return same(input, flights_[2].view()) ? Error::none
+                                               : Error::invalid_state;
+    if (state_ != State::responded)
+        return Error::invalid_state;
+    Record record;
+    std::size_t offset = 0;
+    auto error = exchange_message(input, Message::confirmation, record, offset);
+    if (error != Error::none)
+        return fail(error);
+    if (record.key_length != response_.key_length)
+        return fail(Error::invalid_key_material);
+    Digest hash {}, tag {};
+    error = caller_transcript(
+        provider_, flights_[0].view(), flights_[1].view(), input, hash);
+    if (error != Error::none)
+        return fail(error);
+    std::array<std::byte, 160> message {};
+    error = provider_.verify_p256_sha256(
+        peer_, signed_message(true, hash, message), record.signature);
+    if (error == Error::authentication_failure && ++invalid_confirmations_ < 4)
+        return error;
+    if (error != Error::none)
+        return fail(error);
+    // Never evaluate a passphrase-dependent proof before the pinned signature.
+    error = schedule_.derive_authenticated_keys(
+        passphrase, offer_.nonce, response_.nonce, hash, response_.key_length);
+    if (error == Error::none)
+        error = schedule_.caller_confirmation(record.signature, tag);
+    if (error != Error::none)
+        return fail(error);
+    if (!same(tag, record.confirmation))
+        return fail(Error::authentication_failure);
+    confirmation_ = record;
+    flights_[2].assign(input);
+    state_ = State::ready;
+    return Error::none;
+}
+bool Exchange::failed() const noexcept
+{
+    return state_ == State::failed;
+}
+bool Exchange::ready_for_key_exchange() const noexcept
+{
+    return state_ == State::ready;
+}
+std::span<const std::byte> Exchange::cached(Message message) const noexcept
+{
+    const auto index = static_cast<unsigned>(message);
+    return index >= 1 && index <= 3 ? flights_[index - 1].view()
+                                    : std::span<const std::byte> {};
+}
+std::span<const std::byte> Exchange::peer_public_key() const noexcept
+{
+    return ready_for_key_exchange() ? std::span<const std::byte>(peer_)
+                                    : std::span<const std::byte> {};
+}
+std::span<const std::byte> Exchange::session_key() const noexcept
+{
+    return ready_for_key_exchange() ? schedule_.session_key()
+                                    : std::span<const std::byte> {};
+}
+std::span<const std::byte> Exchange::wrapping_key(bool caller) const noexcept
+{
+    return ready_for_key_exchange() ? schedule_.wrapping_key(caller)
+                                    : std::span<const std::byte> {};
+}
+
 } // namespace robotweax::srt::peer_authentication

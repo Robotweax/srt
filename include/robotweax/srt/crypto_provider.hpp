@@ -45,6 +45,24 @@ public:
         std::span<std::byte> plaintext) noexcept = 0;
 };
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+// Owns a provider-native P-256 private key; destruction releases/erases it.
+// No raw private-key export. A handle is session-owned, not used concurrently.
+// Points are fixed-width big-endian X || Y; signatures are r || s. All failed
+// output-producing operations must erase the complete output. Input and output
+// spans must not overlap. agree() validates the received point before ECDH.
+class P256Key {
+public:
+    virtual ~P256Key() = default;
+    [[nodiscard]] virtual Error public_key(
+        std::span<std::byte, 64>) noexcept = 0;
+    [[nodiscard]] virtual Error agree(std::span<const std::byte, 64> peer,
+        std::span<std::byte, 32> secret) noexcept = 0;
+    [[nodiscard]] virtual Error sign_sha256(std::span<const std::byte> message,
+        std::span<std::byte, 64> signature) noexcept = 0;
+};
+#endif
+
 // This is the only boundary between the SRT protocol implementation and a
 // cryptographic library. Expensive key setup happens when a key is installed,
 // not in the per-packet path.
@@ -71,6 +89,31 @@ public:
     }
 
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    // Optional operations: providers without P-256 support fail closed.
+    [[nodiscard]] virtual Error generate_p256_key(
+        std::unique_ptr<P256Key>& key) noexcept
+    {
+        key.reset();
+        return Error::unsupported;
+    }
+    [[nodiscard]] virtual Error import_p256_key(
+        std::span<const std::byte, 32>, std::unique_ptr<P256Key>& key) noexcept
+    {
+        key.reset();
+        return Error::unsupported;
+    }
+    [[nodiscard]] virtual Error validate_p256_public_key(
+        std::span<const std::byte, 64>) noexcept
+    {
+        return Error::unsupported;
+    }
+    [[nodiscard]] virtual Error verify_p256_sha256(
+        std::span<const std::byte, 64>, std::span<const std::byte>,
+        std::span<const std::byte, 64>) noexcept
+    {
+        return Error::unsupported;
+    }
+
     // Optional transcript primitive. Custom providers fail closed until supplied.
     [[nodiscard]] virtual Error sha256(
         std::span<const std::byte>, std::span<std::byte, 32> output) noexcept
