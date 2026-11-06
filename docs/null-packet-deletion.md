@@ -553,9 +553,22 @@ now passes strict source admission: 245 MPEG-2 video frames and 451 MP2 audio
 frames decode without diagnostics. Its compressed packet hashes match ordered
 selections from the Italian source, while remultiplexing regenerates TS tables,
 PIDs, timestamps and 8 Mb/s stuffing. The pinned recipe reproduces identical
-bytes. This is derived-fixture admission only; no SRT matrix has yet run on
-this new fixture, and unchanged-capture/live-encoder qualification is not
-claimed. Earlier failed source admissions remain unchanged.
+bytes. This admission stage preceded the separate replay matrix below;
+unchanged-capture/live-encoder qualification is not claimed. Earlier failed
+source admissions remain unchanged.
+
+The subsequent [separate derived-fixture replay](https://github.com/Robotweax/srt_network_lab/blob/a076a26f93cd746e1b60b1a03b7a067ccda6a6b8/results/2026-11-06-npd-derived-replay/README.md)
+passed 16/16 cases and eight OFF/ON pairs. Every received file was bit-exact,
+including its 940-byte final message, and strictly decoded all 245 video frames
+and 451 audio frames without diagnostics, matching the pinned decoded hashes.
+All impaired cases observed loss and reordering with zero capture kernel drops.
+Original media SRT DATA bytes fell 73.6828%, excluding retransmissions, parity,
+completion traffic, control and lower-layer headers. This saving reflects the
+fixture's regenerated 8 Mb/s stuffing, not the original encoder output.
+The longest receipt delay was 676.923 ms; the largest paired increase in maximum
+media delivery delay was 15.096 ms, within the declared bounds. This qualifies
+local derived-fixture transport with completion-aware peers and offline decode;
+live encoder/player integration and release acceptance remain separate work.
 
 ## Qualification required before broader support claims
 
