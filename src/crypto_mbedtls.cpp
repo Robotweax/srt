@@ -266,6 +266,19 @@ public:
         return Error::cryptographic_failure;
     }
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    Error sha256(std::span<const std::byte> input,
+        std::span<std::byte, 32> output) noexcept override
+    {
+        const auto* digest = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+        if (digest != nullptr
+            && mbedtls_md(digest, data(input), input.size(), data(output)) == 0)
+            return Error::none;
+        erase(output);
+        return Error::cryptographic_failure;
+    }
+#endif
+
     Error wrap_key(std::span<const std::byte> key,
         std::span<const std::byte> input, std::span<std::byte> output,
         std::size_t& written) noexcept override

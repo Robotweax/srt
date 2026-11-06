@@ -409,6 +409,22 @@ public:
         return Error::cryptographic_failure;
     }
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    Error sha256(std::span<const std::byte> input,
+        std::span<std::byte, 32> output) noexcept override
+    {
+        unsigned int size = 0;
+        if (EVP_Digest(input.data(), input.size(),
+                reinterpret_cast<unsigned char*>(output.data()), &size,
+                EVP_sha256(), nullptr)
+                == 1
+            && size == output.size())
+            return Error::none;
+        secure_erase(output);
+        return Error::cryptographic_failure;
+    }
+#endif
+
     Error wrap_key(
         std::span<const std::byte> key_encrypting_key,
         std::span<const std::byte> plaintext_keys,

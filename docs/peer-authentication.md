@@ -1,12 +1,37 @@
 # Peer authentication (draft contract)
 
-**Status: draft proposal. Nothing in this document is implemented.** Every
-identifier below is provisional and unregistered. **The cryptographic design is
-unreviewed.** It must receive independent cryptographic review before any
-implementation starts, and it makes no security claim until then. If it is
-implemented, it stays behind a default-off [build option](#build-option) until
-that review is complete. Items marked *open* need a decision. Items marked
-*assumption* could not be verified in this repository.
+**Status: draft contract with private protocol components; no socket support.**
+Every identifier below is provisional and unregistered. **The cryptographic
+design is unreviewed.** Independent cryptographic review is required before
+any support or security claim. Development stays behind the default-off
+[build option](#build-option). Items marked *open* need a decision. Items
+marked *assumption* could not be verified in this repository.
+
+The current implementation provides the structural record codec, transcript
+hashing, two-stage key schedule and secret cleanup, with deterministic tests.
+It does not yet provide P-256 agreement/signatures, pinned-key admission,
+socket options, handshake integration or runtime key installation. Enabling
+the build option does not authenticate connections or change their wire bytes.
+The contract below describes the intended complete feature, not current socket
+behavior. The codec checks framing; elliptic-curve validation must be performed
+by admission before a decoded public key can be used.
+
+Build and exercise the private components with:
+
+```sh
+cmake -S . -B build-peerauth -DCMAKE_BUILD_TYPE=Debug \
+  -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH=ON \
+  -DENABLE_AEAD_API_PREVIEW=ON
+cmake --build build-peerauth --target robotweax_srt_tests --parallel
+build-peerauth/robotweax_srt_tests --include peer_auth_
+./tools/python tests/peer_authentication_vectors.py
+```
+
+The vector generator independently computes synthetic transcript and key-schedule
+fixtures using Python's standard library; these are not ECDH/signature vectors
+or evidence of cryptographic review. SHA-256 is implemented for each backend;
+platform qualification still applies. The protocol components use bounded
+storage and are not compiled into builds with the option off.
 
 **Scope of version 1: it authenticates the handshake and key establishment,
 not the runtime.** AES-GCM, which version 1 requires, authenticates source
@@ -187,10 +212,9 @@ point at infinity.
 What the repository establishes:
 
 - The `CryptoProvider` interface in
-  `include/robotweax/srt/crypto_provider.hpp` has no public-key operation, no
-  HKDF and no bare hash. It offers
-  random bytes, PBKDF2-HMAC-SHA1, HMAC-SHA256, AES key wrap, AES-CTR and
-  AES-GCM. None of `src/crypto_openssl.cpp`, `src/crypto_mbedtls.cpp` or
+  `include/robotweax/srt/crypto_provider.hpp` has no public-key operation or
+  native HKDF. It offers random bytes, PBKDF2-HMAC-SHA1, HMAC-SHA256, AES key
+  wrap, AES-CTR and AES-GCM, plus SHA-256 behind the peer-authentication gate. None of `src/crypto_openssl.cpp`, `src/crypto_mbedtls.cpp` or
   `src/crypto_bcrypt.cpp` calls an elliptic-curve function today.
 - OpenSSL 3.0 or later is required by `CMakeLists.txt`.
 - The Mbed TLS backend accepts 3.6.7 and later 3.6.x, links only `mbedcrypto`,
@@ -225,8 +249,9 @@ qualification must confirm with known-answer tests:
 
 The provider would gain optional operations that default to
 `Error::unsupported`, as `hmac_sha256` does, so custom providers fail closed:
-ephemeral key generation, ECDH, ECDSA sign, ECDSA verify and SHA-256. HKDF
-needs no provider change; it is built from `hmac_sha256`.
+ephemeral key generation, ECDH, ECDSA sign and ECDSA verify. SHA-256 already
+has such an optional operation behind the build gate. HKDF needs no provider
+change; it is built from `hmac_sha256`.
 
 ## Handshake flow
 
