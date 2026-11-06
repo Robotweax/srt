@@ -8,8 +8,8 @@ unregistered. This is not a released feature or a RIST compatibility claim.
 
 Development remains on the feature branch. Merging to `main` requires explicit
 maintainer approval after feature completion. Remaining release qualification
-includes deployed MPEG-TS corpora, native Windows qualification, and the broader
-loss/reordering, rotation and retransmission combinations listed below.
+includes deployed MPEG-TS corpora, physical-network pacing measurements, and
+the broader loss/reordering, rotation and retransmission combinations listed below.
 
 Null packet deletion (NPD) removes MPEG-TS null packets from live payloads at
 the sender and restores them at the receiver, so constant-bitrate transport
@@ -375,6 +375,43 @@ payload hashes, source/parity payload byte totals and handshake extension
 records. Dynamic header fields remain excluded as described above. The report
 records both binary hashes. This comparison does not claim byte-for-byte
 identity of encrypted sessions or operating-system timing.
+
+### Native Windows qualification
+
+[Windows qualification run 42218102145](https://github.com/Robotweax/srt/actions/runs/42218102145)
+passed on source `277e669309433aa9a67ddcad408cfc6f9cf6e5b6`:
+
+| Native target | Provider | Result |
+| --- | --- | --- |
+| Windows Server 2025 x64 | BCrypt | 20 NPD, 166 runtime and 3 rotation cases; 8 wire cases passed |
+| Windows Server 2025 x64 | OpenSSL 3.6.5 | 20 NPD, 166 runtime and 3 rotation cases; 8 wire cases passed |
+| Windows 11 ARM64 | BCrypt | 20 NPD, 166 runtime and 3 rotation cases; 8 wire cases passed |
+
+These were Release builds with MSVC 19.51.36260 and AEAD preview enabled.
+This evidence covers the listed configurations and loopback traffic; it does
+not establish Win32, Debug, Windows ARM64/OpenSSL or physical-network timing
+qualification.
+
+The existing Windows backend workflow has a focused `npd_only` manual mode:
+
+```sh
+gh workflow run windows-bcrypt.yml --repo Robotweax/srt \
+  --ref dev/null-packet-deletion -f npd_only=true -f qualification=false
+```
+
+It selects native x64 BCrypt, native x64 OpenSSL and native ARM64 BCrypt
+Release builds, enables AEAD preview, and verifies that runner and target
+architectures match. It runs the NPD, rotation and transport-runtime native
+partitions plus eight separate-process wire cases per configuration. Artifacts
+retain the tested commit, architecture, CMake dependency details, native logs,
+wire reports and binary hashes for 14 days. The other backend workflow jobs
+are skipped in this mode; repository permissions remain read-only.
+
+The first Windows run exposed a test-fixture pacing assumption: one poll did
+not always drain source DATA queued behind parity before the fixture announced
+a successor key. The fixture now waits for captured source packets and checks
+the key's packet count before announcing. Recovery, byte equality and key-selector
+assertions are unchanged.
 
 ## Qualification required before broader support claims
 
