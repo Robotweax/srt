@@ -262,7 +262,9 @@ void exercise_gcm_fec_geometry(std::string_view filter,
     };
     for (std::uint32_t index = 0; index < source_count; ++index) {
         if (rotate && index == 4U) {
+            REQUIRE_EQ(sender_crypto->packets_on_active_key(), 4U);
             REQUIRE_EQ(sender_crypto->prepare_rotation(), Error::none);
+            REQUIRE(!sender_crypto->pending_key_material().empty());
             REQUIRE_EQ(receiver_crypto->accept_key_material(
                            sender_crypto->pending_key_material(), false),
                 Error::none);
@@ -274,8 +276,25 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         REQUIRE_EQ(sender.queue_message(payload, 0, false, false, -1).status,
             MessageIoStatus::success);
         if (rotate) {
-            sender_now += 100U;
-            (void)sender.poll();
+            // Windows starts each pacing slot at its actual submission time.
+            // Advance until this source was captured before announcing the
+            // successor key; one poll need not drain DATA behind FEC parity.
+            std::size_t captured_sources = 0;
+            for (unsigned attempt = 0;
+                attempt < 100U && captured_sources < index + 1U; ++attempt) {
+                sender_now += 100U;
+                (void)sender.poll();
+                captured_sources = 0;
+                std::lock_guard lock(sender_output.mutex);
+                for (const auto& datagram : sender_output.values) {
+                    const auto decoded = decode_packet(datagram);
+                    REQUIRE(decoded);
+                    if (decoded.packet.kind == PacketKind::data
+                        && decoded.packet.data.message_number != 0U)
+                        ++captured_sources;
+                }
+            }
+            REQUIRE_EQ(captured_sources, index + 1U);
         }
     }
     if (rotate)
