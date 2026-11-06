@@ -1,6 +1,9 @@
 #include "compat/listener_connection_setup_sources.hpp"
 
 #include "robotweax/srt/codec.hpp"
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+#include "compat/runtime_work_executor_service.hpp"
+#endif
 
 #include <algorithm>
 #include <utility>
@@ -472,7 +475,13 @@ ListenerConnectionSetupActor::ListenerConnectionSetupActor(
     std::shared_ptr<DatagramInbox> inbox, ListenerHandshakeAdmission admission,
     ListenerConnectionSetupSteps::Configuration configuration,
     std::size_t result_capacity)
-    : scheduler_(std::move(scheduler))
+    :
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    peer_authentication_(configuration.peer_authentication)
+    , peer_retry_milliseconds_(configuration.hsv5.timeout_milliseconds)
+    ,
+#endif
+    scheduler_(std::move(scheduler))
     , affinity_(affinity)
     , inbox_(std::move(inbox))
     , admission_(std::move(admission))
@@ -480,6 +489,12 @@ ListenerConnectionSetupActor::ListenerConnectionSetupActor(
     , local_socket_id_(configuration.hsv5.local_socket_id)
     , results_(std::max<std::size_t>(result_capacity, 1U))
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_) {
+        early_data_.reserve(64);
+        peer_executor_ = acquire_runtime_work_executor();
+    }
+#endif
 }
 
 ListenerConnectionSetupActor::~ListenerConnectionSetupActor()
@@ -490,6 +505,11 @@ ListenerConnectionSetupActor::~ListenerConnectionSetupActor()
 ListenerConnectionSetupDispatchStatus ListenerConnectionSetupActor::start(
     std::chrono::steady_clock::time_point overall_deadline) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    peer_deadline_ = overall_deadline;
+    if (peer_authentication_ && !peer_executor_)
+        return ListenerConnectionSetupDispatchStatus::allocation_failed;
+#endif
     std::shared_ptr<ListenerConnectionSetupActor> owner;
     try {
         owner = shared_from_this();
@@ -577,7 +597,7 @@ void ListenerConnectionSetupActor::stop() noexcept
         return;
     }
     completed_.wait(lock, [this] {
-        return terminal_;
+        return terminal_ && active_thread_ == std::thread::id {};
     });
 }
 
@@ -593,7 +613,7 @@ ListenerConnectionSetupActorResult ListenerConnectionSetupActor::wait() noexcept
             .failure = failure_,
         };
     }
-    const ListenerConnectionSetupActorResult result = results_[head_];
+    ListenerConnectionSetupActorResult result = std::move(results_[head_]);
     head_ = (head_ + 1U) % results_.size();
     --size_;
     if (result.kind == ListenerConnectionSetupActorResultKind::setup
@@ -611,7 +631,7 @@ bool ListenerConnectionSetupActor::try_pop(
     if (size_ == 0U) {
         return false;
     }
-    result = results_[head_];
+    result = std::move(results_[head_]);
     head_ = (head_ + 1U) % results_.size();
     --size_;
     if (result.kind == ListenerConnectionSetupActorResultKind::setup
@@ -730,6 +750,21 @@ ListenerConnectionSetupActor::request_run() noexcept
         finish_failure(ListenerConnectionSetupDispatchStatus::invalid);
         return ListenerConnectionSetupDispatchStatus::invalid;
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_) {
+        const auto submitted = peer_executor_->submit(
+            {.function = run_task, .context = std::move(owner)});
+        const auto status =
+            submitted == RuntimeWorkExecutor::SubmitStatus::accepted
+            ? ListenerConnectionSetupDispatchStatus::completed
+            : submitted == RuntimeWorkExecutor::SubmitStatus::full
+            ? ListenerConnectionSetupDispatchStatus::full
+            : ListenerConnectionSetupDispatchStatus::stopped;
+        if (status != ListenerConnectionSetupDispatchStatus::completed)
+            finish_failure(status);
+        return status;
+    }
+#endif
     const RuntimeScheduler::SubmitStatus submitted =
         scheduler_->submit(affinity_,
             {
@@ -748,6 +783,11 @@ void ListenerConnectionSetupActor::run() noexcept
 {
     {
         std::lock_guard lock(mutex_);
+        if (terminal_) {
+            scheduled_ = false;
+            completed_.notify_all();
+            return;
+        }
         active_thread_ = std::this_thread::get_id();
     }
     for (;;) {
@@ -792,6 +832,15 @@ void ListenerConnectionSetupActor::initialize() noexcept
         initialized_ = true;
         rejection_reason = initial_rejection_reason_;
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_ && !rejection_reason) {
+        handle_peer_result(
+            peer_authentication_->start_admitted_listener(
+                admission_, std::chrono::steady_clock::now(), peer_deadline_),
+            false);
+        return;
+    }
+#endif
     const ListenerConnectionSetupResult started = steps_.dispatch({
         .kind = ListenerConnectionSetupEventKind::start,
     });
@@ -840,12 +889,24 @@ void ListenerConnectionSetupActor::process_source_event(
         process_inbox();
         return;
     case ListenerConnectionSetupSourceEventKind::retry_timer:
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        if (peer_authentication_) {
+            handle_peer_result(
+                peer_authentication_->retry(std::chrono::steady_clock::now()),
+                false);
+            return;
+        }
+#endif
         handle_result(steps_.dispatch({
                           .kind = ListenerConnectionSetupEventKind::retry_timer,
                       }),
             false);
         return;
     case ListenerConnectionSetupSourceEventKind::overall_timeout:
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        if (peer_authentication_)
+            peer_authentication_->abort();
+#endif
         handle_result(
             steps_.dispatch({
                 .kind = ListenerConnectionSetupEventKind::overall_timeout,
@@ -891,6 +952,44 @@ void ListenerConnectionSetupActor::process_inbox() noexcept
     const std::span<const std::byte> bytes =
         std::span {envelope.bytes}.first(envelope.size);
     const DecodeResult packet = decode_packet(bytes);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_) {
+        if (packet && packet.packet.kind == PacketKind::data) {
+            if (packet.packet.data.destination_socket_id == local_socket_id_
+                && early_data_.size() < 64)
+                early_data_.push_back(envelope);
+            source->acknowledge_inbox();
+            return;
+        }
+        // The channel may forward a duplicate M1 still addressed to the
+        // listener's discovery route. Readdress only that outer header.
+        if (packet && packet.packet.kind == PacketKind::control
+            && packet.packet.control.type == ControlType::handshake
+            && packet.packet.control.destination_socket_id
+                == admission_.conclusion.control.destination_socket_id) {
+            auto handshake = decode_handshake_datagram(bytes);
+            if (handshake
+                && handshake.message.packet.socket_id
+                    == admission_.conclusion.message.packet.socket_id
+                && handshake.message.has_peer_authentication) {
+                const auto encoded = encode_peer_authentication_datagram(
+                    handshake.message.peer_authentication_payload.view(),
+                    packet.packet.control.timestamp, local_socket_id_,
+                    envelope.bytes);
+                if (encoded)
+                    envelope.size = encoded.bytes_written;
+            }
+        }
+        handle_peer_result(peer_authentication_->receive(
+                               std::span {envelope.bytes}.first(envelope.size),
+                               std::chrono::steady_clock::now()),
+            true,
+            packet && packet.packet.kind == PacketKind::control
+                ? &packet.packet.control
+                : nullptr);
+        return;
+    }
+#endif
     if (!packet || packet.packet.kind != PacketKind::control) {
         source->acknowledge_inbox();
         return;
@@ -926,6 +1025,74 @@ void ListenerConnectionSetupActor::process_inbox() noexcept
     }
     source->acknowledge_inbox();
 }
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+void ListenerConnectionSetupActor::handle_peer_result(
+    PeerAuthenticationHandshake::Result result, bool acknowledge_inbox,
+    const ControlHeader* control) noexcept
+{
+    ListenerConnectionSetupActorResult output;
+    output.kind = ListenerConnectionSetupActorResultKind::setup;
+    output.failure = ListenerConnectionSetupDispatchStatus::completed;
+    output.setup.protocol = ListenerHandshakeProtocol::hsv5;
+    output.setup.error = result.error;
+    output.peer_datagrams = std::move(result.outgoing);
+    output.peer_datagram_count = result.size;
+    output.peer_handshake = admission_.conclusion.message;
+    output.has_peer_handshake = true;
+    output.peer_control = control ? *control : admission_.conclusion.control;
+    if (result.failed) {
+        output.setup.outcome = ListenerConnectionSetupOutcome::rejected;
+        output.setup.rejection_reason = 11; // uniform UNSECURE; no proof oracle
+        (void)steps_.dispatch(
+            {.kind = ListenerConnectionSetupEventKind::start});
+        output.setup.hsv5_actions =
+            steps_
+                .dispatch({.kind = ListenerConnectionSetupEventKind::reject,
+                    .rejection_reason = output.setup.rejection_reason})
+                .hsv5_actions;
+        finish_setup(std::move(output));
+        return;
+    }
+    if (result.ready) {
+        const auto* transport =
+            peer_authentication_->transport(std::chrono::steady_clock::now());
+        if (!transport) {
+            finish_failure(ListenerConnectionSetupDispatchStatus::invalid);
+            return;
+        }
+        output.setup.outcome = ListenerConnectionSetupOutcome::connected;
+        output.runtime.error = Error::none;
+        output.runtime.packet_filter = transport->negotiated_packet_filter();
+        output.runtime.peer_flow_window = transport->peer_flow_window();
+        output.runtime.has_peer_extension_parameters =
+            transport->has_peer_extension_parameters();
+        if (output.runtime.has_peer_extension_parameters)
+            output.runtime.peer_extension_parameters =
+                transport->peer_extension_parameters();
+        output.runtime.has_peer_stream_id = transport->has_peer_stream_id();
+        if (output.runtime.has_peer_stream_id)
+            output.runtime.peer_stream_id = transport->peer_stream_id();
+        output.runtime.peer_identity = transport->peer_identity();
+        output.early_data = std::move(early_data_);
+        finish_setup(std::move(output));
+        return;
+    }
+    output.setup.outcome = ListenerConnectionSetupOutcome::running;
+    if (result.size != 0 || !acknowledge_inbox) {
+        publish_running(std::move(output), acknowledge_inbox,
+            std::chrono::milliseconds {peer_retry_milliseconds_});
+    } else {
+        std::shared_ptr<ListenerConnectionSetupEventSource> source;
+        {
+            std::lock_guard lock(mutex_);
+            source = source_;
+        }
+        if (source)
+            source->acknowledge_inbox();
+    }
+}
+#endif
 
 void ListenerConnectionSetupActor::handle_result(
     ListenerConnectionSetupResult result, bool acknowledge_inbox,
@@ -1027,6 +1194,11 @@ void ListenerConnectionSetupActor::finish_failure(
 
 void ListenerConnectionSetupActor::finish_closed() noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_)
+        peer_authentication_->abort();
+#endif
+
     ListenerConnectionSetupResult result = steps_.dispatch({
         .kind = ListenerConnectionSetupEventKind::close,
     });

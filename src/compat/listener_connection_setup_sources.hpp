@@ -1,6 +1,10 @@
 #pragma once
 
 #include "compat/listener_connection_setup.hpp"
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+#include "compat/peer_authentication_handshake.hpp"
+#include "compat/runtime_work_executor.hpp"
+#endif
 #include "compat/runtime_scheduler.hpp"
 #include "compat/transport_runtime.hpp"
 
@@ -129,6 +133,11 @@ struct ListenerConnectionSetupActorResult {
     ListenerConnectionSetupDispatchStatus failure =
         ListenerConnectionSetupDispatchStatus::invalid;
     bool has_peer_handshake = false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    std::array<PeerAuthenticationHandshake::Datagram, 2> peer_datagrams {};
+    std::size_t peer_datagram_count = 0;
+    std::vector<DatagramEnvelope> early_data;
+#endif
 };
 
 struct ListenerConnectionSetupActorSnapshot {
@@ -190,6 +199,11 @@ private:
     [[nodiscard]] ListenerConnectionSetupDispatchStatus request_run() noexcept;
     void run() noexcept;
     void initialize() noexcept;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    void handle_peer_result(PeerAuthenticationHandshake::Result result,
+        bool acknowledge_inbox,
+        const ControlHeader* control = nullptr) noexcept;
+#endif
     void drain_source() noexcept;
     void process_inbox() noexcept;
     void process_source_event(
@@ -214,6 +228,13 @@ private:
     [[nodiscard]] static bool terminal_outcome(
         ListenerConnectionSetupOutcome outcome) noexcept;
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    std::shared_ptr<PeerAuthenticationHandshake> peer_authentication_;
+    std::shared_ptr<RuntimeWorkExecutor> peer_executor_;
+    std::chrono::steady_clock::time_point peer_deadline_ {};
+    std::uint32_t peer_retry_milliseconds_ = 250;
+    std::vector<DatagramEnvelope> early_data_;
+#endif
     std::shared_ptr<RuntimeScheduler> scheduler_;
     std::uint64_t affinity_ = 0;
     std::shared_ptr<DatagramInbox> inbox_;

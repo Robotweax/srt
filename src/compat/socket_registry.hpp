@@ -89,6 +89,8 @@ struct SocketRecord {
     bool listen_callback_active = false;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
     // Claimed identifier only; availability is restricted to the callback.
+    bool has_authenticated_peer = false;
+    std::array<std::byte, 64> authenticated_peer {};
     bool has_incoming_peer_authentication = false;
     std::array<std::byte, 32> incoming_peer_authentication {};
 #endif

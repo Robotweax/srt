@@ -5,6 +5,7 @@
 #include "robotweax/srt/handshake.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 #include "robotweax/srt/crypto.hpp"
+#include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/socket_options.hpp"
 #include "srt/srt.h"
 #include "compat/socket_registry.hpp"
@@ -1078,7 +1079,7 @@ TEST(peer_auth_configuration_dependency_order_and_missing_credentials)
     REQUIRE(!copied.encryption_enabled());
 }
 
-TEST(peer_auth_socket_options_fail_closed_until_admission_is_implemented)
+TEST(peer_auth_socket_options_listener_enabled_caller_still_fails_closed)
 {
     const auto pin = public_key(2);
     REQUIRE_EQ(srt_startup(), 0);
@@ -1152,13 +1153,13 @@ TEST(peer_auth_socket_options_fail_closed_until_admission_is_implemented)
     REQUIRE_EQ(srt_bind(socket, reinterpret_cast<const sockaddr*>(&address),
                    sizeof(address)),
         0);
-    REQUIRE_EQ(srt_listen(socket, 8), SRT_ERROR);
-    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESECFAIL);
+
     address.sin_port = htons(9);
     REQUIRE_EQ(srt_connect(socket, reinterpret_cast<const sockaddr*>(&address),
                    sizeof(address)),
         SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESECFAIL);
+    REQUIRE_EQ(srt_listen(socket, 8), 0);
     REQUIRE_EQ(srt_close(socket), 0);
     REQUIRE(!retained->native_options.peer_authentication_required());
     REQUIRE(retained->native_options.peer_authentication_trusted().empty());
@@ -1616,9 +1617,14 @@ TEST(
         const auto rejection = decode_handshake_datagram(
             std::span {wire}.first(rejected.bytes_transferred));
         REQUIRE(rejection);
-        if (choose_required)
-            REQUIRE_EQ(static_cast<int>(rejection.message.packet.request),
-                1000 + SRT_REJ_UNSECURE);
+        if (choose_required) {
+            REQUIRE_EQ(
+                rejection.message.packet.request, HandshakeRequest::conclusion);
+            REQUIRE(rejection.message.has_peer_authentication);
+            std::lock_guard lock(offered.child->mutex);
+            REQUIRE_EQ(offered.child->state, SRTS_CONNECTING);
+            REQUIRE(!offered.child->has_authenticated_peer);
+        }
         REQUIRE(offered.called.load());
         REQUIRE(offered.valid);
         REQUIRE_EQ(offered.identifier, record.key_identifier);
@@ -2029,4 +2035,281 @@ TEST(peer_auth_transport_adapter_recovers_lost_runtime_ack_after_peer_is_ready)
     REQUIRE_EQ(ack.size, 1U);
     REQUIRE(p.caller.receive(ack.outgoing[0].view(), p.now).ready);
     REQUIRE_EQ(p.lp.derivations, derivations);
+}
+
+TEST(peer_auth_public_listener_waits_for_both_keys_and_retains_early_data)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    struct Cleanup {
+        ~Cleanup()
+        {
+            (void)srt_cleanup();
+        }
+    } cleanup;
+    const auto listener = srt_create_socket();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    struct Close {
+        SRTSOCKET id;
+        ~Close()
+        {
+            (void)srt_close(id);
+        }
+    } close {listener};
+    const int enabled = 1, gcm = 2, key_length = 16, timeout = 2000;
+    const bool asynchronous = false;
+    constexpr std::string_view password = "packet adapter test passphrase";
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_PASSPHRASE, password.data(), password.size()),
+        0);
+    REQUIRE_EQ(
+        srt_setsockflag(listener, SRTO_CRYPTOMODE, &gcm, sizeof(gcm)), 0);
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_PBKEYLEN, &key_length, sizeof(key_length)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_SESSIONAUTH, &enabled,
+                   sizeof(enabled)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_PEERAUTH_POLICY,
+                   &enabled, sizeof(enabled)),
+        0);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&address),
+                   sizeof(address)),
+        0);
+    REQUIRE_EQ(srt_listen(listener, 8), SRT_ERROR); // incomplete credentials
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESECFAIL);
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_ROBOTWEAX_PEERAUTH_KEY, scalar(2).data(), 32),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_PEERAUTH_TRUSTED,
+                   public_key(1).data(), 64),
+        0);
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_RCVSYN, &asynchronous, sizeof(asynchronous)),
+        0);
+    REQUIRE_EQ(
+        srt_setsockflag(listener, SRTO_RCVTIMEO, &timeout, sizeof(timeout)), 0);
+    REQUIRE_EQ(srt_listen(listener, 8), 0);
+    int size = sizeof(address);
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&address), &size),
+        0);
+    const auto destination = IpEndpoint::loopback(ntohs(address.sin_port));
+    UdpSocket udp;
+    REQUIRE_EQ(udp.bind(IpEndpoint::loopback(0)), Error::none);
+    auto options = peer_handshake_options(true);
+    PeerHandshake caller(peer_handshake_configuration(true, options), options);
+    const auto now = std::chrono::steady_clock::now();
+    const auto deadline = now + std::chrono::seconds {5};
+    auto initial = caller.start(now, deadline);
+    REQUIRE_EQ(initial.size, 1U);
+    REQUIRE(udp.send_to(initial.outgoing[0].view(), destination));
+    PeerHandshake::Datagram held_ack;
+    std::array<std::byte, 1500> wire {};
+    while (!caller.ready(std::chrono::steady_clock::now())) {
+        REQUIRE(std::chrono::steady_clock::now() < deadline);
+        REQUIRE(udp.wait_readable(1000).ready);
+        const auto received = udp.receive_from(wire);
+        REQUIRE(received);
+        auto result =
+            caller.receive(std::span {wire}.first(received.bytes_transferred),
+                std::chrono::steady_clock::now());
+        REQUIRE(!result.failed);
+        for (std::size_t i = 0; i < result.size; ++i) {
+            const auto packet = decode_packet(result.outgoing[i].view());
+            REQUIRE(packet);
+            if (packet.packet.control.subtype == 0x7f04)
+                held_ack = result.outgoing[i];
+            else
+                REQUIRE(udp.send_to(result.outgoing[i].view(), destination));
+        }
+    }
+    REQUIRE(held_ack.size != 0);
+    REQUIRE_EQ(srt_accept(listener, nullptr, nullptr), SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+    auto crypto = caller.release_crypto(std::chrono::steady_clock::now());
+    REQUIRE(crypto != nullptr);
+    DataHeader header {.sequence = SequenceNumber {1},
+        .message_number = 1,
+        .boundary = MessageBoundary::solo,
+        .encryption_key = crypto->active_sender_key(),
+        .destination_socket_id = caller.peer_socket_id()};
+    const std::array<std::byte, 3> plain {
+        std::byte {7}, std::byte {8}, std::byte {9}};
+    std::array<std::byte, 3 + srt_gcm_authentication_tag_size>
+        protected_data {};
+    EncryptionKey selected {};
+    REQUIRE_EQ(
+        crypto->seal(header, plain, std::span {protected_data}.first<3>(),
+            std::span {protected_data}.subspan<3>(), selected),
+        Error::none);
+    const auto encoded = encode_packet(
+        {.kind = PacketKind::data, .data = header, .payload = protected_data},
+        wire);
+    REQUIRE(encoded);
+    wire[encoded.bytes_written - 1] ^= std::byte {1};
+    REQUIRE(udp.send_to(
+        std::span {wire}.first(encoded.bytes_written), destination));
+    wire[encoded.bytes_written - 1] ^= std::byte {1};
+    REQUIRE(udp.send_to(
+        std::span {wire}.first(encoded.bytes_written), destination));
+    REQUIRE(udp.send_to(held_ack.view(), destination));
+    // Restore blocking accept only after proving no child was published early.
+    const bool synchronous = true;
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+        0);
+    const auto child = srt_accept(listener, nullptr, nullptr);
+    REQUIRE(child != SRT_INVALID_SOCK);
+    Close close_child {child};
+    std::array<std::byte, 64> authenticated {};
+    size = authenticated.size();
+    REQUIRE_EQ(srt_getsockflag(child, SRTO_ROBOTWEAX_PEERAUTH_PEER,
+                   authenticated.data(), &size),
+        0);
+    REQUIRE_EQ(authenticated, public_key(1));
+    REQUIRE_EQ(
+        srt_setsockflag(child, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+        0);
+    std::array<char, 1500> received {};
+    REQUIRE_EQ(srt_recvmsg(child, received.data(), received.size()), 3);
+    REQUIRE(std::equal(plain.begin(), plain.end(),
+        reinterpret_cast<const std::byte*>(received.data())));
+    SRT_TRACEBSTATS stats {};
+    REQUIRE_EQ(srt_bstats(child, &stats, 0), 0);
+    REQUIRE_EQ(stats.pktRcvUndecryptTotal, 1);
+    REQUIRE_EQ(srt_sendmsg(child, "reply", 5, -1, 0), 5);
+    bool got_reply = false;
+    while (!got_reply && std::chrono::steady_clock::now() < deadline) {
+        REQUIRE(udp.wait_readable(1000).ready);
+        const auto datagram = udp.receive_from(wire);
+        REQUIRE(datagram);
+        const auto packet =
+            decode_packet(std::span {wire}.first(datagram.bytes_transferred));
+        REQUIRE(packet);
+        if (packet.packet.kind != PacketKind::data)
+            continue;
+        REQUIRE_EQ(
+            packet.packet.payload.size(), 5 + srt_gcm_authentication_tag_size);
+        std::array<std::byte, 5> reply {};
+        REQUIRE_EQ(
+            crypto->open(packet.packet.data, packet.packet.payload.first<5>(),
+                packet.packet.payload.subspan<5>(), reply),
+            Error::none);
+        REQUIRE(std::equal(reply.begin(), reply.end(),
+            reinterpret_cast<const std::byte*>("reply")));
+        got_reply = true;
+    }
+    REQUIRE(got_reply);
+    const auto retained = compat::SocketRegistry::instance().find(child);
+    REQUIRE(retained != nullptr);
+    REQUIRE_EQ(srt_close(child), 0);
+    std::lock_guard lock(retained->mutex);
+    REQUIRE(!retained->has_authenticated_peer);
+    REQUIRE(std::all_of(retained->authenticated_peer.begin(),
+        retained->authenticated_peer.end(), [](std::byte b) {
+            return b == std::byte {};
+        }));
+}
+
+TEST(peer_auth_public_listener_rejects_wrong_password_and_untrusted_identity)
+{
+    for (const bool wrong_password : {false, true}) {
+        REQUIRE_EQ(srt_startup(), 0);
+        struct Cleanup {
+            ~Cleanup()
+            {
+                (void)srt_cleanup();
+            }
+        } cleanup;
+        const auto listener = srt_create_socket();
+        REQUIRE(listener != SRT_INVALID_SOCK);
+        struct Close {
+            SRTSOCKET id;
+            ~Close()
+            {
+                (void)srt_close(id);
+            }
+        } close {listener};
+        const int enabled = 1, gcm = 2, timeout = 2000;
+        constexpr std::string_view password = "packet adapter test passphrase";
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_PASSPHRASE, password.data(),
+                       password.size()),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(listener, SRTO_CRYPTOMODE, &gcm, sizeof(gcm)), 0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_SESSIONAUTH,
+                       &enabled, sizeof(enabled)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_PEERAUTH_KEY,
+                       scalar(2).data(), 32),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_PEERAUTH_TRUSTED,
+                       public_key(wrong_password ? 1 : 3).data(), 64),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_PEERAUTH_POLICY,
+                       &enabled, sizeof(enabled)),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(listener, SRTO_RCVTIMEO, &timeout, sizeof(timeout)),
+            0);
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        REQUIRE_EQ(
+            srt_bind(listener, reinterpret_cast<const sockaddr*>(&address),
+                sizeof(address)),
+            0);
+        const bool asynchronous = false;
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_RCVSYN, &asynchronous,
+                       sizeof(asynchronous)),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 8), 0);
+        int size = sizeof(address);
+        REQUIRE_EQ(srt_getsockname(
+                       listener, reinterpret_cast<sockaddr*>(&address), &size),
+            0);
+        const auto destination = IpEndpoint::loopback(ntohs(address.sin_port));
+        UdpSocket udp;
+        REQUIRE_EQ(udp.bind(IpEndpoint::loopback(0)), Error::none);
+        auto options = peer_handshake_options(true);
+        if (wrong_password)
+            REQUIRE_EQ(
+                options.set_passphrase("wrong packet adapter passphrase"),
+                Error::none);
+        PeerHandshake caller(
+            peer_handshake_configuration(true, options), options);
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds {5};
+        auto result = caller.start(std::chrono::steady_clock::now(), deadline);
+        bool rejected = false;
+        std::array<std::byte, 1500> wire {};
+        while (!rejected && std::chrono::steady_clock::now() < deadline) {
+            for (std::size_t i = 0; i < result.size; ++i)
+                REQUIRE(udp.send_to(result.outgoing[i].view(), destination));
+            REQUIRE(udp.wait_readable(1000).ready);
+            const auto received = udp.receive_from(wire);
+            REQUIRE(received);
+            const auto bytes =
+                std::span {wire}.first(received.bytes_transferred);
+            const auto handshake = decode_handshake_datagram(bytes);
+            if (handshake
+                && static_cast<int>(handshake.message.packet.request) >= 1000) {
+                REQUIRE_EQ(static_cast<int>(handshake.message.packet.request),
+                    1000 + SRT_REJ_UNSECURE);
+                rejected = true;
+            } else {
+                result =
+                    caller.receive(bytes, std::chrono::steady_clock::now());
+                REQUIRE(!result.failed);
+                REQUIRE(!result.ready);
+            }
+        }
+        REQUIRE(rejected);
+        REQUIRE_EQ(srt_accept(listener, nullptr, nullptr), SRT_INVALID_SOCK);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+        REQUIRE(!caller.release_crypto(std::chrono::steady_clock::now()));
+    }
 }

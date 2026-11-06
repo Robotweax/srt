@@ -527,6 +527,8 @@ void shutdown_record(
         std::lock_guard lock(record->mutex);
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
         record->native_options.clear_peer_authentication();
+        record->has_authenticated_peer = false;
+        record->authenticated_peer = {};
         record->has_incoming_peer_authentication = false;
         record->incoming_peer_authentication = {};
 #endif
