@@ -186,6 +186,9 @@ public:
     void pump_for_testing() noexcept;
 
 private:
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    friend class hybrid::CoordinatorBridge;
+#endif
     friend struct GroupSendCoordinatorTestAccess;
     struct Membership {
         Member state;
@@ -193,6 +196,10 @@ private:
         GroupRuntimeAdmission::Binding binding;
         std::optional<Clock::time_point> busy_since;
         bool unicast_lease = false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        std::uint64_t join_position = 0;
+        SequenceNumber join_sequence;
+#endif
     };
     struct Recipient {
         std::uint64_t member = 0;

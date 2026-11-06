@@ -155,6 +155,9 @@ public:
         }
 
     private:
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        friend class hybrid::CoordinatorBridge;
+#endif
         friend class GroupRuntimeAdmission;
         explicit RecoveryGuard(Status status) noexcept
         {

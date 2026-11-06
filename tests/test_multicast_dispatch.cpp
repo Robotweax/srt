@@ -12,6 +12,7 @@
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 #include "compat/hybrid_exchange.hpp"
 #include "compat/hybrid_native.hpp"
+#include "compat/hybrid_bridge.hpp"
 #endif
 #include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/udp.hpp"
@@ -2024,6 +2025,8 @@ struct HybridNativeOwner {
     std::atomic<std::uint64_t> generation = 7, expiry = 0;
     std::atomic<unsigned> resolves = 0, enrolls = 0;
     bool approve = true, close_on_enroll = false;
+    std::mutex grant_mutex;
+    hn::Authorization resolved_grant;
     static bool resolve(void* p, const hn::CredentialRequest& request,
         hn::Authorization& grant, std::span<std::byte, 32> secret) noexcept
     {
@@ -2039,6 +2042,10 @@ struct HybridNativeOwner {
             .generation = self.generation.load(),
             .expires_at_us = self.expiry.load()};
         std::fill(secret.begin(), secret.end(), std::byte {0x22});
+        {
+            std::lock_guard lock(self.grant_mutex);
+            self.resolved_grant = grant;
+        }
         return true;
     }
     static bool revalidate(void* p, const hn::CredentialRequest&,
@@ -2097,9 +2104,16 @@ struct NativeHybridPair {
         }
         return o;
     }
-    void start()
+    void start(
+        std::optional<hn::CoordinatorBridge::Identity> identity = std::nullopt)
     {
-        l = hn::attach_native_control(listener, options(false));
+        auto o = options(false);
+        if (identity) {
+            o.stream = identity->stream;
+            o.member = identity->member;
+            o.initial_position = identity->initial_position;
+        }
+        l = hn::attach_native_control(listener, std::move(o));
         REQUIRE(l);
         c = hn::attach_native_control(caller, options(true));
         REQUIRE(c);
@@ -2151,6 +2165,8 @@ struct NativeHybridPair {
 struct HybridWireHook {
     std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
     bool drop_selection = false;
+    bool drop_first_control = false;
+    std::atomic<unsigned> control_drops = 0;
     std::atomic<unsigned> dropped = 0;
     std::mutex mutex;
     std::vector<std::byte> last_control;
@@ -2160,6 +2176,11 @@ struct HybridWireHook {
         auto& self = *static_cast<HybridWireHook*>(p);
         const auto decoded = decode_packet(bytes);
         hn::ExchangeRecord record;
+        if (decoded && self.drop_first_control
+            && decoded.packet.control.subtype == authenticated_control_subtype
+            && hn::native_candidate(decoded.packet)
+            && self.control_drops.fetch_add(1) == 0)
+            return {.bytes_transferred = bytes.size()};
         if (decoded && self.drop_selection
             && hn::decode_exchange_packet(decoded.packet, record)
             && record.kind == hn::ExchangeKind::selection
@@ -2328,6 +2349,107 @@ TEST(
     expect_messages(f.receiver, 0, 48);
     REQUIRE(pair.c->snapshot().active);
     REQUIRE(pair.l->snapshot().active);
+}
+#endif
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+TEST(
+    multicast_dispatch_native_coordinator_bridge_fallback_and_lost_commit_plain_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2);
+        NativeHybridPair pair(f);
+        const auto identity =
+            hn::CoordinatorBridge::identity(f.actor(), pair.listener);
+        REQUIRE(identity);
+        pair.start(identity);
+        REQUIRE(pair.wait_active());
+        hn::Authorization grant;
+        {
+            std::lock_guard lock(pair.lo->grant_mutex);
+            grant = pair.lo->resolved_grant;
+        }
+        auto lease = std::make_shared<hn::AuthorizationLease>(grant);
+        std::shared_ptr<hn::CoordinatorBridge> bridge;
+        const auto until =
+            std::chrono::steady_clock::now() + std::chrono::seconds {1};
+        while (!bridge && std::chrono::steady_clock::now() < until) {
+            bridge =
+                hn::CoordinatorBridge::create(f.actor(), pair.l, lease, {});
+            if (!bridge)
+                std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        REQUIRE(bridge);
+        const auto record = SocketRegistry::instance().find(f.listener);
+        std::shared_ptr<robotweax::srt::compat::DatagramChannel> control;
+        {
+            std::lock_guard lock(record->mutex);
+            control = record->channel;
+        }
+        HybridWireHook hook;
+        hook.channel = control;
+        hook.drop_first_control = true;
+        SendHookReset reset {control};
+        control->set_send_hook_for_testing(HybridWireHook::send, &hook);
+        const auto request = pair.request();
+        REQUIRE_EQ(
+            pair.c->send(request, hn::NativeService::monotonic_now() + 500'000),
+            hn::NativeService::Admission::accepted);
+        const auto first =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds {500};
+        while (!hook.control_drops.load()
+            && std::chrono::steady_clock::now() < first) {
+            bridge->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        REQUIRE(hook.control_drops.load());
+        REQUIRE_EQ(bridge->snapshot().applied, 1U);
+        REQUIRE_EQ(
+            pair.c->send(request, hn::NativeService::monotonic_now() + 500'000),
+            hn::NativeService::Admission::accepted);
+        hn::NativeService::Event event;
+        bool received = false;
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds {500};
+        while (!received && std::chrono::steady_clock::now() < deadline) {
+            bridge->pump();
+            while (pair.c->pop(event))
+                if (event.kind == hn::NativeService::Event::Kind::received) {
+                    received = true;
+                    break;
+                }
+            if (!received)
+                std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        REQUIRE(received);
+        REQUIRE_EQ(event.message.kind, hn::Kind::delivery_commit);
+        REQUIRE_EQ(event.message.revision, 1U);
+        REQUIRE_EQ(bridge->snapshot().applied, 1U);
+        REQUIRE_EQ(bridge->snapshot().duplicates, 1U);
+        REQUIRE_EQ(pair.co->resolves.load(), 1U);
+        REQUIRE_EQ(pair.lo->resolves.load(), 1U);
+        auto source = f.source();
+        SendHookReset sr {source};
+        source->set_send_hook_for_testing(
+            [](std::span<const std::byte> b, IpEndpoint,
+                void*) noexcept -> UdpIoResult {
+                return {.bytes_transferred = b.size()};
+            },
+            nullptr);
+        for (int i = 0; i < 48; ++i)
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        expect_messages(f.receiver, 0, 48);
+        REQUIRE_EQ(f.actor()->snapshot().unicast_members, 1U);
+        lease->revoke();
+        REQUIRE(pair.l->closed());
+        REQUIRE_EQ(f.send(48), static_cast<int>(message(48).size()));
+        expect_messages(f.receiver, 48, 1);
+    }
 }
 #endif
 

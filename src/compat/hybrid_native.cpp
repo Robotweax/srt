@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "compat/hybrid_native.hpp"
+#include "compat/hybrid_bridge.hpp"
 #include "compat/transport_runtime.hpp"
 #include "compat/runtime_scheduler_service.hpp"
 #include <algorithm>
@@ -264,6 +265,12 @@ bool NativeService::enqueue(const PacketView& p, std::uint64_t arrival) noexcept
 NativeService::Admission NativeService::send(const Message& m,
     std::uint64_t deadline, std::optional<std::uint64_t> observed) noexcept
 {
+    return send_impl(m, deadline, observed, false);
+}
+NativeService::Admission NativeService::send_impl(const Message& m,
+    std::uint64_t deadline, std::optional<std::uint64_t> observed,
+    bool bridge) noexcept
+{
     const auto at = now();
     if (at >= expires_at_.load()) {
         close(Failure::exchange);
@@ -275,6 +282,8 @@ NativeService::Admission NativeService::send(const Message& m,
             return Admission::closed;
         if (!state_.active)
             return Admission::not_ready;
+        if (bridged_ != bridge)
+            return Admission::invalid;
         if (!hybrid::valid(m, state_.context)
             || sender_is_caller(m.kind) != configuration_.caller
             || deadline <= at || deadline > add(at, maximum_age_us)
@@ -290,6 +299,8 @@ NativeService::Admission NativeService::send(const Message& m,
         jobs_[(head_ + size_) % capacity] = job;
         ++size_;
         state_.queued = size_;
+        if (!bridge)
+            application_used_ = true;
     }
     return wake() ? Admission::accepted : Admission::closed;
 }
@@ -300,12 +311,13 @@ bool NativeService::pop(Event& out) noexcept
         return false;
     }
     std::lock_guard lock(queue_mutex_);
-    if (closed() || !event_size_)
+    if (closed() || bridged_ || !event_size_)
         return false;
     out = events_[event_head_];
     event_head_ = (event_head_ + 1) % event_capacity;
     --event_size_;
     state_.events = event_size_;
+    application_used_ = true;
     return true;
 }
 NativeService::Snapshot NativeService::snapshot() const noexcept
@@ -544,6 +556,24 @@ void NativeService::pump_for_testing() noexcept
 {
     if (manual_ && !ProtocolScope::owns(this))
         pump();
+}
+bool NativeService::bridge_work(CoordinatorBridge& bridge) noexcept
+{
+    if (ProtocolScope::owns(this))
+        return false;
+    std::unique_lock protocol(protocol_mutex_, std::try_to_lock);
+    if (!protocol.owns_lock())
+        return false;
+    ProtocolScope scope(this);
+    if (configuration_.caller || !session_ || !live()) {
+        if (closed())
+            cleanup();
+        return false;
+    }
+    bridge.work();
+    if (closed())
+        cleanup();
+    return true;
 }
 void NativeService::pump() noexcept
 {

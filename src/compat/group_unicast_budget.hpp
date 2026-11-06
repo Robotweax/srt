@@ -8,6 +8,9 @@
 #include <utility>
 
 namespace robotweax::srt::compat {
+namespace hybrid {
+class CoordinatorBridge;
+}
 
 // Aggregate canonical unicast DATA (originals AND repairs), including IP/UDP.
 // One MTU of burst credit, initially full. No mutex is held across socket I/O.
@@ -200,6 +203,7 @@ private:
         }
     }
     Configuration config_;
+    friend class hybrid::CoordinatorBridge;
     std::mutex mutex_;
     Snapshot state_;
     std::uint64_t last_ = 0;

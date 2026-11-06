@@ -177,6 +177,7 @@ add_library(robotweax_srt
     src/compat/hybrid_exchange.cpp
     src/compat/hybrid_conclusions.cpp
     src/compat/hybrid_native.cpp
+    src/compat/hybrid_bridge.cpp
     src/compat/standby_rtt_service.cpp
     src/control.cpp
     src/connection_group.cpp

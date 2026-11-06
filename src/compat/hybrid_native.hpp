@@ -23,6 +23,7 @@ inline constexpr std::size_t maximum_native_control_size =
     PacketTimestamp, std::uint32_t destination, std::span<std::byte>) noexcept;
 
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+class CoordinatorBridge;
 struct NativeOptions {
     Capability policy;
     CredentialId credential_id {};
@@ -121,6 +122,10 @@ public:
     [[nodiscard]] static std::uint64_t monotonic_now() noexcept;
 
 private:
+    friend class CoordinatorBridge;
+    [[nodiscard]] bool bridge_work(CoordinatorBridge&) noexcept;
+    [[nodiscard]] Admission send_impl(const Message&, std::uint64_t,
+        std::optional<std::uint64_t>, bool bridge) noexcept;
     struct Work {
         std::weak_ptr<NativeService> owner;
     };
@@ -161,6 +166,7 @@ private:
     std::atomic_bool cancelled_ = false;
     std::atomic<std::uint64_t> expires_at_ = UINT64_MAX;
     bool activated_ = false, started_ = false, manual_ = false;
+    bool bridged_ = false, application_used_ = false;
     std::uint64_t setup_deadline_ = 0;
     std::array<std::uint64_t, 3> last_report_ {};
 };

@@ -17,6 +17,9 @@
 #include <vector>
 
 namespace robotweax::srt::compat {
+namespace hybrid {
+class CoordinatorBridge;
+}
 
 class DatagramChannel;
 class DispatchTransmitState;
@@ -263,6 +266,7 @@ private:
     void fail_locked(
         Failure, int, RetiredOwners&, std::size_t&, TimePoint) noexcept;
 
+    friend class hybrid::CoordinatorBridge;
     mutable std::mutex mutex_;
     Configuration configuration_;
     std::vector<Entry> entries_;

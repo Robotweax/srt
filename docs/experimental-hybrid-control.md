@@ -9,8 +9,9 @@ frozen conclusion transcripts and final local authorization checks.
 The exchange drives bilateral selection and proofs with bounded retries
 and an explicit credential-provider contract. An explicitly attached internal
 native service now owns that exchange, authenticated UDP controls and expiry.
-These components change no delivery policy, allocate no public C
-option, and do not activate automatic recovery on live sockets. Native handshakes still
+An explicitly attached sender-side coordinator bridge can now grant bounded
+unicast fallback commands. These components allocate no public C
+option and do not activate automatic recovery on live sockets. Native handshakes still
 reject authentication version 7. No new capability handshake extension ID is
 allocated. Existing strict multicast announcements and existing authentication
 versions retain their formats.
@@ -24,6 +25,7 @@ cmake --build build-hybrid-control --parallel
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_admission
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_exchange
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_native
+./build-hybrid-control/robotweax_srt_tests --include hybrid_bridge
 ./tools/python tests/hybrid_control_vectors.py
 ```
 
@@ -194,8 +196,9 @@ after user callbacks and before binding publication. A nonzero generation is
 only a token here: this component has no policy store and cannot discover
 revocation or prove that a callback actually ran. The internal native service
 below invokes this owner through Exchange and owns credential callbacks and
-expiry. Public provisioning, carrier registry review and the final coordinator
-enrollment transaction remain prerequisites for enabling runtime switching.
+expiry. The explicit bridge below adds a local authorization lease and final
+coordinator transaction. Public provisioning, carrier registry review, detection
+and policy reconciliation remain prerequisites for automatic switching.
 Existing ACP1 security-review
 limits and the shared-credential impersonation boundary remain unchanged.
 
@@ -248,8 +251,8 @@ feed them directly into the staged exchange with explicit synthetic credentials.
 They cover plaintext/CTR/GCM, blocking/asynchronous Callers, ordinary session
 authentication's final AGREEMENT and existing join/departure/key lifecycles.
 Those capture tests exercise an in-memory exchange. Separate native-service
-tests below exercise the UDP carrier and credential/expiry ownership. Atomic
-coordinator enrollment remains an integration gate.
+tests below exercise the UDP carrier and credential/expiry ownership. The
+explicit bridge below adds atomic coordinator enrollment for its bounded scope.
 
 ## Bounded exchange and credential provider
 
@@ -361,11 +364,10 @@ multicast failure or authorize switching. Lost final receipts may leave only
 one endpoint locally active; bounded setup failure and subsequent connection
 lifecycle handling must not be interpreted as delivery permission.
 
-The remaining integration must review the provisional wire assignment and
-atomically recheck grant, binding, source, sequence and policy generations at
-coordinator enrollment. A revision/history/budget/deadline-fenced coordinator
-bridge and bounded policy reconciliation remain prerequisites for automatic
-switching.
+The bridge below rechecks local authorization, binding, source, sequence and
+policy generations at coordinator enrollment/commit. Review of the provisional
+wire assignment, public provisioning, detection and bounded policy reconciliation
+remain prerequisites for automatic switching.
 
 ## Internal native carrier and connection owner
 
@@ -406,11 +408,11 @@ After local proof readiness, the `enroll` callback receives the selected context
 grant and local connection generation once. Approval is followed by another
 grant check and a current runtime/conclusion binding check before the service
 publishes its authenticated Session. This hook approves local control
-activation; it does **not** implement an atomic group-coordinator enrollment or
+activation; it does **not** itself implement an atomic group-coordinator enrollment or
 change original/repair delivery policy. Received events are authenticated input,
-not permission to commit a delivery transition. A future coordinator bridge must
-recheck its current member/source/policy generations, sequence/history, budgets
-and deadlines at its own commit boundary, including after callbacks.
+not permission to commit a delivery transition. The optional bridge below adds
+the current member/source/policy, sequence/history, budget and deadline checks
+at its own commit boundary, after callbacks.
 
 Each service reserves one slot on the existing bounded RuntimeScheduler. Slot
 exhaustion explicitly refuses attachment; no worker or scheduler limit is added.
@@ -461,6 +463,105 @@ provenance rejection. They verify that fallback requests leave multicast policy
 unchanged. These tests establish neither automatic recovery nor hostile-network,
 WAN, scale or other-platform support. Existing ACP1 security-review,
 shared-credential impersonation and no-forward-secrecy limitations still apply.
+
+## Explicit sender coordinator bridge
+
+`CoordinatorBridge` is an internal, default-OFF sender-side adapter for one
+coordinated member. Building hybrid control or attaching NativeService alone
+does not install it. The host uses `CoordinatorBridge::identity(actor, runtime)`
+to obtain the actual source incarnation, member ID and original join position
+for the Listener's selection. Enrollment checks that selection against the
+current actor, original dispatch sequence, multicast destination, actual bound
+source endpoint, established runtime, published conclusions and active native
+owner. Only a healthy multicast source and an initially unchanged multicast
+member policy can enroll. Ordinary handshake ISNs remain independent of the
+dispatch DATA origin. Other profiles and source-error recovery do not enroll.
+
+A nonblocking credential callback's returned generation alone cannot serialize
+a later policy-store revocation against an actor commit. The host must supply a
+shared `AuthorizationLease` containing exactly the resolved local grant. This
+lease is single use; its mutex serializes revocation with enrollment and policy
+commit. The host **must revoke this lease before changing or removing the
+corresponding provider authorization**. Revocation cancels the native service
+after releasing the lease mutex. It prevents subsequent bridge commits and
+clears pending native replies; it does not undo already committed DATA work or
+delivery policy. A host that also revokes DATA delivery must remove/close that
+member through the existing ownership path. Opaque provider state changed
+without following this lease contract cannot be atomically protected by the
+bridge. Provider revalidation still runs before bridge work and native sends.
+
+The bridge consumes authenticated events directly from NativeService. It does
+not accept caller-constructed Event objects as authorization. Successful
+enrollment exclusively claims the native application queue and outbound control
+serials; public `send`/`pop` cannot bypass it afterwards. A service whose
+application events or sends were already consumed cannot be handed over.
+Attachment failure before enrollment leaves those application facilities
+available; an enrolled bridge cannot be replaced on the same native attempt.
+
+Native protocol ownership serializes credential callbacks before bridge work.
+Each actor transaction holds the authorization and native-close fences, then
+try-locks actor publication, multicast emission, the member runtime and the
+aggregate wire budget in that order. Busy acquisition returns without mutation.
+All registry/group metadata locks must already be released by the host. There
+are no user credential/activation callbacks, socket sends or new allocations
+inside this transaction. The emitter barrier prevents a concurrently observed
+terminal source failure from authorizing a new transition. Runtime binding and
+native owner identity are rechecked under the retained runtime lock. Clock,
+exclusive command/grant deadlines and history TTL are checked at commit. Work
+notifications and readiness updates occur after releasing these fences.
+
+For FALLBACK_REQUEST the sender checks the exact expected policy revision and
+absolute receiver position against current retained history and the source
+cursor. The existing runtime guard validates the whole contiguous prefix and
+key horizon. The complete prefix, including previously submitted repairs, must
+fit the negotiated prefix limit; a request cannot authorize a partial replay.
+The existing full-stream recipient quota and aggregate wire budget must admit
+the member. A successful transaction schedules that immutable prefix, reserves
+the member's unicast budget lease and changes future originals to unicast with
+a new revision and current sequence/position boundary. Existing queued native
+copies remain valid. Reconfirming an already granted unicast mode keeps its
+policy revision. Denials return DELIVERY_STATUS with stale, history unavailable,
+budget or unsupported outcomes, without changing policy or replaying a prefix.
+Denial retention fields conservatively advertise no earlier recovery than the
+current cursor. MULTICAST_READY is explicitly unsupported by this adapter;
+reports are consumed without inferring a failure or authorizing multicast return.
+
+The host must call `pump` outside group/runtime locks; no worker, timer or
+automatic attachment is added. Each turn consumes at most eight native events,
+examines at most eight pending commands and queues at most eight replies.
+The fixed 64-entry request/reply cache and bookkeeping keep the bridge below
+32 KiB. Duplicate serial/body requests reuse the immutable response and never
+repeat the actor transition. Revalidation of source, native binding and policy
+revision also precedes cached reply admission; an observed external policy
+change or source failure fences the bridge. Already admitted replies and network
+packets cannot be recalled, and observation between pumps can be delayed. New status
+responses describe the current cursor; cached commits retain their historical
+boundary and do not renew authorization or retention promises. A future receiver
+policy owner must enforce monotonic revisions and reconcile uncertainty.
+
+Command lifetime is measured from the native Session's original receive time,
+including time waiting in both queues, and is capped by the local grant expiry.
+Defaults are one second and eight attempts, bounded to five seconds and eight
+attempts. Deadlines never renew for duplicates. Runtime/actor contention consumes
+bounded command attempts; exhaustion or expiry can discard a request without a
+reply and without mutation. A fresh request serial can reconcile the current
+revision. Lost replies are recovered by duplicate requests; EAGAIN produces a
+bounded retry of the same response in a fresh crypto envelope. There is no
+periodic reconciliation or guaranteed response while the host is not pumping.
+Event/queue overflow retains NativeService's fail-closed behavior. Control-only
+failure does not roll back an already committed delivery policy.
+
+Tests exercise stale/future/retired positions, policy revisions, prefix limits,
+recipient quota, closed budgets, TTL, grant denial/revocation, malformed grants,
+runtime contention, close, source failure/departure and exclusive queue ownership.
+Native plaintext/CTR/GCM cases drop the first commit, retry the authenticated
+request and verify one transition, then suppress multicast DATA while delivering
+48 messages through canonical unicast originals, including CTR/GCM key rotation.
+No receiver detector, multicast return/hysteresis, periodic progress producer,
+bounded periodic reconciliation, public provisioning, automatic source recovery
+or startup-join fallback is connected. Loopback/synthetic-credential evidence
+does not qualify hostile networks, physical/WAN paths, overload, scale or other
+platforms; the existing security limits remain.
 
 ## Control body
 
@@ -523,8 +624,8 @@ a short output does not consume a send serial. Gate storage is bounded to 16 KiB
 allocation; the supplied cryptographic provider retains its own allocation behavior.
 
 An authenticated accepted event is **not permission to mutate policy**. This
-stage has no coordinator adapter, retry scheduler, failure detector or public
-socket option. The future owner must validate current policy revision, retained
-history, deadlines and budgets before invoking a coordinator transaction. Peer
+gate alone has no coordinator adapter, retry scheduler, failure detector or public
+socket option. The explicit sender bridge above validates policy revision,
+history, deadlines and budgets before its bounded coordinator transaction. Peer
 claims can still be false; authenticated traffic alone is not source DATA,
 source liveness or multicast-failure evidence.

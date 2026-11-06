@@ -213,6 +213,10 @@ std::optional<GroupSendCoordinator::Member> GroupSendCoordinator::add_member(
     available->state.effective_position = next_position_;
     available->runtime = runtime;
     available->binding = std::move(binding);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    available->join_position = next_position_;
+    available->join_sequence = state_.next_sequence;
+#endif
     ++state_.active_members;
     update_readiness();
     return available->state;

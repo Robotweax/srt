@@ -2,6 +2,8 @@
 #include "compat/group_send_coordinator.hpp"
 #include "compat/group_registry.hpp"
 #include "robotweax/srt/control.hpp"
+#include "compat/hybrid_bridge.hpp"
+#include "robotweax/srt/handshake_datagram.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -14,6 +16,26 @@ using namespace robotweax::srt::compat;
 using namespace std::chrono_literals;
 
 namespace robotweax::srt::compat {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+struct HybridBridgeTestAccess {
+    static void install(
+        ConnectionRuntime& r, const std::shared_ptr<hybrid::NativeService>& s)
+    {
+        std::lock_guard lock(r.mutex_);
+        r.hybrid_service_ = s;
+        r.hybrid_attempted_ = true;
+    }
+    static std::unique_lock<std::mutex> hold(ConnectionRuntime& r)
+    {
+        return std::unique_lock(r.mutex_);
+    }
+    static void stale_generation(ConnectionRuntime& r)
+    {
+        std::lock_guard lock(r.mutex_);
+        ++r.group_send_state_->generation;
+    }
+};
+#endif
 struct GroupSendCoordinatorTestAccess {
     static GroupPacketEncoder::Snapshot encoder(GroupSendCoordinator& actor)
     {
@@ -106,7 +128,8 @@ struct Fixture {
     Actor::Configuration config;
     std::shared_ptr<Actor> actor;
     explicit Fixture(CryptoMode mode = CryptoMode::automatic,
-        std::size_t capacity = 4, SequenceNumber start = initial)
+        std::size_t capacity = 4, SequenceNumber start = initial,
+        std::size_t unicast_members = 4)
     {
         channel->set_send_hook_for_testing(Output::send, &output);
         if (mode != CryptoMode::automatic) {
@@ -133,7 +156,8 @@ struct Fixture {
             .timestamp_origin = origin,
             .key_schedule = schedule,
             .member_capacity = 4,
-            .maximum_busy_attempts = 2};
+            .maximum_busy_attempts = 2,
+            .maximum_unicast_members = unicast_members};
         recreate();
     }
     void recreate()
@@ -2375,3 +2399,483 @@ TEST(
     REQUIRE_EQ(recovery.status, Transition::busy);
     REQUIRE_EQ(recover_source(f, {{a.id, 0}}).status, Transition::applied);
 }
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+namespace {
+namespace hb = robotweax::srt::compat::hybrid;
+struct BridgePeer {
+    hb::Authorization grant;
+    std::uint64_t now = 100;
+    bool alive = true;
+    unsigned would_block = 0;
+    std::weak_ptr<hb::NativeService> service;
+    std::vector<std::vector<std::byte>> output;
+    static bool resolve(void* p, const hb::CredentialRequest& r,
+        hb::Authorization& g, std::span<std::byte, 32> secret) noexcept
+    {
+        auto& self = *static_cast<BridgePeer*>(p);
+        g = {.credential_id = r.credential_id,
+            .caller_group = r.caller_group,
+            .listener_group = r.listener_group,
+            .stream_id = r.stream_id,
+            .generation = 7,
+            .expires_at_us = 10000};
+        self.grant = g;
+        std::fill(secret.begin(), secret.end(), std::byte {0x22});
+        return true;
+    }
+    static bool check(void* p, const hb::CredentialRequest&,
+        const hb::Authorization&, hb::Authorization& g) noexcept
+    {
+        auto& self = *static_cast<BridgePeer*>(p);
+        g = self.grant;
+        return self.alive;
+    }
+    static bool enroll(void*, const hb::Context&, const hb::Authorization&,
+        std::uint64_t) noexcept
+    {
+        return true;
+    }
+    static bool bound(void* p, const hb::NativeService*) noexcept
+    {
+        return static_cast<BridgePeer*>(p)->alive;
+    }
+    static std::uint64_t clock(void* p) noexcept
+    {
+        return static_cast<BridgePeer*>(p)->now;
+    }
+    static UdpIoResult send(void* p, const hb::NativeService*,
+        std::span<const std::byte> bytes, std::uint64_t) noexcept
+    {
+        auto& self = *static_cast<BridgePeer*>(p);
+        if (self.would_block) {
+            --self.would_block;
+            return {.error = Error::would_block};
+        }
+        self.output.emplace_back(bytes.begin(), bytes.end());
+        return {.bytes_transferred = bytes.size()};
+    }
+};
+struct BridgeFixture {
+    Fixture f;
+    Receiver receiver;
+    std::shared_ptr<BridgePeer> cp = std::make_shared<BridgePeer>(),
+                                lp = std::make_shared<BridgePeer>();
+    std::shared_ptr<hb::NativeService> caller, listener;
+    std::shared_ptr<hb::AuthorizationLease> lease;
+    std::shared_ptr<hb::CoordinatorBridge> bridge;
+    std::shared_ptr<const hb::Conclusions> origin;
+    explicit BridgeFixture(std::uint32_t limit = 256, bool attach = true,
+        std::size_t recipients = 4)
+        : f(CryptoMode::automatic, 4, initial, recipients)
+        , receiver(f, 8)
+    {
+        REQUIRE_EQ(
+            f.channel->socket.bind(IpEndpoint::loopback(0)), Error::none);
+        const auto endpoint = f.channel->socket.local_endpoint();
+        REQUIRE(endpoint);
+        hb::ConclusionCapture capture;
+        for (bool c : {true, false}) {
+            HandshakeAction a;
+            a.kind = HandshakeActionKind::send;
+            a.packet.request = HandshakeRequest::conclusion;
+            a.packet.socket_id = c ? 108 : 107;
+            a.packet.initial_sequence = initial;
+            a.packet.extension_field = handshake_extension_flag_handshake
+                | handshake_extension_flag_config;
+            a.has_handshake_extension = true;
+            a.extension_type = c ? HandshakeExtensionType::handshake_request
+                                 : HandshakeExtensionType::handshake_response;
+            a.has_group_membership = true;
+            a.group_membership = {
+                .group_id = c ? (group_handle_mask | 2U) : group_id,
+                .type = GroupType::multicast};
+            a.has_multicast_source = true;
+            if (c)
+                a.multicast_source.kind = MulticastSourceKind::offer;
+            else {
+                a.has_multicast_dispatch = true;
+                a.multicast_dispatch = {.group_id = group_id,
+                    .multicast_group = f.config.source.destination,
+                    .initial_sequence = initial.value(),
+                    .time_to_live = 1};
+                a.multicast_source = {.kind = MulticastSourceKind::announcement,
+                    .group_id = group_id,
+                    .endpoint = endpoint.endpoint};
+            }
+            std::array<std::byte, 1500> bytes {};
+            const auto encoded =
+                encode_handshake_datagram(a, PacketTimestamp {}, 0, bytes);
+            REQUIRE(encoded);
+            REQUIRE(capture.observe(
+                std::span {bytes}.first(encoded.bytes_written)));
+        }
+        origin = capture.freeze(false, 107, 108);
+        REQUIRE(origin);
+        const auto identity =
+            hb::CoordinatorBridge::identity(f.actor, receiver.runtime);
+        REQUIRE(identity);
+        const auto config = [&](bool c) {
+            auto p = c ? cp : lp;
+            hb::NativeService::Configuration x;
+            x.caller = c;
+            x.local_socket = c ? 108 : 107;
+            x.peer_socket = c ? 107 : 108;
+            x.conclusions = origin;
+            x.exchange.dispatch = origin->dispatch();
+            x.exchange.source = origin->source();
+            x.exchange.connection_generation = c ? 1 : 2;
+            x.exchange.established_peer = IpEndpoint::loopback(c ? 8000 : 8001);
+            x.exchange.credential_id.fill(std::byte {0x11});
+            x.exchange.policy.supported = hb::known_features;
+            x.exchange.policy.prefix_limit = limit;
+            if (!c) {
+                x.exchange.stream = identity->stream;
+                x.exchange.member = identity->member;
+                x.exchange.initial_position = identity->initial_position;
+            }
+            x.callbacks.owner = p;
+            x.callbacks.resolve = BridgePeer::resolve;
+            x.callbacks.revalidate = BridgePeer::check;
+            x.callbacks.enroll = BridgePeer::enroll;
+            x.transport_owner = p;
+            x.bound = BridgePeer::bound;
+            x.transmit = BridgePeer::send;
+            x.clock = BridgePeer::clock;
+            x.clock_context = p.get();
+            return x;
+        };
+        caller = hb::NativeService::create_for_testing(config(true));
+        listener = hb::NativeService::create_for_testing(config(false));
+        REQUIRE(caller);
+        REQUIRE(listener);
+        REQUIRE(receiver.runtime->publish_hybrid_conclusions(origin, false));
+        HybridBridgeTestAccess::install(*receiver.runtime, listener);
+        cp->service = caller;
+        lp->service = listener;
+        REQUIRE(listener->activate());
+        REQUIRE(caller->activate());
+        for (unsigned i = 0; i < 6; ++i)
+            round();
+        REQUIRE(caller->snapshot().active);
+        REQUIRE(listener->snapshot().active);
+        lease = std::make_shared<hb::AuthorizationLease>(lp->grant);
+        if (attach) {
+            bridge = hb::CoordinatorBridge::create(
+                f.actor, listener, lease, {.command_timeout_us = 1000});
+            REQUIRE(bridge);
+        }
+    }
+    void deliver(const std::shared_ptr<BridgePeer>& p,
+        const std::shared_ptr<hb::NativeService>& target)
+    {
+        auto packets = std::move(p->output);
+        p->output = {};
+        for (const auto& bytes : packets) {
+            const auto packet = decode_packet(bytes);
+            REQUIRE(packet);
+            REQUIRE(target->enqueue(packet.packet, p->now));
+        }
+    }
+    void round()
+    {
+        caller->pump_for_testing();
+        deliver(cp, listener);
+        listener->pump_for_testing();
+        deliver(lp, caller);
+    }
+    hb::Message request(std::uint64_t serial = 1, std::uint64_t revision = 0,
+        std::uint64_t position = 0)
+    {
+        return {.kind = hb::Kind::fallback_request,
+            .stream = generation,
+            .member = receiver.id,
+            .serial = serial,
+            .revision = revision,
+            .next_position = position,
+            .next_sequence =
+                initial.advanced(static_cast<std::uint32_t>(position)).value(),
+            .mode = hb::Mode::unicast};
+    }
+    void submit(hb::Message message)
+    {
+        REQUIRE_EQ(caller->send(message, cp->now + 1000),
+            hb::NativeService::Admission::accepted);
+        round();
+    }
+    hb::Message reply()
+    {
+        for (unsigned i = 0; i < 4; ++i) {
+            bridge->pump();
+            round();
+        }
+        hb::NativeService::Event e;
+        while (caller->pop(e))
+            if (e.kind == hb::NativeService::Event::Kind::received)
+                return e.message;
+        const auto bs = bridge->snapshot();
+        const auto ns = listener->snapshot();
+        throw std::runtime_error("missing bridge reply: closed="
+            + std::to_string(bs.closed) + " denied=" + std::to_string(bs.denied)
+            + " replied=" + std::to_string(bs.replies)
+            + " native_closed=" + std::to_string(ns.closed)
+            + " native_rejected=" + std::to_string(ns.rejected));
+    }
+    Actor::Member member()
+    {
+        std::array<Actor::Member, 4> m;
+        const auto count = f.actor->members(m);
+        for (std::size_t i = 0; i < count; ++i)
+            if (m[i].id == receiver.id)
+                return m[i];
+        throw std::runtime_error("missing member");
+    }
+};
+}
+TEST(hybrid_bridge_enrolls_exact_native_member_and_commits_bounded_prefix_once)
+{
+    BridgeFixture f;
+    REQUIRE(f.bridge->snapshot().enrolled);
+    REQUIRE_EQ(f.f.send(), Status::accepted);
+    f.f.pump();
+    f.submit(f.request());
+    const auto commit = f.reply();
+    REQUIRE_EQ(commit.kind, hb::Kind::delivery_commit);
+    REQUIRE_EQ(commit.revision, 1U);
+    REQUIRE_EQ(commit.next_position, 1U);
+    REQUIRE_EQ(f.member().delivery, GroupOriginalDelivery::unicast);
+    REQUIRE_EQ(f.f.actor->snapshot().unicast_reservations, 1U);
+    f.submit(f.request());
+    const auto retry = f.reply();
+    REQUIRE_EQ(retry, commit);
+    REQUIRE_EQ(f.bridge->snapshot().applied, 1U);
+    REQUIRE_EQ(f.bridge->snapshot().duplicates, 1U);
+    REQUIRE_EQ(f.member().revision, 1U);
+}
+TEST(
+    hybrid_bridge_rejects_stale_revision_and_future_or_retired_position_without_mutation)
+{
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        BridgeFixture f;
+        if (mode == 2) {
+            REQUIRE_EQ(f.f.send(), Status::accepted);
+            f.f.pump();
+            f.receiver.ack(initial.next());
+        }
+        auto m = f.request();
+        if (mode == 0)
+            m.revision = 1;
+        if (mode == 1) {
+            m.next_position = 1;
+            m.next_sequence = initial.next().value();
+        }
+        f.submit(m);
+        const auto r = f.reply();
+        REQUIRE_EQ(r.kind, hb::Kind::delivery_status);
+        REQUIRE_EQ(r.outcome,
+            mode == 0 ? hb::Outcome::stale : hb::Outcome::history_unavailable);
+        REQUIRE_EQ(f.member().revision, 0U);
+        REQUIRE_EQ(f.member().delivery, GroupOriginalDelivery::multicast);
+    }
+}
+TEST(hybrid_bridge_budget_and_negotiated_prefix_limit_refuse_atomically)
+{
+    for (bool prefix : {false, true}) {
+        BridgeFixture f(prefix ? 1 : 256, true, prefix ? 4 : 0);
+        if (prefix) {
+            REQUIRE_EQ(f.f.send(), Status::accepted);
+            f.f.pump();
+            f.f.now += 1ms;
+            f.receiver.now += 1000;
+            REQUIRE_EQ(f.f.send(), Status::accepted);
+            f.f.pump();
+        }
+        f.submit(f.request());
+        const auto r = f.reply();
+        REQUIRE_EQ(r.outcome,
+            prefix ? hb::Outcome::history_unavailable : hb::Outcome::budget);
+        REQUIRE_EQ(f.member().revision, 0U);
+        REQUIRE_EQ(f.f.actor->snapshot().unicast_reservations, 0U);
+    }
+}
+TEST(hybrid_bridge_revocation_and_native_close_clear_commands_before_commit)
+{
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        BridgeFixture f;
+        f.submit(f.request());
+        if (mode == 0)
+            f.lease->revoke();
+        else if (mode == 1)
+            close_connection_runtime(f.receiver.runtime);
+        else
+            ++f.lp->grant.generation;
+        f.bridge->pump();
+        REQUIRE(f.bridge->snapshot().closed);
+        REQUIRE_EQ(f.member().revision, 0U);
+    }
+}
+TEST(
+    hybrid_bridge_external_policy_change_source_error_and_departure_fence_cached_work)
+{
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        BridgeFixture f;
+        f.submit(f.request());
+        if (mode == 0)
+            REQUIRE_EQ(f.f.actor
+                           ->set_delivery(
+                               f.receiver.id, 0, GroupOriginalDelivery::overlap)
+                           .status,
+                Actor::TransitionStatus::applied);
+        else if (mode == 1) {
+            REQUIRE_EQ(f.f.send(), Status::accepted);
+            f.f.output.error = Error::io_error;
+            f.f.pump();
+        } else
+            f.f.actor->remove_member(f.receiver.id);
+        f.bridge->pump();
+        REQUIRE(f.bridge->snapshot().closed);
+        REQUIRE_EQ(f.bridge->snapshot().applied, 0U);
+    }
+}
+TEST(hybrid_bridge_queued_expiry_and_history_ttl_do_not_advance_policy)
+{
+    for (bool ttl : {false, true}) {
+        BridgeFixture f;
+        if (ttl) {
+            REQUIRE_EQ(f.f.send(f.f.origin + 6ms), Status::accepted);
+            f.f.pump();
+            f.receiver.now = 7000;
+        }
+        f.submit(f.request());
+        if (!ttl)
+            f.cp->now = f.lp->now = 1100;
+        f.bridge->pump();
+        REQUIRE_EQ(f.member().revision, 0U);
+        if (ttl)
+            REQUIRE_EQ(f.reply().outcome, hb::Outcome::history_unavailable);
+    }
+}
+TEST(
+    hybrid_bridge_exclusive_queue_claim_and_current_runtime_binding_are_required)
+{
+    BridgeFixture f(256, false);
+    hb::NativeService::Event
+        e; // Consuming an authenticated input before attachment forbids handoff.
+    f.submit(f.request());
+    REQUIRE(f.listener->pop(e));
+    REQUIRE(!hb::CoordinatorBridge::create(f.f.actor, f.listener, f.lease, {}));
+    BridgeFixture clean;
+    REQUIRE(!hb::CoordinatorBridge::create(
+        clean.f.actor, clean.listener, clean.lease, {}));
+    REQUIRE_EQ(
+        clean.listener->send({}, 1000), hb::NativeService::Admission::invalid);
+    REQUIRE(!clean.listener->pop(e));
+}
+TEST(hybrid_bridge_malformed_or_changed_authorization_cannot_enroll)
+{
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        BridgeFixture f(256, false);
+        auto grant = f.lp->grant;
+        if (mode == 0)
+            ++grant.generation;
+        else if (mode == 1)
+            grant.stream_id.size = grant.stream_id.bytes.size() + 1;
+        auto lease = std::make_shared<hb::AuthorizationLease>(grant);
+        if (mode == 2)
+            lease->revoke();
+        REQUIRE(
+            !hb::CoordinatorBridge::create(f.f.actor, f.listener, lease, {}));
+        REQUIRE(!f.listener->closed());
+        auto valid =
+            hb::CoordinatorBridge::create(f.f.actor, f.listener, f.lease, {});
+        REQUIRE(valid);
+    }
+}
+TEST(hybrid_bridge_runtime_contention_defers_without_mutation_and_resumes)
+{
+    for (bool exhaust : {false, true}) {
+        BridgeFixture f;
+        f.submit(f.request());
+        std::promise<void> held, release;
+        auto released = release.get_future();
+        auto blocker = std::async(std::launch::async, [&] {
+            auto guard = HybridBridgeTestAccess::hold(*f.receiver.runtime);
+            held.set_value();
+            released.wait();
+        });
+        held.get_future().wait();
+        for (unsigned i = 0; i < (exhaust ? 8U : 1U); ++i)
+            f.bridge->pump();
+        const auto state = f.bridge->snapshot();
+        release.set_value();
+        blocker.get();
+        REQUIRE_EQ(state.applied, 0U);
+        if (exhaust) {
+            REQUIRE_EQ(state.expired, 1U);
+            f.submit(f.request(2));
+        }
+        REQUIRE_EQ(f.reply().kind, hb::Kind::delivery_commit);
+        REQUIRE_EQ(f.member().revision, 1U);
+    }
+}
+TEST(hybrid_bridge_cached_commit_is_withheld_after_an_external_policy_revision)
+{
+    for (bool generation : {false, true}) {
+        BridgeFixture f;
+        f.submit(f.request());
+        REQUIRE_EQ(f.reply().revision, 1U);
+        if (generation)
+            HybridBridgeTestAccess::stale_generation(*f.receiver.runtime);
+        else
+            REQUIRE_EQ(f.f.actor
+                           ->set_delivery(f.receiver.id, 1,
+                               GroupOriginalDelivery::multicast)
+                           .status,
+                Actor::TransitionStatus::applied);
+        f.submit(f.request());
+        f.bridge->pump();
+        REQUIRE(f.bridge->snapshot().closed);
+        REQUIRE_EQ(f.member().revision, generation ? 1U : 2U);
+        REQUIRE_EQ(f.member().delivery,
+            generation ? GroupOriginalDelivery::unicast
+                       : GroupOriginalDelivery::multicast);
+    }
+}
+TEST(
+    hybrid_bridge_ready_is_explicitly_unsupported_and_closed_budget_cannot_switch)
+{
+    for (bool budget : {false, true}) {
+        BridgeFixture f;
+        auto m = f.request();
+        if (budget)
+            GroupSendCoordinatorTestAccess::budget(*f.f.actor)->close();
+        else {
+            m.kind = hb::Kind::multicast_ready;
+            m.mode = hb::Mode::multicast;
+            m.interval_us = 100;
+        }
+        if (budget)
+            f.submit(m);
+        else {
+            REQUIRE_EQ(f.caller->send(m, 1100, 100),
+                hb::NativeService::Admission::accepted);
+            f.round();
+        }
+        const auto reply = f.reply();
+        REQUIRE_EQ(reply.outcome,
+            budget ? hb::Outcome::budget : hb::Outcome::unsupported);
+        REQUIRE_EQ(f.member().revision, 0U);
+    }
+}
+TEST(hybrid_bridge_command_backpressure_retries_cached_reply_without_reapplying)
+{
+    BridgeFixture f;
+    f.submit(f.request());
+    f.lp->would_block = 1;
+    const auto r = f.reply();
+    REQUIRE_EQ(r.kind, hb::Kind::delivery_commit);
+    REQUIRE_EQ(f.bridge->snapshot().applied, 1U);
+    REQUIRE_EQ(f.bridge->snapshot().replies, 2U);
+    REQUIRE_EQ(f.member().revision, 1U);
+}
+#endif
