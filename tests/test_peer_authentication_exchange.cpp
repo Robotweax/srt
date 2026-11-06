@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <atomic>
 #include <vector>
+#include <future>
+#include <thread>
 
 using namespace robotweax::srt;
 namespace pa = robotweax::srt::peer_authentication;
@@ -1079,7 +1081,7 @@ TEST(peer_auth_configuration_dependency_order_and_missing_credentials)
     REQUIRE(!copied.encryption_enabled());
 }
 
-TEST(peer_auth_socket_options_listener_enabled_caller_still_fails_closed)
+TEST(peer_auth_socket_options_and_close_erase_credentials)
 {
     const auto pin = public_key(2);
     REQUIRE_EQ(srt_startup(), 0);
@@ -1154,11 +1156,6 @@ TEST(peer_auth_socket_options_listener_enabled_caller_still_fails_closed)
                    sizeof(address)),
         0);
 
-    address.sin_port = htons(9);
-    REQUIRE_EQ(srt_connect(socket, reinterpret_cast<const sockaddr*>(&address),
-                   sizeof(address)),
-        SRT_ERROR);
-    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESECFAIL);
     REQUIRE_EQ(srt_listen(socket, 8), 0);
     REQUIRE_EQ(srt_close(socket), 0);
     REQUIRE(!retained->native_options.peer_authentication_required());
@@ -2311,5 +2308,499 @@ TEST(peer_auth_public_listener_rejects_wrong_password_and_untrusted_identity)
         REQUIRE_EQ(srt_accept(listener, nullptr, nullptr), SRT_INVALID_SOCK);
         REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
         REQUIRE(!caller.release_crypto(std::chrono::steady_clock::now()));
+    }
+}
+
+namespace {
+struct PublicPeerSockets {
+    SRTSOCKET listener = SRT_INVALID_SOCK, caller = SRT_INVALID_SOCK,
+              child = SRT_INVALID_SOCK;
+    sockaddr_in address {};
+    PublicPeerSockets()
+    {
+        (void)public_key(
+            1); // Skip before owning sockets on providers without P-256.
+        REQUIRE_EQ(srt_startup(), 0);
+        listener = srt_create_socket();
+        caller = srt_create_socket();
+        REQUIRE(listener != SRT_INVALID_SOCK && caller != SRT_INVALID_SOCK);
+        configure(listener, false);
+        configure(caller, true);
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    }
+    ~PublicPeerSockets()
+    {
+        if (child != SRT_INVALID_SOCK)
+            (void)srt_close(child);
+        (void)srt_close(caller);
+        (void)srt_close(listener);
+        (void)srt_cleanup();
+    }
+    static void configure(SRTSOCKET socket, bool calling)
+    {
+        const int enabled = 1, gcm = 2, timeout = 1500;
+        constexpr std::string_view password =
+            "public peer socket test passphrase";
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_PASSPHRASE, password.data(),
+                       password.size()),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(socket, SRTO_CRYPTOMODE, &gcm, sizeof(gcm)), 0);
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_SESSIONAUTH, &enabled,
+                       sizeof(enabled)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_PEERAUTH_KEY,
+                       scalar(calling ? 1 : 2).data(), 32),
+            0);
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_PEERAUTH_TRUSTED,
+                       public_key(calling ? 2 : 1).data(), 64),
+            0);
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_ROBOTWEAX_PEERAUTH_POLICY,
+                       &enabled, sizeof(enabled)),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(socket, SRTO_RCVTIMEO, &timeout, sizeof(timeout)),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(socket, SRTO_SNDTIMEO, &timeout, sizeof(timeout)),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(socket, SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+            0);
+    }
+    void listen()
+    {
+        REQUIRE_EQ(
+            srt_bind(listener, reinterpret_cast<const sockaddr*>(&address),
+                sizeof(address)),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 8), 0);
+        int size = sizeof(address);
+        REQUIRE_EQ(srt_getsockname(
+                       listener, reinterpret_cast<sockaddr*>(&address), &size),
+            0);
+    }
+    int connect()
+    {
+        return srt_connect(caller, reinterpret_cast<const sockaddr*>(&address),
+            sizeof(address));
+    }
+};
+struct PublicPeerCallback {
+    struct Result {
+        int error;
+        bool authenticated;
+    };
+    std::promise<Result> promise;
+    static void observe(
+        void* opaque, SRTSOCKET socket, int error, const sockaddr*, int)
+    {
+        std::array<std::byte, 64> key {};
+        int size = key.size();
+        const bool authenticated = srt_getsockstate(socket) == SRTS_CONNECTED
+            && srt_getsockflag(
+                   socket, SRTO_ROBOTWEAX_PEERAUTH_PEER, key.data(), &size)
+                == 0
+            && key == public_key(2);
+        static_cast<PublicPeerCallback*>(opaque)->promise.set_value(
+            {error, authenticated});
+    }
+};
+}
+
+TEST(peer_auth_public_sockets_blocking_and_async_bidirectional_data)
+{
+    for (const bool asynchronous : {false, true}) {
+        PublicPeerCallback callback;
+        PublicPeerSockets sockets;
+        auto future = callback.promise.get_future();
+        REQUIRE_EQ(srt_connect_callback(
+                       sockets.caller, PublicPeerCallback::observe, &callback),
+            0);
+        const bool synchronous = !asynchronous;
+        REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_RCVSYN, &synchronous,
+                       sizeof(synchronous)),
+            0);
+        sockets.listen();
+        REQUIRE_EQ(sockets.connect(), 0);
+        REQUIRE(future.wait_for(std::chrono::seconds {3})
+            == std::future_status::ready);
+        const auto result = future.get();
+        REQUIRE_EQ(result.error, SRT_SUCCESS);
+        REQUIRE(result.authenticated);
+        const bool blocking_receive = true;
+        REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_RCVSYN,
+                       &blocking_receive, sizeof(blocking_receive)),
+            0);
+        sockets.child = srt_accept(sockets.listener, nullptr, nullptr);
+        REQUIRE(sockets.child != SRT_INVALID_SOCK);
+        for (const auto socket : {sockets.caller, sockets.child}) {
+            std::array<std::byte, 64> key {};
+            int size = key.size();
+            REQUIRE_EQ(srt_getsockflag(socket, SRTO_ROBOTWEAX_PEERAUTH_PEER,
+                           key.data(), &size),
+                0);
+            REQUIRE_EQ(key, public_key(socket == sockets.caller ? 2 : 1));
+        }
+        for (const bool from_caller : {true, false}) {
+            const auto sender = from_caller ? sockets.caller : sockets.child;
+            const auto receiver = from_caller ? sockets.child : sockets.caller;
+            REQUIRE_EQ(
+                srt_sendmsg(sender, "authenticated data", 18, -1, 0), 18);
+            std::array<char, 1500> received {};
+            REQUIRE_EQ(
+                srt_recvmsg(receiver, received.data(), received.size()), 18);
+            REQUIRE_EQ(std::string_view(received.data(), 18),
+                std::string_view("authenticated data"));
+        }
+    }
+}
+
+TEST(peer_auth_public_caller_rejection_never_publishes_authenticated_peer)
+{
+    for (const bool nonblocking : {false, true})
+        for (const int scenario : {0, 1, 2, 3}) {
+            PublicPeerCallback callback;
+            PublicPeerSockets sockets;
+            auto future = callback.promise.get_future();
+            REQUIRE_EQ(srt_connect_callback(sockets.caller,
+                           PublicPeerCallback::observe, &callback),
+                0);
+            if (scenario == 0)
+                REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_PASSPHRASE,
+                               "wrong public passphrase", 23),
+                    0);
+            else if (scenario == 1)
+                REQUIRE_EQ(srt_setsockflag(sockets.caller,
+                               SRTO_ROBOTWEAX_PEERAUTH_TRUSTED,
+                               public_key(3).data(), 64),
+                    0);
+            else if (scenario == 2)
+                REQUIRE_EQ(srt_setsockflag(sockets.listener,
+                               SRTO_ROBOTWEAX_PEERAUTH_TRUSTED,
+                               public_key(3).data(), 64),
+                    0);
+            else {
+                const int off = 0;
+                REQUIRE_EQ(
+                    srt_setsockflag(sockets.listener,
+                        SRTO_ROBOTWEAX_PEERAUTH_POLICY, &off, sizeof(off)),
+                    0);
+            }
+            const bool asynchronous = false;
+            REQUIRE_EQ(srt_setsockflag(sockets.listener, SRTO_RCVSYN,
+                           &asynchronous, sizeof(asynchronous)),
+                0);
+            const bool synchronous = !nonblocking;
+            REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_RCVSYN,
+                           &synchronous, sizeof(synchronous)),
+                0);
+            sockets.listen();
+            REQUIRE_EQ(sockets.connect(), nonblocking ? 0 : SRT_ERROR);
+            if (!nonblocking)
+                REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESECFAIL);
+            REQUIRE(future.wait_for(std::chrono::seconds {3})
+                == std::future_status::ready);
+            const auto result = future.get();
+            REQUIRE_EQ(result.error, SRT_ESECFAIL);
+            REQUIRE(!result.authenticated);
+            REQUIRE_EQ(srt_accept(sockets.listener, nullptr, nullptr),
+                SRT_INVALID_SOCK);
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+            std::array<char, 64> key {};
+            int size = key.size();
+            REQUIRE_EQ(srt_getsockflag(sockets.caller,
+                           SRTO_ROBOTWEAX_PEERAUTH_PEER, key.data(), &size),
+                SRT_ERROR);
+            REQUIRE_EQ(
+                srt_sendmsg(sockets.caller, "blocked", 7, -1, 0), SRT_ERROR);
+        }
+}
+
+TEST(peer_auth_public_caller_timeout_and_close_cancel_pending_setup)
+{
+    for (const bool cancel : {false, true}) {
+        PublicPeerCallback callback;
+        PublicPeerSockets sockets;
+        auto future = callback.promise.get_future();
+        UdpSocket blackhole;
+        REQUIRE_EQ(blackhole.bind(IpEndpoint::loopback(0)), Error::none);
+        // Bind a destination owned by us without answering discovery.
+        const auto endpoint = blackhole.local_endpoint();
+        REQUIRE(endpoint);
+        sockets.address.sin_port = htons(endpoint.endpoint.port);
+        const bool synchronous = false;
+        const int timeout = 200;
+        REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_RCVSYN, &synchronous,
+                       sizeof(synchronous)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_CONNTIMEO, &timeout,
+                       sizeof(timeout)),
+            0);
+        REQUIRE_EQ(srt_connect_callback(
+                       sockets.caller, PublicPeerCallback::observe, &callback),
+            0);
+        REQUIRE_EQ(sockets.connect(), 0);
+        REQUIRE(blackhole.wait_readable(1000).ready);
+        if (cancel)
+            REQUIRE_EQ(srt_close(sockets.caller), 0);
+        REQUIRE(future.wait_for(std::chrono::seconds {3})
+            == std::future_status::ready);
+        const auto result = future.get();
+        REQUIRE_EQ(result.error, cancel ? SRT_ESCLOSED : SRT_ENOSERVER);
+        REQUIRE(!result.authenticated);
+    }
+}
+
+TEST(
+    peer_auth_public_sockets_recover_loss_duplicates_and_reordered_confirmation)
+{
+    PublicPeerSockets sockets;
+    const int timeout = 4000;
+    REQUIRE_EQ(srt_setsockflag(
+                   sockets.caller, SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(
+                   sockets.listener, SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+        0);
+    sockets.listen();
+    const auto listener = IpEndpoint::loopback(ntohs(sockets.address.sin_port));
+    UdpSocket relay;
+    REQUIRE_EQ(relay.bind(IpEndpoint::loopback(0)), Error::none);
+    const auto endpoint = relay.local_endpoint();
+    REQUIRE(endpoint);
+    sockets.address.sin_port = htons(endpoint.endpoint.port);
+    std::atomic<unsigned> faults {0};
+    std::atomic<bool> io_failed {false};
+    std::jthread forwarding([&](std::stop_token stop) {
+        IpEndpoint caller {};
+        bool have_caller = false, dropped_response = false, reordered = false;
+        bool dropped_ack[2] {};
+        std::vector<std::byte> held_confirmation;
+        std::array<std::byte, 1500> wire {};
+        while (!stop.stop_requested()) {
+            if (!relay.wait_readable(10).ready)
+                continue;
+            const auto received = relay.receive_from(wire);
+            if (!received) {
+                io_failed = true;
+                return;
+            }
+            const bool from_listener = received.peer == listener;
+            if (!from_listener) {
+                caller = received.peer;
+                have_caller = true;
+            }
+            if (!have_caller)
+                continue;
+            const auto destination = from_listener ? caller : listener;
+            const auto bytes =
+                std::span {wire}.first(received.bytes_transferred);
+            const auto packet = decode_packet(bytes);
+            if (!packet)
+                continue;
+            const auto handshake = decode_handshake_datagram(bytes);
+            if (from_listener && handshake
+                && handshake.message.has_peer_authentication
+                && !dropped_response) {
+                dropped_response = true;
+                ++faults;
+                continue;
+            }
+            if (!from_listener && handshake
+                && handshake.message.packet.request
+                    == HandshakeRequest::agreement
+                && !reordered) {
+                held_confirmation.assign(bytes.begin(), bytes.end());
+                continue;
+            }
+            const bool key_request = packet.packet.kind == PacketKind::control
+                && packet.packet.control.type == ControlType::user_defined
+                && packet.packet.control.subtype == 0x7f03;
+            const bool key_response = packet.packet.kind == PacketKind::control
+                && packet.packet.control.type == ControlType::user_defined
+                && packet.packet.control.subtype == 0x7f04;
+            if (key_response && !dropped_ack[from_listener]) {
+                dropped_ack[from_listener] = true;
+                ++faults;
+                continue;
+            }
+            if (!relay.send_to(bytes, destination)) {
+                io_failed = true;
+                return;
+            }
+            if (!from_listener && key_request && !held_confirmation.empty()) {
+                // Deliver the caller's KMREQ before M3, then duplicate M3.
+                if (!relay.send_to(held_confirmation, listener)
+                    || !relay.send_to(held_confirmation, listener)) {
+                    io_failed = true;
+                    return;
+                }
+                held_confirmation.clear();
+                reordered = true;
+                ++faults;
+            }
+        }
+    });
+    REQUIRE_EQ(sockets.connect(), 0);
+    // A caller may send before the listener receives its final KMRSP retry.
+    REQUIRE_EQ(srt_sendmsg(sockets.caller, "after retries", 13, -1, 0), 13);
+    sockets.child = srt_accept(sockets.listener, nullptr, nullptr);
+    REQUIRE(sockets.child != SRT_INVALID_SOCK);
+    std::array<char, 1500> received {};
+    REQUIRE_EQ(
+        srt_recvmsg(sockets.child, received.data(), received.size()), 13);
+    REQUIRE_EQ(std::string_view(received.data(), 13),
+        std::string_view("after retries"));
+    REQUIRE_EQ(srt_sendmsg(sockets.child, "reply", 5, -1, 0), 5);
+    REQUIRE_EQ(
+        srt_recvmsg(sockets.caller, received.data(), received.size()), 5);
+    REQUIRE_EQ(std::string_view(received.data(), 5), std::string_view("reply"));
+    REQUIRE_EQ(faults.load(), 4U);
+    REQUIRE(!io_failed.load());
+}
+
+TEST(
+    peer_auth_public_caller_gates_callback_data_and_identity_until_final_key_ack)
+{
+    for (const bool cancel : {false, true}) {
+        PublicPeerCallback callback;
+        PublicPeerSockets sockets;
+        auto future = callback.promise.get_future();
+        const bool asynchronous = false;
+        REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_RCVSYN, &asynchronous,
+                       sizeof(asynchronous)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_SNDSYN, &asynchronous,
+                       sizeof(asynchronous)),
+            0);
+        REQUIRE_EQ(srt_connect_callback(
+                       sockets.caller, PublicPeerCallback::observe, &callback),
+            0);
+        sockets.listen();
+        const auto listener =
+            IpEndpoint::loopback(ntohs(sockets.address.sin_port));
+        UdpSocket relay;
+        REQUIRE_EQ(relay.bind(IpEndpoint::loopback(0)), Error::none);
+        const auto endpoint = relay.local_endpoint();
+        REQUIRE(endpoint);
+        sockets.address.sin_port = htons(endpoint.endpoint.port);
+        std::promise<void> withheld, early_data;
+        auto withheld_future = withheld.get_future();
+        auto early_data_future = early_data.get_future();
+        std::atomic<bool> release {false};
+        std::atomic<bool> io_failed {false};
+        std::jthread forwarding([&](std::stop_token stop) {
+            IpEndpoint caller {};
+            bool have_caller = false, notified = false, data_notified = false;
+            std::vector<std::byte> held_ack;
+            std::array<std::byte, 1500> wire {};
+            while (!stop.stop_requested()) {
+                if (release && !held_ack.empty()) {
+                    if (!relay.send_to(held_ack, caller)) {
+                        io_failed = true;
+                        return;
+                    }
+                    held_ack.clear();
+                }
+                if (!relay.wait_readable(10).ready)
+                    continue;
+                const auto received = relay.receive_from(wire);
+                if (!received) {
+                    io_failed = true;
+                    return;
+                }
+                const bool from_listener = received.peer == listener;
+                if (!from_listener) {
+                    caller = received.peer;
+                    have_caller = true;
+                }
+                if (!have_caller)
+                    continue;
+                const auto bytes =
+                    std::span {wire}.first(received.bytes_transferred);
+                const auto packet = decode_packet(bytes);
+                if (from_listener && packet
+                    && packet.packet.kind == PacketKind::control
+                    && packet.packet.control.type == ControlType::user_defined
+                    && packet.packet.control.subtype == 0x7f04 && !release) {
+                    held_ack.assign(bytes.begin(), bytes.end());
+                    if (!notified) {
+                        notified = true;
+                        withheld.set_value();
+                    }
+                    continue;
+                }
+                if (!relay.send_to(bytes, from_listener ? caller : listener)) {
+                    io_failed = true;
+                    return;
+                }
+                if (from_listener && packet
+                    && packet.packet.kind == PacketKind::data
+                    && !data_notified) {
+                    data_notified = true;
+                    early_data.set_value();
+                }
+            }
+        });
+        REQUIRE_EQ(sockets.connect(), 0);
+        REQUIRE(withheld_future.wait_for(std::chrono::seconds {2})
+            == std::future_status::ready);
+        REQUIRE_EQ(srt_getsockstate(sockets.caller), SRTS_CONNECTING);
+        REQUIRE(future.wait_for(std::chrono::milliseconds {0})
+            == std::future_status::timeout);
+        std::array<std::byte, 64> identity {};
+        int size = identity.size();
+        REQUIRE_EQ(srt_getsockflag(sockets.caller, SRTO_ROBOTWEAX_PEERAUTH_PEER,
+                       identity.data(), &size),
+            SRT_ERROR);
+        REQUIRE_EQ(
+            srt_sendmsg(sockets.caller, "too soon", 8, -1, 0), SRT_ERROR);
+        const auto retained =
+            compat::SocketRegistry::instance().find(sockets.caller);
+        REQUIRE(retained != nullptr);
+        {
+            std::lock_guard lock(retained->mutex);
+            REQUIRE(retained->crypto == nullptr);
+            REQUIRE(retained->runtime == nullptr);
+        }
+        sockets.child = srt_accept(sockets.listener, nullptr, nullptr);
+        REQUIRE(sockets.child != SRT_INVALID_SOCK);
+        REQUIRE_EQ(srt_sendmsg(sockets.child, "early reply", 11, -1, 0), 11);
+        REQUIRE(early_data_future.wait_for(std::chrono::seconds {2})
+            == std::future_status::ready);
+        std::array<char, 1500> received {};
+        REQUIRE_EQ(
+            srt_recvmsg(sockets.caller, received.data(), received.size()),
+            SRT_ERROR);
+        if (cancel)
+            REQUIRE_EQ(srt_close(sockets.caller), 0);
+        else
+            release = true;
+        REQUIRE(future.wait_for(std::chrono::seconds {3})
+            == std::future_status::ready);
+        const auto result = future.get();
+        REQUIRE_EQ(result.error, cancel ? SRT_ESCLOSED : SRT_SUCCESS);
+        REQUIRE_EQ(result.authenticated, !cancel);
+        REQUIRE(!io_failed);
+        if (!cancel) {
+            const bool synchronous = true;
+            REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_RCVSYN,
+                           &synchronous, sizeof(synchronous)),
+                0);
+            REQUIRE_EQ(
+                srt_recvmsg(sockets.caller, received.data(), received.size()),
+                11);
+            REQUIRE_EQ(std::string_view(received.data(), 11),
+                std::string_view("early reply"));
+        }
+        if (cancel) {
+            std::lock_guard lock(retained->mutex);
+            REQUIRE(!retained->has_authenticated_peer);
+            REQUIRE(!retained->native_options.peer_authentication_required());
+            REQUIRE(
+                retained->native_options.peer_authentication_trusted().empty());
+        }
     }
 }

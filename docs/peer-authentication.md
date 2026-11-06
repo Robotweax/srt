@@ -1,6 +1,6 @@
 # Peer authentication (draft contract)
 
-**Status: draft implementation; authenticated socket establishment is incomplete.**
+**Status: experimental caller/listener implementation; cryptographic review pending.**
 Every identifier below is provisional and unregistered. **The cryptographic
 design is unreviewed.** Independent cryptographic review is required before
 any support or security claim. Development stays behind the default-off
@@ -61,14 +61,29 @@ and is unavailable outside that callback. PEER returns the authenticated public
 key only on a connected, nonterminal runtime; close clears it. REQUIRED listeners
 need complete credentials and cannot be downgraded by a callback.
 
-The production caller setup actor is not yet connected to the adapter.
-**Connect with REQUIRED still returns `SRT_ESECFAIL`**, even with complete
-credentials. There is no legacy fallback. Enabling the build option therefore
-supports the experimental listener path, but not an outgoing public socket
-connection. In particular, `Exchange::ready_for_key_exchange()` is not permission
-to publish a caller or release DATA: the caller still needs the listener's
-passphrase proof through an authenticated runtime key control. The contract
-below describes the intended complete feature, not current caller behavior.
+The production caller now uses the same bounded work executor for public-key
+and password work. Blocking and nonblocking connects share the authenticated
+admission path. CONNECTED, successful connect callbacks, PEER and application
+DATA remain unavailable until both runtime key directions are confirmed.
+The caller retains up to 64 early DATA datagrams and passes them to the runtime
+for authentication after handoff. Timeouts include time spent waiting for a
+worker; cancellation and failed setup erase the actor's credential and proof
+state. Missing credentials fail connect or listen with `SRT_ESECFAIL`; a
+failed peer proof cannot fall back to a legacy handshake.
+
+Public socket tests cover blocking/nonblocking setup, authenticated identity in
+success callbacks, encrypted traffic in both directions, wrong passwords,
+untrusted peers, an OFF listener, timeout, and close during discovery and key
+confirmation. A UDP relay drops a proof response and both initial key
+acknowledgements, duplicates M3, and delivers KMREQ before M3. Another relay
+withholds the listener's final key acknowledgement to verify that caller
+publication and application sends remain blocked.
+
+This is an implementation milestone, not a security qualification. Independent
+cryptographic review remains outstanding. The profile remains default-off,
+OpenSSL-only for P-256, and unsupported for groups/rendezvous; ordinary runtime
+controls are not authenticated by this profile. `Exchange::ready_for_key_exchange()`
+alone is never permission to publish a connection or release DATA.
 
 Build and exercise the private components with:
 

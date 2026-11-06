@@ -2067,6 +2067,12 @@ public:
         , setup_(std::move(setup))
         , rejection_completion_(connect_start)
     {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        peer_connect_start_ = connect_start;
+        peer_mode_ = setup_.options.peer_authentication_required();
+        if (peer_mode_)
+            peer_executor_ = acquire_runtime_work_executor();
+#endif
     }
 
     [[nodiscard]] CallerHandshakeDispatchStatus start() noexcept
@@ -2108,11 +2114,7 @@ public:
             callback_reserved_ = true;
         }
         const RuntimeScheduler::SubmitStatus submitted =
-            scheduler_->submit(setup_.configuration.local_socket_id,
-                {
-                    .function = run_task,
-                    .context = std::move(owner),
-                });
+            submit(std::move(owner));
         if (submitted == RuntimeScheduler::SubmitStatus::accepted) {
             return CallerHandshakeDispatchStatus::completed;
         }
@@ -2154,6 +2156,26 @@ public:
     }
 
 private:
+    RuntimeScheduler::SubmitStatus submit(
+        std::shared_ptr<AsyncCallerHandshakeActor> owner) noexcept
+    {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        if (peer_mode_) {
+            const auto status = peer_executor_
+                ? peer_executor_->submit(
+                      {.function = run_task, .context = std::move(owner)})
+                : RuntimeWorkExecutor::SubmitStatus::stopped;
+            if (status == RuntimeWorkExecutor::SubmitStatus::accepted)
+                return RuntimeScheduler::SubmitStatus::accepted;
+            return status == RuntimeWorkExecutor::SubmitStatus::full
+                ? RuntimeScheduler::SubmitStatus::full
+                : RuntimeScheduler::SubmitStatus::stopped;
+        }
+#endif
+        return scheduler_->submit(setup_.configuration.local_socket_id,
+            {.function = run_task, .context = std::move(owner)});
+    }
+
     static void run_task(void* context) noexcept
     {
         static_cast<AsyncCallerHandshakeActor*>(context)->run();
@@ -2201,11 +2223,7 @@ private:
             return;
         }
         const RuntimeScheduler::SubmitStatus submitted =
-            scheduler_->submit(setup_.configuration.local_socket_id,
-                {
-                    .function = run_task,
-                    .context = std::move(owner),
-                });
+            submit(std::move(owner));
         if (submitted != RuntimeScheduler::SubmitStatus::accepted) {
             handle_submission_failure(connect_submission_status(submitted));
         }
@@ -2292,13 +2310,30 @@ private:
         origin_ = socket_timestamp_origin(*socket_, connection_start);
         overall_deadline_ = connection_start
             + std::chrono::milliseconds {setup_.timeout_milliseconds};
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        if (peer_mode_)
+            overall_deadline_ = peer_connect_start_
+                + std::chrono::milliseconds {setup_.timeout_milliseconds};
+#endif
         send_context_ = {
             .channel = setup_.channel.get(),
             .peer = peer_,
             .origin = origin_,
         };
-        establishment_.emplace(*socket_, peer_, setup_, inbox_, origin_,
-            send_caller_handshake_action, &send_context_, true);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        if (peer_mode_) {
+            try {
+                peer_handshake_ = std::make_unique<PeerAuthenticationHandshake>(
+                    setup_.configuration, setup_.options);
+                peer_early_data_.reserve(64);
+            } catch (...) {
+                finish(fail_connect(*socket_, SRT_ENOBUF));
+                return;
+            }
+        } else
+#endif
+            establishment_.emplace(*socket_, peer_, setup_, inbox_, origin_,
+                send_caller_handshake_action, &send_context_, true);
         try {
             source_ = std::make_shared<CallerHandshakeEventSource>(
                 *scheduler_, setup_.configuration.local_socket_id, inbox_);
@@ -2318,6 +2353,16 @@ private:
             return;
         }
         initialized_ = true;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        if (peer_mode_) {
+            const auto result =
+                peer_handshake_->start(Clock::now(), overall_deadline_);
+            setup_.options.clear_peer_authentication();
+            (void)setup_.options.set_passphrase({});
+            (void)handle_peer_result(result);
+            return;
+        }
+#endif
 
         const CallerHandshakeEventResult result = dispatch({
             .kind = CallerHandshakeEventKind::start,
@@ -2347,6 +2392,28 @@ private:
     [[nodiscard]] bool process_event(
         const CallerHandshakeSourceEvent& event) noexcept
     {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        if (peer_mode_) {
+            switch (event.kind) {
+            case CallerHandshakeSourceEventKind::failure:
+                finish_dispatch_failure(event.failure);
+                return false;
+            case CallerHandshakeSourceEventKind::closed:
+                finish(fail_connect(*socket_, SRT_ESCLOSED));
+                return false;
+            case CallerHandshakeSourceEventKind::overall_timeout:
+                finish(fail_connect(*socket_, SRT_ENOSERVER));
+                return false;
+            case CallerHandshakeSourceEventKind::retry_timer:
+                return handle_peer_result(peer_handshake_->retry(Clock::now()));
+            case CallerHandshakeSourceEventKind::inbox_ready:
+                return process_inbox();
+            case CallerHandshakeSourceEventKind::completion_timer:
+                complete_peer_rejection();
+                return false;
+            }
+        }
+#endif
         switch (event.kind) {
         case CallerHandshakeSourceEventKind::failure:
             finish_dispatch_failure(event.failure);
@@ -2398,13 +2465,44 @@ private:
         }
         if (received == InboxPopStatus::closed) {
             source_->close();
-            (void)dispatch({.kind = CallerHandshakeEventKind::close});
+            if (establishment_)
+                (void)dispatch({.kind = CallerHandshakeEventKind::close});
             finish(fail_connect(*socket_, SRT_ESCLOSED, 0));
             return false;
         }
         if (!same_endpoint(envelope.peer, peer_)) {
             return true;
         }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        if (peer_mode_) {
+            const auto bytes = std::span {envelope.bytes}.first(envelope.size);
+            const auto packet = decode_packet(bytes);
+            if (packet && packet.packet.kind == PacketKind::data) {
+                if (packet.packet.data.destination_socket_id
+                        == setup_.configuration.local_socket_id
+                    && peer_early_data_.size() < 64)
+                    peer_early_data_.push_back(envelope);
+                return true;
+            }
+            const auto result = peer_handshake_->receive(bytes, Clock::now());
+            // Capture transport metadata only from the authenticated response
+            // that caused us to emit our confirmation.
+            if (result.size != 0) {
+                const auto sent =
+                    decode_handshake_datagram(result.outgoing[0].view());
+                if (sent
+                    && sent.message.packet.request
+                        == HandshakeRequest::agreement) {
+                    const auto response = decode_handshake_datagram(bytes);
+                    if (response) {
+                        peer_response_ = response.message;
+                        peer_timestamp_ = response.control.timestamp;
+                    }
+                }
+            }
+            return handle_peer_result(result);
+        }
+#endif
         const auto decoded = decode_handshake_datagram(
             std::span {envelope.bytes}.first(envelope.size));
         if (!decoded) {
@@ -2450,6 +2548,94 @@ private:
         }
         return true;
     }
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    bool handle_peer_result(
+        const PeerAuthenticationHandshake::Result& result) noexcept
+    {
+        if (result.failed) {
+            finish(Clock::now() >= overall_deadline_
+                    ? fail_connect(*socket_, SRT_ENOSERVER)
+                    : fail_connect(
+                          *socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE));
+            return false;
+        }
+        for (std::size_t i = 0; i < result.size; ++i) {
+            const auto sent =
+                setup_.channel->send_datagram(result.outgoing[i].view(), peer_);
+            if (!sent) {
+                finish(
+                    fail_connect(*socket_, SRT_ESOCKFAIL, sent.system_error));
+                return false;
+            }
+        }
+        if (result.ready) {
+            finish(publish_peer_connection());
+            return false;
+        }
+        if (result.size != 0) {
+            const auto status =
+                source_->arm_retry(setup_.configuration.timeout_milliseconds);
+            if (status != CallerHandshakeDispatchStatus::completed) {
+                finish_dispatch_failure(status);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    int publish_peer_connection() noexcept
+    {
+        const auto now = Clock::now();
+        const auto* protocol = peer_handshake_->transport(now);
+        const auto key = peer_handshake_->peer_public_key(now);
+        if (!protocol || key.size() != 64
+            || !peer_response_.has_peer_authentication)
+            return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
+        std::array<std::byte, 64> authenticated_peer {};
+        std::copy(key.begin(), key.end(), authenticated_peer.begin());
+        auto crypto = peer_handshake_->release_crypto(now);
+        if (!crypto)
+            return fail_connect(*socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE);
+        {
+            std::lock_guard lock(socket_->mutex);
+            if (socket_->state != SRTS_CONNECTING)
+                return fail(SRT_ESCLOSED);
+            socket_->crypto = std::move(crypto);
+            socket_->receiver_key_state = CryptoState::secured;
+            socket_->authenticated_peer = authenticated_peer;
+            socket_->has_authenticated_peer = true;
+            socket_->peer_connection_initial_sequence =
+                protocol->peer_initial_sequence().value();
+        }
+        if (!finish_connect(*socket_, SRTS_CONNECTING, peer_,
+                peer_handshake_->peer_socket_id(),
+                peer_response_.packet.maximum_transmission_unit, *protocol))
+            return fail_connect(*socket_, SRT_ECONNSETUP);
+        if (attach_runtime(*socket_, setup_.channel, origin_,
+                microseconds_since(origin_), peer_timestamp_, nullptr, 0U,
+                inbox_, {}, {}, true)
+            == SRT_ERROR)
+            return fail_connect(*socket_,
+                static_cast<SRT_ERRNO>(last_error().code),
+                last_error().system_error);
+        std::shared_ptr<ConnectionRuntime> runtime;
+        {
+            std::lock_guard lock(socket_->mutex);
+            runtime = socket_->runtime;
+        }
+        if (!runtime)
+            return fail_connect(*socket_, SRT_ESCLOSED);
+        for (const auto& envelope : peer_early_data_) {
+            const auto packet =
+                decode_packet(std::span {envelope.bytes}.first(envelope.size));
+            if (packet)
+                runtime->process_packet(packet.packet, envelope.peer);
+        }
+        publish_connected_state(*socket_, SRTS_CONNECTED);
+        return 0;
+    }
+#endif
 
     void finish_dispatch_failure(CallerHandshakeDispatchStatus status) noexcept
     {
@@ -2516,6 +2702,26 @@ private:
             }
             finishing_ = true;
         }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        if (peer_handshake_)
+            peer_handshake_->abort();
+        if (peer_mode_ && result != 0) {
+            std::shared_ptr<ConnectionRuntime> abandoned_runtime;
+            {
+                std::lock_guard lock(socket_->mutex);
+                abandoned_runtime = std::move(socket_->runtime);
+                socket_->crypto.reset();
+                socket_->has_authenticated_peer = false;
+                socket_->authenticated_peer = {};
+            }
+            if (abandoned_runtime)
+                abandoned_runtime->close();
+        }
+        setup_.options.clear_peer_authentication();
+        if (peer_mode_)
+            (void)setup_.options.set_passphrase({});
+        peer_early_data_.clear();
+#endif
         rejection_completion_.cancel();
         const int error_code = result == 0 ? SRT_SUCCESS : last_error().code;
         if (source_ != nullptr) {
@@ -2583,6 +2789,15 @@ private:
         completed_signal_.notify_all();
     }
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    bool peer_mode_ = false;
+    Clock::time_point peer_connect_start_ {};
+    std::shared_ptr<RuntimeWorkExecutor> peer_executor_;
+    std::unique_ptr<PeerAuthenticationHandshake> peer_handshake_;
+    std::vector<DatagramEnvelope> peer_early_data_;
+    HandshakeMessage peer_response_ {};
+    PacketTimestamp peer_timestamp_ {};
+#endif
     std::shared_ptr<RuntimeScheduler> scheduler_;
     std::shared_ptr<SocketRecord> socket_;
     IpEndpoint peer_ {};
@@ -3947,9 +4162,8 @@ int connect_socket(
                 : SRT_EINVOP);
         }
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
-        // Fail closed until authenticated admission owns all three flights
-        // and runtime confirmation. REQUIRED must never enter legacy setup.
-        if (socket->native_options.peer_authentication_required())
+        if (socket->native_options.peer_authentication_required()
+            && !socket->native_options.peer_authentication_configured())
             return fail(SRT_ESECFAIL);
 #endif
         if (socket->native_options.experimental_acp1()
@@ -4279,7 +4493,11 @@ int connect_socket(
     }
     ReadinessSignal::notify();
 
-    if (setup.options.encryption_enabled()) {
+    bool peer_enabled = false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    peer_enabled = setup.options.peer_authentication_required();
+#endif
+    if (!peer_enabled && setup.options.encryption_enabled()) {
         try {
             setup.crypto = std::make_shared<CryptoSession>(
                 setup.options.crypto_configuration());
@@ -4309,7 +4527,7 @@ int connect_socket(
         }
     }
 
-    if (!asynchronous) {
+    if (!asynchronous && !peer_enabled) {
         return run_caller_handshake(socket, peer, std::move(setup));
     }
 
@@ -4346,6 +4564,16 @@ int connect_socket(
                 ? SRT_ENOBUF
                 : SRT_ETHREAD,
             0);
+    }
+    if (!asynchronous) {
+        actor->wait();
+        std::lock_guard lock(socket->mutex);
+        if (socket->state == SRTS_CONNECTED)
+            return 0;
+        if (socket->state == SRTS_CLOSED || socket->state == SRTS_CLOSING)
+            return fail(SRT_ESCLOSED);
+        return fail(static_cast<SRT_ERRNO>(socket->connect_error),
+            socket->connect_system_error);
     }
     return 0;
 }
