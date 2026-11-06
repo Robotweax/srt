@@ -230,12 +230,23 @@ The focused `npd_` native cases exercise policy and option ordering, exact echo
 and retries, authenticated AGREEMENT, clear/CTR/GCM transfers, authenticated
 parity, all key lengths across the FEC geometries, key rotation, ARQ and FEC loss
 recovery, payload ceilings and preservation of the input-rate estimate. The
-deterministic recovery matrix covers 216 combinations: CTR/GCM, 16/24/32-byte
+deterministic recovery matrix covers 288 combinations: CTR/GCM, 16/24/32-byte
 keys, row/column/matrix FEC, always/onreq/never ARQ policies, authenticated or
 legacy parity, and compressed TS or maximum-size passthrough payloads. Each
 combination drops one source, swaps adjacent source DATA, verifies every restored
-byte and checks NPD counters. This does not exhaust multi-loss patterns or
-rotation during reordered recovery. The codec tests cover 3,279 deletion/retention combinations and every prefix across
+byte and checks NPD counters. This includes 72 matrix-FEC cases spanning an
+explicitly acknowledged even-to-odd key change, with five old-key sources and
+four new-key sources. It does not exhaust multi-loss patterns, delayed key
+announcements or repeated rotations during recovery.
+
+A further 18 ARQ cases span CTR/GCM, every key size and all-null, partially
+compressed or passthrough payloads. They drop an old-key source, deliver newer
+sources in reverse order across a key change, and then request the old source.
+The repair must preserve the original encryption-key selector and ciphertext
+(including the GCM tag), restore ordered bit-exact delivery, and leave counters
+unchanged on late originals or duplicate repairs. Key exchange is explicitly
+acknowledged in these deterministic fixtures; it does not simulate key-message
+loss. The codec tests cover 3,279 deletion/retention combinations and every prefix across
 payload lengths through 1,504 bytes. The dedicated fuzz targets are
 `fuzz_null_packet_deletion` and `fuzz_handshake_decode`.
 
