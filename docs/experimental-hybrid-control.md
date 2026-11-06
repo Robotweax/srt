@@ -6,10 +6,11 @@ also requires `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON` explicitly. They provi
 strict capability/message codecs and an authenticated, bounded message gate.
 They also include a setup-only admission owner for explicit pairwise credentials,
 frozen conclusion transcripts and final local authorization checks.
-The staged exchange drives bilateral selection and proofs with bounded retries
-and an explicit credential-provider contract.
-They perform no socket I/O, change no delivery policy, allocate no public C
-option, and do not activate recovery on live sockets. Native handshakes still
+The exchange drives bilateral selection and proofs with bounded retries
+and an explicit credential-provider contract. An explicitly attached internal
+native service now owns that exchange, authenticated UDP controls and expiry.
+These components change no delivery policy, allocate no public C
+option, and do not activate automatic recovery on live sockets. Native handshakes still
 reject authentication version 7. No new capability handshake extension ID is
 allocated. Existing strict multicast announcements and existing authentication
 versions retain their formats.
@@ -22,6 +23,7 @@ cmake --build build-hybrid-control --parallel
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_control
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_admission
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_exchange
+./build-hybrid-control/robotweax_srt_tests --include hybrid_native
 ./tools/python tests/hybrid_control_vectors.py
 ```
 
@@ -190,20 +192,20 @@ Live admission must atomically recheck the grant generation with current group
 incarnation, binding, source state, exact sequence cursor and selected features
 after user callbacks and before binding publication. A nonzero generation is
 only a token here: this component has no policy store and cannot discover
-revocation or prove that a callback actually ran. No native path invokes this
-owner yet. The exchange below defines a provider contract and proof bodies;
-native integration still needs provider configuration, a reviewed carrier,
-the final enrollment transaction and expiry scheduling before enabling runtime
-switching. Existing ACP1 security-review
+revocation or prove that a callback actually ran. The internal native service
+below invokes this owner through Exchange and owns credential callbacks and
+expiry. Public provisioning, carrier registry review and the final coordinator
+enrollment transaction remain prerequisites for enabling runtime switching.
+Existing ACP1 security-review
 limits and the shared-credential impersonation boundary remain unchanged.
 
 ## Native conclusion capture
 
 With the hybrid build gate enabled, native independent-source Caller/Listener
 setup now retains an immutable `Conclusions` pair on each established member
-runtime. This is metadata preparation, not native hybrid-control activation.
-Other profiles retain no published pair. No credential lookup, exchange carrier,
-timer, public C option or delivery-policy change is connected by this step.
+runtime. Capture alone does not activate hybrid control; an internal consumer
+must explicitly attach the native service below. Other profiles retain no
+published pair. Capture introduces no public C option or delivery-policy change.
 
 The native writer captures the exact encoded payload only after full UDP
 submission. Partial submission invalidates that setup's capture. The listener
@@ -245,17 +247,17 @@ Native loopback tests compare both endpoints' complete captured payloads and
 feed them directly into the staged exchange with explicit synthetic credentials.
 They cover plaintext/CTR/GCM, blocking/asynchronous Callers, ordinary session
 authentication's final AGREEMENT and existing join/departure/key lifecycles.
-The in-memory exchange in these tests is not a native carrier or production
-credential-provider integration. Native carrier allocation, credential/expiry
-ownership and atomic hybrid enrollment remain the next integration gates.
+Those capture tests exercise an in-memory exchange. Separate native-service
+tests below exercise the UDP carrier and credential/expiry ownership. Atomic
+coordinator enrollment remains an integration gate.
 
 ## Bounded exchange and credential provider
 
 `compat::hybrid::Exchange` drives four staged records after the ordinary
 connection's conclusions are frozen. It performs no socket I/O, enrollment or
 coordinator mutation. Its storage is bounded to 16 KiB and its bookkeeping
-allocates no dynamic memory. There is still no native carrier, registered
-extension/subtype, public credential API or socket activation for these bodies.
+allocates no dynamic memory. The native service below provides an internal
+carrier; no public credential API or registered stable wire extension exists.
 Native handshakes continue to refuse authentication version 7.
 
 | Direction | Record | Content and effect |
@@ -325,8 +327,9 @@ payloads. The native owner must still establish routing/cookie/session
 provenance and ensure that the callback's policy store authorizes that identity;
 the component cannot prove these facts from a nonzero generation. Callbacks
 must run without group/runtime locks, be nonblocking and outlive the exchange.
-Close from a callback is terminal and prevents output/root publication. Native
-callback dispatch, storage and public configuration remain future integration.
+Close from a callback is terminal and prevents output/root publication. The
+native service owns callback context and dispatch; public configuration remains
+future integration.
 
 `start`, `receive` and `tick` are serialized and take monotonic microseconds.
 Configuration bounds setup lifetime to 1 through 5,000,000 microseconds, retry
@@ -334,7 +337,7 @@ interval to 1 through that lifetime and emissions to 1 through 8 per outgoing
 stage. Defaults are a one-second lifetime, 100 ms retry interval and four
 emissions; they are experimental component settings, not WAN continuity claims.
 Each role has two outgoing stages, so at most 16 records can be published per
-endpoint/attempt. An output counts against that bound even if a future native
+endpoint/attempt. An output counts against that bound even if its native
 send fails. Retries reuse exact cached bytes and never repeat credential
 resolution, root derivation or nonce generation. Duplicate floods cannot
 advance the next emission time. Exhausting emissions stops retransmission
@@ -349,7 +352,7 @@ activation retains its root/replay state. The Listener's receipt cache stops at
 the original deadline or emission limit; old retries cannot reset the root.
 
 `next_deadline` supplies the next retry, setup deadline or grant expiry. The
-future native owner must service it with `tick` and call `receive` only for its
+native owner services it with `tick` and calls `receive` only for its
 already admitted unicast session. Active events revalidate the grant; a close,
 expiry or policy change revokes already borrowed gates. The component has no
 timer, global pending-attempt table, thread or native queue. It does not discover
@@ -358,11 +361,106 @@ multicast failure or authorize switching. Lost final receipts may leave only
 one endpoint locally active; bounded setup failure and subsequent connection
 lifecycle handling must not be interpreted as delivery permission.
 
-The remaining native integration must allocate/review the carrier, preserve
-exact ordinary conclusion payloads, own the callback/expiry lifecycle and
+The remaining integration must review the provisional wire assignment and
 atomically recheck grant, binding, source, sequence and policy generations at
-enrollment. A revision/history/budget/deadline-fenced coordinator bridge and
-bounded policy reconciliation remain prerequisites for automatic switching.
+coordinator enrollment. A revision/history/budget/deadline-fenced coordinator
+bridge and bounded policy reconciliation remain prerequisites for automatic
+switching.
+
+## Internal native carrier and connection owner
+
+`attach_native_control(runtime, NativeOptions)` explicitly attaches one
+`NativeService` to an established independent-source connection with a published
+immutable conclusion pair. It is internal C++, behind the hybrid build gate;
+building the feature does not attach it automatically. The primary handshake
+and any ordinary authentication must already have completed. Attachment freezes
+the actual role, established peer, socket IDs, exact conclusions and a fresh
+process-local connection generation. There is no global pending-attempt table.
+A published attempt cannot be replaced on the same connection, even after
+failure; a new attempt requires a fresh primary connection.
+
+The provisional local user-defined subtype is **0x7f17**. Its type-specific field
+is zero and its payload is exactly one 176-byte exchange record: 192 bytes with
+the ordinary 16-byte control header. Direction and destination socket are checked
+against the record. This assignment has only been checked against this source
+tree, not an external registry, and is not a stable interoperability contract.
+Authenticated runtime controls retain their existing 0x7f16 inner packet inside
+the separate version 7 ACP1 envelope, 172 bytes in total. Bare 0x7f16 packets are
+consumed and discarded. Candidate envelopes are separated from primary ACP1
+authentication before its replay/liveness processing. Only the established
+unicast peer and unicast-session ingress can enqueue them; multicast ingress
+and foreign peers cannot. An unattached/default build discards these candidates.
+None refreshes ordinary SRT peer liveness or ordinary control statistics.
+
+`NativeOptions` owns a shared callback context. Resolve and Revalidate receive
+the locally derived request described above; Resolve runs once per attempt.
+The context must provide a separately provisioned random 32-byte pairwise control
+credential and current grant. The service never fetches DATA keys or passphrases.
+It cannot establish entropy, identity authorization or member uniqueness on the
+provider's behalf. Callbacks must be nonblocking and use weak references back to
+the runtime/service to avoid ownership cycles. The native service serializes
+protocol state and runs credential/activation callbacks without runtime, group
+or queue locks. The callback context remains alive while work executes.
+
+After local proof readiness, the `enroll` callback receives the selected context,
+grant and local connection generation once. Approval is followed by another
+grant check and a current runtime/conclusion binding check before the service
+publishes its authenticated Session. This hook approves local control
+activation; it does **not** implement an atomic group-coordinator enrollment or
+change original/repair delivery policy. Received events are authenticated input,
+not permission to commit a delivery transition. A future coordinator bridge must
+recheck its current member/source/policy generations, sequence/history, budgets
+and deadlines at its own commit boundary, including after callbacks.
+
+Each service reserves one slot on the existing bounded RuntimeScheduler. Slot
+exhaustion explicitly refuses attachment; no worker or scheduler limit is added.
+It owns a 16-job input queue, processes at most eight jobs per turn and exposes
+an eight-event output queue. The complete owner is below 64 KiB, including its
+bounded Exchange and inline Session. Input overflow drops/refuses work; event
+overflow closes the service. Consumers must drain events. Scheduler notifications
+coalesce, and a reserved timer services setup retries and grant expiry without
+depending on the ordinary datagram retry queue. Cached setup retries retain the
+existing stage limits and exact bodies, including after transient UDP failures.
+
+Grants, arrival times, observations and local send deadlines use absolute
+`steady_clock` microseconds, exposed by `NativeService::monotonic_now`. Wire
+timestamps remain relative to the native connection origin. Every queued send
+has an exclusive local deadline no more than five seconds ahead, additionally
+bounded by setup/grant expiry. Runtime binding, cancellation and deadline are
+checked immediately before UDP submission under the runtime mutex. Permanent
+or partial submission closes the control service. A command encountering EAGAIN
+produces a retryable event; its consumer may resubmit the identical serial/body
+before a new local deadline, using a fresh crypto envelope. An expired queued
+command consumes no semantic serial. There is no hidden generic FIFO retry.
+
+STREAM_PROGRESS, PATH_REPORT and MULTICAST_READY require a local observation
+time and zero initial age. The service includes local queue wait in the sealed
+age and permits each report serial only once; every report attempt needs a
+fresh serial. It does not automatically retry reports and thereby refresh stale
+observations. Incoming events retain native arrival time as their first receive
+time, including duplicates; queue delay cannot refresh it. The eventual consumer
+must still assess event age, observation truth and policy freshness.
+
+Close, breakage, peer shutdown/error or any native runtime option application
+cancels the service. Close clears queued work/events immediately and never waits
+for a running credential callback. That worker checks cancellation before
+publishing output and erases keys on exit; an idle close erases them immediately.
+Grant expiry has a reserved timer, and send/pop additionally reject expiry even
+before that timer runs. Grant changes are checked on protocol work; silent
+revocation between calls requires a provider-triggered close or a future policy
+notification. No renewal or resurrection is supported. Control-only failure
+leaves the ordinary connection running unless the trusted host explicitly closes
+it. Reentrant callback close cannot publish a Session, receipt or success event.
+
+Tests use explicit synthetic credentials, not production provisioning. They
+cover every lost setup stage, forged controls, replay continuity, queue pressure,
+timed observations, EAGAIN, expiry, revoked grants, binding changes and reentrant
+close. Native UDP cases exercise plaintext/CTR/GCM coordinated DATA, primary
+session-authenticated CTR with KM rotation, dropped selection recovery and
+provenance rejection. They verify that fallback requests leave multicast policy
+unchanged. These tests establish neither automatic recovery nor hostile-network,
+WAN, scale or other-platform support. Existing ACP1 security-review,
+shared-credential impersonation and no-forward-secrecy limitations still apply.
 
 ## Control body
 

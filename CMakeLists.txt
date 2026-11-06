@@ -176,6 +176,7 @@ add_library(robotweax_srt
     src/compat/hybrid_admission.cpp
     src/compat/hybrid_exchange.cpp
     src/compat/hybrid_conclusions.cpp
+    src/compat/hybrid_native.cpp
     src/compat/standby_rtt_service.cpp
     src/control.cpp
     src/connection_group.cpp
@@ -545,6 +546,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_hybrid_admission.cpp
         tests/test_hybrid_exchange.cpp
         tests/test_hybrid_conclusions.cpp
+        tests/test_hybrid_native.cpp
         tests/test_arq_transport.cpp
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp

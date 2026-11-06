@@ -11,6 +11,7 @@
 #include "compat/transport_runtime.hpp"
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 #include "compat/hybrid_exchange.hpp"
+#include "compat/hybrid_native.hpp"
 #endif
 #include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/udp.hpp"
@@ -1885,7 +1886,8 @@ struct CoordinatedNative {
     sockaddr_in bound {};
     explicit CoordinatedNative(std::int64_t rate = 1'000'000,
         bool encrypted = false, bool gcm = false, int send_packets = 0,
-        int latency = 120)
+        int latency = 120, bool coordinated = true,
+        bool session_authentication = false)
     {
         listener = peers.keep(srt_create_socket());
         const bool enabled = true;
@@ -1896,9 +1898,11 @@ struct CoordinatedNative {
         REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
                        &enabled, sizeof(enabled)),
             0);
-        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_COORDINATED,
-                       &enabled, sizeof(enabled)),
-            0);
+        if (coordinated)
+            REQUIRE_EQ(
+                srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_COORDINATED,
+                    &enabled, sizeof(enabled)),
+                0);
         REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE,
                        &local, sizeof(local)),
             0);
@@ -1949,6 +1953,11 @@ struct CoordinatedNative {
             }
 #endif
         }
+        if (session_authentication) {
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_SESSIONAUTH,
+                           &enabled, sizeof(enabled)),
+                0);
+        }
         REQUIRE_EQ(
             srt_listen_callback(listener, admit_dispatch, &admissions), 0);
         REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&local),
@@ -1959,7 +1968,8 @@ struct CoordinatedNative {
         REQUIRE_EQ(srt_getsockname(
                        listener, reinterpret_cast<sockaddr*>(&bound), &size),
             0);
-        receiver = make_receiver(peers, bound, encrypted, gcm, latency, true);
+        receiver = make_receiver(peers, bound, encrypted, gcm, latency, true,
+            false, session_authentication);
         sender = peers.keep(srt_accept(listener, nullptr, nullptr));
         REQUIRE(sender != SRT_INVALID_SOCK);
         REQUIRE(wait_for_members(sender, 1, encrypted));
@@ -1990,7 +2000,336 @@ struct SendHookReset {
         channel->set_send_hook_for_testing(nullptr, nullptr);
     }
 };
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+namespace hn = robotweax::srt::compat::hybrid;
+std::shared_ptr<robotweax::srt::compat::ConnectionRuntime> hybrid_runtime(
+    SRTSOCKET group)
+{
+    const auto g = GroupRegistry::instance().find(group);
+    REQUIRE(g);
+    SRTSOCKET id = SRT_INVALID_SOCK;
+    {
+        std::lock_guard lock(g->mutex);
+        REQUIRE_EQ(g->members.size(), 1U);
+        id = g->members.front().public_data.id;
+    }
+    const auto socket = SocketRegistry::instance().find(id);
+    REQUIRE(socket);
+    std::lock_guard lock(socket->mutex);
+    REQUIRE(socket->runtime);
+    return socket->runtime;
 }
+struct HybridNativeOwner {
+    std::weak_ptr<robotweax::srt::compat::ConnectionRuntime> runtime;
+    std::atomic<std::uint64_t> generation = 7, expiry = 0;
+    std::atomic<unsigned> resolves = 0, enrolls = 0;
+    bool approve = true, close_on_enroll = false;
+    static bool resolve(void* p, const hn::CredentialRequest& request,
+        hn::Authorization& grant, std::span<std::byte, 32> secret) noexcept
+    {
+        auto& self = *static_cast<HybridNativeOwner*>(p);
+        ++self.resolves;
+        const auto runtime = self.runtime.lock();
+        if (!runtime || !runtime->hybrid_conclusions())
+            return false;
+        grant = {.credential_id = request.credential_id,
+            .caller_group = request.caller_group,
+            .listener_group = request.listener_group,
+            .stream_id = request.stream_id,
+            .generation = self.generation.load(),
+            .expires_at_us = self.expiry.load()};
+        std::fill(secret.begin(), secret.end(), std::byte {0x22});
+        return true;
+    }
+    static bool revalidate(void* p, const hn::CredentialRequest&,
+        const hn::Authorization& expected, hn::Authorization& grant) noexcept
+    {
+        auto& self = *static_cast<HybridNativeOwner*>(p);
+        const auto runtime = self.runtime.lock();
+        if (!runtime || !runtime->hybrid_conclusions())
+            return false;
+        grant = expected;
+        grant.generation = self.generation.load();
+        grant.expires_at_us = self.expiry.load();
+        return true;
+    }
+    static bool enroll(void* p, const hn::Context&, const hn::Authorization&,
+        std::uint64_t) noexcept
+    {
+        auto& self = *static_cast<HybridNativeOwner*>(p);
+        ++self.enrolls;
+        const auto runtime = self.runtime.lock();
+        if (!runtime || !runtime->hybrid_conclusions())
+            return false;
+        if (self.close_on_enroll)
+            runtime->mark_broken(0);
+        return self.approve;
+    }
+};
+struct NativeHybridPair {
+    std::shared_ptr<robotweax::srt::compat::ConnectionRuntime> caller, listener;
+    std::shared_ptr<HybridNativeOwner>
+        co = std::make_shared<HybridNativeOwner>(),
+        lo = std::make_shared<HybridNativeOwner>();
+    std::shared_ptr<hn::NativeService> c, l;
+    explicit NativeHybridPair(
+        CoordinatedNative& f, std::uint64_t lifetime = 2'000'000)
+        : caller(hybrid_runtime(f.receiver))
+        , listener(hybrid_runtime(f.sender))
+    {
+        co->runtime = caller;
+        lo->runtime = listener;
+        co->expiry = lo->expiry = hn::NativeService::monotonic_now() + lifetime;
+    }
+    hn::NativeOptions options(bool is_caller)
+    {
+        hn::NativeOptions o;
+        o.credential_id.fill(std::byte {0x11});
+        o.owner = is_caller ? co : lo;
+        o.resolve = HybridNativeOwner::resolve;
+        o.revalidate = HybridNativeOwner::revalidate;
+        o.enroll = HybridNativeOwner::enroll;
+        o.retry_interval_us = 20'000;
+        o.maximum_sends_per_stage = 8;
+        if (!is_caller) {
+            o.stream = 71;
+            o.member = 97;
+        }
+        return o;
+    }
+    void start()
+    {
+        l = hn::attach_native_control(listener, options(false));
+        REQUIRE(l);
+        c = hn::attach_native_control(caller, options(true));
+        REQUIRE(c);
+    }
+    bool wait_active()
+    {
+        const auto until =
+            std::chrono::steady_clock::now() + std::chrono::seconds {2};
+        while (std::chrono::steady_clock::now() < until) {
+            if (c->snapshot().active && l->snapshot().active)
+                return true;
+            if (c->snapshot().closed || l->snapshot().closed)
+                return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        return false;
+    }
+    bool event(const std::shared_ptr<hn::NativeService>& s,
+        hn::NativeService::Event& e)
+    {
+        const auto until =
+            std::chrono::steady_clock::now() + std::chrono::seconds {1};
+        while (std::chrono::steady_clock::now() < until) {
+            if (s->pop(e))
+                return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        return false;
+    }
+    hn::Message request(std::uint64_t serial = 1)
+    {
+        const auto context = c->snapshot().context;
+        return {.kind = hn::Kind::fallback_request,
+            .stream = context.selection.stream,
+            .member = context.selection.member,
+            .serial = serial,
+            .next_position = context.selection.initial_position,
+            .next_sequence = context.dispatch.initial_sequence,
+            .mode = hn::Mode::unicast};
+    }
+    ~NativeHybridPair()
+    {
+        if (c)
+            c->close();
+        if (l)
+            l->close();
+    }
+};
+struct HybridWireHook {
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+    bool drop_selection = false;
+    std::atomic<unsigned> dropped = 0;
+    std::mutex mutex;
+    std::vector<std::byte> last_control;
+    static UdpIoResult send(
+        std::span<const std::byte> bytes, IpEndpoint peer, void* p) noexcept
+    {
+        auto& self = *static_cast<HybridWireHook*>(p);
+        const auto decoded = decode_packet(bytes);
+        hn::ExchangeRecord record;
+        if (decoded && self.drop_selection
+            && hn::decode_exchange_packet(decoded.packet, record)
+            && record.kind == hn::ExchangeKind::selection
+            && self.dropped.fetch_add(1) == 0)
+            return {.bytes_transferred = bytes.size()};
+        const auto sent = self.channel->socket.send_to(bytes, peer);
+        if (sent && decoded && decoded.packet.kind == PacketKind::control
+            && decoded.packet.control.subtype == authenticated_control_subtype
+            && hn::native_candidate(decoded.packet)) {
+            std::lock_guard lock(self.mutex);
+            self.last_control.assign(bytes.begin(), bytes.end());
+        }
+        return sent;
+    }
+};
+#endif
+}
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+TEST(
+    multicast_dispatch_native_hybrid_transport_plain_ctr_gcm_keeps_delivery_policy_explicit)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2);
+        NativeHybridPair pair(f);
+        pair.start();
+        REQUIRE(pair.wait_active());
+        REQUIRE_EQ(pair.co->resolves.load(), 1U);
+        REQUIRE_EQ(pair.lo->resolves.load(), 1U);
+        REQUIRE(pair.c->snapshot().generation != pair.l->snapshot().generation);
+        REQUIRE_EQ(pair.c->send(pair.request(),
+                       hn::NativeService::monotonic_now() + 500'000),
+            hn::NativeService::Admission::accepted);
+        hn::NativeService::Event e;
+        REQUIRE(pair.event(pair.l, e));
+        REQUIRE_EQ(e.received.status, hn::Session::Status::accepted);
+        REQUIRE_EQ(e.message.kind, hn::Kind::fallback_request);
+        std::array<robotweax::srt::compat::GroupSendCoordinator::Member, 1>
+            member;
+        REQUIRE_EQ(f.actor()->members(member), 1U);
+        REQUIRE_EQ(member[0].delivery, GroupOriginalDelivery::multicast);
+        REQUIRE(!hn::attach_native_control(pair.caller, pair.options(true)));
+        for (int i = 0; i < 5; ++i)
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        expect_messages(f.receiver, 0, 5);
+    }
+}
+TEST(
+    multicast_dispatch_native_hybrid_loss_and_provenance_fences_preserve_control_session)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    CoordinatedNative f;
+    NativeHybridPair pair(f);
+    const auto source = SocketRegistry::instance().find(f.listener);
+    REQUIRE(source);
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+    {
+        std::lock_guard lock(source->mutex);
+        channel = source->channel;
+    }
+    HybridWireHook hook;
+    hook.channel = channel;
+    hook.drop_selection = true;
+    SendHookReset reset {channel};
+    channel->set_send_hook_for_testing(HybridWireHook::send, &hook);
+    pair.start();
+    REQUIRE(pair.wait_active());
+    REQUIRE(hook.dropped.load() >= 1U);
+    REQUIRE_EQ(pair.lo->resolves.load(), 1U);
+    REQUIRE_EQ(pair.co->resolves.load(), 1U);
+    const auto caller_group = GroupRegistry::instance().find(f.receiver);
+    SRTSOCKET caller_id = SRT_INVALID_SOCK;
+    {
+        std::lock_guard lock(caller_group->mutex);
+        caller_id = caller_group->members.front().public_data.id;
+    }
+    const auto caller_socket = SocketRegistry::instance().find(caller_id);
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> cc;
+    IpEndpoint peer;
+    {
+        std::lock_guard lock(caller_socket->mutex);
+        cc = caller_socket->channel;
+        peer = caller_socket->local_endpoint;
+    }
+    HybridWireHook sender_hook;
+    sender_hook.channel = cc;
+    SendHookReset cr {cc};
+    cc->set_send_hook_for_testing(HybridWireHook::send, &sender_hook);
+    REQUIRE_EQ(pair.c->send(pair.request(),
+                   hn::NativeService::monotonic_now() + 500'000),
+        hn::NativeService::Admission::accepted);
+    hn::NativeService::Event e;
+    REQUIRE(pair.event(pair.l, e));
+    std::vector<std::byte> control;
+    {
+        std::lock_guard lock(sender_hook.mutex);
+        control = sender_hook.last_control;
+    }
+    REQUIRE(!control.empty());
+    const auto packet = decode_packet(control);
+    REQUIRE(packet);
+    const auto received = pair.l->snapshot().received;
+    pair.listener->process_packet(packet.packet, peer, std::nullopt,
+        robotweax::srt::compat::PacketIngress::multicast_data);
+    auto foreign = peer;
+    ++foreign.port;
+    pair.listener->process_packet(packet.packet, foreign);
+    std::this_thread::sleep_for(std::chrono::milliseconds {10});
+    REQUIRE_EQ(pair.l->snapshot().received, received);
+    for (int i = 0; i < 3; ++i)
+        REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+    expect_messages(f.receiver, 0, 3);
+}
+TEST(
+    multicast_dispatch_native_hybrid_expiry_denial_and_reentrant_close_are_visible)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    {
+        CoordinatedNative f;
+        NativeHybridPair pair(f, 150'000);
+        pair.start();
+        REQUIRE(pair.wait_active());
+        const auto until =
+            std::chrono::steady_clock::now() + std::chrono::seconds {2};
+        while (!pair.c->closed() && std::chrono::steady_clock::now() < until)
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        REQUIRE(pair.c->closed());
+        REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
+        REQUIRE_EQ(f.send(0), static_cast<int>(message(0).size()));
+        expect_messages(f.receiver, 0, 1);
+    }
+    for (bool close : {false, true}) {
+        CoordinatedNative f;
+        NativeHybridPair pair(f);
+        pair.lo->approve = false;
+        pair.lo->close_on_enroll = close;
+        pair.start();
+        REQUIRE(!pair.wait_active());
+        REQUIRE(pair.l->snapshot().closed);
+        REQUIRE_EQ(pair.lo->enrolls.load(), 1U);
+    }
+}
+TEST(
+    multicast_dispatch_native_hybrid_coexists_with_primary_session_authentication_and_km)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    CoordinatedNative f(1'000'000, true, false, 0, 120, false, true);
+    NativeHybridPair pair(f);
+    pair.start();
+    REQUIRE(pair.wait_active());
+    REQUIRE_EQ(pair.c->send(pair.request(),
+                   hn::NativeService::monotonic_now() + 500'000),
+        hn::NativeService::Admission::accepted);
+    hn::NativeService::Event e;
+    REQUIRE(pair.event(pair.l, e));
+    REQUIRE_EQ(e.received.status, hn::Session::Status::accepted);
+    for (int i = 0; i < 48; ++i) {
+        REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+    expect_messages(f.receiver, 0, 48);
+    REQUIRE(pair.c->snapshot().active);
+    REQUIRE(pair.l->snapshot().active);
+}
+#endif
 
 TEST(
     multicast_dispatch_coordinated_options_freeze_transport_but_allow_group_io_flags)

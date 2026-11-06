@@ -3,7 +3,7 @@
 #include "compat/hybrid_admission.hpp"
 
 namespace robotweax::srt::compat::hybrid {
-// Staged bodies only: no native extension/subtype or public C option allocated.
+// Fixed exchange bodies; the optional internal carrier is in hybrid_native.hpp.
 inline constexpr std::size_t exchange_size = 176;
 enum class ExchangeKind : std::uint32_t {
     offer = 1,
@@ -84,6 +84,15 @@ public:
     [[nodiscard]] Step receive(
         std::span<const std::byte>, std::uint64_t now_us) noexcept;
     [[nodiscard]] Step tick(std::uint64_t now_us) noexcept;
+    // Owner deadline/grant check without consuming a retry emission.
+    [[nodiscard]] bool revalidate(std::uint64_t now_us) noexcept
+    {
+        return live(now_us);
+    }
+    [[nodiscard]] const Authorization* authorization() const noexcept
+    {
+        return grant_.generation ? &grant_ : nullptr;
+    }
     [[nodiscard]] SessionAuthentication* authentication() noexcept;
     [[nodiscard]] const Context& context() const noexcept
     {

@@ -13,9 +13,7 @@
 #include "compat/readiness.hpp"
 #include "compat/socket_readiness.hpp"
 #include "compat/statistics.hpp"
-#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
-#include "compat/hybrid_conclusions.hpp"
-#endif
+#include "compat/hybrid_native.hpp"
 #ifdef ENABLE_MAXREXMITBW
 #include "compat/retransmission_budget.hpp"
 #endif
@@ -520,6 +518,11 @@ private:
 };
 
 class ConnectionRuntime {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    friend std::shared_ptr<hybrid::NativeService> hybrid::attach_native_control(
+        const std::shared_ptr<ConnectionRuntime>&,
+        hybrid::NativeOptions) noexcept;
+#endif
 public:
     [[nodiscard]] const std::shared_ptr<ReadinessSource>&
     readiness_source() const noexcept
@@ -917,6 +920,8 @@ private:
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
     std::shared_ptr<const hybrid::Conclusions> hybrid_conclusions_;
     std::uint32_t hybrid_local_socket_id_ = 0;
+    bool hybrid_caller_ = false, hybrid_attempted_ = false;
+    std::shared_ptr<hybrid::NativeService> hybrid_service_;
 #endif
     std::condition_variable receive_ready_;
     std::condition_variable send_ready_;

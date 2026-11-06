@@ -1870,7 +1870,13 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
         session_.reorder_tolerance_packets());
 }
 
-ConnectionRuntime::~ConnectionRuntime() = default;
+ConnectionRuntime::~ConnectionRuntime()
+{
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_service_)
+        hybrid_service_->close(hybrid::NativeService::Failure::lifetime);
+#endif
+}
 
 std::uint64_t ConnectionRuntime::now_microseconds() const noexcept
 {
@@ -4159,6 +4165,10 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         terminate_standby_rtt();
         peer_closed_ = true;
         broken_ = true;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        if (hybrid_service_)
+            hybrid_service_->close(hybrid::NativeService::Failure::lifetime);
+#endif
         terminal_edge = true;
         receive_ready_.notify_all();
         send_ready_.notify_all();
@@ -4166,6 +4176,10 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         && packet.control.type == ControlType::peer_error) {
         terminate_standby_rtt();
         peer_error_pending_ = true;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        if (hybrid_service_)
+            hybrid_service_->close(hybrid::NativeService::Failure::lifetime);
+#endif
         terminal_edge = true;
         send_ready_.notify_all();
     } else if (receive_edge) {
@@ -4258,6 +4272,7 @@ bool ConnectionRuntime::publish_hybrid_conclusions(
         || !pair->matches(caller, hybrid_local_socket_id_, peer_socket_id_))
         return false;
     hybrid_conclusions_ = std::move(pair);
+    hybrid_caller_ = caller;
     return true;
 }
 std::shared_ptr<const hybrid::Conclusions>
@@ -4289,6 +4304,26 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
     if (incoming_packet.kind == PacketKind::data
         && incoming_packet.payload.size() > maximum_data_payload_size)
         return;
+    if (hybrid::native_candidate(incoming_packet)) {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        std::shared_ptr<hybrid::NativeService> service;
+        {
+            std::lock_guard lock(mutex_);
+            if (!locally_closed_ && !broken_ && !peer_closed_)
+                service = hybrid_service_;
+        }
+        if (service) {
+            const auto at = ingress
+                ? static_cast<std::uint64_t>(std::max<std::int64_t>(0,
+                      std::chrono::duration_cast<std::chrono::microseconds>(
+                          ingress->time_since_epoch())
+                          .count()))
+                : hybrid::NativeService::monotonic_now();
+            (void)service->enqueue(incoming_packet, at);
+        }
+#endif
+        return;
+    }
     std::lock_guard lock(mutex_);
     if (locally_closed_ || broken_)
         return;
@@ -5191,6 +5226,10 @@ void ConnectionRuntime::apply_options(
     const SocketOptions& options) noexcept
 {
     std::unique_lock lock(mutex_);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_service_)
+        hybrid_service_->close(hybrid::NativeService::Failure::options);
+#endif
     if (group_send_state_)
         group_send_state_->binding.reset();
     options_ = options;
@@ -5277,6 +5316,10 @@ void ConnectionRuntime::break_locked(int system_error) noexcept
     statistics_.update_send_duration(now, false);
     terminate_standby_rtt();
     broken_ = true;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_service_)
+        hybrid_service_->close(hybrid::NativeService::Failure::lifetime);
+#endif
     if (group_send_state_)
         group_send_state_->binding.reset();
     pending_datagram_head_.reset();
@@ -5343,6 +5386,10 @@ bool ConnectionRuntime::begin_close() noexcept
         return false;
     }
     locally_closed_ = true;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_service_)
+        hybrid_service_->close(hybrid::NativeService::Failure::lifetime);
+#endif
     if (group_send_state_)
         group_send_state_->binding.reset();
     multicast_ingress_binding_.reset();
