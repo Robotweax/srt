@@ -209,13 +209,15 @@ struct SocketReadiness::State {
             return errno == EINTR ? 0 : -1;
         }
         for (int index = 0; index < result; ++index) {
-            if (events[static_cast<std::size_t>(index)].data.u64
-                == wake_marker) {
+            // Linux packs epoll_event: data.u64 may not be naturally aligned.
+            // Copy by value before vector::push_back binds a reference to it.
+            const std::uint64_t payload =
+                events[static_cast<std::size_t>(index)].data.u64;
+            if (payload == wake_marker) {
                 woken = true;
                 continue;
             }
-            payloads.push_back(
-                events[static_cast<std::size_t>(index)].data.u64);
+            payloads.push_back(payload);
         }
         return result;
     }
