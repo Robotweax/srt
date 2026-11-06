@@ -388,14 +388,14 @@ identity of encrypted sessions or operating-system timing.
 
 ### Native Windows qualification
 
-[Windows qualification run 42218102145](https://github.com/Robotweax/srt/actions/runs/42218102145)
-passed on source `277e669309433aa9a67ddcad408cfc6f9cf6e5b6`:
+[Windows qualification run 42222253159](https://github.com/Robotweax/srt/actions/runs/42222253159)
+passed on source `d2a3ca2a3748171d426375ef33cfcdff0ae20410`:
 
 | Native target | Provider | Result |
 | --- | --- | --- |
-| Windows Server 2025 x64 | BCrypt | 20 NPD, 166 runtime and 3 rotation cases; 8 wire cases passed |
-| Windows Server 2025 x64 | OpenSSL 3.6.5 | 20 NPD, 166 runtime and 3 rotation cases; 8 wire cases passed |
-| Windows 11 ARM64 | BCrypt | 20 NPD, 166 runtime and 3 rotation cases; 8 wire cases passed |
+| Windows Server 2025 x64 | BCrypt | 21 NPD, 166 runtime and 3 rotation cases; 8 wire cases passed |
+| Windows Server 2025 x64 | OpenSSL 3.6.5 | 21 NPD, 166 runtime and 3 rotation cases; 8 wire cases passed |
+| Windows 11 ARM64 | BCrypt | 21 NPD, 166 runtime and 3 rotation cases; 8 wire cases passed |
 
 These were Release builds with MSVC 19.51.36260 and AEAD preview enabled.
 This evidence covers the listed configurations and loopback traffic; it does
@@ -422,6 +422,45 @@ not always drain source DATA queued behind parity before the fixture announced
 a successor key. The fixture now waits for captured source packets and checks
 the key's packet count before announcing. Recovery, byte equality and key-selector
 assertions are unchanged.
+
+### SRT Network Lab integration assessment
+
+The Lab was reviewed at `127001108e35b1d9cdc4da14c9d85d09143043ab`.
+Its [contribution-media profile](https://github.com/Robotweax/srt_network_lab/blob/127001108e35b1d9cdc4da14c9d85d09143043ab/docs/contribution-media-lab.md)
+provides isolated kernel-netem routers, source/receiver/observer recordings,
+packet captures, per-datagram timing, source pins and independent validation.
+Those mechanisms are suitable foundations for a separate NPD profile.
+
+The existing profile cannot qualify NPD unchanged. Its
+[endpoint adapter](https://github.com/Robotweax/srt_network_lab/blob/127001108e35b1d9cdc4da14c9d85d09143043ab/srt_network_lab/contribution_media.py)
+uses Backup/Broadcast groups, which this NPD contract rejects. Its
+[source generator](https://github.com/Robotweax/srt_network_lab/blob/127001108e35b1d9cdc4da14c9d85d09143043ab/scripts/run_docker_contribution_media.py)
+creates a synthetic H.264/AAC test pattern without an explicit constant mux
+rate. The reviewed tracked tree contains no MPEG-TS media file or NPD profile;
+the documented media fixtures are generated, not deployed broadcast captures.
+This finding does not inventory private or externally retained captures.
+
+The next Lab increment should be a separate Caller/Listener profile, preserving
+the existing frozen group matrix and its validators:
+
+- Build ordinary public-API peers from an immutable NPD feature commit. Compare
+  OFF/OFF with REQUIRED/IF_OFFERED using identical application bytes and offered
+  rates, and record the resolved policy and NPD statistics at both ends.
+- Accept a hashed operator-supplied clip, or generate an explicitly labelled
+  constant-rate MPEG-TS source with a measured canonical-null inventory. Include
+  null runs followed by full-size payload bursts; record source pacing.
+- Reuse the isolated router and capture infrastructure for separately declared
+  baseline and impairment cases. Retain original failures and verify cleanup.
+- Independently verify restored bytes and ordering, prefix/deletion counts,
+  DATA/FEC/ARQ wire-byte totals, capture completeness and measured sender and
+  receiver timing. Declare measurement thresholds before executing the matrix;
+  an internally valid archive alone is not an NPD acceptance result.
+
+The Lab's [two-host executor](https://github.com/Robotweax/srt_network_lab/blob/127001108e35b1d9cdc4da14c9d85d09143043ab/docs/contribution-two-host-baseline.md)
+is also group-based and needs supplied endpoint configuration; it is not a
+ready-made NPD physical-network test. This assessment changed no Lab code and
+launched no Lab or cloud workload. Docker logical-path evidence and a genuine
+deployed-stream corpus remain distinct qualification requirements.
 
 ## Qualification required before broader support claims
 
