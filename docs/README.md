@@ -20,8 +20,8 @@ developers and transport integrators using the installed public API.
   authentication, strict bilateral opt-in and provisional wire/API contract.
 
 - [Peer authentication draft](peer-authentication.md) — unreviewed, default-off
-  pinned-key protocol with experimental listener support; public caller integration
-  remains incomplete.
+  pinned-key protocol with experimental caller/listener support; independent
+  cryptographic review remains outstanding.
 
 - [Experimental remote identity](implementation-identity.md) — development-only,
   default-off peer labels, disclosure policy and qualification boundaries.
