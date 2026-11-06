@@ -11,6 +11,7 @@
 #include "compat/socket_registry.hpp"
 #include "compat/peer_authentication_handshake.hpp"
 #include "compat/listener_handshake_sources.hpp"
+#include "compat/runtime_work_executor_service.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -2801,6 +2802,418 @@ TEST(
             REQUIRE(!retained->native_options.peer_authentication_required());
             REQUIRE(
                 retained->native_options.peer_authentication_trusted().empty());
+        }
+    }
+}
+
+TEST(peer_auth_public_rotation_and_authenticated_fec_recover_loss)
+{
+    for (const int key_length : {16, 24, 32}) {
+        for (const bool fec : {false, true}) {
+            PublicPeerSockets sockets;
+            for (const auto socket : {sockets.caller, sockets.listener}) {
+                const int refresh = 16, preannounce = 4, latency = 80;
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_PBKEYLEN, &key_length,
+                               sizeof(key_length)),
+                    0);
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_KMPREANNOUNCE,
+                               &preannounce, sizeof(preannounce)),
+                    0);
+                REQUIRE_EQ(srt_setsockflag(socket, SRTO_KMREFRESHRATE, &refresh,
+                               sizeof(refresh)),
+                    0);
+                REQUIRE_EQ(srt_setsockflag(
+                               socket, SRTO_LATENCY, &latency, sizeof(latency)),
+                    0);
+                if (fec) {
+                    constexpr std::string_view filter =
+                        "fec,cols:4,rows:1,arq:never";
+                    REQUIRE_EQ(srt_setsockflag(socket, SRTO_PACKETFILTER,
+                                   filter.data(), filter.size()),
+                        0);
+                }
+            }
+            sockets.listen();
+            const auto listener =
+                IpEndpoint::loopback(ntohs(sockets.address.sin_port));
+            UdpSocket relay;
+            REQUIRE_EQ(relay.bind(IpEndpoint::loopback(0)), Error::none);
+            const auto endpoint = relay.local_endpoint();
+            REQUIRE(endpoint);
+            sockets.address.sin_port = htons(endpoint.endpoint.port);
+            std::array<std::atomic<unsigned>, 2> source {}, parity {},
+                dropped {}, transitions {};
+            std::atomic<bool> io_failed {false};
+            std::jthread forwarding([&](std::stop_token stop) {
+                IpEndpoint caller {};
+                bool have_caller = false;
+                std::array<EncryptionKey, 2> previous {
+                    EncryptionKey::none, EncryptionKey::none};
+                std::array<bool, 2> corrupted {};
+                std::array<std::byte, 1500> wire {};
+                while (!stop.stop_requested()) {
+                    if (!relay.wait_readable(10).ready)
+                        continue;
+                    const auto received = relay.receive_from(wire);
+                    if (!received) {
+                        io_failed = true;
+                        return;
+                    }
+                    const bool from_listener = received.peer == listener;
+                    const auto direction = static_cast<unsigned>(from_listener);
+                    if (!from_listener) {
+                        caller = received.peer;
+                        have_caller = true;
+                    }
+                    if (!have_caller)
+                        continue;
+                    const auto bytes =
+                        std::span {wire}.first(received.bytes_transferred);
+                    const auto packet = decode_packet(bytes);
+                    const auto destination = from_listener ? caller : listener;
+                    if (packet && packet.packet.kind == PacketKind::data) {
+                        if (packet.packet.data.message_number != 0
+                            && !packet.packet.data.retransmitted) {
+                            const auto count = ++source[direction];
+                            if (previous[direction]
+                                != packet.packet.data.encryption_key) {
+                                if (previous[direction] != EncryptionKey::none)
+                                    ++transitions[direction];
+                                previous[direction] =
+                                    packet.packet.data.encryption_key;
+                            }
+                            if (fec && count % 8 == 2) {
+                                ++dropped[direction];
+                                continue;
+                            }
+                        } else if (packet.packet.data.message_number == 0) {
+                            ++parity[direction];
+                            if (!corrupted[direction]) {
+                                // A forged parity packet must not poison recovery.
+                                wire[received.bytes_transferred - 1] ^=
+                                    std::byte {1};
+                                if (!relay.send_to(bytes, destination)) {
+                                    io_failed = true;
+                                    return;
+                                }
+                                wire[received.bytes_transferred - 1] ^=
+                                    std::byte {1};
+                                corrupted[direction] = true;
+                            }
+                        }
+                    }
+                    if (!relay.send_to(bytes, destination)) {
+                        io_failed = true;
+                        return;
+                    }
+                }
+            });
+            REQUIRE_EQ(sockets.connect(), 0);
+            sockets.child = srt_accept(sockets.listener, nullptr, nullptr);
+            REQUIRE(sockets.child != SRT_INVALID_SOCK);
+            for (unsigned batch = 0; batch < 12; ++batch) {
+                for (const bool reverse : {false, true}) {
+                    const auto sender =
+                        reverse ? sockets.child : sockets.caller;
+                    const auto receiver =
+                        reverse ? sockets.caller : sockets.child;
+                    std::array<std::array<char, 64>, 8> messages {};
+                    for (unsigned i = 0; i < messages.size(); ++i) {
+                        for (unsigned j = 0; j < messages[i].size(); ++j)
+                            messages[i][j] = static_cast<char>(
+                                batch * 8 + i + j + (reverse ? 97 : 0));
+                        REQUIRE_EQ(srt_sendmsg(sender, messages[i].data(),
+                                       messages[i].size(), -1, 0),
+                            64);
+                    }
+                    for (const auto& expected : messages) {
+                        std::array<char, 1500> received {};
+                        REQUIRE_EQ(srt_recvmsg(receiver, received.data(),
+                                       received.size()),
+                            64);
+                        REQUIRE(std::equal(expected.begin(), expected.end(),
+                            received.begin()));
+                    }
+                }
+            }
+            REQUIRE(!io_failed);
+            for (unsigned direction = 0; direction < 2; ++direction) {
+                REQUIRE_EQ(source[direction].load(), 96U);
+                REQUIRE(transitions[direction].load() >= 4U);
+                SRT_TRACEBSTATS stats {};
+                const auto receiver =
+                    direction ? sockets.caller : sockets.child;
+                REQUIRE_EQ(srt_bstats(receiver, &stats, 0), 0);
+                // The only receiver drop is the injected unauthenticated parity.
+                REQUIRE_EQ(stats.pktRcvDropTotal, fec ? 1 : 0);
+                if (fec) {
+                    REQUIRE_EQ(dropped[direction].load(), 12U);
+                    REQUIRE(parity[direction].load() >= 24U);
+                    REQUIRE_EQ(stats.pktRcvFilterSupplyTotal, 12);
+                    REQUIRE_EQ(stats.pktRcvUndecryptTotal, 1);
+                } else {
+                    REQUIRE_EQ(stats.pktRcvUndecryptTotal, 0);
+                }
+            }
+        }
+    }
+}
+
+namespace {
+struct PeerWorkGate {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::size_t started = 0, drained = 0;
+    bool released = false;
+    static void block(void* opaque) noexcept
+    {
+        auto& gate = *static_cast<PeerWorkGate*>(opaque);
+        std::unique_lock lock(gate.mutex);
+        ++gate.started;
+        gate.changed.notify_all();
+        gate.changed.wait(lock, [&] {
+            return gate.released;
+        });
+    }
+    static void count(void* opaque) noexcept
+    {
+        auto& gate = *static_cast<PeerWorkGate*>(opaque);
+        std::lock_guard lock(gate.mutex);
+        ++gate.drained;
+        gate.changed.notify_all();
+    }
+    void release()
+    {
+        std::lock_guard lock(mutex);
+        released = true;
+        changed.notify_all();
+    }
+};
+struct PeerWorkGateRelease {
+    std::shared_ptr<PeerWorkGate> gate;
+    ~PeerWorkGateRelease()
+    {
+        gate->release();
+    }
+};
+}
+
+TEST(peer_auth_public_worker_saturation_fails_bounded_and_recovers)
+{
+    PublicPeerSockets sockets;
+    sockets.listen();
+    const auto executor = compat::acquire_runtime_work_executor();
+    REQUIRE(executor != nullptr);
+    const auto capacity = executor->snapshot();
+    const auto gate = std::make_shared<PeerWorkGate>();
+    PeerWorkGateRelease release {
+        gate}; // Release before socket cleanup even on assertion failure.
+    for (std::size_t i = 0; i < capacity.worker_count; ++i)
+        REQUIRE_EQ(executor->submit(
+                       {.function = PeerWorkGate::block, .context = gate}),
+            compat::RuntimeWorkExecutor::SubmitStatus::accepted);
+    {
+        std::unique_lock lock(gate->mutex);
+        REQUIRE(gate->changed.wait_for(lock, std::chrono::seconds {2}, [&] {
+            return gate->started == capacity.worker_count;
+        }));
+    }
+    for (std::size_t i = 0; i < capacity.queue_capacity; ++i)
+        REQUIRE_EQ(executor->submit(
+                       {.function = PeerWorkGate::count, .context = gate}),
+            compat::RuntimeWorkExecutor::SubmitStatus::accepted);
+    REQUIRE_EQ(sockets.connect(), SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ENOBUF);
+    const auto full = executor->snapshot();
+    REQUIRE_EQ(full.queued, capacity.queue_capacity);
+    REQUIRE_EQ(full.executing, capacity.worker_count);
+    REQUIRE(full.rejected_full > capacity.rejected_full);
+    const auto failed = compat::SocketRegistry::instance().find(sockets.caller);
+    REQUIRE(failed != nullptr);
+    {
+        std::lock_guard lock(failed->mutex);
+        REQUIRE(failed->crypto == nullptr);
+        REQUIRE(failed->runtime == nullptr);
+        REQUIRE(failed->connect_handshake_operation == nullptr);
+        REQUIRE(!failed->has_authenticated_peer);
+    }
+    REQUIRE_EQ(srt_close(sockets.caller), 0);
+    REQUIRE(failed->native_options.peer_authentication_trusted().empty());
+    gate->release();
+    {
+        std::unique_lock lock(gate->mutex);
+        REQUIRE(gate->changed.wait_for(lock, std::chrono::seconds {3}, [&] {
+            return gate->drained == capacity.queue_capacity;
+        }));
+    }
+    sockets.caller = srt_create_socket();
+    REQUIRE(sockets.caller != SRT_INVALID_SOCK);
+    PublicPeerSockets::configure(sockets.caller, true);
+    REQUIRE_EQ(sockets.connect(), 0);
+    sockets.child = srt_accept(sockets.listener, nullptr, nullptr);
+    REQUIRE(sockets.child != SRT_INVALID_SOCK);
+}
+
+TEST(
+    peer_auth_public_concurrent_admissions_keep_identities_and_payloads_isolated)
+{
+    PublicPeerSockets sockets;
+    const int timeout = 5000;
+    REQUIRE_EQ(srt_setsockflag(
+                   sockets.listener, SRTO_CONNTIMEO, &timeout, sizeof(timeout)),
+        0);
+    std::vector<std::byte> pins;
+    for (unsigned i = 0; i < 8; ++i) {
+        const auto key = public_key(i + 3);
+        pins.insert(pins.end(), key.begin(), key.end());
+    }
+    REQUIRE_EQ(srt_setsockflag(sockets.listener,
+                   SRTO_ROBOTWEAX_PEERAUTH_TRUSTED, pins.data(), pins.size()),
+        0);
+    sockets.listen();
+    struct Clients {
+        std::vector<SRTSOCKET> sockets;
+        ~Clients()
+        {
+            for (const auto id : sockets)
+                (void)srt_close(id);
+        }
+    } clients, children;
+    constexpr unsigned count = 8;
+    const bool asynchronous = false;
+    for (unsigned i = 0; i < count; ++i) {
+        const auto id = srt_create_socket();
+        REQUIRE(id != SRT_INVALID_SOCK);
+        clients.sockets.push_back(id);
+        PublicPeerSockets::configure(id, true);
+        REQUIRE_EQ(srt_setsockflag(id, SRTO_ROBOTWEAX_PEERAUTH_KEY,
+                       scalar(i + 3).data(), 32),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(id, SRTO_CONNTIMEO, &timeout, sizeof(timeout)), 0);
+        REQUIRE_EQ(srt_setsockflag(
+                       id, SRTO_RCVSYN, &asynchronous, sizeof(asynchronous)),
+            0);
+        const auto stream = std::to_string(i);
+        REQUIRE_EQ(
+            srt_setsockflag(id, SRTO_STREAMID, stream.data(), stream.size()),
+            0);
+        REQUIRE_EQ(
+            srt_connect(id, reinterpret_cast<const sockaddr*>(&sockets.address),
+                sizeof(sockets.address)),
+            0);
+    }
+    // Accept is nonblocking so a failed admission cannot hang the suite.
+    REQUIRE_EQ(srt_setsockflag(sockets.listener, SRTO_RCVSYN, &asynchronous,
+                   sizeof(asynchronous)),
+        0);
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds {6};
+    while (children.sockets.size() < count
+        && std::chrono::steady_clock::now() < deadline) {
+        const auto child = srt_accept(sockets.listener, nullptr, nullptr);
+        if (child != SRT_INVALID_SOCK)
+            children.sockets.push_back(child);
+        else {
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EASYNCRCV);
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+    }
+    REQUIRE_EQ(children.sockets.size(), count);
+    for (unsigned i = 0; i < count; ++i) {
+        REQUIRE_EQ(srt_getsockstate(clients.sockets[i]), SRTS_CONNECTED);
+        const char byte = static_cast<char>(i);
+        REQUIRE_EQ(srt_sendmsg(clients.sockets[i], &byte, 1, -1, 0), 1);
+    }
+    std::array<bool, count> seen {};
+    for (const auto child : children.sockets) {
+        std::array<char, 16> stream {};
+        int size = stream.size();
+        REQUIRE_EQ(
+            srt_getsockflag(child, SRTO_STREAMID, stream.data(), &size), 0);
+        const auto index = static_cast<unsigned>(stream[0] - '0');
+        REQUIRE(index < count && !seen[index]);
+        seen[index] = true;
+        const bool synchronous = true;
+        REQUIRE_EQ(srt_setsockflag(
+                       child, SRTO_RCVSYN, &synchronous, sizeof(synchronous)),
+            0);
+        std::array<char, 1500> received {};
+        REQUIRE_EQ(srt_recvmsg(child, received.data(), received.size()), 1);
+        REQUIRE_EQ(static_cast<unsigned>(received[0]), index);
+        std::array<std::byte, 64> key {};
+        size = key.size();
+        REQUIRE_EQ(srt_getsockflag(
+                       child, SRTO_ROBOTWEAX_PEERAUTH_PEER, key.data(), &size),
+            0);
+        REQUIRE_EQ(key, public_key(index + 3));
+    }
+}
+
+TEST(peer_auth_public_queued_setup_obeys_deadline_and_close)
+{
+    for (const bool cancel : {false, true}) {
+        PublicPeerCallback callback;
+        PublicPeerSockets sockets;
+        auto result = callback.promise.get_future();
+        std::future<int>
+            closing; // Gate release must precede waiting for this close.
+        const bool synchronous = false;
+        const int timeout = 100;
+        REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_RCVSYN, &synchronous,
+                       sizeof(synchronous)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_CONNTIMEO, &timeout,
+                       sizeof(timeout)),
+            0);
+        REQUIRE_EQ(srt_connect_callback(
+                       sockets.caller, PublicPeerCallback::observe, &callback),
+            0);
+        UdpSocket sink;
+        REQUIRE_EQ(sink.bind(IpEndpoint::loopback(0)), Error::none);
+        const auto endpoint = sink.local_endpoint();
+        REQUIRE(endpoint);
+        sockets.address.sin_port = htons(endpoint.endpoint.port);
+        const auto executor = compat::acquire_runtime_work_executor();
+        REQUIRE(executor != nullptr);
+        const auto capacity = executor->snapshot();
+        const auto gate = std::make_shared<PeerWorkGate>();
+        PeerWorkGateRelease release {gate};
+        for (std::size_t i = 0; i < capacity.worker_count; ++i)
+            REQUIRE_EQ(executor->submit(
+                           {.function = PeerWorkGate::block, .context = gate}),
+                compat::RuntimeWorkExecutor::SubmitStatus::accepted);
+        {
+            std::unique_lock lock(gate->mutex);
+            REQUIRE(gate->changed.wait_for(lock, std::chrono::seconds {2}, [&] {
+                return gate->started == capacity.worker_count;
+            }));
+        }
+        REQUIRE_EQ(sockets.connect(), 0);
+        const auto retained =
+            compat::SocketRegistry::instance().find(sockets.caller);
+        REQUIRE(retained != nullptr);
+        if (cancel)
+            closing = std::async(std::launch::async, [&] {
+                return srt_close(sockets.caller);
+            });
+        REQUIRE(result.wait_for(std::chrono::milliseconds {150})
+            == std::future_status::timeout);
+        gate->release();
+        REQUIRE(result.wait_for(std::chrono::seconds {2})
+            == std::future_status::ready);
+        const auto observed = result.get();
+        REQUIRE_EQ(observed.error, cancel ? SRT_ESCLOSED : SRT_ENOSERVER);
+        REQUIRE(!observed.authenticated);
+        if (cancel)
+            REQUIRE_EQ(closing.get(), 0);
+        // No induction was sent after queue expiry or cancellation.
+        REQUIRE(!sink.wait_readable(20).ready);
+        {
+            std::lock_guard lock(retained->mutex);
+            REQUIRE(retained->runtime == nullptr);
+            REQUIRE(retained->crypto == nullptr);
+            REQUIRE(!retained->has_authenticated_peer);
         }
     }
 }
