@@ -25,6 +25,7 @@
 #include <mutex>
 #include <new>
 #include <span>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -114,7 +115,9 @@ void exercise_gcm_fec_geometry(std::string_view filter,
     std::uint32_t source_count, std::span<const std::uint32_t> dropped_sources,
     std::size_t expected_filter_packets, std::size_t expected_supplied_packets,
     bool corrupt_parity = false, bool protect_parity = false,
-    bool full_payload = false, bool acp1 = false)
+    bool full_payload = false, bool acp1 = false, bool npd = false,
+    std::size_t key_length = 32, bool reorder = false,
+    CryptoMode mode = CryptoMode::aes_gcm)
 {
     const auto sender_channel = std::make_shared<DatagramChannel>();
     const auto receiver_channel = std::make_shared<DatagramChannel>();
@@ -134,9 +137,9 @@ void exercise_gcm_fec_geometry(std::string_view filter,
 
     const CryptoConfiguration crypto_configuration {
         .passphrase = "authenticated fec geometry fixture",
-        .mode = CryptoMode::aes_gcm,
+        .mode = mode,
         .enable_aes_gcm = true,
-        .key_length = 32,
+        .key_length = key_length,
         .refresh_rate_packets = 64,
         .preannouncement_packets = 8,
     };
@@ -182,14 +185,18 @@ void exercise_gcm_fec_geometry(std::string_view filter,
                        710, 720),
             Error::none);
     }
+    if (npd)
+        REQUIRE_EQ(options.reserve_npd_prefix(true), Error::none);
     const bool sensor = options.packet_filter_configuration().sensor_profile();
 #ifdef ENABLE_AEAD_API_PREVIEW
-    REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::crypto_mode,
+                   mode == CryptoMode::aes_gcm ? 2 : 1),
+        Error::none);
 #endif
     const auto payload_size = full_payload
-        ? options.maximum_payload_size_limit(CryptoMode::aes_gcm)
-        : 1U;
-    if (full_payload)
+        ? options.maximum_payload_size_limit(mode)
+        : (npd ? 1316U : 1U);
+    if (full_payload || npd)
         REQUIRE_EQ(options.set(SocketOption::maximum_payload_size,
                        static_cast<std::int64_t>(payload_size)),
             Error::none);
@@ -203,6 +210,7 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         .peer_socket_id = 720,
         .initial_sequence = initial,
         .flow_window_packets = 256,
+        .npd_enabled = npd,
         .options = options,
         .negotiated_options =
             {
@@ -220,6 +228,7 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         .peer_socket_id = 710,
         .initial_sequence = initial,
         .flow_window_packets = 256,
+        .npd_enabled = npd,
         .options = options,
         .negotiated_options =
             {
@@ -233,9 +242,26 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         .now_context = &receiver_now,
     }};
 
-    for (std::uint32_t index = 0; index < source_count; ++index) {
-        const std::vector<std::byte> payload(payload_size,
+    const auto make_payload = [&](std::uint32_t index) {
+        std::vector<std::byte> payload(payload_size,
             static_cast<std::byte>(static_cast<unsigned char>('A') + index));
+        if (npd && !full_payload) {
+            for (std::size_t unit = 0; unit < 7; ++unit) {
+                const auto offset = unit * 188;
+                payload[offset] = std::byte {0x47};
+                if (unit == index % 7)
+                    continue;
+                std::fill_n(
+                    payload.begin() + offset + 4, 184, std::byte {0xff});
+                payload[offset + 1] = std::byte {0x1f};
+                payload[offset + 2] = std::byte {0xff};
+                payload[offset + 3] = std::byte {0x10};
+            }
+        }
+        return payload;
+    };
+    for (std::uint32_t index = 0; index < source_count; ++index) {
+        const auto payload = make_payload(index);
         REQUIRE_EQ(sender.queue_message(payload, 0, false, false, -1).status,
             MessageIoStatus::success);
     }
@@ -248,7 +274,24 @@ void exercise_gcm_fec_geometry(std::string_view filter,
     std::vector<std::byte> last_parity;
     std::size_t source_packets = 0;
     std::size_t filter_packets = 0;
-    for (const auto& datagram : take_datagrams(sender_output)) {
+    auto datagrams = take_datagrams(sender_output);
+    if (reorder) {
+        // Swap adjacent DATA sources without moving parity or key material.
+        for (std::size_t index = 1; index < datagrams.size(); ++index) {
+            const auto previous = decode_packet(datagrams[index - 1]);
+            const auto current = decode_packet(datagrams[index]);
+            REQUIRE(previous);
+            REQUIRE(current);
+            if (previous.packet.kind == PacketKind::data
+                && current.packet.kind == PacketKind::data
+                && previous.packet.data.message_number != 0U
+                && current.packet.data.message_number != 0U) {
+                std::swap(datagrams[index - 1], datagrams[index]);
+                ++index;
+            }
+        }
+    }
+    for (const auto& datagram : datagrams) {
         const auto decoded = decode_packet(datagram);
         REQUIRE(decoded);
         if (decoded.packet.kind != PacketKind::data) {
@@ -274,7 +317,10 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         } else {
             ++source_packets;
             REQUIRE_EQ(decoded.packet.payload.size(),
-                payload_size + srt_gcm_authentication_tag_size);
+                (npd && !full_payload ? 188U : payload_size) + (npd ? 1U : 0U)
+                    + (mode == CryptoMode::aes_gcm
+                            ? srt_gcm_authentication_tag_size
+                            : 0U));
             const std::uint32_t index =
                 (decoded.packet.data.sequence.value() - initial.value())
                 & SequenceNumber::mask;
@@ -333,11 +379,18 @@ void exercise_gcm_fec_geometry(std::string_view filter,
             REQUIRE_EQ(static_cast<std::size_t>(offset), index);
         }
         REQUIRE_EQ(received.bytes, payload_size);
-        REQUIRE_EQ(received_bytes[0],
-            static_cast<std::byte>(static_cast<unsigned char>('A') + offset));
+        const auto expected = make_payload(static_cast<std::uint32_t>(offset));
+        REQUIRE(std::equal(
+            expected.begin(), expected.end(), received_bytes.begin()));
     }
     REQUIRE_EQ(receiver.receive_message(received_bytes, false, -1).status,
         MessageIoStatus::would_block);
+    if (npd) {
+        const auto deleted = full_payload ? 0U : 6U * source_count;
+        REQUIRE_EQ(sender.npd_statistics().deleted_units, deleted);
+        REQUIRE_EQ(receiver.npd_statistics().restored_units, deleted);
+        REQUIRE_EQ(receiver.npd_statistics().malformed_payloads, 0U);
+    }
     const auto statistics = receiver.statistics(false, true);
     REQUIRE_EQ(statistics.total.receiver_filter_extra, expected_filter_packets);
     REQUIRE_EQ(
@@ -349,6 +402,9 @@ void exercise_gcm_fec_geometry(std::string_view filter,
                 : 0U)
             + (protect_parity ? 3U * filter_packets : 0U));
     REQUIRE(!last_parity.empty());
+    // Legacy CTR parity has no authentication and can refresh liveness.
+    if (mode == CryptoMode::aes_ctr && !protect_parity)
+        return;
     last_parity.back() ^= std::byte {1};
     const auto replay = decode_packet(last_parity);
     REQUIRE(replay);
@@ -359,6 +415,36 @@ void exercise_gcm_fec_geometry(std::string_view filter,
 }
 
 } // namespace
+
+TEST(npd_encrypted_fec_policy_key_sizes_and_reordering_matrix)
+{
+    constexpr std::array missing {0U};
+    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == CryptoMode::aes_gcm)
+            continue;
+#endif
+        for (const auto key_length : {16U, 24U, 32U}) {
+            for (const auto policy : {"always", "onreq", "never"}) {
+                for (const bool authenticated : {false, true}) {
+                    for (const bool full_payload : {false, true}) {
+                        const auto run = [&](std::string_view geometry,
+                                             std::uint32_t sources,
+                                             std::size_t parity) {
+                            const auto filter = std::string {geometry} + policy;
+                            exercise_gcm_fec_geometry(filter, sources, missing,
+                                parity, 1U, false, authenticated, full_payload,
+                                false, true, key_length, true, mode);
+                        };
+                        run("fec,cols:2,rows:1,arq:", 2U, 1U);
+                        run("fec,cols:2,rows:-2,layout:even,arq:", 4U, 2U);
+                        run("fec,cols:3,rows:3,layout:even,arq:", 9U, 6U);
+                    }
+                }
+            }
+        }
+    }
+}
 
 #ifdef ENABLE_AEAD_API_PREVIEW
 TEST(compat_runtime_gcm_sensor_authenticates_fec_and_duplicate_data)

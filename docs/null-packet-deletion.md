@@ -8,8 +8,8 @@ unregistered. This is not a released feature or a RIST compatibility claim.
 
 Development remains on the feature branch. Merging to `main` requires explicit
 maintainer approval after feature completion. Remaining release qualification
-includes deployed MPEG-TS corpora, other platforms/providers, and the broader
-loss/reordering and FEC-policy matrix listed below.
+includes deployed MPEG-TS corpora, other platforms, and the broader
+loss/reordering, rotation and retransmission combinations listed below.
 
 Null packet deletion (NPD) removes MPEG-TS null packets from live payloads at
 the sender and restores them at the receiver, so constant-bitrate transport
@@ -230,7 +230,12 @@ The focused `npd_` native cases exercise policy and option ordering, exact echo
 and retries, authenticated AGREEMENT, clear/CTR/GCM transfers, authenticated
 parity, all key lengths across the FEC geometries, key rotation, ARQ and FEC loss
 recovery, payload ceilings and preservation of the input-rate estimate. The
-codec tests cover 3,279 deletion/retention combinations and every prefix across
+deterministic recovery matrix covers 216 combinations: CTR/GCM, 16/24/32-byte
+keys, row/column/matrix FEC, always/onreq/never ARQ policies, authenticated or
+legacy parity, and compressed TS or maximum-size passthrough payloads. Each
+combination drops one source, swaps adjacent source DATA, verifies every restored
+byte and checks NPD counters. This does not exhaust multi-loss patterns or
+rotation during reordered recovery. The codec tests cover 3,279 deletion/retention combinations and every prefix across
 payload lengths through 1,504 bytes. The dedicated fuzz targets are
 `fuzz_null_packet_deletion` and `fuzz_handshake_decode`.
 
@@ -259,6 +264,15 @@ and handshake extension records from OFF and IF_OFFERED listeners in both data
 directions. Both references skipped the unknown offer and omitted an echo;
 REQUIRED callers rejected that response. REQUIRED listeners rejected stock
 callers without an offer.
+
+A local macOS/MbedTLS 3.6.7 build also passed the focused NPD suite and all
+20 black-box cases against the same pinned public-API peers. The encrypted
+recovery matrix passed with both providers. Reproduce the MbedTLS configuration
+by adding `-DROBOTWEAX_SRT_CRYPTO_BACKEND=mbedtls` and
+`-DMbedTLS_ROOT=/path/to/mbedtls-3.6.7-install` to the CMake command above.
+The separate-process runner records each candidate binary hash in `report.json`;
+its current wire comparisons use clear DATA, while native tests exercise both
+cipher modes. These results cover local macOS builds, not other platforms.
 
 For the 84,224-byte synthetic corpus, source DATA payload bytes fell from
 84,224 to 45,184 in each direction. With row FEC, parity payload bytes increased
