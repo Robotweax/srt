@@ -265,6 +265,14 @@ typedef enum SRT_SOCKOPT {
      * receiver can detect a lost tail (TCP TLP, RFC 8985). Accepted only
      * together with SRTO_ROBOTWEAX_FECPOLICY = ARQFIRST. */
     SRTO_ROBOTWEAX_TAILPROBE = 0x01000017,
+    /** Experimental peer authentication PRE configuration. Default-off build
+     * gate; connection admission is not implemented yet. KEY is write-only. */
+    SRTO_ROBOTWEAX_PEERAUTH_POLICY = 0x01000019,
+    SRTO_ROBOTWEAX_PEERAUTH_KEY = 0x0100001a,
+    SRTO_ROBOTWEAX_PEERAUTH_TRUSTED = 0x0100001b,
+    /** Reserved read-only admission/connected results; currently unavailable. */
+    SRTO_ROBOTWEAX_PEERAUTH_OFFERED = 0x0100001c,
+    SRTO_ROBOTWEAX_PEERAUTH_PEER = 0x0100001d,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif

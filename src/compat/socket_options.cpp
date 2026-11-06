@@ -130,6 +130,9 @@ template <typename Value>
         || option == SRTO_ROBOTWEAX_PATHID_POLICY
         || option == SRTO_ROBOTWEAX_PATHID
         || option == SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT
+        || option == SRTO_ROBOTWEAX_PEERAUTH_POLICY
+        || option == SRTO_ROBOTWEAX_PEERAUTH_KEY
+        || option == SRTO_ROBOTWEAX_PEERAUTH_TRUSTED
         || option == SRTO_ROBOTWEAX_ACP1_REQUIRED
         || option == SRTO_ROBOTWEAX_MCAST_GROUP
         || option == SRTO_ROBOTWEAX_MCAST_IFACE
@@ -570,6 +573,31 @@ int get_socket_option(
         *value_size = static_cast<int>(options.path_identifier.size);
         return 0;
     }
+    case SRTO_ROBOTWEAX_PEERAUTH_POLICY:
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        return write_value(value, value_size,
+            std::int32_t(socket.native_options.peer_authentication_required()));
+#else
+        return unsupported_option();
+#endif
+    case SRTO_ROBOTWEAX_PEERAUTH_TRUSTED:
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    {
+        const auto keys = socket.native_options.peer_authentication_trusted();
+        if (*value_size < static_cast<int>(keys.size()))
+            return invalid_parameter();
+        if (!keys.empty())
+            std::memcpy(value, keys.data(), keys.size());
+        *value_size = static_cast<int>(keys.size());
+        return 0;
+    }
+#else
+        return unsupported_option();
+#endif
+    case SRTO_ROBOTWEAX_PEERAUTH_KEY:
+    case SRTO_ROBOTWEAX_PEERAUTH_OFFERED:
+    case SRTO_ROBOTWEAX_PEERAUTH_PEER:
+        return unsupported_option();
     case SRTO_ROBOTWEAX_ACP1_REQUIRED:
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
         return write_value(
@@ -1297,6 +1325,11 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     }
     case SRTO_GROUPCONNECT: {
         bool parsed = false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        if (socket.native_options.peer_authentication_required()
+            && (!read_boolean(value, value_size, parsed) || parsed))
+            return invalid_parameter();
+#endif
         if (!read_boolean(value, value_size, parsed)
             || (parsed
                 && (is_experimental_congestion_controller(
@@ -1487,6 +1520,37 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         options.identity_advertisement = parsed;
         return 0;
     }
+    case SRTO_ROBOTWEAX_PEERAUTH_POLICY:
+    case SRTO_ROBOTWEAX_PEERAUTH_KEY:
+    case SRTO_ROBOTWEAX_PEERAUTH_TRUSTED: {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        if (socket.state == SRTS_CLOSING || socket.state == SRTS_CLOSED)
+            return unsupported_option();
+        if (option == SRTO_ROBOTWEAX_PEERAUTH_POLICY) {
+            std::int32_t parsed = 0;
+            if (!read_value(value, value_size, parsed)
+                || (parsed != 0
+                    && (options.group_connect
+                        || socket.group_id != SRT_INVALID_SOCK)))
+                return invalid_parameter();
+            return set_native(socket.native_options,
+                SocketOption::peer_authentication_policy, parsed);
+        }
+        const auto bytes = std::span {static_cast<const std::byte*>(value),
+            static_cast<std::size_t>(value_size)};
+        const auto error = option == SRTO_ROBOTWEAX_PEERAUTH_KEY
+            ? socket.native_options.set_peer_authentication_key(bytes)
+            : socket.native_options.set_peer_authentication_trusted(bytes);
+        return error == Error::none       ? 0
+            : error == Error::unsupported ? unsupported_option()
+                                          : invalid_parameter();
+#else
+        return unsupported_option();
+#endif
+    }
+    case SRTO_ROBOTWEAX_PEERAUTH_OFFERED:
+    case SRTO_ROBOTWEAX_PEERAUTH_PEER:
+        return unsupported_option();
     case SRTO_ROBOTWEAX_ACP1_REQUIRED: {
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
         bool parsed = false;

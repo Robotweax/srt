@@ -1,6 +1,7 @@
 #include "test.hpp"
 
 #include "robotweax/srt/socket_options.hpp"
+#include "srt/srt.h"
 
 #include <cstdint>
 #include <string_view>
@@ -925,3 +926,23 @@ TEST(fec_policy_arqfirst_locks_the_accepted_bundle)
     REQUIRE_EQ(options.fec_policy(), FecPolicy::arqfirst);
     REQUIRE(options.supports_arqfirst_fec());
 }
+
+#ifndef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+TEST(socket_options_peer_authentication_is_unavailable_by_default)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    const auto socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    for (auto option : {SRTO_ROBOTWEAX_PEERAUTH_POLICY,
+             SRTO_ROBOTWEAX_PEERAUTH_KEY, SRTO_ROBOTWEAX_PEERAUTH_TRUSTED,
+             SRTO_ROBOTWEAX_PEERAUTH_OFFERED, SRTO_ROBOTWEAX_PEERAUTH_PEER}) {
+        int value = 1, size = sizeof(value);
+        REQUIRE_EQ(srt_setsockflag(socket, option, &value, size), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+        REQUIRE_EQ(srt_getsockflag(socket, option, &value, &size), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    }
+    REQUIRE_EQ(srt_close(socket), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
+#endif

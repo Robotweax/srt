@@ -79,6 +79,9 @@ enum class SocketOption : std::uint16_t {
     // SocketOptions::supports_arqfirst_fec for the accepted combination.
     fec_policy,
     sender_tail_probe,
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    peer_authentication_policy,
+#endif
 };
 
 struct SocketOptionResult {
@@ -91,6 +94,39 @@ struct SocketOptionResult {
     }
 };
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+// Owns PRE configuration secrets. Copying is needed for accepted children;
+// assignment and destruction erase the destination's previous private scalar.
+class PeerAuthenticationCredentials {
+public:
+    PeerAuthenticationCredentials() = default;
+    PeerAuthenticationCredentials(
+        const PeerAuthenticationCredentials&) = default;
+    PeerAuthenticationCredentials& operator=(
+        const PeerAuthenticationCredentials&) noexcept;
+    ~PeerAuthenticationCredentials();
+    [[nodiscard]] Error set_identity(std::span<const std::byte> key) noexcept;
+    [[nodiscard]] Error set_trusted(std::span<const std::byte> keys) noexcept;
+    [[nodiscard]] Error configure(
+        peer_authentication::Exchange& exchange) const noexcept;
+    [[nodiscard]] bool complete() const noexcept
+    {
+        return has_identity_ && trusted_size_ != 0;
+    }
+    [[nodiscard]] std::span<const std::byte> trusted() const noexcept
+    {
+        return std::span {trusted_}.first(trusted_size_);
+    }
+    void clear() noexcept;
+
+private:
+    std::array<std::byte, 32> identity_ {};
+    std::array<std::byte, 16 * 64> trusted_ {};
+    std::size_t trusted_size_ = 0;
+    bool has_identity_ = false;
+};
+#endif
+
 class SocketOptions {
 public:
     SocketOptions() = default;
@@ -100,6 +136,34 @@ public:
 
     [[nodiscard]] Error set(SocketOption option, std::int64_t value) noexcept;
     [[nodiscard]] SocketOptionResult get(SocketOption option) const noexcept;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    [[nodiscard]] bool peer_authentication_required() const noexcept
+    {
+        return peer_authentication_required_;
+    }
+    [[nodiscard]] Error set_peer_authentication_key(
+        std::span<const std::byte> key) noexcept
+    {
+        return peer_authentication_credentials_.set_identity(key);
+    }
+    [[nodiscard]] Error set_peer_authentication_trusted(
+        std::span<const std::byte> keys) noexcept
+    {
+        return peer_authentication_credentials_.set_trusted(keys);
+    }
+    [[nodiscard]] std::span<const std::byte>
+    peer_authentication_trusted() const noexcept
+    {
+        return peer_authentication_credentials_.trusted();
+    }
+    [[nodiscard]] Error configure_peer_authentication(
+        peer_authentication::Exchange& exchange) const noexcept;
+    void clear_peer_authentication() noexcept
+    {
+        peer_authentication_required_ = false;
+        peer_authentication_credentials_.clear();
+    }
+#endif
     [[nodiscard]] Error set_passphrase(
         std::string_view passphrase) noexcept;
     [[nodiscard]] Error set_packet_filter(
@@ -335,6 +399,10 @@ private:
     PacketFilterConfiguration
         packet_filter_configuration_{};
     bool enforced_encryption_ = true;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    PeerAuthenticationCredentials peer_authentication_credentials_;
+    bool peer_authentication_required_ = false;
+#endif
     bool session_authentication_ = false;
     bool experimental_acp1_ = false;
     FecPolicy fec_policy_ = FecPolicy::always;

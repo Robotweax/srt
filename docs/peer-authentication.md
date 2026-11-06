@@ -29,9 +29,17 @@ Setup inbox forwarding and the retry encoder preserve those bytes while allowing
 the outer packet timestamp and destination to change. The legacy handshake
 machine refuses PEERAUTH records rather than accepting them without proof checks.
 
-Socket options, admission callbacks and authenticated connection establishment
-are still absent. Enabling the build option does not authenticate socket
-connections or enable outgoing PEERAUTH handshakes. In particular,
+The experimental POLICY, KEY and TRUSTED socket settings are implemented.
+Scalar and point validation happen before replacement; private scalars are
+write-only and erased on replacement, close and destruction. Accepted-child
+configuration copies own independent credentials. REQUIRED rejects incompatible
+configuration in both setting orders, including group option templates.
+
+Admission callbacks and authenticated connection establishment are still absent.
+For now, **connect and listen with REQUIRED return `SRT_ESECFAIL`**, even with
+complete credentials; they cannot fall back to the legacy handshake. OFFERED
+and PEER remain unavailable. Enabling the build option does not authenticate
+socket connections or enable outgoing PEERAUTH handshakes. In particular,
 `Exchange::ready_for_key_exchange()` is not permission to publish a caller or
 release DATA: the caller still needs the listener's passphrase proof through
 an authenticated runtime key control. The socket layer must supply cookie and
