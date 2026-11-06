@@ -136,7 +136,7 @@ struct ListenerConnectionSetupActorResult {
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
     std::array<PeerAuthenticationHandshake::Datagram, 2> peer_datagrams {};
     std::size_t peer_datagram_count = 0;
-    std::vector<DatagramEnvelope> early_data;
+    std::vector<DatagramEnvelope> early_data {};
 #endif
 };
 
