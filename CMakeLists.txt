@@ -254,7 +254,8 @@ if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
 endif()
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
     target_sources(robotweax_srt PRIVATE src/peer_authentication.cpp
-        src/peer_authentication_admission.cpp)
+        src/peer_authentication_admission.cpp
+        src/compat/peer_authentication_handshake.cpp)
     target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH)
 endif()
 target_compile_definitions(robotweax_srt PRIVATE ROBOTWEAX_SRT_BUILDING)

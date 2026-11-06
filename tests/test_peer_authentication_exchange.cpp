@@ -8,6 +8,8 @@
 #include "robotweax/srt/socket_options.hpp"
 #include "srt/srt.h"
 #include "compat/socket_registry.hpp"
+#include "compat/peer_authentication_handshake.hpp"
+#include "compat/listener_handshake_sources.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1679,4 +1681,352 @@ TEST(peer_auth_admission_enforces_deadlines_on_entry_and_runtime_import_failure)
         REQUIRE(faulted.caller.cached(pa::Message::confirmation, faulted.now)
                 .empty());
     }
+}
+
+namespace {
+using PeerHandshake = compat::PeerAuthenticationHandshake;
+SocketOptions peer_handshake_options(bool caller, unsigned length = 16)
+{
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set_passphrase("packet adapter test passphrase"), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::session_authentication, 1), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::encryption_key_length, length), Error::none);
+    REQUIRE_EQ(options.set_peer_authentication_key(scalar(caller ? 1 : 2)),
+        Error::none);
+    REQUIRE_EQ(
+        options.set_peer_authentication_trusted(public_key(caller ? 2 : 1)),
+        Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::peer_authentication_policy, 1), Error::none);
+    return options;
+}
+HandshakeMachine::Configuration peer_handshake_configuration(
+    bool caller, const SocketOptions& options)
+{
+    HandshakeMachine::Configuration configuration;
+    configuration.role =
+        caller ? ConnectionRole::caller : ConnectionRole::listener;
+    configuration.local_socket_id = caller ? 123 : 456;
+    configuration.initial_sequence = SequenceNumber {1};
+    configuration.extension_parameters = options.handshake_parameters();
+    configuration.minimum_peer_srt_version = 0x010000;
+    configuration.cookie_generator = +[](const Handshake&, void*) noexcept {
+        return 0x12345678U;
+    };
+    return configuration;
+}
+struct PacketAdmissionPair {
+    SocketOptions co, lo;
+    TrackingProvider cp, lp;
+    PeerHandshake caller, listener;
+    PeerHandshake::Time now {};
+    PeerHandshake::Time deadline = now + std::chrono::seconds {5};
+    PeerHandshake::Result offer, response, confirmation, listener_keys;
+    explicit PacketAdmissionPair(
+        unsigned caller_length = 16, unsigned listener_length = 16)
+        : co(peer_handshake_options(true, caller_length))
+        , lo(peer_handshake_options(false, listener_length))
+        , caller(peer_handshake_configuration(true, co), co, cp)
+        , listener(peer_handshake_configuration(false, lo), lo, lp)
+    {
+    }
+    void discovery()
+    {
+        REQUIRE(!listener.start(now, deadline).failed);
+        auto initial = caller.start(now, deadline);
+        REQUIRE_EQ(initial.size, 1U);
+        auto cookie = listener.receive(initial.outgoing[0].view(), now);
+        REQUIRE_EQ(cookie.size, 1U);
+        REQUIRE_EQ(cp.operations, 0U);
+        REQUIRE_EQ(lp.operations, 0U);
+        offer = caller.receive(cookie.outgoing[0].view(), now);
+        REQUIRE(!offer.failed);
+        REQUIRE_EQ(offer.size, 1U);
+        REQUIRE_EQ(lp.operations, 0U);
+    }
+    void proofs()
+    {
+        discovery();
+        response = listener.receive(offer.outgoing[0].view(), now);
+        REQUIRE(!response.failed);
+        REQUIRE_EQ(response.size, 1U);
+        REQUIRE(listener.transport(now) == nullptr);
+        REQUIRE(!listener.ready(now));
+        REQUIRE(!listener.release_crypto(now));
+        confirmation = caller.receive(response.outgoing[0].view(), now);
+        REQUIRE(!confirmation.failed);
+        REQUIRE_EQ(confirmation.size, 2U);
+        REQUIRE(caller.transport(now) == nullptr);
+        REQUIRE(!caller.ready(now));
+        REQUIRE(!caller.release_crypto(now));
+        listener_keys = listener.receive(confirmation.outgoing[0].view(), now);
+        REQUIRE(!listener_keys.failed);
+        REQUIRE_EQ(listener_keys.size, 1U);
+    }
+    void confirm_keys()
+    {
+        auto listener_ack =
+            listener.receive(confirmation.outgoing[1].view(), now);
+        REQUIRE(!listener_ack.failed);
+        REQUIRE_EQ(listener_ack.size, 1U);
+        auto caller_ack = caller.receive(listener_keys.outgoing[0].view(), now);
+        REQUIRE(!caller_ack.failed);
+        REQUIRE_EQ(caller_ack.size, 1U);
+        REQUIRE(!caller.ready(now));
+        REQUIRE(!listener.ready(now));
+        REQUIRE(caller.receive(listener_ack.outgoing[0].view(), now).ready);
+        REQUIRE(listener.receive(caller_ack.outgoing[0].view(), now).ready);
+    }
+};
+}
+
+TEST(peer_auth_transport_adapter_negotiates_and_gates_publication)
+{
+    for (unsigned length : {0U, 16U, 24U, 32U}) {
+        PacketAdmissionPair p(length, 24);
+        p.proofs();
+        p.confirm_keys();
+        REQUIRE(p.caller.transport(p.now) != nullptr);
+        REQUIRE(p.listener.transport(p.now) != nullptr);
+        REQUIRE_EQ(
+            p.caller.transport(p.now)->state(), HandshakeState::connected);
+        REQUIRE_EQ(p.caller.peer_socket_id(), 456U);
+        REQUIRE_EQ(p.listener.peer_socket_id(), 123U);
+        REQUIRE(equal(p.caller.peer_public_key(p.now), public_key(2)));
+        REQUIRE(equal(p.listener.peer_public_key(p.now), public_key(1)));
+        auto caller = p.caller.release_crypto(p.now),
+             listener = p.listener.release_crypto(p.now);
+        REQUIRE(caller && listener);
+        REQUIRE_EQ(caller->key_length(), length == 0 ? 24U : length);
+        REQUIRE_EQ(listener->key_length(), caller->key_length());
+        REQUIRE(!p.caller.release_crypto(p.now));
+        DataHeader header {.sequence = SequenceNumber {1},
+            .message_number = 1,
+            .boundary = MessageBoundary::solo,
+            .encryption_key = caller->active_sender_key()};
+        std::array<std::byte, 1> plain {std::byte {42}}, cipher {}, opened {};
+        std::array<std::byte, srt_gcm_authentication_tag_size> tag {};
+        EncryptionKey key;
+        REQUIRE_EQ(caller->seal(header, plain, cipher, tag, key), Error::none);
+        REQUIRE_EQ(listener->open(header, cipher, tag, opened), Error::none);
+        REQUIRE_EQ(opened, plain);
+    }
+}
+
+TEST(peer_auth_transport_adapter_retries_lost_proofs_and_reordered_key_controls)
+{
+    PacketAdmissionPair p;
+    p.discovery();
+    p.response = p.listener.receive(p.offer.outgoing[0].view(), p.now);
+    REQUIRE_EQ(p.response.size, 1U); // drop first response
+    const auto operations = p.lp.operations;
+    auto retry = p.caller.retry(p.now + std::chrono::milliseconds {10});
+    REQUIRE_EQ(retry.size, 1U);
+    REQUIRE(equal(retry.outgoing[0].view().subspan(packet_header_size),
+        p.offer.outgoing[0].view().subspan(packet_header_size)));
+    auto response = p.listener.receive(retry.outgoing[0].view(), p.now);
+    REQUIRE_EQ(response.size, 1U);
+    REQUIRE_EQ(p.lp.operations, operations);
+    REQUIRE(equal(response.outgoing[0].view().subspan(packet_header_size),
+        p.response.outgoing[0].view().subspan(packet_header_size)));
+    p.confirmation = p.caller.receive(response.outgoing[0].view(), p.now);
+    REQUIRE_EQ(p.confirmation.size, 2U);
+    auto reordered =
+        p.listener.receive(p.confirmation.outgoing[1].view(), p.now);
+    REQUIRE(!reordered.failed);
+    REQUIRE_EQ(reordered.size, 0U);
+    auto caller_retry = p.caller.retry(p.now + std::chrono::milliseconds {20});
+    REQUIRE_EQ(caller_retry.size, 2U);
+    p.listener_keys =
+        p.listener.receive(caller_retry.outgoing[0].view(), p.now);
+    REQUIRE_EQ(p.listener_keys.size, 1U);
+    p.confirm_keys();
+}
+
+TEST(peer_auth_transport_adapter_rejects_downgrade_and_bad_cookie_before_crypto)
+{
+    PacketAdmissionPair p;
+    p.discovery();
+    auto bad_cookie = p.offer.outgoing[0];
+    bad_cookie.bytes[packet_header_size + 28] ^= std::byte {1};
+    auto rejected = p.listener.receive(bad_cookie.view(), p.now);
+    REQUIRE(!rejected.ready);
+    REQUIRE_EQ(p.lp.operations, 0U);
+    PacketAdmissionPair stripped;
+    stripped.discovery();
+    const auto decoded =
+        decode_handshake_datagram(stripped.offer.outgoing[0].view());
+    REQUIRE(decoded);
+    HandshakeAction action {.kind = HandshakeActionKind::send,
+        .packet = decoded.message.packet,
+        .has_handshake_extension = true,
+        .extension_type = HandshakeExtensionType::handshake_request,
+        .extension_parameters = decoded.message.extension_parameters};
+    std::array<std::byte, 1500> bytes {};
+    const auto encoded = encode_handshake_datagram(action, {}, 456, bytes);
+    REQUIRE(encoded);
+    REQUIRE(stripped.listener
+            .receive(
+                std::span {bytes}.first(encoded.bytes_written), stripped.now)
+            .failed);
+    REQUIRE_EQ(stripped.lp.operations, 0U);
+}
+
+TEST(
+    peer_auth_transport_adapter_rejects_wrong_routes_and_unauthenticated_runtime_keys)
+{
+    PacketAdmissionPair p;
+    p.proofs();
+    auto wrong_route = p.confirmation.outgoing[1];
+    wrong_route.bytes[15] ^= std::byte {1};
+    auto result = p.listener.receive(wrong_route.view(), p.now);
+    REQUIRE(result.error != Error::none);
+    REQUIRE(!result.failed);
+    REQUIRE(!result.ready);
+    auto invalid_tag = p.confirmation.outgoing[1];
+    invalid_tag.bytes[invalid_tag.size - 1] ^= std::byte {1};
+    result = p.listener.receive(invalid_tag.view(), p.now);
+    REQUIRE_EQ(result.error, Error::authentication_failure);
+    REQUIRE(!result.failed);
+    auto legacy = p.confirmation.outgoing[1];
+    legacy.bytes[2] = std::byte {};
+    legacy.bytes[3] = std::byte {3};
+    result = p.listener.receive(legacy.view(), p.now);
+    REQUIRE(result.error != Error::none);
+    REQUIRE(!result.failed);
+    p.confirm_keys();
+}
+
+TEST(peer_auth_transport_adapter_deadline_and_m3_transport_binding)
+{
+    PacketAdmissionPair p;
+    p.discovery();
+    p.response = p.listener.receive(p.offer.outgoing[0].view(), p.now);
+    p.confirmation = p.caller.receive(p.response.outgoing[0].view(), p.now);
+    REQUIRE_EQ(p.confirmation.size, 2U);
+    auto changed = p.confirmation.outgoing[0];
+    changed.bytes[packet_header_size + 12] ^= std::byte {1}; // MSS
+    REQUIRE(p.listener.receive(changed.view(), p.now).failed);
+    REQUIRE_EQ(p.lp.derivations, 0U);
+    REQUIRE_EQ(p.lp.handles, 0U);
+    REQUIRE(p.caller.retry(p.deadline).failed);
+    REQUIRE_EQ(p.cp.handles, 0U);
+    REQUIRE(!p.caller.release_crypto(p.now));
+}
+
+TEST(
+    peer_auth_transport_adapter_accepts_stateless_cookie_admission_on_child_route)
+{
+    auto co = peer_handshake_options(true, 0),
+         lo = peer_handshake_options(false, 24);
+    TrackingProvider cp, lp;
+    PeerHandshake caller(peer_handshake_configuration(true, co), co, cp);
+    const PeerHandshake::Time now {};
+    const auto deadline = now + std::chrono::seconds {5};
+    auto initial = caller.start(now, deadline);
+    REQUIRE_EQ(initial.size, 1U);
+    compat::StatelessListenerHandshakeRouter router(
+        {.listener_socket_id = 999, .cookie_secret = {std::byte {42}}});
+    const auto peer = IpEndpoint::loopback(40000);
+    const auto decoded_initial =
+        decode_handshake_datagram(initial.outgoing[0].view());
+    REQUIRE(decoded_initial);
+    auto induction = router.route(decoded_initial.message, peer, 7);
+    REQUIRE_EQ(induction.kind,
+        compat::ListenerHandshakeRouteKind::send_induction_response);
+    std::array<std::byte, 1500> wire {};
+    const auto encoded =
+        encode_handshake_datagram(induction.response, {}, 123, wire);
+    REQUIRE(encoded);
+    auto offer =
+        caller.receive(std::span {wire}.first(encoded.bytes_written), now);
+    REQUIRE_EQ(offer.size, 1U);
+    const auto decoded_offer =
+        decode_handshake_datagram(offer.outgoing[0].view());
+    REQUIRE(decoded_offer);
+    auto route = router.route(decoded_offer.message, peer, 7);
+    REQUIRE_EQ(
+        route.kind, compat::ListenerHandshakeRouteKind::admit_conclusion);
+    compat::ListenerHandshakeAdmission admitted {
+        .initial = {.message = route.reconstructed_induction, .peer = peer},
+        .conclusion = {.message = decoded_offer.message,
+            .control = decoded_offer.control,
+            .peer = peer},
+        .protocol = route.protocol,
+        .validated_cookie = route.validated_cookie};
+    auto configuration = peer_handshake_configuration(false, lo);
+    configuration.cookie_generator =
+        +[](const Handshake&, void* cookie) noexcept {
+            return *static_cast<std::uint32_t*>(cookie);
+        };
+    configuration.cookie_context = &route.validated_cookie;
+    PeerHandshake listener(configuration, lo, lp);
+    auto response = listener.start_admitted_listener(admitted, now, deadline);
+    REQUIRE(!response.failed);
+    REQUIRE_EQ(response.size, 1U);
+    auto confirmation = caller.receive(response.outgoing[0].view(), now);
+    REQUIRE(!confirmation.failed);
+    REQUIRE_EQ(confirmation.size, 2U);
+    REQUIRE_EQ(
+        caller.peer_socket_id(), 456U); // child, not stateless listener 999
+    auto keys = listener.receive(confirmation.outgoing[0].view(), now);
+    REQUIRE_EQ(keys.size, 1U);
+    auto caller_ack = caller.receive(keys.outgoing[0].view(), now);
+    auto listener_ack = listener.receive(confirmation.outgoing[1].view(), now);
+    REQUIRE_EQ(caller_ack.size, 1U);
+    REQUIRE_EQ(listener_ack.size, 1U);
+    REQUIRE(caller.receive(listener_ack.outgoing[0].view(), now).ready);
+    REQUIRE(listener.receive(caller_ack.outgoing[0].view(), now).ready);
+    REQUIRE(caller.release_crypto(now) != nullptr);
+    REQUIRE(listener.release_crypto(now) != nullptr);
+    TrackingProvider rejected_provider;
+    PeerHandshake rejected(configuration, lo, rejected_provider);
+    admitted.validated_cookie ^= 1;
+    REQUIRE(rejected.start_admitted_listener(admitted, now, deadline).failed);
+    REQUIRE_EQ(rejected_provider.operations, 0U);
+}
+
+TEST(peer_auth_transport_adapter_retry_budget_cleans_pending_secrets)
+{
+    auto options = peer_handshake_options(true);
+    auto configuration = peer_handshake_configuration(true, options);
+    configuration.maximum_retries = 1;
+    TrackingProvider provider;
+    PeerHandshake caller(configuration, options, provider);
+    const PeerHandshake::Time now {};
+    auto first = caller.start(now, now + std::chrono::seconds {5});
+    REQUIRE_EQ(first.size, 1U);
+    REQUIRE(!caller.retry(now).failed);
+    REQUIRE(caller.retry(now).failed);
+    REQUIRE(caller.transport(now) == nullptr);
+    REQUIRE(!caller.release_crypto(now));
+    REQUIRE_EQ(provider.handles, 0U);
+}
+
+TEST(peer_auth_transport_adapter_recovers_lost_runtime_ack_after_peer_is_ready)
+{
+    PacketAdmissionPair p;
+    p.proofs();
+    auto lost = p.listener.receive(p.confirmation.outgoing[1].view(), p.now);
+    REQUIRE_EQ(lost.size, 1U); // drop caller's key acknowledgement
+    auto caller_ack =
+        p.caller.receive(p.listener_keys.outgoing[0].view(), p.now);
+    REQUIRE_EQ(caller_ack.size, 1U);
+    REQUIRE(p.listener.receive(caller_ack.outgoing[0].view(), p.now).ready);
+    REQUIRE(!p.caller.ready(p.now));
+    REQUIRE(!p.caller.release_crypto(p.now));
+    const auto derivations = p.lp.derivations;
+    auto retry = p.caller.retry(p.now + std::chrono::milliseconds {50});
+    REQUIRE_EQ(retry.size, 2U);
+    auto repeated_confirmation =
+        p.listener.receive(retry.outgoing[0].view(), p.now);
+    REQUIRE(!repeated_confirmation.failed);
+    auto ack = p.listener.receive(retry.outgoing[1].view(), p.now);
+    REQUIRE_EQ(ack.size, 1U);
+    REQUIRE(p.caller.receive(ack.outgoing[0].view(), p.now).ready);
+    REQUIRE_EQ(p.lp.derivations, derivations);
 }
