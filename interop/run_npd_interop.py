@@ -197,6 +197,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--robotweax-peer", type=Path, required=True)
     parser.add_argument("--reference-peer", type=Path, action="append", default=[])
+    parser.add_argument("--baseline-peer", type=Path, help="released Robotweax peer for OFF/OFF comparison")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--input", type=Path, help="optional stream corpus; read in 1316-byte messages")
     args = parser.parse_args()
@@ -214,6 +215,19 @@ def main():
             if args.input is None and fec and active["parity_payload_bytes"] <= off["parity_payload_bytes"]:
                 raise RuntimeError("NPD parity must include the additional prefix byte")
             results += [off, active]
+    if args.baseline_peer is not None:
+        baseline = args.baseline_peer.resolve(strict=True)
+        for reverse in (False, True):
+            for fec in (False, True):
+                stem = f"baseline-{'reverse' if reverse else 'forward'}-{'fec' if fec else 'arq'}"
+                released = run_case(args.output, stem + "-released", baseline, baseline,
+                                    None, None, reverse=reverse, fec=fec, data=data)
+                current = run_case(args.output, stem + "-candidate", candidate, candidate,
+                                   0, 0, reverse=reverse, fec=fec, data=data)
+                for field in ("payload_hashes", "extension_records", "source_payload_bytes", "parity_payload_bytes"):
+                    if released[field] != current[field]:
+                        raise RuntimeError(f"{stem}: OFF/OFF changed {field} from released baseline")
+                results += [released, current]
     for index, reference in enumerate(args.reference_peer):
         reference = reference.resolve(strict=True)
         for reverse in (False, True):
@@ -230,7 +244,7 @@ def main():
                         "sha256": hashlib.sha256(data).hexdigest(), "application_bytes": len(data),
                         "expected_npd_source_bytes": expected},
               "binaries": {str(p.resolve()): hashlib.sha256(p.read_bytes()).hexdigest()
-                           for p in [candidate, *args.reference_peer]}, "cases": results}
+                           for p in [candidate, *args.reference_peer, *([args.baseline_peer] if args.baseline_peer else [])]}, "cases": results}
     (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"validated {len(results)} black-box NPD cases")
 
