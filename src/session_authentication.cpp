@@ -121,6 +121,10 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
     if (!started_ || ready_ || passphrase.empty() || !local_socket_id
         || !peer_socket_id)
         return Error::invalid_state;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_version(parameters_.version) && hybrid_revoked_)
+        return Error::invalid_state;
+#endif
     const bool rendezvous =
         parameters_.version == acp1_rendezvous_session_version
         || parameters_.version == acp1_group_rendezvous_session_version;
@@ -222,9 +226,18 @@ Error SessionAuthentication::mac(std::uint8_t domain, bool caller,
     std::uint64_t counter, std::span<const std::byte> input,
     std::span<std::byte, 32> output) noexcept
 {
-    if (!ready_ || input.size() > last_sent_.size())
+    auto maximum = last_sent_.size();
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_version(parameters_.version))
+        maximum = hybrid_control_maximum_proof_material;
+#endif
+    if (!ready_ || input.size() > maximum)
         return Error::invalid_state;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::array<std::byte, 28 + hybrid_control_maximum_proof_material> bytes {};
+#else
     std::array<std::byte, 156> bytes {};
+#endif
     std::copy(domain_label.begin(), domain_label.end(), bytes.begin());
     bytes[14] =
         std::byte {static_cast<unsigned char>('0' + parameters_.version)};
@@ -586,6 +599,18 @@ bool SessionAuthentication::claim_hybrid_control(
         return false;
     hybrid_claimed_ = true;
     return true;
+}
+void SessionAuthentication::revoke_hybrid_control() noexcept
+{
+    if (!hybrid_version(parameters_.version))
+        return;
+    ready_ = false;
+    hybrid_revoked_ = true;
+    hybrid_peer_confirmed_ = false;
+    hybrid_claimed_ = true;
+    provider_.secure_erase(key_);
+    provider_.secure_erase(caller_control_key_);
+    provider_.secure_erase(listener_control_key_);
 }
 #endif
 

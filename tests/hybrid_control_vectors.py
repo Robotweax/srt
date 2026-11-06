@@ -31,4 +31,34 @@ wire = p('!IIII', 0xFFFF7F05, 0, 77, 107) + p('!IQ', 1, 1) + inner
 tag = hmac.digest(listener_key, b'RWSRT-ACP1-MAC'.ljust(16, b'\0') + wire, 'sha256')
 packet = wire + tag
 assert len(packet) == 172
-print(json.dumps({'context': context.hex(), 'caller_proof': proof(1), 'listener_proof': proof(2), 'packet': packet.hex()}, indent=2))
+result = {'context': context.hex(), 'caller_proof': proof(1), 'listener_proof': proof(2), 'packet': packet.hex()}
+
+# Admission owner fixture. Independent exact payload construction, including
+# SRT's reversed four-byte text words. No C++ codec or generated output is read.
+def ext(kind, content):
+    assert len(content) % 4 == 0
+    return p('!HH', kind, len(content) // 4) + content
+
+def handshake(sid, cookie):
+    return p('!IIIIIIII4I', 5, 5, 0x7ffffffe, 1500, 25600, 0xffffffff,
+             sid, cookie, 0, 0, 0, 0)
+
+parameters = p('!IIHH', 0x010507, 0x3f, 120, 120)
+text = b'live/camera1'
+text += bytes(-len(text) % 4)
+text = b''.join(text[i:i+4][::-1] for i in range(0, len(text), 4))
+caller_payload = (handshake(107, 123) + ext(1, parameters) + ext(5, text)
+                  + ext(8, p('!IBBH', 0x40000002, 4, 0, 0))
+                  + ext(0x7f15, p('!IBBHI', 0x52575301, 1, 0, 0, 0) + bytes(20)))
+listener_payload = (handshake(108, 0) + ext(2, parameters)
+                   + ext(8, p('!IBBH', 0x40000001, 4, 0, 0))
+                   + ext(0x7f14, dispatch) + ext(0x7f15, source))
+admission = (p('!IIII', 0x52574101, 224 + len(caller_payload) + len(listener_payload),
+               len(caller_payload), len(listener_payload)) + bytes([0x11])*16
+             + context + caller_payload + listener_payload)
+admission_root = hashlib.pbkdf2_hmac('sha1', bytes([0x22])*32, salt, 2048, 32)
+def admission_proof(role):
+    return hmac.digest(admission_root, label + p('!BBQH', 1, role, 0, len(admission)) + admission, 'sha256').hex()
+result['admission'] = {'transcript': admission.hex(), 'size': len(admission),
+                       'caller_proof': admission_proof(1), 'listener_proof': admission_proof(2)}
+print(json.dumps(result, indent=2))

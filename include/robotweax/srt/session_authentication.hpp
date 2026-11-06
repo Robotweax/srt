@@ -28,6 +28,7 @@ inline constexpr std::size_t acp1_group_rendezvous_context_size = 96;
 // so production handshakes continue to reject it.
 inline constexpr std::uint8_t hybrid_control_session_version = 7;
 inline constexpr std::size_t hybrid_control_context_size = 192;
+inline constexpr std::size_t hybrid_control_maximum_proof_material = 3192;
 #endif
 [[nodiscard]] constexpr bool is_acp1_session_version(
     std::uint8_t version) noexcept
@@ -83,6 +84,8 @@ public:
         bool caller, std::span<const std::byte> context) const noexcept;
     [[nodiscard]] bool claim_hybrid_control(
         bool caller, std::span<const std::byte> context) noexcept;
+    // Terminal owner revocation also invalidates already borrowed gates.
+    void revoke_hybrid_control() noexcept;
     [[nodiscard]] std::uint32_t hybrid_local_socket_id() const noexcept
     {
         return hybrid_local_socket_id_;
@@ -162,7 +165,8 @@ private:
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
     std::array<std::byte, hybrid_control_context_size> hybrid_context_ {};
     std::uint32_t hybrid_local_socket_id_ = 0, hybrid_peer_socket_id_ = 0;
-    bool hybrid_peer_confirmed_ = false, hybrid_claimed_ = false;
+    bool hybrid_peer_confirmed_ = false, hybrid_claimed_ = false,
+         hybrid_revoked_ = false;
 #endif
 };
 
