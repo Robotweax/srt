@@ -160,8 +160,19 @@ is not delivered, it is counted, and the connection continues.
   encrypts it; AES-GCM also authenticates it. Key selection is unchanged.
 - **FEC.** Parity is generated over the wire bytes, as described in
   [Packet filter](packet-filter.md), so it protects the shortened payload and
-  its prefix. Recovery buffers must be sized for `SRTO_PAYLOADSIZE + 1`. Parity
-  packets keep their configured size, so NPD does not reduce FEC bytes.
+  its prefix. Let `P` be the effective maximum application payload after all
+  MSS, address-family, NPD, FEC and encryption budget constraints, and let `T`
+  be the DATA authentication-tag size (16 bytes for AES-GCM, zero for clear
+  DATA or AES-CTR). The encoder's source capacity, decoder recovery buffers
+  and parity XOR area must all accommodate `P + 1 + T` protected bytes.
+  Parity payloads contain that full XOR area plus the existing four-byte FEC
+  header and, when enabled, the session-authentication v2 parity overhead.
+  These sizes must fit the negotiated MSS budget; increasing only the
+  decoder buffer is insufficient. For an unchanged `P` of 1,316 bytes, the
+  protected capacity is 1,317 bytes without GCM or 1,333 bytes with GCM,
+  making parity one byte larger than without NPD. Parity size is fixed at
+  this capacity even when source units are deleted, so NPD does not reduce
+  FEC bytes.
 - **ARQ.** Loss reports, ACKs and retransmission are unchanged.
 - **Pacing.** The input-rate estimate keeps observing the application payload
   before deletion, while the average packet size observes wire payloads. The
