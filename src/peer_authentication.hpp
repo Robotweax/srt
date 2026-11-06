@@ -131,6 +131,10 @@ public:
         std::span<const std::byte> confirmation,
         std::span<const std::byte> passphrase) noexcept;
     [[nodiscard]] bool ready_for_key_exchange() const noexcept;
+    [[nodiscard]] bool is_caller() const noexcept
+    {
+        return caller_;
+    }
     [[nodiscard]] bool failed() const noexcept;
     [[nodiscard]] std::span<const std::byte> cached(
         Message message) const noexcept;

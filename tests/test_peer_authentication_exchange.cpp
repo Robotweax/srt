@@ -2,6 +2,7 @@
 #include "test.hpp"
 #include "peer_authentication.hpp"
 #include "robotweax/srt/handshake.hpp"
+#include "robotweax/srt/crypto.hpp"
 
 #include <algorithm>
 #include <vector>
@@ -646,4 +647,171 @@ TEST(peer_auth_exchange_valid_ephemeral_mac_cannot_replace_identity_signature)
     REQUIRE_EQ(p.cp.derivations, 0U);
     REQUIRE(!p.caller.ready_for_key_exchange());
     REQUIRE_EQ(p.cp.handles, 0U);
+}
+
+TEST(peer_auth_runtime_directional_keys_and_authenticated_controls)
+{
+    for (unsigned length : {16U, 24U, 32U}) {
+        Pair p;
+        p.configure();
+        p.offer(length);
+        p.response();
+        p.confirmation();
+        REQUIRE_EQ(
+            p.listener.accept_confirmation(p.m3, passphrase()), Error::none);
+        const CryptoConfiguration config {
+            .passphrase = "runtime test passphrase",
+            .mode = CryptoMode::aes_gcm,
+            .enable_aes_gcm = true};
+        CryptoSession c(config, p.cp), l(config, p.lp);
+        REQUIRE_EQ(c.start_peer_authentication(p.caller), Error::none);
+        REQUIRE_EQ(l.start_peer_authentication(p.listener), Error::none);
+        REQUIRE_EQ(c.key_length(), length);
+        REQUIRE_EQ(c.start_peer_authentication(p.caller), Error::invalid_state);
+        REQUIRE_EQ(c.sender_state(), CryptoState::securing);
+        REQUIRE(!c.ready_to_send_data());
+        REQUIRE(!l.ready_to_send_data());
+        REQUIRE(!c.allows_plaintext_fallback());
+        REQUIRE_EQ(c.continue_without_peer_key(CryptoState::no_secret),
+            Error::invalid_state);
+        REQUIRE(!equal(c.pending_key_material(), l.pending_key_material()));
+        const auto c_pbkdf = p.cp.derivations, l_pbkdf = p.lp.derivations;
+        for (bool caller : {true, false}) {
+            auto& sender = caller ? c : l;
+            auto& receiver = caller ? l : c;
+            auto& auth = *sender.session_authentication();
+            auto& peer = *receiver.session_authentication();
+            std::array<std::byte, 256> wire {}, reply {};
+            std::size_t n = 0, m = 0;
+            std::span<const std::byte> material;
+            REQUIRE_EQ(auth.seal(false, sender.pending_key_material(), wire, n),
+                Error::none);
+            const auto body = sender.pending_key_material();
+            std::vector<std::byte> mac_input(28 + body.size());
+            constexpr std::string_view label = "RWSRT-PEERAUTH-1";
+            for (std::size_t i = 0; i < label.size(); ++i)
+                mac_input[i] = std::byte(label[i]);
+            mac_input[16] = std::byte {2}; // request domain
+            mac_input[17] = std::byte(caller ? 1 : 2);
+            mac_input[25] = std::byte {1}; // first request counter
+            mac_input[26] = std::byte(body.size() >> 8);
+            mac_input[27] = std::byte(body.size());
+            std::copy(body.begin(), body.end(), mac_input.begin() + 28);
+            pa::Digest expected;
+            REQUIRE_EQ(p.cp.real.hmac_sha256(
+                           p.caller.session_key(), mac_input, expected),
+                Error::none);
+            REQUIRE(equal(expected, std::span {wire}.first(n).last<32>()));
+            REQUIRE(!auth.open(
+                false, std::span {wire}.first(n), material)); // role reflection
+            wire[n - 1] ^= std::byte {1};
+            REQUIRE(!peer.open(false, std::span {wire}.first(n), material));
+            wire[n - 1] ^= std::byte {1};
+            REQUIRE(peer.open(false, std::span {wire}.first(n), material));
+            REQUIRE(!receiver.needs_receive_key_derivation(material));
+            REQUIRE_EQ(receiver.accept_key_material(material, true),
+                Error::invalid_state);
+            REQUIRE_EQ(
+                receiver.accept_key_material(material, false), Error::none);
+            REQUIRE_EQ(
+                peer.seal(true, receiver.key_material_response(), reply, m),
+                Error::none);
+            REQUIRE(auth.open(true, std::span {reply}.first(m), material));
+            REQUIRE_EQ(
+                sender.acknowledge_key_material(material, false), Error::none);
+            REQUIRE_EQ(sender.sender_state(), CryptoState::secured);
+            REQUIRE(sender.ready_to_send_data());
+            DataHeader data {.sequence = SequenceNumber {1},
+                .message_number = 1,
+                .boundary = MessageBoundary::solo,
+                .encryption_key = sender.active_sender_key()};
+            std::array<std::byte, 3> plaintext {
+                std::byte {7}, std::byte {8}, std::byte {9}};
+            std::array<std::byte, 3> ciphertext {}, opened {};
+            std::array<std::byte, srt_gcm_authentication_tag_size> tag {};
+            EncryptionKey key = EncryptionKey::none;
+            REQUIRE_EQ(sender.seal(data, plaintext, ciphertext, tag, key),
+                Error::none);
+            REQUIRE_EQ(
+                receiver.open(data, ciphertext, tag, opened), Error::none);
+            REQUIRE_EQ(opened, plaintext);
+            tag[0] ^= std::byte {1};
+            REQUIRE(
+                receiver.open(data, ciphertext, tag, opened) != Error::none);
+
+            SessionAuthenticationParameters legacy;
+            REQUIRE_EQ(
+                auth.handshake_proof(caller, {}, legacy), Error::invalid_state);
+            DataHeader header;
+            std::array<std::byte, 3> parity {
+                std::byte {1}, std::byte {2}, std::byte {3}};
+            REQUIRE_EQ(auth.seal_fec(header, parity, wire, n), Error::none);
+            REQUIRE(
+                !auth.open_fec(header, std::span {wire}.first(n), material));
+            REQUIRE(peer.open_fec(header, std::span {wire}.first(n), material));
+            REQUIRE(equal(material, parity));
+            REQUIRE(
+                !peer.open_fec(header, std::span {wire}.first(n), material));
+        }
+        // A newly generated salt still uses the same directional KEK.
+        CryptoSession fresh(config, p.cp);
+        REQUIRE_EQ(fresh.start_peer_authentication(p.caller), Error::none);
+        REQUIRE(!l.needs_receive_key_derivation(fresh.pending_key_material()));
+        REQUIRE_EQ(l.accept_key_material(fresh.pending_key_material(), false),
+            Error::none);
+        REQUIRE_EQ(p.cp.derivations, c_pbkdf);
+        REQUIRE_EQ(p.lp.derivations, l_pbkdf);
+    }
+}
+
+TEST(peer_auth_runtime_rejects_incomplete_and_incompatible_sessions)
+{
+    Pair p;
+    const CryptoConfiguration config {.passphrase = "runtime test passphrase",
+        .mode = CryptoMode::aes_gcm,
+        .enable_aes_gcm = true};
+    CryptoSession fresh(config);
+    REQUIRE_EQ(fresh.start_peer_authentication(p.caller), Error::invalid_state);
+    p.configure();
+    p.offer();
+    p.response();
+    p.confirmation();
+    CryptoSession legacy({.passphrase = "runtime test passphrase"});
+    REQUIRE_EQ(
+        legacy.start_peer_authentication(p.caller), Error::invalid_state);
+    CryptoSession active(config);
+    REQUIRE_EQ(active.start_initiator(), Error::none);
+    REQUIRE_EQ(
+        active.start_peer_authentication(p.caller), Error::invalid_state);
+    CryptoSession session_auth(config);
+    REQUIRE_EQ(session_auth.start_session_authentication(true), Error::none);
+    REQUIRE_EQ(
+        session_auth.start_peer_authentication(p.caller), Error::invalid_state);
+    auto rendezvous = config;
+    rendezvous.negotiation_context = CryptoNegotiationContext::rendezvous;
+    CryptoSession simultaneous(rendezvous);
+    REQUIRE_EQ(
+        simultaneous.start_peer_authentication(p.caller), Error::invalid_state);
+}
+
+TEST(peer_auth_runtime_initialization_failure_is_terminal)
+{
+    Pair p;
+    p.configure();
+    p.offer();
+    p.response();
+    p.confirmation();
+    CryptoSession c({.passphrase = "runtime test passphrase",
+                        .mode = CryptoMode::aes_gcm,
+                        .enable_aes_gcm = true},
+        p.cp);
+    p.cp.fail_at = p.cp.operations + 1; // initial runtime randomness
+    REQUIRE_EQ(
+        c.start_peer_authentication(p.caller), Error::cryptographic_failure);
+    REQUIRE(c.session_authentication() == nullptr);
+    REQUIRE(c.pending_key_material().empty());
+    REQUIRE_EQ(c.start_peer_authentication(p.caller), Error::invalid_state);
+    REQUIRE_EQ(c.start_initiator(), Error::cryptographic_failure);
+    REQUIRE_EQ(c.continue_without_peer_key(CryptoState::no_secret),
+        Error::invalid_state);
 }

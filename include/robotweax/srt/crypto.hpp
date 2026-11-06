@@ -477,6 +477,11 @@ private:
     SequenceNumber frontier_sequence_ {};
 };
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+namespace peer_authentication {
+class Exchange;
+}
+#endif
 class CryptoSession {
 public:
     explicit CryptoSession(
@@ -489,6 +494,13 @@ public:
     CryptoSession(CryptoSession&&) = delete;
     CryptoSession& operator=(CryptoSession&&) = delete;
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    // Import only a completed private exchange into a fresh session. Generates
+    // independent runtime transmit material; authenticated KM confirmation is
+    // still required before the socket owner may publish the connection.
+    [[nodiscard]] Error start_peer_authentication(
+        const peer_authentication::Exchange& exchange) noexcept;
+#endif
     [[nodiscard]] Error start_initiator() noexcept;
     [[nodiscard]] Error start_session_authentication(bool caller,
         std::uint8_t version = session_authentication_version) noexcept;
@@ -648,7 +660,11 @@ public:
     }
     [[nodiscard]] bool enabled() const noexcept
     {
-        return passphrase_size_ != 0U;
+        return passphrase_size_ != 0U
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+            || peer_authentication_
+#endif
+            ;
     }
     [[nodiscard]] std::size_t key_length() const noexcept;
     [[nodiscard]] CryptoMode configured_mode() const noexcept
@@ -772,6 +788,9 @@ private:
     void erase_receive_history(ReceiveKeyHistory& history) noexcept;
     void erase_slot(KeySlot& slot) noexcept;
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    bool peer_authentication_ = false;
+#endif
     CryptoProvider& provider_;
     std::unique_ptr<SessionAuthentication> session_authentication_;
     std::array<std::byte, maximum_passphrase_size> passphrase_{};

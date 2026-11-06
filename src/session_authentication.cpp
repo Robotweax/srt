@@ -72,6 +72,19 @@ SessionAuthentication::~SessionAuthentication()
     provider_.secure_erase(last_sent_);
     provider_.secure_erase(last_received_);
 }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+Error SessionAuthentication::import_peer_key(
+    bool caller, std::span<const std::byte, 32> key) noexcept
+{
+    if (started_)
+        return Error::invalid_state;
+    std::copy(key.begin(), key.end(), key_.begin());
+    caller_ = caller;
+    parameters_.version = session_authentication_version;
+    started_ = ready_ = peer_authentication_ = true;
+    return Error::none;
+}
+#endif
 Error SessionAuthentication::start(bool caller, std::uint8_t version) noexcept
 {
     if (version != session_authentication_version
@@ -191,6 +204,13 @@ Error SessionAuthentication::mac(std::uint8_t domain, bool caller,
     std::copy(domain_label.begin(), domain_label.end(), bytes.begin());
     bytes[14] =
         std::byte {static_cast<unsigned char>('0' + parameters_.version)};
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_) {
+        constexpr char label[] = "RWSRT-PEERAUTH-1";
+        for (std::size_t i = 0; i < sizeof(label) - 1; ++i)
+            bytes[i] = std::byte {static_cast<unsigned char>(label[i])};
+    }
+#endif
     bytes[16] = std::byte {domain};
     bytes[17] = static_cast<std::byte>(caller ? 1U : 2U);
     put64(std::span {bytes}.subspan<18, 8>(), counter);
@@ -204,6 +224,10 @@ Error SessionAuthentication::handshake_proof(bool caller,
     std::span<const std::byte> initial_material,
     SessionAuthenticationParameters& output) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_)
+        return Error::invalid_state;
+#endif
     output = parameters_;
     return mac(1, caller, 0, initial_material, output.proof);
 }
@@ -293,6 +317,13 @@ Error SessionAuthentication::fec_mac(bool caller, std::uint64_t counter,
     std::copy(domain_label.begin(), domain_label.end(), bytes.begin());
     bytes[14] =
         std::byte {static_cast<unsigned char>('0' + parameters_.version)};
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_) {
+        constexpr char label[] = "RWSRT-PEERAUTH-1";
+        for (std::size_t i = 0; i < sizeof(label) - 1; ++i)
+            bytes[i] = std::byte {static_cast<unsigned char>(label[i])};
+    }
+#endif
     bytes[16] = std::byte {4};
     bytes[17] = static_cast<std::byte>(caller ? 1U : 2U);
     put64(std::span {bytes}.subspan<18, 8>(), counter);
