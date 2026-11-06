@@ -698,6 +698,16 @@ is disabled; keep `SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD=0`. Packet filters,
 session-authentication profiles and fragmented application messages are refused.
 At most 64 receiver members, including detached members, can occupy the group.
 
+All canonical unicast DATA repairs share an aggregate wire budget in addition to
+each member's own pacing and flow limits. The aggregate rate is four times
+`SRTO_MAXBW` (saturated at the largest unsigned 64-bit rate), with at most one
+configured IP MTU of burst credit across the group. It includes DATA headers,
+encryption tags and IP/UDP overhead. Failed UDP attempts do not spend credit;
+partial datagram success is a fatal transport error charged conservatively as
+the full datagram. Control and KM traffic continue while DATA waits for credit.
+The aggregate limit bounds egress; it does not guarantee repair deadlines or a
+fair bandwidth share for each receiver.
+
 A member whose repair history is full is detached from future group admission.
 Runtime/KM busy gets a 50 ms retry grace before detachment; completion fanout also
 has a bounded busy retry budget. `srt_group_data` and the `srt_sendmsg2` group-data

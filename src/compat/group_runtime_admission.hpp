@@ -2,12 +2,14 @@
 
 #include "compat/group_multicast_emitter.hpp"
 #include "compat/group_packet_encoder.hpp"
+#include "compat/group_unicast_budget.hpp"
 #include "compat/transport_runtime.hpp"
 
 namespace robotweax::srt::compat {
 
 class GroupSendBinding {
     friend class GroupRuntimeAdmission;
+    friend class ConnectionRuntime;
     std::weak_ptr<ConnectionRuntime> runtime_;
     std::uint32_t group_id_ = 0;
     std::uint64_t stream_generation_ = 0;
@@ -16,6 +18,7 @@ class GroupSendBinding {
     CryptoMode mode_ = CryptoMode::automatic;
     std::uint64_t runtime_position_origin_ = 0;
     std::uint64_t source_position_origin_ = 0;
+    std::shared_ptr<GroupUnicastBudget> unicast_budget_;
 };
 
 // Optional state; ordinary connections incur only one null pointer.
@@ -48,6 +51,7 @@ public:
         IpAddressFamily family = IpAddressFamily::ipv4;
         std::shared_ptr<SharedTransmitKeySchedule> key_schedule;
         std::optional<SequenceNumber> initial_sequence;
+        std::shared_ptr<GroupUnicastBudget> unicast_budget;
     };
     struct Ticket {
         Binding binding;

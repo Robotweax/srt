@@ -14,6 +14,12 @@ using namespace std::chrono_literals;
 
 namespace robotweax::srt::compat {
 struct GroupSendCoordinatorTestAccess {
+    static std::shared_ptr<GroupUnicastBudget> budget(
+        GroupSendCoordinator& actor)
+    {
+        std::lock_guard lock(actor.publication_);
+        return actor.unicast_budget_;
+    }
     static void revision(
         GroupSendCoordinator& actor, std::uint64_t id, std::uint64_t revision)
     {
@@ -139,6 +145,7 @@ struct Receiver {
     std::uint64_t id = 0;
     std::uint32_t ack_serial = 1;
     std::vector<std::vector<std::byte>> data_attempts;
+    std::size_t control_attempts = 0;
     explicit Receiver(Fixture& f, std::size_t capacity = 4, bool add = true,
         SequenceNumber start = initial, bool realtime = false,
         std::int64_t rate = -1)
@@ -228,6 +235,7 @@ struct Receiver {
                 data_attempts.push_back(std::move(bytes));
                 continue;
             }
+            ++control_attempts;
             if (!decryptor || p.packet.control.type != ControlType::user_defined
                 || p.packet.control.subtype != key_material_request_subtype)
                 continue;
@@ -1509,4 +1517,335 @@ TEST(compat_group_policy_prefix_repairs_pin_keys_until_cumulative_retirement)
                 REQUIRE_EQ(a.crypto->key_material_revision(), key_revision);
         }
     }
+}
+
+namespace {
+void configure_wire_budget(Fixture& f, Clock::time_point& clock,
+    std::uint64_t rate, std::uint64_t source_rate = 1'000'000)
+{
+    f.actor->close();
+    f.config.source.wire_bytes_per_second = source_rate;
+    f.config.aggregate_unicast_wire_bytes_per_second = rate;
+    f.config.unicast_budget_clock = [](void* p) noexcept {
+        return *static_cast<Clock::time_point*>(p);
+    };
+    f.config.unicast_budget_clock_context = &clock;
+    f.recreate();
+}
+void exhaust_wire_credit(Fixture& f)
+{
+    auto budget = GroupSendCoordinatorTestAccess::budget(*f.actor);
+    const auto credit = budget->snapshot().available_bytes;
+    REQUIRE(credit > 28U);
+    auto permit = budget->acquire(credit - 28);
+    REQUIRE(permit);
+    permit.finish(true, false);
+    REQUIRE_EQ(budget->snapshot().available_bytes, 0U);
+}
+}
+
+TEST(
+    compat_group_budget_rate_capacity_and_old_originals_fence_new_recipient_admission)
+{
+    Fixture f;
+    auto clock = f.now;
+    configure_wire_budget(f, clock, 1'999'999);
+    Receiver a(f), b(f);
+    REQUIRE_EQ(f.actor->snapshot().unicast_recipient_limit, 1U);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+        Transition::applied);
+    exhaust_wire_credit(f);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    a.exchange_keys(true);
+    REQUIRE(a.data_attempts.empty());
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 1, Delivery::multicast).status,
+        Transition::applied);
+    REQUIRE_EQ(f.actor->set_delivery(b.id, 0, Delivery::overlap).status,
+        Transition::full);
+    REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 1U);
+    clock += 1ms;
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 1U);
+    f.pump();
+    REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 0U);
+    REQUIRE_EQ(f.actor->set_delivery(b.id, 0, Delivery::overlap).status,
+        Transition::applied);
+}
+
+TEST(
+    compat_group_budget_original_overlap_and_prefix_repair_share_protected_wire_rate)
+{
+    for (auto mode :
+        {CryptoMode::automatic, CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        Fixture f(mode, 8);
+        auto clock = f.now;
+        configure_wire_budget(f, clock, 3'000'000);
+        Receiver a(f), b(f);
+        REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+            Transition::applied);
+        REQUIRE_EQ(f.actor->set_delivery(b.id, 0, Delivery::overlap).status,
+            Transition::applied);
+        exhaust_wire_credit(f);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        f.pump();
+        a.exchange_keys(true);
+        b.exchange_keys(true);
+        REQUIRE(a.data_attempts.empty());
+        REQUIRE(b.data_attempts.empty());
+        a.ack(initial.next(), true);
+        REQUIRE_EQ(a.buffered(), 1U);
+        const auto cost = 47U + (mode == CryptoMode::aes_gcm ? 16U : 0U);
+        const auto step = std::chrono::microseconds {(cost + 2U) / 3U};
+        clock += step;
+        a.exchange_keys(true);
+        REQUIRE_EQ(a.data_attempts.size(), 1U);
+        const auto recovery =
+            f.actor->set_delivery(a.id, 1, Delivery::unicast, true);
+        REQUIRE_EQ(recovery.status, Transition::applied);
+        REQUIRE_EQ(recovery.prefix.repairs, 1U);
+        b.exchange_keys(true);
+        REQUIRE(b.data_attempts.empty());
+        clock += step;
+        b.exchange_keys(true);
+        REQUIRE_EQ(b.data_attempts.size(), 1U);
+        clock += step;
+        tick(f, a);
+        a.exchange_keys(true);
+        REQUIRE_EQ(a.data_attempts.size(), 2U);
+        REQUIRE(
+            decode_packet(a.data_attempts.back()).packet.data.retransmitted);
+        decrypt_original(a, mode, a.data_attempts.front());
+        decrypt_original(a, mode, a.data_attempts.back());
+        const auto budget = f.actor->snapshot().unicast_budget;
+        REQUIRE_EQ(budget.original_wire_bytes, 1500U + 2U * cost);
+        REQUIRE_EQ(budget.repair_wire_bytes, cost);
+        REQUIRE_EQ(budget.submitted_packets, 4U);
+        REQUIRE(budget.waits > 0);
+        REQUIRE_EQ(f.output.packets.size(), 1U);
+    }
+}
+
+TEST(compat_group_budget_quota_wait_keeps_key_exchange_and_control_service_live)
+{
+    for (auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        Fixture f(mode, 16);
+        auto clock = f.now;
+        configure_wire_budget(f, clock, 1'000'000);
+        Receiver a(f, 16);
+        REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+            Transition::applied);
+        const auto initial_revision = a.crypto->key_material_revision();
+        exhaust_wire_credit(f);
+        for (unsigned i = 0; i < 4; ++i) {
+            REQUIRE_EQ(f.send(), Status::accepted);
+            a.exchange_keys(true);
+            f.pump();
+            tick(f, a);
+        }
+        REQUIRE(a.data_attempts.empty());
+        REQUIRE(a.control_attempts > 0);
+        REQUIRE(a.crypto->key_material_revision() > initial_revision);
+        REQUIRE(a.crypto->ready_to_send_data());
+        a.ack(initial.advanced(4), true);
+        REQUIRE_EQ(a.buffered(), 4U);
+        clock += 1s;
+        a.exchange_keys(true);
+        REQUIRE_EQ(a.data_attempts.size(), 1U);
+        decrypt_original(a, mode, a.data_attempts.back());
+        REQUIRE_EQ(f.actor->snapshot().unicast_budget.submitted_packets, 2U);
+    }
+}
+
+TEST(
+    compat_group_budget_native_retry_refunds_credit_and_moves_quota_wait_out_of_fifo)
+{
+    Fixture f(CryptoMode::aes_gcm, 8);
+    auto clock = f.now;
+    configure_wire_budget(f, clock, 2'000'000);
+    Receiver a(f), b(f);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+        Transition::applied);
+    REQUIRE_EQ(f.actor->set_delivery(b.id, 0, Delivery::unicast).status,
+        Transition::applied);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    a.output.data_failures = 1;
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 1U);
+    const auto exact = a.data_attempts.back();
+    REQUIRE_EQ(f.actor->snapshot().unicast_budget.submitted_packets, 0U);
+    b.exchange_keys(true);
+    REQUIRE_EQ(b.data_attempts.size(), 1U);
+    exhaust_wire_credit(f);
+    tick(f, a, &b);
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 1U);
+    const auto controls = a.control_attempts;
+    a.now += 1'000'000;
+    a.exchange_keys(true);
+    REQUIRE(a.control_attempts > controls);
+    REQUIRE_EQ(a.data_attempts.size(), 1U);
+    clock += 1ms;
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 2U);
+    REQUIRE_EQ(a.data_attempts.back(), exact);
+    const auto state = f.actor->snapshot().unicast_budget;
+    REQUIRE_EQ(state.cancelled_attempts, 1U);
+    REQUIRE_EQ(
+        state.submitted_packets, 3U); // B, synthetic prior load, A retry.
+}
+
+TEST(compat_group_budget_held_original_is_fenced_by_ack_ttl_revoke_and_close)
+{
+    for (unsigned action = 0; action < 4; ++action) {
+        Fixture f;
+        auto clock = f.now;
+        configure_wire_budget(f, clock, 1'000'000);
+        Receiver a(f);
+        REQUIRE_EQ(f.actor
+                       ->set_delivery(a.id, 0,
+                           action == 0 ? Delivery::overlap : Delivery::unicast)
+                       .status,
+            Transition::applied);
+        exhaust_wire_credit(f);
+        REQUIRE_EQ(f.send(action == 1 ? f.now + 1ms : Clock::time_point::max()),
+            Status::accepted);
+        f.pump();
+        a.exchange_keys(true);
+        REQUIRE(a.data_attempts.empty());
+        std::future<bool> drained;
+        if (action == 0) {
+            a.ack(initial.next(), true);
+            drained = std::async(std::launch::async, [&] {
+                return a.runtime->wait_for_send_drain(2s);
+            });
+            REQUIRE_EQ(drained.wait_for(2ms), std::future_status::timeout);
+        }
+        if (action == 1) {
+            tick(f, a);
+            tick(f, a);
+        }
+        if (action == 2)
+            Admission::revoke(
+                GroupSendCoordinatorTestAccess::binding(*f.actor, a.id));
+        if (action == 3)
+            f.actor->close();
+        clock += 1s;
+        a.exchange_keys(true);
+        REQUIRE(a.data_attempts.empty());
+        if (action == 0) {
+            REQUIRE_EQ(drained.wait_for(1s), std::future_status::ready);
+            REQUIRE(drained.get());
+        }
+        REQUIRE_EQ(f.actor->snapshot().unicast_budget.submitted_packets, 1U);
+    }
+}
+
+TEST(
+    compat_group_budget_partial_native_success_is_charged_and_breaks_only_its_member)
+{
+    Fixture f;
+    Receiver a(f), b(f);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+        Transition::applied);
+    a.output.partial = true;
+    REQUIRE_EQ(f.send(), Status::accepted);
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 1U);
+    const auto budget = f.actor->snapshot().unicast_budget;
+    REQUIRE_EQ(budget.original_wire_bytes, 47U);
+    REQUIRE_EQ(budget.submitted_packets, 1U);
+    REQUIRE_EQ(
+        a.runtime->statistics(false, true).total.sent_unique.packets, 0U);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    f.pump();
+    REQUIRE_EQ(reason(f, a.id), Actor::Detachment::closed);
+    REQUIRE_EQ(reason(f, b.id), Actor::Detachment::none);
+}
+
+TEST(
+    compat_group_budget_concurrent_transitions_reserve_only_available_full_stream_capacity)
+{
+    Fixture f;
+    auto clock = f.now;
+    configure_wire_budget(f, clock, 2'000'000);
+    Receiver a(f), b(f), c(f);
+    auto one = std::async(std::launch::async, [&] {
+        return f.actor->set_delivery(a.id, 0, Delivery::unicast);
+    });
+    auto two = std::async(std::launch::async, [&] {
+        return f.actor->set_delivery(b.id, 0, Delivery::overlap);
+    });
+    auto three = std::async(std::launch::async, [&] {
+        return f.actor->set_delivery(c.id, 0, Delivery::unicast);
+    });
+    std::size_t applied = 0, refused = 0;
+    for (auto result : {one.get(), two.get(), three.get()}) {
+        if (result.status == Transition::applied) {
+            ++applied;
+            REQUIRE_EQ(result.member.revision, 1U);
+        }
+        if (result.status == Transition::full) {
+            ++refused;
+            REQUIRE_EQ(result.member.revision, 0U);
+        }
+    }
+    REQUIRE_EQ(applied, 2U);
+    REQUIRE_EQ(refused, 1U);
+    REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 2U);
+}
+
+TEST(compat_group_budget_long_rate_wait_preserves_sender_ttl_deadline)
+{
+    Fixture f;
+    auto clock = f.now;
+    configure_wire_budget(f, clock, 1, 1);
+    Receiver a(f);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+        Transition::applied);
+    exhaust_wire_credit(f);
+    REQUIRE_EQ(f.send(f.now + 2ms), Status::accepted);
+    const auto result = a.runtime->poll();
+    REQUIRE(!result.immediate_work);
+    REQUIRE(result.next_work_delay);
+    REQUIRE(*result.next_work_delay <= 2001us);
+    f.now += 2001us;
+    a.now += 2001;
+    a.exchange_keys(true);
+    REQUIRE(a.data_attempts.empty());
+    REQUIRE_EQ(a.buffered(), 0U);
+    REQUIRE_EQ(f.actor->snapshot().unicast_budget.submitted_packets, 1U);
+}
+
+TEST(
+    compat_group_budget_configuration_saturates_default_rate_and_refuses_unfunded_originals)
+{
+    Fixture f;
+    auto clock = f.now;
+    REQUIRE_EQ(
+        f.actor->snapshot().unicast_budget.wire_bytes_per_second, 4'000'000U);
+    f.actor->close();
+    f.config.source.wire_bytes_per_second = UINT64_MAX;
+    f.recreate();
+    REQUIRE_EQ(
+        f.actor->snapshot().unicast_budget.wire_bytes_per_second, UINT64_MAX);
+    REQUIRE_EQ(f.actor->snapshot().unicast_recipient_limit, 1U);
+    configure_wire_budget(f, clock, 999'999);
+    Receiver a(f);
+    REQUIRE_EQ(f.actor->snapshot().unicast_recipient_limit, 0U);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::unicast).status,
+        Transition::full);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::overlap).status,
+        Transition::full);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    REQUIRE_EQ(f.actor->set_delivery(a.id, 0, Delivery::multicast, true).status,
+        Transition::full);
+    REQUIRE_EQ(f.actor->snapshot().unicast_reservations, 0U);
+    f.pump();
+    const auto repaired =
+        f.actor->set_delivery(a.id, 0, Delivery::multicast, true);
+    REQUIRE_EQ(repaired.status, Transition::applied);
+    REQUIRE_EQ(repaired.prefix.repairs, 1U);
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 1U);
+    REQUIRE(decode_packet(a.data_attempts.back()).packet.data.retransmitted);
 }

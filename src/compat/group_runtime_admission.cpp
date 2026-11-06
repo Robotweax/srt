@@ -49,6 +49,7 @@ GroupRuntimeAdmission::Binding GroupRuntimeAdmission::bind(
         if (runtime->locally_closed_ || runtime->peer_closed_
             || runtime->broken_ || runtime->peer_error_pending_
             || runtime->pending_datagram_size_ != 0U
+            || runtime->group_budget_pending_
             || runtime->session_.send_buffer().sequence_span() != 0U
             || (c.initial_sequence
                 && *c.initial_sequence
@@ -81,6 +82,7 @@ GroupRuntimeAdmission::Binding GroupRuntimeAdmission::bind(
         binding->group_id_ = c.group_id;
         binding->stream_generation_ = c.stream_generation;
         binding->schedule_ = c.key_schedule;
+        binding->unicast_budget_ = c.unicast_budget;
         binding->runtime_position_origin_ =
             runtime->session_.send_buffer().next_sequence_position();
         binding->source_position_origin_ = c.key_schedule

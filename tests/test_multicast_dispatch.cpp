@@ -1709,7 +1709,8 @@ struct CoordinatedNative {
     SRTSOCKET receiver = SRT_INVALID_SOCK;
     sockaddr_in bound {};
     explicit CoordinatedNative(std::int64_t rate = 1'000'000,
-        bool encrypted = false, bool gcm = false, int send_packets = 0)
+        bool encrypted = false, bool gcm = false, int send_packets = 0,
+        int latency = 120)
     {
         listener = peers.keep(srt_create_socket());
         const bool enabled = true;
@@ -1783,7 +1784,7 @@ struct CoordinatedNative {
         REQUIRE_EQ(srt_getsockname(
                        listener, reinterpret_cast<sockaddr*>(&bound), &size),
             0);
-        receiver = make_receiver(peers, bound, encrypted, gcm, 120, true);
+        receiver = make_receiver(peers, bound, encrypted, gcm, latency, true);
         sender = peers.keep(srt_accept(listener, nullptr, nullptr));
         REQUIRE(sender != SRT_INVALID_SOCK);
         REQUIRE(wait_for_members(sender, 1, encrypted));
@@ -2443,5 +2444,116 @@ TEST(multicast_dispatch_delivery_policy_committed_unicast_survives_source_error)
             SRT_ERROR); // Accepted work survives; new source admission still fails.
         REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ESOCKFAIL);
         REQUIRE_EQ(actor->snapshot().detached_members, 0U);
+    }
+}
+
+TEST(
+    multicast_dispatch_coordinated_aggregate_budget_bounds_correlated_prefix_repairs)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    for (const bool gcm : {false, true}) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (gcm)
+            continue;
+#endif
+        CoordinatedNative f(30'000, gcm, gcm, 64, 1000);
+        std::vector<SRTSOCKET> receivers {f.receiver};
+        for (unsigned i = 1; i < 6; ++i)
+            receivers.push_back(
+                make_receiver(f.peers, f.bound, gcm, gcm, 1000, true));
+        REQUIRE(wait_for_members(f.sender, 6, gcm));
+        for (const auto handle : receivers) {
+            const auto record = GroupRegistry::instance().find(handle);
+            std::shared_ptr<robotweax::srt::compat::DatagramChannel> ingress;
+            std::uint32_t route = 0;
+            {
+                std::lock_guard lock(record->mutex);
+                ingress = record->dispatch->receive_channel;
+                route = record->dispatch->ingress_group_id;
+            }
+            ingress->unregister_connection(route);
+        }
+        auto actor = f.actor();
+        std::array<PolicyActor::Member, 6> members;
+        REQUIRE_EQ(actor->members(members), 6U);
+        std::shared_ptr<robotweax::srt::compat::DatagramChannel> control;
+        {
+            auto group = GroupRegistry::instance().find(f.sender);
+            SRTSOCKET member = SRT_INVALID_SOCK;
+            {
+                std::lock_guard lock(group->mutex);
+                member = group->members.front().public_data.id;
+            }
+            auto socket = SocketRegistry::instance().find(member);
+            std::lock_guard lock(socket->mutex);
+            control = socket->channel;
+        }
+        struct Trace {
+            std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+            std::mutex mutex;
+            std::vector<
+                std::pair<std::chrono::steady_clock::time_point, std::size_t>>
+                submissions;
+            bool nonrepair = false;
+            static UdpIoResult send(std::span<const std::byte> bytes,
+                IpEndpoint peer, void* p) noexcept
+            {
+                auto& self = *static_cast<Trace*>(p);
+                const auto sent = self.channel->socket.send_to(bytes, peer);
+                const auto decoded = decode_packet(bytes);
+                if (sent && sent.bytes_transferred == bytes.size() && decoded
+                    && decoded.packet.kind == PacketKind::data) {
+                    std::lock_guard lock(self.mutex);
+                    self.submissions.emplace_back(
+                        std::chrono::steady_clock::now(), bytes.size() + 28U);
+                    self.nonrepair |= !decoded.packet.data.retransmitted;
+                }
+                return sent;
+            }
+        } trace;
+        trace.channel = control;
+        SendHookReset cleanup {control};
+        control->set_send_hook_for_testing(Trace::send, &trace);
+        for (int i = 0; i < 30; ++i)
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds {3};
+        while (actor->snapshot().inflight_frames) {
+            REQUIRE(std::chrono::steady_clock::now() < deadline);
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        const auto start = std::chrono::steady_clock::now();
+        for (const auto member : members) {
+            const auto result = force_policy(
+                actor, member.id, 0, PolicyDelivery::multicast, true);
+            REQUIRE_EQ(result.status, PolicyActor::TransitionStatus::applied);
+            REQUIRE_EQ(result.prefix.repairs, 30U);
+        }
+        for (const auto handle : receivers)
+            expect_messages(handle, 0, 30);
+        const auto state = actor->snapshot();
+        REQUIRE_EQ(state.detached_members, 0U);
+        REQUIRE_EQ(state.unicast_budget.wire_bytes_per_second, 120'000U);
+        REQUIRE_EQ(state.unicast_budget.original_wire_bytes, 0U);
+        REQUIRE(state.unicast_budget.waits > 0);
+        std::lock_guard lock(trace.mutex);
+        REQUIRE(!trace.nonrepair);
+        REQUIRE(trace.submissions.size() >= 180U);
+        std::uint64_t wire = 0;
+        for (const auto& [time, bytes] : trace.submissions) {
+            wire += bytes;
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    time - start)
+                    .count();
+            REQUIRE(elapsed >= 0);
+            // One MTU burst plus the common rate; a microsecond of allowance
+            // covers floor quantization at the observer/budget clock boundary.
+            REQUIRE(wire <= 1500U
+                    + 120'000U * static_cast<std::uint64_t>(elapsed + 1)
+                        / 1'000'000U);
+        }
+        REQUIRE(state.unicast_budget.repair_wire_bytes >= wire);
     }
 }

@@ -528,6 +528,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_group_emission_outcomes.cpp
         tests/test_group_runtime_admission.cpp
         tests/test_group_send_coordinator.cpp
+        tests/test_group_unicast_budget.cpp
         tests/test_arq_transport.cpp
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp

@@ -74,6 +74,29 @@ std::shared_ptr<GroupSendCoordinator> GroupSendCoordinator::make(
         auto actor = std::shared_ptr<GroupSendCoordinator>(
             new GroupSendCoordinator(std::move(c)));
         auto& config = actor->configuration_;
+        const auto source_rate = config.source.wire_bytes_per_second;
+        if (!source_rate)
+            return {};
+        const auto recipients =
+            std::max<std::size_t>(1, config.maximum_unicast_members);
+        const auto rate = config.aggregate_unicast_wire_bytes_per_second
+            ? config.aggregate_unicast_wire_bytes_per_second
+            : source_rate
+                > std::numeric_limits<std::uint64_t>::max() / recipients
+            ? std::numeric_limits<std::uint64_t>::max()
+            : source_rate * recipients;
+        actor->unicast_budget_ = std::make_shared<GroupUnicastBudget>(
+            GroupUnicastBudget::Configuration {.wire_bytes_per_second = rate,
+                .maximum_wire_datagram =
+                    config.source.maximum_transmission_unit,
+                .ip_udp_overhead =
+                    config.source.destination.is_ipv4() ? 28U : 48U,
+                .clock = config.unicast_budget_clock,
+                .clock_context = config.unicast_budget_clock_context});
+        if (actor->unicast_budget_->snapshot().closed)
+            return {};
+        actor->state_.unicast_recipient_limit = std::min<std::uint64_t>(
+            config.maximum_unicast_members, rate / source_rate);
         actor->encoder_ = GroupPacketEncoder::create(
             {.group_id = config.source.group_id,
                 .stream_generation = config.source.generation,
@@ -153,7 +176,8 @@ std::optional<GroupSendCoordinator::Member> GroupSendCoordinator::add_member(
             .timestamp_origin = configuration_.timestamp_origin,
             .family = configuration_.source.destination.family,
             .key_schedule = configuration_.key_schedule,
-            .initial_sequence = state_.next_sequence});
+            .initial_sequence = state_.next_sequence,
+            .unicast_budget = unicast_budget_});
     if (!binding)
         return {};
     available->state = {next_member_++, Detachment::none};
@@ -254,8 +278,7 @@ GroupSendCoordinator::Transition GroupSendCoordinator::set_delivery(
             return {
                 .status = TransitionStatus::exhausted, .member = member.state};
         if (mode != GroupOriginalDelivery::multicast && !member.unicast_lease
-            && state_.unicast_reservations
-                == configuration_.maximum_unicast_members)
+            && state_.unicast_reservations >= state_.unicast_recipient_limit)
             return {.status = TransitionStatus::full, .member = member.state};
         if (!manual_
             && scheduler_->notify_service(service_)
@@ -266,7 +289,7 @@ GroupSendCoordinator::Transition GroupSendCoordinator::set_delivery(
             state_.next_sequence, recover,
             member.unicast_lease
                 || state_.unicast_reservations
-                    < configuration_.maximum_unicast_members);
+                    < state_.unicast_recipient_limit);
         if (prefix.status != RuntimeAdmission::Status::ready) {
             result.status = prefix.status == RuntimeAdmission::Status::busy
                 ? TransitionStatus::busy
@@ -557,6 +580,8 @@ GroupSendCoordinator::Snapshot GroupSendCoordinator::snapshot() const noexcept
 {
     std::lock_guard lock(publication_);
     auto state = state_;
+    if (unicast_budget_)
+        state.unicast_budget = unicast_budget_->snapshot();
     state.writable = !state.closed && !state.failed
         && (!retry_at_ || admission_now() >= *retry_at_)
         && (state.active_members == 0
@@ -681,6 +706,8 @@ void GroupSendCoordinator::close() noexcept
         if (state_.closed)
             return;
         state_.closed = true;
+        if (unicast_budget_)
+            unicast_budget_->close();
         if (emitter_)
             emitter_->close();
         if (encoder_)

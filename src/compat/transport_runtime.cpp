@@ -2617,6 +2617,136 @@ std::span<const std::byte> ConnectionRuntime::queued_control_payload(
     return bytes.subspan(packet_header_size);
 }
 
+UdpIoResult ConnectionRuntime::send_budgeted_datagram(DatagramChannel& channel,
+    std::span<const std::byte> bytes, const DatagramCompletion& completion,
+    bool& budget_wait) noexcept
+{
+    if (!completion.group_binding || !completion.group_binding->unicast_budget_)
+        return channel.send_datagram(bytes, peer_);
+    auto permit =
+        completion.group_binding->unicast_budget_->acquire(bytes.size());
+    if (!permit) {
+        budget_wait = true;
+        return {.error = Error::would_block};
+    }
+    const auto sent = channel.send_datagram(bytes, peer_);
+    permit.finish(
+        sent && sent.bytes_transferred != 0U, completion.data.retransmitted);
+    return sent;
+}
+
+bool ConnectionRuntime::current_group_datagram(
+    const DatagramCompletion& completion) const noexcept
+{
+    const auto token = session_.send_buffer().group_original_submission(
+        completion.data.sequence);
+    return group_send_state_
+        && group_send_state_->binding == completion.group_binding && token
+        && token->sequence_position == completion.group_position;
+}
+
+bool ConnectionRuntime::hold_group_budget_datagram(
+    std::span<const std::byte> bytes,
+    const DatagramCompletion& completion) noexcept
+{
+    if (group_budget_pending_) {
+        break_locked(0);
+        return false;
+    }
+    group_budget_pending_.reset(new (std::nothrow) PendingDatagram {});
+    if (!group_budget_pending_) {
+        break_locked(0);
+        return false;
+    }
+    std::copy(bytes.begin(), bytes.end(), group_budget_pending_->bytes.begin());
+    group_budget_pending_->size = bytes.size();
+    group_budget_pending_->completion = completion;
+    return true;
+}
+
+bool ConnectionRuntime::flush_group_budget_datagram(std::uint64_t now) noexcept
+{
+    if (!group_budget_pending_)
+        return true;
+    const auto& pending = *group_budget_pending_;
+    if (!current_group_datagram(pending.completion)) {
+        group_budget_pending_.reset();
+        send_ready_.notify_all();
+        return true;
+    }
+#ifdef ENABLE_MAXREXMITBW
+    if (pending.completion.data.retransmitted
+        && !retransmission_budget_.ready(pending.size, now)) {
+        session_.requeue_prepared_retransmission(
+            pending.completion.data.sequence);
+        group_budget_pending_.reset();
+        return true;
+    }
+#endif
+    if (pending_datagram_size_ || (poll_send_budget_ && !*poll_send_budget_))
+        return true;
+    auto channel = channel_.lock();
+    if (!channel) {
+        break_locked(0);
+        return false;
+    }
+    bool wait = false;
+    const auto bytes = std::span {pending.bytes}.first(pending.size);
+    const auto sent =
+        send_budgeted_datagram(*channel, bytes, pending.completion, wait);
+    if (wait)
+        return true;
+    if (poll_send_budget_)
+        --*poll_send_budget_;
+    if (!sent) {
+        if (!defer_send_error(sent, now))
+            return false;
+        // A real native error returns to the existing bounded retry FIFO.
+        pending_datagram_head_ = std::move(group_budget_pending_);
+        pending_datagram_tail_ = pending_datagram_head_.get();
+        pending_datagram_size_ = 1;
+        return true;
+    }
+    if (sent.bytes_transferred != pending.size) {
+        break_locked(0);
+        return false;
+    }
+    const auto completed = complete_datagram(bytes, pending.completion, now);
+    group_budget_pending_.reset();
+    send_ready_.notify_all();
+    return completed;
+}
+
+RuntimePollResult ConnectionRuntime::group_budget_poll_result(
+    std::uint64_t now) noexcept
+{
+    auto delay = std::chrono::microseconds {1'000};
+    if (group_budget_pending_->completion.group_binding->unicast_budget_)
+        delay = group_budget_pending_->completion.group_binding->unicast_budget_
+                    ->delay(group_budget_pending_->size);
+    // Fairness/contention polling is bounded; protocol controls, sender TTL,
+    // and receive delivery must keep their earlier existing deadlines.
+    delay = std::min(delay, std::chrono::microseconds {1'000'000});
+    if (crypto_ && !crypto_->pending_key_material().empty())
+        delay = std::min(delay, std::chrono::microseconds {1'000});
+    const auto bound = [&](std::uint64_t deadline) {
+        delay = std::min(delay,
+            std::chrono::microseconds {deadline > now ? deadline - now : 0U});
+    };
+    bound(session_.next_control_deadline(now));
+    const auto remaining = std::numeric_limits<std::uint64_t>::max()
+        - last_peer_activity_microseconds_;
+    bound(last_peer_activity_microseconds_
+        + std::min(remaining, peer_idle_timeout_microseconds_ + 1U));
+    if (const auto deadline = session_.next_sender_retirement_deadline())
+        bound(*deadline);
+    if (const auto deadline = session_.next_receive_delivery_time())
+        bound(*deadline);
+    if (const auto deadline = session_.next_tail_probe_due())
+        bound(*deadline);
+    return {.immediate_work = delay.count() == 0, .next_work_delay = delay};
+}
+
 bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
     DatagramCompletion completion, std::uint64_t now) noexcept
 {
@@ -2652,10 +2782,13 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
     }
     if (pending_datagram_size_ == 0U
         && (poll_send_budget_ == nullptr || *poll_send_budget_ != 0U)) {
-        if (poll_send_budget_ != nullptr) {
+        bool budget_wait = false;
+        const auto sent =
+            send_budgeted_datagram(*channel, bytes, completion, budget_wait);
+        if (budget_wait)
+            return hold_group_budget_datagram(bytes, completion);
+        if (poll_send_budget_ != nullptr)
             --*poll_send_budget_;
-        }
-        const auto sent = channel->send_datagram(bytes, peer_);
         if (sent) {
             if (sent.bytes_transferred != bytes.size()) {
                 break_locked(0);
@@ -2874,15 +3007,7 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
             current = session_.send_buffer().retains_packet(
                 pending.completion.data.sequence);
             if (pending.completion.group_binding) {
-                const auto token =
-                    session_.send_buffer().group_original_submission(
-                        pending.completion.data.sequence);
-                current = current && group_send_state_
-                    && group_send_state_->binding
-                        == pending.completion.group_binding
-                    && token
-                    && token->sequence_position
-                        == pending.completion.group_position;
+                current = current && current_group_datagram(pending.completion);
             }
         } else if (pending.completion.kind == DatagramKind::key_request) {
             // An earlier copy may have been acknowledged while this retry
@@ -2923,9 +3048,28 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
                 if (*poll_send_budget_ == 0U) {
                     return true;
                 }
-                --*poll_send_budget_;
             }
-            const auto sent = channel->send_datagram(bytes, peer_);
+            bool budget_wait = false;
+            const auto sent = send_budgeted_datagram(
+                *channel, bytes, pending.completion, budget_wait);
+            if (budget_wait) {
+                if (group_budget_pending_) {
+                    break_locked(0);
+                    return false;
+                }
+                auto held = std::move(pending_datagram_head_);
+                pending_datagram_head_ = std::move(held->next);
+                if (!pending_datagram_head_)
+                    pending_datagram_tail_ = nullptr;
+                --pending_datagram_size_;
+                group_budget_pending_ = std::move(held);
+                next_datagram_retry_microseconds_ = 0;
+                transient_send_failure_since_.reset();
+                transient_send_system_error_ = 0;
+                continue;
+            }
+            if (poll_send_budget_)
+                --*poll_send_budget_;
             if (!sent) {
                 return defer_send_error(sent, now);
             }
@@ -4628,6 +4772,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     // sent. Once the stream pauses or ends, retained copies stay available
     // for retransmission until acknowledged.
     const bool new_data_waiting = pending_datagram_size_ != 0U
+        || group_budget_pending_
         || session_.send_buffer().peek_new_packet().has_value();
     if (!send_actions(session_.drop_expired_sender_message(now), now)
         || (new_data_waiting
@@ -4699,6 +4844,12 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         return {};
     }
 #endif
+    if (!flush_group_budget_datagram(now))
+        return {};
+    if (pending_datagram_size_)
+        return pending_send_poll_result(now);
+    if (group_budget_pending_)
+        return group_budget_poll_result(now_microseconds());
     for (std::size_t index = 0;
         index < maximum_send_batch && *poll_send_budget_ != 0U; ++index) {
         const std::uint64_t packet_time = now_microseconds();
@@ -4841,11 +4992,13 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         if (!send_data(*packet, packet_time)) {
             return {};
         }
-        if (pending_datagram_size_ != 0U) {
+        if (pending_datagram_size_ != 0U || group_budget_pending_) {
             break;
         }
     }
 
+    if (group_budget_pending_)
+        return group_budget_poll_result(now_microseconds());
     if (pending_datagram_size_ != 0U) {
         return pending_send_poll_result(now_microseconds());
     }
@@ -5098,6 +5251,7 @@ void ConnectionRuntime::break_locked(int system_error) noexcept
     pending_datagram_head_.reset();
     pending_datagram_tail_ = nullptr;
     pending_datagram_size_ = 0U;
+    group_budget_pending_.reset();
     next_datagram_retry_microseconds_ = 0U;
     transient_send_failure_since_.reset();
     transient_send_system_error_ = 0;
@@ -5288,6 +5442,7 @@ void ConnectionRuntime::finish_close() noexcept
     transient_send_failure_since_.reset();
     transient_send_system_error_ = 0;
     close_completed_ = true;
+    group_budget_pending_.reset();
     auto retirement = std::exchange(retired_group_statistics_, {});
     PacketByteCounter total;
     if (retirement.group != SRT_INVALID_SOCK)
@@ -5441,13 +5596,14 @@ bool ConnectionRuntime::wait_for_send_drain(
     std::unique_lock lock(mutex_);
     const auto complete = [this] {
         return (session_.send_buffer().size() == 0U
-                   && pending_datagram_size_ == 0U)
+                   && pending_datagram_size_ == 0U && !group_budget_pending_)
             || locally_closed_ || peer_closed_ || broken_;
     };
     if (!complete() && timeout.count() > 0) {
         (void)send_ready_.wait_for(lock, timeout, complete);
     }
-    return session_.send_buffer().size() == 0U && pending_datagram_size_ == 0U;
+    return session_.send_buffer().size() == 0U && pending_datagram_size_ == 0U
+        && !group_budget_pending_;
 }
 
 CryptoState ConnectionRuntime::sender_crypto_state() const noexcept

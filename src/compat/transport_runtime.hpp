@@ -791,6 +791,16 @@ private:
     [[nodiscard]] bool complete_datagram(std::span<const std::byte> bytes,
         const DatagramCompletion& completion, std::uint64_t now) noexcept;
     [[nodiscard]] bool flush_pending_datagrams(std::uint64_t now) noexcept;
+    [[nodiscard]] UdpIoResult send_budgeted_datagram(DatagramChannel&,
+        std::span<const std::byte>, const DatagramCompletion&,
+        bool& budget_wait) noexcept;
+    [[nodiscard]] bool current_group_datagram(
+        const DatagramCompletion&) const noexcept;
+    [[nodiscard]] bool hold_group_budget_datagram(
+        std::span<const std::byte>, const DatagramCompletion&) noexcept;
+    [[nodiscard]] bool flush_group_budget_datagram(std::uint64_t now) noexcept;
+    [[nodiscard]] RuntimePollResult group_budget_poll_result(
+        std::uint64_t now) noexcept;
     [[nodiscard]] bool defer_send_error(
         const UdpIoResult& failure, std::uint64_t now) noexcept;
     [[nodiscard]] RuntimePollResult pending_send_poll_result(
@@ -932,6 +942,9 @@ private:
     // attempts; yielding for the channel budget is not UDP backpressure.
     std::size_t* poll_send_budget_ = nullptr;
     std::unique_ptr<PendingDatagram> pending_datagram_head_;
+    // Exactly one prepared canonical DATA can wait for the aggregate quota,
+    // outside the native-error FIFO so periodic controls/KM remain runnable.
+    std::unique_ptr<PendingDatagram> group_budget_pending_;
     PendingDatagram* pending_datagram_tail_ = nullptr;
     std::size_t pending_datagram_size_ = 0;
     std::uint64_t next_datagram_retry_microseconds_ = 0;

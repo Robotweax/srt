@@ -36,6 +36,12 @@ public:
         // native copies. This is not an aggregate wire/repair bandwidth budget.
         // No public switching API selects these internal delivery policies.
         std::size_t maximum_unicast_members = 4;
+        // Aggregate original/repair wire bytes, including IP/UDP. Zero derives
+        // source rate * max(1, maximum_unicast_members), saturating on overflow.
+        // One MTU of burst credit. No public rate override selects this value.
+        std::uint64_t aggregate_unicast_wire_bytes_per_second = 0;
+        GroupUnicastBudget::ClockFunction unicast_budget_clock = nullptr;
+        void* unicast_budget_clock_context = nullptr;
     };
     enum class Status : std::uint8_t {
         accepted,
@@ -105,6 +111,8 @@ public:
         std::uint64_t duplicate_completions = 0;
         std::size_t unicast_members = 0;
         std::size_t unicast_reservations = 0;
+        std::size_t unicast_recipient_limit = 0;
+        GroupUnicastBudget::Snapshot unicast_budget;
         bool writable = false;
         bool failed = false;
         bool closed = false;
@@ -196,6 +204,7 @@ private:
     std::size_t maximum_payload_ = 0;
     std::unique_ptr<GroupPacketEncoder> encoder_;
     std::shared_ptr<GroupMulticastEmitter> emitter_;
+    std::shared_ptr<GroupUnicastBudget> unicast_budget_;
     std::shared_ptr<RuntimeScheduler> scheduler_;
     RuntimeScheduler::ServiceToken service_ {};
     std::shared_ptr<Work> work_;
