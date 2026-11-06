@@ -113,6 +113,12 @@ public:
         std::span<const std::byte>& parity) noexcept;
 
 private:
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    friend class CryptoSession;
+    [[nodiscard]] Error import_peer_key(
+        bool caller, std::span<const std::byte, 32> key) noexcept;
+    bool peer_authentication_ = false;
+#endif
     [[nodiscard]] Error fec_mac(bool caller, std::uint64_t counter,
         const DataHeader& header, std::span<const std::byte> parity,
         std::span<std::byte, 32> output) noexcept;

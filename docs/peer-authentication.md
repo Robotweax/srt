@@ -14,8 +14,17 @@ key generation/import, public-point validation, ECDH and ECDSA; Mbed TLS and
 BCrypt currently return `Error::unsupported` for those operations. Private
 keys stay in provider-owned handles with no raw private-key export.
 
-Socket options, admission callbacks, transport-handshake integration and
-runtime key installation are still absent. Enabling the build option does not
+The native runtime can now import a completed exchange into a fresh
+`CryptoSession`: key 4 authenticates KM and FEC using the peer-authentication
+label, and keys 5/6 wrap the caller/listener transmit material without further
+PBKDF2 work. Both directions generate fresh AES-GCM material and wait for KM
+confirmation. Legacy handshake proofs, optional-encryption fallback and shared
+group schedules are rejected for imported sessions. The runtime erases its
+passphrase copy on import; the exchange owner still owns its cached flights
+and must destroy the exchange on completion or failure.
+
+Socket options, admission callbacks and transport-handshake integration are
+still absent. Enabling the build option does not
 authenticate socket connections or change their wire bytes. In particular,
 `Exchange::ready_for_key_exchange()` is not permission to publish a caller or
 release DATA: the caller still needs the listener's passphrase proof through
@@ -41,7 +50,9 @@ or evidence of cryptographic review. Separate P-256 tests use the public vectors
 from RFC 6979 section A.2.5 and RFC 5903 section 8.1. Exchange tests cover
 mutual authentication, pin rotation, transcript tampering, replay, wrong
 passphrases, bounded invalid signatures, byte-identical retries and provider
-failures. SHA-256 is implemented for each backend; platform qualification still
+failures. Runtime handoff tests cover all AES key lengths, directional KM
+confirmation, fresh salts without PBKDF2, FEC replay rejection and failed
+initialization. SHA-256 is implemented for each backend; platform qualification still
 applies. The protocol components use bounded
 storage and are not compiled into builds with the option off.
 

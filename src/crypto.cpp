@@ -1,6 +1,9 @@
 #include "robotweax/srt/crypto.hpp"
 
 #include "robotweax/srt/codec.hpp"
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+#include "peer_authentication.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -223,6 +226,57 @@ CryptoSession::CryptoSession(
     }
     configuration_error_ = validate_configuration();
 }
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+Error CryptoSession::start_peer_authentication(
+    const peer_authentication::Exchange& exchange) noexcept
+{
+    if (!exchange.ready_for_key_exchange()
+        || configuration_error_ != Error::none || !enabled()
+        || peer_authentication_ || session_authentication_
+        || configured_mode_ != CryptoMode::aes_gcm || !aes_gcm_enabled_
+        || negotiation_context_ != CryptoNegotiationContext::caller_listener
+        || shared_schedule_ || sender_state_ != CryptoState::unsecured
+        || receiver_state_ != CryptoState::unsecured)
+        return Error::invalid_state;
+    const auto transmit = exchange.wrapping_key(exchange.is_caller());
+    const auto receive = exchange.wrapping_key(!exchange.is_caller());
+    const auto root = exchange.session_key();
+    if (!valid_aes_key_size(transmit.size())
+        || transmit.size() != receive.size() || root.size() != 32U)
+        return Error::invalid_state;
+    auto authentication = std::unique_ptr<SessionAuthentication>(
+        new (std::nothrow) SessionAuthentication(provider_));
+    if (!authentication)
+        return Error::cryptographic_failure;
+    const auto imported = authentication->import_peer_key(
+        exchange.is_caller(), std::span<const std::byte, 32>(root.data(), 32));
+    if (imported != Error::none)
+        return imported;
+    // Salt is IV material only in this profile, never input to a runtime PBKDF.
+    std::copy(transmit.begin(), transmit.end(), kek_cache_[0].key.begin());
+    std::copy(receive.begin(), receive.end(), kek_cache_[1].key.begin());
+    kek_cache_[0].length = kek_cache_[1].length = transmit.size();
+    configured_key_length_ = transmit.size();
+    effective_mode_ = CryptoMode::aes_gcm;
+    peer_authentication_ = true;
+    provider_.secure_erase(passphrase_);
+    passphrase_size_ = 0;
+    session_authentication_ = std::move(authentication);
+    const auto result = prepare_bidirectional_sender(configured_key_length_);
+    if (result != Error::none) {
+        session_authentication_.reset();
+        for (auto& cache : kek_cache_) {
+            provider_.secure_erase(cache.key);
+            cache.length = 0;
+        }
+        erase_slot(transmit_even_);
+        erase_slot(transmit_odd_);
+        configuration_error_ = result; // terminal; never fall back to PBKDF
+    }
+    return result;
+}
+#endif
 
 Error CryptoSession::start_session_authentication(
     bool caller, std::uint8_t version) noexcept
@@ -639,6 +693,16 @@ Error CryptoSession::derive_key_encryption_key(KeyEncryptionKeyUse use,
     std::span<std::byte> destination, bool cache_result) noexcept
 {
     auto& cache = kek_cache_[static_cast<std::size_t>(use)];
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_) {
+        if (cache.length != destination.size()) {
+            provider_.secure_erase(destination);
+            return Error::invalid_key_material;
+        }
+        std::copy_n(cache.key.begin(), destination.size(), destination.begin());
+        return Error::none;
+    }
+#endif
     if (cache.length == destination.size()
         && std::equal(salt.begin(), salt.end(), cache.salt.begin())) {
         std::copy_n(cache.key.begin(), destination.size(), destination.begin());
@@ -660,6 +724,10 @@ void CryptoSession::cache_key_encryption_key(KeyEncryptionKeyUse use,
     std::span<const std::byte, pbkdf2_salt_size> salt,
     std::span<const std::byte> key) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_)
+        return;
+#endif
     auto& cache = kek_cache_[static_cast<std::size_t>(use)];
     provider_.secure_erase(cache.key);
     std::copy_n(key.begin(), key.size(), cache.key.begin());
@@ -902,6 +970,11 @@ Error CryptoSession::prepare_shared_sender() noexcept
 Error CryptoSession::attach_shared_transmit_schedule(
     std::shared_ptr<SharedTransmitKeySchedule> schedule) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_)
+        return Error::invalid_state;
+#endif
+
     if (schedule == nullptr || !enabled() || shared_schedule_ != nullptr) {
         return Error::invalid_state;
     }
@@ -1124,6 +1197,10 @@ Error CryptoSession::build_sender_key_material(
 bool CryptoSession::needs_receive_key_derivation(
     std::span<const std::byte> request) const noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_)
+        return false;
+#endif
     if (history_contains(received_key_material_history_,
             received_key_material_history_size_, request)) {
         return false;
@@ -1143,6 +1220,11 @@ Error CryptoSession::accept_key_material(
     std::span<const std::byte> request,
     bool clone_for_bidirectional_sender) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_ && clone_for_bidirectional_sender)
+        return Error::invalid_state;
+#endif
+
     const bool preserve_secured_state =
         receiver_state_ == CryptoState::secured
         || receiver_state_ == CryptoState::securing;
@@ -1382,6 +1464,11 @@ Error CryptoSession::acknowledge_key_material(
     std::span<const std::byte> response,
     bool clone_for_bidirectional_receiver) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_ && clone_for_bidirectional_receiver)
+        return Error::invalid_state;
+#endif
+
     // A confirmed encrypted handshake must not downgrade while confirming
     // directional keys or rotating established keys. Only the original
     // optional-encryption negotiation may accept NOSECRET as a fallback.
@@ -1469,6 +1556,11 @@ Error CryptoSession::generate_next_sender_key() noexcept
 
 Error CryptoSession::continue_without_peer_key(CryptoState reported) noexcept
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    if (peer_authentication_)
+        return Error::invalid_state;
+#endif
+
     if (!enabled()) {
         return Error::invalid_state;
     }
