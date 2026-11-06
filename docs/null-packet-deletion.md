@@ -547,6 +547,16 @@ buffer and atomic readiness fix preceded a new full matrix; no assertions or
 individual cases were replaced. A clean real-source fixture, live encoder
 integration and release acceptance remain separate requirements.
 
+
+A separately labelled [capture-derived fixture](https://github.com/Robotweax/srt_network_lab/blob/71b01e269aec81fbbc87418fb42afb18ba1739bc/results/2026-11-06-npd-derived-fixture/README.md)
+now passes strict source admission: 245 MPEG-2 video frames and 451 MP2 audio
+frames decode without diagnostics. Its compressed packet hashes match ordered
+selections from the Italian source, while remultiplexing regenerates TS tables,
+PIDs, timestamps and 8 Mb/s stuffing. The pinned recipe reproduces identical
+bytes. This is derived-fixture admission only; no SRT matrix has yet run on
+this new fixture, and unchanged-capture/live-encoder qualification is not
+claimed. Earlier failed source admissions remain unchanged.
+
 ## Qualification required before broader support claims
 
 Evidence must be reproducible and black-box, as required by
