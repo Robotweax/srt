@@ -21,8 +21,8 @@ ReceiverBridge::ReceiverBridge(
 std::shared_ptr<ReceiverBridge> ReceiverBridge::create(
     std::shared_ptr<NativeService> service, Configuration c) noexcept
 {
-    if (!service || !service->configuration_.caller || !c.retry_interval_us
-        || c.retry_interval_us > c.round_timeout_us
+    if (!service || !service->configuration_.caller || !valid(c.reporting)
+        || !c.retry_interval_us || c.retry_interval_us > c.round_timeout_us
         || c.round_timeout_us > c.operation_timeout_us
         || c.operation_timeout_us > maximum_age_us || !c.query_interval_us
         || c.query_interval_us > maximum_age_us || !c.confirmation_lifetime_us
@@ -76,6 +76,8 @@ ReceiverBridge::Snapshot ReceiverBridge::snapshot() const noexcept
             s.next_wakeup_us = std::min(s.next_wakeup_us,
                 add(s.confirmation_origin_us,
                     configuration_.confirmation_lifetime_us));
+        if (configuration_.reporting.interval_us && !pending_report_)
+            s.next_wakeup_us = std::min(s.next_wakeup_us, next_report_);
         s.next_wakeup_us = std::min(s.next_wakeup_us, native.expires_at_us);
     }
     return s;
@@ -90,6 +92,46 @@ ReceiverBridge::data_progress() const noexcept
     return r ? r->hybrid_receive_progress(
                    service_.get(), native.context.selection.initial_position)
              : std::nullopt;
+}
+std::optional<ReportObservation> ReceiverBridge::peer_report(
+    std::uint32_t maximum_age) const noexcept
+{
+    const auto native = service_->snapshot();
+    std::lock_guard lock(mutex_);
+    const auto at = service_->now();
+    if (cancelled_.load() || service_->closed() || native.closed
+        || !native.active || at >= native.expires_at_us || !state_.attached)
+        return {};
+    return peer_report_.snapshot(at, maximum_age);
+}
+void ReceiverBridge::report() noexcept
+{
+    const auto at = service_->now();
+    const auto c = configuration_.reporting;
+    if (!c.interval_us || pending_report_ || at < next_report_)
+        return;
+    next_report_ = add(at, c.interval_us);
+    ++state_.report_attempts;
+    if (!next_serial_ || next_serial_ == UINT64_MAX) {
+        cancelled_.store(true);
+        return;
+    }
+    const auto data = data_progress();
+    const auto sample = data
+        ? path_report(*data, context_, state_.mode, state_.revision,
+              next_serial_, c, service_->now())
+        : std::nullopt;
+    if (!sample) {
+        ++state_.reports_skipped;
+        return;
+    }
+    const auto result = service_->send_impl(
+        sample->message, sample->not_after_us, sample->observed_at_us, true);
+    if (result == NativeService::Admission::accepted) {
+        pending_report_ = next_serial_++;
+        ++state_.reports_queued;
+    } else
+        ++state_.reports_skipped;
 }
 ReceiverBridge::Admission ReceiverBridge::request_fallback(
     std::uint64_t position) noexcept
@@ -188,6 +230,24 @@ void ReceiverBridge::round(Kind kind, std::uint64_t at) noexcept
 void ReceiverBridge::event(
     const NativeService::Event& e, std::uint64_t at) noexcept
 {
+    if (e.message.kind == Kind::path_report
+        && e.kind != NativeService::Event::Kind::received) {
+        if (e.message.serial == pending_report_) {
+            pending_report_ = 0;
+            if (e.kind == NativeService::Event::Kind::submitted)
+                ++state_.reports_submitted;
+        }
+        return;
+    }
+    if (e.kind == NativeService::Event::Kind::received
+        && e.message.kind == Kind::stream_progress
+        && e.generation == generation_) {
+        if (!peer_report_.accept(e.message,
+                e.received.status == Session::Status::duplicate,
+                e.received.first_received_us, at))
+            ++state_.ignored;
+        return;
+    }
     if (e.kind != NativeService::Event::Kind::received) {
         if (e.kind == NativeService::Event::Kind::submitted && active_
             && e.message.serial == request_.serial)
@@ -293,6 +353,8 @@ void ReceiverBridge::work() noexcept
             || !(service_->state_.context.selection.supported & policy_query))
             return;
         context_ = service_->state_.context;
+        peer_report_ = ReportTracker(
+            Kind::stream_progress, context_.selection.initial_position);
         generation_ = service_->state_.generation;
         service_->bridged_ = true;
         state_.attached = true;
@@ -357,6 +419,8 @@ void ReceiverBridge::work() noexcept
                 cancelled_.store(true);
         }
     }
+    if (!cancelled_.load())
+        report();
     if (cancelled_.load()) {
         state_.phase = Phase::closed;
         lock.unlock();

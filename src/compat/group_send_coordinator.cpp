@@ -804,6 +804,20 @@ GroupSendCoordinator::Snapshot GroupSendCoordinator::snapshot() const noexcept
     return state;
 }
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+bool GroupSendCoordinator::declare_source_activity(hybrid::Activity activity,
+    std::uint64_t produced, std::uint32_t lifetime) noexcept
+{
+    std::lock_guard lock(publication_);
+    if (state_.closed || state_.failed
+        || state_.source_mode != SourceMode::multicast)
+        return false;
+    const auto at = std::chrono::duration_cast<std::chrono::microseconds>(
+        source_now().time_since_epoch())
+                        .count();
+    return at >= 0
+        && source_activity_.declare(activity, produced, lifetime,
+            static_cast<std::uint64_t>(at), next_position_);
+}
 std::optional<hybrid::SourceDataProgress> GroupSendCoordinator::data_progress(
     std::uint64_t id) const noexcept
 {
@@ -836,7 +850,17 @@ std::optional<hybrid::SourceDataProgress> GroupSendCoordinator::data_progress(
             .multicast = multicast_originals_,
             .unicast = unicast,
             .source_failed = state_.failed,
-            .unicast_only = state_.source_mode == SourceMode::unicast_only};
+            .unicast_only = state_.source_mode == SourceMode::unicast_only,
+            .delivery_mode =
+                member.state.delivery == GroupOriginalDelivery::multicast
+                ? hybrid::Mode::multicast
+                : member.state.delivery == GroupOriginalDelivery::unicast
+                ? hybrid::Mode::unicast
+                : hybrid::Mode::overlap,
+            .activity = when < 0
+                ? std::nullopt
+                : source_activity_.observe(
+                      static_cast<std::uint64_t>(when), next_position_)};
     }
     return {};
 }

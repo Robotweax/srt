@@ -72,9 +72,10 @@ std::shared_ptr<CoordinatorBridge> CoordinatorBridge::create(
     std::shared_ptr<NativeService> service,
     std::shared_ptr<AuthorizationLease> lease, Configuration c) noexcept
 {
-    if (!actor || !service || !lease || !c.command_timeout_us
-        || c.command_timeout_us > maximum_age_us || !c.maximum_attempts
-        || c.maximum_attempts > 8 || service->configuration_.caller)
+    if (!actor || !service || !lease || !valid(c.reporting)
+        || !c.command_timeout_us || c.command_timeout_us > maximum_age_us
+        || !c.maximum_attempts || c.maximum_attempts > 8
+        || service->configuration_.caller)
         return {};
     // Socket identity inspection is outside all transaction/protocol locks.
     std::shared_ptr<DatagramChannel> channel;
@@ -113,6 +114,9 @@ CoordinatorBridge::Snapshot CoordinatorBridge::snapshot() const noexcept
     std::lock_guard lock(mutex_);
     auto s = state_;
     s.closed = s.closed || cancelled_.load() || service_->closed();
+    if (!s.closed && state_.enrolled && configuration_.reporting.interval_us
+        && !pending_report_)
+        s.next_wakeup_us = next_report_;
     return s;
 }
 std::optional<SourceDataProgress>
@@ -132,6 +136,53 @@ CoordinatorBridge::data_progress() const noexcept
         || sample->revision != revision)
         return {};
     return sample;
+}
+std::optional<ReportObservation> CoordinatorBridge::peer_report(
+    std::uint32_t maximum_age) const noexcept
+{
+    const auto native = service_->snapshot();
+    std::lock_guard lock(mutex_);
+    const auto at = service_->now();
+    if (cancelled_.load() || service_->closed() || native.closed
+        || !native.active || at >= native.expires_at_us || !state_.enrolled)
+        return {};
+    return peer_report_.snapshot(at, maximum_age);
+}
+void CoordinatorBridge::report() noexcept
+{
+    const auto at = service_->now();
+    const auto c = configuration_.reporting;
+    if (!c.interval_us || pending_report_ || at < next_report_)
+        return;
+    next_report_ = add(at, c.interval_us);
+    ++state_.report_attempts;
+    if (!transact(nullptr) || cancelled_.load()) {
+        ++state_.reports_skipped;
+        return;
+    }
+    const auto& context = service_->state_.context;
+    const auto data = actor_->data_progress(context.selection.member);
+    if (!next_reply_ || next_reply_ == UINT64_MAX) {
+        cancelled_.store(true);
+        return;
+    }
+    if (!data || !data->activity || data->revision != state_.revision) {
+        ++state_.reports_skipped;
+        return;
+    }
+    const auto sample = stream_report(*data, *data->activity, context,
+        data->delivery_mode, next_reply_, c, service_->now());
+    if (!sample) {
+        ++state_.reports_skipped;
+        return;
+    }
+    const auto result = service_->send_impl(
+        sample->message, sample->not_after_us, sample->observed_at_us, true);
+    if (result == NativeService::Admission::accepted) {
+        pending_report_ = next_reply_++;
+        ++state_.reports_queued;
+    } else
+        ++state_.reports_skipped;
 }
 void CoordinatorBridge::pump() noexcept
 {
@@ -243,6 +294,8 @@ bool CoordinatorBridge::transact(Entry* entry) noexcept
             || a.unicast_budget_->state_.closed || found->state.revision
             || found->state.delivery != GroupOriginalDelivery::multicast)
             return true;
+        peer_report_ = ReportTracker(
+            Kind::path_report, context.selection.initial_position);
         state_.enrolled = true;
         state_.revision = found->state.revision;
         source_revision_ = a.state_.source_revision;
@@ -348,6 +401,24 @@ bool CoordinatorBridge::transact(Entry* entry) noexcept
 }
 void CoordinatorBridge::event(const NativeService::Event& event) noexcept
 {
+    if (event.message.kind == Kind::stream_progress
+        && event.kind != NativeService::Event::Kind::received) {
+        if (event.message.serial == pending_report_) {
+            pending_report_ = 0;
+            if (event.kind == NativeService::Event::Kind::submitted)
+                ++state_.reports_submitted;
+        }
+        return;
+    }
+    if (event.kind == NativeService::Event::Kind::received
+        && event.message.kind == Kind::path_report
+        && event.generation == service_->state_.generation) {
+        if (!peer_report_.accept(event.message,
+                event.received.status == Session::Status::duplicate,
+                event.received.first_received_us, service_->now()))
+            ++state_.ignored;
+        return;
+    }
     if (event.kind != NativeService::Event::Kind::received) {
         if (event.kind == NativeService::Event::Kind::retryable)
             for (auto& e : entries_)
@@ -463,6 +534,8 @@ void CoordinatorBridge::work() noexcept
     if (!cancelled_.load() && pending && transact(nullptr)
         && !cancelled_.load())
         replies();
+    if (!cancelled_.load())
+        report();
     if (cancelled_.load())
         state_.closed = true;
     lock.unlock();

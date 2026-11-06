@@ -683,6 +683,53 @@ struct ReceiverFixture {
     }
 };
 }
+TEST(
+    hybrid_reporting_receiver_consumes_authenticated_stream_reports_without_policy_confirmation)
+{
+    ReceiverFixture f;
+    auto m = f.response();
+    m.kind = h::Kind::stream_progress;
+    m.request_serial = 0;
+    m.produced_next = 1240;
+    m.retained_floor = 1234;
+    m.multicast_next = 1234;
+    m.interval_us = 100;
+    m.activity = h::Activity::paused;
+    REQUIRE_EQ(
+        f.p.l->send(m, 1100, 100), h::NativeService::Admission::accepted);
+    f.step();
+    f.step();
+    auto observed = f.receiver->peer_report(150);
+    REQUIRE(observed);
+    REQUIRE(observed->fresh);
+    REQUIRE_EQ(observed->message.activity, h::Activity::paused);
+    REQUIRE_EQ(observed->next_advanced_at_us, 0U);
+    REQUIRE(!f.receiver->snapshot().observed);
+    REQUIRE(!f.receiver->snapshot().fresh);
+    f.p.clock->value += 160;
+    REQUIRE(!f.receiver->peer_report(150)->fresh);
+    REQUIRE_EQ(
+        f.receiver->snapshot().fallback, h::ReceiverBridge::RequestState::none);
+    f.receiver->close();
+    REQUIRE(!f.receiver->peer_report(150));
+}
+TEST(
+    hybrid_reporting_receiver_without_native_data_observer_does_not_invent_path_reports)
+{
+    auto configuration = ReceiverFixture::configuration();
+    configuration.reporting = {10, 100};
+    ReceiverFixture f(configuration);
+    for (unsigned i = 0; i < 20; ++i) {
+        f.p.clock->value += 10;
+        f.step();
+    }
+    REQUIRE_EQ(f.receiver->snapshot().reports_queued, 0U);
+    REQUIRE(f.receiver->snapshot().reports_skipped > 0);
+    REQUIRE(
+        std::none_of(f.requests.begin(), f.requests.end(), [](const auto& m) {
+            return m.kind == h::Kind::path_report;
+        }));
+}
 TEST(hybrid_receiver_queries_confirm_and_expire_without_requesting_fallback)
 {
     ReceiverFixture f;

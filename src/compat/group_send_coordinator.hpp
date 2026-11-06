@@ -1,6 +1,7 @@
 #pragma once
 
 #include "compat/group_runtime_admission.hpp"
+#include "compat/hybrid_reporting.hpp"
 
 namespace robotweax::srt::compat {
 
@@ -178,6 +179,10 @@ public:
         bool in_order = true) noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    // Host declares actual application production/activity for this source
+    // incarnation. Refresh before expiry; ended is terminal. No DATA mutation.
+    [[nodiscard]] bool declare_source_activity(hybrid::Activity,
+        std::uint64_t produced_next, std::uint32_t lifetime_us) noexcept;
     // Local observations, not remote delivery, contiguous progress or policy
     // authorization. No sample if the member/runtime lifetime is unavailable.
     [[nodiscard]] std::optional<hybrid::SourceDataProgress> data_progress(
@@ -257,6 +262,7 @@ private:
     std::uint64_t next_position_ = 0;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
     hybrid::DataHighWater multicast_originals_;
+    hybrid::SourceActivity source_activity_;
 #endif
     std::size_t maximum_payload_ = 0;
     std::unique_ptr<GroupPacketEncoder> encoder_;

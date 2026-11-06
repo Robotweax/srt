@@ -2419,7 +2419,7 @@ struct BridgePeer {
             .listener_group = r.listener_group,
             .stream_id = r.stream_id,
             .generation = 7,
-            .expires_at_us = 10000};
+            .expires_at_us = self.now + 9900};
         self.grant = g;
         std::fill(secret.begin(), secret.end(), std::byte {0x22});
         return true;
@@ -2466,7 +2466,7 @@ struct BridgeFixture {
     std::shared_ptr<hb::CoordinatorBridge> bridge;
     std::shared_ptr<const hb::Conclusions> origin;
     explicit BridgeFixture(std::uint32_t limit = 256, bool attach = true,
-        std::size_t recipients = 4)
+        std::size_t recipients = 4, hb::ReportingConfiguration reporting = {})
         : f(CryptoMode::automatic, 4, initial, recipients)
         , receiver(f, 8)
     {
@@ -2512,6 +2512,11 @@ struct BridgeFixture {
         }
         origin = capture.freeze(false, 107, 108);
         REQUIRE(origin);
+        if (reporting.interval_us)
+            cp->now = lp->now = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    f.now.time_since_epoch())
+                    .count());
         const auto identity =
             hb::CoordinatorBridge::identity(f.actor, receiver.runtime);
         REQUIRE(identity);
@@ -2561,8 +2566,8 @@ struct BridgeFixture {
         REQUIRE(listener->snapshot().active);
         lease = std::make_shared<hb::AuthorizationLease>(lp->grant);
         if (attach) {
-            bridge = hb::CoordinatorBridge::create(
-                f.actor, listener, lease, {.command_timeout_us = 1000});
+            bridge = hb::CoordinatorBridge::create(f.actor, listener, lease,
+                {.reporting = reporting, .command_timeout_us = 1000});
             REQUIRE(bridge);
         }
     }
@@ -2898,6 +2903,157 @@ TEST(hybrid_bridge_status_queries_never_replay_prefix_or_reserve_unicast)
     REQUIRE_EQ(f.member().delivery, GroupOriginalDelivery::multicast);
     REQUIRE_EQ(f.f.actor->snapshot().unicast_reservations, 0U);
     REQUIRE_EQ(f.bridge->snapshot().applied, 0U);
+}
+TEST(
+    hybrid_reporting_sender_requires_explicit_activity_and_reports_actual_udp_only)
+{
+    BridgeFixture f(256, true, 4, {100, 1000});
+    f.bridge->pump();
+    REQUIRE_EQ(f.bridge->snapshot().reports_queued, 0U);
+    REQUIRE(
+        f.f.actor->declare_source_activity(hb::Activity::producing, 1, 2000));
+    const auto advance = [&] {
+        f.cp->now += 100;
+        f.lp->now += 100;
+        f.f.now += 100us;
+        f.receiver.now += 100;
+        f.bridge->pump();
+        for (unsigned i = 0; i < 3; ++i)
+            f.round();
+        f.bridge->pump();
+    };
+    const auto latest = [&] {
+        hb::NativeService::Event e;
+        std::optional<hb::Message> m;
+        while (f.caller->pop(e))
+            if (e.kind == hb::NativeService::Event::Kind::received
+                && e.message.kind == hb::Kind::stream_progress)
+                m = e.message;
+        if (!m)
+            throw std::runtime_error("missing progress: queued="
+                + std::to_string(f.bridge->snapshot().reports_queued)
+                + " skipped="
+                + std::to_string(f.bridge->snapshot().reports_skipped)
+                + " submitted="
+                + std::to_string(f.bridge->snapshot().reports_submitted)
+                + " native_rejected="
+                + std::to_string(f.listener->snapshot().rejected)
+                + " closed=" + std::to_string(f.bridge->snapshot().closed));
+        return *m;
+    };
+    advance();
+    auto m = latest();
+    REQUIRE_EQ(m.produced_next, 1U);
+    REQUIRE_EQ(m.next_position, 0U);
+    REQUIRE_EQ(f.f.send(), Status::accepted);
+    advance();
+    m = latest();
+    REQUIRE_EQ(m.next_position, 0U);
+    REQUIRE_EQ(m.multicast_next, 0U);
+    f.f.pump();
+    advance();
+    m = latest();
+    REQUIRE_EQ(m.next_position, 1U);
+    REQUIRE_EQ(m.multicast_next, 1U);
+    REQUIRE_EQ(f.bridge->snapshot().applied, 0U);
+    REQUIRE_EQ(f.member().revision, 0U);
+    REQUIRE(f.f.actor->declare_source_activity(hb::Activity::paused, 1, 2000));
+    advance();
+    m = latest();
+    REQUIRE_EQ(m.activity, hb::Activity::paused);
+    REQUIRE_EQ(m.next_position, 1U);
+    REQUIRE(f.f.actor->declare_source_activity(hb::Activity::ended, 1, 2000));
+    advance();
+    m = latest();
+    REQUIRE_EQ(m.activity, hb::Activity::ended);
+    f.receiver.ack(initial.next());
+    REQUIRE_EQ(f.f.send(), Status::accepted);
+    const auto queued = f.bridge->snapshot().reports_queued;
+    advance();
+    REQUIRE_EQ(f.bridge->snapshot().reports_queued, queued);
+    REQUIRE(!f.f.actor->data_progress(f.receiver.id)->activity);
+    REQUIRE(!f.bridge->snapshot().closed);
+}
+TEST(
+    hybrid_reporting_sender_bounds_queue_pressure_eagain_and_expired_declarations)
+{
+    BridgeFixture f(256, true, 4, {100, 400});
+    REQUIRE(f.f.actor->declare_source_activity(hb::Activity::paused, 0, 500));
+    f.bridge->pump();
+    REQUIRE_EQ(f.bridge->snapshot().reports_queued, 1U);
+    for (unsigned i = 0; i < 50; ++i)
+        f.bridge->pump();
+    REQUIRE_EQ(f.bridge->snapshot().reports_queued, 1U);
+    REQUIRE_EQ(f.listener->snapshot().queued, 1U);
+    f.lp->would_block = 1;
+    f.listener->pump_for_testing();
+    f.bridge->pump();
+    REQUIRE_EQ(f.bridge->snapshot().reports_submitted, 0U);
+    f.cp->now += 100;
+    f.lp->now += 100;
+    f.f.now += 100us;
+    f.bridge->pump();
+    REQUIRE_EQ(f.bridge->snapshot().reports_queued, 2U);
+    f.cp->now += 500;
+    f.lp->now += 500;
+    f.f.now += 500us;
+    f.listener->pump_for_testing();
+    f.bridge->pump();
+    REQUIRE_EQ(f.bridge->snapshot().reports_submitted, 0U);
+    REQUIRE_EQ(f.bridge->snapshot().reports_queued, 2U);
+    REQUIRE_EQ(f.bridge->snapshot().applied, 0U);
+    REQUIRE(!f.f.actor->data_progress(f.receiver.id)->activity);
+    f.lease->revoke();
+    REQUIRE(!f.bridge->peer_report(100));
+    REQUIRE(f.bridge->snapshot().closed);
+    BridgeFixture full(256, true, 4, {100, 400});
+    REQUIRE(
+        full.f.actor->declare_source_activity(hb::Activity::paused, 0, 1000));
+    auto path = full.request();
+    path.kind = hb::Kind::path_report;
+    path.mode = hb::Mode::multicast;
+    path.interval_us = 100;
+    REQUIRE_EQ(full.caller->send(path, full.cp->now + 1000, full.cp->now),
+        hb::NativeService::Admission::accepted);
+    full.caller->pump_for_testing();
+    REQUIRE(!full.cp->output.empty());
+    const auto wire = decode_packet(full.cp->output.back());
+    REQUIRE(wire);
+    for (unsigned i = 0; i < hb::NativeService::capacity; ++i)
+        REQUIRE(full.listener->enqueue(wire.packet, full.lp->now));
+    full.bridge->pump();
+    REQUIRE_EQ(full.bridge->snapshot().reports_queued, 0U);
+    REQUIRE_EQ(full.bridge->snapshot().reports_skipped, 1U);
+    for (unsigned i = 0; i < 50; ++i)
+        full.bridge->pump();
+    REQUIRE_EQ(full.bridge->snapshot().reports_skipped, 1U);
+}
+TEST(
+    hybrid_reporting_sender_consumes_authenticated_path_reports_without_policy_mutation)
+{
+    BridgeFixture f;
+    auto m = f.request();
+    m.kind = hb::Kind::path_report;
+    m.mode = hb::Mode::multicast;
+    m.interval_us = 100;
+    REQUIRE_EQ(f.caller->send(m, f.cp->now + 1000, f.cp->now),
+        hb::NativeService::Admission::accepted);
+    f.round();
+    f.bridge->pump();
+    auto p = f.bridge->peer_report(100);
+    REQUIRE(p);
+    REQUIRE(p->fresh);
+    REQUIRE_EQ(p->message.kind, hb::Kind::path_report);
+    REQUIRE_EQ(p->next_advanced_at_us, 0U);
+    f.cp->now += 100;
+    f.lp->now += 100;
+    REQUIRE(!f.bridge->peer_report(100)->fresh);
+    REQUIRE_EQ(f.bridge->snapshot().applied, 0U);
+    auto fallback = f.request(2);
+    f.submit(fallback);
+    const auto reply = f.reply();
+    REQUIRE_EQ(reply.kind, hb::Kind::delivery_commit);
+    REQUIRE_EQ(f.bridge->snapshot().applied, 1U);
 }
 TEST(hybrid_progress_sender_admission_and_eagain_are_not_multicast_submissions)
 {

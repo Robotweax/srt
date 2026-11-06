@@ -2488,7 +2488,8 @@ struct NativeReceiverOwners {
     std::shared_ptr<hn::AuthorizationLease> lease;
     std::shared_ptr<hn::CoordinatorBridge> sender;
     std::shared_ptr<hn::ReceiverBridge> receiver;
-    explicit NativeReceiverOwners(CoordinatedNative& f)
+    explicit NativeReceiverOwners(
+        CoordinatedNative& f, hn::ReportingConfiguration reporting = {})
         : pair(f)
     {
         const auto identity =
@@ -2505,15 +2506,16 @@ struct NativeReceiverOwners {
         const auto until =
             std::chrono::steady_clock::now() + std::chrono::seconds {1};
         while (!sender && std::chrono::steady_clock::now() < until) {
-            sender =
-                hn::CoordinatorBridge::create(f.actor(), pair.l, lease, {});
+            sender = hn::CoordinatorBridge::create(
+                f.actor(), pair.l, lease, {.reporting = reporting});
             if (!sender)
                 std::this_thread::sleep_for(std::chrono::milliseconds {1});
         }
         REQUIRE(sender);
         while (!receiver && std::chrono::steady_clock::now() < until) {
             receiver = hn::ReceiverBridge::create(pair.c,
-                {.retry_interval_us = 10'000,
+                {.reporting = reporting,
+                    .retry_interval_us = 10'000,
                     .round_timeout_us = 40'000,
                     .operation_timeout_us = 240'000,
                     .query_interval_us = 50'000,
@@ -2534,7 +2536,16 @@ struct NativeReceiverOwners {
             sender->pump();
             std::this_thread::sleep_for(std::chrono::milliseconds {1});
         }
-        REQUIRE(predicate());
+        if (!predicate())
+            throw std::runtime_error("native receiver wait: sender reports="
+                + std::to_string(sender->snapshot().reports_queued)
+                + " skips=" + std::to_string(sender->snapshot().reports_skipped)
+                + " closed=" + std::to_string(sender->snapshot().closed)
+                + " receiver reports="
+                + std::to_string(receiver->snapshot().reports_queued)
+                + " skips="
+                + std::to_string(receiver->snapshot().reports_skipped)
+                + " closed=" + std::to_string(receiver->snapshot().closed));
     }
 };
 }
@@ -2658,6 +2669,52 @@ struct HeldMulticastData {
         return frames;
     }
 };
+}
+TEST(multicast_dispatch_native_authenticated_reporting_plain_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2);
+        NativeReceiverOwners owners(f, {10'000, 100'000});
+        owners.sender->pump();
+        REQUIRE_EQ(owners.sender->snapshot().reports_queued, 0U);
+        REQUIRE(f.actor()->declare_source_activity(
+            hn::Activity::producing, 3, 1'000'000));
+        for (int i = 0; i < 3; ++i)
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        expect_messages(f.receiver, 0, 3);
+        REQUIRE(f.actor()->declare_source_activity(
+            hn::Activity::producing, 3, 1'000'000));
+        owners.wait([&] {
+            const auto stream = owners.receiver->peer_report(100'000);
+            const auto path = owners.sender->peer_report(100'000);
+            return stream && path && stream->fresh && path->fresh
+                && stream->message.next_position == 3
+                && stream->message.multicast_next == 3
+                && path->message.next_position == 3
+                && path->message.multicast_next == 3;
+        });
+        const auto previous = owners.receiver->peer_report(100'000);
+        REQUIRE(f.actor()->declare_source_activity(
+            hn::Activity::paused, 3, 1'000'000));
+        owners.wait([&] {
+            const auto r = owners.receiver->peer_report(100'000);
+            return r && r->message.activity == hn::Activity::paused;
+        });
+        REQUIRE_EQ(owners.receiver->peer_report(100'000)->next_advanced_at_us,
+            previous->next_advanced_at_us);
+        REQUIRE_EQ(owners.sender->snapshot().applied, 0U);
+        REQUIRE_EQ(owners.receiver->snapshot().fallback,
+            hn::ReceiverBridge::RequestState::none);
+        owners.sender->close();
+        owners.receiver->close();
+        REQUIRE(!owners.sender->peer_report(100'000));
+        REQUIRE(!owners.receiver->peer_report(100'000));
+    }
 }
 TEST(
     multicast_dispatch_native_data_observations_distinguish_late_paths_plain_ctr_gcm)

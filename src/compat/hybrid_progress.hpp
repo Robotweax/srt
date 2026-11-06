@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "robotweax/srt/codec.hpp"
+#include "compat/hybrid_control.hpp"
 #include <array>
 #include <optional>
 
 namespace robotweax::srt::compat::hybrid {
+// Explicit host assertions, not activity inferred from admissions or silence.
+struct ActivityObservation {
+    Activity state = Activity::startup;
+    std::uint64_t produced_next = 0, at_us = 0, expires_at_us = 0;
+};
 // A high water is neither contiguous delivery nor an ACK horizon. Only a new
 // position advances its timestamp; repeated/older copies cannot renew progress.
 struct DataHighWater {
@@ -56,5 +62,7 @@ struct SourceDataProgress {
                   admitted_next = 0, history_floor = 0, observed_at_us = 0;
     DataHighWater multicast, unicast;
     bool source_failed = false, unicast_only = false;
+    Mode delivery_mode = Mode::multicast;
+    std::optional<ActivityObservation> activity;
 };
 }

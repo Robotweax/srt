@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "compat/hybrid_native.hpp"
+#include "compat/hybrid_reporting.hpp"
 
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 namespace robotweax::srt::compat::hybrid {
@@ -9,6 +10,7 @@ namespace robotweax::srt::compat::hybrid {
 class ReceiverBridge {
 public:
     struct Configuration {
+        ReportingConfiguration reporting;
         std::uint32_t retry_interval_us = 100'000, round_timeout_us = 500'000,
                       operation_timeout_us = 2'000'000,
                       query_interval_us = 500'000,
@@ -37,6 +39,8 @@ public:
         std::uint64_t revision = 0, cursor = 0, retained_floor = 0,
                       commit_position = 0, confirmation_origin_us = 0,
                       request_serial = 0, next_wakeup_us = UINT64_MAX;
+        std::uint64_t report_attempts = 0, reports_queued = 0,
+                      reports_submitted = 0, reports_skipped = 0;
         std::uint64_t attempts = 0, refused = 0, rounds = 0, queries = 0,
                       confirmed = 0, stale = 0, unmatched = 0, duplicates = 0,
                       conflicts = 0, ignored = 0, exhausted = 0;
@@ -53,12 +57,15 @@ public:
     [[nodiscard]] Snapshot snapshot() const noexcept;
     [[nodiscard]] std::optional<ReceiveDataProgress>
     data_progress() const noexcept;
+    [[nodiscard]] std::optional<ReportObservation> peer_report(
+        std::uint32_t maximum_age) const noexcept;
 
 private:
     friend class NativeService;
     explicit ReceiverBridge(
         std::shared_ptr<NativeService>, Configuration) noexcept;
     void work() noexcept;
+    void report() noexcept;
     void event(const NativeService::Event&, std::uint64_t) noexcept;
     void start(bool fallback, std::uint64_t position, std::uint64_t now,
         std::uint64_t origin) noexcept;
@@ -68,6 +75,8 @@ private:
     Configuration configuration_;
     mutable std::mutex mutex_;
     std::atomic_bool cancelled_ = false;
+    ReportTracker peer_report_;
+    std::uint64_t next_report_ = 0, pending_report_ = 0;
     Snapshot state_;
     Context context_;
     Message request_;

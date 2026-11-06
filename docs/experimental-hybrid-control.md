@@ -11,7 +11,9 @@ and an explicit credential-provider contract. An explicitly attached internal
 native service now owns that exchange, authenticated UDP controls and expiry.
 An explicitly attached sender-side coordinator bridge can now grant bounded
 unicast fallback commands. An explicitly attached receiver owner now tracks
-revisions and reconciles policy with bounded read-only queries. These components allocate no public C
+revisions and reconciles policy with bounded read-only queries. Explicitly configured
+owners can also publish authenticated progress/path reports from local DATA
+observations and bounded host activity declarations. These components allocate no public C
 option and do not activate automatic recovery on live sockets. Native handshakes still
 reject authentication version 7. No new capability handshake extension ID is
 allocated. Existing strict multicast announcements and existing authentication
@@ -28,6 +30,7 @@ cmake --build build-hybrid-control --parallel
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_native
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_bridge
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_receiver
+./build-hybrid-control/robotweax_srt_tests --include hybrid_reporting
 ./tools/python tests/hybrid_control_vectors.py
 ```
 
@@ -719,9 +722,95 @@ owner or revoking the sender authorization lease hides its sample. These are
 local snapshots, not an authorization transaction or a fresh provider check;
 the existing revoke-before-provider-change contract remains mandatory.
 
-Next work is bounded authenticated reporting with an explicit source-activity
-contract, followed by detection and hysteresis based on evidence age. Policy
-query cursors remain admission metadata and cannot substitute for DATA evidence.
+Policy query cursors remain admission metadata and cannot substitute for DATA
+evidence. The optional report producers below consume these local samples.
+
+## Explicit authenticated progress reporting
+
+Both bridge configurations have a `reporting` policy. Its interval defaults to
+zero (disabled). A nonzero interval must be at most one second, no greater than
+the report lifetime; lifetime must be positive and at most five seconds. The
+500 ms lifetime field is a configuration bound, not a production detection
+threshold. The host must choose timing against its latency and scheduling
+budget, pump both owners and honor `next_wakeup_us`. Sender wakeup currently
+exposes report production timing; existing pending command replies still need
+regular pumping. No timer, thread or scheduler service is added.
+
+Before STREAM_PROGRESS can be produced, the trusted source host must call
+`GroupSendCoordinator::declare_source_activity(activity, produced_next,
+lifetime_us)`. This describes actual application production in absolute source
+positions, which can lead transport admission. It is an explicit local assertion,
+not a value inferred from queued sends, source silence, read-only queries or a
+remote peer. The declaration is shared by members of that source incarnation.
+It must cover current admissions and cannot move the produced cursor backwards.
+Startup requires zero production and cannot resume after another activity;
+producing and paused can alternate. Ended fixes the final production cursor and
+is terminal for that incarnation, even after declaration expiry. The host cannot
+assert `source_failed` through this method; bridging actual source failure remains
+separate work. Invalid declarations do not replace the last valid declaration.
+
+Declaration lifetime is positive and at most five seconds. The source clock
+captures declaration time internally. Refresh declarations while they remain
+true. A report's observation origin is the earlier of declaration and DATA
+sample times, and its deadline is bounded by both declaration expiry and the
+report lifetime from that origin. Repeated pumps cannot turn an old assertion
+into fresh activity. A later admission beyond the declared produced cursor makes
+activity unavailable; it does not block or change DATA admission. Such admissions
+after an ended declaration cannot be repaired by inventing a larger final cursor.
+The source and native service use the same host monotonic clock domain.
+
+STREAM_PROGRESS carries the declared production cursor separately from the
+largest actual original UDP-submission position across multicast and this
+member's unicast originals, and separately from multicast submissions. No
+observed submissions map to the member's initial position; pre-join source
+multicast marks are clamped to that origin. The retained floor is the local
+send-window floor, not a recovery guarantee. Member mode/revision and DATA marks
+come from one coordinator snapshot. A valid declaration plus queued DATA can
+therefore report producing with no advancing submission mark. Paused/ended
+production can coexist with later submission of previously produced backlog.
+No activity assertion proves remote receipt or peer honesty.
+
+PATH_REPORT uses validated unique DATA and per-ingress multicast high waters,
+including exact matched multicast copies after unicast consumption. It never
+promotes receive-window, drop or ACK cursors to DATA. If the live runtime or
+original route epoch cannot supply an observation, the receiver skips reporting.
+It may report the last confirmed policy revision/mode as historical metadata;
+this does not select paths or confirm sender policy. Reports already admitted
+before an epoch/state change remain historical samples with their original
+observation time and exclusive deadline; they cannot be recalled from the network.
+
+Commands/replies take priority over one timed report attempt per pump. At most
+one report per owner remains queued/in flight. Each due attempt, including full
+queues and unavailable samples, advances the next attempt time; pumping cannot
+create an unbounded report queue. Source reports use the sender reply serial
+space; path reports use the receiver request serial space. They share the existing
+64-entry semantic windows, so very frequent reports can age old command retries
+out; a fresh query can reconcile. Each admitted report attempt has a fresh serial.
+Queue expiry, EAGAIN and rejection end that attempt; no report body is retried
+with a changed age or timestamp. Native sealing adds sender queue age before the
+existing v7 authenticated envelope is submitted. Existing provider/root/expiry
+and authorization lease fences apply. Report production does not reserve DATA
+bandwidth or commit a prefix.
+
+`peer_report(maximum_age_us)` exposes one authenticated peer report and its
+freshness. It requires a live owner; freshness requires a positive age limit at most five seconds.
+Freshness uses advertised age plus elapsed local time since the original native
+receive, including event-queue wait, with an exclusive age bound. Network transit
+before that receive is not measured; this is not a synchronized clock protocol.
+Missing reports return no observation; stale stored reports return `fresh=false`.
+Duplicates, older serials, backwards positions/revisions and conflicting
+same-revision modes cannot replace or refresh the stored observation. Clock
+regression makes its tracker permanently stale. Ended reports cannot reopen
+production or change the final produced cursor. Peer claims remain assertions.
+
+Metadata freshness and DATA advancement are distinct. A new paused report can
+renew metadata freshness while its `next_advanced_at_us` and
+`multicast_advanced_at_us` remain unchanged. Those timestamps are local first
+receive times for strictly increasing reported high waters, not remote DATA
+arrival timestamps or proof of a contiguous prefix. Incoming reports neither
+confirm a delivery query nor create fallback intent or mutate DATA/ACK state.
+Closing/revoking an owner hides its peer report. Next work is age-based detection
+and hysteresis with explicit latency policy before automatic transitions.
 
 ## Control body
 
@@ -763,8 +852,8 @@ ready messages require negotiated overlap support.
 STREAM_PROGRESS distinguishes production from actual original-submission high
 water and multicast-submission high water. A high water mark is not proof of a
 contiguous submitted prefix or an ACK horizon. Retention can advance beyond an
-older emitted position. A future producer of these records must use actual UDP
-outcomes; codec validity alone cannot establish truth or delivery. PATH_REPORT
+older emitted position. The optional producer uses actual UDP outcomes; codec validity alone cannot
+establish truth or delivery. PATH_REPORT
 separates total validated DATA progress from multicast observations, including
 valid multicast duplicates already delivered by unicast.
 
