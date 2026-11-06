@@ -183,7 +183,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         partitions = {
             "robotweax_srt_tests", "robotweax_srt_tsbpd_rtt_tests", "robotweax_srt_socket_api_tests",
             "robotweax_srt_multicast_dispatch_tests", "robotweax_srt_idle_readiness_tests",
-            "robotweax_srt_arq_transport_tests",
+            "robotweax_srt_arq_transport_tests", "robotweax_srt_npd_tests",
             "robotweax_srt_transport_runtime_tests",
             "robotweax_srt_session_auth_admission_tests",
             "robotweax_srt_acp1_tests",
@@ -236,8 +236,9 @@ class CiTestRegistrationTests(unittest.TestCase):
             "srt_compat_group_pathid_",
             "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
             "stale_drop_coverage", "stale_nak", "standby_rtt_native_runtime_", "compat_group_connect_joins_with_unread_messages_across_rollover",
-            "tsbpd_rtt", "multicast_dispatch", "compat_idle_readiness_", "arq_transport_",
+            "tsbpd_rtt", "multicast_dispatch", "compat_idle_readiness_", "arq_transport_", "npd_",
         ])
+        self.assertEqual(commands["robotweax_srt_npd_tests"], ["--include", "npd_"])
         self.assertEqual(commands["robotweax_srt_tsbpd_rtt_tests"], [
             "--include", "tsbpd_rtt",
         ])
@@ -273,7 +274,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_stale_nak_tests",
         }
         network_partitions = {
-            "robotweax_srt_arq_transport_tests",
+            "robotweax_srt_arq_transport_tests", "robotweax_srt_npd_tests",
             "robotweax_srt_native_reuseport_tests", "robotweax_srt_local_address_tests",
             "robotweax_srt_group_pathid_tests",
             "robotweax_srt_group_acquire_tests",
@@ -329,7 +330,7 @@ class CiTestRegistrationTests(unittest.TestCase):
                 cmake,
             )
             self.assertIsNotNone(profile_properties)
-            self.assertIn("TIMEOUT 30", profile_properties.group(1))
+            self.assertIn("TIMEOUT 120" if name == "robotweax_srt_npd_tests" else "TIMEOUT 30", profile_properties.group(1))
             self.assertIn("integration", profile_properties.group(1))
             self.assertIn("network" if name in network_partitions else "encryption",
                           profile_properties.group(1))

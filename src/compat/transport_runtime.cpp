@@ -1,5 +1,6 @@
 #include "compat/group_receive_retention.hpp"
 #include "compat/transport_runtime.hpp"
+#include "null_packet_deletion.hpp"
 #include "compat/submillisecond_pacing_platform.hpp"
 
 #include "robotweax/srt/parity_policy.hpp"
@@ -66,7 +67,7 @@ constexpr std::uint64_t maximum_transient_send_retry_microseconds = 5'000'000U;
         : configuration.flow_window_packets;
 }
 
-[[nodiscard]] std::size_t effective_maximum_payload_size(
+[[nodiscard]] std::size_t effective_application_payload_size(
     const ConnectionRuntime::Configuration& configuration) noexcept
 {
     const std::size_t configured = configuration.options.maximum_payload_size();
@@ -76,8 +77,11 @@ constexpr std::uint64_t maximum_transient_send_retry_microseconds = 5'000'000U;
     }
     const auto budget = configuration.options.payload_budget(
         configuration.peer.wire_family(), CryptoMode::aes_gcm);
-    return budget ? std::min(configured, budget.maximum_plaintext_payload_size)
-                  : configured;
+    return budget
+        ? std::min(configured,
+              configuration.options.maximum_payload_size_limit(
+                  configuration.peer.wire_family(), CryptoMode::aes_gcm))
+        : configured;
 }
 
 [[nodiscard]] std::size_t effective_fec_payload_size(
@@ -85,18 +89,21 @@ constexpr std::uint64_t maximum_transient_send_retry_microseconds = 5'000'000U;
     const std::shared_ptr<CryptoSession>& crypto) noexcept
 {
     if (crypto == nullptr || !crypto->authenticated_data_enabled()) {
-        return configuration.options.maximum_payload_size();
+        return configuration.options.maximum_payload_size()
+            + (configuration.npd_enabled ? 1U : 0U);
     }
     const auto budget = configuration.options.payload_budget(
         configuration.peer.wire_family(), CryptoMode::aes_gcm);
     if (!budget) {
-        return configuration.options.maximum_payload_size();
+        return configuration.options.maximum_payload_size()
+            + (configuration.npd_enabled ? 1U : 0U);
     }
     const std::size_t plaintext =
         std::min(configuration.options.maximum_payload_size(),
             budget.maximum_plaintext_payload_size);
     return std::min(budget.maximum_wire_payload_size,
-        plaintext + budget.authentication_tag_size);
+        plaintext + (configuration.npd_enabled ? 1U : 0U)
+            + budget.authentication_tag_size);
 }
 
 [[nodiscard]] std::optional<ControlType> control_type(
@@ -1507,6 +1514,7 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
     : channel_(std::move(configuration.channel))
     , peer_(configuration.peer)
     , peer_socket_id_(configuration.peer_socket_id)
+    , npd_enabled_(configuration.npd_enabled)
     , session_({
           .local_initial_sequence = configuration.initial_sequence,
           .peer_initial_sequence =
@@ -1516,7 +1524,9 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
           .peer_socket_id = configuration.peer_socket_id,
           .send_capacity_packets = configuration.options.send_buffer_packets(),
           .receive_capacity_packets = effective_receive_capacity(configuration),
-          .maximum_payload_size = effective_maximum_payload_size(configuration),
+          .maximum_payload_size =
+              effective_application_payload_size(configuration)
+              + (configuration.npd_enabled ? 1U : 0U),
           .start_microseconds = elapsed_microseconds(configuration.origin),
           .member_receive_initial_sequence = configuration.group
                   && configuration.group->type == SRT_GTYPE_BACKUP
@@ -1526,6 +1536,7 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
                                 ? configuration.peer_initial_sequence
                                 : configuration.initial_sequence)}
               : std::nullopt,
+          .npd_enabled = configuration.npd_enabled,
       })
     , pacer_(100'000'000U, effective_peer_flow_window(configuration))
     , options_(configuration.options)
@@ -3055,7 +3066,8 @@ bool ConnectionRuntime::send_data(
         : packet.payload.size();
     const DatagramCompletion completion {.kind = DatagramKind::data,
         .data = view.data,
-        .payload_size = application_payload_size};
+        .payload_size = npd_enabled_ ? datagram_size - packet_header_size
+                                     : application_payload_size};
     bool multicast_path = !packet.header.retransmitted
         && group_data_egress_.mode == GroupDataEgress::Mode::redirect;
     DispatchTransmitState::RepeatDecision repeat_decision;
@@ -3726,6 +3738,20 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         }
     }
 
+    // The codec writes every returned byte; keep OFF free of buffer clearing.
+    std::array<std::byte, maximum_data_payload_size> npd_restored;
+    npd::Result restoration;
+    if (npd_enabled_ && packet.kind == PacketKind::data
+        && !consume_filter_control && !context.discard_payload) {
+        restoration = npd::decode_payload(clear_packet.payload, npd_restored);
+        if (!restoration) {
+            ++npd_malformed_payloads_;
+            statistics_.note_receiver_undecryptable(packet.payload.size());
+            return false;
+        }
+        clear_packet.payload =
+            std::span {npd_restored}.first(restoration.bytes_written);
+    }
     const SequenceNumber first_unacknowledged =
         session_.send_buffer().first_sequence();
     const auto processed = session_.receive(
@@ -3742,6 +3768,7 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     if (packet.kind == PacketKind::data
         && processed.receiver_packet_accepted_unique && !context.discard_payload
         && !processed.receiver_filter_control_packet) {
+        npd_restored_units_ += restoration.null_units;
         received_data_ = true;
         if (standby_rtt_) {
             standby_rtt_->last_data = now;
@@ -3795,17 +3822,17 @@ bool ConnectionRuntime::process_reliability_packet_locked(
 
     if (packet.kind == PacketKind::data) {
         if (wire_received) {
-            statistics_.note_data_received(
-                clear_packet.payload.size(),
-                processed
-                    .receiver_packet_accepted_unique,
+            statistics_.note_data_received(npd_enabled_
+                    ? packet.payload.size()
+                    : clear_packet.payload.size(),
+                processed.receiver_packet_accepted_unique,
                 packet.data.retransmitted);
         }
         if (context.filter_supplied) {
-            statistics_.note_receiver_filter_supply(
-                clear_packet.payload.size(),
-                processed
-                    .receiver_packet_accepted_unique);
+            statistics_.note_receiver_filter_supply(npd_enabled_
+                    ? packet.payload.size()
+                    : clear_packet.payload.size(),
+                processed.receiver_packet_accepted_unique);
         }
         if (processed.receiver_filter_control_packet) {
             statistics_.note_receiver_filter_extra();
@@ -4343,6 +4370,8 @@ bool ConnectionRuntime::process_handshake(
         return false;
     }
 
+    if (npd_enabled_ && (!message.has_npd || !message.npd_valid))
+        return false;
     const auto expected_standby = handshake_replay_response_.packet.request
             == HandshakeRequest::conclusion
         ? StandbyRttIdentity {.caller =
@@ -5165,6 +5194,16 @@ ConnectionRuntime::idle_retirement_deadline() const noexcept
 {
     std::lock_guard lock(mutex_);
     return idle_retirement_deadline_;
+}
+
+ROBOTWEAX_SRT_NPD_STATS_V1 ConnectionRuntime::npd_statistics() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    return {.abi_version = 1,
+        .active = npd_enabled_ ? 1U : 0U,
+        .deleted_units = session_.npd_deleted_units(),
+        .restored_units = npd_restored_units_,
+        .malformed_payloads = npd_malformed_payloads_};
 }
 
 bool ConnectionRuntime::has_received_data() const noexcept

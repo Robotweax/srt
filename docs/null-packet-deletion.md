@@ -1,24 +1,15 @@
 # Null packet deletion (draft contract)
 
-**Status: implementation in progress on `dev/null-packet-deletion`; not a
-supported socket feature.** The allocation-free payload and CONFIG-record
-codecs have initial deterministic tests and a fuzz target. They are not wired
-into connection negotiation or DATA processing, and the proposed socket option
-is not exposed. Every identifier below is provisional and unregistered. Items
-marked *open* need a decision.
-
-Remaining implementation and qualification work:
-
-- Socket policy, option-order validation and payload-budget reservation.
-- Caller/Listener negotiation, retry caching and session-authentication
-  consistency checks, including explicit mismatch rejection.
-- DATA processing around encryption, FEC, retransmission and delivery.
-- Pacing, byte accounting and private NPD counters.
-- Socket-level regression, sanitizer, fuzz and black-box qualification of the
-  integrated feature, as listed below.
+**Status: experimental implementation on `dev/null-packet-deletion`.** NPD is
+available through the private options below, default OFF. Codec, socket policy,
+Caller/Listener negotiation, encrypted DATA, FEC, retransmission, pacing input
+accounting and counters are integrated. Identifiers remain provisional and
+unregistered. This is not a released feature or a RIST compatibility claim.
 
 Development remains on the feature branch. Merging to `main` requires explicit
-maintainer approval after feature completion.
+maintainer approval after feature completion. Remaining release qualification
+includes deployed MPEG-TS corpora, other platforms/providers, and the broader
+loss/reordering and FEC-policy matrix listed below.
 
 Null packet deletion (NPD) removes MPEG-TS null packets from live payloads at
 the sender and restores them at the receiver, so constant-bitrate transport
@@ -57,7 +48,7 @@ reference builds only.
 ## Application contract
 
 When NPD is active the receiving application gets the same bytes, the same
-message boundaries and the same delivery times as without it. This follows
+message boundaries, original timestamps and TSBPD scheduling. This follows
 from three rules:
 
 - only *canonical* null packets are deleted, so restoration is bit-exact;
@@ -65,11 +56,23 @@ from three rules:
   delivery are untouched; and
 - payloads that are not aligned MPEG-TS pass through unmodified.
 
-Proposed private option:
+Private options:
 
 | Option | Contract |
 | --- | --- |
 | `SRTO_ROBOTWEAX_NPD_POLICY` (`0x01000018`) | PRE `int32_t`, default OFF: OFF, REQUIRED or IF_OFFERED; inherited by accepted sockets, which report the negotiated result as REQUIRED or OFF |
+| `SRTO_ROBOTWEAX_NPD_STATS` (`0x01000019`) | Read-only `ROBOTWEAX_SRT_NPD_STATS_V1`, cumulative, no clear-on-read; groups return `SRT_EINVOP` |
+
+The stats structure is 32 bytes: two `uint32_t` fields (`abi_version`, always
+`ROBOTWEAX_SRT_NPD_STATS_VERSION` = 1, and `active`, 0 or 1), followed by three
+`uint64_t` fields: `deleted_units`, `restored_units`, `malformed_payloads`.
+Deleted units count successfully queued messages, including messages later
+dropped by the sender; restored units count uniquely accepted source packets,
+including FEC recovery. Malformed counts failed NPD validation after decryption.
+An unconnected socket returns version 1 with other fields zero. Supply at least
+`sizeof(ROBOTWEAX_SRT_NPD_STATS_V1)`; undersized getters fail without a partial
+write. These fields do not extend or change `SRT_TRACEBSTATS`.
+
 
 A socket holding `IF_OFFERED` fails `srt_connect` with `SRT_EINVPARAM`, as it
 does for path identifiers.
@@ -102,25 +105,25 @@ A REQUIRED caller offers the record. A REQUIRED or `IF_OFFERED` listener echoes
 it byte for byte in its CONCLUSION response and commits to NPD for that
 connection. The caller activates NPD only on an exact echo.
 
-- With policy OFF the record is not parsed. It is skipped like any unknown
-  record, so default behavior is unchanged.
+- With policy OFF NPD content validity is not enforced. The record is ignored
+  like an unknown record; the enclosing extension chain must still be valid.
 - A REQUIRED listener rejects a CONCLUSION without a valid offer.
 - A REQUIRED caller that receives no echo fails setup and closes.
-- An echo without an offer, or an echo that differs from the offer, fails
-  setup.
+- Under REQUIRED, an echo that differs from the offer fails setup. An OFF
+  caller ignores an unsolicited record, preserving unknown-record behavior.
 - Under a non-OFF policy, wrong magic, an unknown version, nonzero flags or
   reserved bytes, a wrong size, a duplicate record or a missing CONFIG bit fail
-  decoding, as they do for the other private records.
+  negotiation. The decoder retains a bounded validity flag so OFF can ignore
+  invalid NPD content without weakening REQUIRED.
 
 Offers and echoes are cached for handshake retries and cannot change within one
 transaction. With [session authentication](session-authentication.md), the
-caller repeats the record in AGREEMENT and the listener requires consistency
-before publishing the connection. A handshake that cannot hold the record
+caller repeats the record in AGREEMENT and the listener ignores inconsistent
+retries, requiring a matching confirmation before publishing the connection. A handshake that cannot hold the record
 within its MSS budget fails encoding; it is never truncated.
 
-*Open:* the rejection reason for a policy mismatch. Path identifiers use
-`SRT_REJ_GROUP`, which does not describe NPD, and `SRT_REJ_FILTER` would
-mislead FEC diagnostics.
+A missing or invalid required record is rejected with `SRT_REJ_ROGUE` (invalid
+handshake parameters). The caller fails locally if the listener omits its echo.
 
 ## DATA payload format
 
@@ -166,8 +169,10 @@ Restoration happens after decryption and authentication and before application
 delivery. A restored payload obeys the same local size rules as an ordinary
 received payload of that length.
 
-*Proposed:* a malformed payload is handled like DATA that failed decryption. It
-is not delivered, it is counted, and the connection continues.
+A malformed payload is handled like DATA that failed authentication: it is not
+delivered or acknowledged, increments the private malformed counter and the
+existing undecryptable counter, and does not refresh peer liveness. The
+connection continues; subsequent DATA can expose the missing sequence to ARQ.
 
 ## Interaction with other features
 
@@ -191,13 +196,14 @@ is not delivered, it is counted, and the connection continues.
 - **ARQ.** Loss reports, ACKs and retransmission are unchanged.
 - **Pacing.** The input-rate estimate keeps observing the application payload
   before deletion, while the average packet size observes wire payloads. The
-  pacing budget then stays at the stream's nominal rate, so a burst of real
-  packets after a run of nulls is never delayed more than without NPD.
+  pacing budget therefore retains the application's nominal input rate after
+  null runs. The prefix remains part of wire pacing cost; identical wall-clock
+  delivery times are not guaranteed.
   Explicit `SRTO_MAXBW` and `SRTO_INPUTBW` values keep their meaning.
-- **Statistics.** *Proposed:* wire-byte fields count the bytes sent, including
-  the prefix; delivered and receive-buffer payload fields count restored bytes.
-  Counters for deleted units, restored units and malformed payloads need a
-  private getter whose ABI this draft does not define.
+- **Statistics.** For negotiated NPD, source wire-byte counters count protected
+  payload bytes, including the prefix and any GCM tag, plus their usual packet
+  overhead. Delivered and receive-buffer payload fields count restored bytes.
+  The private getter above reports deleted, restored and malformed counts.
 - **Security.** NPD is not a protection feature. Session authentication and
   ACP1 do not authenticate the handshake transcript, so an on-path attacker can
   remove or forge the record. Removal fails setup. A forged echo leaves the
@@ -218,7 +224,48 @@ bytes of payload capacity for its own framing.
 - Smaller parity packets.
 - Any compatibility with the RIST wire format.
 
-## Qualification required before any support claim
+## Reproducible development evidence
+
+The focused `npd_` native cases exercise policy and option ordering, exact echo
+and retries, authenticated AGREEMENT, clear/CTR/GCM transfers, authenticated
+parity, all key lengths across the FEC geometries, key rotation, ARQ and FEC loss
+recovery, payload ceilings and preservation of the input-rate estimate. The
+codec tests cover 3,279 deletion/retention combinations and every prefix across
+payload lengths through 1,504 bytes. The dedicated fuzz targets are
+`fuzz_null_packet_deletion` and `fuzz_handshake_decode`.
+
+```sh
+cmake -S . -B build-npd -DCMAKE_BUILD_TYPE=Debug -DENABLE_AEAD_API_PREVIEW=ON
+cmake --build build-npd --parallel
+ctest --test-dir build-npd -R robotweax_srt_npd_tests --output-on-failure
+./tools/python interop/run_npd_interop.py \
+  --robotweax-peer build-npd/robotweax_srt_interop_peer \
+  --reference-peer /path/to/pinned-ctr-peer \
+  --reference-peer /path/to/pinned-aead-peer \
+  --output /tmp/npd-qualification
+```
+
+The runner records commands, binary SHA-256 hashes, source/parity byte counts,
+DATA payload hashes and handshake extension records. Comparisons exclude
+per-connection socket IDs, timestamps, cookies and initial sequence numbers.
+The deterministic corpus contains canonical nulls, real TS-shaped packets and
+non-canonical nulls; it is not a capture of a deployed broadcast stream.
+
+A local macOS/OpenSSL run passed 20 separate-process cases using the pinned
+Haivision public-API peers at `899348d8318eb9a3c5a5b6ec43c4a1114288773a`
+(CTR) and `d99d2e1a3b1a213b03c7dfbea5133898935fdeea` (AEAD). No reference
+implementation source was inspected. Stock callers saw identical DATA payloads
+and handshake extension records from OFF and IF_OFFERED listeners in both data
+directions. Both references skipped the unknown offer and omitted an echo;
+REQUIRED callers rejected that response. REQUIRED listeners rejected stock
+callers without an offer.
+
+For the 84,224-byte synthetic corpus, source DATA payload bytes fell from
+84,224 to 45,184 in each direction. With row FEC, parity payload bytes increased
+from 21,120 to 21,136 (16 parity packets), confirming the added prefix capacity.
+These are payload-byte measurements, not an end-to-end network bandwidth claim.
+
+## Qualification required before broader support claims
 
 Evidence must be reproducible and black-box, as required by
 [Contributing](../CONTRIBUTING.md).

@@ -139,6 +139,8 @@ struct HandshakeAction {
     bool has_standby_rtt = false;
     StandbyRttIdentity standby_rtt {};
     ImplementationIdentity implementation_identity {};
+    bool has_npd = false;
+    bool npd_valid = true;
 };
 
 struct HandshakeActions {
@@ -188,6 +190,8 @@ struct HandshakeMessage {
     bool has_standby_rtt = false;
     StandbyRttIdentity standby_rtt {};
     ImplementationIdentity implementation_identity {};
+    bool has_npd = false;
+    bool npd_valid = true;
 };
 
 using GroupMembershipNegotiator = bool (*)(
@@ -249,6 +253,7 @@ public:
         bool require_standby_rtt = false;
         StandbyRttNonce standby_rtt_nonce {};
         ImplementationIdentity implementation_identity {};
+        bool require_npd = false;
     };
 
     explicit HandshakeMachine(Configuration configuration) noexcept;

@@ -110,6 +110,9 @@ struct Configuration {
     std::int32_t identity_policy = ROBOTWEAX_SRT_IDENTITY_OFF;
     int expected_peer_identity = -1;
 #endif
+#ifdef ROBOTWEAX_SRT_NPD_STATS_VERSION
+    std::int32_t npd_policy = ROBOTWEAX_SRT_EXTENSION_OFF;
+#endif
     int data_sender_override = -1;
     std::int32_t minimum_initial_sequence = -1;
     int initial_sequence_search_limit = 100'000;
@@ -238,6 +241,14 @@ bool parse_arguments(int argc, char** argv, Configuration& configuration)
     for (int index = 2; index < argc; ++index) {
         const std::string_view option{argv[index]};
         std::string_view value;
+#ifdef ROBOTWEAX_SRT_NPD_STATS_VERSION
+        if (option == "--npd-policy" && take_value(index, argc, argv, value)) {
+            if (!parse_integer(value, configuration.npd_policy)
+                || configuration.npd_policy < 0 || configuration.npd_policy > 2)
+                return false;
+            continue;
+        }
+#endif
 #ifdef ROBOTWEAX_SRT_PEER_IDENTITY_VERSION
         if (option == "--identity-policy"
             && take_value(index, argc, argv, value)) {
@@ -813,6 +824,11 @@ bool configure_socket(SRTSOCKET socket, const Configuration& configuration)
         && !set_option(socket, SRTO_CRYPTOMODE, configuration.crypto_mode)) {
         return false;
     }
+#endif
+#ifdef ROBOTWEAX_SRT_NPD_STATS_VERSION
+    if (!set_option(
+            socket, SRTO_ROBOTWEAX_NPD_POLICY, configuration.npd_policy))
+        return false;
 #endif
     if (!configuration.packet_filter.empty()
         && !set_string_option(
@@ -1431,6 +1447,16 @@ void print_complete(
     SRTSOCKET socket,
     const StatisticsSnapshot* captured_statistics = nullptr)
 {
+#ifdef ROBOTWEAX_SRT_NPD_STATS_VERSION
+    ROBOTWEAX_SRT_NPD_STATS_V1 npd {};
+    int npd_size = sizeof(npd);
+    if (srt_getsockflag(socket, SRTO_ROBOTWEAX_NPD_STATS, &npd, &npd_size) == 0)
+        std::cout << "{\"event\":\"npd\",\"active\":" << npd.active
+                  << ",\"deleted_units\":" << npd.deleted_units
+                  << ",\"restored_units\":" << npd.restored_units
+                  << ",\"malformed_payloads\":" << npd.malformed_payloads
+                  << "}\n";
+#endif
     print_event("complete", role, byte_count, elapsed, socket,
         captured_statistics);
 }
@@ -2672,6 +2698,9 @@ void usage()
                  " [--expect-connect-error N]"
 #ifdef ROBOTWEAX_SRT_PEER_IDENTITY_VERSION
                  " [--identity-policy 0|1|2] [--expect-peer-identity 0|1|2]"
+#ifdef ROBOTWEAX_SRT_NPD_STATS_VERSION
+                 " [--npd-policy 0|1|2]"
+#endif
 #endif
                  " [--latency-ms N]"
                  " [--tlpktdrop on|off]"

@@ -1,6 +1,7 @@
 #include "robotweax/srt/handshake_datagram.hpp"
 
 #include "robotweax/srt/codec.hpp"
+#include "null_packet_deletion.hpp"
 #include "robotweax/srt/connection_group.hpp"
 #include "robotweax/srt/handshake_extensions.hpp"
 
@@ -74,6 +75,18 @@ HandshakeDatagramDecodeResult decode_handshake_datagram(
             return {.error = Error::invalid_extension};
         }
         if (static_cast<std::uint16_t>(decoded.extension.type)
+            == npd::extension_command) {
+            message.npd_valid = message.npd_valid && !message.has_npd
+                && (message.packet.extension_field
+                       & handshake_extension_flag_config)
+                    != 0U
+                && message.packet.version == handshake_version_5
+                && (message.packet.request == HandshakeRequest::conclusion
+                    || message.packet.request == HandshakeRequest::agreement)
+                && npd::decode_record(extensions.first(decoded.bytes_consumed))
+                    == Error::none;
+            message.has_npd = true;
+        } else if (static_cast<std::uint16_t>(decoded.extension.type)
             == implementation_identity_extension_type) {
             duplicate_identity = duplicate_identity || seen_identity;
             seen_identity = true;
@@ -317,9 +330,10 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
     const std::size_t dispatch_extension_size = action.has_multicast_dispatch
         ? extension_header_size + multicast_dispatch_content_size
         : 0U;
+    const std::size_t npd_size = action.has_npd ? 12U : 0U;
     const std::size_t total_required = required + path_extension_size
-        + measurement_extension_size + dispatch_extension_size;
-    if ((action.has_path_identifier || action.has_standby_rtt
+        + measurement_extension_size + dispatch_extension_size + npd_size;
+    if ((action.has_npd || action.has_path_identifier || action.has_standby_rtt
             || action.has_multicast_dispatch)
         && (action.packet.maximum_transmission_unit < 48U
             || total_required > action.packet.maximum_transmission_unit - 48U))
@@ -523,9 +537,24 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
     if (identity_size != 0) {
         const auto identity =
             encode_implementation_identity(action.implementation_identity,
-                destination.subspan(total_required, identity_size));
+                destination.subspan(total_required - npd_size, identity_size));
         if (!identity)
             return {.error = identity.error};
+    }
+    if (action.has_npd) {
+        if (!action.npd_valid
+            || (action.packet.extension_field & handshake_extension_flag_config)
+                == 0U
+            || action.packet.version != handshake_version_5
+            || !((action.packet.request == HandshakeRequest::conclusion
+                     && action.has_handshake_extension)
+                || (action.packet.request == HandshakeRequest::agreement
+                    && action.has_session_authentication)))
+            return {.error = Error::invalid_extension};
+        const auto encoded = npd::encode_record(destination.subspan(
+            total_required - npd_size + identity_size, npd_size));
+        if (!encoded)
+            return {.error = encoded.error};
     }
     return {.bytes_written = total_required + identity_size};
 }

@@ -507,6 +507,7 @@ public:
         std::uint32_t peer_flow_window_packets = 0;
         StandbyRttIdentity standby_rtt_identity {};
         bool standby_rtt_caller = true;
+        bool npd_enabled = false;
         std::shared_ptr<StandbyRttService> standby_rtt_service_for_testing {};
         SocketOptions options{};
         NegotiatedLiveOptions negotiated_options{};
@@ -643,6 +644,7 @@ public:
     [[nodiscard]] std::optional<Clock::time_point>
     idle_retirement_deadline() const noexcept;
     [[nodiscard]] bool has_received_data() const noexcept;
+    [[nodiscard]] ROBOTWEAX_SRT_NPD_STATS_V1 npd_statistics() const noexcept;
     [[nodiscard]] bool readable() noexcept;
     [[nodiscard]] std::optional<Clock::time_point>
     next_readable_deadline() noexcept;
@@ -840,6 +842,9 @@ private:
     std::atomic<std::uint64_t> foreign_peer_packets_ {0};
     IpEndpoint peer_{};
     std::uint32_t peer_socket_id_ = 0;
+    bool npd_enabled_ = false;
+    std::uint64_t npd_restored_units_ = 0;
+    std::uint64_t npd_malformed_payloads_ = 0;
     ReliabilitySession session_;
     PacketPacer pacer_;
     SocketOptions options_;

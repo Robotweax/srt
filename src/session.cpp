@@ -1,4 +1,5 @@
 #include "robotweax/srt/session.hpp"
+#include "null_packet_deletion.hpp"
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
 #include "compiled_congestion.hpp"
 #include <new>
@@ -181,6 +182,7 @@ ReliabilitySession::ReliabilitySession(Configuration configuration)
           configuration.peer_initial_sequence.advanced(SequenceNumber::mask))
     , peer_send_horizon_(
           configuration.peer_initial_sequence.advanced(SequenceNumber::mask))
+    , npd_enabled_(configuration.npd_enabled)
     , peer_socket_id_(configuration.peer_socket_id)
 {
     filter_loss_ranges_.reserve(configuration.receive_capacity_packets);
@@ -206,11 +208,24 @@ Error ReliabilitySession::queue_message(std::span<const std::byte> message,
         && message.size() > send_buffer_.maximum_payload_size()) {
         return Error::invalid_payload_size;
     }
+    // The codec writes every returned byte; keep OFF free of buffer clearing.
+    std::array<std::byte, maximum_data_payload_size> npd_payload;
+    std::span<const std::byte> queued = message;
+    npd::Result encoded;
+    if (npd_enabled_) {
+        if (message.size() >= send_buffer_.maximum_payload_size())
+            return Error::invalid_payload_size;
+        encoded = npd::encode_payload(message, npd_payload);
+        if (!encoded)
+            return encoded.error;
+        queued = std::span {npd_payload}.first(encoded.bytes_written);
+    }
     compact_sensor_retired_prefix();
-    const auto error = send_buffer_.enqueue_message(message,
+    const auto error = send_buffer_.enqueue_message(queued,
         next_message_number_, timestamp, peer_socket_id_, in_order,
         enqueue_microseconds, expiration_microseconds);
     if (error == Error::none) {
+        npd_deleted_units_ += encoded.null_units;
         if (live_rate_controller_.has_value()) {
             live_rate_controller_->observe_input(
                 message.size(), enqueue_microseconds);

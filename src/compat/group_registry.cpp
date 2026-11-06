@@ -571,6 +571,11 @@ int GroupRegistry::get_io_option(
         set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
     }
+    if (option == SRTO_ROBOTWEAX_NPD_POLICY
+        || option == SRTO_ROBOTWEAX_NPD_STATS) {
+        set_last_error(SRT_EINVOP);
+        return SRT_ERROR;
+    }
     if (option == SRTO_ROBOTWEAX_ACP1_ACTIVE) {
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
         std::vector<SRTSOCKET> handles;
@@ -771,7 +776,10 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
         set_last_error(SRT_EINVSOCK);
         return SRT_ERROR;
     }
-    if (option == SRTO_ROBOTWEAX_ACP1_ACTIVE || option == SRTO_ROBOTWEAX_PATHID
+    if (option == SRTO_ROBOTWEAX_NPD_STATS
+        || option == SRTO_ROBOTWEAX_NPD_POLICY
+        || option == SRTO_ROBOTWEAX_ACP1_ACTIVE
+        || option == SRTO_ROBOTWEAX_PATHID
         || option == SRTO_ROBOTWEAX_PEER_IDENTITY
         || option == SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT) {
         set_last_error(SRT_EINVOP);

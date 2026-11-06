@@ -17,7 +17,7 @@ developers and transport integrators using the installed public API.
   group-independent ownership, lifecycle and resource boundaries.
 
 - [Null packet deletion draft](null-packet-deletion.md) — optional MPEG-TS null
-  packet deletion contract under development; not yet a socket feature.
+  packet deletion contract and experimental opt-in implementation.
 
 - [Experimental ACP1](experimental-acp1.md) — experimental runtime-control
   authentication, strict bilateral opt-in and provisional wire/API contract.

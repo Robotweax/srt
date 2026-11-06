@@ -4,6 +4,13 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
+## Unreleased — NPD feature branch
+
+- Add default-OFF experimental MPEG-TS null packet deletion for individual Live
+  Caller/Listener sockets, with strict negotiation, encrypted DATA/FEC support
+  and private cumulative counters. See the [NPD contract](docs/null-packet-deletion.md)
+  for provisional identifiers, validation evidence and remaining release scope.
+
 ## 0.3.2 — Multicast and Recovery Stabilization
 
 See the [release notes](docs/release-notes-0.3.2.md) for upgrade behavior and limits.

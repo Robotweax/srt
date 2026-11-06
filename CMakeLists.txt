@@ -479,6 +479,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_handshake_datagram.cpp
         tests/test_handshake_extensions.cpp
         tests/test_path_identifier.cpp
+        tests/test_npd_transport.cpp
         tests/test_null_packet_deletion.cpp
         tests/test_standby_rtt.cpp
         tests/test_listener_admission.cpp
@@ -595,7 +596,11 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover
-            tsbpd_rtt multicast_dispatch compat_idle_readiness_ arq_transport_)
+            tsbpd_rtt multicast_dispatch compat_idle_readiness_ arq_transport_ npd_)
+    add_test(NAME robotweax_srt_npd_tests
+        COMMAND robotweax_srt_tests --include npd_)
+    set_tests_properties(robotweax_srt_npd_tests PROPERTIES
+        TIMEOUT 120 LABELS "network;integration;fec;npd")
     add_test(NAME robotweax_srt_arq_transport_tests
         COMMAND robotweax_srt_tests --include arq_transport_)
     set_tests_properties(robotweax_srt_arq_transport_tests
@@ -1423,6 +1428,13 @@ if(ROBOTWEAX_SRT_BUILD_TOOLS)
     target_compile_features(robotweax_srt_group_peer PRIVATE cxx_std_17)
 
     if(ROBOTWEAX_SRT_BUILD_TESTS AND Python3_Interpreter_FOUND AND UNIX)
+        add_test(NAME robotweax_srt_npd_interop_self
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_npd_interop.py
+                --robotweax-peer $<TARGET_FILE:robotweax_srt_interop_peer>
+                --output ${CMAKE_CURRENT_BINARY_DIR}/npd-interop)
+        set_tests_properties(robotweax_srt_npd_interop_self
+            PROPERTIES TIMEOUT 90 LABELS "integration;handshake;npd")
         add_test(NAME robotweax_srt_identity_interop
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/interop/run_identity_interop.py

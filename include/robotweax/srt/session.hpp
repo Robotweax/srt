@@ -188,9 +188,15 @@ public:
         // this member's wire ACK bounded by DATA or a validated peer drop,
         // starting at its wire ISN even if the delivery cursor was rebased.
         std::optional<SequenceNumber> member_receive_initial_sequence;
+        // maximum_payload_size includes the prefix when NPD is enabled.
+        bool npd_enabled = false;
     };
 
     explicit ReliabilitySession(Configuration configuration);
+    [[nodiscard]] std::uint64_t npd_deleted_units() const noexcept
+    {
+        return npd_deleted_units_;
+    }
 
     void configure_keepalive_interval(std::uint64_t microseconds) noexcept
     {
@@ -769,6 +775,8 @@ private:
     std::size_t sensor_prefix_repeat_remaining_ = 0;
     std::uint64_t drift_correction_count_ = 0;
     std::int64_t total_drift_correction_microseconds_ = 0;
+    bool npd_enabled_ = false;
+    std::uint64_t npd_deleted_units_ = 0;
     std::uint32_t peer_socket_id_ = 0;
     std::uint32_t next_message_number_ = 1;
     AcknowledgementNumberGenerator acknowledgement_numbers_;

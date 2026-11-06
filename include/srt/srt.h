@@ -265,6 +265,11 @@ typedef enum SRT_SOCKOPT {
      * receiver can detect a lost tail (TCP TLP, RFC 8985). Accepted only
      * together with SRTO_ROBOTWEAX_FECPOLICY = ARQFIRST. */
     SRTO_ROBOTWEAX_TAILPROBE = 0x01000017,
+    /* PRE int32_t optional MPEG-TS null deletion; OFF/REQUIRED/IF_OFFERED.
+     * IF_OFFERED is listener-only; groups and Rendezvous are unsupported. */
+    SRTO_ROBOTWEAX_NPD_POLICY = 0x01000018,
+    /* Read-only cumulative ROBOTWEAX_SRT_NPD_STATS_V1; no clear-on-read. */
+    SRTO_ROBOTWEAX_NPD_STATS = 0x01000019,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif
@@ -288,6 +293,21 @@ typedef enum SRT_SOCKOPT {
 #define ROBOTWEAX_SRT_HSFLAG_STREAM 0x00000040u
 #define ROBOTWEAX_SRT_HSFLAG_PACKET_FILTER 0x00000080u
 #define ROBOTWEAX_SRT_PEER_HANDSHAKE_VERSION 1u
+
+#define ROBOTWEAX_SRT_NPD_STATS_VERSION 1u
+
+/* Read-only cumulative NPD snapshot. abi_version=1; active is 0 or 1.
+ * deleted_units counts units removed from successfully queued messages;
+ * restored_units counts units in uniquely accepted source packets.
+ * malformed_payloads counts rejected NPD payloads. No clear-on-read.
+ */
+typedef struct ROBOTWEAX_SRT_NpdStatsV1_ {
+    uint32_t abi_version;
+    uint32_t active;
+    uint64_t deleted_units;
+    uint64_t restored_units;
+    uint64_t malformed_payloads;
+} ROBOTWEAX_SRT_NPD_STATS_V1;
 
 /** Copied by srt_getsockflag/SRTO_ROBOTWEAX_PEER_HANDSHAKE; no initialization
  * required. Supply at least sizeof(V1); success writes exactly sizeof(V1).
