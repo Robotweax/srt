@@ -141,6 +141,11 @@ public:
     {
         return peer_authentication_required_;
     }
+    [[nodiscard]] bool peer_authentication_configured() const noexcept
+    {
+        return peer_authentication_required_
+            && peer_authentication_credentials_.complete();
+    }
     [[nodiscard]] Error set_peer_authentication_key(
         std::span<const std::byte> key) noexcept
     {

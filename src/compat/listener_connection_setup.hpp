@@ -5,6 +5,9 @@
 #include <cstdint>
 
 namespace robotweax::srt::compat {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+class PeerAuthenticationHandshake;
+#endif
 
 enum class ListenerConnectionSetupState : std::uint8_t {
     idle,
@@ -88,6 +91,9 @@ class ListenerConnectionSetupSteps {
 public:
     struct Configuration {
         HandshakeMachine::Configuration hsv5 {};
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        std::shared_ptr<PeerAuthenticationHandshake> peer_authentication;
+#endif
     };
 
     ListenerConnectionSetupSteps(ListenerHandshakeAdmission admission,

@@ -47,22 +47,28 @@ The adapter accepts the existing stateless-listener admission result and routes
 its response from the admitted child's socket ID. Retry, reordering, lost-KMRSP,
 downgrade, routing and deadline tests cover this packet-level path.
 
-The production socket setup actors and application publication are not yet
-connected to this adapter.
+The production listener now runs the adapter on the bounded work executor after
+stateless cookie admission, callback policy selection and crypto-budget checks.
+It publishes an accepted child only after both authenticated runtime KM directions
+complete. Up to 64 early DATA datagrams are retained for the runtime to authenticate
+and process after handoff. Invalid tags cannot consume valid receive sequence state.
+The native-UDP/public-listener tests cover delayed final key acknowledgement,
+early DATA, bidirectional encrypted traffic, wrong passwords and untrusted keys.
 
 A listen callback can read OFFERED from a provisional child after cookie
 admission. It exposes only the claimed key identifier, clears after the callback,
-and is unavailable outside that callback. PEER remains unavailable.
-For now, **connect and listen with REQUIRED return `SRT_ESECFAIL`**, even with
-complete credentials; callback-selected REQUIRED is also rejected. None of
-these paths can fall back to a legacy handshake. Enabling the build option does not authenticate
-socket connections or enable outgoing PEERAUTH handshakes. In particular,
-`Exchange::ready_for_key_exchange()` is not permission to publish a caller or
-release DATA: the caller still needs the listener's passphrase proof through
-an authenticated runtime key control. The socket layer must supply cookie and
-admission checks, normal transport-field validation, timeout/cancellation and
-application publication. The contract below describes the intended complete
-feature, not current socket behavior.
+and is unavailable outside that callback. PEER returns the authenticated public
+key only on a connected, nonterminal runtime; close clears it. REQUIRED listeners
+need complete credentials and cannot be downgraded by a callback.
+
+The production caller setup actor is not yet connected to the adapter.
+**Connect with REQUIRED still returns `SRT_ESECFAIL`**, even with complete
+credentials. There is no legacy fallback. Enabling the build option therefore
+supports the experimental listener path, but not an outgoing public socket
+connection. In particular, `Exchange::ready_for_key_exchange()` is not permission
+to publish a caller or release DATA: the caller still needs the listener's
+passphrase proof through an authenticated runtime key control. The contract
+below describes the intended complete feature, not current caller behavior.
 
 Build and exercise the private components with:
 
