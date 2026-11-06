@@ -3,9 +3,18 @@
 **Status: draft proposal. Nothing in this document is implemented.** Every
 identifier below is provisional and unregistered. **The cryptographic design is
 unreviewed.** It must receive independent cryptographic review before any
-implementation starts, and it makes no security claim until then. Items marked
-*open* need a decision. Items marked *assumption* could not be verified in this
-repository.
+implementation starts, and it makes no security claim until then. If it is
+implemented, it stays behind a default-off [build option](#build-option) until
+that review is complete. Items marked *open* need a decision. Items marked
+*assumption* could not be verified in this repository.
+
+**Scope of version 1: it authenticates the handshake and key establishment,
+not the runtime.** AES-GCM, which version 1 requires, authenticates source
+DATA. Runtime controls such as ACK, NAK, DROPREQ, KEEPALIVE and SHUTDOWN stay
+forgeable by anyone who can inject packets, so a connection between two
+authenticated peers can still be disturbed or closed by a third party. Closing
+that gap by composing with ACP1 is the
+[first follow-up](#first-follow-up-authenticated-runtime-controls).
 
 Peer authentication adds two properties that
 [session authentication](session-authentication.md) and
@@ -23,22 +32,33 @@ passphrase:
 
 - **Per-peer identity.** Each side verifies a signature made with a private key
   whose public key the application pinned. Holding the passphrase is no longer
-  enough to impersonate a peer.
+  enough to impersonate a peer, and holding a pinned identity key without the
+  passphrase is not enough either.
+- **No passphrase guessing by strangers.** Nothing an endpoint sends depends
+  on the passphrase until the other side has proven a pinned identity. The
+  [residual exposure](#what-each-proof-establishes) is limited to holders of a
+  stolen identity key.
 - **Forward secrecy per connection.** Compromise of the passphrase and of both
   identity private keys after a connection has closed does not reveal that
   connection's traffic keys.
 - **Authenticated handshake transcript.** Stream ID, transport settings and
   every extension record in the CONCLUSION and AGREEMENT messages are covered
   by both signatures.
-- **Unchanged default.** With the option off, handshake, key material and DATA
-  bytes are identical to the current release.
+- **Authenticated DATA.** REQUIRED needs AES-GCM, so identity is not followed
+  by a payload that can be altered in transit.
+- **Unchanged default.** With the option off, or in a build without the build
+  option, handshake, key material and DATA bytes are identical to the current
+  release.
 
 Non-goals and limits that remain:
 
 - Runtime controls (ACK, NAK, DROPREQ, KEEPALIVE, SHUTDOWN and others) stay
   unauthenticated. Only key-material controls and FEC parity are authenticated,
-  as in session authentication version 2.
-- AES-CTR source DATA stays malleable. Select AES-GCM for DATA integrity.
+  as in session authentication version 2. A forged SHUTDOWN still closes the
+  connection and a forged DROPREQ still discards data.
+- AES-CTR is not available with peer authentication. AES-GCM keeps its
+  documented limits: the retransmission bit is outside its authenticated header
+  ([AES-GCM contract](aes-gcm-contract.md)).
 - INDUCTION messages and the 16-byte SRT packet header of every handshake
   datagram are outside the transcript. IP addresses and ports are not bound.
 - Identity privacy. Key identifiers travel in clear text.
@@ -50,6 +70,24 @@ Non-goals and limits that remain:
   remains possible.
 - Authorization stays an application decision. A valid identity is not
   permission to use a stream.
+
+## Build option
+
+Peer authentication is compiled only with
+`ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH=ON` (provisional name, default
+`OFF`), the arrangement ACP1 uses while it is unreviewed.
+
+- In a build without it, every socket option in this document returns
+  `SRT_EINVOP`, as the ACP1 options do without their gate. The `0x7f16` record
+  is skipped like any unknown record, and no new provider operation or
+  dependency requirement exists. Ordinary builds keep today's Mbed TLS module
+  list and today's wire bytes.
+- It requires `ENABLE_AEAD_API_PREVIEW=ON`, because version 1 requires AES-GCM.
+  Configuration fails otherwise.
+- The elliptic-curve requirements listed under [Why P-256](#why-p-256) are
+  checked at configure time only when the option is on.
+- It is propagated through the installed CMake target and pkg-config `Cflags`,
+  as the ACP1 and AES-GCM options are. Both peers must be built with it.
 
 ## Compatibility boundary
 
@@ -80,10 +118,18 @@ example by Stream ID, and the caller's offer must match that final value in
 both directions. The callback's choice is explicit application policy, not
 negotiation.
 
-Prerequisites are `SRTO_ROBOTWEAX_SESSIONAUTH=true`, a passphrase and enforced
-encryption, following the ACP1 precedent that a stronger profile does not
-enable its prerequisites implicitly. Missing prerequisites fail connect or
-listen with `SRT_ESECFAIL`.
+Prerequisites are `SRTO_ROBOTWEAX_SESSIONAUTH=true`, a passphrase, enforced
+encryption and an explicit `SRTO_CRYPTOMODE=2` (AES-GCM) on both peers,
+following the ACP1 precedent that a stronger profile does not enable its
+prerequisites implicitly. Missing prerequisites fail connect or listen with
+`SRT_ESECFAIL`; AUTO and AES-CTR are not accepted.
+
+AES-GCM is required because proving who the peer is has little value if the
+payload can then be modified in transit. It has been a released, default-off
+extension since 0.2.0 ([AES-GCM contract](aes-gcm-contract.md)), so this adds
+no unreleased dependency. Peer authentication is consequently limited to the
+transport bundles that contract allows; for example File/Stream with FEC stays
+invalid.
 
 ## A new record, not a new `0x7f10` version
 
@@ -109,17 +155,20 @@ their layouts, counters and replay windows, keyed as described under
 
 ## Cryptographic building blocks
 
-No new primitive or construction is defined. The exchange is the three-message
-sign-and-MAC pattern analysed as
+No new primitive is defined. The exchange is the three-message sign-and-MAC
+pattern analysed as
 [SIGMA](https://doi.org/10.1007/978-3-540-45146-4_24) and used by
 [IKEv2](https://www.rfc-editor.org/rfc/rfc7296) and
 [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446), with raw public keys pinned
-out of band as in [RFC 7250](https://www.rfc-editor.org/rfc/rfc7250).
+out of band as in [RFC 7250](https://www.rfc-editor.org/rfc/rfc7250). The
+[key schedule](#key-schedule) is built from HKDF only, but the order in which
+it mixes the passphrase departs from TLS 1.3; that departure is stated there
+and is a named review item.
 
 | Purpose | Suite 1 |
 | --- | --- |
 | Key agreement | ECDH on NIST P-256 with fresh ephemeral keys, [SP 800-56A Rev. 3](https://csrc.nist.gov/pubs/sp/800/56/a/r3/final) section 5.7.1.2; shared secret `Z` is the 32-byte big-endian x-coordinate |
-| Signature | ECDSA on P-256 with SHA-256, [FIPS 186-5](https://csrc.nist.gov/pubs/fips/186-5/final); deterministic nonces per [RFC 6979](https://www.rfc-editor.org/rfc/rfc6979) are permitted but not required |
+| Signature | ECDSA on P-256 with SHA-256, [FIPS 186-5](https://csrc.nist.gov/pubs/fips/186-5/final); nonce generation as recommended under [Signatures and confirmation](#signatures-and-confirmation) |
 | Key derivation | HKDF-SHA256, [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869) |
 | Tags | HMAC-SHA256, [RFC 2104](https://www.rfc-editor.org/rfc/rfc2104) |
 | Transcript hash | SHA-256, [FIPS 180-4](https://csrc.nist.gov/pubs/fips/180-4/upd1/final) |
@@ -158,7 +207,12 @@ qualification must confirm with known-answer tests:
 - Mbed TLS 3.6 provides both through its legacy `mbedtls_ecdh_*` and
   `mbedtls_ecdsa_*` interfaces when `MBEDTLS_ECP_C`, `MBEDTLS_ECDH_C`,
   `MBEDTLS_ECDSA_C` and `MBEDTLS_ECP_DP_SECP256R1_ENABLED` are set. Those
-  become new required modules, checked at configure time like the others.
+  become required modules only when the build option is on, checked at
+  configure time like the others. Builds without the option keep the current
+  list.
+- OpenSSL needs no newer version than the 3.0 already required, but it can be
+  built without elliptic curves, so the build option adds a configure-time
+  probe. BCrypt needs no additional library.
 - Windows CNG provides `BCRYPT_ECDH_P256_ALGORITHM` and
   `BCRYPT_ECDSA_P256_ALGORITHM`, and its native signature format is the
   fixed-width `r || s` used here.
@@ -195,7 +249,7 @@ if duplicated. Every layout starts with the same 8-byte prefix:
 | 1 | 1 | Message: 1 offer, 2 response, 3 confirmation |
 | 2 | 1 | Suite, 1 |
 | 3 | 1 | Flags, zero |
-| 4 | 1 | Cipher mode: 1 AES-CTR, 2 AES-GCM |
+| 4 | 1 | Cipher mode: 2, AES-GCM; every other value fails decoding in version 1 |
 | 5 | 1 | Traffic key length in bytes: 16, 24 or 32; an offer may carry 0 for no preference |
 | 6 | 2 | Reserved, zero |
 
@@ -233,11 +287,10 @@ shares so that a later version could reuse a listener key share without losing
 freshness; version 1 never reuses one.
 
 Cipher and key-length negotiation moves into the prefix, because M1 carries no
-key material. The response repeats the offered cipher mode or setup fails,
-which preserves the existing rule that an AUTO listener accepts an explicit GCM
-caller and every other CTR/GCM mismatch fails. The response key length is the
-caller's nonzero value, otherwise the listener's configured `SRTO_PBKEYLEN`,
-otherwise 16. The key length advertised in INDUCTION is not used, so an
+key material. Both peers have set AES-GCM explicitly, as Rendezvous GCM already
+requires, so the cipher mode is 2 in every message. The response key length is
+the caller's nonzero value, otherwise the listener's configured
+`SRTO_PBKEYLEN`, otherwise 16. The key length advertised in INDUCTION is not used, so an
 attacker who rewrites INDUCTION cannot steer it. The handshake encryption field
 keeps its meaning and is covered by the transcript; a value that contradicts
 the prefix fails setup.
@@ -276,33 +329,60 @@ authentication and ACP1 documents for the CONCLUSION and AGREEMENT messages.
 It does not cover INDUCTION or packet headers, as listed under non-goals. Any
 value that INDUCTION influences must reappear in M1 or M2 to be authenticated.
 
-A message that is retransmitted must repeat the same `T(M)` bytes. Offers and
-responses are already cached for retries; that the cached handshake field is
-byte-identical on every retry is an *assumption* to confirm in the
-implementation.
+A message that is retransmitted must repeat the same `T(M)` bytes. In
+`src/handshake.cpp` a retry is not a replay of stored bytes: the caller
+rebuilds its CONCLUSION from its fixed configuration, and the listener response
+and the caller AGREEMENT are re-sent from a cached action, each encoded again.
+Byte identity therefore depends on the encoder being deterministic and on the
+compatibility layer adding the same fields each time, which remains an
+*assumption*. An implementation should keep the encoded bytes of each message
+for the transcript and for retries.
 
 ### Key schedule
 
+The schedule has two stages. The first depends only on the ephemeral secret.
+The second adds the passphrase, and neither side computes it until the other
+has proven a pinned identity.
+
 ```text
-psk     = PBKDF2-HMAC-SHA1(passphrase, salt = label, 2048, 32 bytes)
-early   = HKDF-Extract(salt = 32 zero bytes, IKM = psk)
-secret  = HKDF-Extract(salt = early, IKM = Z)
-key(n)  = HKDF-Expand(secret, info = label || uint8(n) || th_L, length)
+hs      = HKDF-Extract(salt = 32 zero bytes, IKM = Z)
+hkey(n) = HKDF-Expand(hs, info = label || uint8(n) || th_L, 32 bytes)
+
+psk     = PBKDF2-HMAC-SHA1(passphrase,
+              salt = label || caller nonce || listener nonce, 2048, 32 bytes)
+master  = HKDF-Extract(salt = hkey(2), IKM = psk)
+key(n)  = HKDF-Expand(master, info = label || uint8(n) || th_C, length)
 ```
 
-| `n` | Length | Use |
-| --- | --- | --- |
-| 1 | 32 | Listener confirmation key |
-| 2 | 32 | Caller confirmation key |
-| 3 | 32 | Session-authentication key for KMREQ/KMRSP and FEC parity tags |
-| 4 | Traffic key length | Key-encrypting key for key material sent by the caller |
-| 5 | Traffic key length | Key-encrypting key for key material sent by the listener |
+| Key | Depends on | Length | Use |
+| --- | --- | --- | --- |
+| `hkey(1)` | Ephemeral secret | 32 | Listener confirmation key |
+| `hkey(2)` | Ephemeral secret | 32 | Salt that chains the first stage into the second |
+| `key(3)` | Ephemeral secret and passphrase | 32 | Caller confirmation key |
+| `key(4)` | Ephemeral secret and passphrase | 32 | Session-authentication key for KMREQ/KMRSP and FEC parity tags |
+| `key(5)` | Ephemeral secret and passphrase | Traffic key length | Key-encrypting key for key material sent by the caller |
+| `key(6)` | Ephemeral secret and passphrase | Traffic key length | Key-encrypting key for key material sent by the listener |
 
-The passphrase is extracted first and the ephemeral secret second, the order
-TLS 1.3 uses for a pre-shared key with ECDHE (RFC 8446 section 7.1). The
-derivation is not otherwise the TLS 1.3 schedule. `psk` depends only on the
-passphrase, so an endpoint computes it once per configuration, not once per
-handshake. Every expansion is at most 32 bytes, a single HMAC block.
+Every expansion is at most 32 bytes, a single HMAC block. Chaining two
+extractions through a derived salt is the pattern of the TLS 1.3 key schedule
+(RFC 8446 section 7.1).
+
+**Departure from the cited schedule.** TLS 1.3 extracts the pre-shared key
+first and the ECDHE secret second, so its first authenticated flight already
+depends on the pre-shared key. This draft reverses the order: the ephemeral
+secret first, the passphrase second. The purpose is that M2, which a listener
+sends to a caller it has not yet authenticated, contains nothing derived from
+the passphrase. Mixing a pre-shared key late in an exchange has precedent in
+the `psk` modifiers of the
+[Noise framework](https://noiseprotocol.org/noise.html), but this schedule is
+not a Noise pattern and has no published analysis. It must be reviewed as a
+construction in its own right, including the use of a PBKDF2 output as the
+input keying material of the second extraction.
+
+The PBKDF2 salt includes both nonces, as the salt of session authentication
+version 2 does. Each side performs one derivation per handshake, and only
+after the other side has authenticated, so an unauthenticated flood cannot
+reach it.
 
 ### Signatures and confirmation
 
@@ -316,8 +396,8 @@ signed_C  = 64 bytes of 0x20 || "Robotweax SRT peer authentication 1, caller"
             || 0x00 || th_C
 sig_L     = ECDSA-P256-SHA256(listener identity key, signed_L)
 sig_C     = ECDSA-P256-SHA256(caller identity key, signed_C)
-confirm_L = HMAC-SHA256(key(1), th_L || sig_L)
-confirm_C = HMAC-SHA256(key(2), th_C || sig_C)
+confirm_L = HMAC-SHA256(hkey(1), th_L || sig_L)
+confirm_C = HMAC-SHA256(key(3),  th_C || sig_C)
 ```
 
 Processing, with failure at any step ending setup without fallback:
@@ -325,19 +405,22 @@ Processing, with failure at any step ending setup without fallback:
 1. **Listener, on M1.** After the cookie check, the listen callback and the
    admission charge described below: look up the caller key identifier in the
    child's pinned set, validate the caller key share, generate its own key
-   share, compute `Z` and the key schedule, sign, and send M2. It erases its
-   ephemeral private key and `Z`.
+   share, compute `Z`, `hs`, `hkey(1)` and `hkey(2)`, sign, and send M2. It
+   keeps `hkey(2)` and the transcript for the pending child and erases its
+   ephemeral private key, `Z` and `hs`. It does not use the passphrase.
 2. **Caller, on M2.** Look up the listener key identifier in its pinned set,
-   validate the key share, compute `Z` and the key schedule, check `confirm_L`,
-   then verify `sig_L`. Send M3 and erase its ephemeral private key and `Z`.
-3. **Listener, on M3.** Check `confirm_C`, then verify `sig_C` with the pinned
-   key selected in step 1. Only then is the connection published to `accept`.
+   validate the key share, compute `Z` and the first stage, check `confirm_L`,
+   then verify `sig_L`. Only after both succeed does it compute `psk`, `master`
+   and the second-stage keys, sign, and send M3. It erases its ephemeral
+   private key, `Z` and `hs`.
+3. **Listener, on M3.** Verify `sig_C` with the pinned key selected in step 1.
+   Only if the signature is valid does it compute `psk` and `master` and check
+   `confirm_C`. Only then is the connection published to `accept`.
 
-The signature proves possession of the pinned identity key over this exact
-transcript. The confirmation tag proves that the signer derived the session
-secret, which binds the identity to the key agreement and proves knowledge of
-the passphrase. Both key identifiers are inside the transcript, so a third
-pinned peer cannot re-sign another peer's exchange as its own.
+The order in step 3 is deliberate. A sender without the pinned caller key
+fails at the signature, so the passphrase-dependent comparison is never
+evaluated for it and its outcome cannot leak through timing or through the
+rejection reason. All failures in step 3 use one rejection reason.
 
 The Stream ID a listen callback reads at step 1 is not yet authenticated. It
 is authenticated, together with the rest of M1, when step 3 succeeds, which is
@@ -347,6 +430,57 @@ The listener retries M2 until M3 arrives, and a connected caller resends its
 cached M3 for a matching M2, as session authentication does today. A repeated
 identical M1 gets the cached M2 without new public-key work. An M1 that changes
 any byte of an exchange in progress is ignored.
+
+**Signature nonces.** The listener signs on demand for callers it has not
+authenticated, so a biased or repeated ECDSA nonce would expose its identity
+key. Implementations should use deterministic nonces
+([RFC 6979](https://www.rfc-editor.org/rfc/rfc6979)), or hedged nonces that
+mix the private key and the message with fresh randomness, wherever the
+backend offers them, and must never use a nonce source weaker than the
+provider's random generator. Deterministic and randomized signatures verify
+identically, so the choice is local to each endpoint. None of this can be
+confirmed from the repository, which contains no signature code. *Assumptions*
+from library documentation: Mbed TLS 3.6 offers RFC 6979 through
+`MBEDTLS_ECDSA_DETERMINISTIC`; OpenSSL offers it as a signature parameter from
+3.2, later than the 3.0 minimum, and otherwise mixes the private key and digest
+into its random nonces; CNG exposes no nonce control and draws from the system
+generator.
+
+### What each proof establishes
+
+| Proof | Establishes | Passphrase involved |
+| --- | --- | --- |
+| `sig_L` | The listener holds a pinned identity key and signed M1 and M2 | No |
+| `confirm_L` | That signer derived `Z`, which binds its identity to this key agreement | No |
+| `sig_C` | The caller holds a pinned identity key and signed M1, M2 as received and M3 | No |
+| `confirm_C` | The caller derived `Z` and holds the passphrase | Yes |
+| First authenticated KMREQ or KMRSP from the listener | The listener holds the passphrase | Yes |
+
+Both key identifiers are inside the transcript, so a third pinned peer cannot
+re-sign another peer's exchange as its own.
+
+The handshake has three messages, so the listener cannot prove knowledge of
+the passphrase inside it without reintroducing the exposure this schedule
+removes. The caller obtains that proof from the first key-material control,
+whose tag needs `key(4)`. No DATA is released and no traffic key is installed
+before it. *Proposed:* a connection whose first authenticated key exchange has
+not completed within the connect timeout is closed.
+
+Residual passphrase-guessing exposure:
+
+- **No identity key.** None. M1 and M2 are independent of the passphrase, a
+  caller sends M3 only to a listener whose signature it verified, and a
+  listener evaluates `confirm_C` only after a valid caller signature.
+- **A stolen caller identity key that a listener pins.** Online guessing only:
+  one guess per handshake, each a fresh exchange charged to the admission
+  budget. The listener can observe it as valid signatures followed by failed
+  confirmation.
+- **A stolen listener identity key, used to impersonate that listener to a
+  genuine caller.** Offline guessing. The impostor receives the caller's M3,
+  knows `Z`, and can test guesses against `confirm_C`. A high-entropy
+  passphrase is the only defence, as for any pre-shared key
+  ([RFC 9257](https://www.rfc-editor.org/rfc/rfc9257)).
+- **A pinned peer** holds the passphrase by configuration.
 
 ### Datagram budget
 
@@ -373,9 +507,11 @@ added only when it fits and is otherwise omitted, as today. For comparison,
 session authentication version 2 spends up to 180 bytes in M1 on its record and
 an AES-256 key-material record; this draft spends 140.
 
-That the response carries no Stream ID was observed in `src/handshake.cpp`,
-where only caller messages set it. That AGREEMENT carries no HSREQ is an
-*assumption*.
+Two entries in the table were checked in `src/handshake.cpp`. Only caller
+messages set a Stream ID, so the response carries none. AGREEMENT carries no
+HSREQ: it is built with the CONFIG flag alone and attaches the
+session-authentication record, plus the path-identifier and standby-RTT
+records when those are required.
 
 `SRTO_MSS` accepts values down to 76, which cannot hold even M1. *Proposed:* a
 REQUIRED policy needs an MSS of at least 512, enforced in either setting order
@@ -398,19 +534,21 @@ key that wraps the traffic keys inside it.
   `SRTO_SNDKMSTATE` reports SECURING until the peer confirms. That this
   exchange can start without handshake key material is an *assumption* about
   the current implementation.
-- The traffic keys in every KMREQ are wrapped with RFC 3394 under `key(4)` or
-  `key(5)`, by sender role. The passphrase-derived key-encrypting key is never
+- The traffic keys in every KMREQ are wrapped with RFC 3394 under `key(5)` or
+  `key(6)`, by sender role. The passphrase-derived key-encrypting key is never
   used. The salt field keeps its role in IV derivation only, so a receiver
   performs no PBKDF2 for a runtime KMREQ.
 - KMREQ and KMRSP use subtypes `0x7f03` and `0x7f04` with the version-2 layout:
-  uint64 counter, key-material body, 32-byte tag. The tag key is `key(3)` and
+  uint64 counter, key-material body, 32-byte tag. The tag key is `key(4)` and
   the MAC label is the 16-byte `label` above; domain bytes, role byte, counter
   rules and retry rules are those of version 2. Bare KMREQ and KMRSP are
   ignored.
 - Rotation follows `SRTO_KMREFRESHRATE` and `SRTO_KMPREANNOUNCE` unchanged.
   Each new traffic key is random and wrapped under the same directional
   key-encrypting key for the life of the connection.
-- On close, `secret`, every `key(n)` and all traffic keys are erased.
+- The first exchange in each direction also completes the passphrase proof
+  described under [What each proof establishes](#what-each-proof-establishes).
+- On close, `master`, every `key(n)` and all traffic keys are erased.
 
 Forward secrecy is therefore per connection. A recorded connection stays
 confidential if the passphrase and both identity keys leak after it closed and
@@ -437,9 +575,14 @@ Public-key work is placed after every cheaper check:
    64 per second. Accept capacity is reserved before setup.
 5. Only then does the listener validate one public key, generate one key pair,
    run one ECDH and produce one signature.
-6. M3 is matched to a pending child. The confirmation tag is checked before the
-   signature, so a datagram from a sender that lacks the session secret costs
-   one HMAC, not a signature verification.
+6. M3 is matched to a pending child by endpoint, socket IDs and cookie. The
+   signature is verified before the confirmation tag, for the reason given
+   under [Signatures and confirmation](#signatures-and-confirmation), so each
+   M3 that reaches a pending child costs one verification. *Proposed:* a
+   pending child fails after four M3 messages with an invalid signature, which
+   bounds that work per admitted M1.
+7. PBKDF2 runs only after a valid caller signature, so no unauthenticated
+   sender can cause one.
 
 A caller performs its public-key work only for a response that matches its own
 pending attempt. Invalid responses are dropped and the attempt ends at its
@@ -459,16 +602,16 @@ several milliseconds per operation. No measurement exists yet; this is an
 
 - **Session authentication version 2.** A prerequisite option, replaced on the
   wire. The `0x7f10` record and its PBKDF2 session root are not used. The
-  version-2 KMREQ/KMRSP and FEC parity protections continue under `key(3)`.
-- **ACP1.** Out of scope for version 1. REQUIRED together with
-  `SRTO_ROBOTWEAX_ACP1_REQUIRED` fails in either setting order. ACP1's
-  direction keys could later be expanded from `secret`; that composition needs
-  its own review. Until then runtime controls are unauthenticated here.
-- **AES-CTR and AES-GCM.** DATA formats, IV derivation and the GCM build gate
-  are unchanged. The cipher mode and key length are authenticated by the
-  transcript. CTR remains without DATA integrity.
+  version-2 KMREQ/KMRSP and FEC parity protections continue under `key(4)`.
+- **ACP1.** Not part of version 1. REQUIRED together with
+  `SRTO_ROBOTWEAX_ACP1_REQUIRED` fails in either setting order. The composition
+  is the [first follow-up](#first-follow-up-authenticated-runtime-controls).
+- **AES-GCM.** Required. The DATA format, IV derivation and tag are those of
+  the [AES-GCM contract](aes-gcm-contract.md), unchanged. The key length is
+  authenticated by the transcript.
+- **AES-CTR.** Not available with REQUIRED. With policy OFF it is unchanged.
 - **FEC parity authentication.** The version-2 envelope, counter and 64-packet
-  replay window are kept, keyed by `key(3)` with the `label` above. The 40-byte
+  replay window are kept, keyed by `key(4)` with the `label` above. The 40-byte
   envelope is reserved when a packet filter is enabled.
 - **Rendezvous.** Out of scope for version 1. REQUIRED with `SRTO_RENDEZVOUS`
   fails in either order, as session authentication alone does.
@@ -489,7 +632,8 @@ several milliseconds per operation. No measurement exists yet; this is an
 
 ## Socket options and key handling
 
-Proposed private options, all provisional:
+Proposed private options, all provisional. Each returns `SRT_EINVOP` in a build
+without the [build option](#build-option):
 
 | Option | Contract |
 | --- | --- |
@@ -499,14 +643,14 @@ Proposed private options, all provisional:
 | `SRTO_ROBOTWEAX_PEERAUTH_OFFERED` (`0x0100001c`) | Read-only in a listen callback: the 32-byte key identifier the caller claims, not yet authenticated |
 | `SRTO_ROBOTWEAX_PEERAUTH_PEER` (`0x0100001d`) | Read-only on a connected socket: the 64-byte public key the peer authenticated with |
 
-REQUIRED without a private key or with an empty pinned set fails connect or
-listen with `SRT_ESECFAIL`. A malformed key or a public key that is not on the
+REQUIRED without a private key, with an empty pinned set or without AES-GCM
+fails connect or listen with `SRT_ESECFAIL`. A malformed key or a public key that is not on the
 curve fails the setter with `SRT_EINVPARAM`. Connected sockets reject changes.
 
 ```c
 int policy = ROBOTWEAX_SRT_EXTENSION_REQUIRED;
-/* Check every return value. Session authentication, a passphrase and
-   enforced encryption must be configured as well. */
+/* Check every return value. Session authentication, a passphrase, enforced
+   encryption and SRTO_CRYPTOMODE=2 must be configured as well. */
 srt_setsockflag(socket, SRTO_ROBOTWEAX_PEERAUTH_KEY, private_key, 32);
 srt_setsockflag(socket, SRTO_ROBOTWEAX_PEERAUTH_TRUSTED, peer_public_key, 64);
 srt_setsockflag(socket, SRTO_ROBOTWEAX_PEERAUTH_POLICY, &policy, sizeof(policy));
@@ -548,51 +692,82 @@ generator and be stored like any other long-term secret.
   already place SRT inside another secured tunnel; this draft is for
   deployments that cannot.
 
+## First follow-up: authenticated runtime controls
+
+Version 1 leaves a connection between two authenticated peers open to forged
+runtime controls. The first follow-up is therefore the composition with
+[ACP1](experimental-acp1.md), ahead of Rendezvous and groups:
+
+- ACP1's two direction keys would be expanded from `master` with further key
+  numbers, in place of its expansion from the PBKDF2 session root. Its
+  envelope, counters and replay window would be unchanged.
+- ACP1 is selected today by the version number in the `0x7f10` record, which
+  peer authentication does not emit. The composition needs its own selector,
+  for example a flag in the `0x7f16` prefix, covered by the transcript.
+- ACP1 is itself experimental and unreviewed
+  ([issue #190](https://github.com/Robotweax/srt/issues/190)). The composition
+  needs its own review and cannot be claimed from the two parts.
+
+Until it exists, applications that need protection against forged SHUTDOWN,
+ACK, NAK or DROPREQ must not rely on peer authentication for it.
+
 ## Open decisions
 
-1. **Passphrase.** Version 1 requires it and mixes it in. Because the listener
-   proves itself first, an active caller that is not pinned receives
-   `confirm_L` and can test passphrase guesses offline against it, the known
-   limit of a low-entropy pre-shared key
-   ([RFC 9257](https://www.rfc-editor.org/rfc/rfc9257)). Alternatives are a
-   mode without a passphrase, or mixing it in only after the caller has
-   authenticated.
-2. **Constant PBKDF2 salt.** It lets `psk` be cached, at the price of a salt
-   shared by all deployments. A per-connection salt would cost one PBKDF2 per
-   admission, as session authentication version 2 does.
-3. **`IF_OFFERED` on listeners.** Excluded here. Allowing it would need a rule
+1. **A mode without a passphrase.** Version 1 requires one as a second factor.
+   Identity-only operation would need the encryption options to work without
+   a passphrase.
+2. **`IF_OFFERED` on listeners.** Excluded here. Allowing it would need a rule
    that applications must read the per-connection result.
-4. **Caller key identifier in M1.** It enables the callback lookup and the
+3. **Caller key identifier in M1.** It enables the callback lookup and the
    cheap rejection, and discloses which key is connecting. The alternative
    sends it only in M3.
-5. **Admission cost** of public-key work, and whether a listener may prepare
+4. **Admission cost** of public-key work, and whether a listener may prepare
    key shares ahead of demand.
-6. **Minimum MSS** of 512.
-7. **Marking key material.** Whether a nonzero KEKI should flag key material
+5. **Limit of four invalid M3 signatures** per pending child, and a counter
+   that lets an application see repeated confirmation failures after valid
+   signatures.
+6. **Closing a connection** whose first authenticated key exchange does not
+   complete within the connect timeout.
+7. **Minimum MSS** of 512.
+8. **Marking key material.** Whether a nonzero KEKI should flag key material
    wrapped under an ephemeral key-encrypting key. Key material uses KEKI zero
    today.
-8. **Rekeying the key-encrypting key** during long connections, to limit what
+9. **Rekeying the key-encrypting key** during long connections, to limit what
    a compromise during a connection exposes.
-9. **Binding INDUCTION.** Whether any INDUCTION field beyond the key length
-   needs to be restated in M1 or M2.
-10. **Private keys that cannot be exported.** A signing callback for hardware
+10. **Binding INDUCTION.** Whether any INDUCTION field beyond the key length
+    needs to be restated in M1 or M2.
+11. **Private keys that cannot be exported.** A signing callback for hardware
     or operating-system key stores, and a helper to generate and convert keys.
-11. **Pinned-set limit** of sixteen keys.
-12. **Rejection reasons.** Session authentication uses `SRT_REJ_UNSECURE` and
-    `SRT_REJ_BADSECRET`; whether one uniform reason is better, so that a
-    listener does not reveal which identifiers it pins.
-13. **Later scope:** ACP1, Rendezvous, connection groups and multicast
-    dispatch groups.
+12. **Pinned-set limit** of sixteen keys.
+13. **Rejection reasons.** Session authentication uses `SRT_REJ_UNSECURE` and
+    `SRT_REJ_BADSECRET`. This draft uses one reason for every M3 failure;
+    whether M1 and M2 failures should share it, so that a listener does not
+    reveal which identifiers it pins.
+14. **Build option name** and whether it should also gate the provider
+    interface additions.
+15. **Later scope,** after the first follow-up: Rendezvous, connection groups
+    and multicast dispatch groups.
 
 ## Review and qualification required before any support claim
 
-Independent cryptographic review comes first and covers at least: the key
-schedule and the use of PBKDF2 output as a pre-shared key; transcript
-definition and the zeroed-field rule; identity binding and role separation;
-downgrade paths through INDUCTION and through listener policy; nonce and key
-share freshness; key erasure; and the listener cost model. The design should
-also be checked against the open questions recorded for ACP1 in
-[issue #190](https://github.com/Robotweax/srt/issues/190). This draft does not
+Independent cryptographic review comes first and covers at least:
+
+- the two-stage key schedule, its reversal of the TLS 1.3 extraction order,
+  and the use of a PBKDF2 output as input keying material;
+- the claim that nothing sent before the peer has authenticated depends on
+  the passphrase, including the check order and single rejection reason in
+  step 3;
+- the listener's passphrase proof being deferred to the first key exchange;
+- the transcript definition and the zeroed-field rule;
+- identity binding and role separation;
+- downgrade paths through INDUCTION and through listener policy;
+- nonce and key-share freshness, signature nonce generation and key erasure;
+- the listener cost model; and
+- whether requiring AES-GCM while leaving runtime controls unauthenticated is
+  an acceptable version 1 boundary.
+
+The design should also be checked against the open questions recorded for ACP1
+in [issue #190](https://github.com/Robotweax/srt/issues/190). This draft does not
 close that issue or [issue #112](https://github.com/Robotweax/srt/issues/112),
 and it was not part of the
 [2026-11-04 source review](security-review-2026-11-04.md).
@@ -605,7 +780,18 @@ Evidence must then be reproducible and black-box, as required by
 - Explicit failure of REQUIRED against each pinned reference build in both
   roles, recording whether the reference ignores, rejects or times out.
 - Explicit failure for every mismatched row of the compatibility table, and
-  for a missing key, an unpinned key, a wrong passphrase and a wrong suite.
+  for a missing key, an unpinned key, a wrong passphrase, a wrong suite and a
+  cipher mode other than AES-GCM.
+- A build without the build option: every option returns `SRT_EINVOP`, the
+  dependency requirements are unchanged, and the wire bytes match the current
+  release.
+- With fixed randomness, M2 is byte-identical for two listeners that differ
+  only in passphrase.
+- A pinned caller with a wrong passphrase and an unpinned caller are both
+  rejected, with the same reason, and the unpinned caller's rejection time
+  does not depend on its confirmation tag.
+- A listener without the passphrase cannot complete the first key exchange,
+  and the caller releases no DATA to it.
 - Known-answer tests on all three backends: ECDH and ECDSA vectors from the
   NIST validation program and RFC 6979, HKDF vectors from RFC 5869, and a
   complete handshake vector computed by an independent implementation.
