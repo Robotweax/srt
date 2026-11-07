@@ -58,6 +58,10 @@ public:
     [[nodiscard]] static std::shared_ptr<CoordinatorBridge> create(
         std::shared_ptr<GroupSendCoordinator>, std::shared_ptr<NativeService>,
         std::shared_ptr<AuthorizationLease>, Configuration) noexcept;
+    // Internal setup can retain one fixed owner while enrollment is busy.
+    [[nodiscard]] static std::shared_ptr<CoordinatorBridge> prepare(
+        std::shared_ptr<GroupSendCoordinator>, std::shared_ptr<NativeService>,
+        std::shared_ptr<AuthorizationLease>, Configuration) noexcept;
     ~CoordinatorBridge();
     void pump() noexcept;
     void close() noexcept;
@@ -69,6 +73,9 @@ public:
 
 private:
     friend class NativeService;
+    [[nodiscard]] static std::shared_ptr<CoordinatorBridge> make(
+        std::shared_ptr<GroupSendCoordinator>, std::shared_ptr<NativeService>,
+        std::shared_ptr<AuthorizationLease>, Configuration, bool) noexcept;
     struct Entry {
         Message request, reply;
         std::uint64_t first_received = 0, deadline = 0;

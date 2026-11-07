@@ -9,6 +9,7 @@
 #include "compat/hybrid_automatic.hpp"
 #include "compat/hybrid_automatic_return.hpp"
 #include "compat/hybrid_membership.hpp"
+#include "compat/hybrid_setup.hpp"
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/transport_runtime.hpp"
@@ -345,7 +346,9 @@ constexpr const char group_passphrase[] = "sixteen-char-key";
 [[nodiscard]] SRTSOCKET make_receiver(Peers& peers, const sockaddr_in& listener,
     bool encrypted = false, bool aes_gcm = false, int latency_ms = 120,
     bool independent = false, bool asynchronous = false,
-    bool session_authentication = false)
+    bool session_authentication = false,
+    void (*configure)(void*, SRTSOCKET, bool) = nullptr,
+    void* context = nullptr, int* connect_result = nullptr)
 {
     const SRTSOCKET group =
         peers.keep(srt_create_group(ROBOTWEAX_SRT_GTYPE_MULTICAST));
@@ -391,8 +394,14 @@ constexpr const char group_passphrase[] = "sixteen-char-key";
     }
     SRT_SOCKGROUPCONFIG endpoint = srt_prepare_endpoint(nullptr,
         reinterpret_cast<const sockaddr*>(&listener), sizeof(listener));
-    REQUIRE(srt_connect_group(group, &endpoint, 1) != SRT_ERROR);
-    if (asynchronous) {
+    if (configure)
+        configure(context, group, true);
+    const auto connected = srt_connect_group(group, &endpoint, 1);
+    if (connect_result)
+        *connect_result = connected;
+    else
+        REQUIRE(connected != SRT_ERROR);
+    if (asynchronous && !connect_result) {
         REQUIRE(wait_for_members(group, 1));
         const bool blocking = true;
         REQUIRE_EQ(
@@ -1892,7 +1901,9 @@ struct CoordinatedNative {
     explicit CoordinatedNative(std::int64_t rate = 1'000'000,
         bool encrypted = false, bool gcm = false, int send_packets = 0,
         int latency = 120, bool coordinated = true,
-        bool session_authentication = false)
+        bool session_authentication = false,
+        void (*configure)(void*, SRTSOCKET, bool) = nullptr,
+        void* context = nullptr)
     {
         listener = peers.keep(srt_create_socket());
         const bool enabled = true;
@@ -1968,13 +1979,15 @@ struct CoordinatedNative {
         REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&local),
                        sizeof(local)),
             0);
+        if (configure)
+            configure(context, listener, false);
         REQUIRE_EQ(srt_listen(listener, 8), 0);
         int size = sizeof(bound);
         REQUIRE_EQ(srt_getsockname(
                        listener, reinterpret_cast<sockaddr*>(&bound), &size),
             0);
         receiver = make_receiver(peers, bound, encrypted, gcm, latency, true,
-            false, session_authentication);
+            false, session_authentication, configure, context);
         sender = peers.keep(srt_accept(listener, nullptr, nullptr));
         REQUIRE(sender != SRT_INVALID_SOCK);
         REQUIRE(wait_for_members(sender, 1, encrypted));
@@ -2249,6 +2262,472 @@ struct HybridWireHook {
 }
 
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+struct StartupProvision {
+    bool caller = false, allow = true, join_success = false;
+    std::byte secret = std::byte {0x22};
+    SRTSOCKET id = SRT_INVALID_SOCK;
+    std::atomic<unsigned> enrolls = 0, joins = 0;
+    std::atomic_bool hidden = true, io_hidden = true;
+    std::uint64_t expiry = hn::NativeService::monotonic_now() + 5'000'000;
+    static bool resolve(void* p, const hn::CredentialRequest& r,
+        hn::Authorization& a, std::span<std::byte, 32> secret) noexcept
+    {
+        auto& self = *static_cast<StartupProvision*>(p);
+        if (!self.allow)
+            return false;
+        a = {.credential_id = r.credential_id,
+            .caller_group = r.caller_group,
+            .listener_group = r.listener_group,
+            .stream_id = r.stream_id,
+            .generation = 7,
+            .expires_at_us = self.expiry};
+        std::fill(secret.begin(), secret.end(), self.secret);
+        return true;
+    }
+    static bool revalidate(void* p, const hn::CredentialRequest&,
+        const hn::Authorization& old, hn::Authorization& a) noexcept
+    {
+        auto& self = *static_cast<StartupProvision*>(p);
+        a = old;
+        return self.allow && a.expires_at_us == self.expiry;
+    }
+    static bool enroll(void* p, const hn::Context&, const hn::Authorization&,
+        std::uint64_t) noexcept
+    {
+        auto& self = *static_cast<StartupProvision*>(p);
+        ++self.enrolls;
+        if (self.caller) {
+            const auto group = GroupRegistry::instance().find(self.id);
+            if (!group)
+                return false;
+            std::vector<SRTSOCKET> ids;
+            {
+                std::lock_guard lock(group->mutex);
+                for (const auto& member : group->members)
+                    ids.push_back(member.public_data.id);
+            }
+            for (auto id : ids) {
+                if (srt_getsockstate(id) != SRTS_CONNECTING)
+                    self.hidden = false;
+                if (srt_sendmsg(id, "x", 1, -1, 1) != SRT_ERROR
+                    || srt_getlasterror(nullptr) != SRT_ENOCONN)
+                    self.io_hidden = false;
+            }
+        }
+        return self.allow;
+    }
+    static std::optional<UdpSocket> join(
+        void* p, const hn::MembershipRecovery::Request& request) noexcept
+    {
+        auto& self = *static_cast<StartupProvision*>(p);
+        ++self.joins;
+        if (srt_getsockstate(self.id) != SRTS_CONNECTED)
+            self.hidden = false;
+        return self.join_success ? hn::MembershipRecovery::prepare(request)
+                                 : std::nullopt;
+    }
+    hn::StartupOptions options(const std::shared_ptr<StartupProvision>& self)
+    {
+        hn::StartupOptions o;
+        o.native.owner = self;
+        o.native.resolve = resolve;
+        o.native.revalidate = revalidate;
+        o.native.enroll = enroll;
+        o.native.credential_id.fill(std::byte {0x11});
+        o.native.policy.supported |= hn::startup_fallback | hn::policy_query;
+        o.native.policy.required |= hn::startup_fallback | hn::policy_query;
+        o.native.retry_interval_us = 10'000;
+        o.native.timeout_us = 300'000;
+        o.native.maximum_sends_per_stage = 8;
+        o.admission_timeout_us = 600'000;
+        o.poll_interval_us = 2'000;
+        o.membership = {IpEndpoint::loopback(), 3, 500'000, 20'000, 40'000};
+        o.join = {self, join};
+        o.receiver = {.retry_interval_us = 10'000,
+            .round_timeout_us = 40'000,
+            .operation_timeout_us = 240'000,
+            .query_interval_us = 50'000,
+            .confirmation_lifetime_us = 80'000,
+            .maximum_sends = 2,
+            .maximum_rounds = 4};
+        return o;
+    }
+};
+struct StartupHooks {
+    std::shared_ptr<StartupProvision> source =
+                                          std::make_shared<StartupProvision>(),
+                                      caller =
+                                          std::make_shared<StartupProvision>();
+    HybridWireHook wire;
+    std::int32_t connect_timeout = 0;
+    static void configure(void* p, SRTSOCKET id, bool caller)
+    {
+        auto& self = *static_cast<StartupHooks*>(p);
+        const auto owner = caller ? self.caller : self.source;
+        owner->caller = caller;
+        owner->id = id;
+        auto options = owner->options(owner);
+        if (self.connect_timeout) {
+            options.admission_timeout_us = 1'000'000;
+            options.native.timeout_us = 900'000;
+            if (caller)
+                REQUIRE_EQ(
+                    srt_setsockflag(id, SRTO_CONNTIMEO, &self.connect_timeout,
+                        sizeof(self.connect_timeout)),
+                    0);
+        }
+        REQUIRE(hn::provision_startup(id, std::move(options)));
+        if (!caller) {
+            const auto socket = SocketRegistry::instance().find(id);
+            {
+                std::lock_guard lock(socket->mutex);
+                self.wire.channel = socket->channel;
+            }
+            self.wire.drop_commits = true;
+            self.wire.channel->set_send_hook_for_testing(
+                HybridWireHook::send, &self.wire);
+        }
+    }
+    ~StartupHooks()
+    {
+        if (wire.channel)
+            wire.channel->set_send_hook_for_testing(nullptr, nullptr);
+    }
+};
+struct StartupServer {
+    Peers peers;
+    AdmissionLog admissions;
+    SRTSOCKET listener = SRT_INVALID_SOCK;
+    sockaddr_in bound {};
+    StartupServer(StartupHooks* hooks, bool encrypted = false,
+        bool authentication = false)
+    {
+        listener = peers.keep(srt_create_socket());
+        const bool yes = true;
+        auto local = ipv4_sockaddr({127, 0, 0, 1}, 0);
+        auto group = ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
+        for (auto option : {SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                 SRTO_ROBOTWEAX_MCAST_COORDINATED})
+            REQUIRE_EQ(srt_setsockflag(listener, option, &yes, sizeof(yes)), 0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE,
+                       &local, sizeof(local)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE, &local,
+                       sizeof(local)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP, &group,
+                       sizeof(group)),
+            0);
+        const std::int32_t ttl = 0;
+        const std::int64_t rate = 1'000'000;
+        REQUIRE_EQ(srt_setsockflag(
+                       listener, SRTO_ROBOTWEAX_MCAST_TTL, &ttl, sizeof(ttl)),
+            0);
+        REQUIRE_EQ(
+            srt_setsockflag(listener, SRTO_MAXBW, &rate, sizeof(rate)), 0);
+        if (encrypted) {
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_PASSPHRASE,
+                           group_passphrase, sizeof(group_passphrase) - 1),
+                0);
+            const std::int32_t refresh = 32, preannounce = 8;
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_KMREFRESHRATE, &refresh,
+                           sizeof(refresh)),
+                0);
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_KMPREANNOUNCE,
+                           &preannounce, sizeof(preannounce)),
+                0);
+        }
+        if (authentication)
+            REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_SESSIONAUTH,
+                           &yes, sizeof(yes)),
+                0);
+        REQUIRE_EQ(
+            srt_listen_callback(listener, admit_dispatch, &admissions), 0);
+        REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&local),
+                       sizeof(local)),
+            0);
+        if (hooks)
+            StartupHooks::configure(hooks, listener, false);
+        REQUIRE_EQ(srt_listen(listener, 8), 0);
+        int size = sizeof(bound);
+        REQUIRE_EQ(srt_getsockname(
+                       listener, reinterpret_cast<sockaddr*>(&bound), &size),
+            0);
+    }
+};
+std::shared_ptr<hn::StartupSession> startup_owner(SRTSOCKET id)
+{
+    auto group = GroupRegistry::instance().find(id);
+    REQUIRE(group);
+    SRTSOCKET member = SRT_INVALID_SOCK;
+    {
+        std::lock_guard lock(group->mutex);
+        REQUIRE(!group->members.empty());
+        member = group->members.front().public_data.id;
+    }
+    const auto socket = SocketRegistry::instance().find(member);
+    REQUIRE(socket);
+    std::lock_guard lock(socket->mutex);
+    return socket->hybrid_startup_session;
+}
+TEST(
+    multicast_dispatch_native_startup_setup_waits_for_uc_before_connected_plain_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        StartupHooks hooks;
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2, 0, 120, true,
+            false, StartupHooks::configure, &hooks);
+        REQUIRE(hooks.caller->hidden.load());
+        REQUIRE(hooks.caller->io_hidden.load());
+        REQUIRE_EQ(hooks.caller->enrolls.load(), 1U);
+        REQUIRE(hooks.wire.commits_dropped.load() > 0);
+        REQUIRE_EQ(f.actor()->snapshot().unicast_members, 1U);
+        const auto group = GroupRegistry::instance().find(f.receiver);
+        std::shared_ptr<hn::StartupSession> startup;
+        {
+            std::lock_guard lock(group->mutex);
+            const auto socket = SocketRegistry::instance().find(
+                group->members.front().public_data.id);
+            std::lock_guard record(socket->mutex);
+            startup = socket->hybrid_startup_session;
+        }
+        REQUIRE(startup);
+        REQUIRE(startup->snapshot().published);
+        REQUIRE(startup->receiver());
+        for (int i = 0; i < 80; ++i)
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        expect_messages(f.receiver, 0, 80);
+        REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
+        REQUIRE(hooks.caller->joins.load() > 0);
+        REQUIRE(!startup->membership()->snapshot().joined);
+        if (mode == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds {650});
+            REQUIRE_EQ(startup->snapshot().phase,
+                hn::StartupSession::Phase::connected);
+            REQUIRE(startup->receiver()->snapshot().fresh);
+            REQUIRE_EQ(f.send(80), static_cast<int>(message(80).size()));
+            expect_messages(f.receiver, 80, 1);
+        }
+    }
+}
+TEST(
+    multicast_dispatch_native_startup_setup_async_real_join_and_group_encryption)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    StartupHooks hooks;
+    hooks.caller->join_success = true;
+    StartupServer server(&hooks, true, false);
+    int result = 0;
+    const auto receiver = make_receiver(server.peers, server.bound, true, false,
+        120, true, true, false, StartupHooks::configure, &hooks, &result);
+    REQUIRE(result != SRT_ERROR);
+    REQUIRE(srt_getsockstate(receiver) != SRTS_CONNECTED);
+    const auto sender =
+        server.peers.keep(srt_accept(server.listener, nullptr, nullptr));
+    REQUIRE(sender != SRT_INVALID_SOCK);
+    REQUIRE(wait_for_members(receiver, 1, true));
+    auto owner = startup_owner(receiver);
+    REQUIRE(owner);
+    REQUIRE(owner->snapshot().published);
+    const auto until =
+        std::chrono::steady_clock::now() + std::chrono::seconds {1};
+    while (!owner->membership()->snapshot().joined
+        && std::chrono::steady_clock::now() < until)
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    REQUIRE(owner->membership()->snapshot().joined);
+    REQUIRE(hooks.caller->hidden.load());
+    const bool blocking = true;
+    REQUIRE_EQ(
+        srt_setsockflag(receiver, SRTO_RCVSYN, &blocking, sizeof(blocking)), 0);
+    for (int i = 0; i < 80; ++i) {
+        const auto data = message(i);
+        REQUIRE_EQ(srt_sendmsg(sender, data.data(), data.size(), -1, 1),
+            static_cast<int>(data.size()));
+    }
+    expect_messages(receiver, 0, 80);
+}
+TEST(multicast_dispatch_native_startup_setup_rejects_missing_or_bad_credentials)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        StartupHooks hooks;
+        if (mode == 1)
+            hooks.source->allow = false;
+        if (mode == 2)
+            hooks.caller->secret = std::byte {0x23};
+        StartupServer server(mode == 0 ? nullptr : &hooks);
+        int result = 0;
+        const auto receiver =
+            make_receiver(server.peers, server.bound, false, false, 120, true,
+                false, false, StartupHooks::configure, &hooks, &result);
+        REQUIRE_EQ(result, SRT_ERROR);
+        REQUIRE(srt_getsockstate(receiver) != SRTS_CONNECTED);
+        REQUIRE_EQ(hooks.caller->joins.load(), 0U);
+    }
+}
+TEST(multicast_dispatch_native_startup_setup_rejects_exhausted_sender_budget)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    StartupHooks hooks;
+    StartupServer server(&hooks);
+    std::vector<SRTSOCKET> receivers;
+    for (unsigned i = 0; i < 4; ++i) {
+        hooks.caller = std::make_shared<StartupProvision>();
+        receivers.push_back(make_receiver(server.peers, server.bound, false,
+            false, 120, true, false, false, StartupHooks::configure, &hooks));
+    }
+    const auto sender =
+        server.peers.keep(srt_accept(server.listener, nullptr, nullptr));
+    REQUIRE(sender != SRT_INVALID_SOCK);
+    hooks.caller = std::make_shared<StartupProvision>();
+    int result = 0;
+    const auto rejected =
+        make_receiver(server.peers, server.bound, false, false, 120, true,
+            false, false, StartupHooks::configure, &hooks, &result);
+    REQUIRE_EQ(result, SRT_ERROR);
+    REQUIRE(srt_getsockstate(rejected) != SRTS_CONNECTED);
+    REQUIRE_EQ(hooks.caller->joins.load(), 0U);
+    const auto group = GroupRegistry::instance().find(sender);
+    std::shared_ptr<robotweax::srt::compat::GroupSendCoordinator> actor;
+    {
+        std::lock_guard lock(group->mutex);
+        actor = group->dispatch->coordinator;
+    }
+    REQUIRE_EQ(actor->snapshot().unicast_members, 4U);
+    for (int i = 0; i < 20; ++i) {
+        const auto data = message(i);
+        REQUIRE_EQ(srt_sendmsg(sender, data.data(), data.size(), -1, 1),
+            static_cast<int>(data.size()));
+    }
+    for (auto receiver : receivers)
+        expect_messages(receiver, 0, 20);
+}
+TEST(multicast_dispatch_native_startup_setup_close_and_reply_loss_never_publish)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (bool close : {false, true}) {
+        StartupHooks hooks;
+        StartupServer server(&hooks);
+        hooks.wire.drop_controls = true;
+        int result = 0;
+        const auto receiver =
+            make_receiver(server.peers, server.bound, false, false, 120, true,
+                true, false, StartupHooks::configure, &hooks, &result);
+        REQUIRE(result != SRT_ERROR);
+        const auto sender =
+            server.peers.keep(srt_accept(server.listener, nullptr, nullptr));
+        REQUIRE(sender != SRT_INVALID_SOCK);
+        std::shared_ptr<hn::StartupSession> owner;
+        const auto until =
+            std::chrono::steady_clock::now() + std::chrono::seconds {1};
+        while (std::chrono::steady_clock::now() < until) {
+            owner = startup_owner(receiver);
+            if (owner
+                && owner->snapshot().phase
+                    == hn::StartupSession::Phase::admitting)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        REQUIRE(owner);
+        REQUIRE(!owner->snapshot().published);
+        REQUIRE(srt_getsockstate(receiver) != SRTS_CONNECTED);
+        const auto source_group = GroupRegistry::instance().find(sender);
+        std::shared_ptr<robotweax::srt::compat::GroupSendCoordinator> actor;
+        {
+            std::lock_guard lock(source_group->mutex);
+            actor = source_group->dispatch->coordinator;
+        }
+        while (!actor->snapshot().unicast_members
+            && std::chrono::steady_clock::now() < until)
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        REQUIRE_EQ(actor->snapshot().unicast_members, 1U);
+        REQUIRE(!owner->snapshot().published);
+        const auto pending_data = message(0);
+        REQUIRE_EQ(srt_sendmsg(
+                       sender, pending_data.data(), pending_data.size(), -1, 1),
+            static_cast<int>(pending_data.size()));
+        const auto caller_group = GroupRegistry::instance().find(receiver);
+        SRTSOCKET child = SRT_INVALID_SOCK;
+        {
+            std::lock_guard lock(caller_group->mutex);
+            child = caller_group->members.front().public_data.id;
+        }
+        const auto record = SocketRegistry::instance().find(child);
+        std::shared_ptr<robotweax::srt::compat::ConnectionRuntime> runtime;
+        {
+            std::lock_guard lock(record->mutex);
+            runtime = record->runtime;
+        }
+        while (!runtime->statistics(false, false).total.received_unique.packets
+            && std::chrono::steady_clock::now() < until)
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        REQUIRE(runtime->statistics(false, false).total.received_unique.packets
+            > 0);
+        char buffer[64];
+        REQUIRE_EQ(srt_recvmsg(child, buffer, sizeof(buffer)), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ENOCONN);
+        REQUIRE(!(robotweax::srt::compat::socket_readiness(child).events
+            & (SRT_EPOLL_IN | SRT_EPOLL_OUT)));
+        REQUIRE(!(robotweax::srt::compat::socket_readiness(receiver).events
+            & (SRT_EPOLL_IN | SRT_EPOLL_OUT)));
+        if (close)
+            server.peers.drop(receiver);
+        else {
+            while (srt_getsockstate(receiver) == SRTS_CONNECTING
+                && std::chrono::steady_clock::now() < until)
+                std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        hooks.wire.drop_controls = false;
+        std::this_thread::sleep_for(std::chrono::milliseconds {20});
+        REQUIRE(!owner->snapshot().published);
+        REQUIRE(srt_getsockstate(receiver) != SRTS_CONNECTED);
+        REQUIRE_EQ(hooks.caller->joins.load(), 0U);
+    }
+}
+TEST(multicast_dispatch_native_startup_setup_keeps_original_connect_deadline)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    StartupHooks hooks;
+    hooks.connect_timeout = 120;
+    StartupServer server(&hooks);
+    hooks.wire.drop_controls = true;
+    int result = 0;
+    const auto begin = std::chrono::steady_clock::now();
+    const auto receiver =
+        make_receiver(server.peers, server.bound, false, false, 120, true,
+            false, false, StartupHooks::configure, &hooks, &result);
+    const auto elapsed = std::chrono::steady_clock::now() - begin;
+    REQUIRE_EQ(result, SRT_ERROR);
+    REQUIRE(elapsed < std::chrono::milliseconds {600});
+    hooks.wire.drop_controls = false;
+    std::this_thread::sleep_for(std::chrono::milliseconds {50});
+    REQUIRE(srt_getsockstate(receiver) != SRTS_CONNECTED);
+    REQUIRE_EQ(hooks.caller->joins.load(), 0U);
+}
+TEST(
+    multicast_dispatch_native_startup_setup_preserves_unprovisioned_join_failure)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    StartupServer server(nullptr);
+    int result = 0;
+    auto bad_interface = +[](void*, SRTSOCKET id, bool caller) {
+        if (caller) {
+            const auto address = ipv4_sockaddr({192, 0, 2, 77}, 0);
+            REQUIRE_EQ(srt_setsockflag(id, SRTO_ROBOTWEAX_MCAST_IFACE, &address,
+                           sizeof(address)),
+                0);
+        }
+    };
+    const auto receiver = make_receiver(server.peers, server.bound, false,
+        false, 120, true, false, false, bad_interface, nullptr, &result);
+    REQUIRE_EQ(result, SRT_ERROR);
+    REQUIRE(srt_getsockstate(receiver) != SRTS_CONNECTED);
+}
 TEST(
     multicast_dispatch_native_hybrid_transport_plain_ctr_gcm_keeps_delivery_policy_explicit)
 {

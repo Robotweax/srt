@@ -553,6 +553,9 @@ bool GroupRegistry::describe_connect(
         record->peer_idle_timeout_milliseconds;
     output.member_native_options = record->member_native_options;
     output.member_public_options = record->member_public_options;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    output.hybrid_startup_options = record->hybrid_startup_options;
+#endif
     return true;
 }
 

@@ -579,7 +579,8 @@ Native plaintext/CTR/GCM cases drop the first commit, retry the authenticated
 request and verify one transition, then suppress multicast DATA while delivering
 48 messages through canonical unicast originals, including CTR/GCM key rotation.
 The receiver, reporting, detection, fallback, return and staged membership owners
-below attach separately. Public provisioning/failed-join connect admission and
+below attach separately. The explicit startup provisioning profile later in this
+document integrates group connect admission; production credential discovery and
 actual source-error control integration remain unimplemented. Loopback/synthetic-credential evidence
 does not qualify hostile networks, physical/WAN paths, overload, scale or other
 platforms; the existing security limits remain.
@@ -921,7 +922,8 @@ while unicast remains committed, pause suppression and owner closure. The
 separate controller below can consume fallback candidates. Explicit bounded
 multicast overlap/return and its separate opt-in automatic controller are described
 below. The internal staged-startup membership profile is described later; public
-provisioning and public connect join-failure admission remain unimplemented.
+credential discovery remains unimplemented. The opt-in group setup profile below
+now integrates staged startup admission.
 
 ## Explicitly attached automatic unicast fallback
 
@@ -1112,9 +1114,9 @@ plain/CTR/GCM, use the exact cache to prove eight overlap positions, and deliver
 high water stays at or below D. Explicit return APIs perform no autonomous
 recovery selection; `AutomaticFallback` remains one-way. The separate controller
 below supplies opt-in return selection. The internal membership profile below
-supplies staged startup support. Public
-provisioning/connect admission, actual source-error control bridge and broader
-network/scale qualification remain future work.
+supplies staged startup support, and the setup profile below integrates native
+group connect admission. Production credential discovery, actual source-error
+control integration and broader network/scale qualification remain future work.
 
 ## Explicitly attached automatic multicast return
 
@@ -1197,14 +1199,14 @@ selected bit. Legacy masks 31/63/127 and crypto vectors retain their semantics.
 Optional startup support can downgrade; required startup support fails admission
 when absent. All experimental gates remain default-OFF.
 
-**Ordinary public connect still fails a local multicast join failure.** It does
-not expose a usable socket before sender approval. This owner operates on an
-explicitly provisioned staged runtime with frozen conclusions, an active Caller
-hybrid service and an already installed established-peer unicast dispatch route.
-It supplies the internal mechanism; a public setup/provisioning path that can
-safely stage a failed join and await authenticated sender admission is still
-unimplemented. Tests stage membership absence after ordinary connect and before
-DATA, rather than claiming a failed public connect now succeeds.
+**Unprovisioned public connect still fails a local multicast join failure.** This
+owner operates on an explicitly staged runtime with frozen conclusions, an active
+Caller hybrid service and an established-peer UC dispatch route. The provisioning
+profile below now stages that runtime inside native group connection setup and
+awaits sender-approved UC before publication. Its initial policy is explicitly
+UC first, with membership attempts after publication. The earlier membership-only
+tests stage absence after ordinary connect; the newer setup tests exercise the
+actual public connect boundary.
 
 Attachment requires no active MC route, no previously accepted DATA, an unchanged
 initial core receive floor, matching native generation/conclusions/runtime, and
@@ -1275,9 +1277,112 @@ zero before any MC observation, perform a real third join, automatically return
 through eight exact overlap positions with all commit replies dropped, deliver
 forty more MC messages across key rotation, then confirm UC and close only the
 owned membership while another forty UC messages remain deliverable. This is
-staged IPv4 loopback qualification; public failed-connect admission, later route
-loss/rejoin, WAN/asymmetric delay, hostile peers, scale and playback continuity
-remain separate gates.
+staged IPv4 loopback qualification. The setup profile below covers opted-in native
+connect admission; later route loss/rejoin, WAN/asymmetric delay, hostile peers,
+scale and playback continuity remain separate gates.
+
+## Provisioned native startup admission
+
+`provision_startup(handle, StartupOptions)` is an explicit internal C++ selector
+for a coordinated independent-source listener and an unopened dispatch Caller
+group. Set the existing socket/group options first, then provision before listen
+or connect. The immutable descriptor supplies the existing pairwise credential
+callbacks and native policy, receiver/source policies, membership interface and
+retry provider, a positive admission timeout <=5 seconds, and a poll interval of
+1..50 milliseconds smaller than that timeout. Native exchange timeout cannot
+exceed the admission timeout. Startup bit 128 and policy queries must both be
+required; optional downgrade cannot activate this path. Defaults do not enable
+it. Configuration is single-use and cannot be changed after opening. Group
+member and accepted-child setup inherit the exact immutable descriptor under the
+existing option/metadata locks. No numeric C socket option or credential lookup
+service is added.
+
+The profile deliberately starts with UC. After ordinary HSv5/KM setup, the Caller
+installs only its established-peer UC dispatch route and freezes the complete
+conclusions. It remains `CONNECTING`: public send/receive, peer-name and readiness
+retain their normal unconnected behavior even if valid UC DATA has already
+entered the core. The separate hybrid exchange must authenticate and select the
+required startup capability. A receiver and membership owner then capture a
+verified empty initial receive origin before any membership attempt or fallback
+request. Because application receive is still unavailable, that original local
+merge cursor remains valid if UC DATA arrives before publication. It is not a
+reported sender progress horizon and causes no manufactured ACK/drop/cursor
+advance.
+
+The sender derives stream/member/origin from its actual coordinator binding and
+freezes the authorization lease. One deferred coordinator object and lease are
+retained while enrollment is busy, rather than reallocating on every poll.
+Enrollment still takes all existing authorization/runtime/history/key/budget
+fences and grants no policy while pending. The Caller posts one bounded explicit
+fallback operation at its validated initial origin, including while source
+activity is paused or no DATA has yet been produced. The sender may deny it under
+its actual UC recipient/bandwidth limits. A fresh correlated commit or query
+result must confirm UC before the Caller publishes `CONNECTED`. Source accept
+remains ordinary primary-handshake completion; it is not a remote receipt that
+the Caller has published its connection.
+
+Publication rechecks owner/native lifetime, grant, receiver freshness, confirmed
+UC, absence of a pending return, original deadline and exact runtime/socket owner.
+It is serialized with profile and socket close. Only then are group readiness and
+normal connect completion/callbacks published. Dropped commits reconcile with
+queries; an observed or guessed remote policy is insufficient. Missing provision,
+unsupported required capability, bad credentials, denial, exhausted/unknown
+reconciliation, close or expiry never publishes the Caller as connected.
+
+Both asynchronous Caller establishment and blocking waits keep the original
+connect deadline. Admission is clipped by that deadline and the explicit startup
+budget; authentication, queueing, credential work, UC reconciliation and lock
+acquisition consume it. The asynchronous actor reuses its retry timer for pending
+admission rather than completing the handshake callback early or blocking a
+protocol shard. Timeout retains the usual timeout result. Denied UC capacity is
+a connection rejection; failed authentication/unconfirmed setup is a setup
+security failure. Failure cancels the local owner, retires its exact UC route and
+closes the unpublished runtime. Expected-runtime retirement cannot remove a
+replacement route. Late replies cannot revive a failed or closed Caller.
+
+One fixed setup owner below 2 KiB reserves one additional scheduler service per
+provisioned member, alongside the existing native service. It drives the existing
+source/receiver owners and their bounded queues; it adds no DATA queue or thread.
+Membership success uses the ordinary receive-channel resources described above.
+Credential callbacks and native join preparation run without setup-owner,
+socket/group/runtime or native queue locks, under their existing nonblocking
+contracts. Callbacks must not wait on network I/O, synchronous connection I/O or
+cleanup. Use weak back references. There is no production credential discovery,
+key generation policy or implicit trust in a packet source.
+
+After publication, the setup deadline stops being a connection lifetime. The
+owner continues control pumping and bounded membership retries; failed joins or
+exhausted membership attempts leave approved UC usable. Joining does not change
+source delivery policy. This profile does not attach automatic fallback/return
+controllers; an advanced host may obtain the receiver/membership owners after
+publication and attach separately configured controllers when their negotiated
+features and reporting contracts permit it. `StartupOptions.membership.interface`
+is the explicit local interface used for these joins. Existing coordinated
+restrictions still apply, including rejection of primary session authentication
+and primary ACP1 on that profile; auxiliary authenticated hybrid control remains
+separate. Plaintext/CTR/GCM data profiles retain their established limits.
+
+Socket teardown cancels the setup owner before runtime/member retirement,
+releases its service, revokes owned MC observations/routes and retires only its
+own UC dispatch alias. A terminal control failure after publication does not
+retroactively undo a completed connection or roll back committed UC. Already
+submitted control or DATA cannot be recalled: a lost/late request may have
+committed remotely even if local setup returns failure. There is no distributed
+abort or universal remote commit cutoff; source grant, budget and transport
+lifecycle fences remain authoritative. Control grant expiry is not a new
+cryptographic DATA revocation mechanism.
+
+Native cases cover actual group connect with every commit reply dropped across
+plain/CTR/GCM, blocked public I/O during enrollment, UC delivery despite failed
+joins and live control after the admission deadline. An asynchronous encrypted
+case performs a real join after publication. Failure cases cover absent source
+provision, rejected/wrong credentials, the fifth UC recipient against a four-member
+budget, fully lost replies despite a committed sender policy, buffered DATA that
+remains publicly unreadable/unready before publication, close, original connect
+timeout, and unchanged unprovisioned join failure. These are synthetic-credential
+IPv4 loopback tests. A public numeric selector, production provisioning, later
+membership-loss/source-error integration, hostile-peer/scale/WAN timing and
+playback-continuity qualification remain future work.
 
 ## Control body
 

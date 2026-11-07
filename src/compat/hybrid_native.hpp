@@ -28,6 +28,7 @@ inline constexpr std::size_t maximum_native_control_size =
 class CoordinatorBridge;
 class ReceiverBridge;
 class MembershipRecovery;
+class StartupSession;
 struct NativeOptions {
     Capability policy;
     CredentialId credential_id {};
@@ -131,6 +132,7 @@ private:
     friend class CoordinatorBridge;
     friend class ReceiverBridge;
     friend class MembershipRecovery;
+    friend class StartupSession;
     friend struct robotweax::srt::compat::HybridAutomaticTestAccess;
     [[nodiscard]] bool bridge_work(CoordinatorBridge&) noexcept;
     [[nodiscard]] bool receiver_work(ReceiverBridge&) noexcept;

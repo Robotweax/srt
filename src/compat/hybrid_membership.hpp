@@ -16,6 +16,7 @@ public:
         std::uint32_t maximum_attempts = 0, timeout_us = 0,
                       initial_backoff_us = 0, maximum_backoff_us = 0;
     };
+    [[nodiscard]] static bool valid_configuration(Configuration) noexcept;
     struct Request {
         Context context;
         IpEndpoint interface;

@@ -288,7 +288,8 @@ public:
         std::shared_ptr<const void> membership = {}) noexcept;
     [[nodiscard]] bool has_ingress_route(std::uint32_t protocol_socket_id,
         const ConnectionRuntime*, PacketIngress) noexcept;
-    void unregister_connection(std::uint32_t protocol_socket_id) noexcept;
+    void unregister_connection(std::uint32_t protocol_socket_id,
+        const ConnectionRuntime* expected = nullptr) noexcept;
     [[nodiscard]] bool replay_established_handshake(
         const HandshakeEnvelope& envelope) noexcept;
     [[nodiscard]] bool register_setup_inbox(std::uint32_t protocol_socket_id,
@@ -523,6 +524,7 @@ class ConnectionRuntime {
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
     friend class hybrid::CoordinatorBridge;
     friend class hybrid::MembershipRecovery;
+    friend class hybrid::StartupSession;
     friend struct HybridBridgeTestAccess;
     friend struct HybridAutomaticTestAccess;
     friend std::shared_ptr<hybrid::NativeService> hybrid::attach_native_control(

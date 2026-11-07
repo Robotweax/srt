@@ -28,6 +28,11 @@ namespace robotweax::srt {
 struct TsbpdClockState;
 }
 namespace robotweax::srt::compat {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+namespace hybrid {
+struct StartupOptions;
+}
+#endif
 
 template <typename T> class ProcessOwned;
 class ConnectionRuntime;
@@ -215,6 +220,9 @@ struct GroupRecord {
     // normal socket validation and normalization, without an unbounded map.
     SocketOptions member_native_options;
     PublicSocketOptions member_public_options;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::shared_ptr<const hybrid::StartupOptions> hybrid_startup_options;
+#endif
     // Observation bookkeeping uses the process monotonic clock, independently
     // of the injectable coordinator clock. Protected by mutex, no policy use.
     std::uint64_t send_authority_revision = 0;
@@ -253,6 +261,9 @@ public:
         std::int32_t peer_idle_timeout_milliseconds = 5'000;
         SocketOptions member_native_options;
         PublicSocketOptions member_public_options;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        std::shared_ptr<const hybrid::StartupOptions> hybrid_startup_options;
+#endif
     };
 
     struct MirrorDescription {

@@ -18,17 +18,20 @@ ReceiverBridge::ReceiverBridge(
     , configuration_(c)
 {
 }
-std::shared_ptr<ReceiverBridge> ReceiverBridge::create(
-    std::shared_ptr<NativeService> service, Configuration c) noexcept
+bool ReceiverBridge::valid_configuration(Configuration c) noexcept
 {
-    if (!service || !service->configuration_.caller || !valid(c.reporting)
-        || (c.detection && !valid(*c.detection)) || !c.retry_interval_us
-        || c.retry_interval_us > c.round_timeout_us
+    return !(!valid(c.reporting) || (c.detection && !valid(*c.detection))
+        || !c.retry_interval_us || c.retry_interval_us > c.round_timeout_us
         || c.round_timeout_us > c.operation_timeout_us
         || c.operation_timeout_us > maximum_age_us || !c.query_interval_us
         || c.query_interval_us > maximum_age_us || !c.confirmation_lifetime_us
         || c.confirmation_lifetime_us > maximum_age_us || !c.maximum_sends
-        || c.maximum_sends > 8 || !c.maximum_rounds || c.maximum_rounds > 8)
+        || c.maximum_sends > 8 || !c.maximum_rounds || c.maximum_rounds > 8);
+}
+std::shared_ptr<ReceiverBridge> ReceiverBridge::create(
+    std::shared_ptr<NativeService> service, Configuration c) noexcept
+{
+    if (!service || !service->configuration_.caller || !valid_configuration(c))
         return {};
     try {
         auto receiver = std::shared_ptr<ReceiverBridge>(

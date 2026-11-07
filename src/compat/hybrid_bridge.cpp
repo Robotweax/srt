@@ -72,6 +72,23 @@ std::shared_ptr<CoordinatorBridge> CoordinatorBridge::create(
     std::shared_ptr<NativeService> service,
     std::shared_ptr<AuthorizationLease> lease, Configuration c) noexcept
 {
+    return make(
+        std::move(actor), std::move(service), std::move(lease), c, true);
+}
+std::shared_ptr<CoordinatorBridge> CoordinatorBridge::prepare(
+    std::shared_ptr<GroupSendCoordinator> actor,
+    std::shared_ptr<NativeService> service,
+    std::shared_ptr<AuthorizationLease> lease, Configuration c) noexcept
+{
+    return make(
+        std::move(actor), std::move(service), std::move(lease), c, false);
+}
+std::shared_ptr<CoordinatorBridge> CoordinatorBridge::make(
+    std::shared_ptr<GroupSendCoordinator> actor,
+    std::shared_ptr<NativeService> service,
+    std::shared_ptr<AuthorizationLease> lease, Configuration c,
+    bool require_enrollment) noexcept
+{
     if (!actor || !service || !lease || !valid(c.reporting)
         || (c.returning && !valid(*c.returning)) || !c.command_timeout_us
         || c.command_timeout_us > maximum_age_us || !c.maximum_attempts
@@ -92,7 +109,9 @@ std::shared_ptr<CoordinatorBridge> CoordinatorBridge::create(
         auto bridge = std::shared_ptr<CoordinatorBridge>(new CoordinatorBridge(
             std::move(actor), std::move(service), std::move(lease), c));
         bridge->pump();
-        if (!bridge->snapshot().enrolled)
+        const auto state = bridge->snapshot();
+        if ((require_enrollment && !state.enrolled)
+            || (!require_enrollment && state.closed))
             return {};
         return bridge;
     } catch (...) {

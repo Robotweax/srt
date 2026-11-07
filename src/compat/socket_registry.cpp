@@ -1,3 +1,4 @@
+#include "compat/hybrid_setup.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/thread_name.hpp"
 #include "compat/process_owned.hpp"
@@ -420,6 +421,10 @@ void shutdown_record(
     std::shared_ptr<DatagramChannel> channel;
     std::shared_ptr<DatagramChannel> multicast_transmitter;
     std::shared_ptr<ConnectionRuntime> runtime;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::shared_ptr<hybrid::StartupSession> startup;
+    std::shared_ptr<const hybrid::StartupOptions> startup_options;
+#endif
     std::shared_ptr<CryptoSession> crypto;
     std::shared_ptr<HandshakeInbox> listener_inbox;
     std::shared_ptr<ListenerRuntime> listener_runtime;
@@ -461,6 +466,10 @@ void shutdown_record(
         multicast_transmitter = std::move(record->multicast_transmit_channel);
         record->multicast_transmit_source = {};
         runtime = std::move(record->runtime);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        startup = std::move(record->hybrid_startup_session);
+        startup_options = std::move(record->hybrid_startup_options);
+#endif
         crypto = std::move(record->crypto);
         listener_inbox = std::move(record->listener_inbox);
         listener_runtime = std::move(record->listener_runtime);
@@ -471,6 +480,10 @@ void shutdown_record(
         connect_worker = std::move(record->connect_worker);
         record->pending_accepts.store(0U, std::memory_order_release);
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (startup)
+        startup->close();
+#endif
     publish_group_state(record, broken_connection);
     // A closed socket is no longer a member, even while its runtime lingers.
     // Publish failure first so UPDATE remains observable for surviving paths.

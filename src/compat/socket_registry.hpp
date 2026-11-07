@@ -25,7 +25,12 @@ template <typename T> class ProcessOwned;
 
 class ListenerRuntime;
 class ConnectHandshakeOperation;
-
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+namespace hybrid {
+struct StartupOptions;
+class StartupSession;
+}
+#endif
 
 struct SocketRecord {
     enum class Purpose { transport, option_template };
@@ -43,6 +48,10 @@ struct SocketRecord {
     std::shared_ptr<DatagramChannel> multicast_transmit_channel;
     IpEndpoint multicast_transmit_source {};
     std::shared_ptr<ConnectionRuntime> runtime;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::shared_ptr<const hybrid::StartupOptions> hybrid_startup_options;
+    std::shared_ptr<hybrid::StartupSession> hybrid_startup_session;
+#endif
     std::shared_ptr<CryptoSession> crypto;
     // Receive-direction key-material state from connection setup when no
     // local session exists (optional encryption without a usable secret).

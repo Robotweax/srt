@@ -23,6 +23,7 @@ public:
                       confirmation_lifetime_us = 1'000'000;
         std::uint32_t maximum_sends = 4, maximum_rounds = 4;
     };
+    [[nodiscard]] static bool valid_configuration(Configuration) noexcept;
     enum class Phase {
         observing,
         requesting,

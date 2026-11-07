@@ -825,8 +825,8 @@ bool DatagramChannel::has_ingress_route(std::uint32_t id,
     return found != routes_.end() && found->second.runtime.get() == runtime
         && found->second.provenance == provenance;
 }
-void DatagramChannel::unregister_connection(
-    std::uint32_t protocol_socket_id) noexcept
+void DatagramChannel::unregister_connection(std::uint32_t protocol_socket_id,
+    const ConnectionRuntime* expected) noexcept
 {
     std::lock_guard lock(routes_mutex_);
     const auto route = routes_.find(protocol_socket_id);
@@ -834,6 +834,8 @@ void DatagramChannel::unregister_connection(
         return;
     }
     auto& node = route->second;
+    if (expected && node.runtime.get() != expected)
+        return;
     if (node.multicast_binding != nullptr)
         node.runtime->revoke_multicast_ingress(node.multicast_binding);
     if (node.next == nullptr) {

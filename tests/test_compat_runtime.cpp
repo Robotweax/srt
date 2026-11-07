@@ -14202,3 +14202,31 @@ TEST(compat_multicast_binding_global_ipv6_source_keeps_scope_zero)
         fixture.runtime->statistics(false, false).total.received_unique.packets,
         1U);
 }
+
+TEST(compat_multicast_binding_expected_runtime_fences_ingress_retirement)
+{
+    auto first = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.peer = IpEndpoint::loopback(1),
+            .local_socket_id = 107,
+            .peer_socket_id = 108});
+    auto next = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.peer = IpEndpoint::loopback(1),
+            .local_socket_id = 207,
+            .peer_socket_id = 208});
+    DatagramChannel channel;
+    constexpr auto id = group_handle_mask | 1U;
+    REQUIRE(channel.register_ingress_route(
+        id, first, PacketIngress::unicast_session));
+    channel.unregister_connection(id, next.get());
+    REQUIRE(channel.has_ingress_route(
+        id, first.get(), PacketIngress::unicast_session));
+    channel.unregister_connection(id, first.get());
+    REQUIRE(!channel.has_ingress_route(
+        id, first.get(), PacketIngress::unicast_session));
+    REQUIRE(channel.register_ingress_route(
+        id, next, PacketIngress::unicast_session));
+    channel.unregister_connection(id, first.get());
+    REQUIRE(channel.has_ingress_route(
+        id, next.get(), PacketIngress::unicast_session));
+    channel.unregister_connection(id, next.get());
+}

@@ -11,6 +11,15 @@ std::uint64_t add(std::uint64_t a, std::uint64_t b) noexcept
 }
 }
 static_assert(sizeof(MembershipRecovery) < 2048);
+bool MembershipRecovery::valid_configuration(Configuration c) noexcept
+{
+    return !(!c.maximum_attempts || c.maximum_attempts > 8 || !c.timeout_us
+        || c.timeout_us > maximum_age_us || !c.initial_backoff_us
+        || c.initial_backoff_us > c.maximum_backoff_us
+        || c.maximum_backoff_us > maximum_interval_us
+        || c.initial_backoff_us >= c.timeout_us || c.interface.port
+        || c.interface.is_multicast());
+}
 std::shared_ptr<MembershipRecovery> MembershipRecovery::create(
     std::shared_ptr<NativeService> s, Configuration c) noexcept
 {
@@ -28,12 +37,7 @@ MembershipRecovery::MembershipRecovery(
 std::shared_ptr<MembershipRecovery> MembershipRecovery::create(
     std::shared_ptr<NativeService> s, Configuration c, Provider p) noexcept
 {
-    if (!s || !c.maximum_attempts || c.maximum_attempts > 8 || !c.timeout_us
-        || c.timeout_us > maximum_age_us || !c.initial_backoff_us
-        || c.initial_backoff_us > c.maximum_backoff_us
-        || c.maximum_backoff_us > maximum_interval_us
-        || c.initial_backoff_us >= c.timeout_us || c.interface.port
-        || c.interface.is_multicast()
+    if (!s || !valid_configuration(c)
         || static_cast<bool>(p.owner) != static_cast<bool>(p.prepare))
         return {};
     const auto native = s->snapshot();

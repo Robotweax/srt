@@ -2800,6 +2800,30 @@ TEST(hybrid_bridge_malformed_or_changed_authorization_cannot_enroll)
         REQUIRE(valid);
     }
 }
+TEST(
+    hybrid_setup_deferred_sender_bridge_retains_one_owner_until_runtime_enrollment)
+{
+    BridgeFixture f(256, false);
+    std::shared_ptr<hb::CoordinatorBridge> prepared;
+    {
+        auto held = HybridBridgeTestAccess::hold(*f.receiver.runtime);
+        REQUIRE(
+            !hb::CoordinatorBridge::create(f.f.actor, f.listener, f.lease, {}));
+        prepared =
+            hb::CoordinatorBridge::prepare(f.f.actor, f.listener, f.lease, {});
+        REQUIRE(prepared);
+        REQUIRE(!prepared->snapshot().enrolled);
+        for (unsigned i = 0; i < 8; ++i)
+            prepared->pump();
+        REQUIRE(!prepared->snapshot().enrolled);
+        REQUIRE_EQ(f.f.actor->snapshot().unicast_members, 0U);
+    }
+    prepared->pump();
+    REQUIRE(prepared->snapshot().enrolled);
+    REQUIRE(!prepared->snapshot().closed);
+    REQUIRE_EQ(prepared->snapshot().applied, 0U);
+    REQUIRE_EQ(f.f.actor->snapshot().unicast_members, 0U);
+}
 TEST(hybrid_bridge_runtime_contention_defers_without_mutation_and_resumes)
 {
     for (bool exhaust : {false, true}) {
