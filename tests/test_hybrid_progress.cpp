@@ -156,3 +156,34 @@ TEST(hybrid_progress_invalid_inputs_and_absolute_overflow_are_not_observations)
     p.receive(packet(1), true, hp::DataPath::unicast, 100);
     REQUIRE(!p.snapshot(UINT64_MAX - 1));
 }
+
+TEST(
+    hybrid_rejoin_coverage_invalidation_preserves_uc_history_and_requires_new_mc_copies)
+{
+    hp::ReceiveProgress p(SequenceNumber {10});
+    auto a = packet(10), b = packet(11);
+    p.receive(a, true, hp::DataPath::unicast, 100);
+    p.receive(a, false, hp::DataPath::multicast, 110);
+    p.receive(b, true, hp::DataPath::multicast, 120);
+    REQUIRE(p.coverage(1000, 1002, 1000));
+    const auto before = p.snapshot(1000);
+    REQUIRE(before);
+    p.invalidate_multicast_coverage();
+    REQUIRE(!p.coverage(1000, 1002, 1000));
+    const auto after = p.snapshot(1000);
+    REQUIRE(after);
+    REQUIRE_EQ(after->all.next, before->all.next);
+    REQUIRE_EQ(
+        after->multicast.last_advance_us, before->multicast.last_advance_us);
+    REQUIRE_EQ(after->unicast.next, before->unicast.next);
+    REQUIRE_EQ(after->unique_packets, before->unique_packets);
+    p.receive(a, false, hp::DataPath::multicast, 200);
+    REQUIRE(!p.coverage(1000, 1002, 1000));
+    p.receive(b, false, hp::DataPath::multicast, 210);
+    const auto fresh = p.coverage(1000, 1002, 1000);
+    REQUIRE(fresh);
+    REQUIRE_EQ(fresh->first_at_us, 200U);
+    REQUIRE_EQ(fresh->last_at_us, 210U);
+    REQUIRE_EQ(p.snapshot(1000)->multicast.last_advance_us,
+        before->multicast.last_advance_us);
+}

@@ -131,13 +131,15 @@ private:
         const std::shared_ptr<ConnectionRuntime>&, NativeOptions) noexcept;
     friend class CoordinatorBridge;
     friend class ReceiverBridge;
+    friend class robotweax::srt::compat::ConnectionRuntime;
     friend class MembershipRecovery;
     friend class StartupSession;
     friend struct robotweax::srt::compat::HybridAutomaticTestAccess;
     [[nodiscard]] bool bridge_work(CoordinatorBridge&) noexcept;
     [[nodiscard]] bool receiver_work(ReceiverBridge&) noexcept;
     [[nodiscard]] Admission send_impl(const Message&, std::uint64_t,
-        std::optional<std::uint64_t>, bool bridge) noexcept;
+        std::optional<std::uint64_t>, bool bridge,
+        std::uint64_t route_epoch = 0) noexcept;
     struct Work {
         std::weak_ptr<NativeService> owner;
     };
@@ -146,7 +148,7 @@ private:
         std::array<std::byte, maximum_native_control_size> bytes {};
         std::size_t size = 0;
         Message message;
-        std::uint64_t arrival = 0, not_after = 0;
+        std::uint64_t arrival = 0, not_after = 0, route_epoch = 0;
         std::optional<std::uint64_t> observed;
     };
     NativeService(Configuration, CryptoProvider&);
@@ -159,8 +161,8 @@ private:
     [[nodiscard]] bool ensure_active() noexcept;
     void handle(const Exchange::Step&) noexcept;
     void process(const Job&) noexcept;
-    void transmit(
-        std::span<const std::byte>, std::uint64_t, const Message*) noexcept;
+    void transmit(std::span<const std::byte>, std::uint64_t, const Message*,
+        std::uint64_t route_epoch = 0) noexcept;
     void publish(Event) noexcept;
     [[nodiscard]] bool wake() noexcept;
     Configuration configuration_;

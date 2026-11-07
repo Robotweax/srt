@@ -2,6 +2,7 @@
 #include "compat/hybrid_membership.hpp"
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 #include "compat/transport_runtime.hpp"
+#include "compat/hybrid_receiver.hpp"
 #include <algorithm>
 namespace robotweax::srt::compat::hybrid {
 namespace {
@@ -13,31 +14,37 @@ std::uint64_t add(std::uint64_t a, std::uint64_t b) noexcept
 static_assert(sizeof(MembershipRecovery) < 2048);
 bool MembershipRecovery::valid_configuration(Configuration c) noexcept
 {
-    return !(!c.maximum_attempts || c.maximum_attempts > 8 || !c.timeout_us
-        || c.timeout_us > maximum_age_us || !c.initial_backoff_us
-        || c.initial_backoff_us > c.maximum_backoff_us
-        || c.maximum_backoff_us > maximum_interval_us
-        || c.initial_backoff_us >= c.timeout_us || c.interface.port
-        || c.interface.is_multicast());
+    return c.maximum_recoveries <= 8
+        && !(!c.maximum_attempts || c.maximum_attempts > 8 || !c.timeout_us
+            || c.timeout_us > maximum_age_us || !c.initial_backoff_us
+            || c.initial_backoff_us > c.maximum_backoff_us
+            || c.maximum_backoff_us > maximum_interval_us
+            || c.initial_backoff_us >= c.timeout_us || c.interface.port
+            || c.interface.is_multicast());
 }
 std::shared_ptr<MembershipRecovery> MembershipRecovery::create(
     std::shared_ptr<NativeService> s, Configuration c) noexcept
 {
     return create(std::move(s), c, Provider {});
 }
-MembershipRecovery::MembershipRecovery(
-    std::shared_ptr<NativeService> s, Configuration c, Provider p)
+MembershipRecovery::MembershipRecovery(std::shared_ptr<NativeService> s,
+    Configuration c, Provider p, std::shared_ptr<ReceiverBridge> receiver)
     : service_(std::move(s))
     , runtime_(service_->runtime_.lock())
+    , receiver_(std::move(receiver))
     , identity_(std::make_shared<std::byte>())
     , configuration_(c)
     , provider_(std::move(p))
 {
 }
 std::shared_ptr<MembershipRecovery> MembershipRecovery::create(
-    std::shared_ptr<NativeService> s, Configuration c, Provider p) noexcept
+    std::shared_ptr<NativeService> s, Configuration c, Provider p,
+    std::shared_ptr<ReceiverBridge> receiver) noexcept
 {
     if (!s || !valid_configuration(c)
+        || (c.maximum_recoveries
+            && (!receiver || receiver->service_ != s
+                || receiver->snapshot().closed))
         || static_cast<bool>(p.owner) != static_cast<bool>(p.prepare))
         return {};
     const auto native = s->snapshot();
@@ -46,8 +53,9 @@ std::shared_ptr<MembershipRecovery> MembershipRecovery::create(
         || c.interface.family != native.context.dispatch.multicast_group.family)
         return {};
     try {
-        auto result = std::shared_ptr<MembershipRecovery>(
-            new MembershipRecovery(std::move(s), c, std::move(p)));
+        auto result =
+            std::shared_ptr<MembershipRecovery>(new MembershipRecovery(
+                std::move(s), c, std::move(p), std::move(receiver)));
         if (!result->runtime_)
             return {};
         const auto now = result->service_->now();
@@ -84,6 +92,7 @@ std::shared_ptr<MembershipRecovery> MembershipRecovery::create(
             return {};
         r.hybrid_membership_ = result->identity_;
         r.hybrid_membership_claimed_ = r.hybrid_membership_live_ = true;
+        r.hybrid_membership_recoverable_ = c.maximum_recoveries != 0;
         r.hybrid_receive_route_ = r.multicast_ingress_generation_;
         result->request_ = {native.context, c.interface, native.generation, 0,
             now, std::min(add(now, c.timeout_us), native.expires_at_us)};
@@ -112,6 +121,23 @@ bool MembershipRecovery::live() const noexcept
         && runtime_->hybrid_membership_live_
         && runtime_->hybrid_observation_current();
 }
+bool MembershipRecovery::report_loss() noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (state_.closed || !state_.joined || !channel_
+        || !configuration_.maximum_recoveries || !live())
+        return false;
+    std::shared_ptr<const MulticastIngressBinding> binding;
+    {
+        std::lock_guard runtime(runtime_->mutex_);
+        binding = runtime_->multicast_ingress_binding_;
+    }
+    if (!runtime_->lose_multicast_ingress(binding))
+        return false;
+    channel_->unregister_connection(
+        request_.context.dispatch.group_id, runtime_.get());
+    return true;
+}
 MembershipRecovery::~MembershipRecovery()
 {
     close();
@@ -126,11 +152,14 @@ void MembershipRecovery::close() noexcept
         state_.joined = false;
         channel = std::move(channel_);
         if (channel)
-            channel->unregister_connection(request_.context.dispatch.group_id);
+            channel->unregister_connection(
+                request_.context.dispatch.group_id, runtime_.get());
         if (runtime_) {
             std::lock_guard runtime(runtime_->mutex_);
-            if (runtime_->hybrid_membership_ == identity_)
+            if (runtime_->hybrid_membership_ == identity_) {
                 runtime_->hybrid_membership_live_ = false;
+                runtime_->hybrid_membership_recoverable_ = false;
+            }
         }
     }
     // Worker/channel retirement happens without owner/runtime/protocol locks.
@@ -148,11 +177,27 @@ MembershipRecovery::Snapshot MembershipRecovery::snapshot() const noexcept
         s.phase = Phase::closed;
         s.joined = false;
     }
+    const auto expiry = service_->snapshot().expires_at_us;
+    if (!s.closed) {
+        std::lock_guard runtime(runtime_->mutex_);
+        s.route_epoch = runtime_->multicast_ingress_generation_;
+        if (runtime_->hybrid_membership_loss_) {
+            s.joined = false;
+            s.phase = Phase::awaiting_unicast;
+            s.not_after_us = std::min(add(runtime_->hybrid_membership_loss_at_,
+                                          configuration_.timeout_us),
+                expiry);
+        }
+    }
     if (!s.closed && !s.joined && now >= s.not_after_us)
         s.phase = Phase::expired;
-    s.budget_exhausted = s.attempts >= configuration_.maximum_attempts;
+    s.budget_exhausted = s.cycle_attempts >= configuration_.maximum_attempts
+        || (!s.joined && s.losses > s.recoveries
+            && s.recoveries >= configuration_.maximum_recoveries);
     s.next_wakeup_us =
         s.closed ? UINT64_MAX : service_->snapshot().expires_at_us;
+    if (!s.closed && s.phase == Phase::awaiting_unicast)
+        s.next_wakeup_us = std::min({s.next_wakeup_us, now, s.not_after_us});
     if (!s.closed && s.phase == Phase::waiting)
         s.next_wakeup_us =
             std::min({s.next_wakeup_us, next_attempt_, s.not_after_us});
@@ -188,6 +233,43 @@ void MembershipRecovery::pump() noexcept
         close();
         return;
     }
+    std::shared_ptr<DatagramChannel> retired;
+    const auto expiry = service_->snapshot().expires_at_us;
+    {
+        std::lock_guard lock(mutex_);
+        std::lock_guard runtime(runtime_->mutex_);
+        if (!state_.closed && runtime_->hybrid_membership_ == identity_
+            && runtime_->hybrid_membership_loss_) {
+            const auto loss_at = runtime_->hybrid_membership_loss_at_;
+            runtime_->hybrid_membership_loss_ = false;
+            ++state_.losses;
+            state_.joined = false;
+            retired = std::move(channel_);
+            if (state_.recoveries >= configuration_.maximum_recoveries) {
+                state_.phase = Phase::exhausted;
+            } else {
+                ++state_.recoveries;
+                state_.cycle_attempts = 0;
+                request_.recovery = state_.recoveries;
+                request_.started_at_us = loss_at;
+                request_.not_after_us =
+                    std::min(add(loss_at, configuration_.timeout_us), expiry);
+                state_.not_after_us = request_.not_after_us;
+                next_attempt_ = loss_at;
+                backoff_ = configuration_.initial_backoff_us;
+                state_.phase = Phase::awaiting_unicast;
+            }
+        }
+    }
+    if (retired)
+        retired->stop();
+    retired.reset();
+    // Sender UC approval is separate from membership loss. Lookup outside locks.
+    const bool uc_ready = receiver_ && [&] {
+        const auto s = receiver_->snapshot();
+        return !s.closed && s.fresh && s.mode == Mode::unicast
+            && s.returning != ReceiverBridge::RequestState::pending;
+    }();
     Request request;
     {
         std::lock_guard lock(mutex_);
@@ -207,12 +289,15 @@ void MembershipRecovery::pump() noexcept
             state_.phase = Phase::expired;
             return;
         }
+        if (state_.recoveries && !uc_ready)
+            return;
         if (now < next_attempt_)
             return;
         ++state_.attempts;
+        ++state_.cycle_attempts;
         state_.phase = Phase::preparing;
         request = request_;
-        request.attempt = state_.attempts;
+        request.attempt = state_.cycle_attempts;
     }
     auto socket = provider_.prepare
         ? provider_.prepare(provider_.owner.get(), request)
@@ -232,6 +317,18 @@ void MembershipRecovery::pump() noexcept
             }
         }
     }
+    std::unique_lock<std::mutex> confirmation;
+    if (request.recovery && receiver_)
+        confirmation = std::unique_lock(receiver_->mutex_);
+    const auto checked_at = service_->now();
+    const bool uc_still_ready = !request.recovery
+        || (receiver_ && !receiver_->cancelled_.load() && receiver_->confirmed_
+            && receiver_->state_.mode == Mode::unicast
+            && checked_at >= receiver_->state_.confirmation_origin_us
+            && checked_at - receiver_->state_.confirmation_origin_us
+                < receiver_->configuration_.confirmation_lifetime_us
+            && receiver_->state_.returning
+                != ReceiverBridge::RequestState::pending);
     std::lock_guard lock(mutex_);
     const auto now = service_->now();
     if (now < last_now_)
@@ -246,6 +343,13 @@ void MembershipRecovery::pump() noexcept
     }
     if (now >= state_.not_after_us) {
         state_.phase = Phase::expired;
+        return;
+    }
+    if (!uc_still_ready) {
+        ++state_.failures;
+        state_.phase = state_.cycle_attempts >= configuration_.maximum_attempts
+            ? Phase::exhausted
+            : Phase::awaiting_unicast;
         return;
     }
     if (channel) {
@@ -264,7 +368,8 @@ void MembershipRecovery::pump() noexcept
                 state_.phase = Phase::joined;
                 return;
             }
-            channel->unregister_connection(request.context.dispatch.group_id);
+            channel->unregister_connection(
+                request.context.dispatch.group_id, runtime_.get());
             // Publication may have admitted native DATA. Never rearm a route
             // after a failed/expired publication or fabricate a fresh ledger.
             state_.closed = true;
@@ -276,7 +381,7 @@ void MembershipRecovery::pump() noexcept
         return;
     }
     ++state_.failures;
-    if (state_.attempts >= configuration_.maximum_attempts) {
+    if (state_.cycle_attempts >= configuration_.maximum_attempts) {
         state_.phase = Phase::exhausted;
         return;
     }

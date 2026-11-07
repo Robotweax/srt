@@ -269,8 +269,8 @@ NativeService::Admission NativeService::send(const Message& m,
     return send_impl(m, deadline, observed, false);
 }
 NativeService::Admission NativeService::send_impl(const Message& m,
-    std::uint64_t deadline, std::optional<std::uint64_t> observed,
-    bool bridge) noexcept
+    std::uint64_t deadline, std::optional<std::uint64_t> observed, bool bridge,
+    std::uint64_t route_epoch) noexcept
 {
     const auto at = now();
     if (at >= expires_at_.load()) {
@@ -297,6 +297,7 @@ NativeService::Admission NativeService::send_impl(const Message& m,
         job.message = m;
         job.not_after = deadline;
         job.observed = observed;
+        job.route_epoch = route_epoch;
         jobs_[(head_ + size_) % capacity] = job;
         ++size_;
         state_.queued = size_;
@@ -419,7 +420,8 @@ bool NativeService::ensure_active() noexcept
     return true;
 }
 void NativeService::transmit(std::span<const std::byte> bytes,
-    std::uint64_t deadline, const Message* m) noexcept
+    std::uint64_t deadline, const Message* m,
+    std::uint64_t route_epoch) noexcept
 {
     if (!live())
         return;
@@ -429,6 +431,16 @@ void NativeService::transmit(std::span<const std::byte> bytes,
         if (m)
             publish({.kind = Event::Kind::expired, .message = *m});
         return;
+    }
+    // Revalidation above may invoke local host code that reports route loss.
+    // Fence again immediately before handing this attempt to the transport.
+    if (route_epoch) {
+        const auto runtime = runtime_.lock();
+        if (!runtime || !runtime->hybrid_multicast_fence(this, route_epoch)) {
+            if (m)
+                publish({.kind = Event::Kind::rejected, .message = *m});
+            return;
+        }
     }
     const auto result = configuration_.transmit(
         configuration_.transport_owner.get(), this, bytes, deadline);
@@ -522,6 +534,14 @@ void NativeService::process(const Job& job) noexcept
         publish({.kind = Event::Kind::expired, .message = m});
         return;
     }
+    if (job.route_epoch) {
+        const auto runtime = runtime_.lock();
+        if (!runtime
+            || !runtime->hybrid_multicast_fence(this, job.route_epoch)) {
+            publish({.kind = Event::Kind::rejected, .message = m});
+            return;
+        }
+    }
     if (timed(m.kind)) {
         const auto index = m.kind == Kind::stream_progress ? 0U
             : m.kind == Kind::path_report                  ? 1U
@@ -546,7 +566,8 @@ void NativeService::process(const Job& job) noexcept
         publish({.kind = Event::Kind::rejected, .message = m});
         return;
     }
-    transmit(std::span {wire}.first(written), job.not_after, &m);
+    transmit(
+        std::span {wire}.first(written), job.not_after, &m, job.route_epoch);
 }
 void NativeService::run(void* opaque) noexcept
 {

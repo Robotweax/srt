@@ -648,8 +648,9 @@ exercise plain/CTR/GCM, lost UC commits recovered by query, permanent MC error,
 authenticated reports before/after explicit recovery, 80 canonical UC messages
 across key rotation, control revocation with further DATA, and a provisioned
 startup owner driven by its existing service. No production credential discovery,
-post-success membership-loss recovery, hostile-network, WAN, scale or playback
-continuity qualification is implied.
+unprovisioned membership-loss recovery, hostile-network, WAN, scale or playback
+continuity qualification is implied. The managed post-join recovery profile below
+requires separate explicit configuration.
 
 ## Receiver revisions and bounded policy reconciliation
 
@@ -1319,9 +1320,10 @@ all existing checks. An unrelated route cannot replace a managed route. A
 successful owned registration advances the route epoch while preserving the
 existing UC cache and core receive state. First matching late MC copies can then
 be observed normally; exact coverage still requires an actual current MC binding.
-Revocation after publication permanently hides that owner's observations rather
-than manufacturing a fresh recovery epoch. This owner retries initial join
-failure, not later membership loss or primary-session reconnection.
+Unrelated route revocation after publication permanently hides that owner's
+observations. Initial-join configuration defaults to no post-join recovery;
+the explicit managed-loss profile below can retain the same owner and ledger
+across bounded recovery episodes. Primary-session reconnection remains separate.
 
 The existing `AutomaticFallback` can now assess a startup blackout from empty
 local MC history under this explicit profile: fresh source production/emission,
@@ -1352,8 +1354,85 @@ through eight exact overlap positions with all commit replies dropped, deliver
 forty more MC messages across key rotation, then confirm UC and close only the
 owned membership while another forty UC messages remain deliverable. This is
 staged IPv4 loopback qualification. The setup profile below covers opted-in native
-connect admission; later route loss/rejoin, WAN/asymmetric delay, hostile peers,
-scale and playback continuity remain separate gates.
+connect admission; the profile below adds managed post-join loss/rejoin.
+WAN/asymmetric delay, hostile peers, scale and playback continuity remain
+separate qualification gates.
+
+## Bounded recovery after a successful multicast join
+
+`MembershipRecovery::Configuration.maximum_recoveries` defaults to zero, keeping
+initial-join-only behavior. A nonzero value is explicit local policy from 1 to 8
+and requires the same active `ReceiverBridge` passed to the membership factory.
+Provisioned startup supplies its receiver automatically. Each loss episode uses
+the existing 1..8 preparation-attempt budget, positive capped exponential backoff
+and timeout of at most five seconds. The initial join plus at most eight recovery
+episodes therefore permits at most 72 provider calls over this owner's lifetime.
+Exhaustion, expiry or close cannot be bypassed by recreating the single-use owner.
+
+`report_loss()` is a trusted local assertion about the currently joined membership
+owned by this object. It immediately retires that exact ingress route and clears
+its MC coverage evidence; repeated reports without another successful join are
+refused. A fatal native receive/scheduler error on the same managed MC ingress
+also records loss and removes that route instead of breaking the primary UC
+runtime. Existing transient UDP-error handling is unchanged. A stopped primary
+session, unowned route revocation/replacement, credential expiry/revocation,
+root change, owner close and clock regression remain terminal. Unconfigured
+members retain their previous error behavior. Source silence alone is not an OS
+membership-loss signal; use the existing detector and host policy to decide
+whether an explicit local loss report is appropriate.
+
+The episode deadline starts at the recorded loss, including time before the next
+pump, then is clipped by grant expiry. Snapshot projects pending loss immediately;
+accounting/old-channel retirement occurs on pump. Counters distinguish total and
+per-cycle attempts, losses, admitted recovery cycles and the current local route
+epoch. Provider requests carry the cycle number and its original start/deadline.
+Backoff begins from failed preparation completion and never extends that deadline.
+Old receive-channel retirement runs outside owner/runtime locks, before a new
+channel is started; no extra concurrent MC receive watch/worker is introduced.
+
+Recovery waits for fresh correlated sender-confirmed UC and no pending return
+operation before preparing a replacement membership. Membership loss does not
+request or approve fallback and supplies no merge cursor. The host or separately
+attached fallback controller must obtain approval using the existing trusted
+cursor, source authorization, history/key, quota and bandwidth fences. Waiting
+for approval consumes the original episode timeout. A failed or expired rejoin
+leaves committed UC usable. Provider callbacks still run without owner, receiver,
+protocol, runtime, channel or group locks and may inspect/reenter/close. Final UC
+freshness/publication is serialized against local receiver-policy changes; late
+or unauthorized prepared sockets are discarded within the same attempt budget.
+
+The runtime retains its opaque membership identity, primary session, canonical
+receive history, UC cache and all DATA high waters. Managed loss increments a
+local route epoch and clears only MC path bits/timestamps in the exact-copy cache;
+rejoin increments the epoch again. Old native binding tokens cannot admit DATA.
+MC high waters are historical monotonic metadata, not current coverage. Actual
+matching copies on the new route can refill coverage even after application pop;
+only a strictly higher DATA position renews a high-water advancement timestamp.
+Detector evidence resets on epoch change rather than carrying old recovery
+hysteresis into the replacement membership.
+
+`CoverageProof.route_epoch` and queued final-return jobs carry this local fence;
+it is never encoded in control packets. Managed recovery refuses missing or old
+proof epochs, and a final MC request posted or handed to the native queue before
+loss is checked again before submission. Automatic-return operations are bound
+to their original route epoch and cannot finish using another epoch's coverage.
+A newly joined socket never directly changes source policy: returning to MC still
+requires the existing fresh overlap revision, complete bounded coverage and sender
+approval. Overlap commands or final returns already submitted before loss may
+still commit remotely. This is not distributed cancellation or a guarantee of
+uninterrupted playback; correlated queries, approved fallback and ordinary DATA
+reliability remain necessary.
+
+Components exercise opt-in bounds/same receiver, duplicate loss reports, UC
+approval/freshness, canonical cache preservation, stale binding tokens,
+per-cycle/lifetime budgets, original loss deadlines, callback latency/reentry and
+close, native fatal receive handling versus unowned revocation, grant expiry,
+MC-coverage invalidation and stale/posted/native-queued final returns. Native
+plain/CTR/GCM tests start with a real successful join and confirmed MC, report
+loss, wait for approved UC, inject two failed rejoin attempts while delivering UC,
+perform a real rejoin, prove fresh eight-position overlap and deliver further MC
+across key rotation while all commit replies are dropped. This is synthetic-
+credential IPv4 loopback qualification, with no WAN/hostile-peer/scale claim.
 
 ## Provisioned native startup admission
 
@@ -1454,9 +1533,10 @@ provision, rejected/wrong credentials, the fifth UC recipient against a four-mem
 budget, fully lost replies despite a committed sender policy, buffered DATA that
 remains publicly unreadable/unready before publication, close, original connect
 timeout, and unchanged unprovisioned join failure. These are synthetic-credential
-IPv4 loopback tests. A public numeric selector, production provisioning, later
-membership-loss recovery, hostile-peer/scale/WAN timing and
-playback-continuity qualification remain future work.
+IPv4 loopback tests. The managed-loss profile above can be enabled through
+`StartupOptions.membership.maximum_recoveries`. A public numeric selector,
+production provisioning, hostile-peer/scale/WAN timing and playback-continuity
+qualification remain future work.
 
 ## Control body
 

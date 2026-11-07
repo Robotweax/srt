@@ -804,6 +804,28 @@ bool ConnectionRuntime::activate_multicast_ingress(
     return true;
 }
 
+bool ConnectionRuntime::lose_multicast_ingress(
+    const std::shared_ptr<const MulticastIngressBinding>& binding) noexcept
+{
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::lock_guard lock(mutex_);
+    if (!binding || multicast_ingress_binding_ != binding || !hybrid_membership_
+        || !hybrid_membership_live_ || !hybrid_membership_recoverable_
+        || hybrid_membership_loss_ || locally_closed_ || broken_ || peer_closed_
+        || peer_error_pending_ || multicast_ingress_generation_ == UINT64_MAX)
+        return false;
+    multicast_ingress_binding_.reset();
+    hybrid_membership_loss_ = true;
+    hybrid_membership_loss_at_ = hybrid_service_ ? hybrid_service_->now() : 0;
+    hybrid_receive_route_ = ++multicast_ingress_generation_;
+    if (hybrid_receive_)
+        hybrid_receive_->invalidate_multicast_coverage();
+    return true;
+#else
+    (void)binding;
+    return false;
+#endif
+}
 void ConnectionRuntime::revoke_multicast_ingress(
     const std::shared_ptr<const MulticastIngressBinding>& binding) noexcept
 {
@@ -1480,8 +1502,15 @@ void DatagramChannel::dispatch(const PacketView& packet,
 void DatagramChannel::mark_connections_broken(int system_error) noexcept
 {
     std::lock_guard lock(routes_mutex_);
-    for (const auto& route : routes_) {
-        route.second.runtime->mark_broken(system_error);
+    for (auto route = routes_.begin(); route != routes_.end();) {
+        if (route->second.multicast_binding
+            && route->second.runtime->lose_multicast_ingress(
+                route->second.multicast_binding)) {
+            route = routes_.erase(route);
+        } else {
+            route->second.runtime->mark_broken(system_error);
+            ++route;
+        }
     }
 }
 
@@ -4386,7 +4415,23 @@ ConnectionRuntime::hybrid_receive_progress(
         return {};
     hybrid_receive_->sync_floor(
         session_.receive_buffer().first_stored_sequence());
-    return hybrid_receive_->snapshot(origin);
+    auto data = hybrid_receive_->snapshot(origin);
+    if (data && hybrid_membership_recoverable_)
+        data->route_epoch = multicast_ingress_generation_;
+    return data;
+}
+bool ConnectionRuntime::hybrid_multicast_fence(
+    const hybrid::NativeService* service, std::uint64_t epoch) const noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (!service || service->closed() || hybrid_service_.get() != service
+        || locally_closed_ || broken_ || peer_closed_ || peer_error_pending_)
+        return false;
+    if (!hybrid_membership_recoverable_ && !epoch)
+        return true; // Existing trusted explicit proof contract.
+    return epoch && epoch == multicast_ingress_generation_
+        && multicast_ingress_binding_ && hybrid_observation_current()
+        && !hybrid_membership_loss_;
 }
 std::optional<hybrid::MulticastCoverage>
 ConnectionRuntime::hybrid_multicast_coverage(
@@ -4401,7 +4446,10 @@ ConnectionRuntime::hybrid_multicast_coverage(
         return {};
     hybrid_receive_->sync_floor(
         session_.receive_buffer().first_stored_sequence());
-    return hybrid_receive_->coverage(begin, through, origin);
+    auto coverage = hybrid_receive_->coverage(begin, through, origin);
+    if (coverage)
+        coverage->route_epoch = multicast_ingress_generation_;
+    return coverage;
 }
 #endif
 void ConnectionRuntime::process_packet(const PacketView& incoming_packet,

@@ -283,7 +283,7 @@ void StartupSession::drive() noexcept
                     return;
                 }
                 membership = MembershipRecovery::create(
-                    native_, options_->membership, options_->join);
+                    native_, options_->membership, options_->join, receiver);
                 if (!membership) {
                     fail(Outcome::denied);
                     native_->close();

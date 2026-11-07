@@ -2269,6 +2269,7 @@ struct StartupProvision {
     std::atomic<unsigned> enrolls = 0, joins = 0;
     std::atomic_bool hidden = true, io_hidden = true;
     std::uint64_t expiry = hn::NativeService::monotonic_now() + 5'000'000;
+    std::atomic<unsigned> recovery_failures {0};
     static bool resolve(void* p, const hn::CredentialRequest& r,
         hn::Authorization& a, std::span<std::byte, 32> secret) noexcept
     {
@@ -2321,6 +2322,10 @@ struct StartupProvision {
     {
         auto& self = *static_cast<StartupProvision*>(p);
         ++self.joins;
+        if (request.recovery && self.recovery_failures.load()) {
+            --self.recovery_failures;
+            return {};
+        }
         if (srt_getsockstate(self.id) != SRTS_CONNECTED)
             self.hidden = false;
         return self.join_success ? hn::MembershipRecovery::prepare(request)
@@ -2361,6 +2366,8 @@ struct StartupHooks {
     HybridWireHook wire;
     std::int32_t connect_timeout = 0;
     hn::ReportingConfiguration reporting;
+    std::uint32_t maximum_recoveries = 0;
+    std::optional<hn::ReturnPolicy> returning;
     static void configure(void* p, SRTSOCKET id, bool caller)
     {
         auto& self = *static_cast<StartupHooks*>(p);
@@ -2369,6 +2376,11 @@ struct StartupHooks {
         owner->id = id;
         auto options = owner->options(owner);
         options.source.reporting = options.receiver.reporting = self.reporting;
+        options.membership.maximum_recoveries = self.maximum_recoveries;
+        if (self.returning) {
+            options.native.policy.supported |= hn::return_control | hn::overlap;
+            options.source.returning = self.returning;
+        }
         if (self.connect_timeout) {
             options.admission_timeout_us = 1'000'000;
             options.native.timeout_us = 900'000;
@@ -5073,5 +5085,110 @@ TEST(
     REQUIRE_EQ(owner->snapshot().phase, hn::StartupSession::Phase::connected);
     REQUIRE_EQ(f.send(1), static_cast<int>(message(1).size()));
     expect_messages(f.receiver, 1, 1);
+}
+#endif
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+TEST(
+    multicast_dispatch_native_rejoin_loss_fallback_and_fresh_return_plain_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        StartupHooks hooks;
+        hooks.maximum_recoveries = 1;
+        hooks.reporting = {10'000, 600'000};
+        hooks.caller->join_success = true;
+        hooks.returning = hn::ReturnPolicy {1'000'000, 32, 4, 10'000, 200'000};
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2, 0, 120, true,
+            false, StartupHooks::configure, &hooks);
+        auto owner = startup_owner(f.receiver);
+        REQUIRE(owner);
+        auto receiver = owner->receiver();
+        auto membership = owner->membership();
+        const auto wait = [&](auto predicate) {
+            const auto until =
+                std::chrono::steady_clock::now() + std::chrono::seconds {2};
+            while (!predicate() && std::chrono::steady_clock::now() < until)
+                std::this_thread::sleep_for(std::chrono::milliseconds {1});
+            REQUIRE(predicate());
+        };
+        wait([&] {
+            return membership->snapshot().joined;
+        });
+        int next = 0;
+        const auto return_mc = [&] {
+            REQUIRE_EQ(receiver->request_overlap(),
+                hn::ReceiverBridge::Admission::accepted);
+            wait([&] {
+                auto s = receiver->snapshot();
+                return s.fresh && s.mode == hn::Mode::overlap;
+            });
+            const auto boundary = receiver->snapshot().commit_position;
+            const int first = next;
+            REQUIRE_EQ(boundary, static_cast<std::uint64_t>(next));
+            for (unsigned i = 0; i < 8; ++i) {
+                REQUIRE_EQ(
+                    f.send(next), static_cast<int>(message(next).size()));
+                ++next;
+                std::this_thread::sleep_for(std::chrono::milliseconds {3});
+            }
+            expect_messages(f.receiver, first, 8);
+            std::optional<hn::CoverageProof> proof;
+            wait([&] {
+                proof = receiver->coverage_proof(boundary + 8, 160'000);
+                return proof.has_value();
+            });
+            REQUIRE(proof->route_epoch);
+            REQUIRE_EQ(receiver->request_multicast(*proof),
+                hn::ReceiverBridge::Admission::accepted);
+            wait([&] {
+                auto s = receiver->snapshot();
+                return s.fresh && s.mode == hn::Mode::multicast;
+            });
+        };
+        return_mc();
+        const auto old_epoch = membership->snapshot().route_epoch;
+        const auto attempts = membership->snapshot().attempts;
+        REQUIRE(membership->report_loss());
+        REQUIRE(!membership->snapshot().joined);
+        std::this_thread::sleep_for(std::chrono::milliseconds {10});
+        REQUIRE_EQ(
+            membership->snapshot().attempts, attempts); // No UC approval yet.
+        hooks.caller->recovery_failures = 2;
+        REQUIRE_EQ(receiver->request_fallback(next),
+            hn::ReceiverBridge::Admission::accepted);
+        wait([&] {
+            auto s = receiver->snapshot();
+            return s.fresh && s.mode == hn::Mode::unicast;
+        });
+        const int first = next;
+        for (unsigned i = 0; i < 40; ++i) {
+            REQUIRE_EQ(f.send(next), static_cast<int>(message(next).size()));
+            ++next;
+            std::this_thread::sleep_for(std::chrono::milliseconds {2});
+        }
+        expect_messages(f.receiver, first, 40);
+        wait([&] {
+            return membership->snapshot().joined;
+        });
+        REQUIRE_EQ(membership->snapshot().recoveries, 1U);
+        REQUIRE_EQ(membership->snapshot().failures, 2U);
+        REQUIRE(membership->snapshot().route_epoch > old_epoch);
+        return_mc();
+        const int restored = next;
+        for (unsigned i = 0; i < 40; ++i) {
+            REQUIRE_EQ(f.send(next), static_cast<int>(message(next).size()));
+            ++next;
+            std::this_thread::sleep_for(std::chrono::milliseconds {2});
+        }
+        expect_messages(f.receiver, restored, 40);
+        REQUIRE_EQ(f.actor()->snapshot().unicast_members, 0U);
+        REQUIRE(hooks.wire.commits_dropped.load() >= 6);
+        REQUIRE_EQ(membership->snapshot().losses, 1U);
+    }
 }
 #endif

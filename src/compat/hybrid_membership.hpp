@@ -7,6 +7,7 @@ namespace robotweax::srt::compat {
 class DatagramChannel;
 }
 namespace robotweax::srt::compat::hybrid {
+class ReceiverBridge;
 // Internal staged-setup owner. It never bypasses ordinary connect admission.
 class MembershipRecovery
     : public std::enable_shared_from_this<MembershipRecovery> {
@@ -14,14 +15,15 @@ public:
     struct Configuration {
         IpEndpoint interface;
         std::uint32_t maximum_attempts = 0, timeout_us = 0,
-                      initial_backoff_us = 0, maximum_backoff_us = 0;
+                      initial_backoff_us = 0, maximum_backoff_us = 0,
+                      maximum_recoveries = 0;
     };
     [[nodiscard]] static bool valid_configuration(Configuration) noexcept;
     struct Request {
         Context context;
         IpEndpoint interface;
         std::uint64_t generation = 0, attempt = 0, started_at_us = 0,
-                      not_after_us = 0;
+                      not_after_us = 0, recovery = 0;
     };
     struct Provider {
         // Trusted local native join preparation. No locks held; nonblocking.
@@ -31,15 +33,25 @@ public:
         std::optional<UdpSocket> (*prepare)(
             void*, const Request&) noexcept = nullptr;
     };
-    enum class Phase { waiting, preparing, joined, exhausted, expired, closed };
+    enum class Phase {
+        waiting,
+        preparing,
+        joined,
+        awaiting_unicast,
+        exhausted,
+        expired,
+        closed
+    };
     struct Snapshot {
         Phase phase = Phase::waiting;
         bool closed = false, joined = false, budget_exhausted = false;
-        std::uint64_t attempts = 0, failures = 0, not_after_us = 0,
-                      next_wakeup_us = UINT64_MAX;
+        std::uint64_t attempts = 0, failures = 0, cycle_attempts = 0,
+                      losses = 0, recoveries = 0, route_epoch = 0,
+                      not_after_us = 0, next_wakeup_us = UINT64_MAX;
     };
     [[nodiscard]] static std::shared_ptr<MembershipRecovery> create(
-        std::shared_ptr<NativeService>, Configuration, Provider) noexcept;
+        std::shared_ptr<NativeService>, Configuration, Provider,
+        std::shared_ptr<ReceiverBridge> receiver = {}) noexcept;
     [[nodiscard]] static std::shared_ptr<MembershipRecovery> create(
         std::shared_ptr<NativeService>, Configuration) noexcept;
     // Default provider: reuse/bind/join on the explicit local interface.
@@ -47,16 +59,22 @@ public:
         const Request&) noexcept;
     ~MembershipRecovery();
     void pump() noexcept;
+    // Trusted local assertion about this exact owned MC membership. Invalidates
+    // coverage immediately; never requests fallback or changes sender policy.
+    [[nodiscard]] bool report_loss() noexcept;
     // Revokes only this owner's MC route and observations; UC session continues.
     // Does not wait for a provider; late prepared sockets are discarded.
     void close() noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
 
 private:
-    MembershipRecovery(std::shared_ptr<NativeService>, Configuration, Provider);
+    friend struct robotweax::srt::compat::HybridAutomaticTestAccess;
+    MembershipRecovery(std::shared_ptr<NativeService>, Configuration, Provider,
+        std::shared_ptr<ReceiverBridge>);
     [[nodiscard]] bool live() const noexcept;
     std::shared_ptr<NativeService> service_;
     std::shared_ptr<ConnectionRuntime> runtime_;
+    std::shared_ptr<ReceiverBridge> receiver_;
     std::shared_ptr<const void> identity_;
     std::shared_ptr<DatagramChannel> channel_;
     Configuration configuration_;

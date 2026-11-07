@@ -15,5 +15,7 @@ struct CoverageProof {
     std::uint64_t generation = 0, revision = 0, boundary = 0, through = 0,
                   observed_at_us = 0, not_after_us = 0;
     std::uint32_t interval_us = 0;
+    // Local route identity only; never encoded on the wire.
+    std::uint64_t route_epoch = 0;
 };
 }

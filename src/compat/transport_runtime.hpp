@@ -239,6 +239,9 @@ struct MessageIoResult {
 };
 
 class DatagramChannel : public std::enable_shared_from_this<DatagramChannel> {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    friend class hybrid::MembershipRecovery;
+#endif
 public:
     using SendHook = UdpIoResult (*)(
         std::span<const std::byte>,
@@ -599,6 +602,8 @@ public:
     [[nodiscard]] std::optional<hybrid::ReceiveDataProgress>
     hybrid_receive_progress(const hybrid::NativeService*,
         std::uint64_t absolute_origin) const noexcept;
+    [[nodiscard]] bool hybrid_multicast_fence(
+        const hybrid::NativeService*, std::uint64_t epoch) const noexcept;
     [[nodiscard]] std::optional<hybrid::MulticastCoverage>
     hybrid_multicast_coverage(const hybrid::NativeService*, std::uint64_t begin,
         std::uint64_t through, std::uint64_t origin) const noexcept;
@@ -757,6 +762,8 @@ private:
     [[nodiscard]] bool activate_multicast_ingress(
         const std::shared_ptr<MulticastIngressBinding>& binding,
         const std::shared_ptr<const void>& membership = {}) noexcept;
+    [[nodiscard]] bool lose_multicast_ingress(
+        const std::shared_ptr<const MulticastIngressBinding>&) noexcept;
     void revoke_multicast_ingress(
         const std::shared_ptr<const MulticastIngressBinding>& binding) noexcept;
     friend void close_connection_runtime(
@@ -942,7 +949,10 @@ private:
     std::unique_ptr<hybrid::ReceiveProgress> hybrid_receive_;
     std::uint64_t hybrid_receive_route_ = 0;
     std::shared_ptr<const void> hybrid_membership_;
-    bool hybrid_membership_claimed_ = false, hybrid_membership_live_ = false;
+    bool hybrid_membership_claimed_ = false, hybrid_membership_live_ = false,
+         hybrid_membership_recoverable_ = false,
+         hybrid_membership_loss_ = false;
+    std::uint64_t hybrid_membership_loss_at_ = 0;
     [[nodiscard]] bool hybrid_observation_current() const noexcept;
 #endif
     std::condition_variable receive_ready_;

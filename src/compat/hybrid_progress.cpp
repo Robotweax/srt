@@ -17,6 +17,13 @@ bool DataHighWater::note(std::uint64_t p, std::uint64_t at) noexcept
     }
     return true;
 }
+void ReceiveProgress::invalidate_multicast_coverage() noexcept
+{
+    for (auto& entry : entries_) {
+        entry.paths &= ~2U;
+        entry.multicast_at_us = 0;
+    }
+}
 void ReceiveProgress::sync_floor(SequenceNumber s) noexcept
 {
     if (!state_.valid)

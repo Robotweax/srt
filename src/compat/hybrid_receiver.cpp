@@ -107,7 +107,8 @@ ReceiverBridge::path_assessment() const noexcept
         || !native.active || at >= native.expires_at_us || !state_.attached)
         return {};
     const auto assessment = detector_->snapshot(at);
-    if (!data_progress())
+    const auto data = data_progress();
+    if (!data || data->route_epoch != detector_route_epoch_)
         return PathDetector::Assessment {.state = PathDetector::State::unknown,
             .reason = PathDetector::Reason::no_data,
             .observed_at_us = at};
@@ -120,6 +121,11 @@ void ReceiverBridge::detect() noexcept
     const auto native = service_->snapshot();
     const auto data = data_progress();
     const auto at = service_->now();
+    if (data && data->route_epoch != detector_route_epoch_) {
+        *detector_ =
+            PathDetector(*configuration_.detection, context_, generation_);
+        detector_route_epoch_ = data->route_epoch;
+    }
     const auto expiry = add(
         state_.confirmation_origin_us, configuration_.confirmation_lifetime_us);
     detector_->observe({.now_us = at,
@@ -333,7 +339,8 @@ std::optional<CoverageProof> ReceiverBridge::coverage_proof(
         .not_after_us =
             std::min(add(coverage->last_at_us, lifetime), native.expires_at_us),
         .interval_us = static_cast<std::uint32_t>(
-            coverage->last_at_us - coverage->first_at_us)};
+            coverage->last_at_us - coverage->first_at_us),
+        .route_epoch = coverage->route_epoch};
 }
 ReceiverBridge::Admission ReceiverBridge::request_overlap() noexcept
 {
@@ -385,7 +392,9 @@ ReceiverBridge::Admission ReceiverBridge::request_multicast(
     if (posted_ || (active_ && (want_fallback_ || want_return_)))
         return Admission::busy;
     const auto data = data_progress();
-    if (!data || !data->multicast.observed
+    const auto runtime = service_->runtime_.lock();
+    if (!data || !runtime || !data->multicast.observed
+        || !runtime->hybrid_multicast_fence(service_.get(), proof.route_epoch)
         || proof.through > data->multicast.next)
         return Admission::invalid;
     if (manual_epoch_ == UINT64_MAX)
@@ -393,7 +402,7 @@ ReceiverBridge::Admission ReceiverBridge::request_multicast(
     ++manual_epoch_;
     posted_ = Posted {proof.through, proof.observed_at_us, proof.not_after_us,
         0, Mode::multicast, proof.boundary, proof.observed_at_us,
-        proof.interval_us};
+        proof.interval_us, 0, proof.route_epoch};
     state_.returning = RequestState::pending;
     state_.return_outcome = Outcome::ok;
     state_.return_target = Mode::multicast;
@@ -465,7 +474,7 @@ void ReceiverBridge::start(bool fallback, std::uint64_t position,
     std::uint64_t at, std::uint64_t origin, std::uint64_t not_after,
     std::uint64_t automatic_ticket, Mode target, std::uint64_t proof_begin,
     std::uint32_t proof_interval, std::uint64_t proof_observed,
-    std::uint64_t return_ticket) noexcept
+    std::uint64_t return_ticket, std::uint64_t route_epoch) noexcept
 {
     target_mode_ = target;
     want_return_ = fallback && target != Mode::unicast;
@@ -473,6 +482,7 @@ void ReceiverBridge::start(bool fallback, std::uint64_t position,
     proof_begin_ = proof_begin;
     proof_interval_ = proof_interval;
     proof_observed_ = proof_observed;
+    proof_route_epoch_ = route_epoch;
     active_automatic_ticket_ = automatic_ticket;
     active_return_ticket_ = return_ticket;
     active_ = true;
@@ -699,7 +709,8 @@ void ReceiverBridge::work() noexcept
         posted_.reset();
         start(true, posted.position, at, posted.at, posted.not_after,
             posted.automatic_ticket, posted.target, posted.proof_begin,
-            posted.proof_interval, posted.proof_observed, posted.return_ticket);
+            posted.proof_interval, posted.proof_observed, posted.return_ticket,
+            posted.route_epoch);
     }
     for (std::size_t i = 0; i < NativeService::batch; ++i) {
         NativeService::Event e;
@@ -743,6 +754,16 @@ void ReceiverBridge::work() noexcept
                 state_.request_serial = request_.serial;
                 sent_ = queued_ = false;
             }
+            if (request_.kind == Kind::multicast_ready
+                && target_mode_ == Mode::multicast) {
+                const auto runtime = service_->runtime_.lock();
+                if (!runtime
+                    || !runtime->hybrid_multicast_fence(
+                        service_.get(), proof_route_epoch_)) {
+                    finish(Phase::unknown, at);
+                    return;
+                }
+            }
             ++sends_;
             next_send_ = add(at, configuration_.retry_interval_us);
             const auto admission =
@@ -750,7 +771,11 @@ void ReceiverBridge::work() noexcept
                     request_.kind == Kind::multicast_ready
                         ? std::optional<std::uint64_t> {proof_observed_}
                         : std::nullopt,
-                    true);
+                    true,
+                    request_.kind == Kind::multicast_ready
+                            && target_mode_ == Mode::multicast
+                        ? proof_route_epoch_
+                        : 0);
             if (admission == NativeService::Admission::accepted) {
                 if (!queued_) {
                     queued_ = true;

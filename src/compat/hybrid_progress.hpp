@@ -20,6 +20,7 @@ struct DataHighWater {
 };
 enum class DataPath { unicast, multicast };
 struct ReceiveDataProgress {
+    std::uint64_t route_epoch = 0;
     bool valid = true;
     std::uint64_t origin = 0, window_floor = 0, unique_packets = 0,
                   matched_copies = 0, ignored_copies = 0;
@@ -29,7 +30,7 @@ struct ReceiveDataProgress {
 // bounded to32 recent positions, allow a late path copy after application pop.
 // No hash/MAC is invented; crypto and provenance validation precede this hook.
 struct MulticastCoverage {
-    std::uint64_t first_at_us = 0, last_at_us = 0;
+    std::uint64_t first_at_us = 0, last_at_us = 0, route_epoch = 0;
 };
 class ReceiveProgress {
 public:
@@ -39,6 +40,9 @@ public:
     {
     }
     void sync_floor(SequenceNumber) noexcept;
+    // Preserve canonical/UC history and high waters; old MC copies cannot prove
+    // coverage after a membership loss. New matching MC copies may fill it.
+    void invalidate_multicast_coverage() noexcept;
     [[nodiscard]] std::optional<MulticastCoverage> coverage(std::uint64_t begin,
         std::uint64_t through, std::uint64_t origin) const noexcept;
     void receive(const PacketView& clear, bool accepted_unique, DataPath,

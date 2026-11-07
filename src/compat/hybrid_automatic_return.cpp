@@ -225,7 +225,8 @@ ReceiverBridge::automatic_return_candidate() const noexcept
         .admission_deadline_us =
             std::min({a.valid_until_us, native.expires_at_us,
                 add(state_.confirmation_origin_us,
-                    configuration_.confirmation_lifetime_us)})};
+                    configuration_.confirmation_lifetime_us)}),
+        .route_epoch = data->route_epoch};
 }
 ReceiverBridge::ReturnReceipt ReceiverBridge::automatic_return_receipt(
     const AutomaticRequest& r, std::uint64_t deadline) const noexcept
@@ -240,6 +241,8 @@ ReceiverBridge::ReturnReceipt ReceiverBridge::automatic_return_receipt(
         && r.generation == generation_ && r.stream == context_.selection.stream
         && r.member == context_.selection.member
         && r.manual_epoch == manual_epoch_;
+    const auto data = data_progress();
+    s.current = s.current && data && data->route_epoch == r.route_epoch;
     if (s.result == RequestState::pending
         && (!s.current
             || (posted_ && posted_->return_ticket == s.ticket
@@ -282,6 +285,7 @@ std::optional<std::uint64_t> ReceiverBridge::admit_automatic_return(
             >= configuration_.confirmation_lifetime_us
         || cancelled_.load() || service_->closed() || !data
         || a.revision != state_.revision || a.valid_until_us <= at
+        || data->route_epoch != r.route_epoch
         || a.received_next != data->all.next
         || a.received_multicast_next != data->multicast.next)
         return {};
@@ -339,6 +343,7 @@ std::optional<std::uint64_t> ReceiverBridge::admit_automatic_return(
                 > maximum_interval_us
             || checked - coverage->last_at_us >= proof_lifetime)
             return {};
+        posted.route_epoch = coverage->route_epoch;
         posted.position = through;
         posted.proof_begin = state_.commit_position;
         posted.proof_observed = coverage->last_at_us;

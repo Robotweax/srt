@@ -78,6 +78,7 @@ public:
 
 private:
     friend class NativeService;
+    friend class MembershipRecovery;
     friend class AutomaticFallback;
     friend class AutomaticReturn;
     [[nodiscard]] bool claim_automatic_return() noexcept;
@@ -118,8 +119,8 @@ private:
         std::uint64_t origin, std::uint64_t not_after = UINT64_MAX,
         std::uint64_t automatic_ticket = 0, Mode target = Mode::unicast,
         std::uint64_t proof_begin = 0, std::uint32_t proof_interval = 0,
-        std::uint64_t proof_observed = 0,
-        std::uint64_t return_ticket = 0) noexcept;
+        std::uint64_t proof_observed = 0, std::uint64_t return_ticket = 0,
+        std::uint64_t route_epoch = 0) noexcept;
     void round(Kind, std::uint64_t) noexcept;
     void finish(Phase, std::uint64_t) noexcept;
     std::shared_ptr<NativeService> service_;
@@ -138,7 +139,7 @@ private:
         Mode target = Mode::unicast;
         std::uint64_t proof_begin = 0, proof_observed = 0;
         std::uint32_t proof_interval = 0;
-        std::uint64_t return_ticket = 0;
+        std::uint64_t return_ticket = 0, route_epoch = 0;
     };
     std::optional<Posted> posted_;
     bool automatic_claimed_ = false, automatic_return_claimed_ = false;
@@ -155,6 +156,7 @@ private:
     Mode target_mode_ = Mode::unicast;
     std::uint64_t expected_revision_ = 0, proof_begin_ = 0, proof_observed_ = 0;
     std::uint32_t proof_interval_ = 0;
+    std::uint64_t proof_route_epoch_ = 0, detector_route_epoch_ = 0;
     bool active_ = false, want_fallback_ = false, confirmed_ = false,
          sent_ = false, queued_ = false;
 };

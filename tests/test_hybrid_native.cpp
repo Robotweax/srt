@@ -114,6 +114,18 @@ TEST(hybrid_native_unconfigured_carrier_cannot_refresh_ordinary_peer_liveness)
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 namespace robotweax::srt::compat {
 struct HybridAutomaticTestAccess {
+    static std::shared_ptr<DatagramChannel> membership_channel(
+        hybrid::MembershipRecovery& m)
+    {
+        std::lock_guard lock(m.mutex_);
+        return m.channel_;
+    }
+    static std::shared_ptr<const MulticastIngressBinding> token(
+        ConnectionRuntime& r)
+    {
+        std::lock_guard lock(r.mutex_);
+        return r.multicast_ingress_binding_;
+    }
     static void link(const std::shared_ptr<ConnectionRuntime>& r,
         const std::shared_ptr<hybrid::NativeService>& service)
     {
@@ -129,13 +141,16 @@ struct HybridAutomaticTestAccess {
     }
     static void multicast(const std::shared_ptr<ConnectionRuntime>& r,
         const std::shared_ptr<hybrid::NativeService>& service,
-        std::uint32_t sequence, std::uint64_t now, bool multicast = true)
+        std::uint32_t sequence, std::uint64_t now, bool multicast = true,
+        std::shared_ptr<const MulticastIngressBinding> stale = {})
     {
         std::shared_ptr<const MulticastIngressBinding> binding;
         {
             std::lock_guard lock(r->mutex_);
             binding = r->multicast_ingress_binding_;
         }
+        if (stale)
+            binding = std::move(stale);
         const std::array<std::byte, 1> payload {std::byte {1}};
         r->process_packet({.kind = PacketKind::data,
                               .data = {.sequence = SequenceNumber {sequence},
@@ -253,6 +268,7 @@ struct Provider {
     }
 };
 struct Transport {
+    std::function<void()> bound_effect;
     bool alive = true, partial = false, close_send = false;
     unsigned would_block = 0, drop_kind = 0, dropped = 0;
     std::weak_ptr<h::NativeService> service;
@@ -260,7 +276,10 @@ struct Transport {
     std::vector<std::vector<std::byte>> output, history;
     static bool bound(void* p, const h::NativeService*) noexcept
     {
-        return static_cast<Transport*>(p)->alive;
+        auto& self = *static_cast<Transport*>(p);
+        if (self.bound_effect)
+            self.bound_effect();
+        return self.alive;
     }
     static UdpIoResult send(void* p, const h::NativeService*,
         std::span<const std::byte> bytes, std::uint64_t) noexcept
@@ -1605,7 +1624,7 @@ namespace {
 struct MembershipProvider {
     std::function<void(const h::MembershipRecovery::Request&)> effect;
     unsigned calls = 0;
-    bool failed = false;
+    bool failed = false, succeed = false;
     static std::optional<UdpSocket> prepare(
         void* p, const h::MembershipRecovery::Request& r) noexcept
     {
@@ -1616,6 +1635,14 @@ struct MembershipProvider {
                 self.effect(r);
         } catch (...) {
             self.failed = true;
+        }
+        if (self.succeed) {
+            UdpSocket socket(r.context.dispatch.multicast_group.family);
+            if (socket.valid() && socket.set_reuse_address(true) == Error::none
+                && socket.bind(
+                       IpEndpoint::any(r.context.dispatch.multicast_group.port))
+                    == Error::none)
+                return socket; // Injected provider contract; no real MC traffic in components.
         }
         return {};
     }
@@ -1643,7 +1670,7 @@ struct MembershipFixture : ReceiverFixture {
     void attach(h::MembershipRecovery::Configuration c = policy())
     {
         membership = h::MembershipRecovery::create(
-            p.c, c, {provider, MembershipProvider::prepare});
+            p.c, c, {provider, MembershipProvider::prepare}, receiver);
         REQUIRE(membership);
     }
 };
@@ -2446,5 +2473,265 @@ TEST(
         h::ReceiverBridge::RequestState::unknown);
     REQUIRE_EQ(posted.receiver->snapshot().attempts, 0U);
     REQUIRE(posted.requests.empty());
+}
+#endif
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+namespace {
+struct RejoinFixture : MembershipFixture {
+    RejoinFixture(unsigned cycles = 1)
+    {
+        provider->succeed = true;
+        auto c = policy();
+        c.maximum_recoveries = cycles;
+        attach(c);
+        membership->pump();
+        REQUIRE(membership->snapshot().joined);
+    }
+    void uc()
+    {
+        REQUIRE_EQ(receiver->request_fallback(1234),
+            h::ReceiverBridge::Admission::accepted);
+        step();
+        deliver(response(h::Kind::delivery_commit, 1, h::Mode::unicast));
+        REQUIRE(receiver->snapshot().fresh);
+        REQUIRE_EQ(receiver->snapshot().mode, h::Mode::unicast);
+    }
+};
+}
+TEST(hybrid_rejoin_requires_explicit_budget_and_same_receiver)
+{
+    MembershipFixture f;
+    auto c = f.policy();
+    c.maximum_recoveries = 9;
+    REQUIRE(!h::MembershipRecovery::valid_configuration(c));
+    c.maximum_recoveries = 1;
+    REQUIRE(!h::MembershipRecovery::create(
+        f.p.c, c, {f.provider, MembershipProvider::prepare}));
+    ReceiverFixture other;
+    REQUIRE(!h::MembershipRecovery::create(
+        f.p.c, c, {f.provider, MembershipProvider::prepare}, other.receiver));
+    f.provider->succeed = true;
+    f.attach();
+    f.membership->pump();
+    REQUIRE(f.membership->snapshot().joined);
+    REQUIRE(!f.membership->report_loss());
+}
+TEST(
+    hybrid_rejoin_loss_waits_for_approved_uc_and_preserves_canonical_observations)
+{
+    RejoinFixture f;
+    const auto first = f.membership->snapshot().route_epoch;
+    const auto old_token = compat::HybridAutomaticTestAccess::token(*f.runtime);
+    compat::HybridAutomaticTestAccess::multicast(
+        f.runtime, f.p.c, 42, f.p.clock->value.load());
+    const auto before = f.receiver->data_progress();
+    REQUIRE(before);
+    REQUIRE(f.membership->report_loss());
+    REQUIRE(!f.membership->report_loss());
+    REQUIRE(!f.membership->snapshot().joined);
+    REQUIRE(f.receiver->data_progress());
+    REQUIRE_EQ(
+        f.receiver->data_progress()->unique_packets, before->unique_packets);
+    f.membership->pump();
+    REQUIRE_EQ(f.provider->calls, 1U);
+    REQUIRE_EQ(f.membership->snapshot().phase,
+        h::MembershipRecovery::Phase::awaiting_unicast);
+    auto rogue = std::make_shared<compat::DatagramChannel>();
+    REQUIRE(!rogue->register_ingress_route(f.p.c->origin()->dispatch().group_id,
+        f.runtime, compat::PacketIngress::multicast_data,
+        compat::MulticastIngressConfiguration {f.p.c->origin()->source()}));
+    f.uc();
+    f.membership->pump();
+    REQUIRE(f.membership->snapshot().joined);
+    REQUIRE(f.membership->snapshot().route_epoch > first);
+    REQUIRE_EQ(f.membership->snapshot().recoveries, 1U);
+    REQUIRE_EQ(f.receiver->data_progress()->all.next, before->all.next);
+    compat::HybridAutomaticTestAccess::multicast(
+        f.runtime, f.p.c, 43, f.p.clock->value.load(), true, old_token);
+    REQUIRE_EQ(f.receiver->data_progress()->all.next, before->all.next);
+    REQUIRE_EQ(f.provider->calls, 2U);
+}
+TEST(hybrid_rejoin_cycle_attempts_backoff_and_lifetime_loss_budget_are_bounded)
+{
+    RejoinFixture f;
+    f.uc();
+    REQUIRE(f.membership->report_loss());
+    f.provider->succeed = false;
+    f.membership->pump();
+    REQUIRE_EQ(f.membership->snapshot().cycle_attempts, 1U);
+    f.advance(10);
+    f.membership->pump();
+    REQUIRE_EQ(f.provider->calls, 3U);
+    f.provider->succeed = true;
+    f.advance(20);
+    f.membership->pump();
+    REQUIRE(f.membership->snapshot().joined);
+    REQUIRE_EQ(f.membership->snapshot().attempts, 4U);
+    REQUIRE(f.membership->report_loss());
+    f.membership->pump();
+    REQUIRE_EQ(f.membership->snapshot().phase,
+        h::MembershipRecovery::Phase::exhausted);
+    REQUIRE(f.membership->snapshot().budget_exhausted);
+    for (unsigned i = 0; i < 20; ++i)
+        f.membership->pump();
+    REQUIRE_EQ(f.provider->calls, 4U);
+    REQUIRE(f.receiver->data_progress());
+    REQUIRE(!h::MembershipRecovery::create(f.p.c, f.policy()));
+}
+TEST(
+    hybrid_rejoin_deadline_starts_at_loss_and_provider_cannot_refresh_uc_or_time)
+{
+    for (bool provider_delay : {false, true}) {
+        RejoinFixture f;
+        f.uc();
+        REQUIRE(f.membership->report_loss());
+        const auto deadline = f.membership->snapshot().not_after_us;
+        if (provider_delay)
+            f.provider->effect = [&](const auto& r) {
+                REQUIRE_EQ(r.recovery, 1U);
+                REQUIRE_EQ(r.attempt, 1U);
+                f.p.clock->value = deadline;
+            };
+        else
+            f.p.clock->value = deadline;
+        f.membership->pump();
+        REQUIRE_EQ(f.membership->snapshot().phase,
+            h::MembershipRecovery::Phase::expired);
+        REQUIRE(!f.membership->snapshot().joined);
+        REQUIRE_EQ(f.membership->snapshot().not_after_us, deadline);
+        REQUIRE_EQ(f.provider->calls, provider_delay ? 2U : 1U);
+    }
+    RejoinFixture stale;
+    stale.uc();
+    REQUIRE(stale.membership->report_loss());
+    stale.provider->effect = [&](const auto&) {
+        stale.p.clock->value += 150;
+    };
+    stale.membership->pump();
+    REQUIRE(!stale.membership->snapshot().joined);
+    REQUIRE_EQ(stale.membership->snapshot().phase,
+        h::MembershipRecovery::Phase::awaiting_unicast);
+}
+TEST(
+    hybrid_rejoin_native_receive_error_preserves_uc_but_unowned_revocation_is_terminal)
+{
+    for (bool fatal : {false, true}) {
+        RejoinFixture f;
+        f.uc();
+        auto channel = compat::HybridAutomaticTestAccess::membership_channel(
+            *f.membership);
+        if (fatal) {
+            auto receive = [](std::span<std::byte>) noexcept {
+                return UdpIoResult {
+                    .error = Error::io_error, .system_error = EBADF};
+            };
+            (void)channel->run_once_for_testing(receive);
+            REQUIRE(!f.runtime->broken());
+            REQUIRE(f.receiver->data_progress());
+            f.membership->pump();
+            REQUIRE(!channel->running());
+            REQUIRE(f.membership->snapshot().joined);
+            REQUIRE_EQ(f.membership->snapshot().recoveries, 1U);
+        } else {
+            channel->unregister_connection(
+                f.p.c->origin()->dispatch().group_id);
+            REQUIRE(f.membership->snapshot().closed);
+            f.membership->pump();
+            REQUIRE_EQ(f.provider->calls, 1U);
+            REQUIRE(!f.receiver->data_progress());
+        }
+    }
+}
+TEST(hybrid_rejoin_close_during_preparation_discards_late_channel)
+{
+    RejoinFixture f;
+    f.uc();
+    REQUIRE(f.membership->report_loss());
+    std::promise<void> entered, release;
+    auto ready = release.get_future().share();
+    f.provider->effect = [&](const auto&) {
+        entered.set_value();
+        ready.wait();
+    };
+    auto task = std::async(std::launch::async, [&] {
+        f.membership->pump();
+    });
+    entered.get_future().wait();
+    f.membership->close();
+    release.set_value();
+    task.get();
+    REQUIRE(f.membership->snapshot().closed);
+    REQUIRE(!f.membership->snapshot().joined);
+    REQUIRE_EQ(f.provider->calls, 2U);
+    REQUIRE(!f.receiver->data_progress());
+}
+TEST(hybrid_rejoin_old_coverage_and_queued_final_return_cannot_cross_loss_epoch)
+{
+    for (unsigned stage = 0; stage < 4; ++stage) {
+        RejoinFixture f;
+        f.uc();
+        REQUIRE_EQ(f.receiver->request_overlap(),
+            h::ReceiverBridge::Admission::accepted);
+        f.step();
+        f.deliver(f.response(h::Kind::delivery_commit, 2, h::Mode::overlap));
+        auto at = f.p.clock->value.load();
+        compat::HybridAutomaticTestAccess::multicast(f.runtime, f.p.c, 42, at);
+        f.p.clock->value += 10;
+        compat::HybridAutomaticTestAccess::multicast(
+            f.runtime, f.p.c, 43, at + 10);
+        const auto proof = f.receiver->coverage_proof(1236, 100);
+        REQUIRE(proof);
+        REQUIRE(proof->route_epoch);
+        if (stage)
+            REQUIRE_EQ(f.receiver->request_multicast(*proof),
+                h::ReceiverBridge::Admission::accepted);
+        if (stage >= 2)
+            f.receiver->pump(); // Handed to native queue, not transmitted yet.
+        if (stage == 3) {
+            unsigned checks = 0;
+            bool lost = false;
+            f.p.ct->bound_effect = [&] {
+                if (++checks == 3)
+                    lost = f.membership->report_loss();
+            };
+            f.p.c->pump_for_testing();
+            f.p.ct->bound_effect = {};
+            REQUIRE(lost);
+        } else
+            REQUIRE(f.membership->report_loss());
+        REQUIRE(!f.receiver->coverage_proof(1236, 100));
+        if (!stage)
+            REQUIRE_EQ(f.receiver->request_multicast(*proof),
+                h::ReceiverBridge::Admission::invalid);
+        f.step();
+        if (stage)
+            REQUIRE(f.receiver->snapshot().returning
+                != h::ReceiverBridge::RequestState::confirmed);
+        REQUIRE_EQ(f.receiver->snapshot().mode, h::Mode::overlap);
+        for (const auto& m : f.requests)
+            REQUIRE(!(m.kind == h::Kind::multicast_ready
+                && m.mode == h::Mode::multicast));
+    }
+}
+#endif
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+TEST(hybrid_rejoin_grant_expiry_and_reentrant_loss_cannot_extend_lifetime)
+{
+    RejoinFixture f;
+    f.uc();
+    REQUIRE(f.membership->report_loss());
+    f.provider->effect = [&](const auto&) {
+        f.membership->pump();
+        REQUIRE(!f.membership->report_loss());
+        f.p.clock->value = f.p.c->snapshot().expires_at_us;
+    };
+    f.membership->pump();
+    REQUIRE(!f.provider->failed);
+    REQUIRE(f.membership->snapshot().closed);
+    REQUIRE(!f.membership->snapshot().joined);
+    REQUIRE(!f.receiver->data_progress());
+    REQUIRE_EQ(f.provider->calls, 2U);
 }
 #endif
