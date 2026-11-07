@@ -2534,7 +2534,7 @@ struct BridgeFixture {
             x.exchange.established_peer = IpEndpoint::loopback(c ? 8000 : 8001);
             x.exchange.credential_id.fill(std::byte {0x11});
             x.exchange.policy.supported =
-                returning ? hb::known_features : hb::policy_query_features;
+                returning ? hb::return_features : hb::policy_query_features;
             x.exchange.policy.prefix_limit = limit;
             if (!c) {
                 x.exchange.stream = identity->stream;

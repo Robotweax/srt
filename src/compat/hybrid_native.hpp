@@ -27,6 +27,7 @@ inline constexpr std::size_t maximum_native_control_size =
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 class CoordinatorBridge;
 class ReceiverBridge;
+class MembershipRecovery;
 struct NativeOptions {
     Capability policy;
     CredentialId credential_id {};
@@ -129,6 +130,7 @@ private:
         const std::shared_ptr<ConnectionRuntime>&, NativeOptions) noexcept;
     friend class CoordinatorBridge;
     friend class ReceiverBridge;
+    friend class MembershipRecovery;
     friend struct robotweax::srt::compat::HybridAutomaticTestAccess;
     [[nodiscard]] bool bridge_work(CoordinatorBridge&) noexcept;
     [[nodiscard]] bool receiver_work(ReceiverBridge&) noexcept;

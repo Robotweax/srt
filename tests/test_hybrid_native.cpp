@@ -4,6 +4,7 @@
 #include "compat/hybrid_receiver.hpp"
 #include "compat/hybrid_automatic.hpp"
 #include "compat/hybrid_automatic_return.hpp"
+#include "compat/hybrid_membership.hpp"
 #include <functional>
 #include "compat/transport_runtime.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
@@ -119,6 +120,12 @@ struct HybridAutomaticTestAccess {
         std::lock_guard lock(r->mutex_);
         r->hybrid_service_ = service;
         service->runtime_ = r;
+    }
+    static void channel(const std::shared_ptr<ConnectionRuntime>& r,
+        const std::shared_ptr<DatagramChannel>& c)
+    {
+        std::lock_guard lock(r->mutex_);
+        r->channel_ = c;
     }
     static void multicast(const std::shared_ptr<ConnectionRuntime>& r,
         const std::shared_ptr<hybrid::NativeService>& service,
@@ -288,7 +295,7 @@ struct Transport {
     }
 };
 struct Pair {
-    bool returning = false;
+    bool returning = false, startup = false;
     std::shared_ptr<Clock> clock = std::make_shared<Clock>();
     std::shared_ptr<Provider> cp = std::make_shared<Provider>(),
                               lp = std::make_shared<Provider>();
@@ -312,7 +319,9 @@ struct Pair {
         x.exchange.retry_interval_us = 100;
         x.exchange.timeout_us = 1000;
         x.exchange.policy.supported =
-            returning ? h::known_features : h::policy_query_features;
+            returning ? h::return_features : h::policy_query_features;
+        if (startup)
+            x.exchange.policy.supported |= h::startup_fallback;
         if (!caller) {
             x.exchange.stream = 71;
             x.exchange.member = 97;
@@ -329,8 +338,9 @@ struct Pair {
         x.clock_context = clock.get();
         return x;
     }
-    explicit Pair(bool returns = false)
+    explicit Pair(bool returns = false, bool starts = false)
         : returning(returns)
+        , startup(starts)
     {
         c = h::NativeService::create_for_testing(config(true));
         l = h::NativeService::create_for_testing(config(false));
@@ -679,8 +689,8 @@ struct ReceiverFixture {
     }
     explicit ReceiverFixture(
         h::ReceiverBridge::Configuration c = configuration(),
-        bool local_data = false, bool returns = false)
-        : p(returns)
+        bool local_data = false, bool returns = false, bool starts = false)
+        : p(returns, starts)
     {
         p.connect();
         if (local_data) {
@@ -1590,6 +1600,318 @@ TEST(hybrid_auto_return_native_grant_clips_handoff_and_expires_pending_receipt)
     REQUIRE_EQ(f.controller->snapshot().result,
         h::ReceiverBridge::RequestState::unknown);
     REQUIRE(f.controller->snapshot().closed);
+}
+namespace {
+struct MembershipProvider {
+    std::function<void(const h::MembershipRecovery::Request&)> effect;
+    unsigned calls = 0;
+    bool failed = false;
+    static std::optional<UdpSocket> prepare(
+        void* p, const h::MembershipRecovery::Request& r) noexcept
+    {
+        auto& self = *static_cast<MembershipProvider*>(p);
+        ++self.calls;
+        try {
+            if (self.effect)
+                self.effect(r);
+        } catch (...) {
+            self.failed = true;
+        }
+        return {};
+    }
+};
+struct MembershipFixture : ReceiverFixture {
+    std::shared_ptr<MembershipProvider> provider =
+        std::make_shared<MembershipProvider>();
+    std::shared_ptr<h::MembershipRecovery> membership;
+    std::shared_ptr<compat::DatagramChannel> control =
+        std::make_shared<compat::DatagramChannel>();
+    static h::MembershipRecovery::Configuration policy()
+    {
+        return {IpEndpoint::any(), 3, 400, 10, 40};
+    }
+    MembershipFixture()
+        : ReceiverFixture(AutomaticFixture::configuration(), true, true, true)
+    {
+        multicast->unregister_connection(p.c->origin()->dispatch().group_id);
+        REQUIRE(!receiver->data_progress());
+        REQUIRE(
+            control->register_ingress_route(p.c->origin()->dispatch().group_id,
+                runtime, compat::PacketIngress::unicast_session));
+        compat::HybridAutomaticTestAccess::channel(runtime, control);
+    }
+    void attach(h::MembershipRecovery::Configuration c = policy())
+    {
+        membership = h::MembershipRecovery::create(
+            p.c, c, {provider, MembershipProvider::prepare});
+        REQUIRE(membership);
+    }
+};
+}
+TEST(
+    hybrid_membership_factory_requires_negotiation_absence_and_empty_receive_history)
+{
+    ReceiverFixture legacy(ReceiverFixture::configuration(), true, true);
+    legacy.multicast->unregister_connection(
+        legacy.p.c->origin()->dispatch().group_id);
+    REQUIRE(!h::MembershipRecovery::create(
+        legacy.p.c, MembershipFixture::policy()));
+    for (unsigned bad = 0; bad < 8; ++bad) {
+        MembershipFixture f;
+        auto c = f.policy();
+        switch (bad) {
+        case 0:
+            c.maximum_attempts = 0;
+            break;
+        case 1:
+            c.maximum_attempts = 9;
+            break;
+        case 2:
+            c.timeout_us = 0;
+            break;
+        case 3:
+            c.timeout_us = h::maximum_age_us + 1;
+            break;
+        case 4:
+            c.initial_backoff_us = 0;
+            break;
+        case 5:
+            c.initial_backoff_us = 41;
+            break;
+        case 6:
+            c.interface.port = 1;
+            break;
+        case 7:
+            c.maximum_backoff_us = h::maximum_interval_us + 1;
+            break;
+        }
+        REQUIRE(!h::MembershipRecovery::create(f.p.c, c));
+    }
+    ReceiverFixture joined(ReceiverFixture::configuration(), true, true, true);
+    REQUIRE(!h::MembershipRecovery::create(
+        joined.p.c, MembershipFixture::policy()));
+    MembershipFixture absent;
+    absent.control->unregister_connection(
+        absent.p.c->origin()->dispatch().group_id);
+    REQUIRE(!h::MembershipRecovery::create(absent.p.c, absent.policy()));
+    MembershipFixture data;
+    compat::HybridAutomaticTestAccess::multicast(
+        data.runtime, data.p.c, 42, data.p.clock->value.load(), false);
+    REQUIRE(
+        !h::MembershipRecovery::create(data.p.c, MembershipFixture::policy()));
+}
+TEST(hybrid_membership_backoff_attempts_and_single_use_are_bounded)
+{
+    MembershipFixture f;
+    f.attach();
+    f.membership->pump();
+    REQUIRE_EQ(f.provider->calls, 1U);
+    REQUIRE_EQ(
+        f.membership->snapshot().next_wakeup_us, f.p.clock->value.load() + 10);
+    for (unsigned i = 0; i < 10; ++i)
+        f.membership->pump();
+    REQUIRE_EQ(f.provider->calls, 1U);
+    f.advance(10);
+    f.membership->pump();
+    REQUIRE_EQ(f.provider->calls, 2U);
+    f.advance(19);
+    f.membership->pump();
+    REQUIRE_EQ(f.provider->calls, 2U);
+    f.advance(1);
+    f.membership->pump();
+    REQUIRE_EQ(f.provider->calls, 3U);
+    REQUIRE_EQ(f.membership->snapshot().phase,
+        h::MembershipRecovery::Phase::exhausted);
+    REQUIRE(f.membership->snapshot().budget_exhausted);
+    REQUIRE(f.receiver->data_progress());
+    f.membership->close();
+    REQUIRE(!f.receiver->data_progress());
+    REQUIRE(!h::MembershipRecovery::create(f.p.c, f.policy()));
+}
+TEST(hybrid_membership_absence_records_valid_uc_without_fabricating_mc_coverage)
+{
+    MembershipFixture f;
+    f.attach();
+    compat::HybridAutomaticTestAccess::multicast(
+        f.runtime, f.p.c, 42, f.p.clock->value.load(), false);
+    auto progress = f.receiver->data_progress();
+    REQUIRE(progress);
+    REQUIRE_EQ(progress->all.next, 1235U);
+    REQUIRE_EQ(progress->unicast.next, 1235U);
+    REQUIRE(!progress->multicast.observed);
+    REQUIRE(!f.receiver->coverage_proof(1235, 100));
+    auto rogue = std::make_shared<compat::DatagramChannel>();
+    REQUIRE(!rogue->register_ingress_route(f.p.c->origin()->dispatch().group_id,
+        f.runtime, compat::PacketIngress::multicast_data,
+        compat::MulticastIngressConfiguration {f.p.c->origin()->source()}));
+    f.membership->close();
+    REQUIRE(!f.receiver->data_progress());
+}
+TEST(hybrid_membership_deadline_and_provider_latency_cannot_refresh_the_budget)
+{
+    for (bool during : {false, true}) {
+        MembershipFixture f;
+        f.attach();
+        const auto deadline = f.membership->snapshot().not_after_us;
+        if (during)
+            f.provider->effect = [&](const auto&) {
+                f.p.clock->value = deadline;
+            };
+        else
+            f.p.clock->value = deadline;
+        f.membership->pump();
+        REQUIRE_EQ(f.membership->snapshot().phase,
+            h::MembershipRecovery::Phase::expired);
+        REQUIRE_EQ(f.membership->snapshot().not_after_us, deadline);
+        REQUIRE_EQ(f.provider->calls, during ? 1U : 0U);
+        for (unsigned i = 0; i < 10; ++i)
+            f.membership->pump();
+        REQUIRE_EQ(f.provider->calls, during ? 1U : 0U);
+    }
+}
+TEST(hybrid_membership_provider_can_inspect_reenter_or_close_outside_locks)
+{
+    for (bool close : {false, true}) {
+        MembershipFixture f;
+        f.attach();
+        f.provider->effect = [&](const auto& r) {
+            REQUIRE_EQ(r.context, f.p.c->snapshot().context);
+            REQUIRE_EQ(r.generation, f.p.c->snapshot().generation);
+            REQUIRE_EQ(r.attempt, 1U);
+            REQUIRE_EQ(f.membership->snapshot().phase,
+                h::MembershipRecovery::Phase::preparing);
+            f.membership->pump();
+            if (close)
+                f.membership->close();
+        };
+        f.membership->pump();
+        REQUIRE(!f.provider->failed);
+        REQUIRE_EQ(f.provider->calls, 1U);
+        REQUIRE_EQ(f.membership->snapshot().closed, close);
+        REQUIRE(!f.receiver->snapshot().closed);
+    }
+}
+TEST(hybrid_membership_close_does_not_wait_for_a_running_provider)
+{
+    MembershipFixture f;
+    f.attach();
+    std::promise<void> entered, release;
+    auto ready = release.get_future().share();
+    f.provider->effect = [&](const auto&) {
+        entered.set_value();
+        ready.wait();
+    };
+    auto running = std::async(std::launch::async, [&] {
+        f.membership->pump();
+    });
+    entered.get_future().wait();
+    f.membership->close();
+    REQUIRE(f.membership->snapshot().closed);
+    release.set_value();
+    running.get();
+    REQUIRE_EQ(f.provider->calls, 1U);
+    REQUIRE(!f.membership->snapshot().joined);
+}
+TEST(
+    hybrid_membership_native_expiry_clock_regression_and_close_hide_observations)
+{
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        MembershipFixture f;
+        f.attach();
+        if (mode == 0)
+            f.p.clock->value = f.p.c->snapshot().expires_at_us;
+        if (mode == 1)
+            --f.p.clock->value;
+        if (mode == 2)
+            f.receiver->close();
+        REQUIRE(f.membership->snapshot().closed);
+        f.membership->pump();
+        REQUIRE(!f.receiver->data_progress());
+        REQUIRE_EQ(f.provider->calls, 0U);
+    }
+}
+TEST(
+    hybrid_membership_startup_outage_uses_trusted_initial_cursor_not_sender_horizon)
+{
+    for (bool bad_cursor : {false, true}) {
+        MembershipFixture f;
+        f.attach();
+        f.step();
+        f.deliver(f.response());
+        const auto report = [&](std::uint64_t offset) {
+            auto m = f.response(
+                h::Kind::delivery_status, 0, h::Mode::multicast, 1234 + offset);
+            m.kind = h::Kind::stream_progress;
+            m.request_serial = 0;
+            m.multicast_next = m.next_position;
+            m.produced_next = 1334;
+            m.interval_us = 10;
+            m.activity = h::Activity::producing;
+            REQUIRE_EQ(f.p.l->send(m, f.p.clock->value.load() + 1000,
+                           f.p.clock->value.load()),
+                h::NativeService::Admission::accepted);
+            f.step();
+            f.step();
+        };
+        report(0);
+        f.advance(10);
+        report(1);
+        for (unsigned i = 0; i < 6; ++i)
+            f.advance(10);
+        REQUIRE(f.receiver->path_assessment()->fallback_candidate);
+        auto provider = std::make_shared<AutomaticProvider>();
+        provider->clock = f.p.clock;
+        if (bad_cursor)
+            provider->position = 1235;
+        auto controller = h::AutomaticFallback::create(
+            f.receiver, {1, 500}, {provider, AutomaticProvider::resolve});
+        REQUIRE(controller);
+        controller->pump();
+        REQUIRE_EQ(provider->calls, 1U);
+        REQUIRE_EQ(controller->snapshot().admitted, bad_cursor ? 0U : 1U);
+        if (!bad_cursor) {
+            f.step();
+            f.deliver(f.response(
+                h::Kind::delivery_commit, 1, h::Mode::unicast, 1235));
+            REQUIRE_EQ(controller->snapshot().result,
+                h::ReceiverBridge::RequestState::confirmed);
+            REQUIRE_EQ(controller->snapshot().position, 1234U);
+        }
+        REQUIRE(!f.receiver->data_progress()->multicast.observed);
+    }
+}
+TEST(
+    hybrid_membership_grant_expiry_clips_retry_deadline_and_rejects_incomplete_provider)
+{
+    MembershipFixture f;
+    REQUIRE(!h::MembershipRecovery::create(
+        f.p.c, f.policy(), {f.provider, nullptr}));
+    const auto expiry = f.p.c->snapshot().expires_at_us;
+    f.p.clock->value = expiry - 50;
+    f.attach();
+    REQUIRE_EQ(f.membership->snapshot().not_after_us, expiry);
+    f.p.clock->value = expiry;
+    REQUIRE(f.membership->snapshot().closed);
+    f.membership->pump();
+    REQUIRE_EQ(f.provider->calls, 0U);
+}
+TEST(hybrid_membership_absence_does_not_admit_foreign_uc_or_unbound_mc)
+{
+    MembershipFixture f;
+    f.attach();
+    const std::array<std::byte, 1> payload {std::byte {1}};
+    const PacketView packet {.kind = PacketKind::data,
+        .data = {.sequence = SequenceNumber {42},
+            .message_number = 1,
+            .boundary = MessageBoundary::solo,
+            .destination_socket_id = f.p.c->origin()->dispatch().group_id},
+        .payload = payload};
+    f.runtime->process_packet(packet, IpEndpoint::loopback(1));
+    f.runtime->process_packet(packet, f.p.c->origin()->source().endpoint,
+        std::nullopt, compat::PacketIngress::multicast_data);
+    const auto progress = f.receiver->data_progress();
+    REQUIRE(progress);
+    REQUIRE(!progress->all.observed);
 }
 namespace {
 struct ReturnFixture : ReceiverFixture {

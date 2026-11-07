@@ -88,4 +88,8 @@ ready_return = p('!IIQQQQQIIQQQIIII', 1, 6, 71, 97, 10, 2, 1241, 5, 0, 0, 1237, 
 assert len(return_status) == len(ready_return) == 96
 assert return_status[64:72] == p('!Q', 1237) and return_status[72:80] == p('!Q', 8)
 result['return_control'] = {'feature':64,'status_boundary':return_status.hex(),'ready_coverage':ready_return.hex()}
+startup_offer = p('!IIIIIIQQQ', 1, 1, 167, 167, 256, 0, 0, 0, 0)
+startup_selection = p('!IIIIIIQQQ', 1, 2, 167, 167, 256, 0, 71, 97, 1234)
+assert len(startup_offer) == len(startup_selection) == 48
+result['startup_fallback'] = {'feature': 128, 'offer': startup_offer.hex(), 'selection': startup_selection.hex()}
 print(json.dumps(result, indent=2))

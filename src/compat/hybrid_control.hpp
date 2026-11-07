@@ -17,8 +17,9 @@ inline constexpr std::size_t capability_size = 48, context_size = 192,
 inline constexpr std::uint32_t originals = 1, prefix_replay = 2, progress = 4,
                                overlap = 8, source_recovery = 16,
                                policy_query = 32, return_control = 64,
-                               core_features = 7, legacy_features = 31,
-                               policy_query_features = 63, known_features = 127;
+                               startup_fallback = 128, core_features = 7,
+                               legacy_features = 31, policy_query_features = 63,
+                               return_features = 127, known_features = 255;
 inline constexpr std::uint32_t maximum_prefix = 256,
                                maximum_interval_us = 1'000'000,
                                maximum_age_us = 5'000'000;

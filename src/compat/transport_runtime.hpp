@@ -284,8 +284,10 @@ public:
     // metadata retains the legacy complete unicast-peer endpoint as source.
     [[nodiscard]] bool register_ingress_route(std::uint32_t protocol_socket_id,
         std::shared_ptr<ConnectionRuntime> runtime, PacketIngress provenance,
-        std::optional<MulticastIngressConfiguration> multicast =
-            std::nullopt) noexcept;
+        std::optional<MulticastIngressConfiguration> multicast = std::nullopt,
+        std::shared_ptr<const void> membership = {}) noexcept;
+    [[nodiscard]] bool has_ingress_route(std::uint32_t protocol_socket_id,
+        const ConnectionRuntime*, PacketIngress) noexcept;
     void unregister_connection(std::uint32_t protocol_socket_id) noexcept;
     [[nodiscard]] bool replay_established_handshake(
         const HandshakeEnvelope& envelope) noexcept;
@@ -520,6 +522,7 @@ private:
 class ConnectionRuntime {
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
     friend class hybrid::CoordinatorBridge;
+    friend class hybrid::MembershipRecovery;
     friend struct HybridBridgeTestAccess;
     friend struct HybridAutomaticTestAccess;
     friend std::shared_ptr<hybrid::NativeService> hybrid::attach_native_control(
@@ -750,7 +753,8 @@ private:
     // Binding operations follow routes_mutex_ -> mutex_ and never acquire
     // channel locks or perform socket I/O while holding the runtime mutex.
     [[nodiscard]] bool activate_multicast_ingress(
-        const std::shared_ptr<MulticastIngressBinding>& binding) noexcept;
+        const std::shared_ptr<MulticastIngressBinding>& binding,
+        const std::shared_ptr<const void>& membership = {}) noexcept;
     void revoke_multicast_ingress(
         const std::shared_ptr<const MulticastIngressBinding>& binding) noexcept;
     friend void close_connection_runtime(
@@ -935,6 +939,9 @@ private:
     std::shared_ptr<hybrid::NativeService> hybrid_service_;
     std::unique_ptr<hybrid::ReceiveProgress> hybrid_receive_;
     std::uint64_t hybrid_receive_route_ = 0;
+    std::shared_ptr<const void> hybrid_membership_;
+    bool hybrid_membership_claimed_ = false, hybrid_membership_live_ = false;
+    [[nodiscard]] bool hybrid_observation_current() const noexcept;
 #endif
     std::condition_variable receive_ready_;
     std::condition_variable send_ready_;

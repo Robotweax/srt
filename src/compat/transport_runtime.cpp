@@ -720,12 +720,14 @@ std::shared_ptr<ConnectionRuntime> DatagramChannel::promote_setup_connection(
 
 bool DatagramChannel::register_ingress_route(std::uint32_t protocol_socket_id,
     std::shared_ptr<ConnectionRuntime> runtime, PacketIngress provenance,
-    std::optional<MulticastIngressConfiguration> multicast) noexcept
+    std::optional<MulticastIngressConfiguration> multicast,
+    std::shared_ptr<const void> membership) noexcept
 {
     if (protocol_socket_id == 0U || runtime == nullptr
         || (provenance != PacketIngress::multicast_data
             && provenance != PacketIngress::unicast_session)
-        || (multicast && provenance != PacketIngress::multicast_data))
+        || ((multicast || membership)
+            && provenance != PacketIngress::multicast_data))
         return false;
     try {
         std::shared_ptr<MulticastIngressBinding> binding;
@@ -764,7 +766,8 @@ bool DatagramChannel::register_ingress_route(std::uint32_t protocol_socket_id,
                 .multicast_binding = binding});
         if (!inserted)
             return false;
-        if (binding && !runtime->activate_multicast_ingress(binding)) {
+        if (binding
+            && !runtime->activate_multicast_ingress(binding, membership)) {
             routes_.erase(route);
             return false;
         }
@@ -775,14 +778,28 @@ bool DatagramChannel::register_ingress_route(std::uint32_t protocol_socket_id,
 }
 
 bool ConnectionRuntime::activate_multicast_ingress(
-    const std::shared_ptr<MulticastIngressBinding>& binding) noexcept
+    const std::shared_ptr<MulticastIngressBinding>& binding,
+    const std::shared_ptr<const void>& membership) noexcept
 {
     std::lock_guard lock(mutex_);
     if (locally_closed_ || broken_ || peer_closed_
         || multicast_ingress_generation_
             == std::numeric_limits<std::uint64_t>::max())
         return false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (membership != hybrid_membership_
+        || (membership
+            && (!hybrid_membership_live_ || multicast_ingress_binding_)))
+        return false;
+#else
+    if (membership)
+        return false;
+#endif
     binding->generation_ = ++multicast_ingress_generation_;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (membership)
+        hybrid_receive_route_ = multicast_ingress_generation_;
+#endif
     multicast_ingress_binding_ = binding;
     return true;
 }
@@ -791,10 +808,23 @@ void ConnectionRuntime::revoke_multicast_ingress(
     const std::shared_ptr<const MulticastIngressBinding>& binding) noexcept
 {
     std::lock_guard lock(mutex_);
-    if (multicast_ingress_binding_ == binding)
+    if (multicast_ingress_binding_ == binding) {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        if (hybrid_membership_)
+            hybrid_membership_live_ = false;
+#endif
         multicast_ingress_binding_.reset();
+    }
 }
 
+bool DatagramChannel::has_ingress_route(std::uint32_t id,
+    const ConnectionRuntime* runtime, PacketIngress provenance) noexcept
+{
+    std::lock_guard lock(routes_mutex_);
+    const auto found = routes_.find(id);
+    return found != routes_.end() && found->second.runtime.get() == runtime
+        && found->second.provenance == provenance;
+}
 void DatagramChannel::unregister_connection(
     std::uint32_t protocol_socket_id) noexcept
 {
@@ -4336,6 +4366,12 @@ ConnectionRuntime::hybrid_conclusions() const noexcept
     return locally_closed_ || broken_ || peer_closed_ ? nullptr
                                                       : hybrid_conclusions_;
 }
+bool ConnectionRuntime::hybrid_observation_current() const noexcept
+{
+    return hybrid_receive_route_ == multicast_ingress_generation_
+        && (hybrid_membership_ ? hybrid_membership_live_
+                               : static_cast<bool>(multicast_ingress_binding_));
+}
 std::optional<hybrid::ReceiveDataProgress>
 ConnectionRuntime::hybrid_receive_progress(
     const hybrid::NativeService* service, std::uint64_t origin) const noexcept
@@ -4344,8 +4380,7 @@ ConnectionRuntime::hybrid_receive_progress(
     if (locally_closed_ || broken_ || peer_closed_ || peer_error_pending_
         || !service || service->closed() || hybrid_service_.get() != service
         || hybrid_conclusions_ != service->origin() || !hybrid_receive_
-        || !multicast_ingress_binding_
-        || hybrid_receive_route_ != multicast_ingress_generation_)
+        || !hybrid_observation_current())
         return {};
     hybrid_receive_->sync_floor(
         session_.receive_buffer().first_stored_sequence());
@@ -4360,8 +4395,7 @@ ConnectionRuntime::hybrid_multicast_coverage(
     if (locally_closed_ || broken_ || peer_closed_ || peer_error_pending_
         || !service || service->closed() || hybrid_service_.get() != service
         || hybrid_conclusions_ != service->origin() || !hybrid_receive_
-        || !multicast_ingress_binding_
-        || hybrid_receive_route_ != multicast_ingress_generation_)
+        || !multicast_ingress_binding_ || !hybrid_observation_current())
         return {};
     hybrid_receive_->sync_floor(
         session_.receive_buffer().first_stored_sequence());
@@ -4767,8 +4801,7 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
     std::uint64_t arrival = 0;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
     if (packet.kind == PacketKind::data && hybrid_receive_
-        && multicast_ingress_binding_
-        && hybrid_receive_route_ == multicast_ingress_generation_) {
+        && hybrid_observation_current()) {
         observation_path = provenance == PacketIngress::multicast_data
             ? hybrid::DataPath::multicast
             : hybrid::DataPath::unicast;

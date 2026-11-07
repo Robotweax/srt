@@ -17,7 +17,7 @@ hr::Context context(bool returning)
         .group_id = c.dispatch.group_id,
         .endpoint = {.address = {192, 0, 2, 1}, .port = 9000}};
     c.offer.supported =
-        returning ? hr::known_features : hr::policy_query_features;
+        returning ? hr::return_features : hr::policy_query_features;
     c.selection = c.offer;
     c.selection.kind = hr::CapabilityKind::selection;
     c.selection.stream = 71;
@@ -59,7 +59,7 @@ TEST(
     bad.supported &= ~hr::overlap;
     REQUIRE(!hr::valid(bad));
     bad = c.offer;
-    bad.supported |= 128;
+    bad.supported |= 256;
     REQUIRE(!hr::valid(bad));
     hr::Capability selected;
     REQUIRE(hr::negotiate(c.offer, c.offer, 71, 97, 100, selected));
@@ -149,4 +149,30 @@ TEST(
     p.receive(packet(40), true, hr::DataPath::unicast, 400);
     REQUIRE(!p.coverage(1000, 1003, 1000));
     REQUIRE(!p.coverage(999, 1003, 1000));
+}
+
+TEST(
+    hybrid_membership_capability_requires_policy_queries_and_preserves_old_masks)
+{
+    hr::Capability offer;
+    offer.supported = hr::core_features | hr::startup_fallback;
+    REQUIRE(!hr::valid(offer));
+    offer.supported |= hr::policy_query;
+    REQUIRE(hr::valid(offer));
+    offer.required |= hr::startup_fallback;
+    hr::Capability selection;
+    auto legacy = context(true).offer;
+    REQUIRE(!hr::negotiate(offer, legacy, 71, 97, 100, selection));
+    offer.required = hr::core_features;
+    REQUIRE(hr::negotiate(offer, legacy, 71, 97, 100, selection));
+    REQUIRE(!(selection.supported & hr::startup_fallback));
+    REQUIRE(hr::negotiate(offer, offer, 71, 97, 100, selection));
+    REQUIRE(selection.supported & hr::startup_fallback);
+    REQUIRE_EQ(hr::return_features, 127U);
+    REQUIRE_EQ(hr::known_features, 255U);
+    std::array<std::byte, 48> wire {};
+    REQUIRE(hr::encode(selection, wire));
+    hr::Capability decoded;
+    REQUIRE(hr::decode(wire, decoded));
+    REQUIRE_EQ(decoded, selection);
 }

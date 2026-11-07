@@ -17,7 +17,9 @@ observations and bounded host activity declarations. An explicitly configured
 passive receiver detector assesses stalls and sustained multicast recovery.
 A separately attached internal controller can opt into bounded automatic unicast
 fallback using trusted local merge state. A separate opt-in return controller uses
-sustained recovery and exact committed-overlap coverage. Default configuration keeps automation
+sustained recovery and exact committed-overlap coverage. An internal staged-startup
+membership owner can retry a missing join while authenticated unicast remains usable.
+Default configuration keeps automation
 disabled and allocates no public C option. Native handshakes still
 reject authentication version 7. No new capability handshake extension ID is
 allocated. Existing strict multicast announcements and existing authentication
@@ -39,6 +41,7 @@ cmake --build build-hybrid-control --parallel
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_automatic
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_return
 ./build-hybrid-control/robotweax_srt_tests --include hybrid_auto_return
+./build-hybrid-control/robotweax_srt_tests --include hybrid_membership
 ./tools/python tests/hybrid_control_vectors.py
 ```
 
@@ -65,7 +68,9 @@ progress reports. All three are mandatory. Bits 8 and 16 mean overlap and source
 recovery. Bit 32 selects read-only policy queries and request-correlated delivery
 responses. Bit 64 selects bounded return control and effective-boundary metadata;
 it requires bits 8 and 32. The previous all-features mask remains 63 and the
-current mask is 127. Unknown bits are rejected, required bits must be supported, and a
+return-only mask is 127. Bit 128 permits the internal staged-startup membership
+profile and requires bit 32. The current known mask is 255. Unknown bits are
+rejected, required bits must be supported, and a
 selection must satisfy both peers' requirements. The prefix limit is the smaller
 of their limits. Offers have zero incarnation/position fields. A selection has
 nonzero stream and member incarnations; position may be zero. A receiver checks
@@ -573,10 +578,9 @@ runtime contention, close, source failure/departure and exclusive queue ownershi
 Native plaintext/CTR/GCM cases drop the first commit, retry the authenticated
 request and verify one transition, then suppress multicast DATA while delivering
 48 messages through canonical unicast originals, including CTR/GCM key rotation.
-The receiver owner below adds bounded periodic policy queries. No receiver
-detector, multicast return/hysteresis, periodic progress producer,
-public provisioning, automatic source recovery
-or startup-join fallback is connected. Loopback/synthetic-credential evidence
+The receiver, reporting, detection, fallback, return and staged membership owners
+below attach separately. Public provisioning/failed-join connect admission and
+actual source-error control integration remain unimplemented. Loopback/synthetic-credential evidence
 does not qualify hostile networks, physical/WAN paths, overload, scale or other
 platforms; the existing security limits remain.
 
@@ -916,7 +920,8 @@ blackout detection, explicit host fallback, sustained multicast observation
 while unicast remains committed, pause suppression and owner closure. The
 separate controller below can consume fallback candidates. Explicit bounded
 multicast overlap/return and its separate opt-in automatic controller are described
-below; public provisioning and startup join failure handling remain unimplemented.
+below. The internal staged-startup membership profile is described later; public
+provisioning and public connect join-failure admission remain unimplemented.
 
 ## Explicitly attached automatic unicast fallback
 
@@ -1106,9 +1111,10 @@ plain/CTR/GCM, use the exact cache to prove eight overlap positions, and deliver
 40 more canonical messages after return across key rotation. Sender UC-original
 high water stays at or below D. Explicit return APIs perform no autonomous
 recovery selection; `AutomaticFallback` remains one-way. The separate controller
-below supplies opt-in return selection. Public provisioning, startup-join fallback,
-actual source-error control bridge and broader network/scale qualification remain
-future work.
+below supplies opt-in return selection. The internal membership profile below
+supplies staged startup support. Public
+provisioning/connect admission, actual source-error control bridge and broader
+network/scale qualification remain future work.
 
 ## Explicitly attached automatic multicast return
 
@@ -1179,6 +1185,99 @@ positions, confirm MC by query, and deliver forty more canonical messages across
 key rotation. This remains loopback qualification under explicit host timing,
 truthful activity and pumping contracts, not WAN, startup join, hostile-peer,
 scale or playback-continuity qualification.
+
+## Internal staged-startup membership recovery
+
+`MembershipRecovery::create(service, configuration, provider)` is a separately
+attached internal owner for initial missing membership. Negotiated bit 128
+(`startup_fallback`) requires policy queries; it does not require return control
+or introduce another message kind. The capability/context/body/envelope sizes
+remain 48/192/96/172 bytes, and existing transcript authentication covers the
+selected bit. Legacy masks 31/63/127 and crypto vectors retain their semantics.
+Optional startup support can downgrade; required startup support fails admission
+when absent. All experimental gates remain default-OFF.
+
+**Ordinary public connect still fails a local multicast join failure.** It does
+not expose a usable socket before sender approval. This owner operates on an
+explicitly provisioned staged runtime with frozen conclusions, an active Caller
+hybrid service and an already installed established-peer unicast dispatch route.
+It supplies the internal mechanism; a public setup/provisioning path that can
+safely stage a failed join and await authenticated sender admission is still
+unimplemented. Tests stage membership absence after ordinary connect and before
+DATA, rather than claiming a failed public connect now succeeds.
+
+Attachment requires no active MC route, no previously accepted DATA, an unchanged
+initial core receive floor, matching native generation/conclusions/runtime, and
+a verified UC dispatch route. It is exclusive and single-use for that runtime
+lifetime. A receiver cannot discard prior observations or recreate the owner to
+obtain a fresh startup ledger. The staged setup owner must retain its UC route
+for the primary session lifetime. The membership owner does not own that route.
+
+The explicit local configuration supplies an interface, maximum attempts 1..8,
+a positive total retry timeout <=5 seconds, and positive initial/capped backoff
+with initial<=cap<=1 second and initial<timeout. Defaults fail validation. First
+attempt is immediate; failed preparation schedules a bounded exponential backoff
+from completion, clipped by the original deadline/grant. Every attempt consumes
+an allowance, including unavailable/late preparation. At most one preparation is
+made per pump; concurrent/reentrant pumps return. Snapshots expose attempts,
+failures, phase, joined state, deadline and next wakeup, including grant expiry.
+No retry timer or retry thread is created: the host pumps the owner. One fixed
+owner below 2 KiB holds at most one published receive channel; successful native
+publication uses the ordinary bounded channel/watch/worker machinery.
+
+The default provider opens, reuses, binds and joins a new native UDP socket on the
+explicit local interface. An optional trusted local provider can prepare an
+actually joined, bound, unconnected socket; it must be nonblocking and must not
+publish/start a route. It runs outside owner, protocol, runtime, channel and group
+locks, and can inspect/reenter/close the owner. Use weak back references to avoid
+cycles. Native membership success is the provider's local assertion, not evidence
+of source DATA, contiguous coverage or future reliability. Socket family/port,
+root, original deadline, grant and owner liveness are checked again before
+publication. Late results are discarded; provider latency cannot refresh time.
+A partial/expired publication is terminal and never resets the DATA ledger.
+
+Before a successful join, an opaque runtime-bound ownership identity permits
+validated UC observations while no MC binding exists. It does not admit MC:
+missing/stale/foreign route identities, wrong sources and wrong UC peers retain
+all existing checks. An unrelated route cannot replace a managed route. A
+successful owned registration advances the route epoch while preserving the
+existing UC cache and core receive state. First matching late MC copies can then
+be observed normally; exact coverage still requires an actual current MC binding.
+Revocation after publication permanently hides that owner's observations rather
+than manufacturing a fresh recovery epoch. This owner retries initial join
+failure, not later membership loss or primary-session reconnection.
+
+The existing `AutomaticFallback` can now assess a startup blackout from empty
+local MC history under this explicit profile: fresh source production/emission,
+stall timing and a trusted local initial merge cursor are still required. The
+sender independently approves UC under authorization/history/key/resource and
+budget fences. A source horizon never supplies the cursor; a cursor beyond the
+actual core floor is refused. Join failure alone grants no UC and changes no
+sender policy. Exhausted/expired retries can leave approved UC usable. After a
+successful join, sustained validated MC and the separate `AutomaticReturn` can
+perform the bounded overlap/coverage protocol. Neither OS join success nor a
+local membership state directly requests return to MC.
+
+Close revokes only this owner's MC route/observations and retires its channel
+without waiting for a provider. It does not close the primary UC session,
+cancel a handed-off fallback, request fallback, or change sender policy. Arrange
+approved UC before closing a joined membership if continuous reception is
+required; closing a local MC route while MC remains committed removes that local
+reception path. Already admitted/network DATA cannot be recalled. Root/grant
+expiry, clock regression and external route loss fail closed; a replacement
+session/explicit future lifecycle policy is needed to rearm.
+
+Deterministic tests cover negotiation/dependencies, empty setup/UC-route/history
+requirements, attempts/backoff/deadlines/grants, provider reentry/close/latency,
+UC-only observations and invalid ingress, and trusted startup cursor bounds.
+Native plain/CTR/GCM tests inject two failed preparations, confirm UC from cursor
+zero before any MC observation, perform a real third join, automatically return
+through eight exact overlap positions with all commit replies dropped, deliver
+forty more MC messages across key rotation, then confirm UC and close only the
+owned membership while another forty UC messages remain deliverable. This is
+staged IPv4 loopback qualification; public failed-connect admission, later route
+loss/rejoin, WAN/asymmetric delay, hostile peers, scale and playback continuity
+remain separate gates.
 
 ## Control body
 

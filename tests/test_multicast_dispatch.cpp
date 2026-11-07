@@ -8,6 +8,7 @@
 #include "compat/group_send_coordinator.hpp"
 #include "compat/hybrid_automatic.hpp"
 #include "compat/hybrid_automatic_return.hpp"
+#include "compat/hybrid_membership.hpp"
 #include "compat/runtime_scheduler_service.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/transport_runtime.hpp"
@@ -2109,7 +2110,7 @@ struct NativeHybridPair {
     }
     void start(
         std::optional<hn::CoordinatorBridge::Identity> identity = std::nullopt,
-        bool queries = false, bool returning = false)
+        bool queries = false, bool returning = false, bool startup = false)
     {
         auto o = options(false);
         auto caller_options = options(true);
@@ -2128,6 +2129,14 @@ struct NativeHybridPair {
                 hn::return_control | hn::overlap | hn::policy_query;
             caller_options.policy.required |=
                 hn::return_control | hn::overlap | hn::policy_query;
+        }
+        if (startup) {
+            o.policy.supported |= hn::startup_fallback | hn::policy_query;
+            o.policy.required |= hn::startup_fallback | hn::policy_query;
+            caller_options.policy.supported |=
+                hn::startup_fallback | hn::policy_query;
+            caller_options.policy.required |=
+                hn::startup_fallback | hn::policy_query;
         }
         if (identity) {
             o.stream = identity->stream;
@@ -2503,13 +2512,14 @@ struct NativeReceiverOwners {
     explicit NativeReceiverOwners(CoordinatedNative& f,
         hn::ReportingConfiguration reporting = {},
         std::optional<hn::DetectionConfiguration> detection = std::nullopt,
-        std::optional<hn::ReturnPolicy> returning = std::nullopt)
+        std::optional<hn::ReturnPolicy> returning = std::nullopt,
+        bool startup = false)
         : pair(f)
     {
         const auto identity =
             hn::CoordinatorBridge::identity(f.actor(), pair.listener);
         REQUIRE(identity);
-        pair.start(identity, true, returning.has_value());
+        pair.start(identity, true, returning.has_value(), startup);
         REQUIRE(pair.wait_active());
         hn::Authorization grant;
         {
@@ -3010,6 +3020,177 @@ TEST(multicast_dispatch_native_automatic_return_lost_commits_plain_ctr_gcm)
         });
         REQUIRE(progress->unicast.next <= through);
         REQUIRE_EQ(owners.sender->snapshot().applied, 3U);
+    }
+}
+namespace {
+struct NativeJoinPreparation {
+    unsigned calls = 0;
+    static std::optional<UdpSocket> prepare(
+        void* p, const hn::MembershipRecovery::Request& r) noexcept
+    {
+        auto& self = *static_cast<NativeJoinPreparation*>(p);
+        ++self.calls;
+        if (self.calls <= 2)
+            return {};
+        return hn::MembershipRecovery::prepare(r);
+    }
+};
+}
+TEST(
+    multicast_dispatch_native_startup_join_retry_fallback_and_return_plain_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned profile = 0; profile < 3; ++profile) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (profile == 2)
+            continue;
+#endif
+        CoordinatedNative f(1'000'000, profile != 0, profile == 2);
+        const hn::DetectionConfiguration detection {.report_age_us = 800'000,
+            .maximum_transit_us = 5'000,
+            .stall_us = 40'000,
+            .emission_lifetime_us = 400'000,
+            .recovery_us = 80'000,
+            .recovery_gap_us = 60'000,
+            .hold_down_us = 100'000,
+            .sample_gap_us = 20'000,
+            .recovery_advances = 3};
+        NativeReceiverOwners owners(f, {10'000, 600'000}, detection,
+            hn::ReturnPolicy {1'000'000, 32, 4, 10'000, 200'000}, true);
+        // The normal connect path remains strict. Stage local membership absence
+        // before any DATA to exercise the separately negotiated internal path.
+        const auto group = GroupRegistry::instance().find(f.receiver);
+        std::shared_ptr<robotweax::srt::compat::DatagramChannel> original;
+        {
+            std::lock_guard lock(group->mutex);
+            original = group->dispatch->receive_channel;
+        }
+        REQUIRE(original);
+        original->unregister_connection(
+            owners.pair.c->origin()->dispatch().group_id);
+        REQUIRE(!owners.receiver->data_progress());
+        auto joiner = std::make_shared<NativeJoinPreparation>();
+        auto membership = hn::MembershipRecovery::create(owners.pair.c,
+            {IpEndpoint::loopback(), 4, 1'000'000, 80'000, 160'000},
+            {joiner, NativeJoinPreparation::prepare});
+        REQUIRE(membership);
+        auto cursor = std::make_shared<NativeMergeCursor>();
+        const auto native = owners.pair.c->snapshot();
+        cursor->stream = native.context.selection.stream;
+        cursor->member = native.context.selection.member;
+        cursor->generation = native.generation;
+        auto fallback = hn::AutomaticFallback::create(owners.receiver,
+            {1, 500'000}, {cursor, NativeMergeCursor::resolve});
+        auto returning = hn::AutomaticReturn::create(
+            owners.receiver, {1, 220'000, 8, 10'000, 160'000});
+        REQUIRE(fallback);
+        REQUIRE(returning);
+        const auto socket = SocketRegistry::instance().find(f.listener);
+        std::shared_ptr<robotweax::srt::compat::DatagramChannel> control;
+        {
+            std::lock_guard lock(socket->mutex);
+            control = socket->channel;
+        }
+        HybridWireHook hook;
+        hook.channel = control;
+        hook.drop_commits = true;
+        SendHookReset reset {control};
+        control->set_send_hook_for_testing(HybridWireHook::send, &hook);
+        REQUIRE(f.actor()->declare_source_activity(
+            hn::Activity::producing, 0, 1'000'000));
+        owners.wait([&] {
+            return owners.receiver->snapshot().fresh
+                && owners.receiver->peer_report(800'000).has_value();
+        });
+        int next = 0;
+        auto send_at = std::chrono::steady_clock::now();
+        const auto until = send_at + std::chrono::seconds {2};
+        bool fallback_confirmed = false, joined = false;
+        while (returning->snapshot().phase
+                != hn::AutomaticReturn::Phase::collecting
+            && std::chrono::steady_clock::now() < until) {
+            if (std::chrono::steady_clock::now() >= send_at) {
+                REQUIRE(next < 96);
+                REQUIRE(
+                    f.actor()->declare_source_activity(hn::Activity::producing,
+                        static_cast<std::uint64_t>(next + 1), 1'000'000));
+                REQUIRE_EQ(
+                    f.send(next), static_cast<int>(message(next).size()));
+                ++next;
+                send_at = std::chrono::steady_clock::now()
+                    + std::chrono::milliseconds {12};
+            }
+            fallback->pump();
+            if (!fallback_confirmed
+                && fallback->snapshot().result
+                    == hn::ReceiverBridge::RequestState::confirmed) {
+                fallback_confirmed = true;
+                REQUIRE(!membership->snapshot().joined);
+                REQUIRE_EQ(owners.receiver->snapshot().mode, hn::Mode::unicast);
+                REQUIRE(!owners.receiver->data_progress()->multicast.observed);
+            }
+            if (membership->snapshot().attempts < 2 || fallback_confirmed)
+                membership->pump();
+            joined = joined || membership->snapshot().joined;
+            returning->pump();
+            owners.sender->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        REQUIRE(fallback_confirmed);
+        REQUIRE(joined);
+        REQUIRE_EQ(joiner->calls, 3U);
+        REQUIRE_EQ(membership->snapshot().failures, 2U);
+        REQUIRE_EQ(cursor->calls, 1U);
+        const auto overlap = returning->snapshot();
+        REQUIRE_EQ(overlap.phase, hn::AutomaticReturn::Phase::collecting);
+        const auto through = overlap.boundary + 8;
+        REQUIRE(static_cast<std::uint64_t>(next) <= through);
+        while (static_cast<std::uint64_t>(next) < through) {
+            REQUIRE(f.actor()->declare_source_activity(hn::Activity::producing,
+                static_cast<std::uint64_t>(next + 1), 1'000'000));
+            REQUIRE_EQ(f.send(next), static_cast<int>(message(next).size()));
+            ++next;
+            returning->pump();
+            owners.sender->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds {3});
+        }
+        owners.wait([&] {
+            returning->pump();
+            return returning->snapshot().result
+                == hn::ReceiverBridge::RequestState::confirmed;
+        });
+        REQUIRE_EQ(owners.sender->snapshot().applied, 3U);
+        REQUIRE(hook.commits_dropped.load() >= 3);
+        expect_messages(f.receiver, 0, next);
+        cursor->next_required = next;
+        const auto first = next;
+        for (unsigned i = 0; i < 40; ++i) {
+            REQUIRE_EQ(f.send(next), static_cast<int>(message(next).size()));
+            ++next;
+            owners.receiver->pump();
+            owners.sender->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        expect_messages(f.receiver, first, 40);
+        cursor->next_required = next;
+        REQUIRE_EQ(
+            owners.receiver->request_fallback(static_cast<std::uint64_t>(next)),
+            hn::ReceiverBridge::Admission::accepted);
+        owners.wait([&] {
+            const auto s = owners.receiver->snapshot();
+            return s.fresh && s.mode == hn::Mode::unicast;
+        });
+        membership->close();
+        REQUIRE(!owners.receiver->data_progress());
+        REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
+        const auto uc_first = next;
+        for (unsigned i = 0; i < 40; ++i) {
+            REQUIRE_EQ(f.send(next), static_cast<int>(message(next).size()));
+            ++next;
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        expect_messages(f.receiver, uc_first, 40);
+        REQUIRE_EQ(owners.sender->snapshot().applied, 4U);
     }
 }
 TEST(

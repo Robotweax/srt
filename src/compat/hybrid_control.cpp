@@ -41,6 +41,7 @@ bool valid(const Capability& c) noexcept
         || (c.supported & core_features) != core_features
         || (c.required & core_features) != core_features || !c.prefix_limit
         || c.prefix_limit > maximum_prefix
+        || ((c.supported & startup_fallback) && !(c.supported & policy_query))
         || ((c.supported & return_control)
             && (c.supported & (overlap | policy_query))
                 != (overlap | policy_query)))
