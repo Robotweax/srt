@@ -5216,6 +5216,14 @@ struct HybridFaultLink {
     Queue::Rules auxiliary_rules, data_rules;
     std::atomic<bool> drop_commits = true, fatal_data = false;
     std::atomic<std::uint32_t> policy_delay_us = 0;
+    std::optional<IpEndpoint> selected_aux_peer;
+    std::atomic<bool> drop_selected_aux = false;
+    std::atomic<unsigned> selected_aux_drops = 0, bypassed_aux = 0;
+    void select_aux_peer(IpEndpoint peer)
+    {
+        std::lock_guard lock(mutex);
+        selected_aux_peer = peer;
+    }
     std::atomic<unsigned> commits_dropped = 0, io_errors = 0,
                           policy_released = 0, reordered = 0;
     std::atomic<std::uint64_t> max_lateness_us = 0;
@@ -5313,6 +5321,16 @@ struct HybridFaultLink {
         if (!payload && !aux)
             return self.channel->socket.send_to(
                 bytes, peer); // HS/KM/ACK/NAK unchanged.
+        bool selected = false, matches = true;
+        if (aux) {
+            std::lock_guard lock(self.mutex);
+            selected = self.selected_aux_peer.has_value();
+            matches = !selected || peer == *self.selected_aux_peer;
+        }
+        if (aux && selected && matches && self.drop_selected_aux.load()) {
+            ++self.selected_aux_drops;
+            return {.bytes_transferred = bytes.size()};
+        }
         if (payload && self.fatal_data.load())
             return {.error = Error::io_error, .system_error = EIO};
         bool policy_reply = false;
@@ -5333,6 +5351,10 @@ struct HybridFaultLink {
                     }
                 }
             }
+        }
+        if (aux && selected && !matches) {
+            ++self.bypassed_aux;
+            return self.channel->socket.send_to(bytes, peer);
         }
         std::lock_guard lock(self.mutex);
         auto rules = payload ? self.data_rules : self.auxiliary_rules;
@@ -5679,5 +5701,354 @@ TEST(hybrid_network_original_connect_deadline_survives_delayed_exchange)
     std::this_thread::sleep_for(std::chrono::milliseconds {250});
     REQUIRE(srt_getsockstate(receiver) != SRTS_CONNECTED);
     REQUIRE_EQ(net.startup.caller->joins.load(), 0U);
+}
+#endif
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+namespace {
+struct HybridMultiReceiver {
+    SRTSOCKET id = SRT_INVALID_SOCK;
+    std::shared_ptr<hn::StartupSession> owner;
+    std::shared_ptr<StartupProvision> provider;
+    std::uint64_t first = 0, read_next = 0, initial_epoch = 0;
+};
+struct HybridMultiScenario {
+    HybridNetworkFixture net;
+    std::unique_ptr<CoordinatedNative> stream;
+    std::vector<HybridMultiReceiver> peers;
+    unsigned mode;
+    int next = 0;
+    unsigned healthy_checks = 0;
+    std::vector<std::size_t> monitored;
+    explicit HybridMultiScenario(unsigned profile)
+        : mode(profile)
+    {
+        net.startup.source->expiry =
+            hn::NativeService::monotonic_now() + 10'000'000;
+        net.startup.caller->expiry = net.startup.source->expiry;
+        stream =
+            std::make_unique<CoordinatedNative>(1'000'000, mode != 0, mode == 2,
+                0, 200, true, false, HybridNetworkFixture::configure, &net);
+        peers.push_back(describe(stream->receiver, net.startup.caller));
+        net.install_caller(stream->receiver);
+        net.multicast.install(stream->source());
+    }
+    HybridMultiReceiver describe(
+        SRTSOCKET id, std::shared_ptr<StartupProvision> provider)
+    {
+        auto owner = startup_owner(id);
+        REQUIRE(owner);
+        hybrid_network_wait([&] {
+            return owner->membership()->snapshot().joined;
+        });
+        const auto data = owner->receiver()->data_progress();
+        REQUIRE(data);
+        return {id, owner, std::move(provider), data->origin, data->origin,
+            owner->membership()->snapshot().route_epoch};
+    }
+    IpEndpoint endpoint(SRTSOCKET id)
+    {
+        const auto group = GroupRegistry::instance().find(id);
+        SRTSOCKET child;
+        {
+            std::lock_guard lock(group->mutex);
+            child = group->members.front().public_data.id;
+        }
+        const auto r = SocketRegistry::instance().find(child);
+        std::lock_guard lock(r->mutex);
+        return r->has_connected_local_endpoint ? r->connected_local_endpoint
+                                               : r->local_endpoint;
+    }
+    bool key_ready(SRTSOCKET id)
+    {
+        if (!mode)
+            return true;
+        const auto target = endpoint(id);
+        const auto group = GroupRegistry::instance().find(stream->sender);
+        std::vector<SRTSOCKET> children;
+        {
+            std::lock_guard lock(group->mutex);
+            for (const auto& m : group->members)
+                children.push_back(m.public_data.id);
+        }
+        for (auto child : children) {
+            auto r = SocketRegistry::instance().find(child);
+            if (!r)
+                continue;
+            bool matches = false;
+            {
+                std::lock_guard lock(r->mutex);
+                matches = r->peer_endpoint == target;
+            }
+            if (matches) {
+                int state = -1, size = sizeof(state);
+                return srt_getsockflag(child, SRTO_SNDKMSTATE, &state, &size)
+                    == 0
+                    && state == SRT_KM_S_SECURED;
+            }
+        }
+        return false;
+    }
+    SRTSOCKET attempt(int* result = nullptr)
+    {
+        net.startup.caller = std::make_shared<StartupProvision>();
+        net.startup.caller->join_success = true;
+        net.startup.caller->expiry =
+            hn::NativeService::monotonic_now() + 10'000'000;
+        return make_receiver(stream->peers, stream->bound, mode != 0, mode == 2,
+            200, true, false, false, HybridNetworkFixture::configure, &net,
+            result);
+    }
+    void add()
+    {
+        const auto id = attempt();
+        auto p = describe(id, net.startup.caller);
+        REQUIRE_EQ(p.first, static_cast<std::uint64_t>(next));
+        hybrid_network_wait([&] {
+            return key_ready(id);
+        });
+        peers.push_back(std::move(p));
+    }
+    void monitor()
+    {
+        for (auto index : monitored) {
+            const auto r = peers[index].owner->receiver()->snapshot();
+            REQUIRE(r.fresh);
+            REQUIRE(!r.closed);
+            REQUIRE_EQ(srt_getsockstate(peers[index].id), SRTS_CONNECTED);
+            ++healthy_checks;
+        }
+    }
+    void read_all()
+    {
+        for (auto& p : peers) {
+            while (p.read_next < static_cast<std::uint64_t>(next)) {
+                std::array<char, 256> data {};
+                const auto expected = message(static_cast<int>(p.read_next));
+                const auto n = srt_recvmsg(p.id, data.data(), data.size());
+                if (n != static_cast<int>(expected.size())
+                    || !std::equal(
+                        expected.begin(), expected.end(), data.begin()))
+                    throw std::runtime_error(
+                        "multi DATA peer=" + std::to_string(&p - peers.data())
+                        + " expected=" + std::to_string(p.read_next)
+                        + " received=" + std::to_string(n) + " error="
+                        + std::to_string(srt_getlasterror(nullptr)));
+                ++p.read_next;
+                monitor();
+            }
+        }
+    }
+    void burst(unsigned count, bool drain = true)
+    {
+        const auto uc_saved = net.source.payload_rules(),
+                   mc_saved = net.multicast.payload_rules();
+        for (unsigned i = 0; i < count; ++i) {
+            if (i + 2 >= count) {
+                auto uc = uc_saved, mc = mc_saved;
+                uc.drop_every = mc.drop_every = 0;
+                uc.drop_first = mc.drop_first = 0;
+                net.source.payload_rules(uc);
+                net.multicast.payload_rules(mc);
+            }
+            REQUIRE_EQ(
+                stream->send(next), static_cast<int>(message(next).size()));
+            ++next;
+            monitor();
+            std::this_thread::sleep_for(std::chrono::milliseconds {3});
+        }
+        if (drain)
+            read_all();
+        net.source.payload_rules(uc_saved);
+        net.multicast.payload_rules(mc_saved);
+    }
+    void multicast(std::size_t index)
+    {
+        auto receiver = peers[index].owner->receiver();
+        net.multicast.rules({}, {2'000, 6'000, 0, 3, 29});
+        REQUIRE_EQ(receiver->request_overlap(),
+            hn::ReceiverBridge::Admission::accepted);
+        hybrid_network_wait([&] {
+            auto s = receiver->snapshot();
+            return s.fresh && s.mode == hn::Mode::overlap;
+        });
+        const auto b = receiver->snapshot().commit_position;
+        REQUIRE_EQ(b, static_cast<std::uint64_t>(next));
+        burst(8, false);
+        std::optional<hn::CoverageProof> proof;
+        hybrid_network_wait([&] {
+            proof = receiver->coverage_proof(b + 8, 200'000);
+            return proof.has_value();
+        });
+        REQUIRE_EQ(receiver->request_multicast(*proof),
+            hn::ReceiverBridge::Admission::accepted);
+        hybrid_network_wait([&] {
+            auto s = receiver->snapshot();
+            return s.fresh && s.mode == hn::Mode::multicast;
+        });
+        read_all();
+        net.multicast.rules({}, {2'000, 6'000, 11, 3, 29});
+    }
+    void isolate_first()
+    {
+        net.source.select_aux_peer(endpoint(peers[0].id));
+        net.source.drop_selected_aux = true;
+        hybrid_network_wait([&] {
+            return !peers[0].owner->receiver()->snapshot().fresh;
+        });
+        REQUIRE(net.source.selected_aux_drops.load() > 0);
+    }
+    void check_links()
+    {
+        for (auto* link : {&net.source, &net.caller, &net.multicast}) {
+            REQUIRE_EQ(link->io_errors.load(), 0U);
+            REQUIRE_EQ(link->stats().overflows, 0U);
+            REQUIRE_EQ(link->stats(true).overflows, 0U);
+        }
+        REQUIRE(net.source.bypassed_aux.load() > 0);
+    }
+};
+}
+TEST(
+    hybrid_network_multi_receiver_control_loss_does_not_stall_healthy_peers_plain_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        HybridMultiScenario f(mode);
+        f.add();
+        f.add();
+        REQUIRE(wait_for_members(f.stream->sender, 3, mode != 0));
+        f.multicast(2);
+        f.monitored = {1, 2};
+        f.burst(40);
+        const auto b_epoch =
+            f.peers[1].owner->membership()->snapshot().route_epoch;
+        const auto c_epoch =
+            f.peers[2].owner->membership()->snapshot().route_epoch;
+        const auto b_revision =
+            f.peers[1].owner->receiver()->snapshot().revision;
+        const auto c_revision =
+            f.peers[2].owner->receiver()->snapshot().revision;
+        const auto b_runtime = hybrid_runtime(f.peers[1].id),
+                   c_runtime = hybrid_runtime(f.peers[2].id);
+        f.isolate_first();
+        f.burst(40);
+        auto a = f.peers[0].owner;
+        const auto attempts = a->membership()->snapshot().attempts;
+        REQUIRE(a->membership()->report_loss());
+        f.peers[0].provider->recovery_failures = 2;
+        f.burst(40);
+        REQUIRE_EQ(a->membership()->snapshot().attempts, attempts);
+        REQUIRE(!a->membership()->snapshot().joined);
+        f.net.source.drop_selected_aux = false;
+        hybrid_network_wait([&] {
+            return a->membership()->snapshot().joined;
+        });
+        REQUIRE_EQ(a->membership()->snapshot().recoveries, 1U);
+        REQUIRE_EQ(a->membership()->snapshot().failures, 2U);
+        f.burst(40);
+        f.check_links();
+        REQUIRE_EQ(f.next, 168);
+        REQUIRE_EQ(f.stream->actor()->snapshot().unicast_members, 2U);
+        REQUIRE_EQ(
+            f.peers[1].owner->membership()->snapshot().route_epoch, b_epoch);
+        REQUIRE_EQ(
+            f.peers[2].owner->membership()->snapshot().route_epoch, c_epoch);
+        REQUIRE_EQ(f.stream->actor()->snapshot().detached_members, 0U);
+        REQUIRE_EQ(
+            f.peers[1].owner->receiver()->snapshot().mode, hn::Mode::unicast);
+        REQUIRE_EQ(
+            f.peers[2].owner->receiver()->snapshot().mode, hn::Mode::multicast);
+        REQUIRE_EQ(
+            f.peers[1].owner->receiver()->snapshot().revision, b_revision);
+        REQUIRE_EQ(
+            f.peers[2].owner->receiver()->snapshot().revision, c_revision);
+        REQUIRE(hybrid_runtime(f.peers[1].id) == b_runtime);
+        REQUIRE(hybrid_runtime(f.peers[2].id) == c_runtime);
+        for (const auto& p : f.peers) {
+            REQUIRE_EQ(p.read_next, 168U);
+            REQUIRE_EQ(hybrid_runtime(p.id)
+                           ->statistics(false, false)
+                           .total.received_unique.packets,
+                168U);
+        }
+        std::fprintf(stdout,
+            "[HYBRID_MULTI] "
+            "{\"scenario\":0,\"profile\":%u,\"source_messages\":168,\"received_"
+            "messages\":504,\"data_receivers\":3,\"healthy_control_checks\":%u,"
+            "\"isolated_aux_drops\":%u,\"bypassed_aux\":%u,\"rejoin_failures\":"
+            "2,\"uc_members\":2}\n",
+            mode, f.healthy_checks, f.net.source.selected_aux_drops.load(),
+            f.net.source.bypassed_aux.load());
+    }
+}
+TEST(
+    hybrid_network_multi_receiver_stale_control_retains_quota_until_real_return_plain_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        HybridMultiScenario f(mode);
+        f.add();
+        f.add();
+        f.add();
+        REQUIRE(wait_for_members(f.stream->sender, 4, mode != 0));
+        f.monitored = {1, 2, 3};
+        f.isolate_first();
+        REQUIRE_EQ(f.stream->actor()->snapshot().unicast_reservations, 4U);
+        int result = 0;
+        const auto rejected = f.attempt(&result);
+        auto rejected_provider = f.net.startup.caller;
+        REQUIRE_EQ(result, SRT_ERROR);
+        REQUIRE(srt_getsockstate(rejected) != SRTS_CONNECTED);
+        REQUIRE_EQ(rejected_provider->joins.load(), 0U);
+        REQUIRE_EQ(f.stream->actor()->snapshot().unicast_members, 4U);
+        f.burst(40);
+        f.monitored = {2, 3};
+        f.multicast(1);
+        hybrid_network_wait([&] {
+            return f.stream->actor()->snapshot().unicast_reservations == 3;
+        });
+        f.add();
+        REQUIRE_EQ(f.peers.back().first, 48U);
+        f.monitored = {1, 2, 3, 4};
+        REQUIRE_EQ(f.stream->actor()->snapshot().unicast_members, 4U);
+        result = 0;
+        const auto refused_again = f.attempt(&result);
+        REQUIRE_EQ(result, SRT_ERROR);
+        REQUIRE(srt_getsockstate(refused_again) != SRTS_CONNECTED);
+        REQUIRE_EQ(f.net.startup.caller->joins.load(), 0U);
+        f.burst(40);
+        f.check_links();
+        REQUIRE_EQ(f.next, 88);
+        REQUIRE_EQ(f.stream->actor()->snapshot().unicast_reservations, 4U);
+        REQUIRE(!f.peers[0].owner->receiver()->snapshot().fresh);
+        for (std::size_t i = 0; i < f.peers.size(); ++i) {
+            const auto& p = f.peers[i];
+            REQUIRE_EQ(p.read_next, 88U);
+            REQUIRE_EQ(p.owner->receiver()->snapshot().mode,
+                i == 1 ? hn::Mode::multicast : hn::Mode::unicast);
+            REQUIRE_EQ(hybrid_runtime(p.id)
+                           ->statistics(false, false)
+                           .total.received_unique.packets,
+                88U - p.first);
+        }
+        std::fprintf(stdout,
+            "[HYBRID_MULTI] "
+            "{\"scenario\":1,\"profile\":%u,\"source_messages\":88,\"received_"
+            "messages\":392,\"data_receivers\":5,\"healthy_control_checks\":%u,"
+            "\"isolated_aux_drops\":%u,\"bypassed_aux\":%u,\"rejected_"
+            "callers\":2,\"late_origin\":48,\"uc_members\":4,\"uc_"
+            "reservations\":4}\n",
+            mode, f.healthy_checks, f.net.source.selected_aux_drops.load(),
+            f.net.source.bypassed_aux.load());
+    }
 }
 #endif

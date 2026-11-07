@@ -1605,6 +1605,59 @@ sustained overload/fairness, large member counts, other platforms or uninterrupt
 playback. Next qualification should expand the declared latency/traffic envelope
 and loss observability deliberately before public provisioning or release claims.
 
+### Multiple receivers under selective control loss
+
+The same serial network gate also runs two multi-receiver scenarios across
+plaintext, CTR and GCM. The source-side test link can select one Caller endpoint
+for auxiliary-control impairment while forwarding other endpoints' non-commit
+control directly. This filtering is test-local and preserves the original UDP
+endpoints and packet contents. All commit replies remain deliberately dropped,
+so healthy receivers also reconcile transitions through correlated queries.
+Primary handshake, KM, ACK and NAK handling is unchanged. No production policy,
+wire field, quota, scheduler or credential rule is modified by these tests.
+
+The first scenario has three live DATA receivers: two on approved UC and one on
+confirmed MC. One UC receiver's auxiliary replies are blackholed until its policy
+confirmation becomes stale. The other two receivers retain fresh control while
+all three consume the same stream through periodic DATA loss, reordering,
+duplication and retryable sends. The affected receiver then reports membership
+loss; no new preparation attempt occurs while UC confirmation is stale. Restoring
+its replies permits fresh confirmation, two failed preparations and a real rejoin.
+Each receiver consumes 168 canonical messages across key rotations. The two
+unaffected receivers keep their runtime identities, policy modes/revisions and
+membership epochs; no member detaches. This qualifies that particular selective
+fault sequence, not adversarial-member or scheduler-fairness isolation.
+
+The second scenario fills the existing four-member UC admission quota. One
+receiver's stale control does not release its committed UC lease: an additional
+Caller fails admission and never joins. The four established receivers continue
+receiving DATA. A healthy receiver then completes exact eight-position overlap
+and return to MC. Only after its real UC reservation drains does a fresh Caller
+successfully join at absolute stream position 48. This late receiver has its own
+new root and confirmed initial UC admission, and its sender key state is ready
+before more DATA is produced. A further Caller is rejected when the four UC
+reservations are occupied again. The four original receivers each consume 88
+canonical messages, and the late receiver consumes positions 48 through 87: 392
+successful application deliveries per encryption profile. The selected receiver
+remains stale, while the other four receivers retain fresh control and the
+expected UC/MC modes. Rejected Callers record no membership preparation.
+
+`HYBRID_MULTI` JSON records identify scenario/profile, source and received message
+counts, DATA receiver count, healthy-control checks, selectively dropped replies,
+bypassed control and quota/recovery outcomes. Healthy-path link I/O errors and
+queue overflows must remain zero. Synthetic grants are explicitly 10 seconds for
+these multi-receiver fixtures; operation/retry and membership deadlines retain
+their existing bounds. DATA bursts retain the earlier un-dropped tail witnesses,
+and proof observations precede application playout. No isolated tail-loss or
+delayed/reordered-KM claim is added.
+
+This is controlled Darwin IPv4 loopback evidence for three or five live DATA
+receivers with at most four UC leases, not general member-scale, overload,
+hostile-peer, physical/WAN, cross-platform or uninterrupted-playback qualification.
+The same synthetic credentials/shared group keys retain their existing security
+limits. Larger populations, stronger traffic contention and delayed KM remain
+separate qualification work.
+
 ## Control body
 
 Every control body is exactly 96 bytes.
