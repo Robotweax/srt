@@ -3,6 +3,7 @@
 // group. The administratively scoped group 239.255.133.0/24 with hop limit 0
 // and the loopback interface keeps every datagram on this host.
 #include "test.hpp"
+#include "hybrid_fault_link.hpp"
 
 #include "compat/group_registry.hpp"
 #include "compat/group_send_coordinator.hpp"
@@ -30,6 +31,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -2368,6 +2370,7 @@ struct StartupHooks {
     hn::ReportingConfiguration reporting;
     std::uint32_t maximum_recoveries = 0;
     std::optional<hn::ReturnPolicy> returning;
+    bool network_timing = false;
     static void configure(void* p, SRTSOCKET id, bool caller)
     {
         auto& self = *static_cast<StartupHooks*>(p);
@@ -2380,6 +2383,16 @@ struct StartupHooks {
         if (self.returning) {
             options.native.policy.supported |= hn::return_control | hn::overlap;
             options.source.returning = self.returning;
+        }
+        if (self.network_timing) {
+            options.admission_timeout_us = 1'500'000;
+            options.native.timeout_us = 600'000;
+            options.native.retry_interval_us = 20'000;
+            options.receiver.retry_interval_us = 20'000;
+            options.receiver.round_timeout_us = 120'000;
+            options.receiver.operation_timeout_us = 600'000;
+            options.receiver.confirmation_lifetime_us = 250'000;
+            options.membership.timeout_us = 1'000'000;
         }
         if (self.connect_timeout) {
             options.admission_timeout_us = 1'000'000;
@@ -5190,5 +5203,481 @@ TEST(
         REQUIRE(hooks.wire.commits_dropped.load() >= 6);
         REQUIRE_EQ(membership->snapshot().losses, 1U);
     }
+}
+#endif
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+namespace {
+struct HybridFaultLink {
+    using Queue = robotweax::srt::test::HybridFaultQueue;
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+    mutable std::mutex mutex;
+    Queue auxiliary, data;
+    Queue::Rules auxiliary_rules, data_rules;
+    std::atomic<bool> drop_commits = true, fatal_data = false;
+    std::atomic<std::uint32_t> policy_delay_us = 0;
+    std::atomic<unsigned> commits_dropped = 0, io_errors = 0,
+                          policy_released = 0, reordered = 0;
+    std::atomic<std::uint64_t> max_lateness_us = 0;
+    std::array<std::uint64_t, 2> last_ordinal {};
+    static std::optional<hn::Kind> body_kind(std::span<const std::byte> bytes)
+    {
+        const auto p = decode_packet(bytes);
+        if (!p || p.packet.kind != PacketKind::control
+            || p.packet.control.subtype != authenticated_control_subtype
+            || !hn::native_candidate(p.packet))
+            return {};
+        const auto body = p.packet.payload;
+        if (body.size() < 44)
+            return {};
+        const auto inner = decode_packet(body.subspan(12, body.size() - 44));
+        hn::Message message;
+        if (inner && hn::decode(inner.packet.payload, message))
+            return message.kind;
+        return {};
+    }
+    std::jthread worker;
+    static std::uint64_t now()
+    {
+        return hn::NativeService::monotonic_now();
+    }
+    void install(std::shared_ptr<robotweax::srt::compat::DatagramChannel> c)
+    {
+        REQUIRE(!channel);
+        channel = std::move(c);
+        channel->set_send_hook_for_testing(send, this);
+        worker = std::jthread([this](std::stop_token stop) {
+            while (!stop.stop_requested()) {
+                for (unsigned i = 0; i < 16; ++i) {
+                    std::optional<Queue::Packet> p;
+                    unsigned path = 0;
+                    {
+                        std::lock_guard lock(mutex);
+                        p = auxiliary.take(now());
+                        if (!p) {
+                            p = data.take(now());
+                            path = 1;
+                        }
+                    }
+                    if (!p)
+                        break;
+                    if (p->ordinal < last_ordinal[path])
+                        ++reordered;
+                    last_ordinal[path] =
+                        std::max(last_ordinal[path], p->ordinal);
+                    max_lateness_us =
+                        std::max(max_lateness_us.load(), now() - p->due_us);
+                    const auto bytes = std::span {p->bytes}.first(p->size);
+                    const auto result = channel->socket.send_to(bytes, p->peer);
+                    if (!result)
+                        ++io_errors;
+                    else if (const auto kind = body_kind(bytes); kind
+                        && (*kind == hn::Kind::delivery_commit
+                            || *kind == hn::Kind::delivery_status))
+                        ++policy_released;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds {1});
+            }
+        });
+    }
+    void rules(Queue::Rules aux, Queue::Rules payload)
+    {
+        REQUIRE(Queue::valid(aux));
+        REQUIRE(Queue::valid(payload));
+        std::lock_guard lock(mutex);
+        auxiliary_rules = aux;
+        data_rules = payload;
+    }
+    Queue::Rules payload_rules() const
+    {
+        std::lock_guard lock(mutex);
+        return data_rules;
+    }
+    void payload_rules(Queue::Rules r)
+    {
+        std::lock_guard lock(mutex);
+        data_rules = r;
+    }
+    Queue::Snapshot stats(bool payload = false) const
+    {
+        std::lock_guard lock(mutex);
+        return payload ? data.snapshot() : auxiliary.snapshot();
+    }
+    static UdpIoResult send(
+        std::span<const std::byte> bytes, IpEndpoint peer, void* p) noexcept
+    {
+        auto& self = *static_cast<HybridFaultLink*>(p);
+        const auto packet = decode_packet(bytes);
+        const bool payload = packet && packet.packet.kind == PacketKind::data;
+        const bool aux = packet && hn::native_candidate(packet.packet);
+        if (!payload && !aux)
+            return self.channel->socket.send_to(
+                bytes, peer); // HS/KM/ACK/NAK unchanged.
+        if (payload && self.fatal_data.load())
+            return {.error = Error::io_error, .system_error = EIO};
+        bool policy_reply = false;
+        if (aux
+            && packet.packet.control.subtype == authenticated_control_subtype) {
+            const auto body = packet.packet.payload;
+            if (body.size() >= 44) {
+                const auto inner =
+                    decode_packet(body.subspan(12, body.size() - 44));
+                hn::Message message;
+                if (inner && hn::decode(inner.packet.payload, message)) {
+                    policy_reply = message.kind == hn::Kind::delivery_commit
+                        || message.kind == hn::Kind::delivery_status;
+                    if (message.kind == hn::Kind::delivery_commit
+                        && self.drop_commits.load()) {
+                        ++self.commits_dropped;
+                        return {.bytes_transferred = bytes.size()};
+                    }
+                }
+            }
+        }
+        std::lock_guard lock(self.mutex);
+        auto rules = payload ? self.data_rules : self.auxiliary_rules;
+        if (policy_reply && self.policy_delay_us.load()) {
+            rules.delay_us = self.policy_delay_us.load();
+            rules.alternating_delay_us = 0;
+        }
+        const auto r = (payload ? self.data : self.auxiliary)
+                           .enqueue(bytes, peer, now(), rules);
+        if (r == Queue::Result::accepted)
+            return {.bytes_transferred = bytes.size()};
+        return {.error = r == Queue::Result::retry ? Error::would_block
+                                                   : Error::io_error};
+    }
+    ~HybridFaultLink()
+    {
+        if (channel)
+            channel->set_send_hook_for_testing(nullptr, nullptr);
+        if (worker.joinable()) {
+            worker.request_stop();
+            worker.join();
+        }
+    }
+};
+struct HybridNetworkFixture {
+    StartupHooks startup;
+    HybridFaultLink source, caller, multicast;
+    HybridNetworkFixture()
+    {
+        startup.network_timing = true;
+        startup.maximum_recoveries = 1;
+        startup.reporting = {20'000, 600'000};
+        startup.caller->join_success = true;
+        startup.returning =
+            hn::ReturnPolicy {1'500'000, 32, 4, 10'000, 300'000};
+        source.rules({8'000, 16'000, 7, 3, 29, 1}, {4'000, 6'000, 13, 5, 29});
+        caller.rules({1'000, 2'000, 11, 4, 31}, {});
+        multicast.rules({}, {2'000, 6'000, 11, 3, 29});
+    }
+    static void configure(void* p, SRTSOCKET id, bool is_caller)
+    {
+        auto& self = *static_cast<HybridNetworkFixture*>(p);
+        StartupHooks::configure(&self.startup, id, is_caller);
+        if (!is_caller)
+            self.source.install(self.startup.wire.channel);
+    }
+    void install_caller(SRTSOCKET id)
+    {
+        const auto group = GroupRegistry::instance().find(id);
+        SRTSOCKET child;
+        {
+            std::lock_guard lock(group->mutex);
+            child = group->members.front().public_data.id;
+        }
+        const auto socket = SocketRegistry::instance().find(child);
+        std::shared_ptr<robotweax::srt::compat::DatagramChannel> c;
+        {
+            std::lock_guard lock(socket->mutex);
+            c = socket->channel;
+        }
+        caller.install(std::move(c));
+    }
+};
+template <class F> void hybrid_network_wait(F predicate)
+{
+    const auto until =
+        std::chrono::steady_clock::now() + std::chrono::seconds {3};
+    while (!predicate() && std::chrono::steady_clock::now() < until)
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    REQUIRE(predicate());
+}
+}
+TEST(
+    hybrid_network_asymmetric_impairment_preserves_integrated_lifecycle_plain_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        HybridNetworkFixture net;
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2, 0, 200, true,
+            false, HybridNetworkFixture::configure, &net);
+        net.install_caller(f.receiver);
+        net.multicast.install(f.source());
+        auto owner = startup_owner(f.receiver);
+        REQUIRE(owner);
+        auto receiver = owner->receiver();
+        auto membership = owner->membership();
+        const auto await = [&](const char* label, auto predicate) {
+            try {
+                hybrid_network_wait(predicate);
+            } catch (const std::exception&) {
+                const auto r = receiver->snapshot();
+                const auto m = membership->snapshot();
+                throw std::runtime_error(std::string("network stage=") + label
+                    + " mode=" + std::to_string(static_cast<unsigned>(r.mode))
+                    + " revision=" + std::to_string(r.revision)
+                    + " fresh=" + std::to_string(r.fresh)
+                    + " closed=" + std::to_string(r.closed) + " return="
+                    + std::to_string(static_cast<unsigned>(r.returning))
+                    + " fallback="
+                    + std::to_string(static_cast<unsigned>(r.fallback))
+                    + " member_phase="
+                    + std::to_string(static_cast<unsigned>(m.phase))
+                    + " source_fail="
+                    + std::to_string(f.actor()->snapshot().failed) + " queued="
+                    + std::to_string(net.source.stats().queued) + " source_io="
+                    + std::to_string(net.source.io_errors.load()));
+            }
+        };
+        await("initial join", [&] {
+            return membership->snapshot().joined;
+        });
+        int next = 0;
+        const auto read = [&](int first, unsigned n) {
+            for (int index = first; index < first + static_cast<int>(n);
+                ++index) {
+                std::array<char, 256> bytes {};
+                const auto expected = message(index);
+                const int received =
+                    srt_recvmsg(f.receiver, bytes.data(), bytes.size());
+                if (received != static_cast<int>(expected.size())
+                    || !std::equal(
+                        expected.begin(), expected.end(), bytes.begin())) {
+                    const auto r = receiver->snapshot();
+                    throw std::runtime_error(
+                        "network DATA first=" + std::to_string(first)
+                        + " expected=" + std::to_string(index)
+                        + " received=" + std::to_string(received) + " error="
+                        + std::to_string(srt_getlasterror(nullptr)) + " text="
+                        + std::string(bytes.data(), received > 0 ? received : 0)
+                        + " mode="
+                        + std::to_string(static_cast<unsigned>(r.mode))
+                        + " revision=" + std::to_string(r.revision)
+                        + " UCdrops="
+                        + std::to_string(net.source.stats(true).dropped)
+                        + " MCdrops="
+                        + std::to_string(net.multicast.stats(true).dropped));
+                }
+            }
+        };
+        const auto burst = [&](unsigned n, bool drain = true) {
+            const int first = next;
+            const auto saved_uc = net.source.payload_rules(),
+                       saved_mc = net.multicast.payload_rules();
+            for (unsigned i = 0; i < n; ++i) {
+                if (i + 2 >= n) {
+                    auto uc = saved_uc, mc = saved_mc;
+                    uc.drop_every = mc.drop_every = 0;
+                    uc.drop_first = mc.drop_first = 0;
+                    net.source.payload_rules(uc);
+                    net.multicast.payload_rules(mc);
+                }
+                REQUIRE_EQ(
+                    f.send(next), static_cast<int>(message(next).size()));
+                ++next;
+                std::this_thread::sleep_for(std::chrono::milliseconds {3});
+            }
+            if (drain)
+                read(first, n);
+            net.source.payload_rules(saved_uc);
+            net.multicast.payload_rules(saved_mc);
+        };
+        const auto uc = [&] {
+            REQUIRE_EQ(receiver->request_fallback(next),
+                hn::ReceiverBridge::Admission::accepted);
+            await("UC confirmation", [&] {
+                auto s = receiver->snapshot();
+                return s.fresh && s.mode == hn::Mode::unicast;
+            });
+        };
+        const auto mc = [&] {
+            net.multicast.rules({},
+                {2'000, 6'000, 0, 3,
+                    29}); // Complete new-route proof still mandatory.
+            REQUIRE_EQ(receiver->request_overlap(),
+                hn::ReceiverBridge::Admission::accepted);
+            await("overlap confirmation", [&] {
+                auto s = receiver->snapshot();
+                return s.fresh && s.mode == hn::Mode::overlap;
+            });
+            const auto b = receiver->snapshot().commit_position;
+            REQUIRE_EQ(b, static_cast<std::uint64_t>(next));
+            const int first = next;
+            burst(8, false);
+            std::optional<hn::CoverageProof> proof;
+            await("exact MC proof", [&] {
+                proof = receiver->coverage_proof(b + 8, 200'000);
+                return proof.has_value();
+            });
+            REQUIRE_EQ(receiver->request_multicast(*proof),
+                hn::ReceiverBridge::Admission::accepted);
+            await("MC confirmation", [&] {
+                auto s = receiver->snapshot();
+                return s.fresh && s.mode == hn::Mode::multicast;
+            });
+            read(first, 8);
+            net.multicast.rules({}, {2'000, 6'000, 11, 3, 29});
+        };
+        mc();
+        burst(40);
+        const auto epoch = membership->snapshot().route_epoch;
+        REQUIRE(membership->report_loss());
+        net.startup.caller->recovery_failures = 2;
+        uc();
+        burst(40);
+        await("rejoin", [&] {
+            return membership->snapshot().joined;
+        });
+        REQUIRE(membership->snapshot().route_epoch > epoch);
+        REQUIRE_EQ(membership->snapshot().failures, 2U);
+        mc();
+        burst(40);
+        uc();
+        net.multicast.fatal_data = true;
+        burst(1);
+        wait_for_source_failure(f.actor());
+        await("source error report", [&] {
+            auto r = receiver->peer_report(800'000);
+            return r && r->fresh
+                && r->message.activity == hn::Activity::source_failed;
+        });
+        std::array<PolicyActor::Member, 1> members;
+        REQUIRE_EQ(f.actor()->members(members), 1U);
+        const auto old_revision = members[0].revision;
+        const std::array selected {
+            PolicyActor::RecoveryMember {members[0].id, old_revision}};
+        REQUIRE_EQ(recover_native_source(f.actor(), selected).status,
+            PolicyActor::TransitionStatus::applied);
+        await("source recovery confirmation", [&] {
+            auto s = receiver->snapshot();
+            return s.fresh && s.revision == old_revision + 1
+                && s.mode == hn::Mode::unicast;
+        });
+        burst(40);
+        REQUIRE_EQ(f.actor()->snapshot().source_revision, 1U);
+        REQUIRE_EQ(f.actor()->snapshot().unicast_members, 1U);
+        for (auto* link : {&net.source, &net.caller, &net.multicast}) {
+            REQUIRE_EQ(link->io_errors.load(), 0U);
+            for (bool payload : {false, true})
+                REQUIRE_EQ(link->stats(payload).overflows, 0U);
+        }
+        REQUIRE(net.source.stats().dropped > 0);
+        REQUIRE(net.source.stats().duplicates > 0);
+        REQUIRE(net.caller.stats().duplicates > 0);
+        REQUIRE(net.multicast.stats(true).dropped > 0);
+        REQUIRE(net.source.stats(true).dropped > 0);
+        REQUIRE(net.source.commits_dropped.load() >= 7);
+        REQUIRE(net.source.reordered.load() > 0);
+        REQUIRE(net.multicast.reordered.load() > 0);
+        REQUIRE(net.startup.caller->hidden.load());
+        REQUIRE(net.startup.caller->io_hidden.load());
+        for (unsigned index = 0;
+            auto* link : {&net.source, &net.caller, &net.multicast}) {
+            const auto a = link->stats(), d = link->stats(true);
+            std::fprintf(stdout,
+                "[HYBRID_NETWORK] "
+                "{\"profile\":%u,\"link\":%u,\"messages\":%d,\"aux_accepted\":%"
+                "llu,\"aux_dropped\":%llu,\"aux_duplicates\":%llu,\"aux_"
+                "retries\":%llu,\"aux_peak\":%zu,\"data_accepted\":%llu,\"data_"
+                "dropped\":%llu,\"data_duplicates\":%llu,\"data_retries\":%llu,"
+                "\"data_peak\":%zu,\"reordered\":%u,\"max_lateness_us\":%llu}"
+                "\n",
+                mode, index++, next,
+                static_cast<unsigned long long>(a.accepted),
+                static_cast<unsigned long long>(a.dropped),
+                static_cast<unsigned long long>(a.duplicates),
+                static_cast<unsigned long long>(a.retries), a.peak,
+                static_cast<unsigned long long>(d.accepted),
+                static_cast<unsigned long long>(d.dropped),
+                static_cast<unsigned long long>(d.duplicates),
+                static_cast<unsigned long long>(d.retries), d.peak,
+                link->reordered.load(),
+                static_cast<unsigned long long>(link->max_lateness_us.load()));
+        }
+    }
+}
+TEST(hybrid_network_delayed_policy_replies_cannot_revive_closed_startup)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    HybridNetworkFixture net;
+    net.source.drop_commits = false;
+    net.source.policy_delay_us = 250'000;
+    StartupServer server(&net.startup);
+    net.source.install(net.startup.wire.channel);
+    int result = 0;
+    const auto receiver =
+        make_receiver(server.peers, server.bound, false, false, 120, true, true,
+            false, HybridNetworkFixture::configure, &net, &result);
+    REQUIRE(result != SRT_ERROR);
+    const auto sender =
+        server.peers.keep(srt_accept(server.listener, nullptr, nullptr));
+    REQUIRE(sender != SRT_INVALID_SOCK);
+    std::shared_ptr<hn::StartupSession> owner;
+    hybrid_network_wait([&] {
+        owner = startup_owner(receiver);
+        return owner
+            && owner->snapshot().phase == hn::StartupSession::Phase::admitting;
+    });
+    const auto group = GroupRegistry::instance().find(sender);
+    std::shared_ptr<PolicyActor> actor;
+    {
+        std::lock_guard lock(group->mutex);
+        actor = group->dispatch->coordinator;
+    }
+    hybrid_network_wait([&] {
+        return actor->snapshot().unicast_members == 1;
+    });
+    REQUIRE(!owner->snapshot().published);
+    REQUIRE(srt_getsockstate(receiver) != SRTS_CONNECTED);
+    REQUIRE_EQ(net.source.policy_released.load(), 0U);
+    server.peers.drop(receiver);
+    hybrid_network_wait([&] {
+        return net.source.policy_released.load() > 0;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds {50});
+    REQUIRE(!owner->snapshot().published);
+    REQUIRE(owner->snapshot().closed);
+    REQUIRE(srt_getsockstate(receiver) != SRTS_CONNECTED);
+    REQUIRE_EQ(net.startup.caller->joins.load(), 0U);
+}
+TEST(hybrid_network_original_connect_deadline_survives_delayed_exchange)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    HybridNetworkFixture net;
+    net.startup.connect_timeout = 120;
+    net.source.drop_commits = false;
+    net.source.rules({200'000}, {});
+    StartupServer server(&net.startup);
+    net.source.install(net.startup.wire.channel);
+    int result = 0;
+    const auto begin = std::chrono::steady_clock::now();
+    const auto receiver =
+        make_receiver(server.peers, server.bound, false, false, 120, true,
+            false, false, HybridNetworkFixture::configure, &net, &result);
+    REQUIRE_EQ(result, SRT_ERROR);
+    REQUIRE(std::chrono::steady_clock::now() - begin
+        < std::chrono::milliseconds {600});
+    hybrid_network_wait([&] {
+        return net.source.stats().delivered > 0;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds {250});
+    REQUIRE(srt_getsockstate(receiver) != SRTS_CONNECTED);
+    REQUIRE_EQ(net.startup.caller->joins.load(), 0U);
 }
 #endif

@@ -1538,6 +1538,73 @@ IPv4 loopback tests. The managed-loss profile above can be enabled through
 production provisioning, hostile-peer/scale/WAN timing and playback-continuity
 qualification remain future work.
 
+## Repeatable local network and timing qualification
+
+Enabled builds add a separate `robotweax_srt_hybrid_network_tests` CTest gate,
+selected by `--include hybrid_network_`. It has a 30-second aggregate bound and
+`RUN_SERIAL`; it is excluded from the general C++ gate and the existing multicast
+partition, whose timeouts are unchanged. Pure `hybrid_link_` cases run in both
+default and enabled builds. No production source, wire protocol, feature default,
+credential admission rule or public API changes are introduced by this gate.
+
+The test-local link model uses fixed 64-datagram queues per direction/path, each
+holding at most 1,500 bytes per datagram. Test workers forward queued datagrams
+through the original native UDP sockets, preserving packet bytes, authentication
+tags, destination endpoints and source ports. A successful modeled send means the
+emulated link accepted the packet; later queue loss models network loss rather
+than an actual kernel send failure. Deterministic alternating delays induce
+reordering, selected sends duplicate, periodic network loss and an initial burst
+drop exercise reconciliation, and selected attempts return EAGAIN without
+submission. Queue pressure returns retry without partial duplicate admission.
+This is a test harness, not a production transport queue or a physical/WAN link.
+
+The integrated profile applies source auxiliary-control delays of 8/24 ms and
+Caller delays of 1/3 ms, with periodic loss/duplication and retryable sends in both
+directions. UC DATA uses 4/10 ms and MC DATA 2/8 ms, also with periodic loss and
+duplication. Primary handshake, KM, ACK and NAK packets pass unchanged. The
+returned report ages therefore still exclude the emulated link transit, as on a
+real unsynchronized path; this profile makes no claim about arbitrary transit
+beyond the chosen control/freshness budgets. Scheduling lateness is measured and
+logged rather than asserted to have a universal bound.
+
+For each of plaintext, CTR and GCM, the same provisioned connection performs
+startup UC admission under impaired source control, a real membership join,
+fresh overlap/MC return, a DATA burst with recoverable gaps, local membership
+loss, sender-approved UC, two failed preparation attempts and real rejoin,
+another exact overlap/return, then native source failure after fresh UC approval
+and explicit atomic UC-only source recovery. Every commit reply is dropped;
+correlated queries reconcile the actual revisions. Each profile receives 177
+canonical messages across several key rotations. Per-link JSON records include
+accepted/drop/duplicate/retry counts, observed reorder counts, peak queue use and
+maximum worker scheduling lateness. Healthy-path socket I/O errors and queue
+overflows must remain zero.
+
+Overlap proof is collected from validated receive-path observations before
+waiting for application playout; a 200 ms playout delay must not be charged to a
+200 ms proof lifetime. MC network loss is disabled for the exact eight-position
+proof interval, while delay, reordering, duplication and retry still apply.
+Other DATA bursts retain periodic loss and end with two un-dropped witness
+packets (or the sole packet for a one-packet burst). These make earlier missing
+sequences observable to the ordinary reliability path. A lost isolated final
+packet has no later DATA horizon from which to detect the gap: this gate does
+not claim isolated tail-loss recovery or infer an ACK horizon from control
+progress. No DATA/ACK/drop semantics are changed to make the tests pass.
+
+Two negative profiles queue policy replies for 250 ms, close startup after the
+source has committed UC, then actually forward those replies and check that the
+Caller never publishes or joins. Separately, 200 ms exchange delay outlasts an
+original 120 ms connect deadline; late exchange datagrams cannot revive the
+failed connection. The model never rewrites the echoed request reference, native
+root, policy revision or deadline. Close/timeout checks remain separate from
+whether an already accepted remote command committed.
+
+These results qualify only this controlled Darwin IPv4 loopback fault profile
+with synthetic credentials. They do not qualify hostile peers, physical/WAN or
+asymmetric routing, arbitrary jitter/RTT, isolated tail loss, delayed/reordered KM,
+sustained overload/fairness, large member counts, other platforms or uninterrupted
+playback. Next qualification should expand the declared latency/traffic envelope
+and loss observability deliberately before public provisioning or release claims.
+
 ## Control body
 
 Every control body is exactly 96 bytes.
