@@ -414,3 +414,27 @@ TEST(hybrid_detector_policy_revision_change_discards_old_recovery_evidence)
     REQUIRE_EQ(a.recovery_data_advances, 0U);
     REQUIRE(!a.return_candidate);
 }
+
+TEST(
+    hybrid_source_error_detector_accepts_failure_after_end_and_suppresses_transitions)
+{
+    Fixture f;
+    f.input.source->message.activity = hd::Activity::ended;
+    REQUIRE_EQ(f.observe().state, hd::PathDetector::State::ended);
+    f.input.now_us += 10;
+    f.report(0);
+    f.input.source->message.activity = hd::Activity::source_failed;
+    REQUIRE_EQ(f.observe().state, hd::PathDetector::State::source_failed);
+    f.mode(hd::Mode::unicast, 1);
+    f.input.now_us += 10;
+    f.report(0, 1);
+    f.receive(0, 1);
+    const auto state = f.observe();
+    REQUIRE_EQ(state.state, hd::PathDetector::State::source_failed);
+    REQUIRE(!state.fallback_candidate);
+    REQUIRE(!state.return_candidate);
+    f.input.now_us += 10;
+    f.report(0, 2);
+    f.input.source->message.activity = hd::Activity::producing;
+    REQUIRE_EQ(f.observe().reason, hd::PathDetector::Reason::invalid_evidence);
+}

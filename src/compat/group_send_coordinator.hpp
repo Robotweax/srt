@@ -216,6 +216,10 @@ private:
         };
         std::optional<OverlapWindow> overlap_window;
         std::uint64_t expired_overlap_root = 0, expired_overlap_revision = 0;
+        // Exact local recovery receipt, only for an already approved UC lease.
+        std::uint64_t hybrid_root = 0, recovered_hybrid_root = 0,
+                      recovered_member_revision = 0,
+                      recovered_source_revision = 0;
 #endif
     };
     struct Recipient {

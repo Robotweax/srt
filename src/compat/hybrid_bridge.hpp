@@ -43,7 +43,9 @@ public:
         std::uint32_t maximum_attempts = 8;
     };
     struct Snapshot {
-        bool enrolled = false, closed = false;
+        bool enrolled = false, closed = false, source_failed = false,
+             unicast_only = false;
+        std::uint64_t source_recoveries = 0;
         std::uint64_t applied = 0, denied = 0, duplicates = 0, expired = 0,
                       ignored = 0, replies = 0;
         std::uint64_t overlap_expirations = 0, overlap_deadline_us = 0,

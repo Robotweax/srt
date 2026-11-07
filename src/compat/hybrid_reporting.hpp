@@ -9,6 +9,10 @@ public:
     [[nodiscard]] bool declare(Activity, std::uint64_t produced_next,
         std::uint32_t lifetime_us, std::uint64_t now,
         std::uint64_t admitted_next) noexcept;
+    // Actual permanent transport failure may be reported without asserting
+    // production. Admissions are a lower bound on application-produced DATA.
+    [[nodiscard]] ActivityObservation failure(
+        std::uint64_t now, std::uint64_t admitted_next) const noexcept;
     [[nodiscard]] std::optional<ActivityObservation> observe(
         std::uint64_t now, std::uint64_t admitted_next) const noexcept;
 

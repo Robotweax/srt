@@ -177,7 +177,7 @@ void CoordinatorBridge::report() noexcept
         return;
     next_report_ = add(at, c.interval_us);
     ++state_.report_attempts;
-    if (!transact(nullptr) || cancelled_.load()) {
+    if (!transact(nullptr, false) || cancelled_.load()) {
         ++state_.reports_skipped;
         return;
     }
@@ -257,12 +257,36 @@ bool CoordinatorBridge::transact(Entry* entry, bool wake_actor) noexcept
         state_.revision = found->state.revision;
         ++state_.overlap_expirations;
     }
-    if (a.state_.closed || a.state_.failed
-        || a.state_.source_mode != A::SourceMode::multicast
-        || found == a.members_.end() || context.selection.stream != c.generation
+    // Only the actor's exact source-recovery receipt may advance this owner.
+    // An arbitrary external delivery change still invalidates it.
+    if (found != a.members_.end() && state_.enrolled
+        && a.state_.source_mode == A::SourceMode::unicast_only
+        && source_revision_ != UINT64_MAX && state_.revision != UINT64_MAX
+        && a.state_.source_revision == source_revision_ + 1
+        && found->recovered_hybrid_root == service_->state_.generation
+        && found->recovered_source_revision == source_revision_
+        && found->recovered_member_revision == state_.revision
+        && found->state.revision == state_.revision + 1
+        && found->state.delivery == GroupOriginalDelivery::unicast
+        && found->state.detachment == A::Detachment::none
+        && found->unicast_lease) {
+        source_revision_ = a.state_.source_revision;
+        state_.revision = found->state.revision;
+        ++state_.source_recoveries;
+        for (auto& cached : entries_)
+            if (cached.complete && cached.reply.revision < state_.revision)
+                cached.pending = false;
+    }
+    const bool diagnostic_member = found != a.members_.end() && state_.enrolled
+        && a.state_.failed && !a.terminal_failure_
+        && a.state_.source_mode == A::SourceMode::multicast
+        && found->state.detachment == A::Detachment::source_not_submitted;
+    if (a.state_.closed || a.terminal_failure_ || found == a.members_.end()
+        || context.selection.stream != c.generation
         || context.dispatch.group_id != c.group_id
         || context.dispatch.multicast_group != c.destination
-        || found->state.detachment != A::Detachment::none
+        || (found->state.detachment != A::Detachment::none
+            && !diagnostic_member)
         || context.selection.initial_position != found->join_position
         || context.dispatch.initial_sequence != found->join_sequence.value()
         || (state_.enrolled
@@ -274,11 +298,24 @@ bool CoordinatorBridge::transact(Entry* entry, bool wake_actor) noexcept
     std::unique_lock emitter(a.emitter_->mutex_, std::try_to_lock);
     if (!emitter.owns_lock())
         return false;
-    if (a.emitter_->state_.closed
-        || a.emitter_->state_.failure != GroupMulticastEmitter::Failure::none) {
+    const auto failure = a.emitter_->state_.failure;
+    const bool source_failed =
+        failure == GroupMulticastEmitter::Failure::transport
+        || failure == GroupMulticastEmitter::Failure::partial_datagram;
+    const bool unicast_only =
+        a.state_.source_mode == A::SourceMode::unicast_only;
+    if ((!state_.enrolled && (source_failed || unicast_only))
+        || (failure != GroupMulticastEmitter::Failure::none && !source_failed)
+        || (a.state_.failed && !source_failed)
+        || (a.emitter_->state_.closed && !unicast_only)
+        || (unicast_only
+            && (!source_failed || !state_.source_recoveries
+                || found->state.delivery != GroupOriginalDelivery::unicast))) {
         cancelled_.store(true);
         return true;
     }
+    state_.source_failed = source_failed;
+    state_.unicast_only = unicast_only;
     auto guard = R::try_recover_prefix(found->binding, a.state_.next_sequence);
     const auto prefix = guard.result();
     if (prefix.status == R::Status::busy)
@@ -335,6 +372,7 @@ bool CoordinatorBridge::transact(Entry* entry, bool wake_actor) noexcept
         peer_report_ = ReportTracker(
             Kind::path_report, context.selection.initial_position);
         state_.enrolled = true;
+        found->hybrid_root = service_->state_.generation;
         state_.revision = found->state.revision;
         source_revision_ = a.state_.source_revision;
         authorization_->claimed_ = true;
@@ -362,6 +400,8 @@ bool CoordinatorBridge::transact(Entry* entry, bool wake_actor) noexcept
         : GroupOriginalDelivery::unicast;
     if (e.request.kind != Kind::fallback_request && !query && !returning)
         outcome = Outcome::unsupported;
+    else if (!query && source_failed)
+        outcome = Outcome::denied;
     else if (!query && e.request.revision != found->state.revision)
         outcome = Outcome::stale;
     else if (!query && prefix.status != R::Status::ready)
@@ -571,6 +611,8 @@ void CoordinatorBridge::event(const NativeService::Event& event) noexcept
         if (e.request == m) {
             ++state_.duplicates;
             if (e.complete && e.reply.serial
+                && !(state_.source_recoveries
+                    && e.reply.revision < state_.revision)
                 && e.sends < configuration_.maximum_attempts)
                 e.pending = true;
         }
@@ -597,7 +639,9 @@ void CoordinatorBridge::replies() noexcept
         if (!e.occupied || !e.complete || !e.pending || !e.reply.serial)
             continue;
         if (service_->now() >= e.deadline
-            || e.sends >= configuration_.maximum_attempts) {
+            || e.sends >= configuration_.maximum_attempts
+            || (state_.source_recoveries
+                && e.reply.revision < state_.revision)) {
             e.pending = false;
             continue;
         }

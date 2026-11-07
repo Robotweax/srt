@@ -67,6 +67,8 @@ struct SourceDataProgress {
     std::uint64_t stream = 0, member = 0, revision = 0, member_origin = 0,
                   admitted_next = 0, history_floor = 0, observed_at_us = 0;
     DataHighWater multicast, unicast;
+    // Permanent native multicast failure remains true after explicit UC recovery.
+    // This does not describe the surviving primary UC session's health.
     bool source_failed = false, unicast_only = false;
     Mode delivery_mode = Mode::multicast;
     std::optional<ActivityObservation> activity;

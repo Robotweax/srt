@@ -2742,7 +2742,12 @@ TEST(
         } else
             f.f.actor->remove_member(f.receiver.id);
         f.bridge->pump();
-        REQUIRE(f.bridge->snapshot().closed);
+        if (mode == 1) {
+            REQUIRE(!f.bridge->snapshot().closed);
+            REQUIRE(f.bridge->snapshot().source_failed);
+            REQUIRE_EQ(f.reply().outcome, hb::Outcome::denied);
+        } else
+            REQUIRE(f.bridge->snapshot().closed);
         REQUIRE_EQ(f.bridge->snapshot().applied, 0U);
     }
 }
@@ -3310,7 +3315,11 @@ TEST(hybrid_progress_sender_partial_and_failed_data_have_no_success_sample)
         REQUIRE_EQ(f.send(), Status::accepted);
         REQUIRE(!f.actor->data_progress(r.id)->multicast.observed);
         f.pump();
-        REQUIRE(!f.actor->data_progress(r.id));
+        const auto failed = f.actor->data_progress(r.id);
+        REQUIRE(failed);
+        REQUIRE(failed->source_failed);
+        REQUIRE(!failed->multicast.observed);
+        REQUIRE(!failed->unicast.observed);
         REQUIRE(f.actor->snapshot().failed);
         Fixture u;
         Receiver receiver(u);
@@ -3392,6 +3401,139 @@ TEST(hybrid_progress_sender_prefix_repairs_are_not_unicast_originals)
         REQUIRE_EQ(s->unicast.observed, !submitted);
         if (!submitted)
             REQUIRE_EQ(s->unicast.next, 1U);
+    }
+}
+#endif
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+TEST(
+    hybrid_source_error_bridge_reports_failed_multicast_and_answers_read_only_queries)
+{
+    for (bool partial : {false, true}) {
+        BridgeFixture f(256, true, 4, {100, 1000});
+        REQUIRE_EQ(f.f.send(), Status::accepted);
+        f.f.output.partial = partial;
+        if (!partial)
+            f.f.output.error = Error::io_error;
+        f.f.pump();
+        REQUIRE(f.f.actor->snapshot().failed);
+        f.cp->now += 100;
+        f.lp->now += 100;
+        f.f.now += 100us;
+        f.bridge->pump();
+        for (unsigned i = 0; i < 3; ++i)
+            f.round();
+        auto r = f.reply();
+        REQUIRE_EQ(r.kind, hb::Kind::stream_progress);
+        REQUIRE_EQ(r.activity, hb::Activity::source_failed);
+        REQUIRE_EQ(r.produced_next, 1U);
+        REQUIRE_EQ(r.next_position, 0U);
+        REQUIRE_EQ(r.multicast_next, 0U);
+        auto q = f.request();
+        q.kind = hb::Kind::delivery_query;
+        q.mode = hb::Mode::multicast;
+        f.submit(q);
+        r = f.reply();
+        REQUIRE_EQ(r.kind, hb::Kind::delivery_status);
+        REQUIRE_EQ(r.outcome, hb::Outcome::ok);
+        REQUIRE_EQ(r.revision, 0U);
+        REQUIRE_EQ(r.mode, hb::Mode::multicast);
+        f.submit(f.request(2));
+        r = f.reply();
+        REQUIRE_EQ(r.outcome, hb::Outcome::denied);
+        REQUIRE_EQ(f.member().revision, 0U);
+        REQUIRE_EQ(f.bridge->snapshot().applied, 0U);
+        REQUIRE_EQ(f.f.actor->snapshot().unicast_reservations, 0U);
+        REQUIRE(!f.bridge->snapshot().closed);
+    }
+}
+TEST(hybrid_source_error_bridge_adopts_only_exact_preapproved_unicast_recovery)
+{
+    BridgeFixture f;
+    f.submit(f.request());
+    REQUIRE_EQ(f.reply().outcome, hb::Outcome::ok);
+    REQUIRE_EQ(f.member().revision, 1U);
+    REQUIRE_EQ(f.f.send(), Status::accepted);
+    f.f.output.error = Error::io_error;
+    f.f.pump();
+    REQUIRE_EQ(
+        recover_source(f.f, {{f.receiver.id, 1}}).status, Transition::applied);
+    auto q = f.request(2);
+    q.kind = hb::Kind::delivery_query;
+    q.mode = hb::Mode::multicast;
+    f.submit(q);
+    const auto r = f.reply();
+    REQUIRE_EQ(r.revision, 2U);
+    REQUIRE_EQ(r.mode, hb::Mode::unicast);
+    REQUIRE_EQ(r.outcome, hb::Outcome::ok);
+    REQUIRE_EQ(f.bridge->snapshot().source_recoveries, 1U);
+    REQUIRE(f.bridge->snapshot().source_failed);
+    REQUIRE(f.bridge->snapshot().unicast_only);
+    REQUIRE(!f.bridge->snapshot().closed);
+    const auto replies = f.bridge->snapshot().replies;
+    f.submit(f.request()); // old cached commit cannot be rearmed after recovery
+    for (unsigned i = 0; i < 4; ++i) {
+        f.bridge->pump();
+        f.round();
+    }
+    REQUIRE_EQ(f.bridge->snapshot().replies, replies);
+    f.submit(f.request(3, 2));
+    REQUIRE_EQ(f.reply().outcome, hb::Outcome::denied);
+    REQUIRE_EQ(f.member().revision, 2U);
+    REQUIRE_EQ(f.bridge->snapshot().applied, 1U);
+    f.lease->revoke();
+    f.bridge->pump();
+    REQUIRE(f.bridge->snapshot().closed);
+}
+TEST(
+    hybrid_source_error_bridge_refuses_recovery_of_members_without_existing_uc_approval)
+{
+    BridgeFixture f;
+    REQUIRE_EQ(f.f.send(), Status::accepted);
+    f.f.output.error = Error::io_error;
+    f.f.pump();
+    REQUIRE_EQ(
+        recover_source(f.f, {{f.receiver.id, 0}}).status, Transition::applied);
+    auto q = f.request(2);
+    q.kind = hb::Kind::delivery_query;
+    q.mode = hb::Mode::multicast;
+    f.submit(q);
+    f.bridge->pump();
+    REQUIRE(f.bridge->snapshot().closed);
+    REQUIRE_EQ(f.bridge->snapshot().source_recoveries, 0U);
+    REQUIRE_EQ(f.member().delivery, GroupOriginalDelivery::unicast);
+}
+TEST(
+    hybrid_source_error_bridge_internal_failure_and_missing_receipts_remain_terminal)
+{
+    for (unsigned mode = 0; mode < 4; ++mode) {
+        BridgeFixture f;
+        f.submit(f.request());
+        (void)f.reply();
+        if (mode == 0)
+            GroupSendCoordinatorTestAccess::fail(*f.f.actor);
+        else {
+            REQUIRE_EQ(f.f.send(), Status::accepted);
+            f.f.output.error = Error::io_error;
+            f.f.pump();
+            REQUIRE_EQ(recover_source(f.f, {{f.receiver.id, 1}}).status,
+                Transition::applied);
+            if (mode == 1)
+                GroupSendCoordinatorTestAccess::source_revision(*f.f.actor, 2);
+            if (mode == 2)
+                GroupSendCoordinatorTestAccess::revision(
+                    *f.f.actor, f.receiver.id, 3);
+            if (mode == 3)
+                f.lease->revoke();
+        }
+        auto q = f.request(2);
+        q.kind = hb::Kind::delivery_query;
+        q.mode = hb::Mode::multicast;
+        if (mode != 3)
+            f.submit(q);
+        f.bridge->pump();
+        REQUIRE(f.bridge->snapshot().closed);
+        REQUIRE(!f.bridge->data_progress());
     }
 }
 #endif

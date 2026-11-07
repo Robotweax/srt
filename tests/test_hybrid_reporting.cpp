@@ -251,3 +251,60 @@ TEST(hybrid_reporting_configuration_and_age_bounds_are_explicit)
     REQUIRE(!t.snapshot(2, hr::maximum_age_us + 1)->fresh);
     REQUIRE_EQ(t.snapshot(UINT64_MAX, 100)->effective_age_us, UINT64_MAX);
 }
+
+TEST(
+    hybrid_source_error_reporting_uses_native_failure_and_preserves_known_production)
+{
+    hr::SourceActivity a;
+    auto failed = a.failure(200, 105);
+    REQUIRE_EQ(failed.state, hr::Activity::source_failed);
+    REQUIRE_EQ(failed.produced_next, 105U);
+    auto s = source();
+    auto c = context();
+    REQUIRE(!hr::stream_report(
+        s, failed, c, hr::Mode::multicast, 1, {10, 100}, 200));
+    s.source_failed = true;
+    auto r =
+        hr::stream_report(s, failed, c, hr::Mode::multicast, 1, {10, 100}, 200);
+    REQUIRE(r);
+    REQUIRE_EQ(r->message.next_position, 100U);
+    REQUIRE_EQ(r->message.multicast_next, 100U);
+    REQUIRE(!hr::stream_report(
+        s, failed, c, hr::Mode::multicast, 1, {10, 100}, 300));
+    REQUIRE(a.declare(hr::Activity::ended, 110, 10, 100, 105));
+    failed = a.failure(200, 105);
+    REQUIRE_EQ(failed.produced_next,
+        110U); // expired declaration still records production
+    s.unicast_only = true;
+    REQUIRE(!hr::stream_report(
+        s, failed, c, hr::Mode::multicast, 2, {10, 100}, 200));
+    REQUIRE(
+        hr::stream_report(s, failed, c, hr::Mode::unicast, 2, {10, 100}, 200));
+    REQUIRE_EQ(a.failure(200, 111).produced_next, 111U);
+}
+TEST(hybrid_source_error_reports_are_sticky_without_fabricating_advancement)
+{
+    hr::ReportTracker t(hr::Kind::stream_progress, 100);
+    auto m = report();
+    m.activity = hr::Activity::ended;
+    REQUIRE(t.accept(m, false, 200, 200));
+    m.serial++;
+    m.activity = hr::Activity::source_failed;
+    REQUIRE(t.accept(m, false, 220, 220));
+    REQUIRE_EQ(t.snapshot(220, 100)->next_advanced_at_us, 200U);
+    for (auto activity : {hr::Activity::startup, hr::Activity::producing,
+             hr::Activity::paused, hr::Activity::ended}) {
+        m.serial++;
+        m.activity = activity;
+        REQUIRE(!t.accept(m, false, 230, 230));
+    }
+    m.serial++;
+    m.activity = hr::Activity::source_failed;
+    m.mode = hr::Mode::unicast;
+    m.revision++;
+    m.next_position++;
+    REQUIRE(t.accept(m, false, 240, 240));
+    REQUIRE_EQ(t.snapshot(240, 100)->multicast_advanced_at_us, 200U);
+    REQUIRE_EQ(t.snapshot(240, 100)->next_advanced_at_us, 240U);
+    REQUIRE(!t.snapshot(340, 100)->fresh);
+}

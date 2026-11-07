@@ -2360,6 +2360,7 @@ struct StartupHooks {
                                           std::make_shared<StartupProvision>();
     HybridWireHook wire;
     std::int32_t connect_timeout = 0;
+    hn::ReportingConfiguration reporting;
     static void configure(void* p, SRTSOCKET id, bool caller)
     {
         auto& self = *static_cast<StartupHooks*>(p);
@@ -2367,6 +2368,7 @@ struct StartupHooks {
         owner->caller = caller;
         owner->id = id;
         auto options = owner->options(owner);
+        options.source.reporting = options.receiver.reporting = self.reporting;
         if (self.connect_timeout) {
             options.admission_timeout_us = 1'000'000;
             options.native.timeout_us = 900'000;
@@ -4895,3 +4897,181 @@ TEST(
     REQUIRE(actor->snapshot().closed);
     REQUIRE_EQ(probe.attempts.load(), attempts);
 }
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+TEST(
+    multicast_dispatch_native_source_error_reports_and_preserves_preapproved_uc_plain_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        CoordinatedNative f(1'000'000, mode != 0, mode == 2, 64);
+        const hn::DetectionConfiguration detection {.report_age_us = 800'000,
+            .maximum_transit_us = 5'000,
+            .stall_us = 40'000,
+            .emission_lifetime_us = 400'000,
+            .recovery_us = 80'000,
+            .recovery_gap_us = 60'000,
+            .hold_down_us = 100'000,
+            .sample_gap_us = 20'000,
+            .recovery_advances = 3};
+        NativeReceiverOwners owners(f, {10'000, 600'000}, detection);
+        // Lost commits must reconcile before this member becomes a survivor.
+        const auto socket = SocketRegistry::instance().find(f.listener);
+        std::shared_ptr<robotweax::srt::compat::DatagramChannel> control;
+        {
+            std::lock_guard lock(socket->mutex);
+            control = socket->channel;
+        }
+        HybridWireHook hook;
+        hook.channel = control;
+        hook.drop_commits = true;
+        SendHookReset control_reset {control};
+        control->set_send_hook_for_testing(HybridWireHook::send, &hook);
+        REQUIRE_EQ(owners.receiver->request_fallback(0),
+            hn::ReceiverBridge::Admission::accepted);
+        owners.wait([&] {
+            auto s = owners.receiver->snapshot();
+            return s.fresh && s.mode == hn::Mode::unicast;
+        });
+        REQUIRE_EQ(owners.receiver->snapshot().revision, 1U);
+        FailedSourceProbe probe;
+        probe.fatal = true;
+        SendHookReset source_reset {f.source()};
+        f.source()->set_send_hook_for_testing(FailedSourceProbe::send, &probe);
+        REQUIRE_EQ(f.send(0), static_cast<int>(message(0).size()));
+        wait_for_source_failure(f.actor());
+        expect_messages(f.receiver, 0, 1);
+        owners.wait([&] {
+            auto r = owners.receiver->peer_report(800'000);
+            auto a = owners.receiver->path_assessment();
+            return r && r->fresh
+                && r->message.activity == hn::Activity::source_failed && a
+                && a->state == hn::PathDetector::State::source_failed;
+        });
+        REQUIRE(!owners.sender->snapshot().closed);
+        REQUIRE_EQ(srt_getsockstate(f.sender), SRTS_BROKEN);
+        const auto identity = owners.pair.l->snapshot().context.selection;
+        const std::array selected {
+            PolicyActor::RecoveryMember {identity.member, 1}};
+        REQUIRE_EQ(recover_native_source(f.actor(), selected).status,
+            PolicyActor::TransitionStatus::applied);
+        owners.wait([&] {
+            auto s = owners.receiver->snapshot();
+            return s.fresh && s.revision == 2 && s.mode == hn::Mode::unicast;
+        });
+        REQUIRE_EQ(owners.sender->snapshot().source_recoveries, 1U);
+        REQUIRE(owners.sender->snapshot().unicast_only);
+        const auto attempts = probe.attempts.load();
+        for (int i = 1; i < 81; ++i) {
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+            owners.receiver->pump();
+            owners.sender->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds {2});
+        }
+        expect_messages(f.receiver, 1, 80);
+        owners.wait([&] {
+            auto r = owners.receiver->peer_report(800'000);
+            return r && r->fresh && r->message.revision == 2
+                && r->message.next_position == 81
+                && r->message.mode == hn::Mode::unicast
+                && r->message.activity == hn::Activity::source_failed;
+        });
+        REQUIRE_EQ(probe.attempts.load(), attempts);
+        REQUIRE_EQ(owners.sender->snapshot().applied, 1U);
+        REQUIRE_EQ(srt_getsockstate(f.sender), SRTS_CONNECTED);
+        owners.lease->revoke();
+        owners.receiver->pump();
+        owners.sender->pump();
+        REQUIRE(owners.sender->snapshot().closed);
+        REQUIRE_EQ(f.send(81), static_cast<int>(message(81).size()));
+        expect_messages(f.receiver, 81, 1);
+    }
+}
+TEST(multicast_dispatch_native_source_error_is_diagnostic_without_uc_admission)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    CoordinatedNative f;
+    NativeReceiverOwners owners(f, {10'000, 100'000});
+    FailedSourceProbe probe;
+    probe.fatal = true;
+    SendHookReset reset {f.source()};
+    f.source()->set_send_hook_for_testing(FailedSourceProbe::send, &probe);
+    REQUIRE_EQ(f.send(0), static_cast<int>(message(0).size()));
+    wait_for_source_failure(f.actor());
+    owners.wait([&] {
+        auto r = owners.receiver->peer_report(100'000);
+        return r && r->fresh
+            && r->message.activity == hn::Activity::source_failed;
+    });
+    REQUIRE_EQ(owners.receiver->snapshot().mode, hn::Mode::multicast);
+    REQUIRE_EQ(owners.receiver->request_fallback(0),
+        hn::ReceiverBridge::Admission::accepted);
+    owners.wait([&] {
+        return owners.receiver->snapshot().fallback
+            == hn::ReceiverBridge::RequestState::denied;
+    });
+    REQUIRE(!owners.sender->snapshot().closed);
+    REQUIRE_EQ(f.actor()->snapshot().unicast_reservations, 0U);
+    REQUIRE_EQ(owners.sender->snapshot().applied, 0U);
+    REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
+}
+#endif
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+TEST(
+    multicast_dispatch_native_source_error_provisioned_startup_keeps_owned_control)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    StartupHooks hooks;
+    hooks.reporting = {10'000, 100'000};
+    CoordinatedNative f(1'000'000, false, false, 0, 120, true, false,
+        StartupHooks::configure, &hooks);
+    auto owner = startup_owner(f.receiver);
+    REQUIRE(owner);
+    auto receiver = owner->receiver();
+    REQUIRE(receiver);
+    FailedSourceProbe probe;
+    probe.fatal = true;
+    SendHookReset reset {f.source()};
+    f.source()->set_send_hook_for_testing(FailedSourceProbe::send, &probe);
+    REQUIRE_EQ(f.send(0), static_cast<int>(message(0).size()));
+    wait_for_source_failure(f.actor());
+    expect_messages(f.receiver, 0, 1);
+    auto until = std::chrono::steady_clock::now() + std::chrono::seconds {1};
+    bool reported = false;
+    while (std::chrono::steady_clock::now() < until) {
+        auto r = receiver->peer_report(100'000);
+        if (r && r->fresh
+            && r->message.activity == hn::Activity::source_failed) {
+            reported = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+    REQUIRE(reported);
+    std::array<PolicyActor::Member, 1> members;
+    REQUIRE_EQ(f.actor()->members(members), 1U);
+    const std::array selected {
+        PolicyActor::RecoveryMember {members[0].id, members[0].revision}};
+    REQUIRE_EQ(recover_native_source(f.actor(), selected).status,
+        PolicyActor::TransitionStatus::applied);
+    until = std::chrono::steady_clock::now() + std::chrono::seconds {1};
+    bool confirmed = false;
+    while (std::chrono::steady_clock::now() < until) {
+        auto s = receiver->snapshot();
+        if (s.fresh && s.revision == 2) {
+            confirmed = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds {1});
+    }
+    REQUIRE(confirmed);
+    REQUIRE_EQ(owner->snapshot().phase, hn::StartupSession::Phase::connected);
+    REQUIRE_EQ(f.send(1), static_cast<int>(message(1).size()));
+    expect_messages(f.receiver, 1, 1);
+}
+#endif

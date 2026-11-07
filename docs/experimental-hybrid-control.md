@@ -496,7 +496,9 @@ current actor, original dispatch sequence, multicast destination, actual bound
 source endpoint, established runtime, published conclusions and active native
 owner. Only a healthy multicast source and an initially unchanged multicast
 member policy can enroll. Ordinary handshake ISNs remain independent of the
-dispatch DATA origin. Other profiles and source-error recovery do not enroll.
+dispatch DATA origin. Other profiles and already failed/recovered sources do not
+enroll new control owners; existing UC owners can reconcile explicit recovery
+as described below.
 
 A nonblocking credential callback's returned generation alone cannot serialize
 a later policy-store revocation against an actor commit. The host must supply a
@@ -580,10 +582,74 @@ request and verify one transition, then suppress multicast DATA while delivering
 48 messages through canonical unicast originals, including CTR/GCM key rotation.
 The receiver, reporting, detection, fallback, return and staged membership owners
 below attach separately. The explicit startup provisioning profile later in this
-document integrates group connect admission; production credential discovery and
-actual source-error control integration remain unimplemented. Loopback/synthetic-credential evidence
+document integrates group connect admission. Source-error control integration is
+described below; production credential discovery remains unimplemented.
+Loopback/synthetic-credential evidence
 does not qualify hostile networks, physical/WAN paths, overload, scale or other
 platforms; the existing security limits remain.
+
+## Native source-error control integration
+
+An already enrolled `CoordinatorBridge` retains authenticated control after a
+permanent native multicast transport error or partial datagram. Internal actor
+faults, unrelated detachments, retired runtimes, changed roots, revoked grants,
+expired credentials and external policy changes retain their fail-closed gates.
+This does not enroll a new owner on a failed or recovered source. Reporting still
+requires an explicit nonzero reporting interval and host pumping (or the existing
+provisioned startup service); no new timer, thread, queue or public selector is
+added.
+
+The coordinator supplies `Activity::source_failed` from the actual permanent
+native error, including after explicit recovery leaves the failed multicast
+source retired. This describes the multicast source, not failure of the surviving
+UC session. It does not require or infer a producing declaration. The produced
+cursor is at least actual application admissions and preserves any larger earlier
+explicit production declaration, even an expired one; it never manufactures a
+successful UDP submission. Ordinary produced/submitted/multicast marks, member
+policy and retained floor remain distinct. A fresh sample of the still-current
+permanent failure may produce a fresh bounded diagnostic, while DATA advancement
+timestamps change only on actual new submissions. Ended may advance to failure;
+failure cannot revert to producing, paused, ended or startup in this incarnation.
+
+The failed profile answers fresh correlated `delivery_query` requests with the
+actual current policy. Fallback and return commands receive `denied`, including
+for a member detached only as `source_not_submitted`; they neither approve UC nor
+restart the source. The receiver detector exposes `source_failed` and suppresses
+both fallback and return candidates. An MC member can therefore retain diagnostic
+control while its original DATA path remains broken. A control report or query is
+never recovery authorization or proof of delivery.
+
+`recover_source_to_unicast` remains an explicit trusted host operation with its
+existing atomic selected-member, source/member revision, full retained-prefix,
+key, outcome-drain, quota and bandwidth checks. No automatic recovery selection
+or new authenticated recovery command is introduced. For a selected member that
+already had a live, unchanged UC delivery lease under this control root, the
+actor records a fixed receipt for the old source/member revisions. The same
+bridge alone can adopt the exact single successor source and member revisions,
+confirm UC through a fresh query, and continue reporting. A selected MC/overlap
+member, an unselected member, a missing/wrong receipt, an extra revision change or
+an unrelated delivery change cannot be adopted. Existing local recovery may still
+restore such a primary session, but its former bridge closes rather than treating
+that restoration as authenticated UC admission.
+
+The source recovery receipt does not relax grant expiry or revocation and does
+not count as a new bridge-applied remote transition. Pending cached replies from
+older revisions are suppressed on adoption and cannot be rearmed by duplicate or
+retry events. Already queued or submitted datagrams remain historical and cannot
+be recalled; receiver correlation and monotonic revision checks remain mandatory.
+After recovery, control is read-only for delivery policy: no multicast return or
+new prefix command is accepted. Closing/revoking control leaves committed UC DATA
+under the ordinary primary runtime and actor ownership.
+
+Components cover failed/partial sends, diagnostic-only queries, denied mutations,
+exact recovery receipts, cached duplicates, internal faults, revision changes,
+revocation, sticky failure reports and detector suppression. Native loopback tests
+exercise plain/CTR/GCM, lost UC commits recovered by query, permanent MC error,
+authenticated reports before/after explicit recovery, 80 canonical UC messages
+across key rotation, control revocation with further DATA, and a provisioned
+startup owner driven by its existing service. No production credential discovery,
+post-success membership-loss recovery, hostile-network, WAN, scale or playback
+continuity qualification is implied.
 
 ## Receiver revisions and bounded policy reconciliation
 
@@ -703,7 +769,10 @@ member's join. Unicast positions and the retained send-window floor map through
 that member's join origin. This floor describes retained sequence slots; it is
 not a promise that an entire recovery prefix is available. Samples can lag
 completion while the actor is busy, and can be unavailable during runtime
-contention, detachment or failure. A false `source_failed` flag does not prove
+contention, unrelated detachment or internal failure. Native transport failure
+may retain a diagnostic sample for an enrolled member detached solely because
+its multicast original was not submitted. Such a sample has no invented successful
+submission marks. A false `source_failed` flag does not prove
 health or production.
 
 The receiver separates total unique DATA from validated unicast and multicast
@@ -761,8 +830,8 @@ It must cover current admissions and cannot move the produced cursor backwards.
 Startup requires zero production and cannot resume after another activity;
 producing and paused can alternate. Ended fixes the final production cursor and
 is terminal for that incarnation, even after declaration expiry. The host cannot
-assert `source_failed` through this method; bridging actual source failure remains
-separate work. Invalid declarations do not replace the last valid declaration.
+assert `source_failed` through this method. Actual permanent native transport
+failure supplies that diagnostic through the source-error integration above. Invalid declarations do not replace the last valid declaration.
 
 Declaration lifetime is positive and at most five seconds. The source clock
 captures declaration time internally. Refresh declarations while they remain
@@ -816,7 +885,10 @@ Missing reports return no observation; stale stored reports return `fresh=false`
 Duplicates, older serials, backwards positions/revisions and conflicting
 same-revision modes cannot replace or refresh the stored observation. Clock
 regression makes its tracker permanently stale. Ended reports cannot reopen
-production or change the final produced cursor. Peer claims remain assertions.
+production or change the final produced cursor, but can advance to actual source
+failure. Source-failed reports cannot return to another activity in the same
+incarnation; later UC submissions can still advance DATA marks. Peer claims
+remain assertions.
 
 Metadata freshness and DATA advancement are distinct. A new paused report can
 renew metadata freshness while its `next_advanced_at_us` and
@@ -896,7 +968,8 @@ blackouts cannot remain candidates. Source activity claims yield distinct
 startup, paused, ended and source-failed states and suppress candidates. This
 is conservative during paused/ended production even if a backlog remains;
 ordinary reliability handling is unchanged. A source-failed report remains a
-peer assertion; producing it from actual source-error recovery is separate work.
+peer assertion; the source-error bridge above now produces it from actual native
+transport failure without authorizing a receiver transition.
 No fresh emission increase gives `awaiting_emission`, which is not a path outage.
 
 After a stall, or while the confirmed policy is unicast, recovery requires
@@ -1115,8 +1188,9 @@ high water stays at or below D. Explicit return APIs perform no autonomous
 recovery selection; `AutomaticFallback` remains one-way. The separate controller
 below supplies opt-in return selection. The internal membership profile below
 supplies staged startup support, and the setup profile below integrates native
-group connect admission. Production credential discovery, actual source-error
-control integration and broader network/scale qualification remain future work.
+group connect admission. Source-error control integration is described above.
+Production credential discovery and broader network/scale qualification remain
+future work.
 
 ## Explicitly attached automatic multicast return
 
@@ -1381,7 +1455,7 @@ budget, fully lost replies despite a committed sender policy, buffered DATA that
 remains publicly unreadable/unready before publication, close, original connect
 timeout, and unchanged unprovisioned join failure. These are synthetic-credential
 IPv4 loopback tests. A public numeric selector, production provisioning, later
-membership-loss/source-error integration, hostile-peer/scale/WAN timing and
+membership-loss recovery, hostile-peer/scale/WAN timing and
 playback-continuity qualification remain future work.
 
 ## Control body

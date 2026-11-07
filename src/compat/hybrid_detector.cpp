@@ -122,8 +122,11 @@ void PathDetector::observe(const Input& input) noexcept
                     && (m != *report_
                         || r.first_received_us != last_report_received_))
                 || (report_->activity == Activity::ended
+                    && m.activity != Activity::source_failed
                     && (m.activity != Activity::ended
                         || m.produced_next != report_->produced_next))
+                || (report_->activity == Activity::source_failed
+                    && m.activity != Activity::source_failed)
                 || m.next_position < report_->next_position
                 || m.multicast_next < report_->multicast_next
                 || m.produced_next < report_->produced_next

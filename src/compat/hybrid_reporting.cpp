@@ -34,6 +34,13 @@ bool SourceActivity::declare(Activity state, std::uint64_t produced,
     value_ = ActivityObservation {state, produced, now, now + lifetime};
     return true;
 }
+ActivityObservation SourceActivity::failure(
+    std::uint64_t now, std::uint64_t admitted) const noexcept
+{
+    return {Activity::source_failed,
+        std::max(admitted, value_ ? value_->produced_next : 0), now,
+        add(now, maximum_age_us)};
+}
 std::optional<ActivityObservation> SourceActivity::observe(
     std::uint64_t now, std::uint64_t admitted) const noexcept
 {
@@ -56,11 +63,13 @@ std::optional<ReportSample> stream_report(const SourceDataProgress& s,
     const auto origin = c.selection.initial_position;
     if (!valid(configuration) || !configuration.interval_us
         || s.stream != c.selection.stream || s.member != c.selection.member
-        || s.member_origin != origin || s.source_failed || s.unicast_only
+        || s.member_origin != origin
+        || (s.source_failed != (activity.state == Activity::source_failed))
+        || (s.unicast_only && (!s.source_failed || mode != Mode::unicast))
         || s.observed_at_us > now || activity.at_us > now
         || now >= activity.expires_at_us
         || s.admitted_next > activity.produced_next
-        || activity.state > Activity::ended)
+        || activity.state > Activity::source_failed)
         return {};
     const auto mc =
         std::max(origin, s.multicast.observed ? s.multicast.next : origin);
@@ -133,9 +142,12 @@ bool ReportTracker::accept(const Message& m, bool duplicate,
             || m.produced_next < old.produced_next
             || (m.revision == old.revision && m.mode != old.mode)
             || (kind_ == Kind::stream_progress
-                && old.activity == Activity::ended
-                && (m.activity != Activity::ended
-                    || m.produced_next != old.produced_next)))
+                && ((old.activity == Activity::ended
+                        && m.activity != Activity::source_failed
+                        && (m.activity != Activity::ended
+                            || m.produced_next != old.produced_next))
+                    || (old.activity == Activity::source_failed
+                        && m.activity != Activity::source_failed))))
             return false;
     }
     ReportObservation report {.message = m,

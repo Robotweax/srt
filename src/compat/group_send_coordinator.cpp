@@ -454,6 +454,16 @@ GroupSendCoordinator::recover_source_to_unicast(
                     detach(member.state.id, Detachment::source_unavailable);
                 continue;
             }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+            if (member.hybrid_root && member.unicast_lease
+                && member.state.detachment == Detachment::none
+                && member.state.delivery == GroupOriginalDelivery::unicast) {
+                member.recovered_hybrid_root = member.hybrid_root;
+                member.recovered_member_revision = member.state.revision;
+                member.recovered_source_revision = expected;
+            }
+            member.overlap_window.reset();
+#endif
             const auto prefix = guards[i]->commit();
             result.prefix.originals += prefix.prefix.originals;
             result.prefix.repairs += prefix.prefix.repairs;
@@ -856,11 +866,18 @@ std::optional<hybrid::SourceDataProgress> GroupSendCoordinator::data_progress(
     std::uint64_t id) const noexcept
 {
     std::lock_guard lock(publication_);
-    if (state_.closed)
+    const bool native_failure = !terminal_failure_
+        && (state_.source_failure == Emitter::Failure::transport
+            || state_.source_failure == Emitter::Failure::partial_datagram);
+    if (state_.closed || (state_.failed && !native_failure))
         return {};
     for (const auto& member : members_) {
         if (!id || member.state.id != id
-            || member.state.detachment != Detachment::none)
+            || (member.state.detachment != Detachment::none
+                && !(native_failure
+                    && state_.source_mode == SourceMode::multicast
+                    && member.state.detachment
+                        == Detachment::source_not_submitted)))
             continue;
         const auto runtime = RuntimeAdmission::observe_data(member.binding);
         if (!runtime)
@@ -883,7 +900,7 @@ std::optional<hybrid::SourceDataProgress> GroupSendCoordinator::data_progress(
             .observed_at_us = when < 0 ? 0 : static_cast<std::uint64_t>(when),
             .multicast = multicast_originals_,
             .unicast = unicast,
-            .source_failed = state_.failed,
+            .source_failed = native_failure,
             .unicast_only = state_.source_mode == SourceMode::unicast_only,
             .delivery_mode =
                 member.state.delivery == GroupOriginalDelivery::multicast
@@ -891,8 +908,10 @@ std::optional<hybrid::SourceDataProgress> GroupSendCoordinator::data_progress(
                 : member.state.delivery == GroupOriginalDelivery::unicast
                 ? hybrid::Mode::unicast
                 : hybrid::Mode::overlap,
-            .activity = when < 0
-                ? std::nullopt
+            .activity = when < 0 ? std::nullopt
+                : native_failure
+                ? std::optional {source_activity_.failure(
+                      static_cast<std::uint64_t>(when), next_position_)}
                 : source_activity_.observe(
                       static_cast<std::uint64_t>(when), next_position_)};
     }
