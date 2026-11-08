@@ -95,8 +95,10 @@ std::shared_ptr<GroupSendCoordinator> GroupSendCoordinator::make(
                 .clock_context = config.unicast_budget_clock_context});
         if (actor->unicast_budget_->snapshot().closed)
             return {};
-        actor->state_.unicast_recipient_limit = std::min<std::uint64_t>(
-            config.maximum_unicast_members, rate / source_rate);
+        // The minimum is bounded by the size_t member limit, also on Win32.
+        actor->state_.unicast_recipient_limit =
+            static_cast<std::size_t>(std::min<std::uint64_t>(
+                config.maximum_unicast_members, rate / source_rate));
         actor->encoder_ = GroupPacketEncoder::create(
             {.group_id = config.source.group_id,
                 .stream_generation = config.source.generation,

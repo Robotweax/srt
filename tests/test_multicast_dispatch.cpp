@@ -1436,12 +1436,14 @@ void investigate_hybrid_wire(bool encrypted, bool gcm, bool isolated = false)
         REQUIRE_EQ(srt_setsockflag(listener, SRTO_PASSPHRASE, group_passphrase,
                        sizeof(group_passphrase) - 1),
             0);
+#ifdef ENABLE_AEAD_API_PREVIEW
         if (gcm) {
             std::int32_t mode = 2;
             REQUIRE_EQ(
                 srt_setsockflag(listener, SRTO_CRYPTOMODE, &mode, sizeof(mode)),
                 0);
         }
+#endif
     }
     REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP,
                    &group_address, sizeof(group_address)),
