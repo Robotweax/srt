@@ -5801,22 +5801,34 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
         stalled == 0U, available_positions * step >= 4'000U + losses * 10'000U);
 }
 
-} // namespace
-
-TEST(compat_runtime_rotation_loss_preserves_payload_and_configured_key_budget)
+// The loss-horizon matrix is the largest rotation case. Each cipher runs in
+// its own CTest partition so instrumented builds keep the 30-second budget.
+void check_rotation_loss_horizons(CryptoMode mode)
 {
-    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
-        for (const std::uint64_t step : {10U, 25U, 100U, 1'000U}) {
-            for (const std::uint32_t preannouncement : {1U, 256U}) {
-                for (const unsigned losses : {0U, 1U, 2U}) {
-                    for (const bool lose_response : {false, true}) {
-                        check_rotation_loss_horizon(
-                            mode, step, preannouncement, losses, lose_response);
-                    }
+    for (const std::uint64_t step : {10U, 25U, 100U, 1'000U}) {
+        for (const std::uint32_t preannouncement : {1U, 256U}) {
+            for (const unsigned losses : {0U, 1U, 2U}) {
+                for (const bool lose_response : {false, true}) {
+                    check_rotation_loss_horizon(
+                        mode, step, preannouncement, losses, lose_response);
                 }
             }
         }
     }
+}
+
+} // namespace
+
+TEST(
+    compat_runtime_rotation_loss_ctr_preserves_payload_and_configured_key_budget)
+{
+    check_rotation_loss_horizons(CryptoMode::aes_ctr);
+}
+
+TEST(
+    compat_runtime_rotation_loss_gcm_preserves_payload_and_configured_key_budget)
+{
+    check_rotation_loss_horizons(CryptoMode::aes_gcm);
 }
 
 TEST(compat_runtime_rotation_transitions_preserve_payload_and_key_budget)

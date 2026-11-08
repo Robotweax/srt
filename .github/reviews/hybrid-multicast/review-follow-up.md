@@ -160,6 +160,32 @@ reproduces and corrects timer/FIFO starvation. Other native causes remain open. 
 oracle costs and the incomplete timing probe are separate diagnostic evidence.
 The Default console proves 88 gates; its lost auxiliary detail is stated explicitly.
 
+## Hosted CI follow-up at `d8db052`
+
+Run 42507586967 left four red jobs. Linux Release was killed by a runner
+shutdown during the build (exit 143, no compiler or test error); it passed on
+the two preceding pushes. Address/undefined sanitizers timed out in
+`robotweax_srt_rotation_tests` at 30.05 s; the same partition took 27.10 s on
+`main` at `e45d0ed` and 7.6 to 30.0 s across this branch's runs, so it is a
+pre-existing near-budget partition on a noisy runner, not a hybrid regression.
+Both Windows multicast jobs failed in `tools/qualify_multicast.py`, which runs
+every `multicast_dispatch` case and treated any skip as fatal: the new
+`multicast_dispatch_independent_source_ip_distributes_and_rejoins` case skips on
+hosted Windows runners ("no second assigned IPv4 address available"), while all
+48 other cases, including every REQUIRED case, passed on both backends.
+
+Changes: the qualification driver tolerates exactly that case with exactly that
+reason, never a REQUIRED case, and records it under `environment_skips` in the
+evidence; the real Windows and macOS transcripts were replayed through the new
+validator (48 passed + 1 recorded skip; 77 passed, no skip). The rotation
+matrix is split into CTR, GCM, transition and blackout partitions, each with
+the unchanged 30-second budget; the loss-horizon matrix is divided by cipher in
+source, and the Python registry check confirms every case keeps one owner.
+No deadline, assertion or production code changed. BL-4 (`srt-live-transmit
+-version` on Windows x64) has passed on every push since `18b4595`; the
+scheduler starvation fix at `4d59666` is the likely cause, but this is not yet
+attributed, so BL-4 stays open.
+
 ## Remaining harness and evidence work
 
 - Use normal failure reports and membership/control diagnostics to investigate

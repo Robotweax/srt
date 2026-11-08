@@ -865,8 +865,17 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     add_test(NAME robotweax_srt_delayed_key_response_tests
         COMMAND robotweax_srt_tests
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late)
-    add_test(NAME robotweax_srt_rotation_tests
-        COMMAND robotweax_srt_tests compat_runtime_rotation_)
+    # Clock-driven rotation matrices are pure CPU work; sanitizer builds ran
+    # the combined set close to the 30-second budget, so each matrix is its
+    # own partition. The exclusions in the aggregates above still cover all.
+    add_test(NAME robotweax_srt_rotation_ctr_tests
+        COMMAND robotweax_srt_tests compat_runtime_rotation_loss_ctr_)
+    add_test(NAME robotweax_srt_rotation_gcm_tests
+        COMMAND robotweax_srt_tests compat_runtime_rotation_loss_gcm_)
+    add_test(NAME robotweax_srt_rotation_transition_tests
+        COMMAND robotweax_srt_tests compat_runtime_rotation_transitions_)
+    add_test(NAME robotweax_srt_rotation_blackout_tests
+        COMMAND robotweax_srt_tests compat_runtime_rotation_control_blackout_)
     add_test(NAME robotweax_srt_group_retention_prefix_tests
         COMMAND robotweax_srt_tests
             compat_group_closed_member_retains_bounded_copy_prefix)
@@ -878,12 +887,16 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         robotweax_srt_hybrid_model_tests robotweax_srt_idle_readiness_tests
         robotweax_srt_transport_runtime_tests
         robotweax_srt_group_join_rollover_tests
-        robotweax_srt_rotation_tests robotweax_srt_key_length_tests
+        robotweax_srt_rotation_ctr_tests robotweax_srt_rotation_gcm_tests
+        robotweax_srt_rotation_transition_tests
+        robotweax_srt_rotation_blackout_tests robotweax_srt_key_length_tests
         robotweax_srt_delayed_key_response_tests
         robotweax_srt_group_retention_prefix_tests
         robotweax_srt_group_retention_oversized_tests PROPERTIES TIMEOUT 30)
     set_tests_properties(robotweax_srt_delayed_key_response_tests PROPERTIES LABELS "encryption")
-    set_tests_properties(robotweax_srt_rotation_tests PROPERTIES LABELS "encryption")
+    set_tests_properties(robotweax_srt_rotation_ctr_tests
+        robotweax_srt_rotation_gcm_tests robotweax_srt_rotation_transition_tests
+        robotweax_srt_rotation_blackout_tests PROPERTIES LABELS "encryption")
     set_tests_properties(robotweax_srt_key_length_tests PROPERTIES LABELS "encryption")
     add_test(NAME robotweax_srt_rejects_empty_test_selection
         COMMAND robotweax_srt_tests robotweax_nonexistent_test_filter)
