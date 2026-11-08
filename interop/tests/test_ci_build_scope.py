@@ -181,6 +181,17 @@ class CiTestRegistrationTests(unittest.TestCase):
                 "--include", "compat_runtime_", "--exclude", "compat_runtime_"],
         }
         partitions = {
+            "robotweax_srt_hybrid_model_tests",
+            "robotweax_srt_hybrid_investigation_tests",
+            "robotweax_srt_multicast_independent_tests",
+            "robotweax_srt_multicast_coordinated_tests",
+            "robotweax_srt_multicast_startup_tests",
+            "robotweax_srt_multicast_conclusions_tests",
+            "robotweax_srt_multicast_control_tests",
+            "robotweax_srt_multicast_source_error_tests",
+            "robotweax_srt_multicast_rejoin_tests",
+            "robotweax_srt_hybrid_multi_control_tests",
+            "robotweax_srt_hybrid_multi_quota_tests",
             "robotweax_srt_tests", "robotweax_srt_tsbpd_rtt_tests", "robotweax_srt_socket_api_tests",
             "robotweax_srt_multicast_dispatch_tests", "robotweax_srt_idle_readiness_tests",
             "robotweax_srt_hybrid_network_tests", "robotweax_srt_hybrid_key_timing_tests", "robotweax_srt_hybrid_load_tests", "robotweax_srt_hybrid_soak_tests", "robotweax_srt_hybrid_harness_tests",
@@ -237,14 +248,40 @@ class CiTestRegistrationTests(unittest.TestCase):
             "srt_compat_group_pathid_",
             "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
             "stale_drop_coverage", "stale_nak", "standby_rtt_native_runtime_", "compat_group_connect_joins_with_unread_messages_across_rollover",
-            "tsbpd_rtt", "multicast_dispatch", "hybrid_network_", "hybrid_key_network_", "hybrid_load_network_", "hybrid_soak_network_", "hybrid_harness_network_", "compat_idle_readiness_", "arq_transport_",
+            "tsbpd_rtt", "multicast_dispatch", "hybrid_", "hybrid_network_", "hybrid_key_network_", "hybrid_load_network_", "hybrid_soak_network_", "hybrid_harness_network_", "compat_idle_readiness_", "arq_transport_",
         ])
-        multicast_serial = re.search(
-            r"set_tests_properties\(robotweax_srt_multicast_dispatch_tests\s+PROPERTIES\s+([^)]*)\)",
-            cmake,
-        )
-        self.assertIsNotNone(multicast_serial)
-        self.assertIn("RUN_SERIAL TRUE", multicast_serial.group(1))
+        multicast_filters = {
+            "multicast_dispatch": ["--include", "multicast_dispatch", "--exclude",
+                "multicast_dispatch_independent_", "multicast_dispatch_coordinated_",
+                "multicast_dispatch_native_"],
+            "multicast_independent": ["--include", "multicast_dispatch_independent_"],
+            "multicast_coordinated": ["--include", "multicast_dispatch_coordinated_"],
+            "multicast_startup": ["--include", "multicast_dispatch_native_startup_"],
+            "multicast_conclusions": ["--include", "multicast_dispatch_native_conclusions_"],
+            "multicast_control": ["--include", "multicast_dispatch_native_", "--exclude",
+                "multicast_dispatch_native_startup_", "multicast_dispatch_native_conclusions_",
+                "multicast_dispatch_native_source_error_", "multicast_dispatch_native_rejoin_"],
+            "multicast_source_error": ["--include", "multicast_dispatch_native_source_error_"],
+            "multicast_rejoin": ["--include", "multicast_dispatch_native_rejoin_"],
+            "hybrid_multi_control": ["--include", "hybrid_network_multi_receiver_control_loss_"],
+            "hybrid_multi_quota": ["--include", "hybrid_network_multi_receiver_stale_control_"],
+            "hybrid_investigation": ["--include", "investigation_hybrid_"],
+        }
+        for suffix, arguments in multicast_filters.items():
+            name = "robotweax_srt_" + suffix + "_tests"
+            self.assertEqual(commands[name], arguments)
+            properties = re.search(
+                r"set_tests_properties\(" + name + r"\s+PROPERTIES\s+([^)]*)\)", cmake,
+            )
+            self.assertIsNotNone(properties)
+            self.assertIn("RUN_SERIAL TRUE", properties.group(1))
+            self.assertIn("TIMEOUT 30", properties.group(1))
+        self.assertEqual(commands["robotweax_srt_hybrid_model_tests"], [
+            "--include", "hybrid_", "--exclude", "multicast_dispatch",
+            "investigation_hybrid_", "hybrid_network_", "hybrid_key_network_",
+            "hybrid_load_network_", "hybrid_soak_network_", "hybrid_harness_network_",
+            "srt_compat_", "compat_runtime_", "acp1",
+        ])
         self.assertEqual(commands["robotweax_srt_hybrid_harness_tests"], [
             "--include", "hybrid_harness_network_",
         ])
@@ -257,7 +294,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         self.assertIn("TIMEOUT 30", harness_properties.group(1))
         self.assertIn("ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS=4", harness_properties.group(1))
         self.assertEqual(commands["robotweax_srt_hybrid_network_tests"], [
-            "--include", "hybrid_network_",
+            "--include", "hybrid_network_", "--exclude", "hybrid_network_multi_receiver_",
         ])
         hybrid_network_properties = re.search(
             r"set_tests_properties\(robotweax_srt_hybrid_network_tests\s+PROPERTIES\s+([^)]*)\)",
@@ -331,6 +368,17 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_stale_nak_tests",
         }
         network_partitions = {
+            "robotweax_srt_hybrid_investigation_tests",
+            "robotweax_srt_multicast_independent_tests",
+            "robotweax_srt_multicast_coordinated_tests",
+            "robotweax_srt_multicast_startup_tests",
+            "robotweax_srt_multicast_conclusions_tests",
+            "robotweax_srt_multicast_control_tests",
+            "robotweax_srt_multicast_source_error_tests",
+            "robotweax_srt_multicast_rejoin_tests",
+            "robotweax_srt_hybrid_multi_control_tests",
+            "robotweax_srt_hybrid_multi_quota_tests",
+            "robotweax_srt_multicast_dispatch_tests",
             "robotweax_srt_hybrid_network_tests", "robotweax_srt_hybrid_key_timing_tests", "robotweax_srt_hybrid_load_tests", "robotweax_srt_hybrid_soak_tests", "robotweax_srt_hybrid_harness_tests",
             "robotweax_srt_arq_transport_tests",
             "robotweax_srt_native_reuseport_tests", "robotweax_srt_local_address_tests",
@@ -410,7 +458,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_socket_api_tests"))
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_transport_runtime_tests"))
         self.assertIsNotNone(re.search(selection.group(1), "robotweax_srt_key_length_tests"))
-        for name in profile_partitions | stale_partitions | {"robotweax_srt_delayed_key_response_tests", "robotweax_srt_local_address_tests", "robotweax_srt_group_pathid_tests", "robotweax_srt_group_acquire_tests"}:
+        for name in profile_partitions | stale_partitions | {"robotweax_srt_hybrid_model_tests", "robotweax_srt_hybrid_investigation_tests", "robotweax_srt_delayed_key_response_tests", "robotweax_srt_local_address_tests", "robotweax_srt_group_pathid_tests", "robotweax_srt_group_acquire_tests"}:
             self.assertIsNotNone(re.search(selection.group(1), name))
         target = re.search(
             r"add_executable\(robotweax_srt_tests\s+([^)]*)\)", cmake,

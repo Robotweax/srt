@@ -123,6 +123,32 @@ partitions each retain all 400 bidirectional samples for one AES key size and a
 Sensor TTL or correctness assertions. The optional retransmission-limit CI
 configuration runs all these partitions.
 
+Multicast dispatch uses separate serial partitions for the common, independent
+and coordinated cases. Hybrid-control builds also separate startup, conclusions,
+control transitions, source errors and rejoin. The direct `multicast_dispatch`
+selector still runs the complete profile used by qualification tools. The hybrid
+model and native investigation cases have separate budgets, as do the two
+multi-receiver fault scenarios. Each new CTest partition has a 30-second process
+limit. Case filters change only ownership; operation counts, packet comparisons,
+playout, confirmation and recovery deadlines are preserved. The optional
+retransmission-limit job includes cases moved out of the general aggregate.
+
+To inspect individual case wall times on a POSIX host, enable runner diagnostics:
+
+```sh
+ROBOTWEAX_TEST_TIMING=1 ctest --test-dir build -V -R multicast
+```
+
+Each completed case emits `[TIME]` with its name and elapsed microseconds,
+including cleanup. These are process-budget diagnostics, not packet latency
+measurements. The default output is unchanged.
+
+The correlated-prefix repair test checks the aggregate wire envelope at every
+observed physical submission. A slow or coarse host may never exhaust credit;
+that does not violate the envelope. Frozen-clock budget/coordinator cases force
+exhaustion and verify quota waits, while a coarse-clock case checks that all
+repairs can obey the envelope with zero waits.
+
 The native crypto recovery regression also drives 32 key announcements before
 replaying recorded initial KMREQ material, then requires exact DATA recovery
 through four subsequent legitimate announcements. It covers AES-128/192/256,

@@ -638,7 +638,17 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover
-            tsbpd_rtt multicast_dispatch hybrid_network_ hybrid_key_network_ hybrid_load_network_ hybrid_soak_network_ hybrid_harness_network_ compat_idle_readiness_ arq_transport_)
+            tsbpd_rtt multicast_dispatch hybrid_ hybrid_network_ hybrid_key_network_ hybrid_load_network_ hybrid_soak_network_ hybrid_harness_network_ compat_idle_readiness_ arq_transport_)
+    add_test(NAME robotweax_srt_hybrid_model_tests
+        COMMAND robotweax_srt_tests --include hybrid_ --exclude multicast_dispatch
+            investigation_hybrid_ hybrid_network_ hybrid_key_network_
+            hybrid_load_network_ hybrid_soak_network_ hybrid_harness_network_
+            srt_compat_ compat_runtime_ acp1)
+    set_tests_properties(robotweax_srt_hybrid_model_tests PROPERTIES LABELS "unit;hybrid")
+    add_test(NAME robotweax_srt_hybrid_investigation_tests
+        COMMAND robotweax_srt_tests --include investigation_hybrid_)
+    set_tests_properties(robotweax_srt_hybrid_investigation_tests PROPERTIES
+        TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid")
     add_test(NAME robotweax_srt_arq_transport_tests
         COMMAND robotweax_srt_tests --include arq_transport_)
     set_tests_properties(robotweax_srt_arq_transport_tests
@@ -646,18 +656,60 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     # Real multicast and idle-watcher waits have their own bounded budgets;
     # do not charge all platform setup costs to the aggregate unit timeout.
     add_test(NAME robotweax_srt_multicast_dispatch_tests
-        COMMAND robotweax_srt_tests --include multicast_dispatch)
-    # This fixture and the hybrid partitions bind the same loopback group/port.
-    set_tests_properties(robotweax_srt_multicast_dispatch_tests PROPERTIES RUN_SERIAL TRUE)
+        COMMAND robotweax_srt_tests --include multicast_dispatch --exclude
+            multicast_dispatch_independent_ multicast_dispatch_coordinated_
+            multicast_dispatch_native_)
+    # Each serial partition owns complete cases and its own 30-second process
+    # budget. The full direct selector remains available to qualification tools.
+    set_tests_properties(robotweax_srt_multicast_dispatch_tests PROPERTIES
+        TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
+    add_test(NAME robotweax_srt_multicast_independent_tests
+        COMMAND robotweax_srt_tests --include multicast_dispatch_independent_)
+    set_tests_properties(robotweax_srt_multicast_independent_tests PROPERTIES
+        TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
+    add_test(NAME robotweax_srt_multicast_coordinated_tests
+        COMMAND robotweax_srt_tests --include multicast_dispatch_coordinated_)
+    set_tests_properties(robotweax_srt_multicast_coordinated_tests PROPERTIES
+        TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
     if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL)
+        add_test(NAME robotweax_srt_multicast_startup_tests
+            COMMAND robotweax_srt_tests --include multicast_dispatch_native_startup_)
+        set_tests_properties(robotweax_srt_multicast_startup_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;multicast")
+        add_test(NAME robotweax_srt_multicast_conclusions_tests
+            COMMAND robotweax_srt_tests --include multicast_dispatch_native_conclusions_)
+        set_tests_properties(robotweax_srt_multicast_conclusions_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;multicast")
+        add_test(NAME robotweax_srt_multicast_control_tests
+            COMMAND robotweax_srt_tests --include multicast_dispatch_native_ --exclude
+                multicast_dispatch_native_startup_ multicast_dispatch_native_conclusions_
+                multicast_dispatch_native_source_error_ multicast_dispatch_native_rejoin_)
+        set_tests_properties(robotweax_srt_multicast_control_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;multicast")
+        add_test(NAME robotweax_srt_multicast_source_error_tests
+            COMMAND robotweax_srt_tests --include multicast_dispatch_native_source_error_)
+        set_tests_properties(robotweax_srt_multicast_source_error_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;multicast")
+        add_test(NAME robotweax_srt_multicast_rejoin_tests
+            COMMAND robotweax_srt_tests --include multicast_dispatch_native_rejoin_)
+        set_tests_properties(robotweax_srt_multicast_rejoin_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;multicast")
         add_test(NAME robotweax_srt_hybrid_harness_tests
             COMMAND robotweax_srt_tests --include hybrid_harness_network_)
         set_tests_properties(robotweax_srt_hybrid_harness_tests PROPERTIES
             TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;fault-injection;lifecycle"
             ENVIRONMENT "ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS=4")
         add_test(NAME robotweax_srt_hybrid_network_tests
-            COMMAND robotweax_srt_tests --include hybrid_network_)
+            COMMAND robotweax_srt_tests --include hybrid_network_ --exclude hybrid_network_multi_receiver_)
         set_tests_properties(robotweax_srt_hybrid_network_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_multi_control_tests
+            COMMAND robotweax_srt_tests --include hybrid_network_multi_receiver_control_loss_)
+        set_tests_properties(robotweax_srt_hybrid_multi_control_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_multi_quota_tests
+            COMMAND robotweax_srt_tests --include hybrid_network_multi_receiver_stale_control_)
+        set_tests_properties(robotweax_srt_hybrid_multi_quota_tests PROPERTIES
             TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;fault-injection")
         add_test(NAME robotweax_srt_hybrid_key_timing_tests
             COMMAND robotweax_srt_tests --include hybrid_key_network_)
@@ -811,18 +863,13 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             compat_group_closed_member_retains_bounded_copy_after_oversized_message)
     set_tests_properties(
         robotweax_srt_tests robotweax_srt_tsbpd_rtt_tests robotweax_srt_socket_api_tests
-        robotweax_srt_multicast_dispatch_tests robotweax_srt_idle_readiness_tests
+        robotweax_srt_hybrid_model_tests robotweax_srt_idle_readiness_tests
         robotweax_srt_transport_runtime_tests
         robotweax_srt_group_join_rollover_tests
         robotweax_srt_rotation_tests robotweax_srt_key_length_tests
         robotweax_srt_delayed_key_response_tests
         robotweax_srt_group_retention_prefix_tests
         robotweax_srt_group_retention_oversized_tests PROPERTIES TIMEOUT 30)
-    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL)
-        # Hybrid admission, recovery and return cases add complete source-profile
-        # lifecycles. Preserve the default 30-second gate and bounded case waits.
-        set_tests_properties(robotweax_srt_multicast_dispatch_tests PROPERTIES TIMEOUT 60)
-    endif()
     set_tests_properties(robotweax_srt_delayed_key_response_tests PROPERTIES LABELS "encryption")
     set_tests_properties(robotweax_srt_rotation_tests PROPERTIES LABELS "encryption")
     set_tests_properties(robotweax_srt_key_length_tests PROPERTIES LABELS "encryption")

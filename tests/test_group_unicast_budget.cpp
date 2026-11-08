@@ -47,6 +47,7 @@ TEST(compat_group_wire_budget_originals_and_repairs_share_ip_udp_burst_and_rate)
         REQUIRE_EQ(state.repair_wire_bytes, 100U);
         REQUIRE_EQ(state.available_bytes, 0U);
         REQUIRE_EQ(state.submitted_packets, 2U);
+        REQUIRE_EQ(state.waits, 2U);
     }
 }
 
@@ -175,4 +176,23 @@ TEST(
         REQUIRE(state.available_bytes <= state.burst_bytes);
     }
     REQUIRE(charged > 1500U);
+}
+
+TEST(compat_group_wire_budget_coarse_pacing_obeys_rate_without_quota_wait)
+{
+    BudgetFixture f(120'000);
+    const auto start = f.now;
+    for (unsigned i = 0; i < 180; ++i) {
+        f.submit(1472, true);
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::microseconds>(f.now - start)
+                .count();
+        REQUIRE(f.budget.snapshot().repair_wire_bytes <= 1500U
+                + 120'000U * static_cast<std::uint64_t>(elapsed) / 1'000'000U);
+        f.now += 20ms;
+    }
+    const auto state = f.budget.snapshot();
+    REQUIRE_EQ(state.repair_wire_bytes, 180U * 1500U);
+    REQUIRE_EQ(state.submitted_packets, 180U);
+    REQUIRE_EQ(state.waits, 0U);
 }

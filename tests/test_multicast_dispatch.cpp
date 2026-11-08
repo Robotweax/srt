@@ -4694,7 +4694,9 @@ TEST(
         REQUIRE_EQ(state.detached_members, 0U);
         REQUIRE_EQ(state.unicast_budget.wire_bytes_per_second, 120'000U);
         REQUIRE_EQ(state.unicast_budget.original_wire_bytes, 0U);
-        REQUIRE(state.unicast_budget.waits > 0);
+        // Slow/coarse host pacing may avoid quota exhaustion. The trace below
+        // must still obey the wire envelope. Frozen-clock budget/coordinator
+        // tests force exhaustion and check the wait path independently.
         std::lock_guard lock(trace.mutex);
         REQUIRE(!trace.nonrepair);
         REQUIRE(trace.submissions.size() >= 180U);
